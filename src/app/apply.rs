@@ -900,14 +900,11 @@ fn check_lifecycle_now(paths: &Paths, plan: &StoredPlan, notes: &mut Vec<String>
             ));
         }
     }
-    let missing = plan.intent.inputs().into_iter().find(|input| {
-        std::fs::metadata(input.as_path()).is_err_and(|err| {
-            matches!(
-                err.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-            )
-        })
-    });
+    let missing = plan
+        .intent
+        .inputs()
+        .into_iter()
+        .find(|input| plans::input_is_gone(input.as_path()));
     check_lifecycle(
         plan,
         crate::clock::now(),
@@ -946,7 +943,7 @@ fn check_lifecycle(
             json!({ "changed": [], "reason": "already_applied", "txs": txs }),
         ));
     }
-    if now > plan.expires_at {
+    if plan.is_expired(now) {
         return Err(stale(
             format!(
                 "plan {id} expired at {} (plans last 24 hours); nothing was changed",

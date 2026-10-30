@@ -28,6 +28,7 @@ pub mod omarchy;
 pub mod outcome;
 pub mod outdated;
 pub mod pin;
+pub mod plans;
 pub mod precondition;
 pub mod remembered;
 pub mod remove;
@@ -225,6 +226,7 @@ pub const COMMANDS: &[CommandEntry] = &[
     entry("errors dismiss", Look, true, &[0, 1, 2, 4, 5], data_schema::<errors::DismissOutcome>, Network::None),
     entry("export", Look, true, &[0, 1, 2, 3, 4, 5], data_schema::<export::ExportOutcome>, Network::None),
     entry("history", Look, false, &[0, 1, 2, 3, 4], data_schema::<history::HistoryOutcome>, Network::None),
+    entry("plans show", Look, false, &[0, 1, 2, 3], data_schema::<plans::PlansShowOutcome>, Network::None),
     entry("net-log", Look, false, &[0, 1, 2], data_schema::<net_log::NetLogOutcome>, Network::None),
     entry("install", Change, true, &[0, 1, 2, 3, 4, 5, 6], data_schema::<install::InstallOutcome>, Network::Optional).storing_plan(),
     entry("update", Change, true, &[0, 1, 2, 3, 4, 5, 6], data_schema::<update::UpdateOutcome>, Network::Optional).storing_plan(),
@@ -371,6 +373,7 @@ pub fn canonical_path(command: &Command) -> &'static str {
             .as_ref()
             .map_or("backup list", backup::BackupAction::command),
         Command::History(_) => "history",
+        Command::Plans(args) => args.action.command(),
         Command::Info(_) => "info",
         Command::Export(_) => "export",
         Command::Outdated(_) => "outdated",
@@ -730,6 +733,9 @@ fn run_command(cli: &Cli, ctx: &Context, out: &Out<'_>) -> Exit {
             }
             out.emit(result)
         }
+        Some(Command::Plans(args)) => match &args.action {
+            plans::PlansAction::Show(show) => out_logged(out, plans::show(ctx, show)),
+        },
         Some(Command::List(args)) => out.emit(list::run(ctx, *args)),
         Some(Command::Targets(args)) => match &args.action {
             None => out.emit(targets::list(ctx, args.rescan)),
@@ -852,6 +858,7 @@ mod tests {
             (&["auth", "github", "status", "--offline"], "auth github"),
             (&["auth", "github", "--from-gh"], "auth github"),
             (&["auth", "--from-gh", "github"], "auth github"),
+            (&["plans", "show", "01M8Q2VA"], "plans show"),
             (&["robot-docs"], "robot-docs guide"),
             (&["robot-docs", "guide"], "robot-docs guide"),
             (&["robot-docs", "errors"], "robot-docs errors"),

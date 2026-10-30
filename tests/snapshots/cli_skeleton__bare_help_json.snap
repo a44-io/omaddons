@@ -66,6 +66,12 @@ expression: envelope
         "name": "history"
       },
       {
+        "about": "Inspect a stored plan and what history records of it (changes nothing)",
+        "aliases": [],
+        "group": "look",
+        "name": "plans"
+      },
+      {
         "about": "Every network request omaddons made",
         "aliases": [],
         "group": "look",

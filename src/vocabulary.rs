@@ -212,6 +212,7 @@ pub const CLIENT_FREE: &[&str] = &[
     "omarchy",
     "copy",
     "apply",
+    "plans",
     "completions",
     "robot-docs",
 ];

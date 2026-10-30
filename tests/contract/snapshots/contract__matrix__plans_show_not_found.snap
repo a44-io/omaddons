@@ -1,0 +1,29 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "plans show",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "plan_not_found",
+    "details": {
+      "plan_id": "<ulid>"
+    },
+    "fix": "omaddons help plans show",
+    "fix_argv": [
+      "omaddons",
+      "help",
+      "plans",
+      "show"
+    ],
+    "message": "no stored plan has an id starting with <ulid>, and history records no apply of one in the last 24 hours",
+    "retryable": false
+  },
+  "exit_code": 3,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

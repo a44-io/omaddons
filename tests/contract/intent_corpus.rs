@@ -457,6 +457,30 @@ pub const CORPUS: &[Row] = &[
     ),
     row(
         CommandTypo,
+        &["plans", "shwo", "01M8Q2VA7K3N5P8R1T4W6X9Y0Z"],
+        &["plans show"],
+        "the corpus home holds no such plan: the fix exits 3",
+        error(
+            2,
+            "usage",
+            &["omaddons", "plans", "show", "01M8Q2VA7K3N5P8R1T4W6X9Y0Z"],
+            &[3],
+        ),
+    ),
+    row(
+        CommandTypo,
+        &["plan", "show", "01M8Q2VA7K3N5P8R1T4W6X9Y0Z"],
+        &["plans show"],
+        "the corpus home holds no such plan: the fix exits 3",
+        error(
+            2,
+            "usage",
+            &["omaddons", "plans", "show", "01M8Q2VA7K3N5P8R1T4W6X9Y0Z"],
+            &[3],
+        ),
+    ),
+    row(
+        CommandTypo,
         &["reinstall", "dbm", "-t", "retail"],
         &["install"],
         "a synonym keeps the user's intent",
@@ -871,38 +895,6 @@ pub const PENDING: &[Pending] = &[
             ),
         )
         .by_leaf("B3"),
-    ),
-    pending(
-        "D9",
-        &["plans show"],
-        row(
-            CommandTypo,
-            &["plans", "shwo", "01M8Q2VA7K3N5P8R1T4W6X9Y0Z"],
-            &["plans show"],
-            "the corpus home holds no such plan: the fix exits 3",
-            error(
-                2,
-                "usage",
-                &["omaddons", "plans", "show", "01M8Q2VA7K3N5P8R1T4W6X9Y0Z"],
-                &[3],
-            ),
-        ),
-    ),
-    pending(
-        "D9",
-        &["plans show"],
-        row(
-            CommandTypo,
-            &["plan", "show", "01M8Q2VA7K3N5P8R1T4W6X9Y0Z"],
-            &["plans show"],
-            "the corpus home holds no such plan: the fix exits 3",
-            error(
-                2,
-                "usage",
-                &["omaddons", "plans", "show", "01M8Q2VA7K3N5P8R1T4W6X9Y0Z"],
-                &[3],
-            ),
-        ),
     ),
     pending(
         "E3",

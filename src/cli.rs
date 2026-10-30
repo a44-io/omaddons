@@ -185,6 +185,9 @@ pub enum Command {
     /// Show what changed, when, by whom and why
     #[command(visible_alias = "log")]
     History(crate::app::history::HistoryArgs),
+    /// Inspect a stored plan and what history records of it (changes nothing)
+    #[command(subcommand_required = true, arg_required_else_help = false)]
+    Plans(crate::app::plans::PlansArgs),
     /// Which managed addons have updates, on every client (changes nothing)
     #[command(visible_alias = "check", after_long_help = OUTDATED_HELP)]
     Outdated(crate::app::outdated::OutdatedArgs),
@@ -1157,20 +1160,48 @@ fn subcommand_fix(
         }
     }
     let service = is_service_parent(path);
-    let guess = |name: &str| {
-        let mut full = path.to_vec();
-        full.push(name.to_owned());
-        if !service && crate::app::mutates(&full.join(" ")) {
-            (help_for(&full), Some(full.join(" ")))
-        } else {
-            let fixed = fix_argv_replacing(argv, bad, name).unwrap_or_else(|| fix_argv(argv));
-            (Suggestion::command(fixed), None)
-        }
-    };
-    let mut guesses = canonical.iter().map(|name| guess(name));
+    let mut guesses = canonical
+        .iter()
+        .map(|name| guess_suggestion(argv, path, bad, name, service));
     let (fix, closest) = guesses.next()?;
     let alternatives = guesses.map(|(s, _)| s).collect();
     Some((fix, alternatives, closest))
+}
+
+/// What the guessed subcommand `name` (for `bad`, mistyped under `path`) suggests: the
+/// corrected argv when the command it reaches only reads, else that guess's help (M4-D12:
+/// a guess never hands over a command that changes something), with the guessed path for
+/// the message. A guessed path with a `COMMANDS` row is judged by that row. A path
+/// without one (a parent that cannot run bare, such as `plans`) is judged by the command
+/// the corrected argv reaches, which must have a row that changes nothing, and parse.
+/// Under a service parent the user's verb follows, so the correction always stands.
+fn guess_suggestion(
+    argv: &[String],
+    path: &[String],
+    bad: &str,
+    name: &str,
+    service: bool,
+) -> (Suggestion, Option<String>) {
+    let mut full = path.to_vec();
+    full.push(name.to_owned());
+    let joined = full.join(" ");
+    let fixed = fix_argv_replacing(argv, bad, name).unwrap_or_else(|| fix_argv(argv));
+    // ubs:ignore — comparing command paths, not secrets
+    let has_row = |path: &str| crate::app::COMMANDS.iter().any(|c| c.name == path);
+    let reads = |path: &str| has_row(path) && !crate::app::mutates(path);
+    let corrected = if service || has_row(&joined) {
+        service || reads(&joined)
+    } else {
+        let reached = command_path(&fixed);
+        reached.len() > full.len()
+            && reads(&reached.join(" "))
+            && parses(&Suggestion::command(fixed.clone()))
+    };
+    if corrected {
+        (Suggestion::command(fixed), None)
+    } else {
+        (help_for(&full), Some(joined))
+    }
 }
 
 /// Command paths whose subcommands name a service (a noun), not a verb. A mistyped
@@ -1766,6 +1797,122 @@ mod tests {
         assert_eq!(err.fix.argv().unwrap(), ["omaddons", "help", "help"]);
     }
 
+    /// A guessed parent with no row of its own (`plans`) is judged by the command the
+    /// corrected argv reaches; one with a row keeps its rule.
+    #[test]
+    fn a_rowless_parent_is_judged_by_the_command_reached() {
+        let id = "01M8Q2VA7K3N5P8R1T4W6X9Y0Z";
+        let show = argv(&["plans", "show", id]);
+        for (name, args, fix, first_alternative) in [
+            (
+                "plan_show_id",
+                vec!["plan", "show", id],
+                show.clone(),
+                Some(argv(&["help", "pin"])),
+            ),
+            (
+                "plnas_show_id",
+                vec!["plnas", "show", id],
+                show.clone(),
+                None,
+            ),
+            (
+                "plans_shwo_id",
+                vec!["plans", "shwo", id],
+                show.clone(),
+                None,
+            ),
+            (
+                "plan_alone",
+                vec!["plan"],
+                argv(&["help", "plans"]),
+                Some(argv(&["help", "pin"])),
+            ),
+            (
+                "plan_show_without_id",
+                vec!["plan", "show"],
+                argv(&["help", "plans"]),
+                Some(argv(&["help", "pin"])),
+            ),
+            (
+                "bakcup_list",
+                vec!["bakcup", "list"],
+                argv(&["backup", "list"]),
+                None,
+            ),
+            // Every path under `auth` changes something: still its help.
+            (
+                "aut_github_status",
+                vec!["aut", "github", "status"],
+                argv(&["help", "auth"]),
+                None,
+            ),
+        ] {
+            let raw = argv(&args);
+            let err = usage_error(&Cli::try_parse_from(&raw).unwrap_err(), &raw);
+            let got = (
+                err.fix.argv().map(<[String]>::to_vec),
+                err.alternatives
+                    .first()
+                    .and_then(|a| a.argv().map(<[String]>::to_vec)),
+            );
+            let expected = (Some(fix), first_alternative);
+            // Where clap's distances decide the alternatives, only the fix is pinned.
+            if [
+                "plnas_show_id",
+                "plans_shwo_id",
+                "bakcup_list",
+                "aut_github_status",
+            ]
+            .contains(&name)
+            {
+                assert_eq!(got.0, expected.0, "case {name}: argv {raw:?}, got {got:?}");
+            } else {
+                assert_eq!(got, expected, "case {name}: argv {raw:?}");
+            }
+        }
+    }
+
+    /// For every row under a parent with no row, a one-letter typo of the parent is help
+    /// or reaches a row that changes nothing.
+    #[test]
+    fn guess_suggestion_never_suggests_a_mutating_command() {
+        let rowless: std::collections::BTreeSet<&str> = crate::app::COMMANDS
+            .iter()
+            .filter_map(|c| c.name.split_once(' ').map(|(parent, _)| parent))
+            // ubs:ignore — comparing command paths, not secrets
+            .filter(|parent| !crate::app::COMMANDS.iter().any(|c| c.name == *parent))
+            .collect();
+        for parent in rowless {
+            let typo: String = parent.chars().skip(1).collect();
+            for row in crate::app::COMMANDS
+                .iter()
+                .filter(|c| c.name.starts_with(&format!("{parent} ")))
+            {
+                let mut words: Vec<&str> = row.name.split(' ').collect();
+                words[0] = &typo;
+                let raw = argv(&words);
+                let Err(err) = Cli::try_parse_from(&raw) else {
+                    continue;
+                };
+                let error = usage_error(&err, &raw);
+                for suggestion in std::iter::once(&error.fix).chain(&error.alternatives) {
+                    let Some(fixed) = suggestion.argv() else {
+                        continue;
+                    };
+                    let reached = command_path(fixed).join(" ");
+                    // ubs:ignore — comparing a command word, not a secret
+                    let help = fixed.get(1).map(String::as_str) == Some("help");
+                    assert!(
+                        help || !crate::app::mutates(&reached),
+                        "case {parent}/{}: argv {raw:?} suggests {fixed:?}",
+                        row.name
+                    );
+                }
+            }
+        }
+    }
+
     /// `apply` without a plan id (M4-D27): the help, then `adopt --apply`, which changes
     /// something and so is never the fix; any other refusal of `apply` offers no adopt.
     #[test]
@@ -2017,8 +2164,9 @@ mod tests {
     #[test]
     fn fixes_come_from_the_level_that_failed_and_never_guess_a_mutating_verb() {
         for (args, fix) in [
+            // A typo of a noun that needs its subcommand: its help.
+            (&["plan"][..], &["help", "plans"][..]),
             // A typo of a command that changes something: its help, never the command.
-            (&["plan"][..], &["help", "pin"][..]),
             (&["unpn", "x"], &["help", "unpin"]),
             (&["instal", "dbm"], &["help", "install"]),
             // Of one that only reads: the corrected command.

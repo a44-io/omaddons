@@ -222,6 +222,7 @@ fn help_walks_a_nested_path() {
         &["config", "get"],
         &["config", "set"],
         &["config", "path"],
+        &["plans", "show"],
         &["robot-docs", "guide"],
     ] {
         let mut asked = vec!["help"];

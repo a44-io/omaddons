@@ -1266,6 +1266,47 @@ fn history() {
     insta::assert_json_snapshot!("history_bad_since", s.stable(&c.envelope));
 }
 
+/// `plans show` (D9): an applied plan is `completed`, an unknown id `plan_not_found`, and
+/// bare `plans` the usage error whose fix is its help.
+#[test]
+fn plans_show() {
+    let s = Scene::new();
+    s.install_foo();
+    let foo2 = s.zip("foo2");
+    let preview = s.json(
+        &[
+            "install",
+            "gh:o/foo",
+            "--file",
+            &foo2,
+            "-t",
+            "retail",
+            "--dry-run",
+        ],
+        0,
+    );
+    let id = stored_preview(&s, &preview.envelope).plan_id.to_string();
+    s.json(&["apply", &id], 0);
+    let c = s.json(&["plans", "show", &id], 0);
+    let data = &c.envelope["data"];
+    assert_eq!(data["state"], "completed", "{data}");
+    assert_eq!(data["evidence"]["targets"][0]["target"], "retail", "{data}");
+    assert_eq!(validate::validate_envelope(&c.envelope, ""), Ok(()));
+    insta::assert_json_snapshot!("plans_show_completed", s.stable(&c.envelope));
+
+    let c = s.json(&["plans", "show", "01M8Q2VA7K3N5P8R1T4W6X9Y0Z"], 3);
+    assert_eq!(c.envelope["error"]["code"], "plan_not_found");
+    insta::assert_json_snapshot!("plans_show_not_found", s.stable(&c.envelope));
+
+    let c = s.json(&["plans"], 2);
+    assert_eq!(c.envelope["command"], "plans show");
+    assert_eq!(
+        support::strings(&c.envelope["error"]["fix_argv"]),
+        ["omaddons", "help", "plans"]
+    );
+    insta::assert_json_snapshot!("plans_usage", s.stable(&c.envelope));
+}
+
 /// A repair line (M4-D31), planted before any command writes one: `target: null`, its
 /// clients in `targets`, its doctor run and its operations.
 #[test]

@@ -141,6 +141,7 @@ var CLI_PATHS = {
   "errors dismiss":    { "mutates": true,  "destructive": false, "binds": true },
   "export":            { "mutates": true,  "destructive": false, "binds": false },
   "history":           { "mutates": false, "destructive": false, "binds": false },
+  "plans show":        { "mutates": false, "destructive": false, "binds": false },
   "net-log":           { "mutates": false, "destructive": false, "binds": false },
   "install":           { "mutates": true,  "destructive": false, "binds": true },
   "update":            { "mutates": true,  "destructive": false, "binds": true },

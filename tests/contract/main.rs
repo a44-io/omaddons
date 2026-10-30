@@ -468,6 +468,9 @@ mod support {
                 for (key, v) in map.iter_mut() {
                     if matches!(key.as_str(), "duration_ms" | "elapsed_ms" | "lock_held_ms") {
                         *v = Value::from(0);
+                    } else if key == "build_id" && v.is_string() {
+                        // Every build has its own.
+                        *v = Value::from("<build_id>");
                     } else {
                         scrub(v, root);
                     }

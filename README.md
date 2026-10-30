@@ -1420,6 +1420,34 @@ Every line also has `plan`: the [stored plan](#stored-plans) its transaction was
 
 Each line counts the folders added (`+`), replaced (`~`) and removed (`-`). A transaction that changed records without moving a folder, such as forgetting an addon whose folders were gone, also shows `=N` for the folders it recorded (`changes.recorded` in JSON). A `backup restore` is a transaction of kind `restore`, undone like any other. `changes.restored` counts the settings files the restore put back (`· N files restored`), and its ops name settings, not AddOns folders: `wtf` for a whole `WTF/` (`{"op":"wtf","folder":"WTF","addon":"","backup":…,"from":"backup","files":N}`) and `saved_variables` for one addon's files.
 
+### `plans show <PLAN_ID>`
+
+What a stored plan approved, and whether history records it as applied: the answer for an `apply` whose output was lost (a broken pipe, a restart, an agent that crashed) before you preview again or change anything. It reads the plan in the cache and a bounded tail of `history.jsonl`, and never re-plans: no lock, no request, no write, so it is safe while anything runs, `--offline` included.
+
+```bash
+omaddons plans show 01M8Q2VA           # what plan 01M8Q2VA… approved, and whether it was applied
+omaddons plans show 01M8Q2VA --json    # the same as one envelope
+```
+
+```text
+$ omaddons plans show 01M8Q2VA
+plan 01M8Q2VA7K3N5P8R1T4W6X9Y0Z (update): partial, 1 of 2 clients committed
+approved: omaddons update
+  classic: would update DBM 12.1.14 → 12.1.15
+  retail: would update DBM 12.1.14 → 12.1.15
+committed:
+  classic: tx 01M8T4XQ0000000… at 2026-10-30 18:05 · undo: omaddons undo 01M8T4XQ00000000000000000A
+not recorded: retail
+apply never resumes a partial plan; preview again for the rest: omaddons update --dry-run
+```
+
+- **The id.** The full id or a prefix of 8+ characters, in any case. Stored plans are matched first; a plan whose file is gone (expired and swept, or the cache emptied) is still found through history when it committed something. A prefix two plans share is `ref_ambiguous`; one that names nothing is `plan_not_found`.
+- **`state`:** `pending` (stored, unexpired, nothing committed: `apply` it), `completed` (a committed transaction on every client the approval named), `partial` (some, not all: `apply` never resumes it, so preview again for the rest), `expired` (past its 24 hours, nothing committed) or `unknown` (the file is gone or does not read, history was cut by its bound or holds lines that do not read, or an interrupted transaction on an approved client may hold its commit). Only history lines that carry the plan's id count as applied, never addon versions that happen to match.
+- **`backup prune`** appends no history line, so a prune plan is always `unknown` here: preview it again to see what is left.
+- **`stored` and `readable`:** whether the plan's file is in the cache, and whether it read. A file that does not read is reported (`readable: false`), never trusted.
+- **`evidence`:** `targets`, one `{target, key, tx, result, committed_at}` per history line carrying the plan, oldest first, and `complete`, `false` when the scan stopped at its bound (20,000 lines) before the plan was made.
+- `data` is `{plan_id, state, stored, readable, created_at, expires_at, build_id, build_matches, intent: {command, display_argv}, approval, inputs: [{path, present}], evidence}`, every key always present (`null` when unknown). `build_matches` says whether this build made the plan (`apply` refuses one another build made), and `inputs` whether each local file it installs from is still there. `commands` offers the undo of what it committed (`undo --run <run>` first when one run holds several transactions). `-t` is ignored: a plan names its own clients. With `-v` it adds the approval's reasons, the build, the inputs and how far history was read.
+
 ### `list`
 
 The addons in each target's AddOns folder (`ls` is an alias).
@@ -2071,6 +2099,8 @@ A confirm dialog, or an agent that previews before it acts, must not run somethi
 
 The storable commands' previews also store a plan ([Stored plans](#stored-plans)), and [`omaddons apply <plan_id>`](#apply-plan_id) runs exactly it: the stored intent bound to its stored token, every source it installs from checked again, one applier per plan at a time (its lease), and each client reported in `data.outcomes[]`. No command needs to be typed again. `apply` refuses `--if-match`: the plan carries its own token.
 
+**Lost an `apply`'s output?** Run [`omaddons plans show <plan_id>`](#plans-show-plan_id) before you preview again or change anything. It says, from history alone, whether the plan committed on every client, some or none, and never guesses from addon versions; a second `apply` would only report `already_applied` without saying whether every client committed.
+
 ```bash
 omaddons remove Foo -t retail --dry-run --json     # data.precondition: "pc1:…"
 omaddons remove Foo -t retail --if-match pc1:…     # exactly that removal, or plan_stale
@@ -2710,6 +2740,10 @@ Another omaddons process held the lock for more than 5 seconds. `error.details.h
 - `input_missing`: a local archive, folder or `sync` file it installs from is gone (`details.path`).
 - No `reason`, with `details.changed`: the world changed since the preview (a newer release, another change on the client, an edited folder), so the plan no longer describes what would happen.
 
+### My agent lost the output of `apply`
+
+Run `omaddons plans show <plan_id>` (the id the preview returned, or its first 8 characters) before anything else. `completed` means every approved client committed, and `committed` lists each transaction with its undo; `partial` names the clients that committed and those that did not, and `apply` will not resume it, so preview the command again for the rest; `pending` means nothing committed yet, and `apply <plan_id>` still runs it. `unknown` says why history cannot tell. It reads history only, so addon versions that happen to match never count as applied.
+
 ### `rate_limited`
 
 Usually the GitHub REST budget (60 an hour without a token) ran out; only the beta and alpha channels, releases without a usable `release.json` and some pinned tags use REST. Any host can also cause it, keyless github.com included: a 403 or 429 saying no requests remain, a `Retry-After` longer than 60 seconds, or a 429 that outlasts three retries. Wait for `details.reset_at`. For the REST budget, a token raises it to 5,000 an hour (search: 30 a minute):
@@ -3036,6 +3070,7 @@ Core loop
   omaddons install <ref>... -t <target> --dry-run --json
   omaddons install <ref>... -t <target> --json --actor agent --reason "<why>"
   omaddons apply <data.plan_id> --json --actor agent   # or: exactly the preview a person saw
+  omaddons plans show <plan_id> --json   # lost an apply's output? did it commit? (offline, changes nothing)
   omaddons outdated --json                       # what has updates, on every client
   omaddons update --all --dry-run --json         # then without --dry-run
   omaddons undo --last-by agent --json           # the escape hatch
@@ -3071,6 +3106,7 @@ Rules
   - Prefer apply <plan_id> for an approval a person saw: a plan_stale from apply means preview
     again, and already_applied means it ran. A dry run that stored a plan lists that apply
     first in commands[] (as destructive as the plan's command).
+  - If an apply's result is unknown, run plans show before you preview again or change anything.
   - --any-flavor (offered among a refusal's alternatives) only when the user asks for that addon
     on that client; it persists until --no-any-flavor.
   - Bind the real remove, undo, backup restore or backup prune to that preview, and errors dismiss

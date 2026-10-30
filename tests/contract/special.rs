@@ -705,6 +705,7 @@ fn read_only_commands_ignore_dry_run_and_reason() {
             "search" => &["search", "foo"],
             "errors" => &["errors"],
             "history" => &["history"],
+            "plans show" => &["plans", "show", "01M8Q2VA7K3N5P8R1T4W6X9Y0Z"],
             "net-log" => &["net-log"],
             "targets" => &["targets"],
             "config" => &["config"],

@@ -69,6 +69,23 @@ impl StoredPlan {
     pub fn display_argv_agrees(&self) -> bool {
         self.display_argv == self.intent.display_argv()
     }
+
+    /// Whether the plan is past its expiry at `now`: `apply`'s `expired` refusal and
+    /// `plans show`'s `expired` state, so the two agree at the exact instant.
+    pub fn is_expired(&self, now: Timestamp) -> bool {
+        now > self.expires_at
+    }
+}
+
+/// Whether an input a plan installs from is gone: `apply`'s `input_missing` and `plans
+/// show`'s `inputs[].present` ask the same question.
+pub fn input_is_gone(path: &Path) -> bool {
+    std::fs::metadata(path).is_err_and(|err| {
+        matches!(
+            err.kind(),
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+        )
+    })
 }
 
 /// The token a preview returned, and the parts it is the digest of.
@@ -290,7 +307,7 @@ pub fn evidence_horizon(created_at: Option<Timestamp>, given: &str, now: Timesta
 /// The creation time a ULID's first 10 characters encode, for a full id or a prefix (the
 /// rest read as `0`, the earliest it could be); `None` for text that is not Crockford
 /// base32.
-fn encoded_time(given: &str) -> Option<Timestamp> {
+pub(crate) fn encoded_time(given: &str) -> Option<Timestamp> {
     let head: String = given.to_ascii_uppercase().chars().take(10).collect();
     let ulid = ulid::Ulid::from_string(&format!("{head:0<26}")).ok()?;
     Timestamp::from_millisecond(i64::try_from(ulid.timestamp_ms()).ok()?).ok()

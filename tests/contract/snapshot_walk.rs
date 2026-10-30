@@ -26,6 +26,8 @@ enum Sample {
 /// Every whole-value placeholder the snapshot helpers write. A new redaction adds its row.
 const PLACEHOLDERS: &[(&str, Sample)] = &[
     ("<binary>", Sample::Keep),
+    // Each build's own `build_id` (`plans show`): a string.
+    ("<build_id>", Sample::Keep),
     ("<bytes>", Sample::Zero),
     ("<checked_at>", Sample::Time),
     ("<expires>", Sample::Time),

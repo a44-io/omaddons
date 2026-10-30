@@ -1,0 +1,26 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "plans show",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "usage",
+    "details": {},
+    "fix": "omaddons help plans",
+    "fix_argv": [
+      "omaddons",
+      "help",
+      "plans"
+    ],
+    "message": "'omaddons plans' requires a subcommand but one was not provided",
+    "retryable": false
+  },
+  "exit_code": 2,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

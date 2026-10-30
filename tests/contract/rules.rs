@@ -374,12 +374,14 @@ fn violations(roots: &[Root], file_kinds: &[String]) -> BTreeSet<String> {
     for root in roots {
         // The frame's `data` is each command's schema, and its `error` each code's;
         // `apply`'s `result` is each storable command's data and its `approved` the
-        // approval those carry, each checked in its own root.
+        // approval those carry, each checked in its own root, as `plans show`'s
+        // `approval` is.
         let mut pruned: Vec<String> = match root.kind {
             Kind::Envelope => vec!["data".to_owned(), "error".to_owned()],
             Kind::Command if root.scope == "command apply" => {
                 vec!["result".to_owned(), "approved".to_owned()]
             }
+            Kind::Command if root.scope == "command plans show" => vec!["approval".to_owned()],
             _ => Vec::new(),
         };
         walk(&root.schema, &mut |visit| {

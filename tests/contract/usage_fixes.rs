@@ -53,6 +53,8 @@ fn owned(argv: &[&str]) -> Vec<String> {
 const CORPUS: &[(&[&str], Option<&str>)] = &[
     (&["instal", "dbm"], None),
     (&["plan"], None),
+    (&["plan", "show", "01M8Q2VA7K3N5P8R1T4W6X9Y0Z"], None),
+    (&["plans", "shwo", "01M8Q2VA7K3N5P8R1T4W6X9Y0Z"], None),
     (&["unpn", "x"], None),
     (&["statsu"], None),
     (&["lst"], None),
@@ -134,7 +136,19 @@ const VALUE_TYPOS: &[(&[&str], usize)] = &[
 
 /// The fixes decided by omad-m2-audit-yegz.5.1, exactly.
 const DECIDED: &[(&[&str], &[&str])] = &[
-    (&["plan"], &["omaddons", "help", "pin"]),
+    // M2's rule is unchanged (a guessed mutating command is its help, never the command):
+    // only the closest name changed, because `plans` exists (one edit; `pin` is two).
+    (&["plan"], &["omaddons", "help", "plans"]),
+    // D9: a typo of the plans noun reaches plans show, a read, so the corrected argv is
+    // the fix.
+    (
+        &["plan", "show", "01M8Q2VA7K3N5P8R1T4W6X9Y0Z"],
+        &["omaddons", "plans", "show", "01M8Q2VA7K3N5P8R1T4W6X9Y0Z"],
+    ),
+    (
+        &["plans", "shwo", "01M8Q2VA7K3N5P8R1T4W6X9Y0Z"],
+        &["omaddons", "plans", "show", "01M8Q2VA7K3N5P8R1T4W6X9Y0Z"],
+    ),
     (&["unpn", "x"], &["omaddons", "help", "unpin"]),
     (&["statsu"], &["omaddons", "status"]),
     (

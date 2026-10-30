@@ -70,6 +70,7 @@ complete -c omaddons -n "__fish_omaddons_needs_command" -f -a "apply" -d 'Run ex
 complete -c omaddons -n "__fish_omaddons_needs_command" -f -a "backup" -d 'Each client\'s WTF/ backups: copies of its settings (bare: list them)'
 complete -c omaddons -n "__fish_omaddons_needs_command" -f -a "history" -d 'Show what changed, when, by whom and why'
 complete -c omaddons -n "__fish_omaddons_needs_command" -f -a "log" -d 'Show what changed, when, by whom and why'
+complete -c omaddons -n "__fish_omaddons_needs_command" -f -a "plans" -d 'Inspect a stored plan and what history records of it (changes nothing)'
 complete -c omaddons -n "__fish_omaddons_needs_command" -f -a "outdated" -d 'Which managed addons have updates, on every client (changes nothing)'
 complete -c omaddons -n "__fish_omaddons_needs_command" -f -a "check" -d 'Which managed addons have updates, on every client (changes nothing)'
 complete -c omaddons -n "__fish_omaddons_needs_command" -f -a "info" -d 'What an addon is: installed records, catalog entry and newest release'
@@ -735,6 +736,45 @@ complete -c omaddons -n "__fish_omaddons_using_subcommand log" -l no-progress -d
 complete -c omaddons -n "__fish_omaddons_using_subcommand log" -l quiet -d 'Only errors on stderr'
 complete -c omaddons -n "__fish_omaddons_using_subcommand log" -s v -l verbose -d 'More detail (repeatable)'
 complete -c omaddons -n "__fish_omaddons_using_subcommand log" -s h -l help -d 'Show help'
+complete -c omaddons -n "__fish_omaddons_using_subcommand plans; and not __fish_seen_subcommand_from show" -l format -d 'Output format' -r -f -a "json\t''
+human\t''"
+complete -c omaddons -n "__fish_omaddons_using_subcommand plans; and not __fish_seen_subcommand_from show" -s t -l target -l flavor -d 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand plans; and not __fish_seen_subcommand_from show" -l actor -d 'Who is acting: human, agent or widget [env: OMADDONS_ACTOR]' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand plans; and not __fish_seen_subcommand_from show" -l reason -d 'Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand plans; and not __fish_seen_subcommand_from show" -l if-match -d 'Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand plans; and not __fish_seen_subcommand_from show" -l progress -d 'Progress events on stderr' -r -f -a "json\t''
+human\t''
+none\t''"
+complete -c omaddons -n "__fish_omaddons_using_subcommand plans; and not __fish_seen_subcommand_from show" -l json -d 'One JSON envelope on stdout'
+complete -c omaddons -n "__fish_omaddons_using_subcommand plans; and not __fish_seen_subcommand_from show" -l robot -d 'The same as --json'
+complete -c omaddons -n "__fish_omaddons_using_subcommand plans; and not __fish_seen_subcommand_from show" -l dry-run -d 'Show the plan without changing anything (ignored by commands that change nothing)'
+complete -c omaddons -n "__fish_omaddons_using_subcommand plans; and not __fish_seen_subcommand_from show" -l offline -d 'Fail any network access [env: OMADDONS_OFFLINE=1]'
+complete -c omaddons -n "__fish_omaddons_using_subcommand plans; and not __fish_seen_subcommand_from show" -l while-running -d 'Allow folder changes while the client runs (never SavedVariables)'
+complete -c omaddons -n "__fish_omaddons_using_subcommand plans; and not __fish_seen_subcommand_from show" -l no-color -d 'No ANSI color'
+complete -c omaddons -n "__fish_omaddons_using_subcommand plans; and not __fish_seen_subcommand_from show" -l no-progress -d 'No progress output'
+complete -c omaddons -n "__fish_omaddons_using_subcommand plans; and not __fish_seen_subcommand_from show" -l quiet -d 'Only errors on stderr'
+complete -c omaddons -n "__fish_omaddons_using_subcommand plans; and not __fish_seen_subcommand_from show" -s v -l verbose -d 'More detail (repeatable)'
+complete -c omaddons -n "__fish_omaddons_using_subcommand plans; and not __fish_seen_subcommand_from show" -s h -l help -d 'Show help'
+complete -c omaddons -n "__fish_omaddons_using_subcommand plans; and not __fish_seen_subcommand_from show" -f -a "show" -d 'What a stored plan approved, and whether history records it as applied (offline; changes nothing)'
+complete -c omaddons -n "__fish_omaddons_using_subcommand plans; and __fish_seen_subcommand_from show" -l format -d 'Output format' -r -f -a "json\t''
+human\t''"
+complete -c omaddons -n "__fish_omaddons_using_subcommand plans; and __fish_seen_subcommand_from show" -s t -l target -l flavor -d 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand plans; and __fish_seen_subcommand_from show" -l actor -d 'Who is acting: human, agent or widget [env: OMADDONS_ACTOR]' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand plans; and __fish_seen_subcommand_from show" -l reason -d 'Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand plans; and __fish_seen_subcommand_from show" -l if-match -d 'Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand plans; and __fish_seen_subcommand_from show" -l progress -d 'Progress events on stderr' -r -f -a "json\t''
+human\t''
+none\t''"
+complete -c omaddons -n "__fish_omaddons_using_subcommand plans; and __fish_seen_subcommand_from show" -l json -d 'One JSON envelope on stdout'
+complete -c omaddons -n "__fish_omaddons_using_subcommand plans; and __fish_seen_subcommand_from show" -l robot -d 'The same as --json'
+complete -c omaddons -n "__fish_omaddons_using_subcommand plans; and __fish_seen_subcommand_from show" -l dry-run -d 'Show the plan without changing anything (ignored by commands that change nothing)'
+complete -c omaddons -n "__fish_omaddons_using_subcommand plans; and __fish_seen_subcommand_from show" -l offline -d 'Fail any network access [env: OMADDONS_OFFLINE=1]'
+complete -c omaddons -n "__fish_omaddons_using_subcommand plans; and __fish_seen_subcommand_from show" -l while-running -d 'Allow folder changes while the client runs (never SavedVariables)'
+complete -c omaddons -n "__fish_omaddons_using_subcommand plans; and __fish_seen_subcommand_from show" -l no-color -d 'No ANSI color'
+complete -c omaddons -n "__fish_omaddons_using_subcommand plans; and __fish_seen_subcommand_from show" -l no-progress -d 'No progress output'
+complete -c omaddons -n "__fish_omaddons_using_subcommand plans; and __fish_seen_subcommand_from show" -l quiet -d 'Only errors on stderr'
+complete -c omaddons -n "__fish_omaddons_using_subcommand plans; and __fish_seen_subcommand_from show" -s v -l verbose -d 'More detail (repeatable)'
+complete -c omaddons -n "__fish_omaddons_using_subcommand plans; and __fish_seen_subcommand_from show" -s h -l help -d 'Show help'
 complete -c omaddons -n "__fish_omaddons_using_subcommand outdated" -l format -d 'Output format' -r -f -a "json\t''
 human\t''"
 complete -c omaddons -n "__fish_omaddons_using_subcommand outdated" -s t -l target -l flavor -d 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)' -r

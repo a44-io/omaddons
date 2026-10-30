@@ -1,0 +1,96 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "plans show",
+  "commands": [
+    {
+      "action": "undo",
+      "argv": [
+        "omaddons",
+        "undo",
+        "<ulid>"
+      ],
+      "command": "omaddons undo <ulid>",
+      "destructive": false
+    }
+  ],
+  "data": {
+    "approval": {
+      "reasons": [],
+      "routine": true,
+      "scope": {
+        "dependencies_added": [],
+        "folders_removed": [],
+        "local_changes_replaced": {
+          "count": 0,
+          "folders": []
+        },
+        "source_changed": [],
+        "while_running": false
+      },
+      "selection": [
+        {
+          "addon": "Foo",
+          "asset": "foo2.zip",
+          "backup": null,
+          "channel": "stable",
+          "fields": [],
+          "from_version": "1",
+          "op": "update",
+          "release_id": "gh:o/foo@sha256:59fe4208270fa7d13fec322d5f42d836917c2b7b60b81b471e0149e03475ba18",
+          "source": "github",
+          "target_id": "retail",
+          "target_key": "<ulid>",
+          "to_version": "2",
+          "tx": null
+        }
+      ]
+    },
+    "build_id": "<build_id>",
+    "build_matches": true,
+    "created_at": "<time>",
+    "evidence": {
+      "complete": true,
+      "targets": [
+        {
+          "committed_at": "<time>",
+          "key": "<ulid>",
+          "result": "committed",
+          "target": "retail",
+          "tx": "<ulid>"
+        }
+      ]
+    },
+    "expires_at": "<time>",
+    "inputs": [
+      {
+        "path": "<root>/dl/foo2.zip",
+        "present": true
+      }
+    ],
+    "intent": {
+      "command": "install",
+      "display_argv": [
+        "omaddons",
+        "install",
+        "gh:o/foo",
+        "-t",
+        "retail",
+        "--file",
+        "<root>/dl/foo2.zip"
+      ]
+    },
+    "plan_id": "<ulid>",
+    "readable": true,
+    "state": "completed",
+    "stored": true
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}
