@@ -146,7 +146,7 @@ impl Landing {
                 let dirs: Vec<&str> = dirs.iter().map(String::as_str).collect();
                 let listed = entry(-2, "elvui", "ElvUI", &version, &patch, &dirs);
                 tukui_list(&dir, std::slice::from_ref(&listed));
-                let (first, second) = (format!("LAND{n}-A"), format!("LAND{n}-B"));
+                let [first, second] = tukui_tokens(n);
                 tukui_addon(&dir, &listed, &[&first, &second]);
                 let zip = elvui_zip(&version);
                 tukui_download(&dir, "elvui", &first, &zip, Some(&etag(&zip)));
@@ -241,9 +241,24 @@ impl Landing {
             Source::WowAce => "!BugGrabber",
         }
     }
+
+    /// The download tokens the Tukui landing's resolve hands out for release `n`, in the
+    /// order it answers them (synthetic values, which no output or file may keep); none
+    /// for the other sources, which resolve no download link.
+    pub fn download_tokens(&self, n: u32) -> Vec<String> {
+        match self.source {
+            Source::Tukui => tukui_tokens(n).to_vec(),
+            Source::GitHub | Source::Git | Source::Wowi | Source::WowAce => Vec::new(),
+        }
+    }
 }
 
 /// The git landing's head for release `n`: the digit `n`, 40 times.
 fn head(n: u32) -> String {
     n.to_string().repeat(40)
+}
+
+/// The Tukui landing's two download tokens for release `n`; the first one downloads.
+fn tukui_tokens(n: u32) -> [String; 2] {
+    [format!("LAND{n}-A"), format!("LAND{n}-B")]
 }
