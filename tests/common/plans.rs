@@ -12,13 +12,13 @@ use std::process::{ExitStatus, Stdio};
 
 use jiff::{SignedDuration, Timestamp};
 use omaddons::state::paths::Paths;
-use serde_json::Value;
+use serde_json::{Value, json};
 use ulid::Ulid;
 
 use super::env::TestEnv;
 use super::home::Home;
-use super::http::Asset;
-use super::tlog::{Ran, TestLog};
+use super::http::{Asset, paths};
+use super::tlog::{Ran, Runner, TestLog};
 
 /// Replaces each 26-character Crockford run at a word boundary with `<ulid>`.
 pub fn redact_ulids(text: &str) -> String {
@@ -198,9 +198,9 @@ pub fn evidence_txs(ran: &Ran) -> Vec<(String, String)> {
 /// `(target id, tx)` of the `history --json --limit 200` entries whose `plan` is `id`,
 /// oldest first (history lists them newest first). The run names no account, realm or
 /// character on either stream.
-pub fn history_txs_for(log: &TestLog, home: &Home, id: &str) -> Vec<(String, String)> {
+pub fn history_txs_for(log: &TestLog, on: &impl Runner, id: &str) -> Vec<(String, String)> {
     let ran = log.run(
-        home,
+        on,
         &["history", "--json", "--limit", "200", "--progress", "json"],
     );
     ran.ok().assert_private();
@@ -365,4 +365,423 @@ pub fn behind_everywhere(log: &TestLog) -> Home {
         &["retail", "era"],
     );
     home
+}
+
+// ---------------------------------------------------------------------------------------
+// One stored plan's lifecycle (D7, for every storable command; E7 runs it for a repair
+// undo).
+
+/// What a second `apply` of an applied plan says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Second {
+    /// History records the plan: `plan_stale`, `already_applied`, naming the real run's
+    /// transactions, also past the plan's expiry.
+    AlreadyApplied,
+    /// The command writes no history line (`backup prune`): its own binding refuses the
+    /// plan (`selection` moved), then, past its expiry, `expired`.
+    StaleSelection,
+}
+
+/// One plan's lifecycle to run: a home's storable change and what bounds it.
+pub struct LifecycleCase<'a> {
+    /// The command path, in step labels and messages.
+    pub label: &'a str,
+    /// The storable argv, without `--dry-run` and `--json`.
+    pub preview: Vec<String>,
+    /// Labelled trees every refusal leaves unchanged.
+    pub roots: Vec<(String, PathBuf)>,
+    /// Set on every run unless a step overrides it.
+    pub env: Vec<(String, String)>,
+    /// The home has a `WTF/`: every run with `--progress json`, and `assert_private`.
+    pub progress_json: bool,
+    pub second: Second,
+}
+
+/// What the lifecycle's real run committed: its plan, and its transactions in commit
+/// order (none for `backup prune`).
+pub struct Lifecycle {
+    pub plan_id: String,
+    pub txs: Vec<String>,
+}
+
+/// What a refusal must leave as it was, besides the case's roots: the plan files' names
+/// and bytes, and history's length.
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+struct Witness {
+    plan_files: Vec<(String, String)>,
+    history_lines: usize,
+}
+
+impl Witness {
+    fn of(env: &TestEnv) -> Self {
+        Self {
+            plan_files: plan_files(env)
+                .iter()
+                .map(|path| {
+                    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                    (name, sha256(&fs::read(path).unwrap()))
+                })
+                .collect(),
+            history_lines: fs::read_to_string(paths(env).history_file())
+                .map(|text| text.lines().count())
+                .unwrap_or(0),
+        }
+    }
+}
+
+fn sha256(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// Every file under `<state>/omaddons` but `net.log` and `net.log.1`, by relative path,
+/// with its bytes' digest (`dir` for a directory).
+fn state_but_net_log(env: &TestEnv) -> Vec<(String, String)> {
+    fn walk(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries {
+            let path = entry.unwrap().path();
+            let rel = path.strip_prefix(root).unwrap().display().to_string();
+            if path.is_dir() {
+                out.push((rel, "dir".to_owned()));
+                walk(root, &path, out);
+            } else if !matches!(rel.as_str(), "net.log" | "net.log.1") {
+                out.push((rel, sha256(&fs::read(&path).unwrap())));
+            }
+        }
+    }
+    let root = env.state().join("omaddons");
+    let mut out = Vec::new();
+    walk(&root, &root, &mut out);
+    out.sort();
+    out
+}
+
+fn words(value: &Value) -> Vec<String> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|word| word.as_str().map(str::to_owned))
+        .collect()
+}
+
+/// `omaddons <args>` for `case`: `--json` (and `--progress json` when the home has a
+/// `WTF/`) before any `--`, the case's variables, and `now` as `OMADDONS_NOW` when given.
+fn lifecycle_run(
+    log: &TestLog,
+    on: &impl Runner,
+    case: &LifecycleCase<'_>,
+    args: &[String],
+    now: Option<&str>,
+) -> Ran {
+    let mut argv = args.to_vec();
+    let at = argv
+        .iter()
+        .position(|word| word == "--")
+        .unwrap_or(argv.len());
+    let mut flags = vec!["--json".to_owned()];
+    if case.progress_json {
+        flags.extend(["--progress".to_owned(), "json".to_owned()]);
+    }
+    argv.splice(at..at, flags);
+    let mut cmd = log.cmd(on, &argv);
+    for (key, value) in &case.env {
+        cmd = cmd.env(key, value);
+    }
+    if let Some(now) = now {
+        cmd = cmd.env("OMADDONS_NOW", now);
+    }
+    let ran = cmd.run();
+    if case.progress_json {
+        ran.assert_private();
+    }
+    ran
+}
+
+/// A lifecycle refusal: `plan_stale` with `reason`, `changed: []`, not retryable, and
+/// the plan's preview as its fix.
+#[track_caller]
+fn refused_with(log: &TestLog, case: &LifecycleCase<'_>, ran: &Ran, reason: &str, fix: &Value) {
+    ran.fails(1, "plan_stale");
+    let error = &ran.envelope()["error"];
+    log.json("refusal", error);
+    let label = case.label;
+    log.assert_eq(
+        &format!("{label}: reason"),
+        &error["details"]["reason"],
+        &json!(reason),
+    );
+    log.assert_eq(
+        &format!("{label}: changed"),
+        &error["details"]["changed"],
+        &json!([]),
+    );
+    log.assert_eq(
+        &format!("{label}: not retryable"),
+        &error["retryable"],
+        &json!(false),
+    );
+    log.assert_eq(
+        &format!("{label}: the fix previews again"),
+        &error["fix_argv"],
+        fix,
+    );
+}
+
+/// An unreadable plan file: `plan_not_found`, `reason: "unreadable"`, naming the file.
+#[track_caller]
+fn unreadable(log: &TestLog, case: &LifecycleCase<'_>, ran: &Ran, path: &std::path::Path) {
+    ran.fails(3, "plan_not_found");
+    let details = &ran.envelope()["error"]["details"];
+    log.json("refusal details", details);
+    log.assert_eq(
+        &format!("{}: unreadable", case.label),
+        &details["reason"],
+        &json!("unreadable"),
+    );
+    log.assert_eq(
+        &format!("{}: the plan file", case.label),
+        &details["path"],
+        &json!(path.display().to_string()),
+    );
+}
+
+/// One stored plan's lifecycle, end to end: the preview; `apply --dry-run` while the test
+/// holds the global lock and the plan's lease; the refusals of an expired plan, one from
+/// another build, an unknown option in its intent and a `display_argv` that disagrees
+/// (each hand edit undone byte for byte before the next step); the real `apply`; and the
+/// second. Every refusal leaves the case's roots, the plan files and history as they
+/// were.
+pub fn lifecycle(log: &TestLog, on: &impl Runner, case: &LifecycleCase<'_>) -> Lifecycle {
+    let env = on.test_env();
+    let label = case.label;
+    let step = |name: &str| log.step(&format!("{label}: {name}"));
+    let strings =
+        |words: &[&str]| -> Vec<String> { words.iter().map(|w| (*w).to_owned()).collect() };
+    let unchanged = |witness: &Witness| {
+        for (root_label, root) in &case.roots {
+            log.assert_unchanged(root_label, root);
+        }
+        log.assert_eq(
+            &format!("{label}: plan files and history unchanged"),
+            &Witness::of(env),
+            witness,
+        );
+    };
+
+    step("preview");
+    let mut argv = case.preview.clone();
+    argv.push("--dry-run".to_owned());
+    let previewed = lifecycle_run(log, on, case, &argv, None);
+    previewed.ok();
+    let id = plan_id(&previewed);
+    let plan = read_plan(env, &id);
+    log.json("plan file", &plan);
+    for (root_label, root) in &case.roots {
+        log.tree(root_label, root);
+    }
+    let witness = Witness::of(env);
+    log.json("plan files and history", &witness);
+    let path = plans_dir(env).join(format!("{id}.json"));
+    let original = fs::read(&path).unwrap();
+    let fix = json!(omaddons::app::precondition::preview_argv(&words(
+        &plan["display_argv"]
+    )));
+    let expires: Timestamp = plan["expires_at"].as_str().unwrap().parse().unwrap();
+    let past = expires
+        .checked_add(SignedDuration::from_secs(60))
+        .unwrap()
+        .to_string();
+
+    step("apply --dry-run under held locks");
+    let lock_paths = paths(env);
+    let global = omaddons::fsx::GlobalLock::acquire(&lock_paths, "lifecycle").unwrap();
+    let scopes = omaddons::fsx::ScopeTable::new(&lock_paths, &[], None).unwrap();
+    let plan_key: omaddons::model::PlanId = id.parse().unwrap();
+    let lease_path = lock_paths.plan_lease(&plan_key);
+    let lease = omaddons::fsx::Lease::acquire(
+        &scopes,
+        &lease_path,
+        "lifecycle",
+        std::time::Duration::from_secs(5),
+    )
+    .map_err(|_| "the plan's lease")
+    .unwrap();
+    log.note(format!(
+        "the test holds the global lock and the plan's lease ({})",
+        lease_path.strip_prefix(env.root()).unwrap().display()
+    ));
+    let state = state_but_net_log(env);
+    let dry = lifecycle_run(log, on, case, &strings(&["apply", &id, "--dry-run"]), None);
+    lease.release();
+    global.release();
+    log.note("the test released the global lock and the plan's lease");
+    dry.ok();
+    log.assert_eq(
+        &format!("{label}: dry run under locks, elapsed_ms < 4000"),
+        &(dry.elapsed_ms < 4000),
+        &true,
+    );
+    let data = dry.data();
+    log.assert_eq(
+        &format!("{label}: the stored approval"),
+        &data["approved"],
+        &plan["approval"],
+    );
+    log.assert_eq(
+        &format!("{label}: a dry run"),
+        &data["result"]["dry_run"],
+        &json!(true),
+    );
+    let outcomes: Vec<(String, Value)> = data["outcomes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|o| {
+            (
+                o["status"].as_str().unwrap_or_default().to_owned(),
+                o["tx"].clone(),
+            )
+        })
+        .collect();
+    assert!(!outcomes.is_empty(), "{label}: no outcome: {data}");
+    log.assert_eq(
+        &format!("{label}: every outcome unchanged, no tx"),
+        &outcomes,
+        &vec![("unchanged".to_owned(), Value::Null); outcomes.len()],
+    );
+    let hint = dry
+        .commands()
+        .into_iter()
+        .find(|c| c.action == "apply")
+        .map(|c| c.argv);
+    log.assert_eq(
+        &format!("{label}: the apply hint"),
+        &hint,
+        &Some(strings(&["omaddons", "apply", &id])),
+    );
+    unchanged(&witness);
+    log.assert_eq(
+        &format!("{label}: <state> unchanged bar net.log"),
+        &state_but_net_log(env),
+        &state,
+    );
+
+    step("expired");
+    let ran = lifecycle_run(log, on, case, &strings(&["apply", &id]), Some(&past));
+    refused_with(log, case, &ran, "expired", &fix);
+    unchanged(&witness);
+
+    // Each hand edit, its refusal, and the original bytes written back.
+    let edited = |name: &str, edit: &dyn Fn(&mut Value), check: &dyn Fn(&Ran)| {
+        step(name);
+        let mut value: Value = serde_json::from_slice(&original).unwrap();
+        edit(&mut value);
+        fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        let ran = lifecycle_run(log, on, case, &strings(&["apply", &id]), None);
+        check(&ran);
+        fs::write(&path, &original).unwrap();
+        log.note(format!("plan file restored: {}", sha256(&original)));
+        unchanged(&witness);
+    };
+    edited(
+        "another build",
+        &|plan| {
+            plan["build_id"] = json!("0000000000000000");
+            log.json("plan file", &json!({"build_id": plan["build_id"]}));
+        },
+        &|ran| refused_with(log, case, ran, "binary_changed", &fix),
+    );
+    edited(
+        "an unknown option in this intent",
+        &|plan| {
+            plan["intent"]["bogus"] = json!(true);
+            log.json("plan file", &json!({"intent.bogus": true}));
+        },
+        &|ran| unreadable(log, case, ran, &path),
+    );
+    edited(
+        "a display_argv that disagrees",
+        &|plan| {
+            let argv = plan["display_argv"].as_array_mut().unwrap();
+            *argv.last_mut().unwrap() = json!("edited");
+            log.json("plan file", &json!({"display_argv": plan["display_argv"]}));
+        },
+        &|ran| unreadable(log, case, ran, &path),
+    );
+
+    step("apply");
+    let applied = lifecycle_run(log, on, case, &strings(&["apply", &id]), None);
+    applied.ok();
+    log.json("outcomes", &applied.data()["outcomes"]);
+    let statuses: Vec<String> = applied.data()["outcomes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|o| o["status"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    log.assert_eq(
+        &format!("{label}: every outcome committed"),
+        &statuses,
+        &vec!["committed".to_owned(); statuses.len()],
+    );
+    let mut reported: Vec<String> = committed(&applied)
+        .into_iter()
+        .map(|(_, tx)| tx)
+        .filter(|tx| !tx.is_empty())
+        .collect();
+    let txs: Vec<String> = history_txs_for(log, on, &id)
+        .into_iter()
+        .map(|(_, tx)| tx)
+        .collect();
+    log.json("evidence", &txs);
+    let mut recorded = txs.clone();
+    reported.sort();
+    recorded.sort();
+    log.assert_eq(&format!("{label}: txs"), &recorded, &reported);
+    for (root_label, root) in &case.roots {
+        log.tree(root_label, root);
+    }
+    let witness = Witness::of(env);
+
+    step("second apply");
+    let again = lifecycle_run(log, on, case, &strings(&["apply", &id]), None);
+    let late = lifecycle_run(log, on, case, &strings(&["apply", &id]), Some(&past));
+    match case.second {
+        Second::AlreadyApplied => {
+            for ran in [&again, &late] {
+                refused_with(log, case, ran, "already_applied", &fix);
+                log.assert_eq(
+                    &format!("{label}: the real run's txs"),
+                    &ran.envelope()["error"]["details"]["txs"],
+                    &json!(txs),
+                );
+            }
+        }
+        Second::StaleSelection => {
+            again.fails(1, "plan_stale");
+            let details = &again.envelope()["error"]["details"];
+            log.json("refusal details", details);
+            let changed = words(&details["changed"]);
+            log.assert_eq(
+                &format!("{label}: the selection moved"),
+                &changed.contains(&"selection".to_owned()),
+                &true,
+            );
+            log.assert_eq(
+                &format!("{label}: no lifecycle reason"),
+                &details.get("reason").cloned().unwrap_or(Value::Null),
+                &Value::Null,
+            );
+            refused_with(log, case, &late, "expired", &fix);
+        }
+    }
+    unchanged(&witness);
+    Lifecycle { plan_id: id, txs }
 }

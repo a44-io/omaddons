@@ -2,20 +2,31 @@
 //! a concurrent change between a preview and `apply` stales the stored plan, with the
 //! part of the token that moved, and changes nothing; and once a direct run did the
 //! plan's work, the typed bound run of the old token and `apply` of the old plan are both
-//! refused, while a no-op preview stores no plan and its own token's run is accepted.
+//! refused, while a no-op preview stores no plan and its own token's run is accepted
+//! (omad-m4-agent-surface-doctor-c6cm.4.7.3:) and each command's plan lives its whole
+//! lifecycle (`common::plans::lifecycle`), a missing input stales its plan, and a
+//! vanished working directory stales nothing.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use omaddons::app::precondition::preview_argv;
 use omaddons::backup::BackupKind;
 use serde_json::{Value, json};
 
+use crate::common::archives::zip_text;
 use crate::common::backups::seed_backup;
-use crate::common::plans::{committed, history_txs_for, plan_id, read_plan};
+use crate::common::home::Home;
+use crate::common::plans::{
+    LifecycleCase, Second, committed, history_txs_for, lifecycle, plan_id, read_plan,
+};
 use crate::common::privacy::ACCOUNT;
+use crate::common::state::record;
 use crate::common::tlog::{Ran, TestLog, tlog};
-use crate::drift_support::{Built, Changed, built, built_undo_played, run, stale, stale_with_fix};
+use crate::common::trees::tree_hash;
+use crate::drift_support::{
+    Built, Changed, FOO_V1, built, built_undo_played, published, run, stale, stale_with_fix,
+};
 
 /// A command's concurrent changes: each case and the `details.changed` its stale `apply`
 /// must carry (`Contains` for the engine commands, whose witness may name more parts;
@@ -339,6 +350,320 @@ fn refused(log: &TestLog, ran: &Ran, command: &str, fix: &[String]) {
 }
 
 // ---------------------------------------------------------------------------------------
+// The lifecycle.
+
+/// The addon named `name` on `target`, as its record has it.
+fn foo_record(built_home: &Home, target: &str) -> Option<omaddons::model::AddonRecord> {
+    record(built_home, target)
+        .addons
+        .into_values()
+        .find(|addon| addon.name == "Foo")
+}
+
+/// Each backup of retail and when it was captured.
+fn backups_captured(client: &Path) -> Vec<(String, String)> {
+    let dir = client.join("Interface/.omaddons/backups");
+    let mut backups: Vec<(String, String)> = fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.join("backup.json").is_file())
+        .map(|path| {
+            let meta: Value =
+                serde_json::from_slice(&fs::read(path.join("backup.json")).unwrap()).unwrap();
+            let id = path.file_name().unwrap().to_string_lossy().into_owned();
+            (
+                id,
+                meta["captured_at"].as_str().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect();
+    backups.sort();
+    backups
+}
+
+fn lifecycle_row(log: &TestLog, command: &str) {
+    let built = built(log, command);
+    let home = built.home();
+    let client = home.client("_retail_");
+    let before = if command == "backup prune" {
+        backups_captured(&client)
+    } else {
+        Vec::new()
+    };
+    let case = LifecycleCase {
+        label: command,
+        preview: built.preview.clone(),
+        roots: built.roots.clone(),
+        env: built.env.clone(),
+        progress_json: command == "backup restore",
+        second: if command == "backup prune" {
+            Second::StaleSelection
+        } else {
+            Second::AlreadyApplied
+        },
+    };
+    let done = lifecycle(log, &built.on, &case);
+    log.json("lifecycle", &json!({"plan": done.plan_id, "txs": done.txs}));
+
+    log.step(&format!("{command}: its effect"));
+    let version = |target: &str| foo_record(home, target).map(|foo| foo.version);
+    let pinned = || foo_record(home, "retail").map(|foo| foo.pinned);
+    match command {
+        "install" | "sync" => {
+            log.assert_eq("Foo v1 on retail", &version("retail"), &Some("v1".into()))
+        }
+        "update" => log.assert_eq("Foo v2 on retail", &version("retail"), &Some("v2".into())),
+        "copy" => log.assert_eq("Foo v1 on classic", &version("classic"), &Some("v1".into())),
+        "pin" => log.assert_eq("Foo pinned", &pinned(), &Some(true)),
+        "unpin" => log.assert_eq("Foo unpinned", &pinned(), &Some(false)),
+        "adopt" => log.assert_eq(
+            "Foo managed on retail",
+            &foo_record(home, "retail").is_some(),
+            &true,
+        ),
+        "remove" | "undo" => {
+            log.assert_eq(
+                "no Foo folder",
+                &built.addons("_retail_").join("Foo").exists(),
+                &false,
+            );
+            log.assert_eq(
+                "no Foo record",
+                &foo_record(home, "retail").is_none(),
+                &true,
+            );
+        }
+        "backup restore" => {
+            let id = &built.preview[2];
+            let source = client
+                .join("Interface/.omaddons/backups")
+                .join(id)
+                .join("WTF");
+            log.assert_eq(
+                "WTF/ is the backup's",
+                &tree_hash(&client.join("WTF")),
+                &tree_hash(&source),
+            );
+        }
+        "backup prune" => {
+            let oldest: Vec<(String, String)> = before
+                .iter()
+                .filter(|(_, at)| at.starts_with("2026-10-01"))
+                .cloned()
+                .collect();
+            log.assert_eq("one backup of 2026-10-01", &oldest.len(), &1);
+            let expected: Vec<(String, String)> = before
+                .iter()
+                .filter(|backup| !oldest.contains(backup))
+                .cloned()
+                .collect();
+            log.assert_eq(
+                "the oldest automatic backup gone, the other three kept",
+                &backups_captured(&client),
+                &expected,
+            );
+        }
+        other => panic!("no effect for {other}"), // ubs:ignore — a table bug
+    }
+}
+
+/// `Foo`'s files written as an unpacked folder at `dir` (`Foo.toc`, `core.lua`).
+fn foo_folder(dir: &Path) {
+    for (rel, text) in FOO_V1 {
+        let path = dir.join(rel.trim_start_matches("Foo/"));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+}
+
+/// `apply` of a plan whose local input is gone: `input_missing`, naming the input, with
+/// nothing changed.
+#[test]
+fn drift_lifecycle_input_missing() {
+    let log = tlog!();
+    for name in ["file_dir", "file_ref"] {
+        let log = log.case(name);
+        log.step("seed home");
+        let home = published(&log, &["wow"]);
+        let inputs = home.env.root().join("inputs");
+        let (input, preview) = if name == "file_dir" {
+            let dir = inputs.join("Foo");
+            foo_folder(&dir);
+            let dir_arg = dir.display().to_string();
+            (
+                dir,
+                vec![
+                    "install".to_owned(),
+                    "gh:o/foo".into(),
+                    "--file".into(),
+                    dir_arg,
+                ],
+            )
+        } else {
+            let zip = inputs.join("foo.zip");
+            fs::create_dir_all(&inputs).unwrap();
+            fs::write(&zip, zip_text(FOO_V1)).unwrap();
+            let file_ref = format!("file:{}", zip.display());
+            (zip, vec!["install".to_owned(), file_ref])
+        };
+        let mut argv = preview;
+        argv.extend(["-t", "retail", "--dry-run", "--json"].map(str::to_owned));
+
+        log.step("preview");
+        let previewed = log.run(&home, &argv);
+        previewed.ok();
+        let id = plan_id(&previewed);
+        log.json("plan file", &read_plan(&home.env, &id));
+        let absolute = input.canonicalize().unwrap().display().to_string();
+        let roots = [
+            ("retail AddOns", home.addons("_retail_")),
+            ("state targets", home.state().join("targets")),
+        ];
+        for (label, root) in &roots {
+            log.tree(label, root);
+        }
+        let lines = history_lines(&home);
+
+        log.step("delete the input");
+        if input.is_dir() {
+            fs::remove_dir_all(&input).unwrap();
+        } else {
+            fs::remove_file(&input).unwrap();
+        }
+        log.note(format!("deleted {absolute}"));
+
+        log.step("apply");
+        let ran = log.run(&home, &["apply", &id, "--json"]);
+        ran.fails(1, "plan_stale").assert_private();
+        let details = &ran.envelope()["error"]["details"];
+        log.json("details", details);
+        log.assert_eq("input missing", &details["reason"], &json!("input_missing"));
+        log.assert_eq("the input's path", &details["path"], &json!(absolute));
+        for (label, root) in &roots {
+            log.assert_unchanged(label, root);
+        }
+        log.assert_eq("history unchanged", &history_lines(&home), &lines);
+    }
+}
+
+fn history_lines(home: &Home) -> usize {
+    fs::read_to_string(home.state().join("history.jsonl"))
+        .map(|text| text.lines().count())
+        .unwrap_or(0)
+}
+
+/// Every string in `value`, recursively.
+fn strings_in(value: &Value) -> Vec<String> {
+    match value {
+        Value::String(text) => vec![text.clone()],
+        Value::Array(items) => items.iter().flat_map(strings_in).collect(),
+        Value::Object(map) => map.values().flat_map(strings_in).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// A plan previewed from a working directory that is deleted before `apply` runs from
+/// another: its intent holds absolute paths, so nothing goes stale. The inputs live
+/// beside the working directory and are named relative to it.
+#[test]
+fn drift_lifecycle_cwd_gone() {
+    let log = tlog!();
+    for name in ["sync_file", "file_dir", "client_path"] {
+        let log = log.case(name);
+        log.step("seed home");
+        let home = published(&log, &["wow"]);
+        let root = home.env.root();
+        let (work, elsewhere, inputs) = (
+            root.join("work"),
+            root.join("elsewhere"),
+            root.join("inputs"),
+        );
+        for dir in [&work, &elsewhere, &inputs] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        let (args, input): (Vec<String>, PathBuf) = match name {
+            "sync_file" => {
+                let file = inputs.join("addons.toml");
+                fs::write(
+                    &file,
+                    "schema_version = \"1.0\"\n[family.mainline]\naddons = [\"gh:o/foo\"]\n",
+                )
+                .unwrap();
+                (vec!["sync".into(), "../inputs/addons.toml".into()], file)
+            }
+            "file_dir" => {
+                let dir = inputs.join("Foo");
+                foo_folder(&dir);
+                let args = [
+                    "install",
+                    "gh:o/foo",
+                    "--file",
+                    "../inputs/Foo",
+                    "-t",
+                    "retail",
+                ];
+                (args.map(str::to_owned).to_vec(), dir)
+            }
+            _ => {
+                let zip = inputs.join("foo.zip");
+                fs::write(&zip, zip_text(FOO_V1)).unwrap();
+                let client = home.client("_retail_");
+                let relative = format!("../{}", client.strip_prefix(root).unwrap().display());
+                let zip_arg = zip.display().to_string();
+                let args = ["install", "gh:o/foo", "--file", &zip_arg, "-t", &relative];
+                (args.map(str::to_owned).to_vec(), client)
+            }
+        };
+
+        log.step("preview from the working directory");
+        let mut argv = args.clone();
+        argv.extend(["--dry-run", "--json"].map(str::to_owned));
+        let previewed = log.cmd(&home, &argv).cwd(&work).run();
+        previewed.ok();
+        let id = plan_id(&previewed);
+        let intent = read_plan(&home.env, &id)["intent"].clone();
+        log.json("intent", &intent);
+        let texts = strings_in(&intent);
+        if name == "client_path" {
+            // `install` stores the client its relative path resolved to, not the path.
+            log.assert_eq("the client it named", &intent["target"], &json!("retail"));
+        } else {
+            let absolute = input.canonicalize().unwrap().display().to_string();
+            log.assert_eq(
+                "the input, absolute, in the intent",
+                &texts.contains(&absolute),
+                &true,
+            );
+        }
+        log.assert_eq(
+            "no relative path in the intent",
+            &texts
+                .iter()
+                .any(|text| text.starts_with("./") || text.starts_with("../")),
+            &false,
+        );
+
+        log.step("delete the working directory");
+        fs::remove_dir_all(&work).unwrap();
+        log.note("deleted <root>/work");
+
+        log.step("apply from another directory");
+        let ran = log
+            .cmd(&home, &["apply", &id, "--json"])
+            .cwd(&elsewhere)
+            .run();
+        ran.ok().assert_private();
+        log.json("outcomes", &ran.data()["outcomes"]);
+        log.assert_eq("committed", &committed(&ran).len(), &1);
+        log.assert_eq(
+            "Foo installed on retail",
+            &foo_record(&home, "retail").is_some(),
+            &true,
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------------------
 // One test per command and scenario, named by the command.
 
 macro_rules! rows {
@@ -379,4 +704,18 @@ rows!(noop:
     drift_noop_undo => "undo",
     drift_noop_backup_restore => "backup restore",
     drift_noop_backup_prune => "backup prune",
+);
+
+rows!(lifecycle_row:
+    drift_lifecycle_install => "install",
+    drift_lifecycle_update => "update",
+    drift_lifecycle_pin => "pin",
+    drift_lifecycle_unpin => "unpin",
+    drift_lifecycle_adopt => "adopt",
+    drift_lifecycle_sync => "sync",
+    drift_lifecycle_copy => "copy",
+    drift_lifecycle_remove => "remove",
+    drift_lifecycle_undo => "undo",
+    drift_lifecycle_backup_restore => "backup restore",
+    drift_lifecycle_backup_prune => "backup prune",
 );

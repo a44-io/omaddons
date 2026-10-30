@@ -212,7 +212,7 @@ fn private(ran: &Ran, privacy: Privacy) {
 }
 
 /// A home of `products`, Foo v1 published as `gh:o/foo`, and `bar.zip`.
-fn published(log: &TestLog, products: &[&str]) -> Home {
+pub(crate) fn published(log: &TestLog, products: &[&str]) -> Home {
     let home = Home::new(products);
     log.env(&home);
     gh_release(&home.http, FOO, "v1", &foo(FOO_V1));
