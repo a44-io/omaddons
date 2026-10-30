@@ -18,11 +18,12 @@ use crate::drift::{DriftMode, DriftState};
 use crate::error::{Result, Warning};
 use crate::inventory::{Depth, FolderClass, FolderEntry, Inventory, OwnedOn, inventory_shared};
 use crate::model::{
-    AddonReason, AddonRecord, AddonState, Channel, LeftOutFolder, TargetKey, VersionConfidence,
+    AddonReason, AddonRecord, AddonState, Channel, LeftOutFolder, Ref, TargetKey, VersionConfidence,
 };
 use crate::output::{Outcome, Style, table};
 use crate::resolve::updates::{StatusKind, StatusRow, UpdateStatus};
 use crate::rules::{ClientVersion, Family, RulesTable};
+use crate::sources::SourceId;
 use crate::state::records::load_record;
 use crate::toc::Verdict;
 
@@ -110,12 +111,34 @@ pub struct ListAddon {
     pub left_out: Option<Vec<LeftOutFolder>>,
 }
 
-/// What the release memo says is newest for an addon.
+/// What the release memo says is newest for an addon, and which release that is.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct Latest {
     /// The newest release's version, when the status names one.
     pub version: Option<String>,
     pub status: StatusKind,
+    /// The source the status was judged from (the record's ref's), when it names a
+    /// release.
+    pub source: Option<SourceId>,
+    /// That release's id, when the status names one.
+    pub release_id: Option<String>,
+    /// The file of that release the status was judged on (the one `update` tries
+    /// first), when it names one.
+    pub asset: Option<String>,
+}
+
+/// `list`'s update entry for an addon of `r#ref` whose status is `status` (`None`: no
+/// status row, so `unchecked`): the release identity is the one the status names, as
+/// `update`'s approval reports it, or `null` throughout when it names none.
+pub(super) fn latest_of(status: Option<&UpdateStatus>, r#ref: &Ref) -> Latest {
+    let release = status.and_then(UpdateStatus::latest);
+    Latest {
+        version: release.map(|l| l.version.clone()),
+        status: status.map_or(StatusKind::Unchecked, UpdateStatus::kind),
+        source: release.map(|_| SourceId::of(r#ref)),
+        release_id: release.map(|l| l.release_id.clone()),
+        asset: release.and_then(|l| l.asset.clone()),
+    }
 }
 
 /// A folder count, or the names with `-v`.
@@ -290,12 +313,7 @@ fn list_target(
             .iter()
             .find(|r| r.addon.eq_ignore_ascii_case(&a.name))
             .map(|r| &r.status);
-        Latest {
-            version: status
-                .and_then(UpdateStatus::latest)
-                .map(|l| l.version.clone()),
-            status: status.map_or(StatusKind::Unchecked, UpdateStatus::kind),
-        }
+        latest_of(status, &a.r#ref)
     };
     let mut listed: Vec<ListAddon> = addons
         .into_iter()
@@ -567,8 +585,126 @@ mod tests {
             let latest = Latest {
                 version: Some("1.2".to_owned()),
                 status,
+                source: Some(SourceId::Github),
+                release_id: Some("gh:o/foo@1.2".to_owned()),
+                asset: Some("Foo.zip".to_owned()),
             };
             assert_eq!(latest_cell(&latest), cell, "{status:?}");
+        }
+    }
+
+    #[test]
+    fn latest_names_the_release_its_status_was_judged_on() {
+        use crate::error::{Error, ErrorCode, Suggestion};
+        use crate::resolve::updates::{BlockedReason, Confidence, ReleaseBrief, UncheckedReason};
+
+        let brief = |r: &str| ReleaseBrief {
+            version: "v2".into(),
+            release_id: format!("{r}@v2"),
+            published_at: None,
+            channel: Channel::Stable,
+            revision: None,
+            retagged: false,
+            asset: Some("Foo.zip".into()),
+        };
+        let gh = "gh:o/foo";
+        let named = |status, source, r: &str| Latest {
+            version: Some("v2".into()),
+            status,
+            source: Some(source),
+            release_id: Some(format!("{r}@v2")),
+            asset: Some("Foo.zip".into()),
+        };
+        let unnamed = |status| Latest {
+            version: None,
+            status,
+            source: None,
+            release_id: None,
+            asset: None,
+        };
+        let failed = Error::new(ErrorCode::NotFound, "gone", Suggestion::text("x"));
+        let cases: Vec<(&str, Option<UpdateStatus>, &str, Latest)> = vec![
+            (
+                "update_available",
+                Some(UpdateStatus::UpdateAvailable {
+                    latest: brief(gh),
+                    confidence: Confidence::Declared,
+                }),
+                gh,
+                named(StatusKind::UpdateAvailable, SourceId::Github, gh),
+            ),
+            (
+                "current",
+                Some(UpdateStatus::Current { latest: brief(gh) }),
+                gh,
+                named(StatusKind::Current, SourceId::Github, gh),
+            ),
+            (
+                "ahead",
+                Some(UpdateStatus::Ahead { latest: brief(gh) }),
+                gh,
+                named(StatusKind::Ahead, SourceId::Github, gh),
+            ),
+            (
+                "blocked",
+                Some(UpdateStatus::Blocked {
+                    latest: brief(gh),
+                    reason: BlockedReason::VerifiedNotLoading,
+                }),
+                gh,
+                named(StatusKind::Blocked, SourceId::Github, gh),
+            ),
+            (
+                "pinned_with_newer",
+                Some(UpdateStatus::Pinned {
+                    latest: Some(brief(gh)),
+                }),
+                gh,
+                named(StatusKind::Pinned, SourceId::Github, gh),
+            ),
+            (
+                "pinned_without_newer",
+                Some(UpdateStatus::Pinned { latest: None }),
+                gh,
+                unnamed(StatusKind::Pinned),
+            ),
+            (
+                "unchecked",
+                Some(UpdateStatus::Unchecked {
+                    reason: UncheckedReason::NeverChecked,
+                }),
+                gh,
+                unnamed(StatusKind::Unchecked),
+            ),
+            (
+                "failed",
+                Some(UpdateStatus::Failed {
+                    error: failed.into(),
+                }),
+                gh,
+                unnamed(StatusKind::Failed),
+            ),
+            (
+                "static",
+                Some(UpdateStatus::Static),
+                "file:/nonexistent/Foo.zip",
+                unnamed(StatusKind::Static),
+            ),
+            ("no_row", None, gh, unnamed(StatusKind::Unchecked)),
+            (
+                "wowi_ref",
+                Some(UpdateStatus::UpdateAvailable {
+                    latest: brief("wowi:12345"),
+                    confidence: Confidence::Declared,
+                }),
+                "wowi:12345",
+                named(StatusKind::UpdateAvailable, SourceId::Wowi, "wowi:12345"),
+            ),
+        ];
+        for (case, status, r, want) in cases {
+            let parsed: Ref = r.parse().unwrap();
+            let got = latest_of(status.as_ref(), &parsed);
+            assert_eq!(got, want, "{case}: {status:?} on {r}");
         }
     }
 }

@@ -45,7 +45,7 @@ use crate::model::{Target, TargetKey};
 use crate::output::{Outcome, Style};
 use crate::privacy::WtfPathRedactor;
 use crate::resolve::catalog::Catalog;
-use crate::resolve::updates::{StatusKind, UpdateStatus};
+use crate::resolve::updates::StatusKind;
 use crate::state::history::{self, Dismissed, SettingEntry};
 use crate::state::paths::ClientPaths;
 use crate::state::records::{TargetRecord, load_record};
@@ -1017,15 +1017,7 @@ fn latest_of(
         .iter()
         .find(|r| r.addon.eq_ignore_ascii_case(addon))
         .map(|r| &r.status);
-    Some((
-        a.version.clone(),
-        Latest {
-            version: status
-                .and_then(UpdateStatus::latest)
-                .map(|l| l.version.clone()),
-            status: status.map_or(StatusKind::Unchecked, UpdateStatus::kind),
-        },
-    ))
+    Some((a.version.clone(), super::list::latest_of(status, &a.r#ref)))
 }
 
 /// The view's filters, and what it accumulates across targets.

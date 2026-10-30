@@ -1,5 +1,6 @@
 //! `omaddons list` end to end: the binary over a synthetic home with registered
 //! targets and records written as install will write them.
+//! e2e suite: `list`'s update entry names the release its status was judged on, as `update`'s approval does.
 
 mod common;
 
@@ -426,5 +427,161 @@ fn an_unknown_target_is_not_found() {
     assert_eq!(
         (code, envelope["data"]["targets"].as_array().map(Vec::len)),
         (0, Some(1))
+    );
+}
+
+/// `list`'s update entry (`latest`) names the release its status was judged on in the
+/// vocabulary `update`'s approval uses (M4-D28), so the widget can compare an Updates
+/// row with a plan field by field; an addon with no release to name carries `null`s.
+#[test]
+fn latest_carries_the_release_identity_the_plan_reports() {
+    use common::home::Home;
+    use common::tlog::tlog;
+    use serde_json::json;
+
+    const FOO: &str = "https://github.com/o/foo";
+    const FLAVORS: &[(&str, u32)] = &[("mainline", 120_105)];
+    let foo = |version: &'static str| {
+        [(
+            "Foo.zip",
+            FLAVORS,
+            vec![(
+                "Foo/Foo.toc",
+                if version == "v1" {
+                    "## Interface: 120105\n## Version: v1\n"
+                } else {
+                    "## Interface: 120105\n## Version: v2\n"
+                },
+            )],
+        )]
+    };
+    let log = tlog!();
+    let run = |home: &Home, args: &[&str]| {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let ran = log.run(home, &argv);
+        ran.ok();
+        ran
+    };
+    let foo_of = |listed: &Value| -> Value {
+        listed["targets"][0]["addons"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|a| a["name"] == "Foo")
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+
+    log.step("install v1");
+    let mut home = Home::new(&["wow"]);
+    log.env(&home);
+
+    log.step("publish v2 and check");
+    home.installed_behind(FOO, ("v1", &foo("v1")), ("v2", &foo("v2")), &["retail"]);
+    run(&home, &["outdated"]);
+
+    log.step("list");
+    let listed = run(&home, &["list", "-t", "retail"]);
+    let entry = foo_of(listed.data());
+    let latest = entry["latest"].clone();
+    log.assert_eq(
+        "Foo's latest",
+        &latest,
+        &json!({
+            "version": "v2",
+            "status": "update_available",
+            "source": "github",
+            "release_id": "gh:o/foo@v2",
+            "asset": "Foo.zip",
+        }),
+    );
+
+    log.step("outdated");
+    let outdated = run(&home, &["outdated", "-t", "retail"]);
+    let release = outdated.data()["targets"][0]["items"][0]["latest"].clone();
+    log.json("outdated's release", &release);
+    log.assert_eq(
+        "the same release id",
+        &release["release_id"],
+        &latest["release_id"],
+    );
+    log.assert_eq(
+        "no asset on outdated's wire",
+        &release.get("asset").is_some(),
+        &false,
+    );
+
+    log.step("preview");
+    let preview = run(&home, &["update", "foo", "-t", "retail", "--dry-run"]);
+    let selected = preview.data()["approval"]["selection"][0].clone();
+    let pick = |v: &Value, keys: &[&str]| -> Value {
+        keys.iter()
+            .map(|k| ((*k).to_owned(), v[*k].clone()))
+            .collect()
+    };
+    log.json(
+        "parity",
+        &json!({"list": latest, "approval": selected, "list_version": entry["version"]}),
+    );
+    log.assert_eq(
+        "the approval names the same release",
+        &pick(&selected, &["source", "release_id", "asset", "to_version"]),
+        &json!({
+            "source": latest["source"],
+            "release_id": latest["release_id"],
+            "asset": latest["asset"],
+            "to_version": latest["version"],
+        }),
+    );
+    log.assert_eq(
+        "from the installed version, on the listed client",
+        &pick(&selected, &["from_version", "target_key"]),
+        &json!({
+            "from_version": entry["version"],
+            "target_key": listed.data()["targets"][0]["key"],
+        }),
+    );
+
+    log.step("a static addon");
+    let zip = home.env.root().join("Bar.zip");
+    fs::write(
+        &zip,
+        common::archives::zip_text(&[("Bar/Bar.toc", "## Interface: 120105\n")]),
+    )
+    .unwrap();
+    run(
+        &home,
+        &[
+            "install",
+            &format!("file:{}", zip.display()),
+            "-t",
+            "retail",
+        ],
+    );
+    let listed = run(&home, &["list", "-t", "retail"]);
+    let bar = listed.data()["targets"][0]["addons"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|a| a["name"] == "Bar")
+        .map(|a| a["latest"].clone())
+        .unwrap_or(Value::Null);
+    log.assert_eq(
+        "Bar's latest",
+        &bar,
+        &json!({"version": null, "status": "static", "source": null, "release_id": null, "asset": null}),
+    );
+
+    log.step("never checked");
+    let mut other = Home::new(&["wow"]);
+    log.env(&other);
+    other.installed_behind(FOO, ("v1", &foo("v1")), ("v2", &foo("v2")), &["retail"]);
+    other.seed_memo(&omaddons::state::memo::ReleaseMemo::default());
+    let listed = run(&other, &["list", "-t", "retail"]);
+    log.assert_eq(
+        "Foo's latest, never checked",
+        &foo_of(listed.data())["latest"],
+        &json!({"version": null, "status": "unchecked", "source": null, "release_id": null, "asset": null}),
     );
 }

@@ -113,6 +113,10 @@ pub struct ReleaseBrief {
     /// otherwise.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub retagged: bool,
+    /// The file name of the candidate the status was judged on (the one `update`
+    /// tries first); for `list`'s update entry, never serialized.
+    #[serde(skip)]
+    pub asset: Option<String>,
 }
 
 impl ReleaseBrief {
@@ -362,6 +366,7 @@ fn brief(best: &Candidate, release: Option<&Release>) -> ReleaseBrief {
         channel: best.channel,
         revision: best.revision,
         retagged: false,
+        asset: Some(best.asset.filename.clone()),
     }
 }
 
@@ -1007,6 +1012,110 @@ mod tests {
         }
     }
 
+    /// A status names the file of the candidate it was judged on: the best-ranked one,
+    /// not the release's first asset; for a looked-back release, the found one's.
+    #[test]
+    fn brief_keeps_the_best_candidates_asset() {
+        let behind = record(Some("1.0.0"), "1.0.0");
+        let e = entry(
+            release(
+                "2.0.0",
+                Channel::Stable,
+                None,
+                vec![
+                    asset("Foo-vanilla.zip", Confidence::Unlikely),
+                    asset("Foo-mainline.zip", Confidence::Declared),
+                ],
+            ),
+            Vec::new(),
+        );
+        let status = eval(&behind, Some(&e), &[]);
+        assert_eq!(
+            (name(&status), status.latest().and_then(|l| l.asset.clone())),
+            (
+                "update_available".to_owned(),
+                Some("Foo-mainline.zip".into())
+            ),
+            "{status:?}"
+        );
+
+        let refused = [fact("2.0.0", "Foo.zip", false, false, 11_509)];
+        let found = LookBack {
+            found: Some(ReleaseSet {
+                r#ref: FOO.parse().unwrap(),
+                releases: vec![release(
+                    "1.5.0",
+                    Channel::Stable,
+                    None,
+                    vec![asset("Foo-1.5.zip", Confidence::Declared)],
+                )],
+            }),
+            ruled_out: Vec::new(),
+            order: ["2.0.0", "1.5.0", "1.0.0"].map(String::from).to_vec(),
+        };
+        let status = evaluate(
+            &behind,
+            Some(&newest()),
+            &FactIndex::new(&refused),
+            &retail(),
+            Some(120_105),
+            true,
+            &|_| Some(found.clone()),
+        );
+        assert_eq!(
+            (
+                status.latest().map(|l| l.version.clone()),
+                status.latest().and_then(|l| l.asset.clone())
+            ),
+            (Some("1.5.0".into()), Some("Foo-1.5.zip".into())),
+            "looked back: {status:?}"
+        );
+    }
+
+    /// The asset is for `list`'s update entry only: a brief serializes the keys it
+    /// always had, so `outdated`'s and `info`'s wire is unchanged.
+    #[test]
+    fn release_brief_serializes_without_its_asset() {
+        for (case, revision, retagged, want) in [
+            (
+                "plain",
+                None,
+                false,
+                vec!["channel", "published_at", "release_id", "version"],
+            ),
+            (
+                "re-tagged",
+                Some(404),
+                true,
+                vec![
+                    "channel",
+                    "published_at",
+                    "release_id",
+                    "retagged",
+                    "revision",
+                    "version",
+                ],
+            ),
+        ] {
+            let brief = ReleaseBrief {
+                version: "2.0.0".into(),
+                release_id: format!("{FOO}@2.0.0"),
+                published_at: None,
+                channel: Channel::Stable,
+                revision,
+                retagged,
+                asset: Some("Foo.zip".into()),
+            };
+            let value = serde_json::to_value(&brief).unwrap();
+            let mut keys: Vec<&str> = value
+                .as_object()
+                .map(|o| o.keys().map(String::as_str).collect())
+                .unwrap_or_default();
+            keys.sort_unstable();
+            assert_eq!(keys, want, "{case}: {value}");
+        }
+    }
+
     #[test]
     fn static_unchecked_and_failed() {
         let e = newest();
@@ -1179,6 +1288,7 @@ mod tests {
             channel: Channel::Stable,
             revision: None,
             retagged: false,
+            asset: Some("Foo.zip".into()),
         };
         let failed = Error::new(
             ErrorCode::NotFound,

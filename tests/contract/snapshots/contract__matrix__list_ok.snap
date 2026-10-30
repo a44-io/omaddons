@@ -33,6 +33,9 @@ expression: s.stable(&c.envelope)
             "channel": "stable",
             "folders": 1,
             "latest": {
+              "asset": null,
+              "release_id": null,
+              "source": null,
               "status": "static",
               "version": null
             },

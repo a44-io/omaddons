@@ -775,7 +775,13 @@ mod updates {
             .clone();
         assert_eq!(
             foo["latest"],
-            json!({"version": "v2", "status": "update_available"})
+            json!({
+                "version": "v2",
+                "status": "update_available",
+                "source": "github",
+                "release_id": "gh:o/foo@v2",
+                "asset": "Foo.zip",
+            })
         );
         home.run(&["pin", "foo", "-t", "retail"]).expect(0);
         let envelope = home.run(&["list", "-t", "retail"]).expect(0);

@@ -81,6 +81,9 @@ expression: s.stable(&c.envelope)
               "tz": "explicit"
             },
             "latest": {
+              "asset": null,
+              "release_id": null,
+              "source": null,
               "status": "static",
               "version": null
             },
