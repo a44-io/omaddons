@@ -956,6 +956,7 @@ mod tests {
                 status: VersionStatus::Current,
             })),
             records: Some(LayerState::Available(Records::default())),
+            world: None,
             failures: Vec::new(),
         };
         let paths = crate::doctor::tests::fixture_paths();

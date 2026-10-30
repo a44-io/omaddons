@@ -35,6 +35,21 @@ pub enum DiscoveryMode {
     Full,
     /// Ignore the cache and parse every root (`targets --rescan`).
     Rescan,
+    /// Scan for roots, reusing each unchanged root's cached parse; never write the cache
+    /// (the doctor's view: a diagnosis writes nothing outside its run directory).
+    FullNoWrite,
+}
+
+impl DiscoveryMode {
+    /// Whether it looks for roots on disk: every mode but `NoScan`.
+    pub fn scans(self) -> bool {
+        self != Self::NoScan
+    }
+
+    /// Whether it saves the cache when the cache changed: `Full` and `Rescan`.
+    pub fn writes_cache(self) -> bool {
+        matches!(self, Self::Full | Self::Rescan)
+    }
 }
 
 /// The cache file.
@@ -184,12 +199,12 @@ pub fn discover_cached(
         ..input.clone()
     };
     let mut diagnostics = Vec::new();
-    let (requests, mut warnings) = match (mode, &cache) {
-        (DiscoveryMode::NoScan, Some(cache)) => (
+    let (requests, mut warnings) = match (mode.scans(), &cache) {
+        (false, Some(cache)) => (
             cache.roots.iter().map(CachedRoot::request).collect(),
             Vec::new(),
         ),
-        (DiscoveryMode::NoScan, None) => (
+        (false, None) => (
             input
                 .registered_roots
                 .iter()
@@ -204,7 +219,7 @@ pub fn discover_cached(
                 .collect(),
             Vec::new(),
         ),
-        _ => {
+        (true, _) => {
             stats.scanned = true;
             let collected = collect(input, limits);
             diagnostics = collected.diagnostics;
@@ -279,7 +294,7 @@ pub fn discover_cached(
         (Some(old), Ok(new)) => store::encode(old).ok().as_ref() != Some(&new),
         _ => true,
     };
-    if changed && mode != DiscoveryMode::NoScan {
+    if changed && mode.writes_cache() {
         match write_cache(paths, &fresh) {
             Ok(()) => stats.written = true,
             Err(note) => diagnostics.push(format!("discovery cache not written: {note}")),
@@ -443,6 +458,102 @@ mod tests {
         .unwrap();
         // A 1.0 cache has no basis: it loads, and reuses nothing.
         assert_eq!(load_cache(&paths), Some(DiscoveryCache::default()));
+    }
+
+    #[test]
+    fn discovery_mode_predicates() {
+        let cases = [
+            (DiscoveryMode::NoScan, false, false),
+            (DiscoveryMode::Full, true, true),
+            (DiscoveryMode::Rescan, true, true),
+            (DiscoveryMode::FullNoWrite, true, false),
+        ];
+        for (mode, scans, writes_cache) in cases {
+            assert_eq!(
+                (mode.scans(), mode.writes_cache()),
+                (scans, writes_cache),
+                "case {mode:?}: got (scans, writes_cache) = ({}, {}), expected ({scans}, {writes_cache})",
+                mode.scans(),
+                mode.writes_cache()
+            );
+        }
+    }
+
+    #[test]
+    fn full_no_write_scans_but_never_writes_the_cache() {
+        // A tempdir home without clients.
+        let home = || {
+            let dir = tempfile::tempdir().unwrap();
+            let root = std::fs::canonicalize(dir.path()).unwrap();
+            let paths = Paths::with_roots(
+                &root,
+                root.join("config"),
+                root.join("state"),
+                root.join("cache"),
+            );
+            (dir, paths)
+        };
+        let run = |paths: &Paths, mode| {
+            let input = DiscoveryInput {
+                home: paths.home().to_path_buf(),
+                ..DiscoveryInput::default()
+            };
+            let (_, stats) = discover_cached(
+                &input,
+                &RulesTable::builtin(),
+                paths,
+                ScanLimits::default(),
+                mode,
+            );
+            stats
+        };
+
+        let (_first, written) = home();
+        let stats = run(&written, DiscoveryMode::Full);
+        assert!(
+            stats.scanned && stats.written,
+            "case full_writes: {stats:?}"
+        );
+        assert!(written.discovery_cache().exists(), "case full_writes");
+
+        let (_second, paths) = home();
+        let stats = run(&paths, DiscoveryMode::FullNoWrite);
+        assert!(
+            stats.scanned && !stats.written,
+            "case full_no_write_never_writes: {stats:?}"
+        );
+        assert!(
+            !paths.discovery_cache().exists(),
+            "case full_no_write_never_writes: {} was written",
+            paths.discovery_cache().display()
+        );
+
+        // An existing cache stays as it was, though it is stale (built on another basis)
+        // and the home's listing changed: `Full` would rewrite it.
+        let stale = store::encode(&DiscoveryCache {
+            basis: "another basis".to_owned(),
+            roots: Vec::new(),
+        })
+        .unwrap();
+        std::fs::create_dir_all(paths.cache_dir()).unwrap();
+        std::fs::write(paths.discovery_cache(), &stale).unwrap();
+        std::fs::create_dir(paths.home().join("Games")).unwrap();
+        let stats = run(&paths, DiscoveryMode::FullNoWrite);
+        assert!(
+            stats.scanned && !stats.written,
+            "case full_no_write_keeps_an_existing_cache: {stats:?}"
+        );
+        assert_eq!(
+            std::fs::read(paths.discovery_cache()).unwrap(),
+            stale,
+            "case full_no_write_keeps_an_existing_cache: the bytes changed"
+        );
+        let stats = run(&paths, DiscoveryMode::Full);
+        assert!(
+            stats.written,
+            "case full_rewrites_the_stale_cache (the control): {stats:?}"
+        );
+        assert_ne!(std::fs::read(paths.discovery_cache()).unwrap(), stale);
     }
 
     #[test]

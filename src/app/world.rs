@@ -21,12 +21,14 @@ use crate::resolve::catalog::Catalog;
 use crate::rules::RulesTable;
 use crate::sources::SourceConfigView;
 use crate::sources::github_token::GithubToken;
-use crate::state::config::Config;
+use crate::state::config::{Config, LoadedConfig};
 use crate::state::paths::Paths;
 use crate::state::records::{TargetRecord, load_record};
 use crate::state::registry::{Origin, Registry, load_registry};
+use crate::state::store::Loaded;
 
 /// The discovered targets, reconciled with the registry.
+#[derive(Debug)]
 pub struct World {
     pub paths: Paths,
     pub config: Config,
@@ -67,18 +69,65 @@ impl World {
     /// [`World::load`] with an explicit cache mode (`status --cached`, `--rescan`).
     pub fn load_with(ctx: &Context, mode: DiscoveryMode) -> Result<Self> {
         let paths = Paths::from_env()?;
+        let loaded_config = Config::load(&paths)?;
+        // Noted before the registry loads, so its failure still reports them; `assemble`
+        // notes them again, which the notes take once.
+        ctx.notes.warn_all(&loaded_config.warnings);
+        let loaded = load_registry(&paths)?;
+        let mut world = Self::assemble(paths, loaded_config, loaded, mode, &mut |batch| {
+            ctx.notes.warn_all(batch);
+        })?;
+        let found = |world: &mut Self, batch: &[Warning]| {
+            ctx.notes.warn_all(batch);
+            world.warnings.extend_from_slice(batch);
+        };
+        // `-t all` shadowed by a client named `all` (M4-D13): said once, through the notes.
+        let reserved = ctx
+            .target
+            .as_deref()
+            .and_then(|selector| reserved_id_warning(selector, &world.resolved));
+        if let Some(warning) = reserved {
+            found(&mut world, std::slice::from_ref(&warning));
+        }
+        // Unfinished transactions, reported without recovering (D23). A mutating
+        // command recovers them under the lock and reports `journal_recovered` instead:
+        // the run's notes read them again when it ends.
+        let journal = crate::engine::journal::pending_warnings(&world.paths)?;
+        found(&mut world, &journal);
+        if !journal.is_empty() {
+            let at = world.paths.clone();
+            ctx.notes.journal_found(&journal, move || {
+                crate::engine::journal::pending_warnings(&at).ok()
+            });
+        }
+        // Resolved once; a `command` credential runs only when REST first needs it.
+        let github_token = GithubToken::resolve(&world.paths, &world.config.sources);
+        found(&mut world, &github_token.warnings);
+        world.github_token = github_token;
+        Ok(world)
+    }
+
+    /// Builds a world from a configuration and a registry that already loaded: fail-closed
+    /// for commands ([`World::load_with`]), tolerantly for the doctor's view. Each batch of
+    /// warnings goes to `found` and into the world's, in order. Resolves no credential
+    /// (its `github_token` is none) and reads no journal.
+    pub(crate) fn assemble(
+        paths: Paths,
+        loaded_config: LoadedConfig,
+        loaded: Loaded<Registry>,
+        mode: DiscoveryMode,
+        found: &mut dyn FnMut(&[Warning]),
+    ) -> Result<Self> {
         let mut warnings: Vec<Warning> = Vec::new();
         let mut found = |batch: &[Warning]| {
-            ctx.notes.warn_all(batch);
+            found(batch);
             warnings.extend_from_slice(batch);
         };
-        let loaded_config = Config::load(&paths)?;
         found(&loaded_config.warnings);
         let config = loaded_config.config;
         let table = config
             .rules_table(&RulesTable::builtin())
             .map_err(|e| Error::internal(format!("validated rules overrides failed: {e}")))?;
-        let loaded = load_registry(&paths)?;
         found(loaded.warning(&paths.registry_file()).as_slice());
         let registry = loaded.value;
         let mut extra_roots = config.extra_roots.clone();
@@ -104,7 +153,9 @@ impl World {
         }
         // Running clients' prefixes, for the modes that look for roots.
         let extra_prefixes = match mode {
-            DiscoveryMode::Full | DiscoveryMode::Rescan => process_prefixes(&table, paths.home()),
+            DiscoveryMode::Full | DiscoveryMode::Rescan | DiscoveryMode::FullNoWrite => {
+                process_prefixes(&table, paths.home())
+            }
             DiscoveryMode::NoScan => Vec::new(),
         };
         let input = DiscoveryInput {
@@ -129,28 +180,6 @@ impl World {
             .filter_map(|d| crate::discover::unknown_flavor(&d.target))
             .collect();
         found(&unknown);
-        // `-t all` shadowed by a client named `all` (M4-D13): said once, through the notes.
-        let reserved = ctx
-            .target
-            .as_deref()
-            .and_then(|selector| reserved_id_warning(selector, &resolved));
-        if let Some(warning) = reserved {
-            found(std::slice::from_ref(&warning));
-        }
-        // Unfinished transactions, reported without recovering (D23). A mutating
-        // command recovers them under the lock and reports `journal_recovered` instead:
-        // the run's notes read them again when it ends.
-        let journal = crate::engine::journal::pending_warnings(&paths)?;
-        found(&journal);
-        if !journal.is_empty() {
-            let at = paths.clone();
-            ctx.notes.journal_found(&journal, move || {
-                crate::engine::journal::pending_warnings(&at).ok()
-            });
-        }
-        // Resolved once; a `command` credential runs only when REST first needs it.
-        let github_token = GithubToken::resolve(&paths, &config.sources);
-        found(&github_token.warnings);
         Ok(Self {
             paths,
             config,
@@ -160,7 +189,7 @@ impl World {
             warnings,
             diagnostics: discovered.diagnostics,
             discovery,
-            github_token,
+            github_token: GithubToken::none(),
         })
     }
 
@@ -260,6 +289,12 @@ impl World {
             missing_named(selector, &self.resolved.targets, &self.resolved.missing)?;
         }
         select_many(ctx.target.as_deref(), &self.resolved.targets, &self.table)
+    }
+
+    /// [`World::select_many`] for `selector`, without first refusing a registered client
+    /// whose directory is gone: the doctor reports such a client instead.
+    pub fn select_in(&self, selector: Option<&str>) -> Result<Vec<&DiscoveredTarget>> {
+        select_many(selector, &self.resolved.targets, &self.table)
     }
 
     /// Whether `-t` is the keyword `all` and selects every client: no client is named
@@ -363,6 +398,146 @@ mod tests {
 
     fn ids(selected: &[&DiscoveredTarget]) -> Vec<String> {
         selected.iter().map(|d| d.target.id.clone()).collect()
+    }
+
+    /// A tempdir home without clients.
+    fn home() -> (tempfile::TempDir, Paths) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::with_roots(
+            &root,
+            root.join("config"),
+            root.join("state"),
+            root.join("cache"),
+        );
+        (dir, paths)
+    }
+
+    fn manual_entry(id: &str, root: &std::path::Path) -> crate::state::registry::RegistryEntry {
+        crate::state::registry::RegistryEntry {
+            key: TargetKey::new(),
+            id: id.into(),
+            install_root: root.to_path_buf(),
+            client_dir: root.join("_retail_"),
+            flavor_dir: Some("_retail_".into()),
+            product: Some("wow".into()),
+            qualifier: "manual".into(),
+            origin: Origin::Manual,
+            registered_at: "2026-10-14T12:00:00Z".parse().unwrap(),
+        }
+    }
+
+    fn loaded<T: crate::state::store::Versioned>(value: T) -> Loaded<T> {
+        Loaded {
+            value,
+            version: T::CURRENT,
+            status: crate::state::store::VersionStatus::Current,
+        }
+    }
+
+    #[test]
+    fn assemble_builds_a_world_from_given_layers() {
+        use crate::error::WarningCode;
+        use crate::state::store::{SchemaVersion, VersionStatus};
+
+        let (_dir, paths) = home();
+        let gone = manual_entry("gone", &paths.home().join("nowhere"));
+        let registry = Registry {
+            targets: vec![gone.clone()],
+            default: None,
+        };
+        let config = LoadedConfig {
+            warnings: vec![Warning::new(
+                WarningCode::ConfigUnknownKey,
+                "an unknown key",
+            )],
+            ..LoadedConfig::default()
+        };
+        let newer = Loaded {
+            version: SchemaVersion::new(1, 9),
+            status: VersionStatus::Newer,
+            ..loaded(registry)
+        };
+        let mut batches: Vec<Vec<WarningCode>> = Vec::new();
+        let world = World::assemble(
+            paths.clone(),
+            config,
+            newer,
+            DiscoveryMode::FullNoWrite,
+            &mut |batch| batches.push(batch.iter().map(|w| w.code).collect()),
+        )
+        .unwrap();
+        assert!(
+            world.resolved.targets.is_empty(),
+            "{:?}",
+            world.resolved.targets
+        );
+        assert_eq!(world.resolved.missing, [gone]);
+        // The batches in order: config, registry, discovery, reconciliation, flavors.
+        assert_eq!(batches.len(), 5, "{batches:?}");
+        assert_eq!(batches[0], [WarningCode::ConfigUnknownKey]);
+        assert_eq!(batches[1], [WarningCode::StateVersionNewer]);
+        let seen: Vec<WarningCode> = batches.concat();
+        let kept: Vec<WarningCode> = world.warnings.iter().map(|w| w.code).collect();
+        assert_eq!(kept, seen, "the world keeps every batch, in order");
+        assert!(world.discovery.scanned && !world.discovery.written);
+        assert!(
+            !paths.discovery_cache().exists(),
+            "{} was written",
+            paths.discovery_cache().display()
+        );
+    }
+
+    #[test]
+    fn assemble_never_resolves_the_github_token() {
+        let (_dir, paths) = home();
+        let token = paths.credentials_dir().join("github");
+        std::fs::create_dir_all(paths.credentials_dir()).unwrap();
+        std::fs::write(&token, "ghp_planted\n").unwrap();
+        let world = World::assemble(
+            paths,
+            LoadedConfig::default(),
+            loaded(Registry::default()),
+            DiscoveryMode::NoScan,
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(
+            world.github_token.source(),
+            crate::sources::github_token::TokenSource::None
+        );
+    }
+
+    #[test]
+    fn select_in_does_not_refuse_a_missing_client() {
+        let (_dir, paths) = home();
+        let mut world = World::assemble(
+            paths.clone(),
+            LoadedConfig::default(),
+            loaded(Registry::default()),
+            DiscoveryMode::NoScan,
+            &mut |_| {},
+        )
+        .unwrap();
+        world.resolved.targets = vec![found("retail", Family::Mainline, Some("wow"))];
+        world.resolved.missing = vec![manual_entry("gone", &paths.home().join("nowhere"))];
+
+        let not_found = world.select_in(Some("gone")).unwrap_err();
+        assert_eq!(not_found.code, ErrorCode::TargetNotFound);
+        assert!(
+            !not_found.message.contains("is registered"),
+            "case gone: {}",
+            not_found.message
+        );
+        let refused =
+            missing_named("gone", &world.resolved.targets, &world.resolved.missing).unwrap_err();
+        assert!(
+            refused.message.contains("is registered"),
+            "{}",
+            refused.message
+        );
+        let retail = world.select_in(Some("retail")).unwrap();
+        assert_eq!(ids(&retail), ["retail"], "case retail");
     }
 
     #[test]

@@ -1,8 +1,10 @@
 //! The doctor's view of the machine (M4-D43): each layer (the configuration, the target
-//! registry, the records) loaded on first use, at most once, and tolerantly. A layer that
-//! cannot be read is unavailable, and its failure becomes one finding that shows where and
-//! why, never what the file holds (M4-D42), so the checks that need the layer are skipped
-//! rather than run on defaults. Nothing here writes.
+//! registry, the records, the discovered clients, each client's `AddOns/`) loaded on first
+//! use, at most once, and tolerantly. A layer that cannot be read is unavailable, and its
+//! failure becomes one finding that shows where and why, never what the file holds
+//! (M4-D42), so the checks that need the layer are skipped rather than run on defaults. A
+//! layer built from an unavailable one is unavailable too, with that one as its cause.
+//! Nothing here writes, the discovery cache included.
 //!
 //! Until E2's part 4 points `status` at the rules directly and F8 removes them, a view can
 //! instead carry the facts `status` computes ([`DoctorView::from_status_facts`]); such a
@@ -18,8 +20,14 @@ use super::finding::{
     Confidence, Evidence, Finding, FindingTarget, Observation, Severity, Subject,
 };
 use super::registry::{self, Layer, ids};
+use crate::app::world::World;
 use crate::cli::Context;
-use crate::error::{ErrorCode, Result, Warning};
+use crate::discover::DiscoveredTarget;
+use crate::discover::cache::DiscoveryMode;
+use crate::discover::registry::read_marker;
+use crate::discover::shared::siblings;
+use crate::error::{Error, ErrorCode, Result, Warning};
+use crate::inventory::{Depth, Inventory, inventory_shared};
 use crate::limits::{DISCOVERY_FILE_MAX_BYTES, DOCTOR_SCAN_MAX_ENTRIES};
 use crate::model::TargetKey;
 use crate::state::config::{Config, LoadedConfig};
@@ -27,6 +35,34 @@ use crate::state::paths::Paths;
 use crate::state::records::TargetRecord;
 use crate::state::registry::Registry;
 use crate::state::store::{self, Loaded, VersionStatus, Versioned};
+
+/// How the view finds clients. Neither way writes: loading the view never writes the
+/// discovery cache.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ViewOptions {
+    pub discovery: ViewDiscovery,
+}
+
+/// How the Discovery layer finds clients.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ViewDiscovery {
+    /// Scan for clients, reusing each unchanged root's cached parse (the doctor's
+    /// default): [`DiscoveryMode::FullNoWrite`].
+    #[default]
+    Scan,
+    /// No scan: the cached roots looked at again, or without a cache only the registered
+    /// roots (`status --cached`): [`DiscoveryMode::NoScan`].
+    Cached,
+}
+
+impl ViewDiscovery {
+    fn mode(self) -> DiscoveryMode {
+        match self {
+            Self::Scan => DiscoveryMode::FullNoWrite,
+            Self::Cached => DiscoveryMode::NoScan,
+        }
+    }
+}
 
 /// One read of the machine, shared by every detector of a run. Each layer is read when a
 /// detector first asks for it, and a second ask reads nothing.
@@ -36,6 +72,7 @@ use crate::state::store::{self, Loaded, VersionStatus, Versioned};
 #[derive(Debug)]
 pub struct DoctorView {
     paths: Paths,
+    options: ViewOptions,
     /// Built from `status`'s facts: no layer is read, and every layer is unavailable.
     facts_only: bool,
     /// The most entries one listing visits: [`DOCTOR_SCAN_MAX_ENTRIES`] (a test lowers it).
@@ -43,29 +80,35 @@ pub struct DoctorView {
     config: OnceCell<LayerState<LoadedConfig>>,
     registry: OnceCell<LayerState<Loaded<Registry>>>,
     records: OnceCell<LayerState<Records>>,
+    discovered: OnceCell<LayerState<Discovered>>,
     failures: RefCell<Vec<LayerFailure>>,
     warnings: RefCell<Vec<Warning>>,
+    /// What went wrong that no failure mode describes, for a `-v` log.
+    diagnostics: RefCell<Vec<String>>,
     loaded: RefCell<BTreeSet<Layer>>,
     status_facts: StatusFacts,
 }
 
 impl DoctorView {
     /// The view of this user's machine.
-    pub fn load(_ctx: &Context) -> Result<Self> {
-        Ok(Self::load_at(Paths::from_env()?))
+    pub fn load(_ctx: &Context, options: ViewOptions) -> Result<Self> {
+        Ok(Self::load_at(Paths::from_env()?, options))
     }
 
     /// The view of the machine under `paths`. Reads nothing yet, so it never fails.
-    pub fn load_at(paths: Paths) -> Self {
+    pub fn load_at(paths: Paths, options: ViewOptions) -> Self {
         Self {
             paths,
+            options,
             facts_only: false,
             max_entries: DOCTOR_SCAN_MAX_ENTRIES,
             config: OnceCell::new(),
             registry: OnceCell::new(),
             records: OnceCell::new(),
+            discovered: OnceCell::new(),
             failures: RefCell::default(),
             warnings: RefCell::default(),
+            diagnostics: RefCell::default(),
             loaded: RefCell::default(),
             status_facts: StatusFacts::default(),
         }
@@ -77,7 +120,7 @@ impl DoctorView {
         Self {
             facts_only: true,
             status_facts,
-            ..Self::load_at(paths)
+            ..Self::load_at(paths, ViewOptions::default())
         }
     }
 
@@ -118,6 +161,49 @@ impl DoctorView {
         }
         self.records
             .get_or_init(|| self.loading(Layer::Records, Self::load_records))
+            .available()
+    }
+
+    /// The clients on this machine, reconciled with the registry, found in the view's
+    /// discovery mode without writing the discovery cache. `None` when the configuration
+    /// or the registry cannot be read: discovery never runs on defaults in place of the
+    /// user's broken file. Its `github_token` is none: the view resolves no credential.
+    pub fn world(&self) -> Option<&World> {
+        Some(&self.discovered()?.world)
+    }
+
+    /// `target`'s `AddOns/`, classified at full depth when a check first asks for this
+    /// client. `None` for a client not in [`DoctorView::world`], or when its folders
+    /// cannot be classified: its record or a registered sibling's cannot be read, or
+    /// `AddOns/` cannot be listed.
+    pub fn inventory(&self, target: &DiscoveredTarget) -> Option<&Inventory> {
+        let discovered = self.discovered()?;
+        let index = discovered
+            .world
+            .resolved
+            .targets
+            .iter()
+            .position(|d| d.target.client_dir == target.target.client_dir)?;
+        let cell = discovered.inventories.get(index)?;
+        cell.get_or_init(|| {
+            let state = self.load_inventory(&discovered.world, index);
+            self.loaded.borrow_mut().insert(Layer::Inventory);
+            state
+        })
+        .available()
+    }
+
+    /// What went wrong while loading that no failure mode describes, for a `-v` log.
+    pub fn diagnostics(&self) -> Vec<String> {
+        self.diagnostics.borrow().clone()
+    }
+
+    fn discovered(&self) -> Option<&Discovered> {
+        if self.facts_only {
+            return None;
+        }
+        self.discovered
+            .get_or_init(|| self.loading(Layer::Discovery, Self::load_discovery))
             .available()
     }
 
@@ -357,6 +443,149 @@ impl DoctorView {
         LayerState::Available(Records { by_key })
     }
 
+    fn load_discovery(&self) -> LayerState<Discovered> {
+        let unavailable = |cause| {
+            LayerState::Unavailable(Unavailable {
+                layer: Layer::Discovery,
+                cause,
+            })
+        };
+        // Their own failures stand; discovery adds none.
+        let Some(config) = self.config() else {
+            return unavailable(cause_of(&self.config, Layer::Config));
+        };
+        let Some(registry) = self.registry() else {
+            return unavailable(cause_of(&self.registry, Layer::Registry));
+        };
+        let mut found = Vec::new();
+        let assembled = World::assemble(
+            self.paths.clone(),
+            config.clone(),
+            registry.clone(),
+            self.options.discovery.mode(),
+            &mut |batch| found.extend_from_slice(batch),
+        );
+        // The config's and the registry's own warnings are the view's already.
+        let mut warnings = self.warnings.borrow_mut();
+        for warning in found {
+            if !warnings.contains(&warning) {
+                warnings.push(warning);
+            }
+        }
+        drop(warnings);
+        match assembled {
+            Ok(world) => {
+                let inventories = world
+                    .resolved
+                    .targets
+                    .iter()
+                    .map(|_| OnceCell::new())
+                    .collect();
+                LayerState::Available(Discovered { world, inventories })
+            }
+            Err(err) => self.fail_error(Layer::Discovery, &err),
+        }
+    }
+
+    /// The inventory of the `index`th client of `world`.
+    fn load_inventory(&self, world: &World, index: usize) -> LayerState<Inventory> {
+        let unavailable = |cause| {
+            LayerState::Unavailable(Unavailable {
+                layer: Layer::Inventory,
+                cause,
+            })
+        };
+        let Some(target) = world.resolved.targets.get(index).map(|d| &d.target) else {
+            return unavailable(Layer::Inventory);
+        };
+        // Its record and each registered sibling's say who owns a folder: without one,
+        // shared folders would be misclassified.
+        let record = match target.key {
+            None => None,
+            Some(key) => match self.inventory_record(key) {
+                Some(record) => Some(record),
+                None => return unavailable(Layer::Records),
+            },
+        };
+        let mut shared = Vec::new();
+        for sibling in siblings(target, world.resolved.targets.iter().map(|d| &d.target)) {
+            let Some(key) = sibling.key.or_else(|| read_marker(&sibling.client_dir)) else {
+                continue;
+            };
+            let Some(record) = self.inventory_record(key) else {
+                return unavailable(Layer::Records);
+            };
+            shared.push((sibling.id.clone(), record));
+        }
+        match inventory_shared(target, record.as_ref(), &shared, &world.table, Depth::Full) {
+            Ok(inventory) => LayerState::Available(inventory),
+            // An `AddOns/` that cannot be listed: no failure mode describes it, and the
+            // checks that need it are skipped for this client.
+            Err(_) => unavailable(Layer::Inventory),
+        }
+    }
+
+    /// `key`'s record as an inventory reads it: an empty one when it has none on disk,
+    /// as `load_record` reads it; `None` when it cannot be read.
+    fn inventory_record(&self, key: TargetKey) -> Option<TargetRecord> {
+        match self.records()?.by_key.get(&key) {
+            Some(LayerState::Available(loaded)) => Some(loaded.value.clone()),
+            Some(LayerState::Unavailable(_)) => None,
+            None => Some(TargetRecord::empty(key)),
+        }
+    }
+
+    /// A layer whose load failed with a command's error: a finding when a failure mode
+    /// describes it (a state file newer, corrupt or unreadable), else a diagnostic. The
+    /// error's message never reaches a finding.
+    fn fail_error<T>(&self, layer: Layer, err: &Error) -> LayerState<T> {
+        let path = err.details["path"].as_str().map(PathBuf::from);
+        let file = path
+            .as_deref()
+            .and_then(Path::file_name)
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let failed = |fm, path| Failed {
+            layer,
+            fm,
+            target: None,
+            path,
+            file: &file,
+        };
+        match (err.code, path.as_deref()) {
+            (ErrorCode::StateTooNew, Some(path)) => {
+                let evidence = Evidence {
+                    observed: err.details["schema_version"].as_str().map(str::to_owned),
+                    ..Evidence::default()
+                };
+                self.fail(
+                    failed(ids::STATE_VERSION_NEWER, path),
+                    FailureReason::Newer,
+                    evidence,
+                )
+            }
+            (ErrorCode::StateCorrupt, Some(path)) => self.fail(
+                failed(ids::STATE_CORRUPT, path),
+                FailureReason::Decode,
+                Evidence::default(),
+            ),
+            (ErrorCode::Io, Some(path)) => self.fail(
+                failed(ids::STATE_CORRUPT, path),
+                FailureReason::Unreadable,
+                Evidence::default(),
+            ),
+            _ => {
+                self.diagnostics
+                    .borrow_mut()
+                    .push(format!("the {layer:?} layer did not load: {}", err.message));
+                LayerState::Unavailable(Unavailable {
+                    layer,
+                    cause: layer,
+                })
+            }
+        }
+    }
+
     /// One state file, bounded and decoded as `store::load` would; `missing` is what an
     /// absent file stands for. A newer file that decodes is available, with its warning.
     fn load_state<T: Versioned>(
@@ -430,6 +659,23 @@ struct Failed<'a> {
     path: &'a Path,
     /// The file as a title names it: `config.toml`, `targets/<key>.json`.
     file: &'a str,
+}
+
+/// Why the layer in `cell` is unavailable: the layer whose failure made it so (`layer`
+/// itself unless it records another).
+fn cause_of<T>(cell: &OnceCell<LayerState<T>>, layer: Layer) -> Layer {
+    match cell.get() {
+        Some(LayerState::Unavailable(unavailable)) => unavailable.cause,
+        _ => layer,
+    }
+}
+
+/// The Discovery layer: the world, and one Inventory layer per discovered client, in
+/// `world.resolved.targets`' order.
+#[derive(Debug)]
+struct Discovered {
+    world: World,
+    inventories: Vec<OnceCell<LayerState<Inventory>>>,
 }
 
 /// A layer as the view loaded it.
@@ -749,6 +995,8 @@ pub(crate) struct Preloaded {
     pub config: Option<LayerState<LoadedConfig>>,
     pub registry: Option<LayerState<Loaded<Registry>>>,
     pub records: Option<LayerState<Records>>,
+    /// The Discovery layer, each client's inventory still to build.
+    pub world: Option<LayerState<World>>,
     pub failures: Vec<LayerFailure>,
 }
 
@@ -766,13 +1014,27 @@ impl DoctorView {
         let config = cell(&mut loaded, Layer::Config, preloaded.config);
         let registry = cell(&mut loaded, Layer::Registry, preloaded.registry);
         let records = cell(&mut loaded, Layer::Records, preloaded.records);
+        let world = preloaded.world.map(|state| match state {
+            LayerState::Available(world) => {
+                let inventories = world
+                    .resolved
+                    .targets
+                    .iter()
+                    .map(|_| OnceCell::new())
+                    .collect();
+                LayerState::Available(Discovered { world, inventories })
+            }
+            LayerState::Unavailable(unavailable) => LayerState::Unavailable(unavailable),
+        });
+        let discovered = cell(&mut loaded, Layer::Discovery, world);
         Self {
             config,
             registry,
             records,
+            discovered,
             failures: RefCell::new(preloaded.failures),
             loaded: RefCell::new(loaded),
-            ..Self::load_at(paths)
+            ..Self::load_at(paths, ViewOptions::default())
         }
     }
 }
@@ -793,6 +1055,11 @@ mod tests {
 
     fn key(text: &str) -> TargetKey {
         text.parse().unwrap()
+    }
+
+    /// The doctor's default view of `paths`.
+    fn view_at(paths: Paths) -> DoctorView {
+        DoctorView::load_at(paths, ViewOptions::default())
     }
 
     fn home() -> (tempfile::TempDir, Paths) {
@@ -1119,7 +1386,7 @@ mod tests {
             let (_dir, paths) = home();
             let path = paths.config_file();
             plant(&path, &how);
-            let view = DoctorView::load_at(paths.clone());
+            let view = view_at(paths.clone());
             let config = view.config();
             let failures = view.failures();
             match &expected {
@@ -1155,7 +1422,7 @@ mod tests {
             &paths.config_file(),
             &Plant::Bytes(b"check_intervl_hours = 6\n".to_vec()),
         );
-        let view = DoctorView::load_at(paths);
+        let view = view_at(paths);
         let config = view.config().unwrap();
         assert_eq!(config.warnings.len(), 1, "{:?}", config.warnings);
         let codes: Vec<WarningCode> = view.warnings().iter().map(|w| w.code).collect();
@@ -1218,7 +1485,7 @@ mod tests {
             let (_dir, paths) = home();
             let path = paths.registry_file();
             plant(&path, &how);
-            let view = DoctorView::load_at(paths.clone());
+            let view = view_at(paths.clone());
             let registry = view.registry();
             let failures = view.failures();
             match &expected {
@@ -1249,7 +1516,7 @@ mod tests {
             &paths.registry_file(),
             &Plant::Bytes(br#"{"schema_version":"1.9","targets":[],"default":null}"#.to_vec()),
         );
-        let view = DoctorView::load_at(paths);
+        let view = view_at(paths);
         assert_eq!(
             view.registry().map(|r| r.status),
             Some(VersionStatus::Newer)
@@ -1366,7 +1633,7 @@ mod tests {
             if name == "targets_not_a_directory" {
                 plant(&paths.targets_dir(), &Plant::Bytes(Vec::new()));
             }
-            let mut view = DoctorView::load_at(paths.clone());
+            let mut view = view_at(paths.clone());
             view.max_entries = case.max_entries;
             let records = view.records();
             let failures: Vec<LayerFailure> = view
@@ -1454,7 +1721,7 @@ mod tests {
             &paths.registry_file(),
             &Plant::Bytes(registry_bytes(&[(K, "retail")])),
         );
-        let view = DoctorView::load_at(paths.clone());
+        let view = view_at(paths.clone());
         assert_eq!(
             view.loaded_layers(),
             BTreeSet::new(),
@@ -1500,7 +1767,7 @@ mod tests {
         );
         let record = paths.target_record(&key(K));
         plant(&record, &Plant::Bytes(format!("{MARKER} [").into_bytes()));
-        let view = DoctorView::load_at(paths.clone());
+        let view = view_at(paths.clone());
         // Asked in the opposite order of the report's.
         assert!(view.config().is_none());
         assert!(view.records().is_some());
@@ -1585,7 +1852,7 @@ mod tests {
         for (case, how, k, id) in cases {
             let (_dir, paths) = home();
             plant(&paths.registry_file(), &how);
-            let view = DoctorView::load_at(paths);
+            let view = view_at(paths);
             let got = view.target_ref(key(k));
             assert_eq!(
                 (got.id.as_str(), got.key),
@@ -1693,6 +1960,335 @@ mod tests {
             );
             assert_eq!(FailureReason::of(&evidence), Some(reason), "case {case}");
         }
+    }
+
+    /// Why the view's Discovery layer is unavailable, when it is.
+    fn discovery_cause(view: &DoctorView) -> Option<Layer> {
+        match view.discovered.get() {
+            Some(LayerState::Unavailable(unavailable)) => Some(unavailable.cause),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn discovery_layer_requires_config_and_registry() {
+        let cases = [
+            (
+                "config_broken",
+                Plant::Bytes(b"a = [\n".to_vec()),
+                Plant::Absent,
+                ViewDiscovery::Scan,
+                Some(Layer::Config),
+            ),
+            (
+                "registry_broken",
+                Plant::Absent,
+                Plant::Bytes(b"{".to_vec()),
+                ViewDiscovery::Scan,
+                Some(Layer::Registry),
+            ),
+            (
+                "both_fine",
+                Plant::Absent,
+                Plant::Absent,
+                ViewDiscovery::Scan,
+                None,
+            ),
+            (
+                "cached_mode",
+                Plant::Absent,
+                Plant::Absent,
+                ViewDiscovery::Cached,
+                None,
+            ),
+        ];
+        for (case, config, registry, discovery, cause) in cases {
+            let (_dir, paths) = home();
+            plant(&paths.config_file(), &config);
+            plant(&paths.registry_file(), &registry);
+            let view = DoctorView::load_at(paths.clone(), ViewOptions { discovery });
+            let world = view.world();
+            assert_eq!(
+                (world.is_some(), discovery_cause(&view)),
+                (cause.is_none(), cause),
+                "case {case}: got available {}, cause {:?}, expected cause {cause:?}",
+                world.is_some(),
+                discovery_cause(&view)
+            );
+            let failures = view.failures();
+            assert_eq!(
+                failures.len(),
+                usize::from(cause.is_some()),
+                "case {case}: only the broken file's failure: {failures:?}"
+            );
+            if let Some(world) = world {
+                assert!(world.resolved.targets.is_empty(), "case {case}");
+                assert_eq!(
+                    world.discovery.scanned,
+                    discovery == ViewDiscovery::Scan,
+                    "case {case}: {:?}",
+                    world.discovery
+                );
+                assert_eq!(
+                    world.github_token.source(),
+                    crate::sources::github_token::TokenSource::None,
+                    "case {case}"
+                );
+            }
+            assert!(
+                view.loaded_layers().contains(&Layer::Discovery),
+                "case {case}: {:?}",
+                view.loaded_layers()
+            );
+            assert!(
+                !paths.cache_dir().exists(),
+                "case {case}: loading the view wrote {}",
+                paths.cache_dir().display()
+            );
+        }
+    }
+
+    /// A registered retail-like client at `client_dir`, as discovery finds it.
+    fn client(id: &str, client_dir: &Path, key_text: Option<&str>) -> DiscoveredTarget {
+        let mut target = crate::engine::testing::target(client_dir);
+        target.id = id.to_owned();
+        target.key = key_text.map(key);
+        DiscoveredTarget {
+            target,
+            default_id: id.to_owned(),
+            qualifier: "test".to_owned(),
+            source: crate::discover::DiscoverySource::Scan,
+        }
+    }
+
+    /// A world holding `targets`, as the view's Discovery layer.
+    fn world_of(paths: &Paths, targets: Vec<DiscoveredTarget>) -> World {
+        let mut world = World::assemble(
+            paths.clone(),
+            LoadedConfig::default(),
+            Loaded {
+                value: Registry::default(),
+                version: Registry::CURRENT,
+                status: VersionStatus::Current,
+            },
+            DiscoveryMode::NoScan,
+            &mut |_| {},
+        )
+        .unwrap();
+        world.resolved.targets = targets;
+        world
+    }
+
+    fn records_of(states: Vec<(&str, bool)>) -> Records {
+        let by_key = states
+            .into_iter()
+            .map(|(k, readable)| {
+                let state = if readable {
+                    LayerState::Available(Loaded {
+                        value: TargetRecord::empty(key(k)),
+                        version: TargetRecord::CURRENT,
+                        status: VersionStatus::Current,
+                    })
+                } else {
+                    LayerState::Unavailable(Unavailable {
+                        layer: Layer::Records,
+                        cause: Layer::Records,
+                    })
+                };
+                (key(k), state)
+            })
+            .collect();
+        Records { by_key }
+    }
+
+    /// Why the inventory of the `index`th client is unavailable, when it is.
+    fn inventory_cause(view: &DoctorView, index: usize) -> Option<Layer> {
+        match view.discovered.get() {
+            Some(LayerState::Available(discovered)) => match discovered.inventories[index].get() {
+                Some(LayerState::Unavailable(unavailable)) => Some(unavailable.cause),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn inventory_layer_outcomes() {
+        struct Case {
+            name: &'static str,
+            /// `(id, key)` of each client; the first is the one asked about.
+            clients: Vec<(&'static str, Option<&'static str>)>,
+            /// `(key, readable)` of each record; `None` leaves Records unavailable.
+            records: Option<Vec<(&'static str, bool)>>,
+            addons_mode_000: bool,
+            /// `None`: available, listing `Foo`.
+            cause: Option<Layer>,
+        }
+        let cases = vec![
+            Case {
+                name: "available",
+                clients: vec![("retail", Some(K))],
+                records: Some(vec![(K, true)]),
+                addons_mode_000: false,
+                cause: None,
+            },
+            Case {
+                name: "registered_without_a_record_file",
+                clients: vec![("retail", Some(K))],
+                records: Some(Vec::new()),
+                addons_mode_000: false,
+                cause: None,
+            },
+            Case {
+                name: "own_record_unavailable",
+                clients: vec![("retail", Some(K))],
+                records: Some(vec![(K, false)]),
+                addons_mode_000: false,
+                cause: Some(Layer::Records),
+            },
+            Case {
+                name: "records_layer_unavailable",
+                clients: vec![("retail", Some(K))],
+                records: None,
+                addons_mode_000: false,
+                cause: Some(Layer::Records),
+            },
+            Case {
+                name: "unregistered_needs_no_record",
+                clients: vec![("retail", None)],
+                records: None,
+                addons_mode_000: false,
+                cause: None,
+            },
+            Case {
+                name: "keyed_sibling_record_unavailable",
+                clients: vec![("retail", Some(K)), ("retail@wine", Some(K2))],
+                records: Some(vec![(K, true), (K2, false)]),
+                addons_mode_000: false,
+                cause: Some(Layer::Records),
+            },
+            Case {
+                name: "unkeyed_sibling_contributes_nothing",
+                clients: vec![("retail", Some(K)), ("retail@wine", None)],
+                records: Some(vec![(K, true)]),
+                addons_mode_000: false,
+                cause: None,
+            },
+            Case {
+                name: "addons_mode_000",
+                clients: vec![("retail", Some(K))],
+                records: Some(vec![(K, true)]),
+                addons_mode_000: true,
+                cause: Some(Layer::Inventory),
+            },
+        ];
+        for case in cases {
+            let name = case.name;
+            if case.addons_mode_000 && is_root() {
+                continue;
+            }
+            let (_dir, paths) = home();
+            // The first client's AddOns holds Foo; every other client's AddOns is a
+            // symlink to it (a shared directory).
+            let first = paths.home().join("Games/wow/_retail_");
+            let addons = first.join("Interface/AddOns");
+            plant(
+                &addons.join("Foo/Foo.toc"),
+                &Plant::Bytes(b"## Interface: 120105\n".to_vec()),
+            );
+            let mut targets = Vec::new();
+            for (n, (id, k)) in case.clients.iter().enumerate() {
+                let dir = paths.home().join(format!("Games/wow{n}/_retail_"));
+                let client_dir = if n == 0 { first.clone() } else { dir };
+                if n > 0 {
+                    std::fs::create_dir_all(client_dir.join("Interface")).unwrap();
+                    std::os::unix::fs::symlink(&addons, client_dir.join("Interface/AddOns"))
+                        .unwrap();
+                }
+                targets.push(client(id, &client_dir, *k));
+            }
+            let asked = targets[0].clone();
+            let records = case
+                .records
+                .map(|states| LayerState::Available(records_of(states)))
+                .unwrap_or(LayerState::Unavailable(Unavailable {
+                    layer: Layer::Records,
+                    cause: Layer::Records,
+                }));
+            let view = DoctorView::preloaded(
+                paths.clone(),
+                Preloaded {
+                    records: Some(records),
+                    world: Some(LayerState::Available(world_of(&paths, targets))),
+                    ..Preloaded::default()
+                },
+            );
+            if case.addons_mode_000 {
+                std::fs::set_permissions(&addons, std::fs::Permissions::from_mode(0o000)).unwrap();
+            }
+            let inventory = view.inventory(&asked);
+            if case.addons_mode_000 {
+                std::fs::set_permissions(&addons, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            let names: Option<Vec<String>> =
+                inventory.map(|inv| inv.folders.iter().map(|f| f.name.clone()).collect());
+            match case.cause {
+                None => assert_eq!(
+                    names,
+                    Some(vec!["Foo".to_owned()]),
+                    "case {name}: got {names:?}, cause {:?}",
+                    inventory_cause(&view, 0)
+                ),
+                Some(cause) => assert_eq!(
+                    (names, inventory_cause(&view, 0)),
+                    (None, Some(cause)),
+                    "case {name}"
+                ),
+            }
+            assert!(
+                view.failures().is_empty(),
+                "case {name}: no failure of its own"
+            );
+            assert!(
+                view.loaded_layers().contains(&Layer::Inventory),
+                "case {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_inventory_is_built_once_and_only_for_its_client() {
+        let (_dir, paths) = home();
+        let client_dir = paths.home().join("Games/wow/_retail_");
+        let toc = client_dir.join("Interface/AddOns/Foo/Foo.toc");
+        plant(&toc, &Plant::Bytes(b"## Interface: 120105\n".to_vec()));
+        let retail = client("retail", &client_dir, Some(K));
+        let elsewhere = client("era", &paths.home().join("Games/era"), None);
+        let view = DoctorView::preloaded(
+            paths.clone(),
+            Preloaded {
+                records: Some(LayerState::Available(records_of(vec![(K, true)]))),
+                world: Some(LayerState::Available(world_of(
+                    &paths,
+                    vec![retail.clone()],
+                ))),
+                ..Preloaded::default()
+            },
+        );
+        assert!(
+            !view.loaded_layers().contains(&Layer::Inventory),
+            "nothing built before an ask"
+        );
+        assert!(
+            view.inventory(&elsewhere).is_none(),
+            "a client not in the world"
+        );
+        let first = view.inventory(&retail).unwrap();
+        assert_eq!(first.folders.len(), 1);
+        std::fs::remove_dir_all(toc.parent().unwrap()).unwrap();
+        let again = view.inventory(&retail).unwrap();
+        assert!(std::ptr::eq(first, again), "built once");
+        assert_eq!(again.folders.len(), 1, "the first build stands");
     }
 
     #[test]
