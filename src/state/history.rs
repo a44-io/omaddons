@@ -902,40 +902,97 @@ pub fn last(paths: &Paths, filter: &HistoryFilter) -> Result<Option<HistoryEntry
     Ok(read(paths, &filter)?.entries.pop())
 }
 
-/// What history records of one stored plan (M4-D25): the evidence `apply`'s
+/// Which plan a [`plan_evidence`] scan looks for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlanMatch<'a> {
+    /// Lines whose `plan` is exactly this id.
+    Exact(PlanId),
+    /// Lines whose `plan`, uppercased, starts with this (uppercased; 8 or more
+    /// characters, as an id prefix is).
+    Prefix(&'a str),
+}
+
+impl PlanMatch<'_> {
+    fn matches(&self, plan: &str) -> bool {
+        match self {
+            Self::Exact(id) => plan.parse::<PlanId>().is_ok_and(|p| p == *id),
+            Self::Prefix(prefix) => plan
+                .to_ascii_uppercase()
+                .starts_with(&prefix.to_ascii_uppercase()),
+        }
+    }
+}
+
+/// Why a [`plan_evidence`] scan stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanStop {
+    /// It reached the start of the file.
+    Start,
+    /// It read a line older than its horizon.
+    Horizon,
+    /// It examined `max_lines` lines and another remained.
+    Bound,
+}
+
+/// What history records of one stored plan (M4-D25, M4-D63): the evidence `apply`'s
 /// `already_applied` and `plans show` read.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanEvidence {
-    /// Every transaction line whose `plan` is the plan's id, oldest first.
+    /// Every transaction line whose `plan` matched, oldest first (commit order).
     pub lines: Vec<PlanLine>,
-    /// The scan reached the start of the file, or a line older than `since`, within its
-    /// bound, and skipped no line too long to read.
-    pub complete: bool,
-    /// Complete lines read (each counts toward the bound).
-    pub scanned: usize,
+    /// Lines whose `plan` matched but whose `tx`, `target`, `kind`, `result` or `at` did
+    /// not read: they may be the plan's commits, and are none of `lines`.
+    pub unattributed: usize,
+    /// Complete lines in the window that did not read as a history line at all, or were
+    /// too long to read: any of them may have been evidence.
+    pub unreadable: usize,
+    /// Lines examined, the one that stopped the scan included.
+    pub lines_read: usize,
+    pub stop: ScanStop,
+}
+
+impl PlanEvidence {
+    /// The scan covered its whole window: its bound did not cut it.
+    pub fn complete(&self) -> bool {
+        !matches!(self.stop, ScanStop::Bound)
+    }
+
+    fn empty() -> Self {
+        Self {
+            lines: Vec::new(),
+            unattributed: 0,
+            unreadable: 0,
+            lines_read: 0,
+            stop: ScanStop::Start,
+        }
+    }
 }
 
 /// One transaction a stored plan committed, as its history line records it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanLine {
+    pub plan: PlanId,
     pub tx: TxId,
-    /// `None` on a target-less line (a repair).
-    pub target: Option<TargetKey>,
+    pub target: TargetKey,
     pub kind: TxKind,
-    pub at: Timestamp,
     pub run: Option<RunId>,
+    pub result: TxResult,
+    pub at: Timestamp,
 }
 
-/// How much of `history.jsonl` [`plan_evidence`] reads at a time, from its end: a read
-/// buffer, neither a safety limit (`limits.rs`) nor a politeness constant
-/// (`politeness.rs`).
-const SCAN_BLOCK: usize = 64 * 1024;
+/// How much of `history.jsonl` [`plan_evidence`] reads at a time, from its end: a buffer
+/// size, not a limit (it changes no answer, only how many reads one scan makes), so
+/// neither a safety limit (`limits.rs`) nor a politeness constant (`politeness.rs`).
+const SCAN_BLOCK_BYTES: usize = 64 * 1024;
 
-/// Reads `history.jsonl` backwards in blocks for the lines of `plan`, stopping at the
-/// start of the file, at the first line older than `since` (a `backup` line never stops
-/// it), or after `max_lines` complete lines (M4-D63). It never loads the whole history,
-/// and holds at most one line of [`DISCOVERY_FILE_MAX_BYTES`]; a longer line is skipped,
-/// and makes the evidence incomplete.
+/// Reads `history.jsonl` backwards in blocks for the lines of `wanted`, stopping at the
+/// start of the file, at the first line older than `horizon` (a `backup` line never
+/// stops it, nor does a line with no readable `at`), or after `max_lines` lines
+/// (M4-D63). It never loads the whole history, writes nothing, and holds at most one
+/// block and one line of [`DISCOVERY_FILE_MAX_BYTES`]; a longer line is counted
+/// unreadable. A missing history is an empty one. `backup` and settings lines are never
+/// evidence, and a matching line it cannot attribute (a missing target included) is
+/// counted, never unwrapped.
 ///
 /// A line's `at` orders it: a transaction's and a settings change's are taken under the
 /// global lock as they are appended. A `backup` line's is its capture time, and an
@@ -949,8 +1006,8 @@ const SCAN_BLOCK: usize = 64 * 1024;
 /// the token's generations as well.
 pub fn plan_evidence(
     paths: &Paths,
-    plan: &PlanId,
-    since: Timestamp,
+    wanted: &PlanMatch<'_>,
+    horizon: Timestamp,
     max_lines: usize,
 ) -> Result<PlanEvidence> {
     let path = paths.history_file();
@@ -960,32 +1017,40 @@ pub fn plan_evidence(
         Ok(file) => file,
         // ubs:ignore — an io::ErrorKind, not a secret
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(PlanEvidence {
-                complete: true,
-                ..PlanEvidence::default()
-            });
+            return Ok(PlanEvidence::empty());
         }
         Err(err) => return Err(fail(err)),
     };
-    scan_with_block(&mut file, SCAN_BLOCK, plan, since, max_lines).map_err(fail)
+    scan_reverse(&mut file, SCAN_BLOCK_BYTES, wanted, horizon, max_lines)
+        .map(|(evidence, _)| evidence)
+        .map_err(fail)
+}
+
+/// What one scan cost, for the tests: the bytes it read, and the most of one line it
+/// held at once.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))]
+struct ScanStats {
+    bytes_read: u64,
+    max_carry: usize,
 }
 
 /// [`plan_evidence`] over `history`, read `block` bytes at a time from its end.
-fn scan_with_block<R: Read + Seek>(
+fn scan_reverse<R: Read + Seek>(
     history: &mut R,
     block: usize,
-    plan: &PlanId,
-    since: Timestamp,
+    wanted: &PlanMatch<'_>,
+    horizon: Timestamp,
     max_lines: usize,
-) -> std::io::Result<PlanEvidence> {
+) -> std::io::Result<(PlanEvidence, ScanStats)> {
     let max_line = usize::try_from(DISCOVERY_FILE_MAX_BYTES).unwrap_or(usize::MAX);
     let mut scan = PlanScan {
-        plan: *plan,
-        since,
+        wanted,
+        horizon,
         max_lines,
-        evidence: PlanEvidence::default(),
-        skipped_long: false,
+        evidence: PlanEvidence::empty(),
     };
+    let mut stats = ScanStats::default();
     let mut buf = vec![0u8; block.max(1)];
     let mut pos = history.seek(SeekFrom::End(0))?;
     // The line being assembled, its bytes reversed, from where the reads have reached to
@@ -994,30 +1059,36 @@ fn scan_with_block<R: Read + Seek>(
     // It is the file's last line, which no newline ends: a torn tail (or a line being
     // written), or nothing when the file ends with a newline. Never read.
     let mut tail = true;
+    let held = |line: &Option<Vec<u8>>, stats: &mut ScanStats| {
+        stats.max_carry = stats.max_carry.max(line.as_ref().map_or(0, Vec::len));
+    };
     while pos > 0 {
         let len = usize::try_from(pos).map_or(buf.len(), |pos| pos.min(buf.len()));
         pos -= u64::try_from(len).unwrap_or(pos);
         history.seek(SeekFrom::Start(pos))?;
         let chunk = &mut buf[..len];
         history.read_exact(chunk)?;
+        stats.bytes_read += u64::try_from(len).unwrap_or(u64::MAX);
         let mut end = len;
         while let Some(newline) = chunk[..end].iter().rposition(|byte| *byte == b'\n') {
             gather(&mut line, &chunk[newline + 1..end], max_line);
+            held(&line, &mut stats);
             let complete = line.replace(Vec::new());
             if !std::mem::replace(&mut tail, false)
                 && let Some(stop) = scan.line(complete)
             {
-                return Ok(scan.finish(stop));
+                return Ok((scan.finish(stop), stats));
             }
             end = newline;
         }
         gather(&mut line, &chunk[..end], max_line);
+        held(&line, &mut stats);
     }
     // The file's first line, which a newline ends unless it is also its last.
     if !tail && let Some(stop) = scan.line(line) {
-        return Ok(scan.finish(stop));
+        return Ok((scan.finish(stop), stats));
     }
-    Ok(scan.finish(Stop::Start))
+    Ok((scan.finish(ScanStop::Start), stats))
 }
 
 /// Adds `part`, the bytes just before what `line` holds, to the line assembled backwards
@@ -1029,96 +1100,136 @@ fn gather(line: &mut Option<Vec<u8>>, part: &[u8], max: usize) {
     }
 }
 
-/// Why a [`plan_evidence`] scan stopped.
-enum Stop {
-    /// It reached the start of the file.
-    Start,
-    /// It read a line older than `since`.
-    Older,
-    /// It read `max_lines` lines and there was another.
-    Bound,
-}
-
 /// A [`plan_evidence`] scan's state.
-struct PlanScan {
-    plan: PlanId,
-    since: Timestamp,
+struct PlanScan<'w> {
+    wanted: &'w PlanMatch<'w>,
+    horizon: Timestamp,
     max_lines: usize,
     evidence: PlanEvidence,
-    /// A line too long to read was skipped: it may have been evidence.
-    skipped_long: bool,
 }
 
-impl PlanScan {
+impl PlanScan<'_> {
     /// Reads one complete line (`None`: too long to read; else its bytes, reversed), and
     /// says whether the scan stops before or at it.
-    fn line(&mut self, reversed: Option<Vec<u8>>) -> Option<Stop> {
+    fn line(&mut self, reversed: Option<Vec<u8>>) -> Option<ScanStop> {
         if reversed
             .as_ref()
             .is_some_and(|bytes| bytes.iter().all(u8::is_ascii_whitespace))
         {
             return None;
         }
-        if self.evidence.scanned >= self.max_lines {
-            return Some(Stop::Bound);
+        if self.evidence.lines_read >= self.max_lines {
+            return Some(ScanStop::Bound);
         }
-        self.evidence.scanned += 1;
+        self.evidence.lines_read += 1;
         let Some(mut bytes) = reversed else {
-            self.skipped_long = true;
+            self.evidence.unreadable += 1;
             return None;
         };
         bytes.reverse();
-        // A line that does not read is never evidence, and never stops the scan.
-        let fields = plan_fields(&String::from_utf8_lossy(&bytes))?;
-        if fields.kind != TxKind::Backup && fields.at < self.since {
-            return Some(Stop::Older);
+        // A line that does not read is never evidence, and never stops the scan; a torn
+        // line a later write closed off is no lost transaction (recovery appends the
+        // whole line again), so it is not counted unreadable.
+        let fields = match evidence_fields(&String::from_utf8_lossy(&bytes)) {
+            Ok(fields) => fields,
+            Err(Unread::Torn) => return None,
+            Err(Unread::Garbage) => {
+                self.evidence.unreadable += 1;
+                return None;
+            }
+        };
+        let kind = fields
+            .kind
+            .clone()
+            .and_then(|kind| serde_json::from_value::<TxKind>(kind).ok());
+        // A backup line's `at` is its capture time, which can be older than lines before
+        // it: it never stops the scan.
+        let backup = kind == Some(TxKind::Backup);
+        if !backup && fields.at.is_some_and(|at| at < self.horizon) {
+            return Some(ScanStop::Horizon);
         }
-        if fields.plan == Some(self.plan)
-            && fields.kind != TxKind::Backup
-            && !fields.kind.is_setting()
-        {
-            self.evidence.lines.push(PlanLine {
-                tx: fields.tx,
-                target: fields.target,
-                kind: fields.kind,
-                at: fields.at,
-                run: fields.run,
-            });
+        let plan = fields.plan.as_deref().filter(|p| self.wanted.matches(p))?;
+        if backup || kind.is_some_and(|kind| kind.is_setting()) {
+            return None;
+        }
+        match attributed(&fields, plan, kind) {
+            Some(line) => self.evidence.lines.push(line),
+            None => self.evidence.unattributed += 1,
         }
         None
     }
 
-    fn finish(mut self, stop: Stop) -> PlanEvidence {
-        self.evidence.complete = match stop {
-            Stop::Start | Stop::Older => !self.skipped_long,
-            Stop::Bound => false,
-        };
+    fn finish(mut self, stop: ScanStop) -> PlanEvidence {
+        self.evidence.stop = stop;
         self.evidence.lines.reverse();
         self.evidence
     }
 }
 
-/// The fields of a line [`plan_evidence`] reads; the rest (a transaction's ops) is
-/// skipped without being built. `target` is `null` on a repair and a settings line.
+/// The fields of a line [`plan_evidence`] reads, each optional so that a newer build's
+/// line, a settings line (`target: null`) or a target-less repair line all read; the rest
+/// (a transaction's ops) is skipped without being built.
 #[derive(Deserialize)]
-struct PlanFields {
-    tx: TxId,
-    kind: TxKind,
-    at: Timestamp,
+struct EvidenceFields {
     #[serde(default)]
-    target: Option<TargetKey>,
+    at: Option<Timestamp>,
     #[serde(default)]
-    run: Option<RunId>,
+    tx: Option<String>,
     #[serde(default)]
-    plan: Option<PlanId>,
+    kind: Option<serde_json::Value>,
+    #[serde(default)]
+    target: Option<String>,
+    #[serde(default)]
+    run: Option<String>,
+    #[serde(default)]
+    plan: Option<String>,
+    #[serde(default)]
+    result: Option<String>,
 }
 
-/// One complete line's [`PlanFields`], salvaged like [`read_line`] does; `None` for a
-/// line that does not read.
-fn plan_fields(line: &str) -> Option<PlanFields> {
-    serde_json::from_str::<PlanFields>(line).ok().or_else(|| {
-        let at = line.rfind(LINE_START).filter(|at| *at > 0)?;
-        serde_json::from_str::<PlanFields>(&line[at..]).ok()
+/// Why a complete line did not read.
+enum Unread {
+    /// It ends early: a torn line a later write closed off.
+    Torn,
+    Garbage,
+}
+
+/// One complete line's [`EvidenceFields`], salvaged like [`read_line`] does.
+fn evidence_fields(line: &str) -> std::result::Result<EvidenceFields, Unread> {
+    let first = match serde_json::from_str::<EvidenceFields>(line) {
+        Ok(fields) => return Ok(fields),
+        Err(err) => err,
+    };
+    if let Some(at) = line.rfind(LINE_START).filter(|at| *at > 0)
+        && let Ok(fields) = serde_json::from_str::<EvidenceFields>(&line[at..])
+    {
+        return Ok(fields);
+    }
+    if first.classify() == serde_json::error::Category::Eof {
+        Err(Unread::Torn)
+    } else {
+        Err(Unread::Garbage)
+    }
+}
+
+/// The matching line as a [`PlanLine`]: `None` when any field it needs does not read (a
+/// missing or `null` target included).
+fn attributed(fields: &EvidenceFields, plan: &str, kind: Option<TxKind>) -> Option<PlanLine> {
+    let run = match fields.run.as_deref() {
+        None => None,
+        Some(run) => Some(run.parse().ok()?),
+    };
+    let result =
+        serde_json::from_value::<TxResult>(serde_json::Value::String(fields.result.clone()?))
+            .ok()?;
+    Some(PlanLine {
+        plan: plan.parse().ok()?,
+        tx: fields.tx.as_deref()?.parse().ok()?,
+        target: fields.target.as_deref()?.parse().ok()?,
+        kind: kind?,
+        run,
+        result,
+        at: fields.at?,
     })
 }
 
@@ -2467,13 +2578,35 @@ mod tests {
         name: &'static str,
         /// The history's text; `None`: no file at all.
         text: Option<String>,
-        since: &'static str,
+        horizon: &'static str,
         max_lines: usize,
-        /// The evidence's transactions, oldest first; `complete`; `scanned`.
-        want: (Vec<TxId>, bool, usize),
+        want: Want,
+    }
+
+    /// The evidence's transactions (oldest first), why it stopped, the lines it read, and
+    /// how many were unreadable and unattributed.
+    type Want = (Vec<TxId>, ScanStop, usize, usize, usize);
+
+    /// `line` with a padding key that makes it exactly `len` bytes, its newline aside.
+    fn padded(line: &str, len: usize) -> String {
+        let mut value: serde_json::Value = serde_json::from_str(line).unwrap();
+        value["pad"] = serde_json::json!("");
+        let bare = serde_json::to_string(&value).unwrap().len();
+        value["pad"] = serde_json::json!("x".repeat(len - bare));
+        let text = serde_json::to_string(&value).unwrap();
+        assert_eq!(text.len(), len);
+        format!("{text}\n")
+    }
+
+    /// `line` without the key `field`: its plan still matches.
+    fn without(field: &str, line: &str) -> String {
+        let mut value: serde_json::Value = serde_json::from_str(line).unwrap();
+        value.as_object_mut().unwrap().remove(field);
+        format!("{}\n", serde_json::to_string(&value).unwrap())
     }
 
     fn evidence_cases() -> Vec<EvidenceCase> {
+        use ScanStop::{Bound, Horizon, Start};
         let max_line = usize::try_from(DISCOVERY_FILE_MAX_BYTES).unwrap();
         let mine = |n, at| line_of(&applied(n, TxKind::Install, at, KEY_A, Some(PLAN)));
         let other = |n, at| line_of(&applied(n, TxKind::Update, at, KEY_A, Some(OTHER_PLAN)));
@@ -2481,7 +2614,7 @@ mod tests {
         let case = |name, text: Vec<String>, max_lines, want| EvidenceCase {
             name,
             text: Some(text.concat()),
-            since: SINCE,
+            horizon: SINCE,
             max_lines,
             want,
         };
@@ -2493,26 +2626,28 @@ mod tests {
             &json(&applied(1, TxKind::Install, NEW, KEY_A, None))[..40],
             mine(2, NEW)
         );
+        // A line a crash cut short, closed off by the next write's newline.
+        let closed_off = format!("{}\n", &mine(2, NEW)[..40]);
         vec![
             EvidenceCase {
                 name: "missing_file",
                 text: None,
-                since: SINCE,
+                horizon: SINCE,
                 max_lines: 100,
-                want: (vec![], true, 0),
+                want: (vec![], Start, 0, 0, 0),
             },
-            case("empty_file", vec![], 100, (vec![], true, 0)),
+            case("empty_file", vec![], 100, (vec![], Start, 0, 0, 0)),
             case(
                 "no_matching_line",
                 vec![other(1, NEW), plain(2, NEW), plain(3, NEW)],
                 100,
-                (vec![], true, 3),
+                (vec![], Start, 3, 0, 0),
             ),
             case(
                 "one_matching_line",
                 vec![plain(1, NEW), mine(2, NEW), plain(3, NEW)],
                 100,
-                (vec![tx_of(2)], true, 3),
+                (vec![tx_of(2)], Start, 3, 0, 0),
             ),
             case(
                 "matching_lines_on_two_targets_oldest_first",
@@ -2521,19 +2656,37 @@ mod tests {
                     line_of(&applied(2, TxKind::Update, NEW, KEY_B, Some(PLAN))),
                 ],
                 100,
-                (vec![tx_of(1), tx_of(2)], true, 2),
+                (vec![tx_of(1), tx_of(2)], Start, 2, 0, 0),
             ),
             case(
                 "other_plans_ignored",
                 vec![other(1, NEW), mine(2, NEW), other(3, NEW)],
                 100,
-                (vec![tx_of(2)], true, 3),
+                (vec![tx_of(2)], Start, 3, 0, 0),
             ),
             case(
                 "stops_at_an_older_commit_line",
                 vec![mine(1, OLD), plain(2, OLD), mine(3, NEW)],
                 100,
-                (vec![tx_of(3)], true, 2),
+                (vec![tx_of(3)], Horizon, 2, 0, 0),
+            ),
+            case(
+                "a_line_at_the_horizon_does_not_stop_it",
+                vec![mine(1, SINCE), plain(2, NEW)],
+                100,
+                (vec![tx_of(1)], Start, 2, 0, 0),
+            ),
+            case(
+                "a_line_without_at_never_stops_it_and_is_unattributed",
+                vec![mine(1, NEW), without("at", &mine(2, OLD)), plain(3, NEW)],
+                100,
+                (vec![tx_of(1)], Start, 3, 0, 1),
+            ),
+            case(
+                "a_matching_line_without_a_tx_is_unattributed",
+                vec![without("tx", &mine(1, NEW)), mine(2, NEW)],
+                100,
+                (vec![tx_of(2)], Start, 2, 0, 1),
             ),
             case(
                 "an_older_backup_line_does_not_stop_it",
@@ -2543,123 +2696,126 @@ mod tests {
                     plain(3, NEW),
                 ],
                 100,
-                (vec![tx_of(1)], true, 3),
+                (vec![tx_of(1)], Start, 3, 0, 0),
             ),
             case(
                 "an_older_settings_line_stops_it",
                 vec![mine(1, NEW), setting_at(2, OLD, None), plain(3, NEW)],
                 100,
-                (vec![], true, 2),
+                (vec![], Horizon, 2, 0, 0),
             ),
             case(
                 "bound_reached_is_incomplete",
                 (1..=5).map(|n| plain(n, NEW)).collect(),
                 3,
-                (vec![], false, 3),
+                (vec![], Bound, 3, 0, 0),
             ),
             case(
-                "start_of_file_is_complete",
+                "exactly_max_lines_reads_to_the_start",
                 vec![mine(1, NEW), plain(2, NEW), plain(3, NEW)],
                 3,
-                (vec![tx_of(1)], true, 3),
+                (vec![tx_of(1)], Start, 3, 0, 0),
             ),
             case(
                 "a_zero_bound_reads_nothing",
                 vec![mine(1, NEW)],
                 0,
-                (vec![], false, 0),
+                (vec![], Bound, 0, 0, 0),
             ),
             case(
                 "torn_tail_skipped",
                 vec![plain(1, NEW), mine(2, NEW).trim_end().to_owned()],
                 100,
-                (vec![], true, 1),
+                (vec![], Start, 1, 0, 0),
             ),
             case(
                 "a_file_without_a_newline_is_all_tail",
                 vec![mine(1, NEW).trim_end().to_owned()],
                 100,
-                (vec![], true, 0),
+                (vec![], Start, 0, 0, 0),
             ),
             case(
                 "merged_line_salvaged",
                 vec![merged],
                 100,
-                (vec![tx_of(2)], true, 1),
+                (vec![tx_of(2)], Start, 1, 0, 0),
+            ),
+            case(
+                "a_closed_off_torn_line_is_read_but_not_unreadable",
+                vec![mine(1, NEW), closed_off, mine(3, NEW)],
+                100,
+                (vec![tx_of(1), tx_of(3)], Start, 3, 0, 0),
             ),
             case(
                 "unreadable_line_skipped_and_counted",
                 vec![mine(1, NEW), "{not json}\n".into(), mine(3, NEW)],
                 100,
-                (vec![tx_of(1), tx_of(3)], true, 3),
+                (vec![tx_of(1), tx_of(3)], Start, 3, 1, 0),
             ),
             case(
                 "empty_lines_are_not_counted",
                 vec![mine(1, NEW), "\n".into(), "   \n".into(), plain(2, NEW)],
                 100,
-                (vec![tx_of(1)], true, 2),
+                (vec![tx_of(1)], Start, 2, 0, 0),
             ),
             case(
-                "oversized_line_makes_it_incomplete",
+                "an_oversized_line_is_unreadable",
                 vec![
                     mine(1, NEW),
                     format!("{}\n", "x".repeat(max_line + 1)),
                     mine(3, NEW),
                 ],
                 100,
-                (vec![tx_of(1), tx_of(3)], false, 3),
+                (vec![tx_of(1), tx_of(3)], Start, 3, 1, 0),
             ),
             case(
-                "a_line_at_the_size_bound_reads",
-                vec![
-                    mine(1, NEW),
-                    format!("{}\n", "x".repeat(max_line)),
-                    mine(3, NEW),
-                ],
+                "a_line_at_the_size_bound_is_held_and_read",
+                vec![mine(1, NEW), padded(&mine(2, NEW), max_line), mine(3, NEW)],
                 100,
-                (vec![tx_of(1), tx_of(3)], true, 3),
+                (vec![tx_of(1), tx_of(2), tx_of(3)], Start, 3, 0, 0),
             ),
             case(
                 "an_oversized_torn_tail_is_only_a_tail",
                 vec![mine(1, NEW), "x".repeat(max_line + 1)],
                 100,
-                (vec![tx_of(1)], true, 1),
+                (vec![tx_of(1)], Start, 1, 0, 0),
             ),
             case(
-                "a_target_less_line_reads",
+                "a_target_less_line_is_unattributed",
                 vec![line_of(&repair_line)],
                 100,
-                (vec![tx_of(30)], true, 1),
+                (vec![], Start, 1, 0, 1),
             ),
             case(
                 "backup_lines_are_never_evidence",
                 vec![line_of(&backup_at(1, NEW, Some(PLAN)))],
                 100,
-                (vec![], true, 1),
+                (vec![], Start, 1, 0, 0),
             ),
             case(
                 "settings_lines_are_never_evidence",
                 vec![setting_at(1, NEW, Some(PLAN))],
                 100,
-                (vec![], true, 1),
+                (vec![], Start, 1, 0, 0),
             ),
         ]
     }
 
     #[test]
     fn plan_evidence_cases() {
-        let plan = plan_id(PLAN);
+        let wanted = PlanMatch::Exact(plan_id(PLAN));
+        let max_line = usize::try_from(DISCOVERY_FILE_MAX_BYTES).unwrap();
         for case in evidence_cases() {
             let f = fixture();
             let path = f.paths.history_file();
             if let Some(text) = &case.text {
                 std::fs::write(&path, text).unwrap();
             }
-            let since: Timestamp = case.since.parse().unwrap();
-            let got = plan_evidence(&f.paths, &plan, since, case.max_lines).unwrap();
+            let horizon: Timestamp = case.horizon.parse().unwrap();
+            let got = plan_evidence(&f.paths, &wanted, horizon, case.max_lines).unwrap();
             let summary = |e: &PlanEvidence| {
                 let txs: Vec<TxId> = e.lines.iter().map(|l| l.tx).collect();
-                (txs, e.complete, e.scanned)
+                (txs, e.stop, e.lines_read, e.unreadable, e.unattributed)
             };
             let text = case
                 .text
@@ -2668,24 +2824,81 @@ mod tests {
             assert_eq!(
                 summary(&got),
                 case.want,
-                "{}: since {}, max_lines {}, history:\n{text}got {got:?}",
+                "{}: horizon {}, max_lines {}, history:\n{text}got {got:?}",
                 case.name,
-                case.since,
+                case.horizon,
                 case.max_lines
             );
-            // Every block size reads the same: 64 bytes split every line across reads.
-            if case.text.is_some() {
-                for block in [64, 1000, SCAN_BLOCK] {
-                    let mut file = std::fs::File::open(&path).unwrap();
-                    let small =
-                        scan_with_block(&mut file, block, &plan, since, case.max_lines).unwrap();
+            assert_eq!(got.complete(), got.stop != ScanStop::Bound, "{}", case.name);
+            // Every block size gives the same answer (a 1-byte block splits every line
+            // across reads), holding at most one line of the cap.
+            if let Some(text) = &case.text {
+                for block in [1, 2, 7, 64, 4096, 65_536] {
+                    let mut file = std::io::Cursor::new(text.as_bytes());
+                    let (small, stats) =
+                        scan_reverse(&mut file, block, &wanted, horizon, case.max_lines).unwrap();
                     assert_eq!(
                         small, got,
                         "{}: {block}-byte blocks differ from one large read; history:\n{text}",
                         case.name
                     );
+                    assert!(
+                        stats.max_carry <= max_line,
+                        "{}: {block}-byte blocks held {} bytes of one line",
+                        case.name,
+                        stats.max_carry
+                    );
                 }
             }
+        }
+    }
+
+    /// A prefix of 8 or more characters, in any case, matches the plans that start so.
+    #[test]
+    fn plan_evidence_matches_a_prefix_in_any_case() {
+        let f = fixture();
+        let mine = |n| line_of(&applied(n, TxKind::Install, NEW, KEY_A, Some(PLAN)));
+        let other = line_of(&applied(2, TxKind::Update, NEW, KEY_A, Some(OTHER_PLAN)));
+        std::fs::write(f.paths.history_file(), [mine(1), other, mine(3)].concat()).unwrap();
+        let horizon: Timestamp = SINCE.parse().unwrap();
+        let txs = |wanted: PlanMatch<'_>| -> Vec<TxId> {
+            plan_evidence(&f.paths, &wanted, horizon, 100)
+                .unwrap()
+                .lines
+                .iter()
+                .map(|l| l.tx)
+                .collect()
+        };
+        let lower = PLAN.to_ascii_lowercase();
+        for (case, wanted, want) in [
+            (
+                "exact",
+                PlanMatch::Exact(plan_id(PLAN)),
+                vec![tx_of(1), tx_of(3)],
+            ),
+            (
+                "full id as a prefix",
+                PlanMatch::Prefix(PLAN),
+                vec![tx_of(1), tx_of(3)],
+            ),
+            // `PLAN` and `OTHER_PLAN` share their first 24 characters.
+            (
+                "8 characters",
+                PlanMatch::Prefix(&PLAN[..8]),
+                vec![tx_of(1), tx_of(2), tx_of(3)],
+            ),
+            (
+                "lowercase",
+                PlanMatch::Prefix(&lower),
+                vec![tx_of(1), tx_of(3)],
+            ),
+            (
+                "another plan",
+                PlanMatch::Prefix(OTHER_PLAN),
+                vec![tx_of(2)],
+            ),
+        ] {
+            assert_eq!(txs(wanted), want, "{case}");
         }
     }
 
@@ -2701,26 +2914,23 @@ mod tests {
             [line_of(&on_b), line_of(&target_less)].concat(),
         )
         .unwrap();
-        let got = plan_evidence(&f.paths, &plan_id(PLAN), SINCE.parse().unwrap(), 10).unwrap();
+        let wanted = PlanMatch::Exact(plan_id(PLAN));
+        let got = plan_evidence(&f.paths, &wanted, SINCE.parse().unwrap(), 10).unwrap();
+        // The target-less line matches but names no client to attribute it to.
         assert_eq!(
-            got.lines,
-            [
-                PlanLine {
+            (got.lines, got.unattributed),
+            (
+                vec![PlanLine {
+                    plan: plan_id(PLAN),
                     tx: on_b.tx,
-                    target: Some(key(KEY_B)),
+                    target: key(KEY_B),
                     kind: TxKind::Update,
-                    at: NEW.parse().unwrap(),
                     run: on_b.run,
-                },
-                PlanLine {
-                    tx: target_less.tx,
-                    target: None,
-                    kind: TxKind::Repair,
-                    at: target_less.at,
-                    run: target_less.run,
-                },
-            ],
-            "{got:?}"
+                    result: TxResult::Committed,
+                    at: NEW.parse().unwrap(),
+                }],
+                1
+            ),
         );
     }
 
@@ -2754,23 +2964,23 @@ mod tests {
             inner: std::fs::File::open(f.paths.history_file()).unwrap(),
             read: 0,
         };
-        let since: Timestamp = "2000-01-01T00:00:00Z".parse().unwrap();
-        let got = scan_with_block(&mut file, SCAN_BLOCK, &plan_id(PLAN), since, 100).unwrap();
+        let horizon: Timestamp = "2000-01-01T00:00:00Z".parse().unwrap();
+        let wanted = PlanMatch::Exact(plan_id(PLAN));
+        let (got, stats) =
+            scan_reverse(&mut file, SCAN_BLOCK_BYTES, &wanted, horizon, 100).unwrap();
         assert_eq!(
-            (got.lines.len(), got.complete, got.scanned),
-            (0, false, 100),
+            (got.lines.len(), got.stop, got.complete(), got.lines_read),
+            (0, ScanStop::Bound, false, 100),
             "{got:?}"
         );
         let size = text.len() as u64;
         assert!(
-            file.read <= 2 * SCAN_BLOCK as u64 && file.read * 20 < size,
+            file.read <= 2 * SCAN_BLOCK_BYTES as u64 && file.read * 20 < size,
             "read {} bytes of a {size}-byte history for 100 lines",
             file.read
         );
-        assert_eq!(
-            plan_evidence(&f.paths, &plan_id(PLAN), since, 100).unwrap(),
-            got
-        );
+        assert_eq!(stats.bytes_read, file.read, "the scan counts what it reads");
+        assert_eq!(plan_evidence(&f.paths, &wanted, horizon, 100).unwrap(), got);
     }
 
     #[test]
@@ -2788,7 +2998,8 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
-        let got = plan_evidence(&f.paths, &plan_id(PLAN), SINCE.parse().unwrap(), 10);
+        let wanted = PlanMatch::Exact(plan_id(PLAN));
+        let got = plan_evidence(&f.paths, &wanted, SINCE.parse().unwrap(), 10);
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         let err = got.unwrap_err();
         assert_eq!(err.code, ErrorCode::Io, "{err:?}");

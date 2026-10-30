@@ -265,6 +265,37 @@ pub enum Found {
     Many(Vec<PlanId>),
 }
 
+/// Where a plan's evidence scan stops (M4-D63): no history line older than this can be
+/// one of its commits. The earliest of the plan's `created_at` (when its file read), the
+/// creation time its id (or id prefix) encodes, and, only when the file did not read,
+/// `now - PLAN_TTL`. The id's time can only move the horizon earlier, so the scan reads
+/// at least what the plan's own rule reads; it also keeps the stop right with a plan
+/// older than a day whose file is gone, and in tests whose clock is frozen.
+pub fn evidence_horizon(created_at: Option<Timestamp>, given: &str, now: Timestamp) -> Timestamp {
+    let a_day_ago = SignedDuration::try_from(PLAN_TTL)
+        .ok()
+        .and_then(|ttl| now.checked_sub(ttl).ok())
+        .unwrap_or(Timestamp::MIN);
+    [
+        created_at,
+        encoded_time(given),
+        created_at.is_none().then_some(a_day_ago),
+    ]
+    .into_iter()
+    .flatten()
+    .min()
+    .unwrap_or(a_day_ago)
+}
+
+/// The creation time a ULID's first 10 characters encode, for a full id or a prefix (the
+/// rest read as `0`, the earliest it could be); `None` for text that is not Crockford
+/// base32.
+fn encoded_time(given: &str) -> Option<Timestamp> {
+    let head: String = given.to_ascii_uppercase().chars().take(10).collect();
+    let ulid = ulid::Ulid::from_string(&format!("{head:0<26}")).ok()?;
+    Timestamp::from_millisecond(i64::try_from(ulid.timestamp_ms()).ok()?).ok()
+}
+
 /// The stored plan `given` names (`apply <plan_id>`): a full id, read directly with no
 /// listing, or a prefix of 8 to 25 characters, matched against the bounded listing's
 /// names (no plan is read). Case is ignored. A symlink is never a plan.
@@ -781,6 +812,60 @@ mod tests {
 
     use crate::app::approval::ApprovalScope;
     use crate::app::intent::RemoveIntent;
+
+    /// The earliest of the plan's creation, the time its id (or prefix) encodes and,
+    /// without a readable plan, a day before now (M4-D63).
+    #[test]
+    fn the_evidence_horizon_is_the_earliest_bound() {
+        let at = |text: &str| text.parse::<Timestamp>().unwrap();
+        let id_at = |text: &str| {
+            let ms = u64::try_from(at(text).as_millisecond()).unwrap();
+            ulid::Ulid::from_parts(ms, 7).to_string()
+        };
+        let now = at("2026-10-29T12:00:00Z");
+        let created = at("2026-10-28T12:00:00Z");
+        let (early, late) = (id_at("2026-10-28T11:00:00Z"), id_at("2026-10-28T13:00:00Z"));
+        let older = id_at("2026-10-20T00:00:00Z");
+        for (case, created_at, given, want) in [
+            ("the plan's creation", Some(created), late.as_str(), created),
+            (
+                "an id older than its creation",
+                Some(created),
+                early.as_str(),
+                at("2026-10-28T11:00:00Z"),
+            ),
+            (
+                "no file: a day before now",
+                None,
+                late.as_str(),
+                at("2026-10-28T12:00:00Z"),
+            ),
+            (
+                "no file, an older id",
+                None,
+                older.as_str(),
+                at("2026-10-20T00:00:00Z"),
+            ),
+            ("not an id", None, "not-a-plan", at("2026-10-28T12:00:00Z")),
+            ("not an id, a file", Some(created), "not-a-plan", created),
+        ] {
+            assert_eq!(
+                evidence_horizon(created_at, given, now),
+                want,
+                "{case}: created {created_at:?}, given {given}"
+            );
+        }
+        // An 8-character prefix encodes the earliest time it could be (the rest read as
+        // 0: at most 1,023 ms before the full id's), in any case.
+        let full = at("2026-10-28T11:00:00Z");
+        for prefix in [early[..8].to_owned(), early[..8].to_ascii_lowercase()] {
+            let got = evidence_horizon(None, &prefix, now);
+            assert!(
+                got <= full && full.duration_since(got) < SignedDuration::from_millis(1_024),
+                "{prefix}: {got}"
+            );
+        }
+    }
 
     struct Fixture {
         _dir: tempfile::TempDir,

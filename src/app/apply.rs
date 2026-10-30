@@ -40,7 +40,7 @@ use crate::fsx::{HolderInfo, Lease, LeaseError, LeaseGuard, ScopeTable};
 use crate::limits::{PLAN_EVIDENCE_LINES_MAX, PLAN_LEASE_TIMEOUT};
 use crate::model::{PlanId, TargetKey, TxId};
 use crate::output::{Outcome, Style};
-use crate::state::history::{self, PlanEvidence};
+use crate::state::history::{self, PlanEvidence, PlanMatch};
 use crate::state::paths::Paths;
 use crate::state::plans::{self, Found, StoredPlan};
 
@@ -872,21 +872,33 @@ fn reload(path: &Path, id: &PlanId) -> Result<StoredPlan> {
     }
 }
 
-/// [`check_lifecycle`] with what it reads: the history scan, the clock, this build and
-/// the plan's local inputs. An incomplete scan that found nothing is a `-v` note, not a
-/// refusal: the token's generations still refuse a second application.
+/// [`check_lifecycle`] with what it reads: the history scan (the one `plans show` reads,
+/// so the two never disagree), the clock, this build and the plan's local inputs. A scan
+/// that found nothing but was cut, or met lines it could not read or attribute, is a `-v`
+/// note, not a refusal: the token's generations still refuse a second application.
 fn check_lifecycle_now(paths: &Paths, plan: &StoredPlan, notes: &mut Vec<String>) -> Result<()> {
+    let id = plan.plan_id.to_string();
+    let horizon = plans::evidence_horizon(Some(plan.created_at), &id, crate::clock::now());
     let evidence = history::plan_evidence(
         paths,
-        &plan.plan_id,
-        plan.created_at,
+        &PlanMatch::Exact(plan.plan_id),
+        horizon,
         PLAN_EVIDENCE_LINES_MAX,
     )?;
-    if !evidence.complete && evidence.lines.is_empty() {
-        notes.push(format!(
-            "the history scan for plan {} stopped after {} lines; the token's generations still refuse a second application",
-            plan.plan_id, evidence.scanned
-        ));
+    if evidence.lines.is_empty() {
+        let still = "the token's generations still refuse a second application";
+        if !evidence.complete() {
+            notes.push(format!(
+                "the history scan for plan {id} stopped after {} lines; {still}",
+                evidence.lines_read
+            ));
+        }
+        if evidence.unreadable + evidence.unattributed > 0 {
+            notes.push(format!(
+                "the history scan for plan {id} met {} lines it could not read and {} it could not attribute; {still}",
+                evidence.unreadable, evidence.unattributed
+            ));
+        }
     }
     let missing = plan.intent.inputs().into_iter().find(|input| {
         std::fs::metadata(input.as_path()).is_err_and(|err| {
@@ -1418,15 +1430,19 @@ mod tests {
             lines: txs
                 .iter()
                 .map(|tx| history::PlanLine {
+                    plan: "01JB8Q2VR00000000000000001".parse().unwrap(),
                     tx: *tx,
-                    target: Some(key(RETAIL)),
+                    target: key(RETAIL),
                     kind: TxKind::Install,
-                    at: "2026-10-27T13:00:00Z".parse().unwrap(),
                     run: None,
+                    result: history::TxResult::Committed,
+                    at: "2026-10-27T13:00:00Z".parse().unwrap(),
                 })
                 .collect(),
-            complete: true,
-            scanned: txs.len(),
+            unattributed: 0,
+            unreadable: 0,
+            lines_read: txs.len(),
+            stop: history::ScanStop::Start,
         }
     }
 
