@@ -13,7 +13,7 @@ use common::archives::{RawEntry, raw_zip};
 use common::home::Home;
 use common::http::{Asset, gh_release};
 use common::netlog::net_log;
-use common::plans::{lease_files, plan_files, plans_dir, plant_expired, read_plan};
+use common::plans::{lease_files, plan_files, plan_id, plans_dir, plant_expired, read_plan};
 use common::state::{history, record};
 use common::tlog::{Ran, TestLog, tlog};
 use jiff::{SignedDuration, Timestamp};
@@ -292,6 +292,7 @@ fn retention_sweeps_expired_plans_in_bounded_batches_until_none_is_left() {
     plant_expired(&home.env, &template, 150);
     let expired: Vec<_> = plan_files(&home.env)
         .into_iter()
+        // ubs:ignore — comparing plan ids (file names), not secrets
         .filter(|p| p.file_stem().unwrap() != id.as_str())
         .collect();
     for path in &expired[..10] {
@@ -597,6 +598,7 @@ fn a_local_zip_only_touched_after_its_preview_still_applies() {
     let after = zip_fact(&zip);
     log.json("zip after", &after);
     log.assert_eq("digest unchanged", &after["sha256"], &before["sha256"]);
+    // ubs:ignore — comparing modification times, not secrets
     log.assert_eq("mtime changed", &(after["mtime"] != before["mtime"]), &true);
     commit(
         &log,
@@ -606,6 +608,246 @@ fn a_local_zip_only_touched_after_its_preview_still_applies() {
     );
     log.assert_eq(
         "original bytes installed",
+        &fs::read(home.addons("_retail_").join("Foo/core.lua")).unwrap(),
+        &b"-- a".to_vec(),
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// The same proofs through `apply <plan_id>`, which runs the stored intent bound to its
+// stored token.
+
+/// Each `apply` outcome's target and status, in order.
+fn outcomes(ran: &Ran) -> Vec<(String, String)> {
+    ran.data()["outcomes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|o| {
+            let text = |key: &str| o[key].as_str().unwrap_or_default().to_owned();
+            (text("target"), text("status"))
+        })
+        .collect()
+}
+
+/// A local-zip install previewed: the plan it stored.
+fn preview_local(log: &TestLog, home: &Home, zip: &Path) -> String {
+    log.step("preview");
+    let ran = run(log, home, &local_args(zip, "--dry-run", None), NOW);
+    ran.ok();
+    let id = plan_id(&ran);
+    log.json("plan id", &id);
+    id
+}
+
+/// A live plan pins the archive it would install: a commit elsewhere evicts what no plan
+/// or record pins, and `apply` then installs from the pinned archive with no download.
+#[test]
+fn apply_uses_a_pinned_archive_after_an_eviction() {
+    let log = tlog!();
+    let home = home(&log, Some(1));
+    let (id, _token, s2) = preview(&log, &home, NOW);
+    let a1 = installed_blob(&home, "retail");
+    log.json("archives: A v1, A v2", &json!({"a1": a1, "s2": s2}));
+    log.assert_eq(
+        "preview archive cached",
+        &blobs(&home).contains_key(&s2),
+        &true,
+    );
+    log.step("plant an unpinned archive");
+    let x = plant_blob(&home, &[42; 4096]);
+    log.step("commit on era");
+    commit(&log, &home, &["install", "gh:o/b", "-t", "era"], NOW);
+    let b1 = installed_blob(&home, "era");
+    let kept = blobs(&home);
+    log.json("archives after the eviction", &kept);
+    log.assert_eq("unpinned archive evicted", &kept.contains_key(&x), &false);
+    log.assert_eq(
+        "plan and record archives kept",
+        &(kept.contains_key(&s2) && kept.contains_key(&a1) && kept.contains_key(&b1)),
+        &true,
+    );
+
+    log.step("apply the stored plan");
+    let assets = net_log(&home).count_purpose("asset");
+    log.json("asset requests before apply", &assets);
+    let ran = commit(&log, &home, &["apply", &id], NOW);
+    log.assert_eq(
+        "the update committed on retail",
+        &outcomes(&ran),
+        &vec![("retail".to_owned(), "committed".to_owned())],
+    );
+    log.assert_eq(
+        "apply downloaded no archive",
+        &net_log(&home).count_purpose("asset"),
+        &assets,
+    );
+    log.assert_eq(
+        "A updated",
+        &record(&home, "retail")
+            .addons
+            .values()
+            .next()
+            .unwrap()
+            .version,
+        &"v2".to_owned(),
+    );
+
+    log.step("the old archive is free");
+    let kept = blobs(&home);
+    log.json("archives after apply", &kept);
+    log.assert_eq("old archive evicted", &kept.contains_key(&a1), &false);
+    log.assert_eq(
+        "only A v2 and B remain",
+        &kept.into_keys().collect::<BTreeSet<_>>(),
+        &BTreeSet::from([s2, b1]),
+    );
+}
+
+/// `apply` hashes a plan's local archive again: other bytes at the same size and time
+/// are another selection, refused with nothing changed, while a touch alone applies.
+#[test]
+fn apply_hashes_a_local_zip_again() {
+    let log = tlog!();
+    {
+        let log = log.case("edited");
+        let home = Home::new(&["wow"]);
+        let zip = local_zip(&home, b"-- a");
+        let id = preview_local(&log, &home, &zip);
+        log.tree("addons", &home.addons("_retail_"));
+        let before = zip_fact(&zip);
+        log.json("zip before", &before);
+        let old_mtime = fs::metadata(&zip).unwrap().modified().unwrap();
+        let history_before = history(&home).len();
+
+        log.step("edit, same size, same mtime");
+        local_zip(&home, b"-- b");
+        fs::File::options()
+            .write(true)
+            .open(&zip)
+            .unwrap()
+            .set_modified(old_mtime)
+            .unwrap();
+        let after = zip_fact(&zip);
+        log.json("zip after", &after);
+        log.assert_eq("same length", &after["bytes"], &before["bytes"]);
+        log.assert_eq("same mtime", &after["mtime"], &before["mtime"]);
+        log.assert_eq(
+            "different digest",
+            &(after["sha256"] != before["sha256"]),
+            &true,
+        );
+
+        log.step("apply the plan of the original bytes");
+        let ran = run(&log, &home, &["apply", &id], NOW);
+        ran.fails(1, "plan_stale").assert_private();
+        let error = &ran.envelope()["error"];
+        log.json("details", &error["details"]);
+        log.assert_eq("not retryable", &error["retryable"], &json!(false));
+        let changed = error["details"]["changed"].as_array().cloned().unwrap();
+        log.assert_eq(
+            "the selection moved",
+            &changed.contains(&json!("selection")),
+            &true,
+        );
+        log.assert_unchanged("addons", &home.addons("_retail_"));
+        log.assert_eq("history unchanged", &history(&home).len(), &history_before);
+
+        log.step("re-preview the edited archive and apply it");
+        let fresh = preview_local(&log, &home, &zip);
+        // ubs:ignore — comparing plan ids, not secrets
+        log.assert_eq("a new plan", &(fresh != id), &true);
+        let ran = commit(&log, &home, &["apply", &fresh], NOW);
+        log.assert_eq(
+            "committed on retail",
+            &outcomes(&ran),
+            &vec![("retail".to_owned(), "committed".to_owned())],
+        );
+        log.assert_eq(
+            "new bytes installed",
+            &fs::read(home.addons("_retail_").join("Foo/core.lua")).unwrap(),
+            &b"-- b".to_vec(),
+        );
+    }
+    {
+        let log = log.case("touched");
+        let home = Home::new(&["wow"]);
+        let zip = local_zip(&home, b"-- a");
+        let id = preview_local(&log, &home, &zip);
+        let before = zip_fact(&zip);
+        log.json("zip before", &before);
+
+        log.step("touch only");
+        let mtime = fs::metadata(&zip).unwrap().modified().unwrap() + Duration::from_secs(120);
+        fs::File::options()
+            .write(true)
+            .open(&zip)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        let after = zip_fact(&zip);
+        log.json("zip after", &after);
+        log.assert_eq("digest unchanged", &after["sha256"], &before["sha256"]);
+        // ubs:ignore — comparing modification times, not secrets
+        log.assert_eq("mtime changed", &(after["mtime"] != before["mtime"]), &true);
+
+        log.step("apply");
+        let ran = commit(&log, &home, &["apply", &id], NOW);
+        log.assert_eq(
+            "committed on retail",
+            &outcomes(&ran),
+            &vec![("retail".to_owned(), "committed".to_owned())],
+        );
+        log.assert_eq(
+            "original bytes installed",
+            &fs::read(home.addons("_retail_").join("Foo/core.lua")).unwrap(),
+            &b"-- a".to_vec(),
+        );
+    }
+}
+
+/// A plan whose local archive is gone is refused before anything runs (`input_missing`),
+/// and applies once the archive is back and previewed again.
+#[test]
+fn apply_refuses_a_deleted_local_input() {
+    let log = tlog!();
+    let home = Home::new(&["wow"]);
+    let zip = local_zip(&home, b"-- a");
+    let id = preview_local(&log, &home, &zip);
+    let path = zip.canonicalize().unwrap().display().to_string();
+    log.json("zip", &zip_fact(&zip));
+    log.tree("addons", &home.addons("_retail_"));
+    let history_before = history(&home).len();
+
+    log.step("delete the archive");
+    fs::remove_file(&zip).unwrap();
+
+    log.step("apply");
+    let ran = run(&log, &home, &["apply", &id], NOW);
+    ran.fails(1, "plan_stale").assert_private();
+    let details = &ran.envelope()["error"]["details"];
+    log.json("details", details);
+    log.assert_eq("input missing", &details["reason"], &json!("input_missing"));
+    log.assert_eq("the archive's path", &details["path"], &json!(path));
+    log.assert_unchanged("addons", &home.addons("_retail_"));
+    log.assert_eq("history unchanged", &history(&home).len(), &history_before);
+
+    log.step("restore the archive");
+    local_zip(&home, b"-- a");
+    log.json("zip restored", &zip_fact(&zip));
+    let again = preview_local(&log, &home, &zip);
+    log.json(
+        "the same intent and token reuse the plan",
+        &json!({"first": id, "again": again}),
+    );
+    let ran = commit(&log, &home, &["apply", &again], NOW);
+    log.assert_eq(
+        "committed on retail",
+        &outcomes(&ran),
+        &vec![("retail".to_owned(), "committed".to_owned())],
+    );
+    log.assert_eq(
+        "installed",
         &fs::read(home.addons("_retail_").join("Foo/core.lua")).unwrap(),
         &b"-- a".to_vec(),
     );
