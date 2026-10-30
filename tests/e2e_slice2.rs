@@ -26,8 +26,623 @@ use serde_json::{Value, json};
 use support::{
     CLEANUP, Demo, PLANNED, PRESTAGED, apply_hint, assert_nothing_changed, assert_release,
     assert_untouched, baseline, behind, contains, expected_fix, names, never_planned, outcomes,
-    regular_files, requests, selected, sha256, stale, until_it_ends,
+    regular_files, repo, requests, selected, sha256, stale, until_it_ends,
 };
+
+/// The demo's three widget items: the QML scenario of G1's `tst_plans.qml` that shows each,
+/// and the text that scenario must assert on, so one renamed onto other behaviour, or
+/// emptied, fails here.
+const WIDGET_ITEMS: [(&str, &str, &str); 3] = [
+    (
+        "a routine matching plan applies with no dialog",
+        "test_a_routine_matching_update_applies_with_no_dialog",
+        "\"apply\"",
+    ),
+    (
+        "a plan that adds a dependency opens the dialog",
+        "test_a_matching_update_that_adds_a_dependency_opens_the_dialog_naming_it",
+        "Also installs",
+    ),
+    (
+        "a moved release opens the dialog",
+        "test_a_moved_release_opens_the_dialog_with_changed_since_you_looked",
+        "Changed since you looked",
+    ),
+];
+
+/// The widget's plan scenarios (G1).
+const PLANS_QML: &str = "omarchy/tests/qml/tst_plans.qml";
+
+/// Pure readers of the widget's sources for the structural checks on its Update
+/// scenarios: brace matching that skips string literals and comments, a QML suite's test
+/// functions, the fixtures a body reads (directly or through a helper), a Rust array
+/// constant's strings, and needles found in order. Text scanning, not parsing: it knows
+/// `//` and `/* */` comments and quoted strings, which is all these files need.
+#[cfg(test)]
+mod widget {
+    use std::collections::BTreeMap;
+
+    fn is_ident(byte: u8) -> bool {
+        byte.is_ascii_alphanumeric() || byte == b'_'
+    }
+
+    /// Where the string literal opening at `start` ends (past its closing quote): the end
+    /// of `bytes` when it never closes, or `None` when `single_line` and it does not close
+    /// before a newline. A backslash escapes the next byte.
+    fn string_end(bytes: &[u8], start: usize, single_line: bool) -> Option<usize> {
+        let quote = bytes[start];
+        let mut j = start + 1;
+        while j < bytes.len() {
+            match bytes[j] {
+                b'\\' => j += 2,
+                byte if byte == quote => return Some(j + 1),
+                b'\n' if single_line => return None,
+                _ => j += 1,
+            }
+        }
+        (!single_line).then_some(bytes.len())
+    }
+
+    /// `text` with every comment and string literal (quotes included) blanked to spaces,
+    /// newlines kept, byte for byte: an offset into it is an offset into `text`, and a
+    /// search of it finds code only. `"…"` and `` `…` `` may span lines (Rust's do); `'…'`
+    /// counts only when it closes on its line (a JS string, a Rust char literal), so a
+    /// Rust lifetime stays code.
+    pub fn code_only(text: &str) -> String {
+        let bytes = text.as_bytes();
+        let mut out = bytes.to_vec();
+        let mut i = 0;
+        while i < bytes.len() {
+            let rest = &bytes[i..];
+            let end = if rest.starts_with(b"//") {
+                rest.iter()
+                    .position(|&byte| byte == b'\n')
+                    .map_or(bytes.len(), |n| i + n)
+            } else if rest.starts_with(b"/*") {
+                rest[2..]
+                    .windows(2)
+                    .position(|pair| pair == b"*/")
+                    .map_or(bytes.len(), |n| i + 2 + n + 2)
+            } else if matches!(bytes[i], b'"' | b'`') {
+                string_end(bytes, i, false).unwrap_or(bytes.len())
+            } else if bytes[i] == b'\'' {
+                match string_end(bytes, i, true) {
+                    Some(end) => end,
+                    None => {
+                        i += 1;
+                        continue;
+                    }
+                }
+            } else {
+                i += 1;
+                continue;
+            };
+            for byte in &mut out[i..end] {
+                if *byte != b'\n' {
+                    *byte = b' ';
+                }
+            }
+            i = end;
+        }
+        // Only whole ASCII-delimited runs were blanked, so the bytes stay UTF-8.
+        String::from_utf8(out).unwrap()
+    }
+
+    /// The braces of the first block at or after `from` in `code` (a [`code_only`] text):
+    /// the offsets of its `{` and of the `}` that closes it.
+    fn block_at(code: &str, from: usize) -> Option<(usize, usize)> {
+        let open = from + code.get(from..)?.find('{')?;
+        let mut depth = 0usize;
+        for (k, byte) in code.as_bytes()[open..].iter().enumerate() {
+            match byte {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some((open, open + k));
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// The body (between its braces) of the first block that follows `header` in `text`,
+    /// matching braces while skipping string literals and comments; `header` is looked
+    /// for in code only.
+    pub fn braced_body<'a>(text: &'a str, header: &str) -> Option<&'a str> {
+        let code = code_only(text);
+        let at = code.find(header)? + header.len();
+        let (open, close) = block_at(&code, at)?;
+        Some(&text[open + 1..close])
+    }
+
+    /// Every `function <name>(<params>) { … }` in code: name, parameters and the braces
+    /// of its body.
+    fn functions(code: &str) -> Vec<(String, Vec<String>, (usize, usize))> {
+        let mut out = Vec::new();
+        let mut from = 0;
+        while let Some(found) = code[from..].find("function ") {
+            let start = from + found;
+            from = start + "function ".len();
+            if start > 0 && is_ident(code.as_bytes()[start - 1]) {
+                continue;
+            }
+            let name_len = code.as_bytes()[from..]
+                .iter()
+                .take_while(|&&byte| is_ident(byte))
+                .count();
+            let name = &code[from..from + name_len];
+            let rest = &code[from + name_len..];
+            let (Some(open), Some(close)) = (rest.find('('), rest.find(')')) else {
+                continue;
+            };
+            if name.is_empty() || !rest[..open].trim().is_empty() || close < open {
+                continue;
+            }
+            let params = rest[open + 1..close]
+                .split(',')
+                .map(|param| param.trim().to_owned())
+                .filter(|param| !param.is_empty())
+                .collect();
+            if let Some(block) = block_at(code, from + name_len + close) {
+                out.push((name.to_owned(), params, block));
+            }
+        }
+        out
+    }
+
+    /// Every `function test_<name>(…) { … }` of a QML test suite: name → body.
+    pub fn qml_test_functions(qml: &str) -> BTreeMap<String, String> {
+        let code = code_only(qml);
+        functions(&code)
+            .into_iter()
+            .filter(|(name, _, _)| name.starts_with("test_"))
+            .map(|(name, _, (open, close))| (name, qml[open + 1..close].to_owned()))
+            .collect()
+    }
+
+    /// Whether `code` calls `Fixtures.text(<ident>)` with exactly the identifier `ident`.
+    fn reads_fixture(code: &str, ident: &str) -> bool {
+        code.match_indices("Fixtures.text(").any(|(at, call)| {
+            code[at + call.len()..]
+                .trim_start()
+                .strip_prefix(ident)
+                .is_some_and(|rest| rest.trim_start().starts_with(')'))
+        })
+    }
+
+    /// The helpers of a QML suite that read a fixture named by one of their parameters
+    /// (`function answer(launch, name, code) { … Fixtures.text(name) … }`): helper → the
+    /// index of that parameter.
+    pub fn fixture_wrappers(qml: &str) -> BTreeMap<String, usize> {
+        let code = code_only(qml);
+        functions(&code)
+            .into_iter()
+            .filter_map(|(name, params, (open, close))| {
+                let body = &code[open + 1..close];
+                let index = params.iter().position(|param| reads_fixture(body, param))?;
+                Some((name, index))
+            })
+            .collect()
+    }
+
+    /// The top-level arguments of the call whose `(` is at `open`, as offsets into the
+    /// text `code` was made from; nesting and commas are read from `code`, so neither a
+    /// comma nor a bracket inside a string counts.
+    fn arguments(code: &str, open: usize) -> Vec<(usize, usize)> {
+        let mut args = Vec::new();
+        let (mut depth, mut start) = (0usize, open + 1);
+        for (k, byte) in code.as_bytes()[open..].iter().enumerate() {
+            let at = open + k;
+            match byte {
+                b'(' | b'[' | b'{' => depth += 1,
+                b')' | b']' | b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        args.push((start, at));
+                        return args;
+                    }
+                }
+                b',' if depth == 1 => {
+                    args.push((start, at));
+                    start = at + 1;
+                }
+                _ => {}
+            }
+        }
+        args
+    }
+
+    /// The fixtures a scenario body reads: the string literal given to every
+    /// `Fixtures.text("…")` or `Fixtures.text('…')`, and to every call of a helper of
+    /// `wrappers` at its fixture parameter, in first-seen order, each once. A call inside
+    /// a comment, a method of the same name (`x.answer(…)`) and an argument that is no
+    /// literal name nothing.
+    pub fn fixture_names(body: &str, wrappers: &BTreeMap<String, usize>) -> Vec<String> {
+        let code = code_only(body);
+        let bytes = code.as_bytes();
+        let mut names = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            let boundary = i == 0 || !(is_ident(bytes[i - 1]) || bytes[i - 1] == b'.');
+            if !boundary || !(bytes[i].is_ascii_alphabetic() || bytes[i] == b'_') {
+                i += 1;
+                continue;
+            }
+            let len = bytes[i..]
+                .iter()
+                .take_while(|&&byte| is_ident(byte) || byte == b'.')
+                .count();
+            let callee = &code[i..i + len];
+            i += len;
+            let index = match callee {
+                "Fixtures.text" => Some(0),
+                other => wrappers.get(other).copied(),
+            };
+            let open = i + (bytes.len() - i - code[i..].trim_start().len());
+            let (Some(index), Some(b'(')) = (index, bytes.get(open)) else {
+                continue;
+            };
+            let Some(&(start, end)) = arguments(&code, open).get(index) else {
+                continue;
+            };
+            let arg = body[start..end].trim();
+            let quoted = arg.len() >= 2
+                && matches!(arg.as_bytes()[0], b'"' | b'\'')
+                && arg.as_bytes()[arg.len() - 1] == arg.as_bytes()[0];
+            let name = quoted.then(|| arg[1..arg.len() - 1].to_owned());
+            if let Some(name) = name.filter(|name| !names.contains(name)) {
+                names.push(name);
+            }
+        }
+        names
+    }
+
+    /// The string literals of the `PLAN_FIXTURES` array constant in a Rust source, its
+    /// definition found past any use of the name, `//` lines skipped.
+    pub fn plan_fixture_list(rust: &str) -> Vec<String> {
+        let code = code_only(rust);
+        let Some(at) = code.find("const PLAN_FIXTURES") else {
+            return Vec::new();
+        };
+        // The type (`&[&str]`) has brackets too: the array is the first one after `=`.
+        let Some(open) = code[at..]
+            .find('=')
+            .and_then(|eq| code[at + eq..].find('[').map(|n| at + eq + n))
+        else {
+            return Vec::new();
+        };
+        let Some(close) = code[open..].find(']').map(|n| open + n) else {
+            return Vec::new();
+        };
+        rust[open + 1..close]
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .flat_map(|line| {
+                line.split('"')
+                    .skip(1)
+                    .step_by(2)
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    /// The offset of each needle in `text`, each found after the end of the previous one;
+    /// `Err` names the first needle that is missing, or found only before the previous.
+    pub fn in_order(text: &str, needles: &[&str]) -> Result<Vec<usize>, String> {
+        let mut offsets = Vec::new();
+        let mut from = 0;
+        for (n, needle) in needles.iter().enumerate() {
+            match text[from..].find(needle) {
+                Some(at) => {
+                    offsets.push(from + at);
+                    from += at + needle.len();
+                }
+                None if n > 0 && text.contains(needle) => {
+                    return Err(format!("{needle:?} comes only before {:?}", needles[n - 1]));
+                }
+                None => return Err(format!("{needle:?} is missing")),
+            }
+        }
+        Ok(offsets)
+    }
+}
+
+/// Table-driven tests of [`widget`]'s readers, each case named.
+#[cfg(test)]
+mod units {
+    use std::collections::BTreeMap;
+
+    use super::widget::{
+        braced_body, fixture_names, fixture_wrappers, in_order, plan_fixture_list,
+        qml_test_functions,
+    };
+
+    /// Named pairs: a function and its body, or a helper and its parameter's index.
+    type Pairs<V> = &'static [(&'static str, V)];
+    /// A case: its name, its input, and what the reader gives for it.
+    type Case<T> = (&'static str, &'static str, T);
+    /// A [`fixture_names`] case: its name, the body, the helpers, the fixtures read.
+    type NamesCase = (
+        &'static str,
+        &'static str,
+        Pairs<usize>,
+        &'static [&'static str],
+    );
+    /// An [`in_order`] case: its name, the text, the needles, the offsets or a word of the
+    /// error.
+    type OrderCase = (
+        &'static str,
+        &'static str,
+        &'static [&'static str],
+        Result<Vec<usize>, &'static str>,
+    );
+
+    fn strings(words: &[&str]) -> Vec<String> {
+        words.iter().map(|word| (*word).to_owned()).collect()
+    }
+
+    #[test]
+    fn qml_test_functions_splits_a_suite_into_named_bodies() {
+        let cases: &[Case<Pairs<&str>>] = &[
+            (
+                "two_functions",
+                "TestCase {\n  function test_a() { a() }\n  function test_b() { b() }\n}",
+                &[("test_a", "a()"), ("test_b", "b()")],
+            ),
+            (
+                "nested_braces_in_a_body",
+                "function test_a() { if (x) { y() } z() }",
+                &[("test_a", "if (x) { y() } z()")],
+            ),
+            (
+                "a_brace_inside_a_string_is_ignored",
+                "function test_a() { s(\"}\"); t('{') }",
+                &[("test_a", "s(\"}\"); t('{')")],
+            ),
+            (
+                "a_helper_that_is_not_a_test_is_ignored",
+                "function helper(x) { return x }\nfunction test_a() { helper(1) }",
+                &[("test_a", "helper(1)")],
+            ),
+            (
+                "the_last_function_closes_before_the_testcase_brace",
+                "TestCase {\n  function test_a() {\n    a()\n  }\n}\n",
+                &[("test_a", "a()")],
+            ),
+            (
+                "a_commented_out_test_is_ignored",
+                "// function test_old() { }\nfunction test_a() { a() }",
+                &[("test_a", "a()")],
+            ),
+            ("an_empty_suite_has_no_functions", "TestCase {}", &[]),
+        ];
+        for (case, input, expected) in cases {
+            let got: BTreeMap<String, String> = qml_test_functions(input)
+                .into_iter()
+                .map(|(name, body)| (name, body.trim().to_owned()))
+                .collect();
+            let expected: BTreeMap<String, String> = expected
+                .iter()
+                .map(|(name, body)| ((*name).to_owned(), (*body).to_owned()))
+                .collect();
+            assert_eq!(
+                got, expected,
+                "{case}: input {input:?} gave {got:?}, expected {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn fixture_names_reads_every_fixtures_text_call() {
+        let wrapped = |pairs: &[(&str, usize)]| -> BTreeMap<String, usize> {
+            pairs
+                .iter()
+                .map(|(name, index)| ((*name).to_owned(), *index))
+                .collect()
+        };
+        let cases: &[NamesCase] = &[
+            ("none", "compare(1, 1)", &[], &[]),
+            (
+                "one_double_quoted",
+                "x(Fixtures.text(\"plan-a\"))",
+                &[],
+                &["plan-a"],
+            ),
+            (
+                "one_single_quoted",
+                "x(Fixtures.text('plan-a'))",
+                &[],
+                &["plan-a"],
+            ),
+            (
+                "several_in_order",
+                "Fixtures.text(\"b\"); Fixtures.text(\"a\")",
+                &[],
+                &["b", "a"],
+            ),
+            (
+                "a_repeated_name_is_listed_once",
+                "Fixtures.text(\"a\"); Fixtures.text(\"a\")",
+                &[],
+                &["a"],
+            ),
+            (
+                "a_commented_out_call_is_ignored",
+                "// Fixtures.text(\"a\")\nFixtures.text(\"b\")",
+                &[],
+                &["b"],
+            ),
+            (
+                "a_wrapper_call_names_its_fixture",
+                "showList(\"plan-list\")",
+                &[("showList", 0)],
+                &["plan-list"],
+            ),
+            (
+                "a_wrapper_with_a_nested_call_before_the_name",
+                "answer(updateFoo(), \"plan-x\")",
+                &[("answer", 1)],
+                &["plan-x"],
+            ),
+            (
+                "a_method_of_the_same_name_is_no_wrapper",
+                "service.answer(a, \"plan-x\")",
+                &[("answer", 1)],
+                &[],
+            ),
+            (
+                "a_variable_argument_names_nothing",
+                "showList(name)",
+                &[("showList", 0)],
+                &[],
+            ),
+        ];
+        for (case, input, wrappers, expected) in cases {
+            let got = fixture_names(input, &wrapped(wrappers));
+            assert_eq!(
+                got,
+                strings(expected),
+                "{case}: input {input:?} with helpers {wrappers:?} gave {got:?}, expected {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn fixture_wrappers_finds_the_helpers_that_read_a_named_fixture() {
+        let cases: &[Case<Pairs<usize>>] = &[
+            ("none", "function f() {}", &[]),
+            (
+                "a_helper_reading_its_parameter",
+                "function answer(launch, name, code) { launch.finish(code || 0, Fixtures.text(name)) }",
+                &[("answer", 1)],
+            ),
+            (
+                "a_helper_reading_a_literal_is_no_wrapper",
+                "function f(x) { return Fixtures.text(\"a\") }",
+                &[],
+            ),
+            (
+                "two_helpers",
+                "function showList(name) { s = Model.reduceList(JSON.parse(Fixtures.text(name))) }\n\
+                 function planIdOf(name) { return JSON.parse(Fixtures.text( name )).data.plan_id }",
+                &[("planIdOf", 0), ("showList", 0)],
+            ),
+        ];
+        for (case, input, expected) in cases {
+            let got = fixture_wrappers(input);
+            let expected: BTreeMap<String, usize> = expected
+                .iter()
+                .map(|(name, index)| ((*name).to_owned(), *index))
+                .collect();
+            assert_eq!(
+                got, expected,
+                "{case}: input {input:?} gave {got:?}, expected {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn plan_fixture_list_parses_the_rust_constant() {
+        let cases: &[(&str, &str, &[&str])] = &[
+            (
+                "one_line",
+                "pub const PLAN_FIXTURES: &[&str] = &[\"a\", \"b\"];",
+                &["a", "b"],
+            ),
+            (
+                "several_lines_with_a_trailing_comma",
+                "const PLAN_FIXTURES: &[&str] = &[\n    \"a\",\n    \"b\",\n];",
+                &["a", "b"],
+            ),
+            (
+                "a_comment_line_inside",
+                "const PLAN_FIXTURES: &[&str] = &[\n    \"a\",\n    // \"old\",\n    \"b\",\n];",
+                &["a", "b"],
+            ),
+            (
+                "a_use_before_the_definition_is_skipped",
+                "f(PLAN_FIXTURES.contains(\"z\"));\nconst PLAN_FIXTURES: &[&str] = &[\"a\"];",
+                &["a"],
+            ),
+            (
+                "absent_constant_gives_nothing",
+                "const OTHER: &[&str] = &[\"a\"];",
+                &[],
+            ),
+        ];
+        for (case, input, expected) in cases {
+            let got = plan_fixture_list(input);
+            assert_eq!(
+                got,
+                strings(expected),
+                "{case}: input {input:?} gave {got:?}, expected {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn in_order_finds_needles_in_sequence() {
+        let cases: &[OrderCase] = &[
+            ("all_in_order", "a b c", &["a", "c"], Ok(vec![0, 4])),
+            ("one_missing", "a b", &["a", "z"], Err("missing")),
+            ("two_out_of_order", "b a", &["a", "b"], Err("before")),
+            (
+                "a_needle_repeated_later_counts_after_the_previous",
+                "b a b",
+                &["a", "b"],
+                Ok(vec![2, 4]),
+            ),
+        ];
+        for (case, text, needles, expected) in cases {
+            let got = in_order(text, needles);
+            let fits = match (&got, expected) {
+                (Ok(offsets), Ok(want)) => offsets == want,
+                (Err(message), Err(word)) => message.contains(word),
+                _ => false,
+            };
+            assert!(
+                fits,
+                "{case}: input {text:?} {needles:?} gave {got:?}, expected {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn braced_body_skips_strings_and_comments() {
+        let cases: &[(&str, &str, &str, Option<&str>)] = &[
+            (
+                "the_first_block_after_the_header",
+                "fn a() { x }\nfn b() { y }",
+                "fn b(",
+                Some("y"),
+            ),
+            (
+                "a_brace_in_a_comment_or_string_is_ignored",
+                "fn b() {\n    // }\n    s(\"}\");\n    t('}');\n}",
+                "fn b(",
+                Some("// }\n    s(\"}\");\n    t('}');"),
+            ),
+            (
+                "a_header_in_a_comment_is_not_the_header",
+                "// fn b() { no }\nfn b() { yes }",
+                "fn b(",
+                Some("yes"),
+            ),
+            ("an_absent_header_gives_nothing", "fn a() {}", "fn b(", None),
+        ];
+        for (case, text, header, expected) in cases {
+            let got = braced_body(text, header).map(str::trim);
+            assert_eq!(
+                got, *expected,
+                "{case}: input {text:?} after {header:?} gave {got:?}, expected {expected:?}"
+            );
+        }
+    }
+}
 
 #[cfg(test)]
 mod support {
@@ -260,6 +875,11 @@ mod support {
                 out.push(path);
             }
         }
+    }
+
+    /// `path`, relative to the repository root.
+    pub fn repo(path: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(path)
     }
 
     /// Whether the JSON array `list` holds the string `word`.
@@ -1269,5 +1889,176 @@ fn demo_plans_show_reconciles_a_lost_output() {
         "the same transactions",
         &plans::evidence_txs(&gone),
         &evidence,
+    );
+}
+
+/// The widget's three Update scenarios of the demo still exist in G1's QML suite under
+/// their names, each driving envelopes the binary wrote (no inline envelope) and asserting
+/// its outcome. Whether they pass is the widget pipeline's QML step (`argc widget-test`).
+#[test]
+fn demo_widget_update_qml_scenarios_exist_by_name() {
+    let log = tlog!();
+    log.step("read the QML suite");
+    let qml = fs::read_to_string(repo(PLANS_QML)).unwrap();
+    log.note(format!("{PLANS_QML}: {} lines", qml.lines().count()));
+    let functions = widget::qml_test_functions(&qml);
+    log.json("functions", &functions.keys().collect::<Vec<_>>());
+    let wrappers = widget::fixture_wrappers(&qml);
+    log.json(
+        "helpers that read a named fixture (parameter index)",
+        &wrappers,
+    );
+
+    log.step("the TestCase");
+    log.assert_eq(
+        "the TestCase is named Plans (the pipeline's PASS lines say Plans::…)",
+        &qml.contains("name: \"Plans\""),
+        &true,
+    );
+
+    log.step("the three scenarios exist");
+    for (item, name, _) in WIDGET_ITEMS {
+        log.assert_eq(
+            &format!("{item}: {name} is defined"),
+            &functions.contains_key(name),
+            &true,
+        );
+    }
+
+    log.step("each drives a real envelope and asserts its outcome");
+    for (item, name, asserts) in WIDGET_ITEMS {
+        let body = functions.get(name).map(String::as_str).unwrap_or_default();
+        let read = widget::fixture_names(body, &wrappers);
+        log.json(name, &read);
+        log.assert_eq(
+            &format!("{item}: reads at least two envelopes (the row's list and a preview)"),
+            &(read.len() >= 2),
+            &true,
+        );
+        log.assert_eq(
+            &format!("{item}: holds no inline envelope"),
+            &(body.contains("\"schema_version\"") || body.contains("\"ok\":")),
+            &false,
+        );
+        log.assert_eq(
+            &format!("{item}: asserts on {asserts}"),
+            &body.contains(asserts),
+            &true,
+        );
+    }
+}
+
+/// The fixtures those scenarios read are ones the binary writes (`PLAN_FIXTURES`, from
+/// `plans_fixtures`, which `write_widget_fixtures` calls in pipeline step 1), regenerated
+/// as `Fixtures.js` in every pipeline run inside the directory it removes, and never
+/// committed: a QML run can read only what that run's binary wrote.
+#[test]
+fn demo_widget_update_qml_scenarios_read_only_fixtures_the_binary_writes() {
+    let log = tlog!();
+    log.step("the fixtures the scenarios read");
+    let qml = fs::read_to_string(repo(PLANS_QML)).unwrap();
+    let functions = widget::qml_test_functions(&qml);
+    let wrappers = widget::fixture_wrappers(&qml);
+    let mut read: Vec<String> = Vec::new();
+    for (_, name, _) in WIDGET_ITEMS {
+        let body = functions.get(name).map(String::as_str).unwrap_or_default();
+        for fixture in widget::fixture_names(body, &wrappers) {
+            if !read.contains(&fixture) {
+                read.push(fixture);
+            }
+        }
+    }
+    log.json("fixtures read", &read);
+    log.assert_eq("the scenarios read fixtures", &read.is_empty(), &false);
+
+    log.step("each is one the binary writes");
+    let source = fs::read_to_string(repo("tests/omarchy_widget.rs")).unwrap();
+    let list = widget::plan_fixture_list(&source);
+    log.json("PLAN_FIXTURES", &list);
+    log.assert_eq("PLAN_FIXTURES lists fixtures", &list.is_empty(), &false);
+    for fixture in &read {
+        log.assert_eq(
+            &format!("{fixture} is in PLAN_FIXTURES"),
+            &list.contains(fixture),
+            &true,
+        );
+    }
+    let code = widget::code_only(&source);
+    log.assert_eq(
+        "tests/omarchy_widget.rs defines plans_fixtures",
+        &code.contains("fn plans_fixtures("),
+        &true,
+    );
+    let writer = widget::braced_body(&source, "fn write_widget_fixtures(").unwrap_or_default();
+    log.note(format!(
+        "write_widget_fixtures: {} lines",
+        writer.lines().count()
+    ));
+    log.assert_eq(
+        "write_widget_fixtures calls plans_fixtures",
+        &widget::code_only(writer).contains("plans_fixtures("),
+        &true,
+    );
+
+    log.step("they are generated in the same pipeline run");
+    let script = fs::read_to_string(repo("scripts/widget-test.sh")).unwrap();
+    let order = widget::in_order(
+        &script,
+        &[
+            "--exact write_widget_fixtures",
+            "cp -r omarchy \"$plugin\"",
+            "omarchy/tests/qml_fixtures.js",
+            "\"$runner\" -input",
+        ],
+    );
+    log.json(
+        "offsets: step 1, the plugin copy, the generator, the runner",
+        &order,
+    );
+    log.assert_eq(
+        "step 1, then the plugin copy, then the generator, then the runner",
+        &order.err(),
+        &None,
+    );
+    let generator = script
+        .lines()
+        .find(|line| line.contains("omarchy/tests/qml_fixtures.js"))
+        .unwrap_or_default();
+    log.note(format!("the generator: {}", generator.trim()));
+    log.assert_eq(
+        "it reads step 1's fixtures and writes the plugin copy's Fixtures.js",
+        &(
+            generator.contains("\"$OMADDONS_WIDGET_OUT/fixtures\""),
+            generator.contains("\"$plugin/tests/qml/Fixtures.js\""),
+        ),
+        &(true, true),
+    );
+    log.assert_eq(
+        "the plugin copy is inside the run's directory, which the trap removes",
+        &(
+            script
+                .lines()
+                .any(|line| line.trim() == "plugin=$OMADDONS_WIDGET_OUT/plugin"),
+            script.contains("trap 'rm -rf \"$OMADDONS_WIDGET_OUT\"' EXIT"),
+        ),
+        &(true, true),
+    );
+
+    log.step("nothing generated is committed");
+    let mut files = Vec::new();
+    regular_files(&repo("omarchy"), &mut files);
+    log.note(format!("walked {} files under omarchy/", files.len()));
+    let generated: Vec<String> = files
+        .iter()
+        .filter(|path| {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            name == "Fixtures.js" || read.iter().any(|fixture| name == format!("{fixture}.json"))
+        })
+        .map(|path| path.display().to_string())
+        .collect();
+    log.assert_eq(
+        "no Fixtures.js, and no copy of a fixture the scenarios read, under omarchy/",
+        &generated,
+        &Vec::<String>::new(),
     );
 }
