@@ -2621,11 +2621,11 @@ The state directory honors `XDG_STATE_HOME`, the cache `XDG_CACHE_HOME`, and the
 | `src/main.rs`, `src/lib.rs` | Entry point and module tree |
 | `src/cli.rs` | clap definitions, global flags, argv for fixes |
 | `src/app/` | One module per command, plus `world.rs` (discovery + registry for a run), `engine.rs` (wiring), `precondition.rs` (the preview tokens `--if-match` binds to) and `issues.rs` (`status`'s findings) |
+| `src/doctor/` | The doctor: the failure-mode registry `status`'s issues come from (`registry.rs`, with its rows' detectors under `detectors/`) and the finding model with stable instance keys (`finding.rs`); the view, runtime and fixers follow |
 | `src/output/` | The JSON envelope, human rendering, stderr events, terminal detection |
 | `src/error.rs` | The error and warning code registries and the exit-code table |
 | `src/model.rs` | Domain types: refs, folder names, actors, channels, records |
 | `src/discover/` | Client discovery, launcher readers, running detection, the target registry and cache |
-| `src/doctor/` | The doctor (milestone 4, in progress): so far its finding model (`finding.rs`: subsystems, severity, confidence, typed evidence, remediation, and the instance keys that name what is broken) |
 | `src/rules.rs` | Products, the version-to-family table, family ranges, client-rules rows, game modes |
 | `src/toc.rs`, `src/toc/loaded.rs` | TOC parser and the load verdict |
 | `src/inventory.rs` | Folder classification: protected, managed, shared, linked, unmanaged, invalid |

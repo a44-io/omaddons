@@ -31,7 +31,7 @@ use super::drift::{DriftItem, needs_reinstall, reinstall_hint};
 use super::errors::CoverageState;
 use super::errors_status::{self, TargetErrors};
 use super::history::ChangeCounts;
-use super::issues::{Issue, SeverityCounts, issues_for, machine_issues};
+use super::issues::{self, Issue, SeverityCounts};
 use super::remembered::Remembered;
 use super::world::World;
 use crate::backup::inventory;
@@ -41,6 +41,13 @@ use crate::discover::DiscoveredTarget;
 use crate::discover::cache::{CacheStats, DiscoveryMode};
 use crate::discover::running::detect_running;
 use crate::discover::shared::{SharedAddons, shared_addons};
+use crate::doctor;
+use crate::doctor::facts::{
+    AddonDriftFact, MachineFacts, NewerFile, PendingJournal, StatusFacts, TargetFacts, WidgetDrift,
+};
+use crate::doctor::registry::Tier;
+use crate::doctor::selection::Selection;
+use crate::doctor::view::DoctorView;
 use crate::drift::{AddonDrift, DriftMode, DriftState};
 use crate::engine::journal;
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
@@ -61,7 +68,7 @@ use crate::state::history_tail::{self, Answer};
 use crate::state::paths::ClientPaths;
 use crate::state::records::{TargetRecord, load_record};
 use crate::state::registry::RegistryEntry;
-use crate::state::store::VersionStatus;
+use crate::state::store::{VersionStatus, Versioned};
 
 /// `status`'s own flags.
 #[derive(Debug, Clone, Copy, Default, clap::Args)]
@@ -683,6 +690,8 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
     }
 
     let mut targets = Vec::new();
+    // Each registered target's facts for the failure-mode registry.
+    let mut facts = Vec::new();
     for d in &selected {
         let t = &d.target;
         let record = match t.key {
@@ -808,7 +817,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             auto_mode,
             errors_now,
         );
-        targets.push(StatusTarget {
+        let target = StatusTarget {
             id: t.id.clone(),
             key: t.key,
             registered: t.key.is_some(),
@@ -845,7 +854,34 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             client_dir: verbose.then(|| t.client_dir.clone()),
             install_root: verbose.then(|| t.install_root.clone()),
             exe_name: if verbose { t.exe_name.clone() } else { None },
-        });
+        };
+        if let Some(key) = target.key {
+            let newer_record = record
+                .as_ref()
+                .filter(|l| l.status == VersionStatus::Newer)
+                .map(|l| NewerFile {
+                    path: world.paths.target_record(&key),
+                    on_disk: l.version,
+                    writes: <TargetRecord as Versioned>::CURRENT,
+                });
+            let missing_folders = |addon: &str| -> Vec<PathBuf> {
+                drifted
+                    .iter()
+                    .filter(|a| a.addon == addon)
+                    .flat_map(|a| a.folders.iter().filter(|f| !f.present))
+                    .map(|f| client.addons().join(f.folder.as_str()))
+                    .collect()
+            };
+            facts.push(target_facts(
+                &target,
+                key,
+                pending_journals(&pending, Some(key), held),
+                newer_record,
+                None,
+                &missing_folders,
+            ));
+        }
+        targets.push(target);
     }
     for e in &missing {
         let record = load_record(&world.paths, &e.key)?.value;
@@ -853,7 +889,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
         if !held && pending.iter().any(|p| p.target == Some(e.key)) {
             attention.insert(0, Attention::JournalPending);
         }
-        targets.push(StatusTarget {
+        let target = StatusTarget {
             id: e.id.clone(),
             key: Some(e.key),
             registered: true,
@@ -890,17 +926,18 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             client_dir: verbose.then(|| e.client_dir.clone()),
             install_root: verbose.then(|| e.install_root.clone()),
             exe_name: None,
-        });
+        };
+        facts.push(target_facts(
+            &target,
+            e.key,
+            pending_journals(&pending, Some(e.key), held),
+            None,
+            Some(e.client_dir.clone()),
+            &|_| Vec::new(),
+        ));
+        targets.push(target);
     }
     targets.sort_by(|a, b| a.id.cmp(&b.id));
-    for t in &mut targets {
-        // Why a journal pending on it cannot be recovered by itself, when it cannot.
-        let reason = pending
-            .iter()
-            .filter(|p| t.key.is_some() && p.target == t.key)
-            .find_map(|p| p.unrecoverable.map(journal::Unrecoverable::reason));
-        t.issues = issues_for(t, reason);
-    }
 
     // The bar widget: file reads only, no subprocess (E4).
     let widget = omarchy_status::widget(&world.paths);
@@ -917,7 +954,36 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
     // A pending journal that names no client (it cannot be read) is attention too: no
     // target carries it, and it needs manual repair.
     let unattributed = !held && pending.iter().any(|p| p.target.is_none());
-    let issues = machine_issues(widget.as_ref(), unattributed);
+
+    // Each issue is a finding of the failure-mode registry (E1), from the facts gathered
+    // above: `--cached` runs the `cached` rows, plain `status` the `quick` ones too.
+    let machine = machine_facts(widget.as_ref(), pending_journals(&pending, None, held));
+    let view = DoctorView::from_status_facts(StatusFacts {
+        targets: facts,
+        machine,
+    });
+    let max_tier = if args.cached {
+        Tier::Cached
+    } else {
+        Tier::Quick
+    };
+    let found = doctor::detect(
+        &view,
+        &Selection::only(issues::STATUS_FAILURE_MODES),
+        max_tier,
+    );
+    debug_assert!(
+        found.incomplete.is_empty(),
+        "status's rows walk nothing: {:?}",
+        found.incomplete
+    );
+    for t in &mut targets {
+        t.issues = t
+            .key
+            .map(|key| issues::for_target(&found.findings, key))
+            .unwrap_or_default();
+    }
+    let issues = issues::for_machine(&found.findings);
 
     let (mut commands, mut first_fix) = recommendations(&targets, check_due, widget_outdated);
     if unattributed && first_fix.is_none() {
@@ -1221,13 +1287,90 @@ fn change_of(world: &World, entries: &[&HistoryEntry]) -> LastChange {
     }
 }
 
+/// A registered target's facts for the failure-mode registry (E1), mirroring its
+/// `attention` exactly: each fact is kept only when `status` raised the attention item it
+/// stands for, so the registry finds what `status` reports. `missing_folders` gives a
+/// drifted addon's folders gone from `Interface/AddOns`.
+pub(crate) fn target_facts(
+    target: &StatusTarget,
+    key: TargetKey,
+    journals: Vec<PendingJournal>,
+    newer_record: Option<NewerFile>,
+    vanished: Option<PathBuf>,
+    missing_folders: &dyn Fn(&str) -> Vec<PathBuf>,
+) -> TargetFacts {
+    let raised = |attention| target.attention.contains(&attention);
+    TargetFacts {
+        id: target.id.clone(),
+        key,
+        journals: if raised(Attention::JournalPending) {
+            journals
+        } else {
+            Vec::new()
+        },
+        newer_record: newer_record.filter(|_| raised(Attention::StateVersionNewer)),
+        vanished: vanished.filter(|_| raised(Attention::TargetMissing)),
+        degraded: if raised(Attention::AddonDegraded) {
+            target.addons.degraded
+        } else {
+            0
+        },
+        drift: target
+            .drift
+            .iter()
+            .filter(|d| needs_reinstall(d.state))
+            .map(|d| AddonDriftFact {
+                addon: d.addon.clone(),
+                state: d.state,
+                files: d.files,
+                missing_folders: missing_folders(&d.addon),
+            })
+            .collect(),
+    }
+}
+
+/// The pending journals naming `target` (`None`: naming no client), oldest first, while
+/// no omaddons process holds the lock; a held lock means a change is committing, not
+/// interrupted.
+pub(crate) fn pending_journals(
+    pending: &[journal::Pending],
+    target: Option<TargetKey>,
+    held: bool,
+) -> Vec<PendingJournal> {
+    if held {
+        return Vec::new();
+    }
+    pending
+        .iter()
+        .filter(|p| p.target == target)
+        .map(|p| PendingJournal {
+            tx: p.tx,
+            unrecoverable: p.unrecoverable,
+        })
+        .collect()
+}
+
+/// The machine's facts: the journals that name no client, and the bar widget when it
+/// needs a reinstall.
+pub(crate) fn machine_facts(
+    widget: Option<&WidgetInfo>,
+    unattributed: Vec<PendingJournal>,
+) -> MachineFacts {
+    MachineFacts {
+        unattributed,
+        widget: widget.filter(|w| w.needs_reinstall()).map(|w| WidgetDrift {
+            version: w.version.clone(),
+        }),
+    }
+}
+
 /// `targets rm <id>`, the fix for a client whose directory is gone.
-pub(super) fn forget_target_hint(target: &str) -> CommandHint {
+pub(crate) fn forget_target_hint(target: &str) -> CommandHint {
     CommandHint::new(Action::ForgetTarget, ["omaddons", "targets", "rm", target])
 }
 
 /// `list -t <id> -v`, the look at a target's degraded addons.
-pub(super) fn inspect_hint(target: &str) -> CommandHint {
+pub(crate) fn inspect_hint(target: &str) -> CommandHint {
     CommandHint::new(Action::Inspect, ["omaddons", "list", "-t", target, "-v"])
 }
 
@@ -1509,7 +1652,7 @@ mod tests {
     #[test]
     fn the_summary_counts_every_target() {
         let mut gone = target("gone", 0, &[Attention::TargetMissing], 0);
-        gone.issues = crate::app::issues::issues_for(&gone, None);
+        gone.issues = crate::app::issues::tests::registry_issues(&gone, &[], false);
         let mut retail = target("retail", 2, &[], 0);
         retail.running = Some(true);
         let classic = target("classic", 1, &[], 0);
@@ -1707,13 +1850,18 @@ mod tests {
             outdated: true,
             context_matches: Some(true),
         };
-        let machine = machine_issues(Some(&widget), false);
+        use crate::app::issues::tests::registry_machine_issues;
+        let machine = registry_machine_issues(Some(&widget), &[]);
         let s = summary(std::slice::from_ref(&retail), &machine, &commands, true);
         assert_eq!((s.issues.p3, s.widget_outdated), (1, true));
         assert_eq!(s.state, SummaryState::Updates, "a P3 never makes it urgent");
-        assert!(machine_issues(None, false).is_empty());
+        assert!(registry_machine_issues(None, &[]).is_empty());
         // A pending journal no client can carry is the machine's, and urgent.
-        let machine = machine_issues(None, true);
+        let unreadable = (
+            "01M7A1B2C3D4E5F6G7H8J9K0MN".parse().unwrap(),
+            Some(journal::Unrecoverable::Unreadable),
+        );
+        let machine = registry_machine_issues(None, &[unreadable]);
         assert_eq!(machine[0].severity, crate::app::issues::Severity::P0);
         let s = summary(&[retail], &machine, &commands, false);
         assert_eq!(s.state, SummaryState::Attention);

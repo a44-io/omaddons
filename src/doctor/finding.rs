@@ -595,10 +595,6 @@ impl Finding {
     /// A registry row's finding for one observation: the instance key and label from its
     /// subject, the target from its scope, then the remediation, from the finished
     /// finding. The registry is its caller.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the failure-mode registry (E1 part 4) calls it")
-    )]
     pub(crate) fn build(
         id: &'static str,
         subsystem: Subsystem,
