@@ -1774,4 +1774,63 @@ mod tests {
         assert_eq!(message, "retail: 6 addon(s) modified");
         assert_eq!(fix.argv().unwrap(), commands[0].argv());
     }
+
+    /// A `status` outcome of `targets` and the machine's own issues, nothing else:
+    /// no warning, recommendation, drift line, last change or widget.
+    fn outcome_for(targets: Vec<StatusTarget>, machine: Vec<Issue>) -> StatusOutcome {
+        let summary = summary(&targets, &machine, &[], false);
+        let needs_attention =
+            !machine.is_empty() || targets.iter().any(|t| !t.attention.is_empty());
+        StatusOutcome {
+            data: StatusData {
+                cached: false,
+                targets,
+                journal: JournalState {
+                    pending: 0,
+                    in_progress: false,
+                },
+                needs_attention,
+                summary,
+                last_change: None,
+                last_change_state: LastChangeState::Ok,
+                widget: None,
+                issues: machine,
+            },
+            warnings: Vec::new(),
+            commands: Vec::new(),
+            check: false,
+            first_fix: None,
+            drift_lines: Vec::new(),
+            discovery: CacheStats::default(),
+            notes: Vec::new(),
+        }
+    }
+
+    /// The human lines `status` prints for issues (E1 part 1), pinned before the move onto
+    /// the failure-mode registry: each target's issues come from `issues_of_case`, so this
+    /// snapshot moves with the adapter.
+    #[test]
+    fn status_issue_lines_are_pinned() {
+        use crate::app::issues::tests::{
+            issues_of_case, machine_issues_of_case, machine_named, named,
+        };
+        let target_of = |id: &str, case: &str| {
+            let mut case = named(case);
+            case.target.id = id.to_owned();
+            let mut t = case.target.clone();
+            t.issues = issues_of_case(&case);
+            t
+        };
+        let targets = vec![
+            target_of("classic", "degraded_one"),
+            target_of("gone", "vanished_with_journal"),
+            target_of("retail", "everything"),
+        ];
+        let machine = machine_issues_of_case(&machine_named("machine_both"));
+        let outcome = outcome_for(targets, machine);
+        let mut out = Vec::new();
+        outcome.render_human(&mut out, &Style::default()).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        insta::assert_snapshot!("status_issue_lines", text);
+    }
 }

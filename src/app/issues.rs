@@ -239,10 +239,16 @@ impl SeverityCounts {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
+    use std::collections::BTreeMap;
+
+    use ulid::Ulid;
+
     use super::*;
     use crate::app::drift::DriftItem;
     use crate::app::status::test_target;
+    use crate::engine::journal::Unrecoverable;
+    use crate::model::{TargetKey, TxId};
 
     fn drift(addon: &str, state: DriftState, files: u64) -> DriftItem {
         DriftItem {
@@ -397,5 +403,274 @@ mod tests {
         counts.add(&issues_for(&t, None));
         assert_eq!((counts.p0, counts.p2, counts.total()), (1, 1, 2));
         assert!(counts.urgent());
+    }
+
+    // ---- Characterization (E1 part 1): what `status` emits today for every issue it
+    // can produce, pinned in snapshots before the move onto the failure-mode registry.
+    // Every case goes through `issues_of_case` or `machine_issues_of_case`; the move
+    // rewires only their bodies, and must leave every snapshot byte-identical.
+
+    /// A pending journal naming a target: its transaction, and why recovery cannot
+    /// settle it by itself, when it cannot.
+    pub(crate) type Journal = (TxId, Option<Unrecoverable>);
+
+    /// One target as `status` reports it, with what the registry path will also read.
+    pub(crate) struct Case {
+        pub(crate) name: &'static str,
+        pub(crate) target: StatusTarget,
+        /// The pending journals naming the target, oldest first. Today's code reads only
+        /// the first unrecoverable reason; the registry path reads one finding each.
+        pub(crate) journals: Vec<Journal>,
+        /// `status --cached`, which checks drift by presence only.
+        pub(crate) cached: bool,
+    }
+
+    /// The issues of no client: the bar widget and the journals that name no client.
+    pub(crate) struct MachineCase {
+        pub(crate) name: &'static str,
+        pub(crate) widget: Option<WidgetInfo>,
+        pub(crate) journals: Vec<Journal>,
+    }
+
+    /// The key every case's target carries.
+    const KEY: &str = "01M5ZQ7Y3KJ8V9W2X4C6B0N1RT";
+
+    /// The first, second and third pending journal of a case.
+    fn tx(n: usize) -> TxId {
+        let id = [
+            "01M7A1B2C3D4E5F6G7H8J9K0MN",
+            "01M7A1B2C3D4E5F6G7H8J9K0MP",
+            "01M7A1B2C3D4E5F6G7H8J9K0MQ",
+        ][n];
+        TxId::from_ulid(Ulid::from_string(id).unwrap())
+    }
+
+    fn recoverable(n: usize) -> Journal {
+        (tx(n), None)
+    }
+
+    fn unrecoverable(n: usize, why: Unrecoverable) -> Journal {
+        (tx(n), Some(why))
+    }
+
+    /// A retail case: `attention`, then `edit` on its target.
+    fn case(
+        name: &'static str,
+        attention: &[Attention],
+        journals: Vec<Journal>,
+        edit: impl FnOnce(&mut StatusTarget),
+    ) -> Case {
+        let mut target = test_target("retail", 0, attention, 0);
+        target.key = Some(KEY.parse::<TargetKey>().unwrap());
+        edit(&mut target);
+        Case {
+            name,
+            target,
+            journals,
+            cached: false,
+        }
+    }
+
+    /// Every issue `status` can raise for a target, each case by name.
+    pub(crate) fn cases() -> Vec<Case> {
+        use Attention::*;
+        let all = [
+            JournalPending,
+            StateVersionNewer,
+            TargetMissing,
+            AddonDegraded,
+            AddonModified,
+            AddonFolderMissing,
+        ];
+        let mut cached = case(
+            "files_modified_under_cached",
+            &[AddonModified],
+            vec![],
+            |t| {
+                t.drift = vec![drift("Plater", DriftState::Modified, 3)];
+            },
+        );
+        cached.cached = true;
+        vec![
+            case(
+                "journal_waits",
+                &[JournalPending],
+                vec![recoverable(0)],
+                |_| {},
+            ),
+            case(
+                "journal_too_new",
+                &[JournalPending],
+                vec![unrecoverable(0, Unrecoverable::TooNew)],
+                |_| {},
+            ),
+            case(
+                "journal_unreadable",
+                &[JournalPending],
+                vec![unrecoverable(0, Unrecoverable::Unreadable)],
+                |_| {},
+            ),
+            case(
+                "two_journals_one_unreadable",
+                &[JournalPending],
+                vec![recoverable(0), unrecoverable(1, Unrecoverable::Unreadable)],
+                |_| {},
+            ),
+            case(
+                "two_journals_both_recoverable",
+                &[JournalPending],
+                vec![recoverable(0), recoverable(1)],
+                |_| {},
+            ),
+            case("state_newer", &[StateVersionNewer], vec![], |_| {}),
+            case("folder_missing", &[AddonFolderMissing], vec![], |t| {
+                t.drift = vec![drift("Details", DriftState::Missing, 0)];
+            }),
+            case("files_modified_one", &[AddonModified], vec![], |t| {
+                t.drift = vec![drift("Plater", DriftState::Modified, 1)];
+            }),
+            case("files_modified_three", &[AddonModified], vec![], |t| {
+                t.drift = vec![drift("Plater", DriftState::Modified, 3)];
+            }),
+            cached,
+            case("degraded_one", &[AddonDegraded], vec![], |t| {
+                t.addons.degraded = 1;
+            }),
+            case("degraded_two", &[AddonDegraded], vec![], |t| {
+                t.addons.degraded = 2;
+            }),
+            case("vanished", &[TargetMissing], vec![], |t| t.missing = true),
+            case(
+                "vanished_with_journal",
+                &[JournalPending, TargetMissing],
+                vec![recoverable(0)],
+                |t| t.missing = true,
+            ),
+            // A missing target's record may hold degraded addons, but `status` raises no
+            // `addon_degraded` attention for it.
+            case(
+                "vanished_with_degraded_record",
+                &[TargetMissing],
+                vec![],
+                |t| {
+                    t.missing = true;
+                    t.addons.degraded = 2;
+                },
+            ),
+            case("unindexed_is_no_issue", &[], vec![], |t| {
+                t.drift = vec![drift("Quiet", DriftState::Unindexed, 0)];
+            }),
+            case(
+                "everything",
+                &all,
+                vec![recoverable(0), unrecoverable(1, Unrecoverable::TooNew)],
+                |t| {
+                    t.missing = true;
+                    t.addons.degraded = 2;
+                    t.drift = vec![
+                        drift("Details", DriftState::Missing, 0),
+                        drift("Plater", DriftState::Modified, 3),
+                        drift("Quiet", DriftState::Unindexed, 0),
+                        drift("Aaa", DriftState::Missing, 0),
+                    ];
+                },
+            ),
+        ]
+    }
+
+    /// The case named `name`.
+    pub(crate) fn named(name: &str) -> Case {
+        cases().into_iter().find(|c| c.name == name).unwrap()
+    }
+
+    /// An installed bar widget on an Omarchy desktop, from another build, installed
+    /// under this run's directories (`context_matches`) or another's.
+    fn outdated_widget(context_matches: bool) -> WidgetInfo {
+        WidgetInfo {
+            omarchy: true,
+            installed: true,
+            enabled: true,
+            version: Some("0.0.9".to_owned()),
+            outdated: true,
+            context_matches: Some(context_matches),
+        }
+    }
+
+    /// The journals that name no client: one that does not read, and one whose file could
+    /// not be read at all.
+    fn unattributed() -> Vec<Journal> {
+        vec![unrecoverable(0, Unrecoverable::Unreadable), recoverable(1)]
+    }
+
+    /// Every issue of no client, each case by name.
+    pub(crate) fn machine_cases() -> Vec<MachineCase> {
+        let machine = |name, widget, journals| MachineCase {
+            name,
+            widget,
+            journals,
+        };
+        vec![
+            machine("machine_nothing", None, vec![]),
+            machine(
+                "machine_widget_outdated",
+                Some(outdated_widget(true)),
+                vec![],
+            ),
+            machine(
+                "machine_widget_other_context",
+                Some(outdated_widget(false)),
+                vec![],
+            ),
+            machine("machine_unattributed", None, unattributed()),
+            machine("machine_both", Some(outdated_widget(true)), unattributed()),
+        ]
+    }
+
+    /// The machine case named `name`.
+    pub(crate) fn machine_named(name: &str) -> MachineCase {
+        machine_cases()
+            .into_iter()
+            .find(|c| c.name == name)
+            .unwrap()
+    }
+
+    /// What `status` shows for a case today: the first pending journal's unrecoverable
+    /// reason, and under `--cached` only missing folders as drift. Part 4 rewires this
+    /// body to the registry.
+    pub(crate) fn issues_of_case(case: &Case) -> Vec<Issue> {
+        let reason = case
+            .journals
+            .iter()
+            .find_map(|(_, why)| why.map(Unrecoverable::reason));
+        if case.cached {
+            let mut target = case.target.clone();
+            target.drift.retain(|d| d.state == DriftState::Missing);
+            return issues_for(&target, reason);
+        }
+        issues_for(&case.target, reason)
+    }
+
+    /// What `status` shows of no client for a machine case today. Part 4 rewires this
+    /// body to the registry.
+    pub(crate) fn machine_issues_of_case(case: &MachineCase) -> Vec<Issue> {
+        machine_issues(case.widget.as_ref(), !case.journals.is_empty())
+    }
+
+    #[test]
+    fn issues_by_case_are_pinned() {
+        let by_case: BTreeMap<&str, Vec<Issue>> = cases()
+            .iter()
+            .map(|c| (c.name, issues_of_case(c)))
+            .collect();
+        insta::assert_json_snapshot!("status_issues_by_case", by_case);
+    }
+
+    #[test]
+    fn machine_issues_by_case_are_pinned() {
+        let by_case: BTreeMap<&str, Vec<Issue>> = machine_cases()
+            .iter()
+            .map(|c| (c.name, machine_issues_of_case(c)))
+            .collect();
+        insta::assert_json_snapshot!("status_machine_issues_by_case", by_case);
     }
 }

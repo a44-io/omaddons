@@ -1,0 +1,360 @@
+---
+source: src/app/issues.rs
+expression: by_case
+---
+{
+  "degraded_one": [
+    {
+      "id": "fm-external_artifacts-ownership-transferred",
+      "severity": "P2",
+      "title": "1 addon lost a folder to another addon",
+      "addon": null,
+      "remediation": {
+        "command": "omaddons list -t retail -v",
+        "argv": [
+          "omaddons",
+          "list",
+          "-t",
+          "retail",
+          "-v"
+        ],
+        "destructive": false
+      }
+    }
+  ],
+  "degraded_two": [
+    {
+      "id": "fm-external_artifacts-ownership-transferred",
+      "severity": "P2",
+      "title": "2 addons lost a folder to another addon",
+      "addon": null,
+      "remediation": {
+        "command": "omaddons list -t retail -v",
+        "argv": [
+          "omaddons",
+          "list",
+          "-t",
+          "retail",
+          "-v"
+        ],
+        "destructive": false
+      }
+    }
+  ],
+  "everything": [
+    {
+      "id": "fm-concurrency_primitives-journal-pending",
+      "severity": "P0",
+      "title": "An interrupted change needs manual repair",
+      "addon": null,
+      "remediation": {
+        "command": "see \"journal_pending that does not clear\" under Troubleshooting in the README",
+        "argv": null,
+        "destructive": false
+      }
+    },
+    {
+      "id": "fm-schemas-state-version-newer",
+      "severity": "P0",
+      "title": "State was written by a newer omaddons",
+      "addon": null,
+      "remediation": {
+        "command": "upgrade omaddons",
+        "argv": null,
+        "destructive": false
+      }
+    },
+    {
+      "id": "fm-state_files-record-folder-missing",
+      "severity": "P1",
+      "title": "Aaa's folder is gone",
+      "addon": "Aaa",
+      "remediation": {
+        "command": "omaddons install Aaa -t retail --reinstall",
+        "argv": [
+          "omaddons",
+          "install",
+          "Aaa",
+          "-t",
+          "retail",
+          "--reinstall"
+        ],
+        "destructive": false
+      }
+    },
+    {
+      "id": "fm-state_files-record-folder-missing",
+      "severity": "P1",
+      "title": "Details's folder is gone",
+      "addon": "Details",
+      "remediation": {
+        "command": "omaddons install Details -t retail --reinstall",
+        "argv": [
+          "omaddons",
+          "install",
+          "Details",
+          "-t",
+          "retail",
+          "--reinstall"
+        ],
+        "destructive": false
+      }
+    },
+    {
+      "id": "fm-external_artifacts-managed-files-modified",
+      "severity": "P2",
+      "title": "Plater's files changed on disk (3 files)",
+      "addon": "Plater",
+      "remediation": {
+        "command": "omaddons install Plater -t retail --reinstall",
+        "argv": [
+          "omaddons",
+          "install",
+          "Plater",
+          "-t",
+          "retail",
+          "--reinstall"
+        ],
+        "destructive": false
+      }
+    },
+    {
+      "id": "fm-external_artifacts-ownership-transferred",
+      "severity": "P2",
+      "title": "2 addons lost a folder to another addon",
+      "addon": null,
+      "remediation": {
+        "command": "omaddons list -t retail -v",
+        "argv": [
+          "omaddons",
+          "list",
+          "-t",
+          "retail",
+          "-v"
+        ],
+        "destructive": false
+      }
+    },
+    {
+      "id": "fm-userland_state-target-vanished",
+      "severity": "P2",
+      "title": "The client's directory is gone",
+      "addon": null,
+      "remediation": {
+        "command": "omaddons targets rm retail",
+        "argv": [
+          "omaddons",
+          "targets",
+          "rm",
+          "retail"
+        ],
+        "destructive": true
+      }
+    }
+  ],
+  "files_modified_one": [
+    {
+      "id": "fm-external_artifacts-managed-files-modified",
+      "severity": "P2",
+      "title": "Plater's files changed on disk (1 file)",
+      "addon": "Plater",
+      "remediation": {
+        "command": "omaddons install Plater -t retail --reinstall",
+        "argv": [
+          "omaddons",
+          "install",
+          "Plater",
+          "-t",
+          "retail",
+          "--reinstall"
+        ],
+        "destructive": false
+      }
+    }
+  ],
+  "files_modified_three": [
+    {
+      "id": "fm-external_artifacts-managed-files-modified",
+      "severity": "P2",
+      "title": "Plater's files changed on disk (3 files)",
+      "addon": "Plater",
+      "remediation": {
+        "command": "omaddons install Plater -t retail --reinstall",
+        "argv": [
+          "omaddons",
+          "install",
+          "Plater",
+          "-t",
+          "retail",
+          "--reinstall"
+        ],
+        "destructive": false
+      }
+    }
+  ],
+  "files_modified_under_cached": [],
+  "folder_missing": [
+    {
+      "id": "fm-state_files-record-folder-missing",
+      "severity": "P1",
+      "title": "Details's folder is gone",
+      "addon": "Details",
+      "remediation": {
+        "command": "omaddons install Details -t retail --reinstall",
+        "argv": [
+          "omaddons",
+          "install",
+          "Details",
+          "-t",
+          "retail",
+          "--reinstall"
+        ],
+        "destructive": false
+      }
+    }
+  ],
+  "journal_too_new": [
+    {
+      "id": "fm-concurrency_primitives-journal-pending",
+      "severity": "P0",
+      "title": "An interrupted change needs manual repair",
+      "addon": null,
+      "remediation": {
+        "command": "see \"journal_pending that does not clear\" under Troubleshooting in the README",
+        "argv": null,
+        "destructive": false
+      }
+    }
+  ],
+  "journal_unreadable": [
+    {
+      "id": "fm-concurrency_primitives-journal-pending",
+      "severity": "P0",
+      "title": "An interrupted change needs manual repair",
+      "addon": null,
+      "remediation": {
+        "command": "see \"journal_pending that does not clear\" under Troubleshooting in the README",
+        "argv": null,
+        "destructive": false
+      }
+    }
+  ],
+  "journal_waits": [
+    {
+      "id": "fm-concurrency_primitives-journal-pending",
+      "severity": "P0",
+      "title": "An interrupted change waits to be finished",
+      "addon": null,
+      "remediation": {
+        "command": "quit the game if it is running, then run any change command; it finishes or rolls back the change first",
+        "argv": null,
+        "destructive": false
+      }
+    }
+  ],
+  "state_newer": [
+    {
+      "id": "fm-schemas-state-version-newer",
+      "severity": "P0",
+      "title": "State was written by a newer omaddons",
+      "addon": null,
+      "remediation": {
+        "command": "upgrade omaddons",
+        "argv": null,
+        "destructive": false
+      }
+    }
+  ],
+  "two_journals_both_recoverable": [
+    {
+      "id": "fm-concurrency_primitives-journal-pending",
+      "severity": "P0",
+      "title": "An interrupted change waits to be finished",
+      "addon": null,
+      "remediation": {
+        "command": "quit the game if it is running, then run any change command; it finishes or rolls back the change first",
+        "argv": null,
+        "destructive": false
+      }
+    }
+  ],
+  "two_journals_one_unreadable": [
+    {
+      "id": "fm-concurrency_primitives-journal-pending",
+      "severity": "P0",
+      "title": "An interrupted change needs manual repair",
+      "addon": null,
+      "remediation": {
+        "command": "see \"journal_pending that does not clear\" under Troubleshooting in the README",
+        "argv": null,
+        "destructive": false
+      }
+    }
+  ],
+  "unindexed_is_no_issue": [],
+  "vanished": [
+    {
+      "id": "fm-userland_state-target-vanished",
+      "severity": "P2",
+      "title": "The client's directory is gone",
+      "addon": null,
+      "remediation": {
+        "command": "omaddons targets rm retail",
+        "argv": [
+          "omaddons",
+          "targets",
+          "rm",
+          "retail"
+        ],
+        "destructive": true
+      }
+    }
+  ],
+  "vanished_with_degraded_record": [
+    {
+      "id": "fm-userland_state-target-vanished",
+      "severity": "P2",
+      "title": "The client's directory is gone",
+      "addon": null,
+      "remediation": {
+        "command": "omaddons targets rm retail",
+        "argv": [
+          "omaddons",
+          "targets",
+          "rm",
+          "retail"
+        ],
+        "destructive": true
+      }
+    }
+  ],
+  "vanished_with_journal": [
+    {
+      "id": "fm-concurrency_primitives-journal-pending",
+      "severity": "P0",
+      "title": "An interrupted change waits to be finished",
+      "addon": null,
+      "remediation": {
+        "command": "quit the game if it is running, then run any change command; it finishes or rolls back the change first",
+        "argv": null,
+        "destructive": false
+      }
+    },
+    {
+      "id": "fm-userland_state-target-vanished",
+      "severity": "P2",
+      "title": "The client's directory is gone",
+      "addon": null,
+      "remediation": {
+        "command": "omaddons targets rm retail",
+        "argv": [
+          "omaddons",
+          "targets",
+          "rm",
+          "retail"
+        ],
+        "destructive": true
+      }
+    }
+  ]
+}

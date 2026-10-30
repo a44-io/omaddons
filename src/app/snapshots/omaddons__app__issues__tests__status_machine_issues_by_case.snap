@@ -1,0 +1,66 @@
+---
+source: src/app/issues.rs
+expression: by_case
+---
+{
+  "machine_both": [
+    {
+      "id": "fm-concurrency_primitives-journal-pending",
+      "severity": "P0",
+      "title": "An interrupted change needs manual repair",
+      "addon": null,
+      "remediation": {
+        "command": "see \"journal_pending that does not clear\" under Troubleshooting in the README",
+        "argv": null,
+        "destructive": false
+      }
+    },
+    {
+      "id": "fm-plugins-widget-version-drift",
+      "severity": "P3",
+      "title": "The bar widget is from another omaddons build",
+      "addon": null,
+      "remediation": {
+        "command": "omaddons omarchy install",
+        "argv": [
+          "omaddons",
+          "omarchy",
+          "install"
+        ],
+        "destructive": false
+      }
+    }
+  ],
+  "machine_nothing": [],
+  "machine_unattributed": [
+    {
+      "id": "fm-concurrency_primitives-journal-pending",
+      "severity": "P0",
+      "title": "An interrupted change needs manual repair",
+      "addon": null,
+      "remediation": {
+        "command": "see \"journal_pending that does not clear\" under Troubleshooting in the README",
+        "argv": null,
+        "destructive": false
+      }
+    }
+  ],
+  "machine_widget_other_context": [],
+  "machine_widget_outdated": [
+    {
+      "id": "fm-plugins-widget-version-drift",
+      "severity": "P3",
+      "title": "The bar widget is from another omaddons build",
+      "addon": null,
+      "remediation": {
+        "command": "omaddons omarchy install",
+        "argv": [
+          "omaddons",
+          "omarchy",
+          "install"
+        ],
+        "destructive": false
+      }
+    }
+  ]
+}
