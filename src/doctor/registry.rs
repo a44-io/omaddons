@@ -23,7 +23,7 @@ use crate::app::status::{forget_target_hint, inspect_hint};
 use crate::engine::repair_action::{Fix, FixKind};
 use crate::error::CommandHint;
 use crate::fsx::{Scope, Writer};
-use crate::limits::QUICK_DETECTOR_BUDGET;
+use crate::limits::{DOCTOR_SCAN_MAX_ENTRIES, QUICK_DETECTOR_BUDGET};
 use crate::omarchy::status as omarchy_status;
 
 /// The failure-mode ids (vision D20) that `status` publishes, stable across releases.
@@ -59,6 +59,11 @@ pub mod ids {
     pub const CONFIG_PARSE_ERROR: &str = "fm-configs-config-parse-error";
     /// A state file cannot be read (the doctor's view raises it).
     pub const STATE_CORRUPT: &str = "fm-schemas-state-corrupt";
+
+    /// A check panicked during a doctor run (the runtime raises it).
+    pub const DETECTOR_CRASHED: &str = "fm-state_files-detector-crashed";
+    /// A check stopped at its deadline or entry cap (the runtime raises it).
+    pub const CHECK_INCOMPLETE: &str = "fm-state_files-check-incomplete";
 }
 
 // ---------------------------------------------------------------------------------------
@@ -438,6 +443,36 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         manual: Some(upgrade_manual),
     },
     FailureMode {
+        id: ids::CHECK_INCOMPLETE,
+        subsystem: Subsystem::StateFiles,
+        severity: Severity::P3,
+        title: "a check could not finish within its limit",
+        description: "A detector stopped at its deadline or its entry limit during this run, so what it checks was only partly checked.",
+        why: "Incomplete coverage must never read as a pass.",
+        tier: Tier::Runtime,
+        online: false,
+        cost_ms: 0,
+        requires: &[],
+        detect: None,
+        fix: None,
+        manual: Some(incomplete_manual),
+    },
+    FailureMode {
+        id: ids::DETECTOR_CRASHED,
+        subsystem: Subsystem::StateFiles,
+        severity: Severity::P1,
+        title: "a check stopped with an internal error",
+        description: "A detector panicked during this run; the run went on without its result.",
+        why: "A check that did not run cannot say the state is healthy.",
+        tier: Tier::Runtime,
+        online: false,
+        cost_ms: 0,
+        requires: &[],
+        detect: None,
+        fix: None,
+        manual: Some(crashed_manual),
+    },
+    FailureMode {
         id: ids::RECORD_FOLDER_MISSING,
         subsystem: Subsystem::StateFiles,
         severity: Severity::P1,
@@ -509,6 +544,44 @@ fn forget_manual(f: &Finding) -> Remediation {
 
 fn widget_manual(_: &Finding) -> Remediation {
     hint(&omarchy_status::reinstall_hint())
+}
+
+/// A crashed check is a bug: no command helps.
+fn crashed_manual(_: &Finding) -> Remediation {
+    prose("this is a bug in omaddons: report the detector and location above")
+}
+
+/// A check past its deadline runs again alone with ten times as long (a read); one past
+/// its entry cap can only be narrowed.
+fn incomplete_manual(f: &Finding) -> Remediation {
+    match (f.evidence.detector, f.evidence.deadline_ms) {
+        (Some(fm), Some(ms)) => {
+            let budget = format!("{}ms", ms.saturating_mul(10));
+            let argv = argv_of(&["omaddons", "doctor", "--only", fm, "--budget", &budget]);
+            Remediation {
+                command: shell_words::join(&argv),
+                argv: Some(argv),
+                ..Remediation::default()
+            }
+        }
+        _ => prose(&format!(
+            "this check visits at most {} entries; narrow it with -t <client>",
+            thousands(f.evidence.max_entries.unwrap_or(DOCTOR_SCAN_MAX_ENTRIES))
+        )),
+    }
+}
+
+/// `n` with a comma between each group of three digits.
+fn thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (at, digit) in digits.chars().enumerate() {
+        if at > 0 && (digits.len() - at).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
 }
 
 /// The target id of a target's finding (always set on the rows that read it).
@@ -946,8 +1019,8 @@ mod tests {
                 "{id}"
             );
         }
-        // The seven, and the two the doctor's view raises.
-        assert_eq!(FAILURE_MODES.len(), 9);
+        // The seven, the two the doctor's view raises, and the two its runtime raises.
+        assert_eq!(FAILURE_MODES.len(), 11);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 ---
 source: src/limits.rs
-assertion_line: 1366
+assertion_line: 1376
 expression: "(politeness, REGISTRY)"
 ---
 [
@@ -437,6 +437,15 @@ expression: "(politeness, REGISTRY)"
       "unit": "ms",
       "config_key": null,
       "notes": "A default or deep doctor check's run-time deadline without --budget; past it, check-incomplete"
+    },
+    {
+      "name": "RUN_ID_RETRY",
+      "value": {
+        "count": 2
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Fresh ULIDs drawn after a doctor run-directory name collision"
     },
     {
       "name": "DISCOVERY_FILE_MAX_BYTES",

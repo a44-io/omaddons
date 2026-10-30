@@ -154,6 +154,13 @@ pub const KINDS: &[KindRow] = &[
         current: super::history::CURRENT,
         schema: super::history::line_schema,
     },
+    // A doctor run's `report.json`: the envelope's bytes, written through fsx and not
+    // `save`; its version is the envelope's `schema_version`.
+    KindRow {
+        kind: "doctor_report",
+        current: SchemaVersion::new(1, 0),
+        schema: crate::doctor::report::record_schema,
+    },
 ];
 
 /// How a loaded file's version compared with this binary's.
@@ -420,7 +427,11 @@ mod tests {
                 "{name} implements Versioned but has no KINDS row"
             );
         }
-        assert_eq!(found.len() + 1, KINDS.len(), "every row but history's");
+        assert_eq!(
+            found.len() + 2,
+            KINDS.len(),
+            "every row but history's and doctor_report's"
+        );
         let kinds: Vec<&str> = KINDS.iter().map(|row| row.kind).collect();
         assert!(kinds.contains(&"release_memo") && kinds.contains(&"http_validators"));
     }

@@ -64,6 +64,7 @@ pub const OPAQUE: &[Opaque] = &[
     Opaque { scope: "envelope", path: "data", source: "Envelope.data", reason: "A command's data is described by its own schema, published per command, and validated against it." },
     Opaque { scope: "envelope", path: "error.details.items[].error.details", source: "ItemError.details", reason: ITEM_ERROR_DETAILS },
     Opaque { scope: "error", path: "details.items[].error.details", source: "ItemError.details", reason: ITEM_ERROR_DETAILS },
+    Opaque { scope: "file doctor_report", path: "error.details.items[].error.details", source: "ItemError.details", reason: ITEM_ERROR_DETAILS },
     Opaque { scope: "file journal", path: "**.left_out[]", source: "LeftOutFolder.details", reason: LEFT_OUT_FOLDER },
     Opaque { scope: "file plan", path: "precondition.parts.command", source: "StoredParts.command", reason: PRECONDITION_PART },
     Opaque { scope: "file plan", path: "precondition.parts.observed", source: "StoredParts.observed", reason: PRECONDITION_PART },

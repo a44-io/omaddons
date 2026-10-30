@@ -7,8 +7,17 @@ pub mod exit;
 pub mod facts;
 pub mod finding;
 pub mod registry;
+pub mod report;
+pub mod runtime;
 pub mod selection;
 pub mod view;
+
+/// Every doctor failpoint (debug builds), checked against the source by a test.
+pub const FAILPOINTS: &[&str] = &[
+    "doctor.run.staged",
+    "doctor.run.published",
+    "doctor.detector.panic",
+];
 
 use budget::Budget;
 use finding::{Finding, Incomplete};
@@ -178,6 +187,62 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn failpoints_match_the_source() {
+        use crate::source_scan::{Literals, production_code, sources};
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut found = std::collections::BTreeSet::new();
+        for (_, text) in sources(&root.join("src/doctor")) {
+            let code = production_code(&text, Literals::Keep).unwrap_or_default();
+            for (at, _) in code.match_indices("failpoint::hit(\"doctor.") {
+                let rest = &code[at + "failpoint::hit(\"".len()..];
+                found.insert(rest.split('"').next().unwrap().to_owned());
+            }
+        }
+        let listed: std::collections::BTreeSet<String> =
+            FAILPOINTS.iter().map(|s| (*s).to_owned()).collect();
+        assert_eq!(found, listed);
+    }
+
+    /// Checks take `&DoctorView` and never write (§6.12): no detector uses fsx's writer, as
+    /// the view itself never does (`view_source_never_writes`). fsx's read-only types
+    /// (`LockState`) are fine.
+    #[test]
+    fn detectors_never_write() {
+        use crate::source_scan::{Literals, production_code, sources};
+        const WRITES: [&str; 8] = [
+            "WriteSession",
+            "mutate(",
+            "ensure_dir_all(",
+            "prune(",
+            "Op::",
+            "OpenOptions",
+            "fs::write",
+            "lock_file",
+        ];
+        let writes =
+            |code: &str| -> Vec<&str> { WRITES.into_iter().filter(|w| code.contains(w)).collect() };
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut found = Vec::new();
+        for (path, text) in sources(&root.join("src/doctor/detectors")) {
+            let code = production_code(&text, Literals::Blank).unwrap_or_default();
+            for needle in writes(&code) {
+                found.push(format!("{}: {needle}", path.display()));
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "detectors that write:\n{}",
+            found.join("\n")
+        );
+        let planted = production_code("fn f() { crate::fsx::mutate(s, p, op); }", Literals::Blank);
+        assert_eq!(
+            writes(&planted.unwrap_or_default()),
+            ["mutate("],
+            "the scan sees one"
+        );
+    }
+
+    #[test]
     fn status_rules_run_up_to_the_tier() {
         let cached = facts::findings(&facts(), Tier::Cached);
         let ids_of = |found: &[Finding]| {
@@ -217,7 +282,13 @@ pub(crate) mod tests {
             .map(|row| row.id)
             .collect();
         assert_eq!(run(&all, Tier::Cached), cached);
-        assert_eq!(run(&all, Tier::Deep).len(), rows.len());
+        // Every row but the runtime's, which no tier selects.
+        let detecting = rows.iter().filter(|row| row.tier != Tier::Runtime).count();
+        assert_eq!(run(&all, Tier::Deep).len(), detecting);
+        assert!(
+            detecting < rows.len(),
+            "the runtime's rows are in the registry"
+        );
         assert_eq!(
             run(&Selection::only(&[ids::TARGET_VANISHED]), Tier::Deep),
             [ids::TARGET_VANISHED]

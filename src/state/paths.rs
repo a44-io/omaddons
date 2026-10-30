@@ -13,6 +13,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use crate::discover::{find_child, find_children};
+use crate::doctor::runtime::DoctorRunId;
 use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::model::{PlanId, TargetKey, TxId};
 
@@ -355,9 +356,30 @@ impl Paths {
         self.plans_dir().join(".lock")
     }
 
+    /// The doctor's own directory (M4): its runs and `latest`.
+    pub fn doctor_dir(&self) -> PathBuf {
+        self.state.join("doctor")
+    }
+
     /// Doctor run artifacts (M4).
     pub fn doctor_runs_dir(&self) -> PathBuf {
-        self.state.join("doctor").join("runs")
+        self.doctor_dir().join("runs")
+    }
+
+    /// The link to the newest finished doctor run, for reading its report (M4-D32).
+    pub fn doctor_latest(&self) -> PathBuf {
+        self.doctor_dir().join("latest")
+    }
+
+    /// One doctor run's directory.
+    pub fn doctor_run(&self, id: &DoctorRunId) -> PathBuf {
+        self.doctor_runs_dir().join(id.as_str())
+    }
+
+    /// The name a doctor run's directory is made under before it is published: hidden, and
+    /// no run id, so nothing lists it as a run.
+    pub fn doctor_run_stage(&self, id: &DoctorRunId) -> PathBuf {
+        self.doctor_runs_dir().join(format!(".{}.tmp", id.as_str()))
     }
 
     /// Request log.
@@ -606,6 +628,7 @@ mod tests {
 
     const TX: &str = "01JB8Q2VA00000000000000000";
     const KEY: &str = "01JB8Q2V9W0000000000000000";
+    const RUN: &str = "2026-10-30T18-03-40Z__01JB8Q2VA00000000000000000";
 
     fn lookup(vars: &[(&str, &str)]) -> impl Fn(&str) -> Option<OsString> {
         let vars: BTreeMap<String, OsString> = vars
@@ -626,6 +649,7 @@ mod tests {
         let key: TargetKey = KEY.parse().unwrap();
         let plan: PlanId = TX.parse().unwrap();
         let sha = "ab".repeat(32);
+        let run = DoctorRunId::parse(RUN).unwrap();
         let cases: Vec<(PathBuf, String)> = vec![
             (p.home().to_path_buf(), "/h".into()),
             (p.config_dir().to_path_buf(), "/c/omaddons".into()),
@@ -685,7 +709,14 @@ mod tests {
                 p.state_snapshot_wtf(&tx),
                 format!("/s/omaddons/snapshots/{TX}.wtf"),
             ),
+            (p.doctor_dir(), "/s/omaddons/doctor".into()),
             (p.doctor_runs_dir(), "/s/omaddons/doctor/runs".into()),
+            (p.doctor_latest(), "/s/omaddons/doctor/latest".into()),
+            (p.doctor_run(&run), format!("/s/omaddons/doctor/runs/{RUN}")),
+            (
+                p.doctor_run_stage(&run),
+                format!("/s/omaddons/doctor/runs/.{RUN}.tmp"),
+            ),
             (p.net_log(), "/s/omaddons/net.log".into()),
             (p.net_log_previous(), "/s/omaddons/net.log.1".into()),
             (p.lock_file(), "/s/omaddons/lock".into()),

@@ -179,6 +179,20 @@ pub struct Evidence {
     /// `capabilities` lists it. Omitted when no limit is concerned.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<&'static str>,
+    /// The failure mode whose check this finding is about (the doctor runtime's own
+    /// findings). Omitted otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detector: Option<&'static str>,
+    /// A place in omaddons' own source, `<file>:<line>`: where a check stopped with an
+    /// internal error. Omitted otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    /// The deadline, in milliseconds, a check stopped at. Omitted otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deadline_ms: Option<u64>,
+    /// The entry cap a check stopped at. Omitted otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_entries: Option<u64>,
 }
 
 /// `mode` as exactly four octal digits.
@@ -257,6 +271,8 @@ pub enum Discriminator {
     Folder(FolderName),
     Addon(String),
     Blob([u8; 32]),
+    /// A failure mode's check (the doctor runtime's own findings).
+    Detector(&'static str),
 }
 
 /// What a finding is about: a scope and at most one resource in it. The one way a
@@ -305,6 +321,11 @@ impl Subject {
 
     pub fn blob(self, sha256: [u8; 32]) -> Self {
         self.about(Discriminator::Blob(sha256))
+    }
+
+    /// The check of the failure mode `fm`.
+    pub fn detector(self, fm: &'static str) -> Self {
+        self.about(Discriminator::Detector(fm))
     }
 
     /// A second discriminator replaces the first; no detector should set two.
@@ -448,6 +469,7 @@ fn key_and_label(fm_id: &'static str, subject: &Subject) -> (InstanceKey, String
             let short = hex.get(..12).unwrap_or(&hex);
             (format!(":blob={hex}"), format!(" · blob {short}"))
         }
+        Some(Discriminator::Detector(fm)) => (format!(":detector={fm}"), format!(" · {fm}")),
     };
     (
         InstanceKey(format!("{fm_id}@{scope}{key_part}")),
@@ -502,10 +524,18 @@ pub enum DiscriminatorKind {
     Folder,
     Addon,
     Blob,
+    Detector,
 }
 
 impl DiscriminatorKind {
-    const ALL: [Self; 5] = [Self::Tx, Self::Path, Self::Folder, Self::Addon, Self::Blob];
+    const ALL: [Self; 6] = [
+        Self::Tx,
+        Self::Path,
+        Self::Folder,
+        Self::Addon,
+        Self::Blob,
+        Self::Detector,
+    ];
 
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -514,6 +544,7 @@ impl DiscriminatorKind {
             Self::Folder => "folder",
             Self::Addon => "addon",
             Self::Blob => "blob",
+            Self::Detector => "detector",
         }
     }
 
@@ -531,6 +562,7 @@ impl DiscriminatorKind {
                         .bytes()
                         .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
             }
+            Self::Detector => is_fm_id(value),
         }
     }
 }
@@ -544,7 +576,7 @@ pub enum InstanceParseError {
     BadFmId(String),
     #[error("scope {0:?} is neither `machine` nor a target key")]
     BadScope(String),
-    #[error("{0:?} is not a resource kind: expected tx, path, folder, addon or blob")]
+    #[error("{0:?} is not a resource kind: expected tx, path, folder, addon, blob or detector")]
     UnknownDiscriminator(String),
     #[error("{value:?} is not a {} value", .kind.as_str())]
     BadValue {
@@ -872,6 +904,12 @@ mod tests {
                 format!("{FM}@machine:blob={blob}"),
                 "machine · blob abababababab".to_owned(),
             ),
+            (
+                "detector",
+                Subject::machine().detector(PENDING),
+                format!("{FM}@machine:detector={PENDING}"),
+                format!("machine · {PENDING}"),
+            ),
         ]
     }
 
@@ -925,6 +963,7 @@ mod tests {
                 Discriminator::Folder(_) => DiscriminatorKind::Folder,
                 Discriminator::Addon(_) => DiscriminatorKind::Addon,
                 Discriminator::Blob(_) => DiscriminatorKind::Blob,
+                Discriminator::Detector(_) => DiscriminatorKind::Detector,
             });
             assert_eq!(kind, expected, "{case}: {instance}");
             assert_eq!(parsed.to_string(), instance, "{case}");

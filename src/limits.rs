@@ -79,6 +79,9 @@ pub const QUICK_DETECTOR_BUDGET: Duration = Duration::from_millis(5);
 /// A default or deep doctor check's run-time deadline without `--budget` (M4-D43); past
 /// it the check stops and the run reports it incomplete.
 pub const DOCTOR_DETECTOR_DEADLINE: Duration = Duration::from_secs(2);
+/// Fresh ULIDs a doctor run draws after its run directory's name is taken (M4-D33):
+/// three attempts in all, then the run cannot create its directory.
+pub const RUN_ID_RETRY: u32 = 2;
 /// Most bytes discovery reads from one client metadata file (`.build.info`,
 /// `.flavor.info`, `Config.wtf`, `realmlist.wtf`, …); the rest is ignored. Also the most
 /// the doctor's view reads of one state or config file (`config.toml`, `registry.json`,
@@ -478,6 +481,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         "ms",
         None,
         "A default or deep doctor check's run-time deadline without --budget; past it, check-incomplete",
+    ),
+    limit(
+        "RUN_ID_RETRY",
+        LimitValue::Count(RUN_ID_RETRY as u64),
+        "count",
+        None,
+        "Fresh ULIDs drawn after a doctor run-directory name collision",
     ),
     limit(
         "DISCOVERY_FILE_MAX_BYTES",
@@ -1101,7 +1111,7 @@ mod tests {
         "PLANS_SWEEP_MAX", "PLAN_EVIDENCE_LINES_MAX", "ORPHAN_MIN_AGE", "REASON_MAX_CHARS",
         "AUTH_TOKEN_MAX_BYTES", "NET_LOG_MAX_BYTES",
         "SAVEDVARIABLES_MAX_BYTES", "TOC_LINE_MAX", "QUICK_DETECTOR_BUDGET",
-        "DOCTOR_DETECTOR_DEADLINE",
+        "DOCTOR_DETECTOR_DEADLINE", "RUN_ID_RETRY",
         "DISCOVERY_FILE_MAX_BYTES", "CREDENTIAL_COMMAND_TIMEOUT", "RELEASE_MEMO_MAX_ENTRIES",
         "MEMO_KNOWN_RELEASES", "DEPENDENCY_SOURCE_MAX_AGE", "CHANGELOG_MAX_CHARS",
         "CHANGELOG_MAX_ENTRIES", "API_RESPONSE_MAX_BYTES",

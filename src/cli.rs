@@ -1662,7 +1662,56 @@ fn install_panic_hook() {
             .map(|l| format!(" at {}:{}", l.file(), l.line()))
             .unwrap_or_default();
         first_panic(&PANIC_INFO, format!("internal error: {payload}{at}"));
+        record_location(info);
     }));
+}
+
+thread_local! {
+    /// Where this thread last panicked, `<file>:<line>`, for [`take_caught_panic`].
+    static PANIC_AT: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Records where `info` panicked on this thread. A file the compiler names by an absolute
+/// path (a dependency's, under the builder's home) keeps only its file name.
+fn record_location(info: &std::panic::PanicHookInfo<'_>) {
+    let at = info.location().map(|l| {
+        let file = std::path::Path::new(l.file());
+        let file = if file.is_absolute() {
+            file.file_name().map_or_else(
+                || l.file().to_owned(),
+                |name| name.to_string_lossy().into_owned(),
+            )
+        } else {
+            l.file().to_owned()
+        };
+        format!("{file}:{}", l.line())
+    });
+    PANIC_AT.with(|slot| *slot.borrow_mut() = at);
+}
+
+/// For a panic the program caught on this thread (a doctor check, isolated): where it
+/// struck, `<file>:<line>`, and the first-panic slot cleared, so a later real panic is
+/// reported as itself. The payload is never kept: it may format data.
+pub(crate) fn take_caught_panic() -> Option<String> {
+    let mut first = PANIC_INFO
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *first = None;
+    PANIC_AT.with(|slot| slot.borrow_mut().take())
+}
+
+/// In tests, where `run` never installs the hook: one that records where each thread
+/// panicked, then hands the panic to the hook before it, so test output is unchanged.
+#[cfg(test)]
+pub(crate) fn record_panic_locations() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            record_location(info);
+            previous(info);
+        }));
+    });
 }
 
 /// Keeps `message` unless a panic is recorded already: a scoped thread's panic panics
