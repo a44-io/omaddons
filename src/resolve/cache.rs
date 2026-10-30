@@ -488,6 +488,13 @@ impl<'a> ReleaseCache<'a> {
             .cloned()
     }
 
+    /// Adds `facts` to what this run learned, for [`ReleaseCache::remember`] to write:
+    /// what a plan its binding refused downloaded (M4-D20), so the next run finds those
+    /// archives in the cache by their hashes instead of downloading them again.
+    pub fn learn(&self, facts: &[CandidateFact]) {
+        lock(&self.learned).candidates.extend(facts.iter().cloned());
+    }
+
     /// Writes what this run learned (and `facts`) to the memo, once per command, ringing
     /// the doorbell when that changed the memo. The warnings join the outcome:
     /// `stale_check` when an answer came from the memo whatever its age. The notes are
@@ -1148,5 +1155,63 @@ mod tests {
             cache.tukui_list().unwrap_err().code,
             ErrorCode::SourceDisabled
         );
+    }
+
+    /// What a refused plan downloaded, learned during the run, is written with the facts
+    /// the command gives `remember` (M4-D20).
+    #[test]
+    fn facts_learned_during_the_run_are_remembered() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().to_path_buf();
+        let paths = Paths::with_roots(&base, base.join("c"), base.join("s"), base.join("k"));
+        let registry = SourceRegistry::builtin(&crate::sources::SourceConfigView::all_enabled());
+        let fact = |release_id: &str| CandidateFact {
+            release_id: release_id.to_owned(),
+            asset: "Foo.zip".to_owned(),
+            sha256: "ab".repeat(32),
+            size: 3,
+            verdicts: Vec::new(),
+            unverified: false,
+        };
+        for (name, learned, given) in [
+            ("learned alone", vec!["gh:o/foo@v3"], vec![]),
+            (
+                "learned and given",
+                vec!["gh:o/foo@v3"],
+                vec!["gh:o/bar@v1"],
+            ),
+            ("given alone", vec![], vec!["gh:o/bar@v1"]),
+        ] {
+            let cache = ReleaseCache::new(
+                &paths,
+                &NoNetwork,
+                &registry,
+                Freshness::Revalidate,
+                "apply",
+                Actor::Agent,
+            );
+            let facts = |ids: &[&str]| ids.iter().map(|id| fact(id)).collect::<Vec<_>>();
+            cache.learn(&facts(&learned));
+            let remembered = cache.remember(&facts(&given));
+            assert!(
+                remembered.notes.is_empty(),
+                "{name}: {:?}",
+                remembered.notes
+            );
+            let (memo, _) = memo::load(&paths);
+            let mut ids: Vec<&str> = memo
+                .candidates
+                .iter()
+                .map(|f| f.release_id.as_str())
+                .collect();
+            ids.sort_unstable();
+            let mut want: Vec<&str> = learned.iter().chain(&given).copied().collect();
+            want.sort_unstable();
+            want.dedup();
+            assert!(
+                want.iter().all(|id| ids.contains(id)),
+                "{name}: memo candidates {ids:?}, want {want:?}"
+            );
+        }
     }
 }

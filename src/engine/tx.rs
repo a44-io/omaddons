@@ -448,8 +448,15 @@ pub fn run(req: &TxRequest, ctx: &EngineCtx<'_>) -> Result<TxOutcomes> {
     };
     let planned = plan::plan(&plan_req, &plan_ctx).and_then(|plan| match ctx.binding {
         // A bound run, dry or not, stages and reports nothing unless it planned what the
-        // preview showed (M4-D19).
-        Some(binding) => binding.plan(&plan).map(|()| plan),
+        // preview showed (M4-D19). What its planning downloaded is still true: the
+        // command remembers it, so the re-preview finds those archives cached (M4-D20).
+        Some(binding) => match binding.plan(&plan) {
+            Ok(()) => Ok(plan),
+            Err(error) => {
+                cache.learn(&plan.facts);
+                Err(error)
+            }
+        },
         None => Ok(plan),
     });
     let plan = match planned {

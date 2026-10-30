@@ -15,9 +15,11 @@ use common::http::{record as record_http, replay, scenario};
 use common::netlog::net_log;
 use common::state::record;
 use common::trees::tree_hash;
-use common::tukui::{elvui, etag, tukui_addon, tukui_dead_token, tukui_download, tukui_list};
+use common::tukui::{
+    elvui, elvui_zip, etag, tukui_addon, tukui_dead_token, tukui_download, tukui_list,
+};
 use serde_json::{Value, json};
-use support::{check_recorded, elvui_zip, everything_under, folders, purposes};
+use support::{check_recorded, everything_under, folders, purposes};
 
 #[cfg(test)]
 mod support {
@@ -63,22 +65,6 @@ mod support {
             resolved.canonical_url.as_deref(),
             Some("https://api.tukui.org/v1/addon/elvui")
         );
-    }
-
-    /// ElvUI's three folders as its zip has them: each with one TOC naming every client
-    /// it loads on and the Tukui project headers, and a `core.lua` per version.
-    pub fn elvui_zip(version: &str) -> Vec<u8> {
-        let toc = "## Interface: 11509, 16001, 20506, 38002, 50504, 120100, 120105\n\
-                   ## Title: ElvUI\n\
-                   ## X-Tukui-ProjectID: -2\n\
-                   ## X-Tukui-ProjectFolders: ElvUI, ElvUI_Libraries, ElvUI_Options\n";
-        let core = format!("-- ElvUI {version}");
-        super::zip_text(&[
-            ("ElvUI/ElvUI.toc", toc),
-            ("ElvUI/core.lua", &core),
-            ("ElvUI_Libraries/ElvUI_Libraries.toc", toc),
-            ("ElvUI_Options/ElvUI_Options.toc", toc),
-        ])
     }
 
     /// `(tukui-list, tukui-addon, asset)` lines in `net.log` after the first `before`.

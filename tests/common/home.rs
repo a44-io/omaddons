@@ -148,7 +148,7 @@ impl Home {
     }
 
     /// A fresh scenario holding a copy of the current one's fixtures.
-    fn next_scenario(&mut self) -> PathBuf {
+    pub fn next_scenario(&mut self) -> PathBuf {
         let mut n = 1;
         while self.env.root().join(format!("http-{n}")).exists() {
             n += 1;

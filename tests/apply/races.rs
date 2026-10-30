@@ -373,12 +373,19 @@ fn race_split_the_waiter_proceeds_when_the_first_committed_nothing() {
     log.reached(&pa, PLANNED);
 
     log.step("second applier waits");
-    let b = cmd(&log, home, &["apply", &p]).spawn();
+    // Held where it has planned but committed nothing: it gets there only through the
+    // lease, and the first applier's empty record is checked before it commits.
+    let pb = Pause::new(home.env.root());
+    let b = cmd(&log, home, &["apply", &p])
+        .failpoints(&format!("{PLANNED}=pause"))
+        .pause(&pb)
+        .spawn();
     wait_until_open(&log, b.pid(), &lease, Duration::from_secs(10));
 
     log.step("first applier commits nothing");
     log.resume(&pa, PLANNED);
     let a = a.wait();
+    log.reached(&pb, PLANNED);
     if a.envelope().get("data").is_some() {
         log.note("the first applier's shape: exit 0, partial, every outcome failed");
         a.ok().assert_private();
@@ -406,6 +413,7 @@ fn race_split_the_waiter_proceeds_when_the_first_committed_nothing() {
     }
 
     log.step("second applier proceeds");
+    log.resume(&pb, PLANNED);
     let b = b.wait();
     b.ok().assert_private();
     let got = outcomes(&log, &b);

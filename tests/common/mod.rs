@@ -7,8 +7,9 @@
 //! (`differential`), shell checks of completion scripts (`shells`), planning as a
 //! command plans, with a persistent release cache and approval witnesses (`planning`),
 //! previews bound by `--if-match`, their refusals and what they leave alone
-//! (`binding`), and the realistic home of 5,040 managed files, built offline
-//! (`realistic`).
+//! (`binding`), the realistic home of 5,040 managed files, built offline
+//! (`realistic`), release landings for every source (`landing`), and WowAce fixtures
+//! over its recording (`wowace`).
 //! Each integration test crate declares `mod common;` and uses the subset it needs.
 //!
 //! Everything is written under a [`env::TestEnv`] tempdir; nothing here touches the real
@@ -35,6 +36,7 @@ pub mod history;
 pub mod home;
 pub mod http;
 pub mod intent;
+pub mod landing;
 pub mod launchers;
 pub mod lua;
 pub mod memo;
@@ -54,6 +56,7 @@ pub mod targets;
 pub mod tlog;
 pub mod trees;
 pub mod tukui;
+pub mod wowace;
 pub mod wowi;
 pub mod wtf;
 

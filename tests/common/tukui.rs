@@ -1,11 +1,12 @@
 //! Tukui fixtures: the project list, `/v1/addon/<slug>` handing out one download token
 //! per call, token downloads (served with an `ETag`, or refused with 403 as a dead token
-//! is), and changelogs.
+//! is), changelogs, and ElvUI's zip.
 
 use std::path::Path;
 
 use serde_json::{Value, json};
 
+use super::archives::zip_text;
 use super::http::{Resp, fixture_seq};
 
 /// The list's URL.
@@ -54,6 +55,22 @@ pub fn elvui() -> Value {
         &["12.1.0", "5.5.4", "1.15.9", "2.5.6"],
         &["ElvUI", "ElvUI_Libraries", "ElvUI_Options"],
     )
+}
+
+/// ElvUI's three folders as its zip has them: each with one TOC naming every client
+/// it loads on and the Tukui project headers, and a `core.lua` per version.
+pub fn elvui_zip(version: &str) -> Vec<u8> {
+    let toc = "## Interface: 11509, 16001, 20506, 38002, 50504, 120100, 120105\n\
+               ## Title: ElvUI\n\
+               ## X-Tukui-ProjectID: -2\n\
+               ## X-Tukui-ProjectFolders: ElvUI, ElvUI_Libraries, ElvUI_Options\n";
+    let core = format!("-- ElvUI {version}");
+    zip_text(&[
+        ("ElvUI/ElvUI.toc", toc),
+        ("ElvUI/core.lua", &core),
+        ("ElvUI_Libraries/ElvUI_Libraries.toc", toc),
+        ("ElvUI_Options/ElvUI_Options.toc", toc),
+    ])
 }
 
 /// Serves `entries` as the list (`cache-control: private, no-store`, as the API does).
