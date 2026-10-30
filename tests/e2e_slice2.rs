@@ -10,19 +10,23 @@ mod common;
 
 use std::collections::BTreeSet;
 use std::fs;
+use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
+use std::time::Duration;
 
 use common::home::Home;
 use common::landing::{Landing, Source};
 use common::memo;
 use common::netlog::net_log;
+use common::pause::Pause;
 use common::plans;
 use common::tlog::tlog;
 use jiff::{SignedDuration, Timestamp};
 use serde_json::{Value, json};
 use support::{
-    Demo, apply_hint, assert_nothing_changed, assert_release, assert_untouched, baseline, behind,
-    expected_fix, outcomes, regular_files, requests, selected, stale,
+    CLEANUP, Demo, PLANNED, PRESTAGED, apply_hint, assert_nothing_changed, assert_release,
+    assert_untouched, baseline, behind, contains, expected_fix, names, never_planned, outcomes,
+    regular_files, requests, selected, sha256, stale, until_it_ends,
 };
 
 #[cfg(test)]
@@ -31,6 +35,7 @@ mod support {
     use std::fs;
     use std::io::ErrorKind;
     use std::path::{Path, PathBuf};
+    use std::time::{Duration, Instant};
 
     use omaddons::app::precondition::preview_argv;
     use serde_json::{Value, json};
@@ -40,6 +45,7 @@ mod support {
     use crate::common::landing::{Landing, Source};
     use crate::common::memo;
     use crate::common::netlog::{NetLogView, net_log};
+    use crate::common::pause::Pause;
     use crate::common::plans;
     use crate::common::tlog::{Ran, TestLog};
 
@@ -164,7 +170,7 @@ mod support {
             .collect()
     }
 
-    fn sha256(bytes: &[u8]) -> String {
+    pub fn sha256(bytes: &[u8]) -> String {
         Sha256::digest(bytes)
             .iter()
             .map(|byte| format!("{byte:02x}"))
@@ -253,6 +259,93 @@ mod support {
             } else if kind.is_file() {
                 out.push(path);
             }
+        }
+    }
+
+    /// Whether the JSON array `list` holds the string `word`.
+    pub fn contains(list: &Value, word: &str) -> bool {
+        list.as_array()
+            .is_some_and(|items| items.iter().any(|item| item == word))
+    }
+
+    /// The names in `dir`, sorted; none when it is absent.
+    pub fn names(dir: &Path) -> Vec<String> {
+        let entries = match fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Vec::new(),
+            Err(error) => panic!("list {}: {error}", dir.display()), // ubs:ignore — the assertion
+        };
+        let mut names: Vec<String> = entries
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Hit after a bound run's own planning, its first token check and its staging, just
+    /// before it takes the global lock: an edit made while it waits there is "late".
+    pub const PRESTAGED: &str = "engine.snapshot.prestaged";
+    /// Hit once, when every target is planned and before any commit: an applier that
+    /// slipped past the plan's lease would plan, and stop here.
+    pub const PLANNED: &str = "engine.plan.done";
+    /// Hit after each target's commit window has unlocked and cleaned up, before the next
+    /// target starts: a pause there holds no global lock.
+    pub const CLEANUP: &str = "engine.cleanup.done";
+
+    /// The waiting applier reached neither sentinel ([`PLANNED`], [`CLEANUP`]). When it
+    /// did, it slipped past the lease: both are resumed, so it exits, and the test fails.
+    #[track_caller]
+    pub fn never_planned(log: &TestLog, waiter: &Pause) {
+        let reached: Vec<(&str, bool)> = [PLANNED, CLEANUP]
+            .map(|name| (name, waiter.was_reached(name)))
+            .to_vec();
+        log.note(format!("the waiting applier's markers: {reached:?}"));
+        let slipped = reached.iter().any(|(_, at)| *at);
+        if slipped {
+            for name in [PLANNED, CLEANUP] {
+                log.resume(waiter, name);
+            }
+        }
+        log.assert_eq(
+            "the second applier planned or committed while the first held the lease",
+            &slipped,
+            &false,
+        );
+    }
+
+    /// Whether process `pid` has ended: gone, or a zombie not reaped yet.
+    fn exited(pid: u32) -> bool {
+        match fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Err(_) => true,
+            Ok(stat) => stat
+                .rsplit_once(')')
+                .and_then(|(_, rest)| rest.split_whitespace().next())
+                .is_none_or(|state| matches!(state, "Z" | "X")),
+        }
+    }
+
+    /// Watches the waiting applier `pid` until it ends (30 s at most), checking its
+    /// sentinels on every poll, so one that slipped past the lease fails the test at once
+    /// instead of sitting paused.
+    #[track_caller]
+    pub fn until_it_ends(log: &TestLog, waiter: &Pause, pid: u32) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if [PLANNED, CLEANUP]
+                .iter()
+                .any(|name| waiter.was_reached(name))
+            {
+                never_planned(log, waiter);
+            }
+            if exited(pid) {
+                log.note(format!("pid {pid} ended"));
+                return;
+            }
+            if Instant::now() >= deadline {
+                log.note(format!("pid {pid} still runs after 30 s"));
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
         }
     }
 }
@@ -779,4 +872,402 @@ fn demo_a_tukui_plan_applies_from_the_cache() {
         .map(|(label, _)| label.as_str())
         .collect();
     log.assert_eq("no download token", &leaked, &Vec::<&str>::new());
+}
+
+/// A file a person edits after `apply`'s own first check, while it waits for the commit
+/// lock, is caught under the lock: `plan_stale` naming `observed`, nothing moved, the edit
+/// kept. The re-preview says it replaces local changes, its plan commits knowingly, and
+/// the undo brings the edit back byte for byte.
+#[test]
+fn demo_a_late_hand_edit_is_caught_under_the_lock() {
+    let log = tlog!();
+    let demo = behind(&log, &["wow"], &["retail"], Source::GitHub);
+
+    log.step("preview");
+    let preview = log.run(
+        &demo.home,
+        &["update", "foo", "-t", "retail", "--dry-run", "--json"],
+    );
+    preview.ok();
+    let p = plans::plan_id(&preview);
+    let approval = &preview.data()["approval"];
+    log.assert_eq(
+        "routine, with no reasons",
+        &(&approval["routine"], &approval["reasons"]),
+        &(&json!(true), &json!([])),
+    );
+    let lease = plans::lease_path(&demo.home.env, &p);
+
+    log.step("apply pauses before the commit lock");
+    let pause = Pause::new(demo.home.env.root());
+    let paused = log
+        .cmd(&demo.home, &["apply", &p, "--json"])
+        .failpoints(&format!("{PRESTAGED}=pause"))
+        .pause(&pause)
+        .spawn();
+    log.reached(&pause, PRESTAGED);
+    log.note(
+        "apply passed its lifecycle checks, re-planned bound to the stored token and staged \
+         release 2; it holds the plan's lease and no global lock",
+    );
+    log.assert_eq(
+        "the paused apply holds the plan's lease",
+        &plans::holds_open(paused.pid(), &lease),
+        &true,
+    );
+
+    log.step("a hand edit after the first check");
+    let core = demo.home.addons("_retail_").join("Foo/core.lua");
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&core)
+        .unwrap()
+        .write_all(b"-- edited by hand after the preview\n")
+        .unwrap();
+    let edited = fs::read(&core).unwrap();
+    let before = baseline(&log, &demo.home, &["retail"]);
+
+    log.step("the commit refuses under the lock");
+    log.resume(&pause, PRESTAGED);
+    let ran = paused.wait();
+    let details = stale(&log, &ran);
+    log.assert_eq(
+        "details.changed holds observed",
+        &contains(&details["changed"], "observed"),
+        &true,
+    );
+    let error = &ran.envelope()["error"];
+    log.assert_eq(
+        "the fix previews the plan again",
+        &error["fix_argv"],
+        &json!(expected_fix(&demo.home, &p)),
+    );
+    // The witness names a folder by its key, the case-folded name (`src/engine/witness.rs`).
+    log.assert_eq(
+        "the message names Foo as what changed under the lock",
+        &error["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("(observed changed: foo changed after the preview)"),
+        &true,
+    );
+    assert_nothing_changed(&log, &demo.home, &["retail"], &before);
+    log.assert_eq(
+        "core.lua is as the edit left it",
+        &sha256(&fs::read(&core).unwrap()),
+        &sha256(&edited),
+    );
+    let stage = demo
+        .home
+        .client("_retail_")
+        .join("Interface/.omaddons/stage");
+    log.assert_eq(
+        "no journal or stage is left",
+        &(names(&demo.home.state().join("journal")), names(&stage)),
+        &(Vec::new(), Vec::new()),
+    );
+    log.assert_eq(
+        "no history line carries the plan",
+        &plans::history_txs_for(&log, &demo.home, &p),
+        &Vec::new(),
+    );
+
+    log.step("the re-preview shows the edit");
+    let again = log.run(
+        &demo.home,
+        &["update", "foo", "-t", "retail", "--dry-run", "--json"],
+    );
+    again.ok();
+    let p2 = plans::plan_id(&again);
+    // ubs:ignore — comparing plan ids, not secrets
+    log.assert_eq("a new plan", &(p2 != p), &true);
+    let approval = again.data()["approval"].clone();
+    log.json("approval", &approval);
+    let replaced = &approval["scope"]["local_changes_replaced"];
+    log.assert_eq(
+        "not routine: it replaces local changes in Foo",
+        &(
+            &approval["routine"],
+            contains(&approval["reasons"], "local_changes_replaced"),
+            replaced["count"].as_u64().is_some_and(|count| count >= 1),
+            contains(&replaced["folders"], "Foo"),
+        ),
+        &(&json!(false), true, true, true),
+    );
+
+    log.step("apply the new plan");
+    let applied = log.run(&demo.home, &["apply", &p2, "--json"]);
+    applied.ok();
+    let done = outcomes(&log, &applied);
+    let statuses: Vec<_> = done
+        .iter()
+        .map(|(target, status, tx)| (target.as_str(), status.as_str(), tx.is_some()))
+        .collect();
+    log.assert_eq(
+        "committed on retail",
+        &statuses,
+        &vec![("retail", "committed", true)],
+    );
+    let tx = done[0].2.clone().unwrap_or_default();
+    assert_release(&log, &demo, "retail", 2);
+
+    log.step("undo brings the edit back");
+    log.run(&demo.home, &["undo", &tx, "--json"]).ok();
+    log.assert_eq(
+        "core.lua is the hand-edited file, byte for byte",
+        &sha256(&fs::read(&core).unwrap()),
+        &sha256(&edited),
+    );
+}
+
+/// Two `apply`s of one two-client plan, the first paused between its clients' commits:
+/// the second waits on the plan's lease without planning, then reports the first one's
+/// work as `already_applied`. The plan is never split between appliers.
+#[test]
+fn demo_two_appliers_never_split_a_plan() {
+    let log = tlog!();
+    let demo = behind(
+        &log,
+        &["wow", "wow_classic"],
+        &["retail", "classic"],
+        Source::GitHub,
+    );
+    let home = &demo.home;
+
+    log.step("preview both clients");
+    let preview = log.run(home, &["update", "foo", "--dry-run", "--json"]);
+    preview.ok();
+    let p = plans::plan_id(&preview);
+    let approval = preview.data()["approval"].clone();
+    log.json("approval", &approval);
+    let text = |value: &Value| value.as_str().unwrap_or_default().to_owned();
+    let mut changes: Vec<(String, String)> = approval["selection"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|item| (text(&item["target_id"]), text(&item["to_version"])))
+        .collect();
+    changes.sort();
+    let v2 = demo.landing.version(2);
+    log.assert_eq(
+        "one update per client, to release 2",
+        &changes,
+        &vec![
+            ("classic".to_owned(), v2.clone()),
+            ("retail".to_owned(), v2.clone()),
+        ],
+    );
+    let lease = plans::lease_path(&home.env, &p);
+
+    log.step("the first applier commits one client and pauses");
+    let pa = Pause::new(home.env.root());
+    let a = log
+        .cmd(home, &["apply", &p, "--json"])
+        .failpoints(&format!("{CLEANUP}=pause"))
+        .pause(&pa)
+        .spawn();
+    log.reached(&pa, CLEANUP);
+    let first = plans::history_txs_for(&log, home, &p);
+    log.assert_eq("one client committed so far", &first.len(), &1);
+    let (x, t1) = first[0].clone();
+    let y = if x == "retail" { "classic" } else { "retail" }.to_owned();
+
+    log.step("the second applier waits on the plan's lease");
+    let pb = Pause::new(home.env.root());
+    let b = log
+        .cmd(home, &["apply", &p, "--json"])
+        .failpoints(&format!("{PLANNED}=pause,{CLEANUP}=pause"))
+        .pause(&pb)
+        .spawn();
+    plans::wait_until_open(&log, b.pid(), &lease, Duration::from_secs(10));
+    log.assert_eq(
+        "the second applier holds the lease file open",
+        &plans::holds_open(b.pid(), &lease),
+        &true,
+    );
+    // Only a slipped applier's chance to show itself; the checks after both end bind.
+    std::thread::sleep(Duration::from_millis(200));
+    never_planned(&log, &pb);
+
+    log.step("the first applier finishes");
+    log.resume(&pa, CLEANUP);
+    let ra = a.wait();
+    ra.ok();
+    let done = outcomes(&log, &ra);
+    let t2 = done
+        .iter()
+        .find(|(target, _, _)| *target == y)
+        .and_then(|(_, _, tx)| tx.clone())
+        .unwrap_or_default();
+    log.assert_eq(
+        "two distinct transactions",
+        &(!t2.is_empty() && t2 != t1),
+        &true,
+    );
+    let committed = |target: &str, tx: &str| {
+        (
+            target.to_owned(),
+            "committed".to_owned(),
+            Some(tx.to_owned()),
+        )
+    };
+    let mut expected = vec![committed(&x, &t1), committed(&y, &t2)];
+    expected.sort();
+    log.assert_eq(
+        "both clients committed by the first applier",
+        &done,
+        &expected,
+    );
+
+    log.step("the second applier reports the first one's work");
+    until_it_ends(&log, &pb, b.pid());
+    let rb = b.wait();
+    let details = stale(&log, &rb);
+    log.assert_eq(
+        "already applied, naming both transactions oldest first",
+        &(&details["reason"], &details["txs"]),
+        &(&json!("already_applied"), &json!([t1, t2])),
+    );
+    log.assert_eq(
+        "it waited for the lease, never for its timeout (elapsed_ms < 30000)",
+        &(rb.elapsed_ms < 30_000),
+        &true,
+    );
+    never_planned(&log, &pb);
+
+    log.step("the plan was never split");
+    let lines = plans::history_txs_for(&log, home, &p);
+    log.assert_eq(
+        "exactly two history lines carry the plan",
+        &lines,
+        &vec![(x.clone(), t1.clone()), (y.clone(), t2.clone())],
+    );
+    let shown = plans::show(&log, home, &[&p], &[]);
+    shown.ok();
+    log.assert_eq(
+        "plans show: completed, with history's transactions",
+        &(&shown.data()["state"], plans::evidence_txs(&shown)),
+        &(&json!("completed"), lines.clone()),
+    );
+    for target in ["retail", "classic"] {
+        assert_release(&log, &demo, target, 2);
+    }
+}
+
+/// An `apply` whose output was lost after it committed is reconciled from history alone:
+/// `plans show` reports it completed with one transaction per client, writing nothing and
+/// asking nothing, and still names those transactions once the plan store is emptied.
+#[test]
+fn demo_plans_show_reconciles_a_lost_output() {
+    let log = tlog!();
+    let demo = behind(
+        &log,
+        &["wow", "wow_classic"],
+        &["retail", "classic"],
+        Source::GitHub,
+    );
+    let home = &demo.home;
+
+    log.step("preview");
+    let preview = log.run(home, &["update", "foo", "--dry-run", "--json"]);
+    preview.ok();
+    let p = plans::plan_id(&preview);
+    let approval = preview.data()["approval"].clone();
+    log.json("approval", &approval);
+
+    log.step("apply with its output lost");
+    let status = plans::apply_with_stdout_closed(&log, home, &p);
+    log.note(format!(
+        "exit status {status:?}, not asserted: the commits happen before rendering"
+    ));
+
+    log.step("reconcile");
+    let shown = plans::show(&log, home, &[&p], &[]);
+    shown.ok();
+    let data = shown.data();
+    log.json("plans show", data);
+    log.assert_eq(
+        "completed, stored, readable, with complete evidence",
+        &(
+            &data["state"],
+            &data["stored"],
+            &data["readable"],
+            &data["evidence"]["complete"],
+        ),
+        &(
+            &json!("completed"),
+            &json!(true),
+            &json!(true),
+            &json!(true),
+        ),
+    );
+    let evidence = plans::evidence_txs(&shown);
+    let mut targets: Vec<&str> = evidence.iter().map(|(target, _)| target.as_str()).collect();
+    targets.sort_unstable();
+    log.assert_eq(
+        "one transaction per client",
+        &targets,
+        &vec!["classic", "retail"],
+    );
+    log.assert_eq(
+        "the evidence is history's",
+        &evidence,
+        &plans::history_txs_for(&log, home, &p),
+    );
+    log.assert_eq(
+        "the intent and the preview's approval",
+        &(&data["intent"]["command"], &data["approval"]),
+        &(&json!("update"), &approval),
+    );
+    for target in ["retail", "classic"] {
+        assert_release(&log, &demo, target, 2);
+    }
+
+    log.step("the human answer");
+    let human = plans::show_human(&log, home, &[&p], &[]);
+    human.exit(0);
+    log.assert_eq(
+        "stdout says completed",
+        &human.stdout().contains("completed"),
+        &true,
+    );
+
+    log.step("the plan store is emptied");
+    let mut removed = Vec::new();
+    for path in plans::plan_files(&home.env)
+        .into_iter()
+        .chain(plans::lease_files(&home.env))
+    {
+        removed.push(path.file_name().unwrap().to_string_lossy().into_owned());
+        fs::remove_file(&path).unwrap();
+    }
+    log.json("removed", &removed);
+
+    log.step("reconcile without the plan file");
+    let gone = plans::show(&log, home, &[&p], &[]);
+    gone.ok();
+    let data = gone.data();
+    log.json("plans show", data);
+    log.assert_eq(
+        "unknown, not stored, not readable, with no intent or approval",
+        &(
+            &data["state"],
+            &data["stored"],
+            &data["readable"],
+            &data["intent"],
+            &data["approval"],
+        ),
+        &(
+            &json!("unknown"),
+            &json!(false),
+            &json!(false),
+            &Value::Null,
+            &Value::Null,
+        ),
+    );
+    log.assert_eq(
+        "the same transactions",
+        &plans::evidence_txs(&gone),
+        &evidence,
+    );
 }

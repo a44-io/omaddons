@@ -2919,7 +2919,7 @@ With milestone 3's features in, there are 2,279 Rust tests: 1,154 unit tests in 
 | `tests/skill.rs` | The committed skill is the guide, byte for byte; its frontmatter and stamp; the compiled digest is its stamp; the regeneration's fixed point; every command the guide names parses |
 | `tests/fsx_lock.rs` | The global lock and the in-flight locks |
 | `tests/tlog_selftest.rs` | The test log itself: both files and every field, `net.log` and failpoint capture, redaction, truncation, tree differences, the failure output and the live echo (in child processes), and the e2e marker convention |
-| `tests/e2e_slice2.rs` | Slice 2's exit demo, as tests: install, then `update --dry-run`, then `apply`; a release landing in between (`plan_stale`, and the re-preview shows it); a second `apply` (`already_applied`); a Tukui plan applied from the cache |
+| `tests/e2e_slice2.rs` | Slice 2's exit demo, as tests: install, then `update --dry-run`, then `apply`; a release landing in between (`plan_stale`, and the re-preview shows it); a second `apply` (`already_applied`); a Tukui plan applied from the cache; a late hand edit caught under the lock; two appliers of one plan; `plans show` after a lost output |
 
 Recorded HTTP fixtures live in `tests/fixtures/http/<scenario>/`. Debug builds replay them with `OMADDONS_HTTP_FIXTURES=<dir>` and re-record them with `OMADDONS_RECORD=1`. Recording never stores request headers, drops `set-cookie`, and strips secret query parameters from URLs and `location` headers.
 
