@@ -73,7 +73,8 @@ Item {
 
   function installInto(target, row) {
     if (!canChange) return
-    frame.report(svc.run("install", { "target": target, "ref": row.ref }, "Install " + row.name))
+    // The view shows no release for a search result: the dialog always opens (M4-D28).
+    frame.report(svc.run("install", { "target": target, "ref": row.ref }, "Install " + row.name, []))
   }
 
   // The chooser's cursor moves among the eligible clients only; it starts on none.

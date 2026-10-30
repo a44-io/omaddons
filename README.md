@@ -1775,7 +1775,7 @@ The bar widget for [Omarchy](https://omarchy.org)'s desktop: one gamepad button 
 
 A left click (or the bar's keybinding) opens its keyboard panel, and a middle click opens it on Issues. The panel has a summary ("2 clients · 3 updates · 1 issue", when the last check ran, which client is running) with Check now, Undo last and Open AddOns, a filter by client, the switcher between its five views (Updates, Installed, Issues, Backups, Search, keys `1` to `5`), the progress of a running change, the last result with its Undo, and a failure with its Fix. Opening it and switching views make no network request.
 
-- **Updates** lists what is behind, per client: updates first (`DBM  12.1.14 → 12.1.15`, "then /reload" while that client runs), then pinned addons with a newer release, blocked ones and failed checks. Its header updates everything in the filter (**Update all (3)**); with nothing to do it says "Everything is current · checked 25 min ago".
+- **Updates** lists what is behind, per client: updates first (`DBM  12.1.14 → 12.1.15`, "then /reload" while that client runs), then pinned addons with a newer release, blocked ones and failed checks. Its header updates everything in the filter (**Update all (3)**); with nothing to do it says "Everything is current · checked 25 min ago". Update (Enter), Update all and `u` preview first: the widget runs the update's dry run, and when the plan is exactly what the rows showed (the same client, addon, source, release, file and versions) and needs nothing more, it applies that plan (`omaddons apply <plan_id>`) with no dialog. Otherwise the confirmation opens, starting on No: "Changed since you looked" with what moved, or one line per effect the plan adds (a new dependency, a folder it removes, files you changed that it replaces, kept for undo, another source or channel, a change while the game runs). A preview with nothing to do refreshes the view. Pins run directly.
 - **Installed** lists every managed addon per client with its version, source (`gh`, `wowi`, `tukui`, `git`, `wowace`, `file`) and markers: `dep`, `orphan`, `pinned`, and `modified` or `missing` when its files changed on disk. Unmanaged folders show as a hint (`omaddons adopt -t <id>`).
 - **Issues** puts every problem in one place with its fix one key away: `status`'s problems by severity (Enter runs the remediation; a destructive one asks first; one the widget cannot run shows as text), each client's Lua errors from `omaddons errors` (the likely source with how sure it is, "update available (may fix it)", the error lines in strict text: an addon's own free-text message shows only its length; errors received from other players only as a count), a BugGrabber install where it is missing, and the last status's warnings.
 - **Search** finds addons (`/`, type, Enter) on every client at once, or on the filtered one, with each client's compatibility hint. Enter installs into the filtered client when its hint is `yes` or `likely`; under All it asks which client, choosing none for you.
@@ -1786,7 +1786,7 @@ A left click (or the bar's keybinding) opens its keyboard panel, and a middle cl
 |---|---|
 | `h`/`l`, ←/→, `1`–`5` | Previous or next view, or view N |
 | `j`/`k`, ↓/↑ | Move the cursor |
-| Enter | Updates: update the addon. Installed: reinstall it when its files changed, else update it when a release waits |
+| Enter | Updates: preview the update, then apply it. Installed: reinstall it after a confirmation when its files changed, else update it when a release waits |
 | `p` | Pin or unpin the addon |
 | `i` | Updates: the newest release notes (fetched only then), with a link to GitHub, WoWInterface, Tukui or WowAce |
 | `x` | Installed: remove the addon, after a confirmation |
@@ -1796,7 +1796,7 @@ A left click (or the bar's keybinding) opens its keyboard panel, and a middle cl
 | `x` on a backup | Delete that backup, after a confirmation (never one in use) |
 | `d` | Dismiss the new Lua errors the panel shows (the filtered client's, or each client's); if a session ended since, nothing is dismissed and the panel says "New errors arrived; review them" |
 | `t` | Filter by client: All, then each client in turn |
-| `u` | Update everything, or the filtered client |
+| `u` | Update everything, or the filtered client, previewed |
 | `c` | Check for updates now |
 | `z` | Undo (or redo) the last change, after a confirmation |
 | `o` | Open the filtered client's `Interface/AddOns` folder |
@@ -1804,7 +1804,7 @@ A left click (or the bar's keybinding) opens its keyboard panel, and a middle cl
 | Esc | Close the panel (or the confirmation) |
 | Tab | The next panel on the bar (Omarchy's) |
 
-Every destructive action (an undo, a removal, a restore) first shows what omaddons would do: the command's own dry run. The dialog starts on No: `y`, or moving to Yes with `h`/`l` and pressing Enter, confirms, and `n` or Esc cancels. When the world changed between the preview and the run, nothing runs: the dialog comes back with "Changed since you looked" and the new preview. Only a fresh key press confirms it, never a key still held from before. When the widget finds a binary from another build, the panel turns read-only and keeps only Retry and Reinstall widget. When the binary is missing, it shows the two commands that bring it back.
+Every update, install, reinstall and destructive action (an undo, a removal, a restore, a backup deletion) first runs the command's own dry run, which stores a plan. A reinstall and every destructive action always ask, showing what omaddons would do. The dialog starts on No: `y`, or moving to Yes with `h`/`l` and pressing Enter, confirms, and `n` or Esc cancels. Yes, or a routine matching update, runs `omaddons apply <plan_id>` of exactly that plan. When the plan went stale, expired or is gone, nothing runs: the widget previews again and the dialog comes back with "Changed since you looked" and the new preview. Dismissing Lua errors still binds to the read the panel showed, and forgetting a client (`targets rm`) still confirms the command itself. Only a fresh key press confirms it, never a key still held from before. When the widget finds a binary from another build, the panel turns read-only and keeps only Retry and Reinstall widget. When the binary is missing, it shows the two commands that bring it back.
 
 On its own, the widget looks after a play session without being asked:
 
@@ -1817,16 +1817,17 @@ On its own, the widget looks after a play session without being asked:
 The widget keeps a few rules, and every gate checks them:
 
 - It runs omaddons only with an argv from its own command table, or one the CLI printed and the widget's classifier accepted, never through a shell or as a string.
+- It runs `omaddons apply` only for the plan of the preview it just ran, never from a fix or a recommendation.
 - Besides omaddons it runs four desktop tools: `inotifywait`, `omarchy-notification-send`, `xdg-open`, and `omarchy-launch-browser`, the last only for an `https:` link to GitHub, WoWInterface, Tukui or WowAce. When Omarchy's shell offers no summon call to open the panel, it also runs `omarchy-shell shell summon` with the widget's id, as a fixed argv.
 - Every omaddons process runs under the `HOME` and XDG directories the widget was installed for.
 - It writes no file.
-- It shows the CLI's strings as plain text.
-- A destructive action runs only after its preview.
+- It shows the CLI's strings as plain text, and decides nothing from a warning's text.
+- An update, an install, a reinstall or a destructive action runs only after its preview, and only as that preview's `apply`.
 - A notification carries names and counts only.
 
 `omarchy/tests/security.test.js` scans the widget's source for code that goes around any of these, and each scan must also catch a violation planted in a copy of the source.
 
-The widget also answers on the shell's IPC, under its id: `omarchy-shell a44.omaddons state` prints its state as one JSON object (`phase`, the bar's badge and urgency, `summary`, the running `action`, the last result, whether a panel is open, the binary and both versions, and what each of its lanes is running), and `refresh`, `check` and `show <view>` ask for a refresh, an update check, or the panel opened at a view.
+The widget also answers on the shell's IPC, under its id: `omarchy-shell a44.omaddons state` prints its state as one JSON object (`phase`, the bar's badge and urgency, `summary`, the running `action`, the last result, whether a panel is open, the binary and both versions, what each of its lanes is running, whether a confirmation is open (`confirm`: its heading and plan id) and what the last preview decided (`lastPreview`: `direct`, `dialog`, `refresh`, `refuse` or `failed`, with its plan id)), and `refresh`, `check` and `show <view>` ask for a refresh, an update check, or the panel opened at a view.
 
 ```bash
 omaddons omarchy                          # status: installed, current, on the bar? (bare omarchy)
@@ -3043,6 +3044,10 @@ That is a primary design goal. Use `--json`, read `error.fix_argv` and `commands
 ### Why did `apply` refuse?
 
 Because running the plan would no longer do what its preview showed: it already ran (`already_applied`), its 24 hours passed (`expired`), another omaddons build made it (`binary_changed`), a local file it installs from is gone (`input_missing`), or the world changed since (`details.changed`). Nothing was changed. Preview again: the error's fix is the plan's command with `--dry-run`. See [`plan_stale` after `apply`](#plan_stale-after-apply).
+
+### Why did the widget ask me about an update?
+
+For one of three reasons. The plan does more than the row showed: each line in the dialog is one effect from the CLI's approval summary (a new dependency, a folder removed, files you changed being replaced, another source or channel, a change while the game runs). The release changed since the row was read: the dialog opens with "Changed since you looked" and what moved. Or the view never showed which release it was, as for an install from Search. A routine update that is exactly what the row showed applies with no dialog (see [`omarchy`](#omarchy)).
 
 ### Why does `omarchy plugin remove a44.omaddons` not work?
 

@@ -63,7 +63,8 @@ TestCase {
       property int yes: 0
       property int no: 0
 
-      function run(name, slots, label) { runs = runs.concat([[name, slots, label]]); return "" }
+      // `shown` (what the view showed, for a previewed update) is recorded when given.
+      function run(name, slots, label, shown) { runs = runs.concat([shown === undefined ? [name, slots, label] : [name, slots, label, shown]]); return "" }
       function runCliArgv(argv, label) { cliRuns = cliRuns.concat([[argv, label]]); return "" }
       function readView(view) { reads = reads.concat([view]) }
       function check() { checks++ }
@@ -197,12 +198,13 @@ TestCase {
   // ------------------------------------------------------------- the key map
 
   function test_u_updates_all_or_the_selected_client() {
+    // Each previews with what the Updates view shows (nothing read here: no rows).
     keyClick("u")
-    compare(json(svc.runs[0]), json(["update_all", {}, "Update all"]))
+    compare(json(svc.runs[0]), json(["update_all", {}, "Update all", []]))
     keyClick("t")
     compare(view.filter, "era")
     keyClick("u")
-    compare(json(svc.runs[1]), json(["update_target", { "target": "era" }, "Update era"]))
+    compare(json(svc.runs[1]), json(["update_target", { "target": "era" }, "Update era", []]))
     keyClick("t")
     compare(view.filter, "retail")
     keyClick("t")

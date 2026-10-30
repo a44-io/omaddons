@@ -52,8 +52,11 @@ Item {
   // The read whose failure `lastError` is ("" for an action's): a later success of that
   // same read takes the card away.
   property string lastErrorResource: ""
-  // The open confirmation: {text, stale}.
+  // The open confirmation: {text, heading, stale}.
   property var confirm: null
+  // What the last plan preview decided (M4-D28), for state(): `{resource, decision,
+  // planId}`, null before the first.
+  property var lastPreview: null
   property string incompatibleText: ""
   property string unreachableText: ""
   // The last outcome per resource, for the views and state().
@@ -180,7 +183,8 @@ Item {
       "id": lastRequestId, "contextGeneration": contextGeneration, "target": "", "resource": "",
       "kind": "data", "priority": "user", "selection": null, "lane": "local",
       "template": "", "slots": {}, "cli": null, "purpose": "read", "label": "",
-      "preview": false, "token": "", "confirmed": false, "spec": null, "stale": ""
+      "preview": false, "token": "", "confirmed": false, "spec": null, "stale": "",
+      "mode": "", "shown": null, "again": false, "plan": null, "continuation": false, "deadlineMs": -1, "inactivity": false
     }
     for (var key in fields) if (fields.hasOwnProperty(key)) r[key] = fields[key]
     var queued = Model.enqueue(queues, r)
@@ -318,17 +322,76 @@ Item {
     return request(base)
   }
 
-  function previewOf(spec, stale) {
-    return mutation({
+  // ---- the previewed-action runner (M3-D9, M4-D28): previewOf runs an action's dry run,
+  // applyPreview carries out what Model.previewDecision makes of it, runPlan applies the
+  // plan it offered, and applyAction reads that `apply` and previews again when it was
+  // refused. `again` marks a preview after a refused plan: it goes first, and is never
+  // applied without the dialog.
+  function previewOf(spec, stale, again) {
+    var fields = {
       "resource": spec.template || "cli", "template": spec.template || "", "slots": spec.slots || {},
       "cli": spec.cli || null, "label": spec.label, "priority": spec.priority || "user",
-      "preview": true, "purpose": "preview", "spec": spec, "stale": stale || ""
+      "preview": true, "purpose": "preview", "spec": spec, "stale": stale || "",
+      "mode": spec.mode || "", "shown": spec.shown || null, "again": again === true, "continuation": again === true
+    }
+    // A match preview may ask the sources: the network deadline, kept alive by progress.
+    // A confirm preview and every apply run under the mutation lane's (none).
+    if (spec.mode === "match") {
+      fields.deadlineMs = networkDeadlineMs
+      fields.inactivity = true
+    }
+    return mutation(fields)
+  }
+
+  // The plan a preview offered, applied: first on the mutation lane, replacing nothing,
+  // in the generation it was previewed in.
+  function runPlan(plan, spec, generation) {
+    return mutation({
+      "resource": spec.template || "cli", "cli": plan.argv.slice(), "plan": plan, "label": spec.label,
+      "priority": spec.priority || "user", "purpose": "planned", "spec": spec, "continuation": true,
+      "contextGeneration": generation
     })
   }
 
-  // A mutating template by name: destructive ones preview first (M3-D9), silent ones
-  // run in the background. Returns "" or why it was refused.
-  function run(name, slots, label) {
+  // A preview's answer. On a plan-storing path, Model.previewDecision says what it means:
+  // apply the plan, ask in the dialog, refresh, or run nothing and say why. Elsewhere
+  // (`targets rm`), M3's dialog: Yes runs the command bound to its token, or confirmed.
+  function applyPreview(r, outcome, env) {
+    confirm = null
+    pendingConfirm = null
+    if (outcome !== "ok") {
+      failedPreview = r.spec
+      lastError = errorOf(env, r.label + ": " + outcome)
+      return
+    }
+    var path = r.cli ? Model.classifyCliArgv(r.cli).path : Model.templateShape(r.template, templates).path
+    if (!Model.storesPlan(path)) {
+      var token = env.data && typeof env.data.precondition === "string" ? env.data.precondition : ""
+      confirm = { "text": Model.confirmText(r.template || path, env), "heading": "", "stale": r.stale }
+      pendingConfirm = { "spec": r.spec, "token": token, "binds": Model.CLI_PATHS[path].binds, "plan": null, "contextGeneration": r.contextGeneration }
+      return
+    }
+    var decision = Model.previewDecision({ "mode": r.mode, "shown": r.shown, "again": r.again === true, "path": path }, env)
+    lastPreview = { "resource": r.resource, "decision": decision.kind, "planId": decision.plan ? decision.plan.planId : null }
+    if (decision.kind === "direct") {
+      runPlan(decision.plan, r.spec, r.contextGeneration)
+    } else if (decision.kind === "dialog") {
+      confirm = { "text": Model.dialogText(decision), "heading": decision.heading, "stale": r.stale }
+      pendingConfirm = { "spec": r.spec, "plan": decision.plan, "contextGeneration": r.contextGeneration }
+    } else if (decision.kind === "refresh") {
+      lastResult = { "ok": true, "line": decision.line, "partial": false, "commands": [], "fixes": [] }
+      changed()
+    } else {
+      lastError = { "message": decision.line || r.label + ": no answer to preview", "code": "not_previewed", "fixes": [], "fixText": decision.fixText || "" }
+      changed()
+    }
+  }
+
+  // A mutating template by name: a `preview` template (and any destructive one) runs its
+  // dry run first (M3-D9, M4-D28), silent ones run in the background. `shown` is what
+  // the view showed of the change, for a `match` preview. Returns "" or why it was
+  // refused.
+  function run(name, slots, label, shown) {
     if (!canAct) return incompatibleText || "omaddons is not ready"
     var template = templates.hasOwnProperty(name) ? templates[name] : null
     if (!template || template.mutates !== true) return "no such action: " + name
@@ -337,8 +400,10 @@ Item {
     var refusal = trialBuild(spec)
     if (refusal) return refusal
     var path = Model.templateShape(name, templates).path
-    if (template.confirm === true || Model.CLI_PATHS[path].destructive) {
-      previewOf(spec, "")
+    if (template.preview || Model.CLI_PATHS[path].destructive) {
+      spec.mode = template.preview === "match" ? "match" : "confirm"
+      spec.shown = Array.isArray(shown) ? shown : []
+      previewOf(spec, "", false)
     } else {
       mutation({ "resource": name, "template": name, "slots": spec.slots, "label": spec.label, "priority": spec.priority })
     }
@@ -365,7 +430,9 @@ Item {
     if (!verdict.ok) return "not a command the widget runs (" + verdict.reason + ")"
     var spec = { "cli": argv.slice(), "label": String(label || verdict.path), "priority": "user" }
     if (verdict.destructive) {
-      previewOf(spec, "")
+      spec.mode = "confirm"
+      spec.shown = []
+      previewOf(spec, "", false)
     } else if (verdict.mutates) {
       mutation({ "resource": "cli:" + verdict.path, "cli": spec.cli, "label": spec.label })
     } else {
@@ -379,8 +446,9 @@ Item {
     return ""
   }
 
-  // Yes on the open confirmation: the real run, bound to its preview's token when the
-  // path binds, in the generation the preview was made in.
+  // Yes on the open confirmation, in the generation the preview was made in: the plan
+  // the preview offered, applied; else (no plan-storing path) the real run, bound to its
+  // preview's token when the path binds.
   function confirmYes() {
     if (!confirm || !pendingConfirm) return "nothing to confirm"
     if (!canAct) return incompatibleText || "omaddons is not ready"
@@ -388,6 +456,10 @@ Item {
     confirm = null
     pendingConfirm = null
     var spec = pending.spec
+    if (pending.plan) {
+      runPlan(pending.plan, spec, pending.contextGeneration)
+      return ""
+    }
     mutation({
       "resource": spec.template || "cli", "template": spec.template || "", "slots": spec.slots || {},
       "cli": spec.cli || null, "label": spec.label, "purpose": "confirmed", "spec": spec,
@@ -415,7 +487,8 @@ Item {
   function argvOf(r) {
     var opts = {
       "binary": root.binary, "label": r.label || r.template || "omaddons", "context": Build.CONTEXT,
-      "templates": root.templates, "preview": r.preview === true, "token": r.token || "", "confirmed": r.confirmed === true
+      "templates": root.templates, "preview": r.preview === true, "token": r.token || "", "confirmed": r.confirmed === true,
+      "plan": r.plan || null
     }
     return r.cli ? Model.cliArgv(r.cli, opts) : Model.buildArgv(r.template, r.slots, opts)
   }
@@ -473,7 +546,7 @@ Item {
 
   function startAction(r) {
     action = { "name": r.template || r.resource, "label": r.label, "current": 0, "total": 0,
-      "message": r.preview ? "Checking what it would do…" : "" }
+      "message": !r.preview ? "" : r.mode === "match" ? "Preparing…" : "Checking what it would do…" }
     bar = withSpinning(bar, true)
   }
 
@@ -615,18 +688,7 @@ Item {
 
   function applyAction(r, outcome, env, tail) {
     if (r.purpose === "preview") {
-      if (outcome === "ok") {
-        var path = r.cli ? Model.classifyCliArgv(r.cli).path : Model.templateShape(r.template, templates).path
-        var binds = Model.CLI_PATHS[path].binds
-        var token = env.data && typeof env.data.precondition === "string" ? env.data.precondition : ""
-        confirm = { "text": Model.confirmText(r.template || path, env), "stale": r.stale }
-        pendingConfirm = { "spec": r.spec, "token": token, "binds": binds, "contextGeneration": r.contextGeneration }
-      } else {
-        confirm = null
-        pendingConfirm = null
-        failedPreview = r.spec
-        lastError = errorOf(env, r.label + ": " + outcome)
-      }
+      applyPreview(r, outcome, env)
       return
     }
     if (r.priority === "background" && outcome === "ok") {
@@ -644,12 +706,17 @@ Item {
             "argv": verdict && verdict.ok ? c.argv.slice() : null, "runnable": verdict !== null && verdict.ok })
         }
       }
-      lastResult = { "ok": outcome === "ok", "line": Model.resultLine(env), "partial": !!env && env.partial === true, "commands": commandsOf,
-        "fixes": Model.itemFixes(env) }
+      // A plan's apply reads as the command it ran ("Updated 1 addon").
+      var view = r.purpose === "planned" ? (Model.applyResult(env) || env) : env
+      lastResult = { "ok": outcome === "ok", "line": Model.resultLine(view), "partial": !!env && env.partial === true, "commands": commandsOf,
+        "fixes": Model.itemFixes(view) }
       lastError = outcome === "ok" ? null : errorOf(env, r.label + " failed")
+      // A plan gone stale or gone, or a client's part gone stale: the action is previewed
+      // again (first in line), never applied again (M4-D28).
+      if (r.purpose === "planned" && r.spec && Model.needsPreviewAgain(env)) previewOf(r.spec, Model.staleText(env), true)
       var stale = outcome === "failed" && env.error && env.error.code === "plan_stale"
       // A preview gone stale is previewed again, never rerun with the same token.
-      if (stale && r.purpose === "confirmed" && r.spec) previewOf(r.spec, Model.staleText(env))
+      if (stale && r.purpose === "confirmed" && r.spec) previewOf(r.spec, Model.staleText(env), false)
       if (stale && r.purpose === "bind") {
         lastError = { "message": Model.boundStaleText(r.template, env), "code": "plan_stale", "fixes": [], "fixText": "" }
       }
@@ -806,7 +873,10 @@ Item {
       "widgetVersion": manifest && manifest.version ? String(manifest.version) : "",
       "contextGeneration": contextGeneration,
       "lanes": { "mutation": laneState(mutationLane, "mutation"), "local": laneState(localLane, "local"), "network": laneState(networkLane, "network") },
-      "lastRefreshMs": lastRefreshMs
+      "lastRefreshMs": lastRefreshMs,
+      // The open confirmation and the last plan preview's decision (M4-D28).
+      "confirm": confirm ? { "heading": confirm.heading || "", "planId": pendingConfirm && pendingConfirm.plan ? pendingConfirm.plan.planId : null } : null,
+      "lastPreview": lastPreview
     })
   }
 
@@ -913,6 +983,10 @@ Item {
     property var sink: null
     property int deadlineMs: 0
     property bool inactivity: false
+    // The running request's deadline: its own `deadlineMs` when it sets one (a match
+    // preview), else the lane's.
+    property int runDeadlineMs: 0
+    property bool runInactivity: false
     property int killGraceMs: 5000
     property int streamGraceMs: 2000
     property var request: null
@@ -937,8 +1011,11 @@ Item {
       cancelled = false
       tail = []
       request = r
+      var own = typeof r.deadlineMs === "number" && r.deadlineMs >= 0
+      runDeadlineMs = own ? r.deadlineMs : deadlineMs
+      runInactivity = own ? r.inactivity === true : inactivity
       proc = processComponent.createObject(lane, { "command": argv, "environment": env })
-      if (deadlineMs > 0) deadline.restart()
+      if (runDeadlineMs > 0) deadline.restart()
       proc.running = true
     }
 
@@ -949,11 +1026,13 @@ Item {
     }
 
     // SIGTERM to the pid (what `running = false` sends, F0), then SIGKILL after the
-    // grace period; never the group, which is the shell's.
+    // grace period; never the group, which is the shell's. The grace starts before the
+    // signal: a child that ends at once finishes the request, which stops it, and a
+    // timer started after that would kill the lane's next child.
     function terminate() {
       if (!proc) return
-      proc.signal(15)
       killTimer.restart()
+      proc.signal(15)
     }
 
     function line(text) {
@@ -968,7 +1047,7 @@ Item {
         event = null
       }
       if (!event || event.event !== "progress") return
-      if (inactivity && deadlineMs > 0 && !timedOut && !cancelled) deadline.restart()
+      if (runInactivity && runDeadlineMs > 0 && !timedOut && !cancelled) deadline.restart()
       sink.laneProgress(request, event)
     }
 
@@ -999,7 +1078,7 @@ Item {
 
     Timer {
       id: deadline
-      interval: lane.deadlineMs
+      interval: lane.runDeadlineMs
       onTriggered: {
         lane.timedOut = true
         lane.terminate()

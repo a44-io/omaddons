@@ -99,7 +99,8 @@ TestCase {
       property var searches: []
       property var dismissals: []
 
-      function run(name, slots, label) { runs = runs.concat([[name, slots, label]]); return "" }
+      // `shown` (what the view showed, for a previewed update) is recorded when given.
+      function run(name, slots, label, shown) { runs = runs.concat([shown === undefined ? [name, slots, label] : [name, slots, label, shown]]); return "" }
       function runCliArgv(argv, label) { cliRuns = cliRuns.concat([[argv, label]]); return "" }
       function readView(view) { reads = reads.concat([view]) }
       function readChangelog(target, addon) { notes = notes.concat([[target, addon]]) }
@@ -171,11 +172,18 @@ TestCase {
     return found
   }
 
+  // What a row of `listing()` showed, in Model.shownOf's fields and order (the listing
+  // names no release: its source, release and file are unknown).
+  function shownRow(key, target, addon, from, to) {
+    return { "target_key": key, "target_id": target, "addon": addon, "source": null, "channel": "stable",
+      "release_id": null, "asset": null, "from_version": from, "to_version": to }
+  }
+
   // The command words of the argv Model.buildArgv makes of a recorded run.
   function words(run) {
-    // A confirmed template builds as its preview (the dry run the dialog shows).
+    // A previewed template builds as its preview (the dry run before its plan's apply).
     var built = Model.buildArgv(run[0], run[1], { "binary": "/opt/omaddons", "label": run[2], "context": Build.CONTEXT,
-      "preview": Model.COMMANDS[run[0]].confirm === true })
+      "preview": !!Model.COMMANDS[run[0]].preview })
     var argv = built.argv
     var at = argv.indexOf("--reason") + 2
     while (argv[at] === "--progress" || argv[at] === "--dry-run" || argv[at] === "--if-match") at += argv[at] === "--dry-run" ? 1 : 2
@@ -197,12 +205,15 @@ TestCase {
     compare(view.filter, "retail")
     compare(findChild(content(), "updateAll").text, "Update retail (1)")
     findChild(content(), "updateAll").clicked()
-    compare(json(svc.runs[0]), json(["update_target", { "target": "retail" }, "Update retail"]))
+    // The update previews with what the rows showed: retail's one update.
+    compare(json(svc.runs[0]), json(["update_target", { "target": "retail" }, "Update retail",
+      [shownRow("k-retail", "retail", "DBM", "12.1.14", "12.1.15")]]))
   }
 
   function test_enter_updates_one_addon_and_p_pins_by_its_state() {
     keyClick(Qt.Key_Return)
-    compare(json(svc.runs[0]), json(["update_addon", { "target": "era", "addon": "Bar" }, "Update Bar"]))
+    compare(json(svc.runs[0]), json(["update_addon", { "target": "era", "addon": "Bar" }, "Update Bar",
+      [shownRow("k-era", "era", "Bar", "v1", "v2")]]))
     compare(json(words(svc.runs[0])), json(["update", "-t", "era", "--", "Bar"]))
     // A failed check has nothing to update.
     keyClick("j")
@@ -390,7 +401,9 @@ TestCase {
     issuesReady(false)
     for (var i = 0; i < 3; i++) keyClick("j")
     keyClick(Qt.Key_Return)
-    compare(json(svc.runs[0]), json(["update_addon", { "target": "retail", "addon": "Foo" }, "Update Foo"]))
+    // What the Installed rows show of Foo on retail, for the update's preview.
+    compare(json(svc.runs[0]), json(["update_addon", { "target": "retail", "addon": "Foo" }, "Update Foo",
+      [shownRow("k-retail", "retail", "Foo", "v1", "v1")]]))
     keyClick("j")
     keyClick(Qt.Key_Return)
     compare(svc.runs.length, 1)
@@ -477,10 +490,20 @@ TestCase {
     searchReady({ "retail": "likely", "era": "no" })
     compare(findChild(row("searchRow", 0), "hints").text, "retail likely")
     keyClick(Qt.Key_Return)
-    compare(json(svc.runs[0]), json(["install", { "target": "retail", "ref": "wowi:23056" }, "Install Details!"]))
+    compare(json(svc.runs[0]), json(["install", { "target": "retail", "ref": "wowi:23056" }, "Install Details!", []]))
     // A result for another filter is not this view's.
     keyClick("t")
     compare(findChild(content(), "searchRow_0"), null)
+  }
+
+  // The view shows no release for a search result, so the install's preview always asks.
+  function test_search_install_passes_nothing_shown() {
+    keyClick("t")
+    keyClick("t")
+    searchReady({ "retail": "yes", "era": "no" })
+    keyClick(Qt.Key_Return)
+    compare(svc.runs.length, 1)
+    compare(json(svc.runs[0][3]), json([]), "nothing shown")
   }
 
   function test_a_hint_of_no_offers_no_install() {
@@ -509,7 +532,7 @@ TestCase {
     keyClick("j")
     compare(search.chooserCursor, 1)
     keyClick(Qt.Key_Return)
-    compare(json(svc.runs[0]), json(["install", { "target": "retail", "ref": "wowi:23056" }, "Install Details!"]))
+    compare(json(svc.runs[0]), json(["install", { "target": "retail", "ref": "wowi:23056" }, "Install Details!", []]))
     verify(!findChild(search, "chooser").visible)
     tryVerify(function() { return findChild(view, "keyCatcher").activeFocus })
   }
@@ -593,20 +616,44 @@ TestCase {
 
   // ------------------------------------------------------------- the real service
 
-  // `x` on an Installed row: the dry run first, its text in the dialog, Yes bound to its
-  // token; a stale token previews again instead of removing.
-  function test_x_previews_the_removal_and_yes_runs_it_bound() {
+  readonly property string planId: "01M8Q2ZZZZZZZZZZZZZZZZZZZZ"
+
+  // omaddons launches whose argv holds `word`.
+  function launches(word) {
+    return ProcessRegistry.launches.filter(function(l) {
+      return l.command[1] === "--json" && l.command.indexOf(word) >= 0
+    })
+  }
+
+  // A storable dry run of `command` that stored planId: `data` beside its approval, and
+  // the offer to apply it.
+  function planPreviewJson(command, data, approval, destructive, warnings) {
+    var body = { "dry_run": true, "plan_id": planId, "plan_expires_at": "2100-01-02T00:00:00Z", "precondition": "pc1:" + "a".repeat(64),
+      "approval": approval }
+    for (var key in data) body[key] = data[key]
+    return JSON.stringify({ "ok": true, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION, "command": command, "exit_code": 0,
+      "partial": false, "warnings": warnings || [], "data": body,
+      "commands": [{ "action": "apply", "command": "omaddons apply " + planId, "argv": ["omaddons", "apply", planId], "destructive": destructive }] })
+  }
+
+  function approvalOf(op, addon, from, to, reasons, scopeFields) {
+    var scope = { "dependencies_added": [], "folders_removed": [], "local_changes_replaced": { "count": 0, "folders": [] },
+      "source_changed": [], "while_running": false }
+    for (var key in scopeFields) scope[key] = scopeFields[key]
+    return { "routine": reasons.length === 0, "reasons": reasons, "scope": scope, "selection": [{ "target_key": "k-retail", "target_id": "retail",
+      "addon": addon, "source": "github", "channel": "stable", "release_id": null, "asset": null, "from_version": from, "to_version": to,
+      "op": op, "fields": [], "tx": null, "backup": null }] }
+  }
+
+  // The real Service on the mock Process, at rest with one client, its frame showing
+  // Installed with `addons` (list -v's): `{service, frame}`.
+  function realFrame(addons) {
     svc.destroy()
     svc = null
     ProcessRegistry.reset()
     var service = realService.createObject(testCase, { "bellDebounceMs": 10, "localDeadlineMs": 2000 })
     verify(service !== null)
     made = made.concat([service])
-    var launches = function(word) {
-      return ProcessRegistry.launches.filter(function(l) {
-        return l.command[1] === "--json" && l.command.indexOf(word) >= 0
-      })
-    }
     var statusJson = JSON.stringify({ "ok": true, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION,
       "command": "status", "exit_code": 0, "partial": false, "warnings": [], "commands": [],
       "data": { "targets": [{ "id": "retail", "running": false, "updates": { "available": 1 }, "issues": [] }],
@@ -625,46 +672,78 @@ TestCase {
     var list = launches("list")
     verify(list.length > 0, "switching to Installed reads list")
     list[list.length - 1].process.finish(0, JSON.stringify(listEnvelope([{ "id": "retail", "key": "k-retail", "label": "retail",
-      "counts": { "unmanaged": 0 }, "addons": [addon("Baz", "v1", "v1", "current")] }])))
-    tryVerify(function() { return frame.rowCount === 1 })
+      "counts": { "unmanaged": 0 }, "addons": addons }])))
+    tryVerify(function() { return frame.rowCount === addons.length })
+    return { "service": service, "frame": frame }
+  }
+
+  // `x` on an Installed row: the dry run first, its text and effects in the dialog, Yes
+  // applies that preview's plan; a stale plan previews again instead of removing.
+  function test_x_previews_the_removal_and_yes_runs_its_plan() {
+    var real = realFrame([addon("Baz", "v1", "v1", "current")])
+    var frame = real.frame
     keyClick("x")
     var preview = launches("remove")
     compare(preview.length, 1)
     verify(preview[0].command.indexOf("--dry-run") >= 0)
     compare(preview[0].command.slice(-5), ["remove", "-t", "retail", "--", "Baz"])
-    var token = "pc1:" + "a".repeat(64)
-    preview[0].process.finish(0, JSON.stringify({ "ok": true, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION,
-      "command": "remove", "exit_code": 0, "partial": false, "commands": [],
-      "warnings": [{ "code": "still_required", "message": "LittleWigs still requires Baz", "fix": null }],
-      "data": { "dry_run": true, "target": { "id": "retail" }, "items": [{ "name": "Baz", "version": "v1", "folders": ["Baz"] }],
-        "reload_required": "none", "precondition": token } }))
+    var removal = function(version) {
+      return planPreviewJson("remove", { "target": { "id": "retail" }, "items": [{ "name": "Baz", "version": version, "folders": ["Baz"] }],
+        "reload_required": "none" }, approvalOf("remove", "Baz", version, null, ["folders_removed", "destructive"], { "folders_removed": ["Baz"] }),
+        true, [{ "code": "still_required", "message": "LittleWigs still requires Baz", "fix": null }])
+    }
+    preview[0].process.finish(0, removal("v1"))
     tryVerify(function() { return frame.confirming })
     var dialog = findChild(frame, "confirmDialog")
-    compare(dialog.message, "Remove Baz v1 from retail (1 folder)\nLittleWigs still requires Baz")
+    compare(dialog.message, "Remove Baz v1 from retail (1 folder)\nLittleWigs still requires Baz\nRemoves the folder Baz (kept for undo)\n"
+      + "Removes, reverts or replaces something you have now")
+    compare(launches("apply").length, 0, "nothing runs before Yes")
     tryVerify(function() { return findChild(frame, "confirmKeys").activeFocus })
     keyClick("y")
-    var real = launches("remove")
-    compare(real.length, 2)
-    var at = real[1].command.indexOf("--if-match")
-    verify(at > 0)
-    compare(real[1].command[at + 1], token)
-    verify(real[1].command.indexOf("--dry-run") < 0)
+    var apply = launches("apply")
+    compare(apply.length, 1, "Yes applies the preview's plan")
+    compare(apply[0].command.slice(-2), ["apply", planId])
+    verify(apply[0].command.indexOf("--if-match") < 0)
+    verify(apply[0].command.indexOf("--dry-run") < 0)
+    compare(launches("remove").length, 1, "the removal runs only through its plan")
     // Something changed since the preview: nothing is removed, and it previews again.
-    real[1].process.finish(1, JSON.stringify({ "ok": false, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION,
-      "command": "remove", "exit_code": 1, "warnings": [], "commands": [],
-      "error": { "code": "plan_stale", "message": "this remove is no longer what its preview showed", "fix": "omaddons list",
-        "fix_argv": ["omaddons", "list"], "alternatives": [], "retryable": false, "details": { "changed": ["Baz"] } } }))
-    tryVerify(function() { return launches("remove").length === 3 })
-    var again = launches("remove")[2]
+    apply[0].process.finish(1, JSON.stringify({ "ok": false, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION,
+      "command": "apply", "exit_code": 1, "warnings": [], "commands": [],
+      "error": { "code": "plan_stale", "message": "plan " + planId + " is no longer what its preview showed", "fix": "omaddons remove Baz -t retail --dry-run",
+        "fix_argv": ["omaddons", "remove", "Baz", "-t", "retail", "--dry-run"], "alternatives": [], "retryable": false, "details": { "changed": ["Baz"] } } }))
+    tryVerify(function() { return launches("remove").length === 2 })
+    var again = launches("remove")[1]
     verify(again.command.indexOf("--dry-run") >= 0)
-    again.process.finish(0, JSON.stringify({ "ok": true, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION,
-      "command": "remove", "exit_code": 0, "partial": false, "commands": [], "warnings": [],
-      "data": { "dry_run": true, "target": { "id": "retail" }, "items": [{ "name": "Baz", "version": "v2", "folders": ["Baz"] }],
-        "reload_required": "none", "precondition": "pc1:" + "b".repeat(64) } }))
+    again.process.finish(0, removal("v2"))
     tryVerify(function() { return frame.confirming })
-    verify(dialog.message.indexOf("Changed since you looked: Baz.") === 0)
-    verify(dialog.message.indexOf("Remove Baz v2 from retail") > 0)
+    verify(dialog.message.indexOf("Changed since you looked: Baz.") === 0, dialog.message)
+    verify(dialog.message.indexOf("Remove Baz v2 from retail") > 0, dialog.message)
     compare(dialog.selectedIndex, 0)
-    service.destroy()
+    compare(launches("apply").length, 1, "apply never runs twice for one preview")
+    real.service.destroy()
+  }
+
+  // Enter on a drifted Installed addon: the reinstall previews and asks first, always
+  // (`preview: confirm`); Yes applies its plan.
+  function test_enter_on_an_installed_drifted_addon_confirms_the_reinstall() {
+    var real = realFrame([addon("Foo", "v1", "v1", "current", { "drift": { "state": "modified", "files": 1, "folders": [] } })])
+    var frame = real.frame
+    keyClick(Qt.Key_Return)
+    var preview = launches("--reinstall")
+    compare(preview.length, 1)
+    verify(preview[0].command.indexOf("--dry-run") >= 0)
+    compare(preview[0].command.slice(-6), ["install", "-t", "retail", "--reinstall", "--", "Foo"])
+    compare(real.service.action.message, "Checking what it would do…")
+    preview[0].process.finish(0, planPreviewJson("install", { "target": { "id": "retail" },
+      "items": [{ "name": "Foo", "status": "updated", "from_version": "v1", "to_version": "v1" }] },
+      approvalOf("update", "Foo", "v1", "v1", ["reinstall"], {}), false))
+    tryVerify(function() { return frame.confirming })
+    var dialog = findChild(frame, "confirmDialog")
+    verify(dialog.message.indexOf("Reinstalls over the installed files") >= 0, dialog.message)
+    compare(launches("apply").length, 0, "a reinstall asks first")
+    tryVerify(function() { return findChild(frame, "confirmKeys").activeFocus })
+    keyClick("y")
+    compare(launches("apply").length, 1, "Yes applies the plan")
+    real.service.destroy()
   }
 }

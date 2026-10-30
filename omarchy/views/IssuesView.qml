@@ -62,7 +62,8 @@ Item {
   function activate(row) {
     if (row.kind === "addon") {
       if (row.updateAvailable) {
-        if (canChange) frame.report(svc.run("update_addon", { "target": row.target, "addon": row.addon }, "Update " + row.addon))
+        if (canChange) frame.report(svc.run("update_addon", { "target": row.target, "addon": row.addon }, "Update " + row.addon,
+          Model.shownForAddon(svc.lists, row.target, row.addon)))
       } else {
         expanded = expanded === row.key ? "" : row.key
       }

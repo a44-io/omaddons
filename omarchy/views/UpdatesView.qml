@@ -10,8 +10,8 @@ import "../Model.js" as Model
 // updates first, then pinned with a newer release, blocked, and failed checks; grouped
 // by client in the All filter). Enter updates the row's addon, `p` pins or unpins it,
 // `i` shows its newest release notes (a network read, on demand, kept only for the row
-// that asked); `u` (frame-wide) updates everything in the filter. Updates and pins run
-// without a confirmation: they are undoable and expected (M3-D9).
+// that asked); `u` (frame-wide) updates everything in the filter. Updates preview first
+// and apply a routine plan that matches the row (M4-D28); pins run directly.
 Item {
   id: root
 
@@ -53,7 +53,7 @@ Item {
 
   function run(action) {
     if (!canChange || !action) return false
-    return frame.report(svc.run(action.template, action.slots, action.label))
+    return frame.report(svc.run(action.template, action.slots, action.label, action.shown))
   }
 
   function toggleNotes(row) {

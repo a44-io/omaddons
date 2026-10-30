@@ -310,10 +310,10 @@ function checkSlots(files) {
   return out
 }
 
-// What needs its preview first: `confirm` templates and destructive paths.
+// What needs its preview first: `preview` templates and destructive paths.
 function needsPreview(name) {
   const t = M.COMMANDS[name]
-  return !!t && (t.confirm === true || M.CLI_PATHS[M.templateShape(name, M.COMMANDS).path].destructive === true)
+  return !!t && (!!t.preview || M.CLI_PATHS[M.templateShape(name, M.COMMANDS).path].destructive === true)
 }
 
 // 6. Previews (M3-D9, M3-D46): a destructive action reaches a lane only through the
@@ -333,8 +333,8 @@ function checkPreviews(files) {
   }
   const service = codeOf(files["Service.qml"] || "")
   const routes = [
-    ["function run(", /if \(template\.confirm === true \|\| Model\.CLI_PATHS\[path\]\.destructive\) \{\s*previewOf\(spec, ""\)/],
-    ["function runCliArgv(", /if \(verdict\.destructive\) \{\s*previewOf\(spec, ""\)/],
+    ["function run(", /if \(template\.preview \|\| Model\.CLI_PATHS\[path\]\.destructive\) \{[^}]*previewOf\(spec, "", false\)/],
+    ["function runCliArgv(", /if \(verdict\.destructive\) \{[^}]*previewOf\(spec, "", false\)/],
     ["function runBound(", /if \(!template \|\| template\.bind !== true\) return/],
   ]
   for (const [head, route] of routes) {
@@ -481,11 +481,13 @@ describe("the mechanisms behind the scans", () => {
   const opts = { binary: "/opt/omaddons", label: "Test", context: CONTEXT }
   const slotsOf = (name) => Object.fromEntries((M.COMMANDS[name].argv.join(" ").match(/\{(\w+)\}/g) || []).map((s) => [s.slice(1, -1), "x"]))
 
-  test("every confirm template and destructive path refuses to run without its preview", () => {
+  test("every previewed template and destructive path refuses to run without its preview", () => {
     const needing = Object.keys(M.COMMANDS).filter(needsPreview)
-    expect(needing.sort()).toEqual(["prune_backup", "remove", "restore", "restore_addon"])
+    expect(needing.sort()).toEqual(["install", "prune_backup", "reinstall", "remove", "restore", "restore_addon",
+      "update_addon", "update_all", "update_target"])
     for (const name of needing) {
-      expect(() => M.buildArgv(name, slotsOf(name), opts)).toThrow(/destructive_without_preview/)
+      // Its Yes is its preview's plan, applied (M4-D28): the real form never builds.
+      expect(() => M.buildArgv(name, slotsOf(name), opts)).toThrow(/preview_required/)
       expect(M.buildArgv(name, slotsOf(name), Object.assign({ preview: true }, opts)).argv).toContain("--dry-run")
     }
     for (const [cliPath, row] of Object.entries(M.CLI_PATHS)) {

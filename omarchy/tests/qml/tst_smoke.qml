@@ -16,8 +16,9 @@ TestCase {
   }
 
   function test_argv_builds_with_the_stamped_context() {
+    // An update runs as its preview (M4-D28).
     var built = Model.buildArgv("update_addon", { "target": "retail", "addon": "$&-x" },
-      { "binary": Build.BINARY, "label": "Update", "context": Build.CONTEXT })
+      { "binary": Build.BINARY, "label": "Update", "context": Build.CONTEXT, "preview": true })
     compare(built.argv[0], Build.BINARY)
     compare(built.argv[built.argv.length - 1], "$&-x")
     compare(built.env.XDG_CACHE_HOME, Build.CONTEXT.XDG_CACHE_HOME)

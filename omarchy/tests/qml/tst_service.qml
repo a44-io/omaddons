@@ -25,7 +25,7 @@ TestCase {
   // F9 add `backup_auto` and `restore`.
   readonly property var fixtureTemplates: ({
     "pin_silent": { "argv": ["pin", "-t", "{target}", "--", "{addon}"], "mutates": true, "silent": true },
-    "remove_confirm": { "argv": ["remove", "-t", "{target}", "--", "{addon}"], "mutates": true, "confirm": true }
+    "remove_confirm": { "argv": ["remove", "-t", "{target}", "--", "{addon}"], "mutates": true, "preview": "confirm" }
   })
 
   readonly property var standardFlags: ["--json", "--actor", "widget", "--reason"]
@@ -110,6 +110,81 @@ TestCase {
   function answer(launch, text, order) {
     verify(launch !== null, "a launch to answer")
     launch.process.finish(0, text, order)
+  }
+
+  // ---- stored plans (M4-D28)
+
+  readonly property string planId: "01M8Q2ZZZZZZZZZZZZZZZZZZZZ"
+
+  function merged(base, extra) {
+    var out = {}
+    for (var key in base) out[key] = base[key]
+    if (extra) for (var k in extra) out[k] = extra[k]
+    return out
+  }
+
+  // An approval's selection item as the CLI writes it: Foo v1 → v2 on retail.
+  function planItem(fields) {
+    return merged({ "target_key": "01M8Q2RRRRRRRRRRRRRRRRRRRR", "target_id": "retail", "addon": "Foo", "source": "github",
+      "channel": "stable", "release_id": "gh:o/foo@v2", "asset": "Foo.zip", "from_version": "v1", "to_version": "v2",
+      "op": "update", "fields": [], "tx": null, "backup": null }, fields)
+  }
+
+  // The same item as a row showed it (Model.shownOf's fields).
+  function shownItem(fields) {
+    var out = planItem(fields)
+    delete out.op
+    delete out.fields
+    delete out.tx
+    delete out.backup
+    return out
+  }
+
+  function scope(fields) {
+    return merged({ "dependencies_added": [], "folders_removed": [], "local_changes_replaced": { "count": 0, "folders": [] },
+      "source_changed": [], "while_running": false }, fields)
+  }
+
+  // A storable dry run that stored plan `id` (planId), offering its apply.
+  function planPreview(command, selection, approval, data, extra) {
+    var id = extra && extra.id ? extra.id : planId
+    var offerId = extra && extra.offerId ? extra.offerId : id
+    var body = merged({ "dry_run": true, "plan_id": id, "plan_expires_at": "2100-01-02T00:00:00Z", "precondition": "pc1:" + "e".repeat(64),
+      "approval": merged({ "routine": true, "reasons": [], "selection": selection, "scope": scope() }, approval) }, data)
+    return envelope(command, body, { "commands": [{ "action": "apply", "command": "omaddons apply " + offerId,
+      "argv": ["omaddons", "apply", offerId], "destructive": !!(extra && extra.destructive) }] })
+  }
+
+  // A dry run with nothing to do: no plan, an empty selection, no offer.
+  function noopPreview(command) {
+    return envelope(command, { "dry_run": true, "plan_id": null, "plan_expires_at": null, "precondition": "pc1:" + "f".repeat(64),
+      "approval": { "routine": true, "reasons": [], "selection": [], "scope": scope() } })
+  }
+
+  // `apply`'s envelope around the executed command's data.
+  function applyEnvelope(command, result, outcomes, extra) {
+    return envelope("apply", { "plan_id": planId, "applied": { "command": command, "display_argv": ["omaddons", command] },
+      "result": result, "outcomes": outcomes || [] }, extra)
+  }
+
+  function removePreview(version) {
+    return planPreview("remove", [planItem({ "op": "remove", "addon": "Baz", "from_version": version, "to_version": null, "release_id": null, "asset": null })],
+      { "routine": false, "reasons": ["folders_removed", "destructive"], "scope": scope({ "folders_removed": ["Baz"] }) },
+      { "target": { "id": "retail" }, "items": [{ "name": "Baz", "version": version, "folders": ["Baz"] }], "reload_required": "none" },
+      { "destructive": true })
+  }
+
+  // Every omaddons launch so far, by its words, for a failure's log.
+  function launchLog() {
+    return JSON.stringify(runs().map(function(l) { return words(l.command) }))
+  }
+
+  // Previews `update_addon` (Foo on retail) with what the row showed; returns the launch.
+  function previewFoo(shown) {
+    compare(service.run("update_addon", { "target": "retail", "addon": "Foo" }, "Update Foo", shown === undefined ? [shownItem()] : shown), "")
+    var launch = lastRun("update")
+    verify(launch.command.indexOf("--dry-run") !== -1, "the update's preview: " + launchLog())
+    return launch
   }
 
   // Answers the startup status with `available` updates, then the catch-up checkpoint it
@@ -249,8 +324,7 @@ TestCase {
     service.templates = Object.assign({}, Model.COMMANDS, fixtureTemplates)
     ready(2)
     compare(service.run("remove", { "target": "retail", "addon": "Baz" }, "Remove"), "")
-    answer(lastRun("remove"), envelope("remove", { "dry_run": true, "target": { "id": "retail" },
-      "items": [{ "name": "Baz", "version": "v1", "folders": ["Baz"] }], "reload_required": "none", "precondition": "pc1:" + "a".repeat(64) }))
+    answer(lastRun("remove"), removePreview("v1"))
     verify(service.confirm !== null)
     compare(service.run("update_all", {}, "Update all"), "")
     compare(service.run("update_target", { "target": "retail" }, "Update retail"), "")
@@ -275,8 +349,7 @@ TestCase {
   function test_a_confirmation_from_another_context_never_runs() {
     ready(0)
     service.run("remove", { "target": "retail", "addon": "Baz" }, "Remove")
-    answer(lastRun("remove"), envelope("remove", { "dry_run": true, "target": { "id": "retail" },
-      "items": [{ "name": "Baz", "folders": ["Baz"] }], "reload_required": "none", "precondition": "pc1:" + "b".repeat(64) }))
+    answer(lastRun("remove"), removePreview("v1"))
     verify(service.confirm !== null)
     // A new binary is a new context; the confirmation was made in the old one.
     service.applySettings({ "binary": "/opt/other/omaddons" })
@@ -287,35 +360,216 @@ TestCase {
     compare(service.confirmYes(), "")
     wait(20)
     compare(runs("remove").length, 1)
+    compare(runs("apply").length, 0, "the old context's plan never runs: " + launchLog())
     verify(service.lastError !== null && service.lastError.code === "incompatible")
   }
 
-  // ---- confirmations (M3-D9, M3-D46)
+  // ---- confirmations (M3-D9, M3-D46, M4-D28)
 
-  function test_a_confirmed_run_carries_its_previews_token_and_a_stale_one_previews_again() {
+  function test_a_confirmed_removal_runs_its_previews_plan_and_a_stale_one_previews_again() {
     ready(0)
-    var token = "pc1:" + "c".repeat(64)
     compare(service.run("remove", { "target": "retail", "addon": "Baz" }, "Remove Baz"), "")
     var preview = lastRun("remove")
     verify(preview.command.indexOf("--dry-run") !== -1)
     verify(preview.command.indexOf("--if-match") === -1)
-    answer(preview, envelope("remove", { "dry_run": true, "target": { "id": "retail" },
-      "items": [{ "name": "Baz", "version": "v1", "folders": ["Baz"] }], "reload_required": "none", "precondition": token }))
-    compare(service.confirm.text, "Remove Baz v1 from retail (1 folder)")
+    compare(service.action.message, "Checking what it would do…")
+    answer(preview, removePreview("v1"))
+    compare(service.confirm.text.split("\n"), ["Remove Baz v1 from retail (1 folder)", "Removes the folder Baz (kept for undo)",
+      "Removes, reverts or replaces something you have now"])
+    compare(runs("apply").length, 0, "a removal asks first: " + launchLog())
     compare(service.confirmYes(), "")
-    var real = lastRun("remove")
-    verify(real !== preview)
-    compare(real.command.slice(6, 10), ["--progress", "json", "--if-match", token])
+    var real = lastRun("apply")
+    verify(real !== null, "Yes applies the preview's plan: " + launchLog())
+    compare(words(real.command), ["apply", planId], "the apply of the confirmed preview")
+    compare(real.command.slice(6, 8), ["--progress", "json"])
     verify(real.command.indexOf("--dry-run") === -1)
-    compare(words(real.command), ["remove", "-t", "retail", "--", "Baz"])
-    answer(real, failure("remove", "plan_stale", "this remove is no longer what its preview showed", { "changed": ["selection"] }))
+    verify(real.command.indexOf("--if-match") === -1)
+    answer(real, failure("apply", "plan_stale", "plan " + planId + " is no longer what its preview showed", { "changed": ["selection"] }))
     var again = lastRun("remove")
-    verify(again !== real)
+    verify(again !== preview, "the stale plan previews again: " + launchLog())
     verify(again.command.indexOf("--dry-run") !== -1)
-    answer(again, envelope("remove", { "dry_run": true, "target": { "id": "retail" },
-      "items": [{ "name": "Baz", "version": "v1", "folders": ["Baz"] }], "reload_required": "none", "precondition": "pc1:" + "d".repeat(64) }))
-    verify(service.confirm.stale.indexOf("Changed since you looked: selection") === 0)
-    compare(runs("remove").length, 3)
+    answer(again, removePreview("v2"))
+    verify(service.confirm.stale.indexOf("Changed since you looked: selection") === 0, service.confirm.stale)
+    verify(service.confirm.text.indexOf("Remove Baz v2 from retail") === 0, service.confirm.text)
+    compare(runs("remove").length, 2, launchLog())
+    compare(runs("apply").length, 1, "apply never runs twice for one preview: " + launchLog())
+  }
+
+  // ---- the plan runner (M4-D28)
+
+  function test_a_match_preview_runs_under_the_network_deadline_and_apply_under_none() {
+    make({ "networkDeadlineMs": 400 })
+    ready(0)
+    var silent = previewFoo()
+    tryVerify(function() { return service.outcomes.update_addon === "timeout" }, 1500, "a silent match preview times out")
+    verify(String(service.lastError.message).slice(-7) === "timeout", service.lastError.message)
+    compare(runs("apply").length, 0)
+    // Progress keeps a preview alive past its deadline.
+    // A preview started right after the timeout runs on (the timed-out child's kill timer
+    // never reaches it).
+    var busy = previewFoo()
+    verify(busy !== silent)
+    for (var i = 0; i < 4; i++) {
+      wait(200)
+      busy.process.emitStderr(JSON.stringify({ "event": "progress", "phase": "fetch", "message": "gh:o/foo", "current": i, "total": 4 }))
+    }
+    compare(busy.process.signals, [], "a preview with progress outlives 600 ms")
+    answer(busy, planPreview("update", [planItem()]))
+    var apply = lastRun("apply")
+    verify(apply !== null, "the routine preview's apply: " + launchLog())
+    // An apply is never killed for time.
+    wait(600)
+    compare(apply.process.signals, [], "an apply runs under no deadline")
+    answer(apply, applyEnvelope("update", { "targets": [], "summary": {} }))
+  }
+
+  function test_a_planned_apply_goes_first_and_replaces_no_queued_change() {
+    ready(0)
+    var preview = previewFoo()
+    compare(service.run("update_target", { "target": "era" }, "Update era", []), "")
+    compare(service.queuedAction, "Update era")
+    answer(preview, planPreview("update", [planItem()]))
+    var apply = lastRun("apply")
+    verify(apply !== null, "the apply goes first: " + launchLog())
+    compare(words(ProcessRegistry.launches[ProcessRegistry.launches.length - 1].command), ["apply", planId], launchLog())
+    compare(service.queues.mutation.length, 1, "the queued change stays")
+    compare(service.queues.mutation[0].label, "Update era")
+    answer(apply, applyEnvelope("update", { "targets": [], "summary": {} }))
+    var next = lastRun("update")
+    verify(next !== preview, "the queued preview starts: " + launchLog())
+    compare(words(next.command), ["update", "-t", "era"])
+    verify(next.command.indexOf("--dry-run") !== -1)
+  }
+
+  function test_an_apply_offer_for_another_plan_runs_nothing() {
+    ready(0)
+    answer(previewFoo(), planPreview("update", [planItem()], null, null, { "offerId": "01M8Q2YYYYYYYYYYYYYYYYYYYY" }))
+    compare(runs("apply").length, 0, launchLog())
+    compare(service.confirm, null)
+    compare(service.lastError.message, "The preview offered no plan to apply; nothing ran")
+    compare(service.lastError.code, "not_previewed")
+  }
+
+  function test_a_preview_without_an_approval_runs_nothing() {
+    ready(0)
+    answer(previewFoo(), envelope("update", { "dry_run": true, "plan_id": planId, "plan_expires_at": "2100-01-02T00:00:00Z" },
+      { "commands": [{ "action": "apply", "command": "omaddons apply " + planId, "argv": ["omaddons", "apply", planId], "destructive": false }] }))
+    compare(runs("apply").length, 0, launchLog())
+    compare(service.lastError.message, "The preview did not say what it would change; nothing ran")
+  }
+
+  function test_a_full_plan_store_runs_nothing_and_says_so() {
+    ready(0)
+    var full = JSON.parse(planPreview("update", [planItem()], null, { "plan_id": null, "plan_expires_at": null }))
+    full.commands = []
+    full.warnings = [{ "code": "plan_not_stored", "message": "the plan store is full", "fix": "previews are kept again as plans expire", "fix_argv": null }]
+    answer(previewFoo(), JSON.stringify(full))
+    compare(runs("apply").length, 0, launchLog())
+    compare(service.lastError.message, "The preview could not be kept as a plan; nothing ran")
+    compare(service.lastError.fixText, "previews are kept again as plans expire")
+  }
+
+  function test_a_no_op_preview_refreshes_and_runs_nothing() {
+    ready(0)
+    var statuses = runs("status").length
+    answer(previewFoo(), noopPreview("update"))
+    compare(runs("apply").length, 0, launchLog())
+    compare(service.confirm, null)
+    compare(service.lastResult.line, "Already up to date; the view is refreshed")
+    compare(runs("status").length, statuses + 1, "the view is refreshed")
+  }
+
+  function test_a_matching_preview_that_adds_a_dependency_asks_first() {
+    ready(0)
+    var lib = planItem({ "addon": "LibFoo", "op": "install", "from_version": null, "to_version": "1.0", "release_id": "gh:o/libfoo@1.0", "asset": "LibFoo.zip" })
+    answer(previewFoo(), planPreview("update", [planItem(), lib],
+      { "routine": false, "reasons": ["dependency_added"], "scope": scope({ "dependencies_added": ["LibFoo"] }) }))
+    compare(runs("apply").length, 0, "a plan that does more asks first: " + launchLog())
+    compare(service.confirm.heading, "")
+    compare(service.confirm.text.split("\n"), ["Update Foo v1 → v2 on retail", "Install LibFoo 1.0 on retail", "Also installs LibFoo (a new dependency)"])
+    compare(service.confirmYes(), "")
+    compare(words(lastRun("apply").command), ["apply", planId], "Yes applies the plan")
+  }
+
+  function test_a_moved_release_asks_first_saying_what_changed() {
+    ready(0)
+    answer(previewFoo(), planPreview("update", [planItem({ "to_version": "v3", "release_id": "gh:o/foo@v3", "asset": "Foo-v3.zip" })]))
+    compare(runs("apply").length, 0, launchLog())
+    compare(service.confirm.heading, "Changed since you looked: Foo v3 is now the newest")
+    compare(service.confirm.text.split("\n")[0], "Changed since you looked: Foo v3 is now the newest")
+  }
+
+  function test_a_stale_apply_previews_again_and_never_applies_again() {
+    ready(0)
+    answer(previewFoo(), planPreview("update", [planItem()]))
+    var apply = lastRun("apply")
+    answer(apply, failure("apply", "plan_stale", "plan " + planId + " expired", { "reason": "expired" }))
+    var again = lastRun("update")
+    verify(again.command.indexOf("--dry-run") !== -1, "the update is previewed again: " + launchLog())
+    // Previewed again after a refused plan: even a routine match asks first.
+    answer(again, planPreview("update", [planItem()]))
+    compare(runs("apply").length, 1, launchLog())
+    verify(service.confirm.stale.indexOf("The plan expired.") === 0, service.confirm.stale)
+    compare(service.confirm.text, "Update Foo v1 → v2 on retail")
+  }
+
+  function test_a_stale_client_in_an_applied_plan_previews_again() {
+    ready(0)
+    answer(previewFoo(), planPreview("update", [planItem()]))
+    answer(lastRun("apply"), applyEnvelope("update", { "targets": [], "summary": {} },
+      [{ "target": "retail", "key": "01M8Q2RRRRRRRRRRRRRRRRRRRR", "status": "stale", "tx": null, "error_code": "plan_stale" }], { "partial": true }))
+    compare(runs("update").length, 2, "the update is previewed again: " + launchLog())
+  }
+
+  function test_locked_apply_shows_the_error_and_does_not_preview_again() {
+    ready(0)
+    answer(previewFoo(), planPreview("update", [planItem()]))
+    var locked = JSON.parse(failure("apply", "locked", "another apply holds plan " + planId, { "lease": planId }))
+    locked.exit_code = 5
+    lastRun("apply").process.finish(5, JSON.stringify(locked))
+    compare(service.lastError.code, "locked")
+    compare(runs("update").length, 1, "no preview again: " + launchLog())
+    compare(service.confirm, null)
+  }
+
+  function test_targets_rm_keeps_its_explicit_confirmation() {
+    ready(0)
+    compare(service.runCliArgv(["omaddons", "targets", "rm", "retail"], "Forget retail"), "")
+    var preview = lastRun("targets")
+    verify(preview.command.indexOf("--dry-run") !== -1)
+    answer(preview, envelope("targets rm", { "id": "retail", "managed_addons": 0, "was_default": false, "dry_run": true }))
+    compare(service.confirm.text, "Forget client retail; nothing in its directory is touched")
+    compare(service.confirmYes(), "")
+    var real = lastRun("targets")
+    verify(real !== preview)
+    compare(words(real.command), ["targets", "rm", "retail"])
+    verify(real.command.indexOf("--dry-run") === -1)
+    verify(real.command.indexOf("--if-match") === -1)
+    compare(runs("apply").length, 0)
+  }
+
+  function test_a_dismissal_keeps_its_read_bound_token() {
+    ready(0)
+    var token = "pc1:" + "3".repeat(64)
+    compare(service.dismissErrors([{ "target": "retail", "token": token }]), "")
+    var launch = lastRun("errors")
+    compare(words(launch.command), ["errors", "dismiss", "-t", "retail"])
+    compare(launch.command[launch.command.indexOf("--if-match") + 1], token)
+    verify(launch.command.indexOf("--dry-run") === -1, "no preview")
+    compare(runs("apply").length, 0)
+  }
+
+  function test_state_reports_the_last_preview() {
+    ready(0)
+    answer(previewFoo(), planPreview("update", [planItem()]))
+    var state = JSON.parse(service.stateJson())
+    compare(state.lastPreview, { "resource": "update_addon", "decision": "direct", "planId": planId })
+    compare(state.confirm, null)
+    answer(lastRun("apply"), applyEnvelope("update", { "targets": [], "summary": {} }))
+    answer(previewFoo(), planPreview("update", [planItem({ "to_version": "v3" })]))
+    state = JSON.parse(service.stateJson())
+    compare(state.lastPreview.decision, "dialog")
+    compare(state.confirm, { "heading": "Changed since you looked: Foo v3 is now the newest", "planId": planId })
   }
 
   function test_a_destructive_cli_argv_previews_first() {
@@ -324,23 +578,45 @@ TestCase {
     var preview = lastRun("undo")
     verify(preview.command.indexOf("--dry-run") !== -1)
     verify(service.runCliArgv(["omaddons", "--actor", "agent", "update"], "x").indexOf("widget_flag") !== -1)
+    // Undo last asks first, and Yes applies the preview's plan (M4-D28).
+    answer(preview, planPreview("undo", [planItem({ "op": "undo", "addon": null, "source": null, "release_id": null, "asset": null,
+      "from_version": null, "to_version": null })], { "routine": false, "reasons": ["destructive"] },
+      { "reverted": { "kind": "update" }, "transactions": [{ "target": { "id": "retail" } }], "folders": { "restored": ["Foo"], "removed": [] } },
+      { "destructive": true }))
+    compare(service.confirm.text.split("\n")[0], "Undo update on retail: 1 folder restored, 0 removed")
+    compare(runs("apply").length, 0)
+    compare(service.confirmYes(), "")
+    compare(words(lastRun("apply").command), ["apply", planId], "Yes applies the undo's plan: " + launchLog())
+    compare(runs("undo").length, 1, "the undo runs only through its plan")
   }
 
   // ---- actions and lanes (M3-D11)
 
   function test_an_action_reports_progress_then_its_result() {
     ready(2)
-    compare(service.run("update_all", {}, "Update all"), "")
-    var launch = lastRun("update")
+    var bar = { "addon": "Bar", "release_id": "gh:o/bar@v2", "asset": "Bar.zip" }
+    compare(service.run("update_all", {}, "Update all", [shownItem(), shownItem(bar)]), "")
+    var preview = lastRun("update")
+    verify(service.bar.spinning)
+    compare(service.action.label, "Update all")
+    compare(service.action.message, "Preparing…")
+    answer(preview, planPreview("update", [planItem(), planItem(bar)]))
+    // A routine plan that is what the rows showed applies with no dialog.
+    compare(service.confirm, null)
+    var launch = lastRun("apply")
+    verify(launch !== null, "the routine preview's apply: " + launchLog())
     verify(service.bar.spinning)
     compare(service.action.label, "Update all")
     launch.process.emitStderr(JSON.stringify({ "event": "progress", "phase": "download", "message": "gh:o/bar@v2 on era", "current": 1, "total": 4 }))
     compare(service.action.message, "download 1/4 · gh:o/bar@v2 on era")
     compare(service.action.current, 1)
-    launch.process.finish(0, envelope("update", { "targets": [{ "target": { "id": "retail" }, "items": [{ "status": "updated" }, { "status": "updated" }], "reload_required": "reload" }], "summary": { "changed": 2 } },
+    launch.process.finish(0, applyEnvelope("update",
+      { "targets": [{ "target": { "id": "retail" }, "items": [{ "status": "updated" }, { "status": "updated" }], "reload_required": "reload" }], "summary": { "changed": 2 } },
+      [{ "target": "retail", "key": "01M8Q2RRRRRRRRRRRRRRRRRRRR", "status": "committed", "tx": "01M8Q2TTTTTTTTTTTTTTTTTTTT", "error_code": null }],
       { "commands": [{ "action": "undo_run", "command": "omaddons undo --run 01M", "argv": ["omaddons", "undo", "--run", "01M"], "destructive": false }] }))
     compare(service.action, null)
     verify(!service.bar.spinning)
+    // The apply reads as the update it ran.
     compare(service.lastResult.line, "Updated 2 addons · /reload in game")
     compare(service.lastResult.commands[0].runnable, true)
     // The result refreshes the bar.
@@ -354,10 +630,10 @@ TestCase {
     compare(service.run("pin_silent", { "target": "retail", "addon": "Baz" }, "Pin"), "")
     compare(service.run("update_target", { "target": "retail" }, "Update retail"), "")
     compare(runs("pin").length, 0)
-    lastRun("update").process.finish(0, envelope("update", { "targets": [], "summary": {} }))
+    answer(lastRun("update"), noopPreview("update"))
     compare(words(lastRun("update").command), ["update", "-t", "retail"])
     compare(runs("pin").length, 0)
-    lastRun("update").process.finish(0, envelope("update", { "targets": [], "summary": {} }))
+    answer(lastRun("update"), noopPreview("update"))
     compare(runs("pin").length, 1)
   }
 
@@ -590,8 +866,9 @@ TestCase {
   function test_state_has_the_documented_shape() {
     ready(4)
     var state = JSON.parse(service.stateJson())
-    compare(Object.keys(state).sort(), ["action", "bar", "binary", "contextGeneration", "lanes", "lastRefreshMs",
-      "lastResult", "panelOpen", "phase", "summary", "toolVersion", "widgetVersion"])
+    compare(Object.keys(state).sort(), ["action", "bar", "binary", "confirm", "contextGeneration", "lanes", "lastPreview",
+      "lastRefreshMs", "lastResult", "panelOpen", "phase", "summary", "toolVersion", "widgetVersion"])
+    compare([state.confirm, state.lastPreview], [null, null])
     compare(state.phase, "ok")
     compare(state.bar.badge, 4)
     compare(state.binary, Build.BINARY)

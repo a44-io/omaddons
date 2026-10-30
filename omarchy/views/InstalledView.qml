@@ -58,7 +58,7 @@ Item {
 
   function run(action) {
     if (!canChange || !action) return false
-    return frame.report(svc.run(action.template, action.slots, action.label))
+    return frame.report(svc.run(action.template, action.slots, action.label, action.shown))
   }
 
   function select(index) {

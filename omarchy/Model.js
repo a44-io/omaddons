@@ -95,7 +95,9 @@ var WIDGET_STREAM_GRACE_SEC = 2
 // BEGIN COMMANDS: checked by tests/omarchy_widget.rs; every entry must parse as an omaddons command line
 // F1 ships the entries for commands that exist at F1 time; F8 adds errors_target and backup_auto (B6, D3);
 // F6 adds errors, errors_raw and dismiss_errors (B6, B8); F9 adds backups, backup_target, backup_all,
-// restore, restore_addon and prune_backup (D2, D4, D7, D8).
+// restore, restore_addon and prune_backup (D2, D4, D7, D8). A `preview` template runs only as its dry
+// run; its confirmed run is `apply` of that preview's plan (M4-D28): `match` applies a routine plan
+// that is what the view showed, `confirm` always asks first.
 var COMMANDS = {
   "status":         { "argv": ["status", "--cached", "-v"],                         "mutates": false, "lane": "local" },
   "status_full":    { "argv": ["status", "-v"],                                     "mutates": false, "lane": "local" },
@@ -103,14 +105,14 @@ var COMMANDS = {
   "changelog":      { "argv": ["info", "-t", "{target}", "--changelog", "--", "{addon}"], "mutates": false, "lane": "network" },
   "search":         { "argv": ["search", "--limit", "20", "-t", "{target}", "--", "{query}"], "mutates": false, "lane": "network" },
   "check":          { "argv": ["outdated"],                                         "mutates": false, "lane": "network" },
-  "update_all":     { "argv": ["update"],                                           "mutates": true },
-  "update_target":  { "argv": ["update", "-t", "{target}"],                         "mutates": true },
-  "update_addon":   { "argv": ["update", "-t", "{target}", "--", "{addon}"],        "mutates": true },
-  "reinstall":      { "argv": ["install", "-t", "{target}", "--reinstall", "--", "{addon}"], "mutates": true },
-  "remove":         { "argv": ["remove", "-t", "{target}", "--", "{addon}"],        "mutates": true, "confirm": true },
+  "update_all":     { "argv": ["update"],                                           "mutates": true, "preview": "match" },
+  "update_target":  { "argv": ["update", "-t", "{target}"],                         "mutates": true, "preview": "match" },
+  "update_addon":   { "argv": ["update", "-t", "{target}", "--", "{addon}"],        "mutates": true, "preview": "match" },
+  "reinstall":      { "argv": ["install", "-t", "{target}", "--reinstall", "--", "{addon}"], "mutates": true, "preview": "confirm" },
+  "remove":         { "argv": ["remove", "-t", "{target}", "--", "{addon}"],        "mutates": true, "preview": "confirm" },
   "pin":            { "argv": ["pin", "-t", "{target}", "--", "{addon}"],           "mutates": true },
   "unpin":          { "argv": ["unpin", "-t", "{target}", "--", "{addon}"],         "mutates": true },
-  "install":        { "argv": ["install", "-t", "{target}", "--", "{ref}"],         "mutates": true },
+  "install":        { "argv": ["install", "-t", "{target}", "--", "{ref}"],         "mutates": true, "preview": "match" },
   "errors":         { "argv": ["errors", "--limit", "10"],                          "mutates": false, "lane": "local" },
   "errors_raw":     { "argv": ["errors", "--raw-details", "-t", "{target}", "--addon={addon}"], "mutates": false, "lane": "local" },
   "dismiss_errors": { "argv": ["errors", "dismiss", "-t", "{target}"],              "mutates": true, "bind": true },
@@ -119,9 +121,9 @@ var COMMANDS = {
   "backups_detail": { "argv": ["backup", "list", "-v", "-t", "{target}", "--limit", "50"], "mutates": false, "lane": "local" },
   "backup_target":  { "argv": ["backup", "create", "-t", "{target}"],               "mutates": true },
   "backup_all":     { "argv": ["backup", "create"],                                 "mutates": true },
-  "restore":        { "argv": ["backup", "restore", "-t", "{target}", "--", "{backup}"], "mutates": true, "confirm": true },
-  "restore_addon":  { "argv": ["backup", "restore", "-t", "{target}", "--addon={addon}", "--", "{backup}"], "mutates": true, "confirm": true },
-  "prune_backup":   { "argv": ["backup", "prune", "-t", "{target}", "--", "{backup}"],   "mutates": true, "confirm": true },
+  "restore":        { "argv": ["backup", "restore", "-t", "{target}", "--", "{backup}"], "mutates": true, "preview": "confirm" },
+  "restore_addon":  { "argv": ["backup", "restore", "-t", "{target}", "--addon={addon}", "--", "{backup}"], "mutates": true, "preview": "confirm" },
+  "prune_backup":   { "argv": ["backup", "prune", "-t", "{target}", "--", "{backup}"],   "mutates": true, "preview": "confirm" },
   "errors_target":  { "argv": ["errors", "--limit", "10", "-t", "{target}"],        "mutates": false, "lane": "local" },
   "backup_auto":    { "argv": ["backup", "create", "--auto", "-t", "{target}"],     "mutates": true, "silent": true }
 }
@@ -343,7 +345,7 @@ function standardFlags(opts, progress, preview, ifMatch) {
 // binary and the standard flags, and `env` is the stamped context. Options: `binary`,
 // `label` (the button's), `context`, `preview`, `token` or `confirmed` for the preview
 // flow, and `templates` in place of COMMANDS. Throws on anything the template does not
-// allow.
+// allow; a `preview` template builds only as its preview (its Yes is its plan's apply).
 function buildArgv(name, slots, opts) {
   var o = opts || {}
   var shape = templateShape(name, o.templates)
@@ -370,7 +372,8 @@ function buildArgv(name, slots, opts) {
   }
   var row = CLI_PATHS[shape.path]
   var preview = o.preview === true
-  var ifMatch = ifMatchFor(name, row, template.confirm === true, template.bind === true, o, preview)
+  if (template.preview && !preview) throw refuse("preview_required", name + " runs only as its preview; its Yes runs the plan's apply")
+  var ifMatch = ifMatchFor(name, row, template.preview === "confirm", template.bind === true, o, preview)
   var progress = template.mutates === true || name === "check"
   return { argv: standardFlags(o, progress, preview, ifMatch).concat(filled), env: contextOf(o.context) }
 }
@@ -451,6 +454,8 @@ function cliArgv(argv, opts) {
     if (o.preview === true || !!o.token) throw refuse("apply_outside_plan", "a plan runs as offered, never previewed or bound")
     return { argv: standardFlags(o, true, false, "").concat(argv.slice(1)), env: contextOf(o.context) }
   }
+  // A plan-storing path confirms through its preview's plan (M4-D28), never a token.
+  if (storesPlan(verdict.path) && !!o.token) throw refuse("runs_through_apply", verdict.path + " confirms through its preview's apply, never --if-match")
   var rest = argv.slice(1)
   // The confirmed run of a preview: a CLI argv that came from a dry run's own fix (its
   // alternatives repeat `--dry-run`) runs for real once the user said Yes.
@@ -1658,9 +1663,9 @@ function addonsDirArgv(target) {
   return ["xdg-open", target.clientDir.replace(/\/+$/, "") + "/Interface/AddOns"]
 }
 
-// `u`: every client's updates, or the selected one's (no confirmation: undoable and
-// expected, M3-D9). Given the Updates view's `rows` (updateRows'), `shown` is what the
-// view showed of them, the update rows in the filter, for the plan runner (M4-D28).
+// `u`: every client's updates, or the selected one's, previewed (M4-D28). Given the
+// Updates view's `rows` (updateRows'), `shown` is what the view showed of them, the
+// update rows in the filter, which the plan runner compares with the plan.
 function updateRequest(filter, rows) {
   var request = filter ? { "template": "update_target", "slots": { "target": filter }, "label": "Update " + filter }
     : { "template": "update_all", "slots": {}, "label": "Update all" }

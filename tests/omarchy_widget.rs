@@ -99,11 +99,14 @@ fn stored_intents_are_destructive_where_the_widget_confirms() {
 }
 
 /// Every template is a registry command whose `mutates` is the registry's, previews
-/// what is destructive, sets no flag the widget owns, and keeps every slot one argv
+/// what is destructive (and asks first, `preview: confirm`), previews only on a path that
+/// stores a plan (M4-D28), sets no flag the widget owns, and keeps every slot one argv
 /// element where a hostile value cannot become a flag (M3-D2).
 #[test]
 fn every_template_is_a_registry_command_with_safe_slots() {
     let owned = widget_flags();
+    let plan_paths: Vec<String> =
+        serde_json::from_value(support::block(&model_js(), "PLAN_PATHS")).unwrap();
     for (name, template) in templates() {
         let argv = strings(&template["argv"]);
         let path = leading_path(&argv);
@@ -111,14 +114,26 @@ fn every_template_is_a_registry_command_with_safe_slots() {
         let path = path.unwrap_or_default();
         let mutates = template["mutates"] == true;
         assert_eq!(mutates, app::mutates(&path), "{name}: mutates");
-        if template["confirm"] == true {
+        assert!(
+            template.get("confirm").is_none(),
+            "{name}: the confirm key is gone; a preview: confirm template asks first"
+        );
+        let preview = template.get("preview");
+        if let Some(preview) = preview {
             assert!(
-                DESTRUCTIVE.contains(&path.as_str()),
-                "{name}: confirm on {path}"
+                preview == "match" || preview == "confirm",
+                "{name}: preview is match or confirm, not {preview}"
+            );
+            assert!(
+                plan_paths.contains(&path),
+                "{name}: a preview on {path}, which stores no plan"
             );
         }
         if DESTRUCTIVE.contains(&path.as_str()) {
-            assert!(template["confirm"] == true, "{name}: {path} needs confirm");
+            assert!(
+                preview.is_some_and(|p| p == "confirm"),
+                "{name}: {path} needs preview: confirm"
+            );
         }
         if mutates {
             assert!(

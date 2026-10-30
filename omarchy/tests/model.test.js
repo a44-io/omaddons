@@ -121,12 +121,17 @@ const BENIGN = {
   backup: "01M6QZ0000000000000000000A",
 }
 
-// What a template needs beyond its slots to build: a confirm template's token.
+// What a template needs beyond its slots to build: a previewed template builds as its
+// preview (its Yes is its plan's apply), a bound one with its view's token.
 function runOpts(name) {
   const t = M.COMMANDS[name]
-  if (t.confirm || t.bind || M.CLI_PATHS[M.templateShape(name).path].destructive) return opts({ token: TOKEN })
+  if (t.preview) return opts({ preview: true })
+  if (t.bind || M.CLI_PATHS[M.templateShape(name).path].destructive) return opts({ token: TOKEN })
   return opts()
 }
+
+// The templates whose real run is refused: they run as their preview, then apply.
+const PREVIEWED = ["install", "prune_backup", "reinstall", "remove", "restore", "restore_addon", "update_addon", "update_all", "update_target"]
 
 function benignSlots(name) {
   return Object.fromEntries(M.templateShape(name).slots.map((s) => [s, BENIGN[s]]))
@@ -134,9 +139,9 @@ function benignSlots(name) {
 
 describe("buildArgv", () => {
   test("puts the standard flags right after the binary", () => {
-    const built = M.buildArgv("update_addon", { target: "retail", addon: "DBM" }, opts({ label: "Update" }))
+    const built = M.buildArgv("update_addon", { target: "retail", addon: "DBM" }, opts({ label: "Update", preview: true }))
     expect(built.argv).toEqual([
-      BINARY, "--json", "--actor", "widget", "--reason", "Update (bar widget)", "--progress", "json",
+      BINARY, "--json", "--actor", "widget", "--reason", "Update (bar widget)", "--progress", "json", "--dry-run",
       "update", "-t", "retail", "--", "DBM",
     ])
     expect(built.env).toEqual(CONTEXT)
@@ -149,21 +154,33 @@ describe("buildArgv", () => {
     expect(M.buildArgv("search", { target: "retail", query: "x" }, opts()).argv).not.toContain("--progress")
   })
 
-  test("a preview adds --dry-run, a confirmed run its token", () => {
+  test("a preview adds --dry-run, a bound run its token", () => {
     const slots = { target: "retail", addon: "Baz" }
     const preview = M.buildArgv("remove", slots, opts({ preview: true })).argv
     expect(preview.slice(0, 9)).toEqual([BINARY, "--json", "--actor", "widget", "--reason", "Test (bar widget)", "--progress", "json", "--dry-run"])
-    const run = M.buildArgv("remove", slots, opts({ token: TOKEN })).argv
+    const run = M.buildArgv("dismiss_errors", { target: "retail" }, opts({ token: TOKEN })).argv
     expect(run.slice(8, 10)).toEqual(["--if-match", TOKEN])
     expect(run).not.toContain("--dry-run")
   })
 
+  test("buildArgv refuses a previewed template's real run", () => {
+    expect(Object.keys(M.COMMANDS).filter((name) => M.COMMANDS[name].preview).sort()).toEqual(PREVIEWED)
+    for (const name of PREVIEWED) {
+      for (const extra of [{}, { confirmed: true }, { token: TOKEN }]) {
+        expect([name, extra, reasonOf(() => M.buildArgv(name, benignSlots(name), opts(extra)))]).toEqual([name, extra, "preview_required"])
+      }
+      expect([name, M.buildArgv(name, benignSlots(name), opts({ preview: true })).argv.includes("--dry-run")]).toEqual([name, true])
+    }
+  })
+
   test("refuses what the templates do not allow", () => {
     const remove = { target: "retail", addon: "Baz" }
-    expect(reasonOf(() => M.buildArgv("remove", remove, opts()))).toBe("destructive_without_preview")
-    expect(reasonOf(() => M.buildArgv("remove", remove, opts({ confirmed: true })))).toBe("destructive_without_preview")
-    expect(reasonOf(() => M.buildArgv("remove", remove, opts({ token: "pc1:abc" })))).toBe("bad_token")
-    expect(reasonOf(() => M.buildArgv("remove", remove, opts({ token: TOKEN.toUpperCase() })))).toBe("bad_token")
+    const dismiss = { target: "retail" }
+    expect(reasonOf(() => M.buildArgv("remove", remove, opts()))).toBe("preview_required")
+    expect(reasonOf(() => M.buildArgv("remove", remove, opts({ confirmed: true })))).toBe("preview_required")
+    expect(reasonOf(() => M.buildArgv("dismiss_errors", dismiss, opts({ token: "pc1:abc" })))).toBe("bad_token")
+    expect(reasonOf(() => M.buildArgv("dismiss_errors", dismiss, opts({ token: TOKEN.toUpperCase() })))).toBe("bad_token")
+    expect(reasonOf(() => M.buildArgv("dismiss_errors", dismiss, opts()))).toBe("token_required")
     expect(reasonOf(() => M.buildArgv("remove", remove, opts({ preview: true, token: TOKEN })))).toBe("token_in_preview")
     // `backup create` never binds (M4-D22).
     expect(reasonOf(() => M.buildArgv("backup_all", {}, opts({ token: TOKEN })))).toBe("token_not_bound")
@@ -173,10 +190,10 @@ describe("buildArgv", () => {
     expect(reasonOf(() => M.buildArgv("update_target", { target: "retail", evil: "x" }, opts()))).toBe("unknown_slot")
     expect(reasonOf(() => M.buildArgv("update_addon", { target: "retail", addon: "" }, opts()))).toBe("bad_value")
     expect(reasonOf(() => M.buildArgv("update_addon", { target: "retail", addon: "a\u0000b" }, opts()))).toBe("bad_value")
-    expect(reasonOf(() => M.buildArgv("update_all", {}, opts({ binary: "omaddons" })))).toBe("bad_binary")
-    expect(reasonOf(() => M.buildArgv("update_all", {}, opts({ label: "" })))).toBe("bad_label")
-    expect(reasonOf(() => M.buildArgv("update_all", {}, opts({ label: "a\nb" })))).toBe("bad_label")
-    expect(reasonOf(() => M.buildArgv("update_all", {}, opts({ context: { HOME: "/h" } })))).toBe("bad_context")
+    expect(reasonOf(() => M.buildArgv("update_all", {}, opts({ preview: true, binary: "omaddons" })))).toBe("bad_binary")
+    expect(reasonOf(() => M.buildArgv("update_all", {}, opts({ preview: true, label: "" })))).toBe("bad_label")
+    expect(reasonOf(() => M.buildArgv("update_all", {}, opts({ preview: true, label: "a\nb" })))).toBe("bad_label")
+    expect(reasonOf(() => M.buildArgv("update_all", {}, opts({ preview: true, context: { HOME: "/h" } })))).toBe("bad_context")
   })
 
   test("a bad {target} is refused", () => {
@@ -184,7 +201,7 @@ describe("buildArgv", () => {
       expect(reasonOf(() => M.buildArgv("update_target", { target }, opts()))).toBe(target === "" ? "bad_value" : "bad_target")
     }
     // Ids and keys pass.
-    expect(M.buildArgv("update_target", { target: "01M5JHFF37RESHT6QWM5BT2SXW" }, opts()).argv).toContain("01M5JHFF37RESHT6QWM5BT2SXW")
+    expect(M.buildArgv("update_target", { target: "01M5JHFF37RESHT6QWM5BT2SXW" }, opts({ preview: true })).argv).toContain("01M5JHFF37RESHT6QWM5BT2SXW")
   })
 
   test("hostile values stay one argv element, after -- or in --opt=", () => {
@@ -238,9 +255,14 @@ describe("buildArgv", () => {
   test("every shipped template is well-formed and builds with benign slots", () => {
     for (const name of Object.keys(M.COMMANDS)) {
       const shape = M.templateShape(name)
+      const t = M.COMMANDS[name]
       expect(M.CLI_PATHS[shape.path]).toBeDefined()
-      expect(M.COMMANDS[name].mutates).toBe(M.CLI_PATHS[shape.path].mutates)
-      if (M.COMMANDS[name].confirm) expect(M.CLI_PATHS[shape.path].destructive).toBe(true)
+      expect(t.mutates).toBe(M.CLI_PATHS[shape.path].mutates)
+      // M4-D28: a preview template is on a plan-storing path, a destructive one asks
+      // first, and the old confirm key is gone.
+      expect([name, t.confirm]).toEqual([name, undefined])
+      if (t.preview) expect([name, ["match", "confirm"].includes(t.preview), M.storesPlan(shape.path)]).toEqual([name, true, true])
+      if (M.CLI_PATHS[shape.path].destructive) expect([name, t.preview]).toEqual([name, "confirm"])
       expect(M.buildArgv(name, benignSlots(name), runOpts(name)).argv[0]).toBe(BINARY)
     }
   })
@@ -281,12 +303,13 @@ describe("classifyCliArgv", () => {
     }
   })
 
-  test("a destructive path runs only as a preview or with its token", () => {
+  test("a destructive path runs only as a preview, then through its plan", () => {
     const argv = ["omaddons", "remove", "-t", "retail", "--", "Foo"]
     expect(reasonOf(() => M.cliArgv(argv, opts()))).toBe("destructive_without_preview")
     const preview = M.cliArgv(argv, opts({ preview: true })).argv
     expect(preview.slice(6, 9)).toEqual(["--progress", "json", "--dry-run"])
-    expect(M.cliArgv(argv, opts({ token: TOKEN })).argv).toContain("--if-match")
+    // A plan-storing path confirms through its preview's apply, never a token (M4-D28).
+    expect(reasonOf(() => M.cliArgv(argv, opts({ token: TOKEN })))).toBe("runs_through_apply")
     // targets rm binds nothing: an explicit confirmation runs it.
     const rm = ["omaddons", "targets", "rm", "retail"]
     expect(reasonOf(() => M.cliArgv(rm, opts()))).toBe("destructive_without_preview")
@@ -295,15 +318,30 @@ describe("classifyCliArgv", () => {
     // An argv that is a preview already gets no second --dry-run.
     const dry = M.cliArgv(["omaddons", "remove", "--dry-run", "--", "Foo"], opts()).argv
     expect(dry.filter((a) => a === "--dry-run").length).toBe(1)
-    // A dry run's own alternative (it repeats --dry-run) previews, and its confirmed run
-    // runs for real, bound; a "--dry-run" after -- is a positional and stays.
+    // A dry run's own alternative (it repeats --dry-run) previews; a token never confirms
+    // it (backup restore stores a plan).
     const alt = ["omaddons", "backup", "restore", "01M", "-t", "retail", "--addon", "folder:WeakAuras", "--dry-run"]
     expect(M.cliArgv(alt, opts({ preview: true })).argv.filter((a) => a === "--dry-run").length).toBe(1)
-    const real = M.cliArgv(alt, opts({ token: TOKEN })).argv
-    expect(real).not.toContain("--dry-run")
-    expect(real).toContain("--if-match")
-    const literal = M.cliArgv(["omaddons", "remove", "-t", "retail", "--", "--dry-run"], opts({ token: TOKEN })).argv
+    expect(reasonOf(() => M.cliArgv(alt, opts({ token: TOKEN })))).toBe("runs_through_apply")
+    // Off the plan paths, a confirmed or bound run drops the alternative's --dry-run; a
+    // "--dry-run" after -- is a positional and stays.
+    const rmAlt = M.cliArgv(["omaddons", "targets", "rm", "retail", "--dry-run"], opts({ confirmed: true })).argv
+    expect(rmAlt).not.toContain("--dry-run")
+    const bound = M.cliArgv(["omaddons", "errors", "dismiss", "-t", "retail", "--dry-run"], opts({ token: TOKEN })).argv
+    expect([bound.includes("--dry-run"), bound.includes("--if-match")]).toEqual([false, true])
+    const literal = M.cliArgv(["omaddons", "targets", "rm", "--", "--dry-run"], opts({ confirmed: true })).argv
     expect(literal.slice(-2)).toEqual(["--", "--dry-run"])
+  })
+
+  test("cliArgv keeps tokens off plan paths", () => {
+    table([
+      ["remove", ["omaddons", "remove", "-t", "retail", "--", "Foo"], "runs_through_apply"],
+      ["undo", ["omaddons", "undo", "--run", "01M5JHFF8X0FXBT1K068DQKCHG"], "runs_through_apply"],
+      ["backup_restore", ["omaddons", "backup", "restore", "01M6Q2VA", "-t", "retail"], "runs_through_apply"],
+      ["backup_prune", ["omaddons", "backup", "prune", "-t", "retail", "--", "01M6Q2VA"], "runs_through_apply"],
+      ["update", ["omaddons", "update", "-t", "retail"], "runs_through_apply"],
+      ["errors_dismiss_builds", ["omaddons", "errors", "dismiss", "-t", "retail"], null],
+    ], (argv) => reasonOf(() => M.cliArgv(argv, opts({ token: TOKEN }))))
   })
 
   test("the argv in real envelopes", () => {
@@ -650,8 +688,10 @@ describe("the panel frame", () => {
   test("u updates all, or the selected client", () => {
     expect(M.updateRequest("")).toEqual({ template: "update_all", slots: {}, label: "Update all" })
     expect(M.updateRequest("retail")).toEqual({ template: "update_target", slots: { target: "retail" }, label: "Update retail" })
+    // An update runs as its preview, then its plan's apply (M4-D28).
     for (const r of [M.updateRequest(""), M.updateRequest("retail")]) {
-      expect(() => M.buildArgv(r.template, r.slots, opts())).not.toThrow()
+      expect(() => M.buildArgv(r.template, r.slots, opts({ preview: true }))).not.toThrow()
+      expect(reasonOf(() => M.buildArgv(r.template, r.slots, opts()))).toBe("preview_required")
     }
   })
 
@@ -750,7 +790,7 @@ describe("the Updates and Installed views", () => {
     expect(M.rowAction(Object.assign({}, row, { pinned: true }), "pin").template).toBe("unpin")
     for (const which of ["pin", "update", "reinstall", "remove"]) {
       const action = M.rowAction(row, which)
-      const built = M.buildArgv(action.template, action.slots, opts({ preview: which === "remove" }))
+      const built = M.buildArgv(action.template, action.slots, opts({ preview: !!M.COMMANDS[action.template].preview }))
       expect(built.argv.slice(-2)).toEqual(["--", "-rf Foo"])
     }
     expect(M.rowAction(row, "nonsense")).toBeNull()
@@ -1636,17 +1676,21 @@ test("writes every built argv and the classifier's verdicts for the Rust check",
       refused.push({ template, slots, reason: e.reason || e.message })
     }
   }
+  // A previewed template builds only as its preview (its Yes is its plan's apply, below);
+  // its real form is refused.
+  const realForms = []
   for (const name of Object.keys(M.COMMANDS)) {
     const base = benignSlots(name)
-    const extra = runOpts(name)
-    record(name, base, { token: extra.token })
-    if (M.COMMANDS[name].confirm) record(name, base, { preview: true })
+    const extra = M.COMMANDS[name].preview ? { preview: true } : { token: runOpts(name).token }
+    record(name, base, extra)
+    if (M.COMMANDS[name].preview) realForms.push([name, reasonOf(() => M.buildArgv(name, base, opts()))])
     for (const slot of M.templateShape(name).slots) {
       if (slot === "target") continue
-      for (const value of HOSTILE) record(name, Object.assign({}, base, { [slot]: value }), { token: extra.token })
+      for (const value of HOSTILE) record(name, Object.assign({}, base, { [slot]: value }), extra)
     }
   }
   expect(refused).toEqual([])
+  expect(realForms.sort((a, b) => (a[0] < b[0] ? -1 : 1))).toEqual(PREVIEWED.map((name) => [name, "preview_required"]))
 
   const classified = []
   const real = [

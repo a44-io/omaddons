@@ -235,8 +235,8 @@ Item {
 
   function updateAll() {
     if (busy) return false
-    var request = Model.updateRequest(filter)
-    return report(svc.run(request.template, request.slots, request.label))
+    var request = Model.updateRequest(filter, Model.updateRows(svc.lists, filter, targets))
+    return report(svc.run(request.template, request.slots, request.label, request.shown))
   }
 
   function checkNow() {
