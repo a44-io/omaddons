@@ -967,6 +967,250 @@ fn m2_pin_unpin_update_on_era() {
     assert_eq!(txs.len(), 3, "three transactions, three undos");
 }
 
+/// One update through its stored plan (D7): on a non-Forever client that is not running,
+/// `update <addon> --dry-run` stores a plan, `apply` runs it against the live source,
+/// history and `plans show` record it, and `undo` restores every byte. With no update
+/// pending anywhere, one is made: an older Dominos tag installed and unpinned. Every
+/// transaction is undone, and the backups the test made pruned, before any check fails.
+#[test]
+#[ignore = "real machine and live network: OMADDONS_REAL_MACHINE=1 OMADDONS_LIVE=1"]
+fn apply_one_update_and_undo() {
+    let test = "apply_one_update_and_undo";
+    if !checkpoint::require(test, LIVE) {
+        return;
+    }
+    let (code, status) = omaddons(&["status"]);
+    assert_eq!(code, 0, "{status:#}");
+    let mut candidates: Vec<String> = Vec::new();
+    for t in status["data"]["targets"].as_array().into_iter().flatten() {
+        let id = t["id"].as_str().unwrap_or_default().to_owned();
+        if id == "forever" || t["family"] == "forever" {
+            continue;
+        }
+        if t["running"] == true {
+            note(&format!("{id} is running: left out"), &Value::Null);
+            continue;
+        }
+        candidates.push(id);
+    }
+    candidates.sort();
+    note("candidates", &serde_json::json!(candidates));
+    if candidates.is_empty() {
+        checkpoint::skip(
+            test,
+            "every non-Forever client is running; quit one and run again",
+        );
+        return;
+    }
+    let (guard, snapshot, backups) = (forever_guard(), snapshot_all(), all_backups());
+    let mut txs: Vec<String> = Vec::new();
+    let mut failures: Vec<String> = Vec::new();
+
+    // Every pending update, client by client, each client's by name.
+    let mut pending: Vec<(String, String)> = Vec::new();
+    for id in &candidates {
+        let (code, outdated) = omaddons(&["outdated", "-t", id]);
+        note(&format!("outdated -t {id}"), &outdated["data"]["summary"]);
+        if code != 0 {
+            failures.push(format!("outdated -t {id} exited {code}"));
+            continue;
+        }
+        let mut names: Vec<String> = outdated["data"]["targets"][0]["items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|item| item["status"] == "update_available")
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect();
+        names.sort();
+        pending.extend(names.into_iter().map(|name| (id.clone(), name)));
+    }
+    if pending.is_empty() {
+        // None anywhere: an older Dominos tag, installed (and pinned) then unpinned.
+        let tags = recent_tags("tullamods", "Dominos");
+        note("Dominos tags", &serde_json::json!(tags));
+        'made: for id in &candidates {
+            let (code, list) = omaddons(&["list", "-t", id]);
+            let has_dominos = list["data"]["targets"][0]["addons"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|a| a["name"] == "Dominos");
+            if code != 0 || has_dominos {
+                continue;
+            }
+            for tag in tags.iter().skip(1).take(3) {
+                let (code, installed) =
+                    omaddons(&["install", "dominos", "--version", tag, "-t", id]);
+                note(
+                    &format!("install dominos --version {tag} -t {id}"),
+                    &installed,
+                );
+                txs.extend(tx_of(&installed));
+                if code == 0 && installed["data"]["items"][0]["status"] == "installed" {
+                    let (_, unpinned) = omaddons(&["unpin", "Dominos", "-t", id]);
+                    note(&format!("unpin Dominos -t {id}"), &unpinned);
+                    txs.extend(tx_of(&unpinned));
+                    pending.push((id.clone(), "Dominos".to_owned()));
+                    break 'made;
+                }
+            }
+        }
+    }
+    note("pending updates", &serde_json::json!(pending));
+    if pending.is_empty() {
+        undo_all(&txs);
+        prune_new_backups(&backups);
+        checkpoint::skip(
+            test,
+            "no non-Forever client has an update, and no older Dominos tag installs on one",
+        );
+        return;
+    }
+
+    // The first pending update whose preview stores a plan (one that turns out not to
+    // load is `blocked`, and stores none).
+    let preview = |id: &str, name: &str| -> Option<String> {
+        let (code, previewed) = omaddons(&["update", name, "-t", id, "--dry-run"]);
+        let item = &previewed["data"]["targets"][0]["items"][0];
+        note(
+            &format!("update {name} -t {id} --dry-run"),
+            &serde_json::json!({
+                "exit": code,
+                "plan_id": previewed["data"]["plan_id"],
+                "status": item["status"],
+                "from_version": item["from_version"],
+                "to_version": item["to_version"],
+            }),
+        );
+        previewed["data"]["plan_id"].as_str().map(str::to_owned)
+    };
+    let chosen = pending
+        .iter()
+        .find_map(|(id, name)| preview(id, name).map(|p| (id.clone(), name.clone(), p)));
+    if let Some((id, name, first)) = chosen {
+        let mut plan = first;
+        let mut applied = omaddons(&["apply", &plan]);
+        note(&format!("apply {plan}"), &applied.1);
+        let landed = applied.1["error"]["code"] == "plan_stale"
+            && applied.1["error"]["details"]["changed"]
+                .as_array()
+                .is_some_and(|parts| parts.iter().any(|p| p == "selection"));
+        if landed {
+            note(
+                "a release landed between the preview and apply",
+                &Value::Null,
+            );
+            match preview(&id, &name) {
+                Some(again) => {
+                    plan = again;
+                    applied = omaddons(&["apply", &plan]);
+                    note(&format!("apply {plan}"), &applied.1);
+                }
+                None => failures.push("the second preview stored no plan".to_owned()),
+            }
+        }
+        let (code, envelope) = &applied;
+        let data = &envelope["data"];
+        let committed: Vec<String> = data["outcomes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|o| o["tx"].as_str().map(str::to_owned))
+            .collect();
+        txs.extend(committed.iter().cloned());
+        if *code != 0 {
+            failures.push(format!(
+                "apply {plan} exited {code}: {}",
+                envelope["error"]["code"]
+            ));
+        } else {
+            let display = data["applied"]["display_argv"].clone();
+            let words: Vec<&str> = display
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect();
+            if data["applied"]["command"] != "update"
+                || !words.contains(&"update")
+                || !words.contains(&name.as_str())
+                || !words.contains(&"-t")
+            {
+                failures.push(format!("applied: {:#}", data["applied"]));
+            }
+            let outcomes: Vec<Value> = data["outcomes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|o| {
+                    serde_json::json!({
+                        "target": o["target"], "status": o["status"],
+                        "tx": o["tx"], "error_code": o["error_code"],
+                    })
+                })
+                .collect();
+            let tx = committed.first().cloned().unwrap_or_default();
+            let want = vec![serde_json::json!({
+                "target": id, "status": "committed", "tx": tx, "error_code": null,
+            })];
+            if committed.len() != 1 || outcomes != want {
+                failures.push(format!("outcomes: {outcomes:#?}"));
+            }
+            let (_, history) = omaddons(&["history", "-t", &id, "--limit", "1"]);
+            let newest = &history["data"]["entries"][0];
+            note(
+                "history's newest line",
+                &serde_json::json!({
+                    "tx": newest["tx"], "plan": newest["plan"], "argv": newest["argv"],
+                }),
+            );
+            if newest["tx"] != tx.as_str() || newest["plan"] != plan.as_str() {
+                failures.push(format!(
+                    "history: tx {} plan {}, want {tx} and {plan}",
+                    newest["tx"], newest["plan"]
+                ));
+            }
+            if newest["argv"] != display {
+                failures.push(format!(
+                    "history argv {} is not the plan's {display}",
+                    newest["argv"]
+                ));
+            }
+            let (_, shown) = omaddons(&["plans", "show", &plan]);
+            note(
+                &format!("plans show {plan}"),
+                &serde_json::json!({
+                    "state": shown["data"]["state"],
+                    "evidence": shown["data"]["evidence"],
+                }),
+            );
+            let evidence: Vec<&str> = shown["data"]["evidence"]["targets"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|t| t["tx"].as_str())
+                .collect();
+            if shown["data"]["state"] != "completed" || evidence != [tx.as_str()] {
+                failures.push(format!(
+                    "plans show: state {}, evidence {evidence:?}",
+                    shown["data"]["state"]
+                ));
+            }
+        }
+    } else {
+        failures.push(format!(
+            "no pending update's preview stored a plan: {pending:?}"
+        ));
+    }
+
+    undo_all(&txs);
+    prune_new_backups(&backups);
+    assert!(failures.is_empty(), "{failures:#?}");
+    assert_eq!(snapshot_all(), snapshot, "every AddOns and WTF/ as before");
+    assert_eq!(forever_guard(), guard, "the Forever set untouched");
+}
+
 /// On retail: LittleWigs and its dependency BigWigs in one transaction, one undo.
 #[test]
 #[ignore = "real machine and live network: OMADDONS_REAL_MACHINE=1 OMADDONS_LIVE=1"]
