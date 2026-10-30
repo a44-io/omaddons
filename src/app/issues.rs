@@ -41,14 +41,7 @@ const MANUAL_REPAIR: &[&str] = &[
     "preservation_incomplete",
 ];
 
-/// How urgent an issue is (vision D20): the bar turns urgent on P0 and P1.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, JsonSchema)]
-pub enum Severity {
-    P0,
-    P1,
-    P2,
-    P3,
-}
+pub use crate::doctor::finding::Severity;
 
 /// What addresses an issue: a command (`argv`), or prose (`argv` `null`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]

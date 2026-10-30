@@ -1,0 +1,77 @@
+---
+source: src/doctor/finding.rs
+expression: findings
+---
+[
+  {
+    "id": "fm-concurrency_primitives-journal-pending",
+    "instance": "fm-concurrency_primitives-journal-pending@01M5ZQ7Y3KJ8V9W2X4C6B0N1RT:tx=01M7A1B2C3D4E5F6G7H8J9K0MN",
+    "label": "retail · tx 01M7A1B2C3D4E5F6G7H8J9K0MN",
+    "severity": "P0",
+    "subsystem": "concurrency_primitives",
+    "title": "An interrupted change needs manual repair",
+    "confidence": "high",
+    "target": {
+      "id": "retail",
+      "key": "01M5ZQ7Y3KJ8V9W2X4C6B0N1RT"
+    },
+    "addon": null,
+    "folder": null,
+    "evidence": {
+      "tx": "01M7A1B2C3D4E5F6G7H8J9K0MN",
+      "reason": "journal_unreadable"
+    },
+    "remediation": {
+      "command": "see \"journal_pending that does not clear\" under Troubleshooting in the README",
+      "argv": null,
+      "explain_command": "omaddons doctor explain fm-concurrency_primitives-journal-pending -t retail",
+      "explain_argv": [
+        "omaddons",
+        "doctor",
+        "explain",
+        "fm-concurrency_primitives-journal-pending",
+        "-t",
+        "retail"
+      ],
+      "auto_fixable": false,
+      "needs_force": false,
+      "estimated_actions": 0,
+      "destructive": false
+    }
+  },
+  {
+    "id": "fm-plugins-widget-version-drift",
+    "instance": "fm-plugins-widget-version-drift@machine",
+    "label": "machine",
+    "severity": "P3",
+    "subsystem": "plugins",
+    "title": "The bar widget is from another omaddons build",
+    "confidence": "high",
+    "target": null,
+    "addon": null,
+    "folder": null,
+    "evidence": {
+      "observed": "0.1.0+aaaa",
+      "expected": "0.1.0+bbbb"
+    },
+    "remediation": {
+      "command": "omaddons omarchy install",
+      "argv": [
+        "omaddons",
+        "omarchy",
+        "install"
+      ],
+      "explain_command": "omaddons doctor explain fm-plugins-widget-version-drift",
+      "explain_argv": [
+        "omaddons",
+        "doctor",
+        "explain",
+        "fm-plugins-widget-version-drift"
+      ],
+      "auto_fixable": false,
+      "needs_force": false,
+      "estimated_actions": 0,
+      "destructive": false
+    }
+  }
+]

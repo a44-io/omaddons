@@ -15,6 +15,7 @@ pub mod cli;
 pub mod clock;
 pub mod contract;
 pub mod discover;
+pub mod doctor;
 pub mod drift;
 pub mod engine;
 pub mod error;

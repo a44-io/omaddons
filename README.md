@@ -2625,6 +2625,7 @@ The state directory honors `XDG_STATE_HOME`, the cache `XDG_CACHE_HOME`, and the
 | `src/error.rs` | The error and warning code registries and the exit-code table |
 | `src/model.rs` | Domain types: refs, folder names, actors, channels, records |
 | `src/discover/` | Client discovery, launcher readers, running detection, the target registry and cache |
+| `src/doctor/` | The doctor (milestone 4, in progress): so far its finding model (`finding.rs`: subsystems, severity, confidence, typed evidence, remediation, and the instance keys that name what is broken) |
 | `src/rules.rs` | Products, the version-to-family table, family ranges, client-rules rows, game modes |
 | `src/toc.rs`, `src/toc/loaded.rs` | TOC parser and the load verdict |
 | `src/inventory.rs` | Folder classification: protected, managed, shared, linked, unmanaged, invalid |
