@@ -45,4 +45,9 @@ impl Pause {
     pub fn resume(&self, name: &str) {
         fs::write(self.dir.join(format!("{name}.resume")), "").unwrap();
     }
+
+    /// Whether the child has stopped at `name` (now or earlier), without waiting.
+    pub fn was_reached(&self, name: &str) -> bool {
+        self.dir.join(format!("{name}.reached")).exists()
+    }
 }

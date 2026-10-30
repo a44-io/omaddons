@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 
 use common::home::Home;
 use common::pause::Pause;
-use common::plans::{plans_dir, read_plan};
+use common::plans::{plans_dir, read_plan, wait_until_open};
 use common::tlog::{Cmd, Ran, TestLog, tlog};
 use common::trees::tree_hash;
 use omaddons::fsx::{Lease, ScopeTable};
@@ -572,31 +572,6 @@ fn apply_a_killed_lease_holder_blocks_nothing() {
 // ---------------------------------------------------------------------------------------
 // The reload after the lease, proven.
 
-/// Waits (10 s at most) until the child `pid` has `path` open: it resolved and loaded the
-/// plan, and waits for the lease.
-fn wait_until_open(log: &TestLog, pid: u32, path: &Path) {
-    let wanted = fs::canonicalize(path).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        let open: Vec<PathBuf> = fs::read_dir(format!("/proc/{pid}/fd"))
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter_map(|fd| fs::read_link(fd.path()).ok())
-            .collect();
-        if open.contains(&wanted) {
-            log.note(format!("pid {pid} holds {} open", wanted.display()));
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "pid {pid} never opened {}: {open:?}",
-            wanted.display()
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
-}
-
 #[test]
 fn apply_reloads_the_plan_after_waiting_for_its_lease() {
     let log = tlog!();
@@ -615,7 +590,7 @@ fn apply_reloads_the_plan_after_waiting_for_its_lease() {
         let lease = h.hold_lease(&id);
         log.step("start a waiting applier");
         let waiting = h.cmd(&log, &["apply", &id]).spawn();
-        wait_until_open(&log, waiting.pid(), &h.lease(&id));
+        wait_until_open(&log, waiting.pid(), &h.lease(&id), Duration::from_secs(10));
 
         log.step("change the plan while it waits");
         match case {

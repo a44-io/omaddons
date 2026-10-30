@@ -1,4 +1,4 @@
-//! e2e suite: stored plans and apply: stored previews, bounded admission, concurrency and crash recovery; `apply` running exactly what a preview stored, or refusing it with its reason; and bound runs that commit exactly what their preview approved, or nothing (M4-D60): the approval witness and the re-judged operations checked again under the commit lock, and each rename's identity.
+//! e2e suite: stored plans and apply: stored previews, bounded admission, concurrency and crash recovery; `apply` running exactly what a preview stored, or refusing it with its reason; and bound runs that commit exactly what their preview approved, or nothing (M4-D60): the approval witness and the re-judged operations checked again under the commit lock, and each rename's identity; and the races of one plan's lease (M4-D61): two appliers, its timeout, interference between targets, and the sweeps.
 #![cfg(test)]
 
 #[path = "apply/applying.rs"]
@@ -10,6 +10,8 @@ mod common;
 mod drift;
 #[path = "apply/drift_support.rs"]
 mod drift_support;
+#[path = "apply/races.rs"]
+mod races;
 #[path = "apply/witness.rs"]
 mod witness;
 

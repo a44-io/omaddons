@@ -2,13 +2,15 @@
 //! end-to-end suites. Copies start from a real plan so its typed intent stays valid.
 //! The reconciliation helpers (`show`, `apply_with_stdout_closed`, the evidence and
 //! history readers, `plant_lines`, `behind_everywhere`) serve `plans show`'s suites and
-//! slice 2's end-to-end demo.
+//! slice 2's end-to-end demo. `holds_open` and `wait_until_open` find an `apply` holding
+//! or waiting for a plan's lease through `/proc/<pid>/fd`.
 
 use std::fs;
 use std::io::{Read as _, Write as _};
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
+use std::time::{Duration, Instant};
 
 use jiff::{SignedDuration, Timestamp};
 use omaddons::state::paths::Paths;
@@ -82,6 +84,51 @@ pub fn lease_files(env: &TestEnv) -> Vec<PathBuf> {
 
 pub fn read_plan(env: &TestEnv, id: &str) -> Value {
     serde_json::from_slice(&fs::read(plans_dir(env).join(format!("{id}.json"))).unwrap()).unwrap()
+}
+
+/// `<cache>/omaddons/plans/<id>.lease`, the lease a real `apply` of plan `id` holds.
+pub fn lease_path(env: &TestEnv, id: &str) -> PathBuf {
+    plans_dir(env).join(format!("{id}.lease"))
+}
+
+/// What process `pid` has open: the targets of the links under `/proc/<pid>/fd/`.
+fn open_files(pid: u32) -> Vec<PathBuf> {
+    fs::read_dir(format!("/proc/{pid}/fd"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|fd| fs::read_link(fd.path()).ok())
+        .collect()
+}
+
+/// Whether process `pid` has `path` open (an `apply` holding or waiting for a plan's
+/// lease keeps its lease file open). A path that does not exist is open nowhere.
+pub fn holds_open(pid: u32, path: &Path) -> bool {
+    fs::canonicalize(path).is_ok_and(|wanted| open_files(pid).contains(&wanted))
+}
+
+/// Waits (`limit` at most, polling every 10 ms) until process `pid` has `path` open,
+/// logging each poll; panics after `limit` naming the pid, the path and the links seen.
+#[track_caller]
+pub fn wait_until_open(log: &TestLog, pid: u32, path: &Path, limit: Duration) {
+    let deadline = Instant::now() + limit;
+    loop {
+        let open = holds_open(pid, path);
+        log.note(format!(
+            "pid {pid} has {} open: {open}",
+            path.file_name().unwrap_or_default().to_string_lossy()
+        ));
+        if open {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "pid {pid} never opened {} within {limit:?}; its links: {:?}",
+            path.display(),
+            open_files(pid)
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 /// Physical counts, including files beyond the library listing's bounded window.
