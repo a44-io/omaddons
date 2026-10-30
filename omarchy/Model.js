@@ -384,11 +384,19 @@ function hasDryRun(args) {
   return false
 }
 
+// Whether `plan` (a planFrom result) offered exactly `argv`, element for element.
+function offeredBy(plan, argv) {
+  if (!plan || typeof plan !== "object" || !Array.isArray(plan.argv) || plan.argv.length !== argv.length) return false
+  for (var i = 0; i < argv.length; i++) if (plan.argv[i] !== argv[i]) return false
+  return true
+}
+
 // Whether an argv the CLI handed out (`fix_argv`, alternatives, `commands[]`, issue
 // remediations, `last_change.undo`) may become a button (M3-D2 (a)): `omaddons`, a
 // known path, and no flag the widget owns before `--`. The verdict reports the path's
-// flags, so the runner previews every destructive one.
-function classifyCliArgv(argv) {
+// flags, so the runner previews every destructive one. An `apply` runs only the plan a
+// preview offered (M4-D28): given that plan, never from any other envelope.
+function classifyCliArgv(argv, plan) {
   var verdict = { "ok": false, "path": "", "mutates": false, "destructive": false, "binds": false, "reason": "" }
   if (!Array.isArray(argv) || argv.length < 2) {
     verdict.reason = "malformed"
@@ -417,6 +425,10 @@ function classifyCliArgv(argv) {
     verdict.reason = "unknown_path"
     return verdict
   }
+  if (path === "apply" && !offeredBy(plan, argv)) {
+    verdict.reason = "apply_outside_plan"
+    return verdict
+  }
   var row = CLI_PATHS[path]
   verdict.ok = true
   verdict.path = path
@@ -427,12 +439,18 @@ function classifyCliArgv(argv) {
 }
 
 // An accepted CLI argv as `{argv, env}`: the binary for `omaddons` and the standard
-// flags right after it. The options are buildArgv's; a destructive path runs only as a
-// preview or after one.
+// flags right after it. The options are buildArgv's, and `plan` for the `apply` it
+// offered; a destructive path runs only as a preview or after one.
 function cliArgv(argv, opts) {
-  var verdict = classifyCliArgv(argv)
-  if (!verdict.ok) throw refuse(verdict.reason, "not a command the widget runs")
   var o = opts || {}
+  var verdict = classifyCliArgv(argv, o.plan)
+  if (!verdict.ok) throw refuse(verdict.reason, "not a command the widget runs")
+  // A plan's `apply` runs as offered: never as a preview, never with a token (it carries
+  // its plan's own), with the standard flags and progress only.
+  if (verdict.path === "apply") {
+    if (o.preview === true || !!o.token) throw refuse("apply_outside_plan", "a plan runs as offered, never previewed or bound")
+    return { argv: standardFlags(o, true, false, "").concat(argv.slice(1)), env: contextOf(o.context) }
+  }
   var rest = argv.slice(1)
   // The confirmed run of a preview: a CLI argv that came from a dry run's own fix (its
   // alternatives repeat `--dry-run`) runs for real once the user said Yes.
@@ -531,18 +549,24 @@ function indexWhere(list, test) {
 // `request` queued under the lane rules: `{queues, accepted, replaced}`, where
 // `replaced` is the id of a queued request it took the place of. Mutations: at most
 // one queued user request (a newer one replaces it) and one background request per
-// key. Local reads: one per key, the newest replacing the queued one. Network reads:
-// a newer search replaces a queued one, other reads coalesce per key, at most
-// NETWORK_QUEUE_MAX queued.
+// key; a continuation (the run that carries on a preview: its plan, or the preview
+// again after a refused plan) goes first and replaces nothing, nor is it replaced.
+// Local reads: one per key, the newest replacing the queued one. Network reads: a newer
+// search replaces a queued one, other reads coalesce per key, at most NETWORK_QUEUE_MAX
+// queued.
 function enqueue(queues, request) {
   var out = copyQueues(queues)
   var lane = laneOf(request)
   var list = out[lane]
   var key = coalesceKey(request)
   var at = -1
+  if (lane === "mutation" && request.continuation === true) {
+    list.unshift(request)
+    return { "queues": out, "accepted": true, "replaced": null }
+  }
   if (lane === "mutation") {
     at = request.priority === "user"
-      ? indexWhere(list, function(r) { return r.priority === "user" })
+      ? indexWhere(list, function(r) { return r.priority === "user" && r.continuation !== true })
       : indexWhere(list, function(r) { return r.priority !== "user" && coalesceKey(r) === key })
   } else if (lane === "network" && request.resource === "search") {
     at = indexWhere(list, function(r) { return r.resource === "search" })
@@ -980,7 +1004,13 @@ function reduceList(env) {
             "dependency": a.reason === "dependency",
             "orphan": a.orphan === true,
             "requiredBy": stringList(a.required_by),
-            "folders": stringList(a.folders)
+            "folders": stringList(a.folders),
+            // The release `latest` names, as an update preview's approval names it: what
+            // the plan runner compares with the plan (M4-D28).
+            "channel": str(a.channel),
+            "latestSource": strOrNull(latest.source),
+            "latestReleaseId": strOrNull(latest.release_id),
+            "latestAsset": strOrNull(latest.asset)
           }
         })
       }
@@ -1509,11 +1539,33 @@ function backupFolderOf(env) {
   return error && error.details && typeof error.details.backup_dir === "string" ? error.details.backup_dir : ""
 }
 
-// A `plan_stale` refusal: what changed since the preview (M3-D46).
+// Why a stored plan cannot run any more, by `plan_stale`'s `details.reason` (M4-D24).
+var PLAN_STALE_REASONS = {
+  "expired": "The plan expired.",
+  "binary_changed": "omaddons changed since the preview.",
+  "input_missing": "A file the plan needs is gone.",
+  "already_applied": "The plan was applied already."
+}
+
+// A `plan_stale` refusal: what changed since the preview (M3-D46); for a stored plan,
+// why it cannot run (M4-D24), that it is gone, or the clients where it went stale.
 function staleText(env) {
   var error = env && env.error && typeof env.error === "object" ? env.error : {}
-  var changed = error.details ? stringList(error.details.changed) : []
-  return "Changed since you looked: " + (changed.length ? joinNames(changed) : "the plan") + ". Nothing ran; check the new preview."
+  var details = error.details && typeof error.details === "object" ? error.details : {}
+  var after = " Nothing ran; check the new preview."
+  if (error.code === "plan_not_found") return "The plan is gone (expired or cleared)." + after
+  if (typeof details.reason === "string" && PLAN_STALE_REASONS.hasOwnProperty(details.reason)) {
+    return PLAN_STALE_REASONS[details.reason] + after
+  }
+  var data = env && env.data && typeof env.data === "object" ? env.data : {}
+  var outcomes = Array.isArray(data.outcomes) ? data.outcomes : []
+  var stale = []
+  for (var i = 0; i < outcomes.length; i++) {
+    if (outcomes[i] && outcomes[i].status === "stale" && typeof outcomes[i].target === "string") stale.push(outcomes[i].target)
+  }
+  if (stale.length) return "Changed since you looked on " + joinNames(stale) + ". Nothing ran there; check the new preview."
+  var changed = stringList(details.changed)
+  return "Changed since you looked: " + (changed.length ? joinNames(changed) : "the plan") + "." + after
 }
 
 // A failure's fix as text, when it is no button: prose, or an argv the classifier
@@ -1607,10 +1659,15 @@ function addonsDirArgv(target) {
 }
 
 // `u`: every client's updates, or the selected one's (no confirmation: undoable and
-// expected, M3-D9).
-function updateRequest(filter) {
-  if (filter) return { "template": "update_target", "slots": { "target": filter }, "label": "Update " + filter }
-  return { "template": "update_all", "slots": {}, "label": "Update all" }
+// expected, M3-D9). Given the Updates view's `rows` (updateRows'), `shown` is what the
+// view showed of them, the update rows in the filter, for the plan runner (M4-D28).
+function updateRequest(filter, rows) {
+  var request = filter ? { "template": "update_target", "slots": { "target": filter }, "label": "Update " + filter }
+    : { "template": "update_all", "slots": {}, "label": "Update all" }
+  if (Array.isArray(rows)) {
+    request.shown = rows.filter(function(r) { return !!r && r.kind === "update" && (!filter || r.target === filter) }).map(shownOf)
+  }
+  return request
 }
 
 // The Undo-last control: its label ("Undo update on retail", "Redo …"), the CLI argv
@@ -1671,7 +1728,8 @@ function updateRows(lists, filter, statusTargets) {
       rows.push({
         "key": t.id + "/" + a.name, "target": t.id, "name": a.name, "version": a.version, "latest": a.latest,
         "kind": kind, "label": UPDATE_LABELS[kind], "pinned": a.pinned, "reload": !!status && status.running === true,
-        "group": ""
+        "group": "", "targetKey": t.key, "channel": a.channel, "latestSource": a.latestSource,
+        "latestReleaseId": a.latestReleaseId, "latestAsset": a.latestAsset
       })
     }
     rows.sort(function(x, y) { return UPDATE_ORDER.indexOf(x.kind) - UPDATE_ORDER.indexOf(y.kind) })
@@ -1719,7 +1777,8 @@ function installedRows(lists, filter) {
         "key": t.id + "/" + a.name, "target": t.id, "name": a.name, "version": a.version, "source": a.source,
         "markers": markers, "pinned": a.pinned,
         "primary": a.drift === "modified" || a.drift === "missing" ? "reinstall" : (a.updateAvailable ? "update" : ""),
-        "group": !filter && j === 0 ? t.id : ""
+        "group": !filter && j === 0 ? t.id : "", "targetKey": t.key, "latest": a.latest, "channel": a.channel,
+        "latestSource": a.latestSource, "latestReleaseId": a.latestReleaseId, "latestAsset": a.latestAsset
       })
     }
   }
@@ -1739,7 +1798,7 @@ function rowAction(row, which) {
   var slots = { "target": row.target, "addon": row.name }
   if (which === "pin") return row.pinned ? { "template": "unpin", "slots": slots, "label": "Unpin " + row.name }
     : { "template": "pin", "slots": slots, "label": "Pin " + row.name }
-  if (which === "update") return { "template": "update_addon", "slots": slots, "label": "Update " + row.name }
+  if (which === "update") return { "template": "update_addon", "slots": slots, "label": "Update " + row.name, "shown": [shownOf(row)] }
   if (which === "reinstall") return { "template": "reinstall", "slots": slots, "label": "Reinstall " + row.name }
   if (which === "remove") return { "template": "remove", "slots": slots, "label": "Remove " + row.name }
   return null
@@ -2207,6 +2266,391 @@ function resultUndo(result) {
   return single
 }
 
+// -------------------------------------------------------------- the plan runner (G1)
+
+// A storable command's preview stores a plan (M4-D22, M4-D28): the widget compares its
+// typed approval with what the view showed, then applies the plan as offered, asks
+// first, refreshes, or runs nothing and says why. These functions decide; the service
+// only carries out the decision. None reads a warning's text.
+
+// The paths whose dry runs store a plan (M4-D22), held equal to app::COMMANDS'
+// stores_plan by tests/omarchy_widget.rs. A previewed action on one of them confirms
+// through its plan.
+// BEGIN PLAN_PATHS
+var PLAN_PATHS = ["install", "update", "pin", "unpin", "adopt", "sync", "copy", "remove", "undo", "backup restore", "backup prune"]
+// END PLAN_PATHS
+var PLAN_ID_PATTERN = /^[0-9A-HJKMNP-TV-Z]{26}$/
+// The plan items a dialog lists before "(and N more)"; a plain UI choice.
+var WIDGET_DIALOG_ITEMS_MAX = 12
+// The fields of an approval's selection item, as the widget keeps them.
+var APPROVAL_FIELDS = ["target_key", "target_id", "addon", "source", "channel", "release_id", "asset", "from_version", "to_version", "op"]
+// The fields a shown item and a plan item must both carry, and agree on, to match.
+var MATCH_FIELDS = ["target_key", "addon", "source", "channel", "release_id", "asset", "from_version", "to_version"]
+
+function storesPlan(path) {
+  return PLAN_PATHS.indexOf(path) !== -1
+}
+
+// A non-empty string, else null.
+function nonEmpty(value) {
+  return typeof value === "string" && value !== "" ? value : null
+}
+
+// Lower case for ASCII letters only, as the CLI matches addon names.
+function asciiLower(text) {
+  return String(text).replace(/[A-Z]/g, function(c) { return c.toLowerCase() })
+}
+
+// A dry run's typed approval summary (`data.approval`), fail-closed: null unless it has
+// a boolean `routine`, `reasons` of strings and `selection` of objects. A summary that
+// says routine while naming a reason is not routine.
+function approvalOf(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw) || typeof raw.routine !== "boolean") return null
+  if (!Array.isArray(raw.reasons) || !Array.isArray(raw.selection)) return null
+  for (var i = 0; i < raw.reasons.length; i++) if (typeof raw.reasons[i] !== "string") return null
+  var items = []
+  for (var j = 0; j < raw.selection.length; j++) {
+    var item = raw.selection[j]
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null
+    var kept = {}
+    for (var k = 0; k < APPROVAL_FIELDS.length; k++) kept[APPROVAL_FIELDS[k]] = nonEmpty(item[APPROVAL_FIELDS[k]])
+    items.push(kept)
+  }
+  var scope = raw.scope && typeof raw.scope === "object" && !Array.isArray(raw.scope) ? raw.scope : {}
+  return { "routine": raw.routine === true && raw.reasons.length === 0, "reasons": raw.reasons.slice(), "selection": items, "scope": scope }
+}
+
+// The plan a preview stored, or null: `data.plan_id` a ULID, exactly one offer in
+// `commands[]` to run it whose argv is exactly that plan's, and an approval that reads.
+// `argv` is the only one the plan may run (classifyCliArgv).
+function planFrom(env) {
+  if (!envelopeOk(env) || !env.ok || !env.data || typeof env.data !== "object") return null
+  var id = env.data.plan_id
+  if (typeof id !== "string" || !PLAN_ID_PATTERN.test(id)) return null
+  var offers = Array.isArray(env.commands) ? env.commands.filter(function(c) { return !!c && c.action === "apply" }) : []
+  if (offers.length !== 1) return null
+  var argv = offers[0].argv
+  if (!Array.isArray(argv) || argv.length !== 3 || argv[0] !== "omaddons" || argv[1] !== "apply" || argv[2] !== id) return null
+  var approval = approvalOf(env.data.approval)
+  if (!approval) return null
+  return { "planId": id, "argv": argv.slice(), "destructive": offers[0].destructive === true, "expiresAt": str(env.data.plan_expires_at), "approval": approval }
+}
+
+// What an Updates or Installed row showed, in the approval's field names.
+function shownOf(row) {
+  var r = row && typeof row === "object" ? row : {}
+  return {
+    "target_key": nonEmpty(r.targetKey), "target_id": nonEmpty(r.target), "addon": nonEmpty(r.name),
+    "source": nonEmpty(r.latestSource), "channel": nonEmpty(r.channel), "release_id": nonEmpty(r.latestReleaseId),
+    "asset": nonEmpty(r.latestAsset), "from_version": nonEmpty(r.version), "to_version": nonEmpty(r.latest)
+  }
+}
+
+// What the view showed of `addon` on `target` (its Installed row, the name ignoring
+// ASCII case), else an item naming only the two.
+function shownForAddon(lists, target, addon) {
+  var wanted = asciiLower(str(addon))
+  var rows = target ? installedRows(lists, target) : []
+  for (var i = 0; i < rows.length; i++) if (asciiLower(str(rows[i].name)) === wanted) return [shownOf(rows[i])]
+  return [shownOf({ "target": target, "name": addon })]
+}
+
+// The name a scope list's entry gives: the entry itself, or its `addon` or `name`.
+function entryName(entry) {
+  if (typeof entry === "string") return entry
+  return entry && typeof entry === "object" ? str(entry.addon) || str(entry.name) : ""
+}
+
+// The plan items the user asked for: the selection without the dependencies it adds,
+// which the dialog names as an effect instead (M4-D28).
+function requestedItems(approval) {
+  var selection = approval && Array.isArray(approval.selection) ? approval.selection : []
+  var scope = approval && approval.scope && typeof approval.scope === "object" ? approval.scope : {}
+  var added = (Array.isArray(scope.dependencies_added) ? scope.dependencies_added : []).map(function(d) { return asciiLower(entryName(d)) })
+  return selection.filter(function(item) {
+    return !(item && typeof item.addon === "string" && added.indexOf(asciiLower(item.addon)) !== -1)
+  })
+}
+
+// Where an item pairs: its client key and addon (ignoring ASCII case), or null when it
+// lacks either.
+function pairKey(item) {
+  if (!item || typeof item !== "object" || !nonEmpty(item.target_key) || !nonEmpty(item.addon)) return null
+  return item.target_key + "\n" + asciiLower(item.addon)
+}
+
+function sameField(field, a, b) {
+  return field === "addon" ? asciiLower(a) === asciiLower(b) : a === b
+}
+
+// Whether the plan's items are exactly what the view showed: each shown item paired
+// with the plan item of the same client key and addon, one for one, every MATCH_FIELDS
+// entry present on both sides and equal. Missing evidence is never equality.
+function selectionMatches(shown, selection) {
+  if (!Array.isArray(shown) || !Array.isArray(selection) || shown.length === 0 || shown.length !== selection.length) return false
+  var keys = function(list) {
+    var out = []
+    for (var i = 0; i < list.length; i++) {
+      var key = pairKey(list[i])
+      if (key === null || out.indexOf(key) !== -1) return null
+      out.push(key)
+    }
+    return out
+  }
+  var shownKeys = keys(shown)
+  var planKeys = keys(selection)
+  if (!shownKeys || !planKeys) return false
+  for (var i = 0; i < shown.length; i++) {
+    var partner = selection[planKeys.indexOf(shownKeys[i])]
+    if (!partner) return false
+    for (var f = 0; f < MATCH_FIELDS.length; f++) {
+      var a = nonEmpty(shown[i][MATCH_FIELDS[f]])
+      var b = nonEmpty(partner[MATCH_FIELDS[f]])
+      if (a === null || b === null || !sameField(MATCH_FIELDS[f], a, b)) return false
+    }
+  }
+  return true
+}
+
+// One approval reason in plain words, as dialog lines: never none.
+function reasonText(reason, scope) {
+  var s = scope && typeof scope === "object" ? scope : {}
+  var out = []
+  var list = function(key) { return Array.isArray(s[key]) ? s[key] : [] }
+  if (reason === "dependency_added") {
+    list("dependencies_added").forEach(function(d) {
+      var name = entryName(d)
+      var version = d && typeof d === "object" ? str(d.version) || str(d.to_version) : ""
+      if (name) out.push("Also installs " + name + (version ? " " + version : "") + " (a new dependency)")
+    })
+    return out.length ? out : ["Also installs a new dependency"]
+  }
+  if (reason === "folders_removed") {
+    list("folders_removed").forEach(function(f) {
+      var folder = typeof f === "string" ? f : f && typeof f === "object" ? str(f.folder) : ""
+      if (folder) out.push("Removes the folder " + folder + " (kept for undo)")
+    })
+    return out.length ? out : ["Removes folders (kept for undo)"]
+  }
+  if (reason === "local_changes_replaced") {
+    var local = s.local_changes_replaced && typeof s.local_changes_replaced === "object" ? s.local_changes_replaced : {}
+    var count = num(local.count)
+    var folders = stringList(local.folders)
+    if (count <= 0) return ["Replaces files you changed (kept for undo)"]
+    return ["Replaces " + plural(count, "file") + " you changed" + (folders.length ? " in " + joinNames(folders) : "") + " (kept for undo)"]
+  }
+  if (reason === "source_changed") {
+    list("source_changed").forEach(function(c) {
+      var name = entryName(c)
+      var to = c && typeof c === "object" ? str(c.to) || str(c.source) : ""
+      if (name) out.push(name + " comes from another source now" + (to ? " (" + to + ")" : ""))
+    })
+    return out.length ? out : ["An addon comes from another source now"]
+  }
+  var fixed = {
+    "channel_changed": "Follows another release channel than the one installed",
+    "while_running": "Changes files while the game is running (/reload in game afterwards)",
+    "reinstall": "Reinstalls over the installed files",
+    "force": "Takes over folders another addon owns (--force)",
+    "downgrade": "Installs an older version than the one installed",
+    "destructive": "Removes, reverts or replaces something you have now"
+  }
+  if (fixed.hasOwnProperty(reason)) return [fixed[reason]]
+  return ["Also: " + str(reason).replace(/_/g, " ")]
+}
+
+// Every reason of an approval, in order, as dialog lines.
+function reasonLines(approval) {
+  var out = []
+  for (var i = 0; i < approval.reasons.length; i++) out = out.concat(reasonText(approval.reasons[i], approval.scope))
+  return out
+}
+
+// One plan item as a line: "Update Foo v1 → v2 on retail"; a missing part is left out.
+function planItemLine(item) {
+  var it = item && typeof item === "object" ? item : {}
+  var op = str(it.op)
+  var addon = str(it.addon)
+  var where = str(it.target_id)
+  var from = str(it.from_version)
+  var to = str(it.to_version)
+  var words = []
+  if (op === "update") words = ["Update", addon, from, to ? "→ " + to : "", where ? "on " + where : ""]
+  else if (op === "install") words = ["Install", addon, to, where ? "on " + where : ""]
+  else if (op === "remove") words = ["Remove", addon, from, where ? "from " + where : ""]
+  else if (op === "reinstall") words = ["Reinstall", addon, to || from, where ? "on " + where : ""]
+  else words = [op ? op.charAt(0).toUpperCase() + op.slice(1) : "Change", addon, where ? "on " + where : ""]
+  return words.filter(function(w) { return w !== "" }).join(" ")
+}
+
+// The plan's items as dialog lines, at most WIDGET_DIALOG_ITEMS_MAX, then "(and N more)".
+function planItemLines(selection) {
+  var items = Array.isArray(selection) ? selection : []
+  var out = []
+  for (var i = 0; i < items.length && i < WIDGET_DIALOG_ITEMS_MAX; i++) out.push(planItemLine(items[i]))
+  if (items.length > WIDGET_DIALOG_ITEMS_MAX) out.push("(and " + (items.length - WIDGET_DIALOG_ITEMS_MAX) + " more)")
+  return out
+}
+
+// Whether a plan item is the shown item's partner: the same addon (ignoring ASCII case)
+// on the same client, by key when both carry one, else by id.
+function partners(shownItem, planItem) {
+  if (!shownItem || !planItem || !nonEmpty(shownItem.addon) || !nonEmpty(planItem.addon)) return false
+  if (asciiLower(shownItem.addon) !== asciiLower(planItem.addon)) return false
+  if (nonEmpty(shownItem.target_key) && nonEmpty(planItem.target_key)) return shownItem.target_key === planItem.target_key
+  return nonEmpty(shownItem.target_id) !== null && shownItem.target_id === planItem.target_id
+}
+
+function fieldWords(fields) {
+  return joinNames(fields.map(function(f) { return f.replace(/_/g, " ") }))
+}
+
+// What differs between what the view showed and the plan's items, as phrases: per shown
+// item in order, then the plan's items the view did not show.
+function changeLines(shown, selection) {
+  var rows = Array.isArray(shown) ? shown : []
+  var items = Array.isArray(selection) ? selection : []
+  var used = []
+  var out = []
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i] && typeof rows[i] === "object" ? rows[i] : {}
+    var name = nonEmpty(row.addon) || "an addon"
+    var at = -1
+    for (var j = 0; j < items.length && at === -1; j++) if (used.indexOf(j) === -1 && partners(row, items[j])) at = j
+    if (at === -1) {
+      out.push(name + (nonEmpty(row.target_id) ? " on " + row.target_id : "") + " is no longer part of it")
+      continue
+    }
+    used.push(at)
+    var item = items[at]
+    var both = function(field) { return nonEmpty(row[field]) !== null && nonEmpty(item[field]) !== null }
+    var differs = function(field) { return both(field) && !sameField(field, row[field], item[field]) }
+    if (differs("to_version")) {
+      out.push(name + " " + item.to_version + " is now the newest")
+    } else {
+      var version = nonEmpty(item.to_version) ? " " + item.to_version : ""
+      if (differs("release_id")) out.push(name + version + " is another release now")
+      if (differs("asset")) out.push(name + version + " comes in another file now (" + item.asset + ")")
+    }
+    if (differs("source")) out.push(name + " comes from " + item.source + " now")
+    if (differs("channel")) out.push(name + " follows " + item.channel + " now")
+    if (differs("from_version")) {
+      var where = nonEmpty(row.target_id) || nonEmpty(item.target_id)
+      out.push(name + (where ? " on " + where : "") + " is at " + item.from_version + " now")
+    }
+    var noRow = MATCH_FIELDS.filter(function(f) { return nonEmpty(row[f]) === null })
+    var noPlan = MATCH_FIELDS.filter(function(f) { return nonEmpty(item[f]) === null })
+    if (noRow.length) out.push("the view did not show " + name + "'s " + fieldWords(noRow))
+    if (noPlan.length) out.push("the preview did not say " + name + "'s " + fieldWords(noPlan))
+  }
+  for (var k = 0; k < items.length; k++) {
+    if (used.indexOf(k) === -1) out.push("Also: " + planItemLine(items[k]) + " (not in the view)")
+  }
+  return out
+}
+
+// The dialog's heading for a plan that differs from the view: its first three changes.
+function changeHeading(lines) {
+  var all = Array.isArray(lines) ? lines : []
+  if (all.length === 0) return "Changed since you looked"
+  return "Changed since you looked: " + all.slice(0, 3).join("; ") + (all.length > 3 ? "; and " + (all.length - 3) + " more" : "")
+}
+
+// The fix of the first warning with `code`, as text ("" for none).
+function warningFix(env, code) {
+  var list = env && Array.isArray(env.warnings) ? env.warnings : []
+  for (var i = 0; i < list.length; i++) if (list[i] && list[i].code === code) return str(list[i].fix)
+  return ""
+}
+
+// What to do with a preview's envelope (M4-D28). `spec` is `{mode: "match" | "confirm",
+// shown, again, path}`: `match` compares the plan with what the view `shown`, `again`
+// marks a preview run after a refused plan, and `path` is the previewed command's. The
+// decision is `{kind, plan, heading, lines, line, fixText}`, its kind one of "failed",
+// "refuse" (nothing ran, `line` says why), "refresh" (nothing to do), "dialog" (ask,
+// with `lines`) and "direct" (apply `plan` with no dialog: a routine plan that is
+// exactly what the view showed).
+function previewDecision(spec, env) {
+  var s = spec && typeof spec === "object" ? spec : {}
+  var decision = { "kind": "failed", "plan": null, "heading": "", "lines": [], "line": "", "fixText": "" }
+  if (!envelopeOk(env) || !env.ok) return decision
+  var data = env.data && typeof env.data === "object" ? env.data : {}
+  var approval = approvalOf(data.approval)
+  decision.kind = "refuse"
+  if (!approval) {
+    decision.line = "The preview did not say what it would change; nothing ran"
+    return decision
+  }
+  if (data.plan_id === null && approval.selection.length === 0) {
+    decision.kind = "refresh"
+    decision.line = s.mode === "match" ? "Already up to date; the view is refreshed" : "Nothing to do; the view is refreshed"
+    return decision
+  }
+  if (data.plan_id === null) {
+    decision.line = "The preview could not be kept as a plan; nothing ran"
+    decision.fixText = warningFix(env, "plan_not_stored")
+    return decision
+  }
+  var plan = planFrom(env)
+  if (!plan) {
+    decision.line = "The preview offered no plan to apply; nothing ran"
+    return decision
+  }
+  decision.kind = "dialog"
+  decision.plan = plan
+  var reasons = reasonLines(approval)
+  // Anything but a match is confirmed in the dialog: never applied directly.
+  if (s.mode !== "match") {
+    decision.lines = confirmText(s.path, env).split("\n").concat(reasons)
+    return decision
+  }
+  var shown = Array.isArray(s.shown) ? s.shown : []
+  var compared = requestedItems(approval)
+  var equal = selectionMatches(shown, compared)
+  if (equal && approval.routine && !plan.destructive && s.again !== true) {
+    decision.kind = "direct"
+    return decision
+  }
+  if (equal || shown.length === 0) {
+    decision.lines = planItemLines(approval.selection).concat(reasons)
+    return decision
+  }
+  decision.heading = changeHeading(changeLines(shown, compared))
+  decision.lines = [decision.heading].concat(planItemLines(approval.selection), reasons)
+  return decision
+}
+
+// A decision's dialog text, one line each.
+function dialogText(decision) {
+  return decision && Array.isArray(decision.lines) ? decision.lines.join("\n") : ""
+}
+
+// An `apply` result read as the envelope of the command it ran, so resultLine,
+// failedItems, itemFixes and commandResultLine say what that command did; null for
+// anything else.
+function applyResult(env) {
+  if (!envelopeOk(env) || env.command !== "apply" || !env.data || typeof env.data !== "object") return null
+  var data = env.data
+  if (!data.applied || typeof data.applied !== "object" || typeof data.applied.command !== "string") return null
+  if (!data.result || typeof data.result !== "object" || Array.isArray(data.result)) return null
+  return {
+    "ok": env.ok, "schema_version": env.schema_version, "tool_version": env.tool_version,
+    "command": data.applied.command, "exit_code": env.exit_code, "partial": env.partial, "data": data.result,
+    "warnings": env.warnings, "commands": env.commands, "error": env.error,
+    "outcomes": Array.isArray(data.outcomes) ? data.outcomes : []
+  }
+}
+
+// Whether an `apply` calls for the preview again, never `apply` again: the plan went
+// stale or is gone, or a client's part went stale.
+function needsPreviewAgain(env) {
+  if (!envelopeOk(env) || env.command !== "apply") return false
+  var code = env.error && typeof env.error === "object" ? env.error.code : ""
+  if (!env.ok && (code === "plan_stale" || code === "plan_not_found")) return true
+  var view = applyResult(env)
+  return !!view && view.outcomes.some(function(o) { return !!o && o.status === "stale" })
+}
+
 if (typeof module !== "undefined") {
   module.exports = {
     DEFAULT_SETTINGS: DEFAULT_SETTINGS,
@@ -2313,6 +2757,25 @@ if (typeof module !== "undefined") {
     errorFacts: errorFacts,
     errorToastArgv: errorToastArgv,
     updateToastArgv: updateToastArgv,
-    resultToastArgv: resultToastArgv
+    resultToastArgv: resultToastArgv,
+    PLAN_PATHS: PLAN_PATHS,
+    PLAN_ID_PATTERN: PLAN_ID_PATTERN,
+    WIDGET_DIALOG_ITEMS_MAX: WIDGET_DIALOG_ITEMS_MAX,
+    MATCH_FIELDS: MATCH_FIELDS,
+    storesPlan: storesPlan,
+    approvalOf: approvalOf,
+    planFrom: planFrom,
+    shownOf: shownOf,
+    shownForAddon: shownForAddon,
+    requestedItems: requestedItems,
+    selectionMatches: selectionMatches,
+    reasonText: reasonText,
+    planItemLines: planItemLines,
+    changeLines: changeLines,
+    changeHeading: changeHeading,
+    previewDecision: previewDecision,
+    dialogText: dialogText,
+    applyResult: applyResult,
+    needsPreviewAgain: needsPreviewAgain
   }
 }

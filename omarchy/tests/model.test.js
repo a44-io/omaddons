@@ -30,6 +30,8 @@ const CONTEXT = {
 }
 const TOKEN = "pc1:" + "0123456789abcdef".repeat(4)
 const NOW = Date.parse("2100-01-01T00:00:00Z")
+// A stored plan's id, in the ULID form the CLI gives it.
+const PLAN_ID = "01M8Q2ZZZZZZZZZZZZZZZZZZZZ"
 
 function opts(extra) {
   return Object.assign({ binary: BINARY, label: "Test", context: CONTEXT }, extra || {})
@@ -255,6 +257,8 @@ const CLASSIFIER_TABLE = [
   [["omaddons", "targets", "rm", "retail"], "", true],
   [["omaddons", "remove", "-t", "retail", "--", "Foo"], "", true],
   [["omaddons", "remove", "--", "--json"], "", true],
+  // A plan's apply runs only with the plan that offered it (M4-D28).
+  [["omaddons", "apply", PLAN_ID], "apply_outside_plan", false],
   [["omaddons", "--actor", "agent", "update"], "widget_flag", false],
   [["omaddons", "status", "--json"], "widget_flag", false],
   [["omaddons", "update", "--reason=sneaky"], "widget_flag", false],
@@ -438,6 +442,45 @@ describe("scheduler", () => {
     expect([full.accepted, full.queues.network.length]).toEqual([false, 4])
     expect(M.laneOf(req({ resource: "check" }))).toBe("network")
     expect(M.laneOf(req({ resource: "update_all", kind: "mutation" }))).toBe("mutation")
+  })
+
+  // A continuation carries on a preview (its plan, or the preview again): it goes first
+  // and replaces nothing.
+  const queuedChanges = () => {
+    let q = M.emptyQueues()
+    const user = req({ resource: "update_all", kind: "mutation" })
+    const background = req({ resource: "backup_auto", kind: "mutation", priority: "background", target: "retail" })
+    q = M.enqueue(q, background).queues
+    q = M.enqueue(q, user).queues
+    return { q, user, background }
+  }
+
+  test("continuation_goes_first", () => {
+    const { q, user, background } = queuedChanges()
+    const next = req({ resource: "update_addon", kind: "mutation", continuation: true })
+    const r = M.enqueue(q, next)
+    expect(["continuation_goes_first", r.accepted, r.queues.mutation.map((x) => x.id)])
+      .toEqual(["continuation_goes_first", true, [next.id, background.id, user.id]])
+  })
+
+  test("continuation_replaces_nothing", () => {
+    const { q, user } = queuedChanges()
+    const r = M.enqueue(q, req({ resource: "update_all", kind: "mutation", continuation: true }))
+    expect(["continuation_replaces_nothing", r.replaced, r.queues.mutation.some((x) => x.id === user.id)])
+      .toEqual(["continuation_replaces_nothing", null, true])
+    // Nor does a newer user request replace a queued continuation (decided in 7.1.2).
+    const later = req({ resource: "pin", kind: "mutation", target: "retail" })
+    const after = M.enqueue(r.queues, later)
+    expect(["a_user_request_never_replaces_a_continuation", after.replaced, after.queues.mutation.filter((x) => x.continuation).length])
+      .toEqual(["a_user_request_never_replaces_a_continuation", user.id, 1])
+  })
+
+  test("continuation_then_next_request_starts_it", () => {
+    const { q } = queuedChanges()
+    const next = req({ resource: "update_addon", kind: "mutation", continuation: true })
+    const started = M.nextRequest(M.enqueue(q, next).queues, {})
+    expect(["continuation_then_next_request_starts_it", started.start.mutation.id, started.queues.mutation.length])
+      .toEqual(["continuation_then_next_request_starts_it", next.id, 2])
   })
 
   test("outcomeOf", () => {
@@ -1141,6 +1184,442 @@ describe("the other reducers", () => {
   })
 })
 
+// ------------------------------------------------- the plan runner (G1, M4-D28)
+
+const KEY_RETAIL = "01M8Q2RRRRRRRRRRRRRRRRRRRR"
+const KEY_ERA = "01M8Q2EEEEEEEEEEEEEEEEEEEE"
+
+// A synthetic envelope of `command` (update unless `extra` says otherwise).
+function envOf(data, commands, extra) {
+  return Object.assign({ ok: true, schema_version: "1.0", tool_version: "0.1.0", command: "update", exit_code: 0, partial: false,
+    data: data, warnings: [], commands: commands || [] }, extra || {})
+}
+
+// The `commands[]` entry a dry run offers to run its plan.
+function offer(id, extra) {
+  return Object.assign({ action: "apply", command: "omaddons apply " + id, argv: ["omaddons", "apply", id], destructive: false }, extra || {})
+}
+
+// A selection item as the CLI writes it (Foo v1 → v2 on retail).
+function item(fields) {
+  return Object.assign({ target_key: KEY_RETAIL, target_id: "retail", addon: "Foo", source: "github", channel: "stable",
+    release_id: "gh:o/foo@v2", asset: "Foo-v2.zip", from_version: "v1", to_version: "v2", op: "update",
+    fields: [], tx: null, backup: null }, fields || {})
+}
+
+// The same item as the view showed it (shownOf's fields).
+function shownItem(fields) {
+  const out = Object.assign({}, item(fields))
+  for (const key of ["op", "fields", "tx", "backup"]) delete out[key]
+  return out
+}
+
+// The item approvalOf keeps.
+function kept(fields) {
+  const out = Object.assign({}, item(fields))
+  for (const key of ["fields", "tx", "backup"]) delete out[key]
+  return out
+}
+
+function scopeOf(fields) {
+  return Object.assign({ dependencies_added: [], folders_removed: [], local_changes_replaced: { count: 0, folders: [] },
+    source_changed: [], while_running: false }, fields || {})
+}
+
+function approvalWith(selection, extra) {
+  return Object.assign({ routine: true, reasons: [], selection: selection, scope: scopeOf() }, extra || {})
+}
+
+// A storable dry run that stored plan PLAN_ID.
+function previewOf(selection, extra, commands, data) {
+  return envOf(Object.assign({ dry_run: true, plan_id: PLAN_ID, plan_expires_at: "2100-01-02T00:00:00Z", approval: approvalWith(selection, extra) }, data || {}),
+    commands || [offer(PLAN_ID)])
+}
+
+// Each case as `[case, value]`, so a failure names it and shows both values.
+function table(cases, run) {
+  for (const [name, input, expected] of cases) expect([name, run(input)]).toEqual([name, expected])
+}
+
+describe("approvalOf", () => {
+  test("the table", () => {
+    table([
+      ["well_formed", approvalWith([item({ asset: "" })]),
+        { routine: true, reasons: [], selection: [kept({ asset: null })], scope: scopeOf() }],
+      ["routine_with_a_reason", { routine: true, reasons: ["force"], selection: [], scope: {} },
+        { routine: false, reasons: ["force"], selection: [], scope: {} }],
+      ["routine_not_boolean", approvalWith([], { routine: "true" }), null],
+      ["reasons_not_array", approvalWith([], { reasons: "force" }), null],
+      ["reason_not_string", approvalWith([], { reasons: [3] }), null],
+      ["selection_item_null", approvalWith([null]), null],
+      ["selection_item_array", approvalWith([[]]), null],
+      ["scope_missing", { routine: true, reasons: [], selection: [] }, { routine: true, reasons: [], selection: [], scope: {} }],
+      ["not_an_object", "routine", null],
+    ], M.approvalOf)
+  })
+})
+
+describe("planFrom", () => {
+  const withId = (id) => previewOf([item()], {}, [offer(id)], { plan_id: id })
+
+  test("the table", () => {
+    const plan = (extra) => Object.assign({ planId: PLAN_ID, argv: ["omaddons", "apply", PLAN_ID], destructive: false,
+      expiresAt: "2100-01-02T00:00:00Z", approval: M.approvalOf(approvalWith([item()])) }, extra || {})
+    const failed = Object.assign(previewOf([item()]), { ok: false, error: { code: "network" } })
+    const noApproval = previewOf([item()])
+    delete noApproval.data.approval
+    table([
+      ["offer_matches", previewOf([item()]), plan()],
+      ["offer_destructive", previewOf([item()], {}, [offer(PLAN_ID, { destructive: true })]), plan({ destructive: true })],
+      ["plan_id_null", previewOf([item()], {}, [offer(PLAN_ID)], { plan_id: null }), null],
+      ["plan_id_json", withId("--json"), null],
+      ["plan_id_target", withId("-t"), null],
+      ["plan_id_path", withId("../x"), null],
+      ["plan_id_lower_case", withId(PLAN_ID.toLowerCase()), null],
+      ["plan_id_25_characters", withId(PLAN_ID.slice(1)), null],
+      ["offer_for_another_id", previewOf([item()], {}, [offer("01M8Q2YYYYYYYYYYYYYYYYYYYY")]), null],
+      ["two_offers", previewOf([item()], {}, [offer(PLAN_ID), offer(PLAN_ID)]), null],
+      ["offer_with_extra_argument", previewOf([item()], {}, [offer(PLAN_ID, { argv: ["omaddons", "apply", PLAN_ID, "--dry-run"] })]), null],
+      ["offer_not_omaddons", previewOf([item()], {}, [offer(PLAN_ID, { argv: ["/bin/omaddons", "apply", PLAN_ID] })]), null],
+      ["offer_action_not_apply", previewOf([item()], {}, [offer(PLAN_ID, { action: "undo" })]), null],
+      ["envelope_failed", failed, null],
+      ["approval_missing", noApproval, null],
+      ["approval_malformed", previewOf([item()], { routine: null }), null],
+    ], M.planFrom)
+  })
+
+  test("the plan's argv is a copy", () => {
+    const env = previewOf([item()])
+    const plan = M.planFrom(env)
+    plan.argv.push("--force")
+    expect(env.commands[0].argv).toEqual(["omaddons", "apply", PLAN_ID])
+  })
+})
+
+describe("requestedItems", () => {
+  test("the table", () => {
+    const lib = item({ addon: "LibFoo", op: "install", from_version: null })
+    const withDeps = (deps) => M.approvalOf(approvalWith([item(), lib], { routine: false, reasons: ["dependency_added"], scope: scopeOf({ dependencies_added: deps }) }))
+    table([
+      ["string_dependency_dropped", withDeps(["LibFoo"]), [kept()]],
+      ["object_dependency_dropped", withDeps([{ addon: "LibFoo" }, { name: "Foo" }]), []],
+      ["case_differs_still_dropped", withDeps(["libfoo"]), [kept()]],
+      ["no_dependencies_unchanged", withDeps([]), [kept(), M.approvalOf(approvalWith([lib])).selection[0]]],
+    ], M.requestedItems)
+  })
+})
+
+describe("selectionMatches", () => {
+  test("the table", () => {
+    const bar = { addon: "Bar", release_id: "gh:o/bar@v2", asset: "Bar-v2.zip" }
+    const cases = [
+      ["equal_one_item", [shownItem()], [kept()], true],
+      ["equal_two_items_other_order", [shownItem(), shownItem(bar)], [kept(bar), kept()], true],
+      ["addon_case_differs", [shownItem({ addon: "foo" })], [kept()], true],
+      ["to_version_moved", [shownItem()], [kept({ to_version: "v3" })], false],
+      ["from_version_moved", [shownItem()], [kept({ from_version: "v0" })], false],
+      ["item_added", [shownItem()], [kept(), kept(bar)], false],
+      ["item_dropped", [shownItem(), shownItem(bar)], [kept()], false],
+      ["another_client_key", [shownItem()], [kept({ target_key: KEY_ERA })], false],
+      ["same_versions_other_source", [shownItem()], [kept({ source: "wowi" })], false],
+      ["same_versions_other_asset", [shownItem()], [kept({ asset: "Foo-retail.zip" })], false],
+      ["same_versions_other_release_id", [shownItem()], [kept({ release_id: "gh:o/foo@v2-hotfix" })], false],
+      ["other_channel", [shownItem()], [kept({ channel: "beta" })], false],
+      ["duplicate_shown_key", [shownItem(), shownItem()], [kept(), kept(bar)], false],
+      ["duplicate_selection_key", [shownItem(), shownItem(bar)], [kept(), kept()], false],
+      ["empty_shown", [], [kept()], false],
+      ["empty_both", [], [], false],
+      ["not_arrays", null, [kept()], false],
+    ]
+    // Missing evidence is never equality: each match field missing on either side.
+    for (const field of M.MATCH_FIELDS) {
+      cases.push(["missing_on_row_" + field, [shownItem({ [field]: null })], [kept()], false])
+      cases.push(["missing_on_plan_" + field, [shownItem()], [kept({ [field]: null })], false])
+    }
+    cases.push(["missing_on_row_asset_empty", [shownItem({ asset: "" })], [kept()], false])
+    expect(M.MATCH_FIELDS.length).toBe(8)
+    for (const [name, shown, selection, expected] of cases) expect([name, M.selectionMatches(shown, selection)]).toEqual([name, expected])
+  })
+})
+
+describe("changeLines", () => {
+  test("the table", () => {
+    const bar = { addon: "Bar", target_key: KEY_ERA, target_id: "era", release_id: "gh:o/bar@v2", asset: "Bar-v2.zip" }
+    const cases = [
+      ["to_version", [shownItem()], [kept({ to_version: "v3", release_id: "gh:o/foo@v3", asset: "Foo-v3.zip" })], ["Foo v3 is now the newest"]],
+      ["release_id", [shownItem()], [kept({ release_id: "gh:o/foo@v2-hotfix" })], ["Foo v2 is another release now"]],
+      ["asset", [shownItem()], [kept({ asset: "Foo-retail.zip" })], ["Foo v2 comes in another file now (Foo-retail.zip)"]],
+      ["source", [shownItem()], [kept({ source: "wowi" })], ["Foo comes from wowi now"]],
+      ["channel", [shownItem()], [kept({ channel: "beta" })], ["Foo follows beta now"]],
+      ["from_version", [shownItem()], [kept({ from_version: "v0" })], ["Foo on retail is at v0 now"]],
+      ["missing_on_row", [shownItem({ release_id: null, asset: null })], [kept()], ["the view did not show Foo's release id and asset"]],
+      ["missing_on_plan", [shownItem()], [kept({ source: null })], ["the preview did not say Foo's source"]],
+      ["added", [shownItem()], [kept(), kept(bar)], ["Also: Update Bar v1 → v2 on era (not in the view)"]],
+      ["dropped", [shownItem(), shownItem(bar)], [kept()], ["Bar on era is no longer part of it"]],
+      ["equal", [shownItem()], [kept()], []],
+    ]
+    for (const [name, shown, selection, expected] of cases) expect([name, M.changeLines(shown, selection)]).toEqual([name, expected])
+  })
+
+  test("the heading", () => {
+    table([
+      ["heading_caps_at_three", ["a", "b", "c", "d", "e"], "Changed since you looked: a; b; c; and 2 more"],
+      ["heading_three", ["a", "b", "c"], "Changed since you looked: a; b; c"],
+      ["heading_one", ["Foo v3 is now the newest"], "Changed since you looked: Foo v3 is now the newest"],
+      ["heading_none", [], "Changed since you looked"],
+    ], M.changeHeading)
+  })
+})
+
+describe("reasonText", () => {
+  test("the table", () => {
+    const cases = [
+      ["dependency_added", "dependency_added", scopeOf({ dependencies_added: ["LibFoo"] }), ["Also installs LibFoo (a new dependency)"]],
+      ["dependency_added_with_version", "dependency_added", scopeOf({ dependencies_added: [{ addon: "LibFoo", version: "1.2" }] }),
+        ["Also installs LibFoo 1.2 (a new dependency)"]],
+      ["folders_removed", "folders_removed", scopeOf({ folders_removed: ["Foo_Options", { folder: "Foo_Extra" }] }),
+        ["Removes the folder Foo_Options (kept for undo)", "Removes the folder Foo_Extra (kept for undo)"]],
+      ["local_changes_replaced_two_folders", "local_changes_replaced", scopeOf({ local_changes_replaced: { count: 3, folders: ["DBM-Core", "DBM-GUI"] } }),
+        ["Replaces 3 files you changed in DBM-Core and DBM-GUI (kept for undo)"]],
+      ["local_changes_replaced_one", "local_changes_replaced", scopeOf({ local_changes_replaced: { count: 1, folders: ["Foo"] } }),
+        ["Replaces 1 file you changed in Foo (kept for undo)"]],
+      ["source_changed", "source_changed", scopeOf({ source_changed: ["Foo", { addon: "Bar", to: "wowi" }] }),
+        ["Foo comes from another source now", "Bar comes from another source now (wowi)"]],
+      ["channel_changed", "channel_changed", scopeOf(), ["Follows another release channel than the one installed"]],
+      ["while_running", "while_running", scopeOf({ while_running: true }), ["Changes files while the game is running (/reload in game afterwards)"]],
+      ["reinstall", "reinstall", scopeOf(), ["Reinstalls over the installed files"]],
+      ["force", "force", scopeOf(), ["Takes over folders another addon owns (--force)"]],
+      ["downgrade", "downgrade", scopeOf(), ["Installs an older version than the one installed"]],
+      ["destructive", "destructive", scopeOf(), ["Removes, reverts or replaces something you have now"]],
+      ["dependency_added_empty", "dependency_added", scopeOf(), ["Also installs a new dependency"]],
+      ["folders_removed_empty", "folders_removed", scopeOf(), ["Removes folders (kept for undo)"]],
+      ["local_changes_replaced_empty", "local_changes_replaced", scopeOf(), ["Replaces files you changed (kept for undo)"]],
+      ["source_changed_empty", "source_changed", scopeOf(), ["An addon comes from another source now"]],
+      ["no_scope", "dependency_added", undefined, ["Also installs a new dependency"]],
+      ["unknown_reason", "some_new_thing", scopeOf(), ["Also: some new thing"]],
+    ]
+    for (const [name, reason, scope, expected] of cases) expect([name, M.reasonText(reason, scope)]).toEqual([name, expected])
+  })
+})
+
+describe("planItemLines", () => {
+  test("the table", () => {
+    const many = Array.from({ length: 14 }, (_, i) => kept({ addon: "Addon" + i }))
+    const lines = Array.from({ length: 12 }, (_, i) => "Update Addon" + i + " v1 → v2 on retail").concat(["(and 2 more)"])
+    table([
+      ["update", [kept()], ["Update Foo v1 → v2 on retail"]],
+      ["install", [kept({ op: "install", addon: "WeakAuras", target_id: "era", from_version: null, to_version: "5.22.1" })], ["Install WeakAuras 5.22.1 on era"]],
+      ["remove", [kept({ op: "remove", addon: "Baz", to_version: null })], ["Remove Baz v1 from retail"]],
+      ["reinstall", [kept({ op: "reinstall", to_version: "v1" })], ["Reinstall Foo v1 on retail"]],
+      ["unknown_op", [kept({ op: "adopt" })], ["Adopt Foo on retail"]],
+      ["a_missing_version_is_left_out", [kept({ from_version: null })], ["Update Foo → v2 on retail"]],
+      ["caps_at_twelve", many, lines],
+      ["not_an_array", null, []],
+    ], M.planItemLines)
+    expect(M.WIDGET_DIALOG_ITEMS_MAX).toBe(12)
+  })
+})
+
+describe("previewDecision", () => {
+  const pick = (d) => ({ kind: d.kind, heading: d.heading, lines: d.lines, line: d.line, fixText: d.fixText, planId: d.plan ? d.plan.planId : null })
+  const decision = (fields) => Object.assign({ kind: "dialog", heading: "", lines: [], line: "", fixText: "", planId: PLAN_ID }, fields)
+  const refused = (line, fixText) => decision({ kind: "refuse", line: line, fixText: fixText || "", planId: null })
+  const match = (shown, extra) => Object.assign({ mode: "match", shown: shown, again: false, path: "update" }, extra || {})
+  const nothing = previewOf([], {}, [], { plan_id: null, plan_expires_at: null })
+  const notStored = previewOf([item()], {}, [], { plan_id: null, plan_expires_at: null })
+  notStored.warnings = [{ code: "plan_not_stored", message: "the plan store is full", fix: "previews are kept again as plans expire", fix_argv: null }]
+  const noApproval = previewOf([item()])
+  delete noApproval.data.approval
+  const lib = item({ addon: "LibFoo", op: "install", from_version: null, to_version: "1.0", release_id: "gh:o/libfoo@1.0", asset: "LibFoo.zip" })
+  const withDependency = previewOf([item(), lib], { routine: false, reasons: ["dependency_added"], scope: scopeOf({ dependencies_added: ["LibFoo"] }) })
+  const removal = previewOf([item({ op: "remove", addon: "Baz", to_version: null, release_id: null, asset: null })],
+    { routine: false, reasons: ["folders_removed", "destructive"], scope: scopeOf({ folders_removed: ["Baz"] }) },
+    [offer(PLAN_ID, { destructive: true })], { target: { id: "retail" }, items: [{ name: "Baz", version: "v1", folders: ["Baz"] }] })
+  removal.command = "remove"
+
+  test("the table", () => {
+    const cases = [
+      ["failed_envelope", match([shownItem()]), Object.assign(previewOf([item()]), { ok: false }), decision({ kind: "failed", planId: null })],
+      ["no_approval", match([shownItem()]), noApproval, refused("The preview did not say what it would change; nothing ran")],
+      ["nothing_to_do_match", match([shownItem()]), nothing, decision({ kind: "refresh", line: "Already up to date; the view is refreshed", planId: null })],
+      ["nothing_to_do_confirm", { mode: "confirm", path: "remove" }, nothing, decision({ kind: "refresh", line: "Nothing to do; the view is refreshed", planId: null })],
+      ["not_stored", match([shownItem()]), notStored, refused("The preview could not be kept as a plan; nothing ran", "previews are kept again as plans expire")],
+      ["offer_mismatch", match([shownItem()]), previewOf([item()], {}, [offer("01M8Q2YYYYYYYYYYYYYYYYYYYY")]), refused("The preview offered no plan to apply; nothing ran")],
+      ["confirm", { mode: "confirm", path: "remove" }, removal, decision({
+        lines: ["Remove Baz v1 from retail (1 folder)", "Removes the folder Baz (kept for undo)", "Removes, reverts or replaces something you have now"] })],
+      ["match_equal_routine", match([shownItem()]), previewOf([item()]), decision({ kind: "direct" })],
+      ["match_equal_not_routine", match([shownItem()]), withDependency, decision({
+        lines: ["Update Foo v1 → v2 on retail", "Install LibFoo 1.0 on retail", "Also installs LibFoo (a new dependency)"] })],
+      ["match_different", match([shownItem()]), previewOf([item({ to_version: "v3", release_id: "gh:o/foo@v3", asset: "Foo-v3.zip" })]), decision({
+        heading: "Changed since you looked: Foo v3 is now the newest",
+        lines: ["Changed since you looked: Foo v3 is now the newest", "Update Foo v1 → v3 on retail"] })],
+      ["match_empty_shown", match([]), previewOf([item()]), decision({ lines: ["Update Foo v1 → v2 on retail"] })],
+      ["match_no_shown", { mode: "match", path: "update" }, previewOf([item()]), decision({ lines: ["Update Foo v1 → v2 on retail"] })],
+      ["match_equal_routine_again", match([shownItem()], { again: true }), previewOf([item()]), decision({ lines: ["Update Foo v1 → v2 on retail"] })],
+      ["match_equal_routine_destructive_offer", match([shownItem()]), previewOf([item()], {}, [offer(PLAN_ID, { destructive: true })]),
+        decision({ lines: ["Update Foo v1 → v2 on retail"] })],
+      ["unknown_mode_is_never_direct", { mode: "auto", shown: [shownItem()], path: "update" }, previewOf([item()]),
+        decision({ lines: [M.confirmText("update", previewOf([item()]))] })],
+    ]
+    for (const [name, spec, env, expected] of cases) expect([name, pick(M.previewDecision(spec, env))]).toEqual([name, expected])
+  })
+
+  test("dialogText joins the lines", () => {
+    expect(M.dialogText(M.previewDecision(match([shownItem()]), withDependency)))
+      .toBe("Update Foo v1 → v2 on retail\nInstall LibFoo 1.0 on retail\nAlso installs LibFoo (a new dependency)")
+    expect(M.dialogText(null)).toBe("")
+  })
+})
+
+describe("applyResult and needsPreviewAgain", () => {
+  const applied = (result, outcomes, extra) => envOf({ plan_id: PLAN_ID, applied: { command: result.command, display_argv: ["omaddons", result.command] },
+    result: result.data, outcomes: outcomes }, result.commands, Object.assign({ command: "apply", exit_code: result.exit_code, partial: result.partial }, extra || {}))
+  const refusal = (code, details) => ({ ok: false, schema_version: "1.0", tool_version: "0.1.0", command: "apply", exit_code: code === "locked" ? 5 : code === "plan_not_found" ? 3 : 1,
+    error: { code: code, message: "x", fix: "omaddons update --dry-run", fix_argv: ["omaddons", "update", "--dry-run"], alternatives: [], retryable: false, details: details || {} },
+    warnings: [], commands: [] })
+  const committed = [{ target: "era", key: KEY_ERA, status: "committed", tx: "01M8Q2TTTTTTTTTTTTTTTTTTTT", error_code: null }]
+  const someStale = committed.concat([{ target: "retail", key: KEY_RETAIL, status: "stale", tx: null, error_code: "plan_stale" }])
+
+  test("an apply reads as the command it ran", () => {
+    const update = fixture("update")
+    const view = M.applyResult(applied(update, committed))
+    expect(["wrapper_reads_as_its_command", M.resultLine(view), view.command, view.outcomes])
+      .toEqual(["wrapper_reads_as_its_command", M.resultLine(update), "update", committed])
+    expect(M.resultLine(update)).toBe("Updated 4 addons on 2 clients")
+    expect(M.resultUndo({ commands: view.commands.map((c) => Object.assign({ runnable: true }, c)) }).action).toBe("undo_run")
+    table([
+      ["not_apply", update, null],
+      ["failed_apply", refusal("plan_stale", { reason: "expired" }), null],
+      ["no_result", envOf({ plan_id: PLAN_ID, applied: { command: "update" } }, [], { command: "apply" }), null],
+    ], M.applyResult)
+  })
+
+  test("needsPreviewAgain", () => {
+    const update = fixture("update")
+    table([
+      ["stale_expired", refusal("plan_stale", { reason: "expired" }), true],
+      ["stale_binary_changed", refusal("plan_stale", { reason: "binary_changed" }), true],
+      ["stale_input_missing", refusal("plan_stale", { reason: "input_missing", path: "/x" }), true],
+      ["stale_already_applied", refusal("plan_stale", { reason: "already_applied", txs: [] }), true],
+      ["stale_changed_selection", refusal("plan_stale", { changed: ["selection"] }), true],
+      ["not_found", refusal("plan_not_found", { prefix: PLAN_ID }), true],
+      ["outcome_stale", applied(update, someStale, { partial: true }), true],
+      ["locked", refusal("locked", { lease: PLAN_ID }), false],
+      ["ok", applied(update, committed), false],
+      ["not_apply", Object.assign(refusal("plan_stale", { changed: ["selection"] }), { command: "remove" }), false],
+    ], M.needsPreviewAgain)
+  })
+
+  test("staleText", () => {
+    const after = " Nothing ran; check the new preview."
+    table([
+      ["reason_expired", refusal("plan_stale", { reason: "expired" }), "The plan expired." + after],
+      ["reason_binary_changed", refusal("plan_stale", { reason: "binary_changed" }), "omaddons changed since the preview." + after],
+      ["reason_input_missing", refusal("plan_stale", { reason: "input_missing", path: "/x" }), "A file the plan needs is gone." + after],
+      ["reason_already_applied", refusal("plan_stale", { reason: "already_applied", txs: [] }), "The plan was applied already." + after],
+      ["changed", refusal("plan_stale", { changed: ["selection", "observed"] }), "Changed since you looked: selection and observed." + after],
+      ["plan_not_found", refusal("plan_not_found", { prefix: PLAN_ID }), "The plan is gone (expired or cleared)." + after],
+      ["outcome_stale", applied(fixture("update"), someStale, { partial: true }), "Changed since you looked on retail. Nothing ran there; check the new preview."],
+      ["bound_unchanged", fixture("remove-stale"), "Changed since you looked: command, targets, selection and observed." + after],
+    ], M.staleText)
+  })
+})
+
+describe("what the view showed", () => {
+  const lists = () => M.reduceList(fixture("list"))
+  const retailKey = () => M.targetById(fixture("list").data.targets, "retail").key
+
+  test("the rows carry the release the list names", () => {
+    const rows = M.updateRows(lists(), "retail", [])
+    const bar = M.shownOf(rows[0])
+    expect(["shownOf_from_an_update_row", bar]).toEqual(["shownOf_from_an_update_row", {
+      target_key: retailKey(), target_id: "retail", addon: "Bar", source: "github", channel: "stable",
+      release_id: "gh:o/bar@v2", asset: "Bar.zip", from_version: "v1", to_version: "v2" }])
+    // An Installed row's `source` is its ref's kind, for display; shownOf takes the
+    // release's.
+    const first = M.installedRows(lists(), "retail")[0]
+    expect(["shownOf_uses_latestSource_not_the_display_source", first.source, M.shownOf(first).source])
+      .toEqual(["shownOf_uses_latestSource_not_the_display_source", "gh", "github"])
+    const installed = M.installedRows(lists(), "retail")[1]
+    expect([installed.name, installed.latest, installed.latestReleaseId, installed.targetKey]).toEqual(["Baz", "v1", "gh:o/baz@v1", retailKey()])
+    expect(M.rowAction(rows[0], "update").shown).toEqual([bar])
+  })
+
+  test("shownForAddon", () => {
+    const partial = (target, addon) => [{ target_key: null, target_id: target, addon: addon, source: null, channel: null,
+      release_id: null, asset: null, from_version: null, to_version: null }]
+    table([
+      ["shownForAddon_found", [lists(), "retail", "foo"], [M.shownOf(M.installedRows(lists(), "retail").filter((r) => r.name === "Foo")[0])]],
+      ["shownForAddon_unknown_addon", [lists(), "retail", "Nope"], partial("retail", "Nope")],
+      ["shownForAddon_no_lists", [null, "era", "Foo"], partial("era", "Foo")],
+    ], ([l, target, addon]) => M.shownForAddon(l, target, addon))
+    expect(M.shownForAddon(lists(), "retail", "foo")[0].release_id).toBe("gh:o/foo@v2")
+  })
+
+  test("updateRequest_takes_only_update_rows_in_the_filter", () => {
+    const env = JSON.parse(JSON.stringify(fixture("list")))
+    const retail = M.targetById(env.data.targets, "retail")
+    retail.addons.push(Object.assign({}, retail.addons[0], { name: "Pinned", pinned: true, latest: Object.assign({}, retail.addons[0].latest, { status: "pinned" }) }))
+    retail.addons.push(Object.assign({}, retail.addons[0], { name: "Blocked", latest: Object.assign({}, retail.addons[0].latest, { status: "blocked" }) }))
+    retail.addons.push(Object.assign({}, retail.addons[0], { name: "Failed", latest: { version: null, status: "failed", source: null, release_id: null, asset: null } }))
+    const rows = M.updateRows(M.reduceList(env), "", [])
+    expect(rows.map((r) => r.kind)).toContain("pinned")
+    const names = (r) => r.shown.map((s) => s.target_id + "/" + s.addon)
+    expect(names(M.updateRequest("retail", rows))).toEqual(["retail/Bar", "retail/Foo"])
+    expect(names(M.updateRequest("", rows))).toEqual(["era/Bar", "era/Foo", "retail/Bar", "retail/Foo"])
+    // Without the view's rows the request is as before.
+    expect(M.updateRequest("retail")).toEqual({ template: "update_target", slots: { target: "retail" }, label: "Update retail" })
+  })
+})
+
+describe("classifyCliArgv's apply rule", () => {
+  const plan = M.planFrom(previewOf([item()]))
+  const argv = ["omaddons", "apply", PLAN_ID]
+
+  test("apply runs only with its plan", () => {
+    const other = M.planFrom(previewOf([item()], {}, [offer("01M8Q2YYYYYYYYYYYYYYYYYYYY")], { plan_id: "01M8Q2YYYYYYYYYYYYYYYYYYYY" }))
+    table([
+      ["apply_without_plan", [argv, undefined], { ok: false, path: "", reason: "apply_outside_plan" }],
+      ["apply_with_its_plan", [argv, plan], { ok: true, path: "apply", reason: "" }],
+      ["apply_with_another_plans_argv", [argv, other], { ok: false, path: "", reason: "apply_outside_plan" }],
+      ["apply_with_a_plan_like_object", [argv, { argv: ["omaddons", "apply"] }], { ok: false, path: "", reason: "apply_outside_plan" }],
+    ], ([a, p]) => {
+      const v = M.classifyCliArgv(a, p)
+      return { ok: v.ok, path: v.path, reason: v.reason }
+    })
+  })
+
+  test("cliArgv builds it only with its plan, never previewed or bound", () => {
+    expect(["cliArgv_builds_with_its_plan", M.cliArgv(argv, opts({ plan: plan })).argv]).toEqual(["cliArgv_builds_with_its_plan",
+      [BINARY, "--json", "--actor", "widget", "--reason", "Test (bar widget)", "--progress", "json", "apply", PLAN_ID]])
+    expect(M.cliArgv(argv, opts({ plan: plan, confirmed: true })).env).toEqual(CONTEXT)
+    table([
+      ["cliArgv_without_plan", opts(), "apply_outside_plan"],
+      ["cliArgv_refuses_preview", opts({ plan: plan, preview: true }), "apply_outside_plan"],
+      ["cliArgv_refuses_token", opts({ plan: plan, token: TOKEN }), "apply_outside_plan"],
+    ], (o) => reasonOf(() => M.cliArgv(argv, o)))
+  })
+
+  test("an apply from any other envelope is never a button", () => {
+    const status = JSON.parse(JSON.stringify(fixture("status-attention")))
+    status.data.targets[0].issues[0].remediation = { command: "omaddons apply " + PLAN_ID, argv: argv, destructive: false }
+    status.commands = [offer(PLAN_ID)]
+    status.warnings = [{ code: "w", message: "m", fix: "omaddons apply " + PLAN_ID, fix_argv: argv }]
+    const reduced = M.reduceStatus(status)
+    const failure = { ok: false, schema_version: "1.0", tool_version: "0.1.0", command: "update", exit_code: 1,
+      error: { code: "x", message: "y", fix: "omaddons apply " + PLAN_ID, fix_argv: argv, alternatives: [{ display: "omaddons apply " + PLAN_ID, argv: argv }], retryable: false, details: {} },
+      warnings: [], commands: [] }
+    table([
+      ["remediation", reduced.targets[0].issues[0].remediation.runnable, false],
+      ["commands_entry", reduced.commands.filter((c) => c.action === "apply").map((c) => [c.runnable, c.argv]), [[false, null]]],
+      ["fix_and_alternative", M.fixButtons(failure), []],
+      ["fix_as_text", M.fixText(failure), "omaddons apply " + PLAN_ID],
+      ["warning_fix", [reduced.warnings[0].fix, reduced.warnings[0].fixText], [null, "omaddons apply " + PLAN_ID]],
+      ["result_undo", M.resultUndo({ commands: [{ action: "undo", command: "omaddons apply " + PLAN_ID, argv: argv, runnable: false }] }), null],
+    ], (x) => x)
+  })
+})
+
 // --------------------------------------------------- built-argv.json (step 3)
 
 test("writes every built argv and the classifier's verdicts for the Rust check", () => {
@@ -1190,9 +1669,17 @@ test("writes every built argv and the classifier's verdicts for the Rust check",
     }
     classified.push({ argv, verdict, runnable, refusal })
   }
+  // The apply a preview's plan runs, built only with that plan (M4-D28).
+  const planned = []
+  for (const extra of [{}, { confirmed: true }]) {
+    const plan = M.planFrom(previewOf([item()]))
+    planned.push({ plan_id: plan.planId, argv: M.cliArgv(plan.argv, opts(Object.assign({ plan: plan }, extra))).argv })
+  }
+
   const stringArgv = (argv) => argv.every((a) => typeof a === "string")
-  const doc = { binary: BINARY, built, classified: classified.filter((c) => stringArgv(c.argv)) }
+  const doc = { binary: BINARY, built, classified: classified.filter((c) => stringArgv(c.argv)), planned }
   fs.writeFileSync(path.join(OUT, "built-argv.json"), JSON.stringify(doc, null, 1))
   expect(built.length).toBeGreaterThan(Object.keys(M.COMMANDS).length * 5)
   expect(classified.some((c) => c.refusal === "destructive_without_preview")).toBe(true)
+  expect(classified.some((c) => c.verdict.reason === "apply_outside_plan")).toBe(true)
 })

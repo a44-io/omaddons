@@ -51,6 +51,33 @@ fn cli_paths_mirror_the_registry() {
     }
 }
 
+/// `PLAN_PATHS` lists exactly the registry paths whose dry runs store a plan (M4-D22),
+/// each once: the paths whose previewed actions the widget confirms through their plan.
+#[test]
+fn plan_paths_mirror_the_registry() {
+    let listed: Vec<String> = serde_json::from_value(support::block(&model_js(), "PLAN_PATHS"))
+        .expect("PLAN_PATHS is a list of strings");
+    let unique: BTreeSet<&str> = listed.iter().map(String::as_str).collect();
+    assert_eq!(
+        unique.len(),
+        listed.len(),
+        "PLAN_PATHS repeats a path: {listed:?}"
+    );
+    let storing: BTreeSet<&str> = app::COMMANDS
+        .iter()
+        .filter(|c| c.stores_plan)
+        .map(|c| c.name)
+        .collect();
+    assert_eq!(
+        unique, storing,
+        "PLAN_PATHS differs from app::COMMANDS' stores_plan"
+    );
+    let registry: BTreeSet<&str> = app::COMMANDS.iter().map(|c| c.name).collect();
+    for path in &unique {
+        assert!(registry.contains(path), "{path} is no registry path");
+    }
+}
+
 /// Stored previews use the same destructive policy as the widget's confirmation
 /// dialogs; the widget's other destructive path (`targets rm`) stores no plan.
 #[test]
@@ -548,7 +575,14 @@ fn validate_built_argv() {
         }
         let reason = verdict["reason"].as_str().unwrap_or_default();
         assert!(
-            ["widget_flag", "unknown_path", "not_omaddons", "malformed"].contains(&reason),
+            [
+                "widget_flag",
+                "unknown_path",
+                "not_omaddons",
+                "malformed",
+                "apply_outside_plan"
+            ]
+            .contains(&reason),
             "{argv:?}: unknown reason {reason:?}"
         );
         match reason {
@@ -560,8 +594,50 @@ fn validate_built_argv() {
             ),
             "unknown_path" => assert_eq!(leading_path(&argv[1..end]), None, "{argv:?}"),
             "not_omaddons" => assert_ne!(argv[0], "omaddons", "{argv:?}"),
+            "apply_outside_plan" => assert_eq!(
+                leading_path(&argv[1..end]).as_deref(),
+                Some("apply"),
+                "{argv:?}: apply_outside_plan refuses an apply only"
+            ),
             _ => assert!(argv.len() < 2, "{argv:?}"),
         }
+    }
+
+    // The apply a preview's plan runs (M4-D28): the plan's id, as offered, with the
+    // widget's flags and nothing else; never a preview, never bound.
+    let planned = doc["planned"].as_array().unwrap();
+    assert!(!planned.is_empty(), "bun built no plan's apply");
+    for entry in planned {
+        let argv = strings(&entry["argv"]);
+        let cli = parse(&argv);
+        assert_eq!(argv[0], doc["binary"], "{argv:?}");
+        assert_eq!(
+            command_name(cli.command.as_ref()),
+            "apply",
+            "{argv:?}: apply …"
+        );
+        assert!(!cli.global.dry_run, "{argv:?}: apply … is no preview");
+        assert_eq!(
+            cli.global.if_match, None,
+            "{argv:?}: apply … carries its plan's token"
+        );
+        assert_eq!(cli.global.actor.as_deref(), Some("widget"), "{argv:?}");
+        assert!(
+            cli.global
+                .reason
+                .as_deref()
+                .is_some_and(|r| r.ends_with(" (bar widget)")),
+            "{argv:?}: --reason"
+        );
+        let plan_id = match cli.command {
+            Some(omaddons::cli::Command::Apply(args)) => Some(args.plan_id),
+            _ => None,
+        };
+        assert_eq!(
+            plan_id.as_deref(),
+            entry["plan_id"].as_str(),
+            "{argv:?}: apply … runs its plan's id"
+        );
     }
 }
 
