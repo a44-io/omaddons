@@ -5,6 +5,7 @@
 //! `validate_built_argv` parses exactly the argv bun built. Both are `#[ignore]`: the
 //! widget pipeline (`scripts/gate.sh`, `argc widget-test`) runs them in order, with a
 //! fresh `$OMADDONS_WIDGET_OUT`.
+//! e2e suite: the widget's contract with the CLI, and the plan runner's scenes (M4-D28) as the real binary answers them.
 
 mod common;
 
@@ -13,6 +14,7 @@ use std::fs;
 
 use common::home::Home;
 use common::http::{gh_feed, gh_latest, gh_release, github_search};
+use common::tlog::{TestLog, tlog};
 use common::tukui::{elvui, tukui_list};
 use common::wowi::{FileEntry, wowi_filelist};
 use omaddons::app::intent::StoredIntent;
@@ -75,6 +77,52 @@ fn plan_paths_mirror_the_registry() {
     let registry: BTreeSet<&str> = app::COMMANDS.iter().map(|c| c.name).collect();
     for path in &unique {
         assert!(registry.contains(path), "{path} is no registry path");
+    }
+}
+
+/// The plan scenarios (`omarchy/tests/qml/tst_plans.qml`, over the Fixtures.js the
+/// pipeline generates) read only fixtures step 1 writes, and keep their thirteen
+/// scenarios; the slice-2 demo asserts the first three by name.
+#[test]
+fn the_plan_scenarios_read_only_fixtures_the_binary_writes() {
+    const SCENARIOS: &[&str] = &[
+        "test_a_routine_matching_update_applies_with_no_dialog",
+        "test_a_matching_update_that_adds_a_dependency_opens_the_dialog_naming_it",
+        "test_a_moved_release_opens_the_dialog_with_changed_since_you_looked",
+        "test_a_matching_update_that_replaces_local_edits_opens_the_dialog",
+        "test_a_matching_update_with_extra_removals_opens_the_dialog",
+        "test_equal_versions_from_another_asset_open_the_dialog",
+        "test_a_stale_apply_previews_again_and_never_reruns_apply",
+        "test_an_expired_plan_previews_again",
+        "test_a_missing_plan_previews_again",
+        "test_a_no_op_preview_refreshes_and_runs_nothing",
+        "test_update_all_applies_when_every_row_matches",
+        "test_a_removal_confirms_and_runs_apply_of_its_preview",
+        "test_undo_last_confirms_through_apply",
+    ];
+    let qml = fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("omarchy/tests/qml/tst_plans.qml"),
+    )
+    .unwrap();
+    // Every quoted name that is a plan fixture's (the file holds no escaped quote).
+    let named: BTreeSet<&str> = qml
+        .split('"')
+        .skip(1)
+        .step_by(2)
+        .filter(|s| s.starts_with("plan-"))
+        .collect();
+    assert!(!named.is_empty(), "tst_plans.qml names no plan fixture");
+    for name in &named {
+        assert!(
+            support::PLAN_FIXTURES.contains(name),
+            "tst_plans.qml reads {name}, which plans_fixtures does not write"
+        );
+    }
+    for scenario in SCENARIOS {
+        assert!(
+            qml.contains(&format!("function {scenario}()")),
+            "tst_plans.qml has no {scenario}"
+        );
     }
 }
 
@@ -399,6 +447,27 @@ fn the_output_cap_bounds_every_template() {
         let slope = large[name].saturating_sub(small[name]).div_ceil(20);
         let base = small[name].saturating_sub(10 * slope);
         per_client.insert(name, (base, slope));
+        let worst = CLIENTS * (base + ADDONS * slope);
+        assert!(worst < cap, "{name}: worst case {worst} bytes ≥ {cap}");
+    }
+    // The previewed Update all (M4-D28) and the apply of its plan, each on homes of
+    // its own so the measurements above are unaffected.
+    let plan_sizes = |n: usize| -> (u64, u64) {
+        let home = behind(n);
+        let preview = home.exec(&support::preview_of(fill(&t, "update_all", &[])));
+        let id = support::planned(&preview.expect(0));
+        let apply = home.exec(&support::apply_of(&id));
+        apply.expect(0);
+        (preview.stdout.len() as u64, apply.stdout.len() as u64)
+    };
+    let (small_plan, large_plan) = (plan_sizes(10), plan_sizes(30));
+    for (name, small, large) in [
+        ("update_all_preview", small_plan.0, large_plan.0),
+        ("apply", small_plan.1, large_plan.1),
+    ] {
+        assert!(large > small, "{name}: {small} {large}");
+        let slope = (large - small).div_ceil(20);
+        let base = small.saturating_sub(10 * slope);
         let worst = CLIENTS * (base + ADDONS * slope);
         assert!(worst < cap, "{name}: worst case {worst} bytes ≥ {cap}");
     }
@@ -905,6 +974,116 @@ mod support {
     pub const FOO: &str = "https://github.com/o/foo";
     pub const BAR: &str = "https://github.com/o/bar";
     pub const BAZ: &str = "https://github.com/o/baz";
+    pub const LIBFOO: &str = "https://github.com/o/libfoo";
+
+    /// Every fixture `plans_fixtures` writes (M4-D28): the plan runner's scenes, as the
+    /// real binary answers them.
+    pub const PLAN_FIXTURES: &[&str] = &[
+        "plan-list",
+        "plan-update-routine",
+        "plan-update-routine-apply",
+        "plan-update-noop",
+        "plan-list-after",
+        "plan-update-all",
+        "plan-update-all-apply",
+        "plan-undo",
+        "plan-undo-apply",
+        "plan-remove",
+        "plan-remove-apply",
+        "plan-moved-list",
+        "plan-update-moved",
+        "plan-apply-stale",
+        "plan-update-v4",
+        "plan-apply-expired",
+        "plan-apply-not-found",
+        "plan-asset-list",
+        "plan-update-asset",
+        "plan-dependency-list",
+        "plan-update-dependency",
+        "plan-local-edits-list",
+        "plan-update-local-edits",
+        "plan-removal-list",
+        "plan-update-removal",
+    ];
+
+    /// `argv` (a filled template) as its preview: `--dry-run` after the standard flags.
+    pub fn preview_of(mut argv: Vec<String>) -> Vec<String> {
+        argv.insert(standard(true).len(), "--dry-run".to_owned());
+        argv
+    }
+
+    /// The widget's `apply` of plan `id`.
+    pub fn apply_of(id: &str) -> Vec<String> {
+        let mut argv = standard(true);
+        argv.extend(["apply".to_owned(), id.to_owned()]);
+        argv
+    }
+
+    /// A preview's stored plan: its id, a ULID, offered exactly once as
+    /// `omaddons apply <id>`.
+    pub fn planned(env: &Value) -> String {
+        let id = env["data"]["plan_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        assert!(
+            id.len() == 26
+                && id
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || c.is_ascii_uppercase()),
+            "a plan id: {env}"
+        );
+        let offers: Vec<&Value> = env["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["action"] == "apply")
+            .collect();
+        assert_eq!(offers.len(), 1, "one apply offer: {env}");
+        assert_eq!(
+            offers[0]["argv"],
+            serde_json::json!(["omaddons", "apply", id]),
+            "{env}"
+        );
+        id
+    }
+
+    /// A release asset `file` holding each folder's TOC (with `lines` beyond its title
+    /// and version) and a `core.lua` per tag: for scenes that need another file name,
+    /// several folders, or a TOC that requires something.
+    pub struct CustomRel {
+        file: String,
+        entries: Vec<(String, String)>,
+    }
+
+    impl CustomRel {
+        pub fn new(file: &str, tag: &str, folders: &[(&str, &[&str])]) -> Self {
+            let mut entries = Vec::new();
+            for (folder, lines) in folders {
+                let title = format!("## Title: {folder}");
+                let version = format!("## Version: {tag}");
+                let mut all = vec![title.as_str(), version.as_str()];
+                all.extend(lines.iter());
+                entries.push((format!("{folder}/{folder}.toc"), toc(INTERFACES, &all)));
+                entries.push((format!("{folder}/core.lua"), format!("-- {folder} {tag}")));
+            }
+            Self {
+                file: file.to_owned(),
+                entries,
+            }
+        }
+
+        pub fn assets(&self) -> [Asset<'_>; 1] {
+            [(
+                self.file.as_str(),
+                FLAVORS,
+                self.entries
+                    .iter()
+                    .map(|(p, t)| (p.as_str(), t.as_str()))
+                    .collect(),
+            )]
+        }
+    }
 
     /// Retail and Classic Era.
     pub const INTERFACES: &str = "11509, 120105";
@@ -944,6 +1123,394 @@ mod support {
             )]
         }
     }
+}
+
+/// Runs `argv` on `home` through the log, writes its envelope as fixture `name`
+/// (expecting exit `code`), logs it, and returns it.
+#[cfg(test)]
+fn plan_fixture(
+    log: &TestLog,
+    home: &Home,
+    dir: &std::path::Path,
+    name: &str,
+    argv: &[String],
+    code: i32,
+) -> Value {
+    let ran = log.run(home, argv);
+    let envelope = write_fixture(dir, name, &ran.run, code);
+    log.json(name, &envelope);
+    envelope
+}
+
+/// The addon `name`'s row on client `id` in a `list` envelope.
+#[cfg(test)]
+fn list_row<'a>(list: &'a Value, id: &str, name: &str) -> &'a Value {
+    let target = list["data"]["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == id);
+    let row = target.and_then(|t| {
+        t["addons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["name"] == name)
+    });
+    assert!(row.is_some(), "no {name} on {id}: {list}");
+    row.unwrap_or(&Value::Null)
+}
+
+/// The plan runner's scenes (M4-D28), from the real binary, for the bun and QML
+/// scenarios: previews, their `apply`, and `apply`'s refusals. Each fixture's shape is
+/// asserted before it is written; `PLAN_FIXTURES` lists exactly what is written.
+#[cfg(test)]
+fn plans_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
+    use common::http::gh_release_v;
+    use support::{CustomRel, PLAN_FIXTURES, apply_of, planned, preview_of};
+
+    let log = tlog!();
+    let foo = |tag: &str| Rel::new("Foo", tag);
+    let update_foo = || {
+        preview_of(fill(
+            t,
+            "update_addon",
+            &[("target", "retail"), ("addon", "Foo")],
+        ))
+    };
+
+    log.step("scene A: routine, Update all, undo and remove through apply");
+    let mut home = Home::new(&["wow", "wow_classic_era"]);
+    for (base, name) in [(support::FOO, "Foo"), (support::BAR, "Bar")] {
+        let (old, new) = (Rel::new(name, "v1"), Rel::new(name, "v2"));
+        home.installed_behind(
+            base,
+            ("v1", &old.assets()),
+            ("v2", &new.assets()),
+            &["retail", "era"],
+        );
+    }
+    log.run(&home, &fill(t, "check", &[])).ok();
+    let list = plan_fixture(&log, &home, dir, "plan-list", &fill(t, "list", &[]), 0);
+    let latest = &list_row(&list, "retail", "Foo")["latest"];
+    assert_eq!(
+        (&latest["source"], &latest["release_id"], &latest["asset"]),
+        (&"github".into(), &"gh:o/foo@v2".into(), &"Foo.zip".into()),
+        "the row names its release: {list}"
+    );
+    let preview = plan_fixture(&log, &home, dir, "plan-update-routine", &update_foo(), 0);
+    assert_eq!(preview["data"]["approval"]["routine"], true, "{preview}");
+    let id = planned(&preview);
+    log.note("plan-update-routine: approval.routine true, one apply offer");
+    let applied = plan_fixture(
+        &log,
+        &home,
+        dir,
+        "plan-update-routine-apply",
+        &apply_of(&id),
+        0,
+    );
+    assert_eq!(applied["data"]["applied"]["command"], "update", "{applied}");
+    assert_eq!(
+        applied["data"]["outcomes"][0]["status"], "committed",
+        "{applied}"
+    );
+    let noop = plan_fixture(&log, &home, dir, "plan-update-noop", &update_foo(), 0);
+    assert!(noop["data"]["plan_id"].is_null(), "{noop}");
+    assert_eq!(
+        noop["data"]["approval"]["selection"],
+        serde_json::json!([]),
+        "{noop}"
+    );
+    assert!(
+        noop["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["action"] != "apply"),
+        "no apply offer: {noop}"
+    );
+    plan_fixture(
+        &log,
+        &home,
+        dir,
+        "plan-list-after",
+        &fill(t, "list", &[]),
+        0,
+    );
+    let all = plan_fixture(
+        &log,
+        &home,
+        dir,
+        "plan-update-all",
+        &preview_of(fill(t, "update_all", &[])),
+        0,
+    );
+    assert_eq!(all["data"]["approval"]["routine"], true, "{all}");
+    assert_eq!(
+        all["data"]["approval"]["selection"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3,
+        "{all}"
+    );
+    let id = planned(&all);
+    let applied = plan_fixture(&log, &home, dir, "plan-update-all-apply", &apply_of(&id), 0);
+    let outcomes = applied["data"]["outcomes"].as_array().unwrap();
+    assert!(
+        outcomes.len() == 2 && outcomes.iter().all(|o| o["status"] == "committed"),
+        "a committed outcome per client: {applied}"
+    );
+    let status = log.run(&home, &fill(t, "status", &[]));
+    let status = status.ok().envelope().clone();
+    let mut undo = support::standard(true);
+    undo.push("--dry-run".to_owned());
+    undo.extend(
+        support::strings(&status["data"]["last_change"]["undo"]["argv"])
+            .into_iter()
+            .skip(1),
+    );
+    let preview = plan_fixture(&log, &home, dir, "plan-undo", &undo, 0);
+    let id = planned(&preview);
+    assert_eq!(preview["commands"][0]["destructive"], true, "{preview}");
+    let applied = plan_fixture(&log, &home, dir, "plan-undo-apply", &apply_of(&id), 0);
+    assert_eq!(applied["data"]["applied"]["command"], "undo", "{applied}");
+    let remove = preview_of(fill(t, "remove", &[("target", "retail"), ("addon", "Bar")]));
+    let preview = plan_fixture(&log, &home, dir, "plan-remove", &remove, 0);
+    let id = planned(&preview);
+    assert_eq!(preview["commands"][0]["destructive"], true, "{preview}");
+    plan_fixture(&log, &home, dir, "plan-remove-apply", &apply_of(&id), 0);
+
+    log.step("scene B: a release that moves; a stale, an expired and a missing plan");
+    let mut home = Home::new(&["wow"]);
+    home.installed_behind(
+        support::FOO,
+        ("v1", &foo("v1").assets()),
+        ("v2", &foo("v2").assets()),
+        &["retail"],
+    );
+    log.run(&home, &fill(t, "check", &[])).ok();
+    plan_fixture(
+        &log,
+        &home,
+        dir,
+        "plan-moved-list",
+        &fill(t, "list", &[]),
+        0,
+    );
+    let landed = home.next_scenario();
+    gh_release_v(&landed, support::FOO, "v3", &foo("v3").assets());
+    gh_latest(&landed, support::FOO, "v3");
+    // The update's dry run answers from the memo for 15 minutes: refresh it.
+    log.run(&home, &["outdated", "--refresh", "--json"]).ok();
+    let moved = plan_fixture(&log, &home, dir, "plan-update-moved", &update_foo(), 0);
+    assert_eq!(
+        moved["data"]["approval"]["selection"][0]["to_version"], "v3",
+        "{moved}"
+    );
+    let id = planned(&moved);
+    let landed = home.next_scenario();
+    gh_release_v(&landed, support::FOO, "v4", &foo("v4").assets());
+    gh_latest(&landed, support::FOO, "v4");
+    let stale = plan_fixture(&log, &home, dir, "plan-apply-stale", &apply_of(&id), 1);
+    assert_eq!(stale["error"]["code"], "plan_stale", "{stale}");
+    assert!(
+        support::strings(&stale["error"]["details"]["changed"]).contains(&"selection".to_owned()),
+        "{stale}"
+    );
+    let v4 = plan_fixture(&log, &home, dir, "plan-update-v4", &update_foo(), 0);
+    assert_eq!(
+        v4["data"]["approval"]["selection"][0]["to_version"], "v4",
+        "{v4}"
+    );
+    let id = planned(&v4);
+    // 25 hours after the preview: an hour past the plan's expiry.
+    let expires: jiff::Timestamp = v4["data"]["plan_expires_at"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let later = expires + jiff::SignedDuration::from_hours(1);
+    let ran = log
+        .cmd(&home, &apply_of(&id))
+        .env("OMADDONS_NOW", later.to_string())
+        .run();
+    let expired = write_fixture(dir, "plan-apply-expired", &ran.run, 1);
+    log.json("plan-apply-expired", &expired);
+    assert_eq!(
+        (
+            &expired["error"]["code"],
+            &expired["error"]["details"]["reason"]
+        ),
+        (&"plan_stale".into(), &"expired".into()),
+        "{expired}"
+    );
+    let missing = plan_fixture(
+        &log,
+        &home,
+        dir,
+        "plan-apply-not-found",
+        &apply_of("01ZZZZZZZZZZZZZZZZZZZZZZZZ"),
+        3,
+    );
+    assert_eq!(missing["error"]["code"], "plan_not_found", "{missing}");
+
+    log.step("scene C: equal versions, another asset");
+    let mut home = Home::new(&["wow"]);
+    home.installed_behind(
+        support::FOO,
+        ("v1", &foo("v1").assets()),
+        ("v2", &foo("v2").assets()),
+        &["retail"],
+    );
+    log.run(&home, &fill(t, "check", &[])).ok();
+    plan_fixture(
+        &log,
+        &home,
+        dir,
+        "plan-asset-list",
+        &fill(t, "list", &[]),
+        0,
+    );
+    let reuploaded = home.next_scenario();
+    let retail = CustomRel::new("Foo-retail.zip", "v2", &[("Foo", &[])]);
+    gh_release_v(&reuploaded, support::FOO, "v2", &retail.assets());
+    gh_latest(&reuploaded, support::FOO, "v2");
+    log.run(&home, &["outdated", "--refresh", "--json"]).ok();
+    let asset = plan_fixture(&log, &home, dir, "plan-update-asset", &update_foo(), 0);
+    let item = &asset["data"]["approval"]["selection"][0];
+    assert_eq!(
+        (&item["to_version"], &item["release_id"], &item["asset"]),
+        (
+            &"v2".into(),
+            &"gh:o/foo@v2".into(),
+            &"Foo-retail.zip".into()
+        ),
+        "{asset}"
+    );
+    planned(&asset);
+
+    log.step("scene D: a dependency added");
+    let mut home = Home::new(&["wow"]);
+    let catalog = home.env.config().join("omaddons/catalog.d");
+    fs::create_dir_all(&catalog).unwrap();
+    fs::write(
+        catalog.join("libs.toml"),
+        "schema_version = \"1.0\"\n\n[[addon]]\nname = \"LibFoo\"\nref = \"gh:o/libfoo\"\nfolders = [\"LibFoo\"]\n",
+    )
+    .unwrap();
+    let requiring = CustomRel::new("Foo.zip", "v2", &[("Foo", &["## Dependencies: LibFoo"])]);
+    let behind = home.installed_behind(
+        support::FOO,
+        ("v1", &foo("v1").assets()),
+        ("v2", &requiring.assets()),
+        &["retail"],
+    );
+    let lib = CustomRel::new("LibFoo.zip", "1.0", &[("LibFoo", &[])]);
+    gh_release_v(&behind, support::LIBFOO, "1.0", &lib.assets());
+    gh_latest(&behind, support::LIBFOO, "1.0");
+    log.run(&home, &fill(t, "check", &[])).ok();
+    plan_fixture(
+        &log,
+        &home,
+        dir,
+        "plan-dependency-list",
+        &fill(t, "list", &[]),
+        0,
+    );
+    let dependency = plan_fixture(&log, &home, dir, "plan-update-dependency", &update_foo(), 0);
+    let approval = &dependency["data"]["approval"];
+    assert!(
+        approval["routine"] == false
+            && support::strings(&approval["reasons"]).contains(&"dependency_added".to_owned())
+            && support::strings(&approval["scope"]["dependencies_added"]) == ["LibFoo"],
+        "{dependency}"
+    );
+    planned(&dependency);
+
+    log.step("scene E: local edits replaced");
+    let mut home = Home::new(&["wow"]);
+    home.installed_behind(
+        support::FOO,
+        ("v1", &foo("v1").assets()),
+        ("v2", &foo("v2").assets()),
+        &["retail"],
+    );
+    fs::write(
+        home.addons("_retail_").join("Foo/core.lua"),
+        "-- edited by hand\n",
+    )
+    .unwrap();
+    log.run(&home, &fill(t, "check", &[])).ok();
+    plan_fixture(
+        &log,
+        &home,
+        dir,
+        "plan-local-edits-list",
+        &fill(t, "list", &[]),
+        0,
+    );
+    let edits = plan_fixture(
+        &log,
+        &home,
+        dir,
+        "plan-update-local-edits",
+        &update_foo(),
+        0,
+    );
+    let scope = &edits["data"]["approval"]["scope"]["local_changes_replaced"];
+    assert!(
+        support::strings(&edits["data"]["approval"]["reasons"])
+            .contains(&"local_changes_replaced".to_owned())
+            && scope["count"].as_u64().unwrap_or(0) >= 1
+            && support::strings(&scope["folders"]).contains(&"Foo".to_owned()),
+        "{edits}"
+    );
+    planned(&edits);
+
+    log.step("scene F: a folder the update removes");
+    let mut home = Home::new(&["wow"]);
+    let two = CustomRel::new("Foo.zip", "v1", &[("Foo", &[]), ("Foo_Options", &[])]);
+    let one = CustomRel::new("Foo.zip", "v2", &[("Foo", &[])]);
+    home.installed_behind(
+        support::FOO,
+        ("v1", &two.assets()),
+        ("v2", &one.assets()),
+        &["retail"],
+    );
+    log.run(&home, &fill(t, "check", &[])).ok();
+    plan_fixture(
+        &log,
+        &home,
+        dir,
+        "plan-removal-list",
+        &fill(t, "list", &[]),
+        0,
+    );
+    let removal = plan_fixture(&log, &home, dir, "plan-update-removal", &update_foo(), 0);
+    let approval = &removal["data"]["approval"];
+    assert!(
+        support::strings(&approval["reasons"]).contains(&"folders_removed".to_owned())
+            && support::strings(&approval["scope"]["folders_removed"])
+                .contains(&"Foo_Options".to_owned()),
+        "{removal}"
+    );
+    planned(&removal);
+
+    let mut written: Vec<String> = fs::read_dir(dir)
+        .unwrap()
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter(|n| n.starts_with("plan-") && n.ends_with(".json"))
+        .map(|n| n.trim_end_matches(".json").to_owned())
+        .collect();
+    written.sort();
+    let mut listed: Vec<String> = PLAN_FIXTURES.iter().map(|n| (*n).to_owned()).collect();
+    listed.sort();
+    assert_eq!(
+        written, listed,
+        "plans_fixtures writes exactly PLAN_FIXTURES"
+    );
 }
 
 /// Envelopes from the real binary for bun's reducer tests, written to
@@ -1401,6 +1968,7 @@ fn write_widget_fixtures() {
 
     errors_fixtures(&dir, &t);
     backups_fixtures(&dir, &t);
+    plans_fixtures(&dir, &t);
 
     // Idle: Baz current on retail, checked just now.
     let home = Home::new(&["wow"]);

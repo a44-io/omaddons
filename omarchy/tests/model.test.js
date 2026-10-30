@@ -1660,6 +1660,132 @@ describe("classifyCliArgv's apply rule", () => {
   })
 })
 
+// --------------------------------------- plans from the binary (M4-D28, step 1's scenes)
+
+// The previews of the scenes that store a plan, each the CLI's own envelope.
+const PLANNED_PREVIEWS = ["plan-update-routine", "plan-update-all", "plan-undo", "plan-remove", "plan-update-moved", "plan-update-v4",
+  "plan-update-asset", "plan-update-dependency", "plan-update-local-edits", "plan-update-removal"]
+
+describe("plans from the binary", () => {
+  // What the Updates view shows for `list`'s envelope in `filter`, as Model.shownOf
+  // gives it; one addon's row, as Enter on it passes.
+  const shownFrom = (list, filter) => M.updateRows(M.reduceList(fixture(list)), filter, []).map(M.shownOf)
+  const fooRow = (list) => shownFrom(list, "retail").filter((s) => Object.is(s.addon, "Foo"))
+  // A preview by its fixture's name, or an envelope derived from one.
+  const envOf = (preview) => (preview instanceof Object ? preview : fixture(preview))
+  const decide = (spec, preview) => M.previewDecision(Object.assign({ again: false, path: "update" }, spec), envOf(preview))
+  const match = (list, preview) => decide({ mode: "match", shown: fooRow(list) }, preview)
+  const copy = (name) => JSON.parse(JSON.stringify(fixture(name)))
+  const after = " Nothing ran; check the new preview."
+
+  test("a routine matching update applies its plan directly", () => {
+    const d = match("plan-list", "plan-update-routine")
+    expect(["plan-list + plan-update-routine", d.kind]).toEqual(["plan-list + plan-update-routine", "direct"])
+    const argv = M.cliArgv(d.plan.argv, opts({ plan: d.plan })).argv
+    expect(["the apply argv", argv.slice(-4), argv.includes("--dry-run"), argv.includes("--if-match")])
+      .toEqual(["the apply argv", ["--progress", "json", "apply", d.plan.planId], false, false])
+  })
+
+  test("the apply's result reads as the update's", () => {
+    const view = M.applyResult(fixture("plan-update-routine-apply"))
+    expect(["plan-update-routine-apply", M.resultLine(view)]).toEqual(["plan-update-routine-apply", "Updated 1 addon"])
+    expect(["plan-update-routine-apply", view.commands.some((c) => c.action === "undo" || c.action === "undo_run")])
+      .toEqual(["plan-update-routine-apply", true])
+    expect(M.resultLine(M.applyResult(fixture("plan-update-all-apply")))).toBe("Updated 3 addons on 2 clients")
+  })
+
+  test("nothing to do refreshes", () => {
+    const d = match("plan-list-after", "plan-update-noop")
+    expect(["plan-update-noop", d.kind, d.line]).toEqual(["plan-update-noop", "refresh", "Already up to date; the view is refreshed"])
+  })
+
+  test("update all applies when every row matches", () => {
+    const shown = shownFrom("plan-list-after", "")
+    expect(["plan-list-after rows", shown.map((s) => s.target_id + "/" + s.addon)]).toEqual(["plan-list-after rows", ["era/Bar", "era/Foo", "retail/Bar"]])
+    const d = decide({ mode: "match", shown: shown }, "plan-update-all")
+    expect(["plan-update-all", d.kind]).toEqual(["plan-update-all", "direct"])
+    const fewer = decide({ mode: "match", shown: shown.slice(1) }, "plan-update-all")
+    expect(["one row fewer", fewer.kind, fewer.heading, fewer.lines[0]]).toEqual(["one row fewer", "dialog",
+      "Changed since you looked: Also: Update Bar v1 → v2 on era (not in the view)",
+      "Changed since you looked: Also: Update Bar v1 → v2 on era (not in the view)"])
+  })
+
+  test("a moved release opens the dialog as changed", () => {
+    const d = match("plan-moved-list", "plan-update-moved")
+    expect(["plan-update-moved", d.kind, d.lines[0]]).toEqual(["plan-update-moved", "dialog", "Changed since you looked: Foo v3 is now the newest"])
+  })
+
+  test("another asset opens the dialog as changed", () => {
+    const d = match("plan-asset-list", "plan-update-asset")
+    expect(["plan-update-asset", d.kind, d.heading]).toEqual(["plan-update-asset", "dialog",
+      "Changed since you looked: Foo v2 comes in another file now (Foo-retail.zip)"])
+  })
+
+  test("another source opens the dialog as changed (derived)", () => {
+    const preview = copy("plan-update-routine")
+    preview.data.approval.selection[0].source = "wowi"
+    const d = match("plan-list", preview)
+    expect(["derived: plan-update-routine from wowi", d.kind, d.heading]).toEqual(["derived: plan-update-routine from wowi", "dialog",
+      "Changed since you looked: Foo comes from wowi now"])
+  })
+
+  test("a dependency added opens the dialog naming it", () => {
+    const d = match("plan-dependency-list", "plan-update-dependency")
+    expect(["plan-update-dependency", d.kind, d.heading, d.lines.some((l) => l.startsWith("Also installs LibFoo") && l.endsWith("(a new dependency)"))])
+      .toEqual(["plan-update-dependency", "dialog", "", true])
+  })
+
+  test("local edits replaced open the dialog", () => {
+    const d = match("plan-local-edits-list", "plan-update-local-edits")
+    expect(["plan-update-local-edits", d.kind, d.heading, d.lines.includes("Replaces 1 file you changed in Foo (kept for undo)")])
+      .toEqual(["plan-update-local-edits", "dialog", "", true])
+  })
+
+  test("extra removals open the dialog", () => {
+    const d = match("plan-removal-list", "plan-update-removal")
+    expect(["plan-update-removal", d.kind, d.heading, d.lines.includes("Removes the folder Foo_Options (kept for undo)")])
+      .toEqual(["plan-update-removal", "dialog", "", true])
+  })
+
+  test("a full store runs nothing (derived)", () => {
+    const preview = copy("plan-update-routine")
+    preview.data.plan_id = null
+    preview.data.plan_expires_at = null
+    preview.commands = preview.commands.filter((c) => !Object.is(c.action, "apply"))
+    preview.warnings = [{ code: "plan_not_stored", message: "the plan store is full", fix: "previews are kept again as plans expire", fix_argv: null }]
+    const d = match("plan-list", preview)
+    expect(["derived: plan-update-routine, store full", d.kind, d.fixText]).toEqual(["derived: plan-update-routine, store full", "refuse",
+      "previews are kept again as plans expire"])
+  })
+
+  test("a stale, an expired and a missing plan preview again", () => {
+    table([
+      ["plan-apply-stale", "plan-apply-stale", [true, "Changed since you looked: selection." + after]],
+      ["plan-apply-expired", "plan-apply-expired", [true, "The plan expired." + after]],
+      ["plan-apply-not-found", "plan-apply-not-found", [true, "The plan is gone (expired or cleared)." + after]],
+    ], (name) => [M.needsPreviewAgain(fixture(name)), M.staleText(fixture(name))])
+  })
+
+  test("a removal and an undo confirm through apply", () => {
+    const removal = decide({ mode: "confirm", shown: [], path: "remove" }, "plan-remove")
+    expect(["plan-remove", removal.kind, removal.lines[0], removal.plan.destructive])
+      .toEqual(["plan-remove", "dialog", "Remove Bar v1 from retail (1 folder)", true])
+    const undo = decide({ mode: "confirm", shown: [], path: "undo" }, "plan-undo")
+    expect(["plan-undo", undo.kind, undo.lines[0].indexOf("Undo update on") === 0, undo.plan.destructive])
+      .toEqual(["plan-undo", "dialog", true, true])
+    expect(["plan-remove-apply", M.resultLine(M.applyResult(fixture("plan-remove-apply")))]).toEqual(["plan-remove-apply", "Removed 1 addon"])
+    expect(["plan-undo-apply", M.resultLine(M.applyResult(fixture("plan-undo-apply"))).indexOf("Undid update on") === 0])
+      .toEqual(["plan-undo-apply", true])
+  })
+
+  test("every preview that stored a plan offers exactly its apply", () => {
+    for (const name of PLANNED_PREVIEWS) {
+      const plan = M.planFrom(fixture(name))
+      expect([name, plan !== null && M.PLAN_ID_PATTERN.test(plan.planId)]).toEqual([name, true])
+    }
+  })
+})
+
 // --------------------------------------------------- built-argv.json (step 3)
 
 test("writes every built argv and the classifier's verdicts for the Rust check", () => {
@@ -1713,11 +1839,16 @@ test("writes every built argv and the classifier's verdicts for the Rust check",
     }
     classified.push({ argv, verdict, runnable, refusal })
   }
-  // The apply a preview's plan runs, built only with that plan (M4-D28).
+  // The apply a preview's plan runs, built only with that plan (M4-D28): a synthetic
+  // preview's, and every real one step 1 wrote.
   const planned = []
   for (const extra of [{}, { confirmed: true }]) {
     const plan = M.planFrom(previewOf([item()]))
     planned.push({ plan_id: plan.planId, argv: M.cliArgv(plan.argv, opts(Object.assign({ plan: plan }, extra))).argv })
+  }
+  for (const name of PLANNED_PREVIEWS) {
+    const plan = M.planFrom(fixture(name))
+    planned.push({ plan_id: plan.planId, argv: M.cliArgv(plan.argv, opts({ plan: plan })).argv })
   }
 
   const stringArgv = (argv) => argv.every((a) => typeof a === "string")

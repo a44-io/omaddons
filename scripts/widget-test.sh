@@ -62,6 +62,8 @@ if ((qml)); then
     plugin=$OMADDONS_WIDGET_OUT/plugin
     cp -r omarchy "$plugin"
     cp omarchy/tests/fixtures/Build.js "$plugin/Build.js"
+    # The plan scenes step 1 wrote, for tst_plans.qml: into the temporary copy only.
+    bun omarchy/tests/qml_fixtures.js "$OMADDONS_WIDGET_OUT/fixtures" "$plugin/tests/qml/Fixtures.js"
     imports=()
     [[ -d $plugin/tests/qml/imports ]] && imports=(-import "$plugin/tests/qml/imports")
     QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
