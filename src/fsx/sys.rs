@@ -437,13 +437,29 @@ pub(crate) fn sync_filesystem(path: &Path) -> io::Result<()> {
 /// Sets the mode of `path`, refusing to follow a symlink.
 pub(crate) fn chmod(path: &Path, mode: u32) -> io::Result<()> {
     failpoint::hit("fsx.chmod.before")?;
+    refuse_symlink(path)?;
+    fs::set_permissions(path, Permissions::from_mode(mode))
+}
+
+/// [`chmod`] made durable: the mode is set through a descriptor opened before the change
+/// (so a mode without read permission still syncs), then that inode is fsynced (one
+/// counted `fsync`). For transaction sessions only; staging keeps its no-fsync contract.
+pub(crate) fn chmod_durable(path: &Path, mode: u32) -> io::Result<()> {
+    failpoint::hit("fsx.chmod.before")?;
+    refuse_symlink(path)?;
+    let file = File::open(path)?;
+    file.set_permissions(Permissions::from_mode(mode))?;
+    fsync(&file)
+}
+
+fn refuse_symlink(path: &Path) -> io::Result<()> {
     if fs::symlink_metadata(path)?.file_type().is_symlink() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("refusing to chmod through the symlink {}", path.display()),
         ));
     }
-    fs::set_permissions(path, Permissions::from_mode(mode))
+    Ok(())
 }
 
 /// The directory containing `path`; `.` for a bare file name.

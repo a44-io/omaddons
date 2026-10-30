@@ -23,18 +23,40 @@ const LOG_MODE: u32 = 0o600;
 /// Where a transaction's verbatim backups go, per side: home-side paths back up under
 /// `home_side`; paths inside a client dir back up under that client's
 /// `Interface/.omaddons/snapshots/<tx>/files/` (`<tx>.wtf/` for a transaction that puts
-/// settings back), on the same filesystem, so backups are reflinks.
+/// settings back, `<tx>.repair/` for a doctor repair), on the same filesystem, so backups
+/// are reflinks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapshotRoots {
     home_side: PathBuf,
-    wtf: bool,
+    client_half: ClientHalf,
+}
+
+/// The name of a transaction's client-side snapshot half.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClientHalf {
+    /// `<tx>`.
+    Plain,
+    /// `<tx>.wtf`.
+    Wtf,
+    /// `<tx>.repair`.
+    Repair,
 }
 
 impl SnapshotRoots {
     pub fn new(home_side: impl Into<PathBuf>) -> Self {
         Self {
             home_side: home_side.into(),
-            wtf: false,
+            client_half: ClientHalf::Plain,
+        }
+    }
+
+    /// A doctor repair's layout (M4-D31): home-side backups under `home_side` (the
+    /// repair passes `<run>/backups/`), client-side ones under the client's
+    /// `<tx>.repair` half ([`ClientPaths::snapshots_repair`]).
+    pub fn for_repair(home_side: impl Into<PathBuf>, _tx: &TxId) -> Self {
+        Self {
+            home_side: home_side.into(),
+            client_half: ClientHalf::Repair,
         }
     }
 
@@ -48,18 +70,21 @@ impl SnapshotRoots {
     pub fn for_wtf_tx(paths: &Paths, tx: &TxId) -> Self {
         Self {
             home_side: paths.state_snapshot_wtf(tx).join("files"),
-            wtf: true,
+            client_half: ClientHalf::Wtf,
         }
     }
 
     pub(crate) fn dir_for(&self, side: &Side, tx: &TxId) -> PathBuf {
-        match side {
-            Side::Home => self.home_side.clone(),
-            Side::Client(client_dir) if self.wtf => {
-                ClientPaths::new(client_dir).snapshots_wtf(tx).join("files")
-            }
-            Side::Client(client_dir) => ClientPaths::new(client_dir).snapshots(tx).join("files"),
-        }
+        let Side::Client(client_dir) = side else {
+            return self.home_side.clone();
+        };
+        let client = ClientPaths::new(client_dir);
+        let half = match self.client_half {
+            ClientHalf::Plain => client.snapshots(tx),
+            ClientHalf::Wtf => client.snapshots_wtf(tx),
+            ClientHalf::Repair => client.snapshots_repair(tx),
+        };
+        half.join("files")
     }
 }
 
@@ -301,6 +326,45 @@ impl<'a> WriteSession<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repair_snapshot_roots_put_client_backups_under_the_repair_half() {
+        let tx: TxId = "01JB8Q2VA00000000000000000".parse().unwrap();
+        let paths = Paths::with_roots("/h", "/c", "/s", "/k");
+        let client = Side::Client(PathBuf::from("/wow/_retail_"));
+        let snapshots = "/wow/_retail_/Interface/.omaddons/snapshots";
+        let repair = SnapshotRoots::for_repair("/s/omaddons/doctor/runs/R/backups", &tx);
+        let cases = [
+            (
+                "repair_home",
+                repair.dir_for(&Side::Home, &tx),
+                "/s/omaddons/doctor/runs/R/backups".to_owned(),
+            ),
+            (
+                "repair_client",
+                repair.dir_for(&client, &tx),
+                format!("{snapshots}/{tx}.repair/files"),
+            ),
+            (
+                "tx_client",
+                SnapshotRoots::for_tx(&paths, &tx).dir_for(&client, &tx),
+                format!("{snapshots}/{tx}/files"),
+            ),
+            (
+                "tx_home",
+                SnapshotRoots::for_tx(&paths, &tx).dir_for(&Side::Home, &tx),
+                format!("/s/omaddons/snapshots/{tx}/files"),
+            ),
+            (
+                "wtf_client",
+                SnapshotRoots::for_wtf_tx(&paths, &tx).dir_for(&client, &tx),
+                format!("{snapshots}/{tx}.wtf/files"),
+            ),
+        ];
+        for (case, got, want) in cases {
+            assert_eq!(got, PathBuf::from(&want), "{case}: {got:?} → {want}");
+        }
+    }
 
     #[test]
     fn the_log_follows_the_renames_that_move_it() {

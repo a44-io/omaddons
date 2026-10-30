@@ -1,6 +1,6 @@
 ---
 source: src/limits.rs
-assertion_line: 1376
+assertion_line: 1387
 expression: "(politeness, REGISTRY)"
 ---
 [
@@ -977,6 +977,15 @@ expression: "(politeness, REGISTRY)"
       "unit": "count",
       "config_key": null,
       "notes": "Most entries one doctor walk or listing visits per run"
+    },
+    {
+      "name": "SKILL_DIRS_MAX",
+      "value": {
+        "count": 8
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Skill directories a scope table, history_tail.skill_dirs[] and the skill-drift check admit at most"
     }
   ]
 ]

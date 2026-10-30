@@ -29,8 +29,16 @@ pub const WIDGET_ID: &str = "a44.omaddons";
 /// never sees these (D12, `tests/compat_m2.rs`).
 const WTF_SUFFIX: &str = ".wtf";
 
+/// What marks the repair family (M4-D31): a doctor repair's journal
+/// (`<tx>.repair.jsonl`) and the client-side half of its snapshots (`<tx>.repair`). A
+/// build before M4 cannot read a repair journal and must not take it for a folder
+/// transaction, which is why the family has a name of its own. Only `engine::repair::list`
+/// parses such names; retention only matches the suffix, to leave them alone.
+pub const REPAIR_SUFFIX: &str = ".repair";
+
 /// The transaction a journal (its `.jsonl` stripped), stage or snapshot entry is named
-/// for: a bare id, or one with [`WTF_SUFFIX`].
+/// for: a bare id, or one with [`WTF_SUFFIX`]. Names with `.repair` are not parsed here,
+/// on purpose: they belong to the repair family, which older builds must not see (M4-D31).
 pub fn tx_named(name: &str) -> Option<TxId> {
     name.strip_suffix(WTF_SUFFIX).unwrap_or(name).parse().ok()
 }
@@ -306,6 +314,12 @@ impl Paths {
         self.journal_dir().join(format!("{tx}.jsonl"))
     }
 
+    /// A doctor repair's journal (M4-D31, [`REPAIR_SUFFIX`]).
+    pub fn journal_repair(&self, tx: &TxId) -> PathBuf {
+        self.journal_dir()
+            .join(format!("{tx}{REPAIR_SUFFIX}.jsonl"))
+    }
+
     /// The journal of a transaction that puts settings back, which a pre-M3 build never
     /// lists ([`WTF_SUFFIX`]).
     pub fn journal_wtf(&self, tx: &TxId) -> PathBuf {
@@ -501,6 +515,11 @@ impl Paths {
     pub fn cache_trash(&self) -> PathBuf {
         self.cache.join("trash")
     }
+
+    /// What one doctor run set aside from the cache (`<cache>/quarantine/<run_id>`).
+    pub fn cache_quarantine(&self, run_id: &str) -> PathBuf {
+        self.cache.join("quarantine").join(run_id)
+    }
 }
 
 /// Paths inside one client dir (the directory holding `Interface/` and `WTF/`).
@@ -590,6 +609,13 @@ impl ClientPaths {
             .join(format!("{tx}{WTF_SUFFIX}"))
     }
 
+    /// The client-side half of a doctor repair's snapshots ([`REPAIR_SUFFIX`]).
+    pub fn snapshots_repair(&self, tx: &TxId) -> PathBuf {
+        self.meta_dir()
+            .join("snapshots")
+            .join(format!("{tx}{REPAIR_SUFFIX}"))
+    }
+
     /// Where `prune()` stages client-side victims before deleting them.
     pub fn trash(&self) -> PathBuf {
         self.meta_dir().join("trash")
@@ -640,6 +666,46 @@ mod tests {
 
     fn paths() -> Paths {
         Paths::with_roots("/h", "/c", "/s", "/k")
+    }
+
+    #[test]
+    fn repair_names_are_invisible_to_tx_named() {
+        let tx: TxId = TX.parse().unwrap();
+        for (case, name, want) in [
+            ("bare", TX.to_owned(), Some(tx)),
+            ("wtf", format!("{TX}.wtf"), Some(tx)),
+            ("repair", format!("{TX}.repair"), None),
+            ("repair_after_wtf", format!("{TX}.wtf.repair"), None),
+            ("wtf_after_repair", format!("{TX}.repair.wtf"), None),
+        ] {
+            assert_eq!(tx_named(&name), want, "{case}: {name}");
+        }
+    }
+
+    #[test]
+    fn repair_paths_are_where_the_layout_says() {
+        let p = paths();
+        let tx: TxId = TX.parse().unwrap();
+        let client = ClientPaths::new("/wow/_retail_");
+        for (case, got, want) in [
+            (
+                "journal_repair",
+                p.journal_repair(&tx),
+                format!("/s/omaddons/journal/{TX}.repair.jsonl"),
+            ),
+            (
+                "cache_quarantine",
+                p.cache_quarantine(RUN),
+                format!("/k/omaddons/quarantine/{RUN}"),
+            ),
+            (
+                "snapshots_repair",
+                client.snapshots_repair(&tx),
+                format!("/wow/_retail_/Interface/.omaddons/snapshots/{TX}.repair"),
+            ),
+        ] {
+            assert_eq!(got, PathBuf::from(&want), "{case}: {got:?} → {want}");
+        }
     }
 
     #[test]

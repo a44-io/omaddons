@@ -22,7 +22,7 @@ use sha2::{Digest as _, Sha256};
 use super::expect::Expect;
 use super::failpoint;
 use super::op::Op;
-use super::scope::{Access, Refusal};
+use super::scope::{Access, Refusal, Writer};
 use super::session::{SessionKind, TxState, WriteSession};
 use super::sys::{self, CloneKind, ClonePolicy, Content, Durability, RenameError, RenameMode};
 use crate::error::{Error, ErrorCode, Suggestion};
@@ -90,6 +90,11 @@ pub struct MutateOpts {
     /// The predicate on a rename's destination, checked with `expect`; refused on any
     /// other operation.
     pub expect_to: Option<Expect>,
+    /// Asks for the one exception to the symlink refusal: a doctor's no-replace rename of
+    /// a temporary link a crash inside `symlink_atomic` left (`.omaddons-…`), between an
+    /// omaddons-owned directory and a quarantine root, either way. fsx checks every
+    /// condition ([`temp_symlink_rename`]), so a caller cannot widen it.
+    pub temp_symlink: bool,
     /// The tree digest of a directory at the path before the operation, from the
     /// caller's per-file index, so large folders need not be re-hashed.
     pub tree_before: Option<TreeDigest>,
@@ -338,7 +343,9 @@ pub fn mutate_with(
     let wire = op.wire();
 
     // 1. Scope, op and precondition checks.
-    let target = normalize(path, matches!(op, Op::SymlinkAtomic { .. }))?;
+    let link_op = matches!(op, Op::SymlinkAtomic { .. })
+        || (opts.temp_symlink && temp_symlink_rename(s, path, &op));
+    let target = normalize(path, link_op)?;
     let access = match op {
         Op::CreateDir => Access::CreateDir,
         Op::Rename { .. } => Access::Rename,
@@ -382,7 +389,7 @@ pub fn mutate_with(
                 &target,
                 to.as_deref(),
                 op,
-                (opts.durability, opts.expect.as_ref()),
+                (opts.durability, opts.expect.as_ref(), false),
             )?;
             return Ok(ActionRecord {
                 seq: 0,
@@ -412,7 +419,7 @@ pub fn mutate_with(
                 &target,
                 to.as_deref(),
                 op,
-                (opts.durability, opts.expect.as_ref()),
+                (opts.durability, opts.expect.as_ref(), false),
             );
             let record = ActionRecord {
                 seq: log.next_seq(),
@@ -489,7 +496,7 @@ pub fn mutate_with(
         &target,
         to.as_deref(),
         op,
-        (opts.durability, opts.expect.as_ref()),
+        (opts.durability, opts.expect.as_ref(), true),
     )
     .and_then(|written| {
         failpoint::hit("fsx.mutate.executed").map_err(io_err(&target))?;
@@ -630,9 +637,44 @@ fn check_shape(path: &Path) -> Result<(), FsxError> {
     Ok(())
 }
 
+/// Whether `path` → `op` is the rename [`MutateOpts::temp_symlink`] admits: a no-replace
+/// rename by the doctor, of a symlink, both names temporary (`.omaddons-…`), with one end
+/// in an omaddons-owned directory and the other below a quarantine root. Only a crash
+/// inside `symlink_atomic` leaves such a link where omaddons keeps its own files; a
+/// developer's symlink in AddOns stays immutable.
+fn temp_symlink_rename(s: &WriteSession<'_>, path: &Path, op: &Op<'_>) -> bool {
+    let Op::Rename {
+        to,
+        mode: RenameMode::NoReplace,
+    } = op
+    else {
+        return false;
+    };
+    if !matches!(s.writer, Writer::Doctor) {
+        return false;
+    }
+    let (Ok(from), Ok(to)) = (normalize(path, true), normalize(to, true)) else {
+        return false;
+    };
+    let temporary = |p: &Path| {
+        p.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(sys::TEMP_PREFIX))
+    };
+    let link = fs::symlink_metadata(&from).is_ok_and(|m| m.file_type().is_symlink());
+    let (owned, quarantine) = (
+        |p: &Path| s.scopes.is_app_owned(p),
+        |p: &Path| s.scopes.is_quarantine(p),
+    );
+    link && temporary(&from)
+        && temporary(&to)
+        && ((owned(&from) && quarantine(&to)) || (quarantine(&from) && owned(&to)))
+}
+
 /// The canonical parent joined with the final component. The final component must not
-/// be an existing symlink unless `allow_symlink` (a `SymlinkAtomic` link path), which
-/// keeps developer symlinks in AddOns immutable.
+/// be an existing symlink unless `allow_symlink` (a `SymlinkAtomic` link path, or the
+/// rename [`temp_symlink_rename`] admits), which keeps developer symlinks in AddOns
+/// immutable.
 fn normalize(path: &Path, allow_symlink: bool) -> Result<PathBuf, FsxError> {
     check_shape(path)?;
     let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
@@ -841,11 +883,14 @@ fn backup(
 
 /// Runs the operation; reports the written content's SHA-256 for `WriteFile` and how
 /// a `CloneFile` copied.
+/// Runs `op`. `tracked` (a transaction session) makes a chmod durable before its
+/// actions line can be: a power loss must never keep a repair's `done` line and lose the
+/// mode change it records.
 fn execute(
     target: &Path,
     to: Option<&Path>,
     op: Op<'_>,
-    (durability, expect): (Durability, Option<&Expect>),
+    (durability, expect, tracked): (Durability, Option<&Expect>, bool),
 ) -> Result<Executed, FsxError> {
     let io = io_err(target);
     let none = |()| Executed::default();
@@ -900,6 +945,7 @@ fn execute(
                 clone: Some(kind),
             })
             .map_err(io),
+        Op::Chmod { mode } if tracked => sys::chmod_durable(target, mode).map(none).map_err(io),
         Op::Chmod { mode } => sys::chmod(target, mode).map(none).map_err(io),
         Op::SymlinkAtomic {
             target: link_target,
@@ -1401,6 +1447,203 @@ mod tests {
     fn refused_with(result: Result<ActionRecord, FsxError>, path: &Path, text: &str) -> bool {
         matches!(&result, Err(FsxError::Precondition(message))
             if message.starts_with(&*path.to_string_lossy()) && message.ends_with(text))
+    }
+
+    /// The link a crash inside `symlink_atomic` left in `<state>`, and a quarantine
+    /// directory of a doctor run to set it aside in.
+    fn crashed_link(f: &Fixture) -> (PathBuf, PathBuf) {
+        let state = f.paths.state_dir().to_path_buf();
+        fs::create_dir_all(state.join("doctor/runs/old")).unwrap();
+        let quarantine = state.join("doctor/runs/R/quarantine/state");
+        fs::create_dir_all(&quarantine).unwrap();
+        let link = state.join(".omaddons-abc");
+        std::os::unix::fs::symlink("doctor/runs/old", &link).unwrap();
+        (link, quarantine)
+    }
+
+    fn temp_symlink() -> MutateOpts {
+        MutateOpts {
+            temp_symlink: true,
+            ..MutateOpts::default()
+        }
+    }
+
+    fn no_replace(to: &Path) -> Op<'_> {
+        Op::Rename {
+            to,
+            mode: RenameMode::NoReplace,
+        }
+    }
+
+    #[test]
+    fn a_temp_symlink_renames_into_a_quarantine_root() {
+        let f = Fixture::new();
+        let (link, quarantine) = crashed_link(&f);
+        let dest = quarantine.join(".omaddons-abc");
+        let mut s = f.tx_session(Writer::Doctor);
+        let record = mutate_with(&mut s, &link, no_replace(&dest), temp_symlink()).unwrap();
+        assert!(
+            fs::symlink_metadata(&dest)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(fs::read_link(&dest).unwrap(), Path::new("doctor/runs/old"));
+        assert!(fs::symlink_metadata(&link).is_err(), "the link moved");
+        assert!(
+            f.paths.state_dir().join("doctor/runs/old").is_dir(),
+            "its target untouched"
+        );
+        assert_eq!(
+            (record.op.as_str(), record.before_hash.as_deref()),
+            ("rename_noreplace", Some("link:doctor/runs/old"))
+        );
+        assert_eq!(
+            f.actions().last().map(|a| a.op.clone()).as_deref(),
+            Some("rename_noreplace")
+        );
+    }
+
+    #[test]
+    fn a_temp_symlink_renames_back_out_of_quarantine() {
+        let f = Fixture::new();
+        let (link, quarantine) = crashed_link(&f);
+        let dest = quarantine.join(".omaddons-abc");
+        let mut s = f.tx_session(Writer::Doctor);
+        mutate_with(&mut s, &link, no_replace(&dest), temp_symlink()).unwrap();
+        mutate_with(&mut s, &dest, no_replace(&link), temp_symlink()).unwrap();
+        assert_eq!(fs::read_link(&link).unwrap(), Path::new("doctor/runs/old"));
+        assert!(fs::symlink_metadata(&dest).is_err());
+    }
+
+    #[test]
+    fn the_symlink_exception_refuses_everything_else() {
+        // Each case: its name, the session's writer, whether it asks for the exception,
+        // and the shape it changes from a good rename into quarantine.
+        let cases: [(&str, Writer, bool, &str); 11] = [
+            ("flag_not_set", Writer::Doctor, false, "quarantine"),
+            (
+                "no_temp_prefix_on_source",
+                Writer::Doctor,
+                true,
+                "plain_source",
+            ),
+            (
+                "no_temp_prefix_on_destination",
+                Writer::Doctor,
+                true,
+                "plain_destination",
+            ),
+            ("writer_mutating", Writer::Mutating, true, "quarantine"),
+            ("rename_replace", Writer::Doctor, true, "replace"),
+            ("rename_exchange", Writer::Doctor, true, "exchange"),
+            (
+                "destination_not_quarantine",
+                Writer::Doctor,
+                true,
+                "elsewhere",
+            ),
+            ("both_ends_owned", Writer::Doctor, true, "cache"),
+            ("source_in_addons", Writer::Doctor, true, "addons"),
+            ("write_through_link", Writer::Doctor, true, "write"),
+            ("chmod_link", Writer::Doctor, true, "chmod"),
+        ];
+        for (case, writer, flag, shape) in cases {
+            let f = Fixture::new();
+            let (mut link, quarantine) = crashed_link(&f);
+            let state = f.paths.state_dir().to_path_buf();
+            match shape {
+                "plain_source" => {
+                    link = state.join(".cache-link");
+                    std::os::unix::fs::symlink("doctor/runs/old", &link).unwrap();
+                }
+                "addons" => {
+                    link = f.client.join("Interface/AddOns/.omaddons-abc");
+                    std::os::unix::fs::symlink("WeakAuras", &link).unwrap();
+                }
+                _ => {}
+            }
+            let elsewhere = state.join("elsewhere");
+            let cache = f.paths.cache_dir().join("x");
+            for dir in [&elsewhere, &cache] {
+                fs::create_dir_all(dir).unwrap();
+            }
+            let other = quarantine.join("other");
+            fs::write(&other, b"x").unwrap();
+            let dest = match shape {
+                "plain_destination" => quarantine.join("abc"),
+                "elsewhere" => elsewhere.join(".omaddons-abc"),
+                "cache" => cache.join(".omaddons-abc"),
+                _ => quarantine.join(link.file_name().unwrap()),
+            };
+            let op = match shape {
+                "replace" => Op::Rename {
+                    to: &dest,
+                    mode: RenameMode::Replace,
+                },
+                "exchange" => Op::Rename {
+                    to: &other,
+                    mode: RenameMode::Exchange,
+                },
+                "write" => write(b"through"),
+                "chmod" => Op::Chmod { mode: 0o600 },
+                _ => no_replace(&dest),
+            };
+            let opts = if flag {
+                temp_symlink()
+            } else {
+                MutateOpts::default()
+            };
+            let before = fs::read_link(&link).unwrap();
+            let mut s = f.tx_session(writer);
+            let result = mutate_with(&mut s, &link, op, opts);
+            assert!(
+                matches!(&result, Err(FsxError::ScopeDenied(m)) if m.contains("is a symlink")),
+                "{case}: {} → {result:?}",
+                link.display()
+            );
+            assert_eq!(
+                fs::read_link(&link).unwrap(),
+                before,
+                "{case}: the link is unchanged"
+            );
+            // An exchange names an existing file; every other case a free destination.
+            assert!(
+                fs::symlink_metadata(&dest).is_err() || matches!(shape, "exchange"),
+                "{case}: nothing at the destination"
+            );
+            assert!(!f.actions_log().exists(), "{case}: no actions line");
+        }
+    }
+
+    #[test]
+    fn a_tracked_chmod_is_durable() {
+        let f = Fixture::new();
+        let file = f.paths.state_dir().join("x");
+        let mut s = f.tx_session(Writer::Mutating);
+        ensure_dir_all(&mut s, f.paths.state_dir()).unwrap();
+        mutate(&mut s, &file, write(b"x")).unwrap();
+        let before = sys::sync_counts();
+        mutate(&mut s, &file, Op::Chmod { mode: 0o200 }).unwrap();
+        // The actions line's own fsync, and now the mode's.
+        assert_eq!(sys::sync_counts().fsync - before.fsync, 2);
+        assert_eq!(
+            mode_of(&file),
+            0o200,
+            "set through the descriptor opened before"
+        );
+    }
+
+    #[test]
+    fn an_untracked_chmod_adds_no_fsync() {
+        let f = Fixture::new();
+        let file = f.paths.cache_dir().join("x");
+        fs::create_dir_all(f.paths.cache_dir()).unwrap();
+        fs::write(&file, b"x").unwrap();
+        let mut s = WriteSession::untracked(Writer::Derived, &f.scopes, "a test");
+        let before = sys::sync_counts();
+        mutate(&mut s, &file, Op::Chmod { mode: 0o600 }).unwrap();
+        assert_eq!(sys::sync_counts().fsync - before.fsync, 0);
     }
 
     #[test]

@@ -153,7 +153,9 @@ pub fn prune(
     // A writer cleaning up after itself never deletes the journal recovery still needs:
     // only the next global lock holder finishes or rolls back an unfinished one.
     if own.is_some()
-        && let Some(open) = planned.iter().find(|p| p.journal && unfinished(&p.victim))
+        && let Some(open) = planned
+            .iter()
+            .find(|p| p.journal && unfinished(&p.victim, p.kind))
     {
         return Err(Error::new(
             ErrorCode::ScopeDenied,
@@ -328,7 +330,7 @@ fn classify(scopes: &ScopeTable, reason: PruneReason, victim: &Path) -> Result<O
         trash,
         kind,
         inflight: kind == Kind::Inflight,
-        journal: kind == Kind::Journal,
+        journal: matches!(kind, Kind::Journal | Kind::RepairJournal),
     }))
 }
 
@@ -431,6 +433,8 @@ enum Kind {
     ClientBackup,
     StateSnapshot,
     Journal,
+    /// `<state>/journal/<tx>.repair.jsonl`, a doctor repair's journal (M4-D31).
+    RepairJournal,
     Inflight,
     /// `<cache>/plans/<id>.json`
     Plan,
@@ -449,9 +453,11 @@ impl Kind {
     fn reason(self) -> PruneReason {
         match self {
             Self::ClientSnapshot | Self::StateSnapshot | Self::Blob => PruneReason::Retention,
-            Self::ClientStage | Self::Journal | Self::Inflight | Self::CacheTmp => {
-                PruneReason::PostCommitCleanup
-            }
+            Self::ClientStage
+            | Self::Journal
+            | Self::RepairJournal
+            | Self::Inflight
+            | Self::CacheTmp => PruneReason::PostCommitCleanup,
             Self::Plan | Self::PlanLease => PruneReason::PlanExpiry,
             Self::ClientBackup => PruneReason::BackupPrune,
             Self::DoctorRun => PruneReason::DoctorGc,
@@ -494,6 +500,10 @@ fn location(scopes: &ScopeTable, victim: &Path) -> Option<(Kind, PathBuf)> {
             ["journal", name] if name.strip_suffix(".jsonl").is_some_and(is_tx_named) => {
                 Kind::Journal
             }
+            // Exactly `<tx>.repair.jsonl`: a location check, never a lister of repairs.
+            ["journal", name] if name.strip_suffix(".repair.jsonl").is_some_and(is_tx) => {
+                Kind::RepairJournal
+            }
             ["inflight", name] if name.strip_suffix(".lock").is_some_and(is_tx) => Kind::Inflight,
             ["doctor", "runs", name] if is_plain(name) => Kind::DoctorRun,
             _ => return None,
@@ -532,13 +542,26 @@ fn location(scopes: &ScopeTable, victim: &Path) -> Option<(Kind, PathBuf)> {
 }
 
 /// Whether the journal at `path` belongs to a transaction that started but did not
-/// finish: its first complete line is `prepared` and its last is not `committed`. A torn
-/// or missing `prepared` line means nothing ran. An unreadable journal counts as
-/// unfinished. The format is the engine's (`engine::journal`); fsx reads only the tags.
-fn unfinished(path: &Path) -> bool {
-    let Ok(bytes) = fs::read(path) else {
+/// finish: its first complete line is `prepared`, and its last is not `committed` (a
+/// folder journal) or neither `committed` nor `rolled_back` (a repair journal, `kind`
+/// [`Kind::RepairJournal`]). A torn or missing `prepared` line means nothing ran. An
+/// unreadable journal counts as unfinished. The formats are the engine's; fsx reads only
+/// the tags.
+fn unfinished(path: &Path, kind: Kind) -> bool {
+    let Some((first, last)) = end_tags(path) else {
         return true;
     };
+    let finished = match kind {
+        Kind::RepairJournal => matches!(last.as_deref(), Some("committed" | "rolled_back")),
+        _ => last.as_deref() == Some("committed"),
+    };
+    first.as_deref() == Some("prepared") && !finished
+}
+
+/// The `type` tags of a journal's first and last complete lines (a line without one, or
+/// that does not parse, has none); `None` when the journal cannot be read.
+fn end_tags(path: &Path) -> Option<(Option<String>, Option<String>)> {
+    let bytes = fs::read(path).ok()?;
     let text = String::from_utf8_lossy(&bytes);
     let mut complete: Vec<&str> = text.lines().collect();
     if !text.ends_with('\n') {
@@ -548,8 +571,7 @@ fn unfinished(path: &Path) -> bool {
         line.and_then(|l| serde_json::from_str::<serde_json::Value>(l).ok())
             .and_then(|v| v.get("type")?.as_str().map(str::to_owned))
     };
-    tag(complete.first()).as_deref() == Some("prepared")
-        && tag(complete.last()).as_deref() != Some("committed")
+    Some((tag(complete.first()), tag(complete.last())))
 }
 
 /// Canonicalizes `dir` through its deepest existing ancestor, appending the missing rest.
@@ -1016,6 +1038,141 @@ mod tests {
             assert_eq!(report.removed, victims);
             assert_eq!(report.bytes, 10, "measured through the sealed directory");
             assert!(!victim.exists(), "{reason:?}");
+        }
+    }
+
+    /// `<state>/journal/<TX>.repair.jsonl` holding `text`.
+    fn repair_journal(f: &Fixture, text: &str) -> PathBuf {
+        let tx: TxId = TX.parse().unwrap();
+        let journal = f.paths.journal_repair(&tx);
+        fs::create_dir_all(journal.parent().unwrap()).unwrap();
+        fs::write(&journal, text).unwrap();
+        journal
+    }
+
+    /// Prunes `victim` for post-commit cleanup under `TX`'s own lock.
+    fn prune_own(f: &Fixture, victim: &Path) -> Result<PruneReport> {
+        let tx: TxId = TX.parse().unwrap();
+        let lock = super::super::lock::InflightLock::create(&f.paths, &tx).unwrap();
+        prune(
+            &f.scopes,
+            PruneReason::PostCommitCleanup,
+            &[victim.to_path_buf()],
+            LockUse::Own(&lock),
+        )
+    }
+
+    const PREPARED: &str = "{\"type\":\"prepared\"}\n";
+
+    #[test]
+    fn a_finished_repair_journal_is_pruned_under_its_own_lock() {
+        for (case, last) in [("committed", "committed"), ("rolled_back", "rolled_back")] {
+            let f = fixture();
+            let text = format!("{PREPARED}{{\"type\":\"done\"}}\n{{\"type\":\"{last}\"}}\n");
+            let journal = repair_journal(&f, &text);
+            let result = prune_own(&f, &journal);
+            assert!(result.is_ok(), "{case}: {} → {result:?}", journal.display());
+            assert!(!journal.exists(), "{case}: removed");
+        }
+    }
+
+    #[test]
+    fn an_unfinished_repair_journal_is_never_pruned_under_its_own_lock() {
+        for (case, rest) in [
+            ("prepared", ""),
+            ("stepped", "{\"type\":\"step\"}\n"),
+            ("done", "{\"type\":\"done\"}\n"),
+        ] {
+            let f = fixture();
+            let journal = repair_journal(&f, &format!("{PREPARED}{rest}"));
+            let result = prune_own(&f, &journal);
+            assert!(
+                matches!(&result, Err(e) if e.code == ErrorCode::ScopeDenied
+                    && e.message.contains("refusing to prune an unfinished journal")),
+                "{case}: {} → {result:?}",
+                journal.display()
+            );
+            assert!(journal.exists(), "{case}: intact");
+        }
+    }
+
+    #[test]
+    fn an_unstarted_repair_journal_is_pruned() {
+        for (case, text) in [
+            ("empty", ""),
+            ("torn_prepared", "{\"type\":\"prepared\"}"),
+            ("garbage_first_line", "not json\n{\"type\":\"done\"}\n"),
+        ] {
+            let f = fixture();
+            let journal = repair_journal(&f, text);
+            let result = prune_own(&f, &journal);
+            assert!(result.is_ok(), "{case}: {} → {result:?}", journal.display());
+            assert!(!journal.exists(), "{case}: removed");
+        }
+    }
+
+    #[test]
+    fn repair_journal_names_are_matched_exactly() {
+        let f = fixture();
+        let dir = f.paths.journal_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let prunable = repair_journal(&f, "");
+        let result = prune(
+            &f.scopes,
+            PruneReason::PostCommitCleanup,
+            std::slice::from_ref(&prunable),
+            LockUse::Acquire,
+        );
+        assert!(result.is_ok(), "{} → {result:?}", prunable.display());
+        for (case, name) in [
+            ("wtf_repair", format!("{TX}.wtf.repair.jsonl")),
+            ("json", format!("{TX}.repair.json")),
+            ("tmp", format!("{TX}.repair.jsonl.tmp")),
+            ("not_a_ulid", "notaulid.repair.jsonl".to_owned()),
+            ("directory", format!("{TX}.repair")),
+        ] {
+            let victim = dir.join(&name);
+            if case == "directory" {
+                fs::create_dir_all(&victim).unwrap();
+            } else {
+                fs::write(&victim, b"").unwrap();
+            }
+            let result = prune(
+                &f.scopes,
+                PruneReason::PostCommitCleanup,
+                std::slice::from_ref(&victim),
+                LockUse::Acquire,
+            );
+            assert!(
+                matches!(&result, Err(e) if e.message.contains("not a prunable location")),
+                "{case}: {} → {result:?}",
+                victim.display()
+            );
+            assert!(victim.exists(), "{case}: untouched");
+        }
+    }
+
+    #[test]
+    fn a_repair_journal_is_pruned_for_post_commit_cleanup_only() {
+        for reason in [
+            PruneReason::Retention,
+            PruneReason::DoctorGc,
+            PruneReason::PlanExpiry,
+        ] {
+            let f = fixture();
+            let journal = repair_journal(&f, "");
+            let result = prune(
+                &f.scopes,
+                reason,
+                std::slice::from_ref(&journal),
+                LockUse::Acquire,
+            );
+            assert!(
+                matches!(&result, Err(e) if e.code == ErrorCode::ScopeDenied),
+                "{reason:?}: {} → {result:?}",
+                journal.display()
+            );
+            assert!(journal.exists(), "{reason:?}: untouched");
         }
     }
 

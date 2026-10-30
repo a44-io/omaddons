@@ -13,8 +13,9 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use crate::error::{Error, ErrorCode, Result, Suggestion};
+use crate::limits::SKILL_DIRS_MAX;
 use crate::model::FolderName;
-use crate::state::paths::Paths;
+use crate::state::paths::{Paths, REPAIR_SUFFIX};
 
 /// Who is writing, which decides the rows a session may use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -224,7 +225,8 @@ pub struct ScopeTable {
     net_log_previous: PathBuf,
     /// `<plugins>`, canonical: the widget's entries are named children of it.
     omarchy_plugins: PathBuf,
-    skill: PathBuf,
+    /// The agent skill dirs: the default one first, then those a repair names.
+    skills: Vec<PathBuf>,
     record_fixtures: Option<PathBuf>,
     /// The file `backup export` writes, once [`ScopeTable::with_export_file`] admits it.
     export_file: Option<PathBuf>,
@@ -248,7 +250,9 @@ impl ScopeTable {
             state,
             cache: canonical(paths.cache_dir())?,
             omarchy_plugins: canonical(&paths.omarchy_plugins_dir())?,
-            skill: canonical(&skill_dir.map_or_else(|| paths.skill_dir(), Path::to_path_buf))?,
+            skills: vec![canonical(
+                &skill_dir.map_or_else(|| paths.skill_dir(), Path::to_path_buf),
+            )?],
             record_fixtures: None,
             export_file: None,
             client_dirs: Vec::new(),
@@ -257,6 +261,59 @@ impl ScopeTable {
             table.add_client_dir(dir)?;
         }
         Ok(table)
+    }
+
+    /// Admits more agent skill dirs (a repair of several installed skills), each
+    /// canonicalized like the default one and writable by the Skill row's writers only.
+    /// A directory already admitted counts once; more than [`SKILL_DIRS_MAX`] in all is
+    /// `scope_denied`.
+    pub fn with_skill_dirs(mut self, dirs: &[PathBuf]) -> Result<Self> {
+        for dir in dirs {
+            let dir = canonical(dir)?;
+            if !self.skills.contains(&dir) {
+                self.skills.push(dir);
+            }
+        }
+        if self.skills.len() > SKILL_DIRS_MAX {
+            return Err(Error::new(
+                ErrorCode::ScopeDenied,
+                format!(
+                    "a repair names {} skill directories; at most {SKILL_DIRS_MAX} are admitted",
+                    self.skills.len()
+                ),
+                Suggestion::command(["omaddons", "status"]),
+            ));
+        }
+        Ok(self)
+    }
+
+    /// Whether `path` is strictly below a doctor quarantine root: a run's
+    /// `<state>/doctor/runs/<run>/quarantine/`, the cache's `<cache>/quarantine/<run>/`,
+    /// or a registered client's `Interface/.omaddons/snapshots/<tx>.repair/quarantine/`.
+    /// It reads no file.
+    pub fn is_quarantine(&self, path: &Path) -> bool {
+        let words = |root: &Path| -> Option<Vec<&OsStr>> {
+            path.strip_prefix(root)
+                .ok()
+                .map(|rel| normal_components(rel).collect())
+        };
+        let run = words(&self.state).is_some_and(|c| {
+            matches!(c.as_slice(), [doctor, runs, _, quarantine, _, ..]
+                if *doctor == "doctor" && *runs == "runs" && *quarantine == "quarantine")
+        });
+        let cache = words(&self.cache).is_some_and(
+            |c| matches!(c.as_slice(), [quarantine, _, _, ..] if *quarantine == "quarantine"),
+        );
+        let client = self.client_dirs.iter().any(|client| {
+            client_components(client, path).is_some_and(|c| {
+                is_meta_prefix(&c)
+                    && matches!(c.as_slice(), [_, _, snapshots, half, quarantine, _, ..]
+                        if eq_ci(snapshots, "snapshots")
+                            && half.to_str().and_then(|h| h.strip_suffix(REPAIR_SUFFIX)).is_some_and(|tx| !tx.is_empty())
+                            && eq_ci(quarantine, "quarantine"))
+            })
+        });
+        run || cache || client
     }
 
     /// Adds a client dir, e.g. when the registry registers a target under the lock.
@@ -401,6 +458,12 @@ impl ScopeTable {
             })
     }
 
+    /// Whether `path` is below a directory omaddons owns: `<config>`, `<state>` or
+    /// `<cache>` (each `…/omaddons`), or a registered client's `Interface/.omaddons`.
+    pub fn is_app_owned(&self, path: &Path) -> bool {
+        path.starts_with(&self.config) || path.starts_with(&self.cache) || self.is_internal(path)
+    }
+
     /// Whether `path` is inside a client's staging dir
     /// (`<client dir>/Interface/.omaddons/stage/<tx>/…`).
     pub fn is_stage(&self, path: &Path) -> bool {
@@ -522,10 +585,11 @@ impl ScopeTable {
         if let Some(position) = self.omarchy_position(path) {
             found.push(Candidate::new(Scope::Omarchy, position, Side::Home));
         }
-        let home_rows = [
-            (Scope::Skill, Some(&self.skill)),
-            (Scope::RecordFixtures, self.record_fixtures.as_ref()),
-        ];
+        let home_rows = self
+            .skills
+            .iter()
+            .map(|skill| (Scope::Skill, Some(skill)))
+            .chain([(Scope::RecordFixtures, self.record_fixtures.as_ref())]);
         for (scope, root) in home_rows {
             let Some(root) = root else { continue };
             if path == root {
@@ -728,6 +792,122 @@ mod tests {
         ALL.into_iter()
             .filter(|&w| t.check(w, owned_set, &p(path), access).is_ok())
             .collect()
+    }
+
+    #[test]
+    fn with_skill_dirs_admits_each_dir_for_skill_and_doctor_only() {
+        let t = table()
+            .with_skill_dirs(&[p("home/.codex/skills/omaddons"), p("work/skills/omaddons")])
+            .unwrap();
+        let none = owned(&[]);
+        for (case, path, want) in [
+            (
+                "default_dir",
+                "home/.claude/skills/omaddons/SKILL.md",
+                vec![Writer::Skill, Writer::Doctor],
+            ),
+            (
+                "second_dir",
+                "home/.codex/skills/omaddons/SKILL.md",
+                vec![Writer::Skill, Writer::Doctor],
+            ),
+            (
+                "third_dir",
+                "work/skills/omaddons/SKILL.md",
+                vec![Writer::Skill, Writer::Doctor],
+            ),
+            ("sibling", "work/skills/other/SKILL.md", vec![]),
+        ] {
+            let got: Vec<Writer> = ALL
+                .into_iter()
+                .filter(|&w| t.check(w, &none, &p(path), Access::Write).is_ok())
+                .collect();
+            assert_eq!(got, want, "{case}: {path} → {got:?}");
+        }
+    }
+
+    #[test]
+    fn with_skill_dirs_refuses_more_than_skill_dirs_max() {
+        // The default dir counts: SKILL_DIRS_MAX - 1 more fit, a duplicate counts once.
+        let dirs: Vec<PathBuf> = (1..SKILL_DIRS_MAX)
+            .map(|n| p(&format!("work/{n}/skills/omaddons")))
+            .collect();
+        let mut with_duplicate = dirs.clone();
+        with_duplicate.push(dirs[0].clone());
+        assert!(
+            table().with_skill_dirs(&with_duplicate).is_ok(),
+            "{SKILL_DIRS_MAX} in all"
+        );
+        let mut one_more = dirs;
+        one_more.push(p("work/extra/skills/omaddons"));
+        let refused = table().with_skill_dirs(&one_more).unwrap_err();
+        assert_eq!(refused.code, ErrorCode::ScopeDenied, "{}", refused.message);
+    }
+
+    #[test]
+    fn is_quarantine_recognizes_exactly_the_three_roots() {
+        let t = table();
+        let state = "home/.local/state/omaddons";
+        let tx = "01JB8Q2VA00000000000000000";
+        let snapshots = "games/wow/_retail_/Interface/.omaddons/snapshots";
+        for (case, path, want) in [
+            (
+                "run_quarantine",
+                format!("{state}/doctor/runs/R/quarantine/state/x"),
+                true,
+            ),
+            (
+                "cache_quarantine",
+                "home/.cache/omaddons/quarantine/R/blobs/x".to_owned(),
+                true,
+            ),
+            (
+                "client_quarantine",
+                format!("{snapshots}/{tx}.repair/quarantine/Interface/AddOns/X"),
+                true,
+            ),
+            (
+                "run_backups",
+                format!("{state}/doctor/runs/R/backups/1"),
+                false,
+            ),
+            (
+                "run_root",
+                format!("{state}/doctor/runs/R/quarantine"),
+                false,
+            ),
+            (
+                "cache_root",
+                "home/.cache/omaddons/quarantine/R".to_owned(),
+                false,
+            ),
+            (
+                "plain_snapshot",
+                format!("{snapshots}/{tx}/quarantine/x"),
+                false,
+            ),
+            (
+                "wtf_snapshot",
+                format!("{snapshots}/{tx}.wtf/quarantine/x"),
+                false,
+            ),
+            (
+                "repair_files",
+                format!("{snapshots}/{tx}.repair/files/1"),
+                false,
+            ),
+            (
+                "unregistered_client",
+                format!(
+                    "games/wow/_classic_/Interface/.omaddons/snapshots/{tx}.repair/quarantine/x"
+                ),
+                false,
+            ),
+            ("elsewhere", "home/x".to_owned(), false),
+        ] {
+            let path = p(&path);
+            assert_eq!(t.is_quarantine(&path), want, "{case}: {}", path.display());
+        }
     }
 
     #[test]
