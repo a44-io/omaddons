@@ -87,15 +87,29 @@ pub enum Layer {
     Discovery,
     Records,
     Inventory,
+    Journals,
+    Lock,
+    History,
+    Caches,
+    Widget,
+    Skill,
+    Credentials,
 }
 
 impl Layer {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 12] = [
         Self::Config,
         Self::Registry,
         Self::Discovery,
         Self::Records,
         Self::Inventory,
+        Self::Journals,
+        Self::Lock,
+        Self::History,
+        Self::Caches,
+        Self::Widget,
+        Self::Skill,
+        Self::Credentials,
     ];
 
     /// The layers it is built from: it is unavailable when one of them is. Records never
@@ -104,7 +118,16 @@ impl Layer {
         match self {
             Self::Discovery => &[Self::Config, Self::Registry],
             Self::Inventory => &[Self::Discovery, Self::Records],
-            Self::Config | Self::Registry | Self::Records => &[],
+            Self::Credentials => &[Self::Config],
+            Self::Config
+            | Self::Registry
+            | Self::Records
+            | Self::Journals
+            | Self::Lock
+            | Self::History
+            | Self::Caches
+            | Self::Widget
+            | Self::Skill => &[],
         }
     }
 }
@@ -1020,24 +1043,32 @@ mod tests {
 
     #[test]
     fn layer_order_and_dependencies() {
-        assert_eq!(
-            Layer::ALL,
-            [
-                Layer::Config,
-                Layer::Registry,
+        let cases: [(Layer, &str, &[Layer]); 12] = [
+            (Layer::Config, "config", &[]),
+            (Layer::Registry, "registry", &[]),
+            (
                 Layer::Discovery,
-                Layer::Records,
-                Layer::Inventory
-            ]
-        );
-        let cases: [(Layer, &[Layer]); 5] = [
-            (Layer::Config, &[]),
-            (Layer::Registry, &[]),
-            (Layer::Discovery, &[Layer::Config, Layer::Registry]),
-            (Layer::Records, &[]),
-            (Layer::Inventory, &[Layer::Discovery, Layer::Records]),
+                "discovery",
+                &[Layer::Config, Layer::Registry],
+            ),
+            (Layer::Records, "records", &[]),
+            (
+                Layer::Inventory,
+                "inventory",
+                &[Layer::Discovery, Layer::Records],
+            ),
+            (Layer::Journals, "journals", &[]),
+            (Layer::Lock, "lock", &[]),
+            (Layer::History, "history", &[]),
+            (Layer::Caches, "caches", &[]),
+            (Layer::Widget, "widget", &[]),
+            (Layer::Skill, "skill", &[]),
+            (Layer::Credentials, "credentials", &[Layer::Config]),
         ];
-        for (layer, expected) in cases {
+        let order: Vec<Layer> = cases.iter().map(|(layer, ..)| *layer).collect();
+        assert_eq!(Layer::ALL.to_vec(), order, "the order");
+        for (layer, wire, expected) in cases {
+            assert_eq!(json!(layer), json!(wire), "{layer:?}");
             assert_eq!(layer.depends_on(), expected, "{layer:?}");
         }
         // No cycle: a depth-first walk from each layer never comes back to it.

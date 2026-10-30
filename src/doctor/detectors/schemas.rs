@@ -6,10 +6,14 @@ use crate::doctor::registry::ids;
 use crate::doctor::selection::Selection;
 use crate::doctor::view::DoctorView;
 
-/// `state-corrupt`: a state file the view's layers could not read.
+/// `state-corrupt`: a state file the view's layers could not read: every layer that can
+/// record one is asked.
 pub(crate) fn state_corrupt(view: &DoctorView, _: &Selection, _: &mut Budget) -> Detected {
     view.registry();
     view.records();
+    view.journals();
+    view.lock();
+    view.history();
     Detected {
         found: view.failure_observations(ids::STATE_CORRUPT),
         incomplete: None,

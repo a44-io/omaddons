@@ -13,6 +13,7 @@
 use std::cell::{OnceCell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{ErrorKind, Read};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use super::facts::StatusFacts;
@@ -26,11 +27,15 @@ use crate::discover::DiscoveredTarget;
 use crate::discover::cache::DiscoveryMode;
 use crate::discover::registry::read_marker;
 use crate::discover::shared::siblings;
+use crate::engine::journal::{self, Pending};
 use crate::error::{Error, ErrorCode, Result, Warning};
+use crate::fsx::{LockState, probe_global};
 use crate::inventory::{Depth, Inventory, inventory_shared};
 use crate::limits::{DISCOVERY_FILE_MAX_BYTES, DOCTOR_SCAN_MAX_ENTRIES};
 use crate::model::TargetKey;
-use crate::state::config::{Config, LoadedConfig};
+use crate::omarchy::status::{self as omarchy_status, WidgetInfo};
+use crate::state::config::{Config, CredentialRef, LoadedConfig};
+use crate::state::history::{self, HistoryFilter, HistoryRead};
 use crate::state::paths::Paths;
 use crate::state::records::TargetRecord;
 use crate::state::registry::Registry;
@@ -81,6 +86,13 @@ pub struct DoctorView {
     registry: OnceCell<LayerState<Loaded<Registry>>>,
     records: OnceCell<LayerState<Records>>,
     discovered: OnceCell<LayerState<Discovered>>,
+    journals: OnceCell<LayerState<Journals>>,
+    lock: OnceCell<LayerState<LockState>>,
+    history: OnceCell<LayerState<HistoryRead>>,
+    caches: OnceCell<LayerState<Caches>>,
+    widget: OnceCell<LayerState<WidgetLayer>>,
+    skill: OnceCell<LayerState<Vec<SkillFile>>>,
+    credentials: OnceCell<LayerState<Credentials>>,
     failures: RefCell<Vec<LayerFailure>>,
     warnings: RefCell<Vec<Warning>>,
     /// What went wrong that no failure mode describes, for a `-v` log.
@@ -106,6 +118,13 @@ impl DoctorView {
             registry: OnceCell::new(),
             records: OnceCell::new(),
             discovered: OnceCell::new(),
+            journals: OnceCell::new(),
+            lock: OnceCell::new(),
+            history: OnceCell::new(),
+            caches: OnceCell::new(),
+            widget: OnceCell::new(),
+            skill: OnceCell::new(),
+            credentials: OnceCell::new(),
             failures: RefCell::default(),
             warnings: RefCell::default(),
             diagnostics: RefCell::default(),
@@ -135,33 +154,69 @@ impl DoctorView {
     /// `config.toml`, the default configuration when it is absent; `None` when it cannot
     /// be read.
     pub fn config(&self) -> Option<&LoadedConfig> {
-        if self.facts_only {
-            return None;
-        }
-        self.config
-            .get_or_init(|| self.loading(Layer::Config, Self::load_config))
-            .available()
+        self.layer(&self.config, Layer::Config, Self::load_config)
     }
 
     /// `registry.json`, an empty registry when it is absent; `None` when it cannot be read.
     pub fn registry(&self) -> Option<&Loaded<Registry>> {
-        if self.facts_only {
-            return None;
-        }
-        self.registry
-            .get_or_init(|| self.loading(Layer::Registry, Self::load_registry))
-            .available()
+        self.layer(&self.registry, Layer::Registry, Self::load_registry)
     }
 
     /// Every target's record that the registry names or `<state>/targets/` holds; `None`
     /// when that directory cannot be listed whole.
     pub fn records(&self) -> Option<&Records> {
-        if self.facts_only {
-            return None;
-        }
-        self.records
-            .get_or_init(|| self.loading(Layer::Records, Self::load_records))
-            .available()
+        self.layer(&self.records, Layer::Records, Self::load_records)
+    }
+
+    /// Every journal that is not committed, or that recovery cannot read, oldest first;
+    /// `None` when `<state>/journal/` cannot be listed.
+    pub fn journals(&self) -> Option<&Journals> {
+        self.layer(&self.journals, Layer::Journals, Self::load_journals)
+    }
+
+    /// The global lock, probed without taking it (detectors read `Missing` as `Free`);
+    /// `None` when its file cannot be opened.
+    pub fn lock(&self) -> Option<&LockState> {
+        self.layer(&self.lock, Layer::Lock, Self::load_lock)
+    }
+
+    /// `history.jsonl`, read whole as `history` and `undo` read it; `None` when it cannot
+    /// be read. Its `unreadable[].raw` holds damaged lines' text: count them, never put
+    /// them in evidence (M4-D42).
+    pub fn history(&self) -> Option<&HistoryRead> {
+        self.layer(&self.history, Layer::History, Self::load_history)
+    }
+
+    /// The listing of `<cache>/blobs/`; `None` when it cannot be listed (derived data: no
+    /// failure is recorded).
+    pub fn caches(&self) -> Option<&Caches> {
+        self.layer(&self.caches, Layer::Caches, Self::load_caches)
+    }
+
+    /// The bar widget as `status` reports it; never unavailable.
+    pub fn widget(&self) -> Option<&WidgetLayer> {
+        self.layer(&self.widget, Layer::Widget, |view| {
+            LayerState::Available(WidgetLayer {
+                info: omarchy_status::widget(&view.paths),
+            })
+        })
+    }
+
+    /// Each installed agent skill's `SKILL.md`, read bounded; never unavailable: each
+    /// file's outcome is its `read`.
+    pub fn skill(&self) -> Option<&[SkillFile]> {
+        self.layer(&self.skill, Layer::Skill, Self::load_skill)
+            .map(Vec::as_slice)
+    }
+
+    /// Each stored credential file and each configured `{ file = … }` credential, stat'ed
+    /// and never opened; `None` when the configuration cannot be read.
+    pub fn credentials(&self) -> Option<&Credentials> {
+        self.layer(
+            &self.credentials,
+            Layer::Credentials,
+            Self::load_credentials,
+        )
     }
 
     /// The clients on this machine, reconciled with the registry, found in the view's
@@ -199,12 +254,25 @@ impl DoctorView {
     }
 
     fn discovered(&self) -> Option<&Discovered> {
+        self.layer(&self.discovered, Layer::Discovery, Self::load_discovery)
+    }
+
+    /// `cell`'s layer, loaded by `load` on the first ask; never for a facts-only view.
+    fn layer<'a, T>(
+        &'a self,
+        cell: &'a OnceCell<LayerState<T>>,
+        layer: Layer,
+        load: fn(&Self) -> LayerState<T>,
+    ) -> Option<&'a T> {
         if self.facts_only {
             return None;
         }
-        self.discovered
-            .get_or_init(|| self.loading(Layer::Discovery, Self::load_discovery))
-            .available()
+        cell.get_or_init(|| {
+            let state = load(self);
+            self.loaded.borrow_mut().insert(layer);
+            state
+        })
+        .available()
     }
 
     /// A target as a finding names it: its id in the registry, else its key. Never from
@@ -266,12 +334,6 @@ impl DoctorView {
     /// The layers loaded so far.
     pub fn loaded_layers(&self) -> BTreeSet<Layer> {
         self.loaded.borrow().clone()
-    }
-
-    fn loading<T>(&self, layer: Layer, load: fn(&Self) -> LayerState<T>) -> LayerState<T> {
-        let state = load(self);
-        self.loaded.borrow_mut().insert(layer);
-        state
     }
 
     fn observation(&self, failure: &LayerFailure) -> Observation {
@@ -408,10 +470,10 @@ impl DoctorView {
                     file: "targets/",
                 };
                 return match listing {
-                    Listing::Unreadable => {
+                    ListingError::Unreadable => {
                         self.fail(failed, FailureReason::Unreadable, Evidence::default())
                     }
-                    Listing::TooMany { count } => {
+                    ListingError::TooMany { count } => {
                         let evidence = Evidence {
                             count: Some(count),
                             limit: Some("DOCTOR_SCAN_MAX_ENTRIES"),
@@ -483,8 +545,92 @@ impl DoctorView {
                     .collect();
                 LayerState::Available(Discovered { world, inventories })
             }
-            Err(err) => self.fail_error(Layer::Discovery, &err),
+            Err(err) => self.fail_error(Layer::Discovery, &err, None),
         }
+    }
+
+    fn load_journals(&self) -> LayerState<Journals> {
+        match journal::pending(&self.paths) {
+            Ok(pending) => LayerState::Available(Journals { pending }),
+            Err(err) => self.fail_error(Layer::Journals, &err, Some("journal/")),
+        }
+    }
+
+    /// The lock file's path comes only from a failure's error: the view never names it.
+    fn load_lock(&self) -> LayerState<LockState> {
+        match probe_global(&self.paths) {
+            Ok(state) => LayerState::Available(state),
+            Err(err) => self.fail_error(Layer::Lock, &err, Some("lock")),
+        }
+    }
+
+    fn load_history(&self) -> LayerState<HistoryRead> {
+        match history::read(&self.paths, &HistoryFilter::default()) {
+            Ok(read) => LayerState::Available(read),
+            Err(err) => self.fail_error(Layer::History, &err, Some("history.jsonl")),
+        }
+    }
+
+    fn load_caches(&self) -> LayerState<Caches> {
+        match list_dir(&self.paths.blobs_dir(), self.max_entries) {
+            Ok(blobs) => LayerState::Available(Caches { blobs }),
+            Err(_) => LayerState::Unavailable(Unavailable {
+                layer: Layer::Caches,
+                cause: Layer::Caches,
+            }),
+        }
+    }
+
+    fn load_skill(&self) -> LayerState<Vec<SkillFile>> {
+        let dir = self.paths.skill_dir();
+        let file = dir.join("SKILL.md");
+        let read = read_bounded(&file, DISCOVERY_FILE_MAX_BYTES);
+        LayerState::Available(vec![SkillFile { dir, file, read }])
+    }
+
+    fn load_credentials(&self) -> LayerState<Credentials> {
+        let Some(config) = self.config() else {
+            return LayerState::Unavailable(Unavailable {
+                layer: Layer::Credentials,
+                cause: cause_of(&self.config, Layer::Config),
+            });
+        };
+        let dir = self.paths.credentials_dir();
+        let mut files = Vec::new();
+        let truncated = match list_dir(&dir, self.max_entries) {
+            Ok(listing) => {
+                files.extend(listing.entries.iter().map(|entry| {
+                    let path = dir.join(&entry.name);
+                    CredentialStat {
+                        stat: stat_file(&path),
+                        path,
+                        origin: CredentialOrigin::Stored,
+                    }
+                }));
+                listing.truncated
+            }
+            // The directory itself, as one that cannot be read.
+            Err(err) => {
+                files.push(CredentialStat {
+                    path: dir.clone(),
+                    origin: CredentialOrigin::Stored,
+                    stat: FileStat::Unreadable { kind: err.kind() },
+                });
+                false
+            }
+        };
+        for (source, settings) in &config.config.sources {
+            if let Some(CredentialRef::File { file }) = &settings.credential {
+                files.push(CredentialStat {
+                    path: file.clone(),
+                    origin: CredentialOrigin::Configured {
+                        source: source.clone(),
+                    },
+                    stat: stat_file(file),
+                });
+            }
+        }
+        LayerState::Available(Credentials { files, truncated })
     }
 
     /// The inventory of the `index`th client of `world`.
@@ -537,14 +683,19 @@ impl DoctorView {
 
     /// A layer whose load failed with a command's error: a finding when a failure mode
     /// describes it (a state file newer, corrupt or unreadable), else a diagnostic. The
-    /// error's message never reaches a finding.
-    fn fail_error<T>(&self, layer: Layer, err: &Error) -> LayerState<T> {
+    /// path is the error's (`details.path`), and `file` names it in titles (its file name
+    /// when `None`). The error's message never reaches a finding.
+    fn fail_error<T>(&self, layer: Layer, err: &Error, file: Option<&str>) -> LayerState<T> {
         let path = err.details["path"].as_str().map(PathBuf::from);
-        let file = path
-            .as_deref()
-            .and_then(Path::file_name)
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default();
+        let file = file.map_or_else(
+            || {
+                path.as_deref()
+                    .and_then(Path::file_name)
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            },
+            str::to_owned,
+        );
         let failed = |fm, path| Failed {
             layer,
             fm,
@@ -894,7 +1045,7 @@ fn position(bytes: &[u8], at: usize) -> (u32, u32) {
 
 /// Why `<state>/targets/` could not be listed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Listing {
+enum ListingError {
     Unreadable,
     /// It holds more than the bound; `count` entries were visited.
     TooMany {
@@ -902,20 +1053,196 @@ enum Listing {
     },
 }
 
+/// One directory's entries, as the Caches layer lists them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Listing {
+    pub dir: PathBuf,
+    /// Sorted by name.
+    pub entries: Vec<ListedEntry>,
+    /// It holds more than [`DOCTOR_SCAN_MAX_ENTRIES`] entries and lists only that many: a
+    /// detector reading it must report itself incomplete, never clean (M4-D43).
+    pub truncated: bool,
+}
+
+/// One entry of a [`Listing`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListedEntry {
+    /// Lossy for a name that is not UTF-8.
+    pub name: String,
+    pub kind: EntryKind,
+    /// Its own size, not followed through a symlink and not summed over a directory.
+    pub bytes: u64,
+}
+
+/// What a listed entry is, not following a symlink.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryKind {
+    File,
+    Dir,
+    Symlink,
+    /// Anything else, or an entry that vanished or could not be stat'ed while listed.
+    Other,
+}
+
+/// `dir`'s entries, at most `max_entries` of them, sorted by name, with one
+/// `symlink_metadata` each; a missing `dir` is empty.
+fn list_dir(dir: &Path, max_entries: u64) -> std::io::Result<Listing> {
+    let mut listing = Listing {
+        dir: dir.to_path_buf(),
+        ..Listing::default()
+    };
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(listing),
+        Err(err) => return Err(err),
+    };
+    for (visited, entry) in (0u64..).zip(entries) {
+        let entry = entry?;
+        if visited == max_entries {
+            listing.truncated = true;
+            break;
+        }
+        let (kind, bytes) = match std::fs::symlink_metadata(entry.path()) {
+            Ok(metadata) => {
+                let kind = metadata.file_type();
+                let kind = if kind.is_symlink() {
+                    EntryKind::Symlink
+                } else if kind.is_dir() {
+                    EntryKind::Dir
+                } else if kind.is_file() {
+                    EntryKind::File
+                } else {
+                    EntryKind::Other
+                };
+                (kind, metadata.len())
+            }
+            Err(_) => (EntryKind::Other, 0),
+        };
+        listing.entries.push(ListedEntry {
+            name: entry.file_name().to_string_lossy().into_owned(),
+            kind,
+            bytes,
+        });
+    }
+    listing.entries.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(listing)
+}
+
+/// The Journals layer.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Journals {
+    /// Every journal that is not committed, or that recovery cannot read, oldest first.
+    pub pending: Vec<Pending>,
+}
+
+/// The Caches layer: the cache directories omaddons keeps, one level deep.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Caches {
+    /// `<cache>/blobs/`.
+    pub blobs: Listing,
+}
+
+/// The Widget layer.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WidgetLayer {
+    /// `None` without Omarchy's config directory.
+    pub info: Option<WidgetInfo>,
+}
+
+/// One installed agent skill's `SKILL.md`, read bounded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillFile {
+    pub dir: PathBuf,
+    pub file: PathBuf,
+    pub read: BoundedRead,
+}
+
+/// The Credentials layer: where secrets live, stat'ed. Nothing in it can hold a secret's
+/// bytes: no credential file is opened.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Credentials {
+    /// The stored ones first, by name, then the configured ones, by source.
+    pub files: Vec<CredentialStat>,
+    /// `<config>/credentials/` holds more than [`DOCTOR_SCAN_MAX_ENTRIES`] entries and
+    /// only that many are listed.
+    pub truncated: bool,
+}
+
+/// One credential file and what a stat of it shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CredentialStat {
+    /// As stored, or as configured.
+    pub path: PathBuf,
+    pub origin: CredentialOrigin,
+    pub stat: FileStat,
+}
+
+/// Why a credential file is listed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CredentialOrigin {
+    /// An entry of `<config>/credentials/`.
+    Stored,
+    /// `[sources.<source>] credential = { file = … }`.
+    Configured { source: String },
+}
+
+/// A file as `symlink_metadata` and `metadata` show it, never opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileStat {
+    Missing,
+    /// A regular file (after following a symlink): its permission bits, owner and size,
+    /// and whether the path itself is a symlink.
+    Regular {
+        mode: u32,
+        uid: u32,
+        bytes: u64,
+        symlink: bool,
+    },
+    NotRegular {
+        symlink: bool,
+    },
+    /// It exists but cannot be stat'ed; a dangling symlink too.
+    Unreadable {
+        kind: ErrorKind,
+    },
+}
+
+/// `path`'s [`FileStat`].
+fn stat_file(path: &Path) -> FileStat {
+    let symlink = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata.file_type().is_symlink(),
+        Err(err) if err.kind() == ErrorKind::NotFound => return FileStat::Missing,
+        Err(err) => return FileStat::Unreadable { kind: err.kind() },
+    };
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => FileStat::Regular {
+            mode: metadata.mode() & 0o7777,
+            uid: metadata.uid(),
+            bytes: metadata.len(),
+            symlink,
+        },
+        Ok(_) => FileStat::NotRegular { symlink },
+        Err(err) => FileStat::Unreadable { kind: err.kind() },
+    }
+}
+
 /// The keys of the records in `dir`: each name that is exactly `<TargetKey>.json`, the key
 /// in its canonical form. A missing `dir` holds none. One listing, of at most
 /// `max_entries` entries.
-fn record_keys(dir: &Path, max_entries: u64) -> std::result::Result<BTreeSet<TargetKey>, Listing> {
+fn record_keys(
+    dir: &Path,
+    max_entries: u64,
+) -> std::result::Result<BTreeSet<TargetKey>, ListingError> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(err) if err.kind() == ErrorKind::NotFound => return Ok(BTreeSet::new()),
-        Err(_) => return Err(Listing::Unreadable),
+        Err(_) => return Err(ListingError::Unreadable),
     };
     let mut keys = BTreeSet::new();
     for (visited, entry) in (0u64..).zip(entries) {
-        let entry = entry.map_err(|_| Listing::Unreadable)?;
+        let entry = entry.map_err(|_| ListingError::Unreadable)?;
         if visited == max_entries {
-            return Err(Listing::TooMany { count: visited });
+            return Err(ListingError::TooMany { count: visited });
         }
         let name = entry.file_name();
         let key = name
@@ -1701,7 +2028,10 @@ mod tests {
         for name in [json_name(K), json_name(K2), "third".to_owned()] {
             plant(&dir.join(name), &Plant::Bytes(Vec::new()));
         }
-        assert_eq!(record_keys(&dir, 2), Err(Listing::TooMany { count: 2 }));
+        assert_eq!(
+            record_keys(&dir, 2),
+            Err(ListingError::TooMany { count: 2 })
+        );
         assert_eq!(record_keys(&dir, 3), Ok(BTreeSet::from([key(K), key(K2)])));
         assert_eq!(
             record_keys(&paths.state_dir().join("nowhere"), 2),
@@ -2289,6 +2619,507 @@ mod tests {
         let again = view.inventory(&retail).unwrap();
         assert!(std::ptr::eq(first, again), "built once");
         assert_eq!(again.folders.len(), 1, "the first build stands");
+    }
+
+    /// A committed install's history line for `key`.
+    fn history_entry(tx: crate::model::TxId, k: TargetKey) -> history::HistoryEntry {
+        use crate::model::{Actor, FolderName, TxKind};
+        use crate::state::history::{FolderOp, HistoryEntry, HistoryOp, TxResult};
+        HistoryEntry {
+            schema_version: history::CURRENT,
+            tx,
+            kind: TxKind::Install,
+            at: "2026-10-14T12:00:00Z".parse().unwrap(),
+            target: Some(k),
+            targets: Vec::new(),
+            actor: Actor::Agent,
+            reason: None,
+            argv: vec!["omaddons".into(), "install".into()],
+            ops: vec![HistoryOp {
+                op: FolderOp::Add,
+                folder: FolderName::new("Foo").unwrap(),
+                addon: "Foo".into(),
+                edit: None,
+                backup: None,
+                from: None,
+                files: None,
+            }],
+            result: TxResult::Committed,
+            reverts: None,
+            sv_deferred: false,
+            sv_restored: None,
+            created_addons_dir: false,
+            run: None,
+            backup: None,
+            plan: None,
+            doctor_run_id: None,
+            repairs: Vec::new(),
+        }
+    }
+
+    /// A journal that reached `committed`, with the journal module's own lines.
+    fn committed_journal(tx: crate::model::TxId, k: TargetKey) -> String {
+        use crate::engine::journal::{CURRENT, CommitPayload, IndexChanges, JournalLine, Prepared};
+        let prepared = JournalLine::Prepared(Box::new(Prepared {
+            schema_version: CURRENT,
+            tx,
+            target_key: k,
+            client_dir: "/fixture/client".into(),
+            kind: crate::model::TxKind::Install,
+            started_at: "2026-10-14T12:00:00Z".parse().unwrap(),
+            creates_dirs: Vec::new(),
+            writes_wtf: false,
+            staged_stamp: None,
+            staged_files: None,
+            source_backup: None,
+            client: None,
+            commit: CommitPayload {
+                record: TargetRecord::empty(k),
+                index: IndexChanges::default(),
+                history: history_entry(tx, k),
+                stage_dir: "/fixture/client/Interface/.omaddons/stage/x".into(),
+                sv_restore: None,
+            },
+        }));
+        [prepared, JournalLine::Committed]
+            .iter()
+            .map(|line| format!("{}\n", serde_json::to_string(line).unwrap()))
+            .collect()
+    }
+
+    /// The view's one failure, as `(fm, reason, path)`.
+    fn only_failure(view: &DoctorView) -> Vec<(&'static str, &'static str, PathBuf)> {
+        view.failures()
+            .into_iter()
+            .map(|f| (f.fm, f.evidence.reason.unwrap_or_default(), f.path))
+            .collect()
+    }
+
+    fn set_mode(path: &Path, mode: u32) {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    #[test]
+    fn journals_layer_outcomes() {
+        use crate::engine::journal::Unrecoverable;
+        let tx: crate::model::TxId = "01M7A1B2C3D4E5F6G7H8J9K0MP".parse().unwrap();
+
+        let (_dir, paths) = home();
+        let view = view_at(paths);
+        assert_eq!(
+            view.journals().map(|j| j.pending.len()),
+            Some(0),
+            "case no_journal_dir"
+        );
+
+        let (_dir, paths) = home();
+        let line = format!(r#"{{"type":"prepared","schema_version":"1.1","target_key":"{K}"}}"#);
+        plant(
+            &paths.journal_dir().join(format!("{tx}.jsonl")),
+            &Plant::Bytes(format!("{line}\n").into_bytes()),
+        );
+        let view = view_at(paths);
+        assert_eq!(
+            view.journals().map(|j| j.pending.clone()),
+            Some(vec![Pending {
+                tx,
+                target: Some(key(K)),
+                unrecoverable: Some(Unrecoverable::Unreadable),
+            }]),
+            "case unreadable_journal_naming_a_key"
+        );
+
+        let (_dir, paths) = home();
+        plant(
+            &paths.journal_dir().join(format!("{tx}.jsonl")),
+            &Plant::Bytes(committed_journal(tx, key(K)).into_bytes()),
+        );
+        let view = view_at(paths);
+        assert_eq!(
+            view.journals().map(|j| j.pending.len()),
+            Some(0),
+            "case committed_journal"
+        );
+
+        if is_root() {
+            return;
+        }
+        let (_dir, paths) = home();
+        let dir = paths.journal_dir();
+        plant(
+            &dir.join(format!("{tx}.jsonl")),
+            &Plant::Bytes(committed_journal(tx, key(K)).into_bytes()),
+        );
+        set_mode(&dir, 0o000);
+        let view = view_at(paths);
+        let journals = view.journals().cloned();
+        let failures = only_failure(&view);
+        set_mode(&dir, 0o755);
+        assert_eq!(journals, None, "case journal_dir_mode_000");
+        assert_eq!(
+            failures,
+            [(ids::STATE_CORRUPT, "unreadable", dir)],
+            "case journal_dir_mode_000"
+        );
+        assert_eq!(view.failures()[0].title, "journal/ cannot be read");
+    }
+
+    #[test]
+    fn lock_layer_outcomes() {
+        use crate::fsx::GlobalLock;
+
+        let (_dir, paths) = home();
+        assert_eq!(
+            view_at(paths).lock(),
+            Some(&LockState::Missing),
+            "case no_lock_file"
+        );
+
+        let (_dir, paths) = home();
+        drop(GlobalLock::acquire(&paths, "test").unwrap());
+        assert_eq!(
+            view_at(paths.clone()).lock(),
+            Some(&LockState::Free),
+            "case free"
+        );
+
+        let guard = GlobalLock::acquire(&paths, "test").unwrap();
+        let held = view_at(paths.clone()).lock().cloned();
+        drop(guard);
+        assert!(
+            matches!(held, Some(LockState::Held { .. })),
+            "case held: got {held:?}"
+        );
+
+        if is_root() {
+            return;
+        }
+        set_mode(&paths.lock_file(), 0o000);
+        let view = view_at(paths.clone());
+        assert_eq!(view.lock(), None, "case unopenable");
+        assert_eq!(
+            only_failure(&view),
+            [(ids::STATE_CORRUPT, "unreadable", paths.lock_file())],
+            "case unopenable: the failure's path is the error's"
+        );
+    }
+
+    #[test]
+    fn history_layer_outcomes() {
+        let (_dir, paths) = home();
+        let view = view_at(paths);
+        let read = view.history().unwrap();
+        assert_eq!(
+            (read.entries.len(), read.skipped_lines),
+            (0, 0),
+            "case missing"
+        );
+
+        let (_dir, paths) = home();
+        let line = |n: &str| {
+            let tx = n.parse().unwrap();
+            serde_json::to_string(&history_entry(tx, key(K))).unwrap()
+        };
+        let text = format!(
+            "{}\n{MARKER} not json\n{}\n",
+            line("01M7A1B2C3D4E5F6G7H8J9K0MP"),
+            line("01M7A1B2C3D4E5F6G7H8J9K0MQ")
+        );
+        plant(&paths.history_file(), &Plant::Bytes(text.into_bytes()));
+        let view = view_at(paths);
+        let read = view.history().unwrap();
+        assert_eq!(
+            (read.entries.len(), read.skipped_lines),
+            (2, 1),
+            "case two_good_one_bad"
+        );
+        assert_content_free("two_good_one_bad", &view);
+
+        if is_root() {
+            return;
+        }
+        let (_dir, paths) = home();
+        plant(
+            &paths.history_file(),
+            &Plant::Mode000(format!("{MARKER}\n").into_bytes()),
+        );
+        let view = view_at(paths.clone());
+        assert!(view.history().is_none(), "case mode_000");
+        assert_eq!(
+            only_failure(&view),
+            [(ids::STATE_CORRUPT, "unreadable", paths.history_file())],
+            "case mode_000"
+        );
+        assert_content_free("mode_000", &view);
+    }
+
+    #[test]
+    fn caches_layer_outcomes() {
+        let (_dir, paths) = home();
+        let caches = view_at(paths.clone()).caches().cloned().unwrap();
+        assert_eq!(
+            (
+                caches.blobs.entries.len(),
+                caches.blobs.truncated,
+                caches.blobs.dir
+            ),
+            (0, false, paths.blobs_dir()),
+            "case no_blobs_dir"
+        );
+
+        let (_dir, paths) = home();
+        let blobs = paths.blobs_dir();
+        for (name, bytes) in [("b", 2), ("a", 1), ("c", 3)] {
+            plant(&blobs.join(name), &Plant::Bytes(vec![b'x'; bytes]));
+        }
+        std::fs::create_dir(blobs.join("d")).unwrap();
+        let caches = view_at(paths.clone()).caches().cloned().unwrap();
+        let got: Vec<(String, EntryKind, Option<u64>)> = caches
+            .blobs
+            .entries
+            .iter()
+            .map(|e| {
+                let bytes = (e.kind == EntryKind::File).then_some(e.bytes);
+                (e.name.clone(), e.kind, bytes)
+            })
+            .collect();
+        let expected = vec![
+            ("a".to_owned(), EntryKind::File, Some(1)),
+            ("b".to_owned(), EntryKind::File, Some(2)),
+            ("c".to_owned(), EntryKind::File, Some(3)),
+            ("d".to_owned(), EntryKind::Dir, None),
+        ];
+        assert_eq!(got, expected, "case three_blobs_and_a_subdir");
+        assert!(!caches.blobs.truncated);
+
+        let mut view = view_at(paths.clone());
+        view.max_entries = 2;
+        let listing = &view.caches().unwrap().blobs;
+        assert_eq!(
+            (listing.entries.len(), listing.truncated),
+            (2, true),
+            "case over_the_bound"
+        );
+
+        if is_root() {
+            return;
+        }
+        set_mode(&blobs, 0o000);
+        let view = view_at(paths);
+        let caches = view.caches().cloned();
+        let failures = view.failures();
+        set_mode(&blobs, 0o755);
+        assert_eq!(caches, None, "case blobs_dir_mode_000");
+        assert_eq!(failures, Vec::new(), "case blobs_dir_mode_000: no failure");
+        assert!(view.loaded_layers().contains(&Layer::Caches));
+    }
+
+    #[test]
+    fn widget_layer_without_omarchy() {
+        let (_dir, paths) = home();
+        let view = view_at(paths);
+        assert_eq!(view.widget(), Some(&WidgetLayer { info: None }));
+        assert_eq!(view.loaded_layers(), BTreeSet::from([Layer::Widget]));
+    }
+
+    #[test]
+    fn skill_layer_outcomes() {
+        let cases = [
+            ("missing", Plant::Absent, "Missing"),
+            ("present", Plant::Bytes(b"# omaddons\n".to_vec()), "Bytes"),
+            ("oversized", Plant::TooLarge, "TooLarge"),
+            ("directory", Plant::Dir, "NotAFile"),
+        ];
+        for (case, how, expected) in cases {
+            let (_dir, paths) = home();
+            let file = paths.skill_dir().join("SKILL.md");
+            plant(&file, &how);
+            let view = view_at(paths.clone());
+            let skill = view.skill().unwrap();
+            assert_eq!(skill.len(), 1, "case {case}");
+            assert_eq!(
+                (&skill[0].dir, &skill[0].file),
+                (&paths.skill_dir(), &file),
+                "case {case}"
+            );
+            let read = &skill[0].read;
+            let got = match read {
+                BoundedRead::Missing => "Missing",
+                BoundedRead::Bytes(bytes) => {
+                    assert_eq!(bytes, b"# omaddons\n", "case {case}");
+                    "Bytes"
+                }
+                BoundedRead::TooLarge { bytes } => {
+                    assert_eq!(*bytes, DISCOVERY_FILE_MAX_BYTES + 1, "case {case}");
+                    "TooLarge"
+                }
+                BoundedRead::NotAFile => "NotAFile",
+                BoundedRead::Unreadable { .. } => "Unreadable",
+            };
+            assert_eq!(got, expected, "case {case}: got {read:?}");
+        }
+    }
+
+    #[test]
+    fn credentials_layer_outcomes() {
+        // What each credential file holds: never in the layer.
+        const HELD: &str = "planted-credential-bytes-7f3a";
+        let uid = rustix::process::getuid().as_raw();
+        let regular = |mode, symlink| FileStat::Regular {
+            mode,
+            uid,
+            bytes: HELD.len() as u64 + 1,
+            symlink,
+        };
+        type Expect = Vec<(CredentialOrigin, FileStat)>;
+        /// `(case, config.toml given the token's directory, stored mode, expected stats)`.
+        type Case = (&'static str, fn(&Path) -> String, Option<u32>, Expect);
+        let configured = || CredentialOrigin::Configured {
+            source: "github".to_owned(),
+        };
+        let cases: Vec<Case> = vec![
+            (
+                "stored_0600",
+                |_| String::new(),
+                Some(0o600),
+                vec![(CredentialOrigin::Stored, regular(0o600, false))],
+            ),
+            (
+                "configured_0644",
+                |at| {
+                    format!(
+                        "[sources.github]\ncredential = {{ file = {:?} }}\n",
+                        at.join("token")
+                    )
+                },
+                None,
+                vec![(configured(), regular(0o644, false))],
+            ),
+            (
+                "configured_symlink",
+                |at| {
+                    format!(
+                        "[sources.github]\ncredential = {{ file = {:?} }}\n",
+                        at.join("link")
+                    )
+                },
+                None,
+                vec![(configured(), regular(0o600, true))],
+            ),
+            (
+                "configured_missing",
+                |at| {
+                    format!(
+                        "[sources.github]\ncredential = {{ file = {:?} }}\n",
+                        at.join("gone")
+                    )
+                },
+                None,
+                vec![(configured(), FileStat::Missing)],
+            ),
+            (
+                "env_not_listed",
+                |_| "[sources.github]\ncredential = { env = \"GH_TOKEN\" }\n".to_owned(),
+                None,
+                Vec::new(),
+            ),
+            (
+                "command_not_listed",
+                |_| "[sources.github]\ncredential = { command = [\"pass\", \"gh\"] }\n".to_owned(),
+                None,
+                Vec::new(),
+            ),
+        ];
+        for (case, config, stored, expected) in cases {
+            let (_dir, paths) = home();
+            let at = paths.home().join("secrets");
+            plant(
+                &at.join("token"),
+                &Plant::Bytes(format!("{HELD}\n").into_bytes()),
+            );
+            set_mode(&at.join("token"), 0o644);
+            plant(
+                &at.join("private"),
+                &Plant::Bytes(format!("{HELD}\n").into_bytes()),
+            );
+            set_mode(&at.join("private"), 0o600);
+            std::os::unix::fs::symlink(at.join("private"), at.join("link")).unwrap();
+            if let Some(mode) = stored {
+                let file = paths.credentials_dir().join("github");
+                plant(&file, &Plant::Bytes(format!("{HELD}\n").into_bytes()));
+                set_mode(&file, mode);
+            }
+            plant(
+                &paths.config_file(),
+                &Plant::Bytes(config(&at).into_bytes()),
+            );
+            let view = view_at(paths.clone());
+            let credentials = view.credentials();
+            assert!(credentials.is_some(), "case {case}: unavailable");
+            let credentials = credentials.unwrap();
+            let got: Expect = credentials
+                .files
+                .iter()
+                .map(|c| (c.origin.clone(), c.stat.clone()))
+                .collect();
+            assert_eq!(got, expected, "case {case}: {credentials:?}");
+            assert!(
+                !format!("{credentials:?}").contains(HELD),
+                "case {case}: a credential's bytes reached the layer"
+            );
+        }
+
+        let (_dir, paths) = home();
+        plant(&paths.config_file(), &Plant::Bytes(b"a = [\n".to_vec()));
+        let view = view_at(paths);
+        assert!(view.credentials().is_none(), "case config_broken");
+        assert_eq!(
+            view.credentials.get(),
+            Some(&LayerState::Unavailable(Unavailable {
+                layer: Layer::Credentials,
+                cause: Layer::Config,
+            })),
+            "case config_broken"
+        );
+    }
+
+    #[test]
+    fn state_corrupt_detector_covers_every_state_layer() {
+        use crate::doctor::budget::Budget;
+        use crate::doctor::selection::Selection;
+        use crate::fsx::GlobalLock;
+
+        if is_root() {
+            return;
+        }
+        let (_dir, paths) = home();
+        drop(GlobalLock::acquire(&paths, "test").unwrap());
+        set_mode(&paths.lock_file(), 0o000);
+        plant(&paths.registry_file(), &Plant::Bytes(b"{".to_vec()));
+        plant(&paths.target_record(&key(K)), &Plant::Bytes(b"[".to_vec()));
+        plant(&paths.history_file(), &Plant::Mode000(b"x\n".to_vec()));
+        let journal = paths.journal_dir();
+        std::fs::create_dir_all(&journal).unwrap();
+        set_mode(&journal, 0o000);
+        let view = view_at(paths.clone());
+        let row = registry::row(ids::STATE_CORRUPT).unwrap();
+        let found = (row.detect.unwrap())(&view, &Selection::all(), &mut Budget::unlimited());
+        set_mode(&journal, 0o755);
+        let mut paths_found: Vec<PathBuf> = found
+            .found
+            .iter()
+            .filter_map(|obs| obs.evidence.path.clone())
+            .collect();
+        paths_found.sort();
+        let mut expected = vec![
+            paths.registry_file(),
+            paths.target_record(&key(K)),
+            journal,
+            paths.lock_file(),
+            paths.history_file(),
+        ];
+        expected.sort();
+        assert_eq!(paths_found, expected);
     }
 
     #[test]
