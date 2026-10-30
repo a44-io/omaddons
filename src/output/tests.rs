@@ -512,8 +512,11 @@ fn a_result_that_does_not_serialize_is_one_internal_envelope() {
     let stderr = String::from_utf8(reporter.into_sink()).unwrap();
     assert!(stderr.contains("could not be serialized"), "{stderr}");
     // Even the literal kept for when that fails is a whole envelope.
-    let literal = unserializable_literal("status");
+    let literal = unserializable_literal("status", 1);
     assert_eq!(top_level_keys(&literal), top_level_keys(&stdout));
+    let doctor: serde_json::Value =
+        serde_json::from_str(&unserializable_literal("doctor diagnose", 74)).unwrap();
+    assert_eq!(doctor["exit_code"], 74, "{doctor}");
 }
 
 /// A panic while the result serializes writes nothing, so the panic's own envelope is
@@ -537,4 +540,414 @@ fn a_panic_while_serializing_writes_nothing() {
     }));
     assert!(panicked.is_err());
     assert!(stdout.is_empty(), "{}", String::from_utf8_lossy(&stdout));
+}
+
+// ---------------------------------------------------------------------------------------
+// The doctor's envelope and emitter (M4-D34, M4-D40).
+
+use crate::doctor::exit::Exit as DoctorExit;
+
+/// A report with two keys of its own.
+#[derive(Debug, Serialize, JsonSchema)]
+struct DemoReport {
+    a: u32,
+    b: String,
+}
+
+struct DemoDoctor {
+    report: DemoReport,
+    exit: DoctorExit,
+    error: Option<Error>,
+    commands: Vec<CommandHint>,
+}
+
+impl DoctorOutcome for DemoDoctor {
+    type Report = DemoReport;
+
+    fn command(&self) -> &'static str {
+        "doctor diagnose"
+    }
+
+    fn report(&self) -> &DemoReport {
+        &self.report
+    }
+
+    fn exit(&self) -> DoctorExit {
+        self.exit
+    }
+
+    fn error(&self) -> Option<&Error> {
+        self.error.as_ref()
+    }
+
+    fn commands(&self) -> &[CommandHint] {
+        &self.commands
+    }
+
+    fn render_human(&self, w: &mut dyn Write, _: &Style) -> io::Result<()> {
+        writeln!(w, "{} {}", self.report.b, self.report.a)
+    }
+}
+
+fn findings() -> DemoDoctor {
+    DemoDoctor {
+        report: DemoReport {
+            a: 1,
+            b: "x".into(),
+        },
+        exit: DoctorExit::FindingsPresent,
+        error: None,
+        commands: Vec::new(),
+    }
+}
+
+fn doctor_usage() -> Error {
+    Error::new(
+        ErrorCode::Usage,
+        "unknown check fm-nope",
+        Suggestion::command(["omaddons", "help", "doctor"]),
+    )
+}
+
+/// A document's top-level keys in document order, read with a visitor (a
+/// `serde_json::Value` sorts them).
+fn ordered_keys(text: &str) -> Vec<String> {
+    use serde::de::{Deserializer as _, IgnoredAny, MapAccess, Visitor};
+    struct Keys;
+    impl<'de> Visitor<'de> for Keys {
+        type Value = Vec<String>;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a JSON object")
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Vec<String>, A::Error> {
+            let mut keys = Vec::new();
+            while let Some(key) = map.next_key::<String>()? {
+                map.next_value::<IgnoredAny>()?;
+                keys.push(key);
+            }
+            Ok(keys)
+        }
+    }
+    serde_json::Deserializer::from_str(text)
+        .deserialize_map(Keys)
+        .unwrap()
+}
+
+fn meta0() -> Meta {
+    Meta {
+        elapsed_ms: 0,
+        offline: false,
+    }
+}
+
+#[test]
+fn doctor_envelope_key_order() {
+    let r = findings();
+    let envelope = DoctorEnvelope::report(
+        "doctor diagnose",
+        &r.report,
+        DoctorExit::FindingsPresent,
+        None,
+        &[],
+        &[],
+        meta0(),
+    );
+    let text = serde_json::to_string(&envelope).unwrap();
+    assert_eq!(
+        ordered_keys(&text),
+        [
+            "ok",
+            "schema_version",
+            "tool_version",
+            "command",
+            "exit_code",
+            "a",
+            "b",
+            "warnings",
+            "commands",
+            "meta"
+        ],
+        "{text}"
+    );
+    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        (&value["ok"], &value["exit_code"]),
+        (&false.into(), &1.into())
+    );
+    let healthy = DoctorEnvelope::report(
+        "doctor diagnose",
+        &r.report,
+        DoctorExit::Healthy,
+        None,
+        &[],
+        &[],
+        meta0(),
+    );
+    let value = serde_json::to_value(&healthy).unwrap();
+    assert_eq!(
+        (&value["ok"], &value["exit_code"]),
+        (&true.into(), &0.into())
+    );
+}
+
+#[test]
+fn doctor_failure_has_no_report_keys() {
+    let failure = DoctorFailure::from(doctor_usage());
+    assert_eq!(failure.exit, DoctorExit::UsageError);
+    let envelope = DoctorEnvelope::failure("doctor diagnose", &failure, &[], &[], meta0());
+    let text = serde_json::to_string(&envelope).unwrap();
+    assert_eq!(ordered_keys(&text), FAILURE_KEYS, "{text}");
+    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        (&value["ok"], &value["exit_code"], &value["error"]["code"]),
+        (&false.into(), &64.into(), &"usage".into())
+    );
+    // The run directory's failure names its own exit, whatever the error's code.
+    let denied = io::Error::from(io::ErrorKind::PermissionDenied);
+    let cannot = DoctorFailure::cannot_create(Error::io(
+        std::path::Path::new("/fixture/state/omaddons/doctor/runs"),
+        &denied,
+        Suggestion::text("make the state directory writable"),
+    ));
+    assert_eq!(
+        (cannot.error.code, cannot.exit),
+        (ErrorCode::Io, DoctorExit::CannotCreate)
+    );
+    assert_eq!(
+        DoctorFailure::from(cannot.error.clone()).exit,
+        DoctorExit::IoError,
+        "an io error anywhere else is 74"
+    );
+    let envelope = DoctorEnvelope::failure("doctor diagnose", &cannot, &[], &[], meta0());
+    let value = serde_json::to_value(&envelope).unwrap();
+    assert_eq!(value["exit_code"], 73);
+}
+
+#[test]
+fn report_with_error_keeps_both() {
+    let r = findings();
+    let error = Error::internal("report.json could not be hardened");
+    let envelope = DoctorEnvelope::report(
+        "doctor diagnose",
+        &r.report,
+        DoctorExit::IoError,
+        Some(&error),
+        &[],
+        &[],
+        meta0(),
+    );
+    let text = serde_json::to_string(&envelope).unwrap();
+    assert_eq!(
+        ordered_keys(&text),
+        [
+            "ok",
+            "schema_version",
+            "tool_version",
+            "command",
+            "exit_code",
+            "a",
+            "b",
+            "error",
+            "warnings",
+            "commands",
+            "meta"
+        ],
+        "{text}"
+    );
+    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        (&value["exit_code"], &value["error"]["code"]),
+        (&74.into(), &"internal".into())
+    );
+}
+
+#[test]
+fn record_form_has_kind_and_no_meta() {
+    let r = findings();
+    let envelope = DoctorEnvelope::report(
+        "doctor diagnose",
+        &r.report,
+        DoctorExit::FindingsPresent,
+        None,
+        &[],
+        &[],
+        meta0(),
+    )
+    .record(RunKind::Diagnose);
+    let text = serde_json::to_string(&envelope).unwrap();
+    assert_eq!(
+        ordered_keys(&text),
+        [
+            "ok",
+            "schema_version",
+            "tool_version",
+            "command",
+            "kind",
+            "exit_code",
+            "a",
+            "b",
+            "warnings",
+            "commands"
+        ],
+        "{text}"
+    );
+    assert!(text.contains(r#""kind":"diagnose""#), "{text}");
+}
+
+struct DoctorRun {
+    exit: DoctorExit,
+    stdout: String,
+    stderr: String,
+}
+
+fn run_doctor(cfg: OutputConfig, result: Result<DemoDoctor, DoctorFailure>) -> DoctorRun {
+    let mut stdout = Vec::new();
+    let mut reporter = Reporter::new(Vec::new(), &cfg);
+    let exit = emit_doctor_to(
+        &cfg,
+        &mut stdout,
+        &mut reporter,
+        "doctor diagnose",
+        Instant::now(),
+        false,
+        &RunNotes::default(),
+        result,
+    );
+    DoctorRun {
+        exit,
+        stdout: String::from_utf8(stdout).unwrap(),
+        stderr: String::from_utf8(reporter.into_sink()).unwrap(),
+    }
+}
+
+fn error_events(stderr: &str) -> usize {
+    stderr
+        .lines()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+        .filter(|e| e["event"] == "error")
+        .count()
+}
+
+#[test]
+fn emit_doctor_findings_write_no_error_event() {
+    let r = run_doctor(OutputConfig::machine(), Ok(findings()));
+    assert_eq!(r.exit, DoctorExit::FindingsPresent);
+    assert_eq!(r.stdout.lines().count(), 1, "{}", r.stdout);
+    let envelope: serde_json::Value = serde_json::from_str(&r.stdout).unwrap();
+    assert_eq!(
+        (
+            &envelope["exit_code"],
+            &envelope["a"],
+            envelope.get("error")
+        ),
+        (&1.into(), &1.into(), None),
+        "{}",
+        r.stdout
+    );
+    assert_eq!(error_events(&r.stderr), 0, "{}", r.stderr);
+    // Human output renders the report, and is no failure either.
+    let r = run_doctor(human(), Ok(findings()));
+    assert_eq!(
+        (r.exit, r.stdout.as_str()),
+        (DoctorExit::FindingsPresent, "x 1\n")
+    );
+    assert_eq!(error_events(&r.stderr), 0, "{}", r.stderr);
+    // A report that also failed mirrors its error once.
+    let failed = DemoDoctor {
+        exit: DoctorExit::IoError,
+        error: Some(Error::internal("report.json could not be hardened")),
+        ..findings()
+    };
+    let r = run_doctor(OutputConfig::machine(), Ok(failed));
+    assert_eq!(r.exit, DoctorExit::IoError);
+    assert_eq!(error_events(&r.stderr), 1, "{}", r.stderr);
+}
+
+#[test]
+fn emit_doctor_failure_writes_one() {
+    for cfg in [OutputConfig::machine(), human()] {
+        let r = run_doctor(cfg, Err(DoctorFailure::from(doctor_usage())));
+        assert_eq!(r.exit, DoctorExit::UsageError);
+        assert_eq!(error_events(&r.stderr), 1, "{}", r.stderr);
+        if cfg.output == OutputMode::Json {
+            assert_eq!(ordered_keys(&r.stdout), FAILURE_KEYS, "{}", r.stdout);
+            let envelope: serde_json::Value = serde_json::from_str(&r.stdout).unwrap();
+            assert_eq!(envelope["exit_code"], 64, "{}", r.stdout);
+        } else {
+            assert_eq!(r.stdout, "", "human output is empty on failure");
+        }
+    }
+}
+
+/// A report that does not serialize is one internal envelope in the doctor's own
+/// dictionary: 74, never the general 1.
+#[test]
+fn a_doctor_report_that_does_not_serialize_exits_74() {
+    struct BrokenDoctor(Broken);
+    impl DoctorOutcome for BrokenDoctor {
+        type Report = Broken;
+        fn command(&self) -> &'static str {
+            "doctor diagnose"
+        }
+        fn report(&self) -> &Broken {
+            &self.0
+        }
+        fn exit(&self) -> DoctorExit {
+            DoctorExit::Healthy
+        }
+        fn render_human(&self, _: &mut dyn Write, _: &Style) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let cfg = OutputConfig::machine();
+    let mut stdout = Vec::new();
+    let mut reporter = Reporter::new(Vec::new(), &cfg);
+    let exit = emit_doctor_to(
+        &cfg,
+        &mut stdout,
+        &mut reporter,
+        "doctor diagnose",
+        Instant::now(),
+        false,
+        &RunNotes::default(),
+        Ok(BrokenDoctor(Broken { panics: false })),
+    );
+    let stdout = String::from_utf8(stdout).unwrap();
+    assert_eq!(exit, DoctorExit::IoError);
+    assert_eq!(ordered_keys(&stdout), FAILURE_KEYS, "{stdout}");
+    let envelope: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(
+        (&envelope["error"]["code"], &envelope["exit_code"]),
+        (&"internal".into(), &74.into())
+    );
+}
+
+/// The exit a written document leaves for a later panic keeps its dictionary: a doctor
+/// 4 is never read back as the general 4. (Through the encoding: the process-wide slot
+/// is shared by every test running beside this one.)
+#[test]
+fn emitted_exit_remembers_the_doctor_dictionary() {
+    for &exit in Exit::ALL {
+        let process = ProcessExit::General(exit);
+        assert_eq!(
+            decode_exit(encode_exit(process)),
+            Some(process),
+            "{process:?}"
+        );
+    }
+    for &exit in DoctorExit::ALL {
+        let process = ProcessExit::Doctor(exit);
+        assert_eq!(
+            decode_exit(encode_exit(process)),
+            Some(process),
+            "{process:?}"
+        );
+    }
+    assert_ne!(
+        encode_exit(ProcessExit::Doctor(DoctorExit::RefusedUnsafe)),
+        encode_exit(ProcessExit::General(Exit::Refused)),
+        "both exit 4"
+    );
+    assert_eq!(decode_exit(NO_EXIT), None);
+    assert_eq!(decode_exit(DOCTOR_BIT | 9), None, "no doctor exit 9");
 }

@@ -47,7 +47,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::cli::{Cli, Command, Context};
-use crate::error::Exit;
+use crate::error::{Exit, ProcessExit};
 use crate::output::{self, SharedReporter};
 use targets::TargetsAction;
 
@@ -298,6 +298,12 @@ pub const ENVELOPE_ONLY: &[EnvelopeOnly] = &[
 /// The row of the command at `path`.
 pub fn command_entry(path: &str) -> Option<&'static CommandEntry> {
     COMMANDS.iter().find(|c| c.name == path)
+}
+
+/// The exit dictionary of the envelope `command`: its row's; the general one for a name
+/// with no row (`omaddons`, `version`).
+pub fn dictionary_of(command: &str) -> Dictionary {
+    command_entry(command).map_or(Dictionary::General, |c| c.dictionary)
 }
 
 /// The exits a row declares, else an [`ENVELOPE_ONLY`] name's; `None` for any other.
@@ -617,8 +623,9 @@ side_events_of_reads!(
 );
 
 /// Runs the parsed command and renders its outcome through `reporter`, the run's one
-/// stderr reporter (also behind `ctx.progress`).
-pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> Exit {
+/// stderr reporter (also behind `ctx.progress`), and returns its exit in the command's
+/// dictionary.
+pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> ProcessExit {
     let name = command_name(cli.command.as_ref());
     let out = Out {
         cfg: &ctx.output,
@@ -631,7 +638,7 @@ pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> Exit {
         offline_by_env: ctx.offline_by_env,
     };
     if cli.global.version {
-        return out.emit_as("version", Ok(help::version()));
+        return out.emit_as("version", Ok(help::version())).into();
     }
     if cli.global.help {
         // The command as typed, as `help <path>` reads it: `backup --help` is backup's
@@ -643,7 +650,7 @@ pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> Exit {
                 help::for_command(Some(&path), &ctx.argv)
             }
         };
-        return out.emit_as("help", result);
+        return out.emit_as("help", result).into();
     }
     let exit = run_command(cli, ctx, &out);
     // A command that may have appended history (by its full path: `config set`, not
@@ -657,7 +664,7 @@ pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> Exit {
     {
         crate::state::history_tail::rebuild_if_stale(&paths, name, ctx.actor);
     }
-    exit
+    exit.into()
 }
 
 /// Runs the parsed command and renders its outcome through `out`.

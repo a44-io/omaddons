@@ -17,7 +17,8 @@ use std::time::Instant;
 use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 
-use crate::error::{Error, ErrorCode, Exit, Suggestion};
+use crate::app::Dictionary;
+use crate::error::{Error, ErrorCode, ProcessExit, Suggestion};
 use crate::limits::REASON_MAX_CHARS;
 use crate::model::{Actor, PlanId};
 use crate::output::{self, OutputConfig, OutputFlags, Reporter, TermEnv};
@@ -365,8 +366,8 @@ fn check_if_match(token: &str, command: &str, argv: &[String]) -> Result<(), Err
     Ok(())
 }
 
-/// The program: parse `args`, run, render, and exit with a code from the general exit
-/// dictionary (never Rust's 101, even on a panic).
+/// The program: parse `args`, run, render, and exit with a code from the command's exit
+/// dictionary, the general one or the doctor's (never Rust's 101, even on a panic).
 pub fn run<I, T>(args: I) -> ExitCode
 where
     I: IntoIterator<Item = T>,
@@ -390,7 +391,7 @@ fn run_with(
     env: &dyn Fn(&str) -> Option<String>,
     stdin_is_tty: bool,
     started: Instant,
-) -> Exit {
+) -> ProcessExit {
     let argv = normalize_argv(raw);
     let fallback = fallback_output(raw, term);
     let early_offline = output::offline_from_argv(raw, env);
@@ -411,7 +412,8 @@ fn run_with(
                 early_offline,
                 &output::RunNotes::default(),
                 result,
-            );
+            )
+            .into();
         }
         Err(err) => {
             // The registered ids count as client words; read only if a hook needs them.
@@ -458,24 +460,35 @@ fn fallback_output(raw: &[OsString], term: &TermEnv) -> OutputConfig {
     output::resolve(&output::flags_from_argv(raw), term)
 }
 
-/// Renders an error that has no outcome (usage errors, a failed failpoint).
+/// Renders an error that has no outcome (usage errors, a failed failpoint), exiting in
+/// the dictionary of `command`: a usage error on a doctor path is the doctor's 64.
 fn render_error(
     cfg: &OutputConfig,
     command: &'static str,
     started: Instant,
     offline: bool,
     error: Error,
-) -> Exit {
+) -> ProcessExit {
+    let exit = process_exit(crate::app::dictionary_of(command), &error);
     let mut reporter = Reporter::stderr(cfg);
-    output::emit::<crate::app::help::HelpOutcome, _>(
+    output::emit_failure(
         cfg,
         &mut reporter,
         command,
         started,
         offline,
         &output::RunNotes::default(),
-        Err(error),
+        error,
+        exit,
     )
+}
+
+/// The exit of `error` in `dictionary`: its registered exit, or the doctor's for its code.
+fn process_exit(dictionary: Dictionary, error: &Error) -> ProcessExit {
+    match dictionary {
+        Dictionary::General => ProcessExit::General(error.exit()),
+        Dictionary::Doctor => ProcessExit::Doctor(crate::doctor::exit::exit_for(error.code)),
+    }
 }
 
 /// Lossy argv with `argv[0]` normalized to `omaddons`, so the widget can substitute its
@@ -1662,10 +1675,10 @@ fn first_panic(slot: &Mutex<Option<String>>, message: String) {
 }
 
 /// A panic that reached the top: one `internal` envelope with the run's warnings and
-/// hints (the `undo` of a transaction that committed before it), mirrored on stderr.
-/// When a document already went out, it is the contract: an `info` line on stderr, and
-/// that document's exit status.
-fn render_panic() -> Exit {
+/// hints (the `undo` of a transaction that committed before it), mirrored on stderr, in
+/// its command's dictionary (a doctor command's exits 74). When a document already went
+/// out, it is the contract: an `info` line on stderr, and that document's exit status.
+fn render_panic() -> ProcessExit {
     let message = PANIC_INFO
         .lock()
         .ok()
@@ -1695,11 +1708,12 @@ fn render_panic() -> Exit {
     });
     let mut error = Error::internal(message);
     error.fix = crate::error::internal_fix_for(command, &argv);
+    let exit = process_exit(crate::app::dictionary_of(command), &error);
     let mut reporter = Reporter::stderr(&cfg);
     if output::stdout_written() {
         let line = format!("{} after the result was written", error.message);
         reporter.log(output::LogLevel::Info, &line);
-        return output::emitted_exit().unwrap_or(Exit::Failed);
+        return output::emitted_exit().unwrap_or(exit);
     }
     output::emit_panic(
         &cfg,
@@ -1709,6 +1723,7 @@ fn render_panic() -> Exit {
         offline,
         &notes,
         error,
+        exit,
     )
 }
 
@@ -2390,6 +2405,65 @@ mod tests {
         assert_eq!(command_of(&argv(&["hepl"])), "omaddons");
         assert!(wants_help(&argv(&["targets", "add", "-h"])));
         assert!(!wants_help(&argv(&["install", "--", "-h"])));
+    }
+
+    /// Every error a run renders without an outcome (usage, a refused context, a panic)
+    /// exits in its command's dictionary.
+    #[test]
+    fn process_exit_by_dictionary() {
+        let error = |code: ErrorCode| Error::new(code, "m", Suggestion::text("t"));
+        let cases = [
+            ("general usage", Dictionary::General, ErrorCode::Usage, 2),
+            ("doctor usage", Dictionary::Doctor, ErrorCode::Usage, 64),
+            (
+                "doctor target_not_found",
+                Dictionary::Doctor,
+                ErrorCode::TargetNotFound,
+                66,
+            ),
+            (
+                "doctor internal",
+                Dictionary::Doctor,
+                ErrorCode::Internal,
+                74,
+            ),
+            (
+                "general internal",
+                Dictionary::General,
+                ErrorCode::Internal,
+                1,
+            ),
+        ];
+        for (name, dictionary, code, expected) in cases {
+            let exit = process_exit(dictionary, &error(code));
+            assert_eq!(
+                exit.code(),
+                expected,
+                "{name}: {dictionary:?} of {} gave {exit:?}",
+                code.wire()
+            );
+            assert_eq!(
+                matches!(exit, ProcessExit::Doctor(_)),
+                matches!(dictionary, Dictionary::Doctor),
+                "{name}: the dictionary is kept"
+            );
+        }
+        // A command's dictionary is its row's, and a name with no row is general.
+        for row in crate::app::COMMANDS {
+            assert_eq!(
+                crate::app::dictionary_of(row.name),
+                row.dictionary,
+                "{}",
+                row.name
+            );
+        }
+        for name in ["omaddons", "version", "no such command"] {
+            assert_eq!(
+                crate::app::dictionary_of(name),
+                Dictionary::General,
+                "{name}"
+            );
+        }
     }
 
     #[test]

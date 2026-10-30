@@ -137,54 +137,23 @@ mod support {
         pub envelope: Value,
     }
 
-    /// Asserts the whole contract on one `--json` run, and that it ended with `code`.
+    /// Asserts the whole contract on one `--json` run, and that it ended with `code`: the
+    /// general envelope's, or the doctor's for a command of its dictionary (M4-D34).
     pub fn check(run: Run, code: i32) -> Checked {
         let ctx = run.context();
-        // Exactly one JSON document on stdout.
-        let docs: Result<Vec<Value>, _> = serde_json::Deserializer::from_str(&run.stdout)
-            .into_iter::<Value>()
-            .collect();
-        assert!(docs.is_ok(), "stdout is not JSON\n{ctx}");
-        let docs = docs.unwrap();
-        assert_eq!(docs.len(), 1, "exactly one envelope\n{ctx}");
-        let envelope = docs.into_iter().next().unwrap();
         assert_eq!(run.code, code, "{ctx}");
-
-        // Keys in wire order.
-        let keys: Keys = serde_json::from_str(&run.stdout).unwrap();
-        let expected: Vec<&str> = ORDER
-            .iter()
-            .copied()
-            .filter(|k| keys.0.iter().any(|have| have == k))
-            .collect();
-        assert_eq!(keys.0, expected, "envelope key order\n{ctx}");
+        let doctor = serde_json::from_str::<Value>(&run.stdout).is_ok_and(|envelope| {
+            common::doctor::is_doctor(envelope["command"].as_str().unwrap_or_default())
+        });
+        let envelope = if doctor {
+            common::doctor::check_envelope(&run.stdout, &run.stderr, code)
+        } else {
+            general(&run, code, &ctx)
+        };
         named(&envelope, &run.argv, &ctx);
-
-        // ok, exit_code and the registered exit agree.
-        assert_eq!(envelope["schema_version"], "1.0", "{ctx}");
-        assert_eq!(envelope["exit_code"], code, "{ctx}");
-        assert_eq!(envelope["ok"], code == 0, "{ctx}");
         assert!(envelope["meta"]["elapsed_ms"].is_u64(), "{ctx}");
         assert!(envelope["meta"]["offline"].is_boolean(), "{ctx}");
-        if code == 0 {
-            assert!(
-                envelope.get("error").is_none() && envelope.get("data").is_some(),
-                "{ctx}"
-            );
-        } else {
-            let error = &envelope["error"];
-            let wire = error["code"].as_str().unwrap_or_default();
-            let registered = serde_json::from_value::<ErrorCode>(Value::from(wire));
-            assert!(
-                registered.is_ok(),
-                "{wire:?} is not a registered code\n{ctx}"
-            );
-            let registered = registered.unwrap();
-            assert_eq!(
-                i32::from(registered.exit().code()),
-                code,
-                "registered exit of {wire}\n{ctx}"
-            );
+        if let Some(error) = envelope.get("error") {
             assert!(
                 error["retryable"].is_boolean() && error["details"].is_object(),
                 "{ctx}"
@@ -196,12 +165,6 @@ mod support {
             fix(&error["fix"], &error["fix_argv"], &ctx);
             for alternative in error["alternatives"].as_array().unwrap() {
                 fix(&alternative["display"], &alternative["argv"], &ctx);
-            }
-            if code == 6 {
-                assert!(
-                    envelope.get("data").is_some(),
-                    "check_failed keeps data\n{ctx}"
-                );
             }
         }
         let command = envelope["command"].as_str().unwrap_or_default();
@@ -244,8 +207,7 @@ mod support {
             }
         }
 
-        // NDJSON on stderr, with exactly one error event per failure.
-        let mut errors = 0;
+        // NDJSON on stderr, every event registered.
         for line in run.stderr.lines() {
             let event = serde_json::from_str::<Value>(line);
             assert!(event.is_ok(), "stderr line is not JSON: {line}\n{ctx}");
@@ -273,17 +235,17 @@ mod support {
                     event["level"]
                 );
             }
-            errors += usize::from(kind == EventName::Error.wire());
         }
-        assert_eq!(
-            errors,
-            usize::from(code != 0),
-            "error events on stderr\n{ctx}"
-        );
 
-        // Every part against its published schema, strictly (M4-D9, M4-D10).
+        // Every part against its published schema, strictly (M4-D9, M4-D10): a doctor
+        // report against its command's data schema.
         {
-            let validated = super::validate::validate_envelope(&envelope, &run.stderr);
+            let parts = if doctor {
+                common::doctor::as_general(&envelope)
+            } else {
+                envelope.clone()
+            };
+            let validated = super::validate::validate_envelope(&parts, &run.stderr);
             assert!(
                 validated.is_ok(),
                 "{}\n{ctx}",
@@ -296,6 +258,74 @@ mod support {
             super::validate::record_observed(&envelope, Path::new(&file));
         }
         Checked { run, envelope }
+    }
+
+    /// The general envelope's own rules: one document, its keys in [`ORDER`], an `error`
+    /// exactly on a failure, at its code's registered exit, `data` on success and on
+    /// `check_failed`, and one stderr `error` event per failure.
+    fn general(run: &Run, code: i32, ctx: &str) -> Value {
+        // Exactly one JSON document on stdout.
+        let docs: Result<Vec<Value>, _> = serde_json::Deserializer::from_str(&run.stdout)
+            .into_iter::<Value>()
+            .collect();
+        assert!(docs.is_ok(), "stdout is not JSON\n{ctx}");
+        let docs = docs.unwrap();
+        assert_eq!(docs.len(), 1, "exactly one envelope\n{ctx}");
+        let envelope = docs.into_iter().next().unwrap();
+
+        // Keys in wire order.
+        let keys: Keys = serde_json::from_str(&run.stdout).unwrap();
+        let expected: Vec<&str> = ORDER
+            .iter()
+            .copied()
+            .filter(|k| keys.0.iter().any(|have| have == k))
+            .collect();
+        assert_eq!(keys.0, expected, "envelope key order\n{ctx}");
+
+        // ok, exit_code and the registered exit agree.
+        assert_eq!(envelope["schema_version"], "1.0", "{ctx}");
+        assert_eq!(envelope["exit_code"], code, "{ctx}");
+        assert_eq!(envelope["ok"], code == 0, "{ctx}");
+        if code == 0 {
+            assert!(
+                envelope.get("error").is_none() && envelope.get("data").is_some(),
+                "{ctx}"
+            );
+        } else {
+            let error = &envelope["error"];
+            let wire = error["code"].as_str().unwrap_or_default();
+            let registered = serde_json::from_value::<ErrorCode>(Value::from(wire));
+            assert!(
+                registered.is_ok(),
+                "{wire:?} is not a registered code\n{ctx}"
+            );
+            let registered = registered.unwrap();
+            assert_eq!(
+                i32::from(registered.exit().code()),
+                code,
+                "registered exit of {wire}\n{ctx}"
+            );
+            if code == 6 {
+                assert!(
+                    envelope.get("data").is_some(),
+                    "check_failed keeps data\n{ctx}"
+                );
+            }
+        }
+
+        // Exactly one error event per failure.
+        let errors = run
+            .stderr
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter(|event| event["event"] == EventName::Error.wire())
+            .count();
+        assert_eq!(
+            errors,
+            usize::from(code != 0),
+            "error events on stderr\n{ctx}"
+        );
+        envelope
     }
 
     /// A fix is non-empty; its argv starts with omaddons and joins back to the display,
@@ -480,8 +510,50 @@ mod support {
         }
     }
 
-    /// Replaces the tempdir root, ULIDs, RFC 3339 times and precondition tokens (they hash
-    /// file stamps) in a string.
+    fn crockford(c: char) -> bool {
+        c.is_ascii_digit() || (c.is_ascii_uppercase() && !"ILOU".contains(c))
+    }
+
+    /// A doctor run id's time, `d` for a digit, before its `__` and ULID.
+    const RUN_TIME: &str = "dddd-dd-ddTdd-dd-ddZ__";
+
+    /// Replaces every doctor run id (`2026-10-30T18-05-00Z__<ULID>`), alone or inside a
+    /// path, with `<run>`: its ULID and its time both vary.
+    fn redact_runs(s: &str) -> String {
+        let chars: Vec<char> = s.chars().collect();
+        let time = RUN_TIME.chars().count();
+        let len = time + 26;
+        let is_run = |at: usize| {
+            at + len <= chars.len()
+                && (at == 0 || !chars[at - 1].is_ascii_alphanumeric())
+                && chars
+                    .get(at + len)
+                    .is_none_or(|c| !c.is_ascii_alphanumeric())
+                && RUN_TIME
+                    .chars()
+                    .zip(&chars[at..])
+                    .all(|(want, have)| match want {
+                        'd' => have.is_ascii_digit(),
+                        _ => want == *have,
+                    })
+                && chars[at + time..at + len].iter().all(|c| crockford(*c))
+        };
+        let mut out = String::new();
+        let mut i = 0;
+        while i < chars.len() {
+            if is_run(i) {
+                out.push_str("<run>");
+                i += len;
+            } else {
+                out.push(chars[i]);
+                i += 1;
+            }
+        }
+        out
+    }
+
+    /// Replaces the tempdir root, doctor run ids, ULIDs, RFC 3339 times and precondition
+    /// tokens (they hash file stamps) in a string.
     fn redact(s: &str, root: &str) -> String {
         let s = s.replace(root, "<root>");
         if s.parse::<jiff::Timestamp>().is_ok() {
@@ -490,8 +562,7 @@ mod support {
         if omaddons::app::precondition::is_token(&s) {
             return "<precondition>".to_owned();
         }
-        let crockford =
-            |c: char| c.is_ascii_digit() || (c.is_ascii_uppercase() && !"ILOU".contains(c));
+        let s = redact_runs(&s);
         let chars: Vec<char> = s.chars().collect();
         let mut out = String::new();
         let mut i = 0;
@@ -753,6 +824,146 @@ fn the_harness_rejects_broken_envelopes() {
     assert!(
         recorded.get("help").is_some_and(|exits| exits.contains(&0)),
         "the good envelope was recorded: {recorded:?}"
+    );
+    doctor_envelopes();
+}
+
+/// The doctor mode (M4-D34, M4-D40), on literal envelopes: no `COMMANDS` row is the
+/// doctor's until its first command lands, so these call its check directly.
+fn doctor_envelopes() {
+    use common::doctor::check_envelope;
+    let message = |stdout: &str, stderr: &str, code: i32| {
+        let caught = std::panic::catch_unwind(|| check_envelope(stdout, stderr, code));
+        match caught {
+            Ok(_) => "no panic".to_owned(),
+            Err(panic) => panic
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| panic.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+                .unwrap_or_default(),
+        }
+    };
+    let rejects = |name: &str, stdout: &str, stderr: &str, code: i32, phrase: &str| {
+        let got = message(stdout, stderr, code);
+        assert!(
+            got.contains(phrase),
+            "{name}: expected a failure for {phrase:?}, got {got:?}"
+        );
+    };
+    let head = |ok: bool, exit: i32| {
+        format!(
+            r#""ok":{ok},"schema_version":"1.0","tool_version":"x","command":"doctor diagnose","exit_code":{exit}"#
+        )
+    };
+    let tail = r#""warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}"#;
+    let hint = r#"{"action":"inspect","command":"omaddons doctor explain fm-x","argv":["omaddons","doctor","explain","fm-x"],"destructive":false}"#;
+    let report = r#""state":"DONE_FINDINGS","next_steps":["omaddons doctor explain fm-x"]"#;
+    let error = |code: &str| {
+        format!(
+            r#""error":{{"code":"{code}","message":"m","fix":"omaddons help doctor","fix_argv":["omaddons","help","doctor"],"alternatives":[],"retryable":false,"details":{{}}}}"#
+        )
+    };
+    let event = r#"{"event":"error","code":"usage"}"#;
+
+    let healthy = format!(
+        r#"{{{},"state":"DONE_OK","next_steps":[],{tail}}}"#,
+        head(true, 0)
+    );
+    let findings = format!(
+        r#"{{{},{report},"warnings":[],"commands":[{hint}],"meta":{{"elapsed_ms":0,"offline":false}}}}"#,
+        head(false, 1)
+    );
+    let usage = format!(r#"{{{},{},{tail}}}"#, head(false, 64), error("usage"));
+    let cannot = format!(r#"{{{},{},{tail}}}"#, head(false, 73), error("io"));
+    for (name, stdout, stderr, code) in [
+        ("healthy", &healthy, "", 0),
+        ("findings", &findings, "", 1),
+        ("usage", &usage, event, 64),
+        ("run directory", &cannot, event, 73),
+    ] {
+        assert_eq!(message(stdout, stderr, code), "no panic", "{name}");
+    }
+
+    let with_data = healthy.replacen(r#""state""#, r#""data":{},"state""#, 1);
+    rejects("data", &with_data, "", 0, "has no `data`");
+    let findings_error = format!(
+        r#"{{{},{report},{},"warnings":[],"commands":[{hint}],"meta":{{"elapsed_ms":0,"offline":false}}}}"#,
+        head(false, 1),
+        error("check_failed")
+    );
+    rejects(
+        "error on findings",
+        &findings_error,
+        event,
+        1,
+        "an `error` exactly on exits",
+    );
+    let bare = format!(r#"{{{},{tail}}}"#, head(false, 64));
+    rejects(
+        "usage without error",
+        &bare,
+        "",
+        64,
+        "an `error` exactly on exits",
+    );
+    let late = format!(
+        r#"{{{},"state":"DONE_OK","warnings":[],"late":1,"commands":[],"meta":{{"elapsed_ms":0,"offline":false}}}}"#,
+        head(true, 0)
+    );
+    rejects(
+        "report key after warnings",
+        &late,
+        "",
+        0,
+        "a report key after the envelope's trailing keys",
+    );
+    let diverging = findings.replacen("fm-x\"]", "fm-y\"]", 1);
+    rejects(
+        "next_steps",
+        &diverging,
+        "",
+        1,
+        "`next_steps` mirrors `commands[].command`",
+    );
+    let misfiled = format!(r#"{{{},{},{tail}}}"#, head(false, 74), error("usage"));
+    rejects(
+        "usage at 74",
+        &misfiled,
+        event,
+        74,
+        "the doctor exit of usage is 64",
+    );
+    let outside = format!(r#"{{{},{},{tail}}}"#, head(false, 65), error("usage"));
+    rejects(
+        "an exit outside the dictionary",
+        &outside,
+        event,
+        65,
+        "not in the doctor's dictionary",
+    );
+    rejects("no error event", &usage, "", 64, "stderr error events");
+}
+
+/// Doctor run ids vary with their ULID and time, alone or inside a path.
+#[test]
+fn stable_redacts_doctor_runs() {
+    let run = "2026-10-30T18-05-00Z__01M8Q2VA7K3N5P8R1T4W6X9Y0Z";
+    let envelope = json!({
+        "run": run,
+        "path": format!("/fixture-root/state/omaddons/doctor/runs/{run}/report.json"),
+        "tx": "01M8Q2VA7K3N5P8R1T4W6X9Y0Z",
+        "near": format!("x{run}"),
+    });
+    let stable = support::stable(&envelope, Path::new("/fixture-root"));
+    assert_eq!(stable["run"], "<run>");
+    assert_eq!(
+        stable["path"],
+        "<root>/state/omaddons/doctor/runs/<run>/report.json"
+    );
+    assert_eq!(stable["tx"], "<ulid>", "a bare ULID is still a ULID");
+    assert_eq!(
+        stable["near"], "x2026-10-30T18-05-00Z__<ulid>",
+        "no run id without a boundary before it"
     );
 }
 

@@ -4,7 +4,8 @@
 //! for state and `net.log`, SavedVariables in both writer formats (BugGrabber's
 //! among them), synthetic repair lines for history (`history`), a structured step log
 //! (`tlog`), E11's differential of `journal::diagnose` against recovery
-//! (`differential`), shell checks of completion scripts (`shells`), planning as a
+//! (`differential`), the doctor's envelope contract (`doctor`), shell checks of
+//! completion scripts (`shells`), planning as a
 //! command plans, with a persistent release cache and approval witnesses (`planning`),
 //! previews bound by `--if-match`, their refusals and what they leave alone
 //! (`binding`), the realistic home of 5,040 managed files, built offline
@@ -26,6 +27,7 @@ pub mod binding;
 pub mod buggrabber;
 pub mod checkpoint;
 pub mod differential;
+pub mod doctor;
 pub mod drift;
 pub mod engine;
 pub mod env;

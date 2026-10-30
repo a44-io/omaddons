@@ -22,7 +22,7 @@ expression: s.stable(&c.envelope)
           "replaced": 0,
           "restored": 0
         },
-        "doctor_run_id": "2026-10-30T18-03-40Z__<ulid>",
+        "doctor_run_id": "<run>",
         "kind": "repair",
         "plan": null,
         "reason": null,

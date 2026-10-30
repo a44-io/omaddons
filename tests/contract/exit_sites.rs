@@ -1,10 +1,12 @@
 //! Every exit maps to a published code (vision §5.9 publication rules): each
 //! `ErrorCode::<Variant>` the source uses is registered, every registered code has a
-//! unique snake_case wire name and an exit in the general dictionary (0–6), and the
-//! process leaves only through `Exit` (no `std::process::exit`; `ExitCode::from` only
-//! where an `Exit` is converted).
+//! unique snake_case wire name and an exit in the general dictionary (0–6) and one in the
+//! doctor's (M4-D40), the doctor tree exits only through its own dictionary, and the
+//! process leaves only through a `ProcessExit` (no `std::process::exit`; `ExitCode::from`
+//! only where one is converted).
 
 use super::*;
+use omaddons::doctor::exit::{Exit as DoctorExit, exit_for};
 use omaddons::error::Exit;
 use std::collections::BTreeSet;
 use support::sources;
@@ -152,10 +154,142 @@ fn the_process_exits_only_through_exit() {
                 name.ends_with("src/cli.rs")
                     || name.ends_with("src/error.rs")
                     || name.ends_with("src/main.rs"),
-                "{name} builds an ExitCode outside the Exit conversion"
+                "{name} builds an ExitCode outside the ProcessExit conversion"
             );
         }
     }
+}
+
+#[test]
+fn doctor_exit_dictionary_is_the_visions() {
+    let expected = [
+        (0, "healthy"),
+        (1, "findings_present"),
+        (2, "fix_partial"),
+        (3, "fix_failed_rolled_back"),
+        (4, "refused_unsafe"),
+        (5, "concurrency_lost"),
+        (6, "online_required"),
+        (64, "usage_error"),
+        (66, "no_input"),
+        (73, "cannot_create"),
+        (74, "io_error"),
+    ];
+    let actual: Vec<(u8, &str)> = DoctorExit::ALL
+        .iter()
+        .map(|exit| (exit.code(), exit.name()))
+        .collect();
+    assert_eq!(
+        actual, expected,
+        "vision D18's codes and names, in code order"
+    );
+    let names: BTreeSet<&str> = actual.iter().map(|(_, name)| *name).collect();
+    assert_eq!(names.len(), expected.len(), "unique names");
+    for (_, name) in actual {
+        assert!(
+            name.chars().all(|c| c.is_ascii_lowercase() || c == '_') && !name.starts_with('_'),
+            "{name} is not snake_case"
+        );
+    }
+}
+
+/// The class rule, restated by general exit status: a code's own row first.
+#[test]
+fn every_error_code_has_a_doctor_exit() {
+    for code in ErrorCode::ALL {
+        let expected = match (code.wire(), code.exit().code()) {
+            ("plan_stale", _) => 4,
+            ("check_failed", _) => 1,
+            (_, 2) => 64,
+            (_, 3) => 66,
+            (_, 4) => 4,
+            (_, 5) => 5,
+            (_, 1) => 74,
+            (wire, general) => panic!("{wire}: general exit {general} has no doctor class"), // ubs:ignore — a code without a class fails the test, naming it
+        };
+        let exit = exit_for(*code);
+        assert_eq!(
+            exit.code(),
+            expected,
+            "{}: general exit {}, doctor exit {}",
+            code.wire(),
+            code.exit().code(),
+            exit.name()
+        );
+        assert_ne!(exit, DoctorExit::Healthy, "{} exits healthy", code.wire());
+    }
+}
+
+/// The general dictionary's variants that `text` names as `Exit::<Variant>`, its test
+/// items and line comments aside. Doctor variants that merely start alike
+/// (`Exit::UsageError`, `Exit::RefusedUnsafe`) are not them.
+fn general_exits_named(text: &str) -> Vec<&'static str> {
+    let production = text.split("#[cfg(test)]").next().unwrap_or_default();
+    let code: String = production
+        .lines()
+        .map(|line| line.split("//").next().unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut found = Vec::new();
+    for exit in Exit::ALL {
+        let variant = format!("{exit:?}");
+        let needle = format!("Exit::{variant}");
+        let named = code.match_indices(&needle).any(|(at, _)| {
+            code[at + needle.len()..]
+                .chars()
+                .next()
+                .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'))
+        });
+        if named {
+            found.push(exit.name());
+        }
+    }
+    found
+}
+
+/// The doctor tree (its command module and `src/doctor/`) exits only through the doctor's
+/// dictionary: no general `Exit::` variant outside `src/doctor/exit.rs`, the mapping
+/// itself. A file that does not exist yet passes.
+#[test]
+fn the_doctor_tree_exits_only_through_its_dictionary() {
+    let mut scanned = 0;
+    let mut found = Vec::new();
+    for (path, text) in sources() {
+        let name = path.display().to_string();
+        let in_tree = name.ends_with("src/app/doctor.rs")
+            || (name.contains("/src/doctor/") && !name.ends_with("src/doctor/exit.rs"));
+        if !in_tree {
+            continue;
+        }
+        scanned += 1;
+        for exit in general_exits_named(&text) {
+            found.push(format!("{name}: Exit::{exit}"));
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "general exits in the doctor tree (use doctor::exit::Exit):\n{}",
+        found.join("\n")
+    );
+    assert!(scanned > 0, "the scan found the doctor tree");
+
+    // A planted one is seen; the doctor's own variants, comments and tests are not.
+    assert_eq!(
+        general_exits_named("fn f() -> Exit { Exit::Failed }"),
+        ["failed"]
+    );
+    assert_eq!(
+        general_exits_named("error::Exit::Refused => x, error::Exit::Usage,"),
+        ["usage", "refused"]
+    );
+    assert!(
+        general_exits_named(
+            "DoctorExit::UsageError; Exit::RefusedUnsafe; Exit::IoError\n\
+             // Exit::Failed in a comment\n\
+             #[cfg(test)]\nmod tests { const X: Exit = Exit::Ok; }"
+        )
+        .is_empty()
+    );
 }
 
 /// Reason enums may occur inside refused-folder arrays as well as at the root.

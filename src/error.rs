@@ -4,7 +4,8 @@
 //! Every failure is a typed [`Error`] with a stable snake_case code, a message, a fix
 //! that is never empty, and the argv that runs the fix (vision §5.9, D17, D18, D31).
 //! Programs execute argv only; display strings are shell-quoted for humans and are
-//! never parsed back. The process exit status is only ever derived from an [`Exit`].
+//! never parsed back. The process exit status is only ever derived from a
+//! [`ProcessExit`]: an [`Exit`], or the doctor tree's own.
 
 use std::borrow::Cow;
 use std::fmt;
@@ -108,6 +109,42 @@ impl Exit {
 
 impl From<Exit> for ExitCode {
     fn from(exit: Exit) -> Self {
+        ExitCode::from(exit.code())
+    }
+}
+
+/// A process exit in either dictionary: the general one, or the doctor tree's own
+/// (M4-D40). Every exit the process takes is one of these.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessExit {
+    General(Exit),
+    Doctor(crate::doctor::exit::Exit),
+}
+
+impl ProcessExit {
+    /// The process exit status.
+    pub const fn code(self) -> u8 {
+        match self {
+            Self::General(exit) => exit.code(),
+            Self::Doctor(exit) => exit.code(),
+        }
+    }
+}
+
+impl From<Exit> for ProcessExit {
+    fn from(exit: Exit) -> Self {
+        Self::General(exit)
+    }
+}
+
+impl From<crate::doctor::exit::Exit> for ProcessExit {
+    fn from(exit: crate::doctor::exit::Exit) -> Self {
+        Self::Doctor(exit)
+    }
+}
+
+impl From<ProcessExit> for ExitCode {
+    fn from(exit: ProcessExit) -> Self {
         ExitCode::from(exit.code())
     }
 }
@@ -1022,6 +1059,28 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use std::collections::{BTreeMap, HashSet};
+
+    #[test]
+    fn process_exit_codes() {
+        for &exit in Exit::ALL {
+            assert_eq!(
+                ProcessExit::General(exit).code(),
+                exit.code(),
+                "general {}",
+                exit.name()
+            );
+            assert_eq!(ProcessExit::from(exit), ProcessExit::General(exit));
+        }
+        for &exit in crate::doctor::exit::Exit::ALL {
+            assert_eq!(
+                ProcessExit::Doctor(exit).code(),
+                exit.code(),
+                "doctor {}",
+                exit.name()
+            );
+            assert_eq!(ProcessExit::from(exit), ProcessExit::Doctor(exit));
+        }
+    }
 
     #[test]
     fn every_code_has_a_one_sentence_meaning() {
