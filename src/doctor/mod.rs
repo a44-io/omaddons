@@ -66,6 +66,7 @@ pub(crate) mod tests {
     use crate::drift::DriftState;
     use crate::engine::journal::Unrecoverable;
     use crate::model::{TargetKey, TxId};
+    use crate::state::paths::Paths;
     use crate::state::store::SchemaVersion;
 
     pub(crate) const K: &str = "01M5ZQ7Y3KJ8V9W2X4C6B0N1RT";
@@ -75,6 +76,16 @@ pub(crate) mod tests {
 
     fn key() -> TargetKey {
         K.parse().unwrap()
+    }
+
+    /// Paths of a home that does not exist, for views built from facts (which read none).
+    pub(crate) fn fixture_paths() -> Paths {
+        Paths::with_roots(
+            "/fixture/home",
+            "/fixture/config",
+            "/fixture/state",
+            "/fixture/cache",
+        )
     }
 
     fn tx(text: &str) -> TxId {
@@ -152,7 +163,7 @@ pub(crate) mod tests {
 
     #[test]
     fn detect_runs_selected_rows_up_to_the_tier() {
-        let view = DoctorView::from_status_facts(facts());
+        let view = DoctorView::from_status_facts(fixture_paths(), facts());
         let all = Selection::all();
         let cached = detect(&view, &all, Tier::Cached);
         assert_eq!(
@@ -187,7 +198,7 @@ pub(crate) mod tests {
 
     #[test]
     fn findings_carry_their_rows_meta_and_keys() {
-        let view = DoctorView::from_status_facts(facts());
+        let view = DoctorView::from_status_facts(fixture_paths(), facts());
         let found = detect(&view, &Selection::all(), Tier::Quick);
         for f in &found.findings {
             let row = registry::row(f.id).unwrap();
@@ -252,10 +263,13 @@ pub(crate) mod tests {
             ],
             ..retail()
         };
-        let view = DoctorView::from_status_facts(StatusFacts {
-            targets: vec![target],
-            machine: MachineFacts::default(),
-        });
+        let view = DoctorView::from_status_facts(
+            fixture_paths(),
+            StatusFacts {
+                targets: vec![target],
+                machine: MachineFacts::default(),
+            },
+        );
         let found = detect(&view, &Selection::all(), Tier::Cached);
         let journals: Vec<(&str, &str)> = found
             .findings

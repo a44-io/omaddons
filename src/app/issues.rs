@@ -363,7 +363,10 @@ pub(crate) mod tests {
         machine: MachineFacts,
         cached: bool,
     ) -> Vec<Finding> {
-        let view = DoctorView::from_status_facts(StatusFacts { targets, machine });
+        let view = DoctorView::from_status_facts(
+            crate::doctor::tests::fixture_paths(),
+            StatusFacts { targets, machine },
+        );
         let max_tier = if cached { Tier::Cached } else { Tier::Quick };
         crate::doctor::detect(&view, &Selection::only(STATUS_FAILURE_MODES), max_tier).findings
     }

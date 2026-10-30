@@ -2,6 +2,7 @@
 //! rewrites its detector in place. Each reads only the view and sets `confidence: high`.
 
 pub(crate) mod concurrency;
+pub(crate) mod configs;
 pub(crate) mod external;
 pub(crate) mod plugins;
 pub(crate) mod schemas;

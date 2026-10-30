@@ -1,13 +1,25 @@
-//! `schemas`: state this build cannot write.
+//! `schemas`: state this build cannot read or write.
 
 use crate::doctor::budget::Budget;
 use crate::doctor::finding::{Confidence, Detected, Evidence, Observation, Subject};
+use crate::doctor::registry::ids;
 use crate::doctor::selection::Selection;
 use crate::doctor::view::DoctorView;
 
-/// `state-version-newer`: a target's record written by a newer omaddons.
+/// `state-corrupt`: a state file the view's layers could not read.
+pub(crate) fn state_corrupt(view: &DoctorView, _: &Selection, _: &mut Budget) -> Detected {
+    view.registry();
+    view.records();
+    Detected {
+        found: view.failure_observations(ids::STATE_CORRUPT),
+        incomplete: None,
+    }
+}
+
+/// `state-version-newer`: a target's record written by a newer omaddons, and a state file
+/// a newer omaddons wrote that does not decode.
 pub(crate) fn state_version_newer(view: &DoctorView, _: &Selection, _: &mut Budget) -> Detected {
-    let found = view
+    let mut found: Vec<Observation> = view
         .status_facts()
         .targets
         .iter()
@@ -28,6 +40,9 @@ pub(crate) fn state_version_newer(view: &DoctorView, _: &Selection, _: &mut Budg
             })
         })
         .collect();
+    view.registry();
+    view.records();
+    found.extend(view.failure_observations(ids::STATE_VERSION_NEWER));
     Detected {
         found,
         incomplete: None,

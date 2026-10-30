@@ -958,10 +958,13 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
     // Each issue is a finding of the failure-mode registry (E1), from the facts gathered
     // above: `--cached` runs the `cached` rows, plain `status` the `quick` ones too.
     let machine = machine_facts(widget.as_ref(), pending_journals(&pending, None, held));
-    let view = DoctorView::from_status_facts(StatusFacts {
-        targets: facts,
-        machine,
-    });
+    let view = DoctorView::from_status_facts(
+        world.paths.clone(),
+        StatusFacts {
+            targets: facts,
+            machine,
+        },
+    );
     let max_tier = if args.cached {
         Tier::Cached
     } else {

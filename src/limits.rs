@@ -77,7 +77,9 @@ pub const TOC_LINE_MAX: usize = 1024;
 /// Time budget per doctor `--quick` / `health` detector.
 pub const QUICK_DETECTOR_BUDGET: Duration = Duration::from_millis(5);
 /// Most bytes discovery reads from one client metadata file (`.build.info`,
-/// `.flavor.info`, `Config.wtf`, `realmlist.wtf`, …); the rest is ignored.
+/// `.flavor.info`, `Config.wtf`, `realmlist.wtf`, …); the rest is ignored. Also the most
+/// the doctor's view reads of one state or config file (`config.toml`, `registry.json`,
+/// a target's record): a larger one is a finding, never read in part.
 pub const DISCOVERY_FILE_MAX_BYTES: u64 = MIB;
 /// How long a credential `command` may run before it is killed.
 pub const CREDENTIAL_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
@@ -227,6 +229,10 @@ pub const OMARCHY_PING_TIMEOUT: Duration = Duration::from_secs(2);
 /// An Omarchy tool that timed out gets SIGTERM, with its process group, and this long
 /// to exit before the group gets SIGKILL.
 pub const OMARCHY_KILL_GRACE: Duration = Duration::from_millis(200);
+/// Most entries one doctor walk or directory listing visits per run; past it the layer
+/// or check is incomplete, never clean. `<state>/targets/` holds two files per client, so
+/// a listing over it is damage.
+pub const DOCTOR_SCAN_MAX_ENTRIES: u64 = 20_000;
 
 /// Snapshot retention: keep everything younger than `min_age`; beyond that, keep the
 /// last `keep_last` transactions per target that are younger than `window`.
@@ -468,7 +474,7 @@ pub const REGISTRY: &[LimitInfo] = &[
         LimitValue::Bytes(DISCOVERY_FILE_MAX_BYTES),
         "bytes",
         None,
-        "Most bytes read from one client metadata file during discovery",
+        "Most bytes read from one client metadata file during discovery, or from one state or config file the doctor's view reads",
     ),
     limit(
         "CREDENTIAL_COMMAND_TIMEOUT",
@@ -872,6 +878,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         None,
         "a timed-out Omarchy tool's process group, between SIGTERM and SIGKILL",
     ),
+    limit(
+        "DOCTOR_SCAN_MAX_ENTRIES",
+        LimitValue::Count(DOCTOR_SCAN_MAX_ENTRIES),
+        "count",
+        None,
+        "Most entries one doctor walk or listing visits per run",
+    ),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -1131,6 +1144,7 @@ mod tests {
         "OMARCHY_SHELL_JSON_MAX_BYTES",
         "OMARCHY_PING_TIMEOUT",
         "OMARCHY_KILL_GRACE",
+        "DOCTOR_SCAN_MAX_ENTRIES",
     ];
 
     const CONFIG_NAMES: &[&str] = &[

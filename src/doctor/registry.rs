@@ -12,12 +12,12 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::budget::Budget;
-use super::detectors::{concurrency, external, plugins, schemas, state_files, userland};
+use super::detectors::{concurrency, configs, external, plugins, schemas, state_files, userland};
 use super::finding::{
     Detected, Finding, Observation, Remediation, Severity, Subsystem, is_fm_id, subsystem_part,
 };
 use super::selection::Selection;
-use super::view::DoctorView;
+use super::view::{self, DoctorView};
 use crate::app::drift::reinstall_hint;
 use crate::app::status::{forget_target_hint, inspect_hint};
 use crate::engine::repair_action::{Fix, FixKind};
@@ -43,7 +43,7 @@ pub mod ids {
     /// The bar widget is from another omaddons build (E4 raises it).
     pub const WIDGET_VERSION_DRIFT: &str = "fm-plugins-widget-version-drift";
 
-    /// Every id above.
+    /// The seven ids above: the ones `status` publishes.
     pub(crate) const ALL: [&str; 7] = [
         JOURNAL_PENDING,
         STATE_VERSION_NEWER,
@@ -53,6 +53,12 @@ pub mod ids {
         TARGET_VANISHED,
         WIDGET_VERSION_DRIFT,
     ];
+
+    /// `config.toml` does not parse, holds a value out of range, or cannot be read (the
+    /// doctor's view raises it).
+    pub const CONFIG_PARSE_ERROR: &str = "fm-configs-config-parse-error";
+    /// A state file cannot be read (the doctor's view raises it).
+    pub const STATE_CORRUPT: &str = "fm-schemas-state-corrupt";
 }
 
 // ---------------------------------------------------------------------------------------
@@ -81,6 +87,26 @@ pub enum Layer {
     Discovery,
     Records,
     Inventory,
+}
+
+impl Layer {
+    pub const ALL: [Self; 5] = [
+        Self::Config,
+        Self::Registry,
+        Self::Discovery,
+        Self::Records,
+        Self::Inventory,
+    ];
+
+    /// The layers it is built from: it is unavailable when one of them is. Records never
+    /// need the registry, so a corrupt `registry.json` leaves the records-only checks.
+    pub const fn depends_on(self) -> &'static [Self] {
+        match self {
+            Self::Discovery => &[Self::Config, Self::Registry],
+            Self::Inventory => &[Self::Discovery, Self::Records],
+            Self::Config | Self::Registry | Self::Records => &[],
+        }
+    }
 }
 
 /// Where a fixer may write: a row of fsx's scope table.
@@ -296,6 +322,21 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         manual: Some(journal_manual),
     },
     FailureMode {
+        id: ids::CONFIG_PARSE_ERROR,
+        subsystem: Subsystem::Configs,
+        severity: Severity::P1,
+        title: "config.toml cannot be read",
+        description: "config.toml does not parse, holds a value out of range, is not UTF-8, is too large, or cannot be read.",
+        why: "Every change command fails closed with state_corrupt until it is fixed, and the doctor skips every check that depends on the configuration.",
+        tier: Tier::Cached,
+        online: false,
+        cost_ms: 1,
+        requires: &[],
+        detect: Some(configs::config_parse_error),
+        fix: None,
+        manual: Some(view_failure_manual),
+    },
+    FailureMode {
         id: ids::MANAGED_FILES_MODIFIED,
         subsystem: Subsystem::ExternalArtifacts,
         severity: Severity::P2,
@@ -341,12 +382,27 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         manual: Some(widget_manual),
     },
     FailureMode {
+        id: ids::STATE_CORRUPT,
+        subsystem: Subsystem::Schemas,
+        severity: Severity::P0,
+        title: "a state file cannot be read",
+        description: "A state file (the target registry or a client's record) does not decode, is too large, is not a regular file or cannot be read, or the records directory holds more entries than omaddons ever writes.",
+        why: "omaddons never rewrites a state file it cannot read, so every command that needs it fails closed with state_corrupt, and the doctor skips every check that depends on it.",
+        tier: Tier::Default,
+        online: false,
+        cost_ms: 2,
+        requires: &[],
+        detect: Some(schemas::state_corrupt),
+        fix: None,
+        manual: Some(view_failure_manual),
+    },
+    FailureMode {
         id: ids::STATE_VERSION_NEWER,
         subsystem: Subsystem::Schemas,
         severity: Severity::P0,
         title: "state was written by a newer omaddons",
-        description: "A client's record carries a newer schema version than this build writes.",
-        why: "This build reads it but never writes it, so every change on that client is refused until omaddons is upgraded.",
+        description: "A client's record, or the target registry, carries a newer schema version than this build writes.",
+        why: "This build never writes it, and cannot read one whose shape changed, so every change that needs it is refused until omaddons is upgraded.",
         tier: Tier::Cached,
         online: false,
         cost_ms: 1,
@@ -403,6 +459,11 @@ fn journal_manual(f: &Finding) -> Remediation {
 
 fn upgrade_manual(_: &Finding) -> Remediation {
     prose("upgrade omaddons")
+}
+
+/// A file the doctor's view could not read: prose, since no command repairs it.
+fn view_failure_manual(f: &Finding) -> Remediation {
+    prose(&view::failure_remediation(f.id, &f.evidence))
 }
 
 fn reinstall_manual(f: &Finding) -> Remediation {
@@ -832,7 +893,163 @@ mod tests {
                 "{id}"
             );
         }
-        assert_eq!(FAILURE_MODES.len(), 7);
+        // The seven, and the two the doctor's view raises.
+        assert_eq!(FAILURE_MODES.len(), 9);
+    }
+
+    #[test]
+    fn view_reported_rows_match_appendix_b() {
+        use crate::doctor::view::{LayerFailure, LayerState, Preloaded, Records};
+        use crate::state::config::LoadedConfig;
+        use crate::state::registry::Registry;
+        use crate::state::store::{Loaded, VersionStatus, Versioned};
+
+        let cases = [
+            (
+                ids::CONFIG_PARSE_ERROR,
+                Subsystem::Configs,
+                Severity::P1,
+                Tier::Cached,
+                1,
+            ),
+            (
+                ids::STATE_CORRUPT,
+                Subsystem::Schemas,
+                Severity::P0,
+                Tier::Default,
+                2,
+            ),
+        ];
+        for (id, subsystem, severity, tier, cost_ms) in cases {
+            let row = row(id).unwrap();
+            assert_eq!(
+                (
+                    row.subsystem,
+                    row.severity,
+                    row.tier,
+                    row.online,
+                    row.cost_ms,
+                    row.requires,
+                    row.fix.is_none(),
+                    row.manual.is_some(),
+                ),
+                (
+                    subsystem,
+                    severity,
+                    tier,
+                    false,
+                    cost_ms,
+                    &[][..],
+                    true,
+                    true
+                ),
+                "{id}"
+            );
+        }
+
+        // Every layer available, so a detector reads nothing more.
+        let healthy = || Preloaded {
+            config: Some(LayerState::Available(LoadedConfig::default())),
+            registry: Some(LayerState::Available(Loaded {
+                value: Registry::default(),
+                version: Registry::CURRENT,
+                status: VersionStatus::Current,
+            })),
+            records: Some(LayerState::Available(Records::default())),
+            failures: Vec::new(),
+        };
+        let paths = crate::doctor::tests::fixture_paths();
+        let failure = |fm: &'static str, file: &str, reason: &'static str| LayerFailure {
+            layer: Layer::Config,
+            fm,
+            target: None,
+            path: Path::new("/fixture").join(file),
+            evidence: Evidence {
+                path: Some(Path::new("/fixture").join(file)),
+                reason: Some(reason),
+                ..Evidence::default()
+            },
+            title: format!("{file} is broken"),
+        };
+        let failures = vec![
+            failure(ids::CONFIG_PARSE_ERROR, "config.toml", "parse"),
+            failure(ids::STATE_CORRUPT, "registry.json", "decode"),
+            failure(ids::STATE_VERSION_NEWER, "targets/x.json", "newer"),
+        ];
+        let broken = DoctorView::preloaded(
+            paths.clone(),
+            Preloaded {
+                failures,
+                ..healthy()
+            },
+        );
+        let healthy = DoctorView::preloaded(paths, healthy());
+        let view_findings = broken.failure_findings();
+        for id in [
+            ids::CONFIG_PARSE_ERROR,
+            ids::STATE_CORRUPT,
+            ids::STATE_VERSION_NEWER,
+        ] {
+            let row = row(id).unwrap();
+            let detect = row.detect.unwrap();
+            let found: Vec<Finding> = detect(&broken, &Selection::all(), &mut Budget::unlimited())
+                .found
+                .into_iter()
+                .map(|obs| row.finding(obs))
+                .collect();
+            let expected: Vec<Finding> = view_findings
+                .iter()
+                .filter(|f| f.id == id)
+                .cloned()
+                .collect();
+            assert_eq!(found.len(), 1, "{id}: {found:?}");
+            assert_eq!(
+                found, expected,
+                "{id}: the detector's finding is the view's"
+            );
+            let none = detect(&healthy, &Selection::all(), &mut Budget::unlimited());
+            assert_eq!(none, Detected::default(), "{id} on a healthy view");
+        }
+        // A failure's remediation is the view's prose, and no command.
+        for finding in &view_findings {
+            assert_eq!(finding.remediation.argv, None, "{}", finding.id);
+            assert!(!finding.remediation.command.is_empty(), "{}", finding.id);
+        }
+    }
+
+    #[test]
+    fn layer_order_and_dependencies() {
+        assert_eq!(
+            Layer::ALL,
+            [
+                Layer::Config,
+                Layer::Registry,
+                Layer::Discovery,
+                Layer::Records,
+                Layer::Inventory
+            ]
+        );
+        let cases: [(Layer, &[Layer]); 5] = [
+            (Layer::Config, &[]),
+            (Layer::Registry, &[]),
+            (Layer::Discovery, &[Layer::Config, Layer::Registry]),
+            (Layer::Records, &[]),
+            (Layer::Inventory, &[Layer::Discovery, Layer::Records]),
+        ];
+        for (layer, expected) in cases {
+            assert_eq!(layer.depends_on(), expected, "{layer:?}");
+        }
+        // No cycle: a depth-first walk from each layer never comes back to it.
+        for start in Layer::ALL {
+            let mut stack: Vec<Layer> = start.depends_on().to_vec();
+            let mut seen = BTreeSet::new();
+            while let Some(layer) = stack.pop() {
+                assert_ne!(layer, start, "{start:?} depends on itself");
+                if seen.insert(layer) {
+                    stack.extend(layer.depends_on());
+                }
+            }
+        }
     }
 
     #[test]

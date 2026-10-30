@@ -1,5 +1,6 @@
 ---
 source: src/limits.rs
+assertion_line: 1355
 expression: "(politeness, REGISTRY)"
 ---
 [
@@ -435,7 +436,7 @@ expression: "(politeness, REGISTRY)"
       },
       "unit": "bytes",
       "config_key": null,
-      "notes": "Most bytes read from one client metadata file during discovery"
+      "notes": "Most bytes read from one client metadata file during discovery, or from one state or config file the doctor's view reads"
     },
     {
       "name": "CREDENTIAL_COMMAND_TIMEOUT",
@@ -949,6 +950,15 @@ expression: "(politeness, REGISTRY)"
       "unit": "ms",
       "config_key": null,
       "notes": "a timed-out Omarchy tool's process group, between SIGTERM and SIGKILL"
+    },
+    {
+      "name": "DOCTOR_SCAN_MAX_ENTRIES",
+      "value": {
+        "count": 20000
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Most entries one doctor walk or listing visits per run"
     }
   ]
 ]

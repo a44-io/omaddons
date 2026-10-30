@@ -167,6 +167,17 @@ pub struct Evidence {
     /// says it all.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<&'static str>,
+    /// A configuration key's name (`limits.tx_retention_count`), never its value. Omitted
+    /// when no key is concerned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// A size in bytes. Omitted when no size is concerned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
+    /// The name of the limit a size or count is over (`DISCOVERY_FILE_MAX_BYTES`), as
+    /// `capabilities` lists it. Omitted when no limit is concerned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<&'static str>,
 }
 
 /// `mode` as exactly four octal digits.
