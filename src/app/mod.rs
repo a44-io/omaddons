@@ -11,6 +11,7 @@ pub mod backups_status;
 pub mod completions;
 pub mod config;
 pub mod copy;
+pub mod doctor;
 pub mod drift;
 pub mod engine;
 pub mod errors;
@@ -163,6 +164,14 @@ pub fn data_schema<O: output::Outcome>(g: &mut schemars::SchemaGenerator) -> sch
     g.root_schema_for::<O::Data>()
 }
 
+/// A doctor path's `data` schema: its report's, whose keys its envelope carries at the
+/// top level (M4-D34).
+pub fn report_schema<O: output::DoctorOutcome>(
+    g: &mut schemars::SchemaGenerator,
+) -> schemars::Schema {
+    g.root_schema_for::<O::Report>()
+}
+
 /// A general-dictionary row that stores no plan; [`CommandEntry::doctor`] and
 /// [`CommandEntry::storing_plan`] change either.
 const fn entry(
@@ -228,6 +237,9 @@ pub const COMMANDS: &[CommandEntry] = &[
     entry("history", Look, false, &[0, 1, 2, 3, 4], data_schema::<history::HistoryOutcome>, Network::None),
     entry("plans show", Look, false, &[0, 1, 2, 3], data_schema::<plans::PlansShowOutcome>, Network::None),
     entry("net-log", Look, false, &[0, 1, 2], data_schema::<net_log::NetLogOutcome>, Network::None),
+    // Bare `doctor` runs as `doctor diagnose`: this name appears only on usage errors.
+    entry("doctor", Look, false, &[0, 1, 4, 6, 64, 66, 73, 74], report_schema::<doctor::DiagnoseOutcome>, Network::Optional).doctor(),
+    entry("doctor diagnose", Look, false, &[0, 1, 4, 6, 64, 66, 73, 74], report_schema::<doctor::DiagnoseOutcome>, Network::Optional).doctor(),
     entry("install", Change, true, &[0, 1, 2, 3, 4, 5, 6], data_schema::<install::InstallOutcome>, Network::Optional).storing_plan(),
     entry("update", Change, true, &[0, 1, 2, 3, 4, 5, 6], data_schema::<update::UpdateOutcome>, Network::Optional).storing_plan(),
     entry("pin", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<pin::PinOutcome>, Network::Optional).storing_plan(),
@@ -389,6 +401,10 @@ pub fn canonical_path(command: &Command) -> &'static str {
             None => "errors",
         },
         Command::NetLog(_) => "net-log",
+        Command::Doctor(args) => args
+            .action
+            .as_ref()
+            .map_or("doctor diagnose", doctor::DoctorAction::command),
         Command::List(_) => "list",
         Command::Targets(args) => args
             .action
@@ -451,6 +467,29 @@ impl Out<'_> {
             self.notes,
             result,
         )
+    }
+
+    /// A doctor path's result, in the doctor's dictionary: a failure with the same
+    /// boundary fixes as [`Out::emit_as`]'s.
+    fn emit_doctor<O: output::DoctorOutcome>(
+        &self,
+        result: std::result::Result<O, output::DoctorFailure>,
+    ) -> ProcessExit {
+        let result = result.map_err(|mut failure| {
+            self.boundary_fix(self.name, &mut failure.error);
+            failure
+        });
+        let mut reporter = output::lock(self.reporter);
+        output::emit_doctor(
+            self.cfg,
+            &mut reporter,
+            self.name,
+            self.started,
+            self.offline,
+            self.notes,
+            result,
+        )
+        .into()
     }
 
     /// The fixes only the command's boundary knows: an internal error's never reruns
@@ -652,6 +691,17 @@ pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> ProcessE
         };
         return out.emit_as("help", result).into();
     }
+    // The doctor exits in its own dictionary, and changes nothing a history projection
+    // follows.
+    if let Some(Command::Doctor(args)) = &cli.command {
+        let result = doctor::run(ctx, args);
+        if let Ok(outcome) = &result {
+            for note in &outcome.notes {
+                out.log(output::LogLevel::Debug, note);
+            }
+        }
+        return out.emit_doctor(result);
+    }
     let exit = run_command(cli, ctx, &out);
     // A command that may have appended history (by its full path: `config set`, not
     // `config`) rebuilds the history projection it could not keep current under its
@@ -671,6 +721,10 @@ pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> ProcessE
 fn run_command(cli: &Cli, ctx: &Context, out: &Out<'_>) -> Exit {
     match &cli.command {
         None => out.emit(Ok(help::bare())),
+        // `dispatch` runs the doctor first, in its own dictionary.
+        Some(Command::Doctor(_)) => out.emit::<help::HelpOutcome>(Err(
+            crate::error::Error::internal("the doctor is dispatched before run_command"),
+        )),
         Some(Command::Help { command }) => {
             let path = command.join(" ");
             let name = (!path.is_empty()).then_some(path.as_str());
@@ -1010,9 +1064,24 @@ mod tests {
                     }
                 }
             }
-            Dictionary::Doctor => broken.push(
-                "the doctor dictionary is E3's (omad-m4-agent-surface-doctor-c6cm.5.3): extend these rules with doctor::Exit".to_owned(),
-            ),
+            Dictionary::Doctor => {
+                let doctor: Vec<u8> = crate::doctor::exit::Exit::ALL
+                    .iter()
+                    .map(|e| e.code())
+                    .collect();
+                let outside: Vec<&u8> = exits.iter().filter(|c| !doctor.contains(c)).collect();
+                if !outside.is_empty() {
+                    broken.push(format!("{outside:?} are outside the doctor dictionary"));
+                }
+                // healthy, usage_error and io_error: every doctor command can end so.
+                for code in [0, 64, 74] {
+                    if !exits.contains(&code) {
+                        broken.push(format!(
+                            "a doctor row lists 0, 64 and 74: {code} is missing"
+                        ));
+                    }
+                }
+            }
         }
         if entry.mutates {
             for code in [4, 5] {
@@ -1021,7 +1090,8 @@ mod tests {
                 }
             }
         }
-        if exits.contains(&6) != has_check_or_strict {
+        // In the doctor's dictionary 6 is online_required, never an assertion.
+        if entry.dictionary == Dictionary::General && exits.contains(&6) != has_check_or_strict {
             broken.push(format!(
                 "6 is listed exactly with --check or --strict: listed {}, flag {has_check_or_strict}",
                 exits.contains(&6)
@@ -1113,10 +1183,22 @@ mod tests {
             ("empty", with(&[], false), false, "exits is empty"),
             ("plan_on_a_read", base.storing_plan(), false, "must mutate"),
             (
-                "doctor_row",
-                base.doctor(),
+                "doctor_row_without_64",
+                CommandEntry {
+                    exits: &[0, 1, 74],
+                    ..base.doctor()
+                },
                 false,
-                "omad-m4-agent-surface-doctor-c6cm.5.3",
+                "64 is missing",
+            ),
+            (
+                "doctor_row_outside_its_dictionary",
+                CommandEntry {
+                    exits: &[0, 7, 64, 74],
+                    ..base.doctor()
+                },
+                false,
+                "outside the doctor dictionary",
             ),
         ] {
             let broken = exit_rule_violations(&planted, flag);
@@ -1129,6 +1211,13 @@ mod tests {
         let valid = with(&[0, 1, 2, 4, 5], true);
         let broken = exit_rule_violations(&valid, false);
         assert!(broken.is_empty(), "valid: {broken:?}");
+        // 6 is online_required in the doctor's dictionary, with no --check flag.
+        let doctor = CommandEntry {
+            exits: &[0, 1, 6, 64, 74],
+            ..base.doctor()
+        };
+        let broken = exit_rule_violations(&doctor, false);
+        assert!(broken.is_empty(), "a valid doctor row: {broken:?}");
     }
 
     fn schema_of(row: &str) -> serde_json::Value {
@@ -1252,7 +1341,15 @@ mod tests {
             Some((Group::Setup, true))
         );
         assert!(command_entry("auth").is_none());
-        assert!(COMMANDS.iter().all(|c| c.dictionary == Dictionary::General));
+        // The doctor tree, and only it, exits in the doctor's dictionary.
+        for row in COMMANDS {
+            assert_eq!(
+                row.dictionary == Dictionary::Doctor,
+                row.name.split(' ').next() == Some("doctor"),
+                "{}",
+                row.name
+            );
+        }
     }
 
     #[test]

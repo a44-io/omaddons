@@ -8,6 +8,7 @@ pub const FEATURES: &[&str] = &[
     "dry_run_everywhere",
     "preconditions",
     "stored_plans",
+    "doctor",
     "offline",
     "progress_ndjson",
     "undo",

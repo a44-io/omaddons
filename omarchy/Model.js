@@ -145,6 +145,8 @@ var CLI_PATHS = {
   "history":           { "mutates": false, "destructive": false, "binds": false },
   "plans show":        { "mutates": false, "destructive": false, "binds": false },
   "net-log":           { "mutates": false, "destructive": false, "binds": false },
+  "doctor":            { "mutates": false, "destructive": false, "binds": false },
+  "doctor diagnose":   { "mutates": false, "destructive": false, "binds": false },
   "install":           { "mutates": true,  "destructive": false, "binds": true },
   "update":            { "mutates": true,  "destructive": false, "binds": true },
   "pin":               { "mutates": true,  "destructive": false, "binds": true },

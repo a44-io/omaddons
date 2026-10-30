@@ -1,0 +1,39 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "doctor diagnose",
+  "commands": [],
+  "doctor_contract_version": "1.0",
+  "exit_code": 0,
+  "findings": [],
+  "finished_at": "<time>",
+  "next_steps": [],
+  "ok": true,
+  "run_dir": "<root>/state/omaddons/doctor/runs/<run>",
+  "run_id": "<run>",
+  "schema_version": "1.0",
+  "skipped": [],
+  "started_at": "<time>",
+  "state": "DONE_OK",
+  "summary": {
+    "auto_fixable": 0,
+    "by_severity": {
+      "P0": 0,
+      "P1": 0,
+      "P2": 0,
+      "P3": 0
+    },
+    "duration_ms": 0,
+    "incomplete": 0,
+    "manual": 0,
+    "needs_force": 0,
+    "online_required": 0,
+    "skipped": 0,
+    "total_findings": 0
+  },
+  "tool_version": "<version>",
+  "view": "full",
+  "warnings": []
+}

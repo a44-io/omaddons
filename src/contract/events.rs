@@ -157,7 +157,15 @@ pub struct ErrorEvent<'a> {
 }
 
 impl<'a> ErrorEvent<'a> {
+    /// The event of `error` in a run that exits by its own code's exit.
+    #[cfg(test)]
     pub(crate) fn of(error: &'a Error) -> Self {
+        Self::exiting(error, error.exit().code())
+    }
+
+    /// The event of `error` in a run that exits `exit_code` (a doctor command's, from its
+    /// own dictionary).
+    pub(crate) fn exiting(error: &'a Error, exit_code: u8) -> Self {
         Self {
             event: EventName::Error,
             code: error.code.wire(),
@@ -165,7 +173,7 @@ impl<'a> ErrorEvent<'a> {
             fix: error.fix.display(),
             fix_argv: error.fix.argv(),
             retryable: error.retryable,
-            exit_code: error.exit().code(),
+            exit_code,
         }
     }
 }

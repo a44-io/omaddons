@@ -10,7 +10,7 @@ use serde::Serialize;
 use super::finding::{Finding, Severity};
 use super::registry::ids;
 use super::runtime::{Diagnosis, DoctorRunId};
-use super::selection::Skipped;
+use super::selection::{SkipReason, Skipped};
 use crate::error::{CommandHint, ErrorBody, Warning};
 use crate::output::RunKind;
 
@@ -143,9 +143,9 @@ pub struct BySeverity {
 pub struct Since {
     pub run: DoctorRunId,
     /// Instances found now and not then, sorted.
-    pub new: Vec<String>,
+    pub new_instances: Vec<String>,
     /// Instances found then and not now, sorted.
-    pub resolved: Vec<String>,
+    pub resolved_instances: Vec<String>,
     /// Instances found both times.
     pub unchanged: u32,
 }
@@ -182,8 +182,12 @@ pub fn summary(findings: &[Finding], skipped: &[Skipped], duration_ms: u64) -> S
         auto_fixable,
         needs_force,
         manual: total_findings.saturating_sub(auto_fixable + needs_force),
-        // No check needs the network yet: F7's online checks bring the reason.
-        online_required: 0,
+        online_required: count(
+            skipped
+                .iter()
+                .filter(|s| s.reason == SkipReason::OnlineRequired)
+                .count(),
+        ),
         skipped: count(skipped.len()),
         incomplete: count(
             findings
@@ -201,8 +205,8 @@ pub fn since(run: DoctorRunId, old: &[String], new: &[Finding]) -> Since {
     let now: BTreeSet<&str> = new.iter().map(|f| f.instance.as_str()).collect();
     Since {
         run,
-        new: now.difference(&old).map(|key| (*key).to_owned()).collect(),
-        resolved: old.difference(&now).map(|key| (*key).to_owned()).collect(),
+        new_instances: now.difference(&old).map(|key| (*key).to_owned()).collect(),
+        resolved_instances: old.difference(&now).map(|key| (*key).to_owned()).collect(),
         unchanged: u32::try_from(now.intersection(&old).count()).unwrap_or(u32::MAX),
     }
 }
@@ -356,16 +360,24 @@ mod tests {
         for (case, old, new, added, resolved, unchanged) in cases {
             let got = since(run(), &old, &new);
             assert_eq!(
-                (got.new.len(), got.resolved.len(), got.unchanged),
+                (
+                    got.new_instances.len(),
+                    got.resolved_instances.len(),
+                    got.unchanged
+                ),
                 (added, resolved, unchanged),
                 "{case}: {got:?}"
             );
-            let mut sorted = got.new.clone();
+            let mut sorted = got.new_instances.clone();
             sorted.sort();
-            assert_eq!(got.new, sorted, "{case}: new is sorted");
+            assert_eq!(got.new_instances, sorted, "{case}: sorted");
         }
         let got = since(run(), &keys(&[a.clone(), b.clone()]), &[b]);
-        assert_eq!(got.resolved, keys(&[a]), "by instance key, never by label");
+        assert_eq!(
+            got.resolved_instances,
+            keys(&[a]),
+            "by instance key, never by label"
+        );
     }
 
     #[test]

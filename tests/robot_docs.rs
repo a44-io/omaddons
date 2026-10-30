@@ -28,6 +28,7 @@ use common::tlog::{Ran, Runner, TestLog, tlog};
 use omaddons::app::{COMMANDS, command_entry};
 use omaddons::contract::events::EventName;
 use omaddons::contract::schema::{self, command_schema, envelope_schema, error_variant};
+use omaddons::doctor::exit::exit_for;
 use omaddons::error::{ErrorCode, WarningCode};
 use omaddons::state::store::KINDS;
 use serde_json::{Value, json};
@@ -335,6 +336,7 @@ fn errors_lists_every_code_with_its_facts() {
         let union_details = error_variant(*code).to_value()["properties"]["details"].clone();
         let facts = [
             ("exit", json!(code.exit().code())),
+            ("doctor_exit", json!(exit_for(*code).code())),
             (
                 "retryable",
                 serde_json::to_value(code.retryability()).unwrap(),
@@ -349,10 +351,6 @@ fn errors_lists_every_code_with_its_facts() {
             if *published != expected {
                 differing.push(format!("{code}: {field}"));
             }
-        }
-        // The doctor dictionary (E3) is not on main yet: no row publishes a doctor exit.
-        if row.get("doctor_exit").is_some() {
-            differing.push(format!("{code}: doctor_exit before the doctor dictionary"));
         }
     }
     for (row, code) in warnings.iter().zip(WarningCode::ALL) {

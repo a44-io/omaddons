@@ -30,17 +30,73 @@ const RULES: &[(&str, u8)] = &[
 ];
 
 /// A permanent, reasoned exception for a vocabulary omaddons does not own.
+#[derive(Debug, Clone, Copy)]
 struct Exception {
     rule: &'static str,
-    /// Exact, or `command *` for every command.
+    /// Exact, or `<prefix> *` for that scope and every one below it (`command *` for
+    /// every command, `command doctor *` for the doctor tree).
     scope: &'static str,
     /// A walk path; a leading `**.` matches at any depth.
     path: &'static str,
     reason: &'static str,
 }
 
-/// Empty until a leaf brings an outside vocabulary (the doctor's states and severities).
-const EXCEPTIONS: &[Exception] = &[];
+/// The doctor contract's report (M4-D34, A.4) names its severities and run states as
+/// generic doctor consumers read them.
+const DOCTOR_CONTRACT: &str =
+    "the doctor contract's own names (M4-D34, A.4), which generic doctor consumers read";
+
+/// Outside vocabularies omaddons publishes as they are.
+const EXCEPTIONS: &[Exception] = &[
+    Exception {
+        rule: "r3-array-plural",
+        scope: "command doctor *",
+        path: "skipped",
+        reason: DOCTOR_CONTRACT,
+    },
+    Exception {
+        rule: "r3-name-case",
+        scope: "command doctor *",
+        path: "summary.by_severity.P0",
+        reason: DOCTOR_CONTRACT,
+    },
+    Exception {
+        rule: "r3-name-case",
+        scope: "command doctor *",
+        path: "summary.by_severity.P1",
+        reason: DOCTOR_CONTRACT,
+    },
+    Exception {
+        rule: "r3-name-case",
+        scope: "command doctor *",
+        path: "summary.by_severity.P2",
+        reason: DOCTOR_CONTRACT,
+    },
+    Exception {
+        rule: "r3-name-case",
+        scope: "command doctor *",
+        path: "summary.by_severity.P3",
+        reason: DOCTOR_CONTRACT,
+    },
+    Exception {
+        rule: "r4-open-enum",
+        scope: "command doctor *",
+        path: "findings[].evidence.mode",
+        reason: "a POSIX permission mode, four octal digits checked by a pattern: no enumeration",
+    },
+    Exception {
+        rule: "r4-value-case",
+        scope: "command doctor *",
+        path: "findings[].severity",
+        reason: DOCTOR_CONTRACT,
+    },
+    Exception {
+        rule: "r4-value-case",
+        scope: "command doctor *",
+        path: "state",
+        reason: DOCTOR_CONTRACT,
+    },
+];
 
 const ULID_PATTERN: &str = "^[0-9A-HJKMNP-TV-Z]{26}$";
 
@@ -469,14 +525,40 @@ fn parse_allowlist(text: &str) -> Result<Vec<String>, Vec<String>> {
     }
 }
 
+/// A line's or a violation's `<rule> | <scope> | <path>`.
+fn fields(line: &str) -> Option<(&str, &str, &str)> {
+    let mut fields = line.split(" | ");
+    Some((fields.next()?, fields.next()?, fields.next()?))
+}
+
+/// Whether `pattern` covers `scope`: the same scope, or `<prefix> *` over that prefix (but
+/// a bare `command`) and every scope below it, never a longer word.
+fn scope_matches(pattern: &str, scope: &str) -> bool {
+    pattern == scope
+        || pattern.strip_suffix(" *").is_some_and(|prefix| {
+            scope.strip_prefix(prefix).is_some_and(|rest| {
+                rest.starts_with(' ') || (rest.is_empty() && prefix != "command")
+            })
+        })
+}
+
+/// Whether the allowlist `line` covers `violation`: the same line, or a `<prefix> *` scope
+/// with the same rule and path, for a shape defined once and carried by every scope below
+/// it (the error wrapper's keys).
+fn line_matches(line: &str, violation: &str) -> bool {
+    match (fields(line), fields(violation)) {
+        (Some((rule, scope, path)), Some((found_rule, found_scope, found_path))) => {
+            rule == found_rule && path == found_path && scope_matches(scope, found_scope)
+        }
+        _ => false,
+    }
+}
+
 fn exception_matches(exception: &Exception, violation: &str) -> bool {
-    let mut fields = violation.split(" | ");
-    let (Some(rule), Some(scope), Some(path)) = (fields.next(), fields.next(), fields.next())
-    else {
+    let Some((rule, scope, path)) = fields(violation) else {
         return false;
     };
-    let scope_matches = exception.scope == scope
-        || (exception.scope == "command *" && scope.starts_with("command "));
+    let scope_matches = scope_matches(exception.scope, scope);
     let path_matches = match exception.path.strip_prefix("**.") {
         Some(suffix) => {
             path == suffix
@@ -497,10 +579,9 @@ fn compare(
     exceptions: &[Exception],
 ) -> Result<(), String> {
     let listed = parse_allowlist(allowlist).map_err(|problems| problems.join("\n"))?;
-    let listed_set: BTreeSet<&str> = listed.iter().map(String::as_str).collect();
     let mut failures = Vec::new();
     for violation in violations {
-        if listed_set.contains(violation.as_str())
+        if listed.iter().any(|line| line_matches(line, violation))
             || exceptions.iter().any(|e| exception_matches(e, violation))
         {
             continue;
@@ -516,7 +597,10 @@ fn compare(
         ));
     }
     for line in &listed {
-        if !violations.contains(line) {
+        if !violations
+            .iter()
+            .any(|violation| line_matches(line, violation))
+        {
             failures.push(format!(
                 "`{line}` no longer matches a violation: remove it (the allowlist may only shrink)"
             ));
@@ -1240,6 +1324,39 @@ fn a_stale_line_fails() {
     );
 }
 
+/// A `<prefix> *` line covers its rule and path in every scope below the prefix, and is
+/// stale only when none of them has it.
+#[test]
+fn a_wildcard_line_covers_every_scope_below_it() {
+    let line = "r3-array-plural | error * | details.required_by";
+    for (violation, covered) in [
+        ("r3-array-plural | error usage | details.required_by", true),
+        (
+            "r3-array-plural | error doctor_refused | details.required_by",
+            true,
+        ),
+        ("r3-array-plural | error usage | details.tried", false),
+        ("r3-name-case | error usage | details.required_by", false),
+        (
+            "r3-array-plural | errors usage | details.required_by",
+            false,
+        ),
+        (
+            "r3-array-plural | command usage | details.required_by",
+            false,
+        ),
+    ] {
+        assert_eq!(line_matches(line, violation), covered, "{violation}");
+    }
+    let found: BTreeSet<String> =
+        ["r3-array-plural | error usage | details.tried".to_owned()].into();
+    let failure = compare(&found, &format!("{line}\n"), &[]).unwrap_err();
+    assert!(
+        failure.contains(&format!("`{line}` no longer matches")),
+        "{failure}"
+    );
+}
+
 #[test]
 fn a_stale_exception_fails() {
     let stale = [Exception {
@@ -1254,12 +1371,13 @@ fn a_stale_exception_fails() {
         failure.contains("matches no violation") && failure.contains("**.no_such_field"),
         "{failure}"
     );
-    let matching = [Exception {
+    let mut matching: Vec<Exception> = EXCEPTIONS.to_vec();
+    matching.push(Exception {
         rule: "r4-value-case",
         scope: "command planted",
         path: "color",
         reason: "an outside vocabulary",
-    }];
+    });
     let mut with_planted = found.clone();
     with_planted.extend(violations(&[planted("r4-value-case")], &[]));
     assert_eq!(
@@ -1267,4 +1385,33 @@ fn a_stale_exception_fails() {
         Ok(()),
         "a matching exception covers its violation"
     );
+
+    // `<prefix> *` covers that scope and the ones below it, never a longer word.
+    let tree = Exception {
+        rule: "r4-value-case",
+        scope: "command doctor *",
+        path: "state",
+        reason: "an outside vocabulary",
+    };
+    for (scope, matches) in [
+        ("command doctor", true),
+        ("command doctor diagnose", true),
+        ("command doctors", false),
+        ("command status", false),
+    ] {
+        let violation = format!("r4-value-case | {scope} | state");
+        assert_eq!(exception_matches(&tree, &violation), matches, "{scope}");
+    }
+    let every = Exception {
+        scope: "command *",
+        ..tree
+    };
+    assert!(exception_matches(
+        &every,
+        "r4-value-case | command status | state"
+    ));
+    assert!(!exception_matches(
+        &every,
+        "r4-value-case | error usage | state"
+    ));
 }

@@ -207,6 +207,13 @@ pub enum Command {
     Export(crate::app::export::ExportArgs),
     /// Every network request omaddons made
     NetLog(crate::app::net_log::NetLogArgs),
+    /// Diagnose what omaddons manages (bare: diagnose; changes nothing outside its run
+    /// record)
+    #[command(
+        after_long_help = crate::app::doctor::doctor_help(),
+        args_conflicts_with_subcommands = true
+    )]
+    Doctor(crate::app::doctor::DoctorArgs),
     /// List the addons in each target's AddOns folder
     #[command(visible_alias = "ls")]
     List(crate::app::list::ListArgs),

@@ -6,6 +6,7 @@ mod detectors;
 pub mod exit;
 pub mod facts;
 pub mod finding;
+pub mod plan;
 pub mod registry;
 pub mod report;
 pub mod runtime;

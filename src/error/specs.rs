@@ -540,6 +540,31 @@ pub(crate) const IO: DetailSpec = DetailSpec::Object(&[
     ),
 ]);
 
+/// `doctor --only` naming only online checks: the failure modes that need `--online`.
+pub(crate) const ONLINE_REQUIRED: DetailSpec = DetailSpec::Object(&[Field::req("fms", &STRINGS)]);
+
+/// Every refused doctor run (M4-D40): why, the failure mode or resources concerned, and
+/// for `over_budget` what was compared.
+pub(crate) const DOCTOR_REFUSED: DetailSpec = DetailSpec::Object(&[
+    Field::opt("budget_ms", &INT),
+    Field::opt("estimated_ms", &INT),
+    Field::opt("fm", &STR),
+    Field::req(
+        "reason",
+        &DetailSpec::Enum(&[
+            "force_required",
+            "fixer_conflict",
+            "too_many_actions",
+            "over_budget",
+            "filesystem_mismatch",
+            "client_running",
+            "not_enabled",
+            "edited_locally",
+        ]),
+    ),
+    Field::opt("resources", &STRINGS),
+]);
+
 /// Omarchy plugin validation and journal unexpected/unrecognized states; other bugs `{}`.
 pub(crate) const INTERNAL: DetailSpec = DetailSpec::Object(&[
     Field::opt("problems", &STRINGS),

@@ -1,12 +1,11 @@
 //! The manifest's registries (M4-D56): every enumerable fact a consumer may switch on.
-//! Error codes with their exits and retryability, warning codes, actions, events, phases,
-//! log levels, the general exit dictionary, the `release` environment variables, and every
-//! persisted kind with its own version. Meanings and descriptions are prose and are not
-//! recorded.
+//! Error codes with their exits (general and doctor) and retryability, warning codes,
+//! actions, events, phases, log levels, both exit dictionaries, the `release` environment
+//! variables, and every persisted kind with its own version. Meanings and descriptions
+//! are prose and are not recorded.
 //!
-//! Not recorded yet, because their registries are not in this build: the doctor's exit
-//! dictionary and each code's `doctor_exit` (E3), failure-mode ids (E1) and the doctor's
-//! allowed operations (E4).
+//! Not recorded yet, because their registries are not in this build: failure-mode ids (E1)
+//! and the doctor's allowed operations (E4).
 
 use std::collections::BTreeMap;
 
@@ -15,6 +14,7 @@ use super::{Builder, Fact, NodeKind, fact};
 use crate::contract::actions::Action;
 use crate::contract::env;
 use crate::contract::events::{EventName, LogLevel, Phase};
+use crate::doctor::exit::{Exit as DoctorExit, exit_for};
 use crate::engine::journal;
 use crate::error::{ErrorCode, Exit, Retryability, WarningCode};
 use crate::state::store::{KINDS, SchemaVersion};
@@ -26,6 +26,10 @@ pub(crate) fn collect(b: &mut Builder) {
     for code in ErrorCode::ALL {
         let facts = [
             (fact::EXIT, Some(Fact::Int(i64::from(code.exit().code())))),
+            (
+                fact::DOCTOR_EXIT,
+                Some(Fact::Int(i64::from(exit_for(*code).code()))),
+            ),
             (
                 fact::RETRYABLE,
                 Some(Fact::Text(retryable(code.retryability()).to_owned())),
@@ -83,6 +87,11 @@ pub(crate) fn collect(b: &mut Builder) {
             ),
         ];
         let id = ids::registry(section::EXIT, &format!("general {}", exit.code()));
+        b.insert(id, NodeKind::ExitCode, facts);
+    }
+    for exit in DoctorExit::ALL {
+        let facts = [(fact::NAME, Some(Fact::Text(exit.name().to_owned())))];
+        let id = ids::registry(section::EXIT, &format!("doctor {}", exit.code()));
         b.insert(id, NodeKind::ExitCode, facts);
     }
     for var in env::release() {
@@ -236,9 +245,33 @@ mod tests {
     }
 
     #[test]
+    fn doctor_exit_dictionary_is_recorded() {
+        let nodes = nodes();
+        for exit in DoctorExit::ALL {
+            let id = ids::registry(section::EXIT, &format!("doctor {}", exit.code()));
+            assert_eq!(
+                get(&nodes, &id, fact::NAME),
+                Some(&Fact::Text(exit.name().into())),
+                "{id}"
+            );
+        }
+        for code in ErrorCode::ALL {
+            let id = ids::anchored(section::ERROR, code.wire(), None);
+            assert_eq!(
+                get(&nodes, &id, fact::DOCTOR_EXIT),
+                Some(&Fact::Int(i64::from(exit_for(*code).code()))),
+                "{id}"
+            );
+        }
+    }
+
+    #[test]
     fn general_exit_dictionary_is_recorded() {
         let nodes = nodes();
-        assert_eq!(of_kind(&nodes, NodeKind::ExitCode).len(), Exit::ALL.len());
+        assert_eq!(
+            of_kind(&nodes, NodeKind::ExitCode).len(),
+            Exit::ALL.len() + DoctorExit::ALL.len()
+        );
         for exit in Exit::ALL {
             let id = ids::registry(section::EXIT, &format!("general {}", exit.code()));
             assert_eq!(

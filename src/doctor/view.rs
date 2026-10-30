@@ -507,7 +507,7 @@ impl DoctorView {
                 let evidence = Evidence {
                     line: number("line"),
                     column: number("column"),
-                    key,
+                    config_key: key,
                     ..Evidence::default()
                 };
                 self.fail(failed, reason, evidence)
@@ -1091,7 +1091,7 @@ fn failure_title(file: &str, reason: FailureReason, evidence: &Evidence) -> Stri
         FailureReason::Parse => format!("{file} does not parse (line {line}, column {column})"),
         FailureReason::InvalidValue => format!(
             "{file} has an invalid value for {} (line {line})",
-            evidence.key.as_deref().unwrap_or("a key")
+            evidence.config_key.as_deref().unwrap_or("a key")
         ),
         FailureReason::NotUtf8 => format!("{file} is not UTF-8 (line {line}, column {column})"),
         FailureReason::TooLarge => format!("{file} is larger than omaddons reads"),
@@ -1124,7 +1124,7 @@ pub(crate) fn failure_remediation(fm: &str, evidence: &Evidence) -> String {
         ),
         Some(FailureReason::InvalidValue) => format!(
             "fix the value of {} on line {line} of {path}",
-            evidence.key.as_deref().unwrap_or("the key")
+            evidence.config_key.as_deref().unwrap_or("the key")
         ),
         Some(FailureReason::NotUtf8) => format!("save {path} as UTF-8"),
         Some(FailureReason::TooLarge) if fm == ids::CONFIG_PARSE_ERROR => {
@@ -1634,7 +1634,7 @@ pub(crate) mod tests {
                 reason: e.reason.unwrap_or_default(),
                 line: e.line,
                 column: e.column,
-                key: e.key.clone(),
+                key: e.config_key.clone(),
                 observed: e.observed.clone(),
                 bytes: e.bytes,
                 count: e.count,
@@ -2319,7 +2319,7 @@ pub(crate) mod tests {
             reason: Some(reason.as_str()),
             line: Some(3),
             column: Some(5),
-            key: Some("check_interval_hours".to_owned()),
+            config_key: Some("check_interval_hours".to_owned()),
             observed: Some("9.0".to_owned()),
             count: Some(20_000),
             ..Evidence::default()

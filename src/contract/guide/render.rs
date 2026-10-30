@@ -133,8 +133,18 @@ impl GuideInputs {
                 })
                 .collect(),
             exit_general: Exit::ALL.iter().map(|&exit| exit_row(exit)).collect(),
-            // The doctor's dictionary (E3) is not in this build yet.
-            exit_doctor: None,
+            exit_doctor: Some(
+                crate::doctor::exit::Exit::ALL
+                    .iter()
+                    .map(|exit| ExitRow {
+                        code: exit.code(),
+                        name: exit.name().to_owned(),
+                        meaning: exit.meaning().to_owned(),
+                        // Not shown: the doctor's table has no retry column.
+                        retryable: Retry::NotApplicable,
+                    })
+                    .collect(),
+            ),
             errors_common: ERRORS_COMMON
                 .iter()
                 .map(|&code| ErrorRow {
@@ -1192,7 +1202,17 @@ mod tests {
             "the counts"
         );
         assert_eq!(live.never, NEVER, "NEVER");
-        assert_eq!(live.exit_doctor, None, "no doctor in this build");
+        let doctor: Vec<(u8, String)> = live
+            .exit_doctor
+            .unwrap_or_default()
+            .into_iter()
+            .map(|row| (row.code, row.name))
+            .collect();
+        let dictionary: Vec<(u8, String)> = crate::doctor::exit::Exit::ALL
+            .iter()
+            .map(|exit| (exit.code(), exit.name().to_owned()))
+            .collect();
+        assert_eq!(doctor, dictionary, "the doctor's dictionary, in code order");
     }
 
     #[test]

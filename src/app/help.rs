@@ -433,8 +433,8 @@ mod tests {
     #[test]
     fn bare_help_stays_one_screen_with_every_planned_command() {
         use Group::{Change, Look, Setup};
-        // Every command through M3's backup, and M4's apply and plans, in the planned
-        // layout; test-only, never live help.
+        // Every command through M3's backup, and M4's apply, plans and doctor, in the
+        // planned layout; test-only, never live help.
         let planned = [
             ("status", Look),
             ("list", Look),
@@ -444,6 +444,7 @@ mod tests {
             ("history", Look),
             ("plans", Look),
             ("net-log", Look),
+            ("doctor", Look),
             ("export", Look),
             ("install", Change),
             ("update", Change),
@@ -463,7 +464,7 @@ mod tests {
             ("robot-docs", Setup),
             ("help", Setup),
         ];
-        assert_eq!(planned.len(), 26);
+        assert_eq!(planned.len(), 27);
         let text = bare_text("omaddons [OPTIONS] <COMMAND>", &planned);
         assert!(
             text.lines().count() < 30,

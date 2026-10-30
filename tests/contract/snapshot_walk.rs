@@ -191,6 +191,13 @@ fn every_envelope_snapshot_validates() {
             }
         }
         validated += 1;
+        // A doctor envelope's report is validated as its command's data (M4-D34).
+        let doctor = envelope["command"]
+            .as_str()
+            .is_some_and(super::common::doctor::is_doctor);
+        if doctor {
+            envelope = super::common::doctor::as_general(&envelope);
+        }
         if let Err(message) = validate_envelope(&envelope, "") {
             failures.push(format!(
                 "{relative}:\n{message}\nas validated: {envelope:#}"

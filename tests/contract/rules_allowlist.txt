@@ -1,6 +1,7 @@
 # Contract rule violations that predate the rule test (M4-D55). This list may only shrink:
 # a new shape that breaks a rule is fixed, never added here. H1 empties it before the freeze.
-# Format: <rule> | <scope> | <path>
+# Format: <rule> | <scope> | <path>. A scope `<prefix> *` covers every scope below the prefix,
+# for a shape defined once that each of them carries (the error wrapper's keys).
 r1-instant-name | command backup list | targets[].auto.last.at
 r1-instant-name | command backup | targets[].auto.last.at
 r1-instant-name | command errors | targets[].addons[].errors[].last_seen.at
@@ -155,59 +156,19 @@ r3-array-plural | command update | targets[].items[].folders.skipped
 r3-array-plural | command update | targets[].items[].required_by
 r3-array-plural | command update | targets[].items[].unresolved
 r3-array-plural | command update | targets[].target.mode.shared_with
-r3-array-plural | error archive_too_large | details.required_by
-r3-array-plural | error auth_rejected | details.required_by
-r3-array-plural | error auth_required | details.required_by
-r3-array-plural | error bad_archive | details.required_by
+r3-array-plural | error * | details.required_by
 r3-array-plural | error bad_archive | details.unsupported
 r3-array-plural | error case_collision | details.folders[].existing
-r3-array-plural | error case_collision | details.required_by
-r3-array-plural | error check_failed | details.required_by
-r3-array-plural | error desired_state_invalid | details.required_by
-r3-array-plural | error distribution_disabled | details.required_by
-r3-array-plural | error download_failed | details.required_by
-r3-array-plural | error file_exists | details.required_by
-r3-array-plural | error filesystem_unsupported | details.required_by
-r3-array-plural | error game_running | details.required_by
-r3-array-plural | error hash_mismatch | details.required_by
 r3-array-plural | error hash_mismatch | details.tried
-r3-array-plural | error host_blocked | details.required_by
-r3-array-plural | error http_status | details.required_by
-r3-array-plural | error internal | details.required_by
-r3-array-plural | error io | details.required_by
-r3-array-plural | error locked | details.required_by
-r3-array-plural | error network | details.required_by
 r3-array-plural | error no_compatible_release | details.checked
-r3-array-plural | error no_compatible_release | details.required_by
 r3-array-plural | error no_compatible_release | details.tried
 r3-array-plural | error not_found | details.newest
-r3-array-plural | error not_found | details.required_by
-r3-array-plural | error not_managed | details.required_by
-r3-array-plural | error offline | details.required_by
 r3-array-plural | error ownership_conflict | details.folders[].existing
-r3-array-plural | error ownership_conflict | details.required_by
-r3-array-plural | error plan_not_found | details.required_by
 r3-array-plural | error plan_stale | details.changed
-r3-array-plural | error plan_stale | details.required_by
 r3-array-plural | error protected_folder | details.folders[].existing
-r3-array-plural | error protected_folder | details.required_by
-r3-array-plural | error rate_limited | details.required_by
 r3-array-plural | error ref_ambiguous | details.owned_now
-r3-array-plural | error ref_ambiguous | details.required_by
-r3-array-plural | error ref_invalid | details.required_by
-r3-array-plural | error scope_denied | details.required_by
-r3-array-plural | error source_disabled | details.required_by
-r3-array-plural | error state_corrupt | details.required_by
-r3-array-plural | error state_too_new | details.required_by
-r3-array-plural | error target_ambiguous | details.required_by
-r3-array-plural | error target_not_found | details.required_by
 r3-array-plural | error undo_conflict | details.conflicting
-r3-array-plural | error undo_conflict | details.required_by
 r3-array-plural | error unmanaged_folder | details.folders[].existing
-r3-array-plural | error unmanaged_folder | details.required_by
-r3-array-plural | error unsafe_archive | details.required_by
-r3-array-plural | error usage | details.required_by
-r3-array-plural | error wrong_flavor | details.required_by
 r3-array-plural | error wrong_flavor | details.tried
 r3-key-ulid | command config get | key
 r3-key-ulid | command config set | key

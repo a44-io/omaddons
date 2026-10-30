@@ -20,9 +20,7 @@ use serde::Serialize;
 use ulid::Ulid;
 
 use super::budget::{self, Budget};
-use super::finding::{
-    Confidence, Detected, Evidence, Finding, Incomplete, IncompleteLimit, Observation, Subject,
-};
+use super::finding::{Confidence, Detected, Evidence, Finding, Incomplete, Observation, Subject};
 use super::registry::{self, FailureMode, Tier, ids};
 use super::selection::{Selection, Skipped, partition, target_skips, visible_failures};
 use super::view::{DoctorView, merge_findings};
@@ -427,11 +425,7 @@ fn crashed(row: &FailureMode, location: Option<String>) -> Option<Finding> {
 /// `check-incomplete` for `row`, cut short by `cut`: the limit and the value it was set
 /// to, nothing that varies between two runs of one state.
 fn incomplete_observation(subject: Subject, row: &FailureMode, cut: Incomplete) -> Observation {
-    let limit = match cut.limit {
-        IncompleteLimit::Deadline => "deadline",
-        IncompleteLimit::Entries => "entries",
-        IncompleteLimit::OnlineRequests => "online_requests",
-    };
+    let limit = cut.limit.as_str();
     Observation {
         subject: subject.detector(row.id),
         title: format!("The check {} stopped at its {limit} limit", row.id),

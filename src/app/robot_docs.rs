@@ -305,6 +305,8 @@ pub struct ErrorCodeDoc {
     pub code: ErrorCode,
     /// The general exit code of every command.
     pub exit: u8,
+    /// The exit code of every `doctor` command, from the doctor's own dictionary.
+    pub doctor_exit: u8,
     /// `true`, `false`, or `"conditional"` when each error's own `retryable` decides.
     pub retryable: Retryability,
     /// What the code reports, in one sentence.
@@ -351,7 +353,7 @@ impl Outcome for ErrorsOutcome {
             Retryability::Conditional(_) => "conditional",
         };
         let mut rows = vec![
-            ["CODE", "EXIT", "RETRYABLE", "MEANING"]
+            ["CODE", "EXIT", "DOCTOR", "RETRYABLE", "MEANING"]
                 .map(str::to_owned)
                 .to_vec(),
         ];
@@ -359,6 +361,7 @@ impl Outcome for ErrorsOutcome {
             vec![
                 doc.code.wire().to_owned(),
                 doc.exit.to_string(),
+                doc.doctor_exit.to_string(),
                 retryable(doc.retryable).to_owned(),
                 doc.meaning.to_owned(),
             ]
@@ -420,6 +423,7 @@ pub fn errors() -> Result<ErrorsOutcome> {
         error_codes.push(ErrorCodeDoc {
             code: *code,
             exit: code.exit().code(),
+            doctor_exit: crate::doctor::exit::exit_for(*code).code(),
             retryable: code.retryability(),
             meaning: code.meaning(),
             details_schema: SchemaDoc(details),
@@ -720,10 +724,16 @@ mod tests {
     }
 
     #[test]
-    fn errors_rows_have_no_doctor_exit_yet() {
+    fn doctor_exit_follows_the_doctor_dictionary() {
         let data = serde_json::to_value(errors().unwrap().data).unwrap();
-        for row in data["error_codes"].as_array().unwrap() {
-            assert!(row.get("doctor_exit").is_none(), "{row}");
+        let rows = data["error_codes"].as_array().unwrap();
+        assert_eq!(rows.len(), ErrorCode::ALL.len());
+        for (row, code) in rows.iter().zip(ErrorCode::ALL) {
+            assert_eq!(
+                row["doctor_exit"],
+                crate::doctor::exit::exit_for(*code).code(),
+                "{row}"
+            );
         }
         assert_eq!(
             data["error_codes"][0]
@@ -735,6 +745,7 @@ mod tests {
             [
                 "code",
                 "details_schema",
+                "doctor_exit",
                 "exit",
                 "fix_pattern",
                 "meaning",

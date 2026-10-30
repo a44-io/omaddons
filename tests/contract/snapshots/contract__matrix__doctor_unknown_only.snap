@@ -1,0 +1,31 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "doctor diagnose",
+  "commands": [],
+  "error": {
+    "alternatives": [
+      {
+        "argv": [
+          "omaddons",
+          "help",
+          "doctor"
+        ],
+        "display": "omaddons help doctor"
+      }
+    ],
+    "code": "usage",
+    "details": {},
+    "fix": "use a failure-mode id such as fm-configs-config-parse-error, or a subsystem name such as schemas",
+    "fix_argv": null,
+    "message": "unknown failure mode or subsystem 'fm-nope' in --only",
+    "retryable": false
+  },
+  "exit_code": 64,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

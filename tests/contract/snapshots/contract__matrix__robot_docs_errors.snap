@@ -1,5 +1,6 @@
 ---
 source: tests/contract/matrix.rs
+assertion_line: 2373
 expression: projection
 ---
 {
@@ -117,6 +118,7 @@ expression: projection
           },
           "type": "object"
         },
+        "doctor_exit": 74,
         "exit": 1,
         "fix_pattern": "prose: check the network connection, or retry later",
         "meaning": "A request failed at the network or decoding layer, or a git subprocess timed out or failed outside download; an instance is retryable except after too many redirects or an undecodable encoding.",

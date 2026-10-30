@@ -123,6 +123,10 @@ impl ErrorCode {
             Self::Internal => {
                 "`omaddons status` (`omaddons status --cached` when `status` failed), else prose: report the bug or see the README"
             }
+            Self::OnlineRequired => "the same command with `--online`",
+            Self::DoctorRefused => {
+                "the same command with what the refusal names (a larger `--budget`, `--force`), one alternative without it, or prose"
+            }
         }
     }
 }

@@ -111,6 +111,7 @@ pub const fn exit_for(code: ErrorCode) -> Exit {
         // The run did nothing because the world moved since its preview.
         ErrorCode::PlanStale => Exit::RefusedUnsafe,
         ErrorCode::CheckFailed => Exit::FindingsPresent,
+        ErrorCode::OnlineRequired => Exit::OnlineRequired,
         _ => match code.exit() {
             error::Exit::Usage => Exit::UsageError,
             error::Exit::NotFound => Exit::NoInput,
@@ -174,6 +175,7 @@ mod tests {
         // Restated from the rule, independently of `exit_for`'s match.
         let expected = |code: ErrorCode| match (code, code.exit().code()) {
             (ErrorCode::PlanStale, _) => Exit::RefusedUnsafe,
+            (ErrorCode::OnlineRequired, _) => Exit::OnlineRequired,
             (ErrorCode::CheckFailed, _) | (_, 6) => Exit::FindingsPresent,
             (_, 2) => Exit::UsageError,
             (_, 3) => Exit::NoInput,
@@ -219,6 +221,16 @@ mod tests {
                 "check_failed",
                 ErrorCode::CheckFailed,
                 Exit::FindingsPresent,
+            ),
+            (
+                "online_required",
+                ErrorCode::OnlineRequired,
+                Exit::OnlineRequired,
+            ),
+            (
+                "doctor_refused",
+                ErrorCode::DoctorRefused,
+                Exit::RefusedUnsafe,
             ),
             ("io", ErrorCode::Io, Exit::IoError),
             ("internal", ErrorCode::Internal, Exit::IoError),

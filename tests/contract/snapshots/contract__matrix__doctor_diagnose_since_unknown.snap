@@ -1,0 +1,45 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "doctor diagnose",
+  "commands": [],
+  "error": {
+    "alternatives": [
+      {
+        "argv": [
+          "omaddons",
+          "doctor",
+          "diagnose",
+          "--since",
+          "<run>"
+        ],
+        "display": "omaddons doctor diagnose --since <run>"
+      }
+    ],
+    "code": "not_found",
+    "details": {
+      "newest": [
+        "<run>",
+        "<run>"
+      ],
+      "path": "<root>/state/omaddons/doctor/runs"
+    },
+    "fix": "omaddons doctor diagnose --since <run>",
+    "fix_argv": [
+      "omaddons",
+      "doctor",
+      "diagnose",
+      "--since",
+      "<run>"
+    ],
+    "message": "no doctor run <run>",
+    "retryable": false
+  },
+  "exit_code": 66,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

@@ -1368,6 +1368,58 @@ fn net_log() {
     assert_eq!(c.envelope["error"]["code"], "usage");
 }
 
+/// The doctor (E3): its report at the envelope's top level, its exits from its own
+/// dictionary (M4-D34, M4-D40).
+#[test]
+fn doctor() {
+    // A refusal comes before the run: no run directory, and its fix and alternative run.
+    let r = Scene::new();
+    let c = r.json(&["doctor", "--budget", "1ms"], 4);
+    let error = &c.envelope["error"];
+    assert_eq!(
+        (&error["code"], &error["details"]["reason"]),
+        (&json!("doctor_refused"), &json!("over_budget"))
+    );
+    assert!(
+        !r.home.state().join("doctor").exists(),
+        "a refusal records nothing"
+    );
+    let alternatives = error["alternatives"].as_array().unwrap();
+    let argvs = std::iter::once(&error["fix_argv"]).chain(alternatives.iter().map(|a| &a["argv"]));
+    for argv in argvs {
+        let words: Vec<&str> = argv
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w.as_str().unwrap())
+            .collect();
+        let ran = r.home.run(&words[1..]);
+        assert_eq!(ran.code, 0, "{words:?}\n{}", ran.context());
+    }
+    // The Scene's two clients, nothing installed: nothing to find.
+    let s = Scene::new();
+    let c = s.json(&["doctor"], 0);
+    assert_eq!(
+        (&c.envelope["command"], &c.envelope["state"]),
+        (&json!("doctor diagnose"), &json!("DONE_OK"))
+    );
+    insta::assert_json_snapshot!("doctor_ok", s.stable(&c.envelope));
+    let c = s.json(&["doctor", "--only", "fm-nope"], 64);
+    insta::assert_json_snapshot!("doctor_unknown_only", s.stable(&c.envelope));
+    let c = s.json(&["doctor", "diagnose"], 0);
+    insta::assert_json_snapshot!("doctor_diagnose_ok", s.stable(&c.envelope));
+    let c = s.json(
+        &[
+            "doctor",
+            "diagnose",
+            "--since",
+            "2026-01-01T00-00-00Z__01M8R000000000000000000000",
+        ],
+        66,
+    );
+    insta::assert_json_snapshot!("doctor_diagnose_since_unknown", s.stable(&c.envelope));
+}
+
 #[test]
 fn backup_list() {
     use omaddons::backup::BackupKind;

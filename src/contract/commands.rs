@@ -566,6 +566,9 @@ fn grammar(arg: &clap::Arg) -> Grammar {
     if is(TypeId::of::<PathBuf>()) || is(TypeId::of::<OsString>()) {
         return Grammar::Path;
     }
+    if is(TypeId::of::<std::time::Duration>()) {
+        return Grammar::DurationOrTime;
+    }
     let integers = [
         TypeId::of::<u8>(),
         TypeId::of::<u16>(),

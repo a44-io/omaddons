@@ -200,6 +200,7 @@ fn every_error_code_has_a_doctor_exit() {
         let expected = match (code.wire(), code.exit().code()) {
             ("plan_stale", _) => 4,
             ("check_failed", _) => 1,
+            ("online_required", _) => 6,
             (_, 2) => 64,
             (_, 3) => 66,
             (_, 4) => 4,

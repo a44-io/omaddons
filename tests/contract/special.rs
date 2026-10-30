@@ -721,8 +721,26 @@ fn read_only_commands_ignore_dry_run_and_reason() {
             "robot-docs errors" => &["robot-docs", "errors"],
             "robot-docs guide" => &["robot-docs", "guide"],
             "help" => &["help"],
+            "doctor" => &["doctor"],
+            "doctor diagnose" => &["doctor", "diagnose"],
             _ => return None,
         })
+    };
+    // A doctor run records itself in `<state>/doctor/` (M4-D33), and its report names
+    // that run: exactly those are left out of the comparison.
+    let doctor_dir = state.join("omaddons").join("doctor").display().to_string();
+    let tree = |doctor: bool| -> Vec<(String, Vec<u8>)> {
+        state_tree(&state)
+            .into_iter()
+            .filter(|(name, _)| !(doctor && name.starts_with(&doctor_dir)))
+            .collect()
+    };
+    let compared = |doctor: bool, stdout: &str| -> String {
+        if doctor {
+            without_volatile(stdout)
+        } else {
+            support::without_meta(stdout)
+        }
     };
     // The omarchy commands run with no Omarchy tool reachable: never this machine's
     // shell.
@@ -747,11 +765,12 @@ fn read_only_commands_ignore_dry_run_and_reason() {
         let args = invocation(name);
         assert!(args.is_some(), "add a read-only invocation of {name} here");
         let args = args.unwrap_or_default();
+        let doctor = name.split(' ').next() == Some("doctor");
         let plain = run(name, args);
         let code = plain.code;
         let plain = run(name, args);
         assert_eq!(plain.code, code, "{args:?}\n{}", plain.context());
-        let before = state_tree(&state);
+        let before = tree(doctor);
         let mut flagged_args = args.to_vec();
         flagged_args.extend(["--dry-run", "--reason", "x"]);
         let flagged = run(name, &flagged_args);
@@ -762,15 +781,33 @@ fn read_only_commands_ignore_dry_run_and_reason() {
             flagged.context()
         );
         assert_eq!(
-            support::without_meta(&flagged.stdout),
-            support::without_meta(&plain.stdout),
+            compared(doctor, &flagged.stdout),
+            compared(doctor, &plain.stdout),
             "{name}: the flags changed the envelope"
         );
         assert!(
-            state_tree(&state) == before,
+            tree(doctor) == before,
             "{name}: --dry-run --reason wrote to state"
         );
     }
+}
+
+/// A doctor envelope without `meta` and the keys a new run changes (`contract::VOLATILE`'s
+/// doctor rows: its id, directory and times).
+/// Output that is not JSON is kept as it is, so the comparison shows it.
+fn without_volatile(stdout: &str) -> String {
+    let Ok(mut value) = serde_json::from_str::<Value>(stdout) else {
+        return stdout.to_owned();
+    };
+    if let Some(map) = value.as_object_mut() {
+        for key in ["meta", "run_id", "run_dir", "started_at", "finished_at"] {
+            map.remove(key);
+        }
+        if let Some(summary) = map.get_mut("summary").and_then(Value::as_object_mut) {
+            summary.remove("duration_ms");
+        }
+    }
+    value.to_string()
 }
 
 #[test]

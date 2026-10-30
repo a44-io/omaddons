@@ -377,11 +377,11 @@ pub fn emit_doctor_to<O: DoctorOutcome, W: Write>(
             };
             match (unserializable, outcome.error()) {
                 (Some(internal), _) => {
-                    reporter.error(&internal);
+                    reporter.error_exiting(&internal, DoctorExit::INTERNAL.code());
                     DoctorExit::INTERNAL
                 }
                 (None, Some(error)) => {
-                    reporter.error(error);
+                    reporter.error_exiting(error, outcome.exit().code());
                     outcome.exit()
                 }
                 (None, None) => outcome.exit(),
@@ -559,11 +559,11 @@ fn fail<X: ExitDictionary, W: Write>(
     if cfg.output == OutputMode::Json {
         let document = exit.failure_document(command, &error, &warnings, commands, meta);
         if let Some(internal) = write_json::<X>(stdout, document, command, meta) {
-            reporter.error(&internal);
+            reporter.error_exiting(&internal, X::INTERNAL.code());
             return X::INTERNAL;
         }
     }
-    reporter.error(&error);
+    reporter.error_exiting(&error, exit.code());
     exit
 }
 

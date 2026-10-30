@@ -1,5 +1,6 @@
 ---
 source: tests/cli_skeleton.rs
+assertion_line: 144
 expression: r.stdout
 ---
 World of Warcraft addon manager for Linux and an Omarchy widget
@@ -7,7 +8,7 @@ World of Warcraft addon manager for Linux and an Omarchy widget
 Usage: omaddons [OPTIONS] <COMMAND>
 
 Look      status  list  outdated  info  search  errors  export  history  plans
-          net-log
+          net-log  doctor
 Change    install  update  pin  unpin  adopt  sync  copy  remove  undo  apply
           backup
 Setup     targets  config  auth  omarchy  completions  robot-docs  help

@@ -263,6 +263,44 @@ fn a_mistyped_value_is_corrected_in_place_with_every_argument_kept() {
     }
 }
 
+/// The doctor's usage errors exit 64 (M4-D40), each fix corrects only what was wrong, and
+/// it runs.
+#[test]
+fn doctor_usage_fixes_exit_64_and_run() {
+    let s = Scene::new();
+    let cases: [(&[&str], &[&str]); 3] = [
+        (
+            &[
+                "doctor",
+                "--only",
+                "fm-concurrency_primitives-journal-pendng",
+            ],
+            &[
+                "omaddons",
+                "doctor",
+                "--only",
+                "fm-concurrency_primitives-journal-pending",
+            ],
+        ),
+        (
+            &["doctor", "--severity", "p2"],
+            &["omaddons", "doctor", "--severity", "P2"],
+        ),
+        (
+            &["doctor", "--budget", "500"],
+            &["omaddons", "help", "doctor"],
+        ),
+    ];
+    for (argv, fix) in cases {
+        let checked = s.json(argv, 64);
+        let ctx = checked.run.context();
+        assert_eq!(checked.envelope["error"]["code"], "usage", "{ctx}");
+        assert_eq!(suggestions(&checked.envelope)[0], owned(fix), "{ctx}");
+        let ran = s.home.run(&fix[1..]);
+        assert_eq!(ran.code, 0, "the fix runs: {fix:?}\n{}", ran.context());
+    }
+}
+
 /// The verb aliases run their command, and the envelope names it.
 #[test]
 fn verb_aliases_run_the_canonical_command() {

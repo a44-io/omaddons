@@ -298,6 +298,13 @@ error_codes! {
         "A filesystem operation failed, or files changed too often to finish a consistent backup; an instance is retryable only when `WTF/` changed while a backup copied it.", specs::IO;
     Internal            = "internal",              Failed,      false,
         "An internal invariant, unexpected recovery state or panic stopped the command.", specs::INTERNAL;
+    /// `doctor --only` names only checks that need the network, without `--online`
+    /// (doctor exit 6).
+    OnlineRequired      = "online_required",       Failed,      false,
+        "A doctor selection needs the network and `--online` was not given.", specs::ONLINE_REQUIRED;
+    /// A doctor run refused before changing anything (doctor exit 4, M4-D40).
+    DoctorRefused       = "doctor_refused",        Refused,     false,
+        "The doctor refused before changing anything: a missing `--force`, a conflict, too many actions, an over-budget selection or another safety precondition.", specs::DOCTOR_REFUSED;
 }
 
 impl ErrorCode {
@@ -1195,6 +1202,7 @@ mod tests {
         ("offline", 1, false), ("bad_archive", 1, false), ("distribution_disabled", 1, false),
         ("source_disabled", 1, false), ("auth_required", 1, false), ("auth_rejected", 1, false),
         ("state_corrupt", 1, false), ("io", 1, false), ("internal", 1, false),
+        ("online_required", 1, false), ("doctor_refused", 4, false),
     ];
 
     /// The top-level keys of a JSON object in serialized order. `serde_json::Value`
@@ -1236,8 +1244,8 @@ mod tests {
 
     #[test]
     fn error_registry_matches_the_table() {
-        assert_eq!(ErrorCode::ALL.len(), 41);
-        assert_eq!(EXPECTED.len(), 41);
+        assert_eq!(ErrorCode::ALL.len(), 43);
+        assert_eq!(EXPECTED.len(), 43);
         for (code, &(wire, exit, retryable)) in ErrorCode::ALL.iter().zip(EXPECTED) {
             assert_eq!(code.wire(), wire);
             assert_eq!(code.exit().code(), exit, "{wire}");

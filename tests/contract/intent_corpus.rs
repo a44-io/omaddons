@@ -824,6 +824,40 @@ pub const CORPUS: &[Row] = &[
         },
     )
     .then(offline_then_online),
+    // The doctor tree (E3): usage errors there exit 64 (M4-D40).
+    row(
+        DoctorVerb,
+        &["doctor", "--fix"],
+        &["doctor fix"],
+        "help until E6; then doctor fix --dry-run, exiting 0 or 1",
+        doctor_usage(&["omaddons", "help", "doctor"], &[0]),
+    ),
+    row(
+        DoctorVerb,
+        &["doctor", "diagnoze"],
+        &[],
+        "a finding exits 1",
+        doctor_usage(&["omaddons", "doctor", "diagnose"], &[0, 1]),
+    ),
+    row(
+        DoctorVerb,
+        &["doctor", "--only", "fm-nope"],
+        &["doctor"],
+        "an unknown failure mode: the fix is prose, never one that drops what was named; its help is the alternative",
+        Expect::Error {
+            exit: 64,
+            code: "usage",
+            fix: Fix::FirstAlternative(&["omaddons", "help", "doctor"]),
+            fix_exit: &[0],
+        },
+    ),
+    row(
+        DoctorVerb,
+        &["doctr"],
+        &[],
+        "a root-level typo uses the general dictionary (exit 2)",
+        error(2, "usage", &["omaddons", "doctor"], &[0, 1]),
+    ),
 ];
 
 /// A row whose surface another leaf owns and that has not landed yet (common rule 18).
@@ -898,17 +932,6 @@ pub const PENDING: &[Pending] = &[
     ),
     pending(
         "E3",
-        &["doctor"],
-        row(
-            DoctorVerb,
-            &["doctor", "--fix"],
-            &["doctor fix"],
-            "help until E6; then doctor fix --dry-run, exiting 0 or 1",
-            doctor_usage(&["omaddons", "help", "doctor"], &[0]),
-        ),
-    ),
-    pending(
-        "E3",
         &["doctor explain"],
         row(
             DoctorVerb,
@@ -924,39 +947,6 @@ pub const PENDING: &[Pending] = &[
                 ],
                 &[0],
             ),
-        ),
-    ),
-    pending(
-        "E3",
-        &["doctor diagnose"],
-        row(
-            DoctorVerb,
-            &["doctor", "diagnoze"],
-            &[],
-            "a finding exits 1",
-            doctor_usage(&["omaddons", "doctor", "diagnose"], &[0, 1]),
-        ),
-    ),
-    pending(
-        "E3",
-        &["doctor"],
-        row(
-            DoctorVerb,
-            &["doctor", "--only", "fm-nope"],
-            &["doctor"],
-            "an unknown failure mode",
-            doctor_usage(&["omaddons", "doctor"], &[0, 1]),
-        ),
-    ),
-    pending(
-        "E3",
-        &["doctor"],
-        row(
-            DoctorVerb,
-            &["doctr"],
-            &[],
-            "a root-level typo uses the general dictionary (exit 2)",
-            error(2, "usage", &["omaddons", "doctor"], &[0, 1]),
         ),
     ),
     pending(

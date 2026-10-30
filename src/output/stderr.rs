@@ -269,9 +269,15 @@ impl<W: Write> Reporter<W> {
 
     /// Mirrors an error. Never suppressed.
     pub fn error(&mut self, error: &Error) {
+        self.error_exiting(error, error.exit().code());
+    }
+
+    /// [`Reporter::error`] for a run that exits `exit_code`: a doctor command's, from its
+    /// own dictionary.
+    pub fn error_exiting(&mut self, error: &Error, exit_code: u8) {
         match self.mode {
             StderrMode::Ndjson => {
-                self.json(&ErrorEvent::of(error));
+                self.json(&ErrorEvent::exiting(error, exit_code));
             }
             StderrMode::Human => {
                 let head = self.paint("31", &format!("error[{}]:", error.code.wire()));

@@ -161,7 +161,8 @@ Milestones 1 (the working slice), 2 (updates, dependencies, adoption and desired
 | `completions`: a static completion script for bash, zsh, fish, elvish and PowerShell (commands, subcommands, aliases, flags and fixed values), generated from the command tree; `--json` gives `{shell, script}` | ✅ Done (milestone 4) |
 | `robot-docs guide`, `robot-docs schema` and `robot-docs errors`: the agent guide, every output's JSON Schema and the error and warning catalog, from the binary | ✅ Done (milestone 4) |
 | `apply <plan_id>`: a stored preview run exactly, by one applier at a time, every source checked again, each client reported (`committed`, `unchanged`, `stale`, `failed`) | ✅ Done (milestone 4) |
-| `capabilities`, `doctor`, installing the agent skill, the first tag | 🗓️ Milestone 4 |
+| `doctor` and `doctor diagnose`: what is broken, with evidence and the exact remediation, each check under a budget and isolated from the others, in a run directory of its own, with the doctor's own exit codes; `--since` compares with an earlier run | ✅ Done (milestone 4) |
+| `capabilities`, `doctor explain`, `doctor fix` and its undo, installing the agent skill, the first tag | 🗓️ Milestone 4 |
 | Optional CurseForge and Wago (bring your own key), release packaging | 🗓️ Milestone 5 |
 
 `omaddons outdated` lists what has updates, and `omaddons update` installs them on every client, one transaction per client, all undone by one `omaddons undo`. Two kinds of addon are left alone. A `url:` ref's release is the URL itself, so there is nothing newer to fetch. A pinned addon (by `pin`, or installed with `--version`) stays where it is (`skipped`, reason `pinned`) until `unpin`.
@@ -1729,6 +1730,80 @@ WeakAuras  gh:WeakAuras/WeakAuras2
       Mists support & more
 ```
 
+### `doctor`
+
+What is broken in what omaddons manages, with the evidence and the exact remediation: every check of the doctor's failure-mode registry, each within a budget and isolated from the others. Bare `doctor` is `doctor diagnose`. It changes nothing outside its own run record in `~/.local/state/omaddons/doctor/`, takes no lock and makes no request.
+
+```bash
+omaddons doctor                       # every check but the deep ones
+omaddons doctor --quick               # the cached and quick checks only
+omaddons doctor --only fm-userland_state-target-vanished,schemas
+omaddons doctor --skip plugins --severity P2
+omaddons doctor --budget 500ms        # the whole run's time, shared by the checks
+omaddons doctor --since latest        # what changed since the last run
+omaddons doctor -t retail --json
+```
+
+| Flag | Meaning |
+|---|---|
+| `--only IDS` | Only these checks: failure-mode ids or subsystem names, comma-separated (repeatable). Alone it runs exactly what it names, whatever the tier. An unknown one is a usage error: its fix corrects it in place to the closest id, or, when none is close, says what an item looks like, with `omaddons help doctor` as the alternative |
+| `--skip IDS` | Not these (wins over `--only`) |
+| `--severity P0`…`P3` | Report findings of that severity and more severe ones only. A check that could not finish, or crashed, is reported whatever it says |
+| `--quick` | The cached and quick tiers only (without it, every tier but `deep`) |
+| `--include-deep` | Every tier |
+| `--online` | Also the checks that need the network (no check needs it yet). With `--offline` it is a usage error. `--only` naming only such checks without it is `online_required` (doctor exit 6), and a mixed selection lists them in `skipped` |
+| `--budget 500ms`, `2s` | The run's whole time, shared by the checks' declared costs. A selection declared to cost more is refused before anything runs (`doctor_refused`, `details.reason: "over_budget"`, doctor exit 4), with the budget it needs as the fix |
+| `--since RUN` | Compare with an earlier run, by its id or `latest`: `since: {run, new_instances, resolved_instances, unchanged}`, by instance key. An unknown or interrupted run (no `report.json`) is `not_found` (doctor exit 66), with the newest finished runs as fix and alternatives |
+
+`-t` narrows the checks that look at clients; findings about the machine stay.
+
+**What it reports.** Each finding names its failure mode (`id`); its `instance`, which is the failure mode, the client's key or `machine`, and the resource, and stays the same across renames; a `label`; its `severity`, `subsystem`, `title` and `confidence`; its client (`target`), `addon` and `folder`. It also carries the `evidence`: paths, digests, modes, counts and positions, never a file's content and never a path below `WTF/`, where the game keeps account names. Last comes its `remediation`: `command` and `argv` (`null` for advice), the `doctor explain` command, `auto_fixable`, `needs_force` and `destructive`. A check whose input could not be read (a broken `config.toml`, a corrupt registry) is listed in `skipped` with its reason, never reported clean, and the file it could not read is a finding of its own.
+
+**Budgets.** Each check runs under a budget: 5 ms in the cached and quick tiers (`QUICK_DETECTOR_BUDGET`, twenty times that in debug builds), 2 s in the others (`DOCTOR_DETECTOR_DEADLINE`), and at most 20,000 entries for any walk or listing (`DOCTOR_SCAN_MAX_ENTRIES`). A check a limit stops is `fm-state_files-check-incomplete` (P3), naming the check, the limit and its value. A check that panics is `fm-state_files-detector-crashed` (P1), naming the check and the place in omaddons' source, and the run goes on. Either way, the run is never `DONE_OK`.
+
+**The run directory.** Every run gets `~/.local/state/omaddons/doctor/runs/<UTC time>__<ULID>/`, as in `2026-10-30T20-45-20Z__01M678YN…`. It is made under a hidden name at 0700 and published with one rename. `report.json` holds the envelope as printed, with `kind: "diagnose"` and no `meta`; `runtime.jsonl` holds one line per write the run made. When the run ends both are made read-only (0400); the directory stays 0700. `doctor/latest` links to the newest finished run and never moves back to an older one. Refusals (a usage error, `online_required`, `doctor_refused`, an unknown `-t` or `--since`) come before the run starts and create nothing. A run directory that cannot be created exits 73.
+
+```text
+$ omaddons doctor
+omaddons doctor · 6 checks · 1 finding (1 P1) (3 checks skipped)
+  P1 fm-configs-config-parse-error  machine · ~/.config/omaddons/config.toml
+     config.toml does not parse (line 1, column 19)
+     → fix line 1, column 19 of ~/.config/omaddons/config.toml; omaddons never rewrites a config.toml that does not parse
+run 2026-10-30T20-45-20Z__01M678YN3A22K2ASPW2VZH88A8
+```
+
+With `config.toml` unreadable, the checks that need it are skipped (`-v` lists them) and no client is counted.
+
+The JSON is the [doctor envelope](#the-doctor-envelope), and its report keys are these:
+
+- `view` (`full`), `doctor_contract_version`, `run_id`, `run_dir`, `started_at`, `finished_at`;
+- `state`: `DONE_OK` with no finding at all, else `DONE_FINDINGS`;
+- `summary`: `total_findings`, `by_severity` (`P0` to `P3`), `auto_fixable`, `needs_force`, `manual`, `online_required`, `skipped`, `incomplete` and `duration_ms`;
+- `findings`, by severity, failure mode, client and instance;
+- `skipped`: `{id, reason, target}` each;
+- `since`, with `--since`;
+- `next_steps`.
+
+It exits 0 when `DONE_OK` and 1 when `DONE_FINDINGS`. `run_id`, `run_dir`, `started_at`, `finished_at` and `summary.duration_ms` change with every run; the rest of two runs over one state is the same.
+
+**The failure modes.** The doctor's catalog is code (`src/doctor/registry.rs`), and `status` reports the seven it publishes as its issues ([`status`](#status)).
+
+| Id | Severity | Tier | When |
+|---|---|---|---|
+| `fm-concurrency_primitives-journal-pending` | P0 | cached | An interrupted change waits to be finished, or needs manual repair |
+| `fm-schemas-state-corrupt` | P0 | default | A state file cannot be read |
+| `fm-schemas-state-version-newer` | P0 | cached | State was written by a newer omaddons |
+| `fm-configs-config-parse-error` | P1 | cached | `config.toml` cannot be read |
+| `fm-state_files-record-folder-missing` | P1 | cached | A managed addon's folder is gone |
+| `fm-state_files-detector-crashed` | P1 | runtime | A check stopped with an internal error |
+| `fm-external_artifacts-managed-files-modified` | P2 | quick | A managed addon's files changed on disk |
+| `fm-external_artifacts-ownership-transferred` | P2 | cached | Addons lost a folder to another addon |
+| `fm-userland_state-target-vanished` | P2 | cached | A registered client's directory is gone |
+| `fm-plugins-widget-version-drift` | P3 | cached | The bar widget is from another omaddons build |
+| `fm-state_files-check-incomplete` | P3 | runtime | A check could not finish within its limit |
+
+`runtime` rows are raised by the run itself, never selected: naming one in `--only` or `--skip` is a usage error.
+
 ### `config`
 
 Show or change `config.toml`. `set` edits the one value in place with `toml_edit`, keeping the file's comments and order, and validates the whole file before writing it.
@@ -1900,8 +1975,9 @@ The published schemas are open: a key a newer release adds does not break a vali
 
 #### `robot-docs errors`
 
-Every registered error code, in registry order, as `{code, exit, retryable, meaning, details_schema, fix_pattern}`, and every warning code as `{code, meaning, fix_pattern}` (`data` is `{error_codes, warning_codes}`).
+Every registered error code, in registry order, as `{code, exit, doctor_exit, retryable, meaning, details_schema, fix_pattern}`, and every warning code as `{code, meaning, fix_pattern}` (`data` is `{error_codes, warning_codes}`).
 
+- `doctor_exit` is the code's exit under `doctor`, from the [doctor's dictionary](#doctor-exit-codes).
 - `retryable` is `true`, `false` or `"conditional"`. The last is for `plan_stale`, `http_status`, `hash_mismatch`, `network` and `io`, whose errors decide one by one: each error's own `retryable` says.
 - `details_schema` is the code's typed `details` as a JSON Schema fragment, the same one the error's schema carries.
 - `fix_pattern` says what form the fix takes: `prose: …` when no fix is a command, `none: …` when there is no fix.
@@ -1982,10 +2058,39 @@ omaddons help targets add      # a subcommand by its path; the same as omaddons 
 | 5 | `locked` | Another omaddons process held the lock past the 5-second timeout; retryable |
 | 6 | `check_failed` | An opt-in assertion failed: `status --check` (drift or attention), `outdated --check` (an update is available), or `--strict` on `install`, `update`, `sync` and `copy` (a partial success). `data` is kept |
 
-A panic still produces one `internal` envelope and exit 1, never Rust's 101. Its `commands` offer `omaddons undo <tx>` for a transaction that committed before it, and its warnings are the ones the run found. A panic after the result was written leaves that result and its exit status, with one stderr `log` line saying so (dropped by `--quiet`); a panic the program recovers from prints nothing.
+A panic still produces one `internal` envelope and exit 1, never Rust's 101 (exit 74 in the `doctor` tree). Its `commands` offer `omaddons undo <tx>` for a transaction that committed before it, and its warnings are the ones the run found. A panic after the result was written leaves that result and its exit status, with one stderr `log` line saying so (dropped by `--quiet`); a panic the program recovers from prints nothing.
+
+### The doctor envelope
+
+Every `doctor` command prints the same envelope keys in the same order, with two differences:
+
+- **No `data` and no `partial`.** The report's own keys sit at the top level, after `exit_code`: `view`, `run_id`, `state`, `summary`, `findings` and the rest ([`doctor`](#doctor)).
+- **Findings are not a failure.** `ok` is `true` only for exit 0, and `error` is there only when the run failed (exits 4, 5, 6, 64, 66, 73 and 74), beside the report when the run had one.
+
+A refusal before the run started has no report. Its stderr `error` event carries the doctor's exit code. `omaddons robot-docs schema doctor --json` gives the report's schema.
+
+### Doctor exit codes
+
+Every `doctor` command, usage errors included, exits by its own dictionary, in the BSD `sysexits` range for what is not a diagnosis. A typo of `doctor` itself (`omaddons doctr`) is a root-level usage error: exit 2.
+
+| Exit | Name | Meaning |
+|---|---|---|
+| 0 | `healthy` | Every selected check ran to completion and found nothing |
+| 1 | `findings_present` | The run completed and reports findings, a check that could not finish among them |
+| 2 | `fix_partial` | A fix ran and some findings remain (reserved for `doctor fix`) |
+| 3 | `fix_failed_rolled_back` | A fix failed and was rolled back; nothing changed (reserved for `doctor fix`) |
+| 4 | `refused_unsafe` | Refused before changing anything: a safety precondition, a missing `--force`, a conflict, a stale preview or an over-budget selection |
+| 5 | `concurrency_lost` | Another omaddons process held the lock past the acquire timeout |
+| 6 | `online_required` | The selection needs the network: add `--online` |
+| 64 | `usage_error` | Unknown command or flag, or a bad argument |
+| 66 | `no_input` | A target, run, failure mode or other input was not found, or is ambiguous |
+| 73 | `cannot_create` | The run directory could not be created |
+| 74 | `io_error` | A runtime failure: I/O, state, network or internal |
+
+Every error code has its doctor exit, from its general exit: 2 → 64, 3 → 66, 4 → 4, 5 → 5, 1 → 74, except `plan_stale` (4), `check_failed` (1) and `online_required` (6). `robot-docs errors` lists each code's `doctor_exit`.
 
 <details>
-<summary><strong>Every error code (41)</strong></summary>
+<summary><strong>Every error code (43)</strong></summary>
 
 | Code | Exit | Retryable | When |
 |---|---|---|---|
@@ -2015,6 +2120,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101. Its
 | `filesystem_unsupported` | 4 | no | a `WTF/` restore cannot run on this client: `WTF/` is a mount point (`details.reason: "wtf_is_mount_point"`), the client's `Interface/.omaddons/` is on another mount (`stage_cross_mount`), or the filesystem cannot exchange two directories atomically (`no_rename_exchange`); `details.backup_dir` is the backup's folder to copy from by hand, with the game closed. Checked before anything is copied |
 | `locked` | 5 | yes | lock held past 5 s; `details.holder`. Also a plan's lease another `apply` held past 30 s (`details.lease`, the plan id; `details.holder` with `age_s`) |
 | `check_failed` | 6 | no | `--check` or `--strict` |
+| `doctor_refused` | 4 | no | `doctor` refused before running anything; `details.reason` says why. Today only `over_budget`: the selection's declared cost is over `--budget` (`details.budget_ms`, `details.estimated_ms`; the fix is the budget it needs, rounded up to 100 ms, and the alternative drops `--budget`) |
 | `network` | 1 | yes (no for too many redirects or an undecodable encoding) | connection failure, also mid-body; more than 5 redirects; a `Content-Encoding` omaddons does not decode; a source response it cannot read; a git run that times out, or fails outside clone and fetch |
 | `rate_limited` | 1 | yes | GitHub REST budget exhausted, or any host's rate-limit answer (403/429 with no requests remaining, `Retry-After` over 60 s, a 429 that outlasts the retries); `details.reset_at` |
 | `download_failed` | 1 | no | the git binary could not clone or fetch a `git:` ref on another host: it needs a login (private repositories are not supported), the server refused to send the commit (fix: name a branch or tag), or another git failure |
@@ -2022,6 +2128,7 @@ A panic still produces one `internal` envelope and exit 1, never Rust's 101. Its
 | `hash_mismatch` | 1 | first attempt (never a backup's) | downloaded bytes did not match the expected hash, or a backup's file differs from the hash it was recorded with (`details.backup`): recorded `damaged`, fix `backup verify <id> -t <target>` |
 | `plan_stale` | 1 | yes (no under `--if-match`) | another run changed the target between plan and commit, a folder `adopt` hashed changed before the lock, or a `git:` branch moved between resolve and checkout; under `--if-match`, the run is no longer what its preview showed (`details.changed`, fix the `--dry-run` form; see [Previews, plans and `--if-match`](#previews-plans-and---if-match)); `apply` refusing a plan that can no longer apply, never retryable (`details.reason`: `already_applied` with `details.txs`, `expired`, `binary_changed`, `input_missing` with `details.path`) |
 | `offline` | 1 | no | `--offline` blocked a request |
+| `online_required` | 1 | no | a `doctor` selection holds only checks that need the network, without `--online` (`details.fms`, their ids; doctor exit 6); the fix adds `--online` |
 | `bad_archive` | 1 | no | malformed, encrypted, or not Stored/Deflate |
 | `distribution_disabled` | 1 | no | reserved for CurseForge (M5) |
 | `source_disabled` | 1 | no | a source turned off in `config.toml` (the fix turns it back on); CurseForge or Wago refs and links (M5); a `git:` ref on another host when `git` is missing or older than 2.32, or in a command that does not run git |
@@ -2535,6 +2642,7 @@ A test fails when the binary reads a variable this section does not list.
 | `~/.local/state/omaddons/history.jsonl` | One line per committed transaction, and per settings change (`config`, `target`, `auth`, `export`, `dismiss`, `widget`, never undone; `target` is `null` when it names no client). A repair's line, and the undo of one, has `target: null` and lists its clients in `targets`, its operations in `repairs` and its doctor run in `doctor_run_id`. A transaction `apply` committed also records the stored plan it came from, as `plan`. A line a crash cut short is closed off by the next write, and recovery appends that transaction's line again; other unreadable lines are skipped and counted in a `history_lines_skipped` warning on `history` and `undo` | Loses history |
 | `~/.local/state/omaddons/snapshots/<tx>/` (`<tx>.wtf/` for a transaction that puts settings back), `journal/`, `inflight/`, `trash/` | Undo data for state files, journals, in-flight locks, staged deletions | No |
 | `~/.local/state/omaddons/lock` | The global lock (never delete while running) | No |
+| `~/.local/state/omaddons/doctor/runs/<UTC time>__<ULID>/`, `doctor/latest` | One directory per `doctor` run (0700): `report.json`, the envelope it printed, and `runtime.jsonl`, the run's own writes, both read-only once it ends; a hidden `.<id>.tmp` while it starts. `latest` links to the newest finished run. Nothing prunes them yet | Yes; `--since` then finds no earlier run |
 | `~/.local/state/omaddons/status.json` | A derived summary, rewritten after each commit and undo | Yes |
 | `~/.local/state/omaddons/net.log`, `net.log.1` | The request log | Yes |
 | `~/.cache/omaddons/blobs/`, `http/`, `discovery.json`, `tmp/`, `inflight/`, `trash/`, `git-home/` | Downloads, HTTP validators, the discovery cache, temporary downloads and git checkouts, the in-flight locks of planning and dry runs, staged deletions, git's empty home directory | Yes when no command is running; reinstalls then download again |
@@ -2804,7 +2912,7 @@ An interrupted `WTF/` restore adds three cases. While its game runs, it waits (`
 | Capability | State | Planned |
 |---|---|---|
 | Batched GitHub checks (GraphQL, one request for many repositories) | ❌ one `releases/latest` per repository instead | M5 |
-| `capabilities`, `doctor`, installing the agent skill | ❌ | M4 |
+| `capabilities`, `doctor explain`, `doctor fix` (repairs), installing the agent skill | ❌ | M4 |
 | CurseForge, Wago | ❌ | M5, optional, bring your own key |
 | Packages, man page | ❌ build from source | M5 |
 | Windows, macOS | ❌ | Never (non-goal) |
@@ -3092,6 +3200,8 @@ Core loop
   omaddons errors --json                         # Lua errors: attribution {method, confidence}, new
                                                  # counts; a string-time error before --since is
                                                  # counted as uncertain, never dropped
+  omaddons doctor --json                         # what is broken: findings with evidence and
+                                                 # remediation.argv (changes nothing but its run)
 
 Refs     catalog name | gh:Owner/Repo | Owner/Repo | wowi:<id> | tukui:<slug> | wowace:<slug>
          | git:https://…#rev | url:https://… | a pasted GitHub, WoWInterface, Tukui or WowAce link
@@ -3108,6 +3218,8 @@ Read the envelope
 
 Exit codes  0 ok (check partial) · 1 failed (see retryable) · 2 usage · 3 not found/ambiguous
             4 refused (safety) · 5 locked (retry) · 6 --check/--strict failed
+  doctor    0 healthy · 1 findings · 4 refused · 6 needs --online · 64 usage · 66 not found
+            73 run directory not created · 74 failed (robot-docs errors: doctor_exit per code)
 
 Rules
   - --dry-run first for anything destructive; --force only after reading the refusal.

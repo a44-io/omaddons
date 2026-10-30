@@ -167,11 +167,12 @@ pub struct Evidence {
     /// A snake_case code saying why, never formatted text. Omitted when the failure mode
     /// says it all.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "evidence_reason_schema")]
     pub reason: Option<&'static str>,
     /// A configuration key's name (`limits.tx_retention_count`), never its value. Omitted
-    /// when no key is concerned.
+    /// when no key is concerned. (`key` alone names a target's ULID everywhere else.)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub key: Option<String>,
+    pub config_key: Option<String>,
     /// A size in bytes. Omitted when no size is concerned.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bytes: Option<u64>,
@@ -733,6 +734,43 @@ pub enum IncompleteLimit {
     OnlineRequests,
 }
 
+impl IncompleteLimit {
+    pub const ALL: [Self; 3] = [Self::Deadline, Self::Entries, Self::OnlineRequests];
+
+    /// The wire name, as a `check-incomplete` finding's `evidence.reason` gives it.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Deadline => "deadline",
+            Self::Entries => "entries",
+            Self::OnlineRequests => "online_requests",
+        }
+    }
+}
+
+/// `Evidence.reason`'s closed set: every reason a layer the view could not read, a stuck
+/// journal and the runtime's limits give.
+fn evidence_reasons() -> Vec<&'static str> {
+    let mut reasons: Vec<&'static str> = super::view::FailureReason::ALL
+        .iter()
+        .map(|reason| reason.as_str())
+        .collect();
+    reasons.extend(
+        [
+            crate::engine::journal::Unrecoverable::TooNew,
+            crate::engine::journal::Unrecoverable::Unreadable,
+        ]
+        .map(crate::engine::journal::Unrecoverable::reason),
+    );
+    reasons.extend(IncompleteLimit::ALL.map(IncompleteLimit::as_str));
+    reasons.sort_unstable();
+    reasons.dedup();
+    reasons
+}
+
+fn evidence_reason_schema(_: &mut SchemaGenerator) -> Schema {
+    json_schema!({ "type": "string", "enum": evidence_reasons() })
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -968,6 +1006,28 @@ mod tests {
             assert_eq!(kind, expected, "{case}: {instance}");
             assert_eq!(parsed.to_string(), instance, "{case}");
         }
+    }
+
+    /// `evidence.reason` is published as a closed set, made of its three sources only.
+    #[test]
+    fn evidence_reasons_are_closed() {
+        let mut expected: Vec<&str> = crate::doctor::view::FailureReason::ALL
+            .iter()
+            .map(|r| r.as_str())
+            .collect();
+        expected.extend(["journal_too_new", "journal_unreadable"]);
+        expected.extend(["deadline", "entries", "online_requests"]);
+        expected.sort_unstable();
+        assert_eq!(evidence_reasons(), expected);
+        let mut generator = schemars::generate::SchemaSettings::draft2020_12()
+            .for_serialize()
+            .into_generator();
+        let schema = generator.root_schema_for::<Evidence>().to_value();
+        assert_eq!(
+            schema["properties"]["reason"]["enum"],
+            serde_json::json!(expected),
+            "{schema}"
+        );
     }
 
     #[test]

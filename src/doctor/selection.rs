@@ -196,6 +196,7 @@ fn picks(flag: &str, values: &[String], argv: &[String]) -> Result<Vec<Pick>> {
                     (!kept.is_empty())
                         .then(|| with_value(argv, flag, occurrence, &kept.join(",")))
                         .flatten(),
+                    argv,
                 ));
             }
             let Some(pick) = pick_of(item) else {
@@ -209,6 +210,7 @@ fn picks(flag: &str, values: &[String], argv: &[String]) -> Result<Vec<Pick>> {
                 return Err(bad_item(
                     format!("unknown failure mode or subsystem '{item}' in {flag}"),
                     fix,
+                    argv,
                 ));
             };
             if !out.contains(&pick) {
@@ -278,19 +280,27 @@ fn with_value(argv: &[String], flag: &str, occurrence: usize, value: &str) -> Op
 }
 
 /// `usage` for a bad item: the corrected command when there is one, which keeps the
-/// user's verb, else what the flags take.
-fn bad_item(message: String, fix: Option<Vec<String>>) -> Error {
+/// user's verb, else what the flags take, with the command's help (which lists the
+/// failure modes) as the alternative; never a fix that drops what was named.
+fn bad_item(message: String, fix: Option<Vec<String>>, argv: &[String]) -> Error {
     match fix {
         Some(argv) => Error::new(ErrorCode::Usage, message, Suggestion::command(argv)).user_verb(),
-        None => Error::new(
-            ErrorCode::Usage,
-            message,
-            Suggestion::text(format!(
-                "use a failure-mode id such as {}, or a subsystem name such as {}",
-                ids::CONFIG_PARSE_ERROR,
-                Subsystem::Schemas.as_str()
-            )),
-        ),
+        None => {
+            let help = std::iter::once("omaddons".to_owned())
+                .chain(std::iter::once("help".to_owned()))
+                .chain(crate::cli::command_path(argv))
+                .collect::<Vec<String>>();
+            Error::new(
+                ErrorCode::Usage,
+                message,
+                Suggestion::text(format!(
+                    "use a failure-mode id such as {}, or a subsystem name such as {}",
+                    ids::CONFIG_PARSE_ERROR,
+                    Subsystem::Schemas.as_str()
+                )),
+            )
+            .alternative(Suggestion::command(help))
+        }
     }
 }
 
@@ -313,7 +323,8 @@ pub struct SkippedTarget {
     pub key: Option<TargetKey>,
 }
 
-/// The layer whose failure kept a check from running.
+/// Why a check did not run: the layer whose failure kept it from running, or the network
+/// it needs without `--online`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SkipReason {
@@ -329,6 +340,8 @@ pub enum SkipReason {
     WidgetUnavailable,
     SkillUnavailable,
     CredentialsUnavailable,
+    /// It needs the network, and the run was not given `--online`.
+    OnlineRequired,
 }
 
 impl SkipReason {
@@ -349,8 +362,9 @@ impl SkipReason {
         }
     }
 
-    pub const fn layer(self) -> Layer {
-        match self {
+    /// The layer whose failure this is; `None` for a check skipped for the network.
+    pub const fn layer(self) -> Option<Layer> {
+        Some(match self {
             Self::ConfigUnavailable => Layer::Config,
             Self::RegistryUnavailable => Layer::Registry,
             Self::DiscoveryUnavailable => Layer::Discovery,
@@ -363,7 +377,8 @@ impl SkipReason {
             Self::WidgetUnavailable => Layer::Widget,
             Self::SkillUnavailable => Layer::Skill,
             Self::CredentialsUnavailable => Layer::Credentials,
-        }
+            Self::OnlineRequired => return None,
+        })
     }
 }
 
@@ -456,7 +471,7 @@ pub fn visible_failures(
     part: &Partition<'_>,
     skipped: &[Skipped],
 ) -> Vec<Finding> {
-    let causes: BTreeSet<Layer> = skipped.iter().map(|s| s.reason.layer()).collect();
+    let causes: BTreeSet<Layer> = skipped.iter().filter_map(|s| s.reason.layer()).collect();
     view.failures()
         .iter()
         .filter(|failure| {
@@ -1196,7 +1211,7 @@ mod tests {
         );
         for layer in Layer::ALL {
             let reason = SkipReason::for_layer(layer);
-            assert_eq!(reason.layer(), layer);
+            assert_eq!(reason.layer(), Some(layer));
             assert_eq!(
                 serde_json::to_value(reason).unwrap(),
                 serde_json::json!(format!(

@@ -1,5 +1,6 @@
 ---
 source: tests/cli_skeleton.rs
+assertion_line: 177
 expression: envelope
 ---
 {
@@ -76,6 +77,12 @@ expression: envelope
         "aliases": [],
         "group": "look",
         "name": "net-log"
+      },
+      {
+        "about": "Diagnose what omaddons manages (bare: diagnose; changes nothing outside its run record)",
+        "aliases": [],
+        "group": "look",
+        "name": "doctor"
       },
       {
         "about": "Install or update addons in one target, verified by its own TOC rules",

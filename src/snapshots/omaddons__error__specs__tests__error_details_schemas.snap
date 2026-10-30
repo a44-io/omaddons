@@ -1,5 +1,6 @@
 ---
 source: src/error/specs.rs
+assertion_line: 669
 expression: schemas
 ---
 {
@@ -1052,6 +1053,144 @@ expression: schemas
         "type": "array"
       }
     },
+    "type": "object"
+  },
+  "doctor_refused": {
+    "properties": {
+      "budget_ms": {
+        "type": "integer"
+      },
+      "estimated_ms": {
+        "type": "integer"
+      },
+      "fm": {
+        "type": "string"
+      },
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "additionalProperties": true,
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "reason": {
+        "enum": [
+          "force_required",
+          "fixer_conflict",
+          "too_many_actions",
+          "over_budget",
+          "filesystem_mismatch",
+          "client_running",
+          "not_enabled",
+          "edited_locally"
+        ]
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "resources": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "reason"
+    ],
     "type": "object"
   },
   "download_failed": {
@@ -2967,6 +3106,123 @@ expression: schemas
         "type": "array"
       }
     },
+    "type": "object"
+  },
+  "online_required": {
+    "properties": {
+      "fms": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "items": {
+        "items": {
+          "oneOf": [
+            {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "request"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "additionalProperties": true,
+                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                      "type": "object"
+                    },
+                    "fix": {
+                      "type": "string"
+                    },
+                    "fix_argv": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "fix",
+                    "fix_argv",
+                    "message"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "request",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "journal_pending": {
+        "type": "string"
+      },
+      "recovery_error": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "required_by": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "fms"
+    ],
     "type": "object"
   },
   "ownership_conflict": {
