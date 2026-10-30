@@ -196,10 +196,14 @@ pub fn evidence_txs(ran: &Ran) -> Vec<(String, String)> {
 }
 
 /// `(target id, tx)` of the `history --json --limit 200` entries whose `plan` is `id`,
-/// oldest first (history lists them newest first).
+/// oldest first (history lists them newest first). The run names no account, realm or
+/// character on either stream.
 pub fn history_txs_for(log: &TestLog, home: &Home, id: &str) -> Vec<(String, String)> {
-    let ran = log.run(home, &["history", "--json", "--limit", "200"]);
-    ran.ok();
+    let ran = log.run(
+        home,
+        &["history", "--json", "--limit", "200", "--progress", "json"],
+    );
+    ran.ok().assert_private();
     let mut lines: Vec<(String, String)> = ran.data()["entries"]
         .as_array()
         .into_iter()
