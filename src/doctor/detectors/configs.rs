@@ -10,8 +10,5 @@ use crate::doctor::view::DoctorView;
 /// recorded it.
 pub(crate) fn config_parse_error(view: &DoctorView, _: &Selection, _: &mut Budget) -> Detected {
     view.config();
-    Detected {
-        found: view.failure_observations(ids::CONFIG_PARSE_ERROR),
-        incomplete: None,
-    }
+    Detected::complete(view.failure_observations(ids::CONFIG_PARSE_ERROR))
 }

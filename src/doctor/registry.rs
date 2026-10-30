@@ -66,7 +66,9 @@ pub mod ids {
 
 /// How costly a detector is, and so who runs it: `status --cached` runs `cached`;
 /// `status`, `doctor --quick` and `doctor health` run `cached` and `quick`; `doctor` all
-/// but `deep`; `doctor --include-deep` all.
+/// but `deep`; `doctor --include-deep` all. `runtime` rows have no detector: the doctor
+/// runtime raises them about its own run, and no tier filter selects them (it sorts
+/// last, past every `max_tier`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Tier {
@@ -76,6 +78,7 @@ pub enum Tier {
     Quick,
     Default,
     Deep,
+    Runtime,
 }
 
 /// What a detector reads, so a tolerant view can say what it could not load.
@@ -546,6 +549,10 @@ pub enum Rule {
     ForcedFixerEnabled,
     OnlineInFastTier,
     TooCostlyForTier,
+    /// A row of a detecting tier with no detector.
+    NoDetector,
+    /// A `runtime` row with a detector: the runtime raises it, nothing detects it.
+    RuntimeRowWithDetector,
     FixerWithoutDetector,
     FixerWithoutOps,
     FixerWithoutScope,
@@ -563,8 +570,8 @@ pub struct RowViolation {
 /// Every rule each of `rows` breaks, in row order: ids unique, sorted and well formed,
 /// matching an applicable subsystem; texts present, trimmed and single-line; a
 /// remediation; a forced fixer never enabled; nothing online or over the quick budget in
-/// the fast tiers; a fixer only with a detector, ops and a scope fsx lets the doctor
-/// write.
+/// the fast tiers; a detector exactly on the rows that are not `runtime`'s; a fixer only
+/// with a detector, ops and a scope fsx lets the doctor write.
 pub fn invariant_violations(rows: &[FailureMode]) -> Vec<RowViolation> {
     let mut out = Vec::new();
     let mut seen = BTreeSet::new();
@@ -608,6 +615,11 @@ pub fn invariant_violations(rows: &[FailureMode]) -> Vec<RowViolation> {
         }
         if fast && u128::from(row.cost_ms) > QUICK_DETECTOR_BUDGET.as_millis() {
             broken(Rule::TooCostlyForTier);
+        }
+        match (row.tier, row.detect.is_some()) {
+            (Tier::Runtime, true) => broken(Rule::RuntimeRowWithDetector),
+            (Tier::Runtime, false) | (_, true) => {}
+            (_, false) => broken(Rule::NoDetector),
         }
         if let Some(fix) = &row.fix {
             if fix.needs_force && fix.enabled {
@@ -805,12 +817,30 @@ mod tests {
             ),
             ("costly_in_default", vec![with(|r| r.cost_ms = 600)], vec![]),
             (
+                "no_detector",
+                vec![with(|r| r.detect = None)],
+                vec![Rule::NoDetector],
+            ),
+            (
+                "runtime_row_without_detector",
+                vec![with(|r| {
+                    r.tier = Tier::Runtime;
+                    r.detect = None;
+                })],
+                vec![],
+            ),
+            (
+                "runtime_row_with_detector",
+                vec![with(|r| r.tier = Tier::Runtime)],
+                vec![Rule::RuntimeRowWithDetector],
+            ),
+            (
                 "fixer_without_detector",
                 vec![with(|r| {
                     r.detect = None;
                     r.fix = Some(fixer());
                 })],
-                vec![Rule::FixerWithoutDetector],
+                vec![Rule::NoDetector, Rule::FixerWithoutDetector],
             ),
             (
                 "fixer_without_ops",

@@ -19,10 +19,7 @@ pub(crate) fn managed_files_modified(
         targets: super::drift_facts(view, sel, DriftMode::Stat),
         machine: Default::default(),
     };
-    Detected {
-        found: managed_files_modified_in(&facts),
-        incomplete: None,
-    }
+    Detected::complete(managed_files_modified_in(&facts))
 }
 
 /// `managed-files-modified`'s rule: one finding per managed addon whose files changed on
@@ -74,10 +71,7 @@ pub(crate) fn ownership_transferred(view: &DoctorView, _: &Selection, _: &mut Bu
         targets,
         machine: Default::default(),
     };
-    Detected {
-        found: ownership_transferred_in(&facts),
-        incomplete: None,
-    }
+    Detected::complete(ownership_transferred_in(&facts))
 }
 
 /// `ownership-transferred`'s rule: a target whose addons lost folders to other addons

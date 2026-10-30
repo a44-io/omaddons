@@ -18,10 +18,7 @@ pub(crate) fn record_folder_missing(
         targets: super::drift_facts(view, sel, DriftMode::Presence),
         machine: Default::default(),
     };
-    Detected {
-        found: record_folder_missing_in(&facts),
-        incomplete: None,
-    }
+    Detected::complete(record_folder_missing_in(&facts))
 }
 
 /// `record-folder-missing`'s rule: one finding per managed addon whose folder is gone.

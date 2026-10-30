@@ -14,10 +14,7 @@ pub(crate) fn widget_version_drift(view: &DoctorView, _: &Selection, _: &mut Bud
         targets: Vec::new(),
         machine: machine_facts(widget, Vec::new()),
     };
-    Detected {
-        found: widget_version_drift_in(&facts),
-        incomplete: None,
-    }
+    Detected::complete(widget_version_drift_in(&facts))
 }
 
 /// `widget-version-drift`'s rule: the bar widget serving this state is from another

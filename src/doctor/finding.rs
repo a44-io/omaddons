@@ -16,6 +16,7 @@ use std::str::FromStr;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Serialize, Serializer};
 
+use super::budget::Budget;
 use crate::model::{FolderName, TargetKey, TxId};
 
 /// How sure a finding is (M4-D41): `high` when the state was observed directly (a hash, a
@@ -660,11 +661,35 @@ pub struct Detected {
     pub incomplete: Option<Incomplete>,
 }
 
+impl Detected {
+    /// A detector that ran to its end.
+    pub fn complete(found: Vec<Observation>) -> Self {
+        Self {
+            found,
+            incomplete: None,
+        }
+    }
+
+    /// A detector that stopped when `budget` ran out: what it found so far, and the limit
+    /// that stopped it.
+    pub fn cut_short(found: Vec<Observation>, budget: &Budget) -> Self {
+        Self {
+            found,
+            incomplete: budget.incomplete(),
+        }
+    }
+}
+
 /// A detector stopped by a limit (M4-D43): what it found stands, and the run reports a
-/// `fm-state_files-check-incomplete` finding for it.
+/// `fm-state_files-check-incomplete` finding for it. It holds only what the limit fixes,
+/// never an elapsed time or a count, so two runs over one state record the same.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct Incomplete {
     pub limit: IncompleteLimit,
+    /// The deadline that passed, for `deadline`.
+    pub deadline_ms: Option<u64>,
+    /// The entry cap that was reached, for `entries`.
+    pub max_entries: Option<u64>,
 }
 
 /// The limit that stopped a detector.

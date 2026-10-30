@@ -22,10 +22,7 @@ pub(crate) fn target_vanished(view: &DoctorView, _: &Selection, _: &mut Budget) 
         targets,
         machine: Default::default(),
     };
-    Detected {
-        found: target_vanished_in(&facts),
-        incomplete: None,
-    }
+    Detected::complete(target_vanished_in(&facts))
 }
 
 /// `target-vanished`'s rule: a registered client whose directory is gone.

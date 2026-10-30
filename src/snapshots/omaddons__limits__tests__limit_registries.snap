@@ -1,6 +1,6 @@
 ---
 source: src/limits.rs
-assertion_line: 1355
+assertion_line: 1366
 expression: "(politeness, REGISTRY)"
 ---
 [
@@ -428,6 +428,15 @@ expression: "(politeness, REGISTRY)"
       "unit": "ms",
       "config_key": null,
       "notes": "Doctor --quick / health, per detector"
+    },
+    {
+      "name": "DOCTOR_DETECTOR_DEADLINE",
+      "value": {
+        "millis": 2000
+      },
+      "unit": "ms",
+      "config_key": null,
+      "notes": "A default or deep doctor check's run-time deadline without --budget; past it, check-incomplete"
     },
     {
       "name": "DISCOVERY_FILE_MAX_BYTES",

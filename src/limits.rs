@@ -76,6 +76,9 @@ pub const SAVEDVARIABLES_MAX_BYTES: u64 = 64 * MIB;
 pub const TOC_LINE_MAX: usize = 1024;
 /// Time budget per doctor `--quick` / `health` detector.
 pub const QUICK_DETECTOR_BUDGET: Duration = Duration::from_millis(5);
+/// A default or deep doctor check's run-time deadline without `--budget` (M4-D43); past
+/// it the check stops and the run reports it incomplete.
+pub const DOCTOR_DETECTOR_DEADLINE: Duration = Duration::from_secs(2);
 /// Most bytes discovery reads from one client metadata file (`.build.info`,
 /// `.flavor.info`, `Config.wtf`, `realmlist.wtf`, …); the rest is ignored. Also the most
 /// the doctor's view reads of one state or config file (`config.toml`, `registry.json`,
@@ -468,6 +471,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         "ms",
         None,
         "Doctor --quick / health, per detector",
+    ),
+    limit(
+        "DOCTOR_DETECTOR_DEADLINE",
+        LimitValue::Millis(ms(DOCTOR_DETECTOR_DEADLINE)),
+        "ms",
+        None,
+        "A default or deep doctor check's run-time deadline without --budget; past it, check-incomplete",
     ),
     limit(
         "DISCOVERY_FILE_MAX_BYTES",
@@ -1091,6 +1101,7 @@ mod tests {
         "PLANS_SWEEP_MAX", "PLAN_EVIDENCE_LINES_MAX", "ORPHAN_MIN_AGE", "REASON_MAX_CHARS",
         "AUTH_TOKEN_MAX_BYTES", "NET_LOG_MAX_BYTES",
         "SAVEDVARIABLES_MAX_BYTES", "TOC_LINE_MAX", "QUICK_DETECTOR_BUDGET",
+        "DOCTOR_DETECTOR_DEADLINE",
         "DISCOVERY_FILE_MAX_BYTES", "CREDENTIAL_COMMAND_TIMEOUT", "RELEASE_MEMO_MAX_ENTRIES",
         "MEMO_KNOWN_RELEASES", "DEPENDENCY_SOURCE_MAX_AGE", "CHANGELOG_MAX_CHARS",
         "CHANGELOG_MAX_ENTRIES", "API_RESPONSE_MAX_BYTES",

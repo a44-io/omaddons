@@ -35,10 +35,7 @@ pub(crate) fn journal_pending(view: &DoctorView, _: &Selection, _: &mut Budget) 
             widget: None,
         },
     };
-    Detected {
-        found: journal_pending_in(&facts),
-        incomplete: None,
-    }
+    Detected::complete(journal_pending_in(&facts))
 }
 
 /// `journal-pending`'s rule: one finding per pending journal, on its target, or on the

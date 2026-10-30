@@ -17,10 +17,7 @@ pub(crate) fn state_corrupt(view: &DoctorView, _: &Selection, _: &mut Budget) ->
     view.journals();
     view.lock();
     view.history();
-    Detected {
-        found: view.failure_observations(ids::STATE_CORRUPT),
-        incomplete: None,
-    }
+    Detected::complete(view.failure_observations(ids::STATE_CORRUPT))
 }
 
 /// `state-version-newer`, from the Records layer: each record a newer omaddons wrote,
@@ -47,10 +44,7 @@ pub(crate) fn state_version_newer(view: &DoctorView, _: &Selection, _: &mut Budg
     });
     view.registry();
     found.extend(view.failure_observations(ids::STATE_VERSION_NEWER));
-    Detected {
-        found,
-        incomplete: None,
-    }
+    Detected::complete(found)
 }
 
 /// `state-version-newer`'s rule: a target's record written by a newer omaddons.
