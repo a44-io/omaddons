@@ -161,11 +161,29 @@ pub(crate) mod tests {
         ids
     }
 
+    /// A detector that reads nothing and finds one machine instance.
+    fn one_machine_finding(_: &DoctorView, _: &Selection, _: &mut Budget) -> finding::Detected {
+        finding::Detected {
+            found: vec![finding::Observation {
+                subject: finding::Subject::machine(),
+                title: "t".to_owned(),
+                confidence: finding::Confidence::High,
+                addon: None,
+                folder: None,
+                evidence: finding::Evidence::default(),
+            }],
+            incomplete: None,
+        }
+    }
+
     #[test]
-    fn detect_runs_selected_rows_up_to_the_tier() {
-        let view = DoctorView::from_status_facts(fixture_paths(), facts());
-        let all = Selection::all();
-        let cached = detect(&view, &all, Tier::Cached);
+    fn status_rules_run_up_to_the_tier() {
+        let cached = facts::findings(&facts(), Tier::Cached);
+        let ids_of = |found: &[Finding]| {
+            let mut ids: Vec<&str> = found.iter().map(|f| f.id).collect();
+            ids.dedup();
+            ids
+        };
         assert_eq!(
             ids_of(&cached),
             [
@@ -178,15 +196,33 @@ pub(crate) mod tests {
             ],
             "cached runs no managed-files-modified"
         );
-        let quick = detect(&view, &all, Tier::Quick);
+        let quick = facts::findings(&facts(), Tier::Quick);
         assert_eq!(ids_of(&quick).len(), 7, "{:?}", ids_of(&quick));
         assert!(ids_of(&quick).contains(&ids::MANAGED_FILES_MODIFIED));
-        let only = detect(&view, &Selection::only(&[ids::TARGET_VANISHED]), Tier::Deep);
-        assert_eq!(ids_of(&only), [ids::TARGET_VANISHED]);
-        assert!(quick.incomplete.is_empty());
+    }
+
+    #[test]
+    fn detect_runs_selected_rows_up_to_the_tier() {
+        let view = DoctorView::load_at(fixture_paths(), view::ViewOptions::default());
+        let mut rows = FAILURE_MODES.to_vec();
+        for row in &mut rows {
+            row.detect = Some(one_machine_finding);
+        }
+        let all = Selection::all();
+        let run = |sel: &Selection, tier| ids_of(&detect_rows(&rows, &view, sel, tier));
+        let cached: Vec<&str> = rows
+            .iter()
+            .filter(|row| row.tier == Tier::Cached)
+            .map(|row| row.id)
+            .collect();
+        assert_eq!(run(&all, Tier::Cached), cached);
+        assert_eq!(run(&all, Tier::Deep).len(), rows.len());
+        assert_eq!(
+            run(&Selection::only(&[ids::TARGET_VANISHED]), Tier::Deep),
+            [ids::TARGET_VANISHED]
+        );
 
         // A row without a detector is skipped.
-        let mut rows = FAILURE_MODES.to_vec();
         for row in &mut rows {
             row.detect = None;
         }
@@ -194,12 +230,15 @@ pub(crate) mod tests {
             detect_rows(&rows, &view, &all, Tier::Deep),
             Detection::default()
         );
+        assert_eq!(view.loaded_layers(), std::collections::BTreeSet::new());
     }
 
     #[test]
     fn findings_carry_their_rows_meta_and_keys() {
-        let view = DoctorView::from_status_facts(fixture_paths(), facts());
-        let found = detect(&view, &Selection::all(), Tier::Quick);
+        let found = Detection {
+            findings: facts::findings(&facts(), Tier::Quick),
+            incomplete: Vec::new(),
+        };
         for f in &found.findings {
             let row = registry::row(f.id).unwrap();
             assert_eq!(
@@ -263,14 +302,16 @@ pub(crate) mod tests {
             ],
             ..retail()
         };
-        let view = DoctorView::from_status_facts(
-            fixture_paths(),
-            StatusFacts {
-                targets: vec![target],
-                machine: MachineFacts::default(),
-            },
-        );
-        let found = detect(&view, &Selection::all(), Tier::Cached);
+        let found = Detection {
+            findings: facts::findings(
+                &StatusFacts {
+                    targets: vec![target],
+                    machine: MachineFacts::default(),
+                },
+                Tier::Cached,
+            ),
+            incomplete: Vec::new(),
+        };
         let journals: Vec<(&str, &str)> = found
             .findings
             .iter()

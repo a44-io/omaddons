@@ -5,10 +5,6 @@
 //! (M4-D42), so the checks that need the layer are skipped rather than run on defaults. A
 //! layer built from an unavailable one is unavailable too, with that one as its cause.
 //! Nothing here writes, the discovery cache included.
-//!
-//! Until E2's part 4 points `status` at the rules directly and F8 removes them, a view can
-//! instead carry the facts `status` computes ([`DoctorView::from_status_facts`]); such a
-//! view reads no layer.
 
 use std::cell::{OnceCell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
@@ -16,7 +12,6 @@ use std::io::{ErrorKind, Read};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-use super::facts::StatusFacts;
 use super::finding::{
     Confidence, Evidence, Finding, FindingTarget, Observation, Severity, Subject,
 };
@@ -79,8 +74,6 @@ impl ViewDiscovery {
 pub struct DoctorView {
     paths: Paths,
     options: ViewOptions,
-    /// Built from `status`'s facts: no layer is read, and every layer is unavailable.
-    facts_only: bool,
     /// The most entries one listing visits: [`DOCTOR_SCAN_MAX_ENTRIES`] (a test lowers it).
     max_entries: u64,
     config: OnceCell<LayerState<LoadedConfig>>,
@@ -99,7 +92,6 @@ pub struct DoctorView {
     /// What went wrong that no failure mode describes, for a `-v` log.
     diagnostics: RefCell<Vec<String>>,
     loaded: RefCell<BTreeSet<Layer>>,
-    status_facts: StatusFacts,
 }
 
 impl DoctorView {
@@ -113,7 +105,6 @@ impl DoctorView {
         Self {
             paths,
             options,
-            facts_only: false,
             max_entries: DOCTOR_SCAN_MAX_ENTRIES,
             config: OnceCell::new(),
             registry: OnceCell::new(),
@@ -130,22 +121,7 @@ impl DoctorView {
             warnings: RefCell::default(),
             diagnostics: RefCell::default(),
             loaded: RefCell::default(),
-            status_facts: StatusFacts::default(),
         }
-    }
-
-    /// The facts `status` computes, as the seven rows `status` publishes read them (E1's
-    /// bridge). The view reads no file: its layers are all unavailable.
-    pub fn from_status_facts(paths: Paths, status_facts: StatusFacts) -> Self {
-        Self {
-            facts_only: true,
-            status_facts,
-            ..Self::load_at(paths, ViewOptions::default())
-        }
-    }
-
-    pub fn status_facts(&self) -> &StatusFacts {
-        &self.status_facts
     }
 
     pub fn paths(&self) -> &Paths {
@@ -258,16 +234,13 @@ impl DoctorView {
         self.layer(&self.discovered, Layer::Discovery, Self::load_discovery)
     }
 
-    /// `cell`'s layer, loaded by `load` on the first ask; never for a facts-only view.
+    /// `cell`'s layer, loaded by `load` on the first ask.
     fn layer<'a, T>(
         &'a self,
         cell: &'a OnceCell<LayerState<T>>,
         layer: Layer,
         load: fn(&Self) -> LayerState<T>,
     ) -> Option<&'a T> {
-        if self.facts_only {
-            return None;
-        }
         cell.get_or_init(|| {
             let state = load(self);
             self.loaded.borrow_mut().insert(layer);
@@ -999,6 +972,14 @@ impl Records {
         self.by_key
             .iter()
             .filter_map(|(key, state)| Some((key, state.available()?)))
+    }
+
+    /// Records as a test sets them.
+    #[cfg(test)]
+    pub(crate) fn from_states(
+        by_key: BTreeMap<TargetKey, LayerState<Loaded<TargetRecord>>>,
+    ) -> Self {
+        Self { by_key }
     }
 
     /// Whether the layer looked for `key`'s record: the registry names it, or
@@ -2223,18 +2204,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_facts_view_reads_no_layer() {
-        let (_dir, paths) = home();
-        plant(&paths.config_file(), &Plant::Bytes(b"a = [\n".to_vec()));
-        let view = DoctorView::from_status_facts(paths, StatusFacts::default());
-        assert!(view.config().is_none());
-        assert!(view.registry().is_none());
-        assert!(view.records().is_none());
-        assert_eq!(view.loaded_layers(), BTreeSet::new());
-        assert_eq!(view.failures(), Vec::new());
-    }
-
-    #[test]
     fn failure_findings_are_sorted_instanced_and_content_free() {
         let (_dir, paths) = home();
         let broken = format!("a = [ # {MARKER}\n");
@@ -2807,7 +2776,7 @@ pub(crate) mod tests {
     }
 
     /// A journal that reached `committed`, with the journal module's own lines.
-    fn committed_journal(tx: crate::model::TxId, k: TargetKey) -> String {
+    pub(crate) fn committed_journal(tx: crate::model::TxId, k: TargetKey) -> String {
         use crate::engine::journal::{CURRENT, CommitPayload, IndexChanges, JournalLine, Prepared};
         let prepared = JournalLine::Prepared(Box::new(Prepared {
             schema_version: CURRENT,

@@ -1,14 +1,29 @@
 //! `plugins`: the bar widget.
 
+use crate::app::status::machine_facts;
 use crate::doctor::budget::Budget;
+use crate::doctor::facts::StatusFacts;
 use crate::doctor::finding::{Confidence, Detected, Evidence, Observation, Subject};
 use crate::doctor::selection::Selection;
 use crate::doctor::view::DoctorView;
 
-/// `widget-version-drift`: the bar widget serving this state is from another build.
+/// `widget-version-drift`, from the Widget layer.
 pub(crate) fn widget_version_drift(view: &DoctorView, _: &Selection, _: &mut Budget) -> Detected {
-    let found = view
-        .status_facts()
+    let widget = view.widget().and_then(|layer| layer.info.as_ref());
+    let facts = StatusFacts {
+        targets: Vec::new(),
+        machine: machine_facts(widget, Vec::new()),
+    };
+    Detected {
+        found: widget_version_drift_in(&facts),
+        incomplete: None,
+    }
+}
+
+/// `widget-version-drift`'s rule: the bar widget serving this state is from another
+/// build.
+pub(crate) fn widget_version_drift_in(facts: &StatusFacts) -> Vec<Observation> {
+    facts
         .machine
         .widget
         .iter()
@@ -23,9 +38,5 @@ pub(crate) fn widget_version_drift(view: &DoctorView, _: &Selection, _: &mut Bud
                 ..Evidence::default()
             },
         })
-        .collect();
-    Detected {
-        found,
-        incomplete: None,
-    }
+        .collect()
 }

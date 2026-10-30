@@ -46,8 +46,6 @@ use crate::doctor::facts::{
     AddonDriftFact, MachineFacts, NewerFile, PendingJournal, StatusFacts, TargetFacts, WidgetDrift,
 };
 use crate::doctor::registry::Tier;
-use crate::doctor::selection::Selection;
-use crate::doctor::view::DoctorView;
 use crate::drift::{AddonDrift, DriftMode, DriftState};
 use crate::engine::journal;
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
@@ -955,38 +953,27 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
     // target carries it, and it needs manual repair.
     let unattributed = !held && pending.iter().any(|p| p.target.is_none());
 
-    // Each issue is a finding of the failure-mode registry (E1), from the facts gathered
-    // above: `--cached` runs the `cached` rows, plain `status` the `quick` ones too.
+    // Each issue is a finding of the failure-mode registry, by its rows' own rules over
+    // the facts gathered above: `--cached` runs the `cached` rows, plain `status` the
+    // `quick` ones too.
     let machine = machine_facts(widget.as_ref(), pending_journals(&pending, None, held));
-    let view = DoctorView::from_status_facts(
-        world.paths.clone(),
-        StatusFacts {
-            targets: facts,
-            machine,
-        },
-    );
+    let facts = StatusFacts {
+        targets: facts,
+        machine,
+    };
     let max_tier = if args.cached {
         Tier::Cached
     } else {
         Tier::Quick
     };
-    let found = doctor::detect(
-        &view,
-        &Selection::only(issues::STATUS_FAILURE_MODES),
-        max_tier,
-    );
-    debug_assert!(
-        found.incomplete.is_empty(),
-        "status's rows walk nothing: {:?}",
-        found.incomplete
-    );
+    let found = doctor::facts::findings(&facts, max_tier);
     for t in &mut targets {
         t.issues = t
             .key
-            .map(|key| issues::for_target(&found.findings, key))
+            .map(|key| issues::for_target(&found, key))
             .unwrap_or_default();
     }
-    let issues = issues::for_machine(&found.findings);
+    let issues = issues::for_machine(&found);
 
     let (mut commands, mut first_fix) = recommendations(&targets, check_due, widget_outdated);
     if unattributed && first_fix.is_none() {

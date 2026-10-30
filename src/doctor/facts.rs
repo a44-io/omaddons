@@ -1,18 +1,58 @@
-//! The bridge from what `status` already computes to the registry's detectors (E1): the
-//! seven failure modes `status` publishes, as facts, so their detectors read exactly what
-//! `status` raised attention for.
+//! The facts of the seven failure modes `status` publishes, and each one's rule over
+//! them: `status` gathers the facts from what it already computed and runs the rules
+//! ([`findings`]); the doctor's detectors gather the same facts from the view's layers and
+//! run the same rules, so the two never disagree.
 //!
-//! Temporary by design. E2's `DoctorView::load` must fill these facts from its tolerant
-//! layers, computed as `status` computes them, so that `doctor` (E3) reports the seven too;
-//! each catalog leaf that moves one of the seven onto the layers drops that row's use of
-//! them; F8 removes this module.
+//! Temporary by design: F8 puts `status` on the registry's detectors and removes this
+//! module.
 
 use std::path::PathBuf;
 
+use super::detectors::{concurrency, external, plugins, schemas, state_files, userland};
+use super::finding::{Finding, Observation};
+use super::registry::{FAILURE_MODES, Tier, ids};
 use crate::drift::DriftState;
 use crate::engine::journal::Unrecoverable;
 use crate::model::{TargetKey, TxId};
 use crate::state::store::SchemaVersion;
+
+/// One failure mode's rule: its observations in the facts.
+type Rule = fn(&StatusFacts) -> Vec<Observation>;
+
+/// The rule of each failure mode `status` publishes.
+const RULES: [(&str, Rule); 7] = [
+    (ids::JOURNAL_PENDING, concurrency::journal_pending_in),
+    (ids::STATE_VERSION_NEWER, schemas::state_version_newer_in),
+    (
+        ids::RECORD_FOLDER_MISSING,
+        state_files::record_folder_missing_in,
+    ),
+    (
+        ids::MANAGED_FILES_MODIFIED,
+        external::managed_files_modified_in,
+    ),
+    (
+        ids::OWNERSHIP_TRANSFERRED,
+        external::ownership_transferred_in,
+    ),
+    (ids::TARGET_VANISHED, userland::target_vanished_in),
+    (ids::WIDGET_VERSION_DRIFT, plugins::widget_version_drift_in),
+];
+
+/// The findings of the failure modes `status` publishes, up to `max_tier`, in registry
+/// order: `status --cached` asks for the `cached` rows, plain `status` the `quick` ones
+/// too.
+pub fn findings(facts: &StatusFacts, max_tier: Tier) -> Vec<Finding> {
+    FAILURE_MODES
+        .iter()
+        .filter(|row| row.tier <= max_tier)
+        .filter_map(|row| {
+            let (_, rule) = RULES.iter().find(|(id, _)| *id == row.id)?;
+            Some((row, rule))
+        })
+        .flat_map(|(row, rule)| rule(facts).into_iter().map(|obs| row.finding(obs)))
+        .collect()
+}
 
 /// Everything the seven detectors read.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -39,6 +79,21 @@ pub struct TargetFacts {
     /// Its missing and modified addons, as `status` filtered them (under `--cached`,
     /// missing ones only).
     pub drift: Vec<AddonDriftFact>,
+}
+
+impl TargetFacts {
+    /// A target with nothing to report.
+    pub fn new(id: impl Into<String>, key: TargetKey) -> Self {
+        Self {
+            id: id.into(),
+            key,
+            journals: Vec::new(),
+            newer_record: None,
+            vanished: None,
+            degraded: 0,
+            drift: Vec::new(),
+        }
+    }
 }
 
 /// A pending journal and why recovery cannot settle it by itself, when it cannot.

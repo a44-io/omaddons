@@ -300,8 +300,6 @@ pub(crate) mod tests {
     };
     use crate::doctor::facts::{MachineFacts, NewerFile, PendingJournal, StatusFacts};
     use crate::doctor::registry::Tier;
-    use crate::doctor::selection::Selection;
-    use crate::doctor::view::DoctorView;
     use crate::drift::DriftState;
     use crate::engine::journal::{Pending, Unrecoverable};
     use crate::model::TxId;
@@ -363,12 +361,8 @@ pub(crate) mod tests {
         machine: MachineFacts,
         cached: bool,
     ) -> Vec<Finding> {
-        let view = DoctorView::from_status_facts(
-            crate::doctor::tests::fixture_paths(),
-            StatusFacts { targets, machine },
-        );
         let max_tier = if cached { Tier::Cached } else { Tier::Quick };
-        crate::doctor::detect(&view, &Selection::only(STATUS_FAILURE_MODES), max_tier).findings
+        crate::doctor::facts::findings(&StatusFacts { targets, machine }, max_tier)
     }
 
     fn drift(addon: &str, state: DriftState, files: u64) -> DriftItem {
