@@ -267,7 +267,17 @@ fn bare_update_is_update_all_and_upgrade_is_update() {
     assert_eq!(upgrade["command"], "update");
     assert_eq!(bare["data"]["dry_run"], true);
     assert_eq!(bare["data"]["run"], Value::Null);
-    assert!(bare["commands"].as_array().unwrap().is_empty());
+    // Only the stored plan's apply.
+    let id = bare["data"]["plan_id"].as_str().unwrap();
+    assert_eq!(
+        bare["commands"],
+        serde_json::json!([{
+            "action": "apply",
+            "command": format!("omaddons apply {id}"),
+            "argv": ["omaddons", "apply", id],
+            "destructive": false,
+        }])
+    );
     insta::assert_json_snapshot!("update_dry_run", stable(&bare));
     let human = home.exec(&["update".to_owned(), "--dry-run".to_owned()]);
     insta::assert_snapshot!(

@@ -239,6 +239,11 @@ fn install_dry_run_stored() {
     );
     log.assert_eq("doorbell unchanged", &fs::read(&doorbell).ok(), &before);
     log.assert_unchanged("client before preview", &s.home.root);
+    log.assert_eq(
+        "the stored plan's apply, first",
+        &c.envelope["commands"][0],
+        &apply_hint(&c.envelope, false),
+    );
     insta::assert_json_snapshot!("install_dry_run_stored", s.stable(&c.envelope));
 }
 
@@ -932,6 +937,11 @@ fn remove_dry_run_stored() {
     );
     log.assert_unchanged("client before removal preview", &s.home.root);
     log.assert_unchanged("state before removal preview", &s.home.state());
+    log.assert_eq(
+        "the stored plan's apply, first, as destructive as a remove",
+        &c.envelope["commands"][0],
+        &apply_hint(&c.envelope, true),
+    );
     insta::assert_json_snapshot!("remove_dry_run_stored", s.stable(&c.envelope));
 }
 
@@ -1149,6 +1159,18 @@ fn apply_hints() {
     for (label, root) in &trees {
         log.assert_unchanged(label, root);
     }
+}
+
+/// The `apply` hint a stored preview's envelope must lead its `commands` with.
+#[cfg(test)]
+fn apply_hint(envelope: &Value, destructive: bool) -> Value {
+    let id = envelope["data"]["plan_id"].as_str().unwrap_or_default();
+    serde_json::json!({
+        "action": "apply",
+        "command": format!("omaddons apply {id}"),
+        "argv": ["omaddons", "apply", id],
+        "destructive": destructive,
+    })
 }
 
 #[cfg(test)]

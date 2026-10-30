@@ -586,7 +586,10 @@ fn store_human_output_names_the_plan() {
     log.assert_eq(
         "plan footer",
         &final_line.to_owned(),
-        &format!("Plan {} stored for 24 hours.", plan.plan_id),
+        &format!(
+            "Plan {id} stored for 24 hours. Run exactly this: omaddons apply {id}",
+            id = plan.plan_id
+        ),
     );
     listing(&log, &fixture.home);
     log.step("after installation a no-op has no footer");

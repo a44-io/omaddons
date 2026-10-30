@@ -254,9 +254,10 @@ impl Storable for InstallOutcome {
         self.preview.take().map(|preview| *preview)
     }
 
-    fn record_plan(&mut self, plan_id: PlanId, expires_at: Timestamp) {
+    fn record_plan(&mut self, plan_id: PlanId, expires_at: Timestamp, hint: CommandHint) {
         self.data.plan_id = Some(plan_id);
         self.data.plan_expires_at = Some(expires_at);
+        self.commands.insert(0, hint);
     }
 }
 
@@ -419,11 +420,14 @@ impl Outcome for InstallOutcome {
         if !tail.is_empty() {
             writeln!(w, "{}", tail.join(" · "))?;
         }
-        // Behind `-v`: D4's stored plan makes its `apply` line the default hint.
-        if let Some(token) = d.precondition.as_deref().filter(|_| style.verbose > 0) {
-            writeln!(w, "Run it bound to this preview: --if-match {token}")?;
+        super::intent::render_plan_line(w, d.plan_id.as_ref(), d.plan_expires_at.as_ref())?;
+        // Behind `-v`: the stored plan's `apply` is the default way to run the preview.
+        match d.precondition.as_deref() {
+            Some(token) if style.verbose > 0 => {
+                super::intent::render_bind_line(w, token, d.plan_id.is_some())
+            }
+            _ => Ok(()),
         }
-        super::intent::render_plan_line(w, d.plan_id.as_ref(), d.plan_expires_at.as_ref())
     }
 }
 
@@ -1639,9 +1643,22 @@ mod tests {
             let expires_at = "2026-10-28T00:00:00Z".parse::<Timestamp>().unwrap();
             let approval = Approval::nothing(&ApprovalFlags::default());
             o.data.approval = Some(approval.clone());
-            o.record_plan(plan_id, expires_at);
+            o.record_plan(
+                plan_id,
+                expires_at,
+                crate::app::apply::apply_hint(plan_id, false),
+            );
             let data = serde_json::to_value(o.data()).unwrap();
             assert_eq!(data["plan_id"], json!(plan_id), "{dry_run}: {data}");
+            assert_eq!(
+                o.commands()[0].argv(),
+                [
+                    "omaddons".to_owned(),
+                    "apply".to_owned(),
+                    plan_id.to_string()
+                ],
+                "{dry_run}: the apply hint comes first"
+            );
             assert_eq!(
                 data["plan_expires_at"],
                 json!(expires_at),

@@ -4,7 +4,18 @@ expression: stable(&bare)
 ---
 {
   "command": "update",
-  "commands": [],
+  "commands": [
+    {
+      "action": "apply",
+      "argv": [
+        "omaddons",
+        "apply",
+        "<plan>"
+      ],
+      "command": "omaddons apply <plan>",
+      "destructive": false
+    }
+  ],
   "data": {
     "approval": {
       "reasons": [],

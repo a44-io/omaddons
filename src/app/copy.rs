@@ -78,8 +78,13 @@ impl Storable for CopyOutcome {
         self.inner.take_preview()
     }
 
-    fn record_plan(&mut self, plan_id: crate::model::PlanId, expires_at: jiff::Timestamp) {
-        self.inner.record_plan(plan_id, expires_at);
+    fn record_plan(
+        &mut self,
+        plan_id: crate::model::PlanId,
+        expires_at: jiff::Timestamp,
+        hint: crate::error::CommandHint,
+    ) {
+        self.inner.record_plan(plan_id, expires_at, hint);
     }
 }
 
@@ -168,11 +173,14 @@ impl Outcome for CopyOutcome {
         if let Some(tx) = data.targets.iter().find_map(|t| t.tx) {
             writeln!(w, "undo: omaddons undo {tx}")?;
         }
-        // Behind `-v`: D4's stored plan makes its `apply` line the default hint.
-        if let Some(token) = data.precondition.as_deref().filter(|_| style.verbose > 0) {
-            writeln!(w, "Run it bound to this preview: --if-match {token}")?;
+        intent::render_plan_line(w, data.plan_id.as_ref(), data.plan_expires_at.as_ref())?;
+        // Behind `-v`: the stored plan's `apply` is the default way to run the preview.
+        match data.precondition.as_deref() {
+            Some(token) if style.verbose > 0 => {
+                intent::render_bind_line(w, token, data.plan_id.is_some())
+            }
+            _ => Ok(()),
         }
-        intent::render_plan_line(w, data.plan_id.as_ref(), data.plan_expires_at.as_ref())
     }
 }
 

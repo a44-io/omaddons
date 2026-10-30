@@ -208,10 +208,16 @@ impl Storable for AdoptOutcome {
         self.preview.take().map(|p| *p)
     }
 
-    fn record_plan(&mut self, plan_id: crate::model::PlanId, expires_at: jiff::Timestamp) {
+    fn record_plan(
+        &mut self,
+        plan_id: crate::model::PlanId,
+        expires_at: jiff::Timestamp,
+        hint: CommandHint,
+    ) {
         if let AdoptData::Adopted(data) = &mut self.data {
             data.with_plan(plan_id, expires_at);
         }
+        self.commands.insert(0, hint);
     }
 }
 

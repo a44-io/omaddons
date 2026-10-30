@@ -17,7 +17,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::app::approval::Approval;
-use crate::app::intent::{Preview, Storable, render_plan_line};
+use crate::app::intent::{Preview, Storable, render_bind_line, render_plan_line};
 use crate::contract::actions::Action;
 use crate::engine::TxOutcome;
 use crate::engine::TxOutcomes;
@@ -1094,8 +1094,9 @@ impl Storable for TargetsOutcome {
         self.preview.take().map(|preview| *preview)
     }
 
-    fn record_plan(&mut self, plan_id: PlanId, expires_at: Timestamp) {
+    fn record_plan(&mut self, plan_id: PlanId, expires_at: Timestamp, hint: CommandHint) {
         self.data.with_plan(plan_id, expires_at);
+        self.commands.insert(0, hint);
     }
 }
 
@@ -1124,20 +1125,18 @@ impl Outcome for TargetsOutcome {
 
     fn render_human(&self, w: &mut dyn Write, style: &Style) -> std::io::Result<()> {
         render(w, self.command, &self.data, &self.notes)?;
-        // Behind `-v`: D4's stored plan makes its `apply` line the default hint.
-        if let Some(token) = self
-            .data
-            .precondition
-            .as_deref()
-            .filter(|_| style.verbose > 0)
-        {
-            writeln!(w, "Run it bound to this preview: --if-match {token}")?;
-        }
         render_plan_line(
             w,
             self.data.plan_id.as_ref(),
             self.data.plan_expires_at.as_ref(),
-        )
+        )?;
+        // Behind `-v`: the stored plan's `apply` is the default way to run the preview.
+        match self.data.precondition.as_deref() {
+            Some(token) if style.verbose > 0 => {
+                render_bind_line(w, token, self.data.plan_id.is_some())
+            }
+            _ => Ok(()),
+        }
     }
 }
 
@@ -1692,17 +1691,15 @@ mod tests {
             .checked_add(jiff::SignedDuration::from_hours(24))
             .unwrap();
         stored.data.with_plan(plan_id, expires);
-        for verbose in [0, 1] {
+        // A kept plan: its apply ends the output, and under -v the token is the other way.
+        let plan_line = format!(
+            "Plan {plan_id} stored for 24 hours. Run exactly this: omaddons apply {plan_id}\n"
+        );
+        let or_bind = format!("Or bind a typed run to it: --if-match {token}\n");
+        for (verbose, ending) in [(0, plan_line.clone()), (1, format!("{plan_line}{or_bind}"))] {
             let text = human(&stored, verbose);
-            assert!(
-                text.ends_with(&format!("Plan {plan_id} stored for 24 hours.\n")),
-                "verbose {verbose}: {text}"
-            );
-            assert_eq!(
-                text.contains(&line),
-                verbose > 0,
-                "verbose {verbose}: {text}"
-            );
+            assert!(text.ends_with(&ending), "verbose {verbose}: {text}");
+            assert!(!text.contains(&line), "verbose {verbose}: {text}");
         }
     }
 

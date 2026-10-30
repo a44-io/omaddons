@@ -8,4 +8,4 @@ anniversary: would install 4 addons
   Req  v1 (would install)
   Lib  v1 (would install) (dependency of Req)
   skipped: Bar (no build for tbc), Loc (local source), Qux (already installed)
-Plan <ulid> stored for 24 hours.
+Plan <ulid> stored for 24 hours. Run exactly this: omaddons apply <ulid>

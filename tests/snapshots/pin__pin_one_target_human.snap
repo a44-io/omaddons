@@ -4,4 +4,4 @@ expression: "common::plans::redact_ulids(&dry.stdout)"
 ---
 retail: would pin 1 addon
   Foo  would pin at v1
-Plan <ulid> stored for 24 hours.
+Plan <ulid> stored for 24 hours. Run exactly this: omaddons apply <ulid>

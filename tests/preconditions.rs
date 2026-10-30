@@ -487,7 +487,7 @@ fn a_bound_install_dry_run_compares() {
     let human = [install.as_slice(), &argv(&["--dry-run"])].concat();
     let plain = log.run(&scene, &human);
     let verbose = log.run(&scene, &[human.as_slice(), &argv(&["-v"])].concat());
-    let line = format!("Run it bound to this preview: --if-match {previewed}\n");
+    let line = format!("Or bind a typed run to it: --if-match {previewed}");
     log.assert_eq(
         "(without -v, with -v) contains the token line",
         &(
@@ -496,12 +496,17 @@ fn a_bound_install_dry_run_compares() {
         ),
         &(false, true),
     );
-    for (name, output) in [("plain", plain.ok()), ("verbose", verbose.ok())] {
+    let stored = "Plan <ulid> stored for 24 hours. Run exactly this: omaddons apply <ulid>";
+    for (name, output, last) in [
+        ("plain", plain.ok(), vec![stored]),
+        ("verbose", verbose.ok(), vec![stored, line.as_str()]),
+    ] {
         let text = common::plans::redact_ulids(output.stdout());
+        let lines: Vec<&str> = text.lines().collect();
         log.assert_eq(
-            &format!("{name} preview ends with the stored-plan line"),
-            &text.lines().last(),
-            &Some("Plan <ulid> stored for 24 hours."),
+            &format!("{name} preview ends with the stored plan's apply"),
+            &lines[lines.len() - last.len()..].to_vec(),
+            &last,
         );
     }
 

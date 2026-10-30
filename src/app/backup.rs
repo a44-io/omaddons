@@ -1670,9 +1670,10 @@ impl Storable for BackupRestoreOutcome {
         self.preview.take().map(|preview| *preview)
     }
 
-    fn record_plan(&mut self, plan_id: PlanId, expires_at: Timestamp) {
+    fn record_plan(&mut self, plan_id: PlanId, expires_at: Timestamp, hint: CommandHint) {
         self.data.plan_id = Some(plan_id);
         self.data.plan_expires_at = Some(expires_at);
+        self.commands.insert(0, hint);
     }
 }
 
@@ -2289,6 +2290,8 @@ pub struct BackupPruneOutcome {
     preview: Option<Box<Preview>>,
     warnings: Vec<Warning>,
     partial: bool,
+    /// Only a stored preview's `apply` hint: a prune offers nothing else.
+    commands: Vec<CommandHint>,
 }
 
 impl Storable for BackupPruneOutcome {
@@ -2296,9 +2299,10 @@ impl Storable for BackupPruneOutcome {
         self.preview.take().map(|preview| *preview)
     }
 
-    fn record_plan(&mut self, plan_id: PlanId, expires_at: Timestamp) {
+    fn record_plan(&mut self, plan_id: PlanId, expires_at: Timestamp, hint: CommandHint) {
         self.data.plan_id = Some(plan_id);
         self.data.plan_expires_at = Some(expires_at);
+        self.commands.insert(0, hint);
     }
 }
 
@@ -2315,6 +2319,10 @@ impl Outcome for BackupPruneOutcome {
 
     fn warnings(&self) -> &[Warning] {
         &self.warnings
+    }
+
+    fn commands(&self) -> &[CommandHint] {
+        &self.commands
     }
 
     fn partial(&self) -> bool {
@@ -2457,6 +2465,7 @@ pub fn prune_backups(ctx: &Context, args: &BackupPruneArgs) -> Result<BackupPrun
             preview,
             warnings,
             partial: false,
+            commands: Vec::new(),
         });
     }
     check(
@@ -2515,6 +2524,7 @@ pub fn prune_backups(ctx: &Context, args: &BackupPruneArgs) -> Result<BackupPrun
     }
     Ok(BackupPruneOutcome {
         partial: failed > 0,
+        commands: Vec::new(),
         preview: None,
         data: BackupPruneData {
             dry_run: false,

@@ -4,7 +4,18 @@ expression: s.stable(&c.envelope)
 ---
 {
   "command": "adopt",
-  "commands": [],
+  "commands": [
+    {
+      "action": "apply",
+      "argv": [
+        "omaddons",
+        "apply",
+        "<ulid>"
+      ],
+      "command": "omaddons apply <ulid>",
+      "destructive": false
+    }
+  ],
   "data": {
     "approval": {
       "reasons": [],

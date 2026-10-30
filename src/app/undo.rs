@@ -193,9 +193,10 @@ impl Storable for UndoOutcome {
         self.preview.take().map(|preview| *preview)
     }
 
-    fn record_plan(&mut self, plan_id: PlanId, expires_at: Timestamp) {
+    fn record_plan(&mut self, plan_id: PlanId, expires_at: Timestamp, hint: CommandHint) {
         self.data.plan_id = Some(plan_id);
         self.data.plan_expires_at = Some(expires_at);
+        self.commands.insert(0, hint);
     }
 }
 

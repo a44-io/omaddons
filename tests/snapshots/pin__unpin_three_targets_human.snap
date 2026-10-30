@@ -11,4 +11,4 @@ turtle: would unpin 1 addon
 era: Foo is current
 retail: Foo is current
 turtle: Foo is current
-Plan <ulid> stored for 24 hours.
+Plan <ulid> stored for 24 hours. Run exactly this: omaddons apply <ulid>

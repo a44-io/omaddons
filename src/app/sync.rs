@@ -80,8 +80,13 @@ impl Storable for SyncOutcome {
         self.inner.take_preview()
     }
 
-    fn record_plan(&mut self, plan_id: crate::model::PlanId, expires_at: jiff::Timestamp) {
-        self.inner.record_plan(plan_id, expires_at);
+    fn record_plan(
+        &mut self,
+        plan_id: crate::model::PlanId,
+        expires_at: jiff::Timestamp,
+        hint: crate::error::CommandHint,
+    ) {
+        self.inner.record_plan(plan_id, expires_at, hint);
     }
 }
 

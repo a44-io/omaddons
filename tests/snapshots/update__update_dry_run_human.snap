@@ -8,4 +8,4 @@ era: nothing to update
 retail: would update 2 addons
   Bar  v1 → v2
   Foo  v1 → v2
-Plan <ulid> stored for 24 hours.
+Plan <ulid> stored for 24 hours. Run exactly this: omaddons apply <ulid>

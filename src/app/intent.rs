@@ -31,7 +31,7 @@ use crate::app::undo::UndoArgs;
 use crate::app::update::UpdateArgs;
 use crate::cli::Context;
 use crate::engine::SvPolicy;
-use crate::error::{Error, Result, Suggestion, Warning, WarningCode};
+use crate::error::{CommandHint, Error, Result, Suggestion, Warning, WarningCode};
 use crate::model::{BackupId, Channel, PlanId, Ref, RefKind, RunId, Target, TargetRef, TxId};
 use crate::output::{Outcome, Style};
 use crate::sources::refs::{MatchKind, ParsedRef};
@@ -54,7 +54,10 @@ pub struct Preview {
 /// command functions directly and never passes through this dispatch-only offer.
 pub trait Storable: Outcome {
     fn take_preview(&mut self) -> Option<Preview>;
-    fn record_plan(&mut self, plan_id: PlanId, expires_at: Timestamp);
+    /// Records the kept plan in the outcome's data, and puts `hint` (its `omaddons apply
+    /// <plan_id>`) first in its `commands`, so the next step an agent takes after a
+    /// preview runs exactly that preview.
+    fn record_plan(&mut self, plan_id: PlanId, expires_at: Timestamp, hint: CommandHint);
 }
 
 /// A command's final plan and the exact precondition it returned, before the plan
@@ -107,6 +110,7 @@ fn offer_with_paths<O: Storable>(
     if !preview.changes {
         return Some("plan store: nothing to store".into());
     }
+    let destructive = preview.intent.destructive();
     let mut report = plans::AdmissionReport::default();
     let admission = (|| {
         let mut human = Vec::new();
@@ -154,7 +158,8 @@ fn offer_with_paths<O: Storable>(
             expires_at,
             reused,
         } => {
-            outcome.record_plan(plan_id, expires_at);
+            let hint = super::apply::apply_hint(plan_id, destructive);
+            outcome.record_plan(plan_id, expires_at, hint);
             format!("{} {plan_id}", if reused { "reused" } else { "stored" })
         }
         Admission::NotStored(why) => {
@@ -191,7 +196,18 @@ pub fn plan_not_stored(why: &NotStored) -> Warning {
     ))
 }
 
-/// Ends human output only when a plan was kept, with its original expiry on reuse.
+/// Under `-v`, the token a typed run binds to: beside the kept plan's `apply` when one was
+/// `stored`, else as the way to run exactly this preview.
+pub fn render_bind_line(w: &mut dyn Write, token: &str, stored: bool) -> io::Result<()> {
+    if stored {
+        writeln!(w, "Or bind a typed run to it: --if-match {token}")
+    } else {
+        writeln!(w, "Run it bound to this preview: --if-match {token}")
+    }
+}
+
+/// Ends human output only when a plan was kept, with its original expiry on reuse, and
+/// the `apply` that runs exactly it.
 pub fn render_plan_line(
     w: &mut dyn Write,
     plan_id: Option<&PlanId>,
@@ -219,7 +235,7 @@ fn render_plan_line_at(
         };
         writeln!(
             w,
-            "Plan {id} stored for {n} {unit}{}.",
+            "Plan {id} stored for {n} {unit}{}. Run exactly this: omaddons apply {id}",
             if n == 1 { "" } else { "s" }
         )?;
     }
@@ -1381,6 +1397,7 @@ mod tests {
     use super::*;
     use crate::app::backup::{BackupAction, BackupArgs};
     use crate::cli::{Cli, Command};
+    use crate::contract::actions::Action;
     use crate::model::Actor;
 
     const ERA: &str = "01JB8Q2VA00000000000000001";
@@ -1458,6 +1475,7 @@ mod tests {
     struct Offered {
         preview: Option<Preview>,
         data: Value,
+        commands: Vec<CommandHint>,
     }
 
     impl Outcome for Offered {
@@ -1469,6 +1487,9 @@ mod tests {
         fn data(&self) -> &Value {
             &self.data
         }
+        fn commands(&self) -> &[CommandHint] {
+            &self.commands
+        }
         fn render_human(&self, w: &mut dyn Write, style: &Style) -> io::Result<()> {
             writeln!(w, "{}", style.bold("Would remove Foo"))
         }
@@ -1478,9 +1499,10 @@ mod tests {
         fn take_preview(&mut self) -> Option<Preview> {
             self.preview.take()
         }
-        fn record_plan(&mut self, id: PlanId, expiry: Timestamp) {
+        fn record_plan(&mut self, id: PlanId, expiry: Timestamp, hint: CommandHint) {
             self.data["plan_id"] = json!(id);
             self.data["plan_expires_at"] = json!(expiry);
+            self.commands.insert(0, hint);
         }
     }
 
@@ -1493,6 +1515,11 @@ mod tests {
         );
         Offered {
             data: json!({"plan_id": null, "plan_expires_at": null, "precondition": precondition.token()}),
+            // The preview's own hints, which the apply hint goes before.
+            commands: vec![CommandHint::new(
+                Action::Undo,
+                ["omaddons", "undo", "01JB8Q2VA00000000000000001"].map(str::to_owned),
+            )],
             preview: Some(Preview {
                 intent: StoredIntent::Remove(RemoveIntent {
                     addons: vec!["Foo".into()],
@@ -1556,7 +1583,28 @@ mod tests {
                     jiff::SignedDuration::from_hours(24)
                 );
                 assert!(note.unwrap().contains("stored "));
+                // The apply hint once, first, as destructive as a remove.
+                let actions: Vec<(Action, bool)> = outcome
+                    .commands
+                    .iter()
+                    .map(|c| (c.action(), c.destructive()))
+                    .collect();
+                assert_eq!(
+                    actions,
+                    [(Action::Apply, true), (Action::Undo, false)],
+                    "{name}"
+                );
+                assert_eq!(
+                    outcome.commands[0].argv(),
+                    ["omaddons".to_owned(), "apply".to_owned(), id.to_string()],
+                    "{name}"
+                );
             } else {
+                assert!(
+                    outcome.commands.iter().all(|c| c.action() != Action::Apply),
+                    "{name}: no plan, no apply hint: {:?}",
+                    outcome.commands
+                );
                 assert!(
                     !paths.plans_dir().exists(),
                     "{name}: no store should be opened"
@@ -2065,6 +2113,11 @@ mod tests {
             outcome.data, before,
             "no plan_id, no expiry; the approval stands"
         );
+        assert!(
+            outcome.commands.iter().all(|c| c.action() != Action::Apply),
+            "applying offers no apply of its own: {:?}",
+            outcome.commands
+        );
         assert_eq!(outcome.data["approval"], ordinary.data["approval"]);
         assert!(outcome.preview.is_none(), "the preview was taken");
         assert!(
@@ -2106,6 +2159,11 @@ mod tests {
         let mut outcome = offered(true);
         let note = offer_with_paths(&ctx, &mut outcome, || Ok(paths.clone())).unwrap();
         assert!(outcome.data["plan_id"].is_null(), "{:?}", outcome.data);
+        assert!(
+            outcome.commands.iter().all(|c| c.action() != Action::Apply),
+            "a declined plan offers no apply: {:?}",
+            outcome.commands
+        );
         assert!(super::super::precondition::is_token(
             outcome.data["precondition"].as_str().unwrap()
         ));
@@ -2158,7 +2216,7 @@ mod tests {
             render_plan_line_at(&mut out, Some(&id), Some(&expiry), now).unwrap();
             assert_eq!(
                 String::from_utf8(out).unwrap(),
-                format!("Plan {id} stored for {expected}.\n"),
+                format!("Plan {id} stored for {expected}. Run exactly this: omaddons apply {id}\n"),
                 "{name}"
             );
         }
