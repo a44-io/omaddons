@@ -56,13 +56,9 @@ pub struct Listed {
     pub text: Result<String, String>,
 }
 
-/// Which kind of journal it is. E5 adds repair journals.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum JournalFamily {
-    /// A folder or settings transaction (`journal/<tx>.jsonl`, `<tx>.wtf.jsonl`).
-    Folder,
-}
+/// Which kind of journal it is: the repair action model's, which a delegation names too.
+/// E5 adds repair journals.
+pub use super::repair_action::JournalFamily;
 
 /// What recovery will do with one journal, and why.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

@@ -9,6 +9,7 @@ pub mod journal;
 pub mod ownership;
 pub mod plan;
 mod preserve;
+pub mod repair_action;
 pub mod resource;
 pub mod restore;
 pub mod restore_addons;

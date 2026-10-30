@@ -1,0 +1,393 @@
+---
+source: src/engine/repair_action.rs
+expression: schema
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Step",
+  "description": "One primitive as the repair journal's `prepared.primitives[]` records it, written ahead\nof it as its own `step` line.",
+  "type": "object",
+  "properties": {
+    "fix": {
+      "description": "The fix it lowers, 1-based in the journal's `fixes[]`.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "fm": {
+      "description": "That fix's failure mode. A string a newer build may have named, so recovery still\nreads its journal; fixers borrow their row's id.",
+      "type": "string"
+    },
+    "guards": {
+      "description": "A set-aside's suspension manifest (M4-D38), on a `rename_noreplace` only. Omitted\nwhen empty.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Guard"
+      }
+    },
+    "post": {
+      "$ref": "#/$defs/Endpoints"
+    },
+    "pre": {
+      "$ref": "#/$defs/Endpoints"
+    },
+    "seq": {
+      "description": "1-based and contiguous over the run.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    }
+  },
+  "oneOf": [
+    {
+      "description": "Writes `path` whole with this mode. The content's digest is the step's `post`.",
+      "type": "object",
+      "properties": {
+        "backup": {
+          "description": "Where the file it overwrites is kept: reserved before the write, omitted when\nthe write creates the file.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mode": {
+          "$ref": "#/$defs/Mode"
+        },
+        "op": {
+          "type": "string",
+          "const": "write_file"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "op",
+        "path",
+        "mode"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/Mode"
+        },
+        "op": {
+          "type": "string",
+          "const": "chmod"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "op",
+        "path",
+        "mode"
+      ]
+    },
+    {
+      "description": "`renameat2(RENAME_NOREPLACE)` from `path` to `to`.",
+      "type": "object",
+      "properties": {
+        "activation": {
+          "description": "The rename that reactivates a set-aside journal, which an undo runs last\n(M4-D38). Omitted when false.",
+          "type": "boolean"
+        },
+        "op": {
+          "type": "string",
+          "const": "rename_noreplace"
+        },
+        "path": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "op",
+        "path",
+        "to"
+      ]
+    }
+  ],
+  "required": [
+    "seq",
+    "fix",
+    "fm",
+    "pre",
+    "post"
+  ],
+  "$defs": {
+    "Endpoint": {
+      "description": "One path's predicate: what must be there, or that nothing is. A part that is absent is\nnot checked. One variant per kind, so a content digest on a directory or a stamp on a\nfile cannot be expressed.\n\nWhich part a step records where (§6.14.1): the kind for every present endpoint;\n`identity` for a rename's source, its destination afterwards, and a chmod's file before\nand after; `sha256` for a write's `pre` when it overwrites and its `post`; `mode` for a\nchmod's `pre` and `post` and a write's `post`; `stamp` for a directory that is renamed;\n`link_target` for a symlink that is renamed.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "absent"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "identity": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Identity"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "file"
+            },
+            "mode": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Mode"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "sha256": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Sha256"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "identity": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Identity"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "dir"
+            },
+            "stamp": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Stamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "identity": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Identity"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "symlink"
+            },
+            "link_target": {
+              "description": "As the link holds it, so it may be relative.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "Endpoints": {
+      "description": "A step's `pre` or `post`.",
+      "anyOf": [
+        {
+          "description": "A write's or a chmod's: the predicate of its one path.",
+          "$ref": "#/$defs/Endpoint"
+        },
+        {
+          "description": "A rename's: its source (`path`) and its destination (`to`).",
+          "type": "object",
+          "properties": {
+            "path": {
+              "$ref": "#/$defs/Endpoint"
+            },
+            "to": {
+              "$ref": "#/$defs/Endpoint"
+            }
+          },
+          "required": [
+            "path",
+            "to"
+          ]
+        }
+      ]
+    },
+    "Guard": {
+      "description": "One condition of a set-aside's suspension manifest (M4-D38), recorded when the journal\nwas set aside and checked before its undo reactivates it: a change since refuses the\nundo (`undo_conflict`, `changed_since_suspension`).",
+      "oneOf": [
+        {
+          "description": "The target's record generation.",
+          "type": "object",
+          "properties": {
+            "generation": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "generation"
+            },
+            "target": {
+              "$ref": "#/$defs/TargetKey"
+            }
+          },
+          "required": [
+            "kind",
+            "target",
+            "generation"
+          ]
+        },
+        {
+          "description": "The digest of the target's `<meta>/target.json`.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "marker"
+            },
+            "sha256": {
+              "$ref": "#/$defs/Sha256"
+            },
+            "target": {
+              "$ref": "#/$defs/TargetKey"
+            }
+          },
+          "required": [
+            "kind",
+            "target",
+            "sha256"
+          ]
+        },
+        {
+          "description": "The live stamp of a folder the suspended journal would touch on recovery.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "epoch"
+            },
+            "path": {
+              "type": "string"
+            },
+            "stamp": {
+              "$ref": "#/$defs/Stamp"
+            }
+          },
+          "required": [
+            "kind",
+            "path",
+            "stamp"
+          ]
+        },
+        {
+          "description": "One stamp over a client's whole `WTF/`, never a path below it.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "wtf_epoch"
+            },
+            "stamp": {
+              "$ref": "#/$defs/Stamp"
+            },
+            "target": {
+              "$ref": "#/$defs/TargetKey"
+            }
+          },
+          "required": [
+            "kind",
+            "target",
+            "stamp"
+          ]
+        }
+      ]
+    },
+    "Identity": {
+      "type": "object",
+      "properties": {
+        "born_ns": {
+          "type": "string",
+          "pattern": "^-?[0-9]+$"
+        },
+        "ino": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "ino"
+      ]
+    },
+    "Mode": {
+      "type": "string",
+      "pattern": "^[0-7]{4}$"
+    },
+    "Sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "Stamp": {
+      "type": "string",
+      "pattern": "^stamp:sha256:[0-9a-f]{64}$"
+    },
+    "TargetKey": {
+      "type": "string",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+    }
+  }
+}
