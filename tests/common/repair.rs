@@ -675,12 +675,15 @@ const CHECKED_SWEEP_MAX: u64 = 64;
 
 /// `fsx.mutate.checked=abort@N` for N = 1, 2, … on a fresh scene each, until a child
 /// completes without crashing (`checked` is hit by untracked writes too, so it is swept,
-/// not addressed). Returns each crashed scene with its N.
+/// not addressed), each a `log.step` named `<kind> at <spec>`. Returns each crashed scene
+/// with its N.
 pub fn checked_sweep(scene: impl Fn() -> RepairScene, log: &TestLog) -> Vec<(u64, RepairScene)> {
     let mut crashed = Vec::new();
     for n in 1..=CHECKED_SWEEP_MAX {
         let fresh = scene();
-        match fresh.child(log, &format!("fsx.mutate.checked=abort@{n}")) {
+        let spec = format!("fsx.mutate.checked=abort@{n}");
+        log.step(&format!("{} at {spec}", fresh.kind.label()));
+        match fresh.child(log, &spec) {
             Child::Crashed => crashed.push((n, fresh)),
             Child::Ended(_) => return crashed,
         }

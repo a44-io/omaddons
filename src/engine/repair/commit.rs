@@ -458,7 +458,8 @@ fn rolled_back(
     #[cfg(test)]
     tests::before_rollback();
     let tx = prepared.tx;
-    let restored = roll_back(u, &mut OnDisk, prepared, recorded).map_err(|err| pending(err, tx))?;
+    let restored = roll_back(&mut OnDisk { s: u }, prepared, recorded)
+        .map_err(|stop| pending(stop.into_error(prepared), tx))?;
     append(u, journal, &RepairLine::RolledBack).map_err(|err| pending(err, tx))?;
     Ok(RepairOutcome::RolledBack {
         tx,

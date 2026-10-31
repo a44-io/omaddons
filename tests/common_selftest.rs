@@ -1295,6 +1295,7 @@ mod differential {
             target,
             client_dir: None,
             phase: Phase::Prepared,
+            repair_phase: None,
             live: false,
             verdict,
             evidence: JournalEvidence {

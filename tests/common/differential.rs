@@ -14,7 +14,9 @@ use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-use omaddons::engine::journal::{self, Diagnoses, Expected, JournalDiagnosis, StopReason};
+use omaddons::engine::journal::{
+    self, Diagnoses, Expected, JournalDiagnosis, JournalFamily, StopReason,
+};
 use omaddons::error::{Result, Warning};
 use omaddons::model::{TargetKey, TxId};
 use omaddons::state::paths::Paths;
@@ -50,9 +52,10 @@ pub enum Games<'a> {
 
 /// Runs `journal::diagnose` twice on `paths` and `clients`, with the `sv_writable` the
 /// recovering command will have, and asserts that the two agree and that nothing under
-/// `<state>`, `<cache>` or a client dir changed (every entry's kind, mode, size,
-/// modification time and link target, through directories it cannot list as well). The
-/// diagnoses are logged, and name no planted account, realm or character.
+/// `<state>`, `<config>`, `<cache>`, the agent skill dir or a client dir changed (every
+/// entry's kind, mode, size, modification time and link target, through directories it
+/// cannot list as well). The diagnoses are logged, and name no planted account, realm
+/// or character.
 #[track_caller]
 pub fn predict(
     log: &TestLog,
@@ -61,9 +64,10 @@ pub fn predict(
     clients: &[PathBuf],
     games: &Games<'_>,
 ) -> Prediction {
-    let roots: Vec<PathBuf> = [paths.state_dir(), paths.cache_dir()]
+    let roots: Vec<PathBuf> = [paths.state_dir(), paths.config_dir(), paths.cache_dir()]
         .into_iter()
         .map(Path::to_path_buf)
+        .chain([paths.skill_dir()])
         .chain(clients.iter().cloned())
         .collect();
     let before = fingerprint(&roots);
@@ -311,6 +315,17 @@ fn wanted(diagnosis: &JournalDiagnosis, caller: &Caller) -> (Observed, bool) {
         Expected::RolledBack => (Observed::RolledBack, false),
         Expected::Pruned => (Observed::Pruned, false),
         Expected::Skipped => (Observed::Untouched, false),
+        // A doctor repair names no single target: until E14's fences its stop fails every
+        // committing command, whatever it commits, and only warns one that recovers under
+        // the lock, with its reason (and step) in the warning's text.
+        Expected::Stops { code, reason, step }
+            if diagnosis.family == JournalFamily::Repair && reason != StopReason::Unattributed =>
+        {
+            let fails = matches!(caller, Caller::Commit { .. });
+            let code = fails.then(|| code.wire().to_owned());
+            let reason = Some(reason.as_str().to_owned());
+            (Observed::Stopped { code, reason, step }, fails)
+        }
         Expected::Stops { code, reason, step } => {
             // A failure recovery cannot attribute (a journal with no readable target, or a
             // writer whose lock cannot be probed, which recovery asks before it reads the

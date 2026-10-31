@@ -818,3 +818,284 @@ fn diagnose_after_recovery_finds_nothing() {
         assert!(!prediction.txs().is_empty());
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// The doctor's repairs (E5): `diagnose` on a home a crashed repair left, held to what the
+// binary's recovery then does, for every repair crash state of every fix kind, every
+// planted stop and a crashed recovery. Each repair runs in a child process of this test
+// binary (`child_repair`), crashed by a real `abort`.
+
+/// A child process of the repair scenes (`common::repair::child_main`). Run on its own
+/// it does nothing.
+#[cfg(debug_assertions)]
+#[test]
+#[ignore = "a child process of the repair scenes"]
+fn child_repair() {
+    common::repair::child_main();
+}
+
+#[cfg(test)]
+#[cfg(debug_assertions)]
+mod repair_support {
+    use std::fs;
+    use std::path::Path;
+
+    use super::common::differential::{Caller, Differential};
+    use super::common::repair::RepairScene;
+    use super::common::tlog::TestLog;
+
+    /// Rewrites the scene's repair journal through `edit`.
+    pub fn edit_repair_journal(r: &RepairScene, edit: impl FnOnce(String) -> String) {
+        let dir = r.s.home.state().join("journal");
+        let journal = fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.to_string_lossy().ends_with(".repair.jsonl"))
+            .unwrap();
+        let text = fs::read_to_string(&journal).unwrap();
+        fs::write(&journal, edit(text)).unwrap();
+    }
+
+    pub fn set_mode(path: &Path, bits: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(bits)).unwrap();
+    }
+
+    /// `omaddons <args> --json --progress json`.
+    pub fn json_args(args: &[&str]) -> Vec<String> {
+        args.iter()
+            .copied()
+            .chain(["--json", "--progress", "json"])
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// `config set check_interval_hours 6`: recovery under the lock, committing nothing.
+    pub fn config_set() -> Vec<String> {
+        json_args(&["config", "set", "check_interval_hours", "6"])
+    }
+
+    /// The install of Foo v2 from its archive: a command that commits retail.
+    pub fn install_v2(r: &RepairScene) -> Vec<String> {
+        let mut argv = r.s.install_args("gh:o/foo", "v2");
+        argv.extend(["--progress".to_owned(), "json".to_owned()]);
+        argv
+    }
+
+    /// Who recovers when `argv` runs.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum By {
+        /// A command that commits retail (`install`).
+        Commit,
+        /// A command that recovers under the lock alone (`config set`).
+        Under,
+    }
+
+    /// Predicts `r` as it is now (`label`), runs `argv`, and holds the prediction to
+    /// what its recovery did. Returns how many journals it compared.
+    #[track_caller]
+    pub fn predicted(
+        log: &TestLog,
+        r: &RepairScene,
+        label: &str,
+        argv: &[String],
+        by: By,
+    ) -> usize {
+        let mut differential = Differential::new(log, &r.s.home, &["_retail_"], &[]);
+        let caller = match by {
+            By::Commit => {
+                differential.predict(log, label);
+                differential.commit(&["retail"])
+            }
+            By::Under => {
+                differential.predict_unknown(log, label);
+                Caller::Under
+            }
+        };
+        let ran = log.run(&r.s, argv);
+        ran.assert_private();
+        let envelope = ran.envelope().clone();
+        differential.compare(log, &envelope, &r.s.journals(), &caller)
+    }
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn diagnose_predicts_recovery_of_every_repair_crash_state() {
+    use std::collections::BTreeMap;
+
+    use common::repair::{Kind, RepairScene, checked_sweep, crash_specs};
+    use repair_support::{By, config_set, predicted};
+
+    let log = tlog!();
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for kind in Kind::ALL {
+        let mut compared = 0;
+        let mut crashed: Vec<(String, RepairScene)> = Vec::new();
+        for spec in crash_specs(kind) {
+            let label = format!("{} at {spec}", kind.label());
+            log.step(&label);
+            let r = RepairScene::new(kind);
+            r.child(&log, &spec);
+            crashed.push((label, r));
+        }
+        crashed.extend(
+            checked_sweep(|| RepairScene::new(kind), &log)
+                .into_iter()
+                .map(|(n, r)| {
+                    (
+                        format!("{} at fsx.mutate.checked=abort@{n}", kind.label()),
+                        r,
+                    )
+                }),
+        );
+        for (label, r) in crashed {
+            log.step(&format!("{label}: recover"));
+            log.json("journal at crash", &r.journal_lines());
+            log.json("actions at crash", &r.actions_lines());
+            compared += predicted(&log, &r, &label, &config_set(), By::Under);
+        }
+        counts.insert(kind.label(), compared);
+        let least = 5 + 4 * kind.primitives() as usize;
+        assert!(
+            compared >= least,
+            "{}: {compared} states compared, at least {least} expected",
+            kind.label()
+        );
+    }
+    log.json("states compared", &counts);
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn diagnose_predicts_every_planted_repair_stop() {
+    use common::repair::{Child, Kind, RepairScene};
+    use repair_support::{By, config_set, edit_repair_journal, install_v2, predicted, set_mode};
+
+    /// A crashed repair, then the plant that makes it stop (or makes its writer live).
+    type Plant = fn(&RepairScene) -> Option<fs::File>;
+    let neither_mode: Plant = |r| {
+        let credential = r.s.home.env.config().join("omaddons/credentials/github");
+        set_mode(&credential, 0o640);
+        None
+    };
+    let neither_moved: Plant = |r| {
+        fs::rename(
+            r.s.addons().join("Inner"),
+            r.s.home.env.root().join("elsewhere"),
+        )
+        .unwrap();
+        None
+    };
+    let marker_changed: Plant = |r| {
+        let marker =
+            r.s.home
+                .client("_retail_")
+                .join("Interface/.omaddons/target.json");
+        let mut value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&marker).unwrap()).unwrap();
+        value["key"] = TargetKey::new().to_string().into();
+        fs::write(&marker, value.to_string()).unwrap();
+        None
+    };
+    let unknown_skill_dir: Plant = |r| {
+        let credential = r.s.home.env.config().join("omaddons/credentials/github");
+        let elsewhere = r.s.home.env.home().join("elsewhere/SKILL.md");
+        edit_repair_journal(r, |text| {
+            text.replace(
+                &credential.display().to_string(),
+                &elsewhere.display().to_string(),
+            )
+        });
+        None
+    };
+    let unreadable: Plant = |r| {
+        edit_repair_journal(r, |text| {
+            let (first, rest) = text.split_once('\n').unwrap();
+            format!("{first}\nnot json\n{rest}")
+        });
+        None
+    };
+    let too_new: Plant = |r| {
+        edit_repair_journal(r, |text| {
+            text.replacen("\"format\":\"1.0\"", "\"format\":\"9.0\"", 1)
+        });
+        None
+    };
+    let live: Plant = |r| {
+        let tx = r.tx().unwrap();
+        let lock = r.s.home.state().join(format!("inflight/{tx}.lock"));
+        let holder = fs::File::open(lock).unwrap();
+        holder.lock().unwrap();
+        Some(holder)
+    };
+    let chmod_ran = (Kind::Chmod, "fsx.mutate.executed=abort@1");
+    let flatten_ran = (Kind::FlattenTwo, "fsx.mutate.executed=abort@1");
+    let chmod_stepped = (Kind::Chmod, "doctor.repair.step=abort@1");
+    let cases: Vec<(&str, (Kind, &str), Plant)> = vec![
+        ("neither_state_chmod", chmod_ran, neither_mode),
+        ("neither_state_flatten", flatten_ran, neither_moved),
+        ("marker_changed", flatten_ran, marker_changed),
+        ("unknown_skill_dir", chmod_stepped, unknown_skill_dir),
+        ("unreadable", chmod_stepped, unreadable),
+        ("too_new", chmod_stepped, too_new),
+        ("live", flatten_ran, live),
+    ];
+    let log = tlog!();
+    for (case, (kind, spec), plant) in cases {
+        for by in [By::Commit, By::Under] {
+            let label = format!("{case} ({by:?})");
+            log.step(&label);
+            let r = RepairScene::new(kind);
+            assert_eq!(r.child(&log, spec), Child::Crashed, "{label}");
+            log.note(format!("plant: {case}"));
+            let _held = plant(&r);
+            log.json("journal planted", &r.journal_lines());
+            let argv = match by {
+                By::Commit => install_v2(&r),
+                By::Under => config_set(),
+            };
+            let compared = predicted(&log, &r, &label, &argv, by);
+            assert_eq!(compared, 1, "{label}: the repair was compared");
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn a_crashed_repair_recovery_is_predicted_again() {
+    use common::differential::{Differential, assert_settled};
+    use common::repair::{Child, End, Kind, RepairScene};
+    use repair_support::{By, config_set, predicted};
+
+    let log = tlog!();
+    for kind in Kind::ALL {
+        let label = kind.label();
+        log.step(&format!("{label}: crash with every step run"));
+        let r = RepairScene::new(kind);
+        let spec = format!("fsx.mutate.executed=abort@{}", kind.primitives());
+        assert_eq!(r.child(&log, &spec), Child::Crashed, "{label}");
+        let tx: TxId = r.tx().unwrap().parse().unwrap();
+        let mut differential = Differential::new(&log, &r.s.home, &["_retail_"], &[]);
+        differential.predict_unknown(&log, &format!("{label}: before recovery"));
+        log.step(&format!("{label}: recovery crashed at its first inverse"));
+        let crashed = log
+            .cmd(&r.s, &config_set())
+            .failpoints("doctor.recover.step=abort@1")
+            .run();
+        crashed.aborted();
+        log.step(&format!("{label}: predicted again, then finished"));
+        let compared = predicted(
+            &log,
+            &r,
+            &format!("{label}: again"),
+            &config_set(),
+            By::Under,
+        );
+        assert_eq!(compared, 1, "{label}");
+        assert_eq!(r.accounted(End::Before), Vec::<String>::new(), "{label}");
+        let prediction = differential.prediction.as_ref().unwrap();
+        assert!(prediction.txs().contains(&tx), "{label}");
+        assert_settled(&log, prediction, &differential.paths, &differential.clients);
+    }
+}

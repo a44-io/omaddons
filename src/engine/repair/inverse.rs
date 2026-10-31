@@ -37,19 +37,11 @@ use crate::model::TxId;
 use crate::state::history::{self, HistoryFilter};
 use crate::state::paths::Paths;
 
-/// What classifying a repair's steps reads: the disk ([`OnDisk`]), or a simulation of it.
+/// What classifying a repair's steps reads: the disk ([`OnDisk`]), or a simulation of it
+/// (`journal::diagnose`).
 pub(crate) trait RepairView {
     /// The first part of `expect` that does not hold at `path`, if any.
     fn check(&mut self, path: &Path, expect: &Expect) -> io::Result<Option<Mismatch>>;
-}
-
-/// The disk, read through fsx's own predicate check (E13).
-pub(crate) struct OnDisk;
-
-impl RepairView for OnDisk {
-    fn check(&mut self, path: &Path, expect: &Expect) -> io::Result<Option<Mismatch>> {
-        expect.check(path)
-    }
 }
 
 /// What a step's live paths say about it.
@@ -158,16 +150,45 @@ fn file_id(identity: Identity) -> FileId {
     }
 }
 
-/// Inverts every step `1..=recorded` that ran, newest first, through `s` (an untracked
-/// `Writer::Doctor` session), and returns how many it inverted. A step in neither state
-/// stops the walk with `internal` (`step_unrecognized`); an inverse that fails stops it
-/// with its error. Either way the journal stays for the next command that recovers it.
+/// Why a rollback walk stopped, with the journal kept for the next command that
+/// recovers it.
+#[derive(Debug)]
+pub(crate) enum Stopped {
+    /// Journal step `seq` is one recovery cannot place: in neither its before nor its
+    /// after state, or not invertible as recorded (`why`).
+    Unrecognized { seq: u32, why: String },
+    /// Reading or writing failed (an I/O error, or fsx's refusal of an inverse).
+    Failed(Error),
+}
+
+impl Stopped {
+    /// The stop as the error recovery and the commit report: `internal` with
+    /// `step_unrecognized`, or the failure itself.
+    pub(crate) fn into_error(self, prepared: &RepairPrepared) -> Error {
+        match self {
+            Self::Unrecognized { seq, why } => unrecognized(prepared, seq, &why),
+            Self::Failed(error) => error,
+        }
+    }
+}
+
+/// What a repair's rollback walks: the disk ([`OnDisk`]: recovery and the in-process
+/// commit), or a simulation of it (`journal::diagnose`). Classifying reads it and
+/// [`inverse`] decides from it; only applying the decided inverse differs.
+pub(crate) trait RepairReplay: RepairView {
+    /// Applies `inverse`, decided for `step`, which ran.
+    fn apply(&mut self, step: &Step, inverse: &Inverse<'_>) -> Result<()>;
+}
+
+/// Inverts every step `1..=recorded` that ran, newest first, and returns how many it
+/// inverted. A step in neither state, or one its journal records too little to invert,
+/// stops the walk (`Stopped::Unrecognized`); a read or an inverse that fails stops it
+/// with its error. Either way nothing more is inverted.
 pub(crate) fn roll_back(
-    s: &mut WriteSession<'_>,
-    view: &mut dyn RepairView,
+    replay: &mut dyn RepairReplay,
     prepared: &RepairPrepared,
     recorded: u32,
-) -> Result<u32> {
+) -> std::result::Result<u32, Stopped> {
     let mut inverted = 0;
     for step in prepared
         .primitives
@@ -175,138 +196,196 @@ pub(crate) fn roll_back(
         .filter(|step| step.seq <= recorded)
         .rev()
     {
-        let classified = classify(view, step).map_err(|err| step_io(prepared, step, &err))?;
+        let classified =
+            classify(replay, step).map_err(|err| Stopped::Failed(step_io(step, &err)))?;
         match classified {
             Classified::NotRun => continue,
             Classified::Neither => {
-                return Err(unrecognized(
-                    prepared,
-                    step,
-                    "is in neither its before nor its after state",
-                ));
+                return Err(Stopped::Unrecognized {
+                    seq: step.seq,
+                    why: "is in neither its before nor its after state".to_owned(),
+                });
             }
             Classified::Ran => {}
         }
-        invert(s, prepared, step)?;
+        let inverse = inverse(replay, prepared, step)?;
+        replay.apply(step, &inverse).map_err(Stopped::Failed)?;
         inverted += 1;
-        failpoint::hit("doctor.recover.step").map_err(|err| step_io(prepared, step, &err))?;
     }
     Ok(inverted)
 }
 
-fn invert(s: &mut WriteSession<'_>, prepared: &RepairPrepared, step: &Step) -> Result<()> {
-    let (Endpoints::One(pre), Endpoints::One(post)) = (&step.pre, &step.post) else {
-        return invert_rename(s, prepared, step);
+/// How a step that ran is undone, decided from the journal and the view alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Inverse<'p> {
+    /// The reserved `backup`, which holds the bytes (`sha256`) the write replaced, written
+    /// back at `path` with `mode`.
+    Restore {
+        path: &'p Path,
+        backup: &'p Path,
+        sha256: [u8; 32],
+        mode: Option<u32>,
+    },
+    /// The file the write created, renamed to its rollback destination `to`.
+    Unmake { path: &'p Path, to: &'p Path },
+    /// The mode the chmod replaced, back on `path`.
+    Chmod { path: &'p Path, mode: u32 },
+    /// The rename, back from its destination `from` to its source `to`.
+    RenameBack {
+        from: &'p Path,
+        to: &'p Path,
+        symlink: bool,
+    },
+}
+
+/// The inverse of `step`, which ran. A write over a file is undone only from a backup
+/// that holds the bytes it replaced (checked through `view`); a step whose journal does
+/// not record what its inverse needs is `Stopped::Unrecognized`.
+pub(crate) fn inverse<'p>(
+    view: &mut dyn RepairView,
+    prepared: &'p RepairPrepared,
+    step: &'p Step,
+) -> std::result::Result<Inverse<'p>, Stopped> {
+    let unrecognized = |why: &str| Stopped::Unrecognized {
+        seq: step.seq,
+        why: why.to_owned(),
     };
-    let expect = MutateOpts {
-        expect: Some(expect_of(post)),
-        ..MutateOpts::default()
-    };
-    let done = match &step.op {
-        Primitive::WriteFile {
-            path,
-            backup: Some(backup),
-            ..
-        } => {
+    match (&step.op, &step.pre, &step.post) {
+        (
+            Primitive::WriteFile {
+                path,
+                backup: Some(backup),
+                ..
+            },
+            Endpoints::One(pre),
+            Endpoints::One(_),
+        ) => {
             let Endpoint::File {
                 sha256: Some(old),
-                mode: old_mode,
+                mode,
                 ..
             } = pre
             else {
-                return Err(unrecognized(
-                    prepared,
-                    step,
-                    "overwrote no file it recorded",
-                ));
+                return Err(unrecognized("overwrote no file it recorded"));
             };
-            if Expect::hash(old.0)
-                .check(backup)
-                .map_err(|err| step_io(prepared, step, &err))?
-                .is_some()
-            {
-                return Err(unrecognized(
-                    prepared,
-                    step,
-                    &format!(
-                        "has a backup, {}, that does not hold the bytes it replaced",
-                        backup.display()
-                    ),
-                ));
+            let held = view
+                .check(backup, &Expect::hash(old.0))
+                .map_err(|err| Stopped::Failed(step_io(step, &err)))?;
+            if held.is_some() {
+                return Err(unrecognized(&format!(
+                    "has a backup, {}, that does not hold the bytes it replaced",
+                    backup.display()
+                )));
             }
-            let bytes = std::fs::read(backup).map_err(|err| step_io(prepared, step, &err))?;
-            mutate_with(
-                s,
+            Ok(Inverse::Restore {
                 path,
-                Op::WriteFile {
-                    content: Content::Bytes(&bytes),
-                    mode: old_mode.map(|mode| mode.bits()),
-                },
-                expect,
-            )
+                backup,
+                sha256: old.0,
+                mode: mode.map(|mode| mode.bits()),
+            })
         }
-        Primitive::WriteFile { path, .. } => {
-            let Some(target) = prepared.rollbacks.iter().find(|r| r.seq == step.seq) else {
-                return Err(unrecognized(
-                    prepared,
-                    step,
+        (Primitive::WriteFile { path, .. }, Endpoints::One(_), Endpoints::One(_)) => {
+            match prepared.rollbacks.iter().find(|r| r.seq == step.seq) {
+                Some(target) => Ok(Inverse::Unmake {
+                    path,
+                    to: &target.to,
+                }),
+                None => Err(unrecognized(
                     "created a file that has no rollback destination",
-                ));
-            };
-            mutate_with(
+                )),
+            }
+        }
+        (Primitive::Chmod { path, .. }, Endpoints::One(pre), Endpoints::One(_)) => match pre {
+            Endpoint::File {
+                mode: Some(old), ..
+            } => Ok(Inverse::Chmod {
+                path,
+                mode: old.bits(),
+            }),
+            _ => Err(unrecognized("recorded no mode to put back")),
+        },
+        (
+            Primitive::RenameNoReplace { from, to, .. },
+            Endpoints::Pair { .. },
+            Endpoints::Pair { to: arrived, .. },
+        ) => Ok(Inverse::RenameBack {
+            from: to,
+            to: from,
+            symlink: matches!(arrived, Endpoint::Symlink { .. }),
+        }),
+        _ => Err(unrecognized("has endpoints that do not fit its operation")),
+    }
+}
+
+/// The disk: classifying reads it through fsx's own predicate check (E13), and an
+/// inverse is written through `s` (an untracked `Writer::Doctor` session) with the
+/// step's `post` as its expectation, never replacing anything a rename lands on.
+pub(crate) struct OnDisk<'s, 'a> {
+    pub s: &'s mut WriteSession<'a>,
+}
+
+impl RepairView for OnDisk<'_, '_> {
+    fn check(&mut self, path: &Path, expect: &Expect) -> io::Result<Option<Mismatch>> {
+        expect.check(path)
+    }
+}
+
+impl RepairReplay for OnDisk<'_, '_> {
+    fn apply(&mut self, step: &Step, inverse: &Inverse<'_>) -> Result<()> {
+        let post = match &step.post {
+            Endpoints::One(post) => post,
+            Endpoints::Pair { to, .. } => to,
+        };
+        let expect = MutateOpts {
+            expect: Some(expect_of(post)),
+            ..MutateOpts::default()
+        };
+        let s = &mut *self.s;
+        let done = match *inverse {
+            Inverse::Restore {
+                path, backup, mode, ..
+            } => {
+                let bytes = std::fs::read(backup).map_err(|err| step_io(step, &err))?;
+                mutate_with(
+                    s,
+                    path,
+                    Op::WriteFile {
+                        content: Content::Bytes(&bytes),
+                        mode,
+                    },
+                    expect,
+                )
+            }
+            Inverse::Unmake { path, to } => mutate_with(
                 s,
                 path,
                 Op::Rename {
-                    to: &target.to,
+                    to,
                     mode: RenameMode::NoReplace,
                 },
                 MutateOpts {
                     expect_to: Some(Expect::Absent),
                     ..expect
                 },
-            )
-        }
-        Primitive::Chmod { path, .. } => {
-            let Endpoint::File {
-                mode: Some(old), ..
-            } = pre
-            else {
-                return Err(unrecognized(prepared, step, "recorded no mode to put back"));
-            };
-            mutate_with(s, path, Op::Chmod { mode: old.bits() }, expect)
-        }
-        Primitive::RenameNoReplace { .. } => return invert_rename(s, prepared, step),
-    };
-    done.map(drop).map_err(Error::from)
-}
-
-/// A rename back from its destination to its source, never replacing anything there.
-fn invert_rename(s: &mut WriteSession<'_>, prepared: &RepairPrepared, step: &Step) -> Result<()> {
-    let (Primitive::RenameNoReplace { from, to, .. }, Endpoints::Pair { to: arrived, .. }) =
-        (&step.op, &step.post)
-    else {
-        return Err(unrecognized(
-            prepared,
-            step,
-            "has endpoints that do not fit its operation",
-        ));
-    };
-    mutate_with(
-        s,
-        to,
-        Op::Rename {
-            to: from,
-            mode: RenameMode::NoReplace,
-        },
-        MutateOpts {
-            expect: Some(expect_of(arrived)),
-            expect_to: Some(Expect::Absent),
-            temp_symlink: matches!(arrived, Endpoint::Symlink { .. }),
-            ..MutateOpts::default()
-        },
-    )
-    .map(drop)
-    .map_err(Error::from)
+            ),
+            Inverse::Chmod { path, mode } => mutate_with(s, path, Op::Chmod { mode }, expect),
+            Inverse::RenameBack { from, to, symlink } => mutate_with(
+                s,
+                from,
+                Op::Rename {
+                    to,
+                    mode: RenameMode::NoReplace,
+                },
+                MutateOpts {
+                    expect_to: Some(Expect::Absent),
+                    temp_symlink: symlink,
+                    ..expect
+                },
+            ),
+        };
+        done.map_err(Error::from)?;
+        failpoint::hit("doctor.recover.step").map_err(|err| step_io(step, &err))
+    }
 }
 
 /// Finishes a repair whose every step ran: its history line, appended only when the
@@ -349,14 +428,13 @@ pub(crate) fn append(s: &mut WriteSession<'_>, journal: &Path, line: &RepairLine
 /// manual repair. E11's convention names `journal step <k>`, and the reason is in the
 /// text too, since `recover_under` turns the stop into a warning, which has no details.
 /// A repair names no single target (`target: null`).
-fn unrecognized(prepared: &RepairPrepared, step: &Step, why: &str) -> Error {
+fn unrecognized(prepared: &RepairPrepared, seq: u32, why: &str) -> Error {
     Error::new(
         ErrorCode::Internal,
         format!(
-            "repair transaction {} could not be recovered ({}): journal step {} {why}; recovery stopped and keeps everything",
+            "repair transaction {} could not be recovered ({}): journal step {seq} {why}; recovery stopped and keeps everything",
             prepared.tx,
             StopReason::StepUnrecognized.as_str(),
-            step.seq
         ),
         manual_repair(),
     )
@@ -386,15 +464,12 @@ pub(crate) fn pending(mut err: Error, tx: TxId) -> Error {
     err
 }
 
-/// An I/O failure while classifying or inverting a step: `io`, the journal kept.
-fn step_io(prepared: &RepairPrepared, step: &Step, err: &io::Error) -> Error {
-    let mut error = Error::io(
+/// An I/O failure while classifying or inverting a step: `io`, the journal kept (its
+/// caller adds `details.journal_pending`).
+fn step_io(step: &Step, err: &io::Error) -> Error {
+    Error::io(
         step.op.path(),
         err,
         Suggestion::command(["omaddons", "status"]),
-    );
-    if let Some(details) = error.details.as_object_mut() {
-        details.insert("journal_pending".into(), prepared.tx.to_string().into());
-    }
-    error
+    )
 }

@@ -31,7 +31,7 @@ use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{
     self, InflightLock, LockUse, PruneReason, ScopeTable, WriteSession, Writer, canonical_lenient,
 };
-use crate::model::TxId;
+use crate::model::{TargetKey, TxId};
 use crate::state::paths::Paths;
 
 /// A repair journal recovery still needs: started and neither committed nor rolled back,
@@ -77,44 +77,71 @@ pub fn recover_repairs(env: &RecoveryEnv<'_>) -> Result<Vec<Warning>> {
         if InflightLock::is_live(env.paths, &tx).map_err(|error| unattributed(error, Some(&tx)))? {
             continue;
         }
-        let parsed = journal::read(&path).map_err(|error| pending(error, tx))?;
+        // A journal that cannot be read names no client, as one with no target does.
+        let parsed = journal::read(&path).map_err(|error| unattributed(error, Some(&tx)))?;
         warnings.extend(recover_one(env, tx, &path, &parsed)?);
     }
     Ok(warnings)
 }
 
-/// Settles one repair journal by its phase, then prunes it and its in-flight lock.
+/// What recovery does with a repair journal, decided before it writes anything; the
+/// simulation of recovery (`journal::diagnose`) decides by it too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RepairRoute<'p> {
+    /// This build cannot read it: left whole.
+    Unrecoverable(Unrecoverable),
+    /// Nothing to finish or undo: never prepared, committed, or rolled back in process.
+    Prune,
+    /// Before `done`: roll back the steps `1..=recorded`.
+    Back(&'p RepairPrepared, u32),
+    /// From `done` on: roll forward.
+    Forward(&'p RepairPrepared),
+}
+
+/// [`RepairRoute`] for `parsed`.
+pub(crate) fn route(parsed: &ParsedRepair) -> RepairRoute<'_> {
+    if let Some(why) = parsed.unrecoverable() {
+        return RepairRoute::Unrecoverable(why);
+    }
+    match (&parsed.prepared, parsed.phase) {
+        (Some(prepared), RepairPhase::Prepared | RepairPhase::Stepped(_)) => {
+            RepairRoute::Back(prepared, parsed.steps)
+        }
+        (Some(prepared), RepairPhase::Done) => RepairRoute::Forward(prepared),
+        _ => RepairRoute::Prune,
+    }
+}
+
+/// Settles one repair journal by its route, then prunes it and its in-flight lock.
 fn recover_one(
     env: &RecoveryEnv<'_>,
     tx: TxId,
     path: &Path,
     parsed: &ParsedRepair,
 ) -> Result<Option<Warning>> {
-    if let Some(why) = parsed.unrecoverable() {
-        return Err(unrecoverable(tx, parsed, why));
-    }
-    let settled = match (&parsed.prepared, parsed.phase) {
-        (Some(prepared), RepairPhase::Prepared | RepairPhase::Stepped(_) | RepairPhase::Done) => {
+    let settled = match route(parsed) {
+        RepairRoute::Unrecoverable(why) => return Err(unrecoverable(tx, parsed, why)),
+        RepairRoute::Prune => None,
+        RepairRoute::Back(prepared, recorded) => {
             let scopes = scopes_of(env.paths, tx, prepared)?;
             let mut s = WriteSession::untracked(Writer::Doctor, &scopes, "repair recovery");
-            if parsed.phase == RepairPhase::Done {
-                roll_forward(&mut s, env.paths, path, prepared, parsed.torn_tail)
+            roll_back(&mut OnDisk { s: &mut s }, prepared, recorded)
+                .map_err(|stop| pending(stop.into_error(prepared), tx))?;
+            // A torn last line would swallow the closing line; the prune follows, and a
+            // crash before it only repeats an idempotent rollback.
+            if !parsed.torn_tail {
+                append(&mut s, path, &RepairLine::RolledBack)
                     .map_err(|error| pending(error, tx))?;
-                Some("completed it (rolled forward)")
-            } else {
-                roll_back(&mut s, &mut OnDisk, prepared, parsed.steps)
-                    .map_err(|error| pending(error, tx))?;
-                // A torn last line would swallow the closing line; the prune follows,
-                // and a crash before it only repeats an idempotent rollback.
-                if !parsed.torn_tail {
-                    append(&mut s, path, &RepairLine::RolledBack)
-                        .map_err(|error| pending(error, tx))?;
-                }
-                Some("undid it (rolled back)")
             }
+            Some("undid it (rolled back)")
         }
-        // Nothing to finish or undo: never prepared, committed, or rolled back in process.
-        _ => None,
+        RepairRoute::Forward(prepared) => {
+            let scopes = scopes_of(env.paths, tx, prepared)?;
+            let mut s = WriteSession::untracked(Writer::Doctor, &scopes, "repair recovery");
+            roll_forward(&mut s, env.paths, path, prepared, parsed.torn_tail)
+                .map_err(|error| pending(error, tx))?;
+            Some("completed it (rolled forward)")
+        }
     };
     let mut victims = vec![path.to_path_buf()];
     let inflight = env.paths.inflight_lock(&tx);
@@ -137,45 +164,79 @@ fn recover_one(
     }))
 }
 
-/// The scope table a repair's recovery writes with, from its journal alone: the client
-/// dirs whose markers still name their targets (registration writes markers under the
-/// lock, before any journal), and the skill directories [`skill_dirs`] admits. A client
-/// dir whose marker changed stops recovery: it is not that target's any more.
+/// The scope table a repair's recovery writes with: what [`admit`] admits, the markers
+/// read from the disk.
 fn scopes_of(paths: &Paths, tx: TxId, prepared: &RepairPrepared) -> Result<ScopeTable> {
-    let mut clients = Vec::new();
-    for client in &prepared.client_dirs {
-        // ubs:ignore — comparing target keys (public ULIDs), not secrets
-        if crate::discover::registry::read_marker(&client.dir) != Some(client.target) {
-            return Err(stop(
-                ErrorCode::ScopeDenied,
-                tx,
-                StopReason::MarkerMismatch,
-                format!(
-                    "it names {}, whose marker is not target {}'s any more; recovery leaves it as it is",
-                    client.dir.display(),
-                    client.target
-                ),
-                manual_repair(),
-            ));
-        }
-        clients.push(client.dir.clone());
-    }
-    let skills = skill_dirs(paths, tx, prepared, &clients)?;
-    ScopeTable::new(paths, &clients, None)
-        .and_then(|table| table.with_skill_dirs(&skills))
+    let admitted = admit(paths, prepared, &mut crate::discover::registry::read_marker)
+        .map_err(|refused| refused.into_error(tx))?;
+    ScopeTable::new(paths, &admitted.clients, None)
+        .and_then(|table| table.with_skill_dirs(&admitted.skills))
         .map_err(|error| pending(error, tx))
 }
 
-/// The skill directories `prepared` writes in. Every path a step or a rollback names is
-/// below omaddons' own folders, the bar widget's or one of `clients`, or below a skill
-/// directory omaddons attributes on its own: `Paths::skill_dir()` (B3 adds
-/// `history_tail.skill_dirs[]`). Any other path stops recovery (`skill_dir`).
-fn skill_dirs(
+/// Where a repair's recovery may write besides omaddons' own folders.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Admitted {
+    pub clients: Vec<PathBuf>,
+    pub skills: Vec<PathBuf>,
+}
+
+/// Why recovery may not write what a repair's journal names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Refused {
+    /// A client dir whose marker no longer names its target: not that target's any more.
+    Marker { dir: PathBuf, target: TargetKey },
+    /// A path below no skill directory omaddons attributes on its own, in `dir`.
+    SkillDir { dir: PathBuf },
+}
+
+impl Refused {
+    /// The stop recovery reports: `scope_denied`, everything left in place.
+    pub(crate) fn into_error(self, tx: TxId) -> Error {
+        let (reason, what) = match self {
+            Self::Marker { dir, target } => (
+                StopReason::MarkerMismatch,
+                format!(
+                    "it names {}, whose marker is not target {target}'s any more; recovery leaves it as it is",
+                    dir.display()
+                ),
+            ),
+            Self::SkillDir { dir } => (
+                StopReason::SkillDir,
+                format!(
+                    "it writes in {}, which is not a skill directory omaddons installed; recovery leaves it as it is",
+                    dir.display()
+                ),
+            ),
+        };
+        stop(ErrorCode::ScopeDenied, tx, reason, what, manual_repair())
+    }
+}
+
+/// What a repair's recovery may write, from its journal alone (recovery never takes write
+/// authority from a payload it cannot attribute independently, M4-D38): each client dir
+/// whose `marker` still names its target (registration writes markers under the lock,
+/// before any journal), and each skill directory a path is below that omaddons attributes
+/// on its own, `Paths::skill_dir()` (B3 adds `history_tail.skill_dirs[]`). Every path a
+/// step or a rollback names is below omaddons' own folders, the bar widget's, an admitted
+/// client dir or an admitted skill directory; anything else is refused. Recovery reads
+/// the markers from the disk, `journal::diagnose` from its base.
+pub(crate) fn admit(
     paths: &Paths,
-    tx: TxId,
     prepared: &RepairPrepared,
-    clients: &[PathBuf],
-) -> Result<Vec<PathBuf>> {
+    marker: &mut dyn FnMut(&Path) -> Option<TargetKey>,
+) -> std::result::Result<Admitted, Refused> {
+    let mut clients = Vec::new();
+    for client in &prepared.client_dirs {
+        // ubs:ignore — comparing target keys (public ULIDs), not secrets
+        if marker(&client.dir) != Some(client.target) {
+            return Err(Refused::Marker {
+                dir: client.dir.clone(),
+                target: client.target,
+            });
+        }
+        clients.push(client.dir.clone());
+    }
     let resolved = |dirs: Vec<PathBuf>| -> Vec<PathBuf> {
         dirs.iter()
             .filter_map(|dir| canonical_lenient(dir))
@@ -194,28 +255,21 @@ fn skill_dirs(
     );
     let attributable = resolved(vec![paths.skill_dir()]);
     let below = |path: &Path, dir: &PathBuf| path != dir.as_path() && path.starts_with(dir);
-    let mut admitted: Vec<PathBuf> = Vec::new();
+    let mut skills: Vec<PathBuf> = Vec::new();
     for path in named(prepared) {
         if fixed.iter().any(|root| below(path, root)) {
             continue;
         }
         let Some(dir) = attributable.iter().find(|dir| below(path, dir)) else {
-            return Err(stop(
-                ErrorCode::ScopeDenied,
-                tx,
-                StopReason::SkillDir,
-                format!(
-                    "it writes in {}, which is not a skill directory omaddons installed; recovery leaves it as it is",
-                    path.parent().unwrap_or(path).display()
-                ),
-                manual_repair(),
-            ));
+            return Err(Refused::SkillDir {
+                dir: path.parent().unwrap_or(path).to_path_buf(),
+            });
         };
-        if !admitted.contains(dir) {
-            admitted.push(dir.clone());
+        if !skills.contains(dir) {
+            skills.push(dir.clone());
         }
     }
-    Ok(admitted)
+    Ok(Admitted { clients, skills })
 }
 
 /// Every path a repair's steps and rollbacks name: each primitive's path, a rename's

@@ -22,9 +22,17 @@ use super::journal::{
     StepOp, StepRecord, StopReason, Unrecoverable, Walked, WtfWalked,
 };
 use super::preserve::{self, Placed};
+use super::repair::inverse::{Inverse, RepairReplay, RepairView, Stopped};
+use super::repair::journal::{ParsedRepair, RepairPhase, RepairPrepared};
+use super::repair::recover::{Refused, RepairRoute};
+use super::repair::{self};
+use super::repair_action::{Endpoint, Endpoints, Identity, Primitive, Step};
+use super::resource::Resource;
 use crate::backup::BackupMeta;
 use crate::error::ErrorCode;
-use crate::fsx::{InflightLock, ScopeTable, StampDigest};
+use crate::fsx::{
+    Described, Expect, Found, InflightLock, Mismatch, Predicate, ScopeTable, StampDigest,
+};
 use crate::model::{BackupId, TargetKey, TxId, TxKind};
 use crate::state::paths::{ClientPaths, Paths};
 use crate::state::store::{self, SchemaVersion};
@@ -52,12 +60,12 @@ pub struct ListingFailure {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Listed {
     pub tx: TxId,
+    pub family: JournalFamily,
     pub path: PathBuf,
     pub text: Result<String, String>,
 }
 
 /// Which kind of journal it is: the repair action model's, which a delegation names too.
-/// E5 adds repair journals.
 pub use super::repair_action::JournalFamily;
 
 /// What recovery will do with one journal, and why.
@@ -66,11 +74,18 @@ pub struct JournalDiagnosis {
     pub tx: TxId,
     pub family: JournalFamily,
     pub path: PathBuf,
-    /// The `prepared` line's target, read even when that line does not decode.
+    /// The `prepared` line's target, read even when that line does not decode. A repair
+    /// names no single target: `None`.
     pub target: Option<TargetKey>,
-    /// The `prepared` line's client dir, when that line decodes.
+    /// The `prepared` line's client dir, when that line decodes; `None` for a repair.
     pub client_dir: Option<PathBuf>,
+    /// For a repair, the folder phase recovery treats its own like: `unprepared`,
+    /// `prepared` (before `done`), `swapped` (`done`: it rolls forward) or `committed`
+    /// (`committed` or `rolled_back`); `repair_phase` says which exactly.
     pub phase: Phase,
+    /// A repair's own phase (E5).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repair_phase: Option<RepairPhase>,
     /// Its writer holds its in-flight lock: recovery skips it.
     pub live: bool,
     pub verdict: JournalVerdict,
@@ -96,6 +111,8 @@ pub enum JournalVerdict {
     StepUnrecognized { step: u32 },
     /// Its client no longer carries its target's marker.
     MarkerMismatch,
+    /// A repair names a path below no skill directory omaddons attributes on its own.
+    SkillDirUnattributed,
     /// What a settings restore displaced has no durable home yet: recovery finishes the
     /// preservation (`stops: false`) or stops (`stops: true`).
     PreservationIncomplete { stops: bool },
@@ -170,6 +187,9 @@ impl JournalDiagnosis {
             }
             JournalVerdict::MarkerMismatch => {
                 stops(ErrorCode::ScopeDenied, StopReason::MarkerMismatch, None)
+            }
+            JournalVerdict::SkillDirUnattributed => {
+                stops(ErrorCode::ScopeDenied, StopReason::SkillDir, None)
             }
             JournalVerdict::WaitsForGame => {
                 stops(ErrorCode::GameRunning, StopReason::SavedVariables, None)
@@ -263,6 +283,10 @@ pub enum ArtifactKind {
     StateSnapshot,
     ClientStage,
     ClientSnapshot,
+    /// `<state>/journal/<tx>.repair.jsonl`.
+    RepairJournal,
+    /// A client's `<meta>/snapshots/<tx>.repair/`: a repair's quarantine and backups there.
+    ClientRepairHalf,
 }
 
 /// Where the prediction may differ from recovery, by design.
@@ -276,6 +300,9 @@ pub enum Approximation {
     /// A journal without `writes_wtf` names a path below its client's `WTF/`, which
     /// recovery's writer may not rename; that refusal is not simulated.
     WtfPathWithoutFlag,
+    /// A repair's step or backup could not be read: recovery fails with `io` there, which
+    /// is not simulated.
+    RepairCheckFailed,
 }
 
 /// What recovery may touch for a journal: what a doctor must keep and fence.
@@ -293,7 +320,20 @@ pub fn diagnose(
     client_dirs: &[PathBuf],
     sv_writable: &dyn Fn(&Path) -> bool,
 ) -> Diagnoses {
-    let (found, unlisted) = match journal::list(paths) {
+    // Recovery's order: the folder journals, then the repairs (E5), each by transaction.
+    let listed = journal::list(paths).and_then(|folder| {
+        let repairs = super::repair::journal::list(paths)?;
+        Ok(folder
+            .into_iter()
+            .map(|(tx, path)| (tx, JournalFamily::Folder, path))
+            .chain(
+                repairs
+                    .into_iter()
+                    .map(|(tx, path)| (tx, JournalFamily::Repair, path)),
+            )
+            .collect::<Vec<_>>())
+    });
+    let (found, unlisted) = match listed {
         Ok(found) => (found, None),
         Err(error) => (
             Vec::new(),
@@ -305,11 +345,12 @@ pub fn diagnose(
     };
     let listing = found
         .into_iter()
-        .map(|(tx, path)| Listed {
+        .map(|(tx, family, path)| Listed {
             text: std::fs::read(&path)
                 .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
                 .map_err(|e| format!("{}: {e}", path.display())),
             tx,
+            family,
             path,
         })
         .collect();
@@ -332,7 +373,12 @@ pub fn diagnose_journals<B: Base>(
     let mut sim = Simulated::new(base);
     listing
         .into_iter()
-        .map(|listed| diagnose_one(&mut sim, paths, listed, client_dirs, sv_writable))
+        .map(|listed| match listed.family {
+            JournalFamily::Folder => {
+                diagnose_one(&mut sim, paths, listed, client_dirs, sv_writable)
+            }
+            JournalFamily::Repair => diagnose_repair(&mut sim, paths, listed, client_dirs),
+        })
         .collect()
 }
 
@@ -376,6 +422,10 @@ pub trait Base {
 
     /// The target the client dir's marker names.
     fn marker(&self, client_dir: &Path) -> Option<TargetKey>;
+
+    /// The first part of `expect` that does not hold at `path`, as fsx checks it (E13):
+    /// what a repair's step predicates and backups read.
+    fn check(&self, path: &Path, expect: &Expect) -> std::io::Result<Option<Mismatch>>;
 }
 
 /// The disk, read only, as recovery reads it.
@@ -438,14 +488,20 @@ impl Base for DiskBase {
     fn marker(&self, client_dir: &Path) -> Option<TargetKey> {
         crate::discover::registry::read_marker(client_dir)
     }
+
+    fn check(&self, path: &Path, expect: &Expect) -> std::io::Result<Option<Mismatch>> {
+        expect.check(path)
+    }
 }
 
 /// A base held in maps, for unit tests and the fuzz target: what is not in a map is
-/// absent (an entry, a stamp, a marker), dead (a writer), or fails (a tree stamp, a
-/// description, a backup's metadata).
+/// absent (an entry, a stamp, a marker), dead (a writer), unknown (a fact, which then
+/// never holds), or fails (a tree stamp, a description, a backup's metadata).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct MapBase {
     pub entries: BTreeMap<PathBuf, LiveEntry>,
+    /// What an entry holds besides its kind and identity.
+    pub facts: BTreeMap<PathBuf, Facts>,
     pub file_stamps: BTreeMap<PathBuf, String>,
     /// A tree's stamp, or the error its walk fails with.
     pub tree_stamps: BTreeMap<PathBuf, Result<String, String>>,
@@ -457,6 +513,14 @@ pub struct MapBase {
     pub describable: BTreeSet<TxId>,
     /// Backups whose metadata loads.
     pub backup_metas: BTreeSet<PathBuf>,
+}
+
+/// What a [`MapBase`] entry holds besides its kind and identity.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct Facts {
+    pub sha256: Option<[u8; 32]>,
+    pub mode: Option<u32>,
+    pub link_target: Option<PathBuf>,
 }
 
 impl Base for MapBase {
@@ -500,6 +564,30 @@ impl Base for MapBase {
     fn marker(&self, client_dir: &Path) -> Option<TargetKey> {
         self.markers.get(client_dir).copied()
     }
+
+    fn check(&self, path: &Path, expect: &Expect) -> std::io::Result<Option<Mismatch>> {
+        let described = self.entries.get(path).map(|entry| {
+            let facts = self.facts.get(path).cloned().unwrap_or_default();
+            Described {
+                identity: Some(entry.id),
+                sha256: facts.sha256,
+                mode: facts.mode,
+                link_target: facts.link_target,
+                ..Described::kind(found_of(entry.kind))
+            }
+        });
+        Ok(expect.check_described(described.as_ref()))
+    }
+}
+
+/// fsx's kind of an entry recovery's decisions see.
+fn found_of(kind: LiveKind) -> Found {
+    match kind {
+        LiveKind::File => Found::Regular,
+        LiveKind::Dir => Found::Directory,
+        LiveKind::Symlink => Found::Symlink,
+        LiveKind::Other => Found::Other,
+    }
 }
 
 /// A base read at most once per question and path in one call, and counted.
@@ -514,8 +602,13 @@ pub(crate) struct Cached<'b, B: Base> {
     describable: BTreeMap<TxId, bool>,
     metas: BTreeMap<PathBuf, bool>,
     markers: BTreeMap<PathBuf, Option<TargetKey>>,
+    /// Each check by its path and the expectation's debug form.
+    checks: BTreeMap<(PathBuf, String), Checked>,
     reads: usize,
 }
+
+/// A check's answer as [`Cached`] keeps it: an I/O error by its kind and text.
+type Checked = Result<Option<Mismatch>, (std::io::ErrorKind, String)>;
 
 impl<'b, B: Base> Cached<'b, B> {
     fn new(base: &'b B) -> Self {
@@ -530,8 +623,22 @@ impl<'b, B: Base> Cached<'b, B> {
             describable: BTreeMap::new(),
             metas: BTreeMap::new(),
             markers: BTreeMap::new(),
+            checks: BTreeMap::new(),
             reads: 0,
         }
+    }
+
+    fn check(&mut self, path: &Path, expect: &Expect) -> std::io::Result<Option<Mismatch>> {
+        let (base, reads) = (self.base, &mut self.reads);
+        self.checks
+            .entry((path.to_path_buf(), format!("{expect:?}")))
+            .or_insert_with(|| {
+                *reads += 1;
+                base.check(path, expect)
+                    .map_err(|e| (e.kind(), e.to_string()))
+            })
+            .clone()
+            .map_err(|(kind, why)| std::io::Error::new(kind, why))
     }
 
     /// How many questions reached the base.
@@ -640,14 +747,34 @@ pub(crate) enum Move {
     Exchange { a: PathBuf, b: PathBuf },
 }
 
+/// What a simulated write or chmod inverse left on the entry a base path held, read
+/// before the base (E5's repairs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Overlay {
+    /// A file written whole, so a new identity: its content and mode.
+    Written { sha256: [u8; 32], mode: Option<u32> },
+    /// The same file, with another mode.
+    Mode(u32),
+}
+
 /// The disk as recovery would leave it: a cached base, and the renames simulated on it.
 pub(crate) struct Simulated<'b, B: Base> {
     cache: Cached<'b, B>,
     moves: Vec<Move>,
+    /// Each overlay by the base path of the entry it changed, the latest last.
+    overlays: Vec<(PathBuf, Overlay)>,
     /// The steps reversed since the driver last cleared it.
     reversed: Vec<u32>,
     /// A tree stamp was read over a moved subtree since the driver last cleared it.
     composite: bool,
+}
+
+/// How far a [`Simulated`] tree had got: its moves and overlays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Checkpoint {
+    moves: usize,
+    overlays: usize,
 }
 
 impl<'b, B: Base> Simulated<'b, B> {
@@ -655,18 +782,48 @@ impl<'b, B: Base> Simulated<'b, B> {
         Self {
             cache: Cached::new(base),
             moves: Vec::new(),
+            overlays: Vec::new(),
             reversed: Vec::new(),
             composite: false,
         }
     }
 
-    pub(crate) fn checkpoint(&self) -> usize {
-        self.moves.len()
+    pub(crate) fn checkpoint(&self) -> Checkpoint {
+        Checkpoint {
+            moves: self.moves.len(),
+            overlays: self.overlays.len(),
+        }
     }
 
-    /// Forgets the moves made since `checkpoint`.
-    pub(crate) fn restore(&mut self, checkpoint: usize) {
-        self.moves.truncate(checkpoint);
+    /// Forgets the moves and overlays made since `checkpoint`.
+    pub(crate) fn restore(&mut self, checkpoint: Checkpoint) {
+        self.moves.truncate(checkpoint.moves);
+        self.overlays.truncate(checkpoint.overlays);
+    }
+
+    /// The latest overlay on the entry the base held at `origin`.
+    fn overlay(&self, origin: &Path) -> Option<Overlay> {
+        self.overlays
+            .iter()
+            .rev()
+            .find(|(at, _)| at == origin)
+            .map(|(_, overlay)| *overlay)
+    }
+
+    /// Lays `overlay` on what is at `path` now; nothing there takes none. A mode over a
+    /// written file keeps its content.
+    fn lay(&mut self, path: &Path, overlay: Overlay) {
+        let Some(origin) = self.origin(path) else {
+            return;
+        };
+        let laid = match (self.overlay(&origin), overlay) {
+            (Some(Overlay::Written { sha256, .. }), Overlay::Mode(mode)) => Overlay::Written {
+                sha256,
+                mode: Some(mode),
+            },
+            (_, overlay) => overlay,
+        };
+        self.overlays.push((origin, laid));
     }
 
     pub(crate) fn apply(&mut self, applied: Move) {
@@ -703,6 +860,7 @@ impl<'b, B: Base> Simulated<'b, B> {
 
     /// Whether a simulated move lies strictly inside `path`'s subtree.
     fn moved_inside(&self, path: &Path) -> bool {
+        // ubs:ignore — comparing paths, not secrets
         let inside = |p: &Path| p != path && p.starts_with(path);
         self.moves.iter().any(|done| match done {
             Move::Rename { from, to } => inside(from) || inside(to),
@@ -775,6 +933,70 @@ impl<B: Base> Replay for Simulated<'_, B> {
     }
 }
 
+/// A repair's predicates and backups, read through the simulated moves: an overlay on
+/// the entry answers first; a mode overlay leaves every other part to the base.
+impl<B: Base> RepairView for Simulated<'_, B> {
+    fn check(&mut self, path: &Path, expect: &Expect) -> std::io::Result<Option<Mismatch>> {
+        let Some(origin) = self.origin(path) else {
+            return Ok(expect.check_described(None));
+        };
+        match self.overlay(&origin) {
+            None => self.cache.check(&origin, expect),
+            Some(Overlay::Written { sha256, mode }) => {
+                let written = Described {
+                    sha256: Some(sha256),
+                    mode,
+                    ..Described::kind(Found::Regular)
+                };
+                Ok(expect.check_described(Some(&written)))
+            }
+            Some(Overlay::Mode(mode)) => {
+                let (rest, wanted) = match expect {
+                    Expect::Present(predicate) => (
+                        Expect::Present(Predicate {
+                            mode: None,
+                            ..predicate.clone()
+                        }),
+                        predicate.mode,
+                    ),
+                    Expect::Absent => (Expect::Absent, None),
+                };
+                if let Some(mismatch) = self.cache.check(&origin, &rest)? {
+                    return Ok(Some(mismatch));
+                }
+                Ok(wanted
+                    .map(|expected| (expected & 0o7777, mode & 0o7777))
+                    // ubs:ignore — comparing mode bits, not secrets
+                    .filter(|(expected, found)| expected != found)
+                    .map(|(expected, found)| Mismatch::Mode { expected, found }))
+            }
+        }
+    }
+}
+
+/// A repair inverse applied to the simulated tree: a rename (a created file's included)
+/// as a move, a write or a chmod as an overlay.
+impl<B: Base> RepairReplay for Simulated<'_, B> {
+    fn apply(&mut self, step: &Step, inverse: &Inverse<'_>) -> crate::error::Result<()> {
+        match *inverse {
+            Inverse::Restore {
+                path, sha256, mode, ..
+            } => self.lay(path, Overlay::Written { sha256, mode }),
+            Inverse::Chmod { path, mode } => self.lay(path, Overlay::Mode(mode)),
+            Inverse::Unmake { path, to } => self.moves.push(Move::Rename {
+                from: path.to_path_buf(),
+                to: to.to_path_buf(),
+            }),
+            Inverse::RenameBack { from, to, .. } => self.moves.push(Move::Rename {
+                from: from.to_path_buf(),
+                to: to.to_path_buf(),
+            }),
+        }
+        self.reversed.push(step.seq);
+        Ok(())
+    }
+}
+
 // ---------------------------------------------------------------------------------------
 // The driver.
 
@@ -786,7 +1008,7 @@ fn diagnose_one<B: Base>(
     client_dirs: &[PathBuf],
     sv_writable: &dyn Fn(&Path) -> bool,
 ) -> JournalDiagnosis {
-    let Listed { tx, path, text } = listed;
+    let Listed { tx, path, text, .. } = listed;
     let alive = sim.cache.writer_alive(&tx);
     let parsed = text.as_ref().ok().map(|text| journal::parse(text));
     let checkpoint = sim.checkpoint();
@@ -864,11 +1086,250 @@ fn diagnose_one<B: Base>(
             .and_then(|p| p.prepared.as_ref())
             .map(|p| p.client_dir.clone()),
         phase: parsed.as_ref().map_or(Phase::Unprepared, |p| p.phase),
+        repair_phase: None,
         path: cut_below_wtf(&path),
         live,
         verdict,
         evidence,
         protected,
+    }
+}
+
+/// One repair journal (E5), on the shared tree after every folder journal, by recovery's
+/// own decisions: [`repair::recover::route`], [`repair::recover::admit`] and
+/// [`repair::inverse::roll_back`], whose inverses the tree applies as moves and overlays.
+fn diagnose_repair<B: Base>(
+    sim: &mut Simulated<'_, B>,
+    paths: &Paths,
+    listed: Listed,
+    client_dirs: &[PathBuf],
+) -> JournalDiagnosis {
+    let Listed { tx, path, text, .. } = listed;
+    let alive = sim.cache.writer_alive(&tx);
+    let parsed = text.as_ref().ok().map(|text| repair::journal::parse(text));
+    let checkpoint = sim.checkpoint();
+    sim.reversed.clear();
+    let mut evidence = JournalEvidence::default();
+    let mut admitted = false;
+    let verdict = match (&alive, &parsed) {
+        (Err(_), _) => JournalVerdict::Unattributed {
+            cause: UnattributedCause::LivenessUnknown,
+        },
+        (Ok(_), None) => JournalVerdict::Unattributed {
+            cause: UnattributedCause::ReadFailed,
+        },
+        (Ok(_), Some(parsed)) => repair_verdict(sim, paths, parsed, &mut admitted, &mut evidence),
+    };
+    let live = matches!(alive, Ok(true));
+    if live {
+        sim.restore(checkpoint);
+    }
+    let mut ran = std::mem::take(&mut sim.reversed);
+    ran.sort_unstable();
+    evidence.ran = ran;
+    evidence.kind = Some(TxKind::Repair);
+    if let Some(parsed) = &parsed {
+        evidence.version = parsed.format;
+        evidence.steps = parsed.steps as usize;
+        evidence.torn_tail = parsed.torn_tail;
+        evidence.unknown_lines = parsed.unknown_lines;
+    }
+    evidence.approximations.sort_unstable();
+    evidence.approximations.dedup();
+    evidence.artifacts = repair_artifacts(sim, paths, &tx, client_dirs);
+    let trusted = parsed
+        .as_ref()
+        .and_then(|parsed| parsed.prepared.as_ref())
+        .filter(|_| {
+            admitted
+                && matches!(
+                    verdict,
+                    JournalVerdict::Recoverable { .. } | JournalVerdict::StepUnrecognized { .. }
+                )
+        });
+    let repair_phase = parsed.as_ref().map(|parsed| parsed.phase);
+    let protected = match (trusted, repair_phase) {
+        (Some(prepared), Some(phase)) => {
+            repair_paths(paths, &path, prepared, phase, &evidence.artifacts)
+        }
+        _ => untrusted_paths(&evidence.artifacts),
+    };
+    JournalDiagnosis {
+        tx,
+        family: JournalFamily::Repair,
+        target: None,
+        client_dir: None,
+        phase: repair_phase.map_or(Phase::Unprepared, folder_phase),
+        repair_phase: Some(repair_phase.unwrap_or(RepairPhase::Unprepared)),
+        path: cut_below_wtf(&path),
+        live,
+        verdict,
+        evidence,
+        protected,
+    }
+}
+
+/// The folder phase recovery treats a repair's like: before `done` it rolls back, from
+/// `done` it rolls forward, and a finished one is only removed.
+fn folder_phase(phase: RepairPhase) -> Phase {
+    match phase {
+        RepairPhase::Unprepared => Phase::Unprepared,
+        RepairPhase::Prepared | RepairPhase::Stepped(_) => Phase::Prepared,
+        RepairPhase::Done => Phase::Swapped,
+        RepairPhase::Committed | RepairPhase::RolledBack => Phase::Committed,
+    }
+}
+
+/// The verdict for a repair journal that reads. `admitted` says whether recovery may
+/// write what it names (its paths are then trusted for its protection).
+fn repair_verdict<B: Base>(
+    sim: &mut Simulated<'_, B>,
+    paths: &Paths,
+    parsed: &ParsedRepair,
+    admitted: &mut bool,
+    evidence: &mut JournalEvidence,
+) -> JournalVerdict {
+    let phase = folder_phase(parsed.phase);
+    let (prepared, back) = match repair::recover::route(parsed) {
+        RepairRoute::Unrecoverable(Unrecoverable::TooNew) => return JournalVerdict::TooNew,
+        RepairRoute::Unrecoverable(Unrecoverable::Unreadable) => {
+            return JournalVerdict::Unreadable;
+        }
+        RepairRoute::Prune => {
+            return JournalVerdict::Recoverable {
+                phase,
+                direction: Direction::Prune,
+            };
+        }
+        RepairRoute::Back(prepared, recorded) => (prepared, Some(recorded)),
+        RepairRoute::Forward(prepared) => (prepared, None),
+    };
+    let cache = &mut sim.cache;
+    match repair::recover::admit(paths, prepared, &mut |dir| cache.marker(dir)) {
+        Err(Refused::Marker { .. }) => return JournalVerdict::MarkerMismatch,
+        Err(Refused::SkillDir { .. }) => return JournalVerdict::SkillDirUnattributed,
+        Ok(_) => *admitted = true,
+    }
+    let Some(recorded) = back else {
+        return JournalVerdict::Recoverable {
+            phase,
+            direction: Direction::Forward,
+        };
+    };
+    match repair::inverse::roll_back(sim, prepared, recorded) {
+        Err(Stopped::Unrecognized { seq, .. }) => JournalVerdict::StepUnrecognized { step: seq },
+        result => {
+            if matches!(result, Err(Stopped::Failed(_))) {
+                evidence
+                    .approximations
+                    .push(Approximation::RepairCheckFailed);
+            }
+            JournalVerdict::Recoverable {
+                phase,
+                direction: Direction::Back,
+            }
+        }
+    }
+}
+
+/// What a repair left where omaddons puts it, found by its transaction id alone: its
+/// journal and in-flight lock, and each known client's `.repair` half.
+fn repair_artifacts<B: Base>(
+    sim: &mut Simulated<'_, B>,
+    paths: &Paths,
+    tx: &TxId,
+    client_dirs: &[PathBuf],
+) -> Vec<Artifact> {
+    let mut found = Vec::new();
+    for (path, kind, client) in [
+        (paths.journal_repair(tx), ArtifactKind::RepairJournal, None),
+        (paths.inflight_lock(tx), ArtifactKind::Inflight, None),
+    ]
+    .into_iter()
+    .chain(client_dirs.iter().map(|dir| {
+        (
+            ClientPaths::new(dir).snapshots_repair(tx),
+            ArtifactKind::ClientRepairHalf,
+            Some(dir.clone()),
+        )
+    })) {
+        if sim.cache.entry(&path).is_some() {
+            found.push(Artifact {
+                path: cut_below_wtf(&path),
+                kind,
+                client,
+                marker_matches: None,
+            });
+        }
+    }
+    found
+}
+
+/// What recovery may touch for a repair it trusts: its `prepared` resources as recorded
+/// (never resolved again), every path its steps and rollbacks name, its journal and
+/// in-flight lock, and from `done` on the history; it reads each client's marker.
+fn repair_paths(
+    paths: &Paths,
+    journal_path: &Path,
+    prepared: &RepairPrepared,
+    phase: RepairPhase,
+    artifacts: &[Artifact],
+) -> ProtectedPaths {
+    let resource_path = |text: &String| -> Option<PathBuf> {
+        match Resource::parse(text).ok()? {
+            Resource::Path { path, .. } => Some(path),
+            Resource::Backup { run_dir, seq } => Some(
+                paths
+                    .doctor_runs_dir()
+                    .join(run_dir)
+                    .join("backups")
+                    .join(seq.to_string()),
+            ),
+            Resource::Record(key) => Some(paths.target_record(&key)),
+            Resource::Journal(tx) => Some(paths.journal(&tx)),
+        }
+    };
+    let mut writes = vec![
+        journal_path.to_path_buf(),
+        paths.inflight_lock(&prepared.tx),
+    ];
+    writes.extend(prepared.resources.writes.iter().filter_map(resource_path));
+    for step in &prepared.primitives {
+        writes.push(step.op.path().to_path_buf());
+        match &step.op {
+            Primitive::RenameNoReplace { to, .. } => writes.push(to.clone()),
+            Primitive::WriteFile {
+                backup: Some(backup),
+                ..
+            } => writes.push(backup.clone()),
+            _ => {}
+        }
+    }
+    writes.extend(
+        prepared
+            .rollbacks
+            .iter()
+            .map(|rollback| rollback.to.clone()),
+    );
+    if phase == RepairPhase::Done {
+        writes.push(paths.history_file());
+    }
+    writes.extend(artifacts.iter().map(|artifact| artifact.path.clone()));
+    let mut reads: Vec<PathBuf> = prepared
+        .resources
+        .reads
+        .iter()
+        .filter_map(resource_path)
+        .collect();
+    reads.extend(
+        prepared
+            .client_dirs
+            .iter()
+            .map(|client| ClientPaths::new(&client.dir).marker()),
+    );
+    ProtectedPaths {
+        reads: settled(reads),
+        writes: settled(writes),
     }
 }
 
@@ -1197,11 +1658,14 @@ pub(crate) fn cut_below_wtf(path: &Path) -> PathBuf {
 // ---------------------------------------------------------------------------------------
 // The fuzz property (E11): the `journal` target and the seeds' gate test run it.
 
-/// Any bytes as a journal: they parse and diagnose without a panic, the same bytes always
-/// diagnose the same, and every diagnosis agrees with the parse and names nothing below
-/// `WTF/`. Panics with the violated property; never writes.
+/// Any bytes as a journal of either family: they parse and diagnose without a panic, the
+/// same bytes always diagnose the same, and every diagnosis agrees with the parse and
+/// names nothing below `WTF/`. Every input runs both arms, folder and repair (E5): every
+/// journal starts with `{`, so no leading byte could tell them apart. Panics with the
+/// violated property; never writes.
 #[doc(hidden)]
 pub fn fuzz_property(data: &[u8]) {
+    fuzz_repair_property(data);
     let text = String::from_utf8_lossy(data);
     let parsed = journal::parse(&text);
     let len = data.len();
@@ -1285,6 +1749,7 @@ pub fn fuzz_property(data: &[u8]) {
             .chain(diagnosis.evidence.artifacts.iter().map(|a| &a.path));
         for path in named {
             assert!(
+                // ubs:ignore — comparing paths, not secrets
                 cut_below_wtf(path) == *path,
                 "{len} bytes: a diagnosis names a path below WTF/"
             );
@@ -1307,6 +1772,7 @@ pub fn fuzz_diagnosis(data: &[u8]) -> Vec<JournalDiagnosis> {
         .map_or(TxId::from_ulid(ulid::Ulid::nil()), |p| p.tx);
     let listing = vec![Listed {
         tx,
+        family: JournalFamily::Folder,
         path: paths.journal(&tx),
         text: Ok(text),
     }];
@@ -1317,6 +1783,228 @@ pub fn fuzz_diagnosis(data: &[u8]) -> Vec<JournalDiagnosis> {
         .map(|p| p.client_dir.clone())
         .collect();
     diagnose_journals(&case.base, &paths, listing, &client_dirs, &|_| writable)
+}
+
+/// The repair arm of [`fuzz_property`] (E5): the bytes as a repair journal parse
+/// consistently and the same twice, and diagnose (on a base [`FuzzCase::for_repair`]
+/// builds) the same twice, with a verdict the parse allows, `expected()` total, and
+/// nothing named below `WTF/`.
+fn fuzz_repair_property(data: &[u8]) {
+    let text = String::from_utf8_lossy(data);
+    let parsed = repair::journal::parse(&text);
+    let len = data.len();
+    assert!(
+        parsed.unknown_lines <= parsed.lines,
+        "{len} bytes: a repair journal with more unknown lines than lines"
+    );
+    let primitives = parsed
+        .prepared
+        .as_ref()
+        .map_or(0, |prepared| prepared.primitives.len());
+    match parsed.phase {
+        RepairPhase::Unprepared => assert!(
+            parsed.prepared.is_none(),
+            "{len} bytes: a prepared repair read as unprepared"
+        ),
+        RepairPhase::Stepped(k) => assert!(
+            k >= 1 && k == parsed.steps && (k as usize) <= primitives,
+            "{len} bytes: stepped({k}) with {} step lines",
+            parsed.steps
+        ),
+        RepairPhase::Done | RepairPhase::Committed => assert_eq!(
+            parsed.steps as usize, primitives,
+            "{len} bytes: done before every step"
+        ),
+        RepairPhase::Prepared | RepairPhase::RolledBack => {}
+    }
+    assert_eq!(
+        repair::journal::parse(&text),
+        parsed,
+        "{len} bytes: two parses of a repair journal differ"
+    );
+    let found = fuzz_repair_diagnosis(data);
+    assert_eq!(
+        fuzz_repair_diagnosis(data),
+        found,
+        "{len} bytes: two repair diagnoses differ"
+    );
+    let alive = FuzzCase::for_repair(data, &parsed).alive;
+    for diagnosis in &found {
+        let _ = (
+            diagnosis.expected(),
+            diagnosis.direction(),
+            diagnosis.exact(),
+        );
+        assert_eq!(diagnosis.family, JournalFamily::Repair, "{len} bytes");
+        assert_eq!(diagnosis.repair_phase, Some(parsed.phase), "{len} bytes");
+        let finished = matches!(
+            parsed.phase,
+            RepairPhase::Unprepared | RepairPhase::Committed | RepairPhase::RolledBack
+        );
+        let agrees = match (diagnosis.verdict, parsed.unrecoverable()) {
+            _ if alive.is_err() => matches!(
+                diagnosis.verdict,
+                JournalVerdict::Unattributed {
+                    cause: UnattributedCause::LivenessUnknown
+                }
+            ),
+            (JournalVerdict::TooNew, Some(Unrecoverable::TooNew))
+            | (JournalVerdict::Unreadable, Some(Unrecoverable::Unreadable)) => true,
+            (_, Some(_)) => false,
+            (verdict, None) if finished => matches!(
+                verdict,
+                JournalVerdict::Recoverable {
+                    direction: Direction::Prune,
+                    ..
+                }
+            ),
+            (JournalVerdict::StepUnrecognized { step }, None) => (1..=parsed.steps).contains(&step),
+            (
+                JournalVerdict::Recoverable {
+                    direction: Direction::Forward,
+                    ..
+                },
+                None,
+            ) => parsed.phase == RepairPhase::Done,
+            (
+                JournalVerdict::Recoverable {
+                    direction: Direction::Back,
+                    ..
+                }
+                | JournalVerdict::MarkerMismatch
+                | JournalVerdict::SkillDirUnattributed,
+                None,
+            ) => true,
+            _ => false,
+        };
+        assert!(
+            agrees,
+            "{len} bytes: the repair verdict {:?} disagrees with the parse ({:?})",
+            diagnosis.verdict, parsed.phase
+        );
+        assert!(
+            diagnosis
+                .evidence
+                .ran
+                .iter()
+                .all(|seq| (1..=parsed.steps).contains(seq)),
+            "{len} bytes: a step inverted that was never recorded"
+        );
+        let named = std::iter::once(&diagnosis.path)
+            .chain(&diagnosis.protected.reads)
+            .chain(&diagnosis.protected.writes)
+            .chain(diagnosis.evidence.artifacts.iter().map(|a| &a.path));
+        for path in named {
+            assert!(
+                // ubs:ignore — comparing paths, not secrets
+                cut_below_wtf(path) == *path,
+                "{len} bytes: a repair diagnosis names a path below WTF/"
+            );
+        }
+    }
+}
+
+/// The diagnoses [`fuzz_repair_property`] checks: the bytes as a repair journal on the
+/// base [`FuzzCase::for_repair`] builds.
+#[doc(hidden)]
+pub fn fuzz_repair_diagnosis(data: &[u8]) -> Vec<JournalDiagnosis> {
+    let text = String::from_utf8_lossy(data).into_owned();
+    let parsed = repair::journal::parse(&text);
+    let case = FuzzCase::for_repair(data, &parsed);
+    let paths = Paths::with_roots("/fuzz", "/fuzz/c", "/fuzz/s", "/fuzz/k");
+    let tx = parsed
+        .prepared
+        .as_ref()
+        .map_or(TxId::from_ulid(ulid::Ulid::nil()), |p| p.tx);
+    let client_dirs: Vec<PathBuf> = parsed
+        .prepared
+        .iter()
+        .flat_map(|p| p.client_dirs.iter().map(|client| client.dir.clone()))
+        .collect();
+    let listing = vec![Listed {
+        tx,
+        family: JournalFamily::Repair,
+        path: paths.journal_repair(&tx),
+        text: Ok(text),
+    }];
+    diagnose_journals(&case.base, &paths, listing, &client_dirs, &|_| false)
+}
+
+/// Each path a repair step names, with what its `pre` and `post` say is there.
+fn step_sides(step: &Step) -> Vec<(&Path, &Endpoint, &Endpoint)> {
+    match (&step.op, &step.pre, &step.post) {
+        (
+            Primitive::RenameNoReplace { from, to, .. },
+            Endpoints::Pair {
+                path: from_pre,
+                to: to_pre,
+            },
+            Endpoints::Pair {
+                path: from_post,
+                to: to_post,
+            },
+        ) => vec![
+            (from.as_path(), from_pre, from_post),
+            (to.as_path(), to_pre, to_post),
+        ],
+        (op, Endpoints::One(pre), Endpoints::One(post)) => vec![(op.path(), pre, post)],
+        _ => Vec::new(),
+    }
+}
+
+/// What a [`MapBase`] holds for `endpoint` (`None`: nothing), an entry without a recorded
+/// identity given the fresh inode `fresh`.
+fn entry_of(endpoint: &Endpoint, fresh: u64) -> Option<(LiveEntry, Facts)> {
+    let id = |identity: &Option<Identity>| match identity {
+        Some(identity) => FileId {
+            dev: 0,
+            ino: identity.ino,
+            born_ns: identity.born_ns,
+        },
+        None => FileId {
+            dev: 0,
+            ino: u64::MAX - fresh,
+            born_ns: None,
+        },
+    };
+    match endpoint {
+        Endpoint::Absent => None,
+        Endpoint::File {
+            identity,
+            sha256,
+            mode,
+        } => Some((
+            LiveEntry {
+                kind: LiveKind::File,
+                id: id(identity),
+            },
+            Facts {
+                sha256: sha256.map(|digest| digest.0),
+                mode: mode.map(|mode| mode.bits()),
+                link_target: None,
+            },
+        )),
+        Endpoint::Dir { identity, .. } => Some((
+            LiveEntry {
+                kind: LiveKind::Dir,
+                id: id(identity),
+            },
+            Facts::default(),
+        )),
+        Endpoint::Symlink {
+            identity,
+            link_target,
+        } => Some((
+            LiveEntry {
+                kind: LiveKind::Symlink,
+                id: id(identity),
+            },
+            Facts {
+                link_target: link_target.clone(),
+                ..Facts::default()
+            },
+        )),
+    }
 }
 
 /// `paths`'s journals diagnosed on disk, with a listing of the home taken before and
@@ -1475,6 +2163,89 @@ impl<'d> FuzzCase<'d> {
             };
             case.base.alive.insert(prepared.tx, case.alive.clone());
         }
+        case
+    }
+
+    /// The base a repair journal (E5) is diagnosed on: every path its steps name absent,
+    /// at its `pre`, at its `post` or another entry; each write's backup holding the
+    /// replaced bytes or others; each client's marker its target's, another's or none;
+    /// its writer dead, alive or unknown. Each by a hash of the input and the path.
+    fn for_repair(data: &'d [u8], parsed: &ParsedRepair) -> Self {
+        let mut case = Self {
+            data,
+            base: MapBase::default(),
+            alive: Ok(false),
+        };
+        let Some(prepared) = &parsed.prepared else {
+            return case;
+        };
+        let mut other = 0u64;
+        for step in &prepared.primitives {
+            for (path, pre, post) in step_sides(step) {
+                if case.base.entries.contains_key(path) {
+                    continue;
+                }
+                other += 1;
+                let placed = match case.pick(&path.to_string_lossy(), 4) {
+                    0 => None,
+                    1 => entry_of(pre, other),
+                    2 => entry_of(post, other),
+                    _ => entry_of(
+                        &Endpoint::File {
+                            identity: None,
+                            sha256: None,
+                            mode: None,
+                        },
+                        other,
+                    ),
+                };
+                if let Some((entry, facts)) = placed {
+                    case.base.entries.insert(path.to_path_buf(), entry);
+                    case.base.facts.insert(path.to_path_buf(), facts);
+                }
+            }
+            if let (
+                Primitive::WriteFile {
+                    backup: Some(backup),
+                    ..
+                },
+                Endpoints::One(pre),
+            ) = (&step.op, &step.pre)
+            {
+                other += 1;
+                let kept = match case.pick(&format!("backup {}", backup.display()), 2) {
+                    0 => pre.clone(),
+                    _ => Endpoint::File {
+                        identity: None,
+                        sha256: None,
+                        mode: None,
+                    },
+                };
+                if let Some((entry, facts)) = entry_of(&kept, other) {
+                    case.base.entries.insert(backup.clone(), entry);
+                    case.base.facts.insert(backup.clone(), facts);
+                }
+            }
+        }
+        for client in &prepared.client_dirs {
+            match case.pick(&format!("marker {}", client.dir.display()), 3) {
+                0 => {
+                    case.base.markers.insert(client.dir.clone(), client.target);
+                }
+                1 => {
+                    case.base
+                        .markers
+                        .insert(client.dir.clone(), TargetKey::from_ulid(ulid::Ulid(1)));
+                }
+                _ => {}
+            }
+        }
+        case.alive = match case.pick("alive", 4) {
+            0 => Ok(true),
+            1 => Err("cannot be probed".to_owned()),
+            _ => Ok(false),
+        };
+        case.base.alive.insert(prepared.tx, case.alive.clone());
         case
     }
 
@@ -1688,6 +2459,7 @@ mod tests {
     fn diagnose_text(world: &World, tx: TxId, text: &str, sv_writable: bool) -> JournalDiagnosis {
         let listing = vec![Listed {
             tx,
+            family: JournalFamily::Folder,
             path: paths().journal(&tx),
             text: Ok(text.to_owned()),
         }];
@@ -2192,6 +2964,7 @@ mod tests {
         ] {
             let listing = vec![Listed {
                 tx: folder.tx,
+                family: JournalFamily::Folder,
                 path: paths().journal(&folder.tx),
                 text,
             }];
@@ -2641,11 +3414,13 @@ mod tests {
         let listing = vec![
             Listed {
                 tx: first.tx,
+                family: JournalFamily::Folder,
                 path: paths().journal(&first.tx),
                 text: Ok(text(&first.prepared, &first.steps, &[])),
             },
             Listed {
                 tx,
+                family: JournalFamily::Folder,
                 path: paths().journal(&tx),
                 text: Ok(text(
                     &prepared(tx, first.prepared.target_key),
@@ -2692,6 +3467,7 @@ mod tests {
             JournalVerdict::UnexpectedState { step: 2 },
             JournalVerdict::StepUnrecognized { step: 3 },
             JournalVerdict::MarkerMismatch,
+            JournalVerdict::SkillDirUnattributed,
             JournalVerdict::PreservationIncomplete { stops: false },
             JournalVerdict::PreservationIncomplete { stops: true },
         ];
@@ -2722,6 +3498,7 @@ mod tests {
             target: None,
             client_dir: None,
             phase: Phase::Prepared,
+            repair_phase: None,
             live,
             verdict,
             evidence: JournalEvidence::default(),
@@ -2766,6 +3543,9 @@ mod tests {
                 ),
                 JournalVerdict::MarkerMismatch => {
                     stops(ErrorCode::ScopeDenied, StopReason::MarkerMismatch, None)
+                }
+                JournalVerdict::SkillDirUnattributed => {
+                    stops(ErrorCode::ScopeDenied, StopReason::SkillDir, None)
                 }
                 JournalVerdict::PreservationIncomplete { stops: true } => stops(
                     ErrorCode::StateCorrupt,
@@ -2949,6 +3729,7 @@ mod tests {
         let listing = |text: Result<String, String>| {
             vec![Listed {
                 tx,
+                family: JournalFamily::Folder,
                 path: p.journal(&tx),
                 text,
             }]
@@ -3136,6 +3917,11 @@ mod tests {
             self.ask("marker", client_dir);
             self.base.marker(client_dir)
         }
+
+        fn check(&self, path: &Path, expect: &Expect) -> std::io::Result<Option<Mismatch>> {
+            self.ask("check", (path, format!("{expect:?}")));
+            self.base.check(path, expect)
+        }
     }
 
     #[test]
@@ -3147,6 +3933,7 @@ mod tests {
         };
         let listing = vec![Listed {
             tx: folder.tx,
+            family: JournalFamily::Folder,
             path: paths().journal(&folder.tx),
             text: Ok(text(&folder.prepared, &folder.steps, &[])),
         }];
@@ -3391,5 +4178,647 @@ mod tests {
             production.len() > 10_000,
             "the scan sees the production code"
         );
+    }
+
+    // -----------------------------------------------------------------------------------
+    // The repair family (E5).
+
+    mod repairs {
+        use std::borrow::Cow;
+
+        use super::*;
+        use crate::engine::repair::{PlannedFix, RepairLine};
+        use crate::engine::repair_action::{Fix, Mode, QuarantineRoot};
+        use crate::engine::testing::{RepairHome, repair_home, repair_prepared, tree_hash_except};
+
+        fn planned(fm: &'static str, fix: Fix) -> PlannedFix {
+            PlannedFix {
+                fm: Cow::Borrowed(fm),
+                fix,
+            }
+        }
+
+        fn flatten(home: &RepairHome, inner: &str, outer: &str) -> PlannedFix {
+            planned(
+                "fm-external_artifacts-nested-addon-folder",
+                Fix::Flatten {
+                    inner: home.addons(inner),
+                    outer: home.addons(outer),
+                },
+            )
+        }
+
+        fn write_over(path: PathBuf) -> PlannedFix {
+            planned(
+                "fm-plugins-skill-version-drift",
+                Fix::Write {
+                    path,
+                    content: b"new guide\n".to_vec(),
+                    mode: Mode::new(0o644).unwrap(),
+                },
+            )
+        }
+
+        fn chmod(home: &RepairHome) -> PlannedFix {
+            planned(
+                "fm-secrets-credential-file-mode",
+                Fix::Chmod {
+                    path: home.credential(),
+                    mode: Mode::new(0o600).unwrap(),
+                },
+            )
+        }
+
+        fn stray(home: &RepairHome) -> PlannedFix {
+            planned(
+                "fm-schemas-state-corrupt",
+                Fix::Quarantine {
+                    path: home.addons("Stray"),
+                    root: QuarantineRoot::Client {
+                        client_dir: home.client.client_dir().to_path_buf(),
+                    },
+                },
+            )
+        }
+
+        /// `prepared`, then `rest`, as the commit appends them.
+        fn text(prepared: &RepairPrepared, rest: &[RepairLine]) -> String {
+            std::iter::once(RepairLine::Prepared(Box::new(prepared.clone())))
+                .chain(rest.iter().cloned())
+                .map(|line| format!("{}\n", serde_json::to_string(&line).unwrap()))
+                .collect()
+        }
+
+        fn steps(n: u32) -> Vec<RepairLine> {
+            (1..=n).map(|seq| RepairLine::Step { seq }).collect()
+        }
+
+        /// The base a repair left after its steps `1..=ran`: every path as the first step
+        /// naming it found it, then each run step's `post` laid on in order; each write's
+        /// backup holding the bytes it replaced; each client's marker its target's.
+        fn after(prepared: &RepairPrepared, ran: u32) -> MapBase {
+            let mut base = MapBase::default();
+            let mut fresh = 0;
+            let mut place = |base: &mut MapBase, path: &Path, endpoint: &Endpoint| {
+                fresh += 1;
+                base.entries.remove(path);
+                base.facts.remove(path);
+                if let Some((entry, facts)) = entry_of(endpoint, fresh) {
+                    base.entries.insert(path.to_path_buf(), entry);
+                    base.facts.insert(path.to_path_buf(), facts);
+                }
+            };
+            let mut seen = BTreeSet::new();
+            for step in &prepared.primitives {
+                for (path, pre, _) in step_sides(step) {
+                    if seen.insert(path.to_path_buf()) {
+                        place(&mut base, path, pre);
+                    }
+                }
+                if let (
+                    Primitive::WriteFile {
+                        backup: Some(backup),
+                        ..
+                    },
+                    Endpoints::One(pre),
+                ) = (&step.op, &step.pre)
+                {
+                    place(&mut base, backup, pre);
+                }
+            }
+            for step in prepared.primitives.iter().filter(|step| step.seq <= ran) {
+                for (path, _, post) in step_sides(step) {
+                    place(&mut base, path, post);
+                }
+            }
+            for client in &prepared.client_dirs {
+                base.markers.insert(client.dir.clone(), client.target);
+            }
+            base
+        }
+
+        /// `text` as `prepared`'s repair journal, diagnosed on `base` in a tree `sim`.
+        fn diagnosed<B: Base>(
+            sim: &mut Simulated<'_, B>,
+            home: &RepairHome,
+            prepared: &RepairPrepared,
+            text: String,
+        ) -> JournalDiagnosis {
+            let listed = Listed {
+                tx: prepared.tx,
+                family: JournalFamily::Repair,
+                path: home.paths.journal_repair(&prepared.tx),
+                text: Ok(text),
+            };
+            diagnose_repair(sim, &home.paths, listed, &[])
+        }
+
+        fn one(
+            home: &RepairHome,
+            base: &MapBase,
+            prepared: &RepairPrepared,
+            text: String,
+        ) -> JournalDiagnosis {
+            diagnosed(&mut Simulated::new(base), home, prepared, text)
+        }
+
+        /// Whether `endpoint`'s kind and identity hold at `path` in `sim`.
+        fn holds<B: Base>(sim: &mut Simulated<'_, B>, path: &Path, endpoint: &Endpoint) -> bool {
+            let expect = match endpoint {
+                Endpoint::Absent => Expect::Absent,
+                Endpoint::File { identity, .. }
+                | Endpoint::Dir { identity, .. }
+                | Endpoint::Symlink { identity, .. } => Expect::Present(Predicate {
+                    file_type: Some(match endpoint {
+                        Endpoint::Dir { .. } => crate::fsx::FileKind::Directory,
+                        Endpoint::Symlink { .. } => crate::fsx::FileKind::Symlink,
+                        _ => crate::fsx::FileKind::Regular,
+                    }),
+                    identity: identity.map(|i| FileId {
+                        dev: 0,
+                        ino: i.ino,
+                        born_ns: i.born_ns,
+                    }),
+                    ..Predicate::default()
+                }),
+            };
+            RepairView::check(sim, path, &expect).unwrap().is_none()
+        }
+
+        type Case = (
+            &'static str,
+            Vec<RepairLine>,
+            u32,
+            bool,
+            JournalVerdict,
+            Expected,
+        );
+
+        #[test]
+        fn diagnose_reads_each_repair_phase() {
+            let home = repair_home();
+            let p = repair_prepared(&home, &[], &[flatten(&home, "Wrap/Inner", "Wrap")]);
+            assert_eq!(p.primitives.len(), 2);
+            let back = |phase| JournalVerdict::Recoverable {
+                phase,
+                direction: Direction::Back,
+            };
+            let prune = |phase| JournalVerdict::Recoverable {
+                phase,
+                direction: Direction::Prune,
+            };
+            let with = |extra: &[RepairLine]| [steps(2), extra.to_vec()].concat();
+            let cases: Vec<Case> = vec![
+                (
+                    "prepared",
+                    Vec::new(),
+                    0,
+                    false,
+                    back(Phase::Prepared),
+                    Expected::RolledBack,
+                ),
+                (
+                    "stepped",
+                    steps(2),
+                    2,
+                    false,
+                    back(Phase::Prepared),
+                    Expected::RolledBack,
+                ),
+                (
+                    "done",
+                    with(&[RepairLine::Done]),
+                    2,
+                    false,
+                    JournalVerdict::Recoverable {
+                        phase: Phase::Swapped,
+                        direction: Direction::Forward,
+                    },
+                    Expected::RolledForward,
+                ),
+                (
+                    "committed",
+                    with(&[RepairLine::Done, RepairLine::Committed]),
+                    2,
+                    false,
+                    prune(Phase::Committed),
+                    Expected::Pruned,
+                ),
+                (
+                    "rolled_back",
+                    [steps(1), vec![RepairLine::RolledBack]].concat(),
+                    0,
+                    false,
+                    prune(Phase::Committed),
+                    Expected::Pruned,
+                ),
+                (
+                    "live",
+                    steps(2),
+                    2,
+                    true,
+                    back(Phase::Prepared),
+                    Expected::Skipped,
+                ),
+            ];
+            for (case, rest, ran, live, verdict, expected) in cases {
+                let mut base = after(&p, ran);
+                if live {
+                    base.alive.insert(p.tx, Ok(true));
+                }
+                let d = one(&home, &base, &p, text(&p, &rest));
+                assert_eq!(
+                    (d.verdict, d.expected()),
+                    (verdict, expected),
+                    "{case}: {d:#?}"
+                );
+                assert_eq!(d.family, JournalFamily::Repair, "{case}");
+                assert_eq!(d.evidence.kind, Some(TxKind::Repair), "{case}");
+                assert_eq!((d.target, d.client_dir.as_ref()), (None, None), "{case}");
+            }
+            let d = one(&home, &after(&p, 0), &p, String::new());
+            assert_eq!(
+                (d.verdict, d.expected(), d.repair_phase),
+                (
+                    prune(Phase::Unprepared),
+                    Expected::Pruned,
+                    Some(RepairPhase::Unprepared)
+                ),
+                "an empty journal: nothing ran"
+            );
+        }
+
+        #[test]
+        fn diagnose_simulates_repair_inverses_in_reverse() {
+            let home = repair_home();
+            let p = repair_prepared(&home, &[], &[flatten(&home, "Same/Same", "Same")]);
+            assert_eq!(p.primitives.len(), 3, "the three-rename flatten");
+            let base = after(&p, 3);
+            let mut sim = Simulated::new(&base);
+            let d = diagnosed(&mut sim, &home, &p, text(&p, &steps(3)));
+            assert_eq!(d.expected(), Expected::RolledBack, "{d:#?}");
+            assert_eq!(d.evidence.ran, [1, 2, 3], "every step inverted");
+            // The steps: the wrapper to a provisional name, the child out of it to the
+            // wrapper's name, the wrapper on into the quarantine. After the walk the
+            // wrapper is back at its name, the child back inside it, and both other
+            // names are free.
+            let sides: Vec<Vec<(&Path, &Endpoint, &Endpoint)>> =
+                p.primitives.iter().map(step_sides).collect();
+            let (wrapper, child) = (sides[0][0].1, sides[1][0].1);
+            let (provisional, parked) = (sides[0][1].0, sides[2][1].0);
+            assert_eq!(sides[0][0].0, home.addons("Same"));
+            assert!(
+                holds(&mut sim, &home.addons("Same"), wrapper),
+                "the wrapper"
+            );
+            assert!(
+                holds(&mut sim, &home.addons("Same/Same"), child),
+                "its child"
+            );
+            assert!(
+                holds(&mut sim, provisional, &Endpoint::Absent),
+                "no provisional"
+            );
+            assert!(holds(&mut sim, parked, &Endpoint::Absent), "nothing parked");
+        }
+
+        #[test]
+        fn diagnose_stops_where_recovery_stops() {
+            type Plant = fn(&RepairHome, &RepairPrepared, &mut MapBase);
+            let other_digest: Plant = |h, _, base| {
+                base.facts.get_mut(&h.skill_file()).unwrap().sha256 = Some([7; 32]);
+            };
+            let other_mode: Plant = |h, _, base| {
+                base.facts.get_mut(&h.credential()).unwrap().mode = Some(0o640);
+            };
+            let both_ends_gone: Plant = |_, p, base| {
+                for (path, _, _) in step_sides(&p.primitives[1]) {
+                    base.entries.remove(path);
+                }
+            };
+            let other_marker: Plant = |h, _, base| {
+                base.markers
+                    .insert(h.client.client_dir().to_path_buf(), TargetKey::new());
+            };
+            /// A case: its name, the repair, the steps that ran, the plant, the verdict.
+            type StopCase = (
+                &'static str,
+                fn(&RepairHome) -> RepairPrepared,
+                u32,
+                Plant,
+                JournalVerdict,
+            );
+            let cases: Vec<StopCase> = vec![
+                (
+                    "write_neither",
+                    |h| repair_prepared(h, &[], &[write_over(h.skill_file())]),
+                    1,
+                    other_digest,
+                    JournalVerdict::StepUnrecognized { step: 1 },
+                ),
+                (
+                    "chmod_neither",
+                    |h| repair_prepared(h, &[], &[chmod(h)]),
+                    1,
+                    other_mode,
+                    JournalVerdict::StepUnrecognized { step: 1 },
+                ),
+                (
+                    "rename_neither",
+                    |h| repair_prepared(h, &[], &[flatten(h, "Wrap/Inner", "Wrap")]),
+                    2,
+                    both_ends_gone,
+                    JournalVerdict::StepUnrecognized { step: 2 },
+                ),
+                (
+                    "marker_changed",
+                    |h| repair_prepared(h, &[], &[stray(h)]),
+                    1,
+                    other_marker,
+                    JournalVerdict::MarkerMismatch,
+                ),
+                (
+                    "unattributed_skill_dir",
+                    |h| {
+                        let other = h.paths.home().join("agent-2/skills/omaddons");
+                        std::fs::create_dir_all(&other).unwrap();
+                        std::fs::write(other.join("SKILL.md"), "old\n").unwrap();
+                        let fix = write_over(other.join("SKILL.md"));
+                        repair_prepared(h, std::slice::from_ref(&other), &[fix])
+                    },
+                    1,
+                    |_, _, _| {},
+                    JournalVerdict::SkillDirUnattributed,
+                ),
+            ];
+            for (case, prepare, ran, plant, verdict) in cases {
+                let home = repair_home();
+                let p = prepare(&home);
+                let mut base = after(&p, ran);
+                plant(&home, &p, &mut base);
+                let d = one(&home, &base, &p, text(&p, &steps(ran)));
+                assert_eq!(d.verdict, verdict, "{case}: {d:#?}");
+                assert!(
+                    matches!(d.expected(), Expected::Stops { .. }),
+                    "{case}: {:?}",
+                    d.expected()
+                );
+            }
+        }
+
+        #[test]
+        fn a_write_and_a_chmod_inverse_are_overlaid() {
+            let (dir, file, moved) = (
+                PathBuf::from("/m/X"),
+                PathBuf::from("/m/X/f"),
+                PathBuf::from("/m/Y"),
+            );
+            let id = |ino| FileId {
+                dev: 0,
+                ino,
+                born_ns: None,
+            };
+            let mut base = MapBase::default();
+            base.entries.insert(
+                dir.clone(),
+                LiveEntry {
+                    kind: LiveKind::Dir,
+                    id: id(1),
+                },
+            );
+            base.entries.insert(
+                file.clone(),
+                LiveEntry {
+                    kind: LiveKind::File,
+                    id: id(2),
+                },
+            );
+            base.facts.insert(
+                file.clone(),
+                Facts {
+                    sha256: Some([1; 32]),
+                    mode: Some(0o644),
+                    link_target: None,
+                },
+            );
+            let present = |predicate: Predicate| Expect::Present(predicate);
+            let identity = present(Predicate {
+                identity: Some(id(2)),
+                ..Predicate::default()
+            });
+            let mode = |bits| {
+                present(Predicate {
+                    mode: Some(bits),
+                    ..Predicate::default()
+                })
+            };
+            let mut sim = Simulated::new(&base);
+            let start = sim.checkpoint();
+            let check = |sim: &mut Simulated<'_, MapBase>, path: &Path, expect: &Expect| {
+                RepairView::check(sim, path, expect).unwrap()
+            };
+            // A chmod's inverse: the same file, its mode back.
+            sim.lay(&file, Overlay::Mode(0o600));
+            assert_eq!(check(&mut sim, &file, &identity), None, "the same file");
+            assert_eq!(check(&mut sim, &file, &mode(0o600)), None);
+            assert!(check(&mut sim, &file, &mode(0o644)).is_some());
+            assert_eq!(
+                check(&mut sim, &file, &Expect::hash([1; 32])),
+                None,
+                "its bytes"
+            );
+            // A write's inverse: a new file, with the bytes and mode it put back.
+            sim.lay(
+                &file,
+                Overlay::Written {
+                    sha256: [2; 32],
+                    mode: Some(0o640),
+                },
+            );
+            assert_eq!(check(&mut sim, &file, &Expect::hash([2; 32])), None);
+            assert_eq!(
+                check(&mut sim, &file, &identity),
+                Some(Mismatch::Identity),
+                "a whole write is another file"
+            );
+            sim.lay(&file, Overlay::Mode(0o600));
+            assert_eq!(
+                check(&mut sim, &file, &Expect::hash([2; 32])),
+                None,
+                "a mode keeps the bytes"
+            );
+            assert_eq!(check(&mut sim, &file, &mode(0o600)), None);
+            // The overlay follows its entry when its folder moves.
+            sim.apply(Move::Rename {
+                from: dir.clone(),
+                to: moved.clone(),
+            });
+            assert_eq!(
+                check(&mut sim, &moved.join("f"), &Expect::hash([2; 32])),
+                None
+            );
+            assert_eq!(check(&mut sim, &file, &Expect::Absent), None);
+            // A live journal's effects are forgotten.
+            sim.restore(start);
+            assert_eq!(check(&mut sim, &file, &identity), None);
+            assert_eq!(check(&mut sim, &file, &Expect::hash([1; 32])), None);
+        }
+
+        #[test]
+        fn repair_protected_resources_are_the_prepared_resources() {
+            let home = repair_home();
+            let p = repair_prepared(&home, &[], &[write_over(home.skill_file()), stray(&home)]);
+            let d = one(&home, &after(&p, 2), &p, text(&p, &steps(2)));
+            assert_eq!(d.expected(), Expected::RolledBack, "{d:#?}");
+            let writes = &d.protected.writes;
+            for resource in &p.resources.writes {
+                match Resource::parse(resource).unwrap() {
+                    Resource::Path { path, .. } => {
+                        assert!(writes.contains(&path), "{}: {writes:#?}", path.display());
+                    }
+                    Resource::Backup { run_dir, seq } => {
+                        let backup = home
+                            .paths
+                            .doctor_runs_dir()
+                            .join(run_dir)
+                            .join(format!("backups/{seq}"));
+                        assert!(writes.contains(&backup), "{}", backup.display());
+                    }
+                    other => panic!("{other:?}"), // ubs:ignore — fails the test
+                }
+            }
+            for path in [
+                home.paths.journal_repair(&p.tx),
+                home.paths.inflight_lock(&p.tx),
+            ] {
+                assert!(writes.contains(&path), "{}", path.display());
+            }
+            assert!(
+                d.protected.reads.contains(&home.client.marker()),
+                "{:#?}",
+                d.protected.reads
+            );
+        }
+
+        #[test]
+        fn an_unreadable_repairs_protection_is_only_its_artifacts() {
+            let home = repair_home();
+            let p = repair_prepared(&home, &[], &[stray(&home)]);
+            let mut base = after(&p, 1);
+            let journal = home.paths.journal_repair(&p.tx);
+            let half = home.client.snapshots_repair(&p.tx);
+            let file = |id| LiveEntry {
+                kind: LiveKind::File,
+                id: FileId {
+                    dev: 0,
+                    ino: id,
+                    born_ns: None,
+                },
+            };
+            base.entries.insert(journal.clone(), file(901));
+            base.entries.insert(half.clone(), file(902));
+            let garbled = text(&p, &steps(1)).replacen('\n', "\nnot json\n", 1);
+            let listed = Listed {
+                tx: p.tx,
+                family: JournalFamily::Repair,
+                path: journal.clone(),
+                text: Ok(garbled),
+            };
+            let clients = [home.client.client_dir().to_path_buf()];
+            let d = diagnose_repair(&mut Simulated::new(&base), &home.paths, listed, &clients);
+            assert_eq!(d.verdict, JournalVerdict::Unreadable);
+            assert_eq!(d.protected.writes, settled(vec![journal, half]), "{d:#?}");
+            assert!(d.protected.reads.is_empty());
+        }
+
+        #[test]
+        fn diagnose_never_writes_for_repair_journals() {
+            let home = repair_home();
+            let p = repair_prepared(
+                &home,
+                &[],
+                &[flatten(&home, "Wrap/Inner", "Wrap"), chmod(&home)],
+            );
+            let phases: [&[RepairLine]; 6] = [
+                &[],
+                &[RepairLine::Step { seq: 1 }],
+                &[
+                    RepairLine::Step { seq: 1 },
+                    RepairLine::Step { seq: 2 },
+                    RepairLine::Step { seq: 3 },
+                    RepairLine::Done,
+                ],
+                &[RepairLine::Step { seq: 1 }, RepairLine::RolledBack],
+                &[
+                    RepairLine::Step { seq: 1 },
+                    RepairLine::Step { seq: 2 },
+                    RepairLine::Step { seq: 3 },
+                    RepairLine::Done,
+                    RepairLine::Committed,
+                ],
+                &[RepairLine::Step { seq: 1 }, RepairLine::Step { seq: 2 }],
+            ];
+            for rest in phases {
+                let path = home.paths.journal_repair(&TxId::new());
+                std::fs::write(&path, text(&p, rest)).unwrap();
+            }
+            std::fs::write(home.paths.journal_repair(&TxId::new()), "").unwrap();
+            let lock = [home.paths.lock_file()];
+            let before = tree_hash_except(&home.base, &lock);
+            let clients = [home.client.client_dir().to_path_buf()];
+            let found = diagnose(&home.paths, &clients, &|_| false);
+            assert_eq!(
+                tree_hash_except(&home.base, &lock),
+                before,
+                "diagnose wrote"
+            );
+            let repairs = found
+                .journals
+                .iter()
+                // ubs:ignore — comparing journal families, not secrets
+                .filter(|d| d.family == JournalFamily::Repair)
+                .count();
+            assert_eq!(repairs, 7, "{found:#?}");
+            assert_eq!(
+                found.journals.first().map(|d| d.family),
+                Some(JournalFamily::Folder),
+                "the folder journals first"
+            );
+        }
+
+        #[test]
+        fn the_fuzz_property_holds_for_each_repair_seed_shape() {
+            let home = repair_home();
+            let p = repair_prepared(
+                &home,
+                &[],
+                &[flatten(&home, "Same/Same", "Same"), chmod(&home)],
+            );
+            let whole = text(
+                &p,
+                &[steps(4), vec![RepairLine::Done, RepairLine::Committed]].concat(),
+            );
+            let mut inputs: Vec<String> = (0..=whole.len())
+                .filter(|end| whole.is_char_boundary(*end))
+                .step_by(97)
+                .map(|end| whole[..end].to_owned())
+                .collect();
+            inputs.extend([
+                whole.clone(),
+                text(&p, &[steps(1), vec![RepairLine::RolledBack]].concat()),
+                whole.replacen('\n', "\nnot json\n", 1),
+                whole.replacen("\"format\":\"1.0\"", "\"format\":\"9.0\"", 1),
+                format!("{}{{\"type\":\"step\",\"seq\":9}}\n", text(&p, &[])),
+                String::new(),
+            ]);
+            for input in &inputs {
+                fuzz_property(input.as_bytes());
+                assert!(
+                    !fuzz_repair_diagnosis(input.as_bytes()).is_empty(),
+                    "every input is diagnosed as a repair journal"
+                );
+            }
+            fuzz_property(&[0xff, 0x00, b'{', b'\n']);
+        }
     }
 }

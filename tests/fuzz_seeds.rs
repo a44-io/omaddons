@@ -17,7 +17,9 @@ use common::env::TestEnv;
 use common::product_db::ProductDb;
 use common::tlog::{TestLog, tlog};
 use common::trees::BattlenetRoot;
-use omaddons::engine::simulate::{fuzz_diagnosis, fuzz_disk_property, fuzz_property};
+use omaddons::engine::simulate::{
+    fuzz_diagnosis, fuzz_disk_property, fuzz_property, fuzz_repair_diagnosis,
+};
 use omaddons::model::TxId;
 use omaddons::state::paths::Paths;
 
@@ -78,7 +80,9 @@ fn every_fuzz_target_has_a_source_and_seeds() {
 }
 
 /// The `journal` target's property on every committed seed, in every gate: the parse and
-/// in-memory arms, and the disk arm on a scratch home whose journal is the seed.
+/// in-memory arms of both families, and the disk arm on a scratch home whose folder
+/// journal and repair journal are the seed. The repair family (E5) has its own seeds,
+/// a malformed one among them.
 #[test]
 fn journal_seeds_satisfy_the_fuzz_property() {
     let log: TestLog = tlog!();
@@ -86,22 +90,50 @@ fn journal_seeds_satisfy_the_fuzz_property() {
     let root = env.root();
     let paths = Paths::with_roots(root, root.join("c"), root.join("s"), root.join("k"));
     fs::create_dir_all(paths.journal_dir()).unwrap();
-    let journal = paths.journal(&TxId::new());
+    let journals = [
+        paths.journal(&TxId::new()),
+        paths.journal_repair(&TxId::new()),
+    ];
     let mut seeds: Vec<PathBuf> = fs::read_dir(fuzz_dir().join("seeds/journal"))
         .unwrap()
         .map(|entry| entry.unwrap().path())
         .collect();
     seeds.sort();
     assert!(seeds.len() >= 3, "{seeds:?}");
-    for seed in seeds {
-        let name = seed.file_name().unwrap().to_string_lossy().into_owned();
-        log.step(&name);
-        let bytes = fs::read(&seed).unwrap();
+    let names: Vec<String> = seeds
+        .iter()
+        .map(|seed| seed.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        names
+            .iter()
+            .filter(|name| name.starts_with("repair-"))
+            .count()
+            >= 3
+            && names
+                .iter()
+                .any(|name| name.starts_with("malformed-repair")),
+        "three repair seeds and a malformed one: {names:?}"
+    );
+    for (seed, name) in seeds.iter().zip(&names) {
+        log.step(name);
+        let bytes = fs::read(seed).unwrap();
         log.json("diagnosis", &fuzz_diagnosis(&bytes));
+        log.json("repair diagnosis", &fuzz_repair_diagnosis(&bytes));
         fuzz_property(&bytes);
-        fs::write(&journal, &bytes).unwrap();
+        for journal in &journals {
+            fs::write(journal, &bytes).unwrap();
+        }
         fuzz_disk_property(&paths);
     }
+}
+
+/// A child process of the repair scenes `write_fuzz_seeds` crashes
+/// (`common::repair::child_main`). Run on its own it does nothing.
+#[test]
+#[ignore = "a child process of the repair scenes"]
+fn child_repair() {
+    common::repair::child_main();
 }
 
 #[test]
@@ -730,6 +762,57 @@ fn write_fuzz_seeds() {
         "journal",
         "malformed_middle_line.jsonl",
         malformed.as_bytes(),
+    );
+
+    // journal, the repair family (E5): repairs the child commit was killed in (a
+    // three-rename flatten after `committed`, a chmod after `step 1`, a write over a file
+    // after `done`), the test root renamed `/sim`; a rolled-back journal, a torn tail, a
+    // newer major and a malformed middle line made from the chmod's.
+    let repaired = |kind: common::repair::Kind, spec: &str| {
+        let log: TestLog = tlog!();
+        let r = common::repair::RepairScene::new(kind);
+        assert_eq!(
+            r.child(&log, spec),
+            common::repair::Child::Crashed,
+            "{spec} killed it"
+        );
+        let text = r.journal_lines().unwrap().join("\n") + "\n";
+        let root = r.s.home.env.root();
+        let canonical = fs::canonicalize(root).unwrap();
+        text.replace(&canonical.display().to_string(), "/sim")
+            .replace(&root.display().to_string(), "/sim")
+    };
+    use common::repair::Kind;
+    write(
+        "journal",
+        "repair-committed-flatten-three.jsonl",
+        repaired(Kind::FlattenThree, "doctor.repair.committed=abort").as_bytes(),
+    );
+    let chmod = repaired(Kind::Chmod, "doctor.repair.step=abort@1");
+    write("journal", "repair-chmod-step-1.jsonl", chmod.as_bytes());
+    write(
+        "journal",
+        "repair-write-over-done.jsonl",
+        repaired(Kind::WriteOver, "doctor.repair.done=abort").as_bytes(),
+    );
+    write(
+        "journal",
+        "repair-rolled-back.jsonl",
+        format!("{chmod}{{\"type\":\"rolled_back\"}}\n").as_bytes(),
+    );
+    write(
+        "journal",
+        "repair-torn-tail.jsonl",
+        format!("{chmod}{{\"type\":\"do").as_bytes(),
+    );
+    let newer = chmod.replacen("\"format\":\"1.0\"", "\"format\":\"9.0\"", 1);
+    assert_ne!(newer, chmod, "the prepared line names its format");
+    write("journal", "repair-newer-major.jsonl", newer.as_bytes());
+    let first = chmod.find('\n').unwrap() + 1;
+    write(
+        "journal",
+        "malformed-repair-middle-line.jsonl",
+        format!("{}not json\n{}", &chmod[..first], &chmod[first..]).as_bytes(),
     );
 }
 

@@ -14,7 +14,7 @@ mod session;
 mod stamp;
 pub(crate) mod sys;
 
-pub use expect::{Expect, FileKind, Found, Mismatch, Parts, Predicate};
+pub use expect::{Described, Expect, FileKind, Found, Mismatch, Parts, Predicate};
 #[cfg(debug_assertions)]
 #[doc(hidden)]
 pub use failpoint::{with_spec, with_spec_in};

@@ -270,19 +270,100 @@ impl Expect {
     }
 }
 
+/// An entry as a simulation knows it (`journal::diagnose`): its kind, and each part it can
+/// tell. A part it cannot tell (`None`) never holds when a predicate asks for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Described {
+    pub found: Found,
+    pub identity: Option<FileId>,
+    pub sha256: Option<[u8; 32]>,
+    pub mode: Option<u32>,
+    pub stamp: Option<StampDigest>,
+    pub link_target: Option<PathBuf>,
+}
+
+impl Described {
+    /// Something of this kind whose parts are not known.
+    pub fn kind(found: Found) -> Self {
+        Self {
+            found,
+            identity: None,
+            sha256: None,
+            mode: None,
+            stamp: None,
+            link_target: None,
+        }
+    }
+}
+
+impl Expect {
+    /// [`Expect::check`] against `entry` (`None`: nothing there) instead of the disk, with
+    /// the same rules: the kind first, then each given part.
+    pub fn check_described(&self, entry: Option<&Described>) -> Option<Mismatch> {
+        match (self, entry) {
+            (Self::Absent, None) => None,
+            (Self::Absent, Some(_)) => Some(Mismatch::Exists),
+            (Self::Present(_), None) => Some(Mismatch::Missing),
+            (Self::Present(predicate), Some(entry)) => predicate.check_described(entry),
+        }
+    }
+}
+
 impl Predicate {
+    fn check_described(&self, entry: &Described) -> Option<Mismatch> {
+        let found = entry.found;
+        if let Some(expected) = self.kinds().find(|kind| !found.is(*kind)) {
+            return Some(Mismatch::FileType { expected, found });
+        }
+        if let Some(expected) = self.identity
+            && !FileId::same(entry.identity, Some(expected))
+        {
+            return Some(Mismatch::Identity);
+        }
+        if let Some(expected) = self.mode {
+            let expected = expected & 0o7777;
+            match entry.mode.map(|mode| mode & 0o7777) {
+                Some(found) if found == expected => {}
+                found => {
+                    return Some(Mismatch::Mode {
+                        expected,
+                        found: found.unwrap_or(0),
+                    });
+                }
+            }
+        }
+        if self.link_target.is_some() && entry.link_target != self.link_target {
+            return Some(Mismatch::LinkTarget);
+        }
+        // ubs:ignore — a content hash for compare-and-swap, not a secret
+        if self.sha256.is_some() && entry.sha256 != self.sha256 {
+            return Some(Mismatch::Sha256);
+        }
+        // ubs:ignore — a stat digest for compare-and-swap, not a secret
+        if self.stamp.is_some() && entry.stamp != self.stamp {
+            return Some(Mismatch::Stamp);
+        }
+        None
+    }
+
+    /// The kinds the predicate implies: its own, and each part's.
+    fn kinds(&self) -> impl Iterator<Item = FileKind> {
+        [
+            self.file_type,
+            self.sha256.map(|_| FileKind::Regular),
+            self.stamp.map(|_| FileKind::Directory),
+            self.link_target.as_ref().map(|_| FileKind::Symlink),
+        ]
+        .into_iter()
+        .flatten()
+    }
+
     /// Checks every given part against `meta` (read with `lstat`) and `path`, cheapest
     /// first: the file type, the identity and the mode from `meta`, then the link target
     /// (one `readlink`), the content (a hash) and the stamp (a walk).
     fn check(&self, path: &Path, meta: &fs::Metadata) -> io::Result<Option<Mismatch>> {
         let found = Found::of(meta);
-        let kinds = [
-            self.file_type,
-            self.sha256.map(|_| FileKind::Regular),
-            self.stamp.map(|_| FileKind::Directory),
-            self.link_target.as_ref().map(|_| FileKind::Symlink),
-        ];
-        if let Some(expected) = kinds.into_iter().flatten().find(|kind| !found.is(*kind)) {
+        if let Some(expected) = self.kinds().find(|kind| !found.is(*kind)) {
             return Ok(Some(Mismatch::FileType { expected, found }));
         }
         if let Some(expected) = self.identity
@@ -380,7 +461,9 @@ mod tests {
     fn applicable(path: &Path) -> Parts {
         let found = Found::of(&fs::symlink_metadata(path).unwrap());
         Parts {
+            // ubs:ignore — comparing entry kinds, not secrets
             sha256: found == Found::Regular,
+            // ubs:ignore — comparing entry kinds, not secrets
             stamp: found == Found::Directory,
             link_target: found == Found::Symlink,
             ..all_parts()
@@ -966,6 +1049,91 @@ mod tests {
                 "{message:?} carries content, a target or a digest"
             );
         }
+    }
+
+    /// A description of what is at `path` with every part told, as a simulation that
+    /// read it would hold it.
+    fn described(path: &Path) -> Option<Described> {
+        let meta = fs::symlink_metadata(path).ok()?;
+        let found = Found::of(&meta);
+        Some(Described {
+            found,
+            identity: Some(FileId::from_metadata(&meta)),
+            // ubs:ignore — comparing entry kinds, not secrets
+            sha256: (found == Found::Regular).then(|| hash_file(path).unwrap()),
+            mode: Some(meta.mode() & 0o7777),
+            // ubs:ignore — comparing entry kinds, not secrets
+            stamp: (found == Found::Directory).then(|| StampDigest::compute(path).unwrap()),
+            link_target: fs::read_link(path).ok(),
+        })
+    }
+
+    #[test]
+    fn a_full_description_checks_as_the_disk_does() {
+        let (_dir, root) = root();
+        let (f, d, l, gone) = (
+            root.join("f"),
+            root.join("d"),
+            root.join("l"),
+            root.join("gone"),
+        );
+        file(&f, b"content", 0o640);
+        fs::create_dir(&d).unwrap();
+        file(&d.join("inner"), b"x", 0o644);
+        symlink("f", &l).unwrap();
+        let all = Parts {
+            identity: true,
+            mode: true,
+            ..Parts::default()
+        };
+        let mut expects = vec![Expect::Absent];
+        for (path, extra) in [
+            (
+                &f,
+                Parts {
+                    sha256: true,
+                    ..all
+                },
+            ),
+            (&d, Parts { stamp: true, ..all }),
+            (
+                &l,
+                Parts {
+                    link_target: true,
+                    ..all
+                },
+            ),
+        ] {
+            let Expect::Present(captured) = Expect::capture(path, extra).unwrap() else {
+                panic!("{} is there", path.display()); // ubs:ignore — fails the test
+            };
+            expects.push(Expect::Present(captured.clone()));
+            expects.push(Expect::Present(Predicate {
+                mode: Some(0o777),
+                ..captured.clone()
+            }));
+            expects.push(Expect::Present(Predicate {
+                sha256: Some(sha(b"other")),
+                ..captured
+            }));
+        }
+        expects.push(Expect::hash(sha(b"content")));
+        for path in [&f, &d, &l, &gone] {
+            for expect in &expects {
+                assert_eq!(
+                    expect.check_described(described(path).as_ref()),
+                    expect.check(path).unwrap(),
+                    "{} against {expect:?}",
+                    path.display()
+                );
+            }
+        }
+        let unknown = Described::kind(Found::Regular);
+        assert_eq!(
+            Expect::hash(sha(b"content")).check_described(Some(&unknown)),
+            Some(Mismatch::Sha256),
+            "a part the description cannot tell never holds"
+        );
     }
 
     #[test]

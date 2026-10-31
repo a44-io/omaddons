@@ -1111,6 +1111,64 @@ pub fn repair_home() -> RepairHome {
     }
 }
 
+/// The `prepared` line a commit of `fixes` would write, lowered on `home` with the extra
+/// skill dirs `skills` admitted beside the default one: a fresh transaction, nothing
+/// written.
+pub fn repair_prepared(
+    home: &RepairHome,
+    skills: &[PathBuf],
+    fixes: &[crate::engine::repair::PlannedFix],
+) -> crate::engine::repair::RepairPrepared {
+    use crate::engine::repair::{
+        ClientDirEntry, FORMAT, LowerCtx, RepairPrepared, ResourcesWire, RollbackTarget, lower,
+    };
+    let skill_dirs: Vec<PathBuf> = home.skill_dirs.iter().chain(skills).cloned().collect();
+    let scopes = home.scopes.clone().with_skill_dirs(skills).unwrap();
+    let tx = TxId::new();
+    let ctx = LowerCtx {
+        paths: &home.paths,
+        tx,
+        run: &home.run,
+        clients: &home.planned,
+        skill_dirs: &skill_dirs,
+        scopes: &scopes,
+        mount_id: &crate::fsx::mount_id,
+    };
+    let lowered = lower(&ctx, fixes).unwrap();
+    RepairPrepared {
+        format: FORMAT,
+        tx,
+        run: crate::model::RunId::new(),
+        doctor_run_id: home.run.id.clone(),
+        actor: Actor::Human,
+        reason: None,
+        argv: ["omaddons", "doctor", "fix"].map(str::to_owned).to_vec(),
+        at: Timestamp::now(),
+        targets: lowered.targets.clone(),
+        client_dirs: lowered
+            .client_dirs
+            .iter()
+            .map(|(dir, target)| ClientDirEntry {
+                dir: dir.clone(),
+                target: *target,
+            })
+            .collect(),
+        resources: ResourcesWire::of(&lowered.resources).unwrap(),
+        fixes: lowered.fixes.clone(),
+        primitives: lowered.steps.iter().map(|s| s.step.clone()).collect(),
+        rollbacks: lowered
+            .steps
+            .iter()
+            .filter_map(|s| {
+                s.rollback_to.clone().map(|to| RollbackTarget {
+                    seq: s.step.seq,
+                    to,
+                })
+            })
+            .collect(),
+    }
+}
+
 /// Every entry below `dir`: its path, mode, mtime, inode and content (a symlink's
 /// target). Equal hashes mean nothing below `dir` was written, created, removed, moved
 /// or even touched.
