@@ -400,6 +400,111 @@ pub mod plant {
     }
 }
 
+/// Subjects for the doctor's three test-only fixers (s2 of `doctor fix`): registered only
+/// in debug builds run with `OMADDONS_TEST_FIXERS=1`, so every run that should see them
+/// passes [`test_fixers::ENV`].
+pub mod test_fixers {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use crate::common::home::Home;
+
+    /// The switch that registers the test fixers.
+    pub const ENV: (&str, &str) = ("OMADDONS_TEST_FIXERS", "1");
+    pub const WRITE: &str = "fm-test-write";
+    pub const QUARANTINE: &str = "fm-test-quarantine";
+    pub const FLATTEN: &str = "fm-test-flatten";
+    /// The directory each side's subjects live in.
+    pub const TEST_DIR: &str = "doctor-test";
+    /// What `fm-test-write`'s fixer writes.
+    pub const REPAIRED: &[u8] = b"repaired\n";
+
+    /// Where a subject lives: below omaddons' state, config or cache directory, or below
+    /// a client's `<meta>` (`Interface/.omaddons`), by client folder.
+    #[derive(Debug, Clone, Copy)]
+    pub enum Side<'a> {
+        State,
+        Config,
+        Cache,
+        Client(&'a str),
+    }
+
+    /// A quarantine subject's shape.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Kind {
+        File,
+        Dir,
+    }
+
+    /// `doctor-test/` on `side`.
+    pub fn test_dir(home: &Home, side: Side<'_>) -> PathBuf {
+        match side {
+            Side::State => home.state().join(TEST_DIR),
+            Side::Config => home.env.config().join("omaddons").join(TEST_DIR),
+            Side::Cache => home.env.cache().join("omaddons").join(TEST_DIR),
+            Side::Client(folder) => home
+                .client(folder)
+                .join("Interface/.omaddons")
+                .join(TEST_DIR),
+        }
+    }
+
+    fn put(path: &Path, bytes: &[u8]) -> PathBuf {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, bytes).unwrap();
+        path.to_path_buf()
+    }
+
+    /// `<state>/doctor-test/<rel>` (a `*.write`) holding `bytes`: an `fm-test-write`
+    /// subject unless `bytes` is [`REPAIRED`]. A `*.residual.write` stays broken after
+    /// its repair.
+    pub fn plant_write(home: &Home, rel: &str, bytes: &[u8]) -> PathBuf {
+        put(&test_dir(home, Side::State).join(rel), bytes)
+    }
+
+    /// The marker `<rel>.missing` with no `<rel>` (a `*.write`): the fixer creates `<rel>`,
+    /// whose path this returns.
+    pub fn plant_missing_write(home: &Home, rel: &str) -> PathBuf {
+        let target = test_dir(home, Side::State).join(rel);
+        let mut marker = target.clone().into_os_string();
+        marker.push(".missing");
+        put(Path::new(&marker), b"");
+        target
+    }
+
+    /// `doctor-test/<rel>` (a `*.quarantine`) on `side`: a file, or a directory holding
+    /// one file. An `fm-test-quarantine` subject.
+    pub fn plant_quarantine(home: &Home, side: Side<'_>, rel: &str, kind: Kind) -> PathBuf {
+        let path = test_dir(home, side).join(rel);
+        match kind {
+            Kind::File => put(&path, b"set aside\n"),
+            Kind::Dir => {
+                put(&path.join("inside.txt"), b"kept\n");
+                path
+            }
+        }
+    }
+
+    /// An unmanaged `AddOns/<wrapper>/<inner>/` on the client in `folder`, the inner
+    /// folder holding its TOC: an `fm-test-flatten` subject (two renames, or three when
+    /// `inner` is `wrapper`). The client must be registered ([`register`]).
+    pub fn plant_flatten(home: &Home, folder: &str, wrapper: &str, inner: &str) -> PathBuf {
+        let path = home.addons(folder).join(wrapper);
+        put(
+            &path.join(inner).join(format!("{inner}.toc")),
+            b"## Interface: 120105\n## Title: Test\n",
+        );
+        path
+    }
+
+    /// Registers `target` (`targets default <target>`), so it has a key and the
+    /// client-side test fixers see it.
+    pub fn register(home: &Home, target: &str) {
+        let run = home.run(&["targets", "default", target]);
+        assert_eq!(run.code, 0, "registering {target}\n{}", run.context());
+    }
+}
+
 /// The doctor envelope in the general shape, its report under `data` (when it has one),
 /// so the general validator checks each part against its schema.
 pub fn as_general(envelope: &Value) -> Value {

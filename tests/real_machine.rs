@@ -55,6 +55,7 @@ mod support {
             "OMADDONS_PROC_ROOT",
             "OMADDONS_FAILPOINTS",
             "OMADDONS_OFFLINE",
+            "OMADDONS_TEST_FIXERS",
         ] {
             cmd.env_remove(var);
         }
@@ -1535,4 +1536,135 @@ fn buggrabber_installs_then_undo() {
         "{retail:#}"
     );
     assert!(wotlk_ref.ends_with("#r152"), "{wotlk:#}");
+}
+
+/// Every entry below `dir` (relative path, kind, length, modification time), skipping
+/// `skip` at the top: a write anywhere below changes it, and nothing is read.
+fn stamps(dir: &std::path::Path, skip: &str) -> Vec<(String, bool, u64, i64, i64)> {
+    use std::os::unix::fs::MetadataExt;
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(at) = stack.pop() {
+        for entry in fs::read_dir(&at).into_iter().flatten().flatten() {
+            let path = entry.path();
+            let Ok(rel) = path.strip_prefix(dir).map(|rel| rel.display().to_string()) else {
+                continue;
+            };
+            if rel == skip {
+                continue;
+            }
+            let Ok(meta) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if meta.is_dir() {
+                stack.push(path);
+            }
+            out.push((
+                rel,
+                meta.is_dir(),
+                meta.len(),
+                meta.mtime(),
+                meta.mtime_nsec(),
+            ));
+        }
+    }
+    out.sort();
+    out
+}
+
+/// The doctor on the real home (H6 reviews its output, checkpoint criterion 17):
+/// `doctor` and `doctor fix --dry-run`, read-only. Every finding and every planned action
+/// is printed for review. Nothing outside `<state>/omaddons/doctor/` is written, no
+/// request is made, and every AddOns, `WTF/` and the Forever set are as before. It never
+/// runs a real `doctor fix`. It leaves its two run directories in the real
+/// `<state>/omaddons/doctor/runs/`, which only `doctor gc` deletes.
+#[test]
+#[ignore = "real machine: OMADDONS_REAL_MACHINE=1"]
+fn doctor_on_the_real_home() {
+    if !checkpoint::require("doctor_on_the_real_home", MACHINE) {
+        return;
+    }
+    let xdg = |var: &str, below_home: &str| {
+        std::env::var_os(var).map_or_else(
+            || PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(below_home),
+            PathBuf::from,
+        )
+    };
+    let state = xdg("XDG_STATE_HOME", ".local/state").join("omaddons");
+    let config = xdg("XDG_CONFIG_HOME", ".config").join("omaddons");
+    let cache = xdg("XDG_CACHE_HOME", ".cache").join("omaddons");
+    let (guard, snapshot) = (forever_guard(), snapshot_all());
+    let before = (
+        stamps(&state, "doctor"),
+        stamps(&config, ""),
+        stamps(&cache, ""),
+    );
+    let requests = net_log_lines();
+
+    let declared = |path: &str| omaddons::app::command_entry(path).unwrap().exits;
+    let (code, diagnosed) = omaddons(&["doctor"]);
+    assert!(
+        declared("doctor").contains(&u8::try_from(code).unwrap_or(u8::MAX)),
+        "doctor exited {code}: {diagnosed:#}"
+    );
+    let (code, planned) = omaddons(&["doctor", "fix", "--dry-run"]);
+    assert!(
+        declared("doctor fix").contains(&u8::try_from(code).unwrap_or(u8::MAX)),
+        "doctor fix --dry-run exited {code}: {planned:#}"
+    );
+    assert_eq!(planned["dry_run"], true, "{planned:#}");
+    // Before any other command runs.
+    let after = (
+        stamps(&state, "doctor"),
+        stamps(&config, ""),
+        stamps(&cache, ""),
+    );
+    let requests_after = net_log_lines();
+
+    let findings: Vec<Value> = diagnosed["findings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|f| {
+            serde_json::json!({
+                "id": f["id"], "label": f["label"], "severity": f["severity"],
+                "evidence": f["evidence"].as_object().map(|e| e.keys().cloned().collect::<Vec<_>>()),
+            })
+        })
+        .collect();
+    note("doctor findings", &Value::from(findings));
+    let actions: Vec<Value> = planned["actions_planned"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|a| {
+            serde_json::json!({
+                "seq": a["seq"], "fm": a["fm"], "op": a["op"], "path": a["path"],
+                "to": a["to"], "bytes": a["bytes"],
+            })
+        })
+        .collect();
+    note(
+        "doctor fix plan",
+        &serde_json::json!({
+            "actions": actions,
+            "delegated": planned["delegated_planned"],
+            "unplanned": planned["findings"].as_array().map(|f| f.iter().map(|f| &f["id"]).collect::<Vec<_>>()),
+        }),
+    );
+
+    let mut accounts = Vec::new();
+    for (_, _, _, wtf) in clients() {
+        accounts.extend(entries(&wtf.join("Account")));
+    }
+    for (label, out) in [("doctor", &diagnosed), ("doctor fix --dry-run", &planned)] {
+        let named = names_in(&out.to_string(), &accounts);
+        assert_eq!(named, 0, "{label}: {named} account folder names");
+    }
+    assert!(after.0 == before.0, "<state> outside doctor/ changed");
+    assert!(after.1 == before.1, "<config> changed");
+    assert!(after.2 == before.2, "<cache> changed");
+    assert_eq!(requests_after, requests, "no request");
+    assert_eq!(snapshot_all(), snapshot, "every AddOns and WTF/ as before");
+    assert_eq!(forever_guard(), guard, "the Forever set untouched");
 }

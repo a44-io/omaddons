@@ -311,6 +311,37 @@ fn coverage_home() {
     fs::write(dir.join("coverage.env"), lines.join("\n") + "\n").unwrap();
 }
 
+/// A release build registers no test fixer, whatever `OMADDONS_TEST_FIXERS` says: naming
+/// one is an unknown id (exit 64), and a home with every test fixer's subject planted
+/// reports no `fm-test-` finding. Not a time budget: it is here because the checkpoint
+/// runs this file's ignored tests on a release build.
+#[test]
+#[cfg(not(debug_assertions))]
+#[ignore = "release build, checkpoint"]
+fn release_build_lists_no_test_fixers() {
+    use common::doctor::test_fixers::{
+        ENV, Kind, Side, plant_flatten, plant_quarantine, plant_write, register,
+    };
+    let home = Home::new(&["wow"]);
+    let argv = |args: &[&str]| -> Vec<String> { args.iter().map(|a| (*a).to_owned()).collect() };
+    let named = home.exec_with(
+        &argv(&["doctor", "--only", "fm-test-write", "--json"]),
+        &[ENV],
+    );
+    assert_eq!(named.code, 64, "{}", named.context());
+    register(&home, "retail");
+    plant_write(&home, "a.write", b"broken\n");
+    plant_quarantine(&home, Side::State, "b.quarantine", Kind::File);
+    plant_flatten(&home, "_retail_", "TestWrapA", "Inner");
+    let diagnosed = home.exec_with(&argv(&["doctor", "--json"]), &[ENV]);
+    assert!([0, 1].contains(&diagnosed.code), "{}", diagnosed.context());
+    assert!(
+        !diagnosed.stdout.contains("fm-test-"),
+        "{}",
+        diagnosed.context()
+    );
+}
+
 /// The budget: 5,000 files in 20 folders, installed through the engine, checked by Stat
 /// right after in under 30 ms warm, with at most 1% re-hashed. (Moved from `drift.rs`.)
 #[test]

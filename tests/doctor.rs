@@ -1063,6 +1063,35 @@ fn two_diagnoses_of_one_state_give_identical_findings() {
     );
 }
 
+/// The test fixers' rows exist only with `OMADDONS_TEST_FIXERS=1` (and in debug builds):
+/// each fixture's subject is found with the switch, and never without it.
+#[test]
+fn test_fixer_fixtures_need_the_switch() {
+    let log = tlog!();
+    for fixture in fixture::fixtures::test_fixers() {
+        let log = log.case(fixture.id());
+        let home = home(&log);
+        log.step("plant");
+        fixture.corrupt(&home);
+        assert!(fixture.fixer() && !fixture.subject(&home).is_empty());
+        log.step("diagnose without the switch");
+        let plain = run(&log, &home, &["doctor", "--json"]);
+        assert!(
+            !ids_of(plain.envelope())
+                .iter()
+                .any(|id| id.starts_with("fm-test-")),
+            "{:?}",
+            ids_of(plain.envelope())
+        );
+        log.step("diagnose with it");
+        let env = fixture.run_env();
+        let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let ran = run_with(&log, &home, &["doctor", "--json"], &env);
+        ran.exit(1);
+        assert_eq!(findings(ran.envelope(), fixture.id()).len(), 1);
+    }
+}
+
 #[test]
 fn runtime_fixtures_produce_their_findings() {
     let log = tlog!();
