@@ -23,6 +23,7 @@ pub mod commit;
 pub mod inverse;
 pub mod journal;
 pub mod lower;
+pub mod recover;
 
 pub use commit::{CommitCtx, RepairCleanup, RepairMeta, RepairOutcome, commit};
 pub use journal::{
@@ -30,6 +31,7 @@ pub use journal::{
     RollbackTarget, history_line,
 };
 pub use lower::{LowerCtx, LowerError, Lowered, LoweredStep, PlannedFix, RefusedReason, lower};
+pub use recover::{PendingRepair, pending_repairs, recover_repairs};
 
 use std::path::PathBuf;
 

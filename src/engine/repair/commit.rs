@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
-use super::inverse::{OnDisk, append, expect_of, roll_back, roll_forward};
+use super::inverse::{OnDisk, append, expect_of, pending, roll_back, roll_forward};
 use super::journal::{
     ClientDirEntry, FORMAT, RepairLine, RepairPrepared, ResourcesWire, RollbackTarget, history_line,
 };
@@ -470,17 +470,6 @@ fn rolled_back(
 
 fn io_cause(journal: &Path, err: &io::Error) -> Error {
     Error::io(journal, err, Suggestion::command(["omaddons", "status"]))
-}
-
-/// `err` with `details.journal_pending` naming `tx`, whose journal is kept.
-fn pending(mut err: Error, tx: TxId) -> Error {
-    if !err.details.is_object() {
-        err.details = json!({});
-    }
-    if let Some(details) = err.details.as_object_mut() {
-        details.insert("journal_pending".into(), tx.to_string().into());
-    }
-    err
 }
 
 /// The failure that stopped a repair after `done`, when rolling it forward failed too.

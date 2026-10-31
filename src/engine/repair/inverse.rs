@@ -33,6 +33,7 @@ use crate::fsx::{
     self, Content, Expect, FileId, FileKind, Mismatch, MutateOpts, Op, Predicate, RenameMode,
     StampDigest, WriteSession, failpoint, mutate_with,
 };
+use crate::model::TxId;
 use crate::state::history::{self, HistoryFilter};
 use crate::state::paths::Paths;
 
@@ -181,7 +182,7 @@ pub(crate) fn roll_back(
                 return Err(unrecognized(
                     prepared,
                     step,
-                    "neither its before nor its after state holds",
+                    "is in neither its before nor its after state",
                 ));
             }
             Classified::Ran => {}
@@ -216,7 +217,7 @@ fn invert(s: &mut WriteSession<'_>, prepared: &RepairPrepared, step: &Step) -> R
                 return Err(unrecognized(
                     prepared,
                     step,
-                    "it overwrote no file it recorded",
+                    "overwrote no file it recorded",
                 ));
             };
             if Expect::hash(old.0)
@@ -228,7 +229,7 @@ fn invert(s: &mut WriteSession<'_>, prepared: &RepairPrepared, step: &Step) -> R
                     prepared,
                     step,
                     &format!(
-                        "its backup {} does not hold the bytes it replaced",
+                        "has a backup, {}, that does not hold the bytes it replaced",
                         backup.display()
                     ),
                 ));
@@ -249,7 +250,7 @@ fn invert(s: &mut WriteSession<'_>, prepared: &RepairPrepared, step: &Step) -> R
                 return Err(unrecognized(
                     prepared,
                     step,
-                    "the file it created has no rollback destination",
+                    "created a file that has no rollback destination",
                 ));
             };
             mutate_with(
@@ -270,11 +271,7 @@ fn invert(s: &mut WriteSession<'_>, prepared: &RepairPrepared, step: &Step) -> R
                 mode: Some(old), ..
             } = pre
             else {
-                return Err(unrecognized(
-                    prepared,
-                    step,
-                    "it recorded no mode to put back",
-                ));
+                return Err(unrecognized(prepared, step, "recorded no mode to put back"));
             };
             mutate_with(s, path, Op::Chmod { mode: old.bits() }, expect)
         }
@@ -291,7 +288,7 @@ fn invert_rename(s: &mut WriteSession<'_>, prepared: &RepairPrepared, step: &Ste
         return Err(unrecognized(
             prepared,
             step,
-            "its endpoints do not fit its operation",
+            "has endpoints that do not fit its operation",
         ));
     };
     mutate_with(
@@ -349,20 +346,44 @@ pub(crate) fn append(s: &mut WriteSession<'_>, journal: &Path, line: &RepairLine
 }
 
 /// The stop for a step recovery cannot place: `internal`, with the journal kept for
-/// manual repair (E11's convention, naming `journal step <k>`).
+/// manual repair. E11's convention names `journal step <k>`, and the reason is in the
+/// text too, since `recover_under` turns the stop into a warning, which has no details.
+/// A repair names no single target (`target: null`).
 fn unrecognized(prepared: &RepairPrepared, step: &Step, why: &str) -> Error {
     Error::new(
         ErrorCode::Internal,
         format!(
-            "repair {}: journal step {} cannot be rolled back: {why}; the journal is kept for manual repair",
-            prepared.tx, step.seq
+            "repair transaction {} could not be recovered ({}): journal step {} {why}; recovery stopped and keeps everything",
+            prepared.tx,
+            StopReason::StepUnrecognized.as_str(),
+            step.seq
         ),
-        Suggestion::command(["omaddons", "status"]),
+        manual_repair(),
     )
     .details(json!({
         "journal_pending": prepared.tx,
         "reason": StopReason::StepUnrecognized.as_str(),
+        "target": null,
     }))
+}
+
+/// The fix of a repair journal recovery stopped for: advice, since no command of this
+/// build settles it.
+pub(crate) fn manual_repair() -> Suggestion {
+    Suggestion::text(
+        "see \"journal_pending that does not clear\" under Troubleshooting in the README",
+    )
+}
+
+/// `err` with `details.journal_pending` naming `tx`, whose journal is kept.
+pub(crate) fn pending(mut err: Error, tx: TxId) -> Error {
+    if !err.details.is_object() {
+        err.details = json!({});
+    }
+    if let Some(details) = err.details.as_object_mut() {
+        details.insert("journal_pending".into(), tx.to_string().into());
+    }
+    err
 }
 
 /// An I/O failure while classifying or inverting a step: `io`, the journal kept.

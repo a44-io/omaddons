@@ -367,14 +367,15 @@ pub(crate) const HOST_BLOCKED: DetailSpec = DetailSpec::Object(&[
     Field::opt("url", &STR),
 ]);
 
-/// fsx scope refusals, restore topology, and journal marker mismatch.
+/// fsx scope refusals, restore topology, and journal marker mismatch; a repair journal's
+/// recovery stops name no single target (`target: null`).
 pub(crate) const SCOPE_DENIED: DetailSpec = DetailSpec::Object(&[
     Field::opt("backup_dir", &STR),
     Field::opt(
         "reason",
-        &DetailSpec::Enum(&["wtf_symlinked", "marker_mismatch"]),
+        &DetailSpec::Enum(&["wtf_symlinked", "marker_mismatch", "skill_dir"]),
     ),
-    Field::opt("target", &STR),
+    Field::opt("target", &STR).nullable(),
 ]);
 
 /// `state/store.rs::too_new` and journal unrecoverable/unattributed failures.
@@ -565,14 +566,15 @@ pub(crate) const DOCTOR_REFUSED: DetailSpec = DetailSpec::Object(&[
     Field::opt("resources", &STRINGS),
 ]);
 
-/// Omarchy plugin validation and journal unexpected/unrecognized states; other bugs `{}`.
+/// Omarchy plugin validation and journal unexpected/unrecognized states (a repair's name
+/// no single target: `target: null`); other bugs `{}`.
 pub(crate) const INTERNAL: DetailSpec = DetailSpec::Object(&[
     Field::opt("problems", &STRINGS),
     Field::opt(
         "reason",
         &DetailSpec::Enum(&["plugin_invalid", "unexpected_state", "step_unrecognized"]),
     ),
-    Field::opt("target", &STR),
+    Field::opt("target", &STR).nullable(),
 ]);
 
 pub(super) fn details_schema(code: ErrorCode) -> Value {

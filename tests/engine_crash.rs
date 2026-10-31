@@ -5260,3 +5260,313 @@ fn every_failpoint_in_every_preservation_shape() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// The doctor's repair transactions (E5). No command commits one before `doctor fix` (E6),
+// so each kind's repair runs in a child process of this test binary (`child_repair`),
+// crashed by a real `abort`; every reader and every recovery is the binary's. The oracle:
+// the subject equals its before state when the crash preceded the durable `done`, and its
+// after state from `done` on; no repair journal or in-flight lock is left.
+
+#[cfg(test)]
+mod repair_support {
+    use std::path::PathBuf;
+
+    use serde_json::Value;
+
+    use super::common::repair::RepairScene;
+    use super::common::tlog::TestLog;
+
+    /// `omaddons <args> --json --progress json`.
+    pub fn json_args(args: &[&str]) -> Vec<String> {
+        args.iter()
+            .copied()
+            .chain(["--json", "--progress", "json"])
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// The messages of `envelope`'s warnings with `code` that name `tx`.
+    pub fn naming<'a>(envelope: &'a Value, code: &str, tx: &str) -> Vec<&'a str> {
+        envelope["warnings"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|warning| warning["code"] == code)
+            .filter_map(|warning| warning["message"].as_str())
+            .filter(|message| message.contains(tx))
+            .collect()
+    }
+
+    /// The trees a repair scene's commands may write, by label.
+    pub fn trees(r: &RepairScene) -> [(&'static str, PathBuf); 4] {
+        let env = &r.s.home.env;
+        [
+            ("state", env.state()),
+            ("config", env.config()),
+            ("cache", env.cache()),
+            ("client", r.s.home.client("_retail_")),
+        ]
+    }
+
+    /// Records every tree of [`trees`].
+    pub fn record(log: &TestLog, r: &RepairScene) {
+        for (label, root) in trees(r) {
+            log.tree(label, &root);
+        }
+    }
+
+    /// Every tree of [`trees`] is as [`record`] left it.
+    pub fn unchanged(log: &TestLog, r: &RepairScene) {
+        for (label, root) in trees(r) {
+            log.assert_unchanged(label, &root);
+        }
+    }
+
+    /// What is left in `<state>/journal` and `<state>/inflight`, logged.
+    pub fn leftover_journals(log: &TestLog, r: &RepairScene) -> Vec<String> {
+        let state = r.s.home.state();
+        let mut left = Vec::new();
+        for dir in ["journal", "inflight"] {
+            let listed: Vec<String> = std::fs::read_dir(state.join(dir))
+                .map(|l| {
+                    l.map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            log.note(format!("{dir}/: {listed:?}"));
+            left.extend(listed.into_iter().map(|name| format!("{dir}/{name}")));
+        }
+        left
+    }
+}
+
+/// A child process of the repair scenes: the kind's repair, lowered and committed in
+/// process (`common::repair::child_main`). Run on its own it does nothing.
+#[test]
+#[ignore = "a child process of the repair scenes"]
+fn child_repair() {
+    common::repair::child_main();
+}
+
+#[test]
+fn a_crashed_repair_is_recovered_by_the_next_lock_taking_command() {
+    use std::path::PathBuf;
+
+    use common::repair::{Child, CrashPhase, End, Kind, RepairScene, crash_specs};
+    use repair_support::{json_args, leftover_journals, naming, record, unchanged};
+
+    let log = tlog!();
+    // Every kind's repair commits unarmed, and leaves exactly its predicted after state.
+    log.step("reference");
+    for kind in Kind::ALL {
+        let r = RepairScene::new(kind);
+        let Child::Ended(outcome) = r.child(&log, "") else {
+            panic!("{}: the unarmed repair crashed", kind.label()); // ubs:ignore — fails the test
+        };
+        assert_eq!(
+            outcome["outcome"],
+            "committed",
+            "{}: {outcome}",
+            kind.label()
+        );
+        log.json(&format!("{} after", kind.label()), &r.subject());
+        assert_eq!(
+            r.accounted(End::After),
+            Vec::<String>::new(),
+            "{}",
+            kind.label()
+        );
+        assert_eq!(r.phase(), CrashPhase::NoJournal, "{}", kind.label());
+        assert_eq!(r.history_names_tx(), 1, "{}", kind.label());
+        assert_eq!(r.leftovers(), Vec::<PathBuf>::new(), "{}", kind.label());
+    }
+
+    // A crash before `done`: a reader reports it, and `config set` rolls it back.
+    log.step("build");
+    let r = RepairScene::new(Kind::FlattenTwo);
+    log.env(&r.s);
+    log.json("subject before", &r.subject());
+    log.step("crash");
+    let spec = "doctor.repair.step=abort@2";
+    assert!(crash_specs(Kind::FlattenTwo).contains(&spec.to_owned()));
+    assert_eq!(r.child(&log, spec), Child::Crashed);
+    log.json("journal at crash", &r.journal_lines());
+    log.json("actions at crash", &r.actions_lines());
+    assert_eq!(r.phase(), CrashPhase::Stepped(2));
+    let tx = r.tx().unwrap();
+    log.step("reader");
+    record(&log, &r);
+    let read = log.run(&r.s, &json_args(&["status"]));
+    read.ok().assert_private();
+    assert_eq!(
+        naming(read.envelope(), "journal_pending", &tx).len(),
+        1,
+        "the reader reports the repair"
+    );
+    unchanged(&log, &r);
+    log.step("recover");
+    let ran = log.run(
+        &r.s,
+        &json_args(&["config", "set", "check_interval_hours", "6"]),
+    );
+    ran.ok().assert_private();
+    assert_eq!(
+        naming(ran.envelope(), "journal_recovered", &tx),
+        [format!(
+            "repair transaction {tx} was interrupted; recovery undid it (rolled back)"
+        )]
+    );
+    log.json("subject after recovery", &r.subject());
+    assert_eq!(r.accounted(End::Before), Vec::<String>::new());
+    assert_eq!(r.phase(), CrashPhase::NoJournal);
+    assert_eq!(r.history_names_tx(), 0);
+    assert_eq!(leftover_journals(&log, &r), Vec::<String>::new());
+    assert_eq!(r.leftovers(), Vec::<PathBuf>::new());
+
+    // A crash from `done` on: rolled forward, with exactly one history line.
+    log.step("crash after done");
+    let r = RepairScene::new(Kind::FlattenTwo);
+    assert_eq!(r.child(&log, "doctor.repair.done=abort"), Child::Crashed);
+    log.json("journal at crash", &r.journal_lines());
+    assert_eq!(r.phase(), CrashPhase::Done);
+    let tx = r.tx().unwrap();
+    log.step("recover after done");
+    let ran = log.run(
+        &r.s,
+        &json_args(&["config", "set", "check_interval_hours", "6"]),
+    );
+    ran.ok().assert_private();
+    assert_eq!(
+        naming(ran.envelope(), "journal_recovered", &tx),
+        [format!(
+            "repair transaction {tx} was interrupted; recovery completed it (rolled forward)"
+        )]
+    );
+    log.json("subject after recovery", &r.subject());
+    assert_eq!(r.accounted(End::After), Vec::<String>::new());
+    assert_eq!(r.history_names_tx(), 1);
+    assert_eq!(leftover_journals(&log, &r), Vec::<String>::new());
+    assert_eq!(r.leftovers(), Vec::<PathBuf>::new());
+}
+
+#[test]
+fn a_crashed_repair_is_recovered_by_a_no_op_change() {
+    use common::repair::{Child, CrashPhase, End, Kind, RepairScene};
+    use repair_support::{leftover_journals, naming};
+
+    let log = tlog!();
+    log.step("crash");
+    let r = RepairScene::new(Kind::FlattenTwo);
+    log.env(&r.s);
+    assert_eq!(r.child(&log, "doctor.repair.step=abort@1"), Child::Crashed);
+    assert_eq!(r.phase(), CrashPhase::Stepped(1));
+    let tx = r.tx().unwrap();
+    // The same install again changes nothing, and so recovers through `recover_waiting`.
+    log.step("recover");
+    let mut argv = r.s.install_args("gh:o/foo", "v1");
+    argv.extend(["--progress".to_owned(), "json".to_owned()]);
+    let ran = log.run(&r.s, &argv);
+    ran.ok().assert_private();
+    assert_eq!(
+        ran.data()["items"][0]["status"],
+        "unchanged",
+        "a no-op change"
+    );
+    assert_eq!(naming(ran.envelope(), "journal_recovered", &tx).len(), 1);
+    assert_eq!(r.accounted(End::Before), Vec::<String>::new());
+    assert_eq!(leftover_journals(&log, &r), Vec::<String>::new());
+}
+
+#[test]
+fn a_stuck_repair_journal_fails_every_committing_command_until_fences_land() {
+    use std::os::unix::fs::PermissionsExt;
+
+    use common::repair::{Child, CrashPhase, Kind, RepairScene};
+    use repair_support::{json_args, naming};
+
+    let log = tlog!();
+    log.step("crash");
+    let r = RepairScene::new(Kind::Chmod);
+    log.env(&r.s);
+    assert_eq!(r.child(&log, "fsx.mutate.executed=abort@1"), Child::Crashed);
+    assert_eq!(r.phase(), CrashPhase::Stepped(1));
+    let tx = r.tx().unwrap();
+    // The chmod ran; then its file changed by hand: step 1 is in neither state.
+    let credential = r.s.home.env.config().join("omaddons/credentials/github");
+    fs::set_permissions(&credential, fs::Permissions::from_mode(0o640)).unwrap();
+    let journal = r.journal_lines();
+
+    log.step("a committing command fails");
+    let mut argv = r.s.install_args("gh:o/foo", "v2");
+    argv.extend(["--progress".to_owned(), "json".to_owned()]);
+    let failed = log.run(&r.s, &argv);
+    failed.fails(1, "internal").assert_private();
+    let details = &failed.envelope()["error"]["details"];
+    assert_eq!(details["reason"], "step_unrecognized", "{details}");
+    assert_eq!(details["journal_pending"], tx, "{details}");
+    assert_eq!(
+        r.s.record("foo")["version"],
+        "1",
+        "the install changed nothing"
+    );
+
+    log.step("a settings change only warns");
+    let warned = log.run(
+        &r.s,
+        &json_args(&["config", "set", "check_interval_hours", "6"]),
+    );
+    warned.ok().assert_private();
+    let pending: Vec<&str> = warned.envelope()["warnings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|w| w["code"] == "journal_pending")
+        .filter_map(|w| w["message"].as_str())
+        .collect();
+    assert_eq!(pending.len(), 1, "{pending:?}");
+    assert!(
+        pending[0].contains(&tx) && pending[0].contains("(step_unrecognized)"),
+        "{}",
+        pending[0]
+    );
+
+    log.step("a reader reports it");
+    let read = log.run(&r.s, &json_args(&["status"]));
+    read.ok().assert_private();
+    assert_eq!(naming(read.envelope(), "journal_pending", &tx).len(), 1);
+    assert_eq!(r.journal_lines(), journal, "the journal is left as it is");
+    assert_eq!(
+        fs::metadata(&credential).unwrap().permissions().mode() & 0o7777,
+        0o640,
+        "and the credential"
+    );
+}
+
+#[test]
+fn readers_report_a_pending_repair_without_writing() {
+    use common::repair::{Child, Kind, RepairScene};
+    use repair_support::{json_args, naming, record, unchanged};
+
+    let log = tlog!();
+    log.step("crash");
+    let r = RepairScene::new(Kind::FlattenTwo);
+    log.env(&r.s);
+    assert_eq!(r.child(&log, "doctor.repair.step=abort@2"), Child::Crashed);
+    let tx = r.tx().unwrap();
+    record(&log, &r);
+    for command in [&["status"][..], &["list"], &["history"]] {
+        log.step(command[0]);
+        let read = log.run(&r.s, &json_args(command));
+        read.ok().assert_private();
+        assert_eq!(
+            naming(read.envelope(), "journal_pending", &tx),
+            [format!(
+                "repair transaction {tx} did not finish; the next omaddons command that changes addons, settings or targets recovers it (dry runs never do)"
+            )],
+            "{}",
+            command[0]
+        );
+        unchanged(&log, &r);
+    }
+}

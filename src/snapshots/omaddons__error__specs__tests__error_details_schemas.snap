@@ -1,6 +1,6 @@
 ---
 source: src/error/specs.rs
-assertion_line: 669
+assertion_line: 670
 expression: schemas
 ---
 {
@@ -2168,7 +2168,10 @@ expression: schemas
         "type": "array"
       },
       "target": {
-        "type": "string"
+        "type": [
+          "string",
+          "null"
+        ]
       }
     },
     "type": "object"
@@ -4331,7 +4334,8 @@ expression: schemas
       "reason": {
         "enum": [
           "wtf_symlinked",
-          "marker_mismatch"
+          "marker_mismatch",
+          "skill_dir"
         ]
       },
       "recovery_error": {
@@ -4356,7 +4360,10 @@ expression: schemas
         "type": "array"
       },
       "target": {
-        "type": "string"
+        "type": [
+          "string",
+          "null"
+        ]
       }
     },
     "type": "object"

@@ -966,6 +966,63 @@ impl RepairHome {
     pub fn stuck(&self) -> TxId {
         REPAIR_STUCK_TX.parse().unwrap()
     }
+
+    /// Replaces the stuck journal (which holds no line this build reads, and names no
+    /// target) with one recovery reads: an install on the planned client, prepared,
+    /// nothing stepped, its writer gone.
+    pub fn readable_stuck_journal(&self) {
+        let stuck = self.stuck();
+        std::fs::remove_file(self.paths.journal(&stuck)).unwrap();
+        let prepared = Prepared {
+            schema_version: journal::CURRENT,
+            tx: stuck,
+            target_key: self.key,
+            client_dir: self.client.client_dir().to_path_buf(),
+            kind: TxKind::Install,
+            started_at: Timestamp::now(),
+            creates_dirs: Vec::new(),
+            commit: CommitPayload {
+                record: TargetRecord {
+                    key: self.key,
+                    generation: 1,
+                    addons: Default::default(),
+                },
+                index: IndexChanges::default(),
+                history: HistoryEntry {
+                    schema_version: history::CURRENT,
+                    tx: stuck,
+                    kind: TxKind::Install,
+                    at: Timestamp::now(),
+                    target: Some(self.key),
+                    targets: Vec::new(),
+                    actor: Actor::Agent,
+                    reason: None,
+                    argv: vec!["omaddons".into(), "install".into()],
+                    ops: Vec::new(),
+                    result: TxResult::Committed,
+                    reverts: None,
+                    sv_deferred: false,
+                    sv_restored: None,
+                    created_addons_dir: false,
+                    run: None,
+                    backup: None,
+                    plan: None,
+                    doctor_run_id: None,
+                    repairs: Vec::new(),
+                },
+                stage_dir: self.client.stage(&stuck),
+                sv_restore: None,
+            },
+            writes_wtf: false,
+            staged_stamp: None,
+            staged_files: None,
+            source_backup: None,
+            client: None,
+        };
+        let lock = GlobalLock::acquire(&self.paths, "test").unwrap();
+        let mut s = WriteSession::untracked(Writer::Mutating, &self.scopes, "test");
+        Journal::create(&mut s, &self.paths, &lock, prepared).unwrap();
+    }
 }
 
 pub fn repair_home() -> RepairHome {

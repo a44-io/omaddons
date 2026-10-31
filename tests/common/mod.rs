@@ -9,8 +9,9 @@
 //! command plans, with a persistent release cache and approval witnesses (`planning`),
 //! previews bound by `--if-match`, their refusals and what they leave alone
 //! (`binding`), the realistic home of 5,040 managed files, built offline
-//! (`realistic`), release landings for every source (`landing`), and WowAce fixtures
-//! over its recording (`wowace`).
+//! (`realistic`), release landings for every source (`landing`), WowAce fixtures
+//! over its recording (`wowace`), and crashed repairs of every fix kind, committed in a
+//! child process of the test binary (`repair`).
 //! Each integration test crate declares `mod common;` and uses the subset it needs.
 //!
 //! Everything is written under a [`env::TestEnv`] tempdir; nothing here touches the real
@@ -52,6 +53,7 @@ pub mod privacy;
 pub mod procfs;
 pub mod product_db;
 pub mod realistic;
+pub mod repair;
 pub mod shells;
 pub mod state;
 pub mod targets;

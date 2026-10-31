@@ -868,6 +868,10 @@ const PRUNE_CALLERS: &[(&str, &str)] = &[
         "src/engine/repair/commit.rs",
         "a repair's own journal and in-flight lock, after commit or rollback, under its own lock",
     ),
+    (
+        "src/engine/repair/recover.rs",
+        "repair journals and their in-flight locks, in recovery, under the held global lock",
+    ),
 ];
 
 #[test]

@@ -599,10 +599,13 @@ pub enum StopReason {
     /// A failure recovery cannot attribute to one target, which fails every committing
     /// command on every target.
     Unattributed,
+    /// A repair journal names a skill directory omaddons cannot attribute without the
+    /// journal's word (E5).
+    SkillDir,
 }
 
 impl StopReason {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::JournalTooNew,
         Self::JournalUnreadable,
         Self::MarkerMismatch,
@@ -611,6 +614,7 @@ impl StopReason {
         Self::PreservationIncomplete,
         Self::SavedVariables,
         Self::Unattributed,
+        Self::SkillDir,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -623,6 +627,7 @@ impl StopReason {
             Self::PreservationIncomplete => "preservation_incomplete",
             Self::SavedVariables => "saved_variables",
             Self::Unattributed => "unattributed",
+            Self::SkillDir => "skill_dir",
         }
     }
 }
@@ -856,36 +861,55 @@ pub fn pending(paths: &Paths) -> Result<Vec<Pending>> {
 
 /// Unfinished transactions, for read commands: `journal_pending` when the global lock
 /// is free (the next mutating command recovers them), `tx_in_progress` when it is held.
-/// Writes nothing.
+/// The folder journals come first, then the doctor's repairs (E5), as recovery takes
+/// them. Writes nothing.
 pub fn pending_warnings(paths: &Paths) -> Result<Vec<Warning>> {
     let pending = pending(paths)?;
-    if pending.is_empty() {
+    let repairs = super::repair::pending_repairs(paths)?;
+    if pending.is_empty() && repairs.is_empty() {
         return Ok(Vec::new());
     }
     let held = matches!(probe_global(paths)?, LockState::Held { .. });
-    Ok(pending
-        .into_iter()
-        .map(|Pending { tx, target, unrecoverable }| {
-            let on = target.map(|t| format!(" on target {t}")).unwrap_or_default();
-            if let Some(why) = unrecoverable {
-                unrecoverable_warning(&tx, target, why)
-            } else if held {
-                Warning::new(
-                    WarningCode::TxInProgress,
-                    format!("transaction {tx}{on} is in progress"),
-                )
-                .with_fix(Suggestion::text("wait for the running omaddons command to finish"))
-            } else {
-                Warning::new(
-                    WarningCode::JournalPending,
-                    format!(
-                        "transaction {tx}{on} did not finish; the next omaddons command that changes addons, settings or targets recovers it (dry runs never do)"
-                    ),
-                )
-                .with_fix(Suggestion::command(["omaddons", "status"]))
+    let folder = pending.into_iter().map(
+        |Pending {
+             tx,
+             target,
+             unrecoverable,
+         }| {
+            let on = target
+                .map(|t| format!(" on target {t}"))
+                .unwrap_or_default();
+            match unrecoverable {
+                Some(why) => unrecoverable_warning(&tx, target, why),
+                None => unfinished_warning(&format!("transaction {tx}{on}"), held),
             }
-        })
-        .collect())
+        },
+    );
+    let repairs = repairs
+        .into_iter()
+        .map(|repair| match repair.unrecoverable {
+            Some(why) => super::repair::recover::unrecoverable_warning(&repair.tx, why),
+            None => unfinished_warning(&format!("repair transaction {}", repair.tx), held),
+        });
+    Ok(folder.chain(repairs).collect())
+}
+
+/// What a reader says of an unfinished transaction this build can recover, named by
+/// `what`: in progress while the global lock is `held`, else waiting for the next change.
+fn unfinished_warning(what: &str, held: bool) -> Warning {
+    if held {
+        Warning::new(WarningCode::TxInProgress, format!("{what} is in progress")).with_fix(
+            Suggestion::text("wait for the running omaddons command to finish"),
+        )
+    } else {
+        Warning::new(
+            WarningCode::JournalPending,
+            format!(
+                "{what} did not finish; the next omaddons command that changes addons, settings or targets recovers it (dry runs never do)"
+            ),
+        )
+        .with_fix(Suggestion::command(["omaddons", "status"]))
+    }
 }
 
 /// What a reader, and another target's recovery, say of a journal this build cannot
@@ -993,6 +1017,9 @@ pub fn recover_all(env: &RecoveryEnv<'_>) -> Result<Vec<Warning>> {
             },
         }
     }
+    // Then the doctor's repairs (E5), which name no single target: until E14's fences, a
+    // repair recovery cannot settle fails every committing command.
+    warnings.extend(super::repair::recover_repairs(env)?);
     Ok(warnings)
 }
 
@@ -1001,7 +1028,7 @@ pub fn recover_all(env: &RecoveryEnv<'_>) -> Result<Vec<Warning>> {
 /// every committing command on every target, so `details.reason` says `unattributed`
 /// (over any reason it had), with the transaction when one is known. The code, message
 /// and fix still say what failed.
-fn unattributed(mut error: Error, tx: Option<&TxId>) -> Error {
+pub(crate) fn unattributed(mut error: Error, tx: Option<&TxId>) -> Error {
     if !error.details.is_object() {
         error.details = serde_json::json!({});
     }
@@ -1091,10 +1118,15 @@ pub fn recover_waiting(
     recover_under(&guard, paths, sv_writable, command, actor)
 }
 
-/// Whether a journal whose writer is gone waits for recovery.
+/// Whether a journal whose writer is gone waits for recovery: a folder journal, or a
+/// repair's.
 pub fn recoverable(paths: &Paths) -> Result<bool> {
-    for found in pending(paths)? {
-        if !InflightLock::is_live(paths, &found.tx)? {
+    let folder = pending(paths)?.into_iter().map(|found| found.tx);
+    let repairs = super::repair::pending_repairs(paths)?
+        .into_iter()
+        .map(|found| found.tx);
+    for tx in folder.chain(repairs) {
+        if !InflightLock::is_live(paths, &tx)? {
             return Ok(true);
         }
     }
@@ -3292,6 +3324,7 @@ mod tests {
                 "preservation_incomplete",
                 "saved_variables",
                 "unattributed",
+                "skill_dir",
             ],
             "the strings stay the ones recovery wrote before"
         );
