@@ -242,6 +242,9 @@ pub const DOCTOR_SCAN_MAX_ENTRIES: u64 = 20_000;
 /// Most skill directories a scope table, `history_tail.skill_dirs[]` and the skill-drift
 /// check admit (§7.9): the default one and those `robot-docs install-skill` was given.
 pub const SKILL_DIRS_MAX: usize = 8;
+/// Most primitives one doctor repair may plan (common rule 15); past it the run is
+/// refused (`doctor_refused`, `too_many_actions`) before anything moves.
+pub const DOCTOR_FIX_MAX_ACTIONS: usize = 1_000;
 
 /// Snapshot retention: keep everything younger than `min_age`; beyond that, keep the
 /// last `keep_last` transactions per target that are younger than `window`.
@@ -915,6 +918,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         None,
         "Skill directories a scope table, history_tail.skill_dirs[] and the skill-drift check admit at most",
     ),
+    limit(
+        "DOCTOR_FIX_MAX_ACTIONS",
+        LimitValue::Count(DOCTOR_FIX_MAX_ACTIONS as u64),
+        "count",
+        None,
+        "Primitives one doctor repair may plan; past it the run is refused (too_many_actions)",
+    ),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -1177,6 +1187,7 @@ mod tests {
         "OMARCHY_KILL_GRACE",
         "DOCTOR_SCAN_MAX_ENTRIES",
         "SKILL_DIRS_MAX",
+        "DOCTOR_FIX_MAX_ACTIONS",
     ];
 
     const CONFIG_NAMES: &[&str] = &[

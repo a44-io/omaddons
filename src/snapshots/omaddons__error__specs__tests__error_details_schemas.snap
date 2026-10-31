@@ -1,6 +1,5 @@
 ---
 source: src/error/specs.rs
-assertion_line: 670
 expression: schemas
 ---
 {
@@ -1057,11 +1056,32 @@ expression: schemas
   },
   "doctor_refused": {
     "properties": {
+      "actions": {
+        "type": "integer"
+      },
       "budget_ms": {
         "type": "integer"
       },
       "estimated_ms": {
         "type": "integer"
+      },
+      "fixes": {
+        "items": {
+          "properties": {
+            "fm": {
+              "type": "string"
+            },
+            "instance": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "fm",
+            "instance"
+          ],
+          "type": "object"
+        },
+        "type": "array"
       },
       "fm": {
         "type": "string"
@@ -1147,6 +1167,9 @@ expression: schemas
       },
       "journal_pending": {
         "type": "string"
+      },
+      "max_actions": {
+        "type": "integer"
       },
       "reason": {
         "enum": [

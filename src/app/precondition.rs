@@ -17,6 +17,7 @@ use sha2::{Digest, Sha256};
 
 use crate::app::outcome::SkipReason;
 use crate::cli::Context;
+use crate::doctor::fix::{BoundRepair, FixPlan};
 use crate::engine::plan::{Change, Plan, PlannedOp, PlannedRelease, TargetPlan};
 use crate::engine::tx::UnderLock;
 use crate::engine::witness::{
@@ -1076,6 +1077,102 @@ pub fn of_prune(parts: &[PrunePart<'_>]) -> Precondition {
     )
 }
 
+// ---------------------------------------------------------------------------------------
+// `doctor fix`.
+
+/// `doctor fix`'s precondition (M4-D44). A preview and the run it confirms are two
+/// processes, two run directories and two repair transactions, so nothing of either run
+/// enters it ([`FixPlan::bound`]):
+/// - the targets a step touches or a recovery settles, by key and without a generation
+///   (each step's `pre` proves its paths unchanged, so an unrelated change on the client
+///   does not stale it);
+/// - the selection: each primitive (`fm`, `fix`, `op`, its canonical `path`, a rename's
+///   destination as `to_rel`, a mode) and each delegated recovery (`tx`, `family`,
+///   `phase`, `direction`);
+/// - what it observed: each primitive's `pre` predicate and guards, and every journal
+///   whose writer is gone with its verdict and protected resources, so one that appears,
+///   goes or changes between the preview and the run stales the token.
+pub fn of_doctor_fix(plan: &FixPlan) -> Precondition {
+    of_bound_repair(&plan.bound())
+}
+
+/// [`of_doctor_fix`] of what a plan binds.
+pub fn of_bound_repair(bound: &BoundRepair) -> Precondition {
+    let primitives: Vec<Value> = bound
+        .steps
+        .iter()
+        .map(|step| {
+            let mut primitive = json!({
+                "fm": step.fm,
+                "fix": step.fix,
+                "op": step.op,
+                "path": step.path,
+            });
+            if let Some(map) = primitive.as_object_mut() {
+                if let Some(to_rel) = &step.to_rel {
+                    map.insert("to_rel".to_owned(), json!(to_rel));
+                }
+                if let Some(mode) = step.mode {
+                    map.insert("mode".to_owned(), json!(mode));
+                }
+                if step.activation {
+                    map.insert("activation".to_owned(), json!(true));
+                }
+            }
+            primitive
+        })
+        .collect();
+    let recoveries: Vec<Value> = bound
+        .recoveries
+        .iter()
+        .map(|r| {
+            let mut recovery = json!({
+                "tx": r.tx.to_string(),
+                "family": r.family,
+                "phase": r.phase,
+                "direction": r.direction,
+            });
+            if let (Some(repair_phase), Some(map)) = (&r.repair_phase, recovery.as_object_mut()) {
+                map.insert("repair_phase".to_owned(), repair_phase.clone());
+            }
+            recovery
+        })
+        .collect();
+    let pre: Vec<Value> = bound
+        .steps
+        .iter()
+        .map(|step| {
+            let mut observed = json!({ "seq": step.seq, "pre": step.pre });
+            if let (false, Some(map)) = (step.guards.is_empty(), observed.as_object_mut()) {
+                map.insert("guards".to_owned(), json!(step.guards));
+            }
+            observed
+        })
+        .collect();
+    let journals: Vec<Value> = bound
+        .journals
+        .iter()
+        .map(|j| {
+            json!({
+                "tx": j.tx.to_string(),
+                "family": j.family,
+                "verdict": j.verdict,
+                "protected": { "reads": j.reads, "writes": j.writes },
+            })
+        })
+        .collect();
+    Precondition::new(
+        "doctor fix",
+        bound
+            .targets
+            .iter()
+            .map(|key| (TargetRef::Key(*key), None))
+            .collect(),
+        json!({ "primitives": primitives, "recoveries": recoveries }),
+        json!({ "pre": pre, "journals": journals }),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1791,6 +1888,7 @@ mod tests {
             ("fixture", fixture()),
             ("of_remove", of_remove(&remove_plan(Some(key(KEY))))),
             ("of_plan", inputs().precondition()),
+            ("of_doctor_fix", of_bound_repair(&bound_repair())),
         ];
         for (name, p) in pinned {
             assert_eq!(token_of_parts(&p.part_values()), p.token(), "{name}");
@@ -2019,6 +2117,227 @@ mod tests {
             changed(of_prune(&[other])),
             json!(["targets", "selection"]),
             "unregistered: named by id"
+        );
+    }
+
+    /// What a `doctor fix` plan binds: a chmod and a set-aside rename with its guard, a
+    /// delegated recovery, and two journals whose writers are gone.
+    fn bound_repair() -> BoundRepair {
+        use crate::doctor::fix::{BoundJournal, BoundRecovery, BoundStep};
+        const SET_ASIDE: &str = "01JB8Q2VA00000000000000009";
+        const RECOVERED: &str = "01JB8Q2VA0000000000000000A";
+        let journal = |tx: &str, verdict: Value| BoundJournal {
+            tx: tx.parse().unwrap(),
+            family: json!("folder"),
+            verdict,
+            reads: vec![format!("/fixture/client/Interface/.omaddons/target.json")],
+            writes: vec![format!("/fixture/state/omaddons/journal/{tx}.jsonl")],
+        };
+        BoundRepair {
+            targets: vec![key(KEY)],
+            steps: vec![
+                BoundStep {
+                    seq: 1,
+                    fm: "fm-secrets-credential-file-mode".to_owned(),
+                    fix: 1,
+                    op: "chmod",
+                    path: "/fixture/config/omaddons/credentials/github".to_owned(),
+                    to_rel: None,
+                    mode: Some(0o600),
+                    activation: false,
+                    pre: json!({"kind": "file", "identity": {"ino": 7}, "mode": "0644"}),
+                    guards: Vec::new(),
+                },
+                BoundStep {
+                    seq: 2,
+                    fm: "fm-concurrency_primitives-journal-too-new".to_owned(),
+                    fix: 2,
+                    op: "rename_noreplace",
+                    path: format!("/fixture/state/omaddons/journal/{SET_ASIDE}.jsonl"),
+                    to_rel: Some(format!("state/journal/{SET_ASIDE}.jsonl")),
+                    mode: None,
+                    activation: false,
+                    pre: json!({
+                        "path": {"kind": "file", "identity": {"ino": 9}},
+                        "to": {"kind": "absent"},
+                    }),
+                    guards: vec![json!({"kind": "generation", "target": KEY, "generation": 7})],
+                },
+            ],
+            recoveries: vec![BoundRecovery {
+                tx: RECOVERED.parse().unwrap(),
+                family: json!("folder"),
+                phase: json!("prepared"),
+                repair_phase: None,
+                direction: json!("back"),
+            }],
+            journals: vec![
+                journal(SET_ASIDE, json!("too_new")),
+                journal(
+                    RECOVERED,
+                    json!({"recoverable": {"phase": "prepared", "direction": "back"}}),
+                ),
+            ],
+        }
+    }
+
+    #[test]
+    fn doctor_fix_token_moves_with_each_part() {
+        use crate::doctor::fix::BoundJournal;
+        let token = of_bound_repair(&bound_repair()).token();
+        type Edit = fn(&mut BoundRepair);
+        let cases: [(&str, Edit, &[Part]); 21] = [
+            ("nothing", |_| {}, &[]),
+            (
+                "a_steps_path",
+                |b| b.steps[0].path.push_str(".bak"),
+                &[Part::Selection],
+            ),
+            (
+                "a_steps_op",
+                |b| b.steps[0].op = "write_file",
+                &[Part::Selection],
+            ),
+            (
+                "a_steps_mode",
+                |b| b.steps[0].mode = Some(0o640),
+                &[Part::Selection],
+            ),
+            (
+                "a_steps_fm",
+                |b| b.steps[0].fm.push('x'),
+                &[Part::Selection],
+            ),
+            ("a_steps_fix", |b| b.steps[1].fix = 1, &[Part::Selection]),
+            (
+                "a_steps_to_rel",
+                |b| b.steps[1].to_rel = Some("cache/journal".to_owned()),
+                &[Part::Selection],
+            ),
+            (
+                "an_activation",
+                |b| b.steps[1].activation = true,
+                &[Part::Selection],
+            ),
+            (
+                "a_pre_identity",
+                |b| b.steps[0].pre["identity"]["ino"] = json!(8),
+                &[Part::Observed],
+            ),
+            (
+                "a_pre_mode",
+                |b| b.steps[0].pre["mode"] = json!("0600"),
+                &[Part::Observed],
+            ),
+            (
+                "a_pre_destination",
+                |b| b.steps[1].pre["to"] = json!({"kind": "file"}),
+                &[Part::Observed],
+            ),
+            (
+                "a_guard",
+                |b| b.steps[1].guards[0]["generation"] = json!(8),
+                &[Part::Observed],
+            ),
+            (
+                "a_recoverys_direction",
+                |b| b.recoveries[0].direction = json!("forward"),
+                &[Part::Selection],
+            ),
+            (
+                "a_recoverys_phase",
+                |b| b.recoveries[0].phase = json!("swapped"),
+                &[Part::Selection],
+            ),
+            (
+                "a_journal_appears",
+                |b| {
+                    b.journals.push(BoundJournal {
+                        tx: "01JB8Q2VA0000000000000000B".parse().unwrap(),
+                        family: json!("repair"),
+                        verdict: json!("unreadable"),
+                        reads: Vec::new(),
+                        writes: Vec::new(),
+                    });
+                },
+                &[Part::Observed],
+            ),
+            (
+                "a_journal_disappears",
+                |b| {
+                    b.journals.pop();
+                },
+                &[Part::Observed],
+            ),
+            (
+                "a_journals_verdict",
+                |b| b.journals[0].verdict = json!("unreadable"),
+                &[Part::Observed],
+            ),
+            (
+                "a_protected_resource",
+                |b| {
+                    b.journals[0]
+                        .writes
+                        .push("/fixture/state/omaddons/x".to_owned())
+                },
+                &[Part::Observed],
+            ),
+            (
+                "a_protected_access",
+                |b| {
+                    let read = b.journals[0].reads.remove(0);
+                    b.journals[0].writes.push(read);
+                },
+                &[Part::Observed],
+            ),
+            ("a_target", |b| b.targets.push(key(OTHER)), &[Part::Targets]),
+            (
+                "a_step_and_a_journal",
+                |b| {
+                    b.steps[0].mode = Some(0o400);
+                    b.journals.pop();
+                },
+                &[Part::Selection, Part::Observed],
+            ),
+        ];
+        for (case, edit, want) in cases {
+            let mut edited = bound_repair();
+            edit(&mut edited);
+            let precondition = of_bound_repair(&edited);
+            assert_eq!(
+                changed_parts(&token, &precondition.token()),
+                want,
+                "{case}: {:#?}",
+                precondition.parts()
+            );
+        }
+
+        // A bound run names what moved, and previews again.
+        let mut moved = bound_repair();
+        moved.steps[0].mode = Some(0o640);
+        let preview = argv(&["omaddons", "doctor", "fix", "--dry-run"]);
+        let err = check(Some(&token), &of_bound_repair(&moved), &preview).unwrap_err();
+        assert_eq!(err.code, ErrorCode::PlanStale);
+        assert!(!err.retryable);
+        assert_eq!(err.details["changed"], json!(["selection"]));
+        assert_eq!(err.fix.argv(), Some(preview.as_slice()));
+    }
+
+    #[test]
+    fn doctor_fix_token_pinned() {
+        // The fields are the first 8 bytes of the SHA-256 of the four canonical parts
+        // this assertion prints when it fails, as `sha256sum` gives them.
+        let precondition = of_bound_repair(&bound_repair());
+        assert_eq!(
+            precondition.token(),
+            "pc1:62484ca7d17003f6101f35106b64b5cf9a0a0ab5fe027df41c2691c3b5f9711b",
+            "{:#?}",
+            precondition.parts()
+        );
+        assert_eq!(
+            token_of_parts(&precondition.part_values()),
+            precondition.token()
         );
     }
 

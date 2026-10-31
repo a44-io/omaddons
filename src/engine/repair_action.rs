@@ -805,6 +805,26 @@ impl Fix {
             Self::Delegate { .. } => FixKind::Delegate,
         }
     }
+
+    /// How many primitives E5 lowers it to (`remediation.estimated_actions`): one write,
+    /// chmod or quarantine; a flatten's two renames, or three when the inner folder has
+    /// its wrapper's name (in any case); a suspension's one per artifact; a delegation's
+    /// none. A chmod to the mode the file already has lowers to none, so this counts it
+    /// as an estimate does.
+    pub fn primitive_count(&self) -> u32 {
+        match self {
+            Self::Write { .. } | Self::Chmod { .. } | Self::Quarantine { .. } => 1,
+            Self::Flatten { inner, outer } => {
+                let own_name = match (inner.file_name(), outer.file_name()) {
+                    (Some(name), Some(wrapper)) => name.eq_ignore_ascii_case(wrapper),
+                    _ => false,
+                };
+                if own_name { 3 } else { 2 }
+            }
+            Self::Suspend { journal } => u32::try_from(journal.artifacts.len()).unwrap_or(u32::MAX),
+            Self::Delegate { .. } => 0,
+        }
+    }
 }
 
 /// Where a quarantined path goes. Quarantine never crosses a filesystem (M4-D35): each

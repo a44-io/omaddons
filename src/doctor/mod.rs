@@ -7,12 +7,15 @@ pub mod exit;
 pub mod explain;
 pub mod facts;
 pub mod finding;
+pub mod fix;
 pub mod plan;
 pub mod registry;
 pub mod report;
 pub mod runtime;
 pub mod selection;
 pub mod view;
+
+pub use fix::plan_fix;
 
 /// Every doctor failpoint (debug builds), checked against the source of `src/doctor/` and
 /// of the repair transaction (`src/engine/repair.rs`, `src/engine/repair/`) by a test.

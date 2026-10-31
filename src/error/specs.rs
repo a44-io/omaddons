@@ -544,12 +544,22 @@ pub(crate) const IO: DetailSpec = DetailSpec::Object(&[
 /// `doctor --only` naming only online checks: the failure modes that need `--online`.
 pub(crate) const ONLINE_REQUIRED: DetailSpec = DetailSpec::Object(&[Field::req("fms", &STRINGS)]);
 
-/// Every refused doctor run (M4-D40): why, the failure mode or resources concerned, and
-/// for `over_budget` what was compared.
+/// Every refused doctor run (M4-D40): why, the failure mode or resources concerned, the
+/// two fixes of a `fixer_conflict`, and for `over_budget` and `too_many_actions` what was
+/// compared.
 pub(crate) const DOCTOR_REFUSED: DetailSpec = DetailSpec::Object(&[
+    Field::opt("actions", &INT),
     Field::opt("budget_ms", &INT),
     Field::opt("estimated_ms", &INT),
+    Field::opt(
+        "fixes",
+        &DetailSpec::Array(&DetailSpec::Object(&[
+            Field::req("fm", &STR),
+            Field::req("instance", &STR),
+        ])),
+    ),
     Field::opt("fm", &STR),
+    Field::opt("max_actions", &INT),
     Field::req(
         "reason",
         &DetailSpec::Enum(&[

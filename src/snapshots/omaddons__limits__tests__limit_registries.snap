@@ -1,6 +1,5 @@
 ---
 source: src/limits.rs
-assertion_line: 1387
 expression: "(politeness, REGISTRY)"
 ---
 [
@@ -986,6 +985,15 @@ expression: "(politeness, REGISTRY)"
       "unit": "count",
       "config_key": null,
       "notes": "Skill directories a scope table, history_tail.skill_dirs[] and the skill-drift check admit at most"
+    },
+    {
+      "name": "DOCTOR_FIX_MAX_ACTIONS",
+      "value": {
+        "count": 1000
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Primitives one doctor repair may plan; past it the run is refused (too_many_actions)"
     }
   ]
 ]
