@@ -313,6 +313,72 @@ fn the_plugin_id_is_a_literal_in_the_manifest_only() {
     );
 }
 
+/// The widget lists `status`'s issues generically and matches no failure-mode id by name
+/// (M4-D48), so an id the CLI narrows or splits changes nothing it decides. It scans every
+/// production QML and JS file under `omarchy/` (its tests aside) for `fm-` before a
+/// lowercase letter and for each id of the doctor's registry, and must find an id planted
+/// in a copy of `Model.js`.
+#[test]
+fn the_widget_matches_no_issue_id_by_name() {
+    use omaddons::doctor::registry::FAILURE_MODES;
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("omarchy");
+    let mut files = Vec::new();
+    let mut stack = vec![root.clone()];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.strip_prefix(&root).unwrap().display().to_string();
+            if path.is_dir() {
+                if name != "tests" {
+                    stack.push(path);
+                }
+            } else if path.extension().is_some_and(|e| e == "qml" || e == "js") {
+                files.push((name, fs::read_to_string(&path).unwrap()));
+            }
+        }
+    }
+    assert!(
+        files.iter().any(|(name, _)| name == "Model.js"),
+        "no Model.js under omarchy/"
+    );
+    // `name:line` of every `fm-` followed by a lowercase ASCII letter.
+    let ids_named = |files: &[(String, String)]| -> Vec<String> {
+        let mut out = Vec::new();
+        for (name, text) in files {
+            for (at, _) in text.match_indices("fm-") {
+                let next = text[at + 3..].chars().next();
+                if next.is_some_and(|c| c.is_ascii_lowercase()) {
+                    out.push(format!("{name}:{}", text[..at].matches('\n').count() + 1));
+                }
+            }
+        }
+        out
+    };
+    assert_eq!(ids_named(&files), Vec::<String>::new());
+    for row in FAILURE_MODES {
+        assert_eq!(
+            id_literals(&files, row.id),
+            Vec::<String>::new(),
+            "{}",
+            row.id
+        );
+    }
+
+    let planted = "fm-concurrency_primitives-journal-pending";
+    let model = files
+        .iter_mut()
+        .find(|(name, _)| name == "Model.js")
+        .unwrap();
+    let line = model.1.lines().count() + 1;
+    model
+        .1
+        .push_str(&format!("const planted = \"{planted}\";\n"));
+    let at = format!("Model.js:{line}");
+    assert_eq!(ids_named(&files), std::slice::from_ref(&at));
+    assert_eq!(id_literals(&files, planted), [at]);
+}
+
 /// `name:line` of every file that names `id`. An id that merely starts with it
 /// (`a44.omaddons-fixture`) is another id.
 #[cfg(test)]

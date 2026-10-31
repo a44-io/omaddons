@@ -769,7 +769,7 @@ omaddons status --check       # exit 6 when anything needs attention
 omaddons status -v --json     # adds client_dir, install_root and exe_name, and changed paths
 ```
 
-`--deep` with `--cached` is a usage error. `--cached` before any discovery cache exists also suggests `omaddons status` (action `status`). The human view shows at most 5 changed paths per addon; `-v` shows every path the check listed (at most 50 per kind and folder).
+`--deep` with `--cached` is a usage error. `--cached` before any discovery cache exists also suggests `omaddons status` (action `status`). Plain `status` writes one file: the discovery cache `--cached` reads (`~/.cache/omaddons/discovery.json`), when its scan finds a client changed since the cache was written; `--cached` writes nothing. The human view shows at most 5 changed paths per addon; `-v` shows every path the check listed (at most 50 per kind and folder).
 
 Each client also shows:
 
@@ -2884,7 +2884,7 @@ The state directory honors `XDG_STATE_HOME`, the cache `XDG_CACHE_HOME`, and the
 | `build.rs` | The digest of the widget's files, so `status` compares an installed widget with this build without hashing them on every call |
 | `tests/`, `fuzz/` | Integration, contract, crash, concurrency and live tests; cargo-fuzz targets |
 
-**One doorbell.** Every write that can change what `status --cached` reports rings `~/.cache/omaddons/doorbell.json` once, after the write: each commit window (undo's too, after its lock is released), a recovery that rolled a journal back or forward, a release memo write that changed the memo (`outdated` and the other fetching commands), an errors memo write that changed it (`errors`), a backup inventory write that changed it (a backup made, or a stale summary rebuilt by `backup list`), each backup's history line, and every settings command. `status` never rings it, so it stays write-free and the bar widget can watch the cache directory instead of polling. The file is a signal, never a source of state: the widget reads `status --cached` again when it rings.
+**One doorbell.** Every write that can change what `status --cached` reports rings `~/.cache/omaddons/doorbell.json` once, after the write: each commit window (undo's too, after its lock is released), a recovery that rolled a journal back or forward, a release memo write that changed the memo (`outdated` and the other fetching commands), an errors memo write that changed it (`errors`), a backup inventory write that changed it (a backup made, or a stale summary rebuilt by `backup list`), each backup's history line, and every settings command. `status` never rings it (its one write is the discovery cache a plain scan refreshes), so the bar widget can watch the cache directory for the doorbell instead of polling. The file is a signal, never a source of state: the widget reads `status --cached` again when it rings.
 
 **Invariants the build enforces:**
 

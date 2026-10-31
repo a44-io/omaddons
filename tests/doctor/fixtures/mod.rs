@@ -42,6 +42,14 @@ pub fn all() -> Vec<Box<dyn Fixture>> {
     ]
 }
 
+/// Fixtures of a row's other states, beside its own in [`all`] (which holds one per row):
+/// `journal-preservation-incomplete` when recovery stops rather than resumes.
+pub fn variants() -> Vec<Box<dyn Fixture>> {
+    vec![Box::new(
+        fm_concurrency_primitives_journal_preservation_incomplete::JournalPreservationStops::default(),
+    )]
+}
+
 /// The test-only fixers' fixtures, in id order: rows registered only in debug builds run
 /// with `OMADDONS_TEST_FIXERS=1` (each fixture's `run_env`), so never among [`all`].
 pub fn test_fixers() -> Vec<Box<dyn Fixture>> {

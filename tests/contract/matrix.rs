@@ -988,7 +988,7 @@ fn apply() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|h| h["action"] == "apply");
+        .find(|h| h["action"] == "apply"); // ubs:ignore — an action name, not a secret
     assert_eq!(
         hint.map(|h| &h["argv"]),
         Some(&serde_json::json!(["omaddons", "apply", id])),
@@ -1426,6 +1426,42 @@ fn doctor() {
     insta::assert_json_snapshot!("doctor_explain_ok", s.stable(&c.envelope));
     let c = s.json(&["doctor", "explain", "fm-nope"], 64);
     insta::assert_json_snapshot!("doctor_explain_unknown", s.stable(&c.envelope));
+}
+
+/// A journal a newer omaddons started, on retail (F1): `status`'s issue and `doctor`'s
+/// finding in full, and every remediation and explain argv either offers runs.
+#[test]
+fn status_and_doctor_with_a_journal_too_new() {
+    let s = Scene::new();
+    common::doctor::plant::journal_too_new(&s.home, "retail");
+    let status = s.json(&["status"], 0);
+    insta::assert_json_snapshot!("status_with_a_journal_too_new", s.stable(&status.envelope));
+    let doctor = s.json(&["doctor"], 1);
+    insta::assert_json_snapshot!(
+        "doctor_diagnose_with_a_journal_too_new",
+        s.stable(&doctor.envelope)
+    );
+    let retail = status.envelope["data"]["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == "retail") // ubs:ignore — a client id, not a secret
+        .unwrap();
+    let finding = &doctor.envelope["findings"][0];
+    let argvs = [
+        &retail["issues"][0]["remediation"]["argv"],
+        &finding["remediation"]["argv"],
+        &finding["remediation"]["explain_argv"],
+    ];
+    for argv in argvs {
+        let words: Vec<&str> = argv
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w.as_str().unwrap())
+            .collect();
+        s.json(&words[1..], 0);
+    }
 }
 
 /// `doctor fix` and `doctor diff` (E6) on the Scene's clean home: nothing to repair, the

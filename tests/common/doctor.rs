@@ -748,18 +748,20 @@ pub mod plant {
         (tx, edit)
     }
 
-    /// What [`journal_unexpected_state`] moved: put back with [`Moved::undo`].
+    /// What a helper moved into [`aside`]: put back with [`Moved::undo`].
     pub struct Moved {
         /// Each path, and where it went.
         pub moves: Vec<(PathBuf, PathBuf)>,
-        /// The empty directory made in the live path's place.
-        pub made: PathBuf,
+        /// The empty directory made in a moved path's place, if any.
+        pub made: Option<PathBuf>,
     }
 
     impl Moved {
         /// Removes the empty directory, and moves each path back.
         pub fn undo(&self) {
-            fs::remove_dir(&self.made).unwrap();
+            if let Some(made) = &self.made {
+                fs::remove_dir(made).unwrap();
+            }
             for (path, away) in &self.moves {
                 fs::rename(away, path).unwrap();
             }
@@ -789,7 +791,13 @@ pub mod plant {
         }
         fs::create_dir(&to).unwrap();
         planted(json!({"moved_aside": ["staged WTF/", "live WTF/"], "made": "an empty live WTF/"}));
-        (tx, Moved { moves, made: to })
+        (
+            tx,
+            Moved {
+                moves,
+                made: Some(to),
+            },
+        )
     }
 
     /// `fm-concurrency_primitives-journal-step-unrecognized` (P0, `tx=<tx>` on
@@ -872,6 +880,27 @@ pub mod plant {
         planted(json!({"played_on": "the restored WTF/"}));
         recover_wtf_killed_at(home, target, "engine.preserve.intent");
         tx
+    }
+
+    /// [`journal_preservation_incomplete`], then the first item its pending intent names
+    /// (the played-on tree, where recovery found it) moved into [`aside`]: recovery can
+    /// place it neither there nor in the assembly, so it stops. Verdict
+    /// `PreservationIncomplete { stops: true }`; evidence `resumable: false`. Undo the move,
+    /// then [`recover_wtf`] completes it.
+    pub fn journal_preservation_stops(home: &Home, target: &str) -> (String, Moved) {
+        let tx = journal_preservation_incomplete(home, target);
+        let intent = journal_line(home, &tx, |line| line["type"] == "preserve");
+        let item = PathBuf::from(intent["items"][0]["path"].as_str().unwrap());
+        let away = aside(home).join(format!("{tx}.displaced"));
+        fs::rename(&item, &away).unwrap();
+        planted(json!({"moved_aside": "the displaced tree the intent names"}));
+        (
+            tx,
+            Moved {
+                moves: vec![(item, away)],
+                made: None,
+            },
+        )
     }
 
     /// The `recovered` backups on `target`, by id.

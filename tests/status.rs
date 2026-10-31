@@ -433,6 +433,111 @@ fn a_leftover_journal_needs_attention_and_a_held_lock_does_not() {
     assert_eq!(m.hashes(), before, "status changed nothing");
 }
 
+/// Stuck journals each get their own issue, title and `doctor explain`, beside a
+/// recoverable one's unchanged issue: on retail an unrecognized step, a copy of it a newer
+/// omaddons started and a copy naming classic's client dir; on classic a recoverable
+/// journal (its install proceeds: retail's journals only warn another client). Retail and
+/// classic need a home of their own, so no [`Machine`].
+#[test]
+fn a_stuck_journal_has_its_own_issue_title_and_remediation() {
+    use common::doctor::plant;
+    use serde_json::json;
+
+    let home = Home::new(&["wow", "wow_classic"]);
+    let (stuck, _) = plant::journal_step_unrecognized(&home, "retail");
+    let too_new = plant::copy_journal(&home, &stuck);
+    plant::edit_line(&home, &too_new, plant::is_prepared, |line| {
+        line["schema_version"] = json!("9.0");
+    });
+    let mismatch = plant::copy_journal(&home, &stuck);
+    let classic_dir = home.client("_classic_").display().to_string();
+    plant::edit_line(&home, &mismatch, plant::is_prepared, |line| {
+        line["client_dir"] = json!(classic_dir);
+    });
+    plant::journal_pending(&home, "classic");
+    assert_eq!(plant::journals(&home).len(), 4);
+
+    let hashes = || {
+        [
+            home.state(),
+            home.client("_retail_"),
+            home.client("_classic_"),
+        ]
+        .iter()
+        .map(|dir| Machine::hash(dir))
+        .collect::<Vec<_>>()
+    };
+    let before = hashes();
+    let envelope = home.run(&["status"]).expect(0);
+    let by_id = |id: &str| {
+        envelope["data"]["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["id"] == id)
+            .unwrap()
+            .clone()
+    };
+    let issues = |target: &Value| -> Vec<(String, String, Value)> {
+        target["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| {
+                (
+                    i["id"].as_str().unwrap().to_owned(),
+                    i["title"].as_str().unwrap().to_owned(),
+                    i["remediation"]["argv"].clone(),
+                )
+            })
+            .collect()
+    };
+    let explain = |id: &str| json!(["omaddons", "doctor", "explain", id, "-t", "retail"]);
+    let (retail, classic) = (by_id("retail"), by_id("classic"));
+    let mut found = issues(&retail);
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    let row = |id: &str, title: &str| (id.to_owned(), title.to_owned(), explain(id));
+    assert_eq!(
+        found,
+        [
+            row(
+                "fm-concurrency_primitives-journal-marker-mismatch",
+                "An interrupted change names a client directory that is no longer this client's",
+            ),
+            row(
+                "fm-concurrency_primitives-journal-step-unrecognized",
+                "An interrupted change stopped at step 1, which matches neither its before nor its after state",
+            ),
+            row(
+                "fm-concurrency_primitives-journal-too-new",
+                "An interrupted change (install) was started by a newer omaddons; this build cannot read its journal (format 9.0)",
+            ),
+        ],
+        "{retail:#}"
+    );
+    assert_eq!(
+        issues(&classic),
+        [(
+            "fm-concurrency_primitives-journal-pending".to_owned(),
+            "An interrupted change waits to be finished".to_owned(),
+            Value::Null,
+        )],
+        "{classic:#}"
+    );
+    for target in [&retail, &classic] {
+        assert_eq!(
+            target["attention"],
+            json!(["journal_pending"]),
+            "{target:#}"
+        );
+    }
+    assert_eq!(
+        envelope["data"]["summary"]["issues"]["p0"], 4,
+        "{envelope:#}"
+    );
+    assert_eq!(hashes(), before, "status changed nothing");
+}
+
 #[test]
 fn a_deleted_client_is_missing() {
     let m = Machine::new();

@@ -14,7 +14,7 @@ use omaddons::contract::actions::Action;
 
 use scenarios::{
     Builder, adoptable, behind, degraded, edited, errors_partial, errors_stale, errors_unread,
-    orphaned, stale_backups, target, unchecked, unmanaged, unplugged, unprotected,
+    orphaned, stale_backups, stuck, target, unchecked, unmanaged, unplugged, unprotected,
 };
 use serde_json::json;
 
@@ -203,6 +203,14 @@ mod scenarios {
         fs::write(dir.join(format!("{name}.toc")), "## Interface: 120105\n").unwrap();
     }
 
+    /// A journal a newer omaddons started, on retail (`journal-too-new`): no command is
+    /// recommended, and its issue's remediation is its `doctor explain`.
+    pub fn stuck() -> Scene {
+        let s = Scene::new();
+        common::doctor::plant::journal_too_new(&s.home, "retail");
+        s
+    }
+
     /// `status`'s target `id`.
     pub fn target<'a>(status: &'a Value, id: &str) -> Option<&'a Value> {
         status["data"]["targets"]
@@ -213,17 +221,20 @@ mod scenarios {
 
 #[test]
 fn every_status_recommendation_runs_on_a_fresh_home() {
-    let scenarios: [(&str, Builder, Action); 10] = [
-        ("edited", edited, Action::Reinstall),
-        ("behind", behind, Action::Update),
-        ("adoptable", adoptable, Action::Adopt),
-        ("unchecked", unchecked, Action::CheckUpdates),
-        ("orphaned", orphaned, Action::RemoveOrphans),
-        ("unplugged", unplugged, Action::ForgetTarget),
-        ("degraded", degraded, Action::Inspect),
-        ("unmanaged", unmanaged, Action::ListUnmanaged),
-        ("unprotected", unprotected, Action::BackupCreate),
-        ("stale_backups", stale_backups, Action::RefreshBackups),
+    // Each scenario's recommendation, `None` for one whose issue's remediation is all
+    // `status` offers (`stuck`).
+    let scenarios: [(&str, Builder, Option<Action>); 11] = [
+        ("edited", edited, Some(Action::Reinstall)),
+        ("behind", behind, Some(Action::Update)),
+        ("adoptable", adoptable, Some(Action::Adopt)),
+        ("unchecked", unchecked, Some(Action::CheckUpdates)),
+        ("orphaned", orphaned, Some(Action::RemoveOrphans)),
+        ("unplugged", unplugged, Some(Action::ForgetTarget)),
+        ("degraded", degraded, Some(Action::Inspect)),
+        ("unmanaged", unmanaged, Some(Action::ListUnmanaged)),
+        ("unprotected", unprotected, Some(Action::BackupCreate)),
+        ("stale_backups", stale_backups, Some(Action::RefreshBackups)),
+        ("stuck", stuck, None),
     ];
     let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut fixed: BTreeSet<String> = BTreeSet::new();
@@ -242,10 +253,12 @@ fn every_status_recommendation_runs_on_a_fresh_home() {
                 )
             })
             .collect();
-        assert!(
-            commands.iter().any(|(a, ..)| a == expected.wire()),
-            "{name}: no {expected} in {commands:?}"
-        );
+        if let Some(expected) = expected {
+            assert!(
+                commands.iter().any(|(a, ..)| a == expected.wire()),
+                "{name}: no {expected} in {commands:?}"
+            );
+        }
         for (action, argv, destructive) in &commands {
             seen.insert(action.clone());
             let registered = Action::from_wire(action);
@@ -303,7 +316,7 @@ fn every_status_recommendation_runs_on_a_fresh_home() {
             }
         }
         // Every issue's remediation command runs too, and clears its issue unless it
-        // is a look (`inspect`).
+        // is a look (`inspect`, or a `doctor explain`).
         for t in status["data"]["targets"].as_array().unwrap() {
             let id = t["id"].as_str().unwrap();
             for issue in t["issues"].as_array().unwrap() {
@@ -321,12 +334,14 @@ fn every_status_recommendation_runs_on_a_fresh_home() {
                         i["id"] == issue["id"] && i["addon"] == issue["addon"]
                     })
                 });
-                let look = issue["id"] == "fm-external_artifacts-ownership-transferred";
+                let look = issue["id"] == "fm-external_artifacts-ownership-transferred"
+                    || args.starts_with(&["doctor", "explain"]);
                 assert_eq!(left, look, "{name}: {issue} after {args:?}: {after:#}");
             }
         }
     }
     let expected: BTreeSet<String> = [
+        "fm-concurrency_primitives-journal-too-new",
         "fm-external_artifacts-managed-files-modified",
         "fm-external_artifacts-ownership-transferred",
         "fm-userland_state-target-vanished",
@@ -338,7 +353,7 @@ fn every_status_recommendation_runs_on_a_fresh_home() {
     assert!(missing.is_empty(), "no remediation ran for: {missing:?}");
     let expected: BTreeSet<String> = scenarios
         .iter()
-        .map(|(_, _, action)| action.wire().to_owned())
+        .filter_map(|(_, _, action)| action.map(|action| action.wire().to_owned()))
         .collect();
     let missing: Vec<&String> = expected.difference(&seen).collect();
     assert!(missing.is_empty(), "never recommended: {missing:?}");
