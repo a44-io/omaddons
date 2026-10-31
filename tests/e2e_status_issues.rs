@@ -31,9 +31,19 @@ use omaddons::state::store::SchemaVersion;
 use serde_json::{Value, json};
 
 const JOURNAL: &str = "fm-concurrency_primitives-journal-pending";
-const README_PROSE: &str =
-    "see \"journal_pending that does not clear\" under Troubleshooting in the README";
+const UNREADABLE: &str = "fm-concurrency_primitives-journal-unreadable";
+const TOO_NEW: &str = "fm-concurrency_primitives-journal-too-new";
+const UNATTRIBUTED: &str = "fm-concurrency_primitives-journal-unattributed";
 const WAITS_PROSE: &str = "quit the game if it is running, then run any change command; it finishes or rolls back the change first";
+
+/// A stuck journal's remediation: its `doctor explain`, with `-t` when it is a client's.
+fn explain(id: &str, target: Option<&str>) -> Value {
+    let mut argv = vec!["omaddons", "doctor", "explain", id];
+    if let Some(target) = target {
+        argv.extend(["-t", target]);
+    }
+    support::command(&argv, false)
+}
 
 use support::{
     Planted, assert_human_line, assert_issues, assert_registry_ids, assert_trees_unchanged,
@@ -374,16 +384,27 @@ fn journal_pending_is_one_issue_per_client_and_titled_by_its_journals() {
     assert_registry_ids(&log, ran.envelope());
     assert_trees_unchanged(&log, &trees);
 
+    // Each state is its own issue (F1): the settleable one keeps today's advice, the
+    // unreadable one is named and explained.
     log.step("plant an unreadable journal");
     plant_journal(&log, &home, key, Planted::Unreadable);
     record_trees(&log, &trees);
-    let manual = json!([issue(
-        JOURNAL,
-        "P0",
-        "An interrupted change needs manual repair",
-        None,
-        prose(README_PROSE)
-    )]);
+    let manual = json!([
+        issue(
+            JOURNAL,
+            "P0",
+            "An interrupted change waits to be finished",
+            None,
+            prose(WAITS_PROSE)
+        ),
+        issue(
+            UNREADABLE,
+            "P0",
+            "An interrupted change's journal holds lines this omaddons cannot read",
+            None,
+            explain(UNREADABLE, Some("retail"))
+        ),
+    ]);
     log.step("status --json");
     let ran = status(&log, &home, &[]);
     ran.ok();
@@ -407,7 +428,9 @@ fn journal_pending_is_one_issue_per_client_and_titled_by_its_journals() {
     assert_human_line(
         &log,
         &home,
-        &format!("  P0 An interrupted change needs manual repair → {README_PROSE}"),
+        &format!(
+            "  P0 An interrupted change's journal holds lines this omaddons cannot read → omaddons doctor explain {UNREADABLE} -t retail"
+        ),
     );
     log.step("status --check");
     status(&log, &home, &["--check"]).fails(6, "check_failed");
@@ -448,11 +471,11 @@ fn an_unattributed_journal_is_the_machines_issue() {
     let ran = status(&log, &home, &[]);
     ran.ok();
     let expected = json!([issue(
-        JOURNAL,
+        UNATTRIBUTED,
         "P0",
-        "An interrupted change needs manual repair",
+        "An interrupted change cannot be attributed to any client, so every change is refused",
         None,
-        prose(README_PROSE)
+        explain(UNATTRIBUTED, None)
     )]);
     assert_issues(
         &log,
@@ -811,11 +834,11 @@ fn several_states_rank_by_severity_id_and_addon() {
     ran.ok();
     let expected = json!([
         issue(
-            JOURNAL,
+            TOO_NEW,
             "P0",
-            "An interrupted change needs manual repair",
+            "An interrupted change (install) was started by a newer omaddons; this build cannot read its journal (format 2.0)",
             None,
-            prose(README_PROSE)
+            explain(TOO_NEW, Some("retail"))
         ),
         issue(
             "fm-state_files-record-folder-missing",
@@ -852,7 +875,9 @@ fn several_states_rank_by_severity_id_and_addon() {
     let human = log.run(&home, &["status"]);
     human.exit(0);
     let lines = [
-        format!("  P0 An interrupted change needs manual repair → {README_PROSE}"),
+        format!(
+            "  P0 An interrupted change (install) was started by a newer omaddons; this build cannot read its journal (format 2.0) → omaddons doctor explain {TOO_NEW} -t retail"
+        ),
         format!("  P1 {aaa}'s folder is gone → omaddons install {aaa} -t retail --reinstall"),
         format!(
             "  P2 {foo}'s files changed on disk (1 file) → omaddons install {foo} -t retail --reinstall"

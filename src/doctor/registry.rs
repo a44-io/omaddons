@@ -920,16 +920,12 @@ pub static FAILURE_MODES: &[FailureMode] = &[
 
 /// The manual remediations of the seven rows `status` publishes, built with `status`'s
 /// own hints so a finding's remediation equals `status`'s `commands`.
-fn journal_manual(f: &Finding) -> Remediation {
-    // A journal on a target that recovery can read is finished by the next change; any
-    // other needs manual repair.
-    if f.target.is_some() && f.evidence.reason.is_none() {
-        prose(
-            "quit the game if it is running, then run any change command; it finishes or rolls back the change first",
-        )
-    } else {
-        prose("see \"journal_pending that does not clear\" under Troubleshooting in the README")
-    }
+/// `journal-pending` is a journal recovery settles (F1): the next change finishes it, on
+/// a client or, for a doctor repair, on the machine.
+fn journal_manual(_: &Finding) -> Remediation {
+    prose(
+        "quit the game if it is running, then run any change command; it finishes or rolls back the change first",
+    )
 }
 
 /// A settings restore waiting for its game: recovery's own advice.
@@ -1975,9 +1971,24 @@ mod tests {
             };
             journal_manual(&f).command
         };
+        // `journal-pending` is only a journal recovery settles (F1): today's advice, on a
+        // client and, for a doctor repair, on the machine. Stuck states have rows of their
+        // own, remediated by their `doctor explain`.
         assert!(journal(None, true).starts_with("quit the game"));
-        assert!(journal(Some("journal_too_new"), true).starts_with("see \"journal_pending"));
-        assert!(journal(None, false).starts_with("see \"journal_pending"));
+        assert!(journal(None, false).starts_with("quit the game"));
+        let mut stuck = finding(row(ids::JOURNAL_TOO_NEW).unwrap(), true);
+        stuck.target = Some(target.clone());
+        assert_eq!(
+            explain_manual(&stuck).argv,
+            Some(argv_of(&[
+                "omaddons",
+                "doctor",
+                "explain",
+                ids::JOURNAL_TOO_NEW,
+                "-t",
+                "retail"
+            ]))
+        );
         let mut f = finding(row(ids::RECORD_FOLDER_MISSING).unwrap(), true);
         f.addon = Some("Details".to_owned());
         f.target = Some(target);

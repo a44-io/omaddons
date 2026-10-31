@@ -3,7 +3,7 @@
 
 pub mod budget;
 pub mod delegate;
-mod detectors;
+pub(crate) mod detectors;
 pub mod exit;
 pub mod explain;
 pub mod facts;
@@ -89,21 +89,17 @@ pub(crate) mod tests {
     use std::path::PathBuf;
 
     use super::facts::{
-        AddonDriftFact, MachineFacts, NewerFile, PendingJournal, StatusFacts, TargetFacts,
-        WidgetDrift,
+        AddonDriftFact, MachineFacts, NewerFile, StatusFacts, TargetFacts, WidgetDrift,
     };
     use super::registry::FAILURE_MODES;
     use super::registry::ids;
     use super::*;
     use crate::drift::DriftState;
-    use crate::engine::journal::Unrecoverable;
-    use crate::model::{TargetKey, TxId};
+    use crate::model::TargetKey;
     use crate::state::paths::Paths;
     use crate::state::store::SchemaVersion;
 
     pub(crate) const K: &str = "01M5ZQ7Y3KJ8V9W2X4C6B0N1RT";
-    pub(crate) const T: &str = "01M7A1B2C3D4E5F6G7H8J9K0MN";
-    const T2: &str = "01M7A1B2C3D4E5F6G7H8J9K0MP";
     const RECORD: &str = "/fixture/state/omaddons/targets/01M5ZQ7Y3KJ8V9W2X4C6B0N1RT.json";
 
     fn key() -> TargetKey {
@@ -118,17 +114,6 @@ pub(crate) mod tests {
             "/fixture/state",
             "/fixture/cache",
         )
-    }
-
-    fn tx(text: &str) -> TxId {
-        text.parse().unwrap()
-    }
-
-    fn journal(text: &str, unrecoverable: Option<Unrecoverable>) -> PendingJournal {
-        PendingJournal {
-            tx: tx(text),
-            unrecoverable,
-        }
     }
 
     fn drift(addon: &str, state: DriftState, files: u64) -> AddonDriftFact {
@@ -151,7 +136,6 @@ pub(crate) mod tests {
         TargetFacts {
             id: "retail".to_owned(),
             key: key(),
-            journals: Vec::new(),
             newer_record: None,
             vanished: None,
             degraded: 0,
@@ -159,10 +143,9 @@ pub(crate) mod tests {
         }
     }
 
-    /// Facts holding every one of the seven states.
+    /// Facts holding every state the facts rules read (the journal rows read journals).
     fn facts() -> StatusFacts {
         let target = TargetFacts {
-            journals: vec![journal(T, None)],
             newer_record: Some(NewerFile {
                 path: RECORD.into(),
                 on_disk: SchemaVersion::new(2, 0),
@@ -179,7 +162,6 @@ pub(crate) mod tests {
         StatusFacts {
             targets: vec![target],
             machine: MachineFacts {
-                unattributed: vec![journal(T2, Some(Unrecoverable::Unreadable))],
                 widget: Some(WidgetDrift {
                     version: Some("0.0.9".to_owned()),
                 }),
@@ -284,7 +266,6 @@ pub(crate) mod tests {
         assert_eq!(
             ids_of(&cached),
             [
-                ids::JOURNAL_PENDING,
                 ids::OWNERSHIP_TRANSFERRED,
                 ids::WIDGET_VERSION_DRIFT,
                 ids::STATE_VERSION_NEWER,
@@ -294,7 +275,7 @@ pub(crate) mod tests {
             "cached runs no managed-files-modified"
         );
         let quick = facts::findings(&facts(), Tier::Quick);
-        assert_eq!(ids_of(&quick).len(), 7, "{:?}", ids_of(&quick));
+        assert_eq!(ids_of(&quick).len(), 6, "{:?}", ids_of(&quick));
         assert!(ids_of(&quick).contains(&ids::MANAGED_FILES_MODIFIED));
     }
 
@@ -360,14 +341,6 @@ pub(crate) mod tests {
             .collect();
         let expected = [
             (
-                format!("{}@{K}:tx={T}", ids::JOURNAL_PENDING),
-                format!("retail · tx {T}"),
-            ),
-            (
-                format!("{}@machine:tx={T2}", ids::JOURNAL_PENDING),
-                format!("machine · tx {T2}"),
-            ),
-            (
                 format!("{}@{K}:addon=plater", ids::MANAGED_FILES_MODIFIED),
                 "retail/Plater".to_owned(),
             ),
@@ -394,39 +367,5 @@ pub(crate) mod tests {
             .map(|(instance, label)| (instance.as_str(), label.as_str()))
             .collect();
         assert_eq!(keys, expected);
-    }
-
-    #[test]
-    fn two_journals_are_two_findings() {
-        let target = TargetFacts {
-            journals: vec![
-                journal(T, None),
-                journal(T2, Some(Unrecoverable::Unreadable)),
-            ],
-            ..retail()
-        };
-        let found = Detection {
-            findings: facts::findings(
-                &StatusFacts {
-                    targets: vec![target],
-                    machine: MachineFacts::default(),
-                },
-                Tier::Cached,
-            ),
-            incomplete: Vec::new(),
-        };
-        let journals: Vec<(&str, &str)> = found
-            .findings
-            .iter()
-            .map(|f| (f.instance.as_str(), f.title.as_str()))
-            .collect();
-        assert_eq!(journals.len(), 2, "{journals:?}");
-        assert_ne!(journals[0].0, journals[1].0);
-        assert_eq!(journals[0].1, "An interrupted change waits to be finished");
-        assert_eq!(journals[1].1, "An interrupted change needs manual repair");
-        assert_eq!(
-            found.findings[1].evidence.reason,
-            Some("journal_unreadable")
-        );
     }
 }

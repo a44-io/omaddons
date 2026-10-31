@@ -16,9 +16,9 @@
 //! validated by listing, and never rebuild it; a client without a recent checkpoint is
 //! offered `backup create` whatever `auto_backup` says.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use jiff::Timestamp;
@@ -31,7 +31,7 @@ use super::drift::{DriftItem, needs_reinstall, reinstall_hint};
 use super::errors::CoverageState;
 use super::errors_status::{self, TargetErrors};
 use super::history::ChangeCounts;
-use super::issues::{self, Issue, SeverityCounts};
+use super::issues::{self, Issue, JOURNAL_ROWS, SeverityCounts, ids};
 use super::remembered::Remembered;
 use super::world::World;
 use crate::backup::inventory;
@@ -42,10 +42,13 @@ use crate::discover::cache::{CacheStats, DiscoveryMode};
 use crate::discover::running::detect_running;
 use crate::discover::shared::{SharedAddons, shared_addons};
 use crate::doctor;
+use crate::doctor::detectors::concurrency::{JournalInput, journal_observations, lock_observation};
 use crate::doctor::facts::{
-    AddonDriftFact, MachineFacts, NewerFile, PendingJournal, StatusFacts, TargetFacts, WidgetDrift,
+    AddonDriftFact, MachineFacts, NewerFile, StatusFacts, TargetFacts, WidgetDrift,
 };
-use crate::doctor::registry::Tier;
+use crate::doctor::finding::Finding;
+use crate::doctor::registry::{self, Tier};
+use crate::doctor::view::Journals;
 use crate::drift::{AddonDrift, DriftMode, DriftState};
 use crate::engine::journal;
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
@@ -53,7 +56,7 @@ use crate::errors::observe::{Observe, read_target};
 use crate::errors::{ack, memo};
 use crate::fsx::{LockState, probe_global};
 use crate::inventory::{Counts, Depth, FolderClass, Inventory, inventory_shared};
-use crate::limits::ERRORS_MAX_TOTAL_BYTES;
+use crate::limits::{DOCTOR_SCAN_MAX_ENTRIES, ERRORS_MAX_TOTAL_BYTES};
 use crate::model::{Actor, AddonState, FolderName, Ref, RunId, Target, TargetKey, TxKind};
 use crate::omarchy::status::{self as omarchy_status, WidgetInfo};
 use crate::output::{Outcome, Style, table};
@@ -641,7 +644,42 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
     let running = detect_running(&found);
     warnings.extend(running.warning());
     let pending = journal::pending(&world.paths)?;
-    let held = matches!(probe_global(&world.paths)?, LockState::Held { .. });
+    let lock = probe_global(&world.paths)?;
+    // The journal and lock rows (F1), as the doctor reports them: every client's journals
+    // diagnosed, a settings restore's game judged by the selected clients' running state
+    // (an unselected client's counts as possibly running).
+    let mut client_dirs: Vec<PathBuf> = world
+        .resolved
+        .targets
+        .iter()
+        .map(|d| d.target.client_dir.clone())
+        .chain(world.resolved.missing.iter().map(|e| e.client_dir.clone()))
+        .collect();
+    client_dirs.sort();
+    client_dirs.dedup();
+    let sv_writable = |dir: &Path| {
+        running.unavailable.is_none()
+            && found.iter().any(|t| t.client_dir == dir)
+            && !running.clients.contains_key(dir)
+    };
+    let journals = Journals::read(
+        &world.paths,
+        &client_dirs,
+        &sv_writable,
+        DOCTOR_SCAN_MAX_ENTRIES,
+    )?;
+    let target_id = |key: TargetKey| {
+        world
+            .registry
+            .entry(&key)
+            .map_or_else(|| key.to_string(), |e| e.id.clone())
+    };
+    let journal_found = journal_findings(&journals, &lock, &target_id, crate::clock::now());
+    let journal_keys: BTreeSet<TargetKey> = journal_found
+        .iter()
+        .filter(|f| JOURNAL_ROWS.contains(&f.id))
+        .filter_map(|f| f.target.as_ref().map(|t| t.key))
+        .collect();
     // Read once: what earlier commands learned about releases.
     let remembered = Remembered::load(&world);
     let mut notes: Vec<String> = remembered.note.iter().cloned().collect();
@@ -720,7 +758,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             .as_ref()
             .map_or_else(AddonCounts::default, |l| counts(&l.value));
         let mut attention = Vec::new();
-        if !held && t.key.is_some() && pending.iter().any(|p| p.target == t.key) {
+        if t.key.is_some_and(|key| journal_keys.contains(&key)) {
             attention.push(Attention::JournalPending);
         }
         if record
@@ -873,7 +911,6 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             facts.push(target_facts(
                 &target,
                 key,
-                pending_journals(&pending, Some(key), held),
                 newer_record,
                 None,
                 &missing_folders,
@@ -884,7 +921,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
     for e in &missing {
         let record = load_record(&world.paths, &e.key)?.value;
         let mut attention = vec![Attention::TargetMissing];
-        if !held && pending.iter().any(|p| p.target == Some(e.key)) {
+        if journal_keys.contains(&e.key) {
             attention.insert(0, Attention::JournalPending);
         }
         let target = StatusTarget {
@@ -928,7 +965,6 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
         facts.push(target_facts(
             &target,
             e.key,
-            pending_journals(&pending, Some(e.key), held),
             None,
             Some(e.client_dir.clone()),
             &|_| Vec::new(),
@@ -949,14 +985,10 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             .with_fix(Suggestion::command(["omaddons", "omarchy", "install"])),
         );
     }
-    // A pending journal that names no client (it cannot be read) is attention too: no
-    // target carries it, and it needs manual repair.
-    let unattributed = !held && pending.iter().any(|p| p.target.is_none());
-
     // Each issue is a finding of the failure-mode registry, by its rows' own rules over
     // the facts gathered above: `--cached` runs the `cached` rows, plain `status` the
-    // `quick` ones too.
-    let machine = machine_facts(widget.as_ref(), pending_journals(&pending, None, held));
+    // `quick` ones too. The journal and lock rows (all `cached`) read the journals.
+    let machine = machine_facts(widget.as_ref());
     let facts = StatusFacts {
         targets: facts,
         machine,
@@ -966,7 +998,19 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
     } else {
         Tier::Quick
     };
-    let found = doctor::facts::findings(&facts, max_tier);
+    let mut found = doctor::facts::findings(&facts, max_tier);
+    // A journal on a client `status` does not list is the machine's without `-t`, so a P0
+    // is never invisible; with `-t`, it is out of scope like the client.
+    let listed: BTreeSet<TargetKey> = targets.iter().filter_map(|t| t.key).collect();
+    for mut f in journal_found {
+        if f.target.as_ref().is_some_and(|t| !listed.contains(&t.key)) {
+            if ctx.target.is_some() {
+                continue;
+            }
+            f.target = None;
+        }
+        found.push(f);
+    }
     for t in &mut targets {
         t.issues = t
             .key
@@ -974,15 +1018,14 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             .unwrap_or_default();
     }
     let issues = issues::for_machine(&found);
+    // An interrupted change no listed client carries is attention too.
+    let unattributed = found
+        .iter()
+        .any(|f| JOURNAL_ROWS.contains(&f.id) && f.target.is_none());
 
     let (mut commands, mut first_fix) = recommendations(&targets, check_due, widget_outdated);
     if unattributed && first_fix.is_none() {
-        first_fix = Some((
-            "an interrupted change needs manual repair: its journal cannot be read".to_owned(),
-            Suggestion::text(
-                "see \"journal_pending that does not clear\" under Troubleshooting in the README",
-            ),
-        ));
+        first_fix = journal_fix(&issues, None);
     }
     if let Some(selector) = ctx.target.as_deref() {
         scope_update(&mut commands, selector);
@@ -999,7 +1042,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             targets,
             journal: JournalState {
                 pending: pending.len(),
-                in_progress: held,
+                in_progress: matches!(lock, LockState::Held { .. }),
             },
             needs_attention,
             summary,
@@ -1284,7 +1327,6 @@ fn change_of(world: &World, entries: &[&HistoryEntry]) -> LastChange {
 pub(crate) fn target_facts(
     target: &StatusTarget,
     key: TargetKey,
-    journals: Vec<PendingJournal>,
     newer_record: Option<NewerFile>,
     vanished: Option<PathBuf>,
     missing_folders: &dyn Fn(&str) -> Vec<PathBuf>,
@@ -1293,11 +1335,6 @@ pub(crate) fn target_facts(
     TargetFacts {
         id: target.id.clone(),
         key,
-        journals: if raised(Attention::JournalPending) {
-            journals
-        } else {
-            Vec::new()
-        },
         newer_record: newer_record.filter(|_| raised(Attention::StateVersionNewer)),
         vanished: vanished.filter(|_| raised(Attention::TargetMissing)),
         degraded: if raised(Attention::AddonDegraded) {
@@ -1319,35 +1356,65 @@ pub(crate) fn target_facts(
     }
 }
 
-/// The pending journals naming `target` (`None`: naming no client), oldest first, while
-/// no omaddons process holds the lock; a held lock means a change is committing, not
-/// interrupted.
-pub(crate) fn pending_journals(
-    pending: &[journal::Pending],
-    target: Option<TargetKey>,
-    held: bool,
-) -> Vec<PendingJournal> {
-    if held {
-        return Vec::new();
-    }
-    pending
-        .iter()
-        .filter(|p| p.target == target)
-        .map(|p| PendingJournal {
-            tx: p.tx,
-            unrecoverable: p.unrecoverable,
-        })
-        .collect()
+/// The journal and lock findings (F1), as the doctor's rows report them: every journal
+/// that is neither live nor committed while no other process holds the lock (`status`
+/// never holds it), and a holder that has kept it too long.
+pub(crate) fn journal_findings(
+    journals: &Journals,
+    lock: &LockState,
+    target_id: &dyn Fn(TargetKey) -> String,
+    now: Timestamp,
+) -> Vec<Finding> {
+    let input = JournalInput {
+        journals,
+        lock: Some(lock),
+        caller_holds_lock: false,
+        target_id,
+    };
+    let mut found: Vec<Finding> = journal_observations(&input)
+        .into_iter()
+        .filter_map(|(id, obs)| registry::row(id).map(|row| row.finding(obs)))
+        .collect();
+    found.extend(
+        lock_observation(lock, false, now)
+            .and_then(|obs| registry::row(ids::LOCK_HELD_LONG).map(|row| row.finding(obs))),
+    );
+    found
 }
 
-/// The machine's facts: the journals that name no client, and the bar widget when it
-/// needs a reinstall.
-pub(crate) fn machine_facts(
-    widget: Option<&WidgetInfo>,
-    unattributed: Vec<PendingJournal>,
-) -> MachineFacts {
+/// The `--check` fix for a scope's interrupted changes: its most blocking journal issue
+/// (by severity, `journal-pending` last within one). A settleable change keeps today's
+/// message and advice; a stuck one names its state, with its `doctor explain` (or its
+/// advice). `target` is the client's id; `None` for the machine's.
+fn journal_fix(issues: &[Issue], target: Option<&str>) -> Option<(String, Suggestion)> {
+    let issue = issues
+        .iter()
+        .filter(|i| JOURNAL_ROWS.contains(&i.id))
+        .min_by_key(|i| (i.severity, i.id == ids::JOURNAL_PENDING))?;
+    if issue.id == ids::JOURNAL_PENDING
+        && let Some(id) = target
+    {
+        return Some((
+            format!("an interrupted transaction for {id} awaits recovery"),
+            Suggestion::text(
+                "run any omaddons command that changes addons (install, remove, undo); it recovers the transaction first",
+            ),
+        ));
+    }
+    let fix = match &issue.remediation.argv {
+        Some(argv) => Suggestion::command(argv.clone()),
+        None => Suggestion::text(issue.remediation.command.clone().unwrap_or_default()),
+    };
+    let message = match target {
+        Some(id) => format!("{id}: {}", issue.title),
+        None => issue.title.clone(),
+    };
+    Some((message, fix))
+}
+
+/// The machine's facts: the bar widget when it needs a reinstall.
+pub(crate) fn machine_facts(widget: Option<&WidgetInfo>) -> MachineFacts {
     MachineFacts {
-        unattributed,
         widget: widget.filter(|w| w.needs_reinstall()).map(|w| WidgetDrift {
             version: w.version.clone(),
         }),
@@ -1463,13 +1530,17 @@ fn attention_fixes(targets: &[StatusTarget]) -> (Vec<CommandHint>, Option<(Strin
     for t in targets {
         for a in &t.attention {
             let (message, fix, hint) = match a {
-                Attention::JournalPending => (
-                    format!("an interrupted transaction for {} awaits recovery", t.id),
-                    Suggestion::text(
-                        "run any omaddons command that changes addons (install, remove, undo); it recovers the transaction first",
-                    ),
-                    None,
-                ),
+                Attention::JournalPending => {
+                    let (message, fix) = journal_fix(&t.issues, Some(&t.id)).unwrap_or_else(|| {
+                        (
+                            format!("an interrupted transaction for {} awaits recovery", t.id),
+                            Suggestion::text(
+                                "run any omaddons command that changes addons (install, remove, undo); it recovers the transaction first",
+                            ),
+                        )
+                    });
+                    (message, fix, None)
+                }
                 Attention::StateVersionNewer => (
                     format!("{}'s record was written by a newer omaddons", t.id),
                     Suggestion::text("upgrade omaddons"),
@@ -1945,6 +2016,89 @@ mod tests {
     }
 
     /// The human lines `status` prints for issues (E1 part 1), pinned before the move onto
+    /// `--check`'s journal fix takes the most blocking state: a stuck one names itself and
+    /// gives its `doctor explain`; a settleable one keeps today's text byte for byte; the
+    /// game-waiting one gives its advice; the machine's names its title.
+    #[test]
+    fn check_fix_prefers_the_blocking_state() {
+        let issue = |id: &'static str, severity, title: &str, argv: Option<&[&str]>| Issue {
+            id,
+            severity,
+            title: title.to_owned(),
+            addon: None,
+            remediation: issues::Remediation {
+                command: Some(argv.map_or_else(|| "advice".to_owned(), |a| a.join(" "))),
+                argv: argv.map(|a| a.iter().map(|w| (*w).to_owned()).collect()),
+                destructive: false,
+            },
+        };
+        let pending = issue(
+            ids::JOURNAL_PENDING,
+            issues::Severity::P0,
+            "An interrupted change waits to be finished",
+            None,
+        );
+        let too_new_argv = [
+            "omaddons",
+            "doctor",
+            "explain",
+            ids::JOURNAL_TOO_NEW,
+            "-t",
+            "retail",
+        ];
+        let too_new = issue(
+            ids::JOURNAL_TOO_NEW,
+            issues::Severity::P0,
+            "An interrupted change was started by a newer omaddons",
+            Some(&too_new_argv),
+        );
+        let waits = issue(
+            ids::JOURNAL_WAITS_FOR_GAME,
+            issues::Severity::P2,
+            "An interrupted change to WTF/ waits for the game to exit",
+            None,
+        );
+        let (message, fix) =
+            journal_fix(&[pending.clone(), too_new.clone()], Some("retail")).unwrap();
+        assert_eq!(
+            message,
+            "retail: An interrupted change was started by a newer omaddons"
+        );
+        assert_eq!(fix.argv().unwrap(), too_new_argv);
+        let (message, fix) = journal_fix(std::slice::from_ref(&pending), Some("retail")).unwrap();
+        assert_eq!(
+            message,
+            "an interrupted transaction for retail awaits recovery"
+        );
+        assert_eq!(
+            (fix.display(), fix.argv()),
+            (
+                "run any omaddons command that changes addons (install, remove, undo); it recovers the transaction first",
+                None
+            )
+        );
+        let (message, fix) = journal_fix(&[waits], Some("retail")).unwrap();
+        assert_eq!(
+            message,
+            "retail: An interrupted change to WTF/ waits for the game to exit"
+        );
+        assert_eq!((fix.display(), fix.argv()), ("advice", None));
+        let unattributed_argv = ["omaddons", "doctor", "explain", ids::JOURNAL_UNATTRIBUTED];
+        let unattributed = issue(
+            ids::JOURNAL_UNATTRIBUTED,
+            issues::Severity::P0,
+            "An interrupted change cannot be attributed to any client, so every change is refused",
+            Some(&unattributed_argv),
+        );
+        let (message, fix) = journal_fix(&[unattributed], None).unwrap();
+        assert_eq!(
+            message,
+            "An interrupted change cannot be attributed to any client, so every change is refused"
+        );
+        assert_eq!(fix.argv().unwrap(), unattributed_argv);
+        assert!(journal_fix(&[], Some("retail")).is_none());
+    }
+
     /// the failure-mode registry: each target's issues come from `issues_of_case`, so this
     /// snapshot moves with the adapter.
     #[test]

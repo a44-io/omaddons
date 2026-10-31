@@ -11,6 +11,7 @@
 use schemars::JsonSchema;
 use serde::Serialize;
 
+use crate::doctor::detectors::concurrency;
 use crate::doctor::finding::Finding;
 use crate::model::TargetKey;
 
@@ -18,10 +19,42 @@ pub use crate::doctor::finding::Severity;
 /// The failure-mode ids (vision D20): the registry's.
 pub use crate::doctor::registry::ids;
 
-/// The failure modes `status` runs: exactly the seven it publishes, so its output does
-/// not change while the doctor's catalog grows, until F8 moves it onto every `cached` and
-/// `quick` row.
-pub const STATUS_FAILURE_MODES: &[&str] = &ids::ALL;
+/// The failure modes `status` runs: the seven it publishes, and the journal and lock
+/// rows `journal-pending` was split into (F1), so its output does not change while the
+/// rest of the doctor's catalog grows, until F8 moves it onto every `cached` and `quick`
+/// row.
+pub const STATUS_FAILURE_MODES: &[&str] = &[
+    ids::JOURNAL_PENDING,
+    ids::STATE_VERSION_NEWER,
+    ids::RECORD_FOLDER_MISSING,
+    ids::MANAGED_FILES_MODIFIED,
+    ids::OWNERSHIP_TRANSFERRED,
+    ids::TARGET_VANISHED,
+    ids::WIDGET_VERSION_DRIFT,
+    ids::JOURNAL_WAITS_FOR_GAME,
+    ids::JOURNAL_TOO_NEW,
+    ids::JOURNAL_UNREADABLE,
+    ids::JOURNAL_UNEXPECTED_STATE,
+    ids::JOURNAL_STEP_UNRECOGNIZED,
+    ids::JOURNAL_MARKER_MISMATCH,
+    ids::JOURNAL_UNATTRIBUTED,
+    ids::JOURNAL_PRESERVATION_INCOMPLETE,
+    ids::LOCK_HELD_LONG,
+];
+
+/// The rows of an interrupted change (F1's 1-9): a client's attention item, and grouped
+/// into one issue per row and scope.
+pub const JOURNAL_ROWS: [&str; 9] = [
+    ids::JOURNAL_PENDING,
+    ids::JOURNAL_WAITS_FOR_GAME,
+    ids::JOURNAL_TOO_NEW,
+    ids::JOURNAL_UNREADABLE,
+    ids::JOURNAL_UNEXPECTED_STATE,
+    ids::JOURNAL_STEP_UNRECOGNIZED,
+    ids::JOURNAL_MARKER_MISMATCH,
+    ids::JOURNAL_UNATTRIBUTED,
+    ids::JOURNAL_PRESERVATION_INCOMPLETE,
+];
 
 /// What addresses an issue: a command (`argv`), or prose (`argv` `null`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -60,21 +93,33 @@ pub fn for_target(findings: &[Finding], key: TargetKey) -> Vec<Issue> {
     )
 }
 
-/// One issue per finding, except that a scope's pending journals, one finding each
-/// (M4-D30), show as one issue: the first that needs manual repair (its evidence says
-/// why), else the first. Ranked by severity, then id, then addon.
+/// One issue per finding, except that a scope's journals, one finding each (M4-D30),
+/// show as one issue per row: the finding's own title for one, the row's plural for
+/// more (F1). Ranked by severity, then id, then addon.
 fn ranked<'a>(findings: impl Iterator<Item = &'a Finding>) -> Vec<Issue> {
-    let mut journal: Option<&Finding> = None;
+    let mut journals: Vec<(&'static str, Vec<&Finding>)> = Vec::new();
     let mut issues = Vec::new();
     for f in findings {
-        if f.id != ids::JOURNAL_PENDING {
+        if !JOURNAL_ROWS.contains(&f.id) {
             issues.push(issue_of(f));
-        } else if journal.is_none_or(|j| j.evidence.reason.is_none() && f.evidence.reason.is_some())
-        {
-            journal = Some(f);
+        } else if let Some((_, group)) = journals.iter_mut().find(|(id, _)| *id == f.id) {
+            group.push(f);
+        } else {
+            journals.push((f.id, vec![f]));
         }
     }
-    issues.extend(journal.map(issue_of));
+    for (id, group) in journals {
+        let Some(first) = group.first() else {
+            continue;
+        };
+        let mut issue = issue_of(first);
+        if group.len() > 1
+            && let Some(plural) = concurrency::plural_title(id, group.len())
+        {
+            issue.title = plural;
+        }
+        issues.push(issue);
+    }
     issues.sort_by(|a, b| (a.severity, a.id, &a.addon).cmp(&(b.severity, b.id, &b.addon)));
     issues
 }
@@ -296,12 +341,19 @@ pub(crate) mod tests {
     use super::*;
     use crate::app::drift::DriftItem;
     use crate::app::status::{
-        Attention, StatusTarget, machine_facts, pending_journals, target_facts, test_target,
+        Attention, StatusTarget, journal_findings, machine_facts, target_facts, test_target,
     };
-    use crate::doctor::facts::{MachineFacts, NewerFile, PendingJournal, StatusFacts};
+    use crate::doctor::facts::{MachineFacts, NewerFile, StatusFacts};
     use crate::doctor::registry::Tier;
+    use crate::doctor::view::Journals;
     use crate::drift::DriftState;
-    use crate::engine::journal::{Pending, Unrecoverable};
+    use crate::engine::journal::{Phase, Unrecoverable};
+    use crate::engine::repair_action::JournalFamily;
+    use crate::engine::simulate::{
+        Diagnoses, Direction, JournalDiagnosis, JournalEvidence, JournalVerdict, ProtectedPaths,
+        UnattributedCause,
+    };
+    use crate::fsx::LockState;
     use crate::model::TxId;
     use crate::omarchy::status::WidgetInfo;
     use crate::state::records::TargetRecord;
@@ -323,7 +375,6 @@ pub(crate) mod tests {
         let facts = target_facts(
             &target,
             key,
-            pending(journals),
             Some(NewerFile {
                 path: PathBuf::from(format!("/fixture/state/omaddons/targets/{key}.json")),
                 on_disk: SchemaVersion::new(2, 0),
@@ -336,7 +387,8 @@ pub(crate) mod tests {
                 ))]
             },
         );
-        let found = detect_with(vec![facts], MachineFacts::default(), cached);
+        let mut found = detect_with(vec![facts], MachineFacts::default(), cached);
+        found.extend(journal_issues_found(journals, Some(key)));
         for_target(&found, key)
     }
 
@@ -345,15 +397,85 @@ pub(crate) mod tests {
         widget: Option<&WidgetInfo>,
         journals: &[Journal],
     ) -> Vec<Issue> {
-        let found = detect_with(Vec::new(), machine_facts(widget, pending(journals)), false);
+        let mut found = detect_with(Vec::new(), machine_facts(widget), false);
+        found.extend(journal_issues_found(journals, None));
         for_machine(&found)
     }
 
-    fn pending(journals: &[Journal]) -> Vec<PendingJournal> {
-        journals
+    /// `journals` as E11 would diagnose them on `target` (`None`: naming no client), and
+    /// `status`'s findings of them under a free lock. A settleable journal is a prepared
+    /// folder journal rolled back (a doctor repair, on the machine); one that is too new
+    /// or does not read is that, or unattributed when it names no client.
+    fn journal_issues_found(journals: &[Journal], target: Option<TargetKey>) -> Vec<Finding> {
+        let diagnoses = journals
             .iter()
-            .map(|&(tx, unrecoverable)| PendingJournal { tx, unrecoverable })
-            .collect()
+            .map(|&(tx, why)| diagnosis_of(tx, why, target))
+            .collect();
+        let journals = Journals {
+            pending: Vec::new(),
+            diagnoses: Diagnoses {
+                journals: diagnoses,
+                unlisted: None,
+            },
+            counts: BTreeMap::new(),
+        };
+        let target_id = |key: TargetKey| {
+            if key.to_string() == KEY {
+                "retail".to_owned()
+            } else {
+                key.to_string()
+            }
+        };
+        journal_findings(
+            &journals,
+            &LockState::Free,
+            &target_id,
+            "2026-10-31T12:00:00Z".parse().unwrap(),
+        )
+    }
+
+    fn diagnosis_of(
+        tx: TxId,
+        why: Option<Unrecoverable>,
+        target: Option<TargetKey>,
+    ) -> JournalDiagnosis {
+        let verdict = match (why, target) {
+            (None, _) => JournalVerdict::Recoverable {
+                phase: Phase::Prepared,
+                direction: Direction::Back,
+            },
+            (Some(Unrecoverable::TooNew), Some(_)) => JournalVerdict::TooNew,
+            (Some(Unrecoverable::Unreadable), Some(_)) => JournalVerdict::Unreadable,
+            (Some(Unrecoverable::TooNew), None) => JournalVerdict::Unattributed {
+                cause: UnattributedCause::TooNew,
+            },
+            (Some(Unrecoverable::Unreadable), None) => JournalVerdict::Unattributed {
+                cause: UnattributedCause::Unreadable,
+            },
+        };
+        JournalDiagnosis {
+            tx,
+            family: if target.is_none() && why.is_none() {
+                JournalFamily::Repair
+            } else {
+                JournalFamily::Folder
+            },
+            path: PathBuf::from(format!("/fixture/state/omaddons/journal/{tx}.jsonl")),
+            target,
+            client_dir: target.map(|_| PathBuf::from("/fixture/client")),
+            phase: Phase::Prepared,
+            repair_phase: None,
+            live: false,
+            verdict,
+            evidence: JournalEvidence {
+                version: why.map(|w| match w {
+                    Unrecoverable::TooNew => crate::state::store::SchemaVersion::new(9, 0),
+                    Unrecoverable::Unreadable => crate::state::store::SchemaVersion::new(1, 1),
+                }),
+                ..JournalEvidence::default()
+            },
+            protected: ProtectedPaths::default(),
+        }
     }
 
     fn detect_with(
@@ -470,19 +592,56 @@ pub(crate) mod tests {
         }
     }
 
+    /// A stuck journal names its state, and its remediation is its `doctor explain`, which
+    /// parses; a settleable one keeps today's prose.
     #[test]
-    fn a_journal_that_needs_manual_repair_says_so() {
-        let t = test_target("retail", 0, &[Attention::JournalPending], 0);
-        for why in [Unrecoverable::TooNew, Unrecoverable::Unreadable] {
+    fn stuck_rows_remediate_with_doctor_explain() {
+        use clap::Parser;
+        let mut t = test_target("retail", 0, &[Attention::JournalPending], 0);
+        t.key = Some(KEY.parse().unwrap());
+        for (why, id, title) in [
+            (
+                Unrecoverable::TooNew,
+                ids::JOURNAL_TOO_NEW,
+                "An interrupted change was started by a newer omaddons; this build cannot read its journal (format 9.0)",
+            ),
+            (
+                Unrecoverable::Unreadable,
+                ids::JOURNAL_UNREADABLE,
+                "An interrupted change's journal holds lines this omaddons cannot read",
+            ),
+        ] {
             let issues = registry_issues(&t, &[unrecoverable(0, why)], false);
-            assert_eq!(
-                issues[0].title, "An interrupted change needs manual repair",
-                "{why:?}"
-            );
-            assert_eq!(issues[0].remediation.argv, None);
+            let issue = issues.iter().find(|i| i.id == id).unwrap();
+            assert_eq!(issue.title, title, "{why:?}");
+            let argv = issue.remediation.argv.clone().unwrap();
+            assert_eq!(argv, ["omaddons", "doctor", "explain", id, "-t", "retail"]);
+            assert!(crate::cli::Cli::try_parse_from(&argv).is_ok(), "{argv:?}");
+            assert!(!issue.remediation.destructive);
         }
+        let machine = registry_machine_issues(None, &[unrecoverable(0, Unrecoverable::Unreadable)]);
+        assert_eq!(
+            machine[0].remediation.argv.as_deref(),
+            Some(
+                &["omaddons", "doctor", "explain", ids::JOURNAL_UNATTRIBUTED].map(str::to_owned)[..]
+            ),
+            "machine-scoped: no -t"
+        );
+    }
+
+    #[test]
+    fn recoverable_and_waiting_rows_keep_prose() {
+        let mut t = test_target("retail", 0, &[Attention::JournalPending], 0);
+        t.key = Some(KEY.parse().unwrap());
         let other = registry_issues(&t, &[recoverable(0)], false);
         assert_eq!(other[0].title, "An interrupted change waits to be finished");
+        assert_eq!(other[0].remediation.argv, None);
+        assert_eq!(
+            other[0].remediation.command.as_deref(),
+            Some(
+                "quit the game if it is running, then run any change command; it finishes or rolls back the change first"
+            )
+        );
     }
 
     #[test]
@@ -758,50 +917,90 @@ pub(crate) mod tests {
         registry_machine_issues(case.widget.as_ref(), &case.journals)
     }
 
+    /// One issue per row and client: the instance's title for one, the plural for more.
     #[test]
-    fn two_journals_are_one_issue() {
-        let t = test_target("retail", 0, &[Attention::JournalPending], 0);
-        let manual = registry_issues(
+    fn journal_issues_group_per_client_and_row() {
+        let mut t = test_target("retail", 0, &[Attention::JournalPending], 0);
+        t.key = Some(KEY.parse().unwrap());
+        let issues = registry_issues(
             &t,
-            &[recoverable(0), unrecoverable(1, Unrecoverable::Unreadable)],
+            &[
+                unrecoverable(0, Unrecoverable::TooNew),
+                unrecoverable(1, Unrecoverable::TooNew),
+                recoverable(2),
+            ],
             false,
         );
-        assert_eq!(manual.len(), 1, "{manual:?}");
-        assert_eq!(manual[0].title, "An interrupted change needs manual repair");
+        let journal: Vec<(&str, &str)> = issues
+            .iter()
+            .filter(|i| JOURNAL_ROWS.contains(&i.id))
+            .map(|i| (i.id, i.title.as_str()))
+            .collect();
+        assert_eq!(
+            journal,
+            [
+                (
+                    ids::JOURNAL_PENDING,
+                    "An interrupted change waits to be finished"
+                ),
+                (
+                    ids::JOURNAL_TOO_NEW,
+                    "2 interrupted changes were started by a newer omaddons"
+                ),
+            ],
+            "{issues:?}"
+        );
         let waits = registry_issues(&t, &[recoverable(0), recoverable(1)], false);
-        assert_eq!(waits.len(), 1, "{waits:?}");
-        assert_eq!(waits[0].title, "An interrupted change waits to be finished");
+        let pending: Vec<&Issue> = waits
+            .iter()
+            .filter(|i| i.id == ids::JOURNAL_PENDING)
+            .collect();
+        assert_eq!(pending.len(), 1, "{waits:?}");
+        assert_eq!(
+            pending[0].title,
+            "2 interrupted changes wait to be finished"
+        );
     }
 
+    /// A held lock hides every journal (a change is committing); a holder older than
+    /// `LOCK_HELD_LONG` is the machine's `lock-held-long`, never a journal row.
     #[test]
     fn a_held_lock_hides_journal_findings() {
+        use crate::fsx::HolderInfo;
         let key: TargetKey = KEY.parse().unwrap();
-        let pending = vec![
-            Pending {
-                tx: tx(0),
-                target: Some(key),
-                unrecoverable: None,
+        let journals = Journals {
+            pending: Vec::new(),
+            diagnoses: Diagnoses {
+                journals: vec![
+                    diagnosis_of(tx(0), None, Some(key)),
+                    diagnosis_of(tx(1), Some(Unrecoverable::Unreadable), None),
+                ],
+                unlisted: None,
             },
-            Pending {
-                tx: tx(1),
-                target: None,
-                unrecoverable: Some(Unrecoverable::Unreadable),
-            },
-        ];
-        assert_eq!(pending_journals(&pending, Some(key), false).len(), 1);
-        assert_eq!(pending_journals(&pending, None, false).len(), 1);
-        // A held lock: `status` raises no `journal_pending`, and the facts hold none.
-        let held_target = pending_journals(&pending, Some(key), true);
-        let held_machine = pending_journals(&pending, None, true);
-        assert!(held_target.is_empty() && held_machine.is_empty());
-        let mut t = test_target("retail", 0, &[], 0);
-        t.key = Some(key);
-        let facts = target_facts(&t, key, held_target, None, None, &|_| Vec::new());
-        let found = detect_with(vec![facts], machine_facts(None, held_machine), false);
-        assert!(
-            found.iter().all(|f| f.id != ids::JOURNAL_PENDING),
-            "{found:?}"
+            counts: BTreeMap::new(),
+        };
+        let id = |k: TargetKey| k.to_string();
+        let now: jiff::Timestamp = "2026-10-31T12:00:00Z".parse().unwrap();
+        let free = journal_findings(&journals, &LockState::Free, &id, now);
+        assert_eq!(free.len(), 2, "{free:?}");
+        let held = LockState::Held {
+            holder: Some(HolderInfo {
+                pid: 7,
+                command: "omaddons update".to_owned(),
+                started_at: "2026-10-31T11:00:00Z".parse().unwrap(),
+            }),
+        };
+        let found = journal_findings(&journals, &held, &id, now);
+        let ids: Vec<&str> = found.iter().map(|f| f.id).collect();
+        assert_eq!(
+            ids,
+            [ids::LOCK_HELD_LONG],
+            "lock_held_long_is_a_machine_issue"
         );
+        let issues = for_machine(&found);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].remediation.argv, None, "advice only");
+        assert!(!JOURNAL_ROWS.contains(&issues[0].id), "never attention");
     }
 
     /// One target and the machine, as `status` builds them: the attention it raises from
@@ -938,25 +1137,32 @@ pub(crate) mod tests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(512))]
 
+        /// Every issue but the journals' is today's: F1 names each journal state, so
+        /// those differ from the legacy titles by design (`journal_*` tests pin them).
         #[test]
         fn the_registry_path_equals_the_legacy_path(g in generated()) {
+            let not_journal = |issues: Vec<Issue>| -> serde_json::Value {
+                let kept: Vec<Issue> = issues
+                    .into_iter()
+                    .filter(|i| !JOURNAL_ROWS.contains(&i.id))
+                    .collect();
+                serde_json::to_value(kept).unwrap()
+            };
             let (t, journals) = g.target();
             let reason = journals
                 .iter()
                 .find_map(|(_, why)| why.map(Unrecoverable::reason));
-            let legacy = serde_json::to_value(legacy::issues_for(&t, reason)).unwrap();
-            let registry = serde_json::to_value(registry_issues(&t, &journals, g.cached)).unwrap();
+            let legacy = not_journal(legacy::issues_for(&t, reason));
+            let registry = not_journal(registry_issues(&t, &journals, g.cached));
             prop_assert_eq!(legacy, registry, "{:?}", g);
 
             let widget = g.widget();
             let unattributed = g.unattributed();
-            let legacy = serde_json::to_value(legacy::machine_issues(
+            let legacy = not_journal(legacy::machine_issues(
                 Some(&widget),
                 !unattributed.is_empty(),
-            ))
-            .unwrap();
-            let registry =
-                serde_json::to_value(registry_machine_issues(Some(&widget), &unattributed)).unwrap();
+            ));
+            let registry = not_journal(registry_machine_issues(Some(&widget), &unattributed));
             prop_assert_eq!(legacy, registry, "{:?}", g);
         }
     }

@@ -5,7 +5,6 @@
 use jiff::Timestamp;
 
 use crate::doctor::budget::Budget;
-use crate::doctor::facts::{PendingJournal, StatusFacts};
 use crate::doctor::finding::{
     Confidence, Detected, Evidence, Incomplete, IncompleteLimit, Observation, Subject,
 };
@@ -20,7 +19,6 @@ use crate::fsx::LockState;
 use crate::limits::{DOCTOR_SCAN_MAX_ENTRIES, LOCK_HELD_LONG};
 use crate::model::TargetKey;
 
-const MANUAL: &str = "An interrupted change needs manual repair";
 const WAITS: &str = "An interrupted change waits to be finished";
 
 // ---------------------------------------------------------------------------------------
@@ -280,10 +278,6 @@ fn phase_of(d: &JournalDiagnosis) -> Option<JournalPhase> {
 
 /// `status`'s title for `n > 1` instances of row `id` on one client; `None` for a row
 /// with no such title (one lock).
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "status's issue titles read it once part 2 lands")
-)]
 pub fn plural_title(id: &str, n: usize) -> Option<String> {
     let rest = match id {
         ids::JOURNAL_PENDING => "interrupted changes wait to be finished",
@@ -440,46 +434,6 @@ pub fn lock_observation(
             ..Evidence::default()
         },
     })
-}
-
-// ---------------------------------------------------------------------------------------
-// `status`'s rule for `journal-pending` (part 2 moves `status` onto the mapping above).
-
-/// `journal-pending`'s rule as `status` runs it today: one finding per pending journal,
-/// on its target, or on the machine when it names none. A journal that names no client
-/// needs manual repair whatever it says, since no target's change can recover it.
-pub(crate) fn journal_pending_in(facts: &StatusFacts) -> Vec<Observation> {
-    let on_targets = facts.targets.iter().flat_map(|t| {
-        t.journals.iter().map(|j| {
-            let title = if j.unrecoverable.is_some() {
-                MANUAL
-            } else {
-                WAITS
-            };
-            observation(Subject::target(&t.id, t.key), j, title)
-        })
-    });
-    let on_machine = facts
-        .machine
-        .unattributed
-        .iter()
-        .map(|j| observation(Subject::machine(), j, MANUAL));
-    on_targets.chain(on_machine).collect()
-}
-
-fn observation(subject: Subject, journal: &PendingJournal, title: &str) -> Observation {
-    Observation {
-        subject: subject.tx(journal.tx),
-        title: title.to_owned(),
-        confidence: Confidence::High,
-        addon: None,
-        folder: None,
-        evidence: Evidence {
-            tx: Some(journal.tx),
-            reason: journal.unrecoverable.map(|u| u.reason()),
-            ..Evidence::default()
-        },
-    }
 }
 
 #[cfg(test)]

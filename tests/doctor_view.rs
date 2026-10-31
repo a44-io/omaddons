@@ -60,7 +60,7 @@ const MOVED: [&str; 7] = [
 ];
 
 use support::{
-    Agreement, Tuple, agreement_home, argv, assert_clean, broken_config, diagnose, edit_record,
+    Agreement, agreement_home, argv, assert_clean, broken_config, diagnose, edit_record,
     expected_skips, finding_tuples, install, json_of, load_view, plant_journal, set_mode,
     status_tuples, touch_every_layer, try_diagnose, view_with,
 };
@@ -1063,21 +1063,14 @@ fn the_moved_detectors_agree_with_status() {
     log.json("status's issues", &issues);
     log.tree("home", home.env.root());
 
-    // The planted journal cannot be read: the doctor reports it under its own row (F1
-    // part 1), while `status` keeps `journal-pending` until part 2 puts it on the same
-    // mapping. Everything else agrees exactly.
+    // The planted journal cannot be read: both name its own row (F1).
     let view = load_view(&home);
     let mut selected = MOVED.to_vec();
     selected.push(ids::JOURNAL_UNREADABLE);
     let report = diagnose(&log, &view, &Selection::only(&selected));
     log.step("assert");
-    let journal = |t: &Tuple| t.0 == ids::JOURNAL_PENDING || t.0 == ids::JOURNAL_UNREADABLE;
-    let findings: Vec<Tuple> = finding_tuples(&report.findings)
-        .into_iter()
-        .filter(|t| !journal(t))
-        .collect();
-    let others: Vec<Tuple> = issues.iter().filter(|t| !journal(t)).cloned().collect();
-    log.assert_eq("findings equal status's issues", &findings, &others);
+    let findings = finding_tuples(&report.findings);
+    log.assert_eq("findings equal status's issues", &findings, &issues);
     let unreadable: Vec<Option<String>> = report
         .of(ids::JOURNAL_UNREADABLE)
         .iter()
@@ -1087,10 +1080,6 @@ fn the_moved_detectors_agree_with_status() {
         "the journal's own row",
         &unreadable,
         &vec![Some("retail".to_owned())],
-    );
-    assert!(
-        issues.iter().any(|t| t.0 == ids::JOURNAL_PENDING),
-        "status still reports it as journal-pending: {issues:?}"
     );
     // Every planted state is there: the agreement is not of two empty lists.
     let seen: std::collections::BTreeSet<&str> = report.findings.iter().map(|f| f.id).collect();

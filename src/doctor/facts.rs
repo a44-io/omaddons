@@ -1,27 +1,27 @@
-//! The facts of the seven failure modes `status` publishes, and each one's rule over
-//! them: `status` gathers the facts from what it already computed and runs the rules
-//! ([`findings`]); the doctor's detectors gather the same facts from the view's layers and
-//! run the same rules, so the two never disagree.
+//! The facts of the failure modes `status` publishes, but the journal rows, and each
+//! one's rule over them: `status` gathers the facts from what it already computed and
+//! runs the rules ([`findings`]); the doctor's detectors gather the same facts from the
+//! view's layers and run the same rules, so the two never disagree. The journal rows read
+//! the journals themselves, in `status` as in the doctor (F1).
 //!
 //! Temporary by design: F8 puts `status` on the registry's detectors and removes this
 //! module.
 
 use std::path::PathBuf;
 
-use super::detectors::{concurrency, external, plugins, schemas, state_files, userland};
+use super::detectors::{external, plugins, schemas, state_files, userland};
 use super::finding::{Finding, Observation};
 use super::registry::{Tier, failure_modes, ids};
 use crate::drift::DriftState;
-use crate::engine::journal::Unrecoverable;
-use crate::model::{TargetKey, TxId};
+use crate::model::TargetKey;
 use crate::state::store::SchemaVersion;
 
 /// One failure mode's rule: its observations in the facts.
 type Rule = fn(&StatusFacts) -> Vec<Observation>;
 
-/// The rule of each failure mode `status` publishes.
-const RULES: [(&str, Rule); 7] = [
-    (ids::JOURNAL_PENDING, concurrency::journal_pending_in),
+/// The rule of each failure mode `status` publishes but the journal rows, which read the
+/// journals themselves (F1: `status::journal_findings`).
+const RULES: [(&str, Rule); 6] = [
     (ids::STATE_VERSION_NEWER, schemas::state_version_newer_in),
     (
         ids::RECORD_FOLDER_MISSING,
@@ -67,9 +67,6 @@ pub struct StatusFacts {
 pub struct TargetFacts {
     pub id: String,
     pub key: TargetKey,
-    /// The pending journals naming it, oldest first, while no omaddons process holds the
-    /// lock; otherwise none (`journal_pending`).
-    pub journals: Vec<PendingJournal>,
     /// Its record, written by a newer omaddons (`state_version_newer`).
     pub newer_record: Option<NewerFile>,
     /// Its client directory, when that is gone (`target_missing`).
@@ -87,20 +84,12 @@ impl TargetFacts {
         Self {
             id: id.into(),
             key,
-            journals: Vec::new(),
             newer_record: None,
             vanished: None,
             degraded: 0,
             drift: Vec::new(),
         }
     }
-}
-
-/// A pending journal and why recovery cannot settle it by itself, when it cannot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PendingJournal {
-    pub tx: TxId,
-    pub unrecoverable: Option<Unrecoverable>,
 }
 
 /// A state file a newer omaddons wrote.
@@ -128,8 +117,6 @@ pub struct AddonDriftFact {
 /// The facts of no client.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MachineFacts {
-    /// Pending journals that name no client, while no omaddons process holds the lock.
-    pub unattributed: Vec<PendingJournal>,
     /// The bar widget, when `status` asks for its reinstall.
     pub widget: Option<WidgetDrift>,
 }

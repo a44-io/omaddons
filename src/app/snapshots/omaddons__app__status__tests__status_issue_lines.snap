@@ -2,14 +2,15 @@
 source: src/app/status.rs
 expression: text
 ---
-12 issues (P0, P1, P2, P3)
+14 issues (P0, P1, P2, P3)
 classic  mainline  12.1.5  live  -        0 managed · 0 unmanaged · 0 protected
   P2 1 addon lost a folder to another addon → omaddons list -t classic -v
 gone     mainline  12.1.5  live  missing  0 managed · 0 unmanaged · 0 protected
   P0 An interrupted change waits to be finished → quit the game if it is running, then run any change command; it finishes or rolls back the change first
   P2 The client's directory is gone → omaddons targets rm gone
 retail   mainline  12.1.5  live  missing  0 managed · 0 unmanaged · 0 protected
-  P0 An interrupted change needs manual repair → see "journal_pending that does not clear" under Troubleshooting in the README
+  P0 An interrupted change waits to be finished → quit the game if it is running, then run any change command; it finishes or rolls back the change first
+  P0 An interrupted change was started by a newer omaddons; this build cannot read its journal (format 9.0) → omaddons doctor explain fm-concurrency_primitives-journal-too-new -t retail
   P0 State was written by a newer omaddons → upgrade omaddons
   P1 Aaa's folder is gone → omaddons install Aaa -t retail --reinstall
   P1 Details's folder is gone → omaddons install Details -t retail --reinstall

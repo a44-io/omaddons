@@ -12,7 +12,7 @@ pub(crate) fn widget_version_drift(view: &DoctorView, _: &Selection, _: &mut Bud
     let widget = view.widget().and_then(|layer| layer.info.as_ref());
     let facts = StatusFacts {
         targets: Vec::new(),
-        machine: machine_facts(widget, Vec::new()),
+        machine: machine_facts(widget),
     };
     Detected::complete(widget_version_drift_in(&facts))
 }

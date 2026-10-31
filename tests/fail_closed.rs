@@ -244,12 +244,18 @@ fn a_journal_this_build_cannot_read_is_left_for_manual_repair() {
         );
         assert!(journal.is_file(), "{reason}: still kept");
 
-        // A reader says it needs manual repair.
+        // A reader names the state, and points at its evidence (F1).
         let status = m.run(&["status", "-t", "retail"]).expect(0);
         let retail = &status["data"]["targets"][0];
         assert_eq!(retail["attention"], json!(["journal_pending"]), "{status}");
+        let id = match reason {
+            "journal_too_new" => "fm-concurrency_primitives-journal-too-new",
+            _ => "fm-concurrency_primitives-journal-unreadable",
+        };
+        assert_eq!(retail["issues"][0]["id"], id, "{status}");
         assert_eq!(
-            retail["issues"][0]["title"], "An interrupted change needs manual repair",
+            retail["issues"][0]["remediation"]["argv"],
+            json!(["omaddons", "doctor", "explain", id, "-t", "retail"]),
             "{status}"
         );
     }
