@@ -900,3 +900,197 @@ pub fn predict_then_compare(
     }
     (result, diagnoses)
 }
+
+/// A doctor run's directory name, as E3's runtime names one.
+pub const REPAIR_RUN_ID: &str = "2026-10-30T20-45-20Z__01M678YN3A22K2ASPW2VZH88A8";
+
+/// The stuck journal [`repair_home`] leaves for a suspension to set aside.
+pub const REPAIR_STUCK_TX: &str = "01JB8Q2VA00000000000000009";
+
+/// The account folder of [`repair_home`]'s `WTF/`: a name no message may carry.
+pub const REPAIR_ACCOUNT: &str = "WOWACCOUNTFIXTURE";
+
+/// A home to lower repairs in (E5): its state (a target record and a stuck journal with
+/// its in-flight lock), its config (a 0644 GitHub credential), its cache (a blob and a
+/// temporary link a crash left), an agent skill (with a temporary link beside it), the
+/// bar widget's folder, one client the repair is planned for and one it is not, and a
+/// published doctor run. The planned client's AddOns hold
+/// `Stray/`, `Wrap/Inner/` (a wrapped addon), `Same/Same/` (one wrapped in its own name),
+/// `Dup/Stray/` and `Case/STRAY/` (which would land on `Stray`), `Blizzard_Foo/` and
+/// `Linked`, a developer's symlinked checkout; its `WTF/` holds settings and an
+/// account's SavedVariables, and its stage what the stuck journal staged.
+pub struct RepairHome {
+    /// Keeps the tempdir alive for the home's lifetime.
+    _root: tempfile::TempDir,
+    /// Everything the home holds is below it.
+    pub base: PathBuf,
+    pub paths: Paths,
+    pub client: ClientPaths,
+    pub key: TargetKey,
+    /// Registered in the scope table, but not one of `planned`.
+    pub unplanned: ClientPaths,
+    /// The client a repair here may touch.
+    pub planned: Vec<(PathBuf, TargetKey)>,
+    pub skill_dirs: Vec<PathBuf>,
+    pub scopes: ScopeTable,
+    pub run: crate::engine::repair::RepairRun,
+}
+
+impl RepairHome {
+    /// `<client>/Interface/AddOns/<rel>`.
+    pub fn addons(&self, rel: &str) -> PathBuf {
+        self.client.addons().join(rel)
+    }
+
+    pub fn skill_file(&self) -> PathBuf {
+        self.paths.skill_dir().join("SKILL.md")
+    }
+
+    pub fn credential(&self) -> PathBuf {
+        self.paths.credential_file("github")
+    }
+
+    pub fn record(&self) -> PathBuf {
+        self.paths.target_record(&self.key)
+    }
+
+    pub fn blob(&self) -> PathBuf {
+        self.paths.blobs_dir().join("ab")
+    }
+
+    /// The temporary link a crash inside `symlink_atomic` left in the cache.
+    pub fn temp_link(&self) -> PathBuf {
+        self.paths.cache_dir().join("tmp/.omaddons-link")
+    }
+
+    pub fn stuck(&self) -> TxId {
+        REPAIR_STUCK_TX.parse().unwrap()
+    }
+}
+
+pub fn repair_home() -> RepairHome {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let root = tempfile::tempdir().unwrap();
+    let base = std::fs::canonicalize(root.path()).unwrap();
+    let home = base.join("home");
+    let paths = Paths::with_roots(
+        &home,
+        home.join(".config"),
+        home.join(".local/state"),
+        home.join(".cache"),
+    );
+    let write = |path: &Path, text: &str| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    let key = TargetKey::new();
+    write(&paths.target_record(&key), "{}\n");
+    let stuck: TxId = REPAIR_STUCK_TX.parse().unwrap();
+    write(&paths.journal(&stuck), "{\"line\":\"prepared\"}\n");
+    write(&paths.inflight_lock(&stuck), "");
+    let credential = paths.credential_file("github");
+    write(&credential, "ghp_fixture\n");
+    std::fs::set_permissions(&credential, std::fs::Permissions::from_mode(0o644)).unwrap();
+    write(&paths.blobs_dir().join("ab"), "blob\n");
+    std::fs::create_dir_all(paths.cache_dir().join("tmp")).unwrap();
+    symlink("../blobs/ab", paths.cache_dir().join("tmp/.omaddons-link")).unwrap();
+    let skill = paths.skill_dir().join("SKILL.md");
+    write(&skill, "---\nname: omaddons\n---\nold guide\n");
+    std::fs::set_permissions(&skill, std::fs::Permissions::from_mode(0o644)).unwrap();
+    // A temporary link outside omaddons' own folders, which the doctor never moves.
+    symlink("SKILL.md", paths.skill_dir().join(".omaddons-guide")).unwrap();
+    // The widget's folder: a write scope of the doctor's with no quarantine of its own.
+    std::fs::create_dir_all(paths.omarchy_plugin_dir()).unwrap();
+
+    let client_dir = base.join("games/wow/_retail_");
+    let client = ClientPaths::new(&client_dir);
+    let addons = client.addons();
+    folder(&addons.join("Stray"), "stray");
+    write(&addons.join("Stray/stray.lua"), "-- stray\n");
+    folder(&addons.join("Wrap/Inner"), "inner");
+    write(&addons.join("Wrap/README.txt"), "wrapped by a zip\n");
+    folder(&addons.join("Same/Same"), "same");
+    write(&addons.join("Same/notes.txt"), "wrapped in its own name\n");
+    folder(&addons.join("Dup/Stray"), "a second stray");
+    folder(&addons.join("Case/STRAY"), "a stray in capitals");
+    folder(&addons.join("Blizzard_Foo"), "the client's");
+    folder(&base.join("dev/Linked"), "a checkout");
+    symlink(base.join("dev/Linked"), addons.join("Linked")).unwrap();
+    write(&client.wtf().join("Config.wtf"), "SET realmList \"x\"\n");
+    write(
+        &client
+            .wtf()
+            .join(format!("Account/{REPAIR_ACCOUNT}/SavedVariables/Stray.lua")),
+        "StrayDB = {}\n",
+    );
+    write(
+        &client.stage(&stuck).join("Foo/Foo.toc"),
+        "## Interface: 120105\n",
+    );
+    mark(&client_dir, key);
+
+    let unplanned_dir = base.join("games/wow/_classic_");
+    let unplanned = ClientPaths::new(&unplanned_dir);
+    folder(&unplanned.addons().join("Other"), "another client's");
+    mark(&unplanned_dir, TargetKey::new());
+
+    let run_dir = paths.doctor_runs_dir().join(REPAIR_RUN_ID);
+    std::fs::create_dir_all(&run_dir).unwrap();
+    let scopes = ScopeTable::new(&paths, &[client_dir.clone(), unplanned_dir], None).unwrap();
+    RepairHome {
+        _root: root,
+        base,
+        skill_dirs: vec![paths.skill_dir()],
+        paths,
+        client,
+        key,
+        unplanned,
+        planned: vec![(client_dir, key)],
+        scopes,
+        run: crate::engine::repair::RepairRun {
+            dir: run_dir,
+            id: REPAIR_RUN_ID.to_owned(),
+        },
+    }
+}
+
+/// Every entry below `dir`: its path, mode, mtime, inode and content (a symlink's
+/// target). Equal hashes mean nothing below `dir` was written, created, removed, moved
+/// or even touched.
+pub fn tree_hash(dir: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+    let mut entries = Vec::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(at) = pending.pop() {
+        for child in std::fs::read_dir(&at).unwrap() {
+            let path = child.unwrap().path();
+            let meta = std::fs::symlink_metadata(&path).unwrap();
+            let content = if meta.is_dir() {
+                pending.push(path.clone());
+                Vec::new()
+            } else if meta.file_type().is_symlink() {
+                std::fs::read_link(&path)
+                    .unwrap()
+                    .as_os_str()
+                    .as_bytes()
+                    .to_vec()
+            } else {
+                std::fs::read(&path).unwrap()
+            };
+            let rel = path.strip_prefix(dir).unwrap().to_path_buf();
+            let stat = (meta.mode(), meta.mtime(), meta.mtime_nsec(), meta.ino());
+            entries.push((rel, stat, content));
+        }
+    }
+    entries.sort();
+    let mut hash = Sha256::new();
+    for (rel, (mode, mtime, nsec, ino), content) in entries {
+        hash.update(rel.as_os_str().as_bytes());
+        hash.update(format!("\0{mode:o}\0{mtime}\0{nsec}\0{ino}\0").as_bytes());
+        hash.update(&content);
+        hash.update(b"\n");
+    }
+    hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}

@@ -602,8 +602,9 @@ impl Step {
     }
 }
 
-/// Absolute, valid UTF-8 and free of `..`.
-fn check_path(seq: u32, path: &Path) -> Result<(), StepError> {
+/// Absolute, valid UTF-8 and free of `..`: what every path a step names must be. Lowering
+/// asks it of a fix's own paths before it resolves them, which would hide a `..`.
+pub(crate) fn check_path(seq: u32, path: &Path) -> Result<(), StepError> {
     let path_buf = || path.to_path_buf();
     if path.to_str().is_none() {
         return Err(StepError::NotUtf8 {
@@ -820,6 +821,9 @@ pub enum QuarantineRoot {
     /// A victim in a client (`<meta>` or `Interface/AddOns`):
     /// `<meta>/snapshots/<repair tx>.repair/quarantine/<path relative to client_dir>`.
     Client { client_dir: PathBuf },
+    /// A victim in an agent skill directory, which is under the home directory but none
+    /// of omaddons' own: `<run>/quarantine/skill/<path relative to the home directory>`.
+    Skill,
 }
 
 /// A stuck journal and every artifact of it, to set aside as one suspension (M4-D38).

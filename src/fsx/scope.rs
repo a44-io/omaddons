@@ -3,7 +3,9 @@
 //! Every path `mutate()` touches must fall inside a row that admits the session's
 //! writer; anything else is refused with `scope_denied`. The deny-list runs first and
 //! cannot be overridden: `blizzard_*` AddOns folders in any case (`protected_folder`)
-//! and the global lock file (`scope_denied`). Matching works on normalized absolute
+//! and the global lock file (`scope_denied`). It also refuses an AddOns folder name that
+//! is no valid folder name, except the one a doctor flatten parks a wrapper under, for
+//! the doctor alone (`.omaddons-flatten-<tx>`). Matching works on normalized absolute
 //! paths and touches no file; only building the table canonicalizes its roots.
 
 use std::collections::BTreeSet;
@@ -15,7 +17,7 @@ use std::path::{Component, Path, PathBuf};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::limits::SKILL_DIRS_MAX;
 use crate::model::FolderName;
-use crate::state::paths::{Paths, REPAIR_SUFFIX};
+use crate::state::paths::{Paths, REPAIR_SUFFIX, flatten_provisional_tx};
 
 /// Who is writing, which decides the rows a session may use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -493,7 +495,7 @@ impl ScopeTable {
             .into_iter()
             .any(|root| path.starts_with(root));
         if !in_app_dirs {
-            check_protected(path)?;
+            check_protected(path, writer)?;
         }
         let candidates = self.candidates(path);
         if candidates.is_empty() {
@@ -643,14 +645,23 @@ impl ScopeTable {
 }
 
 /// The deny-list's AddOns rule: the first component under any `Interface/AddOns` must
-/// be a valid, non-protected folder name.
-fn check_protected(path: &Path) -> std::result::Result<(), Refusal> {
+/// be a valid, non-protected folder name. One exception, for the doctor alone: a
+/// flatten's provisional folder, `.omaddons-flatten-<tx>` exactly (M4-D31), which no
+/// valid folder name can spell.
+fn check_protected(path: &Path, writer: Writer) -> std::result::Result<(), Refusal> {
     let components: Vec<&OsStr> = normal_components(path).collect();
     for window in components.windows(3) {
         let [interface, addons, folder] = window else {
             continue;
         };
         if !(eq_ci(interface, "Interface") && eq_ci(addons, "AddOns")) {
+            continue;
+        }
+        if writer == Writer::Doctor
+            && folder
+                .to_str()
+                .is_some_and(|n| flatten_provisional_tx(n).is_some())
+        {
             continue;
         }
         let name = folder.to_string_lossy();
@@ -1202,6 +1213,72 @@ mod tests {
             )
             .unwrap_err();
         assert!(matches!(refusal, Refusal::ScopeDenied(_)), "{refusal:?}");
+    }
+
+    #[test]
+    fn a_flattens_provisional_folder_is_the_doctors_alone() {
+        let tx = "01JB8Q2VA00000000000000000";
+        let addons = "games/wow/_retail_/Interface/AddOns";
+        let none = owned(&[]);
+        for (case, rel, access, want) in [
+            (
+                "provisional",
+                format!("{addons}/.omaddons-flatten-{tx}"),
+                Access::Rename,
+                vec![Writer::Doctor],
+            ),
+            (
+                "below_it",
+                format!("{addons}/.omaddons-flatten-{tx}/Same"),
+                Access::Rename,
+                vec![Writer::Doctor],
+            ),
+            (
+                "lowercase_id",
+                format!("{addons}/.omaddons-flatten-{}", tx.to_ascii_lowercase()),
+                Access::Rename,
+                vec![],
+            ),
+            (
+                "not_an_id",
+                format!("{addons}/.omaddons-flatten-Same"),
+                Access::Rename,
+                vec![],
+            ),
+            (
+                "other_temp_name",
+                format!("{addons}/.omaddons-{tx}"),
+                Access::Rename,
+                vec![],
+            ),
+            (
+                "protected_below_it",
+                format!("{addons}/.omaddons-flatten-{tx}/Interface/AddOns/Blizzard_Foo"),
+                Access::Write,
+                vec![],
+            ),
+            (
+                "unregistered_client",
+                format!("games/unregistered/Interface/AddOns/.omaddons-flatten-{tx}"),
+                Access::Rename,
+                vec![],
+            ),
+        ] {
+            let got = allowed(&rel, access, &none);
+            assert_eq!(got, want, "{case}: {rel} → {got:?}");
+        }
+        let refusal = table()
+            .check(
+                Writer::Mutating,
+                &none,
+                &p(&format!("{addons}/.omaddons-flatten-{tx}")),
+                Access::Rename,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(&refusal, Refusal::ScopeDenied(m) if m.contains("starts with a dot")),
+            "another writer meets the folder-name rule: {refusal:?}"
+        );
     }
 
     #[test]

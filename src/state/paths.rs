@@ -36,6 +36,20 @@ const WTF_SUFFIX: &str = ".wtf";
 /// parses such names; retention only matches the suffix, to leave them alone.
 pub const REPAIR_SUFFIX: &str = ".repair";
 
+/// The provisional name a doctor flatten gives a wrapper whose inner folder has the
+/// wrapper's own name (M4-D31): `Interface/AddOns/.omaddons-flatten-<tx>`, for the
+/// moment between its first and second rename. No folder of that name is an addon, so
+/// the game never loads it, and only the doctor's writer may touch it
+/// ([`flatten_provisional_tx`]).
+pub const FLATTEN_PREFIX: &str = ".omaddons-flatten-";
+
+/// The repair a flatten's provisional AddOns folder is named for: exactly
+/// [`FLATTEN_PREFIX`] and a transaction id as it is written, nothing else.
+pub fn flatten_provisional_tx(name: &str) -> Option<TxId> {
+    let id = name.strip_prefix(FLATTEN_PREFIX)?;
+    id.parse::<TxId>().ok().filter(|tx| tx.to_string() == id)
+}
+
 /// The transaction a journal (its `.jsonl` stripped), stage or snapshot entry is named
 /// for: a bare id, or one with [`WTF_SUFFIX`]. Names with `.repair` are not parsed here,
 /// on purpose: they belong to the repair family, which older builds must not see (M4-D31).
@@ -616,6 +630,11 @@ impl ClientPaths {
             .join(format!("{tx}{REPAIR_SUFFIX}"))
     }
 
+    /// A flatten's provisional AddOns folder ([`FLATTEN_PREFIX`]).
+    pub fn flatten_provisional(&self, tx: &TxId) -> PathBuf {
+        self.addons().join(format!("{FLATTEN_PREFIX}{tx}"))
+    }
+
     /// Where `prune()` stages client-side victims before deleting them.
     pub fn trash(&self) -> PathBuf {
         self.meta_dir().join("trash")
@@ -703,8 +722,33 @@ mod tests {
                 client.snapshots_repair(&tx),
                 format!("/wow/_retail_/Interface/.omaddons/snapshots/{TX}.repair"),
             ),
+            (
+                "flatten_provisional",
+                client.flatten_provisional(&tx),
+                format!("/wow/_retail_/Interface/AddOns/.omaddons-flatten-{TX}"),
+            ),
         ] {
             assert_eq!(got, PathBuf::from(&want), "{case}: {got:?} → {want}");
+        }
+    }
+
+    #[test]
+    fn a_flattens_provisional_name_is_read_exactly() {
+        let tx: TxId = TX.parse().unwrap();
+        for (case, name, want) in [
+            ("provisional", format!(".omaddons-flatten-{TX}"), Some(tx)),
+            (
+                "lowercase_id",
+                format!(".omaddons-flatten-{}", TX.to_ascii_lowercase()),
+                None,
+            ),
+            ("no_id", ".omaddons-flatten-".to_owned(), None),
+            ("not_an_id", ".omaddons-flatten-Foo".to_owned(), None),
+            ("suffixed", format!(".omaddons-flatten-{TX}.old"), None),
+            ("other_temp", format!(".omaddons-{TX}"), None),
+            ("bare_id", TX.to_owned(), None),
+        ] {
+            assert_eq!(flatten_provisional_tx(&name), want, "{case}: {name}");
         }
     }
 
