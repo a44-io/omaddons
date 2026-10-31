@@ -1795,14 +1795,20 @@ It exits 0 when `DONE_OK` and 1 when `DONE_FINDINGS`. `run_id`, `run_dir`, `star
 | `fm-schemas-state-version-newer` | P0 | cached | State was written by a newer omaddons |
 | `fm-configs-config-parse-error` | P1 | cached | `config.toml` cannot be read |
 | `fm-state_files-record-folder-missing` | P1 | cached | A managed addon's folder is gone |
+| `fm-external_artifacts-ownership-conflict` | P1 | default | Several addons of one client's record claim one AddOns folder |
 | `fm-state_files-detector-crashed` | P1 | runtime | A check stopped with an internal error |
 | `fm-external_artifacts-managed-files-modified` | P2 | quick | A managed addon's files changed on disk |
 | `fm-external_artifacts-ownership-transferred` | P2 | cached | Addons lost a folder to another addon |
+| `fm-external_artifacts-case-collision` | P2 | default | AddOns entries' names differ only in case (`Foo` and `foo`) |
+| `fm-external_artifacts-wrong-flavor` | P2 | default | A managed addon's folder no longer loads on its client (its TOC's interface, game type or floor) |
 | `fm-userland_state-target-vanished` | P2 | cached | A registered client's directory is gone |
+| `fm-external_artifacts-out-of-date-toc` | P3 | default | A managed addon loads only as out of date |
 | `fm-plugins-widget-version-drift` | P3 | cached | The bar widget is from another omaddons build |
 | `fm-state_files-check-incomplete` | P3 | runtime | A check could not finish within its limit |
 
 `runtime` rows are raised by the run itself, never selected: naming one in `--only` or `--skip` is a usage error.
+
+The `external_artifacts` rows over a client's full inventory (`ownership-conflict`, `case-collision`, `wrong-flavor`, `out-of-date-toc`) look only at registered clients and repair nothing. Which addon owns a folder, and which spelling to keep, are yours to decide, so the first two give advice; the other two give `omaddons update <addon> -t <id>`, since a newer build may load (or load as current). An addon installed with `--any-flavor` is never reported as the wrong flavor, and nothing is reported on a client whose own interface is unknown.
 
 The doctor contract's `--fix` and `--explain <id>` are commands here, not flags. Typed on `doctor`, they are usage errors whose fix is the command: `omaddons doctor --explain fm-schemas-state-version-newer -t retail` → `omaddons doctor explain fm-schemas-state-version-newer -t retail`. `omaddons doctor --fix --only fm-… -t retail` → `omaddons doctor fix --dry-run --only fm-… -t retail`: the selection is kept, and never `--force` or `--yes`.
 

@@ -194,6 +194,50 @@ pub struct Evidence {
     /// The entry cap a check stopped at. Omitted otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_entries: Option<u64>,
+    /// The addons of one client's record that claim a folder, sorted. Omitted when no
+    /// claim is concerned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owners: Option<Vec<String>>,
+    /// The folders of one addon that a client's load rules judge, sorted by name. Omitted
+    /// when no folder is judged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub folders: Option<Vec<FolderEvidence>>,
+}
+
+/// One folder of an addon as the client's load rules judge it (the `external_artifacts`
+/// rows on a folder's TOC).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct FolderEvidence {
+    /// The folder as on disk.
+    pub name: String,
+    /// The file name of the TOC the client loads from it. Omitted when it loads none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub toc: Option<String>,
+    /// Why the client does not load it. Omitted when it loads.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "folder_reason_schema")]
+    pub reason: Option<&'static str>,
+    /// The TOC's `## Interface` values as this client reads them. Omitted when there are
+    /// none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub interfaces: Vec<u32>,
+    /// The client's interface floor, for `below_client_floor`. Omitted otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub floor: Option<u32>,
+}
+
+/// Why a client does not load an addon's folder, as `FolderEvidence::reason` says it: the
+/// load rules' wire names, and install's name for a folder with no TOC the client loads.
+pub const FOLDER_REASONS: [&str; 5] = [
+    "game_type_excluded",
+    "no_interface",
+    "interface_not_in_family",
+    "below_client_floor",
+    "no_loadable_toc",
+];
+
+fn folder_reason_schema(_: &mut SchemaGenerator) -> Schema {
+    json_schema!({ "type": "string", "enum": FOLDER_REASONS })
 }
 
 /// `mode` as exactly four octal digits.
@@ -269,7 +313,12 @@ pub enum Discriminator {
     Tx(TxId),
     /// Lexically normalized and absolute.
     Path(PathBuf),
-    Folder(FolderName),
+    /// An AddOns entry: its ASCII case-folded key, compared, and its name as on disk,
+    /// shown.
+    Folder {
+        key: String,
+        name: String,
+    },
     Addon(String),
     Blob([u8; 32]),
     /// A failure mode's check (the doctor runtime's own findings).
@@ -313,7 +362,16 @@ impl Subject {
     }
 
     pub fn folder(self, folder: &FolderName) -> Self {
-        self.about(Discriminator::Folder(folder.clone()))
+        self.folder_entry(folder.key(), folder.as_str())
+    }
+
+    /// An AddOns entry by the inventory's `key` and `name`, which may be no valid
+    /// [`FolderName`] (`.git`).
+    pub fn folder_entry(self, key: &str, name: &str) -> Self {
+        self.about(Discriminator::Folder {
+            key: key.to_owned(),
+            name: name.to_owned(),
+        })
     }
 
     pub fn addon(self, name: &str) -> Self {
@@ -457,10 +515,7 @@ fn key_and_label(fm_id: &'static str, subject: &Subject) -> (InstanceKey, String
             let path = path.to_string_lossy();
             (format!(":path={path}"), format!(" · {path}"))
         }
-        Some(Discriminator::Folder(folder)) => (
-            format!(":folder={}", folder.key()),
-            format!("/{}", folder.as_str()),
-        ),
+        Some(Discriminator::Folder { key, name }) => (format!(":folder={key}"), format!("/{name}")),
         Some(Discriminator::Addon(name)) => (
             format!(":addon={}", name.to_ascii_lowercase()),
             format!("/{name}"),
@@ -998,7 +1053,7 @@ mod tests {
             let expected = subject.discriminator.as_ref().map(|d| match d {
                 Discriminator::Tx(_) => DiscriminatorKind::Tx,
                 Discriminator::Path(_) => DiscriminatorKind::Path,
-                Discriminator::Folder(_) => DiscriminatorKind::Folder,
+                Discriminator::Folder { .. } => DiscriminatorKind::Folder,
                 Discriminator::Addon(_) => DiscriminatorKind::Addon,
                 Discriminator::Blob(_) => DiscriminatorKind::Blob,
                 Discriminator::Detector(_) => DiscriminatorKind::Detector,

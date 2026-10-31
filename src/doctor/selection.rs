@@ -450,9 +450,12 @@ pub fn partition<'r>(
 
 /// After the detectors ran: each in-scope client whose record or inventory was
 /// unavailable, once per ran row that reads that layer. Detectors read only what is
-/// available, so they reported nothing about those clients.
+/// available, so they reported nothing about those clients. A row reading both layers
+/// is skipped once per client, with the record's cause: an inventory is unavailable
+/// whenever its client's record is.
 pub fn target_skips(view: &DoctorView, part: &Partition<'_>) -> Vec<Skipped> {
     let mut out = Vec::new();
+    let mut seen: BTreeSet<(&str, String)> = BTreeSet::new();
     for layer in [Layer::Records, Layer::Inventory] {
         let unavailable: Vec<(SkippedTarget, Layer)> = view
             .unavailable_targets(layer)
@@ -460,11 +463,15 @@ pub fn target_skips(view: &DoctorView, part: &Partition<'_>) -> Vec<Skipped> {
             .filter(|(target, _)| part.scope.includes_client(target.key, &target.id))
             .collect();
         for row in part.run.iter().filter(|row| row.requires.contains(&layer)) {
-            out.extend(unavailable.iter().map(|(target, cause)| Skipped {
-                id: row.id,
-                reason: SkipReason::for_layer(*cause),
-                target: Some(target.clone()),
-            }));
+            for (target, cause) in &unavailable {
+                if seen.insert((row.id, target.id.clone())) {
+                    out.push(Skipped {
+                        id: row.id,
+                        reason: SkipReason::for_layer(*cause),
+                        target: Some(target.clone()),
+                    });
+                }
+            }
         }
     }
     sort_skipped(&mut out);
@@ -1052,11 +1059,14 @@ mod tests {
                 ]))),
                 world: Some(LayerState::Available(world_of(
                     &paths,
-                    vec![retail, era.clone()],
+                    vec![retail.clone(), era.clone()],
                 ))),
                 ..Preloaded::default()
             },
         );
+        // A detector asked for retail's inventory too, which its unavailable record makes
+        // unavailable: B is still skipped once for retail, with the record's cause.
+        assert!(view.inventory(&retail).is_none());
         const B: &str = "fm-state_files-b-mode";
         const C: &str = "fm-state_files-c-mode";
         let rows = [

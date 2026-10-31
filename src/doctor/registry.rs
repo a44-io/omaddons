@@ -65,6 +65,15 @@ pub mod ids {
     /// A check stopped at its deadline or entry cap (the runtime raises it).
     pub const CHECK_INCOMPLETE: &str = "fm-state_files-check-incomplete";
 
+    /// Several addons of one client's record claim one AddOns folder.
+    pub const OWNERSHIP_CONFLICT: &str = "fm-external_artifacts-ownership-conflict";
+    /// AddOns entries whose names differ only in case.
+    pub const CASE_COLLISION: &str = "fm-external_artifacts-case-collision";
+    /// A managed addon's folder no longer loads on its client.
+    pub const WRONG_FLAVOR: &str = "fm-external_artifacts-wrong-flavor";
+    /// A managed addon loads only as out of date.
+    pub const OUT_OF_DATE_TOC: &str = "fm-external_artifacts-out-of-date-toc";
+
     /// The test-only failure modes (debug builds with `OMADDONS_TEST_FIXERS=1`,
     /// `doctor::test_fixers`): an ordinary auto-fixer, a forced one and a disabled one.
     #[cfg(debug_assertions)]
@@ -397,6 +406,15 @@ pub fn failure_modes_with(test_fixers: bool) -> std::borrow::Cow<'static, [Failu
 // ---------------------------------------------------------------------------------------
 // The rows.
 
+/// What the rows over a client's full inventory read: the inventory needs the
+/// discovered clients and their records, so a broken layer below it skips them with
+/// its own cause.
+const INVENTORY_LAYERS: &[Layer] = &[Layer::Discovery, Layer::Records, Layer::Inventory];
+
+/// The declared cost of a row over a client's full inventory: the first such row pays
+/// for the view building it, so each declares one full inventory of a realistic client.
+const INVENTORY_COST_MS: u32 = 20;
+
 /// Every failure mode, sorted by id.
 pub static FAILURE_MODES: &[FailureMode] = &[
     FailureMode {
@@ -438,6 +456,25 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         }),
     },
     FailureMode {
+        id: ids::CASE_COLLISION,
+        subsystem: Subsystem::ExternalArtifacts,
+        severity: Severity::P2,
+        title: "folder names differ only in case",
+        description: "AddOns holds two or more entries whose names differ only in case (Foo and foo). The client runs under Wine, which resolves names ignoring case, so it sees one folder under two names.",
+        why: "Which copy the client loads is undefined, and every install, update or removal of that folder is refused with case_collision until one spelling is left.",
+        tier: Tier::Default,
+        online: false,
+        cost_ms: INVENTORY_COST_MS,
+        requires: INVENTORY_LAYERS,
+        detect: Some(external::case_collision),
+        fix: None,
+        manual: Some(Manual {
+            instruction: "keep one spelling of <folder> and move the others out of AddOns by hand, with the game closed",
+            why: "omaddons never picks a spelling: either may hold your files",
+            remediation: case_collision_manual,
+        }),
+    },
+    FailureMode {
         id: ids::MANAGED_FILES_MODIFIED,
         subsystem: Subsystem::ExternalArtifacts,
         severity: Severity::P2,
@@ -457,6 +494,44 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         }),
     },
     FailureMode {
+        id: ids::OUT_OF_DATE_TOC,
+        subsystem: Subsystem::ExternalArtifacts,
+        severity: Severity::P3,
+        title: "a managed addon loads only as out of date",
+        description: "The TOC this client loads from a folder omaddons installed targets an older interface than the client's, so the client lists it as out of date.",
+        why: "It loads only with \"Load out of date AddOns\" enabled, and an addon built for an older patch may misbehave.",
+        tier: Tier::Default,
+        online: false,
+        cost_ms: INVENTORY_COST_MS,
+        requires: INVENTORY_LAYERS,
+        detect: Some(external::out_of_date_toc),
+        fix: None,
+        manual: Some(Manual {
+            instruction: "update <addon>, or enable \"Load out of date AddOns\" in the client",
+            why: "a newer build may not exist yet",
+            remediation: update_manual,
+        }),
+    },
+    FailureMode {
+        id: ids::OWNERSHIP_CONFLICT,
+        subsystem: Subsystem::ExternalArtifacts,
+        severity: Severity::P1,
+        title: "a folder is claimed by several addons",
+        description: "Two or more addons in one client's record list the same AddOns folder (by its case-folded name). omaddons never records this itself: it comes from a hand-edited or damaged record.",
+        why: "Removing any of those addons removes the folder for all of them, and an update of one replaces files the others rely on.",
+        tier: Tier::Default,
+        online: false,
+        cost_ms: INVENTORY_COST_MS,
+        requires: INVENTORY_LAYERS,
+        detect: Some(external::ownership_conflict),
+        fix: None,
+        manual: Some(Manual {
+            instruction: "decide which addon owns <folder>; reinstalling that addon with --force transfers the folder and marks the others degraded",
+            why: "only you know which addon the folder belongs to",
+            remediation: ownership_conflict_manual,
+        }),
+    },
+    FailureMode {
         id: ids::OWNERSHIP_TRANSFERRED,
         subsystem: Subsystem::ExternalArtifacts,
         severity: Severity::P2,
@@ -473,6 +548,25 @@ pub static FAILURE_MODES: &[FailureMode] = &[
             instruction: "look at the degraded addons with omaddons list -t <client> -v, then reinstall or remove them",
             why: "which addon should own the folder is your choice",
             remediation: inspect_manual,
+        }),
+    },
+    FailureMode {
+        id: ids::WRONG_FLAVOR,
+        subsystem: Subsystem::ExternalArtifacts,
+        severity: Severity::P2,
+        title: "a managed addon's folder no longer loads on this client",
+        description: "The TOC this client loads from a folder omaddons installed no longer passes the client's load rules: its interface is outside the client's range or below its floor, a game-type rule excludes the client, or the folder has no TOC the client loads. Usually the client was patched, or the TOC was edited.",
+        why: "The client skips the folder, so the addon, or that part of it, does nothing. A newer build may load; if none exists, the addon is not built for this client and removing it is the other way out.",
+        tier: Tier::Default,
+        online: false,
+        cost_ms: INVENTORY_COST_MS,
+        requires: INVENTORY_LAYERS,
+        detect: Some(external::wrong_flavor),
+        fix: None,
+        manual: Some(Manual {
+            instruction: "update <addon>; if no build for this client exists, remove it",
+            why: "whether a build for this client exists is the publisher's decision",
+            remediation: update_manual,
         }),
     },
     FailureMode {
@@ -650,6 +744,50 @@ fn forget_manual(f: &Finding) -> Remediation {
 
 fn widget_manual(_: &Finding) -> Remediation {
     hint(&omarchy_status::reinstall_hint())
+}
+
+/// Which addon owns a folder is the user's choice: prose naming the claimants.
+fn ownership_conflict_manual(f: &Finding) -> Remediation {
+    let owners = f.evidence.owners.as_deref().unwrap_or_default().join(", ");
+    let folder = f.folder.as_deref().unwrap_or("<folder>");
+    prose(&format!(
+        "{owners} on {} all record {folder}: decide which addon owns it; reinstalling that addon with --force transfers the folder and marks the others degraded, and removing any of them removes the folder for all",
+        target_id(f)
+    ))
+}
+
+/// Which spelling to keep is the user's choice: prose naming the spellings.
+fn case_collision_manual(f: &Finding) -> Remediation {
+    let paths = f.evidence.paths.as_deref().unwrap_or_default();
+    let names: Vec<String> = paths
+        .iter()
+        .filter_map(|path| path.file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .collect();
+    let dir = paths
+        .first()
+        .and_then(|path| path.parent())
+        .map_or_else(|| "AddOns".to_owned(), |dir| dir.display().to_string());
+    prose(&format!(
+        "keep one of {} in {dir} and move the others out by hand, with the game closed; omaddons refuses to change any of them until one spelling is left",
+        names.join(", ")
+    ))
+}
+
+/// A newer build may load, or load as current: the addon's update on its client.
+fn update_manual(f: &Finding) -> Remediation {
+    let argv = argv_of(&[
+        "omaddons",
+        "update",
+        f.addon.as_deref().unwrap_or_default(),
+        "-t",
+        target_id(f),
+    ]);
+    Remediation {
+        command: shell_words::join(&argv),
+        argv: Some(argv),
+        ..Remediation::default()
+    }
 }
 
 /// A crashed check is a bug: no command helps.
@@ -1159,8 +1297,46 @@ mod tests {
                 "{id}"
             );
         }
-        // The seven, the two the doctor's view raises, and the two its runtime raises.
-        assert_eq!(FAILURE_MODES.len(), 11);
+        // The seven, the two the doctor's view raises, the two its runtime raises, and the
+        // four inventory rows of `external_artifacts`.
+        assert_eq!(FAILURE_MODES.len(), 15);
+    }
+
+    /// Appendix B rows 30-33: report-only rows over a client's record and full inventory.
+    #[test]
+    fn the_inventory_rows_match_appendix_b() {
+        for (id, severity) in [
+            (ids::OWNERSHIP_CONFLICT, Severity::P1),
+            (ids::CASE_COLLISION, Severity::P2),
+            (ids::WRONG_FLAVOR, Severity::P2),
+            (ids::OUT_OF_DATE_TOC, Severity::P3),
+        ] {
+            let row = row(id).unwrap();
+            assert_eq!(row.subsystem, Subsystem::ExternalArtifacts, "{id}");
+            assert_eq!(row.severity, severity, "{id}");
+            assert_eq!(row.tier, Tier::Default, "{id}");
+            assert_eq!(
+                row.requires,
+                &[Layer::Discovery, Layer::Records, Layer::Inventory],
+                "{id}"
+            );
+            assert!(!row.online && row.cost_ms == 20, "{id}");
+            assert!(row.detect.is_some() && row.fix.is_none(), "{id}");
+            for text in [row.title, row.description, row.why] {
+                assert!(!text.is_empty(), "{id}");
+            }
+            let manual = row.manual.unwrap();
+            assert!(
+                !manual.instruction.is_empty() && !manual.why.is_empty(),
+                "{id}"
+            );
+            let words: Vec<&str> = manual.instruction.split_whitespace().collect();
+            assert!(
+                !words.windows(2).any(|pair| pair[0] == "omaddons"),
+                "{id}: the manual pair names no runnable command"
+            );
+        }
+        assert!(invariant_violations(FAILURE_MODES).is_empty());
     }
 
     #[test]
