@@ -18,6 +18,7 @@ use std::path::{Component, Path, PathBuf};
 use jiff::Timestamp;
 use serde::Deserialize;
 
+use super::fence::{Fenced, FencedOp};
 use super::lock::{GlobalLock, GlobalLockGuard, InflightLock, Lease, LeaseGuard};
 use super::scope::{ScopeTable, Writer};
 use super::session::WriteSession;
@@ -118,25 +119,25 @@ pub fn prune(
             Suggestion::command(["omaddons", "status"]),
         ));
     }
+    let own = match &lock {
+        LockUse::Own(inflight) => Some(inflight.tx().to_string()),
+        LockUse::Acquire | LockUse::Held(_) | LockUse::Expired { .. } => None,
+    };
     let mut report = PruneReport::default();
     let mut planned = Vec::new();
     for victim in victims {
-        match classify(scopes, reason, victim)? {
-            Some(plan) => planned.push(plan),
-            None => report
+        match classify(scopes, reason, victim, own.as_deref())? {
+            Classified::Planned(plan) => planned.push(plan),
+            Classified::Gone => report
                 .skipped
                 .push((victim.clone(), "already gone".to_owned())),
+            Classified::Fenced(why) => report.skipped.push((victim.clone(), why)),
         }
     }
     // Held until every victim is in trash, so an applier never holds a deleted lease.
     let _leases = match &lock {
         LockUse::Expired { now } => only_expired(scopes, &planned, *now)?,
         LockUse::Acquire | LockUse::Held(_) | LockUse::Own(_) => Vec::new(),
-    };
-
-    let own = match &lock {
-        LockUse::Own(inflight) => Some(inflight.tx().to_string()),
-        LockUse::Acquire | LockUse::Held(_) | LockUse::Expired { .. } => None,
     };
     if let Some(tx) = &own
         && let Some(stranger) = planned.iter().find(|p| !named_for(&p.victim, tx))
@@ -174,7 +175,16 @@ pub fn prune(
         LockUse::Held(_) | LockUse::Own(_) | LockUse::Expired { .. } => None,
     };
     let prune_id = ulid::Ulid::generate();
-    let mut session = WriteSession::untracked(reason.writer(), scopes, "prune");
+    // Under `Own` every victim is the caller's own new transaction's, which no fence
+    // covers (see `classify`), so its moves into trash are not fenced either.
+    let unfenced;
+    let session_scopes = if own.is_some() {
+        unfenced = scopes.without_fences();
+        &unfenced
+    } else {
+        scopes
+    };
+    let mut session = WriteSession::untracked(reason.writer(), session_scopes, "prune");
     let mut trashed = Vec::new();
     for (n, plan) in planned.into_iter().enumerate() {
         // Under `Own` the caller holds the victim's lock itself.
@@ -280,8 +290,25 @@ fn named_for(victim: &Path, tx: &str) -> bool {
         })
 }
 
-/// Checks `victim` against `reason`'s locations; `None` when it is already gone.
-fn classify(scopes: &ScopeTable, reason: PruneReason, victim: &Path) -> Result<Option<Planned>> {
+/// What [`classify`] makes of a victim.
+enum Classified {
+    Planned(Planned),
+    Gone,
+    /// A stuck journal's fence covers it (or every change is refused): left alone, with
+    /// why. A prune is best effort, so this never fails it.
+    Fenced(String),
+}
+
+/// Checks `victim` against `reason`'s locations (a malformed request is refused, even
+/// for a victim already gone), then its fences. A victim named for the caller's
+/// own new transaction (`own`) is never fenced: no stuck journal names a transaction that
+/// is still being written.
+fn classify(
+    scopes: &ScopeTable,
+    reason: PruneReason,
+    victim: &Path,
+    own: Option<&str>,
+) -> Result<Classified> {
     let refuse = |why: &str| {
         Err(Error::new(
             ErrorCode::ScopeDenied,
@@ -325,13 +352,37 @@ fn classify(scopes: &ScopeTable, reason: PruneReason, victim: &Path) -> Result<O
             kind.reason()
         ));
     }
-    Ok(meta.map(|_| Planned {
+    if meta.is_none() {
+        return Ok(Classified::Gone);
+    }
+    if !own.is_some_and(|tx| named_for(&canonical, tx))
+        && let Err(fenced) = scopes.fences().check(FencedOp::Write(&canonical))
+    {
+        return Ok(Classified::Fenced(skip_reason(&fenced)));
+    }
+    Ok(Classified::Planned(Planned {
         victim: canonical,
         trash,
         kind,
         inflight: kind == Kind::Inflight,
         journal: matches!(kind, Kind::Journal | Kind::RepairJournal),
     }))
+}
+
+/// `PruneReport.skipped`'s reason for a fenced victim.
+fn skip_reason(fenced: &Fenced) -> String {
+    let stop = &fenced.stop;
+    if fenced.closed {
+        format!(
+            "every change is refused ({})",
+            stop.reason.unwrap_or(stop.code.wire())
+        )
+    } else {
+        match stop.tx {
+            Some(tx) => format!("fenced by transaction {tx}"),
+            None => "fenced by a journal directory that cannot be listed".to_owned(),
+        }
+    }
 }
 
 /// `LockUse::Expired`'s check, before anything moves: every victim is an expired plan,
@@ -702,6 +753,7 @@ fn sweep(trash: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fsx::{FenceSet, FenceStop};
     use crate::state::paths::Paths;
 
     const TX: &str = "01JB8Q2VA00000000000000000";
@@ -863,10 +915,10 @@ mod tests {
             let is_file = victim.extension().is_some() || victim.starts_with(cache.join("blobs"));
             make(victim, !is_file);
             for reason in reasons {
-                let result = classify(&f.scopes, reason, victim);
+                let result = classify(&f.scopes, reason, victim, None);
                 if reason == *own {
                     assert!(
-                        result.unwrap().is_some(),
+                        matches!(result.unwrap(), Classified::Planned(_)),
                         "{} for {reason:?}",
                         victim.display()
                     );
@@ -968,6 +1020,141 @@ mod tests {
         )
         .unwrap();
         assert_eq!(again.skipped, [(snapshot, "already gone".to_owned())]);
+    }
+
+    /// A stop for the fence tests.
+    fn fence_stop(tx: Option<TxId>, code: ErrorCode, reason: Option<&'static str>) -> FenceStop {
+        FenceStop {
+            tx,
+            target: None,
+            code,
+            reason,
+            summary: "repair transaction did not finish".to_owned(),
+            fix: Suggestion::text("see doctor explain"),
+        }
+    }
+
+    /// Three snapshots of three transactions under `<meta>/snapshots/`.
+    fn three_snapshots(f: &Fixture) -> Vec<PathBuf> {
+        let snapshots = f.client.join("Interface/.omaddons/snapshots");
+        [
+            "01JB8Q2VA00000000000000001",
+            "01JB8Q2VA00000000000000002",
+            "01JB8Q2VA00000000000000003",
+        ]
+        .iter()
+        .map(|tx| make(&snapshots.join(tx), true))
+        .collect()
+    }
+
+    /// Three victims, the second fenced: the other two are pruned, the fenced one stays,
+    /// listed with its reason, and the prune succeeds.
+    #[test]
+    fn a_fenced_victim_is_skipped_with_its_reason() {
+        let f = fixture();
+        let victims = three_snapshots(&f);
+        let by: TxId = "01JB8Q2VA00000000000000009".parse().unwrap();
+        let mut fences = FenceSet::new();
+        fences.fence(
+            victims[1].clone(),
+            "the second snapshot".to_owned(),
+            fence_stop(Some(by), ErrorCode::Internal, Some("step_unrecognized")),
+        );
+        let scopes = f.scopes.clone().with_fences(fences);
+        let report = prune(&scopes, PruneReason::Retention, &victims, LockUse::Acquire).unwrap();
+        assert_eq!(
+            report.removed,
+            [victims[0].clone(), victims[2].clone()],
+            "{report:?}"
+        );
+        assert_eq!(
+            report.skipped,
+            [(victims[1].clone(), format!("fenced by transaction {by}"))]
+        );
+        assert!(victims[1].exists() && !victims[0].exists() && !victims[2].exists());
+    }
+
+    /// A closed table skips every victim with the stop's reason (its code when it has
+    /// none), and the prune still succeeds.
+    #[test]
+    fn a_closed_table_skips_every_victim() {
+        let cases = [
+            (
+                Some("journal_unreadable"),
+                ErrorCode::StateCorrupt,
+                "journal_unreadable",
+            ),
+            (None, ErrorCode::Io, "io"),
+        ];
+        for (reason, code, shown) in cases {
+            let f = fixture();
+            let victims = three_snapshots(&f);
+            let mut fences = FenceSet::new();
+            fences.close("every change".to_owned(), fence_stop(None, code, reason));
+            let scopes = f.scopes.clone().with_fences(fences);
+            let report =
+                prune(&scopes, PruneReason::Retention, &victims, LockUse::Acquire).unwrap();
+            let why = format!("every change is refused ({shown})");
+            let expected: Vec<(PathBuf, String)> =
+                victims.iter().map(|v| (v.clone(), why.clone())).collect();
+            assert_eq!(report.skipped, expected, "{reason:?}");
+            assert!(report.removed.is_empty(), "{reason:?}: {report:?}");
+            assert!(victims.iter().all(|v| v.exists()), "{reason:?}");
+        }
+    }
+
+    /// A victim outside every prunable location is refused before any fence is looked at,
+    /// closed table or not.
+    #[test]
+    fn a_malformed_victim_is_still_refused_before_fences() {
+        let f = fixture();
+        let mut fences = FenceSet::new();
+        fences.close(
+            "every change".to_owned(),
+            fence_stop(None, ErrorCode::Io, None),
+        );
+        let scopes = f.scopes.clone().with_fences(fences);
+        let addon = f.client.join("Interface/AddOns/Foo");
+        for victim in [addon, PathBuf::from("relative/x")] {
+            let err = prune(
+                &scopes,
+                PruneReason::Retention,
+                std::slice::from_ref(&victim),
+                LockUse::Acquire,
+            )
+            .unwrap_err();
+            assert_eq!(err.code, ErrorCode::ScopeDenied, "{}", victim.display());
+        }
+    }
+
+    /// A transaction's own artifacts are pruned under its own lock even when every change
+    /// is fenced: no stuck journal names a transaction still being written.
+    #[test]
+    fn a_transactions_own_victims_are_never_fenced() {
+        let f = fixture();
+        let tx: TxId = TX.parse().unwrap();
+        let lock = super::super::lock::InflightLock::create(&f.paths, &tx).unwrap();
+        let tmp = make(&f.paths.cache_tmp(&tx), true);
+        let mut fences = FenceSet::new();
+        fences.fence(
+            tmp.clone(),
+            "its own tmp".to_owned(),
+            fence_stop(None, ErrorCode::Io, None),
+        );
+        fences.close(
+            "every change".to_owned(),
+            fence_stop(None, ErrorCode::Io, None),
+        );
+        let scopes = f.scopes.clone().with_fences(fences);
+        let report = prune(
+            &scopes,
+            PruneReason::PostCommitCleanup,
+            std::slice::from_ref(&tmp),
+            LockUse::Own(&lock),
+        )
+        .unwrap();
+        assert_eq!(report.removed, std::slice::from_ref(&tmp), "{report:?}");
+        assert!(!tmp.exists());
     }
 
     #[test]
@@ -1704,9 +1891,11 @@ mod tests {
         let victim = plan(&f, TX, "2026-10-24T11:00:00Z");
         let lease = f.paths.plan_lease(&TX.parse().unwrap());
         assert!(!lease.exists());
-        let planned = classify(&f.scopes, PruneReason::PlanExpiry, &victim)
-            .unwrap()
-            .unwrap();
+        let Classified::Planned(planned) =
+            classify(&f.scopes, PruneReason::PlanExpiry, &victim, None).unwrap()
+        else {
+            panic!("{} is a planned victim", victim.display()); // ubs:ignore — the test's own failure
+        };
         let guards = only_expired(&f.scopes, &[planned], now()).unwrap();
         assert!(lease.exists());
         assert!(

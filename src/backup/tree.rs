@@ -630,6 +630,8 @@ fn fsx_error(rel: &str, e: FsxError) -> CloneError {
         }
         FsxError::Precondition(_) => "the path was not as expected".to_owned(),
         FsxError::Unsupported => "the filesystem cannot rename atomically".to_owned(),
+        // It names the fenced resource, never the attempted path.
+        FsxError::Fenced(fenced) => fenced.message(),
     };
     CloneError::Io {
         path: rel.to_owned(),

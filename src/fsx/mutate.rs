@@ -21,6 +21,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::expect::Expect;
 use super::failpoint;
+use super::fence::{Fenced, FencedOp};
 use super::op::Op;
 use super::scope::{Access, Refusal, Writer};
 use super::session::{SessionKind, TxState, WriteSession};
@@ -46,6 +47,9 @@ pub enum FsxError {
     Unsupported,
     #[error("{}: {source}", path.display())]
     Io { path: PathBuf, source: io::Error },
+    /// A stuck journal's fence protects what the operation would write (M4-D62).
+    #[error("{}", .0.message())]
+    Fenced(Box<Fenced>),
 }
 
 impl From<Refusal> for FsxError {
@@ -68,6 +72,21 @@ impl From<FsxError> for Error {
                 Suggestion::command(["omaddons", "list", "--protected"]),
             ),
             FsxError::Io { path, source } => Error::io(&path, &source, status()),
+            // The fencing journal's own stop, as recovery reports it (`journal_pending`,
+            // `reason`, `target`), plus the journal and the resource it protects.
+            FsxError::Fenced(fenced) => {
+                let stop = &fenced.stop;
+                let mut details = serde_json::Map::new();
+                details.insert("journal_pending".into(), serde_json::json!(stop.tx));
+                if let Some(reason) = stop.reason {
+                    details.insert("reason".into(), reason.into());
+                }
+                details.insert("target".into(), serde_json::json!(stop.target));
+                details.insert("tx".into(), serde_json::json!(stop.tx));
+                details.insert("resource".into(), fenced.resource.clone().into());
+                Error::new(stop.code, fenced.message(), stop.fix.clone())
+                    .details(serde_json::Value::Object(details))
+            }
             other @ (FsxError::Precondition(_) | FsxError::Unsupported) => {
                 Error::new(ErrorCode::Io, other.to_string(), status())
             }
@@ -365,6 +384,14 @@ pub fn mutate_with(
         }
         _ => None,
     };
+    // A stuck journal's fences (M4-D62): after the scope checks, so an out-of-scope path
+    // stays `scope_denied`, and before anything is read or written.
+    let fenced = match (&op, to.as_deref()) {
+        (Op::CreateDir, _) => FencedOp::CreateDir(&target),
+        (Op::Rename { .. }, Some(to)) => FencedOp::Rename { from: &target, to },
+        _ => FencedOp::Write(&target),
+    };
+    s.scopes.fences().check(fenced).map_err(FsxError::Fenced)?;
     if opts.durability == Durability::Deferred {
         let deferrable = matches!(
             op,
@@ -1401,6 +1428,302 @@ mod tests {
             mutate(&mut s, &state, Op::CreateDir),
             Err(FsxError::Precondition(_))
         ));
+    }
+
+    /// A stop for the fence tests: `tx` and retail's key, `internal`, `step_unrecognized`.
+    fn fence_stop(tx: &str) -> crate::fsx::FenceStop {
+        crate::fsx::FenceStop {
+            tx: Some(tx.parse().unwrap()),
+            target: Some("01M5ZQ7Y3KJ8V9W2X4C6B0N1RT".parse().unwrap()),
+            code: ErrorCode::Internal,
+            reason: Some("step_unrecognized"),
+            summary: format!(
+                "repair transaction {tx} did not finish, and recovery could not settle it (step_unrecognized)"
+            ),
+            fix: Suggestion::command([
+                "omaddons",
+                "doctor",
+                "explain",
+                "fm-concurrency_primitives-journal-step-unrecognized",
+            ]),
+        }
+    }
+
+    /// One fence, on `path`, its resource text the path with a trailing `/`.
+    fn fence_on(path: &Path) -> crate::fsx::FenceSet {
+        let mut fences = crate::fsx::FenceSet::new();
+        fences.fence(
+            path.to_path_buf(),
+            format!("{}/", path.display()),
+            fence_stop("01JB8Q2VA00000000000000009"),
+        );
+        fences
+    }
+
+    /// One operation of each `Op` kind, each on a path the `Mutating` writer may write.
+    #[derive(Debug, Clone, Copy)]
+    enum FencedCase {
+        WriteFile,
+        AppendFile,
+        CreateDir,
+        RenameFencedSource,
+        RenameFencedDestination,
+        CloneFile,
+        Chmod,
+        SymlinkAtomic,
+    }
+
+    impl FencedCase {
+        const ALL: [Self; 8] = [
+            Self::WriteFile,
+            Self::AppendFile,
+            Self::CreateDir,
+            Self::RenameFencedSource,
+            Self::RenameFencedDestination,
+            Self::CloneFile,
+            Self::Chmod,
+            Self::SymlinkAtomic,
+        ];
+
+        fn record(f: &Fixture) -> PathBuf {
+            f.paths.state_dir().join("targets/key.json")
+        }
+
+        fn addon(f: &Fixture) -> PathBuf {
+            f.client.join("Interface/AddOns/Plater")
+        }
+
+        fn copy(f: &Fixture) -> PathBuf {
+            f.client
+                .join("Interface/.omaddons/snapshots")
+                .join(TX)
+                .join("WeakAuras.lua")
+        }
+
+        /// Makes what the operation needs, unfenced.
+        fn prepare(self, f: &Fixture) {
+            let mut s = f.tx_session(Writer::Mutating);
+            ensure_dir_all(&mut s, &f.paths.state_dir().join("targets")).unwrap();
+            match self {
+                Self::Chmod => {
+                    mutate(&mut s, &Self::record(f), write(b"v1")).unwrap();
+                }
+                Self::RenameFencedSource | Self::RenameFencedDestination => {
+                    ensure_dir_all(&mut s, &f.stage().join("Plater")).unwrap();
+                    fs::write(f.stage().join("Plater/Plater.toc"), b"## Interface: 120105")
+                        .unwrap();
+                }
+                Self::CloneFile => {
+                    ensure_dir_all(&mut s, Self::copy(f).parent().unwrap()).unwrap();
+                }
+                _ => {}
+            }
+        }
+
+        /// The path a fence on which refuses the operation.
+        fn fenced(self, f: &Fixture) -> PathBuf {
+            let state = f.paths.state_dir();
+            match self {
+                Self::WriteFile | Self::Chmod => Self::record(f),
+                Self::AppendFile => state.join("history.jsonl"),
+                Self::CreateDir => state.join("targets/sub"),
+                Self::RenameFencedSource => f.stage().join("Plater"),
+                Self::RenameFencedDestination => Self::addon(f),
+                Self::CloneFile => Self::copy(f),
+                Self::SymlinkAtomic => state.join("latest"),
+            }
+        }
+
+        fn apply(self, f: &Fixture, s: &mut WriteSession<'_>) -> Result<ActionRecord, FsxError> {
+            let state = f.paths.state_dir();
+            match self {
+                Self::WriteFile => mutate(s, &Self::record(f), write(b"v1")),
+                Self::AppendFile => mutate(
+                    s,
+                    &state.join("history.jsonl"),
+                    Op::AppendFile { content: b"{}\n" },
+                ),
+                Self::CreateDir => mutate(s, &state.join("targets/sub"), Op::CreateDir),
+                Self::RenameFencedSource | Self::RenameFencedDestination => mutate(
+                    s,
+                    &f.stage().join("Plater"),
+                    Op::Rename {
+                        to: &Self::addon(f),
+                        mode: RenameMode::NoReplace,
+                    },
+                ),
+                Self::CloneFile => mutate(
+                    s,
+                    &Self::copy(f),
+                    Op::CloneFile {
+                        from: &f.client.join("WTF/Account/A/SavedVariables/WeakAuras.lua"),
+                        policy: ClonePolicy::Preferred,
+                    },
+                ),
+                Self::Chmod => mutate(s, &Self::record(f), Op::Chmod { mode: 0o600 }),
+                Self::SymlinkAtomic => mutate(
+                    s,
+                    &state.join("latest"),
+                    Op::SymlinkAtomic {
+                        target: Path::new("run-1"),
+                    },
+                ),
+            }
+        }
+    }
+
+    /// Every entry under `root`: its kind, mode, and content (a file's bytes, a link's
+    /// target).
+    fn tree_state(root: &Path) -> std::collections::BTreeMap<PathBuf, String> {
+        use std::os::unix::fs::PermissionsExt;
+        listing(root)
+            .into_iter()
+            .map(|path| {
+                let meta = fs::symlink_metadata(&path).unwrap();
+                let mode = meta.permissions().mode();
+                let what = if meta.is_symlink() {
+                    format!("link {}", fs::read_link(&path).unwrap().display())
+                } else if meta.is_dir() {
+                    format!("dir {mode:o}")
+                } else {
+                    format!("file {mode:o} {}", hex(&sha(&fs::read(&path).unwrap())))
+                };
+                (path, what)
+            })
+            .collect()
+    }
+
+    /// The lines of the fixture's actions log, none when it is absent.
+    fn action_lines(f: &Fixture) -> usize {
+        fs::read_to_string(f.actions_log()).map_or(0, |log| log.lines().count())
+    }
+
+    /// Runs `op` with `fsx.mutate.checked` armed to fail, so reaching it would show.
+    #[cfg(debug_assertions)]
+    fn checked_fails<T>(op: impl FnOnce() -> T) -> T {
+        failpoint::with_spec("fsx.mutate.checked=error", op)
+    }
+
+    #[cfg(not(debug_assertions))]
+    fn checked_fails<T>(op: impl FnOnce() -> T) -> T {
+        op()
+    }
+
+    #[test]
+    fn a_fenced_write_touches_nothing() {
+        for case in FencedCase::ALL {
+            let f = Fixture::new();
+            case.prepare(&f);
+            let fenced = f.scopes.clone().with_fences(fence_on(&case.fenced(&f)));
+            let root = f.paths.home().parent().unwrap().to_path_buf();
+            let (before, lines) = (tree_state(&root), action_lines(&f));
+            let mut s = WriteSession::tx(
+                f.tx,
+                Writer::Mutating,
+                &fenced,
+                SnapshotRoots::for_tx(&f.paths, &f.tx),
+                f.actions_log(),
+            );
+            let result = checked_fails(|| case.apply(&f, &mut s));
+            assert!(
+                matches!(result, Err(FsxError::Fenced(_))),
+                "{case:?}: a fence on {}: {result:?}",
+                case.fenced(&f).display()
+            );
+            assert_eq!(tree_state(&root), before, "{case:?}: nothing changed");
+            assert_eq!(action_lines(&f), lines, "{case:?}: no actions line");
+        }
+    }
+
+    #[test]
+    fn without_fences_writes_as_before() {
+        for case in FencedCase::ALL {
+            let f = Fixture::new();
+            case.prepare(&f);
+            let fenced = f.scopes.clone().with_fences(fence_on(&case.fenced(&f)));
+            let unfenced = fenced.without_fences();
+            assert!(unfenced.fences().is_empty() && !fenced.fences().is_empty());
+            let mut s = WriteSession::tx(
+                f.tx,
+                Writer::Mutating,
+                &unfenced,
+                SnapshotRoots::for_tx(&f.paths, &f.tx),
+                f.actions_log(),
+            );
+            let result = case.apply(&f, &mut s);
+            assert!(result.is_ok(), "{case:?}: {result:?}");
+        }
+    }
+
+    #[test]
+    fn ensure_dir_all_below_a_missing_parent_of_a_fence() {
+        let f = Fixture::new();
+        let state = f.paths.state_dir().to_path_buf();
+        let mut s = f.tx_session(Writer::Mutating);
+        ensure_dir_all(&mut s, &state).unwrap();
+        let fenced = f.scopes.clone().with_fences(fence_on(&state.join("a/b/c")));
+        let mut s = WriteSession::tx(
+            f.tx,
+            Writer::Mutating,
+            &fenced,
+            SnapshotRoots::for_tx(&f.paths, &f.tx),
+            f.actions_log(),
+        );
+        ensure_dir_all(&mut s, &state.join("a/b")).unwrap();
+        assert!(state.join("a/b").is_dir());
+        let refused = ensure_dir_all(&mut s, &state.join("a/b/c"));
+        assert!(matches!(refused, Err(FsxError::Fenced(_))), "{refused:?}");
+        assert!(!state.join("a/b/c").exists());
+    }
+
+    #[test]
+    fn fenced_error_has_the_stops_code_details_and_fix() {
+        let f = Fixture::new();
+        let state = f.paths.state_dir().to_path_buf();
+        let mut s = f.tx_session(Writer::Mutating);
+        let protected = state.join("fenced");
+        ensure_dir_all(&mut s, &protected).unwrap();
+        let tx = "01JB8Q2VA00000000000000009";
+        for reason in [Some("step_unrecognized"), None] {
+            let mut stop = fence_stop(tx);
+            stop.reason = reason;
+            let mut fences = crate::fsx::FenceSet::new();
+            fences.fence(
+                protected.clone(),
+                "<state>/fenced/".to_owned(),
+                stop.clone(),
+            );
+            let fenced = f.scopes.clone().with_fences(fences);
+            let mut s = WriteSession::tx(
+                f.tx,
+                Writer::Mutating,
+                &fenced,
+                SnapshotRoots::for_tx(&f.paths, &f.tx),
+                f.actions_log(),
+            );
+            let attempted = protected.join("FAKEACCT.json");
+            let err = Error::from(mutate(&mut s, &attempted, write(b"x")).unwrap_err());
+            let mut details = serde_json::json!({
+                "journal_pending": tx,
+                "target": "01M5ZQ7Y3KJ8V9W2X4C6B0N1RT",
+                "tx": tx,
+                "resource": "<state>/fenced/",
+            });
+            if let Some(reason) = reason {
+                details["reason"] = reason.into();
+            }
+            assert_eq!(
+                (err.code, &err.details, &err.fix),
+                (ErrorCode::Internal, &details, &stop.fix),
+                "{reason:?}"
+            );
+            assert!(
+                err.message.contains("it protects <state>/fenced/")
+                    && !err.message.contains("FAKEACCT"),
+                "{reason:?}: {}",
+                err.message
+            );
+        }
     }
 
     /// Every path under `dir`, to compare what a refused operation left.

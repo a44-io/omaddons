@@ -14,6 +14,7 @@ use std::fmt;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
+use super::fence::FenceSet;
 use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::limits::SKILL_DIRS_MAX;
 use crate::model::FolderName;
@@ -233,6 +234,8 @@ pub struct ScopeTable {
     /// The file `backup export` writes, once [`ScopeTable::with_export_file`] admits it.
     export_file: Option<PathBuf>,
     client_dirs: Vec<PathBuf>,
+    /// What stuck journals protect (M4-D62): empty unless [`ScopeTable::with_fences`].
+    fences: FenceSet,
 }
 
 impl ScopeTable {
@@ -258,11 +261,32 @@ impl ScopeTable {
             record_fixtures: None,
             export_file: None,
             client_dirs: Vec::new(),
+            fences: FenceSet::new(),
         };
         for dir in client_dirs {
             table.add_client_dir(dir)?;
         }
         Ok(table)
+    }
+
+    /// The table with `fences`: every `mutate()` through it refuses what they protect,
+    /// and `prune()` skips what they cover.
+    pub fn with_fences(mut self, fences: FenceSet) -> Self {
+        self.fences = fences;
+        self
+    }
+
+    /// The fences this table carries.
+    pub fn fences(&self) -> &FenceSet {
+        &self.fences
+    }
+
+    /// A clone with no fence: recovery writes unfenced.
+    pub fn without_fences(&self) -> Self {
+        Self {
+            fences: FenceSet::new(),
+            ..self.clone()
+        }
     }
 
     /// Admits more agent skill dirs (a repair of several installed skills), each

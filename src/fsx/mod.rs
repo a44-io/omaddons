@@ -4,6 +4,7 @@
 
 mod expect;
 pub(crate) mod failpoint;
+mod fence;
 mod identity;
 mod lock;
 mod mutate;
@@ -18,6 +19,7 @@ pub use expect::{Described, Expect, FileKind, Found, Mismatch, Parts, Predicate}
 #[cfg(debug_assertions)]
 #[doc(hidden)]
 pub use failpoint::{with_spec, with_spec_in};
+pub use fence::{Fence, FenceSet, FenceStop, Fenced, FencedOp};
 pub use identity::FileId;
 pub use lock::{
     DirLock, GlobalLock, GlobalLockGuard, HolderInfo, InflightLock, Lease, LeaseError, LeaseGuard,
