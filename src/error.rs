@@ -1731,6 +1731,11 @@ mod tests {
             "an error whose in-process recovery failed too is final, whatever its code",
         ),
         (
+            "src/engine/repair/commit.rs",
+            "cause.retryable = false",
+            "a repair whose failure after `done` could not be rolled forward is final, whatever its code",
+        ),
+        (
             "src/error.rs",
             "self.retryable = retryable",
             "the setter itself",

@@ -198,6 +198,11 @@ impl fmt::Display for TreeDigest {
 pub struct StampDigest([u8; 32]);
 
 impl StampDigest {
+    /// The digest a record holds (a repair journal's `stamp:sha256:…`), taken back as is.
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
     /// From entries `(relative path with '/', kind, size, mode, mtime ns)`, in any order.
     /// `kind` is `file`, `dir`, `symlink` or `other`.
     pub fn from_entries<P: Into<String>>(

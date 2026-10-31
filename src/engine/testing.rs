@@ -1058,6 +1058,12 @@ pub fn repair_home() -> RepairHome {
 /// target). Equal hashes mean nothing below `dir` was written, created, removed, moved
 /// or even touched.
 pub fn tree_hash(dir: &Path) -> String {
+    tree_hash_except(dir, &[])
+}
+
+/// [`tree_hash`] without the entries at `except` (the global lock file, which taking the
+/// lock writes).
+pub fn tree_hash_except(dir: &Path, except: &[PathBuf]) -> String {
     use sha2::{Digest, Sha256};
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::MetadataExt;
@@ -1066,6 +1072,9 @@ pub fn tree_hash(dir: &Path) -> String {
     while let Some(at) = pending.pop() {
         for child in std::fs::read_dir(&at).unwrap() {
             let path = child.unwrap().path();
+            if except.contains(&path) {
+                continue;
+            }
             let meta = std::fs::symlink_metadata(&path).unwrap();
             let content = if meta.is_dir() {
                 pending.push(path.clone());

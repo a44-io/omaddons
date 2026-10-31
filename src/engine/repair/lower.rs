@@ -87,6 +87,9 @@ pub struct LoweredStep {
     /// Where an in-process rollback moves a file this write creates (it is quarantined,
     /// never deleted): `<root>/rolled_back/<seq>`, the root of the file's own side.
     pub rollback_to: Option<PathBuf>,
+    /// What a write writes, which the commit needs and the journal never records (its
+    /// digest is the step's `post`); `None` for every other primitive.
+    pub content: Option<Vec<u8>>,
 }
 
 /// A whole repair, lowered.
@@ -1061,6 +1064,7 @@ impl Lowering<'_, '_> {
             backup_bytes: 0,
             quarantine,
             rollback_to: None,
+            content: None,
         });
         Ok(())
     }
@@ -1139,6 +1143,7 @@ impl Lowering<'_, '_> {
             backup_bytes,
             quarantine: None,
             rollback_to,
+            content: Some(content.to_vec()),
         });
         Ok(())
     }
@@ -1249,6 +1254,7 @@ impl Lowering<'_, '_> {
             backup_bytes: 0,
             quarantine: None,
             rollback_to: None,
+            content: None,
         });
         Ok(())
     }

@@ -14,11 +14,20 @@ pub mod runtime;
 pub mod selection;
 pub mod view;
 
-/// Every doctor failpoint (debug builds), checked against the source by a test.
+/// Every doctor failpoint (debug builds), checked against the source of `src/doctor/` and
+/// of the repair transaction (`src/engine/repair.rs`, `src/engine/repair/`) by a test.
 pub const FAILPOINTS: &[&str] = &[
     "doctor.run.staged",
     "doctor.run.published",
     "doctor.detector.panic",
+    // The repair transaction (E5): after each journal line it writes, and after each
+    // step a rollback inverts.
+    "doctor.repair.prepared",
+    "doctor.repair.step",
+    "doctor.repair.done",
+    "doctor.repair.history",
+    "doctor.repair.committed",
+    "doctor.recover.step",
 ];
 
 use budget::Budget;
@@ -193,7 +202,16 @@ pub(crate) mod tests {
         use crate::source_scan::{Literals, production_code, sources};
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut found = std::collections::BTreeSet::new();
-        for (_, text) in sources(&root.join("src/doctor")) {
+        let repair_root = root.join("src/engine/repair.rs");
+        let repair_root = (
+            repair_root.clone(),
+            std::fs::read_to_string(&repair_root).unwrap(),
+        );
+        let scanned = sources(&root.join("src/doctor"))
+            .into_iter()
+            .chain(sources(&root.join("src/engine/repair")))
+            .chain([repair_root]);
+        for (_, text) in scanned {
             let code = production_code(&text, Literals::Keep).unwrap_or_default();
             for (at, _) in code.match_indices("failpoint::hit(\"doctor.") {
                 let rest = &code[at + "failpoint::hit(\"".len()..];

@@ -864,6 +864,10 @@ const PRUNE_CALLERS: &[(&str, &str)] = &[
         "src/state/plans.rs",
         "expired plans and their leases, under LockUse::Expired, without the global lock",
     ),
+    (
+        "src/engine/repair/commit.rs",
+        "a repair's own journal and in-flight lock, after commit or rollback, under its own lock",
+    ),
 ];
 
 #[test]

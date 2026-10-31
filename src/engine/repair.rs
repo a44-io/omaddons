@@ -19,12 +19,15 @@
 //!
 //! [`RepairTx`] holds the transaction's id and in-flight lock from planning to cleanup.
 
+pub mod commit;
+pub mod inverse;
 pub mod journal;
 pub mod lower;
 
+pub use commit::{CommitCtx, RepairCleanup, RepairMeta, RepairOutcome, commit};
 pub use journal::{
     ClientDirEntry, FORMAT, ParsedRepair, RepairLine, RepairPhase, RepairPrepared, ResourcesWire,
-    history_line,
+    RollbackTarget, history_line,
 };
 pub use lower::{LowerCtx, LowerError, Lowered, LoweredStep, PlannedFix, RefusedReason, lower};
 

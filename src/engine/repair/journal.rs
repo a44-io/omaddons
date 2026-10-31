@@ -82,6 +82,18 @@ pub struct RepairPrepared {
     pub resources: ResourcesWire,
     pub fixes: Vec<FixEntry>,
     pub primitives: Vec<Step>,
+    /// Where a rollback quarantines each file a write creates, by its step (lowering's
+    /// choice, so a recovering command needs nothing but the journal). Omitted when no
+    /// write creates a file.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rollbacks: Vec<RollbackTarget>,
+}
+
+/// Where a rollback moves the file step `seq` created: never a delete.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RollbackTarget {
+    pub seq: u32,
+    pub to: PathBuf,
 }
 
 /// A client directory a repair touches, and its target.
@@ -485,6 +497,16 @@ mod tests {
             resources: ResourcesWire::of(&lowered.resources).unwrap(),
             fixes: lowered.fixes.clone(),
             primitives: lowered.steps.iter().map(|s| s.step.clone()).collect(),
+            rollbacks: lowered
+                .steps
+                .iter()
+                .filter_map(|s| {
+                    s.rollback_to.clone().map(|to| RollbackTarget {
+                        seq: s.step.seq,
+                        to,
+                    })
+                })
+                .collect(),
         }
     }
 
