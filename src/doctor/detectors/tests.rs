@@ -40,7 +40,8 @@ fn detected(view: &DoctorView, id: &str) -> Vec<Finding> {
 #[test]
 fn moved_rows_require_their_layers() {
     let cases: [(&str, &[Layer]); 7] = [
-        (ids::JOURNAL_PENDING, &[Layer::Journals, Layer::Lock]),
+        // A lock that cannot be probed counts as not held: it never hides a journal (F1).
+        (ids::JOURNAL_PENDING, &[Layer::Journals]),
         (ids::STATE_VERSION_NEWER, &[Layer::Records]),
         (
             ids::RECORD_FOLDER_MISSING,
@@ -201,8 +202,14 @@ fn moved_rules_match_status() {
     };
     let on_retail = |view: &DoctorView, id| issues::for_target(&detected(view, id), key(K));
 
+    // A journal recovery can settle: its client still carries the target's marker.
     let (_dir, paths) = retail_home();
-    journal(&paths, prepared());
+    let client = paths.home().join("retail");
+    crate::engine::testing::mark(&client, key(K));
+    journal(
+        &paths,
+        prepared().replace("/fixture/client", &client.display().to_string()),
+    );
     let view = DoctorView::load_at(paths.clone(), Default::default());
     assert_eq!(
         on_retail(&view, ids::JOURNAL_PENDING),
@@ -219,9 +226,21 @@ fn moved_rules_match_status() {
         "case journal_pending_held_lock"
     );
 
-    for (case, version, reason) in [
-        ("journal_unreadable", "1.1", "journal_unreadable"),
-        ("journal_too_new", "9.0", "journal_too_new"),
+    // The states recovery stops at have rows of their own (F1); `status` reports them as
+    // `journal-pending` until part 2 puts it on the same mapping.
+    for (case, version, id, reason) in [
+        (
+            "journal_unreadable",
+            "1.1",
+            ids::JOURNAL_UNREADABLE,
+            "journal_unreadable",
+        ),
+        (
+            "journal_too_new",
+            "9.0",
+            ids::JOURNAL_TOO_NEW,
+            "journal_too_new",
+        ),
     ] {
         let (_dir, paths) = retail_home();
         journal(
@@ -231,9 +250,18 @@ fn moved_rules_match_status() {
             ),
         );
         let view = DoctorView::load_at(paths, Default::default());
+        assert!(
+            detected(&view, ids::JOURNAL_PENDING).is_empty(),
+            "case {case}"
+        );
+        let found = detected(&view, id);
+        assert_eq!(found.len(), 1, "case {case}: {found:?}");
         assert_eq!(
-            on_retail(&view, ids::JOURNAL_PENDING),
-            oracle(&[Attention::JournalPending], 0, Vec::new(), Some(reason)),
+            (
+                found[0].target.as_ref().map(|t| t.key),
+                found[0].evidence.reason
+            ),
+            (Some(key(K)), Some(reason)),
             "case {case}"
         );
     }
@@ -241,10 +269,15 @@ fn moved_rules_match_status() {
     let (_dir, paths) = retail_home();
     journal(&paths, "not a journal\n".to_owned());
     let view = DoctorView::load_at(paths, Default::default());
+    // A line that does not decode and no prepared line: recovery reads it as a torn
+    // write that never started and removes it, so it is pending, on the machine.
+    let found = detected(&view, ids::JOURNAL_PENDING);
+    assert_eq!(found.len(), 1, "case journal_torn_unprepared: {found:?}");
+    assert!(found[0].target.is_none(), "case journal_torn_unprepared");
     assert_eq!(
-        issues::for_machine(&detected(&view, ids::JOURNAL_PENDING)),
-        legacy::machine_issues(None, true),
-        "case journal_unattributed"
+        found[0].evidence.phase,
+        Some(crate::engine::repair_action::JournalPhase::Unprepared),
+        "case journal_torn_unprepared"
     );
 
     let (_dir, paths) = retail_home();

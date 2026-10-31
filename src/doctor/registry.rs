@@ -65,6 +65,43 @@ pub mod ids {
     /// A check stopped at its deadline or entry cap (the runtime raises it).
     pub const CHECK_INCOMPLETE: &str = "fm-state_files-check-incomplete";
 
+    /// An interrupted change to `WTF/` waits for its game to exit.
+    pub const JOURNAL_WAITS_FOR_GAME: &str = "fm-concurrency_primitives-journal-waits-for-game";
+    /// An interrupted change was started by a newer omaddons.
+    pub const JOURNAL_TOO_NEW: &str = "fm-concurrency_primitives-journal-too-new";
+    /// An interrupted change's journal cannot be read.
+    pub const JOURNAL_UNREADABLE: &str = "fm-concurrency_primitives-journal-unreadable";
+    /// An interrupted change to `WTF/` stopped at a state it does not recognize.
+    pub const JOURNAL_UNEXPECTED_STATE: &str = "fm-concurrency_primitives-journal-unexpected-state";
+    /// An interrupted change stopped at a step it does not recognize.
+    pub const JOURNAL_STEP_UNRECOGNIZED: &str =
+        "fm-concurrency_primitives-journal-step-unrecognized";
+    /// An interrupted change names a directory that is not its own.
+    pub const JOURNAL_MARKER_MISMATCH: &str = "fm-concurrency_primitives-journal-marker-mismatch";
+    /// An interrupted change cannot be attributed to any client.
+    pub const JOURNAL_UNATTRIBUTED: &str = "fm-concurrency_primitives-journal-unattributed";
+    /// An interrupted restore has not finished keeping what it displaced.
+    pub const JOURNAL_PRESERVATION_INCOMPLETE: &str =
+        "fm-concurrency_primitives-journal-preservation-incomplete";
+    /// The global lock has been held for longer than `LOCK_HELD_LONG`.
+    pub const LOCK_HELD_LONG: &str = "fm-concurrency_primitives-lock-held-long";
+
+    /// The failure mode a recovery stop reports as (E10 points each stop error's fix at
+    /// its `doctor explain`).
+    pub fn for_stop_reason(reason: crate::engine::journal::StopReason) -> &'static str {
+        use crate::engine::journal::StopReason;
+        match reason {
+            StopReason::SavedVariables => JOURNAL_WAITS_FOR_GAME,
+            StopReason::JournalTooNew => JOURNAL_TOO_NEW,
+            StopReason::JournalUnreadable => JOURNAL_UNREADABLE,
+            StopReason::UnexpectedState => JOURNAL_UNEXPECTED_STATE,
+            StopReason::StepUnrecognized => JOURNAL_STEP_UNRECOGNIZED,
+            StopReason::MarkerMismatch | StopReason::SkillDir => JOURNAL_MARKER_MISMATCH,
+            StopReason::Unattributed => JOURNAL_UNATTRIBUTED,
+            StopReason::PreservationIncomplete => JOURNAL_PRESERVATION_INCOMPLETE,
+        }
+    }
+
     /// Several addons of one client's record claim one AddOns folder.
     pub const OWNERSHIP_CONFLICT: &str = "fm-external_artifacts-ownership-conflict";
     /// AddOns entries whose names differ only in case.
@@ -340,7 +377,11 @@ impl FailureMode {
             // Ruled out by the registry's invariants.
             (None, None) => Remediation::default(),
         };
-        let explain_argv = with_target(argv_of(&["omaddons", "doctor", "explain", self.id]));
+        // `-t` only for a target it resolves, so the explain command runs.
+        let mut explain_argv = argv_of(&["omaddons", "doctor", "explain", self.id]);
+        if let Some(id) = registered_id(f) {
+            explain_argv.extend(["-t".to_owned(), id.to_owned()]);
+        }
         Remediation {
             command: base.command,
             argv: base.argv,
@@ -418,22 +459,195 @@ const INVENTORY_COST_MS: u32 = 20;
 /// Every failure mode, sorted by id.
 pub static FAILURE_MODES: &[FailureMode] = &[
     FailureMode {
+        id: ids::JOURNAL_MARKER_MISMATCH,
+        subsystem: Subsystem::ConcurrencyPrimitives,
+        severity: Severity::P0,
+        title: "an interrupted change names a client directory that is not its client's",
+        description: "The journal's client directory no longer carries its target's marker: the directory is gone, or it now belongs to another client. A doctor repair's journal that names a skill directory omaddons cannot attribute stops the same way.",
+        why: "Recovery never writes a directory that is not the journal's own client's, so every change on that client fails with scope_denied until it is resolved.",
+        tier: Tier::Cached,
+        online: false,
+        cost_ms: 1,
+        requires: &[Layer::Journals],
+        detect: Some(concurrency::journal_marker_mismatch),
+        fix: None,
+        manual: Some(Manual {
+            instruction: "look at the journal with doctor explain, then put the client back where the journal expects it, or follow \"journal_pending that does not clear\" under Troubleshooting in the README",
+            why: "recovery never writes a directory that is not the journal's own",
+            remediation: explain_manual,
+        }),
+    },
+    FailureMode {
         id: ids::JOURNAL_PENDING,
         subsystem: Subsystem::ConcurrencyPrimitives,
         severity: Severity::P0,
         title: "an interrupted change waits to be finished",
-        description: "A change's journal is still in the state directory and no omaddons process holds the lock, so the change was interrupted between its first step and its commit.",
-        why: "Every change on that client recovers it first; one that recovery cannot read blocks the client's changes until it is repaired.",
+        description: "A change's journal is still in the state directory, no omaddons process is writing it, and recovery can settle it: the next command that takes the lock rolls it back, rolls it forward or removes it. An interrupted doctor repair counts too.",
+        why: "Until it is settled the client's folders may be half-swapped, and every change on that client recovers it first.",
         tier: Tier::Cached,
         online: false,
         cost_ms: 1,
-        requires: &[Layer::Journals, Layer::Lock],
+        requires: &[Layer::Journals],
         detect: Some(concurrency::journal_pending),
         fix: None,
         manual: Some(Manual {
             instruction: "quit the game, then run any change command on that client: it finishes or rolls back the interrupted change first",
-            why: "only a change command recovers a journal, under the lock and with the game closed; one recovery cannot read needs the repair under Troubleshooting in the README",
+            why: "only a change command recovers a journal, under the lock and with the game closed",
             remediation: journal_manual,
+        }),
+    },
+    FailureMode {
+        id: ids::JOURNAL_PRESERVATION_INCOMPLETE,
+        subsystem: Subsystem::ConcurrencyPrimitives,
+        severity: Severity::P1,
+        title: "an interrupted restore has not finished keeping the settings it displaced",
+        description: "Rolling back a WTF/ restore found settings played on since, or a staged copy whose backup is gone, and started keeping them as a recovered backup, but did not finish.",
+        why: "Recovery keeps everything until that backup is complete; it retries on every change and succeeds once the cause, usually a full disk, is gone.",
+        tier: Tier::Cached,
+        online: false,
+        cost_ms: 1,
+        requires: &[Layer::Journals],
+        detect: Some(concurrency::journal_preservation_incomplete),
+        fix: None,
+        manual: Some(Manual {
+            instruction: "free disk space if it is full, then run any change command; recovery retries keeping the settings",
+            why: "recovery keeps everything until the backup is complete",
+            remediation: explain_manual,
+        }),
+    },
+    FailureMode {
+        id: ids::JOURNAL_STEP_UNRECOGNIZED,
+        subsystem: Subsystem::ConcurrencyPrimitives,
+        severity: Severity::P0,
+        title: "an interrupted change stopped at a step it does not recognize",
+        description: "Rolling back a change, or a doctor repair, found a recorded step whose paths match neither its before nor its after state.",
+        why: "Recovery stopped there and kept the journal, so nothing more is moved; every change on that client, or for a repair every change that touches what it protects, fails until it is resolved.",
+        tier: Tier::Cached,
+        online: false,
+        cost_ms: 1,
+        requires: &[Layer::Journals],
+        detect: Some(concurrency::journal_step_unrecognized),
+        fix: None,
+        manual: Some(Manual {
+            instruction: "look at the step with doctor explain, then follow \"journal_pending that does not clear\" under Troubleshooting in the README",
+            why: "recovery never moves a path it cannot place",
+            remediation: explain_manual,
+        }),
+    },
+    FailureMode {
+        id: ids::JOURNAL_TOO_NEW,
+        subsystem: Subsystem::ConcurrencyPrimitives,
+        severity: Severity::P0,
+        title: "an interrupted change was started by a newer omaddons",
+        description: "The journal's format has a newer major version than this build reads.",
+        why: "This build never acts on a journal it cannot read, so every change on that client fails with state_too_new. Finishing it with the build that started it is the safe way out.",
+        tier: Tier::Cached,
+        online: false,
+        cost_ms: 1,
+        requires: &[Layer::Journals],
+        detect: Some(concurrency::journal_too_new),
+        fix: None,
+        manual: Some(Manual {
+            instruction: "run any change command with the newer omaddons build that started it",
+            why: "this build never acts on a journal it cannot read",
+            remediation: explain_manual,
+        }),
+    },
+    FailureMode {
+        id: ids::JOURNAL_UNATTRIBUTED,
+        subsystem: Subsystem::ConcurrencyPrimitives,
+        severity: Severity::P0,
+        title: "an interrupted change cannot be attributed to any client",
+        description: "A journal names no target this build can read: its prepared line is missing, unreadable or newer, or the journal or its in-flight lock cannot be read.",
+        why: "Recovery cannot tell whose it is, so every committing command on every client fails until it is resolved.",
+        tier: Tier::Cached,
+        online: false,
+        cost_ms: 1,
+        requires: &[Layer::Journals],
+        detect: Some(concurrency::journal_unattributed),
+        fix: None,
+        manual: Some(Manual {
+            instruction: "look at the journal with doctor explain, then follow \"journal_pending that does not clear\" under Troubleshooting in the README",
+            why: "recovery cannot tell whose it is",
+            remediation: explain_manual,
+        }),
+    },
+    FailureMode {
+        id: ids::JOURNAL_UNEXPECTED_STATE,
+        subsystem: Subsystem::ConcurrencyPrimitives,
+        severity: Severity::P0,
+        title: "an interrupted change to WTF/ stopped at a state it does not recognize",
+        description: "Rolling back a WTF/ restore found a step whose paths match neither its before nor its after state, and could not place what it found.",
+        why: "Recovery stopped and kept the journal, the stage, both snapshot halves and the in-flight lock, so nothing is lost; every change on that client fails until it is resolved.",
+        tier: Tier::Cached,
+        online: false,
+        cost_ms: 1,
+        requires: &[Layer::Journals],
+        detect: Some(concurrency::journal_unexpected_state),
+        fix: None,
+        manual: Some(Manual {
+            instruction: "look at the step with doctor explain, then follow \"journal_pending that does not clear\" under Troubleshooting in the README",
+            why: "only you can tell which of the settings found are the ones to keep",
+            remediation: explain_manual,
+        }),
+    },
+    FailureMode {
+        id: ids::JOURNAL_UNREADABLE,
+        subsystem: Subsystem::ConcurrencyPrimitives,
+        severity: Severity::P0,
+        title: "an interrupted change's journal cannot be read",
+        description: "A complete line of the journal does not decode, or no line is a readable prepared line.",
+        why: "Recovery never guesses what an unreadable journal meant, so every change on that client fails with state_corrupt until the journal is dealt with.",
+        tier: Tier::Cached,
+        online: false,
+        cost_ms: 1,
+        requires: &[Layer::Journals],
+        detect: Some(concurrency::journal_unreadable),
+        fix: None,
+        manual: Some(Manual {
+            instruction: "look at the journal with doctor explain, then follow \"journal_pending that does not clear\" under Troubleshooting in the README",
+            why: "recovery never guesses what an unreadable journal meant",
+            remediation: explain_manual,
+        }),
+    },
+    FailureMode {
+        id: ids::JOURNAL_WAITS_FOR_GAME,
+        subsystem: Subsystem::ConcurrencyPrimitives,
+        severity: Severity::P2,
+        title: "an interrupted change to WTF/ waits for the game to exit",
+        description: "A restore of WTF/ (or the undo of one) was interrupted after it started moving WTF/, and the client is running or its running state cannot be told.",
+        why: "Recovery never moves WTF/ while the game may write it, so every change on that client fails with game_running until the game exits; then the next change finishes or undoes it.",
+        tier: Tier::Cached,
+        online: false,
+        cost_ms: 1,
+        requires: &[Layer::Journals],
+        detect: Some(concurrency::journal_waits_for_game),
+        fix: None,
+        manual: Some(Manual {
+            instruction: "quit the game; the next change finishes or undoes it",
+            why: "recovery never moves WTF/ while the game may write it",
+            remediation: waits_manual,
+        }),
+    },
+    FailureMode {
+        id: ids::LOCK_HELD_LONG,
+        subsystem: Subsystem::ConcurrencyPrimitives,
+        severity: Severity::P2,
+        title: "the lock has been held for a long time",
+        // A new holder writes its record just after taking the lock, so for that instant
+        // a reader may see the previous holder's start time; the next run is correct.
+        description: "A live omaddons process has held the global lock for longer than LOCK_HELD_LONG (10 minutes); a commit normally holds it for milliseconds.",
+        why: "Every change waits for the lock and gives up after 5 seconds with locked. The lock is released when its holder exits; omaddons never deletes or rewrites the lock file.",
+        tier: Tier::Cached,
+        online: false,
+        cost_ms: 1,
+        requires: &[Layer::Lock],
+        detect: Some(concurrency::lock_held_long),
+        fix: None,
+        manual: Some(Manual {
+            instruction: "if the process holding the lock is stuck, end it; the lock is released when it exits",
+            why: "omaddons never touches the lock another process holds",
+            remediation: lock_manual,
         }),
     },
     FailureMode {
@@ -718,6 +932,35 @@ fn journal_manual(f: &Finding) -> Remediation {
     }
 }
 
+/// A settings restore waiting for its game: recovery's own advice.
+fn waits_manual(_: &Finding) -> Remediation {
+    prose("quit the game; the next change finishes or undoes it")
+}
+
+/// A stuck journal, until its fixer exists: the evidence, which runs.
+fn explain_manual(f: &Finding) -> Remediation {
+    let mut argv = argv_of(&["omaddons", "doctor", "explain", f.id]);
+    if let Some(id) = registered_id(f) {
+        argv.extend(["-t".to_owned(), id.to_owned()]);
+    }
+    Remediation {
+        command: shell_words::join(&argv),
+        argv: Some(argv),
+        ..Remediation::default()
+    }
+}
+
+/// A lock held long: advice naming its holder; omaddons never touches the lock file.
+fn lock_manual(f: &Finding) -> Remediation {
+    let pid = f
+        .evidence
+        .pid
+        .map_or_else(|| "<pid>".to_owned(), |pid| pid.to_string());
+    prose(&format!(
+        "if the process holding the lock (pid {pid}) is stuck, end it (kill {pid}); the lock is released when it exits, and omaddons never touches the lock file"
+    ))
+}
+
 fn upgrade_manual(_: &Finding) -> Remediation {
     prose("upgrade omaddons")
 }
@@ -831,6 +1074,15 @@ fn thousands(n: u64) -> String {
 /// The target id of a target's finding (always set on the rows that read it).
 fn target_id(f: &Finding) -> &str {
     f.target.as_ref().map_or("", |target| target.id.as_str())
+}
+
+/// The finding's target id when `-t` resolves it: a registered target's own id, never
+/// the key string an unregistered one reads as (`DoctorView::target_ref`).
+fn registered_id(f: &Finding) -> Option<&str> {
+    f.target
+        .as_ref()
+        .filter(|target| target.id != target.key.to_string())
+        .map(|target| target.id.as_str())
 }
 
 fn prose(text: &str) -> Remediation {
@@ -1297,9 +1549,81 @@ mod tests {
                 "{id}"
             );
         }
-        // The seven, the two the doctor's view raises, the two its runtime raises, and the
-        // four inventory rows of `external_artifacts`.
-        assert_eq!(FAILURE_MODES.len(), 15);
+        // The seven, the two the doctor's view raises, the two its runtime raises, the four
+        // inventory rows of `external_artifacts`, and the nine journal and lock rows of
+        // `concurrency_primitives`.
+        assert_eq!(FAILURE_MODES.len(), 24);
+    }
+
+    /// Appendix B rows 1-10: the journal and lock rows, all `cached` and report-only.
+    #[test]
+    fn the_ten_concurrency_rows_match_appendix_b() {
+        for (id, severity, requires) in [
+            (ids::JOURNAL_PENDING, Severity::P0, Layer::Journals),
+            (ids::JOURNAL_WAITS_FOR_GAME, Severity::P2, Layer::Journals),
+            (ids::JOURNAL_TOO_NEW, Severity::P0, Layer::Journals),
+            (ids::JOURNAL_UNREADABLE, Severity::P0, Layer::Journals),
+            (ids::JOURNAL_UNEXPECTED_STATE, Severity::P0, Layer::Journals),
+            (
+                ids::JOURNAL_STEP_UNRECOGNIZED,
+                Severity::P0,
+                Layer::Journals,
+            ),
+            (ids::JOURNAL_MARKER_MISMATCH, Severity::P0, Layer::Journals),
+            (ids::JOURNAL_UNATTRIBUTED, Severity::P0, Layer::Journals),
+            (
+                ids::JOURNAL_PRESERVATION_INCOMPLETE,
+                Severity::P1,
+                Layer::Journals,
+            ),
+            (ids::LOCK_HELD_LONG, Severity::P2, Layer::Lock),
+        ] {
+            let row = row(id).unwrap();
+            assert_eq!(row.subsystem, Subsystem::ConcurrencyPrimitives, "{id}");
+            assert_eq!(row.severity, severity, "{id}");
+            assert_eq!(row.tier, Tier::Cached, "{id}");
+            assert_eq!(row.requires, &[requires], "{id}");
+            assert!(!row.online && row.cost_ms == 1, "{id}");
+            assert!(row.detect.is_some() && row.fix.is_none(), "{id}");
+            let manual = row.manual.unwrap();
+            for text in [
+                row.title,
+                row.description,
+                row.why,
+                manual.instruction,
+                manual.why,
+            ] {
+                assert!(!text.is_empty() && !text.contains('\n'), "{id}: {text}");
+                let words: Vec<&str> = text.split_whitespace().collect();
+                assert!(
+                    !words.windows(2).any(|pair| pair[0] == "omaddons"
+                        && crate::app::COMMANDS
+                            .iter()
+                            .any(|c| c.name.split_whitespace().next() == Some(pair[1]))),
+                    "{id}: names a runnable command: {text}"
+                );
+            }
+        }
+        assert!(invariant_violations(FAILURE_MODES).is_empty());
+    }
+
+    #[test]
+    fn for_stop_reason_is_total() {
+        use crate::engine::journal::StopReason;
+        for reason in StopReason::ALL {
+            let id = ids::for_stop_reason(reason);
+            let row = row(id).unwrap();
+            assert_eq!(
+                row.subsystem,
+                Subsystem::ConcurrencyPrimitives,
+                "{reason:?}"
+            );
+            assert_ne!(
+                id,
+                ids::JOURNAL_PENDING,
+                "{reason:?}: a stop is never pending"
+            );
+        }
     }
 
     /// Appendix B rows 30-33: report-only rows over a client's record and full inventory.

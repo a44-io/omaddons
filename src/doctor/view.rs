@@ -22,13 +22,16 @@ use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
 use crate::discover::cache::DiscoveryMode;
 use crate::discover::registry::read_marker;
+use crate::discover::running::detect_running;
 use crate::discover::shared::siblings;
 use crate::engine::journal::{self, Pending};
-use crate::error::{Error, ErrorCode, Result, Warning};
+use crate::engine::retention;
+use crate::engine::simulate::{self, Artifact, ArtifactKind, Diagnoses};
+use crate::error::{Error, ErrorCode, Result, Suggestion, Warning};
 use crate::fsx::{LockState, probe_global};
 use crate::inventory::{Depth, Inventory, inventory_shared};
 use crate::limits::{DISCOVERY_FILE_MAX_BYTES, DOCTOR_SCAN_MAX_ENTRIES};
-use crate::model::TargetKey;
+use crate::model::{Target, TargetKey, TxId};
 use crate::omarchy::status::{self as omarchy_status, WidgetInfo};
 use crate::state::config::{Config, CredentialRef, LoadedConfig};
 use crate::state::history::{self, HistoryFilter, HistoryRead};
@@ -42,6 +45,9 @@ use crate::state::store::{self, Loaded, VersionStatus, Versioned};
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ViewOptions {
     pub discovery: ViewDiscovery,
+    /// The process building the view holds the global lock itself (`doctor fix` under
+    /// its lock, M4-D45): the lock probe then sees that hold, which hides no journal.
+    pub caller_holds_lock: bool,
 }
 
 /// How the Discovery layer finds clients.
@@ -155,6 +161,11 @@ impl DoctorView {
     /// `None` when its file cannot be opened.
     pub fn lock(&self) -> Option<&LockState> {
         self.layer(&self.lock, Layer::Lock, Self::load_lock)
+    }
+
+    /// Whether the process building the view holds the global lock itself.
+    pub fn caller_holds_lock(&self) -> bool {
+        self.options.caller_holds_lock
     }
 
     /// `history.jsonl`, read whole as `history` and `undo` read it; `None` when it cannot
@@ -619,9 +630,42 @@ impl DoctorView {
         }
     }
 
+    /// The Journals layer uses Discovery and Registry when they load, and needs neither:
+    /// without Discovery every client counts as possibly running, so a settings restore
+    /// waits for its game (fail closed, as recovery without discovery does).
     fn load_journals(&self) -> LayerState<Journals> {
-        match journal::pending(&self.paths) {
-            Ok(pending) => LayerState::Available(Journals { pending }),
+        // A home without journals costs only the listing: the clients and the process
+        // table are read only when there is a journal to diagnose.
+        let any_journal = std::fs::read_dir(self.paths.journal_dir())
+            .is_ok_and(|mut listing| listing.next().is_some());
+        let discovered: Vec<Target> = any_journal
+            .then(|| self.world())
+            .flatten()
+            .map(|world| {
+                world
+                    .resolved
+                    .targets
+                    .iter()
+                    .map(|d| d.target.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut client_dirs: Vec<PathBuf> =
+            discovered.iter().map(|t| t.client_dir.clone()).collect();
+        if let Some(registry) = any_journal.then(|| self.registry()).flatten() {
+            client_dirs.extend(registry.value.targets.iter().map(|e| e.client_dir.clone()));
+        }
+        client_dirs.sort();
+        client_dirs.dedup();
+        let running = (!discovered.is_empty()).then(|| detect_running(&discovered));
+        let sv_writable = |dir: &Path| {
+            discovered.iter().any(|t| t.client_dir == dir)
+                && running.as_ref().is_some_and(|scan| {
+                    scan.unavailable.is_none() && !scan.clients.contains_key(dir)
+                })
+        };
+        match Journals::read(&self.paths, &client_dirs, &sv_writable, self.max_entries) {
+            Ok(journals) => LayerState::Available(journals),
             Err(err) => self.fail_error(Layer::Journals, &err, Some("journal/")),
         }
     }
@@ -1245,10 +1289,103 @@ fn list_dir(dir: &Path, max_entries: u64) -> std::io::Result<Listing> {
 }
 
 /// The Journals layer.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Journals {
     /// Every journal that is not committed, or that recovery cannot read, oldest first.
     pub pending: Vec<Pending>,
+    /// What recovery will do with each journal, both families (E11's classifier).
+    pub diagnoses: Diagnoses,
+    /// Each diagnosed transaction's client-side artifacts, counted.
+    pub counts: BTreeMap<TxId, ArtifactCounts>,
+}
+
+/// The entries a transaction left on its clients' side, counted one level deep.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ArtifactCounts {
+    /// Entries directly in its client stage directories.
+    pub stage_folders: u64,
+    /// Entries in its client snapshots' `AddOns/`, plus each `WTF.previous`: retention's
+    /// possible-only-copy rule.
+    pub snapshot_folders: u64,
+    /// A listing passed its bound, so a count is a floor.
+    pub truncated: bool,
+}
+
+impl Journals {
+    /// Reads every journal: `journal::pending` (whose listing error is the layer's
+    /// failure), then `journal::diagnose(paths, client_dirs, sv_writable)`, then the
+    /// counts of each diagnosed transaction's client-side artifacts, each listing bounded
+    /// by `max_entries`. Writes nothing; takes no lock.
+    pub fn read(
+        paths: &Paths,
+        client_dirs: &[PathBuf],
+        sv_writable: &dyn Fn(&Path) -> bool,
+        max_entries: u64,
+    ) -> Result<Self> {
+        let pending = journal::pending(paths)?;
+        let diagnoses = simulate::diagnose(paths, client_dirs, sv_writable);
+        // The directory became unlistable between the two reads: as `pending`'s failure.
+        if let Some(failure) = &diagnoses.unlisted {
+            return Err(Error::io(
+                &failure.dir,
+                &std::io::Error::other(failure.error.clone()),
+                Suggestion::command(["omaddons", "status"]),
+            ));
+        }
+        let counts = diagnoses
+            .journals
+            .iter()
+            .map(|d| (d.tx, artifact_counts(&d.evidence.artifacts, max_entries)))
+            .collect();
+        Ok(Self {
+            pending,
+            diagnoses,
+            counts,
+        })
+    }
+}
+
+/// The client stage and client snapshot artifacts of one transaction, counted.
+fn artifact_counts(artifacts: &[Artifact], max_entries: u64) -> ArtifactCounts {
+    let mut counts = ArtifactCounts::default();
+    for artifact in artifacts {
+        match artifact.kind {
+            ArtifactKind::ClientStage => {
+                let (n, cut) = bounded_count(&artifact.path, max_entries);
+                counts.stage_folders += n;
+                counts.truncated |= cut;
+            }
+            ArtifactKind::ClientSnapshot => {
+                let (n, cut) = bounded_count(&artifact.path.join("AddOns"), max_entries);
+                let previous =
+                    std::fs::symlink_metadata(artifact.path.join(retention::WTF_PREVIOUS)).is_ok();
+                counts.snapshot_folders += n + u64::from(previous);
+                counts.truncated |= cut;
+            }
+            _ => {}
+        }
+    }
+    counts
+}
+
+/// The entries directly in `dir`, at most `max_entries` (then `true`): none when it is
+/// absent, one when it cannot be read (kept, as retention keeps it, as if it held one).
+fn bounded_count(dir: &Path, max_entries: u64) -> (u64, bool) {
+    match std::fs::read_dir(dir) {
+        Ok(listing) => {
+            let mut n = 0;
+            for _ in listing {
+                if n == max_entries {
+                    return (n, true);
+                }
+                n += 1;
+            }
+            (n, false)
+        }
+        // ubs:ignore — an io::ErrorKind, not a secret
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (0, false),
+        Err(_) => (1, false),
+    }
 }
 
 /// The Caches layer: the cache directories omaddons keeps, one level deep.
@@ -2454,7 +2591,13 @@ pub(crate) mod tests {
             let (_dir, paths) = home();
             plant(&paths.config_file(), &config);
             plant(&paths.registry_file(), &registry);
-            let view = DoctorView::load_at(paths.clone(), ViewOptions { discovery });
+            let view = DoctorView::load_at(
+                paths.clone(),
+                ViewOptions {
+                    discovery,
+                    ..ViewOptions::default()
+                },
+            );
             let world = view.world();
             assert_eq!(
                 (world.is_some(), discovery_cause(&view)),
@@ -2880,6 +3023,147 @@ pub(crate) mod tests {
             "case journal_dir_mode_000"
         );
         assert_eq!(view.failures()[0].title, "journal/ cannot be read");
+    }
+
+    /// Every path below `root` with its length: what a read must leave as it was.
+    fn tree(root: &Path) -> Vec<(PathBuf, u64)> {
+        let mut out = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(at) = stack.pop() {
+            for entry in std::fs::read_dir(&at).into_iter().flatten().flatten() {
+                let meta = entry.metadata().unwrap();
+                if meta.is_dir() {
+                    stack.push(entry.path());
+                }
+                out.push((entry.path(), meta.len()));
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// A prepared journal on a marked client, a stage of three entries, and a snapshot
+    /// with two `AddOns/` entries and a `WTF.previous`.
+    fn journal_with_artifacts(paths: &Paths, tx: TxId) -> PathBuf {
+        let client = paths.home().join("retail");
+        crate::engine::testing::mark(&client, key(K));
+        let prepared = committed_journal(tx, key(K));
+        let prepared = prepared
+            .lines()
+            .next()
+            .unwrap()
+            .replace("/fixture/client", &client.display().to_string());
+        plant(
+            &paths.journal_dir().join(format!("{tx}.jsonl")),
+            &Plant::Bytes(format!("{prepared}\n").into_bytes()),
+        );
+        let client_paths = crate::state::paths::ClientPaths::new(&client);
+        for name in ["A", "B", "C"] {
+            plant(&client_paths.stage(&tx).join(name), &Plant::Dir);
+        }
+        let snapshot = client_paths.snapshots(&tx);
+        for name in ["A", "B"] {
+            plant(&snapshot.join("AddOns").join(name), &Plant::Dir);
+        }
+        plant(
+            &snapshot.join(retention::WTF_PREVIOUS),
+            &Plant::Bytes(b"x".to_vec()),
+        );
+        client
+    }
+
+    #[test]
+    fn journals_layer_reads_diagnoses_and_counts() {
+        let (_dir, paths) = home();
+        let tx: TxId = "01M7A1B2C3D4E5F6G7H8J9K0MP".parse().unwrap();
+        let client = journal_with_artifacts(&paths, tx);
+        let before = tree(paths.home());
+        let read = Journals::read(&paths, &[client], &|_| false, DOCTOR_SCAN_MAX_ENTRIES).unwrap();
+        assert_eq!(tree(paths.home()), before, "the read writes nothing");
+        assert_eq!(read.diagnoses.journals.len(), 1, "{:?}", read.diagnoses);
+        assert_eq!(read.pending.len(), 1);
+        assert_eq!(
+            read.counts.get(&tx),
+            Some(&ArtifactCounts {
+                stage_folders: 3,
+                snapshot_folders: 3,
+                truncated: false,
+            })
+        );
+    }
+
+    #[test]
+    fn the_counts_stop_at_the_limit() {
+        let (_dir, paths) = home();
+        let tx: TxId = "01M7A1B2C3D4E5F6G7H8J9K0MP".parse().unwrap();
+        let client = journal_with_artifacts(&paths, tx);
+        let read = Journals::read(&paths, &[client], &|_| false, 2).unwrap();
+        let counts = read.counts[&tx];
+        assert_eq!(
+            (counts.stage_folders, counts.truncated),
+            (2, true),
+            "{counts:?}"
+        );
+    }
+
+    /// Discovery is used when it loads, never required: without it the layer still reads
+    /// every journal (and, knowing no client, finds no client-side artifact).
+    #[test]
+    fn journals_layer_loads_without_discovery() {
+        let (_dir, paths) = home();
+        let tx: TxId = "01M7A1B2C3D4E5F6G7H8J9K0MP".parse().unwrap();
+        journal_with_artifacts(&paths, tx);
+        let view = DoctorView::preloaded(
+            paths,
+            Preloaded {
+                world: Some(LayerState::Unavailable(Unavailable {
+                    layer: Layer::Discovery,
+                    cause: Layer::Config,
+                })),
+                ..Preloaded::default()
+            },
+        );
+        let journals = view.journals().unwrap();
+        assert_eq!(journals.diagnoses.journals.len(), 1);
+        assert_eq!(journals.counts.get(&tx).map(|c| c.stage_folders), Some(0));
+    }
+
+    #[test]
+    fn the_counts_agree_with_retentions_only_copy_rule() {
+        let (_dir, paths) = home();
+        let snapshot = |name: &str, addons: &[&str], previous: bool| {
+            let dir = paths.home().join(name);
+            plant(&dir.join("keep"), &Plant::Dir);
+            for entry in addons {
+                plant(&dir.join("AddOns").join(entry), &Plant::Dir);
+            }
+            if previous {
+                plant(
+                    &dir.join(retention::WTF_PREVIOUS),
+                    &Plant::Bytes(b"x".to_vec()),
+                );
+            }
+            dir
+        };
+        for (case, dir) in [
+            ("empty_snapshot", snapshot("empty", &[], false)),
+            ("two_addons_entries", snapshot("two", &["A", "B"], false)),
+            ("wtf_previous_alone", snapshot("previous", &[], true)),
+            ("both", snapshot("both", &["A", "B"], true)),
+        ] {
+            let ours = artifact_counts(
+                &[Artifact {
+                    path: dir.clone(),
+                    kind: ArtifactKind::ClientSnapshot,
+                    client: None,
+                    marker_matches: None,
+                }],
+                DOCTOR_SCAN_MAX_ENTRIES,
+            )
+            .snapshot_folders;
+            let retention = retention::snapshot_folders(&dir) as u64;
+            assert_eq!(ours, retention, "{case}");
+        }
     }
 
     #[test]

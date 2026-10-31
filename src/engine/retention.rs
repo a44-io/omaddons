@@ -374,7 +374,7 @@ pub(super) fn dead_snapshots(
 /// The entries in a client snapshot's `AddOns/`, plus its `WTF.previous` when present:
 /// none when both are absent, one for an `AddOns/` that cannot be read (kept, as if it
 /// held a folder).
-fn snapshot_folders(client_snapshot: &Path) -> usize {
+pub(crate) fn snapshot_folders(client_snapshot: &Path) -> usize {
     let addons = match std::fs::read_dir(client_snapshot.join("AddOns")) {
         Ok(listing) => listing.count(),
         // ubs:ignore — an io::ErrorKind, not a secret

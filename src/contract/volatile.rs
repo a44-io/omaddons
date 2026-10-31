@@ -20,4 +20,13 @@ pub const VOLATILE: &[(&str, &str)] = &[
     ("undo_command", "a new doctor run per invocation"),
     ("undo_argv", "a new doctor run per invocation"),
     ("actions.*.backup", "a new doctor run per invocation"),
+    // `lock-held-long`'s evidence (`doctor` and `doctor fix`; `doctor explain`'s instances).
+    (
+        "findings.*.evidence.age_s",
+        "the lock holder's age grows between runs",
+    ),
+    (
+        "instances.*.evidence.age_s",
+        "the lock holder's age grows between runs",
+    ),
 ];

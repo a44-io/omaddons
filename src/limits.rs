@@ -245,6 +245,8 @@ pub const SKILL_DIRS_MAX: usize = 8;
 /// Most primitives one doctor repair may plan (common rule 15); past it the run is
 /// refused (`doctor_refused`, `too_many_actions`) before anything moves.
 pub const DOCTOR_FIX_MAX_ACTIONS: usize = 1_000;
+/// A global-lock holder older than this is `fm-concurrency_primitives-lock-held-long`.
+pub const LOCK_HELD_LONG: Duration = Duration::from_secs(10 * 60);
 
 /// Snapshot retention: keep everything younger than `min_age`; beyond that, keep the
 /// last `keep_last` transactions per target that are younger than `window`.
@@ -925,6 +927,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         None,
         "Primitives one doctor repair may plan; past it the run is refused (too_many_actions)",
     ),
+    limit(
+        "LOCK_HELD_LONG",
+        LimitValue::Millis(ms(LOCK_HELD_LONG)),
+        "ms",
+        None,
+        "A global-lock holder older than this is reported (lock-held-long)",
+    ),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -1188,6 +1197,7 @@ mod tests {
         "DOCTOR_SCAN_MAX_ENTRIES",
         "SKILL_DIRS_MAX",
         "DOCTOR_FIX_MAX_ACTIONS",
+        "LOCK_HELD_LONG",
     ];
 
     const CONFIG_NAMES: &[&str] = &[

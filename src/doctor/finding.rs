@@ -17,7 +17,8 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Serialize, Serializer};
 
 use super::budget::Budget;
-use crate::model::{FolderName, TargetKey, TxId};
+use crate::engine::repair_action::{JournalFamily, JournalPhase};
+use crate::model::{FolderName, TargetKey, TxId, TxKind};
 
 /// How sure a finding is (M4-D41): `high` when the state was observed directly (a hash, a
 /// mode, a missing file), `medium` when inferred from consistent evidence, `low` for a
@@ -202,6 +203,64 @@ pub struct Evidence {
     /// when no folder is judged.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub folders: Option<Vec<FolderEvidence>>,
+    /// Which kind of journal: a folder or settings change, or a doctor repair. Omitted
+    /// when no journal is concerned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub family: Option<JournalFamily>,
+    /// The interrupted change's kind (`install`, `update`, `restore`, …), when its journal
+    /// says it. Omitted otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<TxKind>,
+    /// Where a journal whose lines can be trusted stands. Omitted for one that cannot be
+    /// read, and when no journal is concerned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<JournalPhase>,
+    /// The journal file. Omitted when no journal is concerned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub journal: Option<PathBuf>,
+    /// The journal's format version as its `prepared` line gives it (`1.1`). Omitted when
+    /// that line gives none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    /// The target key a journal's `prepared` line names, read even when that line does
+    /// not decode. Omitted when it names none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<TargetKey>,
+    /// The 1-based step recovery stops at. Omitted when it stops at no step.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step: Option<u32>,
+    /// Why a journal cannot be attributed to one client. Omitted otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "unattributed_cause_schema")]
+    pub cause: Option<&'static str>,
+    /// Whether the next recovery finishes a restore's preservation now. Omitted when no
+    /// preservation is concerned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resumable: Option<bool>,
+    /// Entries directly in an interrupted change's client stage directories. Omitted when
+    /// no journal is concerned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage_folders: Option<u64>,
+    /// Entries in its client snapshots' `AddOns/`, plus each `WTF.previous`. Omitted when
+    /// no journal is concerned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot_folders: Option<u64>,
+    /// A stage or snapshot of the change holds an entry, which may be the only copy of
+    /// what it replaced. Omitted when no journal is concerned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub may_hold_only_copy: Option<bool>,
+    /// A process's command line as it describes itself (the global lock's holder).
+    /// Omitted when no process is concerned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+}
+
+/// Why a journal cannot be attributed to one client, as `Evidence::cause` says it.
+pub const UNATTRIBUTED_CAUSES: [&str; 4] =
+    ["liveness_unknown", "read_failed", "too_new", "unreadable"];
+
+fn unattributed_cause_schema(_: &mut SchemaGenerator) -> Schema {
+    json_schema!({ "type": "string", "enum": UNATTRIBUTED_CAUSES })
 }
 
 /// One folder of an addon as the client's load rules judge it (the `external_artifacts`
@@ -809,13 +868,7 @@ fn evidence_reasons() -> Vec<&'static str> {
         .iter()
         .map(|reason| reason.as_str())
         .collect();
-    reasons.extend(
-        [
-            crate::engine::journal::Unrecoverable::TooNew,
-            crate::engine::journal::Unrecoverable::Unreadable,
-        ]
-        .map(crate::engine::journal::Unrecoverable::reason),
-    );
+    reasons.extend(crate::engine::journal::StopReason::ALL.map(|r| r.as_str()));
     reasons.extend(IncompleteLimit::ALL.map(IncompleteLimit::as_str));
     reasons.sort_unstable();
     reasons.dedup();
@@ -1070,7 +1123,7 @@ mod tests {
             .iter()
             .map(|r| r.as_str())
             .collect();
-        expected.extend(["journal_too_new", "journal_unreadable"]);
+        expected.extend(crate::engine::journal::StopReason::ALL.map(|r| r.as_str()));
         expected.extend(["deadline", "entries", "online_requests"]);
         expected.sort_unstable();
         assert_eq!(evidence_reasons(), expected);

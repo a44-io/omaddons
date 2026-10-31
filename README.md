@@ -1790,10 +1790,17 @@ It exits 0 when `DONE_OK` and 1 when `DONE_FINDINGS`. `run_id`, `run_dir`, `star
 
 | Id | Severity | Tier | When |
 |---|---|---|---|
-| `fm-concurrency_primitives-journal-pending` | P0 | cached | An interrupted change waits to be finished, or needs manual repair |
+| `fm-concurrency_primitives-journal-pending` | P0 | cached | An interrupted change recovery can settle: the next change rolls it back, rolls it forward or removes it; an interrupted doctor repair counts too |
+| `fm-concurrency_primitives-journal-too-new` | P0 | cached | An interrupted change was started by a newer omaddons, whose journal this build does not read |
+| `fm-concurrency_primitives-journal-unreadable` | P0 | cached | An interrupted change's journal cannot be read |
+| `fm-concurrency_primitives-journal-unexpected-state` | P0 | cached | An interrupted change to `WTF/` stopped at a step it cannot place |
+| `fm-concurrency_primitives-journal-step-unrecognized` | P0 | cached | An interrupted change, or doctor repair, stopped at a step in neither its before nor its after state |
+| `fm-concurrency_primitives-journal-marker-mismatch` | P0 | cached | An interrupted change names a client directory that is no longer its client's (or a repair, a skill directory omaddons cannot attribute) |
+| `fm-concurrency_primitives-journal-unattributed` | P0 | cached | An interrupted change cannot be attributed to any client, so every change is refused |
 | `fm-schemas-state-corrupt` | P0 | default | A state file cannot be read |
 | `fm-schemas-state-version-newer` | P0 | cached | State was written by a newer omaddons |
 | `fm-configs-config-parse-error` | P1 | cached | `config.toml` cannot be read |
+| `fm-concurrency_primitives-journal-preservation-incomplete` | P1 | cached | An interrupted restore has not finished keeping the settings it displaced |
 | `fm-state_files-record-folder-missing` | P1 | cached | A managed addon's folder is gone |
 | `fm-external_artifacts-ownership-conflict` | P1 | default | Several addons of one client's record claim one AddOns folder |
 | `fm-state_files-detector-crashed` | P1 | runtime | A check stopped with an internal error |
@@ -1802,11 +1809,15 @@ It exits 0 when `DONE_OK` and 1 when `DONE_FINDINGS`. `run_id`, `run_dir`, `star
 | `fm-external_artifacts-case-collision` | P2 | default | AddOns entries' names differ only in case (`Foo` and `foo`) |
 | `fm-external_artifacts-wrong-flavor` | P2 | default | A managed addon's folder no longer loads on its client (its TOC's interface, game type or floor) |
 | `fm-userland_state-target-vanished` | P2 | cached | A registered client's directory is gone |
+| `fm-concurrency_primitives-journal-waits-for-game` | P2 | cached | An interrupted change to `WTF/` waits for the game to exit |
+| `fm-concurrency_primitives-lock-held-long` | P2 | cached | An omaddons process has held the global lock for more than 10 minutes (`LOCK_HELD_LONG`) |
 | `fm-external_artifacts-out-of-date-toc` | P3 | default | A managed addon loads only as out of date |
 | `fm-plugins-widget-version-drift` | P3 | cached | The bar widget is from another omaddons build |
 | `fm-state_files-check-incomplete` | P3 | runtime | A check could not finish within its limit |
 
 `runtime` rows are raised by the run itself, never selected: naming one in `--only` or `--skip` is a usage error.
+
+The journal rows read one classifier, a read-only simulation of what recovery will do with each journal, so each state recovery stops at has its own finding. Each finding names its transaction (`tx`), its journal and format, what recovery stops with (`reason`, the same string the client's failing commands carry in `details.reason`), and how many entries its client stage and snapshots hold (`stage_folders`, `snapshot_folders`, `may_hold_only_copy`). None is reported while another omaddons process holds the lock: it is committing, or about to recover them. Until their repairs exist, the stuck rows' remediation is their `doctor explain`. `lock-held-long` is advice only: omaddons never touches the lock file.
 
 The `external_artifacts` rows over a client's full inventory (`ownership-conflict`, `case-collision`, `wrong-flavor`, `out-of-date-toc`) look only at registered clients and repair nothing. Which addon owns a folder, and which spelling to keep, are yours to decide, so the first two give advice; the other two give `omaddons update <addon> -t <id>`, since a newer build may load (or load as current). An addon installed with `--any-flavor` is never reported as the wrong flavor, and nothing is reported on a client whose own interface is unknown.
 

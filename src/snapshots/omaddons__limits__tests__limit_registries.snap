@@ -994,6 +994,15 @@ expression: "(politeness, REGISTRY)"
       "unit": "count",
       "config_key": null,
       "notes": "Primitives one doctor repair may plan; past it the run is refused (too_many_actions)"
+    },
+    {
+      "name": "LOCK_HELD_LONG",
+      "value": {
+        "millis": 600000
+      },
+      "unit": "ms",
+      "config_key": null,
+      "notes": "A global-lock holder older than this is reported (lock-held-long)"
     }
   ]
 ]

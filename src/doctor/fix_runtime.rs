@@ -404,8 +404,16 @@ impl RealEffects<'_> {
             .collect())
     }
 
-    fn fresh_view(&self) -> DoctorView {
-        DoctorView::load_at(self.paths.clone(), ViewOptions::default())
+    /// A view read afresh; `under_lock` when this process holds the global lock, so its
+    /// own hold hides no journal (M4-D45).
+    fn fresh_view(&self, under_lock: bool) -> DoctorView {
+        DoctorView::load_at(
+            self.paths.clone(),
+            ViewOptions {
+                caller_holds_lock: under_lock,
+                ..ViewOptions::default()
+            },
+        )
     }
 
     /// The findings the report ends with: the planned modes' as last detected, and the
@@ -430,7 +438,7 @@ impl RealEffects<'_> {
     /// One `journal_pending` warning per journal recovery would settle that the plan does
     /// not delegate.
     fn undelegated(&self, plan: &FixPlan) -> Vec<Warning> {
-        let view = self.fresh_view();
+        let view = self.fresh_view(false);
         plan.journals
             .iter()
             .filter(|j| matches!(j.verdict, JournalVerdict::Recoverable { .. }))
@@ -652,7 +660,7 @@ impl FixEffects for RealEffects<'_> {
     type Out = std::result::Result<FixOutcome, DoctorFailure>;
 
     fn plan(&mut self) -> std::result::Result<FixPlan, Stop> {
-        let view = self.fresh_view();
+        let view = self.fresh_view(false);
         let plan = self
             .plan_on(&view, &self.diagnosis.findings)
             .map_err(Stop::Plan)?;
@@ -669,7 +677,7 @@ impl FixEffects for RealEffects<'_> {
     }
 
     fn fresh_plan(&mut self, _: &GlobalLockGuard) -> std::result::Result<FixPlan, Stop> {
-        let view = self.fresh_view();
+        let view = self.fresh_view(true);
         let findings = if self.modes.is_empty() {
             Vec::new()
         } else {
@@ -732,7 +740,7 @@ impl FixEffects for RealEffects<'_> {
     }
 
     fn verify(&mut self, plan: &FixPlan) -> Verification {
-        let view = self.fresh_view();
+        let view = self.fresh_view(false);
         // A check that cannot run now verifies nothing: every planned instance counts as
         // remaining.
         let found = self.detect_again(&view).ok();

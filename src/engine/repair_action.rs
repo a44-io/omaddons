@@ -912,6 +912,8 @@ pub enum JournalFamily {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum JournalPhase {
+    /// No complete line yet: recovery only removes it.
+    Unprepared,
     Prepared,
     /// A repair with at least one `step` line.
     Step,

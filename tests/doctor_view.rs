@@ -60,7 +60,7 @@ const MOVED: [&str; 7] = [
 ];
 
 use support::{
-    Agreement, agreement_home, argv, assert_clean, broken_config, diagnose, edit_record,
+    Agreement, Tuple, agreement_home, argv, assert_clean, broken_config, diagnose, edit_record,
     expected_skips, finding_tuples, install, json_of, load_view, plant_journal, set_mode,
     status_tuples, touch_every_layer, try_diagnose, view_with,
 };
@@ -81,7 +81,13 @@ mod support {
     }
 
     pub(super) fn view_with(home: &Home, discovery: ViewDiscovery) -> DoctorView {
-        DoctorView::load_at(paths(&home.env), ViewOptions { discovery })
+        DoctorView::load_at(
+            paths(&home.env),
+            ViewOptions {
+                discovery,
+                ..ViewOptions::default()
+            },
+        )
     }
 
     /// One diagnosis, as `doctor diagnose` will report it.
@@ -1057,15 +1063,39 @@ fn the_moved_detectors_agree_with_status() {
     log.json("status's issues", &issues);
     log.tree("home", home.env.root());
 
+    // The planted journal cannot be read: the doctor reports it under its own row (F1
+    // part 1), while `status` keeps `journal-pending` until part 2 puts it on the same
+    // mapping. Everything else agrees exactly.
     let view = load_view(&home);
-    let report = diagnose(&log, &view, &Selection::only(&MOVED));
+    let mut selected = MOVED.to_vec();
+    selected.push(ids::JOURNAL_UNREADABLE);
+    let report = diagnose(&log, &view, &Selection::only(&selected));
     log.step("assert");
-    let findings = finding_tuples(&report.findings);
-    log.assert_eq("findings equal status's issues", &findings, &issues);
+    let journal = |t: &Tuple| t.0 == ids::JOURNAL_PENDING || t.0 == ids::JOURNAL_UNREADABLE;
+    let findings: Vec<Tuple> = finding_tuples(&report.findings)
+        .into_iter()
+        .filter(|t| !journal(t))
+        .collect();
+    let others: Vec<Tuple> = issues.iter().filter(|t| !journal(t)).cloned().collect();
+    log.assert_eq("findings equal status's issues", &findings, &others);
+    let unreadable: Vec<Option<String>> = report
+        .of(ids::JOURNAL_UNREADABLE)
+        .iter()
+        .map(|f| f.target.as_ref().map(|t| t.id.clone()))
+        .collect();
+    log.assert_eq(
+        "the journal's own row",
+        &unreadable,
+        &vec![Some("retail".to_owned())],
+    );
+    assert!(
+        issues.iter().any(|t| t.0 == ids::JOURNAL_PENDING),
+        "status still reports it as journal-pending: {issues:?}"
+    );
     // Every planted state is there: the agreement is not of two empty lists.
     let seen: std::collections::BTreeSet<&str> = report.findings.iter().map(|f| f.id).collect();
     let planted: std::collections::BTreeSet<&str> = [
-        ids::JOURNAL_PENDING,
+        ids::JOURNAL_UNREADABLE,
         ids::STATE_VERSION_NEWER,
         ids::RECORD_FOLDER_MISSING,
         ids::MANAGED_FILES_MODIFIED,
