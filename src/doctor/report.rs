@@ -7,11 +7,16 @@ use jiff::Timestamp;
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::Serialize;
 
+use super::delegate::DelegatedOutcome;
+use super::exit::Exit;
 use super::finding::{Finding, Severity};
 use super::registry::ids;
 use super::runtime::{Diagnosis, DoctorRunId};
 use super::selection::{SkipReason, Skipped};
+use crate::engine::journal::{Direction, JournalFamily, Phase};
+use crate::engine::repair_action::Step;
 use crate::error::{CommandHint, ErrorBody, Warning};
+use crate::model::TxId;
 use crate::output::RunKind;
 
 /// The version of the doctor contract the report follows (M4-D3).
@@ -84,14 +89,24 @@ impl FullReport {
     }
 }
 
-/// Where a run ended (the doctor contract's names, A.4); `doctor fix` adds its own.
+/// Where a run ended (the doctor contract's names, A.4): a diagnose ends `DONE_OK` or
+/// `DONE_FINDINGS`, a fix in any of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum RunState {
-    /// Every selected check ran and found nothing.
+    /// Every selected check ran and found nothing; or every repair planned was made.
     DoneOk,
-    /// Something was found, a check that could not finish included.
+    /// Something was found, a check that could not finish included; or a fix planned
+    /// nothing while findings remain.
     DoneFindings,
+    /// A fix ran and some of what it planned remains.
+    DonePartial,
+    /// A fix failed: rolled back, or stopped before it changed anything.
+    DoneFailed,
+    /// A fix refused before it changed anything.
+    Refusing,
+    /// Another omaddons process held the lock past the timeout.
+    LockLost,
 }
 
 impl RunState {
@@ -102,6 +117,25 @@ impl RunState {
         } else {
             Self::DoneFindings
         }
+    }
+
+    /// The doctor exit a run that ended here gives, when no error decides it (a failure's
+    /// exit is its error's).
+    pub const fn exit(self) -> Exit {
+        match self {
+            Self::DoneOk => Exit::Healthy,
+            Self::DoneFindings => Exit::FindingsPresent,
+            Self::DonePartial => Exit::FixPartial,
+            Self::DoneFailed => Exit::FixFailedRolledBack,
+            Self::Refusing => Exit::RefusedUnsafe,
+            Self::LockLost => Exit::ConcurrencyLost,
+        }
+    }
+
+    /// Whether `latest` follows a run that ended here (M4-D33): only one that finished
+    /// what it set out to do.
+    pub const fn moves_latest(self) -> bool {
+        matches!(self, Self::DoneOk | Self::DoneFindings | Self::DonePartial)
     }
 }
 
@@ -236,9 +270,107 @@ pub fn explain_argvs(findings: &[Finding]) -> Vec<Vec<String>> {
     out
 }
 
+// ---------------------------------------------------------------------------------------
+// `doctor fix` and `doctor diff`.
+
+/// A `doctor fix` run's report (A.5): one shape for a dry run and a real run, every key
+/// present, the other mode's `null`. A dry run fills `actions_planned`,
+/// `delegated_planned` and `precondition`; a real run `tx`, `actions`, `delegated`, the
+/// paths and the undo.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct FixReport {
+    pub doctor_contract_version: &'static str,
+    pub run_id: DoctorRunId,
+    /// The run's directory, absolute.
+    pub run_dir: String,
+    #[schemars(with = "String")]
+    pub started_at: Timestamp,
+    #[schemars(with = "String")]
+    pub finished_at: Timestamp,
+    pub state: RunState,
+    pub dry_run: bool,
+    /// The repair transaction, when one started (committed or rolled back).
+    pub tx: Option<TxId>,
+    pub summary: FixSummary,
+    /// A real run's: the fixed failure modes re-detected after the repair, and the
+    /// others' as diagnosed. A dry run's: as diagnosed.
+    pub findings: Vec<Finding>,
+    pub skipped: Vec<Skipped>,
+    /// The primitives the repair ran, as its journal records them.
+    pub actions: Option<Vec<ActionDone>>,
+    /// The recoveries it had the engine run.
+    pub delegated: Option<Vec<DelegatedOutcome>>,
+    /// What a real run would do. This run's own names are written `<run>` and `<tx>`.
+    pub actions_planned: Option<Vec<ActionPlanned>>,
+    pub delegated_planned: Option<Vec<RecoveryPlanned>>,
+    /// The token `--if-match` takes to run exactly this.
+    pub precondition: Option<String>,
+    pub actions_jsonl_path: Option<String>,
+    pub backups_dir: Option<String>,
+    pub undo_command: Option<String>,
+    pub undo_argv: Option<Vec<String>>,
+    pub next_steps: Vec<String>,
+}
+
+/// A fix report's counts: the diagnose summary's, then the repair's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct FixSummary {
+    #[serde(flatten)]
+    pub findings: Summary,
+    /// What the diagnose found before planning.
+    pub findings_before: u32,
+    /// What remains after a real run; `null` in a dry run.
+    pub findings_after: Option<u32>,
+    pub actions_taken: u32,
+    pub actions_failed: u32,
+    pub bytes_to_back_up: u64,
+    pub bytes_backed_up: u64,
+    /// The steps a rollback inverted.
+    pub backups_restored: u32,
+}
+
+/// One primitive a repair ran: its journal form, and whether it stands.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct ActionDone {
+    #[serde(flatten)]
+    pub step: Step,
+    /// `false` for the step that failed, and for each step its rollback inverted.
+    pub ok: bool,
+}
+
+/// One primitive a repair would run: its journal form, and the bytes it writes or moves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct ActionPlanned {
+    #[serde(flatten)]
+    pub step: Step,
+    /// A write's new content; a rename's subject (a file's length, a folder's files
+    /// summed, a symlink 0); a chmod 0.
+    pub bytes: u64,
+}
+
+/// One recovery a repair would have the engine run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct RecoveryPlanned {
+    pub tx: TxId,
+    pub family: JournalFamily,
+    pub phase: Phase,
+    pub direction: Direction,
+}
+
+/// `doctor diff`'s report: what `doctor fix` would change, or what changed since a run.
+/// Every key present, the other mode's `null`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct DiffReport {
+    pub actions_planned: Option<Vec<ActionPlanned>>,
+    pub delegated_planned: Option<Vec<RecoveryPlanned>>,
+    pub bytes_to_back_up: Option<u64>,
+    pub precondition: Option<String>,
+    pub since: Option<Since>,
+}
+
 /// A run's `report.json`: the doctor envelope's record form (its `kind`, no `meta`) with
-/// a diagnose report. Only its schema is used: the runtime writes the bytes the command
-/// built.
+/// a diagnose or a fix report. Only its schema is used: the runtime writes the bytes the
+/// command built.
 #[derive(Serialize, JsonSchema)]
 struct ReportRecord {
     ok: bool,
@@ -248,12 +380,21 @@ struct ReportRecord {
     kind: RunKind,
     exit_code: u8,
     #[serde(flatten)]
-    report: DiagnoseReport,
+    report: RecordedReport,
     /// Present when the run failed after its report was made.
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<ErrorBody>,
     warnings: Vec<Warning>,
     commands: Vec<CommandHint>,
+}
+
+/// The report a run records, by its `kind`. Only its schema is used, as the record's.
+#[derive(Serialize, JsonSchema)]
+#[serde(untagged)]
+#[expect(dead_code, reason = "only its schema is used")]
+enum RecordedReport {
+    Diagnose(Box<DiagnoseReport>),
+    Fix(Box<FixReport>),
 }
 
 /// The schema of a run's `report.json` (`store::KINDS`' `doctor_report`).

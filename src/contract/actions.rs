@@ -80,6 +80,8 @@ actions! {
     Apply = "apply", false, "Run exactly what a dry run stored";
     /// Offered by doctor diagnose, once per failure mode it found.
     DoctorExplain = "doctor_explain", false, "Explain one failure mode and its instances";
+    /// Offered by a doctor fix dry run that plans a repair, bound to its token.
+    DoctorFix = "doctor_fix", false, "Run exactly the repair a doctor fix dry run showed";
 }
 
 impl fmt::Display for Action {
@@ -103,7 +105,7 @@ mod tests {
     fn every_action_has_a_unique_snake_case_wire_name() {
         assert_eq!(
             Action::ALL.len(),
-            24,
+            25,
             "registered actions: {:?}",
             Action::ALL
         );
@@ -216,6 +218,7 @@ mod tests {
             (Action::EnableWidget, false),
             (Action::Apply, false),
             (Action::DoctorExplain, false),
+            (Action::DoctorFix, false),
         ];
         for action in Action::ALL {
             assert!(

@@ -8,6 +8,13 @@
 //! each. The runtime writes nothing outside `<state>/doctor/`, takes no lock, makes no
 //! request, never prunes and never waits for the clock. Checks take `&DoctorView`, which
 //! has no write methods.
+//!
+//! A `doctor fix` run adds its own states, its lock and its repair on top of these
+//! (`fix_runtime`, whose entry points are re-exported here).
+
+pub use super::fix_runtime::{
+    DiffOutcome, DiffRequest, FixOutcome, FixRequest, run_diff, run_diff_at, run_fix, run_fix_at,
+};
 
 use std::fs;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -23,6 +30,7 @@ use super::budget::{self, Budget};
 use super::finding::{
     Confidence, Detected, Evidence, Finding, Incomplete, IncompleteLimit, Observation, Subject,
 };
+use super::fix::remediation_for;
 use super::registry::{self, DetectFn, FailureMode, Tier, ids};
 use super::selection::{Selection, Skipped, partition, target_skips, visible_failures};
 use super::view::{DoctorView, merge_findings};
@@ -112,6 +120,8 @@ pub struct Diagnosis {
 pub enum Latest {
     /// It now names this run.
     Moved,
+    /// The run's state never moves it (a fix that refused, lost the lock or failed).
+    Skipped,
     /// It names a newer run, which stays the newest.
     Kept,
     /// Something not a symlink is there; it was left alone.
@@ -222,11 +232,7 @@ impl<'a> Runtime<'a> {
         self.paths.doctor_run(&self.id)
     }
 
-    /// `DIAGNOSING`: every row of `registry` the selection includes, of `tiers`, whose
-    /// layers are available, in registry order, each isolated from panics and held to its
-    /// budget. A check that panics is a `detector-crashed` finding and one a limit cut
-    /// short a `check-incomplete` finding; the run goes on either way. Fails only when
-    /// `-t` cannot be resolved.
+    /// `DIAGNOSING`, as [`diagnose`] does it.
     pub fn diagnose(
         &self,
         registry: &[FailureMode],
@@ -235,97 +241,29 @@ impl<'a> Runtime<'a> {
         tiers: &[Tier],
         budgets: Budgets,
     ) -> Result<Diagnosis> {
-        let started_at = crate::clock::now();
-        let clock = Instant::now();
-        // Resolving the scope and the layers each row requires loads them, so a lazy
-        // layer load never counts against a check's deadline.
-        let part = partition(view, selection, registry, tiers)?;
-        let shares = match budgets {
-            Budgets::Run(total) => {
-                let costs: Vec<u32> = part.run.iter().map(|row| row.cost_ms).collect();
-                budget::shares(total, &costs)
-            }
-            Budgets::TierDefaults | Budgets::Each { .. } => Vec::new(),
-        };
-        let mut detected = Vec::new();
-        let mut incomplete = 0;
-        let mut checks_run = 0;
-        for (at, row) in part.run.iter().enumerate() {
-            let Some(detect) = row.detect else {
-                continue;
-            };
-            checks_run += 1;
-            // Under a run's `--budget`, the check's share of it, as planned.
-            let mut share = None;
-            let mut budget = match budgets {
-                Budgets::TierDefaults => Budget::for_tier(row.tier),
-                Budgets::Run(total) => {
-                    let left = total.saturating_sub(clock.elapsed());
-                    let planned = shares.get(at).copied().unwrap_or(left);
-                    share = Some(planned);
-                    Budget::new(planned.min(left), DOCTOR_SCAN_MAX_ENTRIES)
-                }
-                Budgets::Each {
-                    deadline,
-                    max_entries,
-                } => Budget::new(deadline, max_entries),
-            };
-            match run_check(row, detect, view, selection, &mut budget) {
-                Checked::Ran { findings, cut } => {
-                    detected.extend(findings);
-                    if let Some(mut cut) = cut {
-                        // The share, never what was left of it when the check started:
-                        // two runs over one state record the same deadline.
-                        if let (Some(share), IncompleteLimit::Deadline) = (share, cut.limit) {
-                            cut.deadline_ms =
-                                Some(u64::try_from(share.as_millis()).unwrap_or(u64::MAX));
-                        }
-                        incomplete += 1;
-                        detected.extend(runtime_finding(ids::CHECK_INCOMPLETE, |subject| {
-                            incomplete_observation(subject, row, cut)
-                        }));
-                    }
-                }
-                Checked::Crashed(location) => detected.extend(crashed(row, location)),
-            }
-        }
-        let mut skipped = part.skipped.clone();
-        skipped.extend(target_skips(view, &part));
-        let failures = visible_failures(view, selection, &part, &skipped);
-        let findings = merge_findings(failures, detected)
-            .into_iter()
-            .filter(|f| part.scope.includes(f.target.as_ref()))
-            .collect();
-        Ok(Diagnosis {
-            findings,
-            skipped,
-            incomplete,
-            checks_run,
-            started_at,
-            finished_at: crate::clock::now(),
-            duration_ms: u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX),
-        })
+        diagnose(registry, view, selection, tiers, budgets)
     }
 
     /// The terminal writes, in order: `report.json` (0600) holding `record`, `latest`
     /// moved forward to this run, `report.json` then `runtime.jsonl` made 0400 (the log's
     /// own line goes out through its open descriptor). The run directory stays 0700.
     /// A failure is `io` (exit 74), naming the path; the caller keeps its report.
-    pub fn finish(mut self, record: &[u8]) -> std::result::Result<Finished, DoctorFailure> {
+    pub fn finish(self, record: &[u8]) -> std::result::Result<Finished, DoctorFailure> {
+        self.finish_with(record, true, &[])
+    }
+
+    /// [`Runtime::finish`] of a run whose state may not move `latest` (`moves_latest`),
+    /// also giving each of `harden` (a file of the run directory, by name) its mode
+    /// before `report.json` and the log are hardened. Directories, `backups/` and
+    /// `quarantine/` are never hardened.
+    pub fn finish_with(
+        mut self,
+        record: &[u8],
+        moves_latest: bool,
+        harden: &[(&str, u32)],
+    ) -> std::result::Result<Finished, DoctorFailure> {
         let dir = self.dir();
         let report = dir.join(REPORT_FILE);
-        let io = |path: &Path, err: FsxError| {
-            DoctorFailure::from(
-                Error::new(
-                    ErrorCode::Io,
-                    format!("could not record the doctor's run: {err}"),
-                    Suggestion::text(
-                        "check that the state directory is writable and has space, then run the doctor again",
-                    ),
-                )
-                .details(serde_json::json!({ "path": path.display().to_string() })),
-            )
-        };
         let mut record_line = record.to_vec();
         if !record_line.ends_with(b"\n") {
             record_line.push(b'\n');
@@ -338,15 +276,45 @@ impl<'a> Runtime<'a> {
                 mode: Some(0o600),
             },
         )
-        .map_err(|e| io(&report, e))?;
-        let latest = self
-            .move_latest()
-            .map_err(|e| io(&self.paths.doctor_latest(), e))?;
+        .map_err(|e| record_failure(&report, e))?;
+        let latest = if moves_latest {
+            self.move_latest()
+                .map_err(|e| record_failure(&self.paths.doctor_latest(), e))?
+        } else {
+            Latest::Skipped
+        };
+        for (name, mode) in harden {
+            let path = dir.join(name);
+            fsx::mutate(&mut self.session, &path, Op::Chmod { mode: *mode })
+                .map_err(|e| record_failure(&path, e))?;
+        }
         fsx::mutate(&mut self.session, &report, Op::Chmod { mode: 0o400 })
-            .map_err(|e| io(&report, e))?;
+            .map_err(|e| record_failure(&report, e))?;
         let log = dir.join(RUNTIME_LOG);
-        fsx::mutate(&mut self.session, &log, Op::Chmod { mode: 0o400 }).map_err(|e| io(&log, e))?;
+        fsx::mutate(&mut self.session, &log, Op::Chmod { mode: 0o400 })
+            .map_err(|e| record_failure(&log, e))?;
         Ok(Finished { dir, latest })
+    }
+
+    /// Writes `name` in the run directory, whole, at `mode` (a fix run's `undo.sh`),
+    /// logged in `runtime.jsonl` like every write the runtime makes.
+    pub fn write_file(
+        &mut self,
+        name: &str,
+        content: &[u8],
+        mode: u32,
+    ) -> std::result::Result<PathBuf, DoctorFailure> {
+        let path = self.dir().join(name);
+        fsx::mutate(
+            &mut self.session,
+            &path,
+            Op::WriteFile {
+                content: fsx::Content::Bytes(content),
+                mode: Some(mode),
+            },
+        )
+        .map_err(|e| record_failure(&path, e))?;
+        Ok(path)
     }
 
     /// Points `latest` at this run when it is missing, dangling, points outside `runs/`
@@ -381,6 +349,132 @@ impl<'a> Runtime<'a> {
         )?;
         Ok(Latest::Moved)
     }
+}
+
+/// A run's record could not be written: `io` (exit 74), naming `path`.
+fn record_failure(path: &Path, err: FsxError) -> DoctorFailure {
+    DoctorFailure::from(
+        Error::new(
+            ErrorCode::Io,
+            format!("could not record the doctor's run: {err}"),
+            Suggestion::text(
+                "check that the state directory is writable and has space, then run the doctor again",
+            ),
+        )
+        .details(serde_json::json!({ "path": path.display().to_string() })),
+    )
+}
+
+/// `DIAGNOSING`: every row of `registry` the selection includes, of `tiers`, whose layers
+/// are available, in registry order, each isolated from panics and held to its budget. A
+/// check that panics is a `detector-crashed` finding and one a limit cut short a
+/// `check-incomplete` finding; the run goes on either way. A finding whose failure mode
+/// has a fixer carries that fixer's remediation (`fix::remediation_for`), keeping the
+/// user's `-t`. Fails only when `-t` cannot be resolved. Writes nothing, so `doctor diff`
+/// diagnoses without a run directory.
+pub fn diagnose(
+    registry: &[FailureMode],
+    view: &DoctorView,
+    selection: &Selection,
+    tiers: &[Tier],
+    budgets: Budgets,
+) -> Result<Diagnosis> {
+    let started_at = crate::clock::now();
+    let clock = Instant::now();
+    // Resolving the scope and the layers each row requires loads them, so a lazy
+    // layer load never counts against a check's deadline.
+    let part = partition(view, selection, registry, tiers)?;
+    let shares = match budgets {
+        Budgets::Run(total) => {
+            let costs: Vec<u32> = part.run.iter().map(|row| row.cost_ms).collect();
+            budget::shares(total, &costs)
+        }
+        Budgets::TierDefaults | Budgets::Each { .. } => Vec::new(),
+    };
+    let mut detected = Vec::new();
+    let mut incomplete = 0;
+    let mut checks_run = 0;
+    for (at, row) in part.run.iter().enumerate() {
+        let Some(detect) = row.detect else {
+            continue;
+        };
+        checks_run += 1;
+        // Under a run's `--budget`, the check's share of it, as planned.
+        let mut share = None;
+        let mut budget = match budgets {
+            Budgets::TierDefaults => Budget::for_tier(row.tier),
+            Budgets::Run(total) => {
+                let left = total.saturating_sub(clock.elapsed());
+                let planned = shares.get(at).copied().unwrap_or(left);
+                share = Some(planned);
+                Budget::new(planned.min(left), DOCTOR_SCAN_MAX_ENTRIES)
+            }
+            Budgets::Each {
+                deadline,
+                max_entries,
+            } => Budget::new(deadline, max_entries),
+        };
+        match run_check(row, detect, view, selection, &mut budget) {
+            Checked::Ran { findings, cut } => {
+                detected.extend(findings);
+                if let Some(mut cut) = cut {
+                    // The share, never what was left of it when the check started:
+                    // two runs over one state record the same deadline.
+                    if let (Some(share), IncompleteLimit::Deadline) = (share, cut.limit) {
+                        cut.deadline_ms =
+                            Some(u64::try_from(share.as_millis()).unwrap_or(u64::MAX));
+                    }
+                    incomplete += 1;
+                    detected.extend(runtime_finding(ids::CHECK_INCOMPLETE, |subject| {
+                        incomplete_observation(subject, row, cut)
+                    }));
+                }
+            }
+            Checked::Crashed(location) => detected.extend(crashed(row, location)),
+        }
+    }
+    let mut skipped = part.skipped.clone();
+    skipped.extend(target_skips(view, &part));
+    let failures = visible_failures(view, selection, &part, &skipped);
+    let findings = merge_findings(failures, detected)
+        .into_iter()
+        .filter(|f| part.scope.includes(f.target.as_ref()))
+        .collect();
+    Ok(Diagnosis {
+        findings,
+        skipped,
+        incomplete,
+        checks_run,
+        started_at,
+        finished_at: crate::clock::now(),
+        duration_ms: u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX),
+    })
+    .map(|diagnosis| with_fixer_remediations(registry, view, selection, diagnosis))
+}
+
+/// `diagnosis` with each finding whose failure mode has a fixer given that fixer's
+/// remediation, `-t` as the user typed it, else the finding's client.
+fn with_fixer_remediations(
+    registry: &[FailureMode],
+    view: &DoctorView,
+    selection: &Selection,
+    mut diagnosis: Diagnosis,
+) -> Diagnosis {
+    for finding in &mut diagnosis.findings {
+        let Some(spec) = registry
+            .iter()
+            .find(|row| row.id == finding.id)
+            .and_then(|row| row.fix.as_ref())
+        else {
+            continue;
+        };
+        let target = selection
+            .target
+            .clone()
+            .or_else(|| finding.target.as_ref().map(|t| t.id.clone()));
+        finding.remediation = remediation_for(view, finding, spec, target.as_deref());
+    }
+    diagnosis
 }
 
 /// What one check gave.

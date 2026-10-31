@@ -135,7 +135,7 @@ pub enum UnattributedCause {
 }
 
 /// Which way recovery settles a journal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Direction {
     Forward,

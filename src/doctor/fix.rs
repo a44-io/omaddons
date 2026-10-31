@@ -26,6 +26,7 @@ use super::finding::{Finding, Remediation};
 use super::registry::{
     FAILURE_MODES, FailureMode, FixerPrecondition, FixerSpec, Refusal, ScopeName, ids,
 };
+use super::report::{ActionPlanned, RecoveryPlanned};
 use super::selection::Pick;
 use super::view::DoctorView;
 use crate::discover::running::RunningScan;
@@ -34,11 +35,11 @@ use crate::engine::journal::{
     UnattributedCause,
 };
 use crate::engine::repair::{self, LowerCtx, LowerError, Lowered, RepairPhase};
-use crate::engine::repair_action::{Fix, FixKind, Primitive, Step};
+use crate::engine::repair_action::{Fix, FixKind, Guard, Primitive, Step};
 use crate::engine::resource::{PathKind, Resource, ResourceSet};
 use crate::error::{Error, ErrorCode, Suggestion};
 use crate::fsx::{InflightLock, canonical_lenient};
-use crate::limits::DOCTOR_FIX_MAX_ACTIONS;
+use crate::limits::{DOCTOR_FIX_MAX_ACTIONS, DOCTOR_SCAN_MAX_ENTRIES};
 use crate::model::{TargetKey, TxId};
 use crate::state::paths::{ClientPaths, FLATTEN_PREFIX, Paths};
 
@@ -794,6 +795,36 @@ impl Clients {
     }
 }
 
+/// The size of what is at `path` without the entries at `gone`, never following a link:
+/// a file's length, a folder's regular files summed over at most
+/// [`DOCTOR_SCAN_MAX_ENTRIES`] entries, a symlink or nothing 0. An estimate for a
+/// preview, read only.
+fn size_of(path: &Path, gone: &[PathBuf]) -> u64 {
+    let mut total = 0u64;
+    let mut seen = 0u64;
+    let mut pending = vec![path.to_path_buf()];
+    while let Some(at) = pending.pop() {
+        if gone.contains(&at) {
+            continue;
+        }
+        seen += 1;
+        if seen > DOCTOR_SCAN_MAX_ENTRIES {
+            break;
+        }
+        let Ok(meta) = std::fs::symlink_metadata(&at) else {
+            continue;
+        };
+        if meta.is_file() {
+            total = total.saturating_add(meta.len());
+        } else if meta.is_dir()
+            && let Ok(entries) = std::fs::read_dir(&at)
+        {
+            pending.extend(entries.filter_map(Result::ok).map(|entry| entry.path()));
+        }
+    }
+    total
+}
+
 /// `path` resolved as lowering resolves a root, or as given when it cannot be.
 fn whole(path: &Path) -> PathBuf {
     canonical_lenient(path).unwrap_or_else(|| path.to_path_buf())
@@ -895,6 +926,38 @@ impl Names {
             }
             Resource::Journal(_) | Resource::Record(_) => false,
         }
+    }
+
+    /// `step` with every path it names [`Names::neutral`].
+    fn neutral_step(&self, step: &Step) -> Step {
+        let neutral = |path: &Path| PathBuf::from(self.neutral(path));
+        let mut step = step.clone();
+        step.op = match step.op {
+            Primitive::WriteFile { path, mode, backup } => Primitive::WriteFile {
+                path: neutral(&path),
+                mode,
+                backup: backup.as_deref().map(neutral),
+            },
+            Primitive::Chmod { path, mode } => Primitive::Chmod {
+                path: neutral(&path),
+                mode,
+            },
+            Primitive::RenameNoReplace {
+                from,
+                to,
+                activation,
+            } => Primitive::RenameNoReplace {
+                from: neutral(&from),
+                to: neutral(&to),
+                activation,
+            },
+        };
+        for guard in &mut step.guards {
+            if let Guard::Epoch { path, .. } = guard {
+                *path = neutral(path);
+            }
+        }
+        step
     }
 
     /// `set` without the repair's own resources.
@@ -1068,9 +1131,81 @@ impl FixPlan {
         }
     }
 
-    /// Whether the plan repairs nothing: no fix and no recovery.
+    /// Whether the plan changes nothing: no primitive and no recovery (a chmod to the
+    /// mode a file has, or a delegation recovery no longer needs, lowers to none).
     pub fn is_empty(&self) -> bool {
-        self.fixes.is_empty() && self.recoveries.is_empty()
+        !self.has_steps() && self.recoveries.is_empty()
+    }
+
+    /// Whether the plan runs a primitive.
+    pub fn has_steps(&self) -> bool {
+        !self.lowered.steps.is_empty()
+    }
+
+    /// Each primitive as a preview shows it (A.5): its journal form with this run's own
+    /// names written `<run>` and `<tx>`, and the bytes it writes or moves.
+    pub fn actions_planned(&self) -> Vec<ActionPlanned> {
+        // Where each path a step names is on disk now: below a destination an earlier
+        // rename filled, it is what that rename moved. A subject counts without what
+        // earlier renames took out of it.
+        let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
+        let mut taken: Vec<PathBuf> = Vec::new();
+        let on_disk = |moved: &[(PathBuf, PathBuf)], path: &Path| -> PathBuf {
+            moved
+                .iter()
+                .rev()
+                .find_map(|(to, from)| path.strip_prefix(to).ok().map(|rest| from.join(rest)))
+                .unwrap_or_else(|| path.to_path_buf())
+        };
+        let mut out = Vec::with_capacity(self.lowered.steps.len());
+        for lowered in &self.lowered.steps {
+            let bytes = match &lowered.step.op {
+                Primitive::WriteFile { .. } => lowered
+                    .content
+                    .as_ref()
+                    .map_or(0, |content| content.len() as u64),
+                Primitive::Chmod { .. } => 0,
+                Primitive::RenameNoReplace { from, to, .. } => {
+                    let source = on_disk(&moved, from);
+                    let gone: Vec<PathBuf> = taken
+                        .iter()
+                        .filter(|path| *path != &source && path.starts_with(&source))
+                        .cloned()
+                        .collect();
+                    let bytes = size_of(&source, &gone);
+                    moved.push((to.clone(), source.clone()));
+                    taken.push(source);
+                    bytes
+                }
+            };
+            out.push(ActionPlanned {
+                step: self.names.neutral_step(&lowered.step),
+                bytes,
+            });
+        }
+        out
+    }
+
+    /// Each recovery as a preview shows it.
+    pub fn recoveries_planned(&self) -> Vec<RecoveryPlanned> {
+        self.recoveries
+            .iter()
+            .map(|r| RecoveryPlanned {
+                tx: r.tx,
+                family: r.family,
+                phase: r.phase,
+                direction: r.direction,
+            })
+            .collect()
+    }
+
+    /// The failure modes the plan repairs or settles.
+    pub fn modes(&self) -> BTreeSet<&'static str> {
+        self.fixes
+            .iter()
+            .map(|fix| fix.fm)
+            .chain(self.recoveries.iter().map(|r| r.fm))
+            .collect()
     }
 
     /// For `--robot-triage` (E4): one action per failure mode with planned fixes, in plan
@@ -1217,6 +1352,21 @@ fn refused(message: String, fix: Suggestion, details: Value) -> Error {
 }
 
 impl PlanRefusal {
+    /// The code of the error it becomes: `doctor_refused`, or lowering's or the journal
+    /// listing's own.
+    pub fn code(&self) -> ErrorCode {
+        match self {
+            Self::Lowering { error, .. } => error.code,
+            Self::JournalsUnlisted { .. } => ErrorCode::Io,
+            Self::ForceRequired { .. }
+            | Self::Fixer { .. }
+            | Self::ClientRunning { .. }
+            | Self::FilesystemMismatch { .. }
+            | Self::TooManyActions { .. }
+            | Self::FixerConflict { .. } => ErrorCode::DoctorRefused,
+        }
+    }
+
     /// The error the run reports (M4-D40): `doctor_refused` with its `details.reason`,
     /// or the error lowering or listing the journals gave. Every fix keeps `target`, the
     /// user's `-t`, else names the finding's client, and never adds `--force` or
@@ -1350,6 +1500,74 @@ impl PlanRefusal {
 }
 
 #[cfg(test)]
+impl FixPlan {
+    /// A plan of `steps` chmods of one fixture file and `recoveries`, nothing read: what
+    /// the runtime's order tests script.
+    pub(crate) fn scripted(steps: u32, recoveries: Vec<PlannedRecovery>) -> Self {
+        use crate::engine::repair::LoweredStep;
+        use crate::engine::repair_action::{Endpoint, Endpoints, Mode};
+        let file = || Endpoint::File {
+            identity: None,
+            sha256: None,
+            mode: Mode::new(0o600),
+        };
+        let lowered = Lowered {
+            fixes: Vec::new(),
+            steps: (1..=steps)
+                .map(|seq| LoweredStep {
+                    step: Step {
+                        seq,
+                        fix: 1,
+                        fm: Cow::Borrowed("fm-secrets-test-chmod"),
+                        op: Primitive::Chmod {
+                            path: PathBuf::from("/fixture/config/omaddons/credentials/github"),
+                            mode: Mode::new(0o600).unwrap_or_else(|| unreachable!()),
+                        },
+                        pre: Endpoints::One(file()),
+                        post: Endpoints::One(file()),
+                        guards: Vec::new(),
+                    },
+                    resources: ResourceSet::new(),
+                    backup_bytes: 0,
+                    quarantine: None,
+                    rollback_to: None,
+                    content: None,
+                })
+                .collect(),
+            resources: ResourceSet::new(),
+            targets: Vec::new(),
+            client_dirs: Vec::new(),
+            roots: Vec::new(),
+        };
+        let paths = Paths::with_roots(
+            "/fixture/home",
+            "/fixture/config",
+            "/fixture/state",
+            "/fixture/cache",
+        );
+        Self {
+            fixes: Vec::new(),
+            recoveries,
+            journals: Vec::new(),
+            targets: Vec::new(),
+            unplanned: Vec::new(),
+            bytes_to_back_up: 0,
+            lowered,
+            names: Names {
+                tx: TxId::new(),
+                run_id: "R".to_owned(),
+                run_dir: PathBuf::from("/fixture/state/omaddons/doctor/runs/R"),
+                cache_quarantine: PathBuf::from("/fixture/cache/omaddons/quarantine/R"),
+                sides: Vec::new(),
+                paths,
+                skill_dirs: Vec::new(),
+                clients: Vec::new(),
+            },
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
@@ -1363,7 +1581,7 @@ mod tests {
         Attribution, Delegation, Direction as Delegated, JournalPhase, JournalSet, Mode,
         QuarantineRoot, SuspendedArtifact,
     };
-    use crate::engine::testing::{RepairHome, repair_home};
+    use crate::engine::testing::{REPAIR_RUN_ID, RepairHome, repair_home};
 
     // One failure mode per fixer shape; the subsystem matters where `--only` names one.
     const WRITE: &str = "fm-state_files-test-write";
@@ -3013,6 +3231,57 @@ mod tests {
         let [a, b] = [&first, &second].map(of_doctor_fix);
         assert_eq!(a.parts(), b.parts());
         assert_eq!(a.token(), b.token());
+    }
+
+    #[test]
+    fn dry_run_paths_use_placeholders() {
+        let home = repair_home();
+        let findings = [
+            finding(WRITE, &home, at(home.skill_file())),
+            finding(
+                FLATTEN,
+                &home,
+                lift(home.addons("Same/Same"), home.addons("Same")),
+            ),
+        ];
+        let plan = planned("placeholders", plan(&home, &findings, &[]));
+        let planned = plan.actions_planned();
+        let ops: Vec<serde_json::Value> = planned
+            .iter()
+            .map(|a| serde_json::to_value(&a.step).unwrap())
+            .collect();
+        let field = |at: usize, key: &str| ops[at][key].as_str().unwrap().to_owned();
+        let provisional = text(&home.addons(".omaddons-flatten-<tx>"));
+        let parked = home
+            .client
+            .client_dir()
+            .join("Interface/.omaddons/snapshots/<tx>.repair/quarantine/Interface/AddOns/Same");
+        let backup = home.paths.doctor_runs_dir().join("<run>/backups/1");
+        let want = [
+            (field(0, "path"), text(&home.skill_file())),
+            (field(0, "backup"), text(&backup)),
+            (field(1, "to"), provisional.clone()),
+            (field(2, "path"), format!("{provisional}/Same")),
+            (field(3, "path"), provisional),
+            (field(3, "to"), text(&parked)),
+        ];
+        for (got, want) in want {
+            assert_eq!(got, want);
+        }
+        let all = serde_json::to_string(&ops).unwrap();
+        let (tx, run) = (tx().to_string(), REPAIR_RUN_ID);
+        assert!(!all.contains(&tx), "no transaction id: {all}");
+        assert!(!all.contains(run), "no run id: {all}");
+        // The wrapper moves whole, the lifted folder alone, then the wrapper without it.
+        let bytes: Vec<u64> = planned.iter().map(|a| a.bytes).collect();
+        let whole = size_of(&home.addons("Same"), &[]);
+        let inner = size_of(&home.addons("Same/Same"), &[]);
+        assert!(inner > 0 && whole > inner, "{whole} {inner}");
+        assert_eq!(
+            bytes,
+            [CONTENT.len() as u64, whole, inner, whole - inner],
+            "a write's content, then each rename's subject"
+        );
     }
 
     #[test]

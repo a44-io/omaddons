@@ -17,7 +17,7 @@ use crate::doctor::explain::{self, ExplainReport};
 use crate::doctor::finding::{Finding, Severity};
 use crate::doctor::plan::{Asked, plan_diagnose};
 use crate::doctor::registry::{FAILURE_MODES, Layer, ids};
-use crate::doctor::report::{self, DiagnoseReport, FullReport, RunState};
+use crate::doctor::report::{self, DiagnoseReport, FullReport};
 use crate::doctor::runtime::{DoctorRunId, Latest, REPORT_FILE, Runtime};
 use crate::doctor::selection::Selection;
 use crate::doctor::view::{DoctorView, ViewOptions};
@@ -441,10 +441,7 @@ pub fn run_diagnose(
         diagnosis,
         since,
     );
-    let exit = match full.state {
-        RunState::DoneOk => Exit::Healthy,
-        RunState::DoneFindings => Exit::FindingsPresent,
-    };
+    let exit = full.state.exit();
     let report = DiagnoseReport::Full(full);
     let warnings = view.warnings();
     let clients = view

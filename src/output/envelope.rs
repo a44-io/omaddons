@@ -118,6 +118,7 @@ impl<'a> Envelope<'a, ()> {
 #[serde(rename_all = "snake_case")]
 pub enum RunKind {
     Diagnose,
+    Fix,
 }
 
 /// One stdout document of a `doctor` command (M4-D34): the general envelope's keys with

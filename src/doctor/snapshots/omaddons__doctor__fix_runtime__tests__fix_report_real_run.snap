@@ -1,0 +1,70 @@
+---
+source: src/doctor/fix_runtime.rs
+expression: "scrubbed(value, &base_of(&paths))"
+---
+{
+  "actions": [
+    {
+      "backup": "<base>/home/.local/state/omaddons/doctor/runs/<run_id>/backups/1",
+      "fix": 1,
+      "fm": "fm-state_files-test-stale-file",
+      "mode": "0644",
+      "ok": true,
+      "op": "write_file",
+      "path": "<base>/home/.local/state/omaddons/fixme-1.txt",
+      "post": {
+        "kind": "file",
+        "mode": "0644",
+        "sha256": "sha256:0c3071418e6356e614898c84ed064ca95e88551bc0811b534bdf1952ecdae534"
+      },
+      "pre": {
+        "kind": "file",
+        "mode": "0644",
+        "sha256": "sha256:44ea8ede9025c26663124ceeefca2a35e40e5021cd116e436d368e2deae3355e"
+      },
+      "seq": 1
+    }
+  ],
+  "actions_jsonl_path": "<base>/home/.local/state/omaddons/doctor/runs/<run_id>/actions.jsonl",
+  "actions_planned": null,
+  "backups_dir": "<base>/home/.local/state/omaddons/doctor/runs/<run_id>/backups",
+  "delegated": [],
+  "delegated_planned": null,
+  "doctor_contract_version": "1.0",
+  "dry_run": false,
+  "findings": [],
+  "finished_at": "<finished_at>",
+  "next_steps": [],
+  "precondition": null,
+  "run_dir": "<base>/home/.local/state/omaddons/doctor/runs/<run_id>",
+  "run_id": "<run_id>",
+  "skipped": [],
+  "started_at": "<started_at>",
+  "state": "DONE_OK",
+  "summary": {
+    "actions_failed": 0,
+    "actions_taken": 1,
+    "auto_fixable": 0,
+    "backups_restored": 0,
+    "by_severity": {
+      "P0": 0,
+      "P1": 0,
+      "P2": 0,
+      "P3": 0
+    },
+    "bytes_backed_up": 6,
+    "bytes_to_back_up": 6,
+    "duration_ms": 0,
+    "findings_after": 0,
+    "findings_before": 1,
+    "incomplete": 0,
+    "manual": 0,
+    "needs_force": 0,
+    "online_required": 0,
+    "skipped": 0,
+    "total_findings": 0
+  },
+  "tx": "<tx>",
+  "undo_argv": null,
+  "undo_command": null
+}

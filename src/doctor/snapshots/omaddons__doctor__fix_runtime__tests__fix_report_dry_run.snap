@@ -1,0 +1,109 @@
+---
+source: src/doctor/fix_runtime.rs
+expression: "scrubbed(value, &base_of(&paths))"
+---
+{
+  "actions": null,
+  "actions_jsonl_path": null,
+  "actions_planned": [
+    {
+      "backup": "<base>/home/.local/state/omaddons/doctor/runs/<run>/backups/1",
+      "bytes": 6,
+      "fix": 1,
+      "fm": "fm-state_files-test-stale-file",
+      "mode": "0644",
+      "op": "write_file",
+      "path": "<base>/home/.local/state/omaddons/fixme-1.txt",
+      "post": {
+        "kind": "file",
+        "mode": "0644",
+        "sha256": "sha256:0c3071418e6356e614898c84ed064ca95e88551bc0811b534bdf1952ecdae534"
+      },
+      "pre": {
+        "kind": "file",
+        "mode": "0644",
+        "sha256": "sha256:44ea8ede9025c26663124ceeefca2a35e40e5021cd116e436d368e2deae3355e"
+      },
+      "seq": 1
+    }
+  ],
+  "backups_dir": null,
+  "delegated": null,
+  "delegated_planned": [],
+  "doctor_contract_version": "1.0",
+  "dry_run": true,
+  "findings": [
+    {
+      "addon": null,
+      "confidence": "high",
+      "evidence": {
+        "path": "<base>/home/.local/state/omaddons/fixme-1.txt"
+      },
+      "folder": null,
+      "id": "fm-state_files-test-stale-file",
+      "instance": "fm-state_files-test-stale-file@machine:path=<base>/home/.local/state/omaddons/fixme-1.txt",
+      "label": "machine · <base>/home/.local/state/omaddons/fixme-1.txt",
+      "remediation": {
+        "argv": [
+          "omaddons",
+          "doctor",
+          "fix",
+          "--only",
+          "fm-state_files-test-stale-file"
+        ],
+        "auto_fixable": true,
+        "command": "omaddons doctor fix --only fm-state_files-test-stale-file",
+        "destructive": false,
+        "estimated_actions": 1,
+        "explain_argv": [
+          "omaddons",
+          "doctor",
+          "explain",
+          "fm-state_files-test-stale-file"
+        ],
+        "explain_command": "omaddons doctor explain fm-state_files-test-stale-file",
+        "needs_force": false
+      },
+      "severity": "P3",
+      "subsystem": "state_files",
+      "target": null,
+      "title": "a stale file"
+    }
+  ],
+  "finished_at": "<finished_at>",
+  "next_steps": [
+    "omaddons doctor fix --if-match <token>"
+  ],
+  "precondition": "<token>",
+  "run_dir": "<base>/home/.local/state/omaddons/doctor/runs/<run_id>",
+  "run_id": "<run_id>",
+  "skipped": [],
+  "started_at": "<started_at>",
+  "state": "DONE_FINDINGS",
+  "summary": {
+    "actions_failed": 0,
+    "actions_taken": 0,
+    "auto_fixable": 1,
+    "backups_restored": 0,
+    "by_severity": {
+      "P0": 0,
+      "P1": 0,
+      "P2": 0,
+      "P3": 1
+    },
+    "bytes_backed_up": 0,
+    "bytes_to_back_up": 6,
+    "duration_ms": 0,
+    "findings_after": null,
+    "findings_before": 1,
+    "incomplete": 0,
+    "manual": 0,
+    "needs_force": 0,
+    "online_required": 0,
+    "skipped": 0,
+    "total_findings": 1
+  },
+  "tx": null,
+  "undo_argv": null,
+  "undo_command": null
+}

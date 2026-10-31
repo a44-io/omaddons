@@ -609,8 +609,9 @@ fn require_omarchy(paths: &Paths) -> Result<()> {
     .details(json!({ "reason": "omarchy_missing" })))
 }
 
-/// The running binary, canonical: what the widget's commands run.
-pub(super) fn current_binary() -> Result<PathBuf> {
+/// The running binary, canonical: what the widget's commands run, and what a fix run's
+/// `undo.sh` runs.
+pub(crate) fn current_binary() -> Result<PathBuf> {
     let exe = std::env::current_exe().map_err(|err| {
         Error::io(
             Path::new("/proc/self/exe"),

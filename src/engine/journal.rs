@@ -542,7 +542,7 @@ pub(super) fn append_line(s: &mut WriteSession<'_>, path: &Path, line: &JournalL
 // Reading.
 
 /// How far a transaction got.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
     /// Created, but no valid `prepared` line: nothing ran.

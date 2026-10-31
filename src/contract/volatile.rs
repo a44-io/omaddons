@@ -12,4 +12,12 @@ pub const VOLATILE: &[(&str, &str)] = &[
     ("started_at", "a new doctor run per invocation"),
     ("finished_at", "a new doctor run per invocation"),
     ("summary.duration_ms", "timings"),
+    // `doctor fix`'s real runs. A dry run writes its own names `<run>` and `<tx>`, so
+    // its planned actions are no new values.
+    ("tx", "a new transaction"),
+    ("actions_jsonl_path", "a new doctor run per invocation"),
+    ("backups_dir", "a new doctor run per invocation"),
+    ("undo_command", "a new doctor run per invocation"),
+    ("undo_argv", "a new doctor run per invocation"),
+    ("actions.*.backup", "a new doctor run per invocation"),
 ];

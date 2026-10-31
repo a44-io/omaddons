@@ -2,17 +2,20 @@
 //! comes from, and the finding model. Pure: nothing here writes.
 
 pub mod budget;
+pub mod delegate;
 mod detectors;
 pub mod exit;
 pub mod explain;
 pub mod facts;
 pub mod finding;
 pub mod fix;
+pub mod fix_runtime;
 pub mod plan;
 pub mod registry;
 pub mod report;
 pub mod runtime;
 pub mod selection;
+pub mod undo_script;
 pub mod view;
 
 pub use fix::plan_fix;
@@ -23,6 +26,8 @@ pub const FAILPOINTS: &[&str] = &[
     "doctor.run.staged",
     "doctor.run.published",
     "doctor.detector.panic",
+    // `doctor fix`: planned, before the lock (the pause point of two concurrent fixers).
+    "doctor.fix.planned",
     // The repair transaction (E5): after each journal line it writes, and after each
     // step a rollback inverts.
     "doctor.repair.prepared",

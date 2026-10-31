@@ -1,0 +1,14 @@
+---
+source: src/doctor/undo_script.rs
+expression: text
+---
+#!/bin/sh
+# omaddons: undoes doctor run 2026-10-30T18-03-40Z__01M8S7XQKZ0000000000000ABC (repair tx 01JB8Q2VA00000000000000009). Generated once by omaddons doctor fix.
+# It runs `omaddons doctor undo` for this run under the HOME and XDG directories the run used;
+# extra arguments are passed on (for example --dry-run).
+HOME='/home/user'; export HOME
+XDG_CONFIG_HOME='/home/user/.config'; export XDG_CONFIG_HOME
+XDG_STATE_HOME='/home/user/.local/state'; export XDG_STATE_HOME
+XDG_CACHE_HOME='/home/user/.cache'; export XDG_CACHE_HOME
+XDG_DATA_HOME='/home/user/.local/share'; export XDG_DATA_HOME
+exec '/usr/local/bin/omaddons' doctor undo '2026-10-30T18-03-40Z__01M8S7XQKZ0000000000000ABC' "$@"
