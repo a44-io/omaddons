@@ -10,7 +10,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::finding::{Finding, FindingTarget, Subsystem};
-use super::registry::{self, FAILURE_MODES, FailureMode, Layer, Tier, ids};
+use super::registry::{self, FailureMode, Layer, Tier, ids};
 use super::view::{Availability, DoctorView};
 use crate::cli::{fix_argv, levenshtein};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
@@ -223,7 +223,7 @@ fn picks(flag: &str, values: &[String], argv: &[String]) -> Result<Vec<Pick>> {
 
 /// An item exactly as a failure-mode id or a subsystem name.
 fn pick_of(item: &str) -> Option<Pick> {
-    FAILURE_MODES
+    registry::failure_modes()
         .iter()
         .find(|row| row.id == item)
         .map(|row| Pick::Mode(row.id))
@@ -251,7 +251,7 @@ pub fn closest_id(item: &str) -> Option<(usize, &'static str)> {
     let item = item.to_ascii_lowercase();
     let slugs = !item.starts_with("fm-");
     let mut best: Option<(usize, &'static str)> = None;
-    for row in FAILURE_MODES {
+    for row in registry::failure_modes() {
         let slug = row
             .id
             .strip_prefix("fm-")
@@ -503,6 +503,7 @@ fn sort_skipped(skipped: &mut [Skipped]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::doctor::registry::FAILURE_MODES;
     use crate::doctor::view::tests::{
         K, K2, Plant, client, home, is_root, key, plant, record_bytes, records_of, registry_bytes,
         set_mode, view_at, world_of,

@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use super::detectors::{concurrency, external, plugins, schemas, state_files, userland};
 use super::finding::{Finding, Observation};
-use super::registry::{FAILURE_MODES, Tier, ids};
+use super::registry::{Tier, failure_modes, ids};
 use crate::drift::DriftState;
 use crate::engine::journal::Unrecoverable;
 use crate::model::{TargetKey, TxId};
@@ -43,7 +43,7 @@ const RULES: [(&str, Rule); 7] = [
 /// order: `status --cached` asks for the `cached` rows, plain `status` the `quick` ones
 /// too.
 pub fn findings(facts: &StatusFacts, max_tier: Tier) -> Vec<Finding> {
-    FAILURE_MODES
+    failure_modes()
         .iter()
         .filter(|row| row.tier <= max_tier)
         .filter_map(|row| {

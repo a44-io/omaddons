@@ -181,6 +181,12 @@ pub const ENV_VARS: &[EnvVar] = &[
         None,
     ),
     var(
+        "OMADDONS_TEST_FIXERS",
+        EnvKind::Debug,
+        "1 registers the doctor's three test-only fixers, in debug builds",
+        None,
+    ),
+    var(
         "OMADDONS_ALLOW_SKIP",
         EnvKind::Harness,
         "Checkpoint tests allowed to print SKIP, as a comma list of test names",

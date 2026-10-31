@@ -24,7 +24,7 @@ use serde_json::{Value, json};
 
 use super::finding::{Finding, Remediation};
 use super::registry::{
-    FAILURE_MODES, FailureMode, FixerPrecondition, FixerSpec, Refusal, ScopeName, ids,
+    FailureMode, FixerPrecondition, FixerSpec, Refusal, ScopeName, failure_modes, ids,
 };
 use super::report::{ActionPlanned, RecoveryPlanned};
 use super::selection::Pick;
@@ -211,7 +211,7 @@ pub fn plan_fix(
     findings: &[Finding],
     opts: &FixOptions<'_>,
 ) -> Result<FixPlan, PlanRefusal> {
-    plan_fix_in(FAILURE_MODES, view, findings, opts)
+    plan_fix_in(failure_modes(), view, findings, opts)
 }
 
 /// [`plan_fix`] against `rows`, which hold each failure mode's fixer.

@@ -64,6 +64,15 @@ pub mod ids {
     pub const DETECTOR_CRASHED: &str = "fm-state_files-detector-crashed";
     /// A check stopped at its deadline or entry cap (the runtime raises it).
     pub const CHECK_INCOMPLETE: &str = "fm-state_files-check-incomplete";
+
+    /// The test-only failure modes (debug builds with `OMADDONS_TEST_FIXERS=1`,
+    /// `doctor::test_fixers`): an ordinary auto-fixer, a forced one and a disabled one.
+    #[cfg(debug_assertions)]
+    pub const TEST_WRITE: &str = "fm-test-write";
+    #[cfg(debug_assertions)]
+    pub const TEST_QUARANTINE: &str = "fm-test-quarantine";
+    #[cfg(debug_assertions)]
+    pub const TEST_FLATTEN: &str = "fm-test-flatten";
 }
 
 // ---------------------------------------------------------------------------------------
@@ -340,9 +349,49 @@ fn argv_of(parts: &[&str]) -> Vec<String> {
     parts.iter().map(|part| (*part).to_owned()).collect()
 }
 
-/// The row of `id`.
+/// The row of `id`, among the failure modes this process knows.
 pub fn row(id: &str) -> Option<&'static FailureMode> {
-    FAILURE_MODES.iter().find(|row| row.id == id)
+    failure_modes().iter().find(|row| row.id == id)
+}
+
+/// The prefix of the test-only failure modes' ids (`doctor::test_fixers`): no catalog id
+/// starts with it.
+pub const TEST_ID_PREFIX: &str = "fm-test-";
+
+/// Every failure mode this process knows: [`FAILURE_MODES`], and, in a debug build run
+/// with `OMADDONS_TEST_FIXERS=1`, the test-only rows after them. Every runtime reader of
+/// the registry goes through it; `FAILURE_MODES` stays the catalog the invariant and
+/// coverage tests read. A release build never reads the variable.
+pub fn failure_modes() -> &'static [FailureMode] {
+    #[cfg(debug_assertions)]
+    {
+        static EFFECTIVE: std::sync::LazyLock<Vec<FailureMode>> = std::sync::LazyLock::new(|| {
+            let on = std::env::var_os("OMADDONS_TEST_FIXERS").is_some_and(|v| v == "1");
+            failure_modes_with(on).into_owned()
+        });
+        EFFECTIVE.as_slice()
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        FAILURE_MODES
+    }
+}
+
+/// [`FAILURE_MODES`], and the test-only rows after them when `test_fixers` (debug builds;
+/// unit tests call it instead of setting the process's environment).
+#[cfg(debug_assertions)]
+pub fn failure_modes_with(test_fixers: bool) -> std::borrow::Cow<'static, [FailureMode]> {
+    if test_fixers {
+        std::borrow::Cow::Owned(
+            FAILURE_MODES
+                .iter()
+                .chain(super::test_fixers::TEST_FAILURE_MODES)
+                .copied()
+                .collect(),
+        )
+    } else {
+        std::borrow::Cow::Borrowed(FAILURE_MODES)
+    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -716,13 +765,18 @@ pub fn invariant_violations(rows: &[FailureMode]) -> Vec<RowViolation> {
         if !seen.insert(row.id) {
             broken(Rule::DuplicateId);
         }
-        if previous.is_some_and(|previous| previous > row.id) {
-            broken(Rule::NotSorted);
+        // A test row's prefix is its own marker, and test rows follow the catalog in
+        // their declared order: neither rule binds them.
+        let test_row = row.id.starts_with(TEST_ID_PREFIX);
+        if !test_row {
+            if previous.is_some_and(|previous| previous > row.id) {
+                broken(Rule::NotSorted);
+            }
+            previous = Some(row.id);
         }
-        previous = Some(row.id);
         if !is_fm_id(row.id) {
             broken(Rule::BadId);
-        } else if subsystem_part(row.id) != Some(row.subsystem.as_str()) {
+        } else if !test_row && subsystem_part(row.id) != Some(row.subsystem.as_str()) {
             broken(Rule::SubsystemMismatch);
         }
         if !row.subsystem.applicable() {
@@ -1527,5 +1581,66 @@ mod tests {
                 "{bits:o}"
             );
         }
+    }
+
+    fn ids_of(rows: &[FailureMode]) -> Vec<&'static str> {
+        rows.iter().map(|row| row.id).collect()
+    }
+
+    #[test]
+    fn test_rows_only_with_the_switch() {
+        let catalog = ids_of(FAILURE_MODES);
+        let without = ids_of(&failure_modes_with(false));
+        assert_eq!(without, catalog, "without the switch: the catalog");
+        let with = ids_of(&failure_modes_with(true));
+        assert_eq!(
+            &with[..catalog.len()],
+            catalog.as_slice(),
+            "the catalog first"
+        );
+        assert_eq!(
+            &with[catalog.len()..],
+            ["fm-test-write", "fm-test-quarantine", "fm-test-flatten"],
+            "then the test rows, in their order"
+        );
+        // Unit tests never set the variable: this process knows the catalog alone.
+        assert_eq!(ids_of(failure_modes()), catalog);
+    }
+
+    #[test]
+    fn test_rows_obey_the_invariants() {
+        let both = failure_modes_with(true);
+        assert_eq!(invariant_violations(&both), []);
+        assert!(
+            FAILURE_MODES
+                .iter()
+                .all(|row| !row.id.starts_with(TEST_ID_PREFIX)),
+            "no catalog id starts {TEST_ID_PREFIX}"
+        );
+        // The gates the end-to-end suite drives: an ordinary auto-fixer, a forced one,
+        // and a disabled one refused while the client runs.
+        let gates: Vec<(&str, bool, bool, bool, Tier)> = both[FAILURE_MODES.len()..]
+            .iter()
+            .map(|row| {
+                let fix = row.fix.unwrap();
+                let closed = fix
+                    .preconditions
+                    .contains(&FixerPrecondition::ClientNotRunning);
+                (row.id, fix.enabled, fix.needs_force, closed, row.tier)
+            })
+            .collect();
+        assert_eq!(
+            gates,
+            [
+                ("fm-test-write", true, false, false, Tier::Default),
+                ("fm-test-quarantine", false, true, false, Tier::Default),
+                ("fm-test-flatten", false, false, true, Tier::Default),
+            ]
+        );
+        // The exemptions are the prefix's alone: a catalog row out of order, or naming
+        // another subsystem, still breaks the rules.
+        let mut misplaced = both.to_vec();
+        misplaced.swap(0, 1);
+        assert!(!invariant_violations(&misplaced).is_empty());
     }
 }

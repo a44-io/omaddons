@@ -16,7 +16,7 @@ use crate::doctor::exit::Exit;
 use crate::doctor::explain::{self, ExplainReport};
 use crate::doctor::finding::{Finding, Severity};
 use crate::doctor::plan::{Asked, plan_diagnose};
-use crate::doctor::registry::{FAILURE_MODES, Layer, ids};
+use crate::doctor::registry::{Layer, failure_modes, ids};
 use crate::doctor::report::{self, DiagnoseReport, FullReport};
 use crate::doctor::runtime::{DoctorRunId, Latest, REPORT_FILE, Runtime};
 use crate::doctor::selection::Selection;
@@ -400,7 +400,7 @@ pub fn run_diagnose(
         online: args.online,
         budget: args.budget,
     };
-    let plan = plan_diagnose(FAILURE_MODES, &selection, &asked, &ctx.argv)?;
+    let plan = plan_diagnose(failure_modes(), &selection, &asked, &ctx.argv)?;
     let paths = Paths::from_env()?;
     let view = DoctorView::load_at(paths.clone(), ViewOptions::default());
     // -t resolves before the run starts: a client that is not there creates nothing.

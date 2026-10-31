@@ -15,6 +15,8 @@ pub mod registry;
 pub mod report;
 pub mod runtime;
 pub mod selection;
+#[cfg(debug_assertions)]
+pub mod test_fixers;
 pub mod undo_script;
 pub mod view;
 
@@ -40,7 +42,7 @@ pub const FAILPOINTS: &[&str] = &[
 
 use budget::Budget;
 use finding::{Finding, Incomplete};
-use registry::{FAILURE_MODES, FailureMode, Tier};
+use registry::{FailureMode, Tier};
 use selection::Selection;
 use view::DoctorView;
 
@@ -55,7 +57,7 @@ pub struct Detection {
 /// detector found into findings. Pure: reads only the view. (Budgets and isolating a
 /// detector that panics are E3's.)
 pub fn detect(view: &DoctorView, selection: &Selection, max_tier: Tier) -> Detection {
-    detect_rows(FAILURE_MODES, view, selection, max_tier)
+    detect_rows(registry::failure_modes(), view, selection, max_tier)
 }
 
 fn detect_rows(
@@ -90,6 +92,7 @@ pub(crate) mod tests {
         AddonDriftFact, MachineFacts, NewerFile, PendingJournal, StatusFacts, TargetFacts,
         WidgetDrift,
     };
+    use super::registry::FAILURE_MODES;
     use super::registry::ids;
     use super::*;
     use crate::drift::DriftState;
