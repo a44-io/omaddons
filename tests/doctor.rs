@@ -3,6 +3,7 @@
 
 mod common;
 #[path = "doctor/mod.rs"]
+#[allow(dead_code)]
 mod fixture;
 
 use std::fs;
@@ -1092,10 +1093,15 @@ fn test_fixer_fixtures_need_the_switch() {
     }
 }
 
+/// The runtime rows' fixtures: each finding comes from the run itself, so the home stays
+/// healthy. The other rows' fixtures have suites of their own (`doctor_concurrency`).
 #[test]
 fn runtime_fixtures_produce_their_findings() {
     let log = tlog!();
-    for fixture in fixture::fixtures::all() {
+    let runtime = fixture::fixtures::all().into_iter().filter(|fixture| {
+        omaddons::doctor::registry::row(fixture.id()).is_some_and(|row| row.tier == Tier::Runtime)
+    });
+    for fixture in runtime {
         let log = log.case(fixture.id());
         let home = home(&log);
         log.step("plant");

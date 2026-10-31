@@ -179,21 +179,29 @@ pub fn check_envelope(stdout: &str, stderr: &str, code: i32) -> Value {
     envelope
 }
 
-/// The seven failure modes `status` publishes, planted on a [`Home`] whose products are
-/// among `wow` (`retail`), `wow_classic` (`classic`) and `wow_classic_era` (`era`),
-/// through the binary where a change command makes the state and on disk otherwise. Each helper asserts that what it ran
-/// succeeded, and is deterministic. Order matters twice: `state_version_newer` after every
-/// change on its client (a newer record refuses changes), and `journal_pending` last (any
-/// later change command recovers its journal first).
+/// The seven failure modes `status` publishes, and the ten journal and lock states,
+/// planted on a [`Home`] whose products are among `wow` (`retail`), `wow_classic`
+/// (`classic`) and `wow_classic_era` (`era`), through the binary where a change command
+/// makes the state and on disk otherwise. Each helper asserts that what it ran succeeded
+/// (or, for a crash, was killed), and is deterministic. Order matters twice:
+/// `state_version_newer` after every change on its client (a newer record refuses
+/// changes), and a journal last on its client (any later change command recovers it
+/// first, and a too-new or unreadable one refuses it).
 pub mod plant {
+    use std::cell::RefCell;
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
+    use jiff::Timestamp;
+    use omaddons::fsx::{GlobalLock, GlobalLockGuard};
+    use omaddons::model::TxId;
     use serde_json::{Value, json};
 
     use crate::common::archives::zip_text;
     use crate::common::home::{Home, Run};
-    use crate::common::http::{Asset, gh_release};
+    use crate::common::http::{Asset, gh_release, paths};
+    use crate::common::procfs::FakeProc;
+    use crate::common::wtf::Wtf;
 
     /// Every addon here loads on all three clients.
     const FLAVORS: &[(&str, u32)] = &[
@@ -223,10 +231,28 @@ pub mod plant {
             .unwrap_or_default()
     }
 
-    /// `omaddons <args> --json`, which must exit 0.
+    /// `omaddons <args> --json`, which must exit 0; recorded for [`take_planted`].
     fn must(home: &Home, args: &[&str]) -> Run {
-        let run = home.run(args);
+        let run = exec(home, &json_argv(args), &[]);
         assert_eq!(run.code, 0, "planting: {args:?}\n{}", run.context());
+        run
+    }
+
+    fn json_argv(args: &[&str]) -> Vec<String> {
+        let mut argv: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
+        argv.push("--json".to_owned());
+        argv
+    }
+
+    /// `omaddons <argv>` with `env`, recorded for [`take_planted`]: its argv, environment
+    /// and exit (-1 for a process a failpoint killed).
+    fn exec(home: &Home, argv: &[String], env: &[(&str, &str)]) -> Run {
+        let run = home.exec_with(argv, env);
+        let vars: serde_json::Map<String, Value> = env
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), json!(value)))
+            .collect();
+        planted(json!({"argv": argv, "env": vars, "exit": run.code}));
         run
     }
 
@@ -362,21 +388,554 @@ pub mod plant {
     }
 
     /// `fm-concurrency_primitives-journal-pending` (P0, `tx=<tx>` on `target`): an install
-    /// killed after its journal's `prepared` line (`engine.journal.prepared=abort`).
-    /// Last: any later change command recovers it first.
+    /// of `gh:o/stuck` killed after its journal's `prepared` line
+    /// (`engine.journal.prepared=abort`), before any step. E11's verdict:
+    /// `Recoverable { Prepared, Back }`; evidence `phase: prepared`, `kind: install`.
+    /// Last: any later change command recovers it first ([`recover`]).
     pub fn journal_pending(home: &Home, target: &str) {
+        journal_pending_tx(home, target);
+    }
+
+    /// [`journal_pending`], returning the transaction.
+    pub fn journal_pending_tx(home: &Home, target: &str) -> String {
         serve(home, "stuck");
-        let args = ["install", "gh:o/stuck", "-t", target, "--json"].map(str::to_owned);
-        let crashed = home.exec_with(
-            &args,
-            &[("OMADDONS_FAILPOINTS", "engine.journal.prepared=abort")],
+        crash(
+            home,
+            &["install", "gh:o/stuck", "-t", target],
+            "engine.journal.prepared",
+        )
+    }
+
+    // ---------------------------------------------------------------------------------
+    // The journal and lock states (Appendix B rows 1-10). Each journal helper plants
+    // exactly one verdict of E11's `simulate::diagnose`: a change killed at an engine
+    // failpoint, then plain edits of the journal it left (each line parsed as JSON, one
+    // key changed, written back with its newline). A client holds at most one journal
+    // planted by a crash: the next change there recovers a recoverable journal first, and
+    // an unrecoverable one refuses it. [`copy_journal`] makes more.
+
+    thread_local! {
+        /// What the helpers ran and edited on this thread, for [`take_planted`].
+        static PLANTED: RefCell<Vec<Value>> = const { RefCell::new(Vec::new()) };
+    }
+
+    fn planted(entry: Value) {
+        PLANTED.with(|log| log.borrow_mut().push(entry));
+    }
+
+    /// Everything the helpers ran (argv, environment, exit) and every journal edit they
+    /// made (the line before and after, any path below `WTF/` cut at it) on this thread
+    /// since the last call, in order, so a suite logs how each state was planted.
+    pub fn take_planted() -> Vec<Value> {
+        PLANTED.with(|log| std::mem::take(&mut *log.borrow_mut()))
+    }
+
+    /// `text` with every path below a `WTF/` cut at it (`…/WTF/…`), so no account, realm
+    /// or character name reaches a log.
+    fn cut_wtf(text: &str) -> String {
+        const WTF: &str = "/WTF/";
+        let mut cut = String::new();
+        let mut rest = text;
+        while let Some(at) = rest.find(WTF) {
+            cut.push_str(&rest[..at + WTF.len()]);
+            cut.push('…');
+            rest = &rest[at + WTF.len()..];
+            rest = &rest[rest.find('"').unwrap_or(rest.len())..];
+        }
+        cut.push_str(rest);
+        cut
+    }
+
+    fn file_name(path: &Path) -> String {
+        path.file_name().unwrap().to_string_lossy().into_owned()
+    }
+
+    /// `<root>/aside/`: outside every directory discovery scans or omaddons keeps.
+    pub fn aside(home: &Home) -> PathBuf {
+        let dir = home.env.root().join("aside");
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// The transaction ids and files in `<state>/journal/`, sorted.
+    pub fn journals(home: &Home) -> Vec<(String, PathBuf)> {
+        let mut found: Vec<(String, PathBuf)> = fs::read_dir(home.state().join("journal"))
+            .map(|listing| {
+                listing
+                    .filter_map(|entry| {
+                        let path = entry.ok()?.path();
+                        let name = path.file_name()?.to_str()?.strip_suffix(".jsonl")?;
+                        let tx = name.split('.').next()?.to_owned();
+                        Some((tx, path))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        found.sort();
+        found
+    }
+
+    /// `tx`'s journal file (`<tx>.jsonl`, or `<tx>.wtf.jsonl` for one that puts settings
+    /// back).
+    pub fn journal_file(home: &Home, tx: &str) -> PathBuf {
+        journals(home)
+            .into_iter()
+            .find(|(t, _)| t == tx)
+            .map(|(_, path)| path)
+            .unwrap_or_else(|| panic!("no journal of {tx}")) // ubs:ignore — the test's own failure
+    }
+
+    /// The first line of `tx`'s journal that `pick` selects, as JSON.
+    pub fn journal_line(home: &Home, tx: &str, pick: impl Fn(&Value) -> bool) -> Value {
+        let text = fs::read_to_string(journal_file(home, tx)).unwrap();
+        text.lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .find(|line| pick(line))
+            .unwrap_or_else(|| panic!("no such line in {tx}'s journal:\n{}", cut_wtf(&text))) // ubs:ignore — the test's own failure
+    }
+
+    /// A `prepared` line.
+    pub fn is_prepared(line: &Value) -> bool {
+        line["type"] == "prepared"
+    }
+
+    /// The `step` line of step `n`.
+    pub fn is_step(n: u64) -> impl Fn(&Value) -> bool {
+        move |line| line["type"] == "step" && line["n"] == n
+    }
+
+    /// A journal file as it was before a helper edited it.
+    pub struct JournalEdit {
+        pub path: PathBuf,
+        original: Vec<u8>,
+    }
+
+    impl JournalEdit {
+        fn of(path: PathBuf) -> Self {
+            let original = fs::read(&path).unwrap();
+            Self { path, original }
+        }
+
+        /// Writes the journal back byte for byte, as the crash left it.
+        pub fn undo(&self) {
+            fs::write(&self.path, &self.original).unwrap();
+            planted(json!({"journal": file_name(&self.path), "restored": true}));
+        }
+    }
+
+    /// Rewrites the first line of `tx`'s journal that `pick` selects, with `edit` applied
+    /// to its JSON; the line keeps its newline (and comes out with its keys sorted).
+    pub fn edit_line(
+        home: &Home,
+        tx: &str,
+        pick: impl Fn(&Value) -> bool,
+        edit: impl FnOnce(&mut Value),
+    ) -> JournalEdit {
+        let undo = JournalEdit::of(journal_file(home, tx));
+        let text = String::from_utf8(undo.original.clone()).unwrap();
+        let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+        let at = lines
+            .iter()
+            .position(|line| serde_json::from_str::<Value>(line).is_ok_and(|line| pick(&line)))
+            .unwrap_or_else(|| panic!("no such line in {tx}'s journal:\n{}", cut_wtf(&text))); // ubs:ignore — the test's own failure
+        let mut line: Value = serde_json::from_str(&lines[at]).unwrap();
+        edit(&mut line);
+        let after = line.to_string();
+        planted(json!({
+            "journal": file_name(&undo.path),
+            "line": at + 1,
+            "before": cut_wtf(&lines[at]),
+            "after": cut_wtf(&after),
+        }));
+        lines[at] = after;
+        fs::write(&undo.path, lines.join("\n") + "\n").unwrap();
+        undo
+    }
+
+    /// Appends the complete line `line` to `tx`'s journal.
+    pub fn append_line(home: &Home, tx: &str, line: &Value) -> JournalEdit {
+        let undo = JournalEdit::of(journal_file(home, tx));
+        let mut bytes = undo.original.clone();
+        bytes.extend_from_slice(line.to_string().as_bytes());
+        bytes.push(b'\n');
+        fs::write(&undo.path, bytes).unwrap();
+        planted(json!({"journal": file_name(&undo.path), "appended": line}));
+        undo
+    }
+
+    /// A copy of `tx`'s journal under a fresh transaction id, its `prepared` line's `tx`
+    /// and `commit.history.tx` set to that id, which this returns. Nothing else is copied
+    /// (stage, snapshots, in-flight lock): the verdicts of a too-new, unreadable or
+    /// mismatched journal do not depend on them, so a scenario that needs several such
+    /// journals on one client plants one by a crash and derives the others.
+    pub fn copy_journal(home: &Home, tx: &str) -> String {
+        let from = journal_file(home, tx);
+        let copy = TxId::new().to_string();
+        let text = fs::read_to_string(&from).unwrap();
+        let mut copied = String::new();
+        for line in text.lines() {
+            match serde_json::from_str::<Value>(line) {
+                Ok(mut value) if is_prepared(&value) => {
+                    value["tx"] = json!(copy);
+                    if value["commit"]["history"].is_object() {
+                        value["commit"]["history"]["tx"] = json!(copy);
+                    }
+                    copied.push_str(&value.to_string());
+                }
+                _ => copied.push_str(line),
+            }
+            copied.push('\n');
+        }
+        let name = file_name(&from).replacen(tx, &copy, 1);
+        fs::write(from.with_file_name(&name), copied).unwrap();
+        planted(json!({"journal": name, "copied_from": file_name(&from)}));
+        copy
+    }
+
+    /// Runs `omaddons <args> --json` with `failpoint` armed as an abort, which must kill
+    /// it; returns the transaction of the one journal it left.
+    fn crash(home: &Home, args: &[&str], failpoint: &str) -> String {
+        let before = journals(home);
+        let spec = format!("{failpoint}=abort");
+        let run = exec(home, &json_argv(args), &[("OMADDONS_FAILPOINTS", &spec)]);
+        assert_eq!(
+            run.code,
+            -1,
+            "planting: {spec} must kill {args:?}\n{}",
+            run.context()
+        );
+        let new: Vec<String> = journals(home)
+            .into_iter()
+            .filter(|entry| !before.contains(entry))
+            .map(|(tx, _)| tx)
+            .collect();
+        assert_eq!(
+            new.len(),
+            1,
+            "planting {args:?}: one new journal, not {new:?}"
+        );
+        new.into_iter().next().unwrap()
+    }
+
+    /// Settles every folder journal: `config set check_interval_hours 6`, a command that
+    /// takes the global lock and recovers first. It runs no discovery, so it never moves
+    /// a `WTF/`: a journal that puts settings back needs [`recover_wtf`].
+    pub fn recover(home: &Home) {
+        must(home, &["config", "set", "check_interval_hours", "6"]);
+    }
+
+    /// Settles every journal, `WTF/` ones included: `gh:o/recover` installed on `target`
+    /// from a local archive (`--file`, `--offline`), a change command that runs discovery
+    /// and recovers first.
+    pub fn recover_wtf(home: &Home, target: &str) {
+        let run = exec(home, &recover_argv(home, target), &[]);
+        assert_eq!(run.code, 0, "recovering\n{}", run.context());
+    }
+
+    /// [`recover_wtf`] with `failpoint` armed as an abort, which must kill it.
+    pub fn recover_wtf_killed_at(home: &Home, target: &str, failpoint: &str) {
+        let spec = format!("{failpoint}=abort");
+        let run = exec(
+            home,
+            &recover_argv(home, target),
+            &[("OMADDONS_FAILPOINTS", &spec)],
         );
         assert_eq!(
-            crashed.code,
+            run.code,
             -1,
-            "planting a journal\n{}",
-            crashed.context()
+            "recovering: {spec} must kill it\n{}",
+            run.context()
         );
+    }
+
+    fn recover_argv(home: &Home, target: &str) -> Vec<String> {
+        let zip = home.env.root().join("dl/Recover.zip");
+        if !zip.exists() {
+            fs::create_dir_all(zip.parent().unwrap()).unwrap();
+            fs::write(&zip, zip_text(&[("Recover/Recover.toc", TOC)])).unwrap();
+        }
+        let zip = zip.display().to_string();
+        json_argv(&[
+            "install",
+            "gh:o/recover",
+            "--file",
+            &zip,
+            "-t",
+            target,
+            "--offline",
+        ])
+    }
+
+    /// A target id's executable.
+    pub fn exe(target: &str) -> &'static str {
+        match target {
+            "classic" | "era" => "WoWClassic.exe",
+            _ => "Wow.exe",
+        }
+    }
+
+    /// A fake `/proc` at `<root>/proc-<target>` in which `target`'s client runs (pid
+    /// 4242, in the home's prefix) and nothing else, as `Home::client_running` builds
+    /// one. Give a run its root as `OMADDONS_PROC_ROOT`.
+    pub fn running(home: &Home, target: &str) -> FakeProc {
+        let prefix = home.prefix.display().to_string();
+        let path = format!(
+            "C:\\Program Files (x86)\\World of Warcraft\\{}\\{}",
+            client_folder(target),
+            exe(target)
+        );
+        FakeProc::new(home.env.root().join(format!("proc-{target}"))).process(
+            4242,
+            true,
+            exe(target),
+            &[&path],
+            &[("WINEPREFIX", &prefix)],
+        )
+    }
+
+    /// A whole `backup restore` on `target` killed right after its exchange
+    /// (`engine.restore.exchanged=abort`): a `writes_wtf` journal (`<tx>.wtf.jsonl`) whose
+    /// step 1 swapped the backup's copy in for the live `WTF/`. First the client gets a
+    /// `WTF/` holding `Foo`'s SavedVariables (fake names only), a manual backup of it, and
+    /// an edit after that backup, so the restore changes something. Returns the
+    /// transaction.
+    pub fn crashed_restore(home: &Home, target: &str) -> String {
+        let client = home.client(client_folder(target));
+        let wtf = Wtf::at(&client).saved_variables("Foo", 64).build();
+        let made = must(home, &["backup", "create", "-t", target]).envelope();
+        let id = made["data"]["targets"][0]["backup"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        fs::write(wtf.join("Config.wtf"), "SET edited \"after the backup\"\n").unwrap();
+        crash(
+            home,
+            &["backup", "restore", &id, "-t", target],
+            "engine.restore.exchanged",
+        )
+    }
+
+    /// `fm-concurrency_primitives-journal-waits-for-game` (P2, `tx=<tx>` on `target`):
+    /// [`crashed_restore`], and [`running`] for `target`. E11's verdict with that fake
+    /// `/proc`: `WaitsForGame`; evidence `reason: saved_variables`, `kind: restore`.
+    /// Returns the transaction and the fake. Without it the game has exited, and
+    /// [`recover_wtf`] settles the journal.
+    pub fn journal_waits_for_game(home: &Home, target: &str) -> (String, FakeProc) {
+        let tx = crashed_restore(home, target);
+        (tx, running(home, target))
+    }
+
+    /// `fm-concurrency_primitives-journal-too-new` (P0, `tx=<tx>` on `target`):
+    /// [`journal_pending`], then its `prepared` line's `schema_version` set to `"9.0"`, a
+    /// newer major this build never recovers. Verdict `TooNew`; evidence `reason:
+    /// journal_too_new`, `format: "9.0"`. Refuses every later change on `target`; undo
+    /// the edit, then [`recover`].
+    pub fn journal_too_new(home: &Home, target: &str) -> (String, JournalEdit) {
+        let tx = journal_pending_tx(home, target);
+        let edit = edit_line(home, &tx, is_prepared, |line| {
+            line["schema_version"] = json!("9.0");
+        });
+        (tx, edit)
+    }
+
+    /// `fm-concurrency_primitives-journal-unreadable` (P0, `tx=<tx>` on `target`):
+    /// [`journal_pending`], then the complete line `{"type":"from_a_later_build"}`
+    /// appended. Verdict `Unreadable`; evidence `reason: journal_unreadable`. Refuses
+    /// every later change on `target`; undo the edit, then [`recover`].
+    pub fn journal_unreadable(home: &Home, target: &str) -> (String, JournalEdit) {
+        let tx = journal_pending_tx(home, target);
+        let edit = append_line(home, &tx, &json!({"type": "from_a_later_build"}));
+        (tx, edit)
+    }
+
+    /// What [`journal_unexpected_state`] moved: put back with [`Moved::undo`].
+    pub struct Moved {
+        /// Each path, and where it went.
+        pub moves: Vec<(PathBuf, PathBuf)>,
+        /// The empty directory made in the live path's place.
+        pub made: PathBuf,
+    }
+
+    impl Moved {
+        /// Removes the empty directory, and moves each path back.
+        pub fn undo(&self) {
+            fs::remove_dir(&self.made).unwrap();
+            for (path, away) in &self.moves {
+                fs::rename(away, path).unwrap();
+            }
+            planted(json!({"moved_back": self.moves.len()}));
+        }
+    }
+
+    /// `fm-concurrency_primitives-journal-unexpected-state` (P0, `tx=<tx>` on `target`):
+    /// [`crashed_restore`], then both sides of its step 1 replaced: the staged and the
+    /// live `WTF/` moved into [`aside`], and an empty `WTF/` made at the live path.
+    /// Verdict `UnexpectedState { step: 1 }`; evidence `reason: unexpected_state`, `step:
+    /// 1`. Undo the moves, then [`recover_wtf`].
+    pub fn journal_unexpected_state(home: &Home, target: &str) -> (String, Moved) {
+        let tx = crashed_restore(home, target);
+        let step = journal_line(home, &tx, is_step(1));
+        let (from, to) = (
+            PathBuf::from(step["from"].as_str().unwrap()),
+            PathBuf::from(step["to"].as_str().unwrap()),
+        );
+        let aside = aside(home);
+        let moves = vec![
+            (from, aside.join(format!("{tx}.staged-WTF"))),
+            (to.clone(), aside.join(format!("{tx}.live-WTF"))),
+        ];
+        for (path, away) in &moves {
+            fs::rename(path, away).unwrap();
+        }
+        fs::create_dir(&to).unwrap();
+        planted(json!({"moved_aside": ["staged WTF/", "live WTF/"], "made": "an empty live WTF/"}));
+        (tx, Moved { moves, made: to })
+    }
+
+    /// `fm-concurrency_primitives-journal-step-unrecognized` (P0, `tx=<tx>` on
+    /// `target`): an install of `gh:o/unrecognized`, not installed yet, killed after its
+    /// step 1 was journaled and before that rename ran (`engine.swap.before_rename=abort`);
+    /// then that `step` line's `from_id.ino` increased by 1,000,000, so the staged folder
+    /// matches neither the step's before nor its after state. Verdict `StepUnrecognized {
+    /// step: 1 }`; evidence `reason: step_unrecognized`, `step: 1`. Undo the edit, then
+    /// [`recover`].
+    pub fn journal_step_unrecognized(home: &Home, target: &str) -> (String, JournalEdit) {
+        serve(home, "unrecognized");
+        let tx = crash(
+            home,
+            &["install", "gh:o/unrecognized", "-t", target],
+            "engine.swap.before_rename",
+        );
+        let edit = edit_line(home, &tx, is_step(1), |line| {
+            let ino = line["from_id"]["ino"].as_u64().unwrap();
+            line["from_id"]["ino"] = json!(ino + 1_000_000);
+        });
+        (tx, edit)
+    }
+
+    /// `fm-concurrency_primitives-journal-marker-mismatch` (P0, `tx=<tx>` on `target`):
+    /// `other` registered (an addon installed there, which writes its marker), then
+    /// [`journal_pending`] on `target`, its `prepared` line's `client_dir` set to
+    /// `other`'s client dir. Verdict `MarkerMismatch`; evidence `reason:
+    /// marker_mismatch`, `path` the other client dir, `expected` `target`'s key,
+    /// `observed` `other`'s. Undo the edit, then [`recover`].
+    pub fn journal_marker_mismatch(
+        home: &Home,
+        target: &str,
+        other: &str,
+    ) -> (String, JournalEdit) {
+        install(home, "elsewhere", other);
+        let tx = journal_pending_tx(home, target);
+        let dir = home.client(client_folder(other)).display().to_string();
+        let edit = edit_line(home, &tx, is_prepared, |line| {
+            line["client_dir"] = json!(dir);
+        });
+        (tx, edit)
+    }
+
+    /// `fm-concurrency_primitives-journal-unattributed` (P0, about the machine,
+    /// `tx=<tx>`): `<state>/journal/<a fresh id>.jsonl` holding the one complete line
+    /// `{"type":"prepared","schema_version":"1.1"}`, which names no target and does not
+    /// decode. Verdict `Unattributed { cause: Unreadable }`; evidence `cause: unreadable`.
+    /// Refuses every change on every client; move the file into [`aside`] to clear it.
+    /// Returns the transaction.
+    pub fn journal_unattributed(home: &Home) -> String {
+        let tx = TxId::new().to_string();
+        let dir = home.state().join("journal");
+        fs::create_dir_all(&dir).unwrap();
+        let line = r#"{"type":"prepared","schema_version":"1.1"}"#;
+        fs::write(dir.join(format!("{tx}.jsonl")), format!("{line}\n")).unwrap();
+        planted(json!({"journal": format!("{tx}.jsonl"), "written": line}));
+        tx
+    }
+
+    /// Moves `tx`'s journal into [`aside`].
+    pub fn set_journal_aside(home: &Home, tx: &str) {
+        let journal = journal_file(home, tx);
+        fs::rename(&journal, aside(home).join(file_name(&journal))).unwrap();
+        planted(json!({"journal": file_name(&journal), "moved_aside": true}));
+    }
+
+    /// `fm-concurrency_primitives-journal-preservation-incomplete` (P1, `tx=<tx>` on
+    /// `target`): [`crashed_restore`]; a play session on the restored `WTF/` (one
+    /// SavedVariables file rewritten), so rolling back must keep that tree as a
+    /// `recovered` backup; then [`recover_wtf`] killed once that intent is journaled and
+    /// before it is done (`engine.preserve.intent=abort`). Verdict
+    /// `PreservationIncomplete { stops: false }`; evidence `resumable: true`, `count` the
+    /// trees to keep. [`recover_wtf`] again resumes and completes it.
+    pub fn journal_preservation_incomplete(home: &Home, target: &str) -> String {
+        let tx = crashed_restore(home, target);
+        let played = home
+            .client(client_folder(target))
+            .join("WTF/Account/FAKEACCT/SavedVariables/Foo.lua");
+        fs::write(played, "FooDB = { played = true }\n").unwrap();
+        planted(json!({"played_on": "the restored WTF/"}));
+        recover_wtf_killed_at(home, target, "engine.preserve.intent");
+        tx
+    }
+
+    /// The `recovered` backups on `target`, by id.
+    pub fn recovered_backups(home: &Home, target: &str) -> Vec<String> {
+        let dir = home
+            .client(client_folder(target))
+            .join("Interface/.omaddons/backups");
+        let mut ids: Vec<String> = fs::read_dir(dir)
+            .map(|listing| {
+                listing
+                    .filter_map(|entry| {
+                        let path = entry.ok()?.path();
+                        let meta: Value =
+                            serde_json::from_slice(&fs::read(path.join("backup.json")).ok()?)
+                                .ok()?;
+                        (meta["kind"] == "recovered").then(|| file_name(&path))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        ids.sort();
+        ids
+    }
+
+    /// `fm-concurrency_primitives-lock-held-long` (P2, about the machine): the global lock
+    /// taken by this test process through the library, as `command` (the holder record
+    /// names this process's pid). Returns the guard, which holds it until dropped, and the
+    /// time right after it was taken: a diagnosing run whose `OMADDONS_NOW` is more than
+    /// `LOCK_HELD_LONG` past it finds the holder.
+    pub fn hold_lock(home: &Home, command: &str) -> (GlobalLockGuard, Timestamp) {
+        let guard = GlobalLock::acquire(&paths(&home.env), command).unwrap();
+        let taken = Timestamp::now();
+        planted(json!({"lock": command, "pid": std::process::id()}));
+        (guard, taken)
+    }
+
+    /// The journal set of `tx`, those of its paths that exist: its journal, its in-flight
+    /// lock, its state snapshots, and on `target`'s client (none for a journal no client
+    /// carries) its stage and snapshots, each under its bare and its `.wtf` name. What a
+    /// set-aside moves (F2's subject rule).
+    pub fn journal_set(home: &Home, tx: &str, target: Option<&str>) -> Vec<PathBuf> {
+        let state = home.state();
+        let mut set: Vec<PathBuf> = journals(home)
+            .into_iter()
+            .filter(|(t, _)| t == tx)
+            .map(|(_, path)| path)
+            .collect();
+        set.push(state.join("inflight").join(format!("{tx}.lock")));
+        let names = [tx.to_owned(), format!("{tx}.wtf")];
+        for name in &names {
+            set.push(state.join("snapshots").join(name));
+        }
+        if let Some(target) = target {
+            let meta = home
+                .client(client_folder(target))
+                .join("Interface/.omaddons");
+            for side in ["stage", "snapshots"] {
+                for name in &names {
+                    set.push(meta.join(side).join(name));
+                }
+            }
+        }
+        set.retain(|path| fs::symlink_metadata(path).is_ok());
+        set
     }
 
     /// The published run directories' names, sorted; never a stage (`.<id>.tmp`).

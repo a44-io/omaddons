@@ -15,12 +15,17 @@ pub trait Fixture {
     fn corrupt(&self, home: &Home);
     /// Asserts a diagnose of `home` finds no instance of this failure mode.
     fn assert_healthy(&self, home: &Home);
-    /// The paths a fixer of this failure mode would change; empty without a fixer.
+    /// The paths a fixer of this failure mode would change, defined before the fixer
+    /// lands when one is planned; empty when none would change anything.
     fn subject(&self, home: &Home) -> Vec<PathBuf>;
     /// A fixer repairs it.
     fn fixer(&self) -> bool {
         false
     }
+    /// The manual remedy this finding's remediation advises, applied by hand (quit the
+    /// game, finish the journal with a build that can read it, release the lock), after
+    /// which `assert_healthy` holds. A fixer's fixture leaves it empty.
+    fn remedy(&self, _home: &Home) {}
     /// Environment the diagnosing run needs (a failpoint, for a runtime row).
     fn run_env(&self) -> Vec<(String, String)> {
         Vec::new()
