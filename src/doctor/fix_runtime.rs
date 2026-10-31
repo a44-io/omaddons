@@ -348,6 +348,14 @@ struct RealEffects<'a> {
 }
 
 impl RealEffects<'_> {
+    /// A real run that stopped before its commit (a refusal, a stale token, nothing to
+    /// repair) gives up its transaction (E5's `abandon`).
+    fn abandon(&mut self) {
+        if let Some(rtx) = self.rtx.take() {
+            self.warnings.extend(repair::abandon(rtx, self.scopes));
+        }
+    }
+
     fn plan_on(
         &self,
         view: &DoctorView,
@@ -745,6 +753,7 @@ impl FixEffects for RealEffects<'_> {
     }
 
     fn finish(&mut self, terminal: Terminal) -> Self::Out {
+        self.abandon();
         let mut outcome = self.outcome(terminal);
         let mut harden: Vec<(&str, u32)> = Vec::new();
         if self.run.dir.join(ACTIONS_LOG).is_file() {
@@ -1844,6 +1853,22 @@ mod tests {
         );
         assert_eq!(std::fs::read(&file).unwrap(), b"stale\n", "nothing moved");
         assert!(outcome.report.tx.is_none());
+        let locks: Vec<_> = std::fs::read_dir(paths.inflight_dir())
+            .map(|entries| entries.map(|e| e.unwrap().file_name()).collect())
+            .unwrap_or_default();
+        assert!(locks.is_empty(), "no in-flight lock is left: {locks:?}");
+    }
+
+    /// A real run with nothing to repair leaves no in-flight lock either.
+    #[test]
+    fn a_real_run_with_nothing_to_repair_leaves_no_lock() {
+        let (_dir, paths) = home();
+        let outcome = run_fix_at(&paths, &request(false), &NoDelegate).unwrap();
+        assert_eq!(outcome.report.state, RunState::DoneOk);
+        let locks: Vec<_> = std::fs::read_dir(paths.inflight_dir())
+            .map(|entries| entries.map(|e| e.unwrap().file_name()).collect())
+            .unwrap_or_default();
+        assert!(locks.is_empty(), "{locks:?}");
     }
 
     /// `value` with what changes from run to run replaced: the temporary home in every

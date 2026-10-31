@@ -79,9 +79,27 @@ const EXCEPTIONS: &[Exception] = &[
         reason: DOCTOR_CONTRACT,
     },
     Exception {
+        rule: "r3-array-plural",
+        scope: "command doctor *",
+        path: "actions_planned",
+        reason: DOCTOR_CONTRACT,
+    },
+    Exception {
+        rule: "r3-array-plural",
+        scope: "command doctor *",
+        path: "delegated",
+        reason: DOCTOR_CONTRACT,
+    },
+    Exception {
+        rule: "r3-array-plural",
+        scope: "command doctor *",
+        path: "delegated_planned",
+        reason: "pairs with the doctor contract's `delegated` as its `actions_planned` pairs with `actions` (M4-D37, A.5)",
+    },
+    Exception {
         rule: "r4-open-enum",
         scope: "command doctor *",
-        path: "**.evidence.mode",
+        path: "**.mode",
         reason: "a POSIX permission mode, four octal digits checked by a pattern: no enumeration",
     },
     Exception {

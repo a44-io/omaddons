@@ -52,7 +52,23 @@ fn a_preview_only_reads() {
 fn doctor_intent_hints_run_and_never_hand_over_a_change() {
     let s = Scene::new();
     let cases: [(&[&str], i32, &[&str]); 3] = [
-        (&["doctor", "--fix"], 64, &["omaddons", "help", "doctor"]),
+        (
+            &[
+                "doctor",
+                "--fix",
+                "--only",
+                "fm-userland_state-target-vanished",
+            ],
+            64,
+            &[
+                "omaddons",
+                "doctor",
+                "fix",
+                "--dry-run",
+                "--only",
+                "fm-userland_state-target-vanished",
+            ],
+        ),
         (
             &[
                 "doctor",
@@ -434,6 +450,13 @@ fn every_one_edit_typo_of_every_command_gets_a_fix_that_runs() {
             };
             let error = usage_error(&err, &argv);
             let ctx = format!("{argv:?}: {}", error.message);
+            if entry.name == "doctor fix" {
+                assert_eq!(
+                    error.fix.argv(),
+                    Some(&owned(&["omaddons", "help", "doctor", "fix"])[..]),
+                    "a typo of the doctor's repair verb gets its help: {ctx}"
+                );
+            }
             for suggestion in std::iter::once(&error.fix).chain(&error.alternatives) {
                 let Some(suggested) = suggestion.argv() else {
                     continue;

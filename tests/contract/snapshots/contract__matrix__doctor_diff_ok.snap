@@ -1,0 +1,19 @@
+---
+source: tests/contract/matrix.rs
+assertion_line: 1454
+expression: s.stable(&c.envelope)
+---
+{
+  "actions_planned": [],
+  "bytes_to_back_up": 0,
+  "command": "doctor diff",
+  "commands": [],
+  "delegated_planned": [],
+  "exit_code": 0,
+  "ok": true,
+  "precondition": "<precondition>",
+  "schema_version": "1.0",
+  "since": null,
+  "tool_version": "<version>",
+  "warnings": []
+}

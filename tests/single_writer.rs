@@ -866,7 +866,7 @@ const PRUNE_CALLERS: &[(&str, &str)] = &[
     ),
     (
         "src/engine/repair/commit.rs",
-        "a repair's own journal and in-flight lock, after commit or rollback, under its own lock",
+        "a repair's own journal and in-flight lock, after commit or rollback, and the in-flight lock of one that never committed, under its own lock",
     ),
     (
         "src/engine/repair/recover.rs",

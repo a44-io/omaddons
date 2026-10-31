@@ -1428,6 +1428,53 @@ fn doctor() {
     insta::assert_json_snapshot!("doctor_explain_unknown", s.stable(&c.envelope));
 }
 
+/// `doctor fix` and `doctor diff` (E6) on the Scene's clean home: nothing to repair, the
+/// force gate, a stale token, and diff's two modes.
+#[test]
+fn doctor_fix() {
+    let s = Scene::new();
+    let c = s.json(&["doctor", "fix", "--dry-run"], 0);
+    insta::assert_json_snapshot!("doctor_fix_dry_run_ok", s.stable(&c.envelope));
+    let c = s.json(&["doctor", "fix"], 0);
+    insta::assert_json_snapshot!("doctor_fix_ok", s.stable(&c.envelope));
+    let c = s.json(&["doctor", "fix", "--force"], 64);
+    assert_eq!(c.envelope["error"]["details"]["flag"], json!("--force"));
+    insta::assert_json_snapshot!("doctor_fix_force_without_yes", s.stable(&c.envelope));
+    let stale = format!("pc1:{}", "0".repeat(64));
+    let c = s.json(&["doctor", "fix", "--if-match", &stale], 4);
+    assert_eq!(
+        (
+            &c.envelope["error"]["code"],
+            &c.envelope["error"]["fix_argv"]
+        ),
+        (
+            &json!("plan_stale"),
+            &json!(["omaddons", "doctor", "fix", "--dry-run"])
+        )
+    );
+    insta::assert_json_snapshot!("doctor_fix_plan_stale", s.stable(&c.envelope));
+    let c = s.json(&["doctor", "diff"], 0);
+    insta::assert_json_snapshot!("doctor_diff_ok", s.stable(&c.envelope));
+    let c = s.json(
+        &[
+            "doctor",
+            "diff",
+            "2026-01-01T00-00-00Z__01M8R000000000000000000000",
+        ],
+        66,
+    );
+    insta::assert_json_snapshot!("doctor_diff_unknown_run", s.stable(&c.envelope));
+    // Its fix names the newest finished run, and runs.
+    let fix: Vec<&str> = c.envelope["error"]["fix_argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w.as_str().unwrap())
+        .collect();
+    let ran = s.home.run(&fix[1..]);
+    assert_eq!(ran.code, 0, "{fix:?}\n{}", ran.context());
+}
+
 #[test]
 fn backup_list() {
     use omaddons::backup::BackupKind;

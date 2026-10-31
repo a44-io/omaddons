@@ -349,9 +349,16 @@ pub struct Requirement {
     pub requires: &'static [&'static str],
 }
 
-/// Every requirement between arguments. Empty today; `doctor fix --force` → `yes` will be
-/// the first row. `requirements_are_declared_and_true` holds it equal to clap's behaviour.
-pub const REQUIRES: &[Requirement] = &[];
+/// Every requirement between arguments. `requirements_are_declared_and_true` holds it
+/// equal to clap's behaviour.
+pub const REQUIRES: &[Requirement] = &[
+    // A forced repair needs explicit consent (M4-D38).
+    Requirement {
+        path: "doctor fix",
+        long: "force",
+        requires: &["yes"],
+    },
+];
 
 /// Every way `table` disagrees with what `cmd` (the command at `path`) enforces: a flag
 /// that needs another argument to parse without a row saying so, and a row whose flag

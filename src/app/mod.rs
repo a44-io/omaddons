@@ -241,6 +241,8 @@ pub const COMMANDS: &[CommandEntry] = &[
     entry("doctor", Look, false, &[0, 1, 4, 6, 64, 66, 73, 74], report_schema::<doctor::DiagnoseOutcome>, Network::Optional).doctor(),
     entry("doctor diagnose", Look, false, &[0, 1, 4, 6, 64, 66, 73, 74], report_schema::<doctor::DiagnoseOutcome>, Network::Optional).doctor(),
     entry("doctor explain", Look, false, &[0, 64, 66, 74], report_schema::<doctor::ExplainOutcome>, Network::None).doctor(),
+    entry("doctor fix", Look, true, &[0, 1, 2, 3, 4, 5, 6, 64, 66, 73, 74], report_schema::<doctor::FixRun>, Network::Optional).doctor(),
+    entry("doctor diff", Look, false, &[0, 1, 4, 64, 66, 74], report_schema::<doctor::DiffRun>, Network::None).doctor(),
     entry("install", Change, true, &[0, 1, 2, 3, 4, 5, 6], data_schema::<install::InstallOutcome>, Network::Optional).storing_plan(),
     entry("update", Change, true, &[0, 1, 2, 3, 4, 5, 6], data_schema::<update::UpdateOutcome>, Network::Optional).storing_plan(),
     entry("pin", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<pin::PinOutcome>, Network::Optional).storing_plan(),
@@ -706,6 +708,18 @@ pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> ProcessE
                 out.emit_doctor(result)
             }
             doctor::Verb::Explain(explain) => out.emit_doctor(doctor::run_explain(ctx, explain)),
+            // A repair's own cleanup rebuilds the history projection once it releases the
+            // lock (E5), so the arm needs no rebuild of its own.
+            doctor::Verb::Fix(fix) => {
+                let result = doctor::run_fix(ctx, fix);
+                if let Ok(run) = &result {
+                    for note in &run.outcome.notes {
+                        out.log(output::LogLevel::Debug, note);
+                    }
+                }
+                out.emit_doctor(result)
+            }
+            doctor::Verb::Diff(diff) => out.emit_doctor(doctor::run_diff(ctx, diff)),
         };
     }
     let exit = run_command(cli, ctx, &out);

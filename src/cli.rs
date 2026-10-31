@@ -767,6 +767,9 @@ pub fn usage_error_with(
     {
         return error;
     }
+    if let Some(error) = doctor_force_fix(err, argv, &path) {
+        return error;
+    }
     let words = UsageWords::new(vocabulary, names_an_addon);
     if let Some(error) =
         misplaced_before_verb(err, argv, &words).or_else(|| misplaced_after_verb(err, argv, &words))
@@ -933,6 +936,40 @@ fn doctor_intent_hint(
         }
         _ => None,
     }
+}
+
+/// `doctor fix --force` without `--yes` (M4-D38): a forced repair needs explicit consent,
+/// and the fix is its preview, never the consent (`details.flag`).
+fn doctor_force_fix(err: &clap::Error, argv: &[String], path: &[String]) -> Option<Error> {
+    // The arguments clap found missing, as it spells them.
+    let missing = match err.get(ContextKind::InvalidArg) {
+        Some(ContextValue::Strings(args)) => args.clone(),
+        Some(ContextValue::String(arg)) => vec![arg.clone()],
+        _ => Vec::new(),
+    };
+    // ubs:ignore — comparing flag names, not secrets
+    let yes = missing.iter().any(|arg| arg == "--yes");
+    // ubs:ignore — comparing a clap error kind, not a secret
+    let missing_yes = err.kind() == ErrorKind::MissingRequiredArgument
+        && path.iter().map(String::as_str).eq(["doctor", "fix"])
+        && yes;
+    missing_yes.then(|| {
+        crate::app::doctor::force_refused(
+            "--force needs --yes: a forced repair needs explicit consent; preview it first",
+            argv,
+        )
+    })
+}
+
+/// A forced `doctor fix`'s preview: `argv` without `--force`, `--yes` and `--if-match`,
+/// with `--dry-run`, without presentation flags. A fix never supplies consent.
+pub(crate) fn force_preview(argv: &[String]) -> Vec<String> {
+    let unforced: Vec<String> = argv
+        .iter()
+        .filter(|a| !matches!(a.as_str(), "--force" | "--yes"))
+        .cloned()
+        .collect();
+    crate::app::precondition::preview_argv(&unforced)
 }
 
 /// The flags `-t` is spelled with, each taking a value.
@@ -1266,18 +1303,26 @@ fn subcommand_fix(
     let mut root = Cli::command();
     root.build();
     let parent = command_at(&root, path);
-    let mut close: Vec<(usize, String)> = parent
+    // Among equally close names, one `bad` is a neighbour swap of comes first: `doctor
+    // ifx` is two edits from both `fix` and `diff`, and meant `fix`.
+    let mut close: Vec<(usize, bool, String)> = parent
         .get_subcommands()
         .flat_map(|c| {
             std::iter::once(c.get_name())
                 .chain(c.get_visible_aliases())
-                .map(move |spelling| (levenshtein(bad, spelling), c.get_name().to_owned()))
+                .map(move |spelling| {
+                    (
+                        levenshtein(bad, spelling),
+                        !swapped_neighbours(bad, spelling),
+                        c.get_name().to_owned(),
+                    )
+                })
         })
-        .filter(|(d, _)| *d <= 2)
+        .filter(|(d, _, _)| *d <= 2)
         .collect();
     close.sort();
     let mut canonical: Vec<String> = Vec::new();
-    for (_, name) in close {
+    for (_, _, name) in close {
         if !canonical.contains(&name) {
             canonical.push(name);
         }
@@ -1682,6 +1727,14 @@ fn with_flag_value(argv: &[String], flag: &str, value: &str) -> Vec<String> {
     out
 }
 
+/// Whether `a` is `b` with two neighbouring chars swapped.
+fn swapped_neighbours(a: &str, b: &str) -> bool {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let differ: Vec<usize> = (0..a.len()).filter(|&i| a.get(i) != b.get(i)).collect();
+    a.len() == b.len()
+        && matches!(differ.as_slice(), [i, j] if *j == i + 1 && a[*i] == b[*j] && a[*j] == b[*i])
+}
+
 /// Edit distance over chars.
 pub fn levenshtein(a: &str, b: &str) -> usize {
     let b: Vec<char> = b.chars().collect();
@@ -1918,6 +1971,50 @@ mod tests {
         bool,
     );
 
+    /// `doctor fix --force` without `--yes`: usage, `details.flag`, and a fix that is the
+    /// preview with the user's selection, never the consent.
+    #[test]
+    fn doctor_force_without_yes_fix_is_a_preview() {
+        let raw = argv(&[
+            "doctor", "fix", "--only", "fm-x", "--force", "-t", "retail", "--json",
+        ]);
+        let err = usage_error(&Cli::try_parse_from(&raw).unwrap_err(), &raw);
+        assert_eq!(err.code, ErrorCode::Usage);
+        assert_eq!(err.details["flag"], "--force");
+        assert!(matches!(err.usage_fix, crate::error::UsageFix::UserVerb));
+        let fix = err.fix.argv().unwrap();
+        assert_eq!(
+            fix,
+            argv(&[
+                "doctor",
+                "fix",
+                "--only",
+                "fm-x",
+                "-t",
+                "retail",
+                "--dry-run"
+            ])
+        );
+        // ubs:ignore — comparing command-line words, not secrets
+        let consents = fix.iter().any(|a| a == "--force" || a == "--yes");
+        assert!(!consents, "{fix:?}");
+        assert!(Cli::try_parse_from(fix).is_ok(), "the fix parses");
+    }
+
+    /// A typo of the mutating verb gets its help, never a runnable guess.
+    #[test]
+    fn doctor_fix_typo_gets_help() {
+        for typo in ["fxi", "ifx", "fi", "fixx"] {
+            let raw = argv(&["doctor", typo, "--json"]);
+            let err = usage_error(&Cli::try_parse_from(&raw).unwrap_err(), &raw);
+            assert_eq!(
+                err.fix.argv().unwrap(),
+                argv(&["help", "doctor", "fix"]),
+                "{typo}"
+            );
+        }
+    }
+
     /// The doctor contract's `--fix` and `--explain`, with and without `doctor fix`
     /// registered: the fix, and whether it is marked as the user's verb.
     #[test]
@@ -2038,6 +2135,21 @@ mod tests {
     fn global(args: &[&str]) -> GlobalArgs {
         let raw: Vec<String> = argv(args);
         Cli::try_parse_from(&raw).unwrap().global
+    }
+
+    #[test]
+    fn swapped_neighbours_cases() {
+        for (a, b, swapped) in [
+            ("ifx", "fix", true),
+            ("fxi", "fix", true),
+            ("hepl", "help", true),
+            ("fix", "fix", false),
+            ("xif", "fix", false),
+            ("ifx", "diff", false),
+            ("fi", "fix", false),
+        ] {
+            assert_eq!(swapped_neighbours(a, b), swapped, "{a} {b}");
+        }
     }
 
     #[test]

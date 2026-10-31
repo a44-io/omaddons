@@ -248,6 +248,58 @@ fn state_tree(dir: &std::path::Path) -> Vec<(String, Vec<u8>)> {
     out
 }
 
+/// `doctor fix --dry-run` writes only its own run directory and `latest` (M4-D33): every
+/// other file under `<state>` is as it was, and nothing a repair leaves (its journal, its
+/// in-flight lock) is there.
+#[test]
+fn doctor_fix_dry_run_writes_only_its_run_directory() {
+    let s = Scene::new();
+    s.install_foo();
+    let state = s.home.env.state();
+    let doctor = state.join("omaddons").join("doctor");
+    let doctor_dir = doctor.display().to_string();
+    let outside = || -> Vec<(String, Vec<u8>)> {
+        state_tree(&state)
+            .into_iter()
+            .filter(|(name, _)| !name.starts_with(&doctor_dir))
+            .collect()
+    };
+    let before = outside();
+    let checked = s.json(&["doctor", "fix", "--dry-run"], 0);
+    assert_eq!(checked.envelope["dry_run"], true, "{}", checked.envelope);
+    // ubs:ignore — comparing state trees, not secrets
+    let unchanged = outside() == before;
+    assert!(unchanged, "a dry run wrote outside its run directory");
+    let runs: Vec<std::path::PathBuf> = fs::read_dir(doctor.join("runs"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    let mut files: Vec<String> = fs::read_dir(&runs[0])
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    files.sort();
+    assert_eq!(files, ["report.json", "runtime.jsonl"]);
+    assert_eq!(
+        fs::read_link(doctor.join("latest")).unwrap(),
+        std::path::Path::new("runs").join(runs[0].file_name().unwrap()),
+        "latest names it"
+    );
+    let left = |dir: &str, suffix: &str| -> Vec<String> {
+        fs::read_dir(state.join("omaddons").join(dir))
+            .map(|entries| {
+                entries
+                    .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                    .filter(|name| name.ends_with(suffix))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    assert_eq!(left("journal", ".repair.jsonl"), Vec::<String>::new());
+    assert_eq!(left("inflight", ".lock"), Vec::<String>::new());
+}
+
 #[test]
 fn a_dry_run_leaves_the_state_directory_as_it_was() {
     use std::collections::BTreeSet;
@@ -550,8 +602,8 @@ fn a_dry_run_leaves_the_state_directory_as_it_was() {
 /// Every path in `BINDING_COMMANDS` carries `data.precondition`: a token on its dry run,
 /// `null` (the key present) on its real run. A binding path without a row fails here.
 /// This is also M4-D55's guard for `errors dismiss`, whose real-run `null` was made by
-/// `omad-q585`. (A path whose report is top level, such as the doctor's once it binds,
-/// would be excluded by name with that reason.)
+/// `omad-q585`. A doctor path's report is the envelope's top level (M4-D34), where its
+/// precondition is read.
 #[test]
 fn every_binding_path_carries_its_precondition() {
     use common::addons::{addon_folder, toc};
@@ -661,20 +713,29 @@ fn every_binding_path_carries_its_precondition() {
                     &[],
                 )
             }
+            "doctor fix" => (argv(&["doctor", "fix", "--dry-run"]), &[]),
             other => panic!("add a row for {other}"), // ubs:ignore — the test's own failure
         };
         let dry: Vec<&str> = dry.iter().map(String::as_str).collect();
         // ubs:ignore — comparing command-line words, not secrets
         let real: Vec<&str> = dry.iter().copied().filter(|a| *a != "--dry-run").collect();
+        // A doctor report is the envelope's top level (M4-D34); every other is `data`.
+        let report = |envelope: &Value| -> Value {
+            if path.starts_with("doctor ") {
+                envelope.clone()
+            } else {
+                envelope["data"].clone()
+            }
+        };
         let preview = s.json_env(&dry, env, 0);
-        let token = &preview.envelope["data"]["precondition"];
+        let token = &report(&preview.envelope)["precondition"];
         assert!(
             token.as_str().is_some_and(is_token),
             "{path}: the dry run's precondition is a token: {}",
             preview.envelope
         );
         let ran = s.json_env(&real, env, 0);
-        let data = &ran.envelope["data"];
+        let data = &report(&ran.envelope);
         assert!(
             data.get("precondition").is_some_and(Value::is_null),
             "{path}: the real run carries precondition: null: {}",
@@ -724,6 +785,7 @@ fn read_only_commands_ignore_dry_run_and_reason() {
             "doctor" => &["doctor"],
             "doctor diagnose" => &["doctor", "diagnose"],
             "doctor explain" => &["doctor", "explain", "fm-userland_state-target-vanished"],
+            "doctor diff" => &["doctor", "diff"],
             _ => return None,
         })
     };
@@ -766,7 +828,8 @@ fn read_only_commands_ignore_dry_run_and_reason() {
         let args = invocation(name);
         assert!(args.is_some(), "add a read-only invocation of {name} here");
         let args = args.unwrap_or_default();
-        let doctor = name.split(' ').next() == Some("doctor");
+        // `doctor diff` records no run (M4-D33): no exemption for it.
+        let doctor = name.split(' ').next() == Some("doctor") && name != "doctor diff";
         let plain = run(name, args);
         let code = plain.code;
         let plain = run(name, args);

@@ -43,6 +43,7 @@ pub const BINDING_COMMANDS: &[&str] = &[
     "adopt",
     "sync",
     "copy",
+    "doctor fix",
 ];
 
 /// The token format's version and separator.
@@ -2358,6 +2359,7 @@ mod tests {
                 "adopt",
                 "sync",
                 "copy",
+                "doctor fix",
             ]
         );
         assert_eq!(

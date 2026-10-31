@@ -193,7 +193,11 @@ impl JsonSchema for Identity {
             "type": "object",
             "properties": {
                 "ino": { "type": "string", "pattern": "^[0-9]+$" },
-                "born_ns": { "type": "string", "pattern": "^-?[0-9]+$" }
+                "born_ns": {
+                    "description": "The birth time in nanoseconds; omitted when the filesystem records none.",
+                    "type": "string",
+                    "pattern": "^-?[0-9]+$"
+                }
             },
             "required": ["ino"]
         })
@@ -287,23 +291,30 @@ fn hex(bytes: &[u8]) -> String {
 pub enum Endpoint {
     Absent,
     File {
+        /// Omitted when the step does not check it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         identity: Option<Identity>,
+        /// Omitted when the step does not check it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         sha256: Option<Sha256>,
+        /// Omitted when the step does not check it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mode: Option<Mode>,
     },
     Dir {
+        /// Omitted when the step does not check it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         identity: Option<Identity>,
+        /// Omitted when the step does not check it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         stamp: Option<Stamp>,
     },
     Symlink {
+        /// Omitted when the step does not check it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         identity: Option<Identity>,
-        /// As the link holds it, so it may be relative.
+        /// As the link holds it, so it may be relative. Omitted when the step does not
+        /// check it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         link_target: Option<PathBuf>,
     },

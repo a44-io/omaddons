@@ -1172,6 +1172,8 @@ Register-ArgumentCompleter -Native -CommandName 'omaddons' -ScriptBlock {
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Show help')
             [CompletionResult]::new('diagnose', 'diagnose', [CompletionResultType]::ParameterValue, 'Find what is broken, with evidence and the exact fix (changes nothing outside its run record)')
             [CompletionResult]::new('explain', 'explain', [CompletionResultType]::ParameterValue, 'One failure mode in full: what it is, why it matters, and its live instances (changes nothing)')
+            [CompletionResult]::new('fix', 'fix', [CompletionResultType]::ParameterValue, 'Repair the findings a fixer can repair, as one undoable transaction')
+            [CompletionResult]::new('diff', 'diff', [CompletionResultType]::ParameterValue, 'Show what doctor fix would change, or what changed since a run (changes nothing)')
             break
         }
         'omaddons;doctor;diagnose' {
@@ -1206,6 +1208,61 @@ Register-ArgumentCompleter -Native -CommandName 'omaddons' -ScriptBlock {
             break
         }
         'omaddons;doctor;explain' {
+            [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterName, 'Output format')
+            [CompletionResult]::new('-t', '-t', [CompletionResultType]::ParameterName, 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)')
+            [CompletionResult]::new('--target', '--target', [CompletionResultType]::ParameterName, 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)')
+            [CompletionResult]::new('--flavor', '--flavor', [CompletionResultType]::ParameterName, 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)')
+            [CompletionResult]::new('--actor', '--actor', [CompletionResultType]::ParameterName, 'Who is acting: human, agent or widget [env: OMADDONS_ACTOR]')
+            [CompletionResult]::new('--reason', '--reason', [CompletionResultType]::ParameterName, 'Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)')
+            [CompletionResult]::new('--if-match', '--if-match', [CompletionResultType]::ParameterName, 'Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed')
+            [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress events on stderr')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'One JSON envelope on stdout')
+            [CompletionResult]::new('--robot', '--robot', [CompletionResultType]::ParameterName, 'The same as --json')
+            [CompletionResult]::new('--dry-run', '--dry-run', [CompletionResultType]::ParameterName, 'Show the plan without changing anything (ignored by commands that change nothing)')
+            [CompletionResult]::new('--offline', '--offline', [CompletionResultType]::ParameterName, 'Fail any network access [env: OMADDONS_OFFLINE=1]')
+            [CompletionResult]::new('--while-running', '--while-running', [CompletionResultType]::ParameterName, 'Allow folder changes while the client runs (never SavedVariables)')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'No ANSI color')
+            [CompletionResult]::new('--no-progress', '--no-progress', [CompletionResultType]::ParameterName, 'No progress output')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Only errors on stderr')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'More detail (repeatable)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'More detail (repeatable)')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Show help')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Show help')
+            break
+        }
+        'omaddons;doctor;fix' {
+            [CompletionResult]::new('--only', '--only', [CompletionResultType]::ParameterName, 'Only these checks: failure-mode ids or subsystem names, comma-separated')
+            [CompletionResult]::new('--skip', '--skip', [CompletionResultType]::ParameterName, 'Not these checks (wins over --only)')
+            [CompletionResult]::new('--severity', '--severity', [CompletionResultType]::ParameterName, 'Report findings of this severity and more severe ones only')
+            [CompletionResult]::new('--budget', '--budget', [CompletionResultType]::ParameterName, 'The whole run''s time, shared by the checks by their cost: 500ms or 2s')
+            [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterName, 'Output format')
+            [CompletionResult]::new('-t', '-t', [CompletionResultType]::ParameterName, 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)')
+            [CompletionResult]::new('--target', '--target', [CompletionResultType]::ParameterName, 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)')
+            [CompletionResult]::new('--flavor', '--flavor', [CompletionResultType]::ParameterName, 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)')
+            [CompletionResult]::new('--actor', '--actor', [CompletionResultType]::ParameterName, 'Who is acting: human, agent or widget [env: OMADDONS_ACTOR]')
+            [CompletionResult]::new('--reason', '--reason', [CompletionResultType]::ParameterName, 'Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)')
+            [CompletionResult]::new('--if-match', '--if-match', [CompletionResultType]::ParameterName, 'Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed')
+            [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress events on stderr')
+            [CompletionResult]::new('--quick', '--quick', [CompletionResultType]::ParameterName, 'Only the fast checks (the cached and quick tiers)')
+            [CompletionResult]::new('--include-deep', '--include-deep', [CompletionResultType]::ParameterName, 'Also the deep checks')
+            [CompletionResult]::new('--online', '--online', [CompletionResultType]::ParameterName, 'Also the checks that need the network')
+            [CompletionResult]::new('--force', '--force', [CompletionResultType]::ParameterName, 'Run the forced repairs (set-asides) the --only list names; needs --yes')
+            [CompletionResult]::new('--yes', '--yes', [CompletionResultType]::ParameterName, 'Consent to a forced repair')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'One JSON envelope on stdout')
+            [CompletionResult]::new('--robot', '--robot', [CompletionResultType]::ParameterName, 'The same as --json')
+            [CompletionResult]::new('--dry-run', '--dry-run', [CompletionResultType]::ParameterName, 'Show the plan without changing anything (ignored by commands that change nothing)')
+            [CompletionResult]::new('--offline', '--offline', [CompletionResultType]::ParameterName, 'Fail any network access [env: OMADDONS_OFFLINE=1]')
+            [CompletionResult]::new('--while-running', '--while-running', [CompletionResultType]::ParameterName, 'Allow folder changes while the client runs (never SavedVariables)')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'No ANSI color')
+            [CompletionResult]::new('--no-progress', '--no-progress', [CompletionResultType]::ParameterName, 'No progress output')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Only errors on stderr')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'More detail (repeatable)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'More detail (repeatable)')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Show help')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Show help')
+            break
+        }
+        'omaddons;doctor;diff' {
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterName, 'Output format')
             [CompletionResult]::new('-t', '-t', [CompletionResultType]::ParameterName, 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)')
             [CompletionResult]::new('--target', '--target', [CompletionResultType]::ParameterName, 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)')

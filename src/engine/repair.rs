@@ -25,7 +25,7 @@ pub mod journal;
 pub mod lower;
 pub mod recover;
 
-pub use commit::{CommitCtx, RepairCleanup, RepairMeta, RepairOutcome, commit};
+pub use commit::{CommitCtx, RepairCleanup, RepairMeta, RepairOutcome, abandon, commit};
 pub use journal::{
     ClientDirEntry, FORMAT, ParsedRepair, RepairLine, RepairPhase, RepairPrepared, ResourcesWire,
     RollbackTarget, history_line,

@@ -1,0 +1,30 @@
+---
+source: tests/contract/matrix.rs
+assertion_line: 1442
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "doctor fix",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "usage",
+    "details": {
+      "flag": "--force"
+    },
+    "fix": "omaddons doctor fix --dry-run",
+    "fix_argv": [
+      "omaddons",
+      "doctor",
+      "fix",
+      "--dry-run"
+    ],
+    "message": "--force needs --yes: a forced repair needs explicit consent; preview it first",
+    "retryable": false
+  },
+  "exit_code": 64,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

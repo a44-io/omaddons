@@ -1,0 +1,54 @@
+---
+source: tests/contract/matrix.rs
+assertion_line: 1459
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "doctor diff",
+  "commands": [],
+  "error": {
+    "alternatives": [
+      {
+        "argv": [
+          "omaddons",
+          "doctor",
+          "diff",
+          "<run>"
+        ],
+        "display": "omaddons doctor diff <run>"
+      },
+      {
+        "argv": [
+          "omaddons",
+          "doctor",
+          "diff",
+          "<run>"
+        ],
+        "display": "omaddons doctor diff <run>"
+      }
+    ],
+    "code": "not_found",
+    "details": {
+      "newest": [
+        "<run>",
+        "<run>",
+        "<run>"
+      ],
+      "path": "<root>/state/omaddons/doctor/runs"
+    },
+    "fix": "omaddons doctor diff <run>",
+    "fix_argv": [
+      "omaddons",
+      "doctor",
+      "diff",
+      "<run>"
+    ],
+    "message": "no doctor run <run>",
+    "retryable": false
+  },
+  "exit_code": 66,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

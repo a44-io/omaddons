@@ -131,6 +131,33 @@ impl RepairCleanup {
     }
 }
 
+/// A repair transaction that never committed (its run was refused, or found nothing to
+/// repair) removes its in-flight lock, under that lock, as a refused engine transaction
+/// does: nothing of it was staged. A failure is a warning; a sweep removes the lock once
+/// it is free.
+pub fn abandon(rtx: RepairTx, scopes: &ScopeTable) -> Vec<Warning> {
+    let victims = [scopes.paths().inflight_lock(&rtx.tx())];
+    match fsx::prune(
+        scopes,
+        PruneReason::PostCommitCleanup,
+        &victims,
+        LockUse::Own(rtx.inflight()),
+    ) {
+        Ok(_) => Vec::new(),
+        Err(err) => vec![
+            Warning::new(
+                WarningCode::RetentionFailed,
+                format!(
+                    "the in-flight lock of repair {} could not be removed ({}); the next change removes it",
+                    rtx.tx(),
+                    err.message
+                ),
+            )
+            .with_fix(Suggestion::command(["omaddons", "status"])),
+        ],
+    }
+}
+
 /// Runs `lowered` as one repair under `ctx.lock`. `Err` means nothing was written (a
 /// revalidation failed), or a rollback or a roll forward could not finish: the journal
 /// is then kept for the next lock-taking command, named in `details.journal_pending`.
@@ -610,6 +637,21 @@ mod tests {
         };
         let lowered = lower(&ctx, fixes).unwrap();
         (rtx, lowered)
+    }
+
+    /// A transaction that never commits leaves nothing: its in-flight lock is removed.
+    #[test]
+    fn an_abandoned_repair_leaves_no_lock() {
+        let home = repair_home();
+        let rtx = RepairTx::begin(&home.paths).unwrap();
+        let tx = rtx.tx();
+        assert!(home.paths.inflight_lock(&tx).is_file());
+        assert!(abandon(rtx, &home.scopes).is_empty(), "no warning");
+        assert!(!home.paths.inflight_lock(&tx).exists());
+        assert!(
+            !home.paths.journal_repair(&tx).exists(),
+            "no journal either"
+        );
     }
 
     /// `lowered` committed under the global lock with `mount_id`, the lock released after.

@@ -829,9 +829,24 @@ pub const CORPUS: &[Row] = &[
         DoctorVerb,
         &["doctor", "--fix"],
         &["doctor fix"],
-        "help until E6; then doctor fix --dry-run, exiting 0 or 1",
-        doctor_usage(&["omaddons", "help", "doctor"], &[0]),
+        "fixing is its own command: its preview, exiting 0 or 1",
+        doctor_usage(&["omaddons", "doctor", "fix", "--dry-run"], &[0, 1]),
     ),
+    row(
+        DoctorVerb,
+        &["doctor", "fix", "--force"],
+        &["doctor fix"],
+        "a preview, never a forced fix",
+        doctor_usage(&["omaddons", "doctor", "fix", "--dry-run"], &[0, 1]),
+    ),
+    row(
+        DoctorVerb,
+        &["doctor", "fxi"],
+        &[],
+        "a mutating guess becomes help",
+        doctor_usage(&["omaddons", "help", "doctor", "fix"], &[0]),
+    )
+    .by_leaf("E6"),
     row(
         DoctorVerb,
         &["doctor", "diagnoze"],
@@ -963,29 +978,6 @@ pub const PENDING: &[Pending] = &[
             ),
         )
         .by_leaf("B3"),
-    ),
-    pending(
-        "E6",
-        &["doctor fix"],
-        row(
-            DoctorVerb,
-            &["doctor", "fix", "--force"],
-            &["doctor fix"],
-            "a preview, never a forced fix",
-            doctor_usage(&["omaddons", "doctor", "fix", "--dry-run"], &[0, 1]),
-        ),
-    ),
-    pending(
-        "E6",
-        &["doctor fix"],
-        row(
-            DoctorVerb,
-            &["doctor", "fxi"],
-            &[],
-            "a mutating guess becomes help",
-            doctor_usage(&["omaddons", "help", "doctor", "fix"], &[0]),
-        )
-        .by_leaf("E6"),
     ),
     pending(
         "E7",

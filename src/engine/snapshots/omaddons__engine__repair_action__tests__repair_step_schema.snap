@@ -140,6 +140,7 @@ expression: schema
           "type": "object",
           "properties": {
             "identity": {
+              "description": "Omitted when the step does not check it.",
               "anyOf": [
                 {
                   "$ref": "#/$defs/Identity"
@@ -154,6 +155,7 @@ expression: schema
               "const": "file"
             },
             "mode": {
+              "description": "Omitted when the step does not check it.",
               "anyOf": [
                 {
                   "$ref": "#/$defs/Mode"
@@ -164,6 +166,7 @@ expression: schema
               ]
             },
             "sha256": {
+              "description": "Omitted when the step does not check it.",
               "anyOf": [
                 {
                   "$ref": "#/$defs/Sha256"
@@ -182,6 +185,7 @@ expression: schema
           "type": "object",
           "properties": {
             "identity": {
+              "description": "Omitted when the step does not check it.",
               "anyOf": [
                 {
                   "$ref": "#/$defs/Identity"
@@ -196,6 +200,7 @@ expression: schema
               "const": "dir"
             },
             "stamp": {
+              "description": "Omitted when the step does not check it.",
               "anyOf": [
                 {
                   "$ref": "#/$defs/Stamp"
@@ -214,6 +219,7 @@ expression: schema
           "type": "object",
           "properties": {
             "identity": {
+              "description": "Omitted when the step does not check it.",
               "anyOf": [
                 {
                   "$ref": "#/$defs/Identity"
@@ -228,7 +234,7 @@ expression: schema
               "const": "symlink"
             },
             "link_target": {
-              "description": "As the link holds it, so it may be relative.",
+              "description": "As the link holds it, so it may be relative. Omitted when the step does not\ncheck it.",
               "type": [
                 "string",
                 "null"
@@ -361,6 +367,7 @@ expression: schema
       "type": "object",
       "properties": {
         "born_ns": {
+          "description": "The birth time in nanoseconds; omitted when the filesystem records none.",
           "type": "string",
           "pattern": "^-?[0-9]+$"
         },

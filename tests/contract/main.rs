@@ -13,6 +13,7 @@ mod common;
 mod canonical_names;
 #[cfg(test)]
 mod details_report;
+mod doctor_fix_binding;
 mod exit_sites;
 mod intent_corpus;
 mod manifest_report;
