@@ -5570,3 +5570,458 @@ fn readers_report_a_pending_repair_without_writing() {
         unchanged(&log, &r);
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// The repair family's adversarial matrix (E5 s7, common rule 14): synthetic repairs of
+// every fix kind crashed with real `abort`s at every repair failpoint and every primitive
+// boundary, failed by injected I/O errors, their recovery crashed at every inverse and
+// repeated, recovered by three different commands, and quarantined across mounts. Each
+// stop is held to `common::repair::assert_settled`.
+
+#[cfg(test)]
+mod repair_matrix {
+    use std::collections::BTreeSet;
+    use std::time::Instant;
+
+    use super::common::repair::{
+        Child, End, Kind, RepairScene, assert_settled, attributed, checked_sweep, config_set,
+        crash_points, crash_specs, point_of,
+    };
+    use super::common::tlog::TestLog;
+
+    /// The reference run: the kind's repair commits unarmed, to exactly its predicted
+    /// after state.
+    pub fn reference(log: &TestLog, kind: Kind) {
+        log.step(&format!("{} unarmed", kind.label()));
+        let r = RepairScene::new(kind);
+        let Child::Ended(outcome) = r.child(log, "") else {
+            panic!("{}: the unarmed repair crashed", kind.label()); // ubs:ignore — fails the test
+        };
+        assert_eq!(outcome["outcome"], "committed", "{}", kind.label());
+        assert_eq!(
+            r.accounted(End::After),
+            Vec::<String>::new(),
+            "{}",
+            kind.label()
+        );
+    }
+
+    /// Every crash of `kind`'s repair, each settled by the oracle; every crash point the
+    /// kind has must be hit. Returns how many crash states it settled.
+    pub fn run(log: &TestLog, kind: Kind) -> usize {
+        let started = Instant::now();
+        reference(log, kind);
+        let mut exercised = BTreeSet::new();
+        let mut states = 0;
+        for spec in crash_specs(kind) {
+            log.step(&format!("{} at {spec}", kind.label()));
+            let r = RepairScene::new(kind);
+            assert_eq!(
+                r.child(log, &spec),
+                Child::Crashed,
+                "{}: {spec} is on the repair's path",
+                kind.label()
+            );
+            exercised.extend(point_of(&spec));
+            settle(log, &r);
+            states += 1;
+        }
+        for (_, r) in checked_sweep(|| RepairScene::new(kind), log) {
+            exercised.extend(attributed(&r));
+            settle(log, &r);
+            states += 1;
+        }
+        log.json("crashes exercised", &exercised);
+        let missing: Vec<String> = crash_points(kind).difference(&exercised).cloned().collect();
+        assert!(
+            missing.is_empty(),
+            "{}: crash point never hit: {}",
+            kind.label(),
+            missing.join(", ")
+        );
+        log.note(format!(
+            "{}: {states} crash states, {} crash points, in {:.1} s",
+            kind.label(),
+            exercised.len(),
+            started.elapsed().as_secs_f64()
+        ));
+        states
+    }
+
+    /// The crash's journal and actions logged, then the oracle with `config set`.
+    pub fn settle(log: &TestLog, r: &RepairScene) {
+        log.json("journal at crash", &r.journal_lines());
+        log.json("actions at crash", &r.actions_lines());
+        assert_settled(log, r, &config_set());
+    }
+}
+
+/// One test per kind, so libtest runs the kinds in parallel.
+macro_rules! repair_crash_matrix {
+    ($($test:ident => $kind:ident),* $(,)?) => {$(
+        #[test]
+        fn $test() {
+            let log = tlog!();
+            repair_matrix::run(&log, common::repair::Kind::$kind);
+        }
+    )*};
+}
+
+repair_crash_matrix! {
+    repair_crash_matrix_write_over => WriteOver,
+    repair_crash_matrix_write_create => WriteCreate,
+    repair_crash_matrix_chmod => Chmod,
+    repair_crash_matrix_quarantine_state_file => QuarantineStateFile,
+    repair_crash_matrix_quarantine_client_dir => QuarantineClientDir,
+    repair_crash_matrix_quarantine_temp_symlink => QuarantineTempSymlink,
+    repair_crash_matrix_flatten_two => FlattenTwo,
+    repair_crash_matrix_flatten_three => FlattenThree,
+}
+
+#[test]
+fn a_crash_between_a_flattens_renames_recovers_the_whole_before_state() {
+    use common::repair::{Child, End, Kind, RepairScene, assert_settled, config_set};
+
+    let log = tlog!();
+    let cases = [
+        (Kind::FlattenTwo, "doctor.repair.step=abort@2"),
+        (Kind::FlattenTwo, "fsx.mutate.logged=abort@1"),
+        (Kind::FlattenThree, "fsx.mutate.logged=abort@1"),
+        (Kind::FlattenThree, "doctor.repair.step=abort@2"),
+        (Kind::FlattenThree, "fsx.mutate.logged=abort@2"),
+        (Kind::FlattenThree, "doctor.repair.step=abort@3"),
+    ];
+    for (kind, spec) in cases {
+        log.step(&format!("{} at {spec}", kind.label()));
+        let r = RepairScene::new(kind);
+        assert_eq!(r.child(&log, spec), Child::Crashed, "{spec}");
+        let settled = assert_settled(&log, &r, &config_set());
+        assert_eq!(settled.end, End::Before, "{} at {spec}", kind.label());
+        let provisional: Vec<String> = fs::read_dir(r.s.addons())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(".omaddons-flatten-"))
+            .collect();
+        assert_eq!(
+            provisional,
+            Vec::<String>::new(),
+            "{} at {spec}",
+            kind.label()
+        );
+    }
+}
+
+#[test]
+fn a_repair_recovery_crashed_at_every_inverse_finishes() {
+    use common::repair::{Child, End, Kind, RepairScene, assert_settled, config_set};
+
+    let log = tlog!();
+    for kind in Kind::ALL {
+        let n = kind.primitives();
+        for j in 1..=n {
+            log.step(&format!(
+                "{}: recovery crashed at inverse {j} of {n}",
+                kind.label()
+            ));
+            let r = RepairScene::new(kind);
+            let spec = format!("fsx.mutate.logged=abort@{n}");
+            assert_eq!(r.child(&log, &spec), Child::Crashed, "{}", kind.label());
+            let crashed = log
+                .cmd(&r.s, &config_set())
+                .failpoints(&format!("doctor.recover.step=abort@{j}"))
+                .run();
+            crashed.aborted();
+            crashed.assert_private();
+            log.json("journal after the crashed recovery", &r.journal_lines());
+            let settled = assert_settled(&log, &r, &config_set());
+            assert_eq!(settled.end, End::Before, "{} at inverse {j}", kind.label());
+        }
+    }
+}
+
+#[test]
+fn a_repair_recovered_three_times_changes_nothing_after_the_first() {
+    use common::repair::{Child, Kind, RepairScene, assert_settled, config_set};
+
+    let log = tlog!();
+    for kind in Kind::ALL {
+        let before_done = format!("fsx.mutate.logged=abort@{}", kind.primitives());
+        for spec in [before_done.as_str(), "doctor.repair.done=abort"] {
+            log.step(&format!("{} at {spec}", kind.label()));
+            let r = RepairScene::new(kind);
+            assert_eq!(r.child(&log, spec), Child::Crashed, "{spec}");
+            assert_settled(&log, &r, &config_set());
+            for (tree, root) in r.trees() {
+                log.tree(tree, &root);
+            }
+            for again in 1..=3 {
+                let ran = log.run(&r.s, &config_set());
+                ran.ok().assert_private();
+                assert_eq!(
+                    ran.warnings(),
+                    Vec::<String>::new(),
+                    "{} at {spec}: recovery {again} more",
+                    kind.label()
+                );
+                // Taking the global lock rewrites its holder record; nothing else moves.
+                for (tree, root) in r.trees() {
+                    let diff = log.diff(tree, &root);
+                    let moved: Vec<String> = diff
+                        .first(diff.total)
+                        .into_iter()
+                        // ubs:ignore — comparing a tree difference's text, not a secret
+                        .filter(|path| path != "~ omaddons/lock (content)")
+                        .collect();
+                    assert_eq!(
+                        moved,
+                        Vec::<String>::new(),
+                        "{} at {spec}: recovery {again} more wrote {tree}",
+                        kind.label()
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn io_failures_in_a_repair_leave_the_subject_whole() {
+    use common::repair::{Child, End, Kind, RepairScene, assert_settled, config_set};
+
+    let log = tlog!();
+    // How many times a crash sweep at `failpoint` crashes `kind`'s repair: the hits of a
+    // run that fails nowhere.
+    let hits = |kind: Kind, failpoint: &str| -> u64 {
+        for n in 1..=64 {
+            log.step(&format!("{} counting {failpoint} hits: {n}", kind.label()));
+            let r = RepairScene::new(kind);
+            if r.child(&log, &format!("{failpoint}=abort@{n}")) != Child::Crashed {
+                return n - 1;
+            }
+        }
+        panic!("{failpoint} still hit 64 times"); // ubs:ignore — fails the test
+    };
+    for kind in Kind::ALL {
+        let n = kind.primitives();
+        let mut specs: Vec<(String, Option<u32>)> = Vec::new();
+        for k in 1..=n {
+            // Refused before it ran: the steps before it are undone.
+            specs.push((format!("fsx.mutate.backed_up=error@{k}"), Some(k - 1)));
+            // Failed after it ran: it is undone too.
+            specs.push((format!("fsx.mutate.executed=error@{k}"), Some(k)));
+        }
+        for failpoint in ["fsx.mutate.checked", "fsx.append_durable.before"] {
+            let total = hits(kind, failpoint);
+            assert!(
+                total > u64::from(n),
+                "{}: {failpoint} hit {total} times",
+                kind.label()
+            );
+            specs.extend((1..=total).map(|at| (format!("{failpoint}=error@{at}"), None)));
+        }
+        for (spec, restored) in specs {
+            log.step(&format!("{} failing at {spec}", kind.label()));
+            let r = RepairScene::new(kind);
+            let Child::Ended(outcome) = r.child(&log, &spec) else {
+                panic!("{}: an error crashed the child at {spec}", kind.label()); // ubs:ignore — fails the test
+            };
+            let settled = assert_settled(&log, &r, &config_set());
+            let committed = outcome["outcome"] == "committed";
+            assert_eq!(
+                settled.end == End::After,
+                committed,
+                "{} at {spec}: the outcome {outcome} and the end {:?} agree",
+                kind.label(),
+                settled.end
+            );
+            if outcome["outcome"] == "rolled_back"
+                && let Some(restored) = restored
+            {
+                assert_eq!(
+                    outcome["backups_restored"],
+                    restored,
+                    "{} at {spec}: {outcome}",
+                    kind.label()
+                );
+            }
+            if spec.starts_with("fsx.mutate.executed") {
+                let actions = r.actions_lines();
+                let last: serde_json::Value =
+                    serde_json::from_str(actions.last().unwrap()).unwrap();
+                assert_eq!(last["ok"], false, "{} at {spec}: {actions:?}", kind.label());
+            }
+        }
+    }
+}
+
+#[test]
+fn config_set_install_and_undo_recover_a_repair_identically() {
+    use common::repair::{Child, Kind, RepairScene, assert_settled, config_set, json_args};
+
+    let log = tlog!();
+    for kind in [Kind::Chmod, Kind::QuarantineClientDir, Kind::FlattenThree] {
+        for spec in [
+            "doctor.repair.prepared=abort",
+            "fsx.mutate.executed=abort@1",
+            "doctor.repair.done=abort",
+        ] {
+            let mut seen = Vec::new();
+            for by in ["config set", "install", "undo"] {
+                log.step(&format!("{} at {spec}, recovered by {by}", kind.label()));
+                let r = RepairScene::new(kind);
+                let install_tx = r.install_tx();
+                assert_eq!(r.child(&log, spec), Child::Crashed, "{spec}");
+                let argv = match by {
+                    "config set" => config_set(),
+                    "install" => {
+                        let mut argv = r.s.install_args("gh:o/foo", "v2");
+                        argv.extend(["--progress".to_owned(), "json".to_owned()]);
+                        argv
+                    }
+                    _ => json_args(&["undo", &install_tx]),
+                };
+                let settled = assert_settled(&log, &r, &argv);
+                // Each command did what it does without a repair to recover.
+                match by {
+                    "install" => assert_eq!(r.s.record("foo")["version"], "2", "{by}"),
+                    "undo" => assert_eq!(r.s.record("foo"), serde_json::Value::Null, "{by}"),
+                    _ => assert_eq!(r.s.record("foo")["version"], "1", "{by}"),
+                }
+                seen.push((by, settled.subject, settled.recovered));
+            }
+            let (first, rest) = seen.split_first().unwrap();
+            for other in rest {
+                assert_eq!(
+                    (&other.1, &other.2),
+                    (&first.1, &first.2),
+                    "{} at {spec}: {} and {} recovered it differently",
+                    kind.label(),
+                    first.0,
+                    other.0
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_repair_on_a_client_on_another_mount_quarantines_there() {
+    use common::repair::{Child, End, Kind, RepairScene};
+
+    let log = tlog!();
+    for kind in [Kind::QuarantineClientDir, Kind::FlattenTwo] {
+        log.step(&format!("{} on a client mount of its own", kind.label()));
+        let r = RepairScene::new(kind);
+        let client = r.s.home.client("_retail_");
+        let Some(ended) = r.child_bound(&log, "", &client) else {
+            let _ = std::io::Write::write_fmt(
+                &mut std::io::stderr(),
+                format_args!(
+                    "SKIP a_repair_on_a_client_on_another_mount_quarantines_there: no unprivileged user and mount namespaces here\n"
+                ),
+            );
+            return;
+        };
+        let Child::Ended(outcome) = ended else {
+            panic!("{}: the bound repair crashed", kind.label()); // ubs:ignore — fails the test
+        };
+        assert_eq!(
+            outcome["outcome"],
+            "committed",
+            "{}: {outcome}",
+            kind.label()
+        );
+        assert_eq!(
+            r.accounted(End::After),
+            Vec::<String>::new(),
+            "{}",
+            kind.label()
+        );
+        let run_quarantine =
+            r.s.home
+                .state()
+                .join("doctor/runs")
+                .join(&r.run_id)
+                .join("quarantine");
+        let home_side: Vec<String> = if run_quarantine.is_dir() {
+            common::trees::tree_entries(&run_quarantine)
+                .into_keys()
+                .filter(|rel| rel.contains("Interface"))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        assert_eq!(home_side, Vec::<String>::new(), "{}", kind.label());
+    }
+}
+
+#[test]
+fn a_config_victim_on_another_mount_than_state_is_refused_before_anything_moves() {
+    use common::repair::{Child, Kind, RepairScene};
+
+    let log = tlog!();
+    let r = RepairScene::new(Kind::QuarantineConfigFile);
+    let credentials = r.s.home.env.config().join("omaddons/credentials");
+    let state = r.s.home.state();
+    let entries = |dir: &std::path::Path| -> Vec<(String, String)> {
+        common::trees::tree_entries(dir)
+            .into_iter()
+            .filter(|(rel, _)| !rel.starts_with("inflight"))
+            .map(|(rel, entry)| (rel, format!("{entry:?}")))
+            .collect()
+    };
+    let (config_before, state_before) = (entries(&r.s.home.env.config()), entries(&state));
+    let Some(ended) = r.child_bound(&log, "", &credentials) else {
+        let _ = std::io::Write::write_fmt(
+            &mut std::io::stderr(),
+            format_args!(
+                "SKIP a_config_victim_on_another_mount_than_state_is_refused_before_anything_moves: no unprivileged user and mount namespaces here\n"
+            ),
+        );
+        return;
+    };
+    let Child::Ended(outcome) = ended else {
+        panic!("the bound repair crashed"); // ubs:ignore — fails the test
+    };
+    assert_eq!(
+        (outcome["stage"].as_str(), outcome["refused"].as_str()),
+        (Some("lower"), Some("filesystem_mismatch")),
+        "{outcome}"
+    );
+    assert_eq!(
+        entries(&r.s.home.env.config()),
+        config_before,
+        "config unchanged"
+    );
+    assert_eq!(
+        entries(&state),
+        state_before,
+        "state unchanged but for the transaction's in-flight lock: no journal, no roots"
+    );
+    assert_eq!(r.journal_lines(), None);
+}
+
+#[test]
+fn a_repair_never_writes_wtf_through_the_binary() {
+    use common::repair::{Child, Kind, RepairScene, assert_settled, config_set};
+
+    let log = tlog!();
+    for kind in Kind::ALL {
+        log.step(&format!("{} committed", kind.label()));
+        let r = RepairScene::new(kind);
+        assert!(matches!(r.child(&log, ""), Child::Ended(_)));
+        assert_eq!(r.wtf_named(), Vec::<String>::new(), "{}", kind.label());
+        log.step(&format!("{} crashed and recovered", kind.label()));
+        let r = RepairScene::new(kind);
+        let spec = format!("fsx.mutate.logged=abort@{}", kind.primitives());
+        assert_eq!(r.child(&log, &spec), Child::Crashed);
+        assert_settled(&log, &r, &config_set());
+        let history = fs::read_to_string(r.s.home.state().join("history.jsonl")).unwrap();
+        for line in history
+            .lines()
+            .filter(|line| line.contains("\"kind\":\"repair\""))
+        {
+            assert!(!line.to_ascii_lowercase().contains("/wtf/"), "{line}");
+        }
+    }
+}

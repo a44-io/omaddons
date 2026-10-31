@@ -56,6 +56,9 @@ pub enum Kind {
     FlattenTwo,
     /// `<A>/Same/Same/` lifted over its wrapper: three renames.
     FlattenThree,
+    /// `<config>/credentials/github` into the run's config quarantine: only the mount
+    /// scene uses it (it is not in [`Kind::ALL`]).
+    QuarantineConfigFile,
 }
 
 impl Kind {
@@ -89,12 +92,16 @@ impl Kind {
             Kind::QuarantineTempSymlink => "quarantine_temp_symlink",
             Kind::FlattenTwo => "flatten_two",
             Kind::FlattenThree => "flatten_three",
+            Kind::QuarantineConfigFile => "quarantine_config_file",
         }
     }
 
     fn from_label(label: &str) -> Option<Kind> {
-        // ubs:ignore — comparing fix-kind labels, not secrets
-        Kind::ALL.into_iter().find(|kind| kind.label() == label)
+        Kind::ALL
+            .into_iter()
+            .chain([Kind::QuarantineConfigFile])
+            // ubs:ignore — comparing fix-kind labels, not secrets
+            .find(|kind| kind.label() == label)
     }
 }
 
@@ -223,7 +230,7 @@ impl RepairScene {
         match self.kind {
             Kind::WriteOver => write(&self.skill_file(), GUIDE_V1, 0o640),
             Kind::WriteCreate => fs::create_dir_all(self.skill_file().parent().unwrap()).unwrap(),
-            Kind::Chmod => {
+            Kind::Chmod | Kind::QuarantineConfigFile => {
                 fs::create_dir_all(self.credential().parent().unwrap()).unwrap();
                 fs::set_permissions(
                     self.credential().parent().unwrap(),
@@ -320,6 +327,13 @@ impl RepairScene {
                 add("<skills>/SKILL.md".to_owned(), self.skill_file());
             }
             Kind::Chmod => add("<config>/credentials/github".to_owned(), self.credential()),
+            Kind::QuarantineConfigFile => {
+                add("<config>/credentials/github".to_owned(), self.credential());
+                add(
+                    "<run>/quarantine/config/credentials/github".to_owned(),
+                    self.run_dir().join("quarantine/config/credentials/github"),
+                );
+            }
             Kind::QuarantineStateFile | Kind::QuarantineTempSymlink => {
                 let name = self.state_victim();
                 let name = name.file_name().unwrap().to_string_lossy().into_owned();
@@ -404,6 +418,10 @@ impl RepairScene {
         match self.kind {
             Kind::WriteOver | Kind::WriteCreate => vec!["<skills>/SKILL.md".to_owned()],
             Kind::Chmod => vec!["<config>/credentials/github".to_owned()],
+            Kind::QuarantineConfigFile => vec![
+                "<config>/credentials/github".to_owned(),
+                "<run>/quarantine/config/credentials/github".to_owned(),
+            ],
             Kind::QuarantineStateFile | Kind::QuarantineTempSymlink => {
                 let name = self.state_victim();
                 let name = name.file_name().unwrap().to_string_lossy().into_owned();
@@ -444,9 +462,10 @@ impl RepairScene {
                 let (prefix, _) = before.rsplit_once(':').unwrap();
                 after.insert(labels[0].clone(), Some(format!("{prefix}:600")));
             }
-            Kind::QuarantineStateFile | Kind::QuarantineTempSymlink | Kind::QuarantineClientDir => {
-                moved(&labels[0], &labels[1])
-            }
+            Kind::QuarantineStateFile
+            | Kind::QuarantineTempSymlink
+            | Kind::QuarantineClientDir
+            | Kind::QuarantineConfigFile => moved(&labels[0], &labels[1]),
             Kind::FlattenTwo => {
                 let inner = describe(&self.addons("Wrap/Inner"));
                 after.insert("<A>/Wrap".to_owned(), None);
@@ -474,12 +493,27 @@ impl RepairScene {
     /// none): `Crashed`, or the child's outcome JSON. The spec, the exit status and the
     /// outcome are logged.
     pub fn child(&self, log: &TestLog, spec: &str) -> Child {
+        self.child_in(log, spec, None)
+    }
+
+    /// [`Self::child`] with `dir` bind-mounted over itself first, in an unprivileged
+    /// user and mount namespace, so it is a mount of its own; `None` where this machine
+    /// refuses such namespaces.
+    pub fn child_bound(&self, log: &TestLog, spec: &str, dir: &Path) -> Option<Child> {
+        super::mounts::can_bind_mount(dir).then(|| self.child_in(log, spec, Some(dir)))
+    }
+
+    fn child_in(&self, log: &TestLog, spec: &str, bind: Option<&Path>) -> Child {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         let out = self.env().root().join(format!(
             "repair-{}.json",
             NEXT.fetch_add(1, Ordering::SeqCst)
         ));
-        let mut cmd = Command::new(std::env::current_exe().unwrap());
+        let exe = std::env::current_exe().unwrap();
+        let mut cmd = match bind {
+            None => Command::new(exe), // ubs:ignore — the test binary running itself
+            Some(dir) => super::mounts::under_bind(dir, exe),
+        };
         cmd.args([
             "child_repair",
             "--exact",
@@ -516,17 +550,36 @@ impl RepairScene {
         };
         let tx = match &ended {
             Child::Ended(outcome) => outcome["tx"].as_str().map(str::to_owned),
-            Child::Crashed => self.journal().and_then(|path| {
-                let name = path.file_name()?.to_str()?;
-                name.strip_suffix(".repair.jsonl").map(str::to_owned)
-            }),
+            Child::Crashed => self
+                .journal()
+                .and_then(|path| {
+                    let name = path.file_name()?.to_str()?;
+                    name.strip_suffix(".repair.jsonl").map(str::to_owned)
+                })
+                .or_else(|| self.inflight_tx()),
         };
         *self.tx.borrow_mut() = tx;
         ended
     }
 
-    /// The last child's transaction, once known (from its outcome, or its journal's
-    /// name after a crash).
+    /// The transaction of the one in-flight lock in `<state>/inflight/`: a crash before
+    /// the journal leaves only that of a repair.
+    fn inflight_tx(&self) -> Option<String> {
+        let locks: Vec<String> = listed(&self.state().join("inflight"))
+            .into_iter()
+            .filter_map(|path| {
+                let name = path.file_name()?.to_str()?;
+                name.strip_suffix(".lock").map(str::to_owned)
+            })
+            .collect();
+        match locks.as_slice() {
+            [tx] => Some(tx.clone()),
+            _ => None,
+        }
+    }
+
+    /// The last child's transaction, once known (from its outcome, or its journal's or
+    /// in-flight lock's name after a crash).
     pub fn tx(&self) -> Option<String> {
         self.tx.borrow().clone()
     }
@@ -592,6 +645,7 @@ impl RepairScene {
         let want = self.expected(end);
         let mut problems: Vec<String> = want
             .iter()
+            // ubs:ignore — comparing subject descriptions, not secrets
             .filter(|(label, wanted)| now.get(*label) != Some(*wanted))
             .map(|(label, wanted)| format!("{label}: want {wanted:?}, got {:?}", now.get(label)))
             .collect();
@@ -629,6 +683,7 @@ impl RepairScene {
                     found.push(path.clone());
                 }
                 if meta.is_dir() {
+                    // ubs:ignore — walking the test's own scene, never following a link
                     dirs.push(path);
                 }
             }
@@ -715,8 +770,8 @@ pub fn child_main() {
 /// at lowering, the commit under the global lock, the cleanup after it.
 fn repair(kind: Kind, run_id: &str, client_dir: &Path) -> Value {
     use omaddons::engine::repair::{
-        CommitCtx, LowerCtx, PlannedFix, RepairMeta, RepairOutcome, RepairRun, RepairTx, commit,
-        lower,
+        CommitCtx, LowerCtx, LowerError, PlannedFix, RepairMeta, RepairOutcome, RepairRun,
+        RepairTx, commit, lower,
     };
     use omaddons::engine::repair_action::{Fix, Mode, QuarantineRoot};
     use omaddons::fsx::{GlobalLock, ScopeTable};
@@ -748,6 +803,13 @@ fn repair(kind: Kind, run_id: &str, client_dir: &Path) -> Value {
             Fix::Chmod {
                 path: paths.credential_file("github"),
                 mode: mode(0o600),
+            },
+        ),
+        Kind::QuarantineConfigFile => (
+            CORRUPT,
+            Fix::Quarantine {
+                path: paths.credential_file("github"),
+                root: QuarantineRoot::Config,
             },
         ),
         Kind::QuarantineStateFile => (
@@ -798,7 +860,7 @@ fn repair(kind: Kind, run_id: &str, client_dir: &Path) -> Value {
     };
     let rtx = RepairTx::begin(&paths).unwrap();
     let tx = rtx.tx();
-    let lowered = lower(
+    let lowered = match lower(
         &LowerCtx {
             paths: &paths,
             tx,
@@ -809,8 +871,29 @@ fn repair(kind: Kind, run_id: &str, client_dir: &Path) -> Value {
             mount_id: &omaddons::fsx::mount_id,
         },
         &fixes,
-    )
-    .unwrap_or_else(|err| panic!("{} does not lower: {err:?}", kind.label())); // ubs:ignore — fails the test
+    ) {
+        Ok(lowered) => lowered,
+        Err(LowerError::Refused {
+            reason, message, ..
+        }) => {
+            return json!({
+                "ok": false,
+                "tx": tx,
+                "stage": "lower",
+                "refused": reason.wire(),
+                "message": message,
+            });
+        }
+        Err(LowerError::Error(err)) => {
+            return json!({
+                "ok": false,
+                "tx": tx,
+                "stage": "lower",
+                "code": err.code.wire(),
+                "message": err.message,
+            });
+        }
+    };
     let lock = GlobalLock::acquire(&paths, "doctor fix").unwrap();
     let ctx = CommitCtx {
         lock: &lock,
@@ -830,11 +913,29 @@ fn repair(kind: Kind, run_id: &str, client_dir: &Path) -> Value {
     match committed {
         Ok((outcome, cleanup)) => {
             let warnings: Vec<&str> = cleanup.finish().iter().map(|w| w.code.wire()).collect();
-            let outcome = match outcome {
-                RepairOutcome::Committed { .. } => "committed",
-                RepairOutcome::RolledBack { .. } => "rolled_back",
-            };
-            json!({"ok": true, "tx": tx, "outcome": outcome, "warnings": warnings})
+            match outcome {
+                RepairOutcome::Committed { primitives, .. } => json!({
+                    "ok": true,
+                    "tx": tx,
+                    "outcome": "committed",
+                    "primitives": primitives,
+                    "warnings": warnings,
+                }),
+                RepairOutcome::RolledBack {
+                    failed_seq,
+                    cause,
+                    backups_restored,
+                    ..
+                } => json!({
+                    "ok": true,
+                    "tx": tx,
+                    "outcome": "rolled_back",
+                    "failed_seq": failed_seq,
+                    "cause": cause.code.wire(),
+                    "backups_restored": backups_restored,
+                    "warnings": warnings,
+                }),
+            }
         }
         Err(err) => json!({
             "ok": false,
@@ -872,4 +973,302 @@ fn listed(dir: &Path) -> Vec<PathBuf> {
     fs::read_dir(dir)
         .map(|listing| listing.map(|entry| entry.unwrap().path()).collect())
         .unwrap_or_default()
+}
+
+// ---------------------------------------------------------------------------------------
+// The oracle (s7): what every crash or failure of a repair must settle to.
+
+impl RepairScene {
+    /// Where a repair stopped at `phase` must end: before its durable `done` the whole
+    /// before state, from it the whole after state. With no journal, history says which
+    /// (a crash after its cleanup pruned the journal leaves a history line).
+    pub fn end_at(&self, phase: CrashPhase) -> End {
+        match phase {
+            CrashPhase::Done | CrashPhase::Committed => End::After,
+            // ubs:ignore — counting history lines, not comparing secrets
+            CrashPhase::NoJournal if self.history_names_tx() == 1 => End::After,
+            _ => End::Before,
+        }
+    }
+
+    /// The trees a repair scene's commands may write, by label.
+    pub fn trees(&self) -> [(&'static str, PathBuf); 4] {
+        [
+            ("state", self.env().state()),
+            ("config", self.env().config()),
+            ("cache", self.env().cache()),
+            ("client", self.client()),
+        ]
+    }
+
+    /// The scene's `install gh:o/foo v1` transaction, as history names it.
+    pub fn install_tx(&self) -> String {
+        self.history_lines()
+            .into_iter()
+            // ubs:ignore — comparing history kinds, not secrets
+            .find(|line| line["kind"] == "install")
+            .and_then(|line| line["tx"].as_str().map(str::to_owned))
+            .unwrap()
+    }
+
+    /// Every history line that reads.
+    fn history_lines(&self) -> Vec<Value> {
+        fs::read_to_string(self.state().join("history.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .collect()
+    }
+
+    /// The repair lines in history naming the last child's transaction.
+    pub fn repair_history(&self) -> Vec<Value> {
+        let tx = self.tx();
+        self.history_lines()
+            .into_iter()
+            // ubs:ignore — comparing history kinds and transaction ids, not secrets
+            .filter(|line| line["kind"] == "repair")
+            .filter(|line| tx.as_deref().is_none_or(|tx| line["tx"] == tx))
+            .collect()
+    }
+
+    /// Every history line and quarantine entry of a repair that names a path below a
+    /// `WTF/` (in any case): what a repair must never write.
+    pub fn wtf_named(&self) -> Vec<String> {
+        let mut named: Vec<String> = self
+            .repair_history()
+            .iter()
+            .map(Value::to_string)
+            .filter(|line| names_wtf(line))
+            .collect();
+        let mut dirs = vec![
+            self.run_dir().join("quarantine"),
+            self.env().cache().join("omaddons/quarantine"),
+        ];
+        dirs.extend(self.client_halves());
+        while let Some(dir) = dirs.pop() {
+            for path in listed(&dir) {
+                let text = path.display().to_string();
+                if names_wtf(&text) {
+                    named.push(text);
+                }
+                if fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_dir()) {
+                    // ubs:ignore — walking the test's own quarantines, never following a link
+                    dirs.push(path);
+                }
+            }
+        }
+        named
+    }
+
+    /// Whether some live process holds `tx`'s in-flight lock.
+    fn inflight_held(&self, tx: &str) -> bool {
+        fs::File::open(self.state().join(format!("inflight/{tx}.lock")))
+            .is_ok_and(|file| file.try_lock().is_err())
+    }
+}
+
+/// Whether `text` names a path below a `WTF/` folder.
+fn names_wtf(text: &str) -> bool {
+    text.to_ascii_lowercase().contains("/wtf/")
+}
+
+/// `omaddons <args> --json --progress json`.
+pub fn json_args(args: &[&str]) -> Vec<String> {
+    args.iter()
+        .copied()
+        .chain(["--json", "--progress", "json"])
+        .map(str::to_owned)
+        .collect()
+}
+
+/// `config set check_interval_hours 6`: recovery under the lock, committing nothing.
+pub fn config_set() -> Vec<String> {
+    json_args(&["config", "set", "check_interval_hours", "6"])
+}
+
+/// What [`assert_settled`] saw of one stopped repair.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Settled {
+    pub phase: CrashPhase,
+    pub end: End,
+    /// The recovering command's `journal_recovered` messages about the repair, its
+    /// transaction written `<tx>`.
+    pub recovered: Vec<String>,
+    /// The subject once recovered.
+    pub subject: BTreeMap<String, Option<String>>,
+}
+
+/// The oracle every crash and failure of a repair is held to (s7), right after it:
+///
+/// 1. the phase it stopped at says the end: before `done` the before state, from it the
+///    after state;
+/// 2. `status` reports `journal_pending` for a journal recovery will settle, and writes
+///    nothing (`<state>`, `<config>`, `<cache>`, the client dir);
+/// 3. `recover` (a lock-taking command) succeeds, with `journal_recovered` exactly when
+///    there was something to roll back or forward;
+/// 4. the whole subject is that end's, never a mixture, and 6. every preserved original
+///    is accounted for (`accounted`);
+/// 5. no journal is left, nor a live in-flight lock (a crash before the journal leaves
+///    a dead one, which the orphan sweep takes once it is an hour old);
+/// 7. no `.omaddons-*` entry is left outside the repair's own roots;
+/// 8. history holds the repair's line exactly in the after state, well formed, one
+///    `repairs[]` entry per primitive;
+/// 9. nothing names a path below `WTF/`, and every run named no planted account.
+#[track_caller]
+pub fn assert_settled(log: &TestLog, r: &RepairScene, recover: &[String]) -> Settled {
+    let phase = r.phase();
+    let journal = r.journal_lines();
+    log.json("phase", &format!("{phase:?}"));
+    let label = format!("{} stopped at {phase:?}", r.kind.label());
+    let transcript = log.transcript_path().display().to_string();
+    let tx = r.tx();
+    let naming = |envelope: &Value, code: &str| -> Vec<String> {
+        envelope["warnings"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            // ubs:ignore — comparing warning codes, not secrets
+            .filter(|warning| warning["code"] == code)
+            .filter_map(|warning| warning["message"].as_str())
+            .filter(|message| message.contains("repair transaction"))
+            .map(|message| match &tx {
+                Some(tx) => message.replace(tx.as_str(), "<tx>"),
+                None => message.to_owned(),
+            })
+            .collect()
+    };
+    let end = r.end_at(phase);
+    // 2. The reader.
+    for (tree, root) in r.trees() {
+        log.tree(tree, &root);
+    }
+    let read = log.run(&r.s, &json_args(&["status"]));
+    read.ok().assert_private();
+    let waits =
+        journal.is_some() && !matches!(phase, CrashPhase::Committed | CrashPhase::RolledBack);
+    assert_eq!(
+        naming(read.envelope(), "journal_pending").len(),
+        usize::from(waits),
+        "{label}: what the reader reports\ntranscript: {transcript}"
+    );
+    for (tree, root) in r.trees() {
+        log.assert_unchanged(tree, &root);
+    }
+    // 3. The recovery.
+    let ran = log.run(&r.s, recover);
+    ran.ok().assert_private();
+    let recovered = naming(ran.envelope(), "journal_recovered");
+    let acts = matches!(
+        phase,
+        CrashPhase::Prepared | CrashPhase::Stepped(_) | CrashPhase::Done
+    );
+    assert_eq!(
+        recovered.len(),
+        usize::from(acts),
+        "{label}: what recovery reports: {recovered:?}\ntranscript: {transcript}"
+    );
+    // 1, 4, 6. The whole end state, every original accounted for.
+    let subject = r.subject();
+    log.json("subject after recovery", &subject);
+    let problems = r.accounted(end);
+    assert!(
+        problems.is_empty(),
+        "{label}: not the whole {end:?} state: {problems:#?}\ntranscript: {transcript}"
+    );
+    // 5. Nothing left to recover.
+    assert_eq!(
+        r.journal(),
+        None,
+        "{label}: a journal is left\ntranscript: {transcript}"
+    );
+    if let Some(tx) = &tx {
+        assert!(!r.inflight_held(tx), "{label}: a live in-flight lock");
+        // ubs:ignore — comparing crash phases, not secrets
+        if phase != CrashPhase::NoJournal {
+            assert!(
+                !r.state().join(format!("inflight/{tx}.lock")).exists(),
+                "{label}: the in-flight lock is left\ntranscript: {transcript}"
+            );
+        }
+    }
+    // 7. No temporary entry stranded.
+    assert_eq!(
+        r.leftovers(),
+        Vec::<PathBuf>::new(),
+        "{label}: leftovers\ntranscript: {transcript}"
+    );
+    // 8. History.
+    let lines = r.repair_history();
+    assert_eq!(
+        lines.len(),
+        usize::from(end == End::After), // ubs:ignore — comparing end states, not secrets
+        "{label}: repair history lines\ntranscript: {transcript}"
+    );
+    for line in &lines {
+        let entry: omaddons::state::history::HistoryEntry =
+            serde_json::from_value(line.clone()).unwrap();
+        assert!(entry.well_formed(), "{label}: {line}");
+        assert_eq!(
+            entry.repairs.len(),
+            r.kind.primitives() as usize,
+            "{label}: one repairs[] entry per primitive: {line}"
+        );
+    }
+    // 9. Nothing below `WTF/`.
+    let mut wtf = r.wtf_named();
+    wtf.extend(
+        journal
+            .iter()
+            .flatten()
+            .filter(|line| names_wtf(line))
+            .cloned(),
+    );
+    assert_eq!(wtf, Vec::<String>::new(), "{label}: a repair named WTF/");
+    Settled {
+        phase,
+        end,
+        recovered,
+        subject,
+    }
+}
+
+/// The crash point a spec addresses (`prepared`, `step@2`, `executed@1`, …), when it
+/// names one; the `checked` sweep's are attributed from the journal ([`attributed`]).
+pub fn point_of(spec: &str) -> Option<String> {
+    let (name, rest) = spec.split_once('=')?;
+    let at = rest.split_once('@').map(|(_, n)| n);
+    let point = name
+        .strip_prefix("doctor.repair.")
+        .or_else(|| name.strip_prefix("fsx.mutate."))?;
+    Some(match at {
+        Some(n) => format!("{point}@{n}"),
+        None => point.to_owned(),
+    })
+}
+
+/// The `checked` crash's primitive: the journal holds step `k`'s line and `actions.jsonl`
+/// `k - 1` lines, so primitive `k` was about to run. Any other `checked` hit is an
+/// untracked write (a root, a journal or history line, cleanup), no primitive's.
+pub fn attributed(r: &RepairScene) -> Option<String> {
+    match r.phase() {
+        CrashPhase::Stepped(k) if r.actions_lines().len() + 1 == k as usize => {
+            Some(format!("checked@{k}"))
+        }
+        _ => None,
+    }
+}
+
+/// Every crash point a kind's repair has: each primitive's five boundaries, and the
+/// commit's four phase points.
+pub fn crash_points(kind: Kind) -> std::collections::BTreeSet<String> {
+    let mut points: std::collections::BTreeSet<String> =
+        ["prepared", "done", "history", "committed"]
+            .map(str::to_owned)
+            .into();
+    for k in 1..=kind.primitives() {
+        for boundary in ["step", "checked", "backed_up", "executed", "logged"] {
+            points.insert(format!("{boundary}@{k}"));
+        }
+    }
+    points
 }

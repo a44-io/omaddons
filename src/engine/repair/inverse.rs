@@ -200,6 +200,7 @@ pub(crate) fn roll_back(
             classify(replay, step).map_err(|err| Stopped::Failed(step_io(step, &err)))?;
         match classified {
             Classified::NotRun => continue,
+            Classified::Neither if undone_before(replay, prepared, step)? => continue,
             Classified::Neither => {
                 return Err(Stopped::Unrecognized {
                     seq: step.seq,
@@ -213,6 +214,27 @@ pub(crate) fn roll_back(
         inverted += 1;
     }
     Ok(inverted)
+}
+
+/// Whether a step before `step` is in its before state: steps run first to last and
+/// roll back last first, so `step` then never ran, or was undone already, and its paths
+/// may hold neither of its states (a three-rename flatten's last step names the
+/// provisional folder its first step makes, so once a recovery a crash interrupted has
+/// undone all three, it is in neither). The folder family's rule too
+/// (`journal::step_state_after`).
+fn undone_before(
+    view: &mut dyn RepairView,
+    prepared: &RepairPrepared,
+    step: &Step,
+) -> std::result::Result<bool, Stopped> {
+    for earlier in prepared.primitives.iter().filter(|e| e.seq < step.seq) {
+        let classified =
+            classify(view, earlier).map_err(|err| Stopped::Failed(step_io(earlier, &err)))?;
+        if classified == Classified::NotRun {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// How a step that ran is undone, decided from the journal and the view alone.

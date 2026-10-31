@@ -4449,6 +4449,27 @@ mod tests {
         }
 
         #[test]
+        fn a_flatten_undone_whole_reads_as_rolled_back() {
+            let home = repair_home();
+            let p = repair_prepared(&home, &[], &[flatten(&home, "Same/Same", "Same")]);
+            // Every step recorded, and every one undone by a recovery that then died: the
+            // last rename's source, the provisional folder, exists only once the first ran.
+            let d = one(&home, &after(&p, 0), &p, text(&p, &steps(3)));
+            assert_eq!(
+                (d.verdict, d.expected()),
+                (
+                    JournalVerdict::Recoverable {
+                        phase: Phase::Prepared,
+                        direction: Direction::Back,
+                    },
+                    Expected::RolledBack
+                ),
+                "{d:#?}"
+            );
+            assert_eq!(d.evidence.ran, Vec::<u32>::new(), "nothing left to invert");
+        }
+
+        #[test]
         fn diagnose_simulates_repair_inverses_in_reverse() {
             let home = repair_home();
             let p = repair_prepared(&home, &[], &[flatten(&home, "Same/Same", "Same")]);

@@ -1256,6 +1256,35 @@ mod tests {
     }
 
     #[test]
+    fn a_flatten_a_crashed_recovery_undid_whole_still_rolls_back() {
+        let home = repair_home();
+        let before = subject(&home);
+        let same = planned(
+            NESTED,
+            Fix::Flatten {
+                inner: home.addons("Same/Same"),
+                outer: home.addons("Same"),
+            },
+        );
+        let tx = crashed(&home, &[same], "fsx.mutate.executed=panic@3");
+        // Every inverse ran, the third (the first rename's) last; then the recovery died.
+        let err = with_spec("doctor.recover.step=error@3", || recover(&home)).unwrap_err();
+        assert_eq!(err.details["journal_pending"], tx.to_string(), "{err}");
+        assert_eq!(subject(&home), before, "all three renames undone");
+        // The last rename's source is the provisional folder only the first one makes, so
+        // it is in neither state now; the first rename being undone says it never ran.
+        let warnings = recover(&home).unwrap();
+        assert_eq!(
+            messages(&warnings, WarningCode::JournalRecovered),
+            [format!(
+                "repair transaction {tx} was interrupted; recovery undid it (rolled back)"
+            )]
+        );
+        assert_eq!(subject(&home), before);
+        assert_eq!(left(&home, &tx), (false, false));
+    }
+
+    #[test]
     fn recovery_prunes_only_the_journal_and_its_lock() {
         let home = repair_home();
         let fixes = [write_over(&home), stray(&home), link(&home)];
