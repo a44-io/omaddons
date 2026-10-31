@@ -127,13 +127,18 @@ pub fn event_schemas() -> BTreeMap<&'static str, Schema> {
         .collect()
 }
 
-/// Every saved format, plus one journal line and `addons.toml` represented as JSON.
+/// Every saved format, plus one line of each journal family (whose version is in its
+/// `prepared` line, not a leading `schema_version`) and `addons.toml` represented as JSON.
 pub fn file_schemas() -> BTreeMap<&'static str, Schema> {
     let mut schemas: BTreeMap<_, _> = store::KINDS
         .iter()
         .map(|row| (row.kind, (row.schema)(&mut generator())))
         .collect();
     schemas.insert("journal", generator().root_schema_for::<JournalLine>());
+    schemas.insert(
+        "repair_journal",
+        generator().root_schema_for::<crate::engine::repair::RepairLine>(),
+    );
     let mut desired = generator().root_schema_for::<DesiredStateSchema>();
     desired.insert(
         "description".into(),
@@ -813,7 +818,7 @@ mod tests {
         let expected: BTreeSet<_> = store::KINDS
             .iter()
             .map(|row| row.kind)
-            .chain(["journal", "desired_state"])
+            .chain(["journal", "repair_journal", "desired_state"])
             .collect();
         assert_eq!(schemas.keys().copied().collect::<BTreeSet<_>>(), expected);
         for (name, schema) in &schemas {

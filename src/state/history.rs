@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use super::paths::Paths;
 use super::store::SchemaVersion;
 use crate::backup::BackupKind;
+use crate::engine::repair_action::{Endpoint, Endpoints, Guard, Primitive, Step};
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{Op, WriteSession, ensure_dir_all, mutate};
 use crate::limits::{DISCOVERY_FILE_MAX_BYTES, REASON_MAX_CHARS};
@@ -143,6 +144,11 @@ pub struct RepairEntry {
     /// that reactivates a set-aside journal (M4-D38) sets it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub activation: bool,
+    /// A set-aside's suspension manifest (M4-D38), on the rename that moved a stuck
+    /// journal's file into quarantine, which its undo checks before reactivating it.
+    /// Omitted when empty, as on every other operation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub guards: Vec<Guard>,
     /// The client whose files it touches; omitted when it names none, as a home-side
     /// operation does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -200,7 +206,9 @@ pub struct RepairPredicate {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RepairIdentity {
     pub ino: String,
-    pub born_ns: String,
+    /// Omitted when the filesystem records no birth time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub born_ns: Option<String>,
 }
 
 /// What kind of entry a path holds.
@@ -213,6 +221,53 @@ pub enum PredicateKind {
     Symlink,
 }
 
+impl RepairEndpoints {
+    /// A journal step's `pre` or `post`, as history writes it.
+    fn of(endpoints: &Endpoints) -> Self {
+        match endpoints {
+            Endpoints::One(endpoint) => Self::Path(RepairPredicate::of(endpoint)),
+            Endpoints::Pair { path, to } => Self::Rename {
+                path: RepairPredicate::of(path),
+                to: RepairPredicate::of(to),
+            },
+        }
+    }
+}
+
+impl RepairPredicate {
+    /// One endpoint, its digests and mode in their written forms.
+    fn of(endpoint: &Endpoint) -> Self {
+        let identity = endpoint.identity().map(|id| RepairIdentity {
+            ino: id.ino.to_string(),
+            born_ns: id.born_ns.map(|ns| ns.to_string()),
+        });
+        let bare = |kind| Self {
+            kind,
+            identity: identity.clone(),
+            sha256: None,
+            mode: None,
+            stamp: None,
+            link_target: None,
+        };
+        match endpoint {
+            Endpoint::Absent => bare(PredicateKind::Absent),
+            Endpoint::File { sha256, mode, .. } => Self {
+                sha256: sha256.map(|digest| digest.to_string()),
+                mode: mode.map(|mode| mode.to_string()),
+                ..bare(PredicateKind::File)
+            },
+            Endpoint::Dir { stamp, .. } => Self {
+                stamp: stamp.map(|stamp| stamp.to_string()),
+                ..bare(PredicateKind::Dir)
+            },
+            Endpoint::Symlink { link_target, .. } => Self {
+                link_target: link_target.clone(),
+                ..bare(PredicateKind::Symlink)
+            },
+        }
+    }
+}
+
 /// The clients a history line touched: these, or, for a target-less line that touched a
 /// client's files without naming the client, every one (which fails closed).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -222,6 +277,60 @@ pub enum Reach {
 }
 
 impl RepairEntry {
+    /// The history form of one journal primitive (E1's [`Step`]): the same keys with the
+    /// same values, plus `target` (the client `target_of` names for its path, else its
+    /// destination) and `folder` (the AddOns folder its path, else its destination, is or
+    /// is in, when that is a folder name). The one conversion between the two, so the
+    /// commit and recovery write the same line.
+    pub fn from_step(step: &Step, target_of: impl Fn(&Path) -> Option<TargetKey>) -> Self {
+        let (op, path, to, mode, backup, activation) = match &step.op {
+            Primitive::WriteFile { path, mode, backup } => (
+                RepairOp::WriteFile,
+                path,
+                None,
+                Some(mode),
+                backup.clone(),
+                false,
+            ),
+            Primitive::Chmod { path, mode } => {
+                (RepairOp::Chmod, path, None, Some(mode), None, false)
+            }
+            Primitive::RenameNoReplace {
+                from,
+                to,
+                activation,
+            } => (
+                RepairOp::RenameNoReplace,
+                from,
+                Some(to.clone()),
+                None,
+                None,
+                *activation,
+            ),
+        };
+        let folder_of = |path: &Path| {
+            consecutive(path, "AddOns")
+                .and_then(OsStr::to_str)
+                .and_then(|name| FolderName::new(name).ok())
+        };
+        Self {
+            seq: step.seq,
+            fix: step.fix,
+            fm: step.fm.to_string(),
+            op,
+            target: target_of(path).or_else(|| to.as_deref().and_then(&target_of)),
+            folder: folder_of(path).or_else(|| to.as_deref().and_then(folder_of)),
+            path: path.clone(),
+            to,
+            mode: mode.map(ToString::to_string),
+            pre: RepairEndpoints::of(&step.pre),
+            post: RepairEndpoints::of(&step.post),
+            backup,
+            activation,
+            guards: step.guards.clone(),
+        }
+    }
+
     /// Whether it acts on a client's files: it names a client or an AddOns folder, or a
     /// path of it lies under a client's `Interface/AddOns` or `Interface/.omaddons`.
     pub fn client_side(&self) -> bool {
@@ -1925,7 +2034,7 @@ mod tests {
             kind,
             identity: Some(RepairIdentity {
                 ino: "4215".into(),
-                born_ns: "1792900000000000000".into(),
+                born_ns: Some("1792900000000000000".into()),
             }),
             sha256: None,
             mode: Some(mode.into()),
@@ -1959,6 +2068,7 @@ mod tests {
             post: RepairEndpoints::Path(file(PredicateKind::File, "0600")),
             backup: None,
             activation: false,
+            guards: Vec::new(),
             target: None,
             folder: None,
         }
@@ -1989,6 +2099,7 @@ mod tests {
             },
             backup: None,
             activation: false,
+            guards: Vec::new(),
             target: None,
             folder: None,
         }

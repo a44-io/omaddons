@@ -22,6 +22,10 @@ use crate::state::store::{KINDS, SchemaVersion};
 /// The folder journal's kind, outside `KINDS`.
 const JOURNAL: &str = "journal";
 
+/// The repair journal's kind, outside `KINDS` like the folder journal's: its version is
+/// its `prepared` line's `format`, not a leading `schema_version`.
+const REPAIR_JOURNAL: &str = "repair_journal";
+
 pub(crate) fn collect(b: &mut Builder) {
     for code in ErrorCode::ALL {
         let facts = [
@@ -124,12 +128,15 @@ fn retryable(retryability: Retryability) -> &'static str {
     }
 }
 
-/// Every persisted kind's own version: each `KINDS` row, and the folder journal.
+/// Every persisted kind's own version: each `KINDS` row, and both journal families.
 pub(crate) fn persisted_versions() -> BTreeMap<&'static str, SchemaVersion> {
     KINDS
         .iter()
         .map(|row| (row.kind, row.current))
-        .chain([(JOURNAL, journal::CURRENT)])
+        .chain([
+            (JOURNAL, journal::CURRENT),
+            (REPAIR_JOURNAL, crate::engine::repair::FORMAT),
+        ])
         .collect()
 }
 
@@ -309,9 +316,9 @@ mod tests {
     }
 
     #[test]
-    fn every_kinds_row_and_the_journal_has_a_file_node() {
+    fn every_kinds_row_and_each_journal_has_a_file_node() {
         let nodes = nodes();
-        assert_eq!(of_kind(&nodes, NodeKind::FileKind).len(), KINDS.len() + 1);
+        assert_eq!(of_kind(&nodes, NodeKind::FileKind).len(), KINDS.len() + 2);
         for row in KINDS {
             let id = ids::anchored(section::FILE, row.kind, None);
             assert_eq!(
@@ -324,6 +331,11 @@ mod tests {
         assert_eq!(
             journal_version,
             Some(&Fact::Text(journal::CURRENT.to_string()))
+        );
+        assert_eq!(
+            get(&nodes, "file repair_journal", fact::VERSION),
+            Some(&Fact::Text(crate::engine::repair::FORMAT.to_string())),
+            "the repair journal's version is its prepared line's format"
         );
     }
 

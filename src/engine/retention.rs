@@ -17,6 +17,9 @@
 //! evicted LRU to `BLOB_CACHE_MAX_BYTES`, sparing installed releases and unexpired stored
 //! plans. Expired plans are swept first, in a bounded batch through the plan store's
 //! own sweep. Every removal goes through `fsx::prune`.
+//!
+//! Never touched, however old (M4-D36): a doctor repair's `<tx>.repair` halves and the
+//! cache's `quarantine/`, which only `doctor gc` deletes.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -33,7 +36,7 @@ use crate::limits::{
 };
 use crate::model::{TargetKey, TxId, TxKind};
 use crate::state::history::{self, HistoryEntry, HistoryFilter};
-use crate::state::paths::{ClientPaths, Paths};
+use crate::state::paths::{ClientPaths, Paths, REPAIR_SUFFIX};
 use crate::state::plans::{self, PlanPins};
 use crate::state::records::load_record;
 use crate::state::registry::load_registry;
@@ -423,6 +426,11 @@ fn orphans(paths: &Paths, client: &ClientPaths, now: Timestamp, text: &str) -> R
     // Age first: probing a lock takes it for a moment, which must never meet a lock file
     // its transaction has just created and not yet locked.
     for (name, path) in listing(&client.meta_dir().join("stage")) {
+        // The repair family's halves are deleted only by `doctor gc` (M4-D36); the suffix
+        // is matched to skip, never parsed.
+        if name.ends_with(REPAIR_SUFFIX) {
+            continue;
+        }
         if let Some(tx) = crate::state::paths::tx_named(&name)
             && old(&path)
             && dead(&tx)?
@@ -451,6 +459,10 @@ fn orphans(paths: &Paths, client: &ClientPaths, now: Timestamp, text: &str) -> R
     ];
     for (root, client_side) in roots {
         for (name, path) in listing(&root) {
+            // As for stages: a `.repair` half is `doctor gc`'s alone (M4-D36).
+            if name.ends_with(REPAIR_SUFFIX) {
+                continue;
+            }
             if let Some(tx) = crate::state::paths::tx_named(&name)
                 && !in_history(text, &tx)
                 && dead(&tx)?
@@ -812,6 +824,134 @@ mod tests {
         history::append(&mut s, &f.paths, &repair).unwrap();
         let text = history::text(&f.paths).unwrap();
         assert!(in_history(&text, &repair.tx), "{text}");
+    }
+
+    /// A repair's client-side half as the repair leaves it: a reserved backup and a
+    /// quarantined folder, with no `AddOns/` (M4-D36).
+    fn plant_repair_half(f: &Fixture, tx: &TxId) -> PathBuf {
+        let half = f.client.snapshots_repair(tx);
+        for (rel, text) in [
+            ("files/1", "a file a repair overwrote\n"),
+            (
+                "quarantine/Interface/AddOns/X/X.toc",
+                "## Interface: 120105\n",
+            ),
+        ] {
+            let path = half.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        half
+    }
+
+    #[test]
+    fn retention_never_touches_repair_halves() {
+        let f = fixture();
+        let old = f.commit(10 * DAY, 10);
+        f.commit(9 * DAY, 10);
+        // Unnamed by history, past every bound (two hours on), its lock free, its
+        // `AddOns/` empty: everything that makes an ordinary half an orphan.
+        let repair = TxId::new();
+        let half = plant_repair_half(&f, &repair);
+        let state_half = f
+            .paths
+            .state_snapshots_dir()
+            .join(format!("{repair}.repair"));
+        std::fs::create_dir_all(&state_half).unwrap();
+        let orphan = TxId::new();
+        std::fs::create_dir_all(f.client.snapshots(&orphan)).unwrap();
+        let before = crate::engine::testing::tree_hash(&half);
+        let limits = RetentionLimits {
+            blob_cache_max_bytes: 0,
+            ..RetentionLimits::default()
+        };
+        let report = f.run(&limits, &BTreeSet::new());
+        assert_eq!(
+            f.has_snapshot(&old),
+            (false, false),
+            "the run pruned: {report:?}"
+        );
+        assert!(
+            !f.client.snapshots(&orphan).exists(),
+            "and swept: {report:?}"
+        );
+        assert_eq!(
+            crate::engine::testing::tree_hash(&half),
+            before,
+            "the repair half"
+        );
+        assert!(state_half.is_dir(), "a .repair name on the state side too");
+    }
+
+    #[test]
+    fn a_repair_half_named_for_a_pruned_transaction_survives() {
+        let f = fixture();
+        let old = f.commit(10 * DAY, 10);
+        f.commit(9 * DAY, 10);
+        let half = plant_repair_half(&f, &old);
+        let before = crate::engine::testing::tree_hash(&half);
+        let report = f.run(&RetentionLimits::default(), &BTreeSet::new());
+        assert_eq!(f.has_snapshot(&old), (false, false), "{report:?}");
+        assert_eq!(
+            crate::engine::testing::tree_hash(&half),
+            before,
+            "retention names only <tx> and <tx>.wtf halves"
+        );
+        assert_eq!(
+            snapshot_dirs(&f.paths, &f.client, &old).map(|p| p.ends_with(format!("{old}.repair"))),
+            [false; 4],
+            "snapshot_dirs never names a .repair half"
+        );
+    }
+
+    #[test]
+    fn the_orphan_sweep_skips_repair_names_by_suffix() {
+        let f = fixture();
+        let (repair, plain) = (TxId::new(), TxId::new());
+        let repaired = [
+            f.client.meta_dir().join(format!("stage/{repair}.repair")),
+            f.client
+                .meta_dir()
+                .join(format!("snapshots/{repair}.repair")),
+            f.paths
+                .state_snapshots_dir()
+                .join(format!("{repair}.repair")),
+        ];
+        for dir in repaired.iter().chain([&f.client.stage(&plain)]) {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let found = orphans(&f.paths, &f.client, f.clock, "").unwrap();
+        assert_eq!(found.scratch, [f.client.stage(&plain)], "the sweep runs");
+        for dir in &repaired {
+            assert!(
+                !found.scratch.contains(dir) && !found.snapshots.contains(dir),
+                "{} is doctor gc's alone",
+                dir.display()
+            );
+        }
+    }
+
+    #[test]
+    fn cache_quarantine_is_never_visited() {
+        let f = fixture();
+        f.commit(HOUR, 1);
+        let sha = "ab".repeat(32);
+        let blob = f.paths.blob(&sha);
+        let quarantined = f.paths.cache_quarantine("R").join("blobs").join(&sha);
+        for path in [&blob, &quarantined] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, vec![b'x'; 64]).unwrap();
+        }
+        let limits = RetentionLimits {
+            blob_cache_max_bytes: 0,
+            ..RetentionLimits::default()
+        };
+        let report = f.run(&limits, &BTreeSet::new());
+        assert!(!blob.exists(), "eviction ran: {report:?}");
+        assert!(
+            quarantined.is_file(),
+            "the cache quarantine is doctor gc's alone"
+        );
     }
 
     #[test]

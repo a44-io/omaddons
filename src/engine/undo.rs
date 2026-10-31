@@ -4155,6 +4155,7 @@ mod tests {
                 post: RepairEndpoints::Path(absent()),
                 backup: None,
                 activation: false,
+                guards: Vec::new(),
                 target,
                 folder: folder.map(|f| FolderName::new(f).unwrap()),
             })

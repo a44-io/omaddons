@@ -19,8 +19,13 @@
 //!
 //! [`RepairTx`] holds the transaction's id and in-flight lock from planning to cleanup.
 
+pub mod journal;
 pub mod lower;
 
+pub use journal::{
+    ClientDirEntry, FORMAT, ParsedRepair, RepairLine, RepairPhase, RepairPrepared, ResourcesWire,
+    history_line,
+};
 pub use lower::{LowerCtx, LowerError, Lowered, LoweredStep, PlannedFix, RefusedReason, lower};
 
 use std::path::PathBuf;

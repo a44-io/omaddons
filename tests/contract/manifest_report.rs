@@ -130,8 +130,8 @@ fn manifest_report() {
         ("config keys", KEYS.len(), "config::KEYS"),
         (
             "file kinds",
-            KINDS.len() + 1,
-            "store::KINDS and the journal",
+            KINDS.len() + 2,
+            "store::KINDS and both journal families",
         ),
     ];
     for (section, want, registry) in expected {

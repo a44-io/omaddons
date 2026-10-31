@@ -755,7 +755,7 @@ mod tests {
             kind,
             identity: Some(RepairIdentity {
                 ino: "4215".into(),
-                born_ns: "1792900000000000000".into(),
+                born_ns: Some("1792900000000000000".into()),
             }),
             sha256: None,
             mode: None,
@@ -777,6 +777,7 @@ mod tests {
             post: RepairEndpoints::Path(predicate(PredicateKind::Absent)),
             backup: None,
             activation: false,
+            guards: Vec::new(),
             target: None,
             folder: None,
         }

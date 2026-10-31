@@ -1955,7 +1955,11 @@ mod tests {
             expect(ids::anchored(section::ERROR, code.wire(), Some(ROOT)));
             expect(ids::anchored(section::ERROR, code.wire(), Some("details")));
         }
-        for kind in KINDS.iter().map(|row| row.kind).chain(["journal"]) {
+        for kind in KINDS
+            .iter()
+            .map(|row| row.kind)
+            .chain(["journal", "repair_journal"])
+        {
             expect(ids::anchored(section::FILE, kind, Some(ROOT)));
         }
         expect(ids::desired(ROOT));

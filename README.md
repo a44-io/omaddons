@@ -2482,6 +2482,7 @@ Retention runs after every commit, for the target just changed:
 - Orphaned stage directories, in-flight locks and the snapshots of transactions that never committed are swept: a rolled-back or failed transaction's snapshots at once, a dead planner's temporary downloads as soon as its in-flight lock is free, and anything else a crash left once it is an hour old. A snapshot that still holds an addon folder or a `WTF.previous` is never swept.
 - A whole restore's `WTF.previous` (the tree it replaced) is pruned with its transaction by the count and age rules above, and never counts toward the 2 GiB cap, so a few large restores never evict the snapshots undo needs for addons.
 - `WTF/` backups (`.omaddons/backups/`) are never touched by transaction retention. They have their own, below.
+- A repair's client-side half (`<client>/Interface/.omaddons/snapshots/<tx>.repair/`) and the cache quarantine (`~/.cache/omaddons/quarantine/`) are never pruned by retention or the orphan sweep, however old: only `doctor gc` deletes them.
 
 **Backups.** After every backup (by `backup create` or automatic), after a restore (its source kept whatever its age) and on `backup prune`, each client's backups are thinned:
 

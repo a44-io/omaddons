@@ -1,0 +1,100 @@
+---
+source: src/engine/repair/journal.rs
+expression: "redacted(&home, &value)"
+---
+{
+  "actor": "human",
+  "argv": [
+    "omaddons",
+    "doctor",
+    "fix"
+  ],
+  "at": "2026-10-30T18:03:40Z",
+  "client_dirs": [
+    {
+      "dir": "<client dir>",
+      "target": "<key>"
+    }
+  ],
+  "doctor_run_id": "2026-10-30T20-45-20Z__01M678YN3A22K2ASPW2VZH88A8",
+  "fixes": [
+    {
+      "fix": 1,
+      "fm": "fm-external_artifacts-nested-addon-folder",
+      "kind": "flatten"
+    }
+  ],
+  "format": "1.0",
+  "primitives": [
+    {
+      "fix": 1,
+      "fm": "fm-external_artifacts-nested-addon-folder",
+      "op": "rename_noreplace",
+      "path": "<client dir>/Interface/AddOns/Wrap/Inner",
+      "post": {
+        "path": {
+          "kind": "absent"
+        },
+        "to": {
+          "identity": "<identity>",
+          "kind": "dir"
+        }
+      },
+      "pre": {
+        "path": {
+          "identity": "<identity>",
+          "kind": "dir",
+          "stamp": "<stamp>"
+        },
+        "to": {
+          "kind": "absent"
+        }
+      },
+      "seq": 1,
+      "to": "<client dir>/Interface/AddOns/Inner"
+    },
+    {
+      "fix": 1,
+      "fm": "fm-external_artifacts-nested-addon-folder",
+      "op": "rename_noreplace",
+      "path": "<client dir>/Interface/AddOns/Wrap",
+      "post": {
+        "path": {
+          "kind": "absent"
+        },
+        "to": {
+          "identity": "<identity>",
+          "kind": "dir"
+        }
+      },
+      "pre": {
+        "path": {
+          "identity": "<identity>",
+          "kind": "dir",
+          "stamp": "<stamp>"
+        },
+        "to": {
+          "kind": "absent"
+        }
+      },
+      "seq": 2,
+      "to": "<meta>/snapshots/01JB8Q2VA00000000000000003.repair/quarantine/Interface/AddOns/Wrap"
+    }
+  ],
+  "reason": null,
+  "resources": {
+    "reads": [],
+    "writes": [
+      "<meta>/snapshots/01JB8Q2VA00000000000000003.repair/quarantine/Interface/AddOns/Wrap/",
+      "<client dir>/Interface/AddOns/Inner/",
+      "<client dir>/Interface/AddOns/Wrap/",
+      "<client dir>/Interface/AddOns/Wrap/Inner/"
+    ]
+  },
+  "run": "01JB8Q2VA00000000000000004",
+  "targets": [
+    "<key>"
+  ],
+  "tx": "01JB8Q2VA00000000000000003",
+  "type": "prepared"
+}
