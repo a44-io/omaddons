@@ -752,6 +752,10 @@ pub fn checked_sweep(scene: impl Fn() -> RepairScene, log: &TestLog) -> Vec<(u64
 /// repair in process (the failpoints come from `OMADDONS_FAILPOINTS`), finishes its
 /// cleanup, and writes the outcome JSON. Run on its own it does nothing.
 pub fn child_main() {
+    // A repair of the fixes the parent names (`common::repairs`, E14's fence scenarios).
+    if super::repairs::child_main() {
+        return;
+    }
     let var = |key: &str| std::env::var_os(key);
     let (Some(kind), Some(run), Some(client), Some(out)) = (
         var("OMADDONS_REPAIR_KIND"),

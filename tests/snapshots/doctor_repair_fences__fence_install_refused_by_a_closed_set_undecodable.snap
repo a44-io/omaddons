@@ -1,0 +1,56 @@
+---
+source: tests/doctor_repair_fences.rs
+expression: "stable(&f, ran.envelope(), &tx)"
+---
+{
+  "command": "install",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "state_corrupt",
+    "details": {
+      "items": [
+        {
+          "code": "state_corrupt",
+          "message": "repair transaction <tx> did not finish, and this omaddons cannot read what it changed (journal_unreadable); every change is refused until it is set aside",
+          "request": "gh:o/bar"
+        }
+      ],
+      "journal_pending": "<tx>",
+      "reason": "journal_unreadable",
+      "resource": "journal:<tx>",
+      "target": null,
+      "tx": "<tx>"
+    },
+    "fix": "omaddons doctor explain fm-concurrency_primitives-journal-unreadable",
+    "fix_argv": [
+      "omaddons",
+      "doctor",
+      "explain",
+      "fm-concurrency_primitives-journal-unreadable"
+    ],
+    "message": "repair transaction <tx> did not finish, and this omaddons cannot read what it changed (journal_unreadable); every change is refused until it is set aside",
+    "retryable": false
+  },
+  "exit_code": 1,
+  "meta": {
+    "elapsed_ms": 0,
+    "offline": false
+  },
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "0.1.0",
+  "warnings": [
+    {
+      "code": "journal_pending",
+      "fix": "omaddons doctor explain fm-concurrency_primitives-journal-unreadable",
+      "fix_argv": [
+        "omaddons",
+        "doctor",
+        "explain",
+        "fm-concurrency_primitives-journal-unreadable"
+      ],
+      "message": "repair transaction <tx> did not finish, and this omaddons cannot read what it changed (journal_unreadable); every change is refused until it is set aside"
+    }
+  ]
+}

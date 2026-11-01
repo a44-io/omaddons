@@ -54,6 +54,7 @@ pub mod procfs;
 pub mod product_db;
 pub mod realistic;
 pub mod repair;
+pub mod repairs;
 pub mod shells;
 pub mod state;
 pub mod targets;

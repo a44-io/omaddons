@@ -178,22 +178,34 @@ pub struct ItemError {
     /// Only for a conflict between two works of one transaction
     /// (`within_transaction: true`, with each folder and its claimant), an `adopt` item
     /// refused before the engine (`folder`, and `owner`, `class` or `refs`), a rate
-    /// limit (`reset_at`), a dependency that failed (`required_by`), and a client that
-    /// runs (`game_running`: its `reason`, and `running: "unknown"` when `/proc` could
-    /// not be read). Omitted otherwise.
+    /// limit (`reset_at`), a dependency that failed (`required_by`), a client that runs
+    /// (`game_running`: its `reason`, and `running: "unknown"` when `/proc` could not be
+    /// read), and a stuck journal's fence (`journal_pending`, `reason`, `target`, `tx`,
+    /// `resource`). Omitted otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<serde_json::Value>,
 }
 
 /// The details an item error with `code` carries: a within-transaction conflict's, a
 /// `desired_state_invalid`'s (`{path, line, key, reason}`: a `sync` entry listed twice),
-/// a rate limit's `reset_at`, a dependency's `required_by`, a running client's `reason`
+/// a stuck journal's fence's (`{journal_pending, reason, target, tx, resource}`, E14), a
+/// rate limit's `reset_at`, a dependency's `required_by`, a running client's `reason`
 /// and `running`; else none.
 fn item_details(code: ErrorCode, details: &serde_json::Value) -> Option<serde_json::Value> {
     if details["within_transaction"] == true
         || (code == ErrorCode::DesiredStateInvalid && details.is_object())
     {
         return Some(details.clone());
+    }
+    // A fence's refusal is the one error whose details name a `resource`: kept as the
+    // fencing journal's stop, so a run whose every item it refused reports that journal.
+    if details["resource"].is_string() {
+        let kept: serde_json::Map<String, serde_json::Value> =
+            ["journal_pending", "reason", "target", "tx", "resource"]
+                .iter()
+                .filter_map(|key| details.get(*key).map(|v| ((*key).to_owned(), v.clone())))
+                .collect();
+        return Some(serde_json::Value::Object(kept));
     }
     let running: &[&str] = if matches!(code, ErrorCode::GameRunning) {
         &["reason", "running"]
@@ -1322,6 +1334,39 @@ mod tests {
 
     fn run() -> RunId {
         RUN.parse().unwrap()
+    }
+
+    #[test]
+    fn item_details_keep_a_fences_stop_and_nothing_more() {
+        let tx = "01JB8Q2VA00000000000000009";
+        let fence = serde_json::json!({
+            "journal_pending": tx,
+            "reason": "journal_unreadable",
+            "target": null,
+            "tx": tx,
+            "resource": format!("journal:{tx}"),
+            "items": [],
+        });
+        let kept = item_details(ErrorCode::StateCorrupt, &fence).unwrap();
+        assert_eq!(
+            kept,
+            serde_json::json!({
+                "journal_pending": tx,
+                "reason": "journal_unreadable",
+                "target": null,
+                "tx": tx,
+                "resource": format!("journal:{tx}"),
+            })
+        );
+        // The same error back from the item keeps them, so an all-failed run reports the
+        // fencing journal as a stopped one.
+        let item = ItemError::from(
+            &Error::new(ErrorCode::StateCorrupt, "fenced", Suggestion::text("x")).details(fence),
+        );
+        assert_eq!(item.error().details, kept);
+        // Without a resource, an error of that code keeps nothing, as before.
+        let corrupt = serde_json::json!({"reason": "journal_unreadable", "tx": tx});
+        assert_eq!(item_details(ErrorCode::StateCorrupt, &corrupt), None);
     }
 
     fn change(addon: &str, kind: ChangeKind, from: Option<&str>, to: Option<&str>) -> Change {

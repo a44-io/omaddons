@@ -3852,6 +3852,10 @@ impl TargetPlanner<'_> {
                         json!({ "asset": candidate.asset.filename, "reason": refusal.reason }),
                     );
                 }
+                // A stuck journal's fence refused writing the download (E14): no verdict
+                // on this candidate, nor on the next. The run fails with that journal's
+                // stop, and nothing is remembered as not loading.
+                Err(error) if error.fenced.is_some() => return Err(error),
                 Err(error) => {
                     let reason = format!("{}: {}", error.code.wire(), error.message);
                     tried.push(json!({ "asset": candidate.asset.filename, "reason": reason }));

@@ -1,0 +1,49 @@
+---
+source: tests/doctor_repair_fences.rs
+expression: "stable(&f, refused.envelope(), &s.tx)"
+---
+{
+  "command": "auth github",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "internal",
+    "details": {
+      "journal_pending": "<tx>",
+      "reason": "step_unrecognized",
+      "resource": "<root>/config/omaddons/credentials/github",
+      "target": null,
+      "tx": "<tx>"
+    },
+    "fix": "omaddons doctor explain fm-concurrency_primitives-journal-step-unrecognized",
+    "fix_argv": [
+      "omaddons",
+      "doctor",
+      "explain",
+      "fm-concurrency_primitives-journal-step-unrecognized"
+    ],
+    "message": "repair transaction <tx> did not finish, and recovery could not settle it (step_unrecognized); it protects <root>/config/omaddons/credentials/github, so omaddons does not write it",
+    "retryable": false
+  },
+  "exit_code": 1,
+  "meta": {
+    "elapsed_ms": 0,
+    "offline": false
+  },
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "0.1.0",
+  "warnings": [
+    {
+      "code": "journal_pending",
+      "fix": "omaddons doctor explain fm-concurrency_primitives-journal-step-unrecognized",
+      "fix_argv": [
+        "omaddons",
+        "doctor",
+        "explain",
+        "fm-concurrency_primitives-journal-step-unrecognized"
+      ],
+      "message": "repair transaction <tx> did not finish, and recovery could not settle it (step_unrecognized); writes to what it protects are refused, and everything else proceeds"
+    }
+  ]
+}

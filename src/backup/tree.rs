@@ -128,6 +128,9 @@ pub enum CloneError {
     /// A read or write failed at `path` (relative; `""` for the root).
     #[error("copying the tree failed: {cause}")]
     Io { path: String, cause: String },
+    /// A stuck journal's fence refused a write (E14): reported as that journal's stop.
+    #[error("{}", .0.message())]
+    Fenced(Box<crate::fsx::Fenced>),
 }
 
 impl CloneError {
@@ -164,6 +167,8 @@ impl CloneError {
             )
             .retryable(true)
             .details(serde_json::json!({ "path": redactor.rel(path) })),
+            // It names the fenced resource, never a path below `WTF/`.
+            Self::Fenced(fenced) => FsxError::Fenced(fenced.clone()).into(),
         }
     }
 }
@@ -630,8 +635,8 @@ fn fsx_error(rel: &str, e: FsxError) -> CloneError {
         }
         FsxError::Precondition(_) => "the path was not as expected".to_owned(),
         FsxError::Unsupported => "the filesystem cannot rename atomically".to_owned(),
-        // It names the fenced resource, never the attempted path.
-        FsxError::Fenced(fenced) => fenced.message(),
+        // The fencing journal's own stop, whole (E14).
+        FsxError::Fenced(fenced) => return CloneError::Fenced(fenced),
     };
     CloneError::Io {
         path: rel.to_owned(),

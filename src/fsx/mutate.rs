@@ -26,7 +26,7 @@ use super::op::Op;
 use super::scope::{Access, Refusal, Writer};
 use super::session::{SessionKind, TxState, WriteSession};
 use super::sys::{self, CloneKind, ClonePolicy, Content, Durability, RenameError, RenameMode};
-use crate::error::{Error, ErrorCode, Suggestion};
+use crate::error::{Error, ErrorCode, Fencing, Suggestion};
 use crate::model::TxId;
 
 /// Why `mutate()` did not change anything, or failed while doing so.
@@ -90,8 +90,14 @@ impl From<FsxError> for Error {
                     details.insert("tx".into(), serde_json::json!(tx));
                 }
                 details.insert("resource".into(), fenced.resource.clone().into());
+                let how = if fenced.closed {
+                    Fencing::Closed
+                } else {
+                    Fencing::Path
+                };
                 Error::new(stop.code, fenced.message(), stop.fix.clone())
                     .details(serde_json::Value::Object(details))
+                    .fenced(how)
             }
             other @ (FsxError::Precondition(_) | FsxError::Unsupported) => {
                 Error::new(ErrorCode::Io, other.to_string(), status())
@@ -1729,6 +1735,8 @@ mod tests {
                 "{reason:?}: {}",
                 err.message
             );
+            // Marked, so no caller records it as a verdict on what it wrote (E14).
+            assert_eq!(err.fenced, Some(Fencing::Path), "{reason:?}");
         }
     }
 

@@ -374,8 +374,12 @@ fn set_aside(s: &mut WriteSession<'_>, snapshot: &Path, rel: &str) -> Result<()>
 }
 
 /// An error that never names the file: SavedVariables paths hold account, realm and
-/// character names.
+/// character names. A fence's refusal (E14) passes whole: it names only what its journal
+/// protects, never below `WTF/`, and its stop must reach the caller.
 fn private(e: Error) -> Error {
+    if e.fenced.is_some() {
+        return e;
+    }
     Error::new(
         e.code,
         "a SavedVariables file could not be snapshotted",

@@ -755,6 +755,19 @@ pub struct ErrorData {
     pub usage_fix: UsageFix,
     /// The words closest to a selector that named no client. Not serialized.
     pub closest_selectors: Option<ClosestSelectors>,
+    /// A stuck journal's fence refused the write (E14): the error is that journal's stop,
+    /// never a verdict on what was being written, so no caller may record it as one (a
+    /// release candidate that "does not load"). Not serialized.
+    pub fenced: Option<Fencing>,
+}
+
+/// How a stuck journal's fence refused a write (E14).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fencing {
+    /// The journal protects what was written: that write alone is refused.
+    Path,
+    /// The journal's resources cannot be known: every write is refused.
+    Closed,
 }
 
 impl std::ops::Deref for Error {
@@ -816,7 +829,15 @@ impl Error {
             details: serde_json::Value::Object(serde_json::Map::new()),
             usage_fix: UsageFix::Guess,
             closest_selectors: None,
+            fenced: None,
         }))
+    }
+
+    /// Marks the error as a fence's refusal ([`ErrorData::fenced`]).
+    #[must_use]
+    pub fn fenced(mut self, how: Fencing) -> Self {
+        self.0.fenced = Some(how);
+        self
     }
 
     /// Marks the fix as the user's own command, kept ([`UsageFix::UserVerb`]).
