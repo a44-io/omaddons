@@ -22,6 +22,7 @@ use super::trees::tree_hash;
 const SKILL: &str = "fm-plugins-skill-version-drift";
 const FILE_MODE: &str = "fm-secrets-credential-file-mode";
 const CORRUPT: &str = "fm-schemas-state-corrupt";
+const SET_ASIDE: &str = "fm-concurrency_primitives-journal-step-unrecognized";
 
 /// Where a quarantined path goes.
 #[derive(Debug, Clone)]
@@ -49,6 +50,24 @@ pub enum FixSpec {
         path: PathBuf,
         root: Root,
     },
+    /// F2's set-aside of the folder journal `tx` on `target`: each artifact into its
+    /// quarantine root, in this order, with no guards (E14's barrier scene).
+    Suspend {
+        tx: String,
+        target: Option<String>,
+        artifacts: Vec<(PathBuf, Root)>,
+    },
+}
+
+impl Root {
+    fn json(&self) -> Value {
+        match self {
+            Self::Client(dir) => json!({ "client": dir }),
+            Self::State => json!("state"),
+            Self::Config => json!("config"),
+            Self::Cache => json!("cache"),
+        }
+    }
 }
 
 impl FixSpec {
@@ -61,15 +80,160 @@ impl FixSpec {
                 mode,
             } => json!({"op": "write", "path": path, "content": content, "mode": mode}),
             Self::Quarantine { path, root } => {
-                let root = match root {
-                    Root::Client(dir) => json!({ "client": dir }),
-                    Root::State => json!("state"),
-                    Root::Config => json!("config"),
-                    Root::Cache => json!("cache"),
-                };
-                json!({"op": "quarantine", "path": path, "root": root})
+                json!({"op": "quarantine", "path": path, "root": root.json()})
+            }
+            Self::Suspend {
+                tx,
+                target,
+                artifacts,
+            } => {
+                let artifacts: Vec<Value> = artifacts
+                    .iter()
+                    .map(|(path, root)| json!({"path": path, "root": root.json()}))
+                    .collect();
+                json!({"op": "suspend", "tx": tx, "target": target, "artifacts": artifacts})
             }
         }
+    }
+}
+
+/// The child's quarantine root from its JSON form.
+fn root_of(value: &Value) -> omaddons::engine::repair_action::QuarantineRoot {
+    use omaddons::engine::repair_action::QuarantineRoot;
+    match value {
+        Value::String(root) if root == "state" => QuarantineRoot::State,
+        Value::String(root) if root == "config" => QuarantineRoot::Config,
+        Value::String(root) if root == "cache" => QuarantineRoot::Cache,
+        other => QuarantineRoot::Client {
+            client_dir: PathBuf::from(other["client"].as_str().unwrap()),
+        },
+    }
+}
+
+/// What a committed repair lowered to, as the child reports it so a later child can
+/// revert it: its fixes, its steps, each step's resources (their text form), its
+/// clients and its targets.
+fn lowered_json(lowered: &omaddons::engine::repair::Lowered) -> Value {
+    use omaddons::engine::repair::ResourcesWire;
+    let resources: Vec<ResourcesWire> = lowered
+        .steps
+        .iter()
+        .map(|s| ResourcesWire::of(&s.resources).unwrap())
+        .collect();
+    json!({
+        "fixes": lowered.fixes,
+        "steps": lowered.steps.iter().map(|s| &s.step).collect::<Vec<_>>(),
+        "resources": resources,
+        "client_dirs": lowered.client_dirs,
+        "targets": lowered.targets,
+    })
+}
+
+/// E7's reactivation of the set-aside `of` reported (its [`lowered_json`]), built from
+/// E5's primitives as M4-D38 orders it (E14): the journal at `journal` back from its
+/// quarantine under its provisional name first, then every other artifact back where it
+/// was, in the set-aside's order, then the activation, the provisional name renamed to the
+/// journal's own. Each step is the inverse of the set-aside's: what the set-aside left at
+/// the destination is its `pre`, what it took from the source its `post`. No fix kind
+/// lowers this before E7 lands, so the scene writes the primitives itself.
+fn reactivation(
+    paths: &omaddons::state::paths::Paths,
+    of: &Value,
+    journal: &Path,
+) -> omaddons::engine::repair::Lowered {
+    use omaddons::engine::repair::{Lowered, LoweredStep, provisional_journal};
+    use omaddons::engine::repair_action::{Endpoint, Endpoints, FixEntry, Primitive, Step};
+    use omaddons::engine::resource::{PathKind, Resource, ResourceSet};
+
+    let fixes: Vec<FixEntry> = serde_json::from_value(of["fixes"].clone()).unwrap();
+    let steps: Vec<Step> = serde_json::from_value(of["steps"].clone()).unwrap();
+    let tx = journal
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_suffix(".jsonl"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    let provisional = provisional_journal(paths, &tx);
+    // (from, to, what is at `from` before, what is at `to` after, activation)
+    let mut moves: Vec<(PathBuf, PathBuf, Endpoint, Endpoint, bool)> = Vec::new();
+    let mut journal_back = None;
+    for step in &steps {
+        let (Primitive::RenameNoReplace { from, to, .. }, Endpoints::Pair { path: was, .. }) =
+            (&step.op, &step.pre)
+        else {
+            panic!("a set-aside renames only: {step:?}"); // ubs:ignore — fails the test
+        };
+        let Endpoints::Pair { to: left, .. } = &step.post else {
+            panic!("{step:?}"); // ubs:ignore — fails the test
+        };
+        // A rename keeps the entry and what it holds: the inverse's source is what the
+        // set-aside found (its stamp too, which a renamed directory must carry), and its
+        // destination afterwards what the set-aside left (its identity).
+        if from == journal {
+            journal_back = Some((to.clone(), was.clone(), left.clone()));
+        } else {
+            moves.push((to.clone(), from.clone(), was.clone(), left.clone(), false));
+        }
+    }
+    let (quarantined, was, left) = journal_back.expect("the set-aside moves the journal");
+    moves.insert(
+        0,
+        (
+            quarantined,
+            provisional.clone(),
+            was.clone(),
+            left.clone(),
+            false,
+        ),
+    );
+    moves.push((provisional, journal.to_path_buf(), was, left, true));
+    let template = &steps[0];
+    let mut all = ResourceSet::new();
+    let lowered_steps: Vec<LoweredStep> = moves
+        .into_iter()
+        .zip(1..)
+        .map(|((from, to, before, after, activation), seq)| {
+            let mut resources = ResourceSet::new();
+            for end in [&from, &to] {
+                resources.write(Resource::from_canonical(end, PathKind::File).unwrap());
+            }
+            all.extend(&resources);
+            LoweredStep {
+                step: Step {
+                    seq,
+                    fix: template.fix,
+                    fm: template.fm.clone(),
+                    op: Primitive::RenameNoReplace {
+                        from,
+                        to,
+                        activation,
+                    },
+                    pre: Endpoints::Pair {
+                        path: before,
+                        to: Endpoint::Absent,
+                    },
+                    post: Endpoints::Pair {
+                        path: Endpoint::Absent,
+                        to: after,
+                    },
+                    guards: Vec::new(),
+                },
+                resources,
+                backup_bytes: 0,
+                quarantine: None,
+                rollback_to: None,
+                content: None,
+            }
+        })
+        .collect();
+    Lowered {
+        fixes,
+        steps: lowered_steps,
+        resources: all,
+        targets: serde_json::from_value(of["targets"].clone()).unwrap(),
+        client_dirs: serde_json::from_value(of["client_dirs"].clone()).unwrap(),
+        roots: Vec::new(),
     }
 }
 
@@ -89,12 +253,15 @@ pub fn child_main() -> bool {
     use omaddons::engine::repair::{
         CommitCtx, LowerCtx, PlannedFix, RepairMeta, RepairRun, RepairTx, commit, lower,
     };
-    use omaddons::engine::repair_action::{Fix, Mode, QuarantineRoot};
+    use omaddons::engine::repair_action::{
+        Attribution, Fix, JournalFamily, JournalSet, Mode, SuspendedArtifact,
+    };
     use omaddons::fsx::{GlobalLock, ScopeTable};
     use omaddons::model::{Actor, RunId};
     use omaddons::state::paths::Paths;
 
     let var = |key: &str| std::env::var_os(key);
+    // A reactivation names no fixes: its input file stands in for them.
     let (Some(fixes), Some(run), Some(clients), Some(out)) = (
         var("OMADDONS_REPAIR_FIXES"),
         var("OMADDONS_REPAIR_RUN"),
@@ -116,7 +283,8 @@ pub fn child_main() -> bool {
     let planned: Vec<PlannedFix> = specs
         .iter()
         .map(|spec| {
-            let path = PathBuf::from(spec["path"].as_str().unwrap());
+            // A set-aside names its artifacts, not one path.
+            let path = PathBuf::from(spec["path"].as_str().unwrap_or_default());
             let (fm, fix) = match spec["op"].as_str().unwrap() {
                 "chmod" => (
                     FILE_MODE,
@@ -133,17 +301,35 @@ pub fn child_main() -> bool {
                         mode: mode(&spec["mode"]),
                     },
                 ),
-                _ => {
-                    let root = match &spec["root"] {
-                        Value::String(root) if root == "state" => QuarantineRoot::State,
-                        Value::String(root) if root == "config" => QuarantineRoot::Config,
-                        Value::String(root) if root == "cache" => QuarantineRoot::Cache,
-                        other => QuarantineRoot::Client {
-                            client_dir: PathBuf::from(other["client"].as_str().unwrap()),
+                "suspend" => (
+                    SET_ASIDE,
+                    Fix::Suspend {
+                        journal: JournalSet {
+                            tx: spec["tx"].as_str().unwrap().parse().unwrap(),
+                            family: JournalFamily::Folder,
+                            target: spec["target"].as_str().map(|key| key.parse().unwrap()),
+                            artifacts: spec["artifacts"]
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .map(|artifact| SuspendedArtifact {
+                                    path: PathBuf::from(artifact["path"].as_str().unwrap()),
+                                    root: root_of(&artifact["root"]),
+                                })
+                                .collect(),
+                            guards: Vec::new(),
+                            attribution: Attribution::Complete,
+                            unattributed: Vec::new(),
                         },
-                    };
-                    (CORRUPT, Fix::Quarantine { path, root })
-                }
+                    },
+                ),
+                _ => (
+                    CORRUPT,
+                    Fix::Quarantine {
+                        path,
+                        root: root_of(&spec["root"]),
+                    },
+                ),
             };
             PlannedFix { fm: fm.into(), fix }
         })
@@ -164,18 +350,26 @@ pub fn child_main() -> bool {
     let scopes = ScopeTable::new(&paths, &client_dirs, None).unwrap();
     let rtx = RepairTx::begin(&paths).unwrap();
     let tx = rtx.tx();
-    let lowered = lower(
-        &LowerCtx {
-            paths: &paths,
-            tx,
-            run: &run,
-            clients: &clients,
-            skill_dirs: &skill_dirs,
-            scopes: &scopes,
-            mount_id: &omaddons::fsx::mount_id,
-        },
-        &planned,
-    );
+    // A reactivation is E7's to lower; the scene builds it from the set-aside it reverts.
+    let lowered = match var("OMADDONS_REPAIR_REACTIVATE") {
+        Some(input) => {
+            let input: Value = serde_json::from_slice(&fs::read(input).unwrap()).unwrap();
+            let journal = PathBuf::from(input["journal"].as_str().unwrap());
+            Ok(reactivation(&paths, &input["of"], &journal))
+        }
+        None => lower(
+            &LowerCtx {
+                paths: &paths,
+                tx,
+                run: &run,
+                clients: &clients,
+                skill_dirs: &skill_dirs,
+                scopes: &scopes,
+                mount_id: &omaddons::fsx::mount_id,
+            },
+            &planned,
+        ),
+    };
     let outcome = match lowered {
         Err(err) => json!({"ok": false, "tx": tx, "stage": "lower", "error": format!("{err:?}")}),
         Ok(lowered) => {
@@ -194,8 +388,18 @@ pub fn child_main() -> bool {
                 command: "doctor fix",
             };
             match commit(&ctx, rtx, &lowered, &meta) {
-                Ok(_) => json!({"ok": true, "tx": tx}),
-                Err(err) => json!({"ok": false, "tx": tx, "code": err.code.wire()}),
+                Ok((outcome, cleanup)) => {
+                    drop(lock);
+                    cleanup.finish();
+                    let committed = matches!(
+                        outcome,
+                        omaddons::engine::repair::RepairOutcome::Committed { .. }
+                    );
+                    json!({"ok": committed, "tx": tx, "lowered": lowered_json(&lowered)})
+                }
+                Err(err) => {
+                    json!({"ok": false, "tx": tx, "code": err.code.wire(), "message": err.message})
+                }
             }
         }
     };
@@ -213,6 +417,38 @@ pub fn run_child(
     clients: &[PathBuf],
     fixes: &[FixSpec],
     spec: &str,
+) -> Child {
+    run_child_with(home, log, run_id, clients, fixes, spec, None)
+}
+
+/// [`run_child`] for the reactivation (E7's undo of a set-aside, built by the scene) of
+/// the set-aside whose child outcome's `lowered` is `of`, for the journal at `journal`.
+pub fn reactivate_child(
+    home: &Home,
+    log: &TestLog,
+    run_id: &str,
+    clients: &[PathBuf],
+    of: &Value,
+    journal: &Path,
+    spec: &str,
+) -> Child {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let input = home.env.root().join(format!(
+        "reactivation-{}.json",
+        NEXT.fetch_add(1, Ordering::SeqCst)
+    ));
+    fs::write(&input, json!({"of": of, "journal": journal}).to_string()).unwrap();
+    run_child_with(home, log, run_id, clients, &[], spec, Some(&input))
+}
+
+fn run_child_with(
+    home: &Home,
+    log: &TestLog,
+    run_id: &str,
+    clients: &[PathBuf],
+    fixes: &[FixSpec],
+    spec: &str,
+    reactivate: Option<&Path>,
 ) -> Child {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let out = home.env.root().join(format!(
@@ -236,10 +472,14 @@ pub fn run_child(
         .env("OMADDONS_REPAIR_CLIENTS", json!(clients).to_string())
         .env("OMADDONS_REPAIR_OUT", &out)
         .env_remove("OMADDONS_FAILPOINTS")
+        .env_remove("OMADDONS_REPAIR_REACTIVATE")
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
     if !spec.is_empty() {
         cmd.env("OMADDONS_FAILPOINTS", spec);
+    }
+    if let Some(input) = reactivate {
+        cmd.env("OMADDONS_REPAIR_REACTIVATE", input);
     }
     let output = cmd.output().unwrap();
     log.note(format!(

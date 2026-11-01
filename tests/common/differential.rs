@@ -218,11 +218,22 @@ pub fn observe_envelope(
     // A command reports the journals it found before it takes the lock, as a reader does
     // ("… the next omaddons command … recovers it"): that says nothing of what recovery
     // did, so only recovery's own warnings count.
+    // The warning whose subject is `about` (`transaction <tx> …`, `repair transaction
+    // <tx> …`) first: a text about a journal behind a barrier names its owner too (E14).
     let warned = |code: &str, about: &str| {
-        warnings
-            .iter()
-            .filter(|(_, message)| !message.contains("the next omaddons command"))
-            .find(|(c, message)| *c == code && message.contains(about))
+        let ours = || {
+            warnings
+                .iter()
+                .filter(|(_, message)| !message.contains("the next omaddons command"))
+                .filter(move |(c, _)| *c == code)
+        };
+        let subject = |message: &str| {
+            message.starts_with(&format!("transaction {about}"))
+                || message.starts_with(&format!("repair transaction {about}"))
+        };
+        ours()
+            .find(|(_, message)| subject(message))
+            .or_else(|| ours().find(|(_, message)| message.contains(about)))
             .map(|(_, message)| *message)
     };
     let left: Vec<String> = journals_after
@@ -305,14 +316,17 @@ pub fn observe_result(
 }
 
 /// The `<reason>` of a warning's "could not be recovered (<reason>)" or "cannot recover
-/// it (<reason>)", or a stuck repair's "could not settle it (<reason>)" or "cannot read
-/// what it changed (<reason>)".
+/// it (<reason>)", a stuck repair's "could not settle it (<reason>)" or "cannot read
+/// what it changed (<reason>)", or a journal behind a barrier's "which recovery could not
+/// settle (<reason>)" or "which this omaddons cannot read (<reason>)" (E14).
 fn reason_in(message: &str) -> Option<String> {
     [
         "could not be recovered (",
         "cannot recover it (",
         "could not settle it (",
         "cannot read what it changed (",
+        "could not settle (",
+        "cannot read (",
     ]
     .iter()
     .find_map(|lead| message.split_once(lead))
@@ -408,20 +422,108 @@ pub fn assert_agrees(
         );
         ended = true;
     }
-    for diagnosis in &prediction.diagnoses.journals {
+    // What recovery should have done to each journal, in recovery's order (the
+    // diagnoses', E14's three passes). A repair whose fences are closed refuses the
+    // command at its first write. A committing command stages before it takes the lock,
+    // so it is refused before recovery runs at all: only that repair's stop is seen. One
+    // that recovers under the lock first (`config set`) meets it in pass 1 and warns,
+    // goes on through every pass, then fails at its write with the first such repair's
+    // stop, unless a journal failed the command first. Once a journal fails it,
+    // recovery's warnings about the journals before it are lost with the error
+    // (omad-ef89): one that only warned is then seen untouched, and one recovery settled,
+    // pruned.
+    let journals = &prediction.diagnoses.journals;
+    let closed_first = journals.iter().position(|d| {
+        d.family == JournalFamily::Repair
+            && !ended
+            && matches!(caller, Caller::Commit { .. })
+            && wanted(d, caller, &prediction.closed).1
+    });
+    if let Some(at) = closed_first {
+        ended = true;
+        for (i, diagnosis) in journals.iter().enumerate() {
+            let want = if i == at {
+                wanted(diagnosis, caller, &prediction.closed).0
+            } else {
+                Observed::Untouched
+            };
+            compared += 1;
+            let observed = observation
+                .journals
+                .get(&diagnosis.tx)
+                .cloned()
+                .unwrap_or(Observed::Untouched);
+            // The command reported what it found before its first write as a reader does,
+            // and a reader's text for a stuck or held journal is recovery's own (E14).
+            let read = i != at && matches!(observed, Observed::Stopped { code: None, .. });
+            assert!(
+                agrees(&want, &observed) || read,
+                "{}: a closed repair refuses the command before its recovery: diagnose predicted {want:?} for {}, recovery did {observed:?}\ntranscript: {}",
+                prediction.label,
+                diagnosis.tx,
+                log.transcript_path().display()
+            );
+        }
+    }
+    let journals: &[JournalDiagnosis] = if ended && closed_first.is_some() {
+        &[]
+    } else {
+        journals
+    };
+    let mut wants: Vec<Observed> = Vec::with_capacity(journals.len());
+    let mut deferred = None;
+    let mut failed_at = None;
+    for (i, diagnosis) in journals.iter().enumerate() {
+        if ended {
+            wants.push(Observed::Untouched);
+            continue;
+        }
+        let (want, fails) = wanted(diagnosis, caller, &prediction.closed);
+        if fails && diagnosis.family == JournalFamily::Repair {
+            deferred.get_or_insert(i);
+            wants.push(match want {
+                Observed::Stopped { reason, step, .. } => Observed::Stopped {
+                    code: None,
+                    reason,
+                    step,
+                },
+                other => other,
+            });
+            continue;
+        }
+        if fails {
+            ended = true;
+            failed_at = Some(i);
+        }
+        wants.push(want);
+    }
+    // Journals whose warning may be lost: recovery's is, but a reader's report made
+    // before the lock carries the same text for a stuck or held journal (E14), so either
+    // is seen.
+    let mut maybe_unseen = vec![false; journals.len()];
+    match (failed_at, deferred) {
+        (Some(at), _) => {
+            for (want, unseen) in wants[..at].iter_mut().zip(&mut maybe_unseen) {
+                match &*want {
+                    Observed::Stopped { code: None, .. } => *unseen = true,
+                    Observed::RolledBack | Observed::RolledForward => *want = Observed::Pruned,
+                    _ => {}
+                }
+            }
+        }
+        (None, Some(i)) if prediction.diagnoses.unlisted.is_none() => {
+            wants[i] = wanted(&journals[i], caller, &prediction.closed).0;
+        }
+        _ => {}
+    }
+    for ((diagnosis, want), unseen) in journals.iter().zip(wants).zip(maybe_unseen) {
         let observed = observation
             .journals
             .get(&diagnosis.tx)
             .cloned()
             .unwrap_or(Observed::Untouched);
-        let (want, fails) = if ended {
-            (Observed::Untouched, false)
-        } else {
-            wanted(diagnosis, caller, &prediction.closed)
-        };
-        ended |= fails;
         compared += 1;
-        let agreed = agrees(&want, &observed);
+        let agreed = agrees(&want, &observed) || (unseen && observed == Observed::Untouched);
         if !agreed && !diagnosis.exact() {
             log.note(format!(
                 "known approximation {:?}: {} predicted {want:?}, recovery did {observed:?}",

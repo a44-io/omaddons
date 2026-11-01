@@ -24,6 +24,7 @@
 pub mod addons;
 pub mod archives;
 pub mod backups;
+pub mod barrier;
 pub mod binding;
 pub mod buggrabber;
 pub mod checkpoint;

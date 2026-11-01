@@ -1099,3 +1099,95 @@ fn a_crashed_repair_recovery_is_predicted_again() {
         assert_settled(&log, prediction, &differential.paths, &differential.clients);
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// E14: barrier states, predicted then recovered in process (omad-…c6cm.5.14.5, item 9).
+
+/// Recovery in process under the lock alone (`Caller::Under`), between E11's prediction
+/// and its comparison, on a barrier scene: its result.
+#[cfg(test)]
+fn recover_barrier_scene(
+    log: &TestLog,
+    scene: &common::barrier::BarrierScene,
+    label: &str,
+) -> Result<Vec<Warning>> {
+    log.step(label);
+    let paths = Paths::with_roots(
+        scene.home.env.home(),
+        scene.home.env.config(),
+        scene.home.env.state(),
+        scene.home.env.cache(),
+    );
+    let clients = [
+        scene.retail.clone(),
+        fs::canonicalize(scene.home.client(common::barrier::ERA)).unwrap(),
+    ];
+    let prediction = predict(log, label, &paths, &clients, &Games::Unknown);
+    let result = {
+        let scopes = ScopeTable::new(&paths, &clients, None).unwrap();
+        let lock = GlobalLock::acquire(&paths, "test").unwrap();
+        let env = RecoveryEnv {
+            lock: &lock,
+            paths: &paths,
+            scopes: &scopes,
+            own: &[],
+            sv_writable: &|_| false,
+        };
+        recover_all(&env)
+    };
+    let after = common::repairs::journals(&scene.home);
+    let observation = observe_result(&result, &prediction, &after);
+    assert_agrees(log, &prediction, &observation, &Caller::Under);
+    result
+}
+
+/// A set-aside recovery cannot settle holds F at its own name: F is predicted behind it
+/// with its stop, and recovery leaves both, warning of each once.
+#[test]
+fn barrier_an_owner_stuck_holds_its_journal_in_process() {
+    use common::barrier::{BarrierScene, FolderCrash};
+    let log = tlog!();
+    let scene = BarrierScene::new(&log, FolderCrash::MidSwap);
+    let owner = scene.stuck_set_aside(&log);
+    let warnings = recover_barrier_scene(&log, &scene, "owner stuck").unwrap();
+    let pending: Vec<&str> = warnings
+        .iter()
+        .filter(|w| w.code == WarningCode::JournalPending)
+        .map(|w| w.message.as_str())
+        .collect();
+    assert_eq!(pending.len(), 2, "{pending:#?}");
+    assert!(pending[0].starts_with(&format!("repair transaction {owner} ")));
+    assert!(
+        pending[1].starts_with(&format!("transaction {} on target", scene.f))
+            && pending[1].contains(&format!("waits behind repair {owner}"))
+    );
+    assert!(scene.journal().exists(), "F left as it is");
+}
+
+/// A set-aside rolled back by pass 1 puts F's journal back, and pass 2 lists and recovers
+/// it in the same call, as `journal::diagnose` predicts from its simulated moves.
+#[test]
+fn barrier_a_suspension_rolled_back_by_pass_one_in_process() {
+    use common::barrier::{BarrierScene, FolderCrash, SuspendOrder};
+    use common::repairs::Child;
+    let log = tlog!();
+    let scene = BarrierScene::new(&log, FolderCrash::MidSwap);
+    let n = scene.artifacts(SuspendOrder::JournalFirst).len();
+    let child = scene.set_aside(
+        &log,
+        SuspendOrder::JournalFirst,
+        &format!("fsx.mutate.logged=abort@{n}"),
+    );
+    assert!(matches!(child, Child::Crashed), "{child:?}");
+    assert!(scene.f_absent(), "F's journal moved aside before the crash");
+    let warnings = recover_barrier_scene(&log, &scene, "suspension rolled back").unwrap();
+    let recovered: Vec<&str> = warnings
+        .iter()
+        .filter(|w| w.code == WarningCode::JournalRecovered)
+        .map(|w| w.message.as_str())
+        .collect();
+    assert_eq!(recovered.len(), 2, "the set-aside, then F: {recovered:#?}");
+    assert!(recovered[0].starts_with(&format!("repair transaction {} ", scene.set_aside_tx())));
+    assert!(recovered[1].starts_with(&format!("transaction {} on target", scene.f)));
+    assert_eq!(scene.foo_now(), scene.v1_foo, "F rolled back to v1");
+}
