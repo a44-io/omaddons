@@ -109,7 +109,18 @@ fn install(log: &TestLog, home: &Home, name: &str, target: &str) -> Ran {
 /// does not decode), its in-flight lock and client stage, and the request that
 /// `fm-test-suspend` set it aside guarding `guarded`. `wtf` makes it a settings journal.
 fn stuck(home: &Home, tx: &str, guarded: &str, wtf: bool) -> Vec<PathBuf> {
-    let key = plant::target_key(home, "retail");
+    stuck_on(home, ("_retail_", "retail"), tx, guarded, wtf)
+}
+
+/// [`stuck`] on the client `(folder, target id)`.
+fn stuck_on(
+    home: &Home,
+    (folder, target): (&str, &str),
+    tx: &str,
+    guarded: &str,
+    wtf: bool,
+) -> Vec<PathBuf> {
+    let key = plant::target_key(home, target);
     let journal = home.state().join("journal").join(if wtf {
         format!("{tx}.wtf.jsonl")
     } else {
@@ -123,7 +134,7 @@ fn stuck(home: &Home, tx: &str, guarded: &str, wtf: bool) -> Vec<PathBuf> {
     });
     let lock = home.state().join(format!("inflight/{tx}.lock"));
     let stage = home
-        .client("_retail_")
+        .client(folder)
         .join(format!("Interface/.omaddons/stage/{tx}"));
     for (path, bytes) in [
         (journal.clone(), format!("{line}\n")),
@@ -655,6 +666,59 @@ fn undo_reactivates_a_set_aside_byte_identical() {
         &run(&log, &home, &["status"]).ok().warnings(),
         &status_before,
     );
+}
+
+/// A forced fix sets aside every stuck journal it selects in one repair, here one on each
+/// client; its undo reactivates both byte for byte, an activation each, the two last
+/// (omad-i2c5: before, the undo refused it as `state_corrupt`).
+#[test]
+fn undo_reactivates_a_set_aside_of_two_journals() {
+    let log = tlog!();
+    let home = two(&log);
+    let (f, g) = ("01JB8Q2VA00000000000000009", "01JB8Q2VA0000000000000000A");
+    let mut set = stuck(&home, f, "", false);
+    set.extend(stuck_on(&home, ("_classic_era_", "era"), g, "", false));
+    for (i, path) in set.iter().enumerate() {
+        log.tree(&format!("artifact {i}"), path.parent().unwrap());
+    }
+    log.step("set aside both in one repair");
+    let (tx, fix_run) = fixed(&log, &home, "fm-test-suspend", &["--force", "--yes"]);
+    for journal in [&set[0], &set[3]] {
+        assert!(!journal.exists(), "{} set aside", journal.display());
+    }
+    log.step("undo");
+    let undone = run(&log, &home, &["doctor", "undo", &fix_run]);
+    undone.ok();
+    log.assert_eq("its repair", &undone.envelope()["tx"], &json!(tx));
+    for (i, path) in set.iter().enumerate() {
+        log.assert_unchanged(&format!("artifact {i}"), path.parent().unwrap());
+    }
+    let line = history(&log, &home).remove(0);
+    log.json("the undo's line", &line);
+    let activations: Vec<bool> = line["repairs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|op| op["activation"] == true)
+        .collect();
+    let n = activations.len();
+    log.assert_eq(
+        "the activations, last",
+        &activations,
+        &(0..n).map(|at| at + 2 >= n).collect::<Vec<_>>(),
+    );
+    for (tx, folder) in [(f, "_retail_"), (g, "_classic_era_")] {
+        let provisional = home
+            .state()
+            .join(format!("journal/{tx}.reactivating.jsonl"));
+        assert!(!provisional.exists(), "{tx} not left provisional");
+        assert!(
+            home.client(folder)
+                .join(format!("Interface/.omaddons/stage/{tx}"))
+                .exists(),
+            "{tx}'s stage back"
+        );
+    }
 }
 
 /// A client-side repair's undo refuses while its client runs, or may, whatever

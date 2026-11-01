@@ -19,7 +19,8 @@
 //!
 //! **The order** is activation-aware (E14's rules 1 and 3): deactivations, then the
 //! provisional restores, then every other inverse, newest reverted primitive first, then
-//! the activation. A suspended journal thus comes back before any of its artifacts, so the
+//! the activations, one per journal a set-aside suspended (omad-i2c5). A suspended
+//! journal thus comes back before any of its artifacts, so the
 //! orphan sweep never takes them for a dead transaction's, and recovery never sees the
 //! journal under its own name before the undo that restores it has settled.
 //!
@@ -318,9 +319,8 @@ impl RepairUndoPlan {
 /// It reads the filesystem only to resolve omaddons' own directories, and writes nothing.
 /// A line it cannot invert is `state_corrupt`: more operations than a repair may have, a
 /// path that is not absolute, canonical and free of `..`, an operation whose endpoints do
-/// not fit it, a path below a client's `WTF/`, an overwritten file whose mode is not
-/// recorded, or more than one suspended journal (an undo activates at most one). A line
-/// with no operation is `not_found`: there is nothing to undo.
+/// not fit it, a path below a client's `WTF/`, or an overwritten file whose mode is not
+/// recorded. A line with no operation is `not_found`: there is nothing to undo.
 pub fn plan_undo(entries: &[HistoryEntry], at: usize, paths: &Paths) -> Result<RepairUndoPlan> {
     let reverted = entries
         .get(at)
@@ -363,18 +363,9 @@ pub fn plan_undo(entries: &[HistoryEntry], at: usize, paths: &Paths) -> Result<R
     for (entry, step) in &steps {
         inverted.extend(invert(reverted, entry, step, &bases, paths)?);
     }
-    let activations = inverted
-        .iter()
-        .filter(|inverse| inverse.kind == InverseKind::Activate)
-        .count();
-    if activations > 1 {
-        return Err(corrupt(
-            reverted,
-            &format!(
-                "it set aside {activations} journals, and an undo reactivates at most one: its activation must be its last step"
-            ),
-        ));
-    }
+    // A set-aside of several journals comes back with one activation each, all last
+    // (E14's rule 1 as omad-i2c5 widened it): `ordered` puts every provisional restore
+    // first and every activation last.
     let mut inverses = ordered(inverted);
     let fixes = renumbered(fixes_of(&steps, &inverses), &mut inverses);
     let mut reads = Vec::new();
@@ -3570,24 +3561,75 @@ mod tests {
         }
     }
 
+    /// A repair that set aside two journals (a forced fix selects every stuck journal of
+    /// its failure mode, and one run is one repair) comes back with both provisional
+    /// restores first and both activations last, which E14's rules accept, and the undo
+    /// runs: both journals back under their own names, neither under its provisional one
+    /// (omad-i2c5; before, `plan_undo` refused it with `state_corrupt`).
     #[test]
-    fn two_suspended_journals_in_one_repair_cannot_be_undone() {
+    fn a_set_aside_of_two_journals_reactivates_both_last() {
         let home = home();
         let stuck = home.stuck();
         let second = TxId::new();
-        fs::write(home.paths.journal(&second), "{\"line\":\"prepared\"}\n").unwrap();
+        let journal = "{\"line\":\"prepared\"}\n";
+        fs::write(home.paths.journal(&second), journal).unwrap();
         let tx = repaired(
             &home,
             &[
-                set_aside(&home, stuck, &[home.paths.journal(&stuck)], Vec::new()),
+                stuck_set_aside(&home, Vec::new()),
                 set_aside(&home, second, &[home.paths.journal(&second)], Vec::new()),
             ],
         );
-        let read = history_of(&home);
-        let err = plan_undo(&read.entries, at_of(&read, tx), &home.paths).unwrap_err();
-        assert_eq!(err.code, ErrorCode::StateCorrupt, "{err:?}");
-        assert!(err.message.contains("at most one"), "{}", err.message);
-        assert_eq!(err.details["tx"], json!(tx));
+        let plan = plan_of(&home, tx);
+        let kinds: Vec<InverseKind> = plan.inverses.iter().map(|i| i.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                InverseKind::ToProvisional,
+                InverseKind::ToProvisional,
+                InverseKind::RenameBack,
+                InverseKind::Activate,
+                InverseKind::Activate,
+            ],
+            "{:#?}",
+            plan.inverses
+        );
+        let activated: BTreeSet<PathBuf> = plan.inverses[3..]
+            .iter()
+            .map(|i| match &i.to {
+                Dest::Path(to) => to.clone(),
+                other => panic!("{other:?}"), // ubs:ignore — fails the test
+            })
+            .collect();
+        assert_eq!(
+            activated,
+            [home.paths.journal(&stuck), home.paths.journal(&second)].into(),
+            "one activation per journal"
+        );
+        assert_eq!(
+            plan.fixes.iter().map(|f| f.kind).collect::<Vec<_>>(),
+            [FixKind::Suspend, FixKind::Suspend]
+        );
+        let verified = check(&home, tx).unwrap();
+        let mut prepared = repair_prepared(&home, &[], &[chmod(&home)]);
+        prepared.primitives = steps_of(&verified.plan.inverses);
+        assert_eq!(
+            crate::engine::barrier::validate(&prepared, &home.paths),
+            Ok(()),
+            "E14's rules accept two activations, both last"
+        );
+        let outcome = engine_undo(&home, tx, false, vec![discovered(&home)]);
+        assert!(outcome.is_ok(), "{outcome:?}");
+        for (tx, bytes) in [(stuck, None), (second, Some(journal))] {
+            let own = home.paths.journal(&tx);
+            assert!(own.exists(), "{tx} is back under its own name");
+            if let Some(bytes) = bytes {
+                assert_eq!(fs::read_to_string(&own).unwrap(), bytes, "{tx}");
+            }
+            let provisional = super::super::provisional_journal(&home.paths, &tx);
+            assert!(!provisional.exists(), "{tx} is not left provisional");
+        }
+        assert!(home.client.stage(&stuck).exists(), "the stage is back");
     }
 
     #[test]

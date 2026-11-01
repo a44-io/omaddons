@@ -193,7 +193,7 @@ pub fn commit(
     // is never written (E14).
     barrier::validate(&prepared, paths).map_err(|rule| {
         Error::internal(format!(
-            "a repair that reactivates a journal must restore it under its provisional name first and activate it last: {rule}; nothing was written"
+            "a repair that reactivates journals must restore each under its provisional name first and activate them last, one activation per journal: {rule}; nothing was written"
         ))
     })?;
     // A set-aside may move what its own suspended journals' fences protect (E14): those
@@ -1352,8 +1352,7 @@ mod tests {
         let err = commit_with(&home, rtx, &lowered, &fsx::mount_id).unwrap_err();
         assert_eq!(err.code, ErrorCode::Internal, "{err:?}");
         assert!(
-            err.message
-                .contains("provisional name first and activate it last: rule 2"),
+            err.message.contains("one activation per journal: rule 2"),
             "{}",
             err.message
         );

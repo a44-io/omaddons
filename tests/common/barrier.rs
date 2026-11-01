@@ -217,23 +217,7 @@ impl BarrierScene {
     /// for the journal (the others: in-flight lock, state snapshot, client stage, client
     /// snapshot, those that exist).
     pub fn artifacts(&self, order: SuspendOrder) -> Vec<(PathBuf, Root)> {
-        let (state, meta, f) = (self.omaddons(), self.meta(), &self.f);
-        let client = || Root::Client(self.retail.clone());
-        let mut found: Vec<(PathBuf, Root)> = [
-            (state.join(format!("inflight/{f}.lock")), Root::State),
-            (state.join(format!("snapshots/{f}")), Root::State),
-            (meta.join(format!("stage/{f}")), client()),
-            (meta.join(format!("snapshots/{f}")), client()),
-        ]
-        .into_iter()
-        .filter(|(path, _)| fs::symlink_metadata(path).is_ok())
-        .collect();
-        let journal = (self.journal(), Root::State);
-        match order {
-            SuspendOrder::JournalFirst => found.insert(0, journal),
-            SuspendOrder::JournalLast => found.push(journal),
-        }
-        found
+        artifacts_of(&self.omaddons(), &self.retail, &self.f, order)
     }
 
     /// The set-aside of F as a repair, committed by the child with `failpoints` armed.
@@ -423,12 +407,7 @@ impl BarrierScene {
 
     /// `Foo` and `FooOld` of retail's AddOns, as [`Trees`] names them (`addons.foo`).
     pub fn foo_now(&self) -> String {
-        let addons = self.home.addons(RETAIL);
-        format!(
-            "{} {}",
-            hash(&addons.join("Foo")),
-            hash(&addons.join("FooOld"))
-        )
+        foo_of(&self.home.addons(RETAIL))
     }
 
     /// The `doctor` run directory the set-aside was given.
@@ -483,6 +462,282 @@ impl BarrierScene {
     pub fn f_absent(&self) -> bool {
         !self.journal().exists() && !self.provisional().exists()
     }
+}
+
+/// The artifacts of the folder journal `tx` on the client at `client` (canonical), where
+/// the crash left them, each with its quarantine root: in-flight lock, state snapshot,
+/// client stage and client snapshot (those that exist), and the journal, placed by `order`.
+fn artifacts_of(
+    state: &Path,
+    client: &Path,
+    tx: &str,
+    order: SuspendOrder,
+) -> Vec<(PathBuf, Root)> {
+    let meta = client.join("Interface/.omaddons");
+    let on_client = || Root::Client(client.to_path_buf());
+    let mut found: Vec<(PathBuf, Root)> = [
+        (state.join(format!("inflight/{tx}.lock")), Root::State),
+        (state.join(format!("snapshots/{tx}")), Root::State),
+        (meta.join(format!("stage/{tx}")), on_client()),
+        (meta.join(format!("snapshots/{tx}")), on_client()),
+    ]
+    .into_iter()
+    .filter(|(path, _)| fs::symlink_metadata(path).is_ok())
+    .collect();
+    let journal = (state.join(format!("journal/{tx}.jsonl")), Root::State);
+    match order {
+        SuspendOrder::JournalFirst => found.insert(0, journal),
+        SuspendOrder::JournalLast => found.push(journal),
+    }
+    found
+}
+
+// ---------------------------------------------------------------------------------------
+// omad-i2c5: one set-aside of two journals, one per client, and its undo.
+
+/// The second stuck journal of a [`PairScene`]: G, the update of `foo` to v2 on
+/// `_classic_era_`, killed where F's was.
+pub struct Stuck {
+    /// The era client dir, canonical.
+    pub dir: PathBuf,
+    /// G's transaction.
+    pub tx: String,
+    /// `Foo` and `FooOld` on era at v1, before G.
+    pub v1_foo: String,
+}
+
+/// [`BarrierScene`]'s F on `_retail_`, and G on `_classic_era_`, both set aside by one
+/// repair, as a forced `doctor fix` of their failure mode sets aside every stuck journal
+/// it selects. G cannot be made while F is pending (its command would recover F first),
+/// so while `foo` is installed on era and G's update killed, F's journal and artifacts
+/// wait outside every directory omaddons reads, then come back by rename: the same
+/// inodes, the same bytes, the state the crash left.
+pub struct PairScene {
+    /// F's scene: its home, F, and the set-aside and its runs, which are the pair's.
+    pub base: BarrierScene,
+    pub g: Stuck,
+}
+
+impl PairScene {
+    pub fn new(log: &TestLog, crash: FolderCrash) -> Self {
+        let base = BarrierScene::new(log, crash);
+        log.step("hide F, build G");
+        let hidden = base.home.env.root().join("hidden-f");
+        fs::create_dir_all(&hidden).unwrap();
+        let moved: Vec<(PathBuf, PathBuf)> = base
+            .artifacts(SuspendOrder::JournalLast)
+            .into_iter()
+            .zip(0..)
+            .map(|((path, _), n)| (path, hidden.join(n.to_string())))
+            .collect();
+        for (from, to) in &moved {
+            fs::rename(from, to).unwrap();
+        }
+        let era = fs::canonicalize(base.home.client(ERA)).unwrap();
+        for dir in [ACCOUNT, CHARACTER] {
+            let dir = era.join(dir);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("Foo.lua"), "FooDB = { seen = true }\n").unwrap();
+        }
+        // `foo` as Classic Era loads it: the same folders, its interface.
+        for (name, entries) in [("era-v1", V1), ("era-v2", V2)] {
+            let entries: Vec<(&str, String)> = entries
+                .iter()
+                .map(|(path, text)| (*path, text.replace("120105", "11507")))
+                .collect();
+            let entries: Vec<(&str, &str)> = entries
+                .iter()
+                .map(|(path, text)| (*path, text.as_str()))
+                .collect();
+            fs::write(base.dl.join(format!("{name}.zip")), zip_text(&entries)).unwrap();
+        }
+        log.run(
+            &base.home,
+            &base.json(base.install_args("gh:o/foo", "era-v1", "era")),
+        )
+        .ok();
+        let v1_foo = foo_of(&base.home.addons(ERA));
+        let point = match crash {
+            FolderCrash::MidSwap => "engine.swap.after_exchange=abort",
+            FolderCrash::Swapped => "engine.swapped=abort",
+        };
+        log.cmd(
+            &base.home,
+            &base.json(base.install_args("gh:o/foo", "era-v2", "era")),
+        )
+        .failpoints(point)
+        .run()
+        .aborted();
+        let tx = repairs::journals(&base.home)
+            .iter()
+            .filter_map(|path| path.file_name()?.to_str()?.strip_suffix(".jsonl"))
+            .filter(|stem| !stem.ends_with(".repair"))
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            tx.len(),
+            1,
+            "the killed era update left one journal: {tx:?}"
+        );
+        for (to, from) in &moved {
+            fs::rename(from, to).unwrap();
+        }
+        let tx = tx[0].clone();
+        log.note(format!("G is {tx} ({crash:?})"));
+        let scene = Self {
+            base,
+            g: Stuck {
+                dir: era,
+                tx,
+                v1_foo,
+            },
+        };
+        assert_eq!(
+            scene.pending_folder_journals().len(),
+            2,
+            "F and G are both stuck"
+        );
+        scene
+    }
+
+    /// The folder journals under their own names.
+    fn pending_folder_journals(&self) -> Vec<PathBuf> {
+        repairs::journals(&self.base.home)
+            .into_iter()
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| !n.ends_with(".repair.jsonl"))
+            })
+            .collect()
+    }
+
+    /// G's artifacts where the crash left them, its journal last.
+    pub fn g_artifacts(&self) -> Vec<(PathBuf, Root)> {
+        artifacts_of(
+            &self.base.omaddons(),
+            &self.g.dir,
+            &self.g.tx,
+            SuspendOrder::JournalLast,
+        )
+    }
+
+    /// F and G set aside by one repair, committed by the child with nothing armed.
+    pub fn set_aside_both(&self, log: &TestLog) {
+        log.step("set aside F and G in one repair");
+        let base = &self.base;
+        let run = repairs::doctor_run(&base.home);
+        base.runs.borrow_mut().push(run.clone());
+        let target =
+            |dir: &Path| omaddons::discover::registry::read_marker(dir).map(|k| k.to_string());
+        let fixes = [
+            FixSpec::Suspend {
+                tx: base.f.clone(),
+                target: target(&base.retail),
+                artifacts: base.artifacts(SuspendOrder::JournalLast),
+            },
+            FixSpec::Suspend {
+                tx: self.g.tx.clone(),
+                target: target(&self.g.dir),
+                artifacts: self.g_artifacts(),
+            },
+        ];
+        let clients = [base.retail.clone(), self.g.dir.clone()];
+        let child = repairs::run_child(&base.home, log, &run, &clients, &fixes, "");
+        let Child::Ended(outcome) = &child else {
+            panic!("the set-aside of F and G crashed: {child:?}"); // ubs:ignore — fails the test
+        };
+        assert_eq!(outcome["ok"], true, "the set-aside committed: {outcome}");
+        *base.set_aside_tx.borrow_mut() = outcome["tx"].as_str().map(str::to_owned);
+        *base.lowered.borrow_mut() = Some(outcome["lowered"].clone());
+        assert!(self.f_absent() && self.g_absent(), "F and G set aside");
+    }
+
+    /// How many primitives the undo of the set-aside has: each artifact back, and for
+    /// each journal its provisional restore and its activation.
+    pub fn undo_len(&self) -> usize {
+        self.base.reactivation_len() + 1
+    }
+
+    /// G's journal under its own name.
+    pub fn g_journal(&self) -> PathBuf {
+        self.base
+            .omaddons()
+            .join(format!("journal/{}.jsonl", self.g.tx))
+    }
+
+    pub fn f_absent(&self) -> bool {
+        self.base.f_absent()
+    }
+
+    /// Whether G is set aside: neither its own name nor its provisional one is in the
+    /// journal directory.
+    pub fn g_absent(&self) -> bool {
+        let provisional = self
+            .base
+            .omaddons()
+            .join(format!("journal/{}.reactivating.jsonl", self.g.tx));
+        !self.g_journal().exists() && !provisional.exists()
+    }
+
+    /// The pending repair's transaction, as [`BarrierScene::repair_tx`], never F's or G's
+    /// in-flight lock.
+    pub fn repair_tx(&self) -> Option<String> {
+        if let Some(tx) = repairs::repair_txs(&self.base.home).into_iter().next() {
+            return Some(tx);
+        }
+        let inflight = self.base.omaddons().join("inflight");
+        fs::read_dir(inflight).ok()?.find_map(|entry| {
+            let name = entry.ok()?.file_name().into_string().ok()?;
+            let tx = name.strip_suffix(".lock")?;
+            (tx != self.base.f && tx != self.g.tx).then(|| tx.to_owned())
+        })
+    }
+
+    /// Era's `Foo` and `FooOld` (`era.addons.foo`).
+    pub fn g_foo_now(&self) -> String {
+        foo_of(&self.base.home.addons(ERA))
+    }
+
+    /// [`BarrierScene::trees`] and era's: its AddOns, `foo`, stage, snapshots and the
+    /// set-aside's record there.
+    pub fn trees(&self) -> Trees {
+        let mut trees = self.base.trees();
+        let meta = self.g.dir.join("Interface/.omaddons");
+        let set_aside = self.base.set_aside_tx.borrow().clone().map_or_else(
+            || "absent".to_owned(),
+            |tx| hash(&meta.join(format!("snapshots/{tx}.repair"))),
+        );
+        trees.insert("era.addons", hash(&self.base.home.addons(ERA)));
+        trees.insert("era.addons.foo", self.g_foo_now());
+        trees.insert("era.stage", hash(&meta.join("stage")));
+        trees.insert("era.snapshots", hash(&meta.join("snapshots")));
+        trees.insert("era.set_aside", set_aside);
+        trees
+    }
+}
+
+/// [`AFTER_A_COMMIT`] and era's own: the trees a recovering command that commits leaves
+/// alone in a [`PairScene`].
+pub const PAIR_AFTER_A_COMMIT: &[&str] = &[
+    "addons.foo",
+    "state.journal",
+    "state.inflight",
+    "quarantine.state",
+    "client.stage",
+    "client.set_aside",
+    "era.addons.foo",
+    "era.stage",
+    "era.set_aside",
+];
+
+/// `Foo` and `FooOld` of the AddOns tree `addons`.
+fn foo_of(addons: &Path) -> String {
+    format!(
+        "{} {}",
+        hash(&addons.join("Foo")),
+        hash(&addons.join("FooOld"))
+    )
 }
 
 /// A tree's content hash, a file's size, or `absent`.

@@ -37,8 +37,8 @@ mod barrier_matrix {
     use serde_json::Value;
 
     use super::common::barrier::{
-        AFTER_A_COMMIT, BarrierScene, ERA, FolderCrash, RETAIL, Recovering, SuspendOrder, Trees,
-        only,
+        AFTER_A_COMMIT, BarrierScene, ERA, FolderCrash, PAIR_AFTER_A_COMMIT, PairScene, RETAIL,
+        Recovering, SuspendOrder, Trees, only,
     };
     use super::common::differential::{Caller, Differential};
     use super::common::repair::point_of;
@@ -462,6 +462,442 @@ mod barrier_matrix {
             missing.is_empty(),
             "boundaries that never fired: {missing:?}"
         );
+    }
+
+    // -----------------------------------------------------------------------------------
+    // omad-i2c5: the undo of one set-aside of two journals, F on retail and G on era, an
+    // activation each, both last; crashed anywhere, including between the activations.
+
+    /// The pair's key boundaries: every artifact back (before the first activation),
+    /// between the two activations, the second recorded and not run, run and not logged,
+    /// both logged, and `done`.
+    fn pair_key_specs(n: usize) -> Vec<String> {
+        vec![
+            format!("fsx.mutate.logged=abort@{}", n - 2),
+            format!("fsx.mutate.logged=abort@{}", n - 1),
+            format!("doctor.repair.step=abort@{n}"),
+            format!("fsx.mutate.executed=abort@{n}"),
+            format!("fsx.mutate.logged=abort@{n}"),
+            "doctor.repair.done=abort".to_owned(),
+        ]
+    }
+
+    /// [`status_changes_nothing`] for the pair: era's trees too.
+    fn pair_status_changes_nothing(log: &TestLog, scene: &PairScene, pending: bool) {
+        log.step("status changes nothing");
+        let trees = scene.trees();
+        let ran = log.run(
+            &scene.base.home,
+            &["status", "--json", "--progress", "json"],
+        );
+        ran.assert_private();
+        assert_eq!(scene.trees(), trees, "status wrote nothing a case compares");
+        if pending {
+            assert!(
+                ran.warnings().iter().any(|code| code == "journal_pending"),
+                "status reports the pending undo: {:?}",
+                ran.warnings()
+            );
+        }
+    }
+
+    /// Whole before, for the pair: every tree as the set-aside left it (under a command
+    /// that commits, those it does not touch), F and G both set aside and neither
+    /// recovered, no repair journal, no history line of `undo`.
+    fn pair_before(
+        log: &TestLog,
+        scene: &PairScene,
+        before: &Trees,
+        by: Recovering,
+        envelope: &Value,
+        undo: Option<&str>,
+        context: &str,
+    ) {
+        log.step("assert whole before");
+        let now = scene.trees();
+        let mut keys: Vec<&str> = match by {
+            Recovering::ConfigSet => before.keys().copied().filter(|k| *k != "history").collect(),
+            _ => PAIR_AFTER_A_COMMIT.to_vec(),
+        };
+        // An undo killed before its `prepared` line leaves its in-flight lock alone, which
+        // the orphan sweep takes once it is old: that lock, and nothing else, is new.
+        let inflight = scene.base.home.env.state().join("omaddons/inflight");
+        if let Some(undo) = undo.filter(|u| inflight.join(format!("{u}.lock")).exists()) {
+            keys.retain(|k| *k != "state.inflight");
+            let left: Vec<String> = std::fs::read_dir(&inflight)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(
+                left,
+                [format!("{undo}.lock")],
+                "{context}: only its own lock is new"
+            );
+        }
+        if only(&now, &keys) != only(before, &keys) {
+            log.json("before", before);
+            log.json("now", &now);
+        }
+        assert_eq!(
+            only(&now, &keys),
+            only(before, &keys),
+            "{context}: whole before, never a mixture"
+        );
+        assert!(scene.f_absent(), "{context}: F stays set aside");
+        assert!(scene.g_absent(), "{context}: G stays set aside");
+        assert!(
+            scene.base.repair_lines().is_empty(),
+            "{context}: no repair journal left"
+        );
+        if let Some(undo) = undo {
+            assert!(
+                !scene.base.history().iter().any(|tx| tx == undo),
+                "{context}: no history line of {undo}"
+            );
+        }
+        for tx in [&scene.base.f, &scene.g.tx] {
+            assert!(
+                about(envelope, "journal_recovered", tx).is_empty(),
+                "{context}: {tx} is never recovered while the undo rolls back"
+            );
+        }
+    }
+
+    /// Whole after, for the pair: the undo's history line once, and each of F and G
+    /// recovered once by the same command after any warning naming the undo, its journal,
+    /// lock and stage gone, and its client's `foo` as its own recovery leaves it.
+    fn pair_after(log: &TestLog, scene: &PairScene, envelope: &Value, undo: &str, context: &str) {
+        log.step("assert whole after");
+        let history = scene.base.history();
+        assert_eq!(
+            history.iter().filter(|tx| *tx == undo).count(),
+            1,
+            "{context}: the undo's history line, once"
+        );
+        let undo_at = position(envelope, undo);
+        let state = scene.base.home.env.state().join("omaddons");
+        let journals = [
+            (
+                "F",
+                &scene.base.f,
+                &scene.base.retail,
+                RETAIL,
+                &scene.base.v1_foo,
+                scene.base.foo_now(),
+            ),
+            (
+                "G",
+                &scene.g.tx,
+                &scene.g.dir,
+                ERA,
+                &scene.g.v1_foo,
+                scene.g_foo_now(),
+            ),
+        ];
+        for (name, tx, client, folder, v1_foo, foo) in journals {
+            let recovered = about(envelope, "journal_recovered", tx);
+            assert_eq!(
+                recovered.len(),
+                1,
+                "{context}: {name} recovered once: {envelope}"
+            );
+            if let Some(undo_at) = undo_at {
+                assert!(
+                    position(envelope, tx) > Some(undo_at),
+                    "{context}: {name} never ahead of the undo: {envelope}"
+                );
+            }
+            assert!(
+                !state.join(format!("inflight/{tx}.lock")).exists(),
+                "{context}: {name}'s lock pruned"
+            );
+            assert!(
+                !client
+                    .join(format!("Interface/.omaddons/stage/{tx}"))
+                    .exists(),
+                "{context}: {name}'s stage pruned"
+            );
+            let addons = scene.base.home.addons(folder);
+            match scene.base.crash {
+                FolderCrash::MidSwap => {
+                    assert_eq!(&foo, v1_foo, "{context}: {name} rolled back to v1");
+                    assert!(recovered[0].contains("rolled back"), "{context}");
+                }
+                FolderCrash::Swapped => {
+                    let toc = std::fs::read_to_string(addons.join("Foo/Foo.toc")).unwrap();
+                    assert!(
+                        toc.contains("Version: 2"),
+                        "{context}: {name} rolled forward to v2"
+                    );
+                    assert!(!addons.join("FooOld").exists(), "{context}");
+                    assert!(recovered[0].contains("rolled forward"), "{context}");
+                    let lines: Vec<usize> = history
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, line)| *line == tx)
+                        .map(|(at, _)| at)
+                        .collect();
+                    assert_eq!(lines.len(), 1, "{context}: {name}'s history line once");
+                    let u = history.iter().position(|line| line == undo);
+                    assert!(
+                        Some(lines[0]) > u,
+                        "{context}: {name}'s line after the undo's"
+                    );
+                }
+            }
+        }
+        assert!(
+            scene.f_absent() && scene.g_absent(),
+            "{context}: both journals pruned"
+        );
+        assert!(
+            scene.base.repair_lines().is_empty(),
+            "{context}: no repair journal left"
+        );
+    }
+
+    /// One pair case: a fresh pair set aside, its undo through the binary crashed at
+    /// `spec`, a reader, the recovering command `by`, and the pair's whole-state oracle.
+    /// Whether the undo crashed, and the point that fired.
+    fn pair_case(
+        log: &TestLog,
+        crash: FolderCrash,
+        spec: &str,
+        by: Recovering,
+    ) -> (bool, Option<String>) {
+        let scene = PairScene::new(log, crash);
+        scene.set_aside_both(log);
+        let before = scene.trees();
+        let ran = scene.base.undo_set_aside(log, spec);
+        ran.assert_private();
+        let crashed = ran.run.code < 0;
+        let undo = if crashed {
+            scene.repair_tx()
+        } else {
+            ran.ok();
+            ran.envelope()["data"]["tx"].as_str().map(str::to_owned)
+        };
+        let done = undo.as_deref().is_some_and(|tx| scene.base.done(tx));
+        let fired = match (crashed, spec.starts_with("fsx.mutate.checked")) {
+            (false, _) => None,
+            (true, true) => scene.base.checked_point(),
+            (true, false) => super::common::repair::undo_point_of(spec),
+        };
+        log.note(format!(
+            "{spec}: crashed {crashed}, done {done}, fired {fired:?}, undo {undo:?}"
+        ));
+        log.json("undo journal", &scene.base.repair_lines());
+        pair_status_changes_nothing(log, &scene, scene.base.repair_pending());
+        let envelope = recover(log, &scene.base, by, 0);
+        let context = format!("{} at {spec} ({crash:?}), two journals", by.label());
+        if done {
+            pair_after(log, &scene, &envelope, undo.as_deref().unwrap(), &context);
+        } else {
+            pair_before(
+                log,
+                &scene,
+                &before,
+                by,
+                &envelope,
+                undo.as_deref(),
+                &context,
+            );
+        }
+        (crashed, fired)
+    }
+
+    /// The undo of the pair's set-aside, run whole: both provisional restores ahead of
+    /// every other inverse, the two activations last, one per journal, and both journals
+    /// back under their own names for the next lock-taking command, which recovers each.
+    #[test]
+    fn two_journals_set_aside_together_come_back_with_an_activation_each() {
+        let log = tlog!();
+        let scene = PairScene::new(&log, FolderCrash::MidSwap);
+        scene.set_aside_both(&log);
+        let n = scene.undo_len();
+        let ran = scene.base.undo_set_aside(&log, "");
+        ran.assert_private();
+        let data = ran.ok().data().clone();
+        log.json("repairs", &data["repairs"]);
+        let repairs = data["repairs"].as_array().unwrap();
+        assert_eq!(repairs.len(), n, "{data}");
+        let activations: Vec<usize> = repairs
+            .iter()
+            .enumerate()
+            .filter(|(_, op)| op["activation"] == true)
+            .map(|(at, _)| at + 1)
+            .collect();
+        assert_eq!(activations, [n - 1, n], "the activations are last: {data}");
+        let restores: Vec<usize> = repairs
+            .iter()
+            .enumerate()
+            .filter(|(_, op)| {
+                op["path"].as_str().is_some_and(|p| p.ends_with(".jsonl"))
+                    && op["activation"] != true
+            })
+            .map(|(at, _)| at + 1)
+            .collect();
+        assert_eq!(restores, [1, 2], "both provisional restores first: {data}");
+        assert!(
+            scene.base.journal().exists(),
+            "F is back under its own name"
+        );
+        assert!(scene.g_journal().exists(), "G is back under its own name");
+        let envelope = recover(&log, &scene.base, Recovering::ConfigSet, 0);
+        pair_after(
+            &log,
+            &scene,
+            &envelope,
+            data["tx"].as_str().unwrap(),
+            "the undo run whole",
+        );
+    }
+
+    /// omad-i2c5's design gate: the undo of one set-aside of two journals, through the
+    /// binary, crashed at every point on its path (the run directory's and the engine's
+    /// before its journal, every repair point and tracked boundary of each inverse, every
+    /// `checked` hit), between the two activations included, recovered by `config set`;
+    /// at the key boundaries also by an install on either journal's client; behind two
+    /// journals that reached `swapped`, at the key boundaries. Neither journal is ever
+    /// recovered ahead of the undo, and every state is wholly before or wholly after.
+    #[test]
+    fn two_journals_reactivated_crashed_anywhere_settle_before_the_folder_pass() {
+        let log = tlog!();
+        let n = {
+            let scene = PairScene::new(&log, FolderCrash::MidSwap);
+            scene.set_aside_both(&log);
+            scene.undo_len()
+        };
+        let mut all = vec![
+            "doctor.run.staged=abort".to_owned(),
+            "doctor.run.published=abort".to_owned(),
+            "engine.snapshot.prestaged=abort".to_owned(),
+            "engine.lock.acquired=abort".to_owned(),
+            "engine.revalidated=abort".to_owned(),
+        ];
+        all.extend(specs(n));
+        let mut fired = BTreeSet::new();
+        let mut cases = 0;
+        for spec in all {
+            let case = log.case(&spec);
+            let (crashed, point) =
+                pair_case(&case, FolderCrash::MidSwap, &spec, Recovering::ConfigSet);
+            assert!(crashed, "{spec} is on the undo's path");
+            fired.extend(point);
+            cases += 1;
+        }
+        for k in 1..=CHECKED_SWEEP_MAX {
+            let spec = format!("fsx.mutate.checked=abort@{k}");
+            let case = log.case(&spec);
+            let (crashed, point) =
+                pair_case(&case, FolderCrash::MidSwap, &spec, Recovering::ConfigSet);
+            fired.extend(point);
+            cases += 1;
+            if !crashed {
+                break;
+            }
+        }
+        for by in [Recovering::InstallOwn, Recovering::InstallOther] {
+            for spec in pair_key_specs(n) {
+                let case = log.case(&format!("{} {spec}", by.label()));
+                pair_case(&case, FolderCrash::MidSwap, &spec, by);
+                cases += 1;
+            }
+        }
+        for spec in pair_key_specs(n) {
+            let case = log.case(&format!("swapped {spec}"));
+            pair_case(&case, FolderCrash::Swapped, &spec, Recovering::ConfigSet);
+            cases += 1;
+        }
+        let mut expected = points(n);
+        expected.extend(
+            [
+                "run.staged",
+                "run.published",
+                "snapshot.prestaged",
+                "lock.acquired",
+                "revalidated",
+            ]
+            .map(str::to_owned),
+        );
+        log.json("crashed_at", &fired);
+        log.note(format!(
+            "{cases} cases, {} boundaries fired of {}",
+            fired.len(),
+            expected.len()
+        ));
+        let missing: Vec<String> = expected.difference(&fired).cloned().collect();
+        assert!(
+            missing.is_empty(),
+            "boundaries that never fired: {missing:?}"
+        );
+    }
+
+    /// The pair's undo killed between its two activations, and after both, then its
+    /// recovery crashed at every inverse and repeated three times more: every state is
+    /// whole before, and neither journal is recovered. The rollback hides the journal
+    /// activated last first (it inverts newest first).
+    #[test]
+    fn two_journal_recovery_crashed_at_every_inverse_then_repeated() {
+        let log = tlog!();
+        let n = {
+            let scene = PairScene::new(&log, FolderCrash::MidSwap);
+            scene.set_aside_both(&log);
+            scene.undo_len()
+        };
+        let mut crashed_inverses = 0;
+        for at in [n - 1, n] {
+            let spec = format!("fsx.mutate.logged=abort@{at}");
+            for j in 1..=n + 1 {
+                let case = log.case(&format!("{spec} then recover.step@{j}"));
+                let scene = PairScene::new(&case, FolderCrash::MidSwap);
+                scene.set_aside_both(&case);
+                let before = scene.trees();
+                let ran = scene.base.undo_set_aside(&case, &spec);
+                assert!(ran.run.code < 0, "{spec} kills the undo");
+                let undo = scene.repair_tx();
+                let ran = case
+                    .cmd(&scene.base.home, &Recovering::ConfigSet.argv(&scene.base))
+                    .failpoints(&format!("doctor.recover.step=abort@{j}"))
+                    .run();
+                if ran.signal.is_none() {
+                    // Past the last inverse: this recovery finished on its own.
+                    let envelope = ran.envelope().clone();
+                    pair_before(
+                        &case,
+                        &scene,
+                        &before,
+                        Recovering::ConfigSet,
+                        &envelope,
+                        undo.as_deref(),
+                        &spec,
+                    );
+                    break;
+                }
+                crashed_inverses += 1;
+                for round in 0..4 {
+                    let envelope = recover(&case, &scene.base, Recovering::ConfigSet, 0);
+                    let context = format!("{spec}, recovery crashed at inverse {j}, round {round}");
+                    pair_before(
+                        &case,
+                        &scene,
+                        &before,
+                        Recovering::ConfigSet,
+                        &envelope,
+                        undo.as_deref(),
+                        &context,
+                    );
+                    if round > 0 {
+                        assert!(
+                            envelope["warnings"].as_array().is_none_or(|w| w.is_empty()),
+                            "{context}: nothing left to say: {envelope}"
+                        );
+                    }
+                }
+            }
+        }
+        log.note(format!("{crashed_inverses} recoveries crashed"));
+        assert!(crashed_inverses >= 2 * (n - 1), "every inverse crashed");
     }
 
     #[test]

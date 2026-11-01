@@ -1,9 +1,9 @@
 //! Barriers (M4-D38, M4-D31): a doctor repair that moves other journals' artifacts owns a
-//! barrier over them. A set-aside **suspends** a stuck journal set, renaming its journal
-//! file out of `<state>/journal/`; the undo of a set-aside **reactivates** it, its last
-//! primitive (the activation) renaming the journal from its provisional name back to its
-//! own. While such a repair is unsettled, the journals it names must not be recovered
-//! ahead of it, and it protects their targets' records too (E14).
+//! barrier over them. A set-aside **suspends** stuck journal sets, renaming each journal
+//! file out of `<state>/journal/`; the undo of a set-aside **reactivates** them, its last
+//! primitives (one activation per journal) renaming each journal from its provisional
+//! name back to its own. While such a repair is unsettled, the journals it names must not
+//! be recovered ahead of it, and it protects their targets' records too (E14).
 //!
 //! This module classifies a `prepared` line ([`of`]), holds the activation rules every
 //! reactivation follows ([`validate`]), and plans the order recovery takes repairs in
@@ -135,22 +135,28 @@ fn provisional_of(paths: &Paths, path: &Path, tx: TxId) -> bool {
     journal_file(paths, path) == Some((tx, JournalName::Reactivating))
 }
 
-/// The rules a repair that reactivates a journal follows, so that a crash anywhere in it
-/// never lets recovery run the restored journal ahead of the undo that exposed it. Each
+/// The rules a repair that reactivates journals follows, so that a crash anywhere in it
+/// never lets recovery run a restored journal ahead of the undo that exposed it. Each
 /// violation is a message naming its rule and the step:
 ///
-/// 1. at most one primitive is an activation, and it is the repair's last;
-/// 2. it renames `tx`'s provisional journal (`<tx>.reactivating.jsonl`) to that journal's
-///    own name in `<state>/journal/` (`<tx>.jsonl`, `<tx>.wtf.jsonl` or
+/// 1. the activations are the repair's last primitives, at most one per journal: no
+///    primitive that is not an activation follows the first of them (an undo of a
+///    set-aside of several journals reactivates each, omad-i2c5);
+/// 2. each renames `tx`'s provisional journal (`<tx>.reactivating.jsonl`) to that
+///    journal's own name in `<state>/journal/` (`<tx>.jsonl`, `<tx>.wtf.jsonl` or
 ///    `<tx>.repair.jsonl`);
-/// 3. exactly one earlier primitive renames into that provisional name, and it is the
-///    first primitive that names `tx` (as [`of`] names a transaction): the journal comes
-///    back before any of its artifacts, so the orphan sweep never sees them without it;
+/// 3. for each, exactly one earlier primitive renames into that provisional name, and it
+///    is the first primitive that names `tx` (as [`of`] names a transaction): the journal
+///    comes back before any of its artifacts, so the orphan sweep never sees them without
+///    it;
 /// 4. no other primitive renames out of that provisional name, and no primitive but an
 ///    activation moves a journal into `<state>/journal/` under its own name.
 ///
-/// A repair with no activation is held to rule 4's second half only. A rollback's and
-/// recovery's inverses are no primitives, and are not held to these.
+/// So every provisional restore comes before every activation, and a crash between two
+/// activations leaves each journal whole: under its provisional name (invisible), or
+/// under its own behind the unsettled repair, whose rollback hides the last one activated
+/// first. A repair with no activation is held to rule 4's second half only. A rollback's
+/// and recovery's inverses are no primitives, and are not held to these.
 pub fn validate(prepared: &RepairPrepared, paths: &Paths) -> Result<(), String> {
     let renames: Vec<Rename<'_>> = prepared
         .primitives
@@ -170,14 +176,36 @@ pub fn validate(prepared: &RepairPrepared, paths: &Paths) -> Result<(), String> 
         })
         .collect();
     let activations: Vec<&Rename<'_>> = renames.iter().filter(|r| r.activation).collect();
-    if let [first, second, ..] = activations[..] {
+    if let Some(first) = activations.first()
+        && let Some(after) = prepared.primitives.iter().find(|step| {
+            step.seq > first.seq
+                && !matches!(
+                    step.op,
+                    Primitive::RenameNoReplace {
+                        activation: true,
+                        ..
+                    }
+                )
+        })
+    {
         return Err(format!(
-            "rule 1: steps {} and {} both activate a journal, and a repair activates at most one",
-            first.seq, second.seq
+            "rule 1: step {} activates a journal, but step {} after it is no activation, and the activations are the repair's last primitives",
+            first.seq, after.seq
         ));
     }
-    if let Some(activation) = activations.first() {
-        activated(prepared, paths, &renames, activation)?;
+    let mut once = std::collections::BTreeMap::new();
+    for activation in &activations {
+        if let Some((tx, JournalName::Reactivating)) = journal_file(paths, activation.from)
+            && let Some(earlier) = once.insert(tx, activation.seq)
+        {
+            return Err(format!(
+                "rule 1: steps {earlier} and {} both activate journal {tx}, and a repair activates each journal at most once",
+                activation.seq
+            ));
+        }
+    }
+    for activation in &activations {
+        activated(paths, prepared, &renames, activation)?;
     }
     for rename in renames.iter().filter(|r| !r.activation) {
         if own_name(paths, rename.to).is_some() {
@@ -191,20 +219,14 @@ pub fn validate(prepared: &RepairPrepared, paths: &Paths) -> Result<(), String> 
     Ok(())
 }
 
-/// Rules 1 to 4 for the one `activation` of `prepared`.
+/// Rules 2 to 4 for one `activation` of `prepared` (rule 1 holds already).
 fn activated(
-    prepared: &RepairPrepared,
     paths: &Paths,
+    prepared: &RepairPrepared,
     renames: &[Rename<'_>],
     activation: &Rename<'_>,
 ) -> Result<(), String> {
     let seq = activation.seq;
-    let last = prepared.primitives.last().map_or(0, |step| step.seq);
-    if seq != last {
-        return Err(format!(
-            "rule 1: step {seq} activates a journal, but the repair's last primitive is step {last}"
-        ));
-    }
     let Some((tx, JournalName::Reactivating)) = journal_file(paths, activation.from) else {
         return Err(format!(
             "rule 2: step {seq} activates {}, which is not a journal's provisional name",
@@ -857,6 +879,36 @@ mod tests {
         with_renames(set_aside, undo)
     }
 
+    /// [`reactivation`] of the stuck journal and of `more` (each with its in-flight lock),
+    /// as an undo of their set-aside in one repair orders it: every provisional restore
+    /// first, the other artifacts, then one activation per journal, the stuck one's first.
+    fn reactivations(home: &RepairHome, more: &[TxId]) -> RepairPrepared {
+        let base = reactivation(home);
+        let mut r = renames(&base);
+        let stuck = r.pop().unwrap();
+        let quarantine = home.run.dir.join("quarantine/state");
+        for (at, tx) in more.iter().enumerate() {
+            let parked = quarantine.join(format!("journal/{tx}.jsonl"));
+            r.insert(at, (parked, provisional_journal(&home.paths, tx), false));
+            let lock = quarantine.join(format!("inflight/{tx}.lock"));
+            r.push((lock, home.paths.inflight_lock(tx), false));
+        }
+        r.push(stuck);
+        r.extend(more.iter().map(|tx| {
+            (
+                provisional_journal(&home.paths, tx),
+                home.paths.journal(tx),
+                true,
+            )
+        }));
+        with_renames(base, r)
+    }
+
+    /// The step of `p` that renames `(from, to)`'s source, numbered from 0.
+    fn at(p: &[(PathBuf, PathBuf, bool)], from: &Path) -> usize {
+        p.iter().position(|(f, _, _)| f == from).unwrap()
+    }
+
     #[test]
     fn validate_refuses_each_malformed_activation() {
         type Case = (
@@ -868,13 +920,83 @@ mod tests {
             ("well_formed_reactivation", reactivation, None),
             ("well_formed_suspension", set_aside, None),
             (
-                "two_activations",
+                "two_journals_reactivated",
+                |home| reactivations(home, &[TxId::new()]),
+                None,
+            ),
+            (
+                "three_journals_reactivated",
+                |home| reactivations(home, &[TxId::new(), TxId::new()]),
+                None,
+            ),
+            (
+                "activations_in_another_order",
+                |home| {
+                    let mut r = renames(&reactivations(home, &[TxId::new()]));
+                    let n = r.len();
+                    r.swap(n - 2, n - 1);
+                    with_renames(reactivation(home), r)
+                },
+                None,
+            ),
+            (
+                "a_primitive_after_the_first_activation",
                 |home| {
                     let mut r = renames(&reactivation(home));
                     r[1].2 = true;
                     with_renames(reactivation(home), r)
                 },
-                Some("rule 1: steps 2 and 4"),
+                Some("rule 1: step 2 activates a journal, but step 3"),
+            ),
+            (
+                "a_restore_between_two_activations",
+                |home| {
+                    let other = TxId::new();
+                    let mut r = renames(&reactivations(home, &[other]));
+                    let lock = home
+                        .run
+                        .dir
+                        .join(format!("quarantine/state/inflight/{other}.lock"));
+                    let restore = r.remove(at(&r, &lock));
+                    let n = r.len();
+                    r.insert(n - 1, restore);
+                    with_renames(reactivation(home), r)
+                },
+                Some("rule 1: step 5 activates a journal, but step 6"),
+            ),
+            (
+                "two_activations_of_one_journal",
+                |home| {
+                    let mut r = renames(&reactivation(home));
+                    let again = r.last().unwrap().clone();
+                    r.push(again);
+                    with_renames(reactivation(home), r)
+                },
+                Some("rule 1: steps 4 and 5 both activate journal"),
+            ),
+            (
+                "a_second_journal_named_before_its_restore",
+                |home| {
+                    let other = TxId::new();
+                    let mut r = renames(&reactivations(home, &[other]));
+                    let lock = home
+                        .run
+                        .dir
+                        .join(format!("quarantine/state/inflight/{other}.lock"));
+                    let restore = r.remove(at(&r, &lock));
+                    r.insert(0, restore);
+                    with_renames(reactivation(home), r)
+                },
+                Some("rule 3: step 1 names journal"),
+            ),
+            (
+                "a_second_journal_never_restored",
+                |home| {
+                    let mut r = renames(&reactivations(home, &[TxId::new()]));
+                    r[0].1 = home.run.dir.join("elsewhere.jsonl");
+                    with_renames(reactivation(home), r)
+                },
+                Some("rule 3: no step renames journal"),
             ),
             (
                 "activation_not_last",
