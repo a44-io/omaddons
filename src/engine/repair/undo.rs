@@ -407,18 +407,24 @@ pub fn plan_undo(entries: &[HistoryEntry], at: usize, paths: &Paths) -> Result<R
         });
     }
     let resources = resources_of(reverted, &inverses, &reads)?;
+    let guards: Vec<Guard> = steps
+        .iter()
+        .flat_map(|(_, step)| step.guards.iter().cloned())
+        .collect();
     let mut targets: BTreeSet<TargetKey> = reverted.targets.iter().copied().collect();
     targets.extend(reverted.repairs.iter().filter_map(|entry| entry.target));
+    // A set-aside's guards watch a client whose files it may not have touched (a journal
+    // with no client-side artifact left): the undo reads them on that client, so it is
+    // among the undo's clients. A folder's epoch names its client by path alone; the
+    // set-aside's marker guard names the same client by key.
+    targets.extend(guards.iter().filter_map(|g| guard::target(g, &[])));
     Ok(RepairUndoPlan {
         reverted: reverted.tx,
         reverted_kind: reverted.kind,
         reverted_run: reverted.doctor_run_id.clone(),
         targets: targets.into_iter().collect(),
         fixes,
-        guards: steps
-            .iter()
-            .flat_map(|(_, step)| step.guards.iter().cloned())
-            .collect(),
+        guards,
         inverses,
         reads,
         resources,
@@ -2695,6 +2701,33 @@ mod tests {
                 },
             },
         )
+    }
+
+    /// A set-aside of a journal with no client-side artifact names no client in its line,
+    /// but its guards watch one: the undo counts that client among its own, so the guards
+    /// are read there (before, its marker read as absent and refused the undo).
+    #[test]
+    fn a_set_aside_without_a_client_artifact_reads_its_guards_on_their_client() {
+        let home = home();
+        let stuck = home.stuck();
+        let dir = home.client.client_dir();
+        let guards = vec![
+            guard::observe_generation(&home.paths, home.key).unwrap(),
+            guard::observe_marker(dir, home.key).unwrap(),
+        ];
+        let tx = repaired(
+            &home,
+            &[set_aside(
+                &home,
+                stuck,
+                &[home.paths.journal(&stuck)],
+                guards,
+            )],
+        );
+        assert_eq!(line_of(&home, tx).targets, [], "the line names no client");
+        assert_eq!(plan_of(&home, tx).targets, [home.key], "the guards' client");
+        let outcome = engine_undo(&home, tx, true, vec![discovered(&home)]);
+        assert!(outcome.is_ok(), "the guards hold: {outcome:?}");
     }
 
     /// The set-aside of `home`'s stuck journal and its client stage.

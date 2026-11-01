@@ -119,6 +119,11 @@ pub mod ids {
     pub const TEST_QUARANTINE: &str = "fm-test-quarantine";
     #[cfg(debug_assertions)]
     pub const TEST_FLATTEN: &str = "fm-test-flatten";
+    /// E7's: a chmod, and a guarded set-aside of a planted journal.
+    #[cfg(debug_assertions)]
+    pub const TEST_CHMOD: &str = "fm-test-chmod";
+    #[cfg(debug_assertions)]
+    pub const TEST_SUSPEND: &str = "fm-test-suspend";
 }
 
 // ---------------------------------------------------------------------------------------
@@ -2111,7 +2116,13 @@ mod tests {
         );
         assert_eq!(
             &with[catalog.len()..],
-            ["fm-test-write", "fm-test-quarantine", "fm-test-flatten"],
+            [
+                "fm-test-write",
+                "fm-test-quarantine",
+                "fm-test-flatten",
+                "fm-test-chmod",
+                "fm-test-suspend",
+            ],
             "then the test rows, in their order"
         );
         // Unit tests never set the variable: this process knows the catalog alone.
@@ -2129,7 +2140,8 @@ mod tests {
             "no catalog id starts {TEST_ID_PREFIX}"
         );
         // The gates the end-to-end suite drives: an ordinary auto-fixer, a forced one,
-        // and a disabled one refused while the client runs.
+        // and a disabled one refused while the client runs; E7's chmod, an ordinary one,
+        // and its set-aside, forced and refused while the client runs, as F2's will be.
         let gates: Vec<(&str, bool, bool, bool, Tier)> = both[FAILURE_MODES.len()..]
             .iter()
             .map(|row| {
@@ -2146,6 +2158,8 @@ mod tests {
                 ("fm-test-write", true, false, false, Tier::Default),
                 ("fm-test-quarantine", false, true, false, Tier::Default),
                 ("fm-test-flatten", false, false, true, Tier::Default),
+                ("fm-test-chmod", true, false, false, Tier::Default),
+                ("fm-test-suspend", false, true, true, Tier::Default),
             ]
         );
         // The exemptions are the prefix's alone: a catalog row out of order, or naming

@@ -156,6 +156,59 @@ fn token_of(log: &TestLog, label: &str, ran: &Ran) -> String {
     token
 }
 
+/// E7's two test fixers through the binary: `fm-test-chmod` chmods a config file to 0600
+/// and its undo puts the mode back; `fm-test-suspend` (forced) sets a stuck journal aside,
+/// guarded, and its undo puts the journal back under its own name, with no provisional
+/// name left behind.
+#[test]
+fn chmod_and_suspend_test_fixers_repair_and_undo() {
+    let log = tlog!();
+    log.step("home");
+    let home = home(&log);
+    register(&home, "retail");
+    let file = test_dir(&home, Side::Config).join("a.chmod");
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    fs::write(&file, b"secret\n").unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+
+    log.step("chmod");
+    run(&log, &home, &["doctor", "fix", "--only", "fm-test-chmod"]).ok();
+    log.assert_eq("repaired", &mode(&file), &0o600);
+    run(&log, &home, &["undo"]).ok();
+    log.assert_eq("undone", &mode(&file), &0o644);
+
+    log.step("suspend");
+    let tx = "01JB8Q2VA00000000000000009";
+    let journal = home.state().join("journal").join(format!("{tx}.jsonl"));
+    fs::create_dir_all(journal.parent().unwrap()).unwrap();
+    fs::write(&journal, "{\"line\":\"prepared\"}\n").unwrap();
+    let request = test_dir(&home, Side::State).join(format!("{tx}.suspend"));
+    fs::create_dir_all(request.parent().unwrap()).unwrap();
+    let key = plant::target_key(&home, "retail");
+    fs::write(&request, format!("{key}\n")).unwrap();
+    let journals = home.state().join("journal");
+    let set_aside = run(
+        &log,
+        &home,
+        &[
+            "doctor",
+            "fix",
+            "--only",
+            "fm-test-suspend",
+            "--force",
+            "--yes",
+        ],
+    );
+    set_aside.ok();
+    log.assert_eq("set aside", &journal.exists(), &false);
+    run(&log, &home, &["undo"]).ok();
+    log.assert_eq(
+        "the journal back under its own name",
+        &files_in(&journals),
+        &vec![format!("{tx}.jsonl")],
+    );
+}
+
 /// `doctor undo` (E7 s4): bare, it reverts the newest repair still in effect, also after
 /// a diagnose; again, it finds nothing; by the fix run's id, it reports the repair already
 /// undone; and the subject is as it was before the repair.

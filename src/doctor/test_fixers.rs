@@ -12,6 +12,13 @@
 //!   directory or of a client's `<meta>`.
 //! - `fm-test-flatten`, disabled as F5's flatten, refused while the client runs: an
 //!   unmanaged `AddOns/TestWrap*` folder whose only entry is one folder.
+//! - `fm-test-chmod` (E7), an ordinary auto-fixer: a `*.chmod` file below
+//!   `<config>/doctor-test/` whose mode is not 0600, which it chmods to 0600.
+//! - `fm-test-suspend` (E7), gated as F2's set-aside: a request `<tx>.suspend` below
+//!   `<state>/doctor-test/` naming `<target key> [<folder> … | WTF]`, for a journal `<tx>`
+//!   still in `<state>/journal/`. It sets the journal's artifacts aside, guarded by the
+//!   target's generation and marker and the epochs of the folders named (or of `WTF/`), so
+//!   it works on a readable, an unreadable and a newer journal alike.
 //!
 //! Detectors only read, through E3's bounded walker, at most three levels deep, and never
 //! record content (M4-D42); fixers return `Fix` values.
@@ -27,13 +34,22 @@ use super::registry::{
 };
 use super::selection::Selection;
 use super::view::DoctorView;
-use crate::engine::repair_action::{Fix, FixKind, Mode, QuarantineRoot};
-use crate::model::{FolderName, TargetKey};
-use crate::state::paths::ClientPaths;
+use crate::engine::repair::guard;
+use crate::engine::repair_action::{
+    Attribution, Fix, FixKind, JournalFamily, JournalSet, Mode, QuarantineRoot, SuspendedArtifact,
+};
+use crate::model::{FolderName, TargetKey, TxId};
+use crate::state::paths::{ClientPaths, Paths};
 
 pub use super::registry::ids::{
-    TEST_FLATTEN as FLATTEN, TEST_QUARANTINE as QUARANTINE, TEST_WRITE as WRITE,
+    TEST_CHMOD as CHMOD, TEST_FLATTEN as FLATTEN, TEST_QUARANTINE as QUARANTINE,
+    TEST_SUSPEND as SUSPEND, TEST_WRITE as WRITE,
 };
+
+/// The mode `fm-test-chmod` sets.
+pub const CHMOD_MODE: u32 = 0o600;
+/// The most a `*.suspend` request may hold.
+const REQUEST_MAX_BYTES: u64 = 4096;
 
 /// The folder below each root a test plants its subjects in.
 pub const TEST_DIR: &str = "doctor-test";
@@ -49,7 +65,7 @@ const MAX_DEPTH: usize = 3;
 
 const WHY: &str = "It exists only to exercise doctor fix.";
 
-/// The test-only rows, in this order: write, quarantine, flatten.
+/// The test-only rows, in this order: write, quarantine, flatten, chmod, suspend.
 pub static TEST_FAILURE_MODES: &[FailureMode] = &[
     FailureMode {
         id: WRITE,
@@ -123,6 +139,56 @@ pub static TEST_FAILURE_MODES: &[FailureMode] = &[
             cardinality: Cardinality::Low,
             preconditions: &[
                 FixerPrecondition::LockHeld,
+                FixerPrecondition::ClientNotRunning,
+            ],
+        }),
+        manual: None,
+    },
+    FailureMode {
+        id: CHMOD,
+        subsystem: Subsystem::Permissions,
+        severity: super::finding::Severity::P3,
+        title: "a test-only state for exercising doctor fix (debug builds with OMADDONS_TEST_FIXERS=1)",
+        description: "A *.chmod file below the config directory's doctor-test folder whose mode is not 0600, which the test fixer chmods.",
+        why: WHY,
+        tier: Tier::Default,
+        online: false,
+        cost_ms: 1,
+        requires: &[],
+        detect: Some(detect_chmod),
+        fix: Some(FixerSpec {
+            plan: plan_chmod,
+            writes_to: &[ScopeName::Config],
+            ops: &[FixKind::Chmod],
+            enabled: true,
+            needs_force: false,
+            cardinality: Cardinality::Low,
+            preconditions: &[FixerPrecondition::LockHeld],
+        }),
+        manual: None,
+    },
+    FailureMode {
+        id: SUSPEND,
+        subsystem: Subsystem::ConcurrencyPrimitives,
+        severity: super::finding::Severity::P3,
+        title: "a test-only state for exercising doctor fix (debug builds with OMADDONS_TEST_FIXERS=1)",
+        description: "A journal a request below the state directory's doctor-test folder names, which the test fixer sets aside, guarded.",
+        why: WHY,
+        tier: Tier::Default,
+        online: false,
+        cost_ms: 1,
+        requires: &[],
+        detect: Some(detect_suspend),
+        fix: Some(FixerSpec {
+            plan: plan_suspend,
+            writes_to: &[ScopeName::State, ScopeName::ClientMeta],
+            ops: &[FixKind::Suspend],
+            enabled: false,
+            needs_force: true,
+            cardinality: Cardinality::Low,
+            preconditions: &[
+                FixerPrecondition::LockHeld,
+                FixerPrecondition::InflightFree,
                 FixerPrecondition::ClientNotRunning,
             ],
         }),
@@ -333,6 +399,162 @@ fn detect_flatten(view: &DoctorView, _: &Selection, budget: &mut Budget) -> Dete
         }
     }
     Detected::complete(found)
+}
+
+fn detect_chmod(view: &DoctorView, _: &Selection, budget: &mut Budget) -> Detected {
+    use std::os::unix::fs::PermissionsExt;
+    let root = view.paths().config_dir().join(TEST_DIR);
+    let mut found = Vec::new();
+    let result = walk(&root, MAX_DEPTH, budget, |entry| {
+        if entry.kind == EntryKind::File
+            && name_of(entry.path).ends_with(".chmod")
+            && entry.meta.permissions().mode() & 0o7777 != CHMOD_MODE
+        {
+            found.push(observation(Subject::machine(), entry.path, "file", None));
+        }
+        WalkStep::Continue
+    });
+    detected(found, result.complete, budget)
+}
+
+fn plan_chmod(_: &DoctorView, f: &Finding) -> Result<Vec<Fix>, Refusal> {
+    Ok(f.evidence
+        .path
+        .iter()
+        .map(|path| Fix::Chmod {
+            path: path.clone(),
+            mode: Mode::new(CHMOD_MODE).unwrap_or_else(|| unreachable!("0o600 is a mode")),
+        })
+        .collect())
+}
+
+/// A `<tx>.suspend` request: the target and what to guard of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Request {
+    tx: TxId,
+    target: TargetKey,
+    /// Folder names whose epochs to guard; `WTF` guards the client's `WTF/` instead.
+    guarded: Vec<String>,
+}
+
+/// The request at `path` (`<tx>.suspend`), when it reads: bounded, its first line.
+fn request(path: &Path) -> Option<Request> {
+    let tx = name_of(path).strip_suffix(".suspend")?.parse().ok()?;
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > REQUEST_MAX_BYTES {
+        return None;
+    }
+    let text = std::fs::read_to_string(path).ok()?;
+    let mut words = text.lines().next()?.split_whitespace();
+    let target = words.next()?.parse().ok()?;
+    Some(Request {
+        tx,
+        target,
+        guarded: words.map(str::to_owned).collect(),
+    })
+}
+
+/// The journal file of `tx` still in `<state>/journal/`: a folder's or a settings one's.
+fn journal_of(paths: &Paths, tx: &TxId) -> Option<PathBuf> {
+    [paths.journal(tx), paths.journal_wtf(tx)]
+        .into_iter()
+        .find(|path| std::fs::symlink_metadata(path).is_ok())
+}
+
+fn detect_suspend(view: &DoctorView, _: &Selection, budget: &mut Budget) -> Detected {
+    let paths = view.paths();
+    let root = paths.state_dir().join(TEST_DIR);
+    let mut found = Vec::new();
+    let Ok(listing) = list_dir(&root, budget) else {
+        return Detected::complete(found);
+    };
+    let clients = clients(view);
+    for (name, kind) in &listing.entries {
+        let path = root.join(name);
+        let Some(req) = (*kind == EntryKind::File)
+            .then(|| request(&path))
+            .flatten()
+            .filter(|req| journal_of(paths, &req.tx).is_some())
+        else {
+            continue;
+        };
+        let subject = clients
+            .iter()
+            .find(|(_, key, _)| *key == req.target)
+            .map_or_else(Subject::machine, |(id, key, _)| Subject::target(id, *key));
+        found.push(observation(subject, &path, "file", None));
+    }
+    if listing.complete {
+        Detected::complete(found)
+    } else {
+        Detected::cut_short(found, budget)
+    }
+}
+
+/// One guarded set-aside of the journal the request names, every artifact of it present
+/// in its known places; nothing when the request, its client or a guard does not read.
+fn plan_suspend(view: &DoctorView, f: &Finding) -> Result<Vec<Fix>, Refusal> {
+    let paths = view.paths();
+    let Some(req) = f.evidence.path.as_deref().and_then(request) else {
+        return Ok(Vec::new());
+    };
+    let Some((_, _, client_dir)) = clients(view)
+        .into_iter()
+        .find(|(_, key, _)| *key == req.target)
+    else {
+        return Ok(Vec::new());
+    };
+    Ok(suspension(paths, &req, &client_dir).into_iter().collect())
+}
+
+/// The set-aside of `req`'s journal on the client at `client_dir`.
+fn suspension(paths: &Paths, req: &Request, client_dir: &Path) -> Option<Fix> {
+    let client = ClientPaths::new(client_dir);
+    let state = || QuarantineRoot::State;
+    let on_client = || QuarantineRoot::Client {
+        client_dir: client_dir.to_path_buf(),
+    };
+    let candidates = [
+        (paths.journal(&req.tx), state()),
+        (paths.journal_wtf(&req.tx), state()),
+        (paths.inflight_lock(&req.tx), state()),
+        (paths.state_snapshot(&req.tx), state()),
+        (paths.state_snapshot_wtf(&req.tx), state()),
+        (client.stage(&req.tx), on_client()),
+        (client.stage_wtf(&req.tx), on_client()),
+        (client.snapshots(&req.tx), on_client()),
+        (client.snapshots_wtf(&req.tx), on_client()),
+    ];
+    let artifacts: Vec<SuspendedArtifact> = candidates
+        .into_iter()
+        .filter(|(path, _)| std::fs::symlink_metadata(path).is_ok())
+        .map(|(path, root)| SuspendedArtifact { path, root })
+        .collect();
+    if artifacts.is_empty() {
+        return None;
+    }
+    let mut guards = vec![
+        guard::observe_generation(paths, req.target).ok()?,
+        guard::observe_marker(client_dir, req.target).ok()?,
+    ];
+    for name in &req.guarded {
+        guards.push(if name.eq_ignore_ascii_case("WTF") {
+            guard::observe_wtf_epoch(client_dir, req.target).ok()?
+        } else {
+            guard::observe_folder_epoch(client_dir, &FolderName::new(name).ok()?).ok()?
+        });
+    }
+    Some(Fix::Suspend {
+        journal: JournalSet {
+            tx: req.tx,
+            family: JournalFamily::Folder,
+            target: Some(req.target),
+            artifacts,
+            guards,
+            attribution: Attribution::Complete,
+            unattributed: Vec::new(),
+        },
+    })
 }
 
 fn plan_flatten(_: &DoctorView, f: &Finding) -> Result<Vec<Fix>, Refusal> {
@@ -678,6 +900,8 @@ mod tests {
         put(&state_test(&home).join("a.write"), b"broken\n");
         put(&state_test(&home).join("q.quarantine"), b"x");
         std::fs::create_dir_all(home.addons("TestWrapA/Inner")).unwrap();
+        plant_chmod(&home, "a.chmod", 0o644);
+        plant_request(&home, &home.stuck(), "");
         // The view's fixture record is written first: only the detectors are measured.
         let view = view(&home);
         let before = tree_hash(&home.base);
@@ -686,6 +910,141 @@ mod tests {
             assert!(!found.is_empty(), "{}", row.id);
         }
         assert_eq!(tree_hash(&home.base), before, "a detector wrote");
+    }
+
+    /// `<config>/doctor-test/<name>` with mode `mode`: `fm-test-chmod`'s subject unless 0600.
+    fn plant_chmod(home: &RepairHome, name: &str, mode: u32) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = home.paths.config_dir().join(TEST_DIR).join(name);
+        put(&path, b"secret\n");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        path
+    }
+
+    /// The request to set `tx` aside, its target `home`'s client, guarding `rest`.
+    fn plant_request(home: &RepairHome, tx: &TxId, rest: &str) {
+        put(
+            &state_test(home).join(format!("{tx}.suspend")),
+            format!("{} {rest}\n", home.key).as_bytes(),
+        );
+    }
+
+    #[test]
+    fn fm_test_chmod_plans_one_chmod() {
+        let home = repair_home();
+        let open = plant_chmod(&home, "open.chmod", 0o644);
+        plant_chmod(&home, "closed.chmod", 0o600);
+        let view = view(&home);
+        let found = findings(&home, &view, CHMOD);
+        assert_eq!(found.len(), 1, "only the open file: {found:?}");
+        let plan = (row(CHMOD).fix.unwrap().plan)(&view, &found[0]).unwrap();
+        assert_eq!(
+            plan,
+            [Fix::Chmod {
+                path: open,
+                mode: Mode::new(0o600).unwrap()
+            }]
+        );
+    }
+
+    #[test]
+    fn fm_test_suspend_plans_one_rename_per_present_artifact_with_its_guards() {
+        // (case, what it plants for a transaction, the request's guarded names, the
+        // artifacts below the base, the guard kinds)
+        type Prepare = fn(&RepairHome) -> TxId;
+        type Case = (
+            &'static str,
+            Prepare,
+            &'static str,
+            Vec<&'static str>,
+            Vec<&'static str>,
+        );
+        let cases: [Case; 4] = [
+            (
+                "all five artifacts",
+                |h| {
+                    let tx = h.stuck();
+                    std::fs::create_dir_all(h.paths.state_snapshot(&tx)).unwrap();
+                    std::fs::create_dir_all(h.client.snapshots(&tx)).unwrap();
+                    tx
+                },
+                "",
+                vec![
+                    "journal",
+                    "inflight",
+                    "state snapshot",
+                    "stage",
+                    "client snapshots",
+                ],
+                vec!["generation", "marker"],
+            ),
+            (
+                "journal and in-flight lock only",
+                |h| {
+                    let tx = h.stuck();
+                    std::fs::remove_dir_all(h.client.stage(&tx)).unwrap();
+                    tx
+                },
+                "",
+                vec!["journal", "inflight"],
+                vec!["generation", "marker"],
+            ),
+            (
+                "a WTF journal with a WTF epoch guard",
+                |h| {
+                    let tx = TxId::new();
+                    put(&h.paths.journal_wtf(&tx), b"{\"line\":\"prepared\"}\n");
+                    tx
+                },
+                "WTF",
+                vec!["wtf journal"],
+                vec!["generation", "marker", "epochs"],
+            ),
+            (
+                "one epoch per named folder",
+                |h| {
+                    std::fs::create_dir_all(h.addons("Foo")).unwrap();
+                    h.stuck()
+                },
+                "Foo Bar",
+                vec!["journal", "inflight", "stage"],
+                vec!["generation", "marker", "epochs", "epochs"],
+            ),
+        ];
+        for (case, prepare, guarded, artifacts, guards) in cases {
+            let home = repair_home();
+            let tx = prepare(&home);
+            plant_request(&home, &tx, guarded);
+            let view = view(&home);
+            let found = findings(&home, &view, SUSPEND);
+            assert_eq!(found.len(), 1, "{case}: {found:?}");
+            let plan = (row(SUSPEND).fix.unwrap().plan)(&view, &found[0]).unwrap();
+            let [Fix::Suspend { journal }] = plan.as_slice() else {
+                panic!("{case}: {plan:?}"); // ubs:ignore — fails the test
+            };
+            assert_eq!(journal.tx, tx, "{case}");
+            assert_eq!(journal.target, Some(home.key), "{case}");
+            let name = |path: &Path| {
+                let p = &home.paths;
+                let c = &home.client;
+                [
+                    (p.journal(&tx), "journal"),
+                    (p.journal_wtf(&tx), "wtf journal"),
+                    (p.inflight_lock(&tx), "inflight"),
+                    (p.state_snapshot(&tx), "state snapshot"),
+                    (c.stage(&tx), "stage"),
+                    (c.snapshots(&tx), "client snapshots"),
+                ]
+                .into_iter()
+                // ubs:ignore — comparing paths, not secrets
+                .find(|(known, _)| known == path)
+                .map_or("?", |(_, name)| name)
+            };
+            let got: Vec<&str> = journal.artifacts.iter().map(|a| name(&a.path)).collect();
+            assert_eq!(got, artifacts, "{case}");
+            let kinds: Vec<&str> = journal.guards.iter().map(guard::kind).collect();
+            assert_eq!(kinds, guards, "{case}");
+        }
     }
 
     #[test]
