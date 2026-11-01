@@ -808,6 +808,7 @@ mod support {
     pub const DESTRUCTIVE: &[&str] = &[
         "remove",
         "undo",
+        "doctor undo",
         "backup restore",
         "backup prune",
         "targets rm",

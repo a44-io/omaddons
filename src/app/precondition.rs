@@ -3341,6 +3341,7 @@ mod repair_undo_tests {
                 },
                 undo_run: None,
                 committed: Vec::new(),
+                planned: Vec::new(),
             }),
         }
     }

@@ -398,29 +398,41 @@ enum RecordedReport {
     Undo(Box<UndoReport>),
 }
 
-/// An undo run's report (E7, M4-D33): the repair-family transaction it reverted and the
-/// run that made it, the undo's own transaction, and how it ended.
+/// An undo's report (E7, §6.11, M4-D33): the run of kind `undo` records it, and `doctor
+/// undo` prints it. The repair-family transaction reverted and the run that made it, the
+/// undo's own run and transaction, and how it ended.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct UndoReport {
     pub doctor_contract_version: &'static str,
-    pub run_id: DoctorRunId,
-    /// The run's directory, absolute.
-    pub run_dir: String,
+    /// The undo's own run; `null` when it made none: a dry run, nothing to undo, or a
+    /// repair already undone.
+    pub run_id: Option<DoctorRunId>,
+    /// That run's directory, absolute; `null` with `run_id`.
+    pub run_dir: Option<String>,
     #[schemars(with = "String")]
     pub started_at: Timestamp,
     #[schemars(with = "String")]
     pub finished_at: Timestamp,
-    /// `DONE_OK` committed, `DONE_FAILED` rolled back (or stopped), `REFUSING` refused
-    /// under the lock, `LOCK_LOST` the lock not taken.
-    pub state: RunState,
-    /// The transaction it reverted.
-    pub reverts: TxId,
-    /// The doctor run that made it; `null` when its history line names none.
+    /// The doctor run that made the transaction reverted; `null` when nothing was selected
+    /// or its history line names none.
     pub reverted_run: Option<String>,
-    /// The undo's own transaction, when one started (committed or rolled back).
+    /// The transaction reverted (a repair, or the undo of one); `null` when nothing was
+    /// selected.
     pub tx: Option<TxId>,
+    /// The undo's own transaction, when one started (committed or rolled back); the one
+    /// that undid it, when it was already undone.
+    pub undo_tx: Option<TxId>,
+    /// `DONE_OK` committed, nothing to do, or a dry run; `DONE_FAILED` rolled back (or
+    /// stopped); `REFUSING` refused under the lock; `LOCK_LOST` the lock not taken.
+    pub state: RunState,
     /// The inverse primitives it ran.
     pub actions_taken: u32,
+    /// The repair was already undone, by `undo_tx`: nothing was done (exit 0).
+    pub already_undone: bool,
+    /// `--dry-run`'s: each inverse primitive as the run would lower it, this undo's own
+    /// names written `<run>` and `<tx>`. Omitted unless a dry run planned the undo.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actions_planned: Option<Vec<ActionPlanned>>,
 }
 
 /// The schema of a run's `report.json` (`store::KINDS`' `doctor_report`).
@@ -763,9 +775,10 @@ mod tests {
             "\"run_id\"",
             "\"next_steps\"",
             "\"DONE_FINDINGS\"",
-            // An undo run's (E7): the transaction and the run it reverted.
-            "\"reverts\"",
+            // An undo run's (E7, §6.11): the run it reverted, and its own transaction.
             "\"reverted_run\"",
+            "\"undo_tx\"",
+            "\"already_undone\"",
         ] {
             assert!(text.contains(key), "{key} in {text}");
         }

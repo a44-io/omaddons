@@ -1,0 +1,27 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "undo",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "usage",
+    "details": {},
+    "fix": "omaddons doctor undo <run>",
+    "fix_argv": [
+      "omaddons",
+      "doctor",
+      "undo",
+      "<run>"
+    ],
+    "message": "<run> is a doctor run directory; `undo` takes a transaction or a run of the history",
+    "retryable": false
+  },
+  "exit_code": 2,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

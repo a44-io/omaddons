@@ -224,6 +224,17 @@ impl Engine {
         crate::engine::undo(req, &self.ctx(None))
     }
 
+    /// The undo of the repair-family line `read.entries[at]`, and the report its run
+    /// recorded once its run directory existed (`doctor undo`, §6.11).
+    pub fn undo_repair_reported(
+        &self,
+        req: &UndoRequest,
+        read: &crate::state::history::HistoryRead,
+        at: usize,
+    ) -> (Result<UndoOutcome>, crate::engine::repair::undo::Recorded) {
+        crate::engine::repair::undo::undo_repair_reported(req, &self.ctx(None), read, at)
+    }
+
     /// [`Engine::undo`], bound to a preview (`--if-match`) when `binding` is given.
     pub fn undo_bound(
         &self,

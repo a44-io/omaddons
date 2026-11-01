@@ -1,0 +1,58 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "actions_planned": [
+    {
+      "backup": "<root>/state/omaddons/doctor/runs/<run>/backups/1",
+      "bytes": 7,
+      "fix": 1,
+      "fm": "fm-test-write",
+      "mode": "0644",
+      "op": "write_file",
+      "path": "<root>/state/omaddons/doctor-test/a.write",
+      "post": {
+        "kind": "file",
+        "mode": "0644",
+        "sha256": "sha256:cdd6c109503d4e19cad782eef4d9ba162af0d84727445edbb9d300df1adc6048"
+      },
+      "pre": {
+        "kind": "file",
+        "mode": "0644",
+        "sha256": "sha256:aa6083f3a3c96f3860a4977f429ed51841511a3716ea3537472fea4365781e2b"
+      },
+      "seq": 1
+    }
+  ],
+  "actions_taken": 0,
+  "already_undone": false,
+  "command": "doctor undo",
+  "commands": [
+    {
+      "action": "undo",
+      "argv": [
+        "omaddons",
+        "undo",
+        "<ulid>",
+        "--dry-run"
+      ],
+      "command": "omaddons undo <ulid> --dry-run",
+      "destructive": false
+    }
+  ],
+  "doctor_contract_version": "1.0",
+  "exit_code": 0,
+  "finished_at": "<time>",
+  "ok": true,
+  "reverted_run": "<run>",
+  "run_dir": null,
+  "run_id": null,
+  "schema_version": "1.0",
+  "started_at": "<time>",
+  "state": "DONE_OK",
+  "tool_version": "<version>",
+  "tx": "<ulid>",
+  "undo_tx": null,
+  "warnings": []
+}

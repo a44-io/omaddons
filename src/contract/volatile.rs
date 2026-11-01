@@ -20,6 +20,8 @@ pub const VOLATILE: &[(&str, &str)] = &[
     // `doctor fix`'s real runs. A dry run writes its own names `<run>` and `<tx>`, so
     // its planned actions are no new values.
     ("tx", "a new transaction"),
+    // `doctor undo`'s own transaction (E7).
+    ("undo_tx", "a new transaction"),
     ("actions_jsonl_path", "a new doctor run per invocation"),
     ("backups_dir", "a new doctor run per invocation"),
     ("undo_command", "a new doctor run per invocation"),

@@ -34,7 +34,9 @@ expression: "scrubbed(value, &base_of(&paths))"
   "dry_run": false,
   "findings": [],
   "finished_at": "<finished_at>",
-  "next_steps": [],
+  "next_steps": [
+    "omaddons doctor undo <run_id>"
+  ],
   "precondition": null,
   "run_dir": "<base>/home/.local/state/omaddons/doctor/runs/<run_id>",
   "run_id": "<run_id>",
@@ -65,6 +67,11 @@ expression: "scrubbed(value, &base_of(&paths))"
     "total_findings": 0
   },
   "tx": "<tx>",
-  "undo_argv": null,
-  "undo_command": null
+  "undo_argv": [
+    "omaddons",
+    "doctor",
+    "undo",
+    "<run_id>"
+  ],
+  "undo_command": "omaddons doctor undo <run_id>"
 }

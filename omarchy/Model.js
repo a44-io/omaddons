@@ -150,6 +150,7 @@ var CLI_PATHS = {
   "doctor explain":    { "mutates": false, "destructive": false, "binds": false },
   "doctor fix":        { "mutates": true,  "destructive": false, "binds": true },
   "doctor diff":       { "mutates": false, "destructive": false, "binds": false },
+  "doctor undo":       { "mutates": true,  "destructive": true,  "binds": false },
   "install":           { "mutates": true,  "destructive": false, "binds": true },
   "update":            { "mutates": true,  "destructive": false, "binds": true },
   "pin":               { "mutates": true,  "destructive": false, "binds": true },

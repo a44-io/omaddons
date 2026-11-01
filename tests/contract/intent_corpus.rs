@@ -26,6 +26,9 @@ pub struct Row {
     /// The canonical commands the user may have meant; empty for a mistyped verb.
     pub verbs: &'static [&'static str],
     pub expect: Expect,
+    /// Files written on the home before its setup commands: what no command can make, such
+    /// as a test fixer's subject.
+    pub plant: Option<fn(&crate::common::home::Home)>,
     /// Commands run on the home before the row, through the binary; the home is then
     /// snapshotted (`save_row`), so the wrong run and the fix see one state.
     pub setup: &'static [Step],
@@ -155,6 +158,7 @@ const fn row(
         origin: Origin::Plan,
         verbs,
         expect,
+        plant: None,
         setup: &[],
         note,
         extra: None,
@@ -189,6 +193,15 @@ impl Row {
     const fn by_leaf(self, leaf: &'static str) -> Self {
         Self {
             origin: Origin::Leaf(leaf),
+            ..self
+        }
+    }
+
+    /// The row on a home `plant` writes files in and `setup` then runs commands on.
+    const fn on(self, plant: fn(&crate::common::home::Home), setup: &'static [Step]) -> Self {
+        Self {
+            plant: Some(plant),
+            setup,
             ..self
         }
     }
@@ -847,6 +860,24 @@ pub const CORPUS: &[Row] = &[
         doctor_usage(&["omaddons", "help", "doctor", "fix"], &[0]),
     )
     .by_leaf("E6"),
+    // The undo of a repair (E7), on a home with one committed repair.
+    row(
+        DoctorVerb,
+        &["doctor", "undo", "latest"],
+        &["doctor undo"],
+        "latest may name a diagnose: the bare form undoes the newest repair",
+        doctor_usage(&["omaddons", "doctor", "undo"], &[0]),
+    )
+    .on(plant_test_write, E7_SETUP),
+    row(
+        DoctorVerb,
+        &["undo", "--run", "{run}"],
+        &["doctor undo"],
+        "a doctor run id is the doctor's to undo",
+        error(2, "usage", &["omaddons", "doctor", "undo", "{run}"], &[0]),
+    )
+    .on(plant_test_write, E7_SETUP)
+    .by_leaf("E7"),
     row(
         DoctorVerb,
         &["doctor", "diagnoze"],
@@ -928,8 +959,19 @@ const fn doctor_usage(fix: &'static [&'static str], fix_exit: &'static [i32]) ->
     error(64, "usage", fix, fix_exit)
 }
 
-/// The note of E7's rows while their setup is unwritten.
-const E7_SETUP: &str = "setup: E7 writes it (one committed repair by E6's fm-test-write)";
+/// E7's rows' subject: what E6's `fm-test-write` repairs.
+fn plant_test_write(home: &crate::common::home::Home) {
+    crate::common::doctor::test_fixers::plant_write(home, "a.write", b"broken\n");
+}
+
+/// E7's rows' home: one committed repair by E6's `fm-test-write` (the test fixers, a
+/// debug build), its doctor run captured as `{run}`.
+const E7_SETUP: &[Step] = &[Step {
+    argv: &["doctor", "fix", "--only", "fm-test-write"],
+    env: &[crate::common::doctor::test_fixers::ENV],
+    exit: 0,
+    capture: Some(("run", "/run_id")),
+}];
 
 /// Rows of surfaces that have not landed, grouped by leaf. The leaf that adds the last
 /// surface a row needs moves it into `CORPUS` and makes it pass, in that commit.
@@ -978,29 +1020,6 @@ pub const PENDING: &[Pending] = &[
             ),
         )
         .by_leaf("B3"),
-    ),
-    pending(
-        "E7",
-        &["doctor undo", "doctor fix"],
-        row(
-            DoctorVerb,
-            &["doctor", "undo", "latest"],
-            &["doctor undo"],
-            E7_SETUP,
-            doctor_usage(&["omaddons", "doctor", "undo"], &[0]),
-        ),
-    ),
-    pending(
-        "E7",
-        &["doctor undo", "doctor fix"],
-        row(
-            DoctorVerb,
-            &["undo", "--run", "{run}"],
-            &["doctor undo"],
-            E7_SETUP,
-            error(2, "usage", &["omaddons", "doctor", "undo", "{run}"], &[0]),
-        )
-        .by_leaf("E7"),
     ),
 ];
 
@@ -1227,9 +1246,12 @@ fn steps(
     home.reset();
 
     let mut vars = BTreeMap::new();
-    if !row.setup.is_empty() {
+    if row.plant.is_some() || !row.setup.is_empty() {
         progress.step = "setup";
         case.step("setup");
+        if let Some(plant) = row.plant {
+            plant(&home.home);
+        }
         for step in row.setup {
             let argv = with_output(&substitute(step.argv, &vars));
             let mut cmd = home.cmd(case, &as_strs(&argv));

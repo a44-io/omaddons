@@ -156,6 +156,96 @@ fn token_of(log: &TestLog, label: &str, ran: &Ran) -> String {
     token
 }
 
+/// `doctor undo` (E7 s4): bare, it reverts the newest repair still in effect, also after
+/// a diagnose; again, it finds nothing; by the fix run's id, it reports the repair already
+/// undone; and the subject is as it was before the repair.
+#[test]
+fn doctor_undo_smoke() {
+    let log = tlog!();
+    log.step("home");
+    let home = home(&log);
+    let file = plant_write(&home, "a.write", b"broken\n");
+    let subject = test_dir(&home, Side::State);
+    log.tree("subject", &subject);
+    let runs = home.state().join("doctor/runs");
+
+    log.step("repair");
+    let fixed = run(&log, &home, &["doctor", "fix", "--only", WRITE]);
+    fixed.ok();
+    let fix_run = text(&fixed.envelope()["run_id"]).to_owned();
+    let fix_tx = text(&fixed.envelope()["tx"]).to_owned();
+    log.assert_eq("repaired", &fs::read(&file).unwrap(), &REPAIRED.to_vec());
+
+    log.step("diagnose");
+    run(&log, &home, &["doctor"]).exit(0);
+
+    log.step("dry_run");
+    log.tree("runs", &runs);
+    let planned = run(&log, &home, &["doctor", "undo", "--dry-run"]);
+    planned.ok();
+    let report = planned.envelope();
+    log.assert_eq("tx", &report["tx"], &json!(fix_tx));
+    log.assert_eq("run_id", &report["run_id"], &Value::Null);
+    log.assert_eq(
+        "planned",
+        &report["actions_planned"][0]["op"],
+        &json!("write_file"),
+    );
+    log.assert_eq(
+        "the bindable preview",
+        &report["commands"][0]["argv"],
+        &json!(["omaddons", "undo", fix_tx, "--dry-run"]),
+    );
+    log.assert_unchanged("runs", &runs);
+    log.assert_eq(
+        "still repaired",
+        &fs::read(&file).unwrap(),
+        &REPAIRED.to_vec(),
+    );
+
+    log.step("bare_undo");
+    let undone = run(&log, &home, &["doctor", "undo"]);
+    undone.ok();
+    let report = undone.envelope();
+    log.assert_eq("reverted_run", &report["reverted_run"], &json!(fix_run));
+    log.assert_eq("tx", &report["tx"], &json!(fix_tx));
+    log.assert_eq("state", &report["state"], &json!("DONE_OK"));
+    log.assert_eq("actions_taken", &report["actions_taken"], &json!(1));
+    log.assert_eq("already_undone", &report["already_undone"], &json!(false));
+    let undo_run = text(&report["run_id"]).to_owned();
+    let recorded: Value =
+        serde_json::from_slice(&fs::read(runs.join(&undo_run).join("report.json")).unwrap())
+            .unwrap();
+    log.assert_eq("run kind", &recorded["kind"], &json!("undo"));
+    log.assert_eq("its undo_tx", &recorded["undo_tx"], &report["undo_tx"]);
+
+    log.step("again");
+    let again = run(&log, &home, &["doctor", "undo"]);
+    again.ok();
+    log.assert_eq(
+        "nothing selected",
+        &again.envelope()["reverted_run"],
+        &Value::Null,
+    );
+    log.assert_eq("no run", &again.envelope()["run_id"], &Value::Null);
+
+    log.step("by_run");
+    log.tree("runs", &runs);
+    let by_run = run(&log, &home, &["doctor", "undo", &fix_run]);
+    by_run.ok();
+    log.assert_eq(
+        "already_undone",
+        &by_run.envelope()["already_undone"],
+        &json!(true),
+    );
+    log.assert_eq("run_id", &by_run.envelope()["run_id"], &Value::Null);
+    log.assert_eq("undo_tx", &by_run.envelope()["undo_tx"], &report["undo_tx"]);
+    log.assert_unchanged("runs", &runs);
+
+    log.step("trees");
+    log.assert_unchanged("subject", &subject);
+}
+
 /// 1. A write repaired: the report, the backup, history, the hardened record, `undo.sh`.
 #[test]
 fn fix_repairs_a_write_and_reaches_done_ok() {

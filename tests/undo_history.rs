@@ -185,7 +185,8 @@ fn undo_selects_and_reverts_a_repair() {
     )
     .unwrap();
     log.assert_eq("run kind", &report["kind"], &json!("undo"));
-    log.assert_eq("run reverts", &report["reverts"], &json!(fix_tx));
+    log.assert_eq("run reverts", &report["tx"], &json!(fix_tx));
+    log.assert_eq("its own tx", &report["undo_tx"], &data["tx"]);
 
     log.step("assert");
     log.assert_unchanged("subject", &subject);

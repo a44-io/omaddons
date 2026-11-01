@@ -1,0 +1,35 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "actions_taken": 1,
+  "already_undone": false,
+  "command": "doctor undo",
+  "commands": [
+    {
+      "action": "undo",
+      "argv": [
+        "omaddons",
+        "undo",
+        "<ulid>"
+      ],
+      "command": "omaddons undo <ulid>",
+      "destructive": false
+    }
+  ],
+  "doctor_contract_version": "1.0",
+  "exit_code": 0,
+  "finished_at": "<time>",
+  "ok": true,
+  "reverted_run": "<run>",
+  "run_dir": "<root>/state/omaddons/doctor/runs/<run>",
+  "run_id": "<run>",
+  "schema_version": "1.0",
+  "started_at": "<time>",
+  "state": "DONE_OK",
+  "tool_version": "<version>",
+  "tx": "<ulid>",
+  "undo_tx": "<ulid>",
+  "warnings": []
+}

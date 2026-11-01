@@ -1,0 +1,26 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "doctor undo",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "usage",
+    "details": {},
+    "fix": "omaddons doctor undo",
+    "fix_argv": [
+      "omaddons",
+      "doctor",
+      "undo"
+    ],
+    "message": "`latest` names the newest report, which may be a diagnose; `doctor undo` takes a run",
+    "retryable": false
+  },
+  "exit_code": 64,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

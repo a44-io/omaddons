@@ -799,6 +799,55 @@ impl Clients {
 /// a file's length, a folder's regular files summed over at most
 /// [`DOCTOR_SCAN_MAX_ENTRIES`] entries, a symlink or nothing 0. An estimate for a
 /// preview, read only.
+/// What a repair lowered against `roots` would run, as a preview shows it (A.5): each
+/// step with the run's own names written `<run>` and `<tx>`, and the bytes it writes or
+/// moves. `doctor fix`'s and `doctor undo`'s dry runs both report it.
+pub fn planned_actions(roots: &RepairRoots<'_>, lowered: &Lowered) -> Vec<ActionPlanned> {
+    actions_planned_of(&Names::of(roots), lowered)
+}
+
+fn actions_planned_of(names: &Names, lowered: &Lowered) -> Vec<ActionPlanned> {
+    // Where each path a step names is on disk now: below a destination an earlier rename
+    // filled, it is what that rename moved. A subject counts without what earlier renames
+    // took out of it.
+    let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let mut taken: Vec<PathBuf> = Vec::new();
+    let on_disk = |moved: &[(PathBuf, PathBuf)], path: &Path| -> PathBuf {
+        moved
+            .iter()
+            .rev()
+            .find_map(|(to, from)| path.strip_prefix(to).ok().map(|rest| from.join(rest)))
+            .unwrap_or_else(|| path.to_path_buf())
+    };
+    let mut out = Vec::with_capacity(lowered.steps.len());
+    for lowered in &lowered.steps {
+        let bytes = match &lowered.step.op {
+            Primitive::WriteFile { .. } => lowered
+                .content
+                .as_ref()
+                .map_or(0, |content| content.len() as u64),
+            Primitive::Chmod { .. } => 0,
+            Primitive::RenameNoReplace { from, to, .. } => {
+                let source = on_disk(&moved, from);
+                let gone: Vec<PathBuf> = taken
+                    .iter()
+                    .filter(|path| *path != &source && path.starts_with(&source))
+                    .cloned()
+                    .collect();
+                let bytes = size_of(&source, &gone);
+                moved.push((to.clone(), source.clone()));
+                taken.push(source);
+                bytes
+            }
+        };
+        out.push(ActionPlanned {
+            step: names.neutral_step(&lowered.step),
+            bytes,
+        });
+    }
+    out
+}
+
 fn size_of(path: &Path, gone: &[PathBuf]) -> u64 {
     let mut total = 0u64;
     let mut seen = 0u64;
@@ -1145,45 +1194,7 @@ impl FixPlan {
     /// Each primitive as a preview shows it (A.5): its journal form with this run's own
     /// names written `<run>` and `<tx>`, and the bytes it writes or moves.
     pub fn actions_planned(&self) -> Vec<ActionPlanned> {
-        // Where each path a step names is on disk now: below a destination an earlier
-        // rename filled, it is what that rename moved. A subject counts without what
-        // earlier renames took out of it.
-        let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
-        let mut taken: Vec<PathBuf> = Vec::new();
-        let on_disk = |moved: &[(PathBuf, PathBuf)], path: &Path| -> PathBuf {
-            moved
-                .iter()
-                .rev()
-                .find_map(|(to, from)| path.strip_prefix(to).ok().map(|rest| from.join(rest)))
-                .unwrap_or_else(|| path.to_path_buf())
-        };
-        let mut out = Vec::with_capacity(self.lowered.steps.len());
-        for lowered in &self.lowered.steps {
-            let bytes = match &lowered.step.op {
-                Primitive::WriteFile { .. } => lowered
-                    .content
-                    .as_ref()
-                    .map_or(0, |content| content.len() as u64),
-                Primitive::Chmod { .. } => 0,
-                Primitive::RenameNoReplace { from, to, .. } => {
-                    let source = on_disk(&moved, from);
-                    let gone: Vec<PathBuf> = taken
-                        .iter()
-                        .filter(|path| *path != &source && path.starts_with(&source))
-                        .cloned()
-                        .collect();
-                    let bytes = size_of(&source, &gone);
-                    moved.push((to.clone(), source.clone()));
-                    taken.push(source);
-                    bytes
-                }
-            };
-            out.push(ActionPlanned {
-                step: self.names.neutral_step(&lowered.step),
-                bytes,
-            });
-        }
-        out
+        actions_planned_of(&self.names, &self.lowered)
     }
 
     /// Each recovery as a preview shows it.

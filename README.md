@@ -1141,7 +1141,7 @@ omaddons undo --last-by agent
 omaddons undo 01M51F4QY5KB --saved-variables restore   # finish a deferred restore after quitting
 ```
 
-`TX`, `--run` and `--last-by` cannot be combined. A prefix that matches several transactions or runs is `not_found`, with the candidates in `details.candidates`.
+`TX`, `--run` and `--last-by` cannot be combined. A prefix that matches several transactions or runs is `not_found`, with the candidates in `details.candidates`. `--run` takes the runs `history` shows; given a doctor run id (`2026-10-30T18-03-40Z__01M8S…`), as `--run` or as `TX`, `undo` answers `usage` before reading anything, with the fix `omaddons doctor undo <id>`.
 
 `--dry-run` returns `data.precondition` and stores the preview as a plan (`data.plan_id`, see [Stored plans](#stored-plans)); `--if-match <it>` reverts exactly what that preview showed, or nothing: after a newer change, bare `undo` would pick another run, and the bound run refuses with `plan_stale` instead (see [Previews, plans and `--if-match`](#previews-plans-and---if-match)). The stored intent names the full transaction or run the preview resolved, including when the request was bare `undo` or used `--last-by`.
 
@@ -1161,7 +1161,7 @@ A later transaction that only added or dropped a requester in a dependency's `re
 
 #### Undoing a repair
 
-A `doctor fix` repair (`kind: repair` in `history`) is undone like any change. `omaddons undo <tx>` names it. Bare `undo` takes it when it is the newest change, which it usually is. `--last-by`, `--run` and `-t <client>` (when the repair touched that client) take it too.
+A `doctor fix` repair (`kind: repair` in `history`) is undone like any change. `omaddons undo <tx>` names it. Bare `undo` takes it when it is the newest change, which it usually is. `--last-by`, `--run` and `-t <client>` (when the repair touched that client) take it too, and [`omaddons doctor undo <run>`](#doctor-undo) names it by the doctor run that made it.
 
 - **Strict, in reverse.** The undo inverts the repair's operations newest first. Before anything moves, it checks two things: every path is still exactly as the repair left it, and every backup it restores from still holds the bytes it kept. Anything else is `undo_conflict` with `details.reason: "changed_since_repair"` and the paths in `details.paths`. The repaired state and the repair's backups then stay as they are.
 - **A set-aside journal.** The undo of a set-aside puts the journal back only while nothing that journal depends on has changed: the client's record generation, its identity marker, and the folders and `WTF/` the journal would recover. Otherwise it is `undo_conflict` with `details.reason: "changed_since_suspension"`. The journal is restored under the provisional name `<tx>.reactivating.jsonl` first and renamed to its own name last.
@@ -1912,7 +1912,7 @@ A default `doctor fix` repairs every planned finding and lists the others; the h
 
 **Preview, then bind.** `--dry-run` runs the checks and plans the repair without taking the lock or changing anything outside its run directory. It lists every filesystem operation (`actions_planned`: `op`, `path`, a rename's `to`, the `mode` a chmod sets, whether the old content is kept as a backup, and `bytes`), every recovery of an interrupted change it would finish (`delegated_planned`), `summary.bytes_to_back_up`, and `precondition`, the token `--if-match` takes. The token describes the repair, not the run (no run id, no time), so a bound run in another process, later, confirms it: `doctor fix --if-match <token>` plans again under the lock and compares before its first recovery or operation; a difference is `plan_stale` (exit 4) with the preview as its fix, and nothing changes. A bound `--dry-run` compares its token too. `doctor fix` stores no plan: its exits are the doctor's, and `apply` reports the general ones.
 
-**The run.** Under the global lock, in this order: plan again, compare the token, finish the disclosed recoveries, then repair as one journaled transaction. A failed operation rolls back every one before it (`DONE_FAILED`, exit 3). After the lock is released, the repaired failure modes are checked again: `findings` holds what is left, and a repaired mode still found makes the run `DONE_PARTIAL` (exit 2). It never deletes: what it sets aside is moved into the run's `quarantine/`, and what it overwrites is kept in `backups/`. It never writes below `WTF/`, `config.toml`, `addons.toml` or a SavedVariables file. A repair is a line of kind `repair` in [`history`](#history); `--reason` and `--actor` are recorded on it. Its run directory holds `undo.sh`, which restores what the repair changed; `doctor undo` (coming) will run it for you.
+**The run.** Under the global lock, in this order: plan again, compare the token, finish the disclosed recoveries, then repair as one journaled transaction. A failed operation rolls back every one before it (`DONE_FAILED`, exit 3). After the lock is released, the repaired failure modes are checked again: `findings` holds what is left, and a repaired mode still found makes the run `DONE_PARTIAL` (exit 2). It never deletes: what it sets aside is moved into the run's `quarantine/`, and what it overwrites is kept in `backups/`. It never writes below `WTF/`, `config.toml`, `addons.toml` or a SavedVariables file. A repair is a line of kind `repair` in [`history`](#history); `--reason` and `--actor` are recorded on it. Its run directory holds `undo.sh`, which restores what the repair changed; [`doctor undo`](#doctor-undo) with the run's id does the same.
 
 **Refusals.** Before anything changes, as `doctor_refused` (exit 4) with `details.reason`: `force_required`; `client_running` (the repair needs a client that is running to be closed); `filesystem_mismatch` (a rename across filesystems); `too_many_actions` (over 1,000 operations, `DOCTOR_FIX_MAX_ACTIONS`); `fixer_conflict` (two repairs touch the same files, or a repair touches an unfinished change's). A fixer that declines names its own reason. Another process holding the lock past the timeout is exit 5. `--force` without `--yes`, or without `--only`, is a usage error (exit 64) whose fix is the preview, `omaddons doctor fix --dry-run` with your selection: a fix never supplies consent.
 
@@ -1947,6 +1947,58 @@ omaddons doctor diff 2026-10-31T07-23-32Z__01M68DF7…
 ```
 
 Without a run, it is the plan a default `doctor fix --dry-run` with the same `-t` would make: `actions_planned`, `delegated_planned`, `bytes_to_back_up` and `precondition`, which on an unchanged home equals that dry run's, so `doctor fix --if-match <token>` runs it (`commands[]` offers it). With a run (its id or `latest`), it compares this moment's findings with that run's report, as `doctor --since` does: `since: {run, new_instances, resolved_instances, unchanged}`, with a `doctor explain` command per failure mode that has a new instance. An unknown or interrupted run is `not_found` (exit 66), with the newest finished runs as fix and alternatives. The other mode's keys are `null`. It takes no selection flag, and exits 0, 1 when anything is found, 4 when planning is refused, 64, 66 and 74.
+
+### `doctor undo`
+
+Undo a `doctor fix` repair, named by the doctor run that made it. It is the same undo as [`omaddons undo <tx>`](#undoing-a-repair): the same strict checks and refusals, and a run directory of kind `undo` of its own (`report.json` names `reverted_run`).
+
+```bash
+omaddons doctor undo                                 # the newest repair still in effect
+omaddons doctor undo 2026-10-30T18-03-40Z__01M8S…    # the repair that run made
+omaddons doctor undo --dry-run                       # what it would revert; changes nothing
+```
+
+- **Which repair.**
+  - Without a run: the newest repair that committed and is still in effect, whatever diagnoses ran since (they make no history).
+  - A run id, as `doctor fix` printed it: the repair history records for that run, also when the run's report is gone.
+  - An undo run's id: that undo, undone in turn.
+  - A run that committed nothing (a diagnose, a dry run, a rolled-back fix): "changed nothing", exit 0.
+  - An unknown run: `not_found` (exit 66).
+  - `latest`: `usage` (exit 64), since the newest report may be a diagnose. Its fix is bare `omaddons doctor undo`.
+  - A repair's transaction id: `usage`, whose fix names its run.
+- **Idempotent.** A repair already undone is no error: exit 0, `already_undone: true` and `undo_tx` the undo that undid it. Nothing is written, also when another process undid it a moment before. (`omaddons undo <tx>` of an undone repair stays `undo_conflict`, as for every undo.)
+- **Previews.** `--dry-run` runs the checks and lists the inverse operations in `actions_planned` (`doctor fix`'s shape, the undo's own names written `<run>` and `<tx>`), without a run directory or a lock. `doctor undo` stores no plan and takes no `--if-match`. Its bound form is the preview its dry run offers in `commands[]`, `omaddons undo <tx> --dry-run`, which stores a plan for `apply`.
+- **What it leaves.** An interrupted change the fix run completed (its `delegated[]`, rolled forward) is not reverted. The human output names it, and `commands[]` offers `omaddons undo <tx>` for it.
+
+```text
+$ omaddons doctor undo
+undid repair 01M9… from run 2026-10-30T18-03-40Z__01M8S… (1 write)
+run 2026-10-30T18-05-12Z__01MA… · tx 01MA… · redo: omaddons undo 01MA…
+```
+
+The JSON is the [doctor envelope](#the-doctor-envelope) with `kind: "undo"` in `report.json`, and these report keys:
+
+- `doctor_contract_version`;
+- `run_id` and `run_dir`, the undo's own run (`null` when it made none);
+- `started_at` and `finished_at`;
+- `reverted_run`, the fix run;
+- `tx`, the repair reverted;
+- `undo_tx`, the undo's own transaction;
+- `state` (`DONE_OK`, `DONE_FAILED`, `REFUSING`, `LOCK_LOST`);
+- `actions_taken` and `already_undone`;
+- under `--dry-run`, `actions_planned`.
+
+It exits 0 when the repair was undone, was already undone, or there is nothing to undo, and for a dry run. Otherwise:
+
+| Exit | When |
+|---|---|
+| 3 | its commit rolled back |
+| 4 | refused (`undo_conflict`, `game_running`, `scope_denied`) |
+| 5 | the lock was not acquired |
+| 64 | usage |
+| 66 | `not_found`, `target_not_found` |
+| 73 | its run directory could not be created |
+| 74 | anything else |
 
 ### `config`
 

@@ -12,6 +12,7 @@ pub mod completions;
 pub mod config;
 pub mod copy;
 pub mod doctor;
+pub mod doctor_undo;
 pub mod drift;
 pub mod engine;
 pub mod errors;
@@ -243,6 +244,7 @@ pub const COMMANDS: &[CommandEntry] = &[
     entry("doctor explain", Look, false, &[0, 64, 66, 74], report_schema::<doctor::ExplainOutcome>, Network::None).doctor(),
     entry("doctor fix", Look, true, &[0, 1, 2, 3, 4, 5, 6, 64, 66, 73, 74], report_schema::<doctor::FixRun>, Network::Optional).doctor(),
     entry("doctor diff", Look, false, &[0, 1, 4, 64, 66, 74], report_schema::<doctor::DiffRun>, Network::None).doctor(),
+    entry("doctor undo", Look, true, &[0, 3, 4, 5, 64, 66, 73, 74], report_schema::<doctor_undo::DoctorUndoRun>, Network::None).doctor(),
     entry("install", Change, true, &[0, 1, 2, 3, 4, 5, 6], data_schema::<install::InstallOutcome>, Network::Optional).storing_plan(),
     entry("update", Change, true, &[0, 1, 2, 3, 4, 5, 6], data_schema::<update::UpdateOutcome>, Network::Optional).storing_plan(),
     entry("pin", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<pin::PinOutcome>, Network::Optional).storing_plan(),
@@ -720,6 +722,8 @@ pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> ProcessE
                 out.emit_doctor(result)
             }
             doctor::Verb::Diff(diff) => out.emit_doctor(doctor::run_diff(ctx, diff)),
+            // As `doctor fix`: the repair undo's own cleanup rebuilds the projection.
+            doctor::Verb::Undo(undo) => out.emit_doctor(doctor_undo::run(ctx, undo)),
         };
     }
     let exit = run_command(cli, ctx, &out);

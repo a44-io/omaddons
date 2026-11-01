@@ -557,8 +557,32 @@ fn render_tail(w: &mut dyn Write, u: &Undone, hint: bool) -> std::io::Result<()>
     Ok(())
 }
 
+/// A doctor run id given where `undo` takes a transaction or a run of the history
+/// (§6.14.4: the two kinds of run): `usage`, whose fix is the same undo through the
+/// doctor's own form. From the arguments alone, before anything is read.
+fn refuse_doctor_run(args: &UndoArgs) -> Result<()> {
+    for given in [args.run.as_deref(), args.tx.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        // A ULID in any case, as `undo`'s own prefixes are.
+        if let Some(run) = DoctorRunId::parse(&given.to_ascii_uppercase()) {
+            return Err(Error::new(
+                ErrorCode::Usage,
+                format!(
+                    "{given} is a doctor run directory; `undo` takes a transaction or a run of the history"
+                ),
+                Suggestion::command(["omaddons", "doctor", "undo", run.as_str()]),
+            )
+            .user_verb());
+        }
+    }
+    Ok(())
+}
+
 /// Runs `undo`.
 pub fn run(ctx: &Context, args: &UndoArgs) -> Result<UndoOutcome> {
+    refuse_doctor_run(args)?;
     // clap admits only the three actors (its value fix corrects a typo in place); this
     // guard never guesses one.
     let last_by = args
@@ -1680,6 +1704,76 @@ mod tests {
         .unwrap();
         let txs: Vec<TxId> = on_c_only.entries.iter().map(|s| s.entry.tx).collect();
         assert_eq!(txs, [on_c.tx], "-t C: its own install");
+    }
+
+    /// A doctor run id is refused from the arguments alone (no history or home is read):
+    /// `usage`, whose fix is the same undo through `doctor undo`, the user's verb kept.
+    #[test]
+    fn a_doctor_run_id_is_refused_before_anything_is_read() {
+        let run = "2026-10-30T18-03-40Z__01JB8Q2VC00000000000000001";
+        let lower = run.to_ascii_lowercase();
+        for (case, args) in [
+            (
+                "--run",
+                UndoArgs {
+                    run: Some(run.to_owned()),
+                    ..UndoArgs::default()
+                },
+            ),
+            (
+                "positional",
+                UndoArgs {
+                    tx: Some(run.to_owned()),
+                    ..UndoArgs::default()
+                },
+            ),
+            (
+                "lower-case --run",
+                UndoArgs {
+                    run: Some(lower.clone()),
+                    ..UndoArgs::default()
+                },
+            ),
+            (
+                "lower-case positional",
+                UndoArgs {
+                    tx: Some(lower.clone()),
+                    ..UndoArgs::default()
+                },
+            ),
+        ] {
+            let err = refuse_doctor_run(&args).unwrap_err();
+            assert_eq!(err.code, ErrorCode::Usage, "{case}");
+            assert_eq!(
+                err.fix.argv(),
+                Some(
+                    ["omaddons", "doctor", "undo", run]
+                        .map(str::to_owned)
+                        .as_slice()
+                ),
+                "{case}"
+            );
+            assert_eq!(err.usage_fix, crate::error::UsageFix::UserVerb, "{case}");
+        }
+        for (case, args) in [
+            ("bare", UndoArgs::default()),
+            (
+                "a transaction",
+                UndoArgs {
+                    tx: Some("01JB8Q2VA00000000000000001".to_owned()),
+                    ..UndoArgs::default()
+                },
+            ),
+            (
+                "a run of the history",
+                UndoArgs {
+                    run: Some("01JB8Q2VC00000000000000000".to_owned()),
+                    ..UndoArgs::default()
+                },
+            ),
+        ] {
+            assert!(refuse_doctor_run(&args).is_ok(), "{case}");
+        }
     }
 
     /// The undo of a repair, as `render_repair` prints it, and its `undone` facts.

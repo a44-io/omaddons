@@ -1791,6 +1791,10 @@ pub struct RepairUndone {
     pub undo_run: Option<String>,
     /// The inverses as the undo's history line records them; empty for a dry run.
     pub committed: Vec<RepairEntry>,
+    /// A dry run's: each inverse primitive lowered as the run would lower it, its own run
+    /// and transaction written `<run>` and `<tx>` (`doctor undo --dry-run`'s
+    /// `actions_planned`); empty for a real run.
+    pub planned: Vec<crate::doctor::report::ActionPlanned>,
 }
 
 /// Undoes the repair-family line `read.entries[at]` (M4-D46): planned and verified without
@@ -1804,6 +1808,59 @@ pub fn undo_repair(
     ctx: &EngineCtx<'_>,
     read: &HistoryRead,
     at: usize,
+) -> Result<UndoOutcome> {
+    undo_repair_reported(req, ctx, read, at).0
+}
+
+/// What the undo of a repair recorded, for `doctor undo`'s report (§6.11).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Recorded {
+    /// It ended before its run directory was made: a dry run, or a refusal.
+    #[default]
+    Nothing,
+    /// Its run directory could not be made (the doctor's exit 73).
+    CannotCreate,
+    /// The report its run recorded, whatever the outcome.
+    Report(Box<UndoReport>),
+}
+
+/// [`undo_repair`], and what its run recorded: `doctor undo` prints that report.
+pub fn undo_repair_reported(
+    req: &UndoRequest,
+    ctx: &EngineCtx<'_>,
+    read: &HistoryRead,
+    at: usize,
+) -> (Result<UndoOutcome>, Recorded) {
+    let mut recorded = Recorded::Nothing;
+    let result = undo_repair_recording(req, ctx, read, at, &mut recorded);
+    (result, recorded)
+}
+
+/// The id of the undo that already undid the line an undo was refused for (s1's "already
+/// undone" refusal), which `doctor undo` turns into a no-op; `None` for any other error.
+pub fn already_undone_by(error: &Error) -> Option<TxId> {
+    if error.code != ErrorCode::UndoConflict || error.details.get("reason").is_some() {
+        return None;
+    }
+    match error
+        .details
+        .get("conflicting")
+        .and_then(Value::as_array)?
+        .as_slice()
+    {
+        [one] if one.get("kind") == Some(&json!(TxKind::Undo)) => {
+            one.get("tx")?.as_str()?.parse().ok()
+        }
+        _ => None,
+    }
+}
+
+fn undo_repair_recording(
+    req: &UndoRequest,
+    ctx: &EngineCtx<'_>,
+    read: &HistoryRead,
+    at: usize,
+    recorded: &mut Recorded,
 ) -> Result<UndoOutcome> {
     let paths = ctx.paths;
     let reverted = read
@@ -1846,6 +1903,30 @@ pub fn undo_repair(
         &warnings,
     );
     if req.dry_run {
+        // Lowered as the run would lower it, against the names a dry run never makes
+        // (`doctor diff`'s): what `doctor undo --dry-run` plans. It creates nothing.
+        let mut preview = preview;
+        let run = RepairRun {
+            dir: paths.doctor_runs_dir().join("<run>"),
+            id: "<run>".to_owned(),
+        };
+        let lower_clients: Vec<(PathBuf, TargetKey)> =
+            clients.iter().map(|c| (c.dir.clone(), c.key)).collect();
+        let skill_dirs = [paths.skill_dir()];
+        let roots = LowerCtx {
+            paths,
+            tx: TxId::new(),
+            run: &run,
+            clients: &lower_clients,
+            skill_dirs: &skill_dirs,
+            scopes: &scopes,
+            mount_id: &fsx::mount_id,
+        };
+        let lowered =
+            lowered_from_inverses(&roots, &verified).map_err(|err| lowering_error(reverts, err))?;
+        if let Some(repair) = preview.repair.as_mut() {
+            repair.planned = crate::doctor::fix::planned_actions(&roots, &lowered);
+        }
         return Ok(preview);
     }
     // 2. A bound run plans what its preview showed, or nothing.
@@ -1863,6 +1944,9 @@ pub fn undo_repair(
         Ok(runtime) => runtime,
         Err(failure) => {
             warnings.extend(abandon(rtx, &scopes));
+            if failure.exit == crate::doctor::exit::Exit::CannotCreate {
+                *recorded = Recorded::CannotCreate;
+            }
             return Err(failure.error);
         }
     };
@@ -1902,16 +1986,19 @@ pub fn undo_repair(
     }
     let report = UndoReport {
         doctor_contract_version: crate::doctor::report::DOCTOR_CONTRACT_VERSION,
-        run_id: runtime.id().clone(),
-        run_dir: run.dir.display().to_string(),
+        run_id: Some(runtime.id().clone()),
+        run_dir: Some(run.dir.display().to_string()),
         started_at,
         finished_at: crate::clock::now(),
-        state,
-        reverts,
         reverted_run: reverted.doctor_run_id.clone(),
-        tx,
+        tx: Some(reverts),
+        undo_tx: tx,
+        state,
         actions_taken,
+        already_undone: false,
+        actions_planned: None,
     };
+    *recorded = Recorded::Report(Box::new(report.clone()));
     let record = record_of(command, &report, error.as_ref(), &warnings)?;
     let mut harden = Vec::new();
     if run.dir.join(ACTIONS_LOG).is_file() {
@@ -2105,15 +2192,7 @@ fn committed(
             },
             &verified,
         )
-        .map_err(|err| match err {
-            LowerError::Error(error) => error,
-            LowerError::Refused { message, .. } => Error::new(
-                ErrorCode::UndoConflict,
-                message,
-                Suggestion::command(["omaddons", "history"]),
-            )
-            .details(json!({ "tx": c.reverts, "reason": "changed_since_repair" })),
-        })?;
+        .map_err(|err| lowering_error(c.reverts, err))?;
         found.extend(running.warning());
         Ok((verified, lowered, found))
     })();
@@ -2406,7 +2485,22 @@ fn outcome_of(
             plan: verified,
             undo_run: None,
             committed,
+            planned: Vec::new(),
         }),
+    }
+}
+
+/// Why lowering the undo of `reverts` stopped: its own error, or a refusal, which is a
+/// path that changed since the repair.
+fn lowering_error(reverts: TxId, err: LowerError) -> Error {
+    match err {
+        LowerError::Error(error) => error,
+        LowerError::Refused { message, .. } => Error::new(
+            ErrorCode::UndoConflict,
+            message,
+            Suggestion::command(["omaddons", "history"]),
+        )
+        .details(json!({ "tx": reverts, "reason": "changed_since_repair" })),
     }
 }
 
@@ -4568,10 +4662,16 @@ mod tests {
         assert_eq!(report["kind"], json!("undo"), "{report}");
         assert_eq!(report["command"], json!("undo"), "{report}");
         assert_eq!(report["state"], json!("DONE_OK"), "{report}");
-        assert_eq!(report["reverts"], json!(tx), "{report}");
+        assert_eq!(report["tx"], json!(tx), "{report}");
         assert_eq!(report["reverted_run"], json!(home.run.id), "{report}");
-        assert_eq!(report["tx"], json!(undo_tx), "{report}");
+        assert_eq!(report["undo_tx"], json!(undo_tx), "{report}");
         assert_eq!(report["actions_taken"], json!(1), "{report}");
+        assert_eq!(report["already_undone"], json!(false), "{report}");
+        assert_eq!(
+            report["run_id"],
+            json!(dir.file_name().unwrap().to_str()),
+            "{report}"
+        );
         assert_eq!(mode_of(&dir.join("report.json")), 0o400);
         assert_eq!(mode_of(&dir.join(ACTIONS_LOG)), 0o400);
         assert_eq!(mode_of(&dir.join(UNDO_SCRIPT)), 0o500);

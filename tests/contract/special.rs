@@ -610,7 +610,13 @@ fn a_dry_run_leaves_the_state_directory_as_it_was() {
             .run();
         fixed.ok();
         let repair = fixed.envelope()["tx"].as_str().unwrap().to_owned();
-        dry_runs(&[(&["undo", &repair, "--dry-run"], true)]);
+        let fix_run = fixed.envelope()["run_id"].as_str().unwrap().to_owned();
+        dry_runs(&[
+            (&["undo", &repair, "--dry-run"], true),
+            // `doctor undo` stores nothing (M4-D22) and makes no run.
+            (&["doctor", "undo", "--dry-run"], false),
+            (&["doctor", "undo", &fix_run, "--dry-run"], false),
+        ]);
     }
 
     let expected: BTreeSet<String> = omaddons::app::COMMANDS

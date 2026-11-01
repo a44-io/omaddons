@@ -2576,3 +2576,43 @@ fn robot_docs_guide() {
     assert_eq!(c.envelope["error"]["code"], "usage");
     insta::assert_json_snapshot!("robot_docs_guide_extra_argument", s.stable(&c.envelope));
 }
+
+/// `doctor undo` (E7 s4) on a home with one committed `fm-test-write` repair (the test
+/// fixers, a debug build): its dry run, `latest` refused, `undo --run` of a doctor run id
+/// refused, and the undo.
+#[test]
+fn doctor_undo() {
+    use crate::common::doctor::test_fixers::{ENV, WRITE, plant_write};
+    let s = Scene::new();
+    let file = plant_write(&s.home, "a.write", b"broken\n");
+    let fixed = s.json_env(&["doctor", "fix", "--only", WRITE], &[ENV], 0);
+    let run = fixed.envelope["run_id"].as_str().unwrap().to_owned();
+    let tx = fixed.envelope["tx"].as_str().unwrap().to_owned();
+
+    let c = s.json(&["doctor", "undo", "--dry-run"], 0);
+    assert_eq!(c.envelope["tx"], json!(tx));
+    assert_eq!(
+        c.envelope["commands"][0]["argv"],
+        json!(["omaddons", "undo", tx, "--dry-run"])
+    );
+    insta::assert_json_snapshot!("doctor_undo_dry_run", s.stable(&c.envelope));
+
+    let c = s.json(&["doctor", "undo", "latest"], 64);
+    assert_eq!(
+        c.envelope["error"]["fix_argv"],
+        json!(["omaddons", "doctor", "undo"])
+    );
+    insta::assert_json_snapshot!("doctor_undo_latest", s.stable(&c.envelope));
+
+    let c = s.json(&["undo", "--run", &run], 2);
+    assert_eq!(
+        c.envelope["error"]["fix_argv"],
+        json!(["omaddons", "doctor", "undo", run])
+    );
+    insta::assert_json_snapshot!("undo_run_doctor_run_id", s.stable(&c.envelope));
+
+    let c = s.json(&["doctor", "undo"], 0);
+    assert_eq!(c.envelope["reverted_run"], json!(run));
+    assert_eq!(fs::read(&file).unwrap(), b"broken\n", "undone");
+    insta::assert_json_snapshot!("doctor_undo_ok", s.stable(&c.envelope));
+}
