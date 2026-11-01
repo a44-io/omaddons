@@ -346,6 +346,124 @@ mod barrier_matrix {
         (crashed, fired)
     }
 
+    /// E7's reactivation case (omad-m4-agent-surface-doctor-c6cm.5.7.5): [`reactivation_case`]
+    /// with the reactivation the real undo of the set-aside, `omaddons undo <set-aside>`
+    /// through the binary, crashed at `spec`. The same oracle: before the undo's `done`,
+    /// the scene as the set-aside left it and F never recovered; from `done`, F recovered
+    /// once by the folder pass, after the undo.
+    fn undo_reactivation_case(
+        log: &TestLog,
+        crash: FolderCrash,
+        spec: &str,
+        by: Recovering,
+    ) -> (bool, Option<String>) {
+        let scene = BarrierScene::new(log, crash);
+        scene.set_aside_whole(log);
+        let before = scene.trees();
+        let ran = scene.undo_set_aside(log, spec);
+        ran.assert_private();
+        let crashed = ran.run.code < 0;
+        let repair = if crashed {
+            scene.repair_tx()
+        } else {
+            ran.ok();
+            ran.envelope()["data"]["tx"].as_str().map(str::to_owned)
+        };
+        let done = repair.as_deref().is_some_and(|tx| scene.done(tx));
+        let fired = match (crashed, spec.starts_with("fsx.mutate.checked")) {
+            (false, _) => None,
+            (true, true) => scene.checked_point(),
+            (true, false) => super::common::repair::undo_point_of(spec),
+        };
+        log.note(format!(
+            "{spec}: crashed {crashed}, done {done}, fired {fired:?}, undo {repair:?}"
+        ));
+        log.json("undo journal", &scene.repair_lines());
+        status_changes_nothing(log, &scene, scene.repair_pending());
+        let envelope = recover(log, &scene, by, 0);
+        let context = format!("{} at {spec} ({crash:?}), the undo for real", by.label());
+        if done {
+            assert_after(log, &scene, &envelope, repair.as_deref().unwrap(), &context);
+        } else {
+            assert_before(log, &scene, &before, by, repair.as_deref(), &context);
+            assert!(
+                about(&envelope, "journal_recovered", &scene.f).is_empty(),
+                "{context}: F is never recovered while its undo rolls back"
+            );
+        }
+        (crashed, fired)
+    }
+
+    /// E7's design gate, the reactivation through the real undo: crashed at every point on
+    /// its path (the run directory's and the engine's before its journal, every repair
+    /// point and tracked boundary of each inverse, every `checked` hit), recovered by
+    /// `config set`; behind a journal that reached `swapped`, at the key boundaries.
+    #[test]
+    fn a_reactivation_crashed_anywhere_settles_before_the_folder_pass() {
+        let log = tlog!();
+        let n = {
+            let scene = BarrierScene::new(&log, FolderCrash::MidSwap);
+            scene.set_aside_whole(&log);
+            scene.reactivation_len()
+        };
+        let mut all = vec![
+            "doctor.run.staged=abort".to_owned(),
+            "doctor.run.published=abort".to_owned(),
+            "engine.snapshot.prestaged=abort".to_owned(),
+            "engine.lock.acquired=abort".to_owned(),
+            "engine.revalidated=abort".to_owned(),
+        ];
+        all.extend(specs(n));
+        let mut fired = BTreeSet::new();
+        let mut cases = 0;
+        for spec in all {
+            let case = log.case(&spec);
+            let (crashed, point) =
+                undo_reactivation_case(&case, FolderCrash::MidSwap, &spec, Recovering::ConfigSet);
+            assert!(crashed, "{spec} is on the undo's path");
+            fired.extend(point);
+            cases += 1;
+        }
+        for k in 1..=CHECKED_SWEEP_MAX {
+            let spec = format!("fsx.mutate.checked=abort@{k}");
+            let case = log.case(&spec);
+            let (crashed, point) =
+                undo_reactivation_case(&case, FolderCrash::MidSwap, &spec, Recovering::ConfigSet);
+            fired.extend(point);
+            cases += 1;
+            if !crashed {
+                break;
+            }
+        }
+        for spec in key_specs(n) {
+            let case = log.case(&format!("swapped {spec}"));
+            undo_reactivation_case(&case, FolderCrash::Swapped, &spec, Recovering::ConfigSet);
+            cases += 1;
+        }
+        let mut expected = points(n);
+        expected.extend(
+            [
+                "run.staged",
+                "run.published",
+                "snapshot.prestaged",
+                "lock.acquired",
+                "revalidated",
+            ]
+            .map(str::to_owned),
+        );
+        log.json("crashed_at", &fired);
+        log.note(format!(
+            "{cases} cases, {} boundaries fired of {}",
+            fired.len(),
+            expected.len()
+        ));
+        let missing: Vec<String> = expected.difference(&fired).cloned().collect();
+        assert!(
+            missing.is_empty(),
+            "boundaries that never fired: {missing:?}"
+        );
+    }
+
     #[test]
     fn the_scene_builds_a_valid_reactivation() {
         let log = tlog!();

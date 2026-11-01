@@ -318,6 +318,30 @@ impl BarrierScene {
         )
     }
 
+    /// E7's reactivation for real: `omaddons undo <the set-aside> --json --progress json`
+    /// through the binary, `failpoints` armed (empty: none). The undo's own doctor run, once
+    /// it is published, is recorded as the last repair's (for [`Self::actions_lines`]).
+    pub fn undo_set_aside(&self, log: &TestLog, failpoints: &str) -> super::tlog::Ran {
+        log.step(&format!("undo the set-aside (crash at {failpoints:?})"));
+        let argv = ["undo", &self.set_aside_tx(), "--json", "--progress", "json"];
+        let mut cmd = log.cmd(&self.home, &argv);
+        if !failpoints.is_empty() {
+            cmd = cmd.failpoints(failpoints);
+        }
+        let ran = cmd.run();
+        let known = self.runs.borrow().clone();
+        let newest = fs::read_dir(self.omaddons().join("doctor/runs"))
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+            .filter(|name| !name.starts_with('.') && !known.contains(name))
+            .max();
+        if let Some(run) = newest {
+            self.runs.borrow_mut().push(run);
+        }
+        ran
+    }
+
     /// The set-aside's transaction.
     pub fn set_aside_tx(&self) -> String {
         self.set_aside_tx.borrow().clone().expect("set aside first")

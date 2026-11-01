@@ -6038,7 +6038,7 @@ mod repair_undo_matrix {
     use std::time::Instant;
 
     use super::common::repair::{
-        End, Kind, RepairScene, assert_undo_settled, config_set, undo_attributed,
+        End, Kind, RepairScene, assert_undo_settled, config_set, log_point, undo_attributed,
         undo_checked_sweep, undo_crash_points, undo_crash_specs, undo_point_of,
     };
     use super::common::tlog::TestLog;
@@ -6070,11 +6070,13 @@ mod repair_undo_matrix {
             let r = RepairScene::repaired(log, kind);
             r.undo(log, &spec).aborted();
             exercised.extend(undo_point_of(&spec));
+            log_point(log, kind, &spec);
             assert_undo_settled(log, &r, &config_set());
             states += 1;
         }
-        for (_, r) in undo_checked_sweep(kind, log) {
+        for (n, r) in undo_checked_sweep(kind, log) {
             exercised.extend(undo_attributed(&r));
+            log_point(log, kind, &format!("fsx.mutate.checked=abort@{n}"));
             assert_undo_settled(log, &r, &config_set());
             states += 1;
         }
@@ -6119,6 +6121,70 @@ repair_undo_crash_matrix! {
     repair_undo_crash_matrix_quarantine_temp_symlink => QuarantineTempSymlink,
     repair_undo_crash_matrix_flatten_two => FlattenTwo,
     repair_undo_crash_matrix_flatten_three => FlattenThree,
+    repair_undo_crash_matrix_suspend => Suspend,
+}
+
+/// The undo `U` of a repair, itself undone (a redo), crashed at every point on its path:
+/// the oracle swaps again, the whole original `O` before the redo's durable `done`, the
+/// whole repaired `R` from it, with `U`'s line kept and the redo's appearing once.
+#[test]
+fn repair_undo_of_an_undo_crash_matrix() {
+    use std::collections::BTreeSet;
+
+    use common::repair::{
+        End, Kind, RepairScene, assert_redo_settled, config_set, log_point, redo_checked_sweep,
+        undo_attributed, undo_crash_points, undo_crash_specs, undo_point_of,
+    };
+
+    let log = tlog!();
+    for kind in [Kind::Chmod, Kind::FlattenTwo, Kind::Suspend] {
+        log.step(&format!("the undo of the undo of {} unarmed", kind.label()));
+        let r = RepairScene::undone(&log, kind);
+        r.redo(&log, "").ok();
+        assert_eq!(
+            r.accounted(End::After),
+            Vec::<String>::new(),
+            "{}",
+            kind.label()
+        );
+        assert_eq!(r.redo_history().len(), 1, "{}", kind.label());
+        let mut exercised = BTreeSet::new();
+        let mut states = 0;
+        for spec in undo_crash_specs(kind) {
+            log.step(&format!(
+                "the undo of the undo of {} at {spec}",
+                kind.label()
+            ));
+            let r = RepairScene::undone(&log, kind);
+            r.redo(&log, &spec).aborted();
+            exercised.extend(undo_point_of(&spec));
+            log_point(&log, kind, &spec);
+            assert_redo_settled(&log, &r, &config_set());
+            states += 1;
+        }
+        for (n, r) in redo_checked_sweep(kind, &log) {
+            exercised.extend(undo_attributed(&r));
+            log_point(&log, kind, &format!("fsx.mutate.checked=abort@{n}"));
+            assert_redo_settled(&log, &r, &config_set());
+            states += 1;
+        }
+        log.json("crashes_exercised", &exercised);
+        let missing: Vec<String> = undo_crash_points(kind)
+            .difference(&exercised)
+            .cloned()
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "the undo of the undo of {}: crash point never hit: {}",
+            kind.label(),
+            missing.join(", ")
+        );
+        log.note(format!(
+            "the undo of the undo of {}: {states} crash states, {} crash points",
+            kind.label(),
+            exercised.len()
+        ));
+    }
 }
 
 /// An undo crashed after its last inverse (before `done`), its recovery crashed at every
@@ -6129,8 +6195,8 @@ fn a_repair_undo_recovery_crashed_at_every_inverse_finishes() {
     use common::repair::{End, Kind, RepairScene, assert_undo_settled, config_set};
 
     let log = tlog!();
-    for kind in Kind::ALL {
-        let n = kind.primitives();
+    for kind in Kind::ALL.into_iter().chain([Kind::Suspend]) {
+        let n = kind.undo_inverses();
         for j in 1..=n {
             log.step(&format!(
                 "the undo of {}: recovery crashed at inverse {j} of {n}",
@@ -6169,8 +6235,8 @@ fn io_failures_in_a_repair_undo_roll_it_back() {
     use common::repair::{End, Kind, RepairScene};
 
     let log = tlog!();
-    for kind in Kind::ALL {
-        let n = kind.primitives();
+    for kind in Kind::ALL.into_iter().chain([Kind::Suspend]) {
+        let n = kind.undo_inverses();
         let mut specs: Vec<String> = (1..=n)
             .flat_map(|k| {
                 [

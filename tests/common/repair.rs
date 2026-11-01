@@ -59,7 +59,15 @@ pub enum Kind {
     /// `<config>/credentials/github` into the run's config quarantine: only the mount
     /// scene uses it (it is not in [`Kind::ALL`]).
     QuarantineConfigFile,
+    /// A stuck folder journal on retail (a `prepared` line that names its target but does
+    /// not decode), its in-flight lock and its client stage set aside, guarded by the
+    /// client's generation and marker: three renames. E7's undo scenes use it (it is not
+    /// in [`Kind::ALL`]).
+    Suspend,
 }
+
+/// The stuck journal [`Kind::Suspend`] sets aside.
+pub const STUCK: &str = "01JB8Q2VA00000000000000009";
 
 impl Kind {
     pub const ALL: [Kind; 8] = [
@@ -77,8 +85,17 @@ impl Kind {
     pub fn primitives(self) -> u32 {
         match self {
             Kind::FlattenTwo => 2,
-            Kind::FlattenThree => 3,
+            Kind::FlattenThree | Kind::Suspend => 3,
             _ => 1,
+        }
+    }
+
+    /// How many inverses its undo runs: one per primitive, and for a set-aside one more,
+    /// the journal file being restored under its provisional name first and activated last.
+    pub fn undo_inverses(self) -> u32 {
+        match self {
+            Kind::Suspend => self.primitives() + 1,
+            _ => self.primitives(),
         }
     }
 
@@ -93,13 +110,14 @@ impl Kind {
             Kind::FlattenTwo => "flatten_two",
             Kind::FlattenThree => "flatten_three",
             Kind::QuarantineConfigFile => "quarantine_config_file",
+            Kind::Suspend => "suspend",
         }
     }
 
     fn from_label(label: &str) -> Option<Kind> {
         Kind::ALL
             .into_iter()
-            .chain([Kind::QuarantineConfigFile])
+            .chain([Kind::QuarantineConfigFile, Kind::Suspend])
             // ubs:ignore — comparing fix-kind labels, not secrets
             .find(|kind| kind.label() == label)
     }
@@ -209,6 +227,16 @@ impl RepairScene {
         self.state().join("doctor/runs").join(&self.run_id)
     }
 
+    /// [`Kind::Suspend`]'s stuck journal, its in-flight lock and its client stage.
+    fn stuck(&self) -> [PathBuf; 3] {
+        [
+            self.state().join(format!("journal/{STUCK}.jsonl")),
+            self.state().join(format!("inflight/{STUCK}.lock")),
+            self.client()
+                .join(format!("Interface/.omaddons/stage/{STUCK}")),
+        ]
+    }
+
     /// The planted state file or link of the quarantine kinds.
     fn state_victim(&self) -> PathBuf {
         let name = match self.kind {
@@ -278,6 +306,21 @@ impl RepairScene {
                     0o644,
                 );
                 return Some(self.parked_tree(&self.addons("Same"), "Same"));
+            }
+            Kind::Suspend => {
+                // A `prepared` line that names its target (so recovery leaves it on
+                // retail alone) but does not decode: `journal_unreadable`.
+                let key = omaddons::discover::registry::read_marker(&self.client()).unwrap();
+                let [journal, lock, stage] = self.stuck();
+                let line = json!({
+                    "type": "prepared",
+                    "schema_version": "1.1",
+                    "target_key": key,
+                    "written_by": "a build this one does not read",
+                });
+                write(&journal, format!("{line}\n").as_bytes(), 0o644);
+                write(&lock, b"", 0o644);
+                write(&stage.join("Foo/Foo.toc"), toc("Foo").as_bytes(), 0o644);
             }
         }
         None
@@ -362,6 +405,32 @@ impl RepairScene {
                 }
                 paths.extend(client_parked("Same"));
             }
+            Kind::Suspend => {
+                let [journal, lock, stage] = self.stuck();
+                add(format!("<state>/journal/{STUCK}.jsonl"), journal);
+                add(
+                    format!("<state>/journal/{STUCK}.reactivating.jsonl"),
+                    self.state()
+                        .join(format!("journal/{STUCK}.reactivating.jsonl")),
+                );
+                add(format!("<state>/inflight/{STUCK}.lock"), lock);
+                add(format!("<meta>/stage/{STUCK}"), stage);
+                let quarantine = self.run_dir().join("quarantine/state");
+                add(
+                    format!("<run>/quarantine/state/journal/{STUCK}.jsonl"),
+                    quarantine.join(format!("journal/{STUCK}.jsonl")),
+                );
+                add(
+                    format!("<run>/quarantine/state/inflight/{STUCK}.lock"),
+                    quarantine.join(format!("inflight/{STUCK}.lock")),
+                );
+                for half in self.client_halves() {
+                    paths.push((
+                        format!("<client>/Interface/.omaddons/snapshots/<tx>.repair/quarantine/Interface/.omaddons/stage/{STUCK}"),
+                        half.join(format!("quarantine/Interface/.omaddons/stage/{STUCK}")),
+                    ));
+                }
+            }
         }
         paths
     }
@@ -441,6 +510,17 @@ impl RepairScene {
                 "<A>/.omaddons-flatten-<tx>".to_owned(),
                 client("Same"),
             ],
+            Kind::Suspend => vec![
+                format!("<state>/journal/{STUCK}.jsonl"),
+                format!("<state>/inflight/{STUCK}.lock"),
+                format!("<meta>/stage/{STUCK}"),
+                format!("<run>/quarantine/state/journal/{STUCK}.jsonl"),
+                format!("<run>/quarantine/state/inflight/{STUCK}.lock"),
+                format!(
+                    "<client>/Interface/.omaddons/snapshots/<tx>.repair/quarantine/Interface/.omaddons/stage/{STUCK}"
+                ),
+                format!("<state>/journal/{STUCK}.reactivating.jsonl"),
+            ],
         }
     }
 
@@ -476,6 +556,11 @@ impl RepairScene {
                 let inner = describe(&self.addons("Same/Same"));
                 after.insert("<A>/Same".to_owned(), inner);
                 after.insert(labels[2].clone(), parked);
+            }
+            Kind::Suspend => {
+                for (from, to) in [(0, 3), (1, 4), (2, 5)] {
+                    moved(&labels[from], &labels[to]);
+                }
             }
         }
         after
@@ -700,7 +785,12 @@ impl RepairScene {
 /// the tracked-only fsx boundaries (`fsx.mutate.{backed_up,executed,logged}=abort@k` for
 /// each k).
 pub fn crash_specs(kind: Kind) -> Vec<String> {
-    let steps = 1..=kind.primitives();
+    specs_over(kind.primitives())
+}
+
+/// [`crash_specs`] of a repair transaction of `n` primitives.
+fn specs_over(n: u32) -> Vec<String> {
+    let steps = 1..=n;
     let mut specs = vec!["doctor.repair.prepared=abort".to_owned()];
     specs.extend(
         steps
@@ -854,6 +944,41 @@ fn repair(kind: Kind, run_id: &str, client_dir: &Path) -> Value {
                 outer: addons.join("Same"),
             },
         ),
+        Kind::Suspend => {
+            use omaddons::engine::repair::guard;
+            use omaddons::engine::repair_action::{
+                Attribution, JournalFamily, JournalSet, SuspendedArtifact,
+            };
+            let tx: omaddons::model::TxId = STUCK.parse().unwrap();
+            let state = || QuarantineRoot::State;
+            let artifact = |path: PathBuf, root: QuarantineRoot| SuspendedArtifact { path, root };
+            (
+                "fm-concurrency_primitives-journal-unreadable",
+                Fix::Suspend {
+                    journal: JournalSet {
+                        tx,
+                        family: JournalFamily::Folder,
+                        target: Some(key),
+                        artifacts: vec![
+                            artifact(paths.journal(&tx), state()),
+                            artifact(paths.inflight_lock(&tx), state()),
+                            artifact(
+                                client_dir.join(format!("Interface/.omaddons/stage/{STUCK}")),
+                                QuarantineRoot::Client {
+                                    client_dir: client_dir.to_path_buf(),
+                                },
+                            ),
+                        ],
+                        guards: vec![
+                            guard::observe_generation(&paths, key).unwrap(),
+                            guard::observe_marker(client_dir, key).unwrap(),
+                        ],
+                        attribution: Attribution::Complete,
+                        unattributed: Vec::new(),
+                    },
+                },
+            )
+        }
     };
     let fixes = [PlannedFix { fm: fm.into(), fix }];
     let clients = [(client_dir.to_path_buf(), key)];
@@ -1267,11 +1392,16 @@ pub fn attributed(r: &RepairScene) -> Option<String> {
 /// Every crash point a kind's repair has: each primitive's five boundaries, and the
 /// commit's four phase points.
 pub fn crash_points(kind: Kind) -> std::collections::BTreeSet<String> {
+    points_over(kind.primitives())
+}
+
+/// [`crash_points`] of a repair transaction of `n` primitives.
+fn points_over(n: u32) -> std::collections::BTreeSet<String> {
     let mut points: std::collections::BTreeSet<String> =
         ["prepared", "done", "history", "committed"]
             .map(str::to_owned)
             .into();
-    for k in 1..=kind.primitives() {
+    for k in 1..=n {
         for boundary in ["step", "checked", "backed_up", "executed", "logged"] {
             points.insert(format!("{boundary}@{k}"));
         }
@@ -1325,15 +1455,18 @@ impl RepairScene {
 
     /// The undo's own run directory: the one besides the repair's (and no stage).
     pub fn undo_run_dir(&self) -> Option<PathBuf> {
+        // Run names begin with their UTC start time: the newest is the greatest, so after
+        // an undo of the undo, the redo's.
         listed(&self.state().join("doctor/runs"))
             .into_iter()
-            .find(|path| {
+            .filter(|path| {
                 path.file_name()
                     .and_then(|name| name.to_str())
                     .is_some_and(|name| {
                         name != self.run_id && !name.starts_with('.') // ubs:ignore — run names
                     })
             })
+            .max()
     }
 
     /// The undo's `actions.jsonl` lines.
@@ -1348,13 +1481,33 @@ impl RepairScene {
 
     /// History's `undo` lines that revert the repair.
     pub fn undo_history(&self) -> Vec<Value> {
-        let tx = self.tx();
+        self.tx()
+            .map(|tx| self.undo_lines_of(&tx))
+            .unwrap_or_default()
+    }
+
+    /// History's `undo` lines that revert `tx`.
+    fn undo_lines_of(&self, tx: &str) -> Vec<Value> {
         self.history_lines()
             .into_iter()
             // ubs:ignore — comparing history kinds and transaction ids, not secrets
-            .filter(|line| line["kind"] == "undo")
-            .filter(|line| tx.as_deref().is_some_and(|tx| line["reverts"] == tx))
+            .filter(|line| line["kind"] == "undo" && line["reverts"] == tx)
             .collect()
+    }
+
+    /// The undo `U` of the repair, once it committed.
+    pub fn undo_line_tx(&self) -> Option<String> {
+        match self.undo_history().as_slice() {
+            [one] => one["tx"].as_str().map(str::to_owned),
+            _ => None,
+        }
+    }
+
+    /// History's `undo` lines that revert the undo `U` (redos of the repair).
+    pub fn redo_history(&self) -> Vec<Value> {
+        self.undo_line_tx()
+            .map(|undo| self.undo_lines_of(&undo))
+            .unwrap_or_default()
     }
 
     /// Where an undo stopped at `phase` must end: before its durable `done` the whole
@@ -1366,6 +1519,35 @@ impl RepairScene {
             CrashPhase::NoJournal if self.undo_history().len() == 1 => End::Before,
             _ => End::After,
         }
+    }
+
+    /// The scene with its repair committed and then undone unarmed: the subject is `O`.
+    pub fn undone(log: &TestLog, kind: Kind) -> Self {
+        let r = Self::repaired(log, kind);
+        r.undo(log, "").ok();
+        assert_eq!(
+            r.accounted(End::Before),
+            Vec::<String>::new(),
+            "{}",
+            kind.label()
+        );
+        assert!(
+            r.undo_line_tx().is_some(),
+            "{}: the undo's line",
+            kind.label()
+        );
+        r
+    }
+
+    /// `omaddons undo <U> --json --progress json`, the undo of the repair's undo, `spec`
+    /// armed (empty: none).
+    pub fn redo(&self, log: &TestLog, spec: &str) -> super::tlog::Ran {
+        let undo = self.undo_line_tx().unwrap_or_default();
+        let mut cmd = log.cmd(&self.s, &json_args(&["undo", &undo]));
+        if !spec.is_empty() {
+            cmd = cmd.failpoints(spec);
+        }
+        cmd.run()
     }
 
     /// The problems with the originals the undo itself preserves, in `O`: the bytes a
@@ -1427,11 +1609,47 @@ pub struct UndoSettled {
 /// 8. nothing names a path below `WTF/`, and no run named a planted account.
 #[track_caller]
 pub fn assert_undo_settled(log: &TestLog, r: &RepairScene, recover: &[String]) -> UndoSettled {
+    settle(log, r, recover, Depth::Undo)
+}
+
+/// [`assert_undo_settled`] for the undo of the undo `U` (a redo of the repair), its ends
+/// swapped: before the redo's durable `done` the whole `O`, from it the whole `R`; the
+/// undo's line stays once, and the redo's appears once from `done` on.
+#[track_caller]
+pub fn assert_redo_settled(log: &TestLog, r: &RepairScene, recover: &[String]) -> UndoSettled {
+    settle(log, r, recover, Depth::Redo)
+}
+
+/// Which line a stopped undo reverts: the repair's, or the repair's undo's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Depth {
+    Undo,
+    Redo,
+}
+
+#[track_caller]
+fn settle(log: &TestLog, r: &RepairScene, recover: &[String], depth: Depth) -> UndoSettled {
     let phase = r.phase();
     let undo_tx = r.undo_tx();
-    let end = r.undo_end_at(phase);
+    let from_done = match phase {
+        CrashPhase::Done | CrashPhase::Committed => true,
+        CrashPhase::NoJournal => match depth {
+            Depth::Undo => r.undo_history().len() == 1,
+            Depth::Redo => r.redo_history().len() == 1,
+        },
+        _ => false,
+    };
+    // An undo leaves `O` from its `done`, a redo `R`; each leaves the other before it.
+    let end = match (depth, from_done) {
+        (Depth::Undo, true) | (Depth::Redo, false) => End::Before,
+        (Depth::Undo, false) | (Depth::Redo, true) => End::After,
+    };
     log.json("undo phase", &format!("{phase:?}"));
-    let label = format!("the undo of {} stopped at {phase:?}", r.kind.label());
+    let what = match depth {
+        Depth::Undo => "the undo",
+        Depth::Redo => "the undo of the undo",
+    };
+    let label = format!("{what} of {} stopped at {phase:?}", r.kind.label());
     let transcript = log.transcript_path().display().to_string();
     let naming = |envelope: &Value, code: &str| -> usize {
         envelope["warnings"]
@@ -1481,7 +1699,11 @@ pub fn assert_undo_settled(log: &TestLog, r: &RepairScene, recover: &[String]) -
     let wanted = match end {
         End::After => "R",
         End::Before => {
-            problems.extend(r.undo_accounted());
+            // The undo's own originals; a redo rolled back leaves the undo's, which its
+            // own reference run checked.
+            if matches!(depth, Depth::Undo) {
+                problems.extend(r.undo_accounted());
+            }
             "O"
         }
     };
@@ -1529,18 +1751,28 @@ pub fn assert_undo_settled(log: &TestLog, r: &RepairScene, recover: &[String]) -
         "{label}: the repair's line\ntranscript: {transcript}"
     );
     let undos = r.undo_history();
+    let (undo_lines, redo_lines) = match depth {
+        Depth::Undo => (usize::from(from_done), 0),
+        Depth::Redo => (1, usize::from(from_done)),
+    };
     assert_eq!(
         undos.len(),
-        usize::from(end == End::Before), // ubs:ignore — comparing end states, not secrets
-        "{label}: undo lines\ntranscript: {transcript}"
+        undo_lines,
+        "{label}: the undo's lines\ntranscript: {transcript}"
     );
-    for line in &undos {
+    let redos = r.redo_history();
+    assert_eq!(
+        redos.len(),
+        redo_lines,
+        "{label}: the redo's lines\ntranscript: {transcript}"
+    );
+    for line in undos.iter().chain(&redos) {
         let entry: omaddons::state::history::HistoryEntry =
             serde_json::from_value(line.clone()).unwrap();
         assert!(entry.well_formed(), "{label}: {line}");
         assert_eq!(
             entry.repairs.len(),
-            r.kind.primitives() as usize,
+            r.kind.undo_inverses() as usize,
             "{label}: one repairs[] entry per inverse: {line}"
         );
     }
@@ -1557,6 +1789,19 @@ pub fn assert_undo_settled(log: &TestLog, r: &RepairScene, recover: &[String]) -
     }
 }
 
+/// Logs the crash point of one case (`crash point`: the kind, the failpoint and `k`), so
+/// the `crash` record [`assert_undo_settled`] logs next reads with what fired.
+pub fn log_point(log: &TestLog, kind: Kind, spec: &str) {
+    let (failpoint, rest) = spec.split_once('=').unwrap_or((spec, ""));
+    let k = rest
+        .split_once('@')
+        .and_then(|(_, n)| n.parse::<u64>().ok());
+    log.json(
+        "crash point",
+        &json!({ "kind": kind.label(), "failpoint": failpoint, "k": k }),
+    );
+}
+
 /// The crash specs on the path of a repair's undo: the run directory's and the engine's
 /// before its journal, then every repair-journal point and tracked fsx boundary of its
 /// inverses (one per primitive of the repair).
@@ -1570,14 +1815,14 @@ pub fn undo_crash_specs(kind: Kind) -> Vec<String> {
     ]
     .map(str::to_owned)
     .into();
-    specs.extend(crash_specs(kind));
+    specs.extend(specs_over(kind.undo_inverses()));
     specs
 }
 
 /// Every crash point a repair's undo has: [`crash_points`], and the five before its
 /// journal.
 pub fn undo_crash_points(kind: Kind) -> std::collections::BTreeSet<String> {
-    let mut points = crash_points(kind);
+    let mut points = points_over(kind.undo_inverses());
     points.extend(
         [
             "run.staged",
@@ -1627,4 +1872,24 @@ pub fn undo_checked_sweep(kind: Kind, log: &TestLog) -> Vec<(u64, RepairScene)> 
         crashed.push((n, r));
     }
     panic!("an undo still crashed at fsx.mutate.checked@{CHECKED_SWEEP_MAX}"); // ubs:ignore — fails the test
+}
+
+/// [`undo_checked_sweep`] for the undo of the undo: each on a fresh scene whose repair was
+/// committed and undone.
+pub fn redo_checked_sweep(kind: Kind, log: &TestLog) -> Vec<(u64, RepairScene)> {
+    let mut crashed = Vec::new();
+    for n in 1..=CHECKED_SWEEP_MAX {
+        let r = RepairScene::undone(log, kind);
+        let spec = format!("fsx.mutate.checked=abort@{n}");
+        log.step(&format!(
+            "the undo of the undo of {} at {spec}",
+            kind.label()
+        ));
+        let ran = r.redo(log, &spec);
+        if ran.run.code >= 0 {
+            return crashed;
+        }
+        crashed.push((n, r));
+    }
+    panic!("a redo still crashed at fsx.mutate.checked@{CHECKED_SWEEP_MAX}"); // ubs:ignore — fails the test
 }

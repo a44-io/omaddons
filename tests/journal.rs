@@ -966,6 +966,96 @@ fn diagnose_predicts_recovery_of_every_repair_crash_state() {
     log.json("states compared", &counts);
 }
 
+/// E7 (omad-m4-agent-surface-doctor-c6cm.5.7.5): an undo journal is a repair journal, so
+/// `journal::diagnose` must predict its recovery too. Every crash state of the undo's
+/// matrix (every kind, every point on its path, every `checked` hit), of the undo of the
+/// undo (chmod, flatten_two, suspend) and of the undo's recovery crashed at each inverse,
+/// diagnosed on the crashed home itself, then held to what `config set` did.
+#[cfg(debug_assertions)]
+#[test]
+fn diagnose_predicts_recovery_of_every_repair_undo_crash_state() {
+    use std::collections::BTreeMap;
+
+    use common::repair::{
+        Kind, RepairScene, config_set as recover, redo_checked_sweep, undo_checked_sweep,
+        undo_crash_specs,
+    };
+    use repair_support::{By, predicted};
+
+    let log = tlog!();
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    let kinds = Kind::ALL.into_iter().chain([Kind::Suspend]);
+    for kind in kinds {
+        let mut crashed: Vec<(String, RepairScene)> = Vec::new();
+        for spec in undo_crash_specs(kind) {
+            let label = format!("the undo of {} at {spec}", kind.label());
+            log.step(&label);
+            let r = RepairScene::repaired(&log, kind);
+            r.undo(&log, &spec).aborted();
+            crashed.push((label, r));
+        }
+        crashed.extend(undo_checked_sweep(kind, &log).into_iter().map(|(n, r)| {
+            (
+                format!(
+                    "the undo of {} at fsx.mutate.checked=abort@{n}",
+                    kind.label()
+                ),
+                r,
+            )
+        }));
+        let n = kind.undo_inverses();
+        for j in 1..=n {
+            let label = format!(
+                "the undo of {}: recovery crashed at inverse {j}",
+                kind.label()
+            );
+            log.step(&label);
+            let r = RepairScene::repaired(&log, kind);
+            r.undo(&log, &format!("fsx.mutate.logged=abort@{n}"))
+                .aborted();
+            log.cmd(&r.s, &recover())
+                .failpoints(&format!("doctor.recover.step=abort@{j}"))
+                .run()
+                .aborted();
+            crashed.push((label, r));
+        }
+        if matches!(kind, Kind::Chmod | Kind::FlattenTwo | Kind::Suspend) {
+            for spec in undo_crash_specs(kind) {
+                let label = format!("the undo of the undo of {} at {spec}", kind.label());
+                log.step(&label);
+                let r = RepairScene::undone(&log, kind);
+                r.redo(&log, &spec).aborted();
+                crashed.push((label, r));
+            }
+            crashed.extend(redo_checked_sweep(kind, &log).into_iter().map(|(n, r)| {
+                (
+                    format!(
+                        "the undo of the undo of {} at fsx.mutate.checked=abort@{n}",
+                        kind.label()
+                    ),
+                    r,
+                )
+            }));
+        }
+        let mut compared = 0;
+        for (label, r) in crashed {
+            log.step(&format!("{label}: recover"));
+            log.json("journal at crash", &r.journal_lines());
+            compared += predicted(&log, &r, &label, &recover(), By::Under);
+        }
+        // Every state from `prepared` on leaves the undo's journal: its points from
+        // `prepared` through `committed`, and the recovery crashes.
+        let least = 4 + 4 * n as usize + n as usize;
+        assert!(
+            compared >= least,
+            "the undo of {}: {compared} journals compared, at least {least} expected",
+            kind.label()
+        );
+        counts.insert(kind.label().to_owned(), compared);
+    }
+    log.json("journals compared", &counts);
+}
+
 #[cfg(debug_assertions)]
 #[test]
 fn diagnose_predicts_every_planted_repair_stop() {
