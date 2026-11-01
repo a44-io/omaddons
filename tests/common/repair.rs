@@ -652,6 +652,7 @@ impl RepairScene {
         // ubs:ignore — comparing a fix kind and an end state, not secrets
         if self.kind == Kind::WriteOver && end == End::After {
             let backup = self.run_dir().join("backups/1");
+            // ubs:ignore — comparing a test file's bytes, not secrets
             if fs::read(&backup).ok().as_deref() != Some(GUIDE_V1) {
                 problems.push(format!("{} does not hold guide v1", backup.display()));
             }
@@ -1276,4 +1277,354 @@ pub fn crash_points(kind: Kind) -> std::collections::BTreeSet<String> {
         }
     }
     points
+}
+
+// ---------------------------------------------------------------------------------------
+// The undo of a repair (E7 s5): the kind's repair committed unarmed (the subject is `R`,
+// E5's after state), then `omaddons undo <T>` through the binary, crashed by a real
+// `abort` or failed by an injected error. The repair's own journal is pruned once it
+// commits, so the one repair journal left is the undo's. The oracle swaps E5's: before
+// the undo's durable `done` the whole `R`, from it the whole `O` (E5's before state).
+
+impl RepairScene {
+    /// The kind's scene with its repair committed unarmed: the subject is `R`.
+    pub fn repaired(log: &TestLog, kind: Kind) -> Self {
+        let r = Self::new(kind);
+        let Child::Ended(outcome) = r.child(log, "") else {
+            panic!("{}: the unarmed repair crashed", kind.label()); // ubs:ignore — fails the test
+        };
+        assert_eq!(outcome["outcome"], "committed", "{}", kind.label());
+        assert_eq!(
+            r.accounted(End::After),
+            Vec::<String>::new(),
+            "{}",
+            kind.label()
+        );
+        r
+    }
+
+    /// `omaddons undo <the repair> --json --progress json`, `spec` armed (empty: none).
+    pub fn undo(&self, log: &TestLog, spec: &str) -> super::tlog::Ran {
+        let tx = self.tx().unwrap_or_default();
+        let mut cmd = log.cmd(&self.s, &json_args(&["undo", &tx]));
+        if !spec.is_empty() {
+            cmd = cmd.failpoints(spec);
+        }
+        cmd.run()
+    }
+
+    /// The undo's transaction, once its journal or in-flight lock is on disk.
+    pub fn undo_tx(&self) -> Option<String> {
+        self.journal()
+            .and_then(|path| {
+                let name = path.file_name()?.to_str()?;
+                name.strip_suffix(".repair.jsonl").map(str::to_owned)
+            })
+            .or_else(|| self.inflight_tx())
+    }
+
+    /// The undo's own run directory: the one besides the repair's (and no stage).
+    pub fn undo_run_dir(&self) -> Option<PathBuf> {
+        listed(&self.state().join("doctor/runs"))
+            .into_iter()
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name != self.run_id && !name.starts_with('.') // ubs:ignore — run names
+                    })
+            })
+    }
+
+    /// The undo's `actions.jsonl` lines.
+    pub fn undo_actions_lines(&self) -> Vec<String> {
+        self.undo_run_dir()
+            .and_then(|dir| fs::read_to_string(dir.join("actions.jsonl")).ok())
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// History's `undo` lines that revert the repair.
+    pub fn undo_history(&self) -> Vec<Value> {
+        let tx = self.tx();
+        self.history_lines()
+            .into_iter()
+            // ubs:ignore — comparing history kinds and transaction ids, not secrets
+            .filter(|line| line["kind"] == "undo")
+            .filter(|line| tx.as_deref().is_some_and(|tx| line["reverts"] == tx))
+            .collect()
+    }
+
+    /// Where an undo stopped at `phase` must end: before its durable `done` the whole
+    /// `R` ([`End::After`]), from it the whole `O` ([`End::Before`]). With no journal,
+    /// history says which.
+    pub fn undo_end_at(&self, phase: CrashPhase) -> End {
+        match phase {
+            CrashPhase::Done | CrashPhase::Committed => End::Before,
+            CrashPhase::NoJournal if self.undo_history().len() == 1 => End::Before,
+            _ => End::After,
+        }
+    }
+
+    /// The problems with the originals the undo itself preserves, in `O`: the bytes a
+    /// write over `R` replaced kept as the undo's backup, and a file the repair created
+    /// set aside in the undo's quarantine. Empty when both are there.
+    pub fn undo_accounted(&self) -> Vec<String> {
+        let Some(dir) = self.undo_run_dir() else {
+            return vec!["the undo has no run directory".to_owned()];
+        };
+        let mut problems = Vec::new();
+        match self.kind {
+            Kind::WriteOver => {
+                let backup = dir.join("backups/1");
+                // ubs:ignore — comparing a test file's bytes, not secrets
+                if fs::read(&backup).ok().as_deref() != Some(GUIDE_V2) {
+                    problems.push(format!("{} does not hold guide v2", backup.display()));
+                }
+            }
+            Kind::WriteCreate => {
+                let rel = self
+                    .skill_file()
+                    .strip_prefix(self.env().home())
+                    .map(Path::to_path_buf)
+                    .unwrap_or_default();
+                let parked = dir.join("quarantine/skill").join(rel);
+                // ubs:ignore — comparing a test file's bytes, not secrets
+                if fs::read(&parked).ok().as_deref() != Some(GUIDE_V2) {
+                    problems.push(format!("{} does not hold guide v2", parked.display()));
+                }
+            }
+            _ => {}
+        }
+        problems
+    }
+}
+
+/// What [`assert_undo_settled`] saw of one stopped undo.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UndoSettled {
+    pub phase: CrashPhase,
+    pub end: End,
+    pub recovered: usize,
+}
+
+/// The oracle every crash and failure of a repair's undo is held to, right after it:
+///
+/// 1. the phase the undo's journal stopped at says the end: before its `done` the whole
+///    `R`, from it the whole `O`;
+/// 2. `status` reports `journal_pending` for a journal recovery will settle, and writes
+///    nothing;
+/// 3. `recover` succeeds, with `journal_recovered` exactly when there was something to
+///    roll back or forward;
+/// 4. the whole subject is that end's, never a mixture, and every preserved original is
+///    accounted for: in `R` the repair's backups and quarantine, in `O` the undo's own;
+/// 5. no journal is left, nor the undo's in-flight lock;
+/// 6. no `.omaddons-*` entry is left outside the repairs' own roots;
+/// 7. history holds the repair's line once, and the undo's line once in `O` (one
+///    `repairs[]` entry per inverse) and never in `R`;
+/// 8. nothing names a path below `WTF/`, and no run named a planted account.
+#[track_caller]
+pub fn assert_undo_settled(log: &TestLog, r: &RepairScene, recover: &[String]) -> UndoSettled {
+    let phase = r.phase();
+    let undo_tx = r.undo_tx();
+    let end = r.undo_end_at(phase);
+    log.json("undo phase", &format!("{phase:?}"));
+    let label = format!("the undo of {} stopped at {phase:?}", r.kind.label());
+    let transcript = log.transcript_path().display().to_string();
+    let naming = |envelope: &Value, code: &str| -> usize {
+        envelope["warnings"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            // ubs:ignore — comparing warning codes, not secrets
+            .filter(|warning| warning["code"] == code)
+            .filter_map(|warning| warning["message"].as_str())
+            .filter(|message| undo_tx.as_deref().is_some_and(|tx| message.contains(tx)))
+            .count()
+    };
+    // 2. The reader.
+    for (tree, root) in r.trees() {
+        log.tree(tree, &root);
+    }
+    let read = log.run(&r.s, &json_args(&["status"]));
+    read.ok().assert_private();
+    let waits =
+        r.journal().is_some() && !matches!(phase, CrashPhase::Committed | CrashPhase::RolledBack);
+    assert_eq!(
+        naming(read.envelope(), "journal_pending"),
+        usize::from(waits),
+        "{label}: what the reader reports\ntranscript: {transcript}"
+    );
+    for (tree, root) in r.trees() {
+        log.assert_unchanged(tree, &root);
+    }
+    // 3. The recovery.
+    let ran = log.run(&r.s, recover);
+    ran.ok().assert_private();
+    let recovered = naming(ran.envelope(), "journal_recovered");
+    let acts = matches!(
+        phase,
+        CrashPhase::Prepared | CrashPhase::Stepped(_) | CrashPhase::Done
+    );
+    assert_eq!(
+        recovered,
+        usize::from(acts),
+        "{label}: what recovery reports\ntranscript: {transcript}"
+    );
+    // 4. The whole end state, every original accounted for.
+    let subject = r.subject();
+    log.json("subject after recovery", &subject);
+    let mut problems = r.accounted(end);
+    // `R` is the repair's after state, `O` its before state.
+    let wanted = match end {
+        End::After => "R",
+        End::Before => {
+            problems.extend(r.undo_accounted());
+            "O"
+        }
+    };
+    log.json(
+        "crash",
+        &json!({
+            "kind": r.kind.label(),
+            "phase": format!("{phase:?}"),
+            "expected": wanted,
+            "got": if problems.is_empty() { wanted } else { "mixture" },
+        }),
+    );
+    assert!(
+        problems.is_empty(),
+        "{label}: not the whole {wanted} state: {problems:#?}\ntranscript: {transcript}"
+    );
+    // 5. Nothing left to recover.
+    assert_eq!(
+        r.journal(),
+        None,
+        "{label}: a journal is left\ntranscript: {transcript}"
+    );
+    if let Some(tx) = &undo_tx {
+        assert!(
+            !r.inflight_held(tx),
+            "{label}: a live in-flight lock\ntranscript: {transcript}"
+        );
+        if !matches!(phase, CrashPhase::NoJournal) {
+            assert!(
+                !r.state().join(format!("inflight/{tx}.lock")).exists(),
+                "{label}: the in-flight lock is left\ntranscript: {transcript}"
+            );
+        }
+    }
+    // 6. No temporary entry stranded.
+    assert_eq!(
+        r.leftovers(),
+        Vec::<PathBuf>::new(),
+        "{label}: leftovers\ntranscript: {transcript}"
+    );
+    // 7. History.
+    assert_eq!(
+        r.repair_history().len(),
+        1,
+        "{label}: the repair's line\ntranscript: {transcript}"
+    );
+    let undos = r.undo_history();
+    assert_eq!(
+        undos.len(),
+        usize::from(end == End::Before), // ubs:ignore — comparing end states, not secrets
+        "{label}: undo lines\ntranscript: {transcript}"
+    );
+    for line in &undos {
+        let entry: omaddons::state::history::HistoryEntry =
+            serde_json::from_value(line.clone()).unwrap();
+        assert!(entry.well_formed(), "{label}: {line}");
+        assert_eq!(
+            entry.repairs.len(),
+            r.kind.primitives() as usize,
+            "{label}: one repairs[] entry per inverse: {line}"
+        );
+    }
+    // 8. Nothing below `WTF/`.
+    assert_eq!(
+        r.wtf_named(),
+        Vec::<String>::new(),
+        "{label}: a repair named WTF/"
+    );
+    UndoSettled {
+        phase,
+        end,
+        recovered,
+    }
+}
+
+/// The crash specs on the path of a repair's undo: the run directory's and the engine's
+/// before its journal, then every repair-journal point and tracked fsx boundary of its
+/// inverses (one per primitive of the repair).
+pub fn undo_crash_specs(kind: Kind) -> Vec<String> {
+    let mut specs: Vec<String> = [
+        "doctor.run.staged=abort",
+        "doctor.run.published=abort",
+        "engine.snapshot.prestaged=abort",
+        "engine.lock.acquired=abort",
+        "engine.revalidated=abort",
+    ]
+    .map(str::to_owned)
+    .into();
+    specs.extend(crash_specs(kind));
+    specs
+}
+
+/// Every crash point a repair's undo has: [`crash_points`], and the five before its
+/// journal.
+pub fn undo_crash_points(kind: Kind) -> std::collections::BTreeSet<String> {
+    let mut points = crash_points(kind);
+    points.extend(
+        [
+            "run.staged",
+            "run.published",
+            "snapshot.prestaged",
+            "lock.acquired",
+            "revalidated",
+        ]
+        .map(str::to_owned),
+    );
+    points
+}
+
+/// The crash point an undo spec addresses: [`point_of`], and the run directory's and the
+/// engine's points before the journal.
+pub fn undo_point_of(spec: &str) -> Option<String> {
+    let (name, _) = spec.split_once('=')?;
+    name.strip_prefix("doctor.run.")
+        .map(|point| format!("run.{point}"))
+        .or_else(|| name.strip_prefix("engine.").map(str::to_owned))
+        .or_else(|| point_of(spec))
+}
+
+/// The `checked` crash's inverse, as [`attributed`] does for the repair: the undo's journal
+/// holds step `k`'s line and its `actions.jsonl` `k - 1` lines.
+pub fn undo_attributed(r: &RepairScene) -> Option<String> {
+    match r.phase() {
+        CrashPhase::Stepped(k) if r.undo_actions_lines().len() + 1 == k as usize => {
+            Some(format!("checked@{k}"))
+        }
+        _ => None,
+    }
+}
+
+/// `fsx.mutate.checked=abort@N` for N = 1, 2, … on the undo of a fresh repaired scene
+/// each, until an undo completes without crashing. Returns each crashed scene with its N.
+pub fn undo_checked_sweep(kind: Kind, log: &TestLog) -> Vec<(u64, RepairScene)> {
+    let mut crashed = Vec::new();
+    for n in 1..=CHECKED_SWEEP_MAX {
+        let r = RepairScene::repaired(log, kind);
+        let spec = format!("fsx.mutate.checked=abort@{n}");
+        log.step(&format!("the undo of {} at {spec}", kind.label()));
+        let ran = r.undo(log, &spec);
+        if ran.run.code >= 0 {
+            return crashed;
+        }
+        crashed.push((n, r));
+    }
+    panic!("an undo still crashed at fsx.mutate.checked@{CHECKED_SWEEP_MAX}"); // ubs:ignore — fails the test
 }

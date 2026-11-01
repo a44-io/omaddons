@@ -6023,3 +6023,288 @@ fn a_repair_never_writes_wtf_through_the_binary() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// The undo of a repair (E7 s5, the design gate of the undo of repairs): each kind's repair
+// committed, then its undo, `omaddons undo <T>` through the binary, crashed with real
+// `abort`s at every point on its path (the run directory, the engine's before the
+// journal, every repair-journal point and every tracked fsx boundary of each inverse, and
+// every `fsx.mutate.checked` hit). Each stop is held to `assert_undo_settled`: before the
+// undo's durable `done` the whole repaired state, from it the whole original.
+
+#[cfg(test)]
+mod repair_undo_matrix {
+    use std::collections::BTreeSet;
+    use std::time::Instant;
+
+    use super::common::repair::{
+        End, Kind, RepairScene, assert_undo_settled, config_set, undo_attributed,
+        undo_checked_sweep, undo_crash_points, undo_crash_specs, undo_point_of,
+    };
+    use super::common::tlog::TestLog;
+
+    /// The reference run: the kind's undo commits unarmed, to exactly the original state,
+    /// its own preserved originals in place.
+    pub fn reference(log: &TestLog, kind: Kind) {
+        log.step(&format!("the undo of {} unarmed", kind.label()));
+        let r = RepairScene::repaired(log, kind);
+        r.undo(log, "").ok();
+        assert_eq!(
+            r.accounted(End::Before),
+            Vec::<String>::new(),
+            "{}",
+            kind.label()
+        );
+        assert_eq!(r.undo_accounted(), Vec::<String>::new(), "{}", kind.label());
+    }
+
+    /// Every crash of `kind`'s undo, each settled by the oracle; every crash point the
+    /// undo has must be hit. Returns how many crash states it settled.
+    pub fn run(log: &TestLog, kind: Kind) -> usize {
+        let started = Instant::now();
+        reference(log, kind);
+        let mut exercised = BTreeSet::new();
+        let mut states = 0;
+        for spec in undo_crash_specs(kind) {
+            log.step(&format!("the undo of {} at {spec}", kind.label()));
+            let r = RepairScene::repaired(log, kind);
+            r.undo(log, &spec).aborted();
+            exercised.extend(undo_point_of(&spec));
+            assert_undo_settled(log, &r, &config_set());
+            states += 1;
+        }
+        for (_, r) in undo_checked_sweep(kind, log) {
+            exercised.extend(undo_attributed(&r));
+            assert_undo_settled(log, &r, &config_set());
+            states += 1;
+        }
+        log.json("crashes_exercised", &exercised);
+        let missing: Vec<String> = undo_crash_points(kind)
+            .difference(&exercised)
+            .cloned()
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "the undo of {}: crash point never hit: {}",
+            kind.label(),
+            missing.join(", ")
+        );
+        log.note(format!(
+            "the undo of {}: {states} crash states, {} crash points, in {:.1} s",
+            kind.label(),
+            exercised.len(),
+            started.elapsed().as_secs_f64()
+        ));
+        states
+    }
+}
+
+/// One test per kind, so libtest runs the kinds in parallel.
+macro_rules! repair_undo_crash_matrix {
+    ($($test:ident => $kind:ident),* $(,)?) => {$(
+        #[test]
+        fn $test() {
+            let log = tlog!();
+            repair_undo_matrix::run(&log, common::repair::Kind::$kind);
+        }
+    )*};
+}
+
+repair_undo_crash_matrix! {
+    repair_undo_crash_matrix_write_over => WriteOver,
+    repair_undo_crash_matrix_write_create => WriteCreate,
+    repair_undo_crash_matrix_chmod => Chmod,
+    repair_undo_crash_matrix_quarantine_state_file => QuarantineStateFile,
+    repair_undo_crash_matrix_quarantine_client_dir => QuarantineClientDir,
+    repair_undo_crash_matrix_quarantine_temp_symlink => QuarantineTempSymlink,
+    repair_undo_crash_matrix_flatten_two => FlattenTwo,
+    repair_undo_crash_matrix_flatten_three => FlattenThree,
+}
+
+/// An undo crashed after its last inverse (before `done`), its recovery crashed at every
+/// inverse it runs, then recovered: the repaired state, and three more recoveries change
+/// nothing.
+#[test]
+fn a_repair_undo_recovery_crashed_at_every_inverse_finishes() {
+    use common::repair::{End, Kind, RepairScene, assert_undo_settled, config_set};
+
+    let log = tlog!();
+    for kind in Kind::ALL {
+        let n = kind.primitives();
+        for j in 1..=n {
+            log.step(&format!(
+                "the undo of {}: recovery crashed at inverse {j} of {n}",
+                kind.label()
+            ));
+            let r = RepairScene::repaired(&log, kind);
+            r.undo(&log, &format!("fsx.mutate.logged=abort@{n}"))
+                .aborted();
+            let crashed = log
+                .cmd(&r.s, &config_set())
+                .failpoints(&format!("doctor.recover.step=abort@{j}"))
+                .run();
+            crashed.aborted();
+            crashed.assert_private();
+            let settled = assert_undo_settled(&log, &r, &config_set());
+            assert_eq!(settled.end, End::After, "{} at inverse {j}", kind.label());
+            let settled_subject = r.subject();
+            for again in 1..=3 {
+                log.run(&r.s, &config_set()).ok();
+                assert_eq!(
+                    r.subject(),
+                    settled_subject,
+                    "{} at inverse {j}: recovery {again} more changed it",
+                    kind.label()
+                );
+            }
+        }
+    }
+}
+
+/// An injected failure at every inverse rolls the undo back in process: the repaired
+/// state, no undo line, the undo's run `DONE_FAILED`; `doctor undo` of the fix run exits 3.
+/// A failure after `done` completes the undo instead.
+#[test]
+fn io_failures_in_a_repair_undo_roll_it_back() {
+    use common::repair::{End, Kind, RepairScene};
+
+    let log = tlog!();
+    for kind in Kind::ALL {
+        let n = kind.primitives();
+        let mut specs: Vec<String> = (1..=n)
+            .flat_map(|k| {
+                [
+                    format!("fsx.mutate.executed=error@{k}"),
+                    format!("doctor.repair.step=error@{k}"),
+                ]
+            })
+            .collect();
+        if kind == Kind::WriteOver {
+            specs.push("fsx.mutate.backed_up=error@1".to_owned());
+        }
+        for spec in &specs {
+            log.step(&format!("the undo of {} with {spec}", kind.label()));
+            let r = RepairScene::repaired(&log, kind);
+            let ran = r.undo(&log, spec);
+            ran.assert_private();
+            assert!(ran.run.code > 0, "{} with {spec}: it fails", kind.label());
+            assert_eq!(r.accounted(End::After), Vec::<String>::new(), "{spec}");
+            assert_eq!(r.undo_history().len(), 0, "{} with {spec}", kind.label());
+            let report: serde_json::Value = serde_json::from_slice(
+                &fs::read(r.undo_run_dir().unwrap().join("report.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                report["state"],
+                "DONE_FAILED",
+                "{} with {spec}",
+                kind.label()
+            );
+            assert_eq!(r.leftovers(), Vec::<std::path::PathBuf>::new(), "{spec}");
+        }
+        log.step(&format!(
+            "doctor undo of {} with an inverse failing",
+            kind.label()
+        ));
+        let r = RepairScene::repaired(&log, kind);
+        let ran = log
+            .cmd(
+                &r.s,
+                &common::repair::json_args(&["doctor", "undo", &r.run_id]),
+            )
+            .failpoints("fsx.mutate.executed=error@1")
+            .run();
+        ran.exit(3);
+        assert_eq!(
+            r.accounted(End::After),
+            Vec::<String>::new(),
+            "{}",
+            kind.label()
+        );
+
+        // E5's `doctor.repair.done` is hit once `done` is durable: from there the undo
+        // stands, and a failure is rolled forward in process, as at `history`.
+        for spec in ["doctor.repair.done=error", "doctor.repair.history=error"] {
+            log.step(&format!(
+                "the undo of {} with {spec}, after done",
+                kind.label()
+            ));
+            let r = RepairScene::repaired(&log, kind);
+            r.undo(&log, spec);
+            assert_eq!(r.accounted(End::Before), Vec::<String>::new(), "{spec}");
+            assert_eq!(r.undo_accounted(), Vec::<String>::new(), "{spec}");
+            assert_eq!(r.undo_history().len(), 1, "{}: the line once", kind.label());
+        }
+    }
+}
+
+/// An undo whose run directory cannot be created moves nothing: `omaddons undo` fails
+/// with `io`, `doctor undo` exits 73, and neither leaves a journal, an in-flight lock or a
+/// published run directory (the runtime's own `.<id>.tmp` stage stays, as for every run
+/// that fails to start).
+#[test]
+fn a_repair_undo_that_cannot_create_its_run_moves_nothing() {
+    use common::repair::{End, Kind, RepairScene, json_args};
+
+    let log = tlog!();
+    let r = RepairScene::repaired(&log, Kind::FlattenTwo);
+    let ran = r.undo(&log, "doctor.run.staged=error");
+    assert_eq!(ran.error_code(), Some("io"), "omaddons undo");
+    let ran = log
+        .cmd(&r.s, &json_args(&["doctor", "undo", &r.run_id]))
+        .failpoints("doctor.run.staged=error")
+        .run();
+    ran.exit(73);
+    assert_eq!(r.accounted(End::After), Vec::<String>::new());
+    assert_eq!(r.undo_tx(), None, "no journal, no in-flight lock");
+    assert_eq!(r.undo_run_dir(), None, "no published run directory");
+}
+
+/// A crashed undo is recovered the same by `config set`, an `install` and an `undo` of
+/// that install: each command does its own work besides, and the subject ends alike.
+#[test]
+fn config_set_install_and_undo_recover_a_repair_undo_identically() {
+    use common::repair::{Kind, RepairScene, assert_undo_settled, config_set, json_args};
+
+    let log = tlog!();
+    let kind = Kind::FlattenTwo;
+    for spec in ["doctor.repair.step=abort@2", "doctor.repair.done=abort"] {
+        let mut seen = Vec::new();
+        for by in ["config set", "install", "undo"] {
+            log.step(&format!(
+                "the undo of {} at {spec}, recovered by {by}",
+                kind.label()
+            ));
+            let r = RepairScene::repaired(&log, kind);
+            let install_tx = r.install_tx();
+            r.undo(&log, spec).aborted();
+            let argv = match by {
+                "config set" => config_set(),
+                "install" => {
+                    let mut argv = r.s.install_args("gh:o/foo", "v2");
+                    argv.extend(["--progress".to_owned(), "json".to_owned()]);
+                    argv
+                }
+                _ => json_args(&["undo", &install_tx]),
+            };
+            let settled = assert_undo_settled(&log, &r, &argv);
+            match by {
+                "install" => assert_eq!(r.s.record("foo")["version"], "2", "{by}"),
+                "undo" => assert_eq!(r.s.record("foo"), serde_json::Value::Null, "{by}"),
+                _ => assert_eq!(r.s.record("foo")["version"], "1", "{by}"),
+            }
+            seen.push((by, r.subject(), settled.end, settled.recovered));
+        }
+        let (first, rest) = seen.split_first().unwrap();
+        for other in rest {
+            assert_eq!(
+                (&other.1, &other.2, &other.3),
+                (&first.1, &first.2, &first.3),
+                "the undo of {} at {spec}: {} and {} recovered it differently",
+                kind.label(),
+                first.0,
+                other.0
+            );
+        }
+    }
+}
