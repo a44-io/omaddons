@@ -287,16 +287,17 @@ fn fence_builders_plants_decode_as_intended() {
     let undecodable = plant_undecodable_prepared(&f.home);
     let newer = plant_newer_major(&f.home);
     let torn = plant_torn_first_line(&f.home);
+    let paths = f.paths();
     assert_eq!(
-        read_prepared(&journal(&undecodable)).unwrap(),
+        read_prepared(&paths, &journal(&undecodable)).unwrap(),
         PreparedRead::Undecodable
     );
     assert_eq!(
-        read_prepared(&journal(&newer)).unwrap(),
+        read_prepared(&paths, &journal(&newer)).unwrap(),
         PreparedRead::TooNew
     );
     assert_eq!(
-        read_prepared(&journal(&torn)).unwrap(),
+        read_prepared(&paths, &journal(&torn)).unwrap(),
         PreparedRead::Absent
     );
 }

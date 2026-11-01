@@ -1,6 +1,7 @@
 //! Recovering a repair a crash left (E5, M4-D31): every command that takes the global
-//! lock settles each repair journal whose writer is gone, after the folder journals
-//! (`journal::recover_all`, and so `recover_under` and `recover_waiting`).
+//! lock settles each repair journal whose writer is gone, in `journal::recover_all`'s
+//! passes (and so `recover_under`'s and `recover_waiting`'s): the repairs that own a
+//! barrier before the folder journals, the others after them (E14, `engine::barrier`).
 //!
 //! - **By phase.** A journal that never prepared, that committed or that an in-process
 //!   rollback finished is pruned silently. One that stopped after `prepared` or a `step`
@@ -28,8 +29,8 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 
 use super::inverse::{OnDisk, append, manual_repair, pending, roll_back, roll_forward};
-use super::journal::{self, ParsedRepair, RepairLine, RepairPhase, RepairPrepared};
-use crate::engine::fence;
+use super::journal::{self, ParsedRepair, PreparedRead, RepairLine, RepairPhase, RepairPrepared};
+use crate::engine::barrier::{self, ListedRepair};
 use crate::engine::journal::{RecoveryEnv, StopReason, Unrecoverable, unattributed};
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{
@@ -53,7 +54,7 @@ pub struct PendingRepair {
 pub fn pending_repairs(paths: &Paths) -> Result<Vec<PendingRepair>> {
     let mut found = Vec::new();
     for (tx, path) in journal::list(paths).map_err(|error| unattributed(error, None))? {
-        let unrecoverable = match journal::read(&path) {
+        let unrecoverable = match journal::read(paths, &path) {
             Ok(parsed) => match parsed.unrecoverable() {
                 None if matches!(
                     parsed.phase,
@@ -71,63 +72,73 @@ pub fn pending_repairs(paths: &Paths) -> Result<Vec<PendingRepair>> {
     Ok(found)
 }
 
-/// Recovers every repair journal whose writer is gone, in transaction order, under the
-/// lock `env` holds; `env.scopes`, unfenced (recovery is never refused mid-way), serves
-/// only the silent prunes. One `journal_recovered` warning per repair rolled back or
-/// forward. A repair recovery cannot settle stays as it is, with everything it left in
-/// place, and becomes one `journal_pending` warning ([`fence::stuck_warning`]): it never
-/// fails the caller, since the fences every mutating command loads refuse exactly the
-/// writes that overlap what it protects (M4-D62), and recovery goes on to the next. Only
-/// a journal directory that cannot be listed is an error.
-pub fn recover_repairs(env: &RecoveryEnv<'_>) -> Result<Vec<Warning>> {
-    let mut warnings = Vec::new();
-    for settled in settle_all(env)? {
-        match settled.result {
-            Ok(warning) => warnings.extend(warning),
-            Err(error) => warnings.push(fence::recovery_warning(
-                env.paths,
-                settled.tx,
-                &settled.path,
-                &error,
-            )),
-        }
-    }
-    Ok(warnings)
-}
-
-/// What recovery did with one repair journal: settled (with its `journal_recovered`
-/// warning when it rolled), or the stop or failure that left it as it is.
-pub(crate) struct Settled {
-    pub tx: TxId,
+/// One repair journal as `journal::recover_all`'s passes plan with it.
+#[derive(Debug, Clone)]
+pub(crate) struct RepairListing {
+    pub listed: ListedRepair,
     pub path: PathBuf,
-    pub result: Result<Option<Warning>>,
+    /// Its journal ends `committed` or `rolled_back` ([`barrier::finished`]).
+    pub finished: bool,
 }
 
-/// [`recover_repairs`]'s pass, each journal's own result kept: every repair journal whose
-/// writer is gone, in transaction order, unfenced. Only a journal directory that cannot
-/// be listed is an error.
-pub(crate) fn settle_all(env: &RecoveryEnv<'_>) -> Result<Vec<Settled>> {
+/// Every repair journal, as the passes plan with it ([`Passes`](barrier::Passes)): its
+/// first line read through the activation rules (one that cannot be read at all is
+/// `Undecodable`), and whether its writer is alive (an in-flight lock that cannot be
+/// probed counts as gone: its recovery probes again, and reports it). Only a journal
+/// directory that cannot be listed is an error. Writes nothing.
+pub(crate) fn listing(paths: &Paths) -> Result<Vec<RepairListing>> {
+    let listed = journal::list(paths).map_err(|error| unattributed(error, None))?;
+    Ok(listed
+        .into_iter()
+        .map(|(tx, path)| {
+            let live = InflightLock::is_live(paths, &tx).unwrap_or(false);
+            let (prepared, finished) = match journal::read(paths, &path) {
+                Ok(parsed) => (parsed.prepared_read(), barrier::finished(parsed.phase)),
+                Err(_) => (PreparedRead::Undecodable, false),
+            };
+            RepairListing {
+                listed: ListedRepair { tx, prepared, live },
+                path,
+                finished,
+            }
+        })
+        .collect())
+}
+
+/// Recovers the repair journal of `tx` at `path` under the lock `env` holds, with
+/// `env.scopes` serving only the silent prunes (the caller passes recovery's unfenced
+/// table): skipped while its writer is alive; else rolled back or forward, or pruned, and
+/// its `journal_recovered` warning when it rolled. A stop or a failure leaves it as it
+/// is, everything it left in place: the caller reports it (`fence::stuck_warning`) and
+/// never fails on it, since the fences every mutating command loads refuse exactly the
+/// writes that overlap what it protects (M4-D62).
+pub(crate) fn settle_one(env: &RecoveryEnv<'_>, tx: TxId, path: &Path) -> Result<Option<Warning>> {
+    let live =
+        InflightLock::is_live(env.paths, &tx).map_err(|error| unattributed(error, Some(&tx)))?;
+    if live {
+        return Ok(None);
+    }
+    // A journal that cannot be read names no client, as one with no target does.
+    let parsed = journal::read(env.paths, path).map_err(|error| unattributed(error, Some(&tx)))?;
+    recover_one(env, tx, path, &parsed)
+}
+
+/// Every repair journal through [`settle_one`], in transaction order and without the
+/// passes, each journal's own result kept (settled, with its `journal_recovered` warning
+/// when it rolled, or the stop or failure that left it as it is): the unit tests' view of
+/// one journal's stop.
+#[cfg(test)]
+pub(crate) fn settle_all(env: &RecoveryEnv<'_>) -> Result<Vec<Result<Option<Warning>>>> {
     let unfenced = env.scopes.without_fences();
     let env = &RecoveryEnv {
         scopes: &unfenced,
         ..*env
     };
-    let mut settled = Vec::new();
-    for (tx, path) in journal::list(env.paths).map_err(|error| unattributed(error, None))? {
-        let result = InflightLock::is_live(env.paths, &tx)
-            .map_err(|error| unattributed(error, Some(&tx)))
-            .and_then(|live| {
-                if live {
-                    return Ok(None);
-                }
-                // A journal that cannot be read names no client, as one with no target does.
-                let parsed =
-                    journal::read(&path).map_err(|error| unattributed(error, Some(&tx)))?;
-                recover_one(env, tx, &path, &parsed)
-            });
-        settled.push(Settled { tx, path, result });
-    }
-    Ok(settled)
+    Ok(journal::list(env.paths)
+        .map_err(|error| unattributed(error, None))?
+        .into_iter()
+        .map(|(tx, path)| settle_one(env, tx, &path))
+        .collect())
 }
 
 /// What recovery does with a repair journal, decided before it writes anything; the
@@ -403,6 +414,7 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use super::*;
+    use crate::engine::fence;
     use crate::engine::journal::{
         no_saved_variables, pending_warnings, recover_all, recover_under, recoverable,
     };
@@ -572,15 +584,15 @@ mod tests {
         }
     }
 
-    /// `recover_repairs`' pass under the global lock, as `recover_all` runs it after the
-    /// folder journals: the warnings, or the first journal's own stop or failure as the
-    /// error (which `recover_repairs` reports as that journal's `journal_pending`
-    /// warning, never failing its caller).
+    /// Every repair journal recovered under the global lock, in transaction order: the
+    /// warnings, or the first journal's own stop or failure as the error (which
+    /// `recover_all` reports as that journal's `journal_pending` warning, never failing
+    /// its caller).
     fn recover(home: &RepairHome) -> Result<Vec<Warning>> {
         let lock = GlobalLock::acquire(&home.paths, "test").unwrap();
         let mut warnings = Vec::new();
         for settled in settle_all(&env(home, &lock))? {
-            warnings.extend(settled.result?);
+            warnings.extend(settled?);
         }
         Ok(warnings)
     }
@@ -657,7 +669,9 @@ mod tests {
     }
 
     fn phase(home: &RepairHome, tx: &TxId) -> RepairPhase {
-        journal::read(&home.paths.journal_repair(tx)).unwrap().phase
+        journal::read(&home.paths, &home.paths.journal_repair(tx))
+            .unwrap()
+            .phase
     }
 
     fn mode_of(path: &Path) -> u32 {
@@ -996,7 +1010,7 @@ mod tests {
     fn a_torn_history_fragment_naming_the_tx_does_not_hide_it() {
         let home = repair_home();
         let tx = crashed(&home, &[chmod(&home)], "doctor.repair.done=panic");
-        let prepared = journal::read(&home.paths.journal_repair(&tx))
+        let prepared = journal::read(&home.paths, &home.paths.journal_repair(&tx))
             .unwrap()
             .prepared
             .unwrap();
@@ -1215,7 +1229,7 @@ mod tests {
         assert_eq!(left(&home, &later), (false, false), "the later one settled");
         // Its own stop, as recovery stopped with it.
         let settled = settle_all(&env(&home, &lock)).unwrap();
-        let err = settled[0].result.as_ref().unwrap_err();
+        let err = settled[0].as_ref().unwrap_err();
         assert_eq!(
             (err.code, err.details["reason"].as_str()),
             (ErrorCode::Internal, Some("step_unrecognized")),

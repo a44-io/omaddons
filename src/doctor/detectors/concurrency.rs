@@ -83,12 +83,19 @@ fn journal_observation(
     }
     let repair = d.family == JournalFamily::Repair;
     let mut evidence = Evidence::default();
-    let (id, reason, title) = match d.verdict {
+    // A journal behind a barrier is reported under its own state (E14); what holds it
+    // back is its owner's own finding.
+    let verdict = match d.verdict {
+        JournalVerdict::BehindBarrier { .. } => d.evidence.held.unwrap_or(d.verdict),
+        verdict => verdict,
+    };
+    let (id, reason, title) = match verdict {
         JournalVerdict::Recoverable {
             phase: Phase::Committed,
             ..
         } => return None,
-        JournalVerdict::Recoverable { .. } => (
+        // Behind a barrier with no own verdict kept: it waits, as a pending journal does.
+        JournalVerdict::Recoverable { .. } | JournalVerdict::BehindBarrier { .. } => (
             ids::JOURNAL_PENDING,
             None,
             if repair {
@@ -185,7 +192,7 @@ fn journal_observation(
         _ => Subject::machine(),
     };
     let trusted = !matches!(
-        d.verdict,
+        verdict,
         JournalVerdict::TooNew | JournalVerdict::Unreadable | JournalVerdict::Unattributed { .. }
     );
     let counts = counts.copied().unwrap_or_default();

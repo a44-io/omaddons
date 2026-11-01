@@ -29,6 +29,10 @@ use jiff::Timestamp;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::barrier::{Outcome, Passes, Stuck};
+use super::fence::{self, Behind};
+use super::repair::PreparedRead;
+use super::resource::{PathKind, Resource, ResourceSet};
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 pub use crate::fsx::FileId;
 use crate::fsx::{
@@ -876,6 +880,10 @@ pub fn pending_warnings(paths: &Paths) -> Result<Vec<Warning>> {
         return Ok(Vec::new());
     }
     let held = matches!(probe_global(paths)?, LockState::Held { .. });
+    // A repair recovery will stop at, and a journal it would leave behind a barrier, get
+    // the text recovery gives them (E14), so a run that reads them first and recovers
+    // later reports each once.
+    let mut said = stuck_repairs(paths, &repairs);
     let folder = pending.into_iter().map(
         |Pending {
              tx,
@@ -885,24 +893,21 @@ pub fn pending_warnings(paths: &Paths) -> Result<Vec<Warning>> {
             let on = target
                 .map(|t| format!(" on target {t}"))
                 .unwrap_or_default();
-            match unrecoverable {
+            said.remove(&tx).unwrap_or_else(|| match unrecoverable {
                 Some(why) => unrecoverable_warning(&tx, target, why),
                 None => unfinished_warning(&format!("transaction {tx}{on}"), held),
-            }
+            })
         },
     );
-    // A repair recovery will stop at gets the text recovery gives it (E14), so a run that
-    // reads it first and recovers it later reports it once.
-    let mut stuck = stuck_repairs(paths, &repairs);
+    let folder: Vec<Warning> = folder.collect();
     let repairs = repairs.into_iter().map(|repair| {
-        stuck
-            .remove(&repair.tx)
+        said.remove(&repair.tx)
             .unwrap_or_else(|| match repair.unrecoverable {
                 Some(why) => super::repair::recover::unrecoverable_warning(&repair.tx, why),
                 None => unfinished_warning(&format!("repair transaction {}", repair.tx), held),
             })
     });
-    Ok(folder.chain(repairs).collect())
+    Ok(folder.into_iter().chain(repairs).collect())
 }
 
 #[cfg(test)]
@@ -911,9 +916,11 @@ thread_local! {
     pub(crate) static REPAIR_DIAGNOSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// The `journal_pending` warning of each repair journal recovery stops at, by
-/// transaction (`fence::stuck_warning`). Simulates recovery (`diagnose`) only when a
-/// repair journal waits, so a home without one costs a reader nothing more.
+/// The `journal_pending` warning recovery gives, by transaction, of each repair journal
+/// it stops at (`fence::stuck_warning`) and of each journal of either family it leaves
+/// behind a barrier (`fence::behind_warning`, with the stop recovery would follow to).
+/// Simulates recovery (`diagnose`) only when a repair journal waits, so a home without
+/// one costs a reader nothing more: only a repair holds a journal back.
 fn stuck_repairs(
     paths: &Paths,
     repairs: &[super::repair::PendingRepair],
@@ -923,21 +930,70 @@ fn stuck_repairs(
     }
     #[cfg(test)]
     REPAIR_DIAGNOSES.with(|count| count.set(count.get() + 1));
-    diagnose(paths, &[], &no_saved_variables)
-        .journals
+    let diagnoses = diagnose(paths, &[], &no_saved_variables).journals;
+    let closed = |d: &JournalDiagnosis| {
+        d.family == JournalFamily::Repair && super::fence::closes(paths, &d.path)
+    };
+    diagnoses
         .iter()
-        .filter(|d| d.family == JournalFamily::Repair)
-        .filter_map(|d| {
-            let Expected::Stops { reason, .. } = d.expected() else {
-                return None;
-            };
-            let closed = super::fence::closes(paths, &d.path);
-            Some((
-                d.tx,
-                super::fence::stuck_warning(d.tx, Some(reason), closed),
-            ))
+        .filter_map(|d| match d.verdict {
+            JournalVerdict::BehindBarrier {
+                owner,
+                stop: Some(_),
+            } => {
+                // ubs:ignore — comparing transaction ids (public ULIDs), not secrets
+                let od = diagnoses.iter().find(|od| od.tx == owner)?;
+                let root = root_of(&diagnoses, od);
+                let stuck = Stuck {
+                    stop: super::fence::stop_of(root, closed(root))?,
+                    closed: closed(root),
+                };
+                let behind = match (d.family, od.family) {
+                    (JournalFamily::Folder, _) => Behind::Folder {
+                        tx: d.tx,
+                        target: d.target,
+                        owner,
+                    },
+                    (JournalFamily::Repair, JournalFamily::Folder) => {
+                        Behind::Unresolved { tx: d.tx, owner }
+                    }
+                    (JournalFamily::Repair, JournalFamily::Repair) => {
+                        Behind::Repair { tx: d.tx, owner }
+                    }
+                };
+                Some((d.tx, super::fence::behind_warning(behind, &stuck)))
+            }
+            JournalVerdict::BehindBarrier { stop: None, .. } => None,
+            // ubs:ignore — comparing journal families, not secrets
+            _ if d.family == JournalFamily::Repair => {
+                let Expected::Stops { reason, .. } = d.expected() else {
+                    return None;
+                };
+                Some((
+                    d.tx,
+                    super::fence::stuck_warning(d.tx, Some(reason), closed(d)),
+                ))
+            }
+            _ => None,
         })
         .collect()
+}
+
+/// The journal `d` waits behind at the end of its chain of barriers: the one recovery
+/// could not settle, whose stop the chain reports.
+fn root_of<'d>(diagnoses: &'d [JournalDiagnosis], d: &'d JournalDiagnosis) -> &'d JournalDiagnosis {
+    let mut at = d;
+    for _ in 0..diagnoses.len() {
+        let JournalVerdict::BehindBarrier { owner, .. } = at.verdict else {
+            break;
+        };
+        // ubs:ignore — comparing transaction ids (public ULIDs), not secrets
+        match diagnoses.iter().find(|od| od.tx == owner) {
+            Some(od) => at = od,
+            None => break,
+        }
+    }
+    at
 }
 
 /// What a reader says of an unfinished transaction this build can recover, named by
@@ -1019,19 +1075,76 @@ pub struct Recovered {
     pub snapshot_kept: Option<(PathBuf, usize)>,
 }
 
-/// Recovers every leftover journal. No writer is alive except ones still cleaning up
-/// after commit, whose in-flight lock is held and whose journals are skipped. One
-/// `journal_recovered` warning per rolled transaction, each followed by what its
+/// Recovers every leftover journal, in three passes (M4-D31, E14; the order is
+/// [`Passes`]'): first the doctor's repairs that suspend or reactivate a journal (a
+/// set-aside and its undo) and every repair whose `prepared` line cannot be read, then
+/// the folder journals, then the other repairs. No writer is alive except ones still
+/// cleaning up after commit, whose in-flight lock is held and whose journals are skipped.
+/// One `journal_recovered` warning per rolled transaction, each followed by what its
 /// roll-forward left; committed and unprepared journals are removed silently.
+///
+/// A journal behind a repair recovery could not settle is never recovered: a folder
+/// journal of the caller's own target (or with no readable target) fails the caller with
+/// that repair's stop ([`fence::behind_error`]); anything else is one `journal_pending`
+/// warning ([`fence::behind_warning`]). A repair's own stop never fails the caller: the
+/// fences every mutating command loads refuse what it protects. Every pass decides from
+/// the disk as it finds it, so a recovery killed anywhere is finished by the next
+/// lock-taking command, in the same order.
 pub fn recover_all(env: &RecoveryEnv<'_>) -> Result<Vec<Warning>> {
+    recover_all_with(env, &mut OnDisk)
+}
+
+/// What recovery does with one journal whose writer is gone, behind a seam so the unit
+/// tests observe the passes' order without crashing anything.
+pub(crate) trait Settle {
+    /// A folder journal ([`recover_one`]).
+    fn folder(&mut self, env: &RecoveryEnv<'_>, tx: &TxId, path: PathBuf) -> Result<Vec<Warning>>;
+    /// A repair journal ([`super::repair::recover::settle_one`]).
+    fn repair(&mut self, env: &RecoveryEnv<'_>, tx: TxId, path: &Path) -> Result<Option<Warning>>;
+}
+
+/// Recovery itself.
+struct OnDisk;
+
+impl Settle for OnDisk {
+    fn folder(&mut self, env: &RecoveryEnv<'_>, tx: &TxId, path: PathBuf) -> Result<Vec<Warning>> {
+        recover_one(env, tx, path)
+    }
+
+    fn repair(&mut self, env: &RecoveryEnv<'_>, tx: TxId, path: &Path) -> Result<Option<Warning>> {
+        super::repair::recover::settle_one(env, tx, path)
+    }
+}
+
+/// [`recover_all`] through `settle`.
+pub(crate) fn recover_all_with(
+    env: &RecoveryEnv<'_>,
+    settle: &mut dyn Settle,
+) -> Result<Vec<Warning>> {
     // Recovery writes with the caller's scopes but never its fences (E14): it is ordered,
-    // never refused mid-way.
+    // never refused mid-way. Order is what keeps it off a stuck repair's resources.
     let unfenced = env.scopes.without_fences();
     let env = &RecoveryEnv {
         scopes: &unfenced,
         ..*env
     };
     let mut warnings = Vec::new();
+    let listing = super::repair::recover::listing(env.paths)?;
+    let mut passes = Passes::new(
+        listing.iter().map(|l| l.listed.clone()).collect(),
+        env.paths,
+    );
+    // Pass 1: the repairs that own a barrier.
+    while let Some(owner) = passes.next_owner() {
+        // ubs:ignore — comparing transaction ids (public ULIDs), not secrets
+        if let Some(listed) = listing.iter().find(|l| l.listed.tx == owner) {
+            let outcome = repair_pass(env, settle, &passes, listed, &mut warnings);
+            passes.record(owner, outcome);
+        }
+    }
+    // Pass 2: the folder journals, listed now (a suspension pass 1 rolled back has put
+    // its journal back; a reactivation it rolled back has taken one away).
+    let mut unresolved: Vec<(TxId, Stuck)> = Vec::new();
     for (tx, path) in list(env.paths).map_err(|error| unattributed(error, None))? {
         if InflightLock::is_live(env.paths, &tx).map_err(|error| unattributed(error, Some(&tx)))? {
             continue;
@@ -1043,38 +1156,155 @@ pub fn recover_all(env: &RecoveryEnv<'_>) -> Result<Vec<Warning>> {
         let unrecoverable = parsed.as_ref().and_then(Parsed::unrecoverable);
         // No target to attribute its failure to: it fails every committing command.
         let owner_unknown = target.is_none();
-        match recover_one(env, &tx, path) {
+        if let Some(owner) = passes.behind(&tx) {
+            // Behind a live writer's repair (seen only for one this build cannot read),
+            // it waits for that writer, silently.
+            let Some(stuck) = passes.stop(&owner) else {
+                continue;
+            };
+            if owner_unknown || target.is_some_and(|t| env.own.contains(&t)) {
+                return Err(fence::behind_error(tx, target, owner, stuck));
+            }
+            warnings.push(fence::behind_warning(
+                Behind::Folder { tx, target, owner },
+                stuck,
+            ));
+            unresolved.push((tx, stuck.clone()));
+            continue;
+        }
+        match settle.folder(env, &tx, path) {
             Ok(recovered) => warnings.extend(recovered),
-            Err(error) => match (target.filter(|t| !env.own.contains(t)), unrecoverable) {
-                (Some(other), Some(why)) => {
-                    warnings.push(unrecoverable_warning(&tx, Some(other), why));
+            Err(error) => {
+                let reason = error.details["reason"].as_str().and_then(StopReason::parse);
+                match (target.filter(|t| !env.own.contains(t)), unrecoverable) {
+                    (Some(other), Some(why)) => {
+                        warnings.push(unrecoverable_warning(&tx, Some(other), why));
+                    }
+                    // A warning has no details: a stop's or a wait's reason goes in its text.
+                    (Some(other), None) => warnings.push(
+                        Warning::new(
+                            WarningCode::JournalPending,
+                            format!(
+                                "transaction {tx} on target {other} did not finish and could not be recovered{}: {}",
+                                reason
+                                    .map(|why| format!(" ({})", why.as_str()))
+                                    .unwrap_or_default(),
+                                error.message
+                            ),
+                        )
+                        .with_fix(Suggestion::command(["omaddons", "status"])),
+                    ),
+                    (None, _) if owner_unknown => return Err(unattributed(error, Some(&tx))),
+                    // The caller's own target keeps its stop's reason.
+                    (None, _) => return Err(error),
                 }
-                // A warning has no details: a stop's or a wait's reason goes in its text.
-                (Some(other), None) => warnings.push(
-                    Warning::new(
-                        WarningCode::JournalPending,
-                        format!(
-                            "transaction {tx} on target {other} did not finish and could not be recovered{}: {}",
-                            error.details["reason"]
-                                .as_str()
-                                .map(|why| format!(" ({why})"))
-                                .unwrap_or_default(),
-                            error.message
-                        ),
-                    )
-                    .with_fix(Suggestion::command(["omaddons", "status"])),
-                ),
-                (None, _) if owner_unknown => return Err(unattributed(error, Some(&tx))),
-                // The caller's own target keeps its stop's reason.
-                (None, _) => return Err(error),
-            },
+                unresolved.push((tx, fence::folder_stuck(tx, target, error.code, reason)));
+            }
         }
     }
-    // Then the doctor's repairs (E5), which name no single target: one recovery cannot
-    // settle is a warning, and the fences every mutating command loads refuse what it
-    // protects (E14).
-    warnings.extend(super::repair::recover_repairs(env)?);
+    // Pass 3: the other repairs, listed again after pass 2, in transaction order.
+    let relisted = super::repair::recover::listing(env.paths)?;
+    let txs: Vec<TxId> = relisted.iter().map(|l| l.listed.tx).collect();
+    let mut overlaps: Option<Vec<(TxId, ResourceSet)>> = None;
+    for tx in passes.rest(&txs) {
+        // ubs:ignore — comparing transaction ids (public ULIDs), not secrets
+        let Some(listed) = relisted.iter().find(|l| l.listed.tx == tx) else {
+            continue;
+        };
+        let held = listed.listed.live || passes.behind(&tx).is_some();
+        if let (false, false, PreparedRead::Decoded(prepared)) =
+            (held, unresolved.is_empty(), &listed.listed.prepared)
+        {
+            let sets = overlaps.get_or_insert_with(|| protected_sets(env, &unresolved));
+            // A resource text that does not parse could overlap anything.
+            let waits = match prepared.resources.to_set() {
+                Ok(own) => passes.waits_for(&own, sets),
+                Err(_) => sets.first().map(|(f, _)| *f),
+            };
+            // ubs:ignore — comparing transaction ids (public ULIDs), not secrets
+            if let Some((f, stuck)) = waits.and_then(|f| unresolved.iter().find(|(u, _)| *u == f)) {
+                warnings.push(fence::behind_warning(
+                    Behind::Unresolved { tx, owner: *f },
+                    stuck,
+                ));
+                passes.record(tx, Outcome::Behind(*f));
+                continue;
+            }
+        }
+        let outcome = repair_pass(env, settle, &passes, listed, &mut warnings);
+        passes.record(tx, outcome);
+    }
     Ok(warnings)
+}
+
+/// One repair in pass 1 or 3: skipped while its writer is alive, left as it is behind an
+/// owner that holds it (with its behind warning), else recovered (with its stuck warning
+/// when recovery stops at it). What happened, for the passes to record.
+fn repair_pass(
+    env: &RecoveryEnv<'_>,
+    settle: &mut dyn Settle,
+    passes: &Passes,
+    listed: &super::repair::recover::RepairListing,
+    warnings: &mut Vec<Warning>,
+) -> Outcome {
+    let tx = listed.listed.tx;
+    if listed.listed.live {
+        return Outcome::Live {
+            finished: listed.finished,
+        };
+    }
+    if let Some(owner) = passes.behind(&tx) {
+        if let Some(stuck) = passes.stop(&owner) {
+            warnings.push(fence::behind_warning(Behind::Repair { tx, owner }, stuck));
+        }
+        return Outcome::Behind(owner);
+    }
+    match settle.repair(env, tx, &listed.path) {
+        Ok(warning) => {
+            warnings.extend(warning);
+            Outcome::Settled
+        }
+        Err(error) => {
+            let closed = fence::closes(env.paths, &listed.path);
+            let stop = fence::stop_of_error(tx, &error, closed);
+            warnings.push(fence::stuck_warning(
+                tx,
+                stop.reason.and_then(StopReason::parse),
+                closed,
+            ));
+            Outcome::Unsettled(Stuck { stop, closed })
+        }
+    }
+}
+
+/// What each folder journal pass 2 left unresolved protects, as `journal::diagnose`
+/// fills its `protected` (its own, never recomputed here), as a resource set
+/// ([`fence::resources_of`]). A journal the diagnosis does not list stands for everything
+/// (fail closed). Diagnoses only when a pass-3 repair might wait: a rare, read-only cost.
+fn protected_sets(env: &RecoveryEnv<'_>, unresolved: &[(TxId, Stuck)]) -> Vec<(TxId, ResourceSet)> {
+    let diagnoses = diagnose(env.paths, env.scopes.client_dirs(), env.sv_writable);
+    unresolved
+        .iter()
+        .map(|(tx, _)| {
+            let found = diagnoses
+                .journals
+                .iter()
+                .find(|d| d.tx == *tx && d.family == JournalFamily::Folder);
+            (
+                *tx,
+                found.map_or_else(everything, |d| fence::resources_of(&d.protected)),
+            )
+        })
+        .collect()
+}
+
+/// A set that conflicts with every write: the filesystem's root, written.
+fn everything() -> ResourceSet {
+    let mut set = ResourceSet::new();
+    if let Ok(root) = Resource::from_canonical(Path::new("/"), PathKind::Subtree) {
+        set.write(root);
+    }
+    set
 }
 
 /// A recovery failure no single target owns (the journal directory does not list, an
@@ -4932,6 +5162,449 @@ mod tests {
                 count > 0,
                 "the census found no read in {place:?}: it no longer sees the code"
             );
+        }
+    }
+
+    // -----------------------------------------------------------------------------------
+    // The passes (E14): the order recovery takes journals in, observed through a fake.
+
+    mod passes {
+        use std::borrow::Cow;
+        use std::collections::{BTreeMap, BTreeSet};
+
+        use serde_json::json;
+
+        use super::super::*;
+        use crate::engine::repair::{PlannedFix, RepairLine, RepairPrepared, provisional_journal};
+        use crate::engine::repair_action::{
+            Attribution, Fix, JournalSet, Mode, Primitive, QuarantineRoot, SuspendedArtifact,
+        };
+        use crate::engine::testing::{RepairHome, repair_home, repair_prepared};
+        use crate::fsx::{FenceSet, FenceStop};
+
+        const SET_ASIDE: &str = "fm-concurrency_primitives-journal-step-unrecognized";
+
+        fn id(n: u8) -> TxId {
+            format!("01JB8Q2VA000000000000000{n:02}").parse().unwrap()
+        }
+
+        /// Recovery's per-journal calls, recorded in order. Each settles at once unless
+        /// it is one of `stops` (it then stops at an unrecognized step); `then` is what a
+        /// settled repair's recovery did on disk.
+        #[derive(Default)]
+        struct Recording {
+            calls: Vec<(&'static str, TxId)>,
+            stops: BTreeSet<TxId>,
+            then: BTreeMap<TxId, Box<dyn Fn()>>,
+        }
+
+        impl Settle for Recording {
+            fn folder(
+                &mut self,
+                _: &RecoveryEnv<'_>,
+                tx: &TxId,
+                _: PathBuf,
+            ) -> Result<Vec<Warning>> {
+                self.calls.push(("folder", *tx));
+                if self.stops.contains(tx) {
+                    return Err(step_unrecognized(*tx));
+                }
+                Ok(Vec::new())
+            }
+
+            fn repair(
+                &mut self,
+                _: &RecoveryEnv<'_>,
+                tx: TxId,
+                _: &Path,
+            ) -> Result<Option<Warning>> {
+                self.calls.push(("repair", tx));
+                if self.stops.contains(&tx) {
+                    return Err(step_unrecognized(tx));
+                }
+                if let Some(then) = self.then.get(&tx) {
+                    then();
+                }
+                Ok(None)
+            }
+        }
+
+        fn step_unrecognized(tx: TxId) -> Error {
+            Error::new(
+                ErrorCode::Internal,
+                format!(
+                    "transaction {tx} could not be recovered (step_unrecognized): step 1 is in neither state"
+                ),
+                Suggestion::text("left for manual repair"),
+            )
+            .details(json!({"journal_pending": tx, "reason": "step_unrecognized", "target": null}))
+        }
+
+        /// `repair_home` without its stuck journal, so each test lists only its own.
+        fn bare() -> RepairHome {
+            let home = repair_home();
+            let stuck = home.stuck();
+            std::fs::remove_file(home.paths.journal(&stuck)).unwrap();
+            std::fs::remove_file(home.paths.inflight_lock(&stuck)).unwrap();
+            home
+        }
+
+        /// A folder journal of `tx`, on `target` when there is one, as far as recovery's
+        /// isolation reads it.
+        fn folder_journal(home: &RepairHome, tx: TxId, target: Option<TargetKey>) {
+            let target = target
+                .map(|t| format!(",\"target_key\":\"{t}\""))
+                .unwrap_or_default();
+            std::fs::write(
+                home.paths.journal(&tx),
+                format!("{{\"type\":\"prepared\",\"schema_version\":\"1.1\"{target}}}\n"),
+            )
+            .unwrap();
+        }
+
+        /// Plants `p` as repair journal `tx`, its `prepared` line alone.
+        fn plant(home: &RepairHome, mut p: RepairPrepared, tx: TxId) -> TxId {
+            p.tx = tx;
+            let line = serde_json::to_string(&RepairLine::Prepared(Box::new(p))).unwrap();
+            std::fs::write(home.paths.journal_repair(&tx), format!("{line}\n")).unwrap();
+            tx
+        }
+
+        /// The set-aside of folder journal `tx`, lowered while it is in place.
+        fn set_aside(home: &RepairHome, tx: TxId) -> RepairPrepared {
+            let journal = JournalSet {
+                tx,
+                family: JournalFamily::Folder,
+                target: Some(home.key),
+                artifacts: vec![SuspendedArtifact {
+                    path: home.paths.journal(&tx),
+                    root: QuarantineRoot::State,
+                }],
+                guards: Vec::new(),
+                attribution: Attribution::Complete,
+                unattributed: Vec::new(),
+            };
+            let fix = PlannedFix {
+                fm: Cow::Borrowed(SET_ASIDE),
+                fix: Fix::Suspend { journal },
+            };
+            repair_prepared(home, &[], &[fix])
+        }
+
+        /// Where a set-aside's first rename takes the journal.
+        fn quarantined(p: &RepairPrepared) -> PathBuf {
+            match &p.primitives[0].op {
+                Primitive::RenameNoReplace { to, .. } => to.clone(),
+                op => panic!("{op:?}"), // ubs:ignore — fails the test
+            }
+        }
+
+        /// A repair that names nothing: a chmod.
+        fn chmod(home: &RepairHome) -> RepairPrepared {
+            let fix = PlannedFix {
+                fm: Cow::Borrowed("fm-secrets-credential-file-mode"),
+                fix: Fix::Chmod {
+                    path: home.credential(),
+                    mode: Mode::new(0o600).unwrap(),
+                },
+            };
+            repair_prepared(home, &[], &[fix])
+        }
+
+        fn rename(from: &Path, to: &Path) {
+            std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+            std::fs::rename(from, to).unwrap();
+        }
+
+        fn recover<'a>(
+            home: &'a RepairHome,
+            own: &'a [TargetKey],
+            fake: &mut Recording,
+        ) -> Result<Vec<Warning>> {
+            let lock = GlobalLock::acquire(&home.paths, "test").unwrap();
+            let env = RecoveryEnv {
+                lock: &lock,
+                paths: &home.paths,
+                scopes: &home.scopes,
+                own,
+                sv_writable: &no_saved_variables,
+            };
+            recover_all_with(&env, fake)
+        }
+
+        fn stuck_with(owner: TxId) -> Stuck {
+            Stuck {
+                stop: fence::repair_stop(
+                    owner,
+                    ErrorCode::Internal,
+                    Some(StopReason::StepUnrecognized),
+                    false,
+                ),
+                closed: false,
+            }
+        }
+
+        #[test]
+        fn recover_all_runs_three_passes() {
+            let home = bare();
+            let other = TargetKey::new();
+            folder_journal(&home, id(1), Some(home.key));
+            folder_journal(&home, id(2), Some(other));
+            let owner = plant(&home, set_aside(&home, id(1)), id(5));
+            let rest = plant(&home, chmod(&home), id(3));
+            let mut fake = Recording::default();
+            recover(&home, &[home.key], &mut fake).unwrap();
+            assert_eq!(
+                fake.calls,
+                [
+                    ("repair", owner),
+                    ("folder", id(1)),
+                    ("folder", id(2)),
+                    ("repair", rest)
+                ],
+                "owners, then folder journals, then the other repairs"
+            );
+        }
+
+        #[test]
+        fn pass_two_lists_after_pass_one() {
+            // A suspension rolled back in pass 1 has put its journal back: pass 2 sees it.
+            let home = bare();
+            folder_journal(&home, id(1), Some(home.key));
+            let suspension = set_aside(&home, id(1));
+            let away = quarantined(&suspension);
+            rename(&home.paths.journal(&id(1)), &away);
+            let owner = plant(&home, suspension, id(5));
+            let mut fake = Recording::default();
+            let journal = home.paths.journal(&id(1));
+            fake.then
+                .insert(owner, Box::new(move || rename(&away, &journal)));
+            recover(&home, &[home.key], &mut fake).unwrap();
+            assert_eq!(
+                fake.calls,
+                [("repair", owner), ("folder", id(1))],
+                "rolled_back_suspension"
+            );
+
+            // A reactivation rolled back in pass 1 has taken its journal away: pass 2
+            // never sees it.
+            let home = bare();
+            folder_journal(&home, id(1), Some(home.key));
+            let mut reactivation = set_aside(&home, id(1));
+            let away = quarantined(&reactivation);
+            let provisional = provisional_journal(&home.paths, &id(1));
+            let template = reactivation.primitives[0].clone();
+            reactivation.primitives = [
+                (away.clone(), provisional.clone(), false),
+                (provisional, home.paths.journal(&id(1)), true),
+            ]
+            .into_iter()
+            .zip(1..)
+            .map(|((from, to, activation), seq)| {
+                let mut step = template.clone();
+                step.seq = seq;
+                step.op = Primitive::RenameNoReplace {
+                    from,
+                    to,
+                    activation,
+                };
+                step
+            })
+            .collect();
+            let owner = plant(&home, reactivation, id(5));
+            let mut fake = Recording::default();
+            let journal = home.paths.journal(&id(1));
+            fake.then
+                .insert(owner, Box::new(move || rename(&journal, &away)));
+            recover(&home, &[home.key], &mut fake).unwrap();
+            assert_eq!(fake.calls, [("repair", owner)], "rolled_back_reactivation");
+        }
+
+        #[test]
+        fn a_behind_journal_of_the_callers_target_fails_it_with_the_owners_stop() {
+            type Case = (&'static str, bool, &'static [TargetKey]);
+            // A journal of the caller's own target, and one with no readable target,
+            // which fails any caller.
+            let cases: [Case; 2] = [("own_target", true, &[]), ("no_target", false, &[])];
+            for (case, targeted, extra_own) in cases {
+                let home = bare();
+                let target = targeted.then_some(home.key);
+                folder_journal(&home, id(1), target);
+                let owner = plant(&home, set_aside(&home, id(1)), id(5));
+                let mut fake = Recording {
+                    stops: BTreeSet::from([owner]),
+                    ..Recording::default()
+                };
+                let own: Vec<TargetKey> = target.into_iter().chain(extra_own.to_vec()).collect();
+                let err = recover(&home, &own, &mut fake).unwrap_err();
+                assert_eq!(fake.calls, [("repair", owner)], "{case}: never recovered");
+                assert_eq!(err.code, ErrorCode::Internal, "{case}: {err:?}");
+                assert_eq!(
+                    err.details,
+                    json!({
+                        "journal_pending": id(1),
+                        "reason": "step_unrecognized",
+                        "resource": format!("journal:{}", id(1)),
+                        "target": target,
+                        "tx": owner,
+                    }),
+                    "{case}"
+                );
+                assert_eq!(err.code.check_details(&err.details), Ok(()), "{case}");
+                assert_eq!(
+                    err.fix,
+                    fence::explain_fix(Some(StopReason::StepUnrecognized)),
+                    "{case}"
+                );
+                assert_eq!(
+                    err.message,
+                    format!(
+                        "{} waits behind repair {owner}, which recovery could not settle (step_unrecognized); it is left as it is",
+                        fence::folder_named(id(1), target)
+                    ),
+                    "{case}"
+                );
+                assert!(home.paths.journal(&id(1)).exists(), "{case}: left as it is");
+            }
+        }
+
+        #[test]
+        fn a_behind_journal_of_another_target_warns_once() {
+            let home = bare();
+            let other = TargetKey::new();
+            folder_journal(&home, id(1), Some(other));
+            let owner = plant(&home, set_aside(&home, id(1)), id(5));
+            let mut fake = Recording {
+                stops: BTreeSet::from([owner]),
+                ..Recording::default()
+            };
+            let warnings = recover(&home, &[home.key], &mut fake).unwrap();
+            assert_eq!(fake.calls, [("repair", owner)], "never recovered");
+            let behind = fence::behind_warning(
+                Behind::Folder {
+                    tx: id(1),
+                    target: Some(other),
+                    owner,
+                },
+                &stuck_with(owner),
+            );
+            let about: Vec<&Warning> = warnings
+                .iter()
+                .filter(|w| w.message.contains(&id(1).to_string()))
+                .collect();
+            assert_eq!(about, [&behind], "{warnings:#?}");
+            assert!(
+                warnings.contains(&fence::stuck_warning(
+                    owner,
+                    Some(StopReason::StepUnrecognized),
+                    false
+                )),
+                "the owner's own warning: {warnings:#?}"
+            );
+        }
+
+        #[test]
+        fn a_repair_stop_never_fails_the_caller() {
+            let home = bare();
+            folder_journal(&home, id(1), Some(home.key));
+            let suspension = set_aside(&home, id(1));
+            std::fs::remove_file(home.paths.journal(&id(1))).unwrap();
+            let owner = plant(&home, suspension, id(5));
+            let rest = plant(&home, chmod(&home), id(3));
+            let mut fake = Recording {
+                stops: BTreeSet::from([owner, rest]),
+                ..Recording::default()
+            };
+            let warnings = recover(&home, &[home.key], &mut fake)
+                .expect("a repair's own stop never fails the caller");
+            assert_eq!(fake.calls, [("repair", owner), ("repair", rest)]);
+            for tx in [owner, rest] {
+                assert!(
+                    warnings.contains(&fence::stuck_warning(
+                        tx,
+                        Some(StopReason::StepUnrecognized),
+                        false
+                    )),
+                    "{tx}: {warnings:#?}"
+                );
+            }
+        }
+
+        #[test]
+        fn a_pass_three_repair_waits_behind_an_unresolved_journal() {
+            let home = repair_home();
+            home.readable_stuck_journal();
+            let stuck = home.stuck();
+            // A repair recorded as writing below the stuck install's stage, which pass 2
+            // leaves unresolved, and one writing elsewhere.
+            let mut overlapping = chmod(&home);
+            let stage = Resource::from_canonical(&home.client.stage(&stuck), PathKind::Subtree)
+                .unwrap()
+                .text()
+                .unwrap();
+            overlapping.resources.writes.push(stage);
+            let waiting = plant(&home, overlapping, id(20));
+            let disjoint = plant(&home, chmod(&home), id(21));
+            let mut fake = Recording {
+                stops: BTreeSet::from([stuck]),
+                ..Recording::default()
+            };
+            let warnings = recover(&home, &[], &mut fake).unwrap();
+            assert_eq!(
+                fake.calls,
+                [("folder", stuck), ("repair", disjoint)],
+                "the overlapping repair is never recovered ahead of it"
+            );
+            let behind = fence::behind_warning(
+                Behind::Unresolved {
+                    tx: waiting,
+                    owner: stuck,
+                },
+                &fence::folder_stuck(
+                    stuck,
+                    Some(home.key),
+                    ErrorCode::Internal,
+                    Some(StopReason::StepUnrecognized),
+                ),
+            );
+            assert!(warnings.contains(&behind), "{warnings:#?}");
+        }
+
+        /// Recovery writes through the caller's table without its fences: a fence over a
+        /// folder journal's stage never stops that journal's rollback from pruning it.
+        #[test]
+        fn recovery_sessions_are_unfenced() {
+            let home = repair_home();
+            home.readable_stuck_journal();
+            let stuck = home.stuck();
+            let stage = home.client.stage(&stuck);
+            let mut fences = FenceSet::new();
+            fences.fence(
+                stage.clone(),
+                format!("{}/", stage.display()),
+                FenceStop {
+                    tx: Some(id(9)),
+                    target: None,
+                    ..stuck_with(id(9)).stop
+                },
+            );
+            let fenced = home.scopes.clone().with_fences(fences);
+            let lock = GlobalLock::acquire(&home.paths, "test").unwrap();
+            let env = RecoveryEnv {
+                lock: &lock,
+                paths: &home.paths,
+                scopes: &fenced,
+                own: &[home.key],
+                sv_writable: &no_saved_variables,
+            };
+            let warnings = recover_all(&env).unwrap();
+            let recovered = |w: &&Warning| {
+                matches!(w.code, WarningCode::JournalRecovered)
+                    && w.message.contains(&stuck.to_string())
+            };
+            assert!(warnings.iter().any(|w| recovered(&w)), "{warnings:#?}");
+            assert!(!stage.exists(), "its stage was pruned under the fence");
+            assert!(!home.paths.journal(&stuck).exists());
         }
     }
 }

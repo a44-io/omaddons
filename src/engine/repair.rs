@@ -31,7 +31,7 @@ pub use journal::{
     ResourcesWire, RollbackTarget, history_line, read_prepared,
 };
 pub use lower::{LowerCtx, LowerError, Lowered, LoweredStep, PlannedFix, RefusedReason, lower};
-pub use recover::{PendingRepair, pending_repairs, recover_repairs};
+pub use recover::{PendingRepair, pending_repairs};
 
 use std::path::{Path, PathBuf};
 

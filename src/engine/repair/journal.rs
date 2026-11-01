@@ -325,11 +325,30 @@ pub fn list(paths: &Paths) -> Result<Vec<(TxId, PathBuf)>> {
     Ok(found)
 }
 
-/// Reads and parses one repair journal.
-pub fn read(path: &Path) -> Result<ParsedRepair> {
+impl ParsedRepair {
+    /// This journal as recovery may act on it (E14): a `prepared` line that decodes but
+    /// breaks the activation rules ([`barrier::validate`](crate::engine::barrier::validate))
+    /// is read as one that does not decode, so recovery leaves the journal whole and its
+    /// fences close (M3-D45: fail closed on what cannot be fully read). Every reader that
+    /// acts on a repair journal reads it through this.
+    pub fn checked(mut self, paths: &Paths) -> Self {
+        if self
+            .prepared
+            .as_ref()
+            .is_some_and(|prepared| crate::engine::barrier::validate(prepared, paths).is_err())
+        {
+            self.prepared = None;
+            self.unknown_lines += 1;
+        }
+        self
+    }
+}
+
+/// Reads and parses one repair journal of `paths`, [checked](ParsedRepair::checked).
+pub fn read(paths: &Paths, path: &Path) -> Result<ParsedRepair> {
     let bytes = std::fs::read(path)
         .map_err(|e| Error::io(path, &e, Suggestion::command(["omaddons", "status"])))?;
-    Ok(parse(&String::from_utf8_lossy(&bytes)))
+    Ok(parse(&String::from_utf8_lossy(&bytes)).checked(paths))
 }
 
 /// What a repair journal's first line tells of what the repair may have changed (E14):
@@ -340,7 +359,8 @@ pub enum PreparedRead {
     /// later line that does not read leaves it decoded: recovery keeps such a journal
     /// whole (M3-D45), and what it changed is still known.
     Decoded(Box<RepairPrepared>),
-    /// The first complete line is not a `prepared` line this build decodes.
+    /// The first complete line is not a `prepared` line this build decodes, or (read
+    /// through [`ParsedRepair::checked`]) it breaks the activation rules.
     Undecodable,
     /// The first line declares a newer major format.
     TooNew,
@@ -367,9 +387,10 @@ impl ParsedRepair {
     }
 }
 
-/// Reads one repair journal for its [`PreparedRead`].
-pub fn read_prepared(path: &Path) -> Result<PreparedRead> {
-    Ok(read(path)?.prepared_read())
+/// Reads one repair journal of `paths` for its [`PreparedRead`]: a `prepared` line that
+/// breaks the activation rules is [`PreparedRead::Undecodable`].
+pub fn read_prepared(paths: &Paths, path: &Path) -> Result<PreparedRead> {
+    Ok(read(paths, path)?.prepared_read())
 }
 
 // ---------------------------------------------------------------------------------------
@@ -805,6 +826,52 @@ mod tests {
         }
     }
 
+    /// A `prepared` line that decodes but breaks the activation rules is read, by every
+    /// reader that acts on a journal, as one that does not decode (E14): recovery leaves it
+    /// whole, and its fences close.
+    #[test]
+    fn read_prepared_treats_a_malformed_activation_as_undecodable() {
+        let home = repair_home();
+        let well_formed = prepared(&home, &[flatten(&home)]);
+        let mut malformed = well_formed.clone();
+        let last = malformed.primitives.last_mut().unwrap();
+        let Primitive::RenameNoReplace { activation, .. } = &mut last.op else {
+            panic!("{:?}", last.op); // ubs:ignore — fails the test
+        };
+        // A flatten's rename flagged as an activation: not from a provisional name.
+        *activation = true;
+        let dir = home.paths.journal_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let cases = [
+            ("well_formed", &well_formed, true),
+            ("malformed", &malformed, false),
+        ];
+        for (case, p, decodes) in cases {
+            let path = dir.join(format!("{case}.repair.jsonl"));
+            let text = journal(p, &[step(1)]);
+            std::fs::write(&path, &text).unwrap();
+            assert_eq!(
+                parse(&text).prepared_read(),
+                PreparedRead::Decoded(Box::new(p.clone())),
+                "{case}: the raw parse decodes either"
+            );
+            let read_back = read(&home.paths, &path).unwrap();
+            let got = read_prepared(&home.paths, &path).unwrap();
+            if decodes {
+                assert_eq!(got, PreparedRead::Decoded(Box::new(p.clone())), "{case}");
+                assert_eq!(read_back.unrecoverable(), None, "{case}");
+            } else {
+                assert_eq!(got, PreparedRead::Undecodable, "{case}");
+                assert_eq!(
+                    read_back.unrecoverable(),
+                    Some(Unrecoverable::Unreadable),
+                    "{case}: recovery leaves it"
+                );
+                assert_eq!(read_back.prepared, None, "{case}");
+            }
+        }
+    }
+
     #[test]
     fn parse_counts_what_it_cannot_read() {
         let home = repair_home();
@@ -996,7 +1063,7 @@ mod tests {
             None,
             "tx_named never learns the repair family"
         );
-        let parsed = read(&journal.join(format!("{}.repair.jsonl", id(3)))).unwrap();
+        let parsed = read(&paths, &journal.join(format!("{}.repair.jsonl", id(3)))).unwrap();
         assert_eq!(parsed.phase, RepairPhase::Unprepared);
     }
 

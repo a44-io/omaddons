@@ -21,8 +21,8 @@
 
 use std::path::{Path, PathBuf};
 
-use super::barrier;
-use super::journal::{self, Expected, JournalDiagnosis, JournalFamily, StopReason};
+use super::barrier::{self, Stuck};
+use super::journal::{self, Expected, JournalDiagnosis, JournalFamily, JournalVerdict, StopReason};
 use super::repair::{PreparedRead, RepairPrepared, read_prepared};
 use super::repair_action::{Guard, Primitive};
 use super::resource::{PathKind, Resource, ResourceError, ResourceSet};
@@ -30,7 +30,7 @@ use super::simulate::cut_below_wtf;
 use crate::doctor::registry::ids;
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{FenceSet, FenceStop, Fenced, FsxError, ScopeTable, canonical_lenient};
-use crate::model::{Target, TxId};
+use crate::model::{Target, TargetKey, TxId};
 use crate::state::paths::{ClientPaths, Paths};
 
 /// What `prepared`'s repair protects while it is stuck: writes only.
@@ -136,6 +136,34 @@ pub(crate) fn paths_of(set: &ResourceSet, paths: &Paths) -> Vec<(PathBuf, String
     out
 }
 
+/// What a journal's `protected` paths (`journal::diagnose`'s) stand for, as a resource
+/// set, written or read: a directory on disk a subtree, any other path a file (the kind
+/// only names it, for `details.resource`: overlap is the same either way). A path that
+/// cannot be resolved stands for everything (fail closed).
+pub(crate) fn resources_of(protected: &journal::ProtectedPaths) -> ResourceSet {
+    let resource = |path: &PathBuf| {
+        let kind = if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir()) {
+            PathKind::Subtree
+        } else {
+            PathKind::File
+        };
+        Resource::canonical(path, kind)
+            .or_else(|_| Resource::from_canonical(Path::new("/"), PathKind::Subtree))
+    };
+    let mut set = ResourceSet::new();
+    for path in &protected.writes {
+        if let Ok(r) = resource(path) {
+            set.write(r);
+        }
+    }
+    for path in &protected.reads {
+        if let Ok(r) = resource(path) {
+            set.read(r);
+        }
+    }
+    set
+}
+
 /// Every file a journal of `tx` may be: its four names and its in-flight lock.
 fn journal_paths(paths: &Paths, tx: &TxId) -> [PathBuf; 5] {
     [
@@ -171,15 +199,24 @@ enum Protection {
 /// The [`Protection`] of the repair journal at `journal`: path fences when its `prepared`
 /// line decodes (even with a later line this build cannot read: recovery keeps it whole,
 /// and what it changed is known), closed when that line does not decode, declares a
-/// newer major, records a resource that is not one, or cannot be read at all.
+/// newer major, breaks the activation rules, records a resource that is not one, or
+/// cannot be read at all.
 fn protection(paths: &Paths, journal: &Path) -> Protection {
-    match read_prepared(journal) {
-        Ok(PreparedRead::Decoded(prepared)) => match protected(&prepared, paths) {
+    match read_prepared(paths, journal) {
+        Ok(read) => protection_of(paths, &read),
+        Err(_) => Protection::Closed,
+    }
+}
+
+/// The [`Protection`] of a repair journal whose first line reads as `read`.
+fn protection_of(paths: &Paths, read: &PreparedRead) -> Protection {
+    match read {
+        PreparedRead::Decoded(prepared) => match protected(prepared, paths) {
             Ok(set) => Protection::Fences(paths_of(&set, paths)),
             Err(_) => Protection::Closed,
         },
-        Ok(PreparedRead::Absent) => Protection::Nothing,
-        Ok(PreparedRead::Undecodable | PreparedRead::TooNew) | Err(_) => Protection::Closed,
+        PreparedRead::Absent => Protection::Nothing,
+        PreparedRead::Undecodable | PreparedRead::TooNew => Protection::Closed,
     }
 }
 
@@ -189,11 +226,20 @@ pub fn closes(paths: &Paths, journal: &Path) -> bool {
     matches!(protection(paths, journal), Protection::Closed)
 }
 
+/// [`closes`] for a repair journal whose first line was already read as `read`.
+pub(crate) fn closes_read(paths: &Paths, read: &PreparedRead) -> bool {
+    matches!(protection_of(paths, read), Protection::Closed)
+}
+
 /// The fences a mutating command honours now: for every repair journal whose writer is
-/// gone and that recovery stops at, what it protects, with its own stop. A recoverable
-/// or live one fences nothing (the next lock-taking command settles it), nor does a
-/// folder journal. A journal directory that cannot be listed closes the set. Reads
-/// `journal::diagnose` only when a repair journal exists: otherwise one listing.
+/// gone and that recovery stops at, what it protects, with its own stop; and for every
+/// journal of either family recovery would leave behind a barrier (E14), what it
+/// protects, with the stop of the repair (or journal) it waits behind, so a folder
+/// journal behind an owner is protected from every command, not only its own target's.
+/// A recoverable or live one fences nothing (the next lock-taking command settles it),
+/// nor does any other folder journal. A journal directory that cannot be listed closes
+/// the set. Reads `journal::diagnose` only when a repair journal exists: otherwise one
+/// listing.
 pub fn load(paths: &Paths, client_dirs: &[PathBuf]) -> FenceSet {
     let mut set = FenceSet::new();
     match super::repair::journal::list(paths) {
@@ -208,26 +254,55 @@ pub fn load(paths: &Paths, client_dirs: &[PathBuf]) -> FenceSet {
     if diagnoses.unlisted.is_some() {
         close_unlisted(&mut set, paths);
     }
+    // The stop of the journal `owner`, as its own fences would report it.
+    let owner_stop = |owner: TxId| {
+        let od = diagnoses.journals.iter().find(|od| od.tx == owner)?;
+        let closed = od.family == JournalFamily::Repair && closes(paths, &od.path);
+        stop_of(od, closed)
+    };
     for d in &diagnoses.journals {
-        if d.family != JournalFamily::Repair {
-            continue;
-        }
-        let protection = protection(paths, &d.path);
-        let closed = matches!(protection, Protection::Closed);
-        let Some(stop) = stop_of(d, closed) else {
-            continue;
-        };
-        match protection {
-            Protection::Fences(fences) => {
-                for (path, text) in fences {
+        match (d.family, d.verdict) {
+            // Behind a barrier (E14), "fenced with that repair": what the journal itself
+            // protects, with its owner's stop. Behind a live writer, nothing is fenced,
+            // as for any live transaction.
+            (JournalFamily::Folder, JournalVerdict::BehindBarrier { owner, .. }) => {
+                let Some(stop) = owner_stop(owner) else {
+                    continue;
+                };
+                let protected = resources_of(&d.protected);
+                for (path, text) in paths_of(&protected, paths) {
                     set.fence(path, text, stop.clone());
                 }
             }
-            Protection::Closed => set.close(format!("journal:{}", d.tx), stop),
-            Protection::Nothing => {}
+            (JournalFamily::Repair, JournalVerdict::BehindBarrier { owner, .. }) => {
+                if let Some(stop) = owner_stop(owner) {
+                    protect(&mut set, d, protection(paths, &d.path), stop);
+                }
+            }
+            (JournalFamily::Repair, _) => {
+                let protection = protection(paths, &d.path);
+                let closed = matches!(protection, Protection::Closed);
+                if let Some(stop) = stop_of(d, closed) {
+                    protect(&mut set, d, protection, stop);
+                }
+            }
+            (JournalFamily::Folder, _) => {}
         }
     }
     set
+}
+
+/// Fences `set` with what the repair journal `d` protects, reporting `stop`.
+fn protect(set: &mut FenceSet, d: &JournalDiagnosis, protection: Protection, stop: FenceStop) {
+    match protection {
+        Protection::Fences(fences) => {
+            for (path, text) in fences {
+                set.fence(path, text, stop.clone());
+            }
+        }
+        Protection::Closed => set.close(format!("journal:{}", d.tx), stop),
+        Protection::Nothing => {}
+    }
 }
 
 /// Closes `set` for a journal directory that cannot be listed: any unfinished repair's
@@ -258,14 +333,39 @@ pub fn stop_of(d: &JournalDiagnosis, closed: bool) -> Option<FenceStop> {
     let Expected::Stops { code, reason, .. } = d.expected() else {
         return None;
     };
-    Some(FenceStop {
-        tx: Some(d.tx),
-        target: d.target,
-        code,
-        reason: Some(reason.as_str()),
-        summary: summary(d.tx, Some(reason), closed),
-        fix: explain_fix(Some(reason)),
+    Some(match d.family {
+        JournalFamily::Repair => FenceStop {
+            target: d.target,
+            ..repair_stop(d.tx, code, Some(reason), closed)
+        },
+        // A folder journal a pass-3 repair waits behind (E14).
+        JournalFamily::Folder => folder_stuck(d.tx, d.target, code, Some(reason)).stop,
     })
+}
+
+/// The stop of the repair `tx` recovery could not settle, with `code` and `reason`
+/// (`None`: its recovery failed on I/O); `closed` when its resources cannot be read.
+pub(crate) fn repair_stop(
+    tx: TxId,
+    code: ErrorCode,
+    reason: Option<StopReason>,
+    closed: bool,
+) -> FenceStop {
+    FenceStop {
+        tx: Some(tx),
+        target: None,
+        code,
+        reason: reason.map(StopReason::as_str),
+        summary: summary(tx, reason, closed),
+        fix: explain_fix(reason),
+    }
+}
+
+/// The stop recovery reports for the repair `tx`, whose recovery failed with `error`:
+/// its code, and its reason from its details.
+pub(crate) fn stop_of_error(tx: TxId, error: &Error, closed: bool) -> FenceStop {
+    let reason = error.details["reason"].as_str().and_then(StopReason::parse);
+    repair_stop(tx, error.code, reason, closed)
 }
 
 /// `omaddons doctor explain <fm>` for a recovery stop with `reason`, its failure mode
@@ -313,11 +413,126 @@ pub fn stuck_warning(tx: TxId, reason: Option<StopReason>, closed: bool) -> Warn
     .with_fix(explain_fix(reason))
 }
 
-/// The stuck warning recovery reports for the repair journal of `tx` at `journal`, whose
-/// recovery failed with `error`: the stop's reason from its details.
-pub(crate) fn recovery_warning(paths: &Paths, tx: TxId, journal: &Path, error: &Error) -> Warning {
-    let reason = error.details["reason"].as_str().and_then(StopReason::parse);
-    stuck_warning(tx, reason, closes(paths, journal))
+// ---------------------------------------------------------------------------------------
+// Journals behind a barrier (E14).
+
+/// How a journal names itself in a behind text: `transaction <tx>`, with ` on target <t>`
+/// when it has one.
+pub(crate) fn folder_named(tx: TxId, target: Option<TargetKey>) -> String {
+    match target {
+        Some(target) => format!("transaction {tx} on target {target}"),
+        None => format!("transaction {tx}"),
+    }
+}
+
+/// `<waiting> waits behind <owner>, which recovery could not settle (<reason>); <rest>`,
+/// or `which this omaddons cannot read (<reason>)` when `stuck`'s resources cannot be
+/// read: one parenthesized reason, the stop's (`io` for a recovery that failed without
+/// one).
+fn behind_text(waiting: &str, owner: &str, stuck: &Stuck, rest: &str) -> String {
+    let why = stuck.stop.reason.unwrap_or("io");
+    let which = if stuck.closed {
+        "which this omaddons cannot read"
+    } else {
+        "which recovery could not settle"
+    };
+    format!("{waiting} waits behind {owner}, {which} ({why}); {rest}")
+}
+
+/// Where a journal waits, for its behind text.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Behind {
+    /// A folder journal behind the repair `owner`: left as it is.
+    Folder {
+        tx: TxId,
+        target: Option<TargetKey>,
+        owner: TxId,
+    },
+    /// A repair behind the repair `owner` that names it: what it protects is fenced.
+    Repair { tx: TxId, owner: TxId },
+    /// A repair whose resources overlap the journal `owner` pass 2 left unresolved.
+    Unresolved { tx: TxId, owner: TxId },
+}
+
+/// The one `journal_pending` warning of a journal behind a barrier, as recovery and
+/// readers both report it, with the stop of the repair (or journal) it waits behind and
+/// that stop's `doctor explain` as its fix.
+pub(crate) fn behind_warning(behind: Behind, stuck: &Stuck) -> Warning {
+    let fenced = "writes to what it protects are refused";
+    let text = match behind {
+        Behind::Folder { tx, target, owner } => behind_text(
+            &folder_named(tx, target),
+            &format!("repair {owner}"),
+            stuck,
+            "it is left as it is",
+        ),
+        Behind::Repair { tx, owner } => behind_text(
+            &format!("repair transaction {tx}"),
+            &format!("repair {owner}"),
+            stuck,
+            fenced,
+        ),
+        Behind::Unresolved { tx, owner } => behind_text(
+            &format!("repair transaction {tx}"),
+            &format!("transaction {owner}"),
+            stuck,
+            fenced,
+        ),
+    };
+    Warning::new(WarningCode::JournalPending, text).with_fix(stuck.stop.fix.clone())
+}
+
+/// What fails a command whose own target's folder journal `tx` (or one with no readable
+/// target) waits behind the unsettled repair `owner`: that repair's own stop (its code and
+/// `details.reason`, M4-D62's "fenced with that repair"), with `details.journal_pending`
+/// the waiting journal, `details.tx` the repair and `details.resource` what is held back.
+pub(crate) fn behind_error(
+    tx: TxId,
+    target: Option<TargetKey>,
+    owner: TxId,
+    stuck: &Stuck,
+) -> Error {
+    let message = behind_text(
+        &folder_named(tx, target),
+        &format!("repair {owner}"),
+        stuck,
+        "it is left as it is",
+    );
+    let mut details = serde_json::json!({
+        "journal_pending": tx,
+        "resource": format!("journal:{tx}"),
+        "target": target,
+        "tx": owner,
+    });
+    if let Some(reason) = stuck.stop.reason {
+        details["reason"] = serde_json::json!(reason);
+    }
+    Error::new(stuck.stop.code, message, stuck.stop.fix.clone()).details(details)
+}
+
+/// The stop of a folder journal recovery left unresolved: its `code` and `reason`, for a
+/// repair that waits behind it.
+pub(crate) fn folder_stuck(
+    tx: TxId,
+    target: Option<TargetKey>,
+    code: ErrorCode,
+    reason: Option<StopReason>,
+) -> Stuck {
+    let why = reason.map_or("io", StopReason::as_str);
+    Stuck {
+        stop: FenceStop {
+            tx: Some(tx),
+            target,
+            code,
+            reason: reason.map(StopReason::as_str),
+            summary: format!(
+                "{} did not finish, and recovery could not settle it ({why})",
+                folder_named(tx, target)
+            ),
+            fix: explain_fix(reason),
+        },
+        closed: false,
+    }
 }
 
 /// A mutating command's write-scope table: [`ScopeTable::new`] with the fences of
@@ -914,6 +1129,31 @@ mod tests {
             fences: Vec::new(),
             closed: None,
         };
+        /// An unknowable repair puts every other journal behind it (E14): the stuck folder
+        /// journal `repair_home` leaves is fenced (its artifacts, as it is untrusted) with
+        /// that repair's stop, beside the close.
+        fn behind_unknowable(
+            home: &RepairHome,
+            tx: TxId,
+            code: &'static str,
+        ) -> Vec<(PathBuf, String, Option<TxId>, &'static str)> {
+            let stuck = home.stuck();
+            let stage = home.client.stage(&stuck);
+            let file = |path: PathBuf| {
+                let text = path.display().to_string();
+                (path, text, Some(tx), code)
+            };
+            vec![
+                (
+                    stage.clone(),
+                    format!("{}/", stage.display()),
+                    Some(tx),
+                    code,
+                ),
+                file(home.paths.inflight_lock(&stuck)),
+                file(home.paths.journal(&stuck)),
+            ]
+        }
         let cases: Vec<(&str, Plant, Want)> = vec![
             (
                 "recoverable_repair",
@@ -938,10 +1178,10 @@ mod tests {
                     });
                     (Some(tx), None)
                 },
-                |_, tx| {
+                |home, tx| {
                     let tx = tx.unwrap();
                     Shape {
-                        fences: Vec::new(),
+                        fences: behind_unknowable(home, tx, "state_corrupt"),
                         closed: Some((
                             format!("journal:{tx}"),
                             Some(tx),
@@ -960,10 +1200,10 @@ mod tests {
                     });
                     (Some(tx), None)
                 },
-                |_, tx| {
+                |home, tx| {
                     let tx = tx.unwrap();
                     Shape {
-                        fences: Vec::new(),
+                        fences: behind_unknowable(home, tx, "state_too_new"),
                         closed: Some((
                             format!("journal:{tx}"),
                             Some(tx),
@@ -1268,6 +1508,130 @@ mod tests {
             );
             assert!(home.paths.journal_repair(&tx).exists(), "{case}: kept");
         }
+    }
+
+    /// A set-aside of the stuck install `repair_home` leaves (its journal alone) that
+    /// recorded its one step and crashed, recovery unable to settle it: the journal it
+    /// would move was replaced since (another inode), so the step is in neither state. The
+    /// install's journal, readable, waits behind it. Returns the set-aside's transaction.
+    fn stuck_set_aside(home: &RepairHome) -> TxId {
+        use crate::engine::repair::RepairLine;
+        home.readable_stuck_journal();
+        let stuck = home.stuck();
+        let journal = home.paths.journal(&stuck);
+        let set_aside = planned(
+            SET_ASIDE,
+            Fix::Suspend {
+                journal: JournalSet {
+                    tx: stuck,
+                    family: JournalFamily::Folder,
+                    target: Some(home.key),
+                    artifacts: vec![SuspendedArtifact {
+                        path: journal.clone(),
+                        root: QuarantineRoot::State,
+                    }],
+                    guards: Vec::new(),
+                    attribution: Attribution::Complete,
+                    unattributed: Vec::new(),
+                },
+            },
+        );
+        let p = repair_prepared(home, &[], &[set_aside]);
+        let copy = journal.with_extension("copy");
+        std::fs::copy(&journal, &copy).unwrap();
+        std::fs::rename(&copy, &journal).unwrap();
+        let prepared = serde_json::to_string(&RepairLine::Prepared(Box::new(p.clone()))).unwrap();
+        std::fs::write(
+            home.paths.journal_repair(&p.tx),
+            format!("{prepared}\n{{\"type\":\"step\",\"seq\":1}}\n"),
+        )
+        .unwrap();
+        p.tx
+    }
+
+    #[test]
+    fn load_fences_a_behind_journal_with_its_owner() {
+        let home = repair_home();
+        let owner = stuck_set_aside(&home);
+        let stuck = home.stuck();
+        let set = load(&home.paths, &clients(&home));
+        let stage = home.client.stage(&stuck);
+        for path in [stage.join("Foo"), home.paths.journal(&stuck)] {
+            let fence = set.covering(&path);
+            assert!(
+                fence.is_some(),
+                "{} is fenced: {:#?}",
+                path.display(),
+                shape(&set)
+            );
+            let fence = fence.unwrap();
+            assert_eq!(
+                (fence.stop.tx, fence.stop.code, fence.stop.reason),
+                (Some(owner), ErrorCode::Internal, Some("step_unrecognized")),
+                "fenced with that repair: {}",
+                path.display()
+            );
+            assert!(
+                fence.stop.summary.starts_with(&format!(
+                    "repair transaction {owner} did not finish, and recovery could not settle it"
+                )),
+                "{}",
+                fence.stop.summary
+            );
+        }
+        // Without the owner nothing holds it back, and a folder journal fences nothing.
+        std::fs::remove_file(home.paths.journal_repair(&owner)).unwrap();
+        let set = load(&home.paths, &clients(&home));
+        assert!(set.is_empty(), "{:#?}", shape(&set));
+    }
+
+    #[test]
+    fn the_reader_and_recovery_behind_warnings_are_equal() {
+        let home = repair_home();
+        let owner = stuck_set_aside(&home);
+        let stuck = home.stuck();
+        let read = pending_warnings(&home.paths).unwrap();
+        let lock = GlobalLock::acquire(&home.paths, "test").unwrap();
+        let env = RecoveryEnv {
+            lock: &lock,
+            paths: &home.paths,
+            scopes: &home.scopes,
+            own: &[],
+            sv_writable: &journal::no_saved_variables,
+        };
+        let recovered = recover_all(&env).expect("another target's journal only warns");
+        // The one warning whose subject is `lead` (the behind text names the owner too).
+        let about = |warnings: &[Warning], lead: &str| {
+            let found: Vec<&Warning> = warnings
+                .iter()
+                .filter(|w| w.message.starts_with(lead))
+                .collect();
+            assert_eq!(found.len(), 1, "{lead}: {warnings:#?}");
+            found[0].clone()
+        };
+        for lead in [
+            format!("transaction {stuck} "),
+            format!("repair transaction {owner} "),
+        ] {
+            assert_eq!(
+                about(&read, &lead),
+                about(&recovered, &lead),
+                "{lead}: one text, read or recovered"
+            );
+        }
+        let behind = about(&read, &format!("transaction {stuck} "));
+        assert_eq!(
+            behind.message,
+            format!(
+                "transaction {stuck} on target {} waits behind repair {owner}, which recovery could not settle (step_unrecognized); it is left as it is",
+                home.key
+            )
+        );
+        assert_eq!(
+            behind.fix,
+            Some(explain_fix(Some(StopReason::StepUnrecognized)))
+        );
+        assert!(home.paths.journal(&stuck).exists(), "left as it is");
     }
 
     #[test]

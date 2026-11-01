@@ -419,8 +419,12 @@ fn orphans(paths: &Paths, client: &ClientPaths, now: Timestamp, text: &str) -> R
                 now.as_second().saturating_sub(t.as_second()) >= floor
             })
     };
+    // A journal under its provisional name belongs to an undo of a set-aside that has not
+    // settled (E14): whatever that undo has put back around it is never an orphan.
     let dead = |tx: &TxId| -> Result<bool> {
-        Ok(!InflightLock::is_live(paths, tx)? && super::journal::existing(paths, tx).is_none())
+        Ok(!InflightLock::is_live(paths, tx)?
+            && super::journal::existing(paths, tx).is_none()
+            && std::fs::symlink_metadata(super::repair::provisional_journal(paths, tx)).is_err())
     };
     let mut found = Vec::new();
     // Age first: probing a lock takes it for a moment, which must never meet a lock file
@@ -928,6 +932,40 @@ mod tests {
                 "{} is doctor gc's alone",
                 dir.display()
             );
+        }
+    }
+
+    /// A journal under its provisional name keeps its transaction alive (E14): an aged
+    /// stage, in-flight lock and state snapshot of `tx` are no orphans while
+    /// `<tx>.reactivating.jsonl` exists (an undo of a set-aside put them back), and are
+    /// without it.
+    #[test]
+    fn a_provisional_journal_keeps_its_transaction_alive() {
+        let f = fixture();
+        let tx = TxId::new();
+        let stage = f.client.stage(&tx);
+        let snapshot = f.paths.state_snapshot(&tx);
+        let inflight = f.paths.inflight_lock(&tx);
+        for dir in [&stage, &snapshot] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::create_dir_all(f.paths.inflight_dir()).unwrap();
+        std::fs::write(&inflight, b"").unwrap();
+        let provisional = crate::engine::repair::provisional_journal(&f.paths, &tx);
+        std::fs::create_dir_all(f.paths.journal_dir()).unwrap();
+        std::fs::write(&provisional, b"{}\n").unwrap();
+        let named = |found: &Orphans, path: &PathBuf| {
+            found.scratch.contains(path) || found.snapshots.contains(path)
+        };
+
+        let kept = orphans(&f.paths, &f.client, f.clock, "").unwrap();
+        for path in [&stage, &inflight, &snapshot] {
+            assert!(!named(&kept, path), "{} is kept", path.display());
+        }
+        std::fs::remove_file(&provisional).unwrap();
+        let swept = orphans(&f.paths, &f.client, f.clock, "").unwrap();
+        for path in [&stage, &inflight, &snapshot] {
+            assert!(named(&swept, path), "{} is an orphan", path.display());
         }
     }
 

@@ -35,6 +35,7 @@ use super::journal::{
 };
 use super::lower::{Lowered, LoweredStep};
 use super::{RepairRun, RepairTx};
+use crate::engine::barrier;
 use crate::engine::repair_action::{Endpoint, Endpoints, Primitive, validate_steps};
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{
@@ -171,7 +172,34 @@ pub fn commit(
     let tx = rtx.tx();
     revalidate(ctx, lowered)?;
     let prepared = prepared_line(ctx.run, tx, lowered, meta)?;
-    let journal = ctx.scopes.paths().journal_repair(&tx);
+    let paths = ctx.scopes.paths();
+    // A reactivation that breaks M4-D38's order could expose a journal ahead of the undo
+    // that restores it; recovery would read such a `prepared` line as undecodable, so it
+    // is never written (E14).
+    barrier::validate(&prepared, paths).map_err(|rule| {
+        Error::internal(format!(
+            "a repair that reactivates a journal must restore it under its provisional name first and activate it last: {rule}; nothing was written"
+        ))
+    })?;
+    // A set-aside may move what its own suspended journals' fences protect (E14): those
+    // fences, and a close one of them made, are lifted; every other journal's stand. By
+    // the journals moved, not by fix kind: a set-aside of a stuck repair crosses that
+    // repair's own fence, and one of an unreadable repair passes its closed set.
+    let excused;
+    let ctx = match barrier::of(&prepared, paths) {
+        Some(barrier) if barrier.kind == barrier::BarrierKind::Suspension => {
+            let fences = ctx.scopes.fences().excusing(&barrier.names);
+            excused = ctx.scopes.clone().with_fences(fences);
+            &CommitCtx {
+                lock: ctx.lock,
+                scopes: &excused,
+                run: ctx.run,
+                mount_id: ctx.mount_id,
+            }
+        }
+        _ => ctx,
+    };
+    let journal = paths.journal_repair(&tx);
     let outcome = run(ctx, lowered, &prepared, &journal)?;
     let cleanup = RepairCleanup {
         rtx,
@@ -1240,5 +1268,127 @@ mod tests {
             tail.contains(&tx.to_string()),
             "the history projection covers the repair"
         );
+    }
+
+    /// The set-aside of `home`'s stuck folder journal and its client stage.
+    fn set_aside(home: &RepairHome) -> PlannedFix {
+        use crate::engine::repair_action::{
+            Attribution, JournalFamily, JournalSet, SuspendedArtifact,
+        };
+        let stuck = home.stuck();
+        planned(
+            "fm-concurrency_primitives-journal-step-unrecognized",
+            Fix::Suspend {
+                journal: JournalSet {
+                    tx: stuck,
+                    family: JournalFamily::Folder,
+                    target: Some(home.key),
+                    artifacts: vec![
+                        SuspendedArtifact {
+                            path: home.paths.journal(&stuck),
+                            root: QuarantineRoot::State,
+                        },
+                        SuspendedArtifact {
+                            path: home.client.stage(&stuck),
+                            root: client_root(home),
+                        },
+                    ],
+                    guards: Vec::new(),
+                    attribution: Attribution::Complete,
+                    unattributed: Vec::new(),
+                },
+            },
+        )
+    }
+
+    /// A repair whose `prepared` line breaks the activation rules is refused with
+    /// `internal` before anything is written: no journal, no root, nothing moved.
+    #[test]
+    fn commit_refuses_a_malformed_activation_before_prepared() {
+        let home = repair_home();
+        let (rtx, mut lowered) = lowered(&home, &[set_aside(&home)]);
+        let tx = rtx.tx();
+        // The set-aside's last rename flagged as an activation: it renames the journal
+        // out of `<state>/journal/`, not from its provisional name (rule 2).
+        let last = lowered.steps.last_mut().unwrap();
+        let Primitive::RenameNoReplace { activation, .. } = &mut last.step.op else {
+            panic!("{:?}", last.step.op); // ubs:ignore — fails the test
+        };
+        *activation = true;
+        let journal_dir = home.paths.journal_dir();
+        let before = tree_hash(&journal_dir);
+        let addons = tree_hash(&home.client.meta_dir());
+        let run = tree_hash(&home.run.dir);
+        let err = commit_with(&home, rtx, &lowered, &fsx::mount_id).unwrap_err();
+        assert_eq!(err.code, ErrorCode::Internal, "{err:?}");
+        assert!(
+            err.message
+                .contains("provisional name first and activate it last: rule 2"),
+            "{}",
+            err.message
+        );
+        assert_eq!(tree_hash(&journal_dir), before, "no journal line");
+        assert!(!home.paths.journal_repair(&tx).exists());
+        assert_eq!(tree_hash(&home.client.meta_dir()), addons, "nothing moved");
+        assert_eq!(tree_hash(&home.run.dir), run, "no root, no backup");
+    }
+
+    /// A set-aside crosses the fences, and the close, of the journals it moves, and no
+    /// other journal's (E14).
+    #[test]
+    fn a_set_aside_commit_excuses_only_its_journals() {
+        use crate::fsx::{FenceSet, FenceStop};
+        // (case, whether the fence is the set-aside journal's own, whether it closes)
+        let cases = [
+            ("its_own_fence", true, false),
+            ("another_journals_fence", false, false),
+            ("its_own_close", true, true),
+            ("another_journals_close", false, true),
+        ];
+        for (case, own, closes) in cases {
+            let home = repair_home();
+            let stuck = home.stuck();
+            let journal = home.paths.journal(&stuck);
+            let (rtx, lowered) = lowered(&home, &[set_aside(&home)]);
+            let fencer = if own { stuck } else { TxId::new() };
+            let stop = FenceStop {
+                tx: Some(fencer),
+                target: None,
+                code: ErrorCode::Internal,
+                reason: Some("step_unrecognized"),
+                summary: format!("repair transaction {fencer} did not finish"),
+                fix: Suggestion::text("see doctor explain"),
+            };
+            let mut fences = FenceSet::new();
+            if closes {
+                fences.close(format!("journal:{fencer}"), stop);
+            } else {
+                fences.fence(journal.clone(), journal.display().to_string(), stop);
+            }
+            let scopes = home.scopes.clone().with_fences(fences);
+            let lock = GlobalLock::acquire(&home.paths, "test").unwrap();
+            let ctx = CommitCtx {
+                lock: &lock,
+                scopes: &scopes,
+                run: &home.run,
+                mount_id: &fsx::mount_id,
+            };
+            let result = commit(&ctx, rtx, &lowered, &meta());
+            if own {
+                assert!(
+                    matches!(result, Ok((RepairOutcome::Committed { .. }, _))),
+                    "{case}: {result:?}"
+                );
+                assert!(!journal.exists(), "{case}: set aside");
+            } else {
+                let refused = match &result {
+                    Err(err) => err.code,
+                    Ok((RepairOutcome::RolledBack { cause, .. }, _)) => cause.code,
+                    Ok(other) => panic!("{case}: committed {other:?}"), // ubs:ignore — fails the test
+                };
+                assert_eq!(refused, ErrorCode::Internal, "{case}: the fence's stop");
+                assert!(journal.exists(), "{case}: left where it was");
+            }
+        }
     }
 }
