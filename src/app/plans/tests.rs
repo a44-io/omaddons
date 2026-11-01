@@ -729,7 +729,8 @@ fn undo_hints_mirror_targets_data() {
     let pl = |tx: &str, target: &str, run: &str| PlanLine {
         plan,
         tx: tx.parse().unwrap(),
-        target: key(target),
+        target: Some(key(target)),
+        targets: Vec::new(),
         kind: crate::model::TxKind::Update,
         run: Some(run.parse().unwrap()),
         result: TxResult::Committed,

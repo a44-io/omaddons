@@ -1439,7 +1439,8 @@ mod tests {
                 .map(|tx| history::PlanLine {
                     plan: "01JB8Q2VR00000000000000001".parse().unwrap(),
                     tx: *tx,
-                    target: key(RETAIL),
+                    target: Some(key(RETAIL)),
+                    targets: Vec::new(),
                     kind: TxKind::Install,
                     run: None,
                     result: history::TxResult::Committed,

@@ -2214,6 +2214,7 @@ fn committed(
     let undo = UndoOf {
         reverts: c.reverts,
         paths: repair_paths(paths, &verified.plan, c, &tx),
+        plan: ctx.applying,
     };
     let meta = RepairMeta {
         run: req.run,

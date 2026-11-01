@@ -15,6 +15,8 @@ mod drift_support;
 mod races;
 #[path = "apply/releases.rs"]
 mod releases;
+#[path = "apply/repair_undo.rs"]
+mod repair_undo;
 #[path = "apply/witness.rs"]
 mod witness;
 

@@ -1083,11 +1083,28 @@ impl PlanEvidence {
 pub struct PlanLine {
     pub plan: PlanId,
     pub tx: TxId,
-    pub target: TargetKey,
+    /// `None` for a repair-family line (the undo of a repair), which names its clients in
+    /// `targets`.
+    pub target: Option<TargetKey>,
+    /// A repair-family line's clients; empty for any other line, and for a repair of
+    /// omaddons' own files alone.
+    pub targets: Vec<TargetKey>,
     pub kind: TxKind,
     pub run: Option<RunId>,
     pub result: TxResult,
     pub at: Timestamp,
+}
+
+impl PlanLine {
+    /// The clients the line committed on: its target, else each of its `targets`, else
+    /// one `None`, the machine (a repair of omaddons' own files).
+    pub fn clients(&self) -> Vec<Option<TargetKey>> {
+        match (self.target, self.targets.as_slice()) {
+            (Some(key), _) => vec![Some(key)],
+            (None, []) => vec![None],
+            (None, keys) => keys.iter().copied().map(Some).collect(),
+        }
+    }
 }
 
 /// How much of `history.jsonl` [`plan_evidence`] reads at a time, from its end: a buffer
@@ -1289,6 +1306,9 @@ struct EvidenceFields {
     kind: Option<serde_json::Value>,
     #[serde(default)]
     target: Option<String>,
+    /// A repair-family line's clients.
+    #[serde(default)]
+    targets: Option<Vec<String>>,
     #[serde(default)]
     run: Option<String>,
     #[serde(default)]
@@ -1332,10 +1352,23 @@ fn attributed(fields: &EvidenceFields, plan: &str, kind: Option<TxKind>) -> Opti
     let result =
         serde_json::from_value::<TxResult>(serde_json::Value::String(fields.result.clone()?))
             .ok()?;
+    // A target that is there must read; a line without one is a repair-family line, whose
+    // clients are its `targets`.
+    let target = match fields.target.as_deref() {
+        None => None,
+        Some(key) => Some(key.parse().ok()?),
+    };
+    let targets = fields
+        .targets
+        .iter()
+        .flatten()
+        .map(|key| key.parse().ok())
+        .collect::<Option<Vec<TargetKey>>>()?;
     Some(PlanLine {
         plan: plan.parse().ok()?,
         tx: fields.tx.as_deref()?.parse().ok()?,
-        target: fields.target.as_deref()?.parse().ok()?,
+        target,
+        targets,
         kind: kind?,
         run,
         result,
@@ -2892,9 +2925,17 @@ mod tests {
                 100,
                 (vec![tx_of(1)], Start, 1, 0, 0),
             ),
+            // A repair-family line (an applied undo of a repair, E7) is evidence on its
+            // `targets`; one whose client does not read is unattributed.
             case(
-                "a_target_less_line_is_unattributed",
+                "a_repair_line_is_evidence_on_its_targets",
                 vec![line_of(&repair_line)],
+                100,
+                (vec![tx_of(30)], Start, 1, 0, 0),
+            ),
+            case(
+                "a_repair_line_naming_an_unreadable_client_is_unattributed",
+                vec![line_of(&repair_line).replace(KEY_A, "not-a-target-key")],
                 100,
                 (vec![], Start, 1, 0, 1),
             ),
@@ -3028,22 +3069,65 @@ mod tests {
         .unwrap();
         let wanted = PlanMatch::Exact(plan_id(PLAN));
         let got = plan_evidence(&f.paths, &wanted, SINCE.parse().unwrap(), 10).unwrap();
-        // The target-less line matches but names no client to attribute it to.
+        // The target-less line is a repair-family line: its clients are its `targets`
+        // (E7, an applied undo of a repair), so it is evidence too.
         assert_eq!(
             (got.lines, got.unattributed),
             (
-                vec![PlanLine {
-                    plan: plan_id(PLAN),
-                    tx: on_b.tx,
-                    target: key(KEY_B),
-                    kind: TxKind::Update,
-                    run: on_b.run,
-                    result: TxResult::Committed,
-                    at: NEW.parse().unwrap(),
-                }],
-                1
+                vec![
+                    PlanLine {
+                        plan: plan_id(PLAN),
+                        tx: on_b.tx,
+                        target: Some(key(KEY_B)),
+                        targets: Vec::new(),
+                        kind: TxKind::Update,
+                        run: on_b.run,
+                        result: TxResult::Committed,
+                        at: NEW.parse().unwrap(),
+                    },
+                    PlanLine {
+                        plan: plan_id(PLAN),
+                        tx: target_less.tx,
+                        target: None,
+                        targets: vec![key(KEY_A)],
+                        kind: TxKind::Repair,
+                        run: target_less.run,
+                        result: TxResult::Committed,
+                        at: target_less.at,
+                    },
+                ],
+                0
             ),
         );
+        let clients: Vec<Vec<Option<TargetKey>>> = got_clients(&f.paths, &wanted);
+        assert_eq!(clients, [vec![Some(key(KEY_B))], vec![Some(key(KEY_A))]]);
+    }
+
+    /// Each evidence line's clients.
+    fn got_clients(paths: &Paths, wanted: &PlanMatch<'_>) -> Vec<Vec<Option<TargetKey>>> {
+        plan_evidence(paths, wanted, SINCE.parse().unwrap(), 10)
+            .unwrap()
+            .lines
+            .iter()
+            .map(PlanLine::clients)
+            .collect()
+    }
+
+    /// A target-less line naming no client (a repair of omaddons' own files alone) is the
+    /// machine's: one client, `None`.
+    #[test]
+    fn a_home_side_plan_line_is_the_machines() {
+        let line = PlanLine {
+            plan: plan_id(PLAN),
+            tx: tx_of(5),
+            target: None,
+            targets: Vec::new(),
+            kind: TxKind::Undo,
+            run: None,
+            result: TxResult::Committed,
+            at: NEW.parse().unwrap(),
+        };
+        assert_eq!(line.clients(), [None]);
     }
 
     /// A reader that counts the bytes read through it.

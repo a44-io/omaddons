@@ -68,6 +68,8 @@ pub struct RepairMeta {
 pub struct UndoOf {
     pub reverts: TxId,
     pub paths: fsx::RepairPaths,
+    /// The stored plan `apply` runs the undo from, which its line records.
+    pub plan: Option<crate::model::PlanId>,
 }
 
 /// What a commit runs under: the global lock (its type proves it is held, and is the only
@@ -270,6 +272,7 @@ fn prepared_line(
             None => RepairKind::Repair,
         },
         reverts: meta.undo.as_ref().map(|undo| undo.reverts),
+        plan: meta.undo.as_ref().and_then(|undo| undo.plan),
     })
 }
 

@@ -1168,6 +1168,7 @@ pub fn repair_prepared(
             .collect(),
         kind: crate::engine::repair::RepairKind::Repair,
         reverts: None,
+        plan: None,
     }
 }
 

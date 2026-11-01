@@ -126,9 +126,11 @@ pub struct Evidence {
 /// One transaction a plan committed.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct EvidenceTarget {
-    /// The client's id: the registry's, else the approval's, else its key.
+    /// The client's id: the registry's, else the approval's, else its key; `this machine`
+    /// for the undo of a repair of omaddons' own files.
     pub target: String,
-    pub key: TargetKey,
+    /// `null` for the undo of a repair of omaddons' own files, which names no client.
+    pub key: Option<TargetKey>,
     pub tx: TxId,
     pub result: TxResult,
     /// When its history line was appended, under the commit lock.
@@ -373,7 +375,8 @@ fn show_in(paths: &Paths, given: &str, now: Timestamp) -> Result<PlansShowOutcom
     let committed: BTreeSet<String> = evidence
         .lines
         .iter()
-        .map(|l| l.target.to_string())
+        .flat_map(PlanLine::clients)
+        .map(|client| client.map_or_else(String::new, |k| k.to_string()))
         .collect();
     let judgement = Judgement {
         stored: stored_id.is_some(),
@@ -449,6 +452,11 @@ struct Names<'a> {
 }
 
 impl Names<'_> {
+    /// [`Self::of`] the client, or `this machine` for none.
+    fn of_client(&self, key: Option<TargetKey>) -> String {
+        key.map_or_else(|| "this machine".to_owned(), |key| self.of(key))
+    }
+
     fn of(&self, key: TargetKey) -> String {
         self.registry
             .targets
@@ -471,8 +479,12 @@ impl Names<'_> {
     fn approved(&self, approval: &Approval) -> Vec<(String, String)> {
         let mut clients: Vec<(String, String)> = Vec::new();
         for item in &approval.selection {
-            // An undo of a repair of omaddons' own files alone names no client.
+            // An undo of a repair of omaddons' own files alone names no client: the
+            // machine, whose identity matches its committed line's.
             if item.target_key.is_none() && item.target_id.is_empty() {
+                if !clients.iter().any(|(i, _)| i.is_empty()) {
+                    clients.push((String::new(), self.of_client(None)));
+                }
                 continue;
             }
             let key = item.target_key.or_else(|| {
@@ -534,12 +546,14 @@ fn data_of(
             targets: evidence
                 .lines
                 .iter()
-                .map(|line| EvidenceTarget {
-                    target: names.of(line.target),
-                    key: line.target,
-                    tx: line.tx,
-                    result: line.result,
-                    committed_at: line.at,
+                .flat_map(|line| {
+                    line.clients().into_iter().map(|key| EvidenceTarget {
+                        target: names.of_client(key),
+                        key,
+                        tx: line.tx,
+                        result: line.result,
+                        committed_at: line.at,
+                    })
                 })
                 .collect(),
             complete: evidence.complete(),
@@ -566,8 +580,15 @@ fn undo_hints(lines: &[PlanLine], names: &Names<'_>) -> Vec<CommandHint> {
             ],
         ));
     }
-    let mut by_client: Vec<(String, TxId)> =
-        lines.iter().map(|l| (names.of(l.target), l.tx)).collect();
+    let mut by_client: Vec<(String, TxId)> = lines
+        .iter()
+        .map(|l| {
+            (
+                names.of_client(l.clients().first().copied().flatten()),
+                l.tx,
+            )
+        })
+        .collect();
     by_client.sort();
     for (_, tx) in by_client {
         commands.push(CommandHint::new(

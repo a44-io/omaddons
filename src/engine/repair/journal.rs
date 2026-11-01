@@ -30,7 +30,7 @@ use crate::engine::journal::Unrecoverable;
 use crate::engine::repair_action::{FixEntry, Step};
 use crate::engine::resource::{Resource, ResourceError, ResourceSet};
 use crate::error::{Error, Result, Suggestion};
-use crate::model::{Actor, RunId, TargetKey, TxId, TxKind};
+use crate::model::{Actor, PlanId, RunId, TargetKey, TxId, TxKind};
 use crate::state::history::{self, HistoryEntry, RepairEntry, TxResult};
 use crate::state::paths::{Paths, REPAIR_SUFFIX};
 use crate::state::store::SchemaVersion;
@@ -95,6 +95,10 @@ pub struct RepairPrepared {
     /// ([`ParsedRepair::checked`] reads anything else as undecodable). Omitted otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reverts: Option<TxId>,
+    /// The stored plan `apply` ran it from (D5's history `plan`), copied into its line by
+    /// the commit and by recovery's roll-forward alike. Omitted otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<PlanId>,
 }
 
 /// What a repair-family transaction is.
@@ -456,7 +460,7 @@ pub fn history_line(prepared: &RepairPrepared) -> HistoryEntry {
         created_addons_dir: false,
         run: Some(prepared.run),
         backup: None,
-        plan: None,
+        plan: prepared.plan,
         doctor_run_id: Some(prepared.doctor_run_id.clone()),
         repairs: prepared
             .primitives
@@ -602,6 +606,7 @@ mod tests {
                 .collect(),
             kind: RepairKind::Repair,
             reverts: None,
+            plan: None,
         }
     }
 
@@ -1011,6 +1016,33 @@ mod tests {
         assert_eq!(
             history_line(&prepared(&home, &[write(&home)])).kind,
             TxKind::Repair
+        );
+    }
+
+    /// `prepared.plan` (E7 s7): absent, the line has no `plan` and the `prepared` bytes
+    /// are as before; present, the line's `plan` is it.
+    #[test]
+    fn prepared_plan_is_optional_and_copied_into_the_line() {
+        let home = repair_home();
+        let without = prepared(&home, &[write(&home)]);
+        let text = serde_json::to_string(&RepairLine::Prepared(Box::new(without.clone()))).unwrap();
+        assert!(!text.contains("\"plan\""), "{text}");
+        assert_eq!(history_line(&without).plan, None);
+        let plan = PlanId::new();
+        let with = RepairPrepared {
+            kind: RepairKind::Undo,
+            reverts: Some(TxId::new()),
+            plan: Some(plan),
+            ..without
+        };
+        let text = serde_json::to_string(&RepairLine::Prepared(Box::new(with.clone()))).unwrap();
+        assert!(text.contains(&format!("\"plan\":\"{plan}\"")), "{text}");
+        assert_eq!(history_line(&with).plan, Some(plan));
+        let parsed = parse(&format!("{text}\n"));
+        assert_eq!(
+            parsed.prepared.map(|p| p.plan),
+            Some(Some(plan)),
+            "it reads back"
         );
     }
 
