@@ -770,11 +770,12 @@ pub fn check_noop(
 // ---------------------------------------------------------------------------------------
 // `undo`.
 
-/// One transaction an undo selected: the target it changed, and the undo's plan or why
-/// it cannot be undone.
+/// One transaction an undo selected: the targets it changed (one for a folder line, the
+/// line's `targets` for a repair, so a refused repair still names them), and the undo's
+/// plan or why it cannot be undone.
 pub type UndoPlanned<'a> = (
     TxId,
-    TargetKey,
+    &'a [TargetKey],
     std::result::Result<&'a EngineUndo, &'a Error>,
 );
 
@@ -786,11 +787,23 @@ pub fn of_undo(planned: &[UndoPlanned<'_>]) -> Precondition {
     let mut targets = Vec::new();
     let mut selection = Vec::new();
     let mut observed = Vec::new();
-    for (tx, key, result) in planned {
+    for (tx, keys, result) in planned {
         match result {
+            Ok(EngineUndo {
+                repair: Some(repair),
+                ..
+            }) => {
+                let (named, chosen, seen) = of_repair_undo(*tx, repair);
+                targets.extend(named);
+                selection.push(chosen);
+                observed.push(seen);
+            }
             Ok(undo) => {
                 let facts = &undo.plan;
-                targets.push((TargetRef::Key(*key), Some(facts.generation)));
+                targets.extend(
+                    keys.iter()
+                        .map(|key| (TargetRef::Key(*key), Some(facts.generation))),
+                );
                 let mut ops: Vec<Value> = facts
                     .ops
                     .iter()
@@ -828,7 +841,7 @@ pub fn of_undo(planned: &[UndoPlanned<'_>]) -> Precondition {
                 observed.push(seen);
             }
             Err(error) => {
-                targets.push((TargetRef::Key(*key), None));
+                targets.extend(keys.iter().map(|key| (TargetRef::Key(*key), None)));
                 selection.push(json!({ "tx": tx.to_string() }));
                 observed.push(json!({ "tx": tx.to_string(), "verdict": error.code.wire() }));
             }
@@ -842,6 +855,74 @@ pub fn of_undo(planned: &[UndoPlanned<'_>]) -> Precondition {
         Value::Array(selection),
         Value::Array(observed),
     )
+}
+
+/// The undo of a repair-family line `tx` (§6.14.4), as its part of `undo`'s token:
+///
+/// - `targets`: each client the line names, with the record generation the checks read;
+/// - `selection`: `{tx, repairs}`, the inverse primitives in execution order, each in
+///   M4-D44's canonical form;
+/// - `observed`: `{tx, verdict: "ok", predicates, backups, guards}`: every inverse's
+///   `pre` as checked, in history's predicate form; each reverted backup's path and
+///   digest; each guard of a set-aside with the value it reads now.
+///
+/// Nothing run-specific enters it (the undo's transaction, run, sequence numbers or
+/// backup reservations), so a preview and a run in two processes agree.
+fn of_repair_undo(
+    tx: TxId,
+    repair: &crate::engine::repair::undo::RepairUndone,
+) -> (Vec<(TargetRef, Option<u64>)>, Value, Value) {
+    let verified = &repair.plan;
+    let targets = verified
+        .observed
+        .generations
+        .iter()
+        .map(|(key, generation)| (TargetRef::Key(*key), Some(*generation)))
+        .collect();
+    let selection = json!({
+        "tx": tx.to_string(),
+        "repairs": verified.plan.canonical(),
+    });
+    let predicates: Vec<Value> = verified
+        .observed
+        .predicates
+        .iter()
+        .map(|pre| {
+            serde_json::to_value(crate::state::history::RepairEndpoints::of(pre))
+                .unwrap_or(Value::Null)
+        })
+        .collect();
+    let backups: Vec<Value> = verified
+        .observed
+        .backups
+        .iter()
+        .map(|(path, digest)| {
+            json!({
+                "path": path.to_string_lossy(),
+                "sha256": crate::engine::repair_action::Sha256(*digest).to_string(),
+            })
+        })
+        .collect();
+    let guards: Vec<Value> = verified
+        .plan
+        .guards
+        .iter()
+        .zip(&verified.observed.guards)
+        .map(|(guard, now)| {
+            json!({
+                "guard": serde_json::to_value(guard).unwrap_or(Value::Null),
+                "value": now.to_string(),
+            })
+        })
+        .collect();
+    let observed = json!({
+        "tx": tx.to_string(),
+        "verdict": "ok",
+        "predicates": predicates,
+        "backups": backups,
+        "guards": guards,
+    });
+    (targets, selection, observed)
 }
 
 /// An `undo` run bound to its preview: each transaction's plan, made before staging and
@@ -861,10 +942,17 @@ impl Binding for UndoBinding {
         let Some(token) = self.tokens.get(&planned.undoes) else {
             return Err(stale("undo", &[Part::Selection], &self.preview));
         };
-        let Some(key) = planned.outcome.key else {
-            return Err(stale("undo", &[Part::Targets], &self.preview));
+        // A repair's undo names its targets in its facts; a folder undo has its one key.
+        let key;
+        let keys: &[TargetKey] = match (&planned.repair, planned.outcome.key) {
+            (Some(repair), _) => &repair.plan.plan.targets,
+            (None, Some(one)) => {
+                key = one;
+                std::slice::from_ref(&key)
+            }
+            (None, None) => return Err(stale("undo", &[Part::Targets], &self.preview)),
         };
-        let actual = of_undo(&[(planned.undoes, key, Ok(planned))]);
+        let actual = of_undo(&[(planned.undoes, keys, Ok(planned))]);
         check(Some(token), &actual, &self.preview)
     }
 
@@ -3129,5 +3217,273 @@ mod tests {
             "{}",
             because.message
         );
+    }
+}
+
+/// The token of a repair's undo (E7, §6.14.4): what each part covers, and that nothing
+/// run-specific enters it.
+#[cfg(test)]
+mod repair_undo_tests {
+    use std::path::PathBuf;
+
+    use super::*;
+    use crate::engine::repair::guard::GuardValue;
+    use crate::engine::repair::undo::{
+        Dest, InverseKind, InverseStep, ObservedFacts, RepairUndoPlan, RepairUndone, VerifiedPlan,
+    };
+    use crate::engine::repair_action::{
+        Endpoint, Endpoints, FixEntry, FixKind, Guard, Identity, Mode, Sha256 as Digest,
+    };
+    use crate::engine::resource::ResourceSet;
+    use crate::engine::{SvCounts, TxOutcome, UndoFacts};
+    use crate::error::ErrorCode;
+    use crate::model::{ReloadRequired, TxKind};
+
+    const R: &str = "01JB8Q2VA00000000000000005";
+
+    fn file(ino: u64, mode: u32, sha: Option<u8>) -> Endpoint {
+        Endpoint::File {
+            identity: Some(Identity {
+                ino,
+                born_ns: Some(1),
+            }),
+            sha256: sha.map(|byte| Digest([byte; 32])),
+            mode: Mode::new(mode),
+        }
+    }
+
+    fn step(seq: u32, kind: InverseKind, path: &str, mode: u32, pre: Endpoint) -> InverseStep {
+        InverseStep {
+            seq,
+            reverts: seq,
+            fix: 1,
+            fm: "fm-secrets-credential-file-mode".to_owned(),
+            kind,
+            path: PathBuf::from(path),
+            to: Dest::None,
+            mode: Mode::new(mode),
+            pre: Endpoints::One(pre.clone()),
+            post: Endpoints::One(pre),
+            activation: false,
+            target: None,
+            folder: None,
+            backup: None,
+        }
+    }
+
+    /// The undo of a repair on `target` as the engine plans it: a chmod back and a write
+    /// back from the reverted run's backup, with a set-aside's guard.
+    fn planned(target: TargetKey) -> EngineUndo {
+        let inverses = vec![
+            step(
+                1,
+                InverseKind::ChmodBack,
+                "/h/config/credentials/github",
+                0o644,
+                file(7, 0o600, None),
+            ),
+            step(
+                2,
+                InverseKind::RestoreWrite,
+                "/h/config/config.toml",
+                0o644,
+                file(8, 0o644, Some(1)),
+            ),
+        ];
+        let predicates = inverses.iter().map(|i| i.pre.clone()).collect();
+        EngineUndo {
+            undoes: R.parse().unwrap(),
+            outcome: TxOutcome {
+                target: "retail".to_owned(),
+                key: None,
+                tx: None,
+                kind: None,
+                dry_run: true,
+                changes: Vec::new(),
+                atomic_swap: true,
+                reload_required: ReloadRequired::None,
+                warnings: Vec::new(),
+                creates_addons_dir: false,
+                lock_held_ms: None,
+                notes: Vec::new(),
+            },
+            sv: SvCounts::default(),
+            plan: UndoFacts::default(),
+            wtf: None,
+            repair: Some(RepairUndone {
+                plan: VerifiedPlan {
+                    plan: RepairUndoPlan {
+                        reverted: R.parse().unwrap(),
+                        reverted_kind: TxKind::Repair,
+                        reverted_run: Some(
+                            "2026-10-30T18-03-40Z__01JB8Q2VC00000000000000000".into(),
+                        ),
+                        targets: vec![target],
+                        inverses,
+                        reads: Vec::new(),
+                        guards: vec![Guard::Generation {
+                            target,
+                            generation: 3,
+                        }],
+                        fixes: vec![FixEntry {
+                            fix: 1,
+                            fm: "fm-secrets-credential-file-mode".into(),
+                            kind: FixKind::Chmod,
+                        }],
+                        resources: ResourceSet::default(),
+                    },
+                    observed: ObservedFacts {
+                        predicates,
+                        backups: vec![(PathBuf::from("/h/state/doctor/runs/r/backups/2"), [2; 32])],
+                        guards: vec![GuardValue::Generation(3)],
+                        generations: vec![(target, 3)],
+                    },
+                },
+                undo_run: None,
+                committed: Vec::new(),
+            }),
+        }
+    }
+
+    fn facts(undo: &mut EngineUndo) -> &mut VerifiedPlan {
+        &mut undo.repair.as_mut().unwrap().plan
+    }
+
+    fn token_of(undo: &EngineUndo, target: TargetKey) -> Precondition {
+        of_undo(&[(undo.undoes, &[target], Ok(undo))])
+    }
+
+    /// Which of the four parts differ between `a` and `b`, by wire name.
+    fn moved(a: &Precondition, b: &Precondition) -> Vec<&'static str> {
+        a.parts()
+            .iter()
+            .zip(b.parts().iter())
+            .zip(Part::ALL)
+            .filter(|((x, y), _)| x != y)
+            .map(|(_, part)| part.wire())
+            .collect()
+    }
+
+    #[test]
+    fn a_repair_undo_token_moves_with_each_part() {
+        let target = TargetKey::new();
+        let base = token_of(&planned(target), target);
+        type Edit = fn(&mut VerifiedPlan);
+        let cases: [(&str, Edit, &str); 8] = [
+            (
+                "generation_moved",
+                |v| v.observed.generations[0].1 = 4,
+                "targets",
+            ),
+            (
+                "inverse_added",
+                |v| {
+                    let mut extra = v.plan.inverses[0].clone();
+                    extra.seq = 3;
+                    extra.path = PathBuf::from("/h/config/credentials/other");
+                    v.plan.inverses.push(extra);
+                },
+                "selection",
+            ),
+            (
+                "inverse_path_changed",
+                |v| v.plan.inverses[0].path = PathBuf::from("/h/config/credentials/moved"),
+                "selection",
+            ),
+            (
+                "predicate_identity_changed",
+                |v| v.observed.predicates[0] = Endpoints::One(file(70, 0o600, None)),
+                "observed",
+            ),
+            (
+                "predicate_sha256_changed",
+                |v| v.observed.predicates[1] = Endpoints::One(file(8, 0o644, Some(9))),
+                "observed",
+            ),
+            (
+                "predicate_mode_changed",
+                |v| v.observed.predicates[0] = Endpoints::One(file(7, 0o640, None)),
+                "observed",
+            ),
+            (
+                "backup_digest_changed",
+                |v| v.observed.backups[0].1 = [3; 32],
+                "observed",
+            ),
+            (
+                "guard_value_changed",
+                |v| v.observed.guards[0] = GuardValue::Generation(4),
+                "observed",
+            ),
+        ];
+        for (case, edit, part) in cases {
+            let mut undo = planned(target);
+            edit(facts(&mut undo));
+            let actual = token_of(&undo, target);
+            assert_eq!(moved(&base, &actual), [part], "{case}");
+            let err = check(Some(&base.token()), &actual, &["omaddons".into()]).unwrap_err();
+            assert_eq!(err.code, ErrorCode::PlanStale, "{case}");
+            assert_eq!(err.details["changed"], json!([part]), "{case}: {err:?}");
+        }
+    }
+
+    #[test]
+    fn a_repair_undo_token_holds_nothing_run_specific() {
+        let target = TargetKey::new();
+        let preview = planned(target);
+        let mut run = planned(target);
+        run.outcome.tx = Some(TxId::new());
+        run.outcome.dry_run = false;
+        run.outcome.lock_held_ms = Some(12);
+        run.outcome.target = "retail, classic".to_owned();
+        if let Some(repair) = run.repair.as_mut() {
+            repair.undo_run = Some("2026-11-01T10-00-00Z__01JB8Q2VC00000000000000009".into());
+            for inverse in &mut repair.plan.plan.inverses {
+                inverse.reverts += 10;
+            }
+        }
+        assert_eq!(
+            token_of(&preview, target).token(),
+            token_of(&run, target).token(),
+            "the undo's own tx, run and lock hold time, and the reverted seqs, are not part of it"
+        );
+    }
+
+    #[test]
+    fn a_refused_repair_still_names_its_targets() {
+        let (a, b) = (TargetKey::new(), TargetKey::new());
+        let error = Error::new(
+            ErrorCode::UndoConflict,
+            "changed",
+            Suggestion::command(["omaddons", "history"]),
+        );
+        let tx: TxId = R.parse().unwrap();
+        let refused = of_undo(&[(tx, &[a, b], Err(&error))]);
+        let mut keys = vec![json!({"key": a.to_string()}), json!({"key": b.to_string()})];
+        keys.sort_by_key(Value::to_string);
+        let [_, targets, selection, observed] = refused.part_values();
+        let mut listed = targets.as_array().unwrap().clone();
+        listed.sort_by_key(Value::to_string);
+        assert_eq!(listed, keys);
+        assert_eq!(selection, json!([{"tx": R}]));
+        assert_eq!(observed, json!([{"tx": R, "verdict": "undo_conflict"}]));
+    }
+
+    /// `UndoBinding` binds a key-less outcome by its repair facts: the same facts pass,
+    /// a changed predicate is `plan_stale` (`observed`).
+    #[test]
+    fn a_repair_undo_binds_without_a_key() {
+        let target = TargetKey::new();
+        let preview = planned(target);
+        let binding = UndoBinding {
+            tokens: BTreeMap::from([(preview.undoes, token_of(&preview, target).token())]),
+            preview: vec!["omaddons".into(), "undo".into(), "--dry-run".into()],
+        };
+        assert!(binding.undo(&planned(target)).is_ok());
+        let mut changed = planned(target);
+        facts(&mut changed).observed.predicates[0] = Endpoints::One(file(70, 0o600, None));
+        let err = binding.undo(&changed).unwrap_err();
+        assert_eq!(err.code, ErrorCode::PlanStale);
+        assert_eq!(err.details["changed"], json!(["observed"]), "{err:?}");
     }
 }

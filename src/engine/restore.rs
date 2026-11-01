@@ -2301,7 +2301,7 @@ mod tests {
             .undo_with(UndoSelector::Tx(restored), SvPolicy::Auto, true)
             .unwrap();
         assert!(preview.outcome.dry_run && preview.outcome.tx.is_none());
-        let token = of_undo(&[(restored, r.key(), Ok(&preview))]).token();
+        let token = of_undo(&[(restored, &[r.key()], Ok(&preview))]).token();
         let binding = UndoBinding {
             tokens: BTreeMap::from([(restored, token)]),
             preview: vec!["omaddons".into(), "undo".into(), "--dry-run".into()],

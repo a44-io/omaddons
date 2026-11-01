@@ -587,6 +587,32 @@ fn a_dry_run_leaves_the_state_directory_as_it_was() {
         &Value::Null,
     );
 
+    // The undo of a repair (E7) previews like any undo: `<state>`, its `doctor/` runs
+    // included, stays as it was.
+    log.step("commit a repair so undo has one to preview");
+    {
+        use common::doctor::test_fixers::{ENV, WRITE, plant_write};
+        plant_write(&s.home, "a.write", b"broken\n");
+        let fixed = log
+            .cmd(
+                &s.home,
+                &[
+                    "doctor",
+                    "fix",
+                    "--only",
+                    WRITE,
+                    "--json",
+                    "--progress",
+                    "json",
+                ],
+            )
+            .env(ENV.0, ENV.1)
+            .run();
+        fixed.ok();
+        let repair = fixed.envelope()["tx"].as_str().unwrap().to_owned();
+        dry_runs(&[(&["undo", &repair, "--dry-run"], true)]);
+    }
+
     let expected: BTreeSet<String> = omaddons::app::COMMANDS
         .iter()
         .filter(|entry| entry.stores_plan)

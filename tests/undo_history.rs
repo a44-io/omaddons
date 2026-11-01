@@ -1,6 +1,9 @@
 //! `omaddons undo` and `omaddons history` end to end: `--file` installs into a synthetic
 //! retail client with a `WTF/` tree under fake account, realm and character names, a
 //! fake `/proc` for the running client, and every output checked for those names.
+//!
+//! e2e suite: the undo of a `doctor fix` repair (E7), from selection and its bound
+//! preview to the reverted subject and history's `undo` line.
 
 mod common;
 
@@ -9,10 +12,219 @@ use std::path::PathBuf;
 
 use common::addons::{addon_folder, toc};
 use common::archives::zip_text;
+use common::doctor::plant;
+use common::doctor::test_fixers::{ENV, REPAIRED, Side, WRITE, plant_write, test_dir};
 use common::home::{Home, Run};
+use common::tlog::{Ran, TestLog, tlog};
 use common::trees::tree_hash;
 use serde_json::{Value, json};
 use support::{Session, argv_of};
+
+/// `omaddons <args> --json --progress json` through `log`, with the doctor's test fixers
+/// registered and this home's own Omarchy, every channel checked for private names.
+fn logged(log: &TestLog, home: &Home, args: &[&str]) -> Ran {
+    let mut argv: Vec<&str> = args.to_vec();
+    argv.extend(["--json", "--progress", "json"]);
+    let ran = log
+        .cmd(home, &argv)
+        .env(ENV.0, ENV.1)
+        .env("OMARCHY_PATH", plant::omarchy_path(home))
+        .run();
+    common::privacy::assert_private_all(ran.stdout(), ran.stderr());
+    ran
+}
+
+/// [`logged`] without `--json`: the human output, checked for private names.
+fn human(log: &TestLog, home: &Home, args: &[&str]) -> Ran {
+    let ran = log
+        .cmd(home, args)
+        .env(ENV.0, ENV.1)
+        .env("OMARCHY_PATH", plant::omarchy_path(home))
+        .run();
+    common::privacy::assert_private_all(ran.stdout(), ran.stderr());
+    ran
+}
+
+/// A repair is the newest change (M4-D46): bare `undo` selects it, its preview binds
+/// the run, a change between them is `plan_stale`, and the undo puts the subject back
+/// byte for byte, with its own run of kind `undo` and an `undo` line in history.
+#[test]
+fn undo_selects_and_reverts_a_repair() {
+    let log = tlog!();
+    log.step("home");
+    let home = Home::new(&["wow"]);
+    log.env(&home);
+    // Private names under `WTF/`, which no output may carry.
+    for dir in [support::ACCOUNT, support::CHARACTER] {
+        let dir = home.client("_retail_").join(dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("Foo.lua"), "-- private").unwrap();
+    }
+    let file = plant_write(&home, "a.write", b"broken\n");
+    let subject = test_dir(&home, Side::State);
+    log.tree("subject", &subject);
+
+    log.step("repair");
+    let fixed = logged(&log, &home, &["doctor", "fix", "--only", WRITE]);
+    fixed.ok();
+    let fix_tx = fixed.envelope()["tx"].as_str().unwrap().to_owned();
+    log.assert_eq("repaired", &fs::read(&file).unwrap(), &REPAIRED.to_vec());
+
+    log.step("preview");
+    let preview = logged(&log, &home, &["undo", "--dry-run"]);
+    let data = preview.ok().data().clone();
+    log.assert_eq("kind", &data["kind"], &json!("repair"));
+    log.assert_eq("reverted.tx", &data["reverted"]["tx"], &json!(fix_tx));
+    log.assert_eq("reverted.target", &data["reverted"]["target"], &Value::Null);
+    log.assert_eq("reverted.targets", &data["reverted"]["targets"], &json!([]));
+    log.assert_eq(
+        "transactions[0].target",
+        &data["transactions"][0]["target"],
+        &Value::Null,
+    );
+    log.assert_eq("doctor_run_id", &data["doctor_run_id"], &Value::Null);
+    let previewed = data["repairs"].clone();
+    log.assert_eq(
+        "the planned inverse",
+        &previewed,
+        &json!([{
+            "seq": 1,
+            "fix": 1,
+            "fm": WRITE,
+            "op": "write_file",
+            "path": file,
+            "to_rel": null,
+            "octal_mode": "0644",
+            "activation": false,
+        }]),
+    );
+    let token = data["precondition"].as_str().unwrap().to_owned();
+    assert!(token.starts_with("pc1:"), "{token}");
+    let again = logged(&log, &home, &["undo", "--dry-run"]);
+    log.assert_eq(
+        "a second process's token",
+        &again.ok().data()["precondition"],
+        &json!(token),
+    );
+    log.assert_eq(
+        "still repaired",
+        &fs::read(&file).unwrap(),
+        &REPAIRED.to_vec(),
+    );
+
+    log.step("stale");
+    fs::write(&file, b"edited\n").unwrap();
+    let stale = logged(&log, &home, &["undo", "--if-match", &token]);
+    stale.fails(1, "plan_stale");
+    let error = &stale.envelope()["error"];
+    assert!(
+        error["details"]["changed"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("observed")),
+        "{error}"
+    );
+    log.assert_eq("retryable", &error["retryable"], &json!(false));
+    assert!(
+        error["fix_argv"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("--dry-run")),
+        "{error}"
+    );
+    log.assert_eq(
+        "nothing moved",
+        &fs::read(&file).unwrap(),
+        &b"edited\n".to_vec(),
+    );
+    fs::write(&file, REPAIRED).unwrap();
+
+    log.step("human preview");
+    let shown = human(&log, &home, &["undo", "--dry-run"]);
+    shown.exit(0);
+    let lines: Vec<&str> = shown.stdout().lines().collect();
+    let short = &fix_tx[..16];
+    assert!(
+        lines[0].starts_with(&format!(
+            "would revert repair {short}… (doctor fix by agent, "
+        )) && lines[0].ends_with("): 1 write"),
+        "{lines:#?}"
+    );
+    log.assert_eq(
+        "the primitive",
+        &lines[1],
+        &format!("  write {}", file.display()).as_str(),
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("precondition pc1:") && l.contains("--if-match")),
+        "{lines:#?}"
+    );
+
+    log.step("undo");
+    let preview = logged(&log, &home, &["undo", "--dry-run"]);
+    let token = preview.ok().data()["precondition"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let undone = logged(&log, &home, &["undo", "--if-match", &token]);
+    let data = undone.ok().data().clone();
+    log.assert_eq("kind", &data["kind"], &json!("repair"));
+    log.assert_eq("reverted.tx", &data["reverted"]["tx"], &json!(fix_tx));
+    log.assert_eq("what the preview showed", &data["repairs"], &previewed);
+    let run_id = data["doctor_run_id"].as_str().unwrap();
+    let report: Value = serde_json::from_slice(
+        &fs::read(
+            home.state()
+                .join("doctor/runs")
+                .join(run_id)
+                .join("report.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    log.assert_eq("run kind", &report["kind"], &json!("undo"));
+    log.assert_eq("run reverts", &report["reverts"], &json!(fix_tx));
+
+    log.step("assert");
+    log.assert_unchanged("subject", &subject);
+
+    log.step("history");
+    let history = logged(&log, &home, &["history"]);
+    let undo_tx = data["tx"].as_str().unwrap();
+    let line = history.ok().data()["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        // ubs:ignore — comparing transaction ids, not secrets
+        .find(|e| e["tx"] == json!(undo_tx))
+        .cloned()
+        .unwrap();
+    log.assert_eq("line kind", &line["kind"], &json!("undo"));
+    log.assert_eq("line reverts", &line["reverts"], &json!(fix_tx));
+    log.assert_eq("line target", &line["target"], &Value::Null);
+
+    log.step("human redo");
+    let redone = human(&log, &home, &["undo"]);
+    redone.exit(0);
+    let lines: Vec<&str> = redone.stdout().lines().collect();
+    assert!(
+        lines[0].starts_with(&format!(
+            "reverted undo {}… of repair {short}… (undo by ",
+            &undo_tx[..16]
+        )) && lines[0].ends_with("): 1 write"),
+        "{lines:#?}"
+    );
+    let tail = lines.last().unwrap();
+    assert!(
+        tail.starts_with("run ")
+            && tail.contains(" · tx ")
+            && tail.contains("undo this: omaddons undo "),
+        "{lines:#?}"
+    );
+    log.assert_eq("redone", &fs::read(&file).unwrap(), &REPAIRED.to_vec());
+}
 
 #[cfg(test)]
 mod support {

@@ -19,6 +19,7 @@ expression: s.stable(&c.envelope)
   "data": {
     "approval": null,
     "atomic_swap": true,
+    "doctor_run_id": null,
     "dry_run": false,
     "folders": {
       "removed": [],
@@ -26,10 +27,12 @@ expression: s.stable(&c.envelope)
         "Foo"
       ]
     },
+    "kind": "folders",
     "plan_expires_at": null,
     "plan_id": null,
     "precondition": null,
     "reload_required": "none",
+    "repairs": null,
     "reverted": {
       "actor": "agent",
       "argv": [
@@ -48,6 +51,12 @@ expression: s.stable(&c.envelope)
         "id": "retail",
         "key": "<ulid>"
       },
+      "targets": [
+        {
+          "id": "retail",
+          "key": "<ulid>"
+        }
+      ],
       "tx": "<ulid>"
     },
     "reverted_run": "<ulid>",

@@ -222,8 +222,9 @@ pub enum PredicateKind {
 }
 
 impl RepairEndpoints {
-    /// A journal step's `pre` or `post`, as history writes it.
-    fn of(endpoints: &Endpoints) -> Self {
+    /// A journal step's `pre` or `post`, as history writes it (and as the token of a
+    /// repair's undo observes it).
+    pub fn of(endpoints: &Endpoints) -> Self {
         match endpoints {
             Endpoints::One(endpoint) => Self::Path(RepairPredicate::of(endpoint)),
             Endpoints::Pair { path, to } => Self::Rename {

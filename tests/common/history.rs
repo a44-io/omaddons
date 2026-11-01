@@ -37,6 +37,7 @@ pub fn chmod(seq: u32, path: &Path, from: &str, to: &str) -> Value {
         "fm": "fm-secrets-credential-file-mode",
         "op": "chmod",
         "path": path,
+        "mode": to,
         "pre": {"kind": "file", "identity": identity(), "mode": from},
         "post": {"kind": "file", "identity": identity(), "mode": to},
     })

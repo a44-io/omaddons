@@ -453,16 +453,22 @@ impl ResultData for UndoData {
     }
 
     /// One entry per client a reverted transaction was on: the last undo committed
-    /// there, else its first error.
+    /// there, else its first error. A repair's undo names no single client: one entry
+    /// with no key and no id stands for those.
     fn facts(&self) -> Vec<Facts> {
         let mut facts: Vec<Facts> = Vec::new();
         for t in &self.transactions {
-            let at = match facts.iter().position(|f| f.key == Some(t.target.key)) {
+            let key = t.target.as_ref().map(|target| target.key);
+            let at = match facts.iter().position(|f| f.key == key) {
                 Some(at) => at,
                 None => {
                     facts.push(Facts {
-                        target: t.target.id.clone(),
-                        key: Some(t.target.key),
+                        target: t
+                            .target
+                            .as_ref()
+                            .map(|target| target.id.clone())
+                            .unwrap_or_default(),
+                        key,
                         tx: None,
                         error: None,
                         done: false,
@@ -1215,7 +1221,7 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(n, (id, k, undone, failed))| UndoTx {
-                target: history_target(id, k),
+                target: Some(history_target(id, k)),
                 reverted: tx(50 + u8::try_from(n).unwrap()),
                 tx: *undone,
                 status: if failed.is_some() {
@@ -1228,11 +1234,13 @@ mod tests {
             .collect();
         UndoData {
             dry_run,
+            kind: crate::app::undo::UndoKind::Folders,
             reverted: Reverted {
                 tx: tx(50),
                 kind: TxKind::Install,
                 at: "2026-10-29T12:00:00Z".parse().unwrap(),
-                target: history_target("retail", RETAIL),
+                target: Some(history_target("retail", RETAIL)),
+                targets: vec![history_target("retail", RETAIL)],
                 actor: Actor::Agent,
                 argv: vec!["omaddons".into(), "install".into()],
                 reason: None,
@@ -1252,6 +1260,8 @@ mod tests {
             client_dir: None,
             run: None,
             reverted_run: None,
+            repairs: None,
+            doctor_run_id: None,
             transactions,
             precondition: None,
             plan_id: None,

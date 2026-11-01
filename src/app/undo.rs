@@ -29,11 +29,15 @@ use super::precondition;
 use super::world::World;
 use crate::cli::Context;
 use crate::contract::actions::Action;
+use crate::doctor::runtime::DoctorRunId;
+use crate::engine::repair::undo::{Dest, is_repair_family};
 use crate::engine::{SvPolicy, UndoOutcome as EngineUndo, UndoRequest, UndoSelector, WtfUndo};
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning};
 use crate::model::{Actor, FolderName, PlanId, ReloadRequired, RunId, TargetKey, TxId, TxKind};
 use crate::output::{Outcome, Style};
-use crate::state::history::{self, HistoryEntry, HistoryFilter, SettingEntry};
+use crate::state::history::{
+    self, HistoryEntry, HistoryFilter, RepairEntry, RepairOp, SettingEntry,
+};
 use crate::state::plans::NotStored;
 
 /// `undo`'s own flags.
@@ -65,6 +69,8 @@ pub struct UndoArgs {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct UndoData {
     pub dry_run: bool,
+    /// What the first transaction undone was.
+    pub kind: UndoKind,
     pub reverted: Reverted,
     /// The new undo transaction; `null` under `--dry-run`.
     pub tx: Option<TxId>,
@@ -87,6 +93,13 @@ pub struct UndoData {
     /// The run reverted; `null` for `undo <tx>`, for `-t`, and for a transaction from
     /// before M2.
     pub reverted_run: Option<RunId>,
+    /// The undo of a repair: its inverse operations in execution order, the same in a
+    /// preview and in the run (M4-D44's canonical form, which the token binds); `null`
+    /// for `folders`. History's `undo` line records them as committed.
+    pub repairs: Option<Vec<UndoRepairOp>>,
+    /// The undo of a repair: its own doctor run directory (kind `undo`); `null` for
+    /// `folders` and under `--dry-run`.
+    pub doctor_run_id: Option<DoctorRunId>,
     /// Every transaction reverted (or tried), in the order they were undone.
     pub transactions: Vec<UndoTx>,
     /// `--dry-run`: the token `--if-match` takes to bind the real run to this preview
@@ -101,6 +114,66 @@ pub struct UndoData {
     pub approval: Option<Approval>,
 }
 
+/// One inverse operation of the undo of a repair, as a preview and the run both show it:
+/// nothing in it names the undo's own run or transaction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct UndoRepairOp {
+    /// 1-based, in execution order.
+    pub seq: u32,
+    /// The reverted fix it belongs to.
+    pub fix: u32,
+    /// The failure mode that fix repaired.
+    pub fm: String,
+    pub op: RepairOp,
+    /// What it acts on, absolute: a rename's source.
+    pub path: PathBuf,
+    /// A rename's destination: the absolute path, or `<side>/<path below it>` for one in
+    /// the undo's own quarantine (`state`, `config`, `cache`, `skill` or `client`), as
+    /// `doctor fix` names one; `null` for a write or a chmod.
+    pub to_rel: Option<String>,
+    /// The mode a write or a chmod sets, as four octal digits (`"0644"`); `null` for a
+    /// rename.
+    #[schemars(pattern(r"^[0-7]{4}$"))]
+    pub octal_mode: Option<String>,
+    /// The rename that puts a set-aside journal back under its own name, last.
+    pub activation: bool,
+}
+
+impl UndoRepairOp {
+    fn of(inverse: &crate::engine::repair::undo::InverseStep) -> Self {
+        let op = match inverse.kind.op() {
+            "write_file" => RepairOp::WriteFile,
+            "chmod" => RepairOp::Chmod,
+            _ => RepairOp::RenameNoReplace,
+        };
+        let to_rel = match &inverse.to {
+            Dest::None => None,
+            Dest::Path(path) => Some(path.display().to_string()),
+            Dest::Quarantine { side, rel } => Some(format!("{}/{}", side.name(), rel.display())),
+        };
+        Self {
+            seq: inverse.seq,
+            fix: inverse.fix,
+            fm: inverse.fm.clone(),
+            op,
+            path: inverse.path.clone(),
+            to_rel,
+            octal_mode: inverse.mode.map(|mode| mode.to_string()),
+            activation: inverse.activation,
+        }
+    }
+}
+
+/// What an undo reverts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UndoKind {
+    /// Every undo M1–M3 knew: folders, records, SavedVariables, a whole `WTF/` restore.
+    Folders,
+    /// The undo of a repair, or of the undo of one.
+    Repair,
+}
+
 /// The transaction reverted.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct Reverted {
@@ -108,7 +181,11 @@ pub struct Reverted {
     pub kind: TxKind,
     #[schemars(with = "String")]
     pub at: jiff::Timestamp,
-    pub target: TargetRef,
+    /// The client it changed; `null` for a repair, which names its clients in `targets`.
+    pub target: Option<TargetRef>,
+    /// Every client it changed, sorted by id then key: a folder line's one target, a
+    /// repair's `targets` (none for a repair of omaddons' own files alone).
+    pub targets: Vec<TargetRef>,
     pub actor: Actor,
     pub argv: Vec<String>,
     /// `-v` only.
@@ -138,7 +215,8 @@ pub struct SavedVariables {
 /// One transaction of the undo.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct UndoTx {
-    pub target: TargetRef,
+    /// `null` for a repair, which names no single client.
+    pub target: Option<TargetRef>,
     /// The transaction reverted.
     pub reverted: TxId,
     /// The undo transaction; `null` when it failed or under `--dry-run`.
@@ -166,6 +244,22 @@ struct Undone {
     atomic_swap: Option<bool>,
     /// The undo of a whole restore.
     wtf: Option<WtfUndo>,
+    /// The undo of a repair.
+    repair: Option<Box<RepairUndo>>,
+}
+
+/// What the undo of a repair did (or would do), for its data and its human output.
+#[derive(Debug, Clone)]
+struct RepairUndo {
+    /// The line reverted is itself an undo (this is a redo): the repair it reverted.
+    redo_of: Option<TxId>,
+    /// Each inverse primitive as `(op, path, to)`: as committed, or as planned under
+    /// `--dry-run`, where a destination in the undo's own quarantine is named by its side.
+    ops: Vec<(&'static str, String, Option<String>)>,
+    /// The inverse operations, for `data.repairs`.
+    data: Vec<UndoRepairOp>,
+    /// The undo's own doctor run.
+    run: Option<DoctorRunId>,
 }
 
 /// One transaction tried: undone, or why not.
@@ -228,20 +322,33 @@ impl Outcome for UndoOutcome {
         let single = self.attempts.len() == 1;
         for attempt in &self.attempts {
             match attempt {
-                Attempt::Undone(u) => render_undone(w, u, self.data.dry_run, single)?,
+                Attempt::Undone(u) => match &u.repair {
+                    Some(repair) => render_repair(w, u, repair, self.data.dry_run, single)?,
+                    None => render_undone(w, u, self.data.dry_run, single)?,
+                },
                 Attempt::Failed(r, error) => writeln!(
                     w,
-                    "could not revert {} ({} by {}) on {}: {}",
+                    "could not revert {} ({} by {}){}: {}",
                     short_tx(&r.tx),
                     kind_name(r.kind),
                     r.actor.as_str(),
-                    r.target.id,
+                    on_clients(r),
                     error.message
                 )?,
             }
         }
         if !single && let Some(hint) = self.commands.first() {
             writeln!(w, "undo this: {}", hint.command())?;
+        }
+        let repaired = self
+            .attempts
+            .iter()
+            .any(|a| matches!(a, Attempt::Undone(u) if u.repair.is_some()));
+        if repaired && let Some(token) = &self.data.precondition {
+            writeln!(
+                w,
+                "precondition {token} (pass --if-match to apply exactly this)"
+            )?;
         }
         intent::render_plan_line(
             w,
@@ -251,18 +358,109 @@ impl Outcome for UndoOutcome {
     }
 }
 
+/// ` on <ids>`: the clients `r` changed, or nothing for a repair of omaddons' own files.
+fn on_clients(r: &Reverted) -> String {
+    if r.targets.is_empty() {
+        return String::new();
+    }
+    let ids: Vec<&str> = r.targets.iter().map(|t| t.id.as_str()).collect();
+    format!(" on {}", ids.join(", "))
+}
+
+/// The command a history line's `argv` ran, as `doctor fix`: its words after `omaddons`
+/// up to the first flag or value.
+fn command_of(argv: &[String]) -> String {
+    let words: Vec<&str> = argv
+        .iter()
+        .skip(1)
+        .map(String::as_str)
+        .take_while(|word| !word.is_empty() && word.chars().all(|c| c.is_ascii_lowercase()))
+        .take(2)
+        .collect();
+    if words.is_empty() {
+        "omaddons".to_owned()
+    } else {
+        words.join(" ")
+    }
+}
+
+/// The most inverse primitives a repair undo's block lists before `and N more`.
+const REPAIR_LINES_SHOWN: usize = 10;
+
+/// The block of the undo of a repair: what it reverted and on which clients, its
+/// primitives by kind, each one (at most [`REPAIR_LINES_SHOWN`]), and the run and the
+/// transaction it made.
+fn render_repair(
+    w: &mut dyn Write,
+    u: &Undone,
+    repair: &RepairUndo,
+    dry_run: bool,
+    hint: bool,
+) -> std::io::Result<()> {
+    let r = &u.reverted;
+    let verb = if dry_run { "would revert" } else { "reverted" };
+    let what = match repair.redo_of {
+        Some(repair_tx) => format!(
+            "undo {} of repair {}",
+            short_tx(&r.tx),
+            short_tx(&repair_tx)
+        ),
+        None => format!("repair {}", short_tx(&r.tx)),
+    };
+    let mut counts = Vec::new();
+    for (op, word) in [("write", "write"), ("chmod", "chmod"), ("rename", "rename")] {
+        // ubs:ignore — comparing operation names, not secrets
+        let n = repair.ops.iter().filter(|(o, ..)| *o == op).count();
+        if n > 0 {
+            counts.push(crate::output::count(n, word));
+        }
+    }
+    writeln!(
+        w,
+        "{verb} {what} ({} by {}, {}){}: {}",
+        command_of(&r.argv),
+        r.actor.as_str(),
+        local_time(r.at),
+        on_clients(r),
+        counts.join(", ")
+    )?;
+    for (op, path, to) in repair.ops.iter().take(REPAIR_LINES_SHOWN) {
+        match to {
+            Some(to) => writeln!(w, "  {op} {path} → {to}")?,
+            None => writeln!(w, "  {op} {path}")?,
+        }
+    }
+    if repair.ops.len() > REPAIR_LINES_SHOWN {
+        writeln!(w, "  and {} more", repair.ops.len() - REPAIR_LINES_SHOWN)?;
+    }
+    let mut tail = Vec::new();
+    if let Some(run) = &repair.run {
+        tail.push(format!("run {}", run.as_str()));
+    }
+    if let Some(tx) = u.tx {
+        tail.push(format!("tx {tx}"));
+        if hint {
+            tail.push(format!("undo this: omaddons undo {tx}"));
+        }
+    }
+    if !tail.is_empty() {
+        writeln!(w, "{}", tail.join(" · "))?;
+    }
+    Ok(())
+}
+
 /// M1's block for one transaction undone; `hint` adds `undo this: …` to its last line.
 fn render_undone(w: &mut dyn Write, u: &Undone, dry_run: bool, hint: bool) -> std::io::Result<()> {
     let r = &u.reverted;
     let verb = if dry_run { "would revert" } else { "reverted" };
     writeln!(
         w,
-        "{verb} {} ({} by {}, {}) on {}",
+        "{verb} {} ({} by {}, {}){}",
         short_tx(&r.tx),
         kind_name(r.kind),
         r.actor.as_str(),
         local_time(r.at),
-        r.target.id
+        on_clients(r)
     )?;
     if let Some(wtf) = u.wtf {
         render_whole(w, r.kind, wtf, dry_run)?;
@@ -427,7 +625,7 @@ pub fn run(ctx: &Context, args: &UndoArgs) -> Result<UndoOutcome> {
                 .iter()
                 .filter_map(|(chosen, result)| {
                     let undo = result.as_ref().ok()?;
-                    let one = precondition::of_undo(&[(chosen.entry.tx, chosen.key, Ok(undo))]);
+                    let one = precondition::of_undo(&[(chosen.entry.tx, chosen.keys(), Ok(undo))]);
                     Some((chosen.entry.tx, one.token()))
                 })
                 .collect();
@@ -448,11 +646,25 @@ pub fn run(ctx: &Context, args: &UndoArgs) -> Result<UndoOutcome> {
     let token = precondition.as_ref().map(|value| value.token());
     let mut outcome = outcome(ctx, &world, &selection, run, sv_policy, done, token)?;
     if let Some(precondition) = precondition {
+        // One item per client each reverted transaction changed; one naming no client
+        // for a repair of omaddons' own files alone.
         let reverted: Vec<_> = outcome
-            .data
-            .transactions
+            .attempts
             .iter()
-            .map(|tx| (Some(tx.target.key), tx.target.id.clone(), tx.reverted))
+            .map(|attempt| match attempt {
+                Attempt::Undone(undone) => &undone.reverted,
+                Attempt::Failed(reverted, _) => reverted,
+            })
+            .flat_map(|r| {
+                if r.targets.is_empty() {
+                    vec![(None, String::new(), r.tx)]
+                } else {
+                    r.targets
+                        .iter()
+                        .map(|t| (Some(t.key), t.id.clone(), r.tx))
+                        .collect()
+                }
+            })
             .collect();
         let folders_removed: Vec<_> = outcome
             .attempts
@@ -526,7 +738,7 @@ fn resolved_selection(data: &UndoData, narrowed: bool) -> Result<UndoSelection> 
 fn undo_precondition(planned: &[(Selected<'_>, Result<EngineUndo>)]) -> precondition::Precondition {
     let planned: Vec<precondition::UndoPlanned<'_>> = planned
         .iter()
-        .map(|(chosen, result)| (chosen.entry.tx, chosen.key, result.as_ref()))
+        .map(|(chosen, result)| (chosen.entry.tx, chosen.keys(), result.as_ref()))
         .collect();
     precondition::of_undo(&planned)
 }
@@ -548,23 +760,37 @@ struct Selection<'e> {
     reverted_run: Option<RunId>,
 }
 
-/// One transaction to revert, and the client it changed.
+/// One transaction to revert, and the client it changed: `None` for a repair-family
+/// line, whose clients are its `targets`.
 #[derive(Debug, Clone, Copy)]
 struct Selected<'e> {
     entry: &'e HistoryEntry,
-    key: TargetKey,
+    key: Option<TargetKey>,
 }
 
-/// `entries` with the client each changed; `not_found` for a target-less line (a
-/// repair), which this build cannot undo yet, before anything is planned.
+impl Selected<'_> {
+    /// Every client it changed: the one, or a repair's `targets`.
+    fn keys(&self) -> &[TargetKey] {
+        match &self.key {
+            Some(key) => std::slice::from_ref(key),
+            None => &self.entry.targets,
+        }
+    }
+}
+
+/// `entries` with the client each changed. A repair-family line names none (the engine
+/// routes it to the repair undo); any other target-less line is refused before anything
+/// is planned.
 fn selected(entries: Vec<&HistoryEntry>) -> Result<Vec<Selected<'_>>> {
     entries
         .into_iter()
         .map(|entry| {
-            Ok(Selected {
-                key: crate::engine::undo::target_of(entry)?,
-                entry,
-            })
+            let key = if is_repair_family(entry) {
+                None
+            } else {
+                Some(crate::engine::undo::target_of(entry)?)
+            };
+            Ok(Selected { entry, key })
         })
         .collect()
 }
@@ -756,11 +982,21 @@ fn outcome(
                     status: UndoTxStatus::Undone,
                     error: None,
                 });
-                attempts.push(Attempt::Undone(Box::new(undone(reverted, policy, &undo))));
+                attempts.push(Attempt::Undone(Box::new(undone(
+                    reverted,
+                    entry.reverts,
+                    policy,
+                    &undo,
+                ))));
             }
             Err(error) => {
                 let mut warning = Warning::item(&error);
-                warning.message = format!("{}: {}", reverted.target.id, error.message);
+                let ids: Vec<&str> = reverted.targets.iter().map(|t| t.id.as_str()).collect();
+                warning.message = if ids.is_empty() {
+                    error.message.clone()
+                } else {
+                    format!("{}: {}", ids.join(", "), error.message)
+                };
                 warnings.push(warning);
                 transactions.push(UndoTx {
                     target: reverted.target.clone(),
@@ -802,12 +1038,13 @@ fn outcome(
     }
     let client_dir = verbose
         .then(|| {
+            let key = first.reverted.target.as_ref()?.key;
             world
                 .resolved
                 .targets
                 .iter()
                 // ubs:ignore — client identity keys are public identifiers, not credentials
-                .find(|d| d.target.key == Some(first.reverted.target.key))
+                .find(|d| d.target.key == Some(key))
                 .map(|d| d.target.client_dir.clone())
         })
         .flatten();
@@ -817,9 +1054,18 @@ fn outcome(
             unique.push(w);
         }
     }
+    let (kind, repairs, doctor_run_id) = match &first.repair {
+        Some(repair) => (
+            UndoKind::Repair,
+            Some(repair.data.clone()),
+            repair.run.clone(),
+        ),
+        None => (UndoKind::Folders, None, None),
+    };
     Ok(UndoOutcome {
         data: UndoData {
             dry_run: ctx.dry_run,
+            kind,
             reverted: first.reverted,
             tx: first.tx,
             folders: first.folders,
@@ -830,6 +1076,8 @@ fn outcome(
             client_dir,
             run: (!ctx.dry_run).then_some(run),
             reverted_run: selection.reverted_run,
+            repairs,
+            doctor_run_id,
             transactions,
             precondition,
             plan_id: None,
@@ -848,21 +1096,34 @@ fn outcome(
 /// How the history names the transaction reverted.
 fn reverted(world: &World, chosen: Selected<'_>, verbose: bool) -> Reverted {
     let entry = chosen.entry;
+    let named = |key: TargetKey| TargetRef {
+        id: world.target_id(key),
+        key,
+    };
+    let mut targets: Vec<TargetRef> = chosen.keys().iter().copied().map(named).collect();
+    targets.sort_by(|a, b| (a.id.as_str(), a.key).cmp(&(b.id.as_str(), b.key)));
+    // ubs:ignore — client identity keys are public identifiers, not credentials
+    targets.dedup_by(|a, b| a.key == b.key);
     Reverted {
         tx: entry.tx,
         kind: entry.kind,
         at: entry.at,
-        target: TargetRef {
-            id: world.target_id(chosen.key),
-            key: chosen.key,
-        },
+        target: chosen.key.map(named),
+        targets,
         actor: entry.actor,
         argv: entry.argv.clone(),
         reason: entry.reason.clone().filter(|_| verbose),
     }
 }
 
-fn undone(reverted: Reverted, policy: SvPolicy, done: &EngineUndo) -> Undone {
+/// One transaction undone; `reverted_reverts` is what the reverted line itself reverts
+/// (an undo's), so a redo of a repair names the repair.
+fn undone(
+    reverted: Reverted,
+    reverted_reverts: Option<TxId>,
+    policy: SvPolicy,
+    done: &EngineUndo,
+) -> Undone {
     let mut folders = UndoFolders::default();
     for change in &done.outcome.changes {
         folders
@@ -878,6 +1139,20 @@ fn undone(reverted: Reverted, policy: SvPolicy, done: &EngineUndo) -> Undone {
     folders.restored.sort_by(|a, b| a.key().cmp(b.key()));
     folders.removed.sort_by(|a, b| a.key().cmp(b.key()));
     let tx = done.outcome.tx;
+    let repair = done.repair.as_ref().map(|r| {
+        Box::new(RepairUndo {
+            redo_of: (r.plan.plan.reverted_kind == TxKind::Undo)
+                .then_some(reverted_reverts)
+                .flatten(),
+            ops: if r.committed.is_empty() {
+                r.plan.plan.inverses.iter().map(planned_op).collect()
+            } else {
+                r.committed.iter().map(committed_op).collect()
+            },
+            data: r.plan.plan.inverses.iter().map(UndoRepairOp::of).collect(),
+            run: r.undo_run.as_deref().and_then(DoctorRunId::parse),
+        })
+    });
     Undone {
         reverted,
         tx,
@@ -890,9 +1165,53 @@ fn undone(reverted: Reverted, policy: SvPolicy, done: &EngineUndo) -> Undone {
             kept: done.sv.kept,
         },
         reload: done.outcome.reload_required,
-        atomic_swap: tx.map(|_| done.outcome.atomic_swap),
+        // A repair's undo swaps nothing (M1's atomic swap is a folder transaction's).
+        atomic_swap: tx
+            .filter(|_| repair.is_none())
+            .map(|_| done.outcome.atomic_swap),
         wtf: done.wtf,
+        repair,
     }
+}
+
+/// The word a human line names an operation by.
+const fn op_word(op: RepairOp) -> &'static str {
+    match op {
+        RepairOp::WriteFile => "write",
+        RepairOp::Chmod => "chmod",
+        RepairOp::RenameNoReplace => "rename",
+    }
+}
+
+/// A committed inverse primitive, as its human line shows it.
+fn committed_op(entry: &RepairEntry) -> (&'static str, String, Option<String>) {
+    (
+        op_word(entry.op),
+        entry.path.display().to_string(),
+        entry.to.as_ref().map(|to| to.display().to_string()),
+    )
+}
+
+/// A planned inverse primitive, as a dry run's human line shows it: a destination in
+/// the undo's own quarantine, which the run names, by its side.
+fn planned_op(
+    inverse: &crate::engine::repair::undo::InverseStep,
+) -> (&'static str, String, Option<String>) {
+    let word = match inverse.kind.op() {
+        "write_file" => "write",
+        "chmod" => "chmod",
+        _ => "rename",
+    };
+    let to = match &inverse.to {
+        Dest::None => None,
+        Dest::Path(path) => Some(path.display().to_string()),
+        Dest::Quarantine { side, rel } => Some(format!(
+            "this undo's quarantine ({}/{})",
+            side.name(),
+            rel.display()
+        )),
+    };
+    (word, inverse.path.display().to_string(), to)
 }
 
 #[cfg(test)]
@@ -952,11 +1271,13 @@ mod tests {
         let run = "01JB8Q2VC00000000000000000".parse::<RunId>().unwrap();
         let mut data = UndoData {
             dry_run: true,
+            kind: UndoKind::Folders,
             reverted: Reverted {
                 tx,
                 kind: TxKind::Install,
                 at: "2026-10-14T12:00:00Z".parse().unwrap(),
-                target: target.clone(),
+                target: Some(target.clone()),
+                targets: vec![target.clone()],
                 actor: Actor::Agent,
                 argv: vec!["omaddons".into(), "install".into(), "Foo".into()],
                 reason: None,
@@ -976,8 +1297,10 @@ mod tests {
             client_dir: None,
             run: None,
             reverted_run: None,
+            repairs: None,
+            doctor_run_id: None,
             transactions: vec![UndoTx {
-                target,
+                target: Some(target),
                 reverted: tx,
                 tx: None,
                 status: UndoTxStatus::Undone,
@@ -1266,11 +1589,11 @@ mod tests {
         assert_eq!(short.code, ErrorCode::Usage);
     }
 
-    /// A repair (target-less, M4-D31) is the newest change: every selector that reaches
-    /// it refuses it, never stepping over it to an older transaction; a target it did not
-    /// touch still selects its own.
+    /// A repair (target-less, M4-D31) is the newest change (M4-D46): every selector that
+    /// reaches it selects it, with no key (the engine routes it), never stepping over it
+    /// to an older transaction; a target it did not touch still selects its own.
     #[test]
-    fn select_refuses_a_target_less_line() {
+    fn select_selects_a_repair_line() {
         let a = TargetKey::new();
         let c = TargetKey::new();
         let run = RunId::new();
@@ -1338,14 +1661,14 @@ mod tests {
             ("bare", bare),
         ];
         for (name, selector) in cases {
-            let output = select(&entries, &selector).map(|s| s.entries.len());
-            let err = output.as_ref().unwrap_err();
-            assert_eq!(err.code, ErrorCode::NotFound, "{name}: gave {output:?}");
-            assert!(
-                err.message.contains("cannot undo yet"),
-                "{name}: {}",
-                err.message
-            );
+            let selection =
+                select(&entries, &selector).unwrap_or_else(|err| panic!("{name}: {err:?}")); // ubs:ignore — fails the test
+            let chosen: Vec<(TxId, Option<TargetKey>, Vec<TargetKey>)> = selection
+                .entries
+                .iter()
+                .map(|s| (s.entry.tx, s.key, s.keys().to_vec()))
+                .collect();
+            assert_eq!(chosen, [(repair.tx, None, vec![a])], "{name}");
         }
         let on_c_only = select(
             &entries,
@@ -1357,5 +1680,201 @@ mod tests {
         .unwrap();
         let txs: Vec<TxId> = on_c_only.entries.iter().map(|s| s.entry.tx).collect();
         assert_eq!(txs, [on_c.tx], "-t C: its own install");
+    }
+
+    /// The undo of a repair, as `render_repair` prints it, and its `undone` facts.
+    mod repair_output {
+        use super::*;
+
+        const REPAIR: &str = "01JB8Q2VA00000000000000005";
+        const UNDO: &str = "01JB8Q2VA00000000000000007";
+        const RUN: &str = "2026-10-30T18-05-12Z__01JB8Q2VC00000000000000000";
+
+        fn reverted(targets: &[&str], kind: TxKind) -> Reverted {
+            Reverted {
+                tx: REPAIR.parse().unwrap(),
+                kind,
+                at: "2026-10-30T18:03:00Z".parse().unwrap(),
+                target: None,
+                targets: targets
+                    .iter()
+                    .map(|id| TargetRef {
+                        id: (*id).to_owned(),
+                        key: TargetKey::new(),
+                    })
+                    .collect(),
+                actor: Actor::Agent,
+                argv: vec![
+                    "omaddons".into(),
+                    "doctor".into(),
+                    "fix".into(),
+                    "--only".into(),
+                    "fm-test-write".into(),
+                ],
+                reason: None,
+            }
+        }
+
+        fn renames(n: usize) -> Vec<(&'static str, String, Option<String>)> {
+            (0..n)
+                .map(|i| {
+                    (
+                        "rename",
+                        format!("/c/AddOns/Y{i}"),
+                        Some(format!("/c/AddOns/X/Y{i}")),
+                    )
+                })
+                .collect()
+        }
+
+        fn rendered(reverted: Reverted, repair: RepairUndo, dry_run: bool) -> Vec<String> {
+            let tx = (!dry_run).then(|| UNDO.parse::<TxId>().unwrap());
+            let u = Undone {
+                reverted,
+                tx,
+                folders: UndoFolders::default(),
+                sv: SavedVariables {
+                    policy: SvPolicy::Auto,
+                    restored: 0,
+                    unchanged: 0,
+                    deferred: 0,
+                    kept: 0,
+                },
+                reload: ReloadRequired::None,
+                atomic_swap: None,
+                wtf: None,
+                repair: None,
+            };
+            let mut out = Vec::new();
+            render_repair(&mut out, &u, &repair, dry_run, true).unwrap();
+            String::from_utf8(out)
+                .unwrap()
+                .lines()
+                .map(str::to_owned)
+                .collect()
+        }
+
+        fn repair(
+            ops: Vec<(&'static str, String, Option<String>)>,
+            redo_of: Option<&str>,
+        ) -> RepairUndo {
+            RepairUndo {
+                redo_of: redo_of.map(|tx| tx.parse().unwrap()),
+                ops,
+                data: Vec::new(),
+                run: DoctorRunId::parse(RUN),
+            }
+        }
+
+        #[test]
+        fn the_human_output_of_a_repair_undo() {
+            let short = short_tx(&REPAIR.parse().unwrap());
+            let when = local_time("2026-10-30T18:03:00Z".parse().unwrap());
+            let real = rendered(
+                reverted(&["retail"], TxKind::Repair),
+                repair(renames(2), None),
+                false,
+            );
+            assert_eq!(
+                real,
+                [
+                    format!(
+                        "reverted repair {short} (doctor fix by agent, {when}) on retail: 2 renames"
+                    ),
+                    "  rename /c/AddOns/Y0 → /c/AddOns/X/Y0".to_owned(),
+                    "  rename /c/AddOns/Y1 → /c/AddOns/X/Y1".to_owned(),
+                    format!("run {RUN} · tx {UNDO} · undo this: omaddons undo {UNDO}"),
+                ],
+                "a real run"
+            );
+
+            let dry = rendered(
+                reverted(&["retail", "classic"], TxKind::Repair),
+                RepairUndo {
+                    run: None,
+                    ..repair(renames(1), None)
+                },
+                true,
+            );
+            assert_eq!(
+                dry,
+                [
+                    format!(
+                        "would revert repair {short} (doctor fix by agent, {when}) on retail, classic: 1 rename"
+                    ),
+                    "  rename /c/AddOns/Y0 → /c/AddOns/X/Y0".to_owned(),
+                ],
+                "a dry run makes no run and no transaction"
+            );
+
+            let redo = rendered(
+                reverted(&["retail"], TxKind::Undo),
+                repair(renames(1), Some(UNDO)),
+                false,
+            );
+            assert_eq!(
+                redo[0],
+                format!(
+                    "reverted undo {short} of repair {} (doctor fix by agent, {when}) on retail: 1 rename",
+                    short_tx(&UNDO.parse().unwrap())
+                ),
+                "a redo names the repair"
+            );
+
+            let home_side = rendered(
+                reverted(&[], TxKind::Repair),
+                repair(
+                    vec![
+                        ("write", "/h/state/a.write".to_owned(), None),
+                        ("chmod", "/h/config/credentials/github".to_owned(), None),
+                    ],
+                    None,
+                ),
+                false,
+            );
+            assert_eq!(
+                home_side[..3],
+                [
+                    format!(
+                        "reverted repair {short} (doctor fix by agent, {when}): 1 write, 1 chmod"
+                    ),
+                    "  write /h/state/a.write".to_owned(),
+                    "  chmod /h/config/credentials/github".to_owned(),
+                ],
+                "a repair of omaddons' own files names no client"
+            );
+
+            let many = rendered(
+                reverted(&["retail"], TxKind::Repair),
+                repair(renames(12), None),
+                false,
+            );
+            assert_eq!(many.len(), 1 + REPAIR_LINES_SHOWN + 1 + 1, "{many:#?}");
+            assert_eq!(
+                many[REPAIR_LINES_SHOWN],
+                "  rename /c/AddOns/Y9 → /c/AddOns/X/Y9"
+            );
+            assert_eq!(many[REPAIR_LINES_SHOWN + 1], "  and 2 more");
+            assert!(many[0].ends_with(": 12 renames"), "{}", many[0]);
+        }
+
+        #[test]
+        fn command_of_names_the_command_run() {
+            for (argv, want) in [
+                (
+                    vec!["omaddons", "doctor", "fix", "--only", "x"],
+                    "doctor fix",
+                ),
+                (vec!["omaddons", "undo", "01JB8Q2V"], "undo"),
+                (
+                    vec!["omaddons", "doctor", "undo", "2026-10-30T18-05-12Z__01JB"],
+                    "doctor undo",
+                ),
+                (vec!["omaddons"], "omaddons"),
+            ] {
+                let argv: Vec<String> = argv.into_iter().map(str::to_owned).collect();
+                assert_eq!(command_of(&argv), want, "{argv:?}");
+            }
+        }
     }
 }

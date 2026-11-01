@@ -1511,6 +1511,40 @@ fn doctor_fix() {
     assert_eq!(ran.code, 0, "{fix:?}\n{}", ran.context());
 }
 
+/// `undo` of a repair (E7): a committed `fm-test-write` repair (the test fixers, a debug
+/// build), its preview, the undo refused once the subject changed, and the undo. The
+/// data's `repairs` hold no identity or run id, so nothing beyond the matrix's own
+/// redaction varies.
+#[test]
+fn undo_of_a_repair() {
+    use crate::common::doctor::test_fixers::{ENV, REPAIRED, WRITE, plant_write};
+    let s = Scene::new();
+    let file = plant_write(&s.home, "a.write", b"broken\n");
+    let fixed = s.json_env(&["doctor", "fix", "--only", WRITE], &[ENV], 0);
+    let tx = fixed.envelope["tx"].as_str().unwrap().to_owned();
+
+    let c = s.json(&["undo", &tx, "--dry-run"], 0);
+    assert_eq!(c.envelope["data"]["kind"], json!("repair"));
+    insta::assert_json_snapshot!("undo_repair_dry_run", s.stable(&c.envelope));
+
+    fs::write(&file, b"edited\n").unwrap();
+    let c = s.json(&["undo", &tx], 4);
+    assert_eq!(
+        (
+            &c.envelope["error"]["code"],
+            &c.envelope["error"]["details"]["reason"]
+        ),
+        (&json!("undo_conflict"), &json!("changed_since_repair"))
+    );
+    insta::assert_json_snapshot!("undo_repair_changed_since", s.stable(&c.envelope));
+    assert_eq!(fs::read(&file).unwrap(), b"edited\n", "nothing moved");
+
+    fs::write(&file, REPAIRED).unwrap();
+    let c = s.json(&["undo", &tx], 0);
+    assert_eq!(fs::read(&file).unwrap(), b"broken\n", "undone");
+    insta::assert_json_snapshot!("undo_repair_ok", s.stable(&c.envelope));
+}
+
 #[test]
 fn backup_list() {
     use omaddons::backup::BackupKind;

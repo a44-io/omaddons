@@ -1159,6 +1159,25 @@ Settings changes in the history (`config`, `target`, `auth` and `export` lines) 
 
 A later transaction that only added or dropped a requester in a dependency's `required_by` never conflicts. An addon the undo brings back keeps those later requesters. Undoing a transaction that installed a dependency an addon installed later still requires goes ahead with `still_required`, as `remove` does, and its fix undoes the undo. A dependency the undo leaves required by nothing warns `orphaned_dependency`.
 
+#### Undoing a repair
+
+A `doctor fix` repair (`kind: repair` in `history`) is undone like any change. `omaddons undo <tx>` names it. Bare `undo` takes it when it is the newest change, which it usually is. `--last-by`, `--run` and `-t <client>` (when the repair touched that client) take it too.
+
+- **Strict, in reverse.** The undo inverts the repair's operations newest first. Before anything moves, it checks two things: every path is still exactly as the repair left it, and every backup it restores from still holds the bytes it kept. Anything else is `undo_conflict` with `details.reason: "changed_since_repair"` and the paths in `details.paths`. The repaired state and the repair's backups then stay as they are.
+- **A set-aside journal.** The undo of a set-aside puts the journal back only while nothing that journal depends on has changed: the client's record generation, its identity marker, and the folders and `WTF/` the journal would recover. Otherwise it is `undo_conflict` with `details.reason: "changed_since_suspension"`. The journal is restored under the provisional name `<tx>.reactivating.jsonl` first and renamed to its own name last.
+- **Its own record.** The undo is a repair-family transaction of its own:
+  - a history line of kind `undo`, with `reverts` and `target: null`;
+  - its own doctor run directory, of kind `undo` (see [Files and state](#files-and-state));
+  - it can be undone in turn.
+- **Clients.** A client the repair touched must not be running, whatever the running policy (`game_running`, `details.reason: "repair"`). A client the repair names that is not on this machine is `target_not_found`. `--saved-variables` has no effect on a repair.
+- **Previews.** `--dry-run` returns a token and stores a plan, like any undo. The token covers the clients' record generations, the inverse operations, and what the checks read: every path's state, every backup's digest, every guard's value. A change between the preview and `--if-match` is `plan_stale`.
+- **Data.** For a repair:
+  - `data.kind` is `repair` (`folders` for every other undo, whose `repairs` is `null`);
+  - `data.repairs` lists the inverse operations in the order they run. Each has `seq`, `fix`, `fm`, `op`, `path`, `to_rel`, `octal_mode` and `activation`. `to_rel` names a destination in the undo's own quarantine by its side (`state/…`, `client/…`). A preview and the run show the same list; the undo's history line records the operations as committed;
+  - `data.doctor_run_id` is the undo's own run (`null` under `--dry-run`, which makes none);
+  - `data.reverted.targets` lists the clients the repair touched;
+  - `data.reverted.target` and `data.transactions[].target` are `null`, since a repair names no single client.
+
 ### `apply <PLAN_ID>`
 
 Run exactly what a `--dry-run` stored: the plan its `data.plan_id` names (the `Plan … stored` line of its human output). `apply` executes the plan's typed intent through its command's own code, bound to the plan's token, one transaction per client, as the preview showed or not at all.
@@ -2516,6 +2535,7 @@ Both are skipped, as a success with a reason, in these cases:
 - Folders come back as they were from `<client>/Interface/.omaddons/snapshots/<tx>/AddOns/`: every file's bytes and mode, directory modes, symlinks and empty directories (restored files get new timestamps, and a directory always keeps owner access); tests compare all of these. Each addon's record and files index are restored, while other addons' later changes stand.
 - **SavedVariables.** Only the touched addons' own files (`WTF/…/SavedVariables/<Folder>.lua` and `.lua.bak`, account-wide and per character) are snapshotted, with a SHA-256 manifest. On undo, a file that is unchanged since is left alone, a changed one is restored, and one the new version created is moved aside. A snapshot copy that no longer matches its manifest fails the undo with `state_corrupt` before anything moves; `omaddons undo <tx> --saved-variables keep`, its fix, reverts the folders without it. With `--saved-variables auto` and the game running, folders revert (if the running policy allows), and the SavedVariables restore is deferred. You get a `saved_variables_deferred` warning carrying the command to run after quitting: `omaddons undo <tx> --saved-variables restore`. SavedVariables directories that lead outside the client directory through a symlink (a `WTF/` kept in a sync folder) are never snapshotted or written; `saved_variables_out_of_scope` counts the files undo cannot restore. Folder names under `WTF/` are matched ignoring case, as Wine does (`wtf/account/…/savedvariables/` works); a folder spelled two ways (`WTF` and `wtf`) is left alone and counted in `saved_variables_out_of_scope`, because the game reads only one of them.
 - **Conflicts.** `undo_conflict` (exit 4) when a later transaction touched the same folders (undo the newest first), when the transaction was already undone, or when a folder it removed has been put back by hand. A snapshot pruned by retention gives `not_found`; for folders with no other copy, the commit said so with `snapshot_only_copy`.
+- **Repairs.** The undo of a `doctor fix` repair is strict, with no best-effort mode and no flag that relaxes it. It reverts the repair only while nothing the repair touched has changed since: every path as the repair left it, every backup intact. Otherwise it refuses before anything moves. Putting a set-aside journal back is guarded as well: the client's record generation, its marker and the folders that journal would recover must not have changed. The journal comes back under a provisional name first and takes its own name last, so a crash in between is rolled back whole before anything recovers it. A repair stays undoable while nothing it touched has changed. Its record (the doctor run, its backups and quarantine) stays inspectable until `doctor gc`.
 - Registry changes and `target.json` are not reverted.
 
 ### Ownership and protected folders
@@ -2964,6 +2984,26 @@ The folders were reverted, but the game was running, so SavedVariables were left
 ```bash
 omaddons undo <tx> --saved-variables restore
 ```
+
+### `undo_conflict` after a repair (`changed_since_repair`)
+
+Something changed what the repair touched since it ran: the files in `details.paths`, a backup the undo would restore from, or a later transaction on the same paths (`details.conflicting`). Undoing the repair now could overwrite that change, so nothing moved. The repaired state stays, and the repair's backups stay in its doctor run directory. To see what changed since and in which order:
+
+```bash
+omaddons history
+```
+
+When a later transaction is the cause, the fix names it: undo it first, then the repair.
+
+### `undo_conflict` after a set-aside (`changed_since_suspension`)
+
+Putting a set-aside journal back would let the next command replay its instructions against a client that has changed since: its record generation, its identity marker, or the folders and `WTF/` the journal would recover. `details.changed_guards` says which. The journal stays where the set-aside put it, in the doctor run's quarantine. `doctor explain` describes what it held:
+
+```bash
+omaddons doctor explain <failure mode> -t <target>
+```
+
+For a journal a newer omaddons wrote, undo the set-aside with that newer build instead: it reads the journal it puts back, and recovers it on its next change.
 
 ### `locked` (exit 5)
 

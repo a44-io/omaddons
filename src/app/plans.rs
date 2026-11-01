@@ -471,6 +471,10 @@ impl Names<'_> {
     fn approved(&self, approval: &Approval) -> Vec<(String, String)> {
         let mut clients: Vec<(String, String)> = Vec::new();
         for item in &approval.selection {
+            // An undo of a repair of omaddons' own files alone names no client.
+            if item.target_key.is_none() && item.target_id.is_empty() {
+                continue;
+            }
             let key = item.target_key.or_else(|| {
                 self.registry
                     .targets

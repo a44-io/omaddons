@@ -1,0 +1,87 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "undo",
+  "commands": [
+    {
+      "action": "undo",
+      "argv": [
+        "omaddons",
+        "undo",
+        "<ulid>"
+      ],
+      "command": "omaddons undo <ulid>",
+      "destructive": false
+    }
+  ],
+  "data": {
+    "approval": null,
+    "atomic_swap": null,
+    "doctor_run_id": "<run>",
+    "dry_run": false,
+    "folders": {
+      "removed": [],
+      "restored": []
+    },
+    "kind": "repair",
+    "plan_expires_at": null,
+    "plan_id": null,
+    "precondition": null,
+    "reload_required": "none",
+    "repairs": [
+      {
+        "activation": false,
+        "fix": 1,
+        "fm": "fm-test-write",
+        "octal_mode": "0644",
+        "op": "write_file",
+        "path": "<root>/state/omaddons/doctor-test/a.write",
+        "seq": 1,
+        "to_rel": null
+      }
+    ],
+    "reverted": {
+      "actor": "agent",
+      "argv": [
+        "omaddons",
+        "doctor",
+        "fix",
+        "--only",
+        "fm-test-write",
+        "--json"
+      ],
+      "at": "<time>",
+      "kind": "repair",
+      "target": null,
+      "targets": [],
+      "tx": "<ulid>"
+    },
+    "reverted_run": null,
+    "run": "<ulid>",
+    "saved_variables": {
+      "deferred": 0,
+      "kept": 0,
+      "policy": "auto",
+      "restored": 0,
+      "unchanged": 0
+    },
+    "transactions": [
+      {
+        "error": null,
+        "reverted": "<ulid>",
+        "status": "undone",
+        "target": null,
+        "tx": "<ulid>"
+      }
+    ],
+    "tx": "<ulid>"
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

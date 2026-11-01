@@ -1,0 +1,31 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "undo",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "undo_conflict",
+    "details": {
+      "paths": [
+        "<root>/state/omaddons/doctor-test/a.write"
+      ],
+      "reason": "changed_since_repair",
+      "tx": "<ulid>"
+    },
+    "fix": "omaddons history",
+    "fix_argv": [
+      "omaddons",
+      "history"
+    ],
+    "message": "1 path(s) changed since the repair <ulid>; undoing it now could overwrite that",
+    "retryable": false
+  },
+  "exit_code": 4,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

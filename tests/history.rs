@@ -358,9 +358,11 @@ fn status_names_a_repair_as_the_last_change_from_history_and_from_the_projection
     );
 }
 
-/// E7 (the undo of repairs) replaces this scenario's refusals with a revert of R1.
+/// Every selector reaches R1, a repair, as the newest change (M4-D46), and the undo of
+/// repairs checks it strictly: the credential it chmodded is not there, so each refuses
+/// (`undo_conflict`, `changed_since_repair`) before anything moves.
 #[test]
-fn undo_refuses_a_repair_it_cannot_undo_yet_and_moves_nothing() {
+fn undo_reaches_a_repair_and_refuses_one_whose_paths_changed() {
     let log = tlog!();
     let c = clients(&log);
     log.step("plant R1");
@@ -387,16 +389,18 @@ fn undo_refuses_a_repair_it_cannot_undo_yet_and_moves_nothing() {
     for args in selectors {
         log.step(&args.join(" "));
         let ran = json(&log, &c.home, &args);
-        ran.fails(3, "not_found");
-        let message = ran.envelope()["error"]["message"].as_str().unwrap();
-        assert!(
-            message.contains(&tx) && message.contains("cannot undo yet"),
-            "{args:?}: {message}"
+        ran.fails(4, "undo_conflict");
+        let error = &ran.envelope()["error"];
+        log.assert_eq("details.tx", &error["details"]["tx"], &json!(tx));
+        log.assert_eq(
+            "details.reason",
+            &error["details"]["reason"],
+            &json!("changed_since_repair"),
         );
         log.assert_eq(
-            "fix_argv",
-            &ran.envelope()["error"]["fix_argv"],
-            &json!(["omaddons", "history"]),
+            "details.paths",
+            &error["details"]["paths"],
+            &json!([c.credential()]),
         );
         c.unchanged(&log, &roots);
         let journals = fs::read_dir(paths(&c.home.env).journal_dir()).map_or(0, |d| d.count());

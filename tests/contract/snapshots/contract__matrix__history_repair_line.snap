@@ -30,6 +30,7 @@ expression: s.stable(&c.envelope)
           {
             "fix": 1,
             "fm": "fm-secrets-credential-file-mode",
+            "mode": "0600",
             "op": "chmod",
             "path": "<root>/config/omaddons/credentials/github",
             "post": {

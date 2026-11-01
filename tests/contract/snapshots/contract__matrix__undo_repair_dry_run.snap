@@ -1,0 +1,119 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "undo",
+  "commands": [
+    {
+      "action": "apply",
+      "argv": [
+        "omaddons",
+        "apply",
+        "<ulid>"
+      ],
+      "command": "omaddons apply <ulid>",
+      "destructive": true
+    }
+  ],
+  "data": {
+    "approval": {
+      "reasons": [
+        "destructive"
+      ],
+      "routine": false,
+      "scope": {
+        "dependencies_added": [],
+        "folders_removed": [],
+        "local_changes_replaced": {
+          "count": 0,
+          "folders": []
+        },
+        "source_changed": [],
+        "while_running": false
+      },
+      "selection": [
+        {
+          "addon": null,
+          "asset": null,
+          "backup": null,
+          "channel": null,
+          "fields": [],
+          "from_version": null,
+          "op": "undo",
+          "release_id": null,
+          "source": null,
+          "target_id": "",
+          "target_key": null,
+          "to_version": null,
+          "tx": "<ulid>"
+        }
+      ]
+    },
+    "atomic_swap": null,
+    "doctor_run_id": null,
+    "dry_run": true,
+    "folders": {
+      "removed": [],
+      "restored": []
+    },
+    "kind": "repair",
+    "plan_expires_at": "<time>",
+    "plan_id": "<ulid>",
+    "precondition": "<precondition>",
+    "reload_required": "none",
+    "repairs": [
+      {
+        "activation": false,
+        "fix": 1,
+        "fm": "fm-test-write",
+        "octal_mode": "0644",
+        "op": "write_file",
+        "path": "<root>/state/omaddons/doctor-test/a.write",
+        "seq": 1,
+        "to_rel": null
+      }
+    ],
+    "reverted": {
+      "actor": "agent",
+      "argv": [
+        "omaddons",
+        "doctor",
+        "fix",
+        "--only",
+        "fm-test-write",
+        "--json"
+      ],
+      "at": "<time>",
+      "kind": "repair",
+      "target": null,
+      "targets": [],
+      "tx": "<ulid>"
+    },
+    "reverted_run": null,
+    "run": null,
+    "saved_variables": {
+      "deferred": 0,
+      "kept": 0,
+      "policy": "auto",
+      "restored": 0,
+      "unchanged": 0
+    },
+    "transactions": [
+      {
+        "error": null,
+        "reverted": "<ulid>",
+        "status": "undone",
+        "target": null,
+        "tx": null
+      }
+    ],
+    "tx": null
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}
