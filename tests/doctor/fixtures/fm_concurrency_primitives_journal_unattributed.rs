@@ -39,6 +39,11 @@ impl Fixture for JournalUnattributed {
         plant::journal_set(home, &self.tx.get(), None)
     }
 
+    /// The forced set-aside (F2); its inverse is `doctor undo`, while its guards hold.
+    fn fixer(&self) -> bool {
+        true
+    }
+
     fn remedy(&self, home: &Home) {
         plant::set_journal_aside(home, &self.tx.get());
     }

@@ -468,10 +468,15 @@ fn with_fixer_remediations(
         else {
             continue;
         };
-        let target = selection
-            .target
-            .clone()
-            .or_else(|| finding.target.as_ref().map(|t| t.id.clone()));
+        // `-t` only for a target it resolves: a registered id (an unregistered key's id
+        // is the key itself, which `-t` does not take).
+        let target = selection.target.clone().or_else(|| {
+            finding
+                .target
+                .as_ref()
+                .filter(|t| t.id != t.key.to_string())
+                .map(|t| t.id.clone())
+        });
         finding.remediation = remediation_for(view, finding, spec, target.as_deref());
     }
     diagnosis

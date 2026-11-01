@@ -169,12 +169,15 @@ expression: s.stable(&status.envelope)
               "argv": [
                 "omaddons",
                 "doctor",
-                "explain",
+                "fix",
+                "--only",
                 "fm-concurrency_primitives-journal-too-new",
                 "-t",
-                "retail"
+                "retail",
+                "--force",
+                "--yes"
               ],
-              "command": "omaddons doctor explain fm-concurrency_primitives-journal-too-new -t retail",
+              "command": "omaddons doctor fix --only fm-concurrency_primitives-journal-too-new -t retail --force --yes",
               "destructive": false
             },
             "severity": "P0",

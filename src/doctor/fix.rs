@@ -149,7 +149,20 @@ pub struct FixPlan {
     pub bytes_to_back_up: u64,
     /// The whole repair, lowered: what E5 commits.
     pub lowered: Lowered,
+    /// Each set-aside the plan holds (M4-D38), for the human output: what its steps
+    /// alone do not say.
+    pub suspended: Vec<Suspended>,
     names: Names,
+}
+
+/// A set-aside a plan holds: its fix number (its steps' `fix`), the transaction it
+/// suspends, and what attribution could account for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Suspended {
+    pub fix: u32,
+    pub tx: TxId,
+    pub attribution: crate::engine::repair_action::Attribution,
+    pub unattributed: Vec<PathBuf>,
 }
 
 /// Why a run plans nothing: decided before anything moves.
@@ -371,6 +384,19 @@ pub fn plan_fix_in(
     );
     targets.sort();
     targets.dedup();
+    let suspended = inputs
+        .iter()
+        .zip(1u32..)
+        .filter_map(|(input, fix)| match &input.fix {
+            Fix::Suspend { journal } => Some(Suspended {
+                fix,
+                tx: journal.tx,
+                attribution: journal.attribution,
+                unattributed: journal.unattributed.clone(),
+            }),
+            _ => None,
+        })
+        .collect();
     Ok(FixPlan {
         fixes,
         recoveries,
@@ -379,6 +405,7 @@ pub fn plan_fix_in(
         unplanned: unplanned.into_iter().map(|(_, u)| u).collect(),
         bytes_to_back_up: lowered.steps.iter().map(|s| s.backup_bytes).sum(),
         lowered,
+        suspended,
         names,
     })
 }
@@ -1582,6 +1609,7 @@ impl FixPlan {
             unplanned: Vec::new(),
             bytes_to_back_up: 0,
             lowered,
+            suspended: Vec::new(),
             names: Names {
                 tx: TxId::new(),
                 run_id: "R".to_owned(),
@@ -3379,5 +3407,109 @@ mod tests {
             (provisional, some("client/Interface/AddOns/Same")),
         ];
         assert_eq!(got, want);
+    }
+
+    // -----------------------------------------------------------------------------------
+    // F2 s3: the set-aside against the journals the plan observes.
+
+    const SETTING_ASIDE: &str = "fm-concurrency_primitives-test-setting-aside";
+
+    /// F2's set-aside fixer itself, with no client running.
+    fn real_set_aside(view: &DoctorView, f: &Finding) -> Result<Vec<Fix>, Refusal> {
+        crate::doctor::fixers::set_aside::plan_with(view, f, &|_| RunningScan::default())
+    }
+
+    /// `rows()` and a forced row whose fixer is F2's set-aside; its finding of `tx`; and
+    /// the plan of that finding alone, forced.
+    fn plan_set_aside(home: &RepairHome, tx: TxId) -> Result<FixPlan, PlanRefusal> {
+        let mut rows = rows();
+        rows.push(row(
+            SETTING_ASIDE,
+            Subsystem::ConcurrencyPrimitives,
+            Some(spec(
+                real_set_aside,
+                false,
+                true,
+                &[FixerPrecondition::InflightFree],
+            )),
+        ));
+        let found = rows.last().unwrap().finding(Observation {
+            subject: Subject::machine().tx(tx),
+            title: "a stuck journal".to_owned(),
+            confidence: Confidence::High,
+            addon: None,
+            folder: None,
+            evidence: of_tx(tx),
+        });
+        let view = DoctorView::load_at(home.paths.clone(), ViewOptions::default());
+        let roots = roots(home, &home.run, super::tests::tx(), &crate::fsx::mount_id);
+        let only = [Pick::Mode(SETTING_ASIDE)];
+        let opts = FixOptions {
+            only: &only,
+            force: true,
+            roots: &roots,
+            running: &RunningScan::default(),
+        };
+        plan_fix_in(&rows, &view, &[found], &opts)
+    }
+
+    /// The suspend fix moves exactly the journal it suspends, which the plan observes:
+    /// that pair never conflicts (a journal a fix suspends is that fix's to settle).
+    #[test]
+    fn a_set_aside_does_not_conflict_with_its_own_journal() {
+        let home = repair_home();
+        let stuck = home.stuck();
+        let plan = planned("its own journal", plan_set_aside(&home, stuck));
+        assert_eq!(
+            plan.fixes.iter().map(|f| f.kind).collect::<Vec<_>>(),
+            [FixKind::Suspend],
+            "{:#?}",
+            plan.fixes
+        );
+        assert!(
+            plan.journals.iter().any(|j| j.tx == stuck),
+            "it is observed"
+        );
+    }
+
+    /// A stuck journal named by another unfinished repair (here, a set-aside of it whose
+    /// journal is left): its set-aside overlaps what that repair protects, and is refused
+    /// naming it; the owner is recovered or set aside first.
+    #[test]
+    fn a_set_aside_behind_an_unsettled_barrier_is_refused() {
+        use crate::engine::repair::{PlannedFix as Lowerable, RepairLine};
+        let home = repair_home();
+        let stuck = home.stuck();
+        let owner_fix = Lowerable {
+            fm: Cow::Borrowed(SETTING_ASIDE),
+            fix: Fix::Suspend {
+                journal: JournalSet {
+                    tx: stuck,
+                    family: JournalFamily::Folder,
+                    target: Some(home.key),
+                    artifacts: vec![SuspendedArtifact {
+                        path: home.paths.journal(&stuck),
+                        root: QuarantineRoot::State,
+                    }],
+                    guards: Vec::new(),
+                    attribution: Attribution::Complete,
+                    unattributed: Vec::new(),
+                },
+            },
+        };
+        let mut owner = crate::engine::testing::repair_prepared(&home, &[], &[owner_fix]);
+        let owner_tx = TxId::new();
+        owner.tx = owner_tx;
+        let line = serde_json::to_string(&RepairLine::Prepared(Box::new(owner))).unwrap();
+        std::fs::write(home.paths.journal_repair(&owner_tx), format!("{line}\n")).unwrap();
+        let refused = refusal("behind its owner", plan_set_aside(&home, stuck));
+        let PlanRefusal::FixerConflict { fixes, journal, .. } = &refused else {
+            panic!("{refused:#?}"); // ubs:ignore — fails the test
+        };
+        assert!(*journal, "{refused:#?}");
+        assert!(
+            fixes[1].1.ends_with(&format!("tx={owner_tx}")),
+            "it names the owner: {refused:#?}"
+        );
     }
 }

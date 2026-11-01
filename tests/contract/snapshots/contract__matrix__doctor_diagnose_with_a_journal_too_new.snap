@@ -47,15 +47,18 @@ expression: s.stable(&doctor.envelope)
         "argv": [
           "omaddons",
           "doctor",
-          "explain",
+          "fix",
+          "--only",
           "fm-concurrency_primitives-journal-too-new",
           "-t",
-          "retail"
+          "retail",
+          "--force",
+          "--yes"
         ],
         "auto_fixable": false,
-        "command": "omaddons doctor explain fm-concurrency_primitives-journal-too-new -t retail",
+        "command": "omaddons doctor fix --only fm-concurrency_primitives-journal-too-new -t retail --force --yes",
         "destructive": false,
-        "estimated_actions": 0,
+        "estimated_actions": 4,
         "explain_argv": [
           "omaddons",
           "doctor",
@@ -65,7 +68,7 @@ expression: s.stable(&doctor.envelope)
           "retail"
         ],
         "explain_command": "omaddons doctor explain fm-concurrency_primitives-journal-too-new -t retail",
-        "needs_force": false
+        "needs_force": true
       },
       "severity": "P0",
       "subsystem": "concurrency_primitives",
@@ -97,8 +100,8 @@ expression: s.stable(&doctor.envelope)
     },
     "duration_ms": 0,
     "incomplete": 0,
-    "manual": 1,
-    "needs_force": 0,
+    "manual": 0,
+    "needs_force": 1,
     "online_required": 0,
     "skipped": 0,
     "total_findings": 1

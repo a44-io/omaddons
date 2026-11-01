@@ -1401,7 +1401,23 @@ fn journal_fix(issues: &[Issue], target: Option<&str>) -> Option<(String, Sugges
             ),
         ));
     }
+    // A forced repair (a stuck journal's set-aside) is read before it is consented to: its
+    // `doctor explain`, never an argv with `--force --yes` that a caller might run as is.
+    let forced = issue
+        .remediation
+        .argv
+        .as_ref()
+        .is_some_and(|argv| argv.iter().any(|a| a == "--force"));
     let fix = match &issue.remediation.argv {
+        Some(_) if forced => {
+            let mut argv: Vec<String> = ["omaddons", "doctor", "explain", issue.id]
+                .map(str::to_owned)
+                .to_vec();
+            if let Some(id) = target {
+                argv.extend(["-t".to_owned(), id.to_owned()]);
+            }
+            Suggestion::command(argv)
+        }
         Some(argv) => Suggestion::command(argv.clone()),
         None => Suggestion::text(issue.remediation.command.clone().unwrap_or_default()),
     };

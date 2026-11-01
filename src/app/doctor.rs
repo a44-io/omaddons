@@ -23,6 +23,7 @@ use crate::doctor::report::{self, DiagnoseReport, DiffReport, FixReport, FullRep
 use crate::doctor::runtime::{self, DoctorRunId, Latest, REPORT_FILE, Runtime};
 use crate::doctor::selection::Selection;
 use crate::doctor::view::{DoctorView, ViewOptions};
+use crate::engine::repair_action::{Attribution, Primitive, Step};
 use crate::error::{CommandHint, Error, ErrorCode, Suggestion, Warning};
 use crate::fsx::ScopeTable;
 use crate::limits::{API_RESPONSE_MAX_BYTES, DOCTOR_SCAN_MAX_ENTRIES};
@@ -313,6 +314,60 @@ pub struct ExplainOutcome {
     warnings: Vec<Warning>,
 }
 
+/// The evidence keys a stuck journal's set block says (`set_block`).
+const SET_KEYS: [&str; 5] = [
+    "attribution",
+    "unattributed_dirs",
+    "may_hold_only_copy",
+    "stage_folders",
+    "snapshot_folders",
+];
+
+/// What a set-aside of a stuck journal would move (M4-D38), from its finding's evidence:
+/// the set and its folder counts, whether a folder may be the only copy, the attribution,
+/// and each directory not accounted for. Sizes need a walk the cached tier forbids: the
+/// set-aside's dry run shows them.
+fn set_block(evidence: &crate::doctor::finding::Evidence) -> Vec<String> {
+    let folders = |n: Option<u64>| {
+        crate::output::count(
+            usize::try_from(n.unwrap_or(0)).unwrap_or(usize::MAX),
+            "folder",
+        )
+    };
+    let mut lines = vec![
+        format!(
+            "the set: the journal file and what its transaction id names, as far as it exists (the in-flight lock, the state snapshot, the stage with {}, the client snapshot with {})",
+            folders(evidence.stage_folders),
+            folders(evidence.snapshot_folders)
+        ),
+        format!(
+            "may hold the only copy of a folder: {}",
+            if evidence.may_hold_only_copy == Some(true) {
+                "yes"
+            } else {
+                "no"
+            }
+        ),
+    ];
+    if let Some(attribution) = evidence.attribution {
+        lines.push(format!(
+            "attribution: {}",
+            match attribution {
+                Attribution::Complete => "complete",
+                Attribution::Partial => "partial",
+            }
+        ));
+    }
+    lines.extend(
+        evidence
+            .unattributed_dirs
+            .iter()
+            .flatten()
+            .map(|dir| format!("not accounted for: {}", dir.display())),
+    );
+    lines
+}
+
 impl DoctorOutcome for ExplainOutcome {
     type Report = ExplainReport;
 
@@ -379,14 +434,24 @@ impl DoctorOutcome for ExplainOutcome {
         }
         for instance in &report.instances {
             writeln!(w, "  {}", instance.label)?;
+            // A stuck journal's set (F2) reads as one block, its keys not listed twice.
+            let set = instance.evidence.attribution.is_some();
             if let Ok(serde_json::Value::Object(evidence)) =
                 serde_json::to_value(&instance.evidence)
             {
                 for (key, value) in evidence {
+                    if set && SET_KEYS.contains(&key.as_str()) {
+                        continue;
+                    }
                     let value = value
                         .as_str()
                         .map_or_else(|| value.to_string(), str::to_owned);
                     writeln!(w, "    {key}: {value}")?;
+                }
+            }
+            if set {
+                for line in set_block(&instance.evidence) {
+                    writeln!(w, "    {line}")?;
                 }
             }
             writeln!(w, "    → {}", instance.remediation.command)?;
@@ -693,6 +758,69 @@ pub struct DiffRun {
     verbose: bool,
 }
 
+/// A set-aside's lines (M4-D38): its header (the transaction, how many paths, their size
+/// when planned, the attribution), one line per artifact it moves (`kind  from  → to`),
+/// then each directory attribution could not account for. `steps` are its steps, with
+/// their sizes in a dry run.
+fn suspend_lines(
+    s: &crate::doctor::fix::Suspended,
+    steps: &[(&Step, Option<u64>)],
+    show: &dyn Fn(&str) -> String,
+    dry_run: bool,
+) -> Vec<String> {
+    let attribution = match s.attribution {
+        Attribution::Complete => "complete",
+        Attribution::Partial => "partial",
+    };
+    let paths = crate::output::count(steps.len(), "path");
+    let mut lines = vec![if dry_run {
+        let bytes: u64 = steps.iter().filter_map(|(_, b)| *b).sum();
+        format!(
+            "would suspend tx {} ({paths}, {}, nothing copied; attribution {attribution}):",
+            s.tx,
+            super::backup::size(bytes)
+        )
+    } else {
+        format!(
+            "suspended tx {} ({paths}, nothing copied; attribution {attribution}):",
+            s.tx
+        )
+    }];
+    for (step, _) in steps {
+        if let Primitive::RenameNoReplace { from, to, .. } = &step.op {
+            lines.push(format!(
+                "  {:<15} {}  → {}",
+                artifact_word(from),
+                show(&from.display().to_string()),
+                show(&to.display().to_string())
+            ));
+        }
+    }
+    lines.extend(
+        s.unattributed
+            .iter()
+            .map(|dir| format!("  not accounted for: {}", show(&dir.display().to_string()))),
+    );
+    lines
+}
+
+/// What a set-aside artifact is, by where it lies.
+fn artifact_word(path: &std::path::Path) -> &'static str {
+    let parent = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    let client_side = path.components().any(|c| c.as_os_str() == ".omaddons");
+    match (client_side, parent) {
+        (true, "stage") => "stage",
+        (true, _) => "snapshot",
+        (false, "journal") => "journal",
+        (false, "inflight") => "in-flight lock",
+        (false, _) => "state snapshot",
+    }
+}
+
 /// One recovery a preview discloses, as a line: its transaction and which way it settles.
 fn recovery_line(r: &crate::doctor::report::RecoveryPlanned) -> String {
     let way = match r.direction {
@@ -839,12 +967,31 @@ impl DoctorOutcome for FixRun {
                 r.summary.bytes_to_back_up
             )?;
             let mut fms: Vec<String> = Vec::new();
+            let mut shown = std::collections::BTreeSet::new();
             for action in planned {
                 let step = serde_json::to_value(action).unwrap_or_default();
                 let fm = step["fm"].as_str().unwrap_or_default().to_owned();
                 if !fms.contains(&fm) {
                     writeln!(w, "  {fm}")?;
                     fms.push(fm);
+                }
+                if let Some(s) = self
+                    .outcome
+                    .suspended
+                    .iter()
+                    .find(|s| s.fix == action.step.fix)
+                {
+                    if shown.insert(s.fix) {
+                        let steps: Vec<(&Step, Option<u64>)> = planned
+                            .iter()
+                            .filter(|a| a.step.fix == s.fix)
+                            .map(|a| (&a.step, Some(a.bytes)))
+                            .collect();
+                        for line in suspend_lines(s, &steps, &show, true) {
+                            writeln!(w, "    {line}")?;
+                        }
+                    }
+                    continue;
                 }
                 writeln!(w, "    {}", action_line(&step, &show))?;
             }
@@ -897,7 +1044,27 @@ impl DoctorOutcome for FixRun {
                 crate::output::count(r.summary.actions_taken as usize, "action"),
                 r.summary.bytes_backed_up
             )?;
+            let mut shown = std::collections::BTreeSet::new();
             for action in actions {
+                if let Some(s) = self
+                    .outcome
+                    .suspended
+                    .iter()
+                    .find(|s| s.fix == action.step.fix)
+                {
+                    if shown.insert(s.fix) {
+                        let steps: Vec<(&Step, Option<u64>)> = actions
+                            .iter()
+                            .filter(|a| a.step.fix == s.fix)
+                            .map(|a| (&a.step, None))
+                            .collect();
+                        writeln!(w, "  {}", action.step.fm)?;
+                        for line in suspend_lines(s, &steps, &show, false) {
+                            writeln!(w, "  {line}")?;
+                        }
+                    }
+                    continue;
+                }
                 let step = serde_json::to_value(&action.step).unwrap_or_default();
                 writeln!(w, "  {}  {}", action.step.fm, action_line(&step, &show))?;
             }
@@ -1247,6 +1414,96 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    /// A set-aside's header, artifact lines and what it could not account for, as a
+    /// dry run and a real run show them, for a complete and a partial set.
+    #[test]
+    fn the_human_suspend_header() {
+        use std::borrow::Cow;
+        use std::path::PathBuf;
+
+        use crate::doctor::fix::Suspended;
+        use crate::engine::repair_action::{Endpoint, Endpoints};
+        let tx: crate::model::TxId = "01JB8Q2VA00000000000000009".parse().unwrap();
+        let rename = |seq: u32, from: &str, to: &str| Step {
+            seq,
+            fix: 1,
+            fm: Cow::Borrowed(ids::JOURNAL_TOO_NEW),
+            op: Primitive::RenameNoReplace {
+                from: PathBuf::from(from),
+                to: PathBuf::from(to),
+                activation: false,
+            },
+            pre: Endpoints::Pair {
+                path: Endpoint::Absent,
+                to: Endpoint::Absent,
+            },
+            post: Endpoints::Pair {
+                path: Endpoint::Absent,
+                to: Endpoint::Absent,
+            },
+            guards: Vec::new(),
+        };
+        let steps = [
+            rename(
+                1,
+                "/c/_retail_/Interface/.omaddons/stage/T",
+                "/c/_retail_/Interface/.omaddons/snapshots/R.repair/quarantine/Interface/.omaddons/stage/T",
+            ),
+            rename(
+                2,
+                "/s/omaddons/inflight/T.lock",
+                "/s/omaddons/doctor/runs/R/quarantine/state/inflight/T.lock",
+            ),
+            rename(
+                3,
+                "/s/omaddons/journal/T.jsonl",
+                "/s/omaddons/doctor/runs/R/quarantine/state/journal/T.jsonl",
+            ),
+        ];
+        let sized: Vec<(&Step, Option<u64>)> = steps
+            .iter()
+            .zip([18_400_000, 0, 120])
+            .map(|(s, b)| (s, Some(b)))
+            .collect();
+        let show = |p: &str| p.to_owned();
+        let complete = Suspended {
+            fix: 1,
+            tx,
+            attribution: Attribution::Complete,
+            unattributed: Vec::new(),
+        };
+        let lines = suspend_lines(&complete, &sized, &show, true);
+        assert_eq!(
+            lines[0],
+            format!(
+                "would suspend tx {tx} (3 paths, 18.4 MB, nothing copied; attribution complete):"
+            ),
+            "{lines:#?}"
+        );
+        assert!(
+            lines[1].starts_with("  stage ") && lines[1].contains("→"),
+            "{lines:#?}"
+        );
+        assert!(lines[2].starts_with("  in-flight lock "), "{lines:#?}");
+        assert!(lines[3].starts_with("  journal "), "{lines:#?}");
+        assert_eq!(lines.len(), 4, "{lines:#?}");
+        let partial = Suspended {
+            attribution: Attribution::Partial,
+            unattributed: vec![PathBuf::from("/c/_classic_era_")],
+            ..complete
+        };
+        let committed: Vec<(&Step, Option<u64>)> = steps.iter().map(|s| (s, None)).collect();
+        let lines = suspend_lines(&partial, &committed, &show, false);
+        assert_eq!(
+            lines[0],
+            format!("suspended tx {tx} (3 paths, nothing copied; attribution partial):")
+        );
+        assert_eq!(
+            lines.last().unwrap(),
+            "  not accounted for: /c/_classic_era_"
+        );
+    }
 
     const OLD: &str = "2026-10-30T18-00-00Z__01M8S7XQKZ0000000000000AAA";
     const NEW: &str = "2026-10-30T19-00-00Z__01M8S7XQKZ0000000000000BBB";

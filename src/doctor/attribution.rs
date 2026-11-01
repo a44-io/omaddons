@@ -538,8 +538,9 @@ fn sort_key(guard: &Guard, clients: &[(TargetKey, PathBuf)]) -> (u8, Option<Targ
     }
 }
 
+/// The attribution tests, whose temporary homes the set-aside's tests share.
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::time::Duration;
 
     use super::*;
@@ -555,16 +556,16 @@ mod tests {
 
     /// A home with a retail and a Classic Era client, each marked with its key, and the
     /// journal directory.
-    struct Home {
+    pub(crate) struct Home {
         _dir: tempfile::TempDir,
-        paths: Paths,
-        retail: PathBuf,
-        era: PathBuf,
-        rk: TargetKey,
-        ek: TargetKey,
+        pub(crate) paths: Paths,
+        pub(crate) retail: PathBuf,
+        pub(crate) era: PathBuf,
+        pub(crate) rk: TargetKey,
+        pub(crate) ek: TargetKey,
     }
 
-    fn home() -> Home {
+    pub(crate) fn home() -> Home {
         let dir = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(dir.path()).unwrap();
         let base = root.join("home");
@@ -594,11 +595,11 @@ mod tests {
         }
     }
 
-    fn tx() -> TxId {
+    pub(crate) fn tx() -> TxId {
         TX.parse().unwrap()
     }
 
-    fn entry(dir: &Path, key: TargetKey, id: &str) -> RegistryEntry {
+    pub(crate) fn entry(dir: &Path, key: TargetKey, id: &str) -> RegistryEntry {
         RegistryEntry {
             key,
             id: id.to_owned(),
@@ -612,12 +613,21 @@ mod tests {
         }
     }
 
-    fn both(h: &Home) -> Vec<RegistryEntry> {
+    pub(crate) fn both(h: &Home) -> Vec<RegistryEntry> {
         vec![entry(&h.retail, h.rk, "retail"), entry(&h.era, h.ek, "era")]
     }
 
     /// A view whose Registry layer holds `entries` (`None`: no Registry layer).
-    fn view(h: &Home, entries: Option<Vec<RegistryEntry>>) -> DoctorView {
+    pub(crate) fn view(h: &Home, entries: Option<Vec<RegistryEntry>>) -> DoctorView {
+        view_with(h, entries, None)
+    }
+
+    /// [`view`], with a Journals layer holding exactly `diagnoses` when given.
+    pub(crate) fn view_with(
+        h: &Home,
+        entries: Option<Vec<RegistryEntry>>,
+        diagnoses: Option<Vec<JournalDiagnosis>>,
+    ) -> DoctorView {
         use crate::doctor::registry::Layer;
         use crate::doctor::view::Unavailable;
         let registry = match entries {
@@ -634,16 +644,27 @@ mod tests {
                 cause: Layer::Registry,
             }),
         };
+        let journals = diagnoses.map(|journals| {
+            LayerState::Available(crate::doctor::view::Journals {
+                pending: Vec::new(),
+                diagnoses: crate::engine::simulate::Diagnoses {
+                    journals,
+                    unlisted: None,
+                },
+                counts: std::collections::BTreeMap::new(),
+            })
+        });
         DoctorView::preloaded(
             h.paths.clone(),
             Preloaded {
                 registry: Some(registry),
+                journals,
                 ..Preloaded::default()
             },
         )
     }
 
-    fn diagnosis(
+    pub(crate) fn diagnosis(
         path: PathBuf,
         family: JournalFamily,
         target: Option<TargetKey>,
@@ -664,12 +685,12 @@ mod tests {
         }
     }
 
-    fn write(path: &Path, text: &str) {
+    pub(crate) fn write(path: &Path, text: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, text).unwrap();
     }
 
-    fn mkdir(path: &Path) {
+    pub(crate) fn mkdir(path: &Path) {
         std::fs::create_dir_all(path).unwrap();
     }
 
@@ -683,7 +704,7 @@ mod tests {
     }
 
     /// A step line renaming `from` to `to`, as `journal::parse` reads it.
-    fn step_line(n: u32, from: &Path, to: &Path) -> String {
+    pub(crate) fn step_line(n: u32, from: &Path, to: &Path) -> String {
         format!(
             "{}\n",
             serde_json::json!({"type": "step", "n": n, "op": "noreplace", "from": from,
@@ -693,7 +714,7 @@ mod tests {
 
     /// The journal, its lock and state snapshot, and the retail client's stage and
     /// snapshot of the transaction, planted.
-    fn plant_retail_set(h: &Home, journal_text: &str) {
+    pub(crate) fn plant_retail_set(h: &Home, journal_text: &str) {
         let client = ClientPaths::new(&h.retail);
         write(&h.paths.journal(&tx()), journal_text);
         write(&h.paths.inflight_lock(&tx()), "");
@@ -714,7 +735,7 @@ mod tests {
     }
 
     /// The retail set's artifacts, in move order.
-    fn retail_set(h: &Home) -> Vec<(ArtifactKind, PathBuf)> {
+    pub(crate) fn retail_set(h: &Home) -> Vec<(ArtifactKind, PathBuf)> {
         let client = ClientPaths::new(&h.retail);
         vec![
             (ArtifactKind::ClientStage, client.stage(&tx())),

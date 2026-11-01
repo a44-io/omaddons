@@ -502,11 +502,16 @@ fn a_stuck_journal_has_its_own_issue_title_and_remediation() {
             })
             .collect()
     };
-    let explain = |id: &str| json!(["omaddons", "doctor", "explain", id, "-t", "retail"]);
+    // A stuck journal's remediation is its forced set-aside (F2).
+    let set_aside = |id: &str| {
+        json!([
+            "omaddons", "doctor", "fix", "--only", id, "-t", "retail", "--force", "--yes"
+        ])
+    };
     let (retail, classic) = (by_id("retail"), by_id("classic"));
     let mut found = issues(&retail);
     found.sort_by(|a, b| a.0.cmp(&b.0));
-    let row = |id: &str, title: &str| (id.to_owned(), title.to_owned(), explain(id));
+    let row = |id: &str, title: &str| (id.to_owned(), title.to_owned(), set_aside(id));
     assert_eq!(
         found,
         [

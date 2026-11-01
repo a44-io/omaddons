@@ -621,10 +621,10 @@ pub(crate) mod tests {
         assert!(remediation(ids::STATE_VERSION_NEWER).command.is_some());
     }
 
-    /// A stuck journal names its state, and its remediation is its `doctor explain`, which
-    /// parses; a settleable one keeps today's prose.
+    /// A stuck journal names its state, and its remediation is its forced set-aside (F2
+    /// s3, as `doctor` shows it), which parses; machine-scoped, it has no `-t`.
     #[test]
-    fn stuck_rows_remediate_with_doctor_explain() {
+    fn stuck_rows_remediate_with_their_set_aside() {
         use clap::Parser;
         let mut t = test_target("retail", 0, &[Attention::JournalPending], 0);
         t.key = Some(KEY.parse().unwrap());
@@ -644,7 +644,12 @@ pub(crate) mod tests {
             let issue = issues.iter().find(|i| i.id == id).unwrap();
             assert_eq!(issue.title, title, "{why:?}");
             let argv = issue.remediation.argv.clone().unwrap();
-            assert_eq!(argv, ["omaddons", "doctor", "explain", id, "-t", "retail"]);
+            assert_eq!(
+                argv,
+                [
+                    "omaddons", "doctor", "fix", "--only", id, "-t", "retail", "--force", "--yes"
+                ]
+            );
             assert!(crate::cli::Cli::try_parse_from(&argv).is_ok(), "{argv:?}");
             assert!(!issue.remediation.destructive);
         }
@@ -652,7 +657,16 @@ pub(crate) mod tests {
         assert_eq!(
             machine[0].remediation.argv.as_deref(),
             Some(
-                &["omaddons", "doctor", "explain", ids::JOURNAL_UNATTRIBUTED].map(str::to_owned)[..]
+                &[
+                    "omaddons",
+                    "doctor",
+                    "fix",
+                    "--only",
+                    ids::JOURNAL_UNATTRIBUTED,
+                    "--force",
+                    "--yes"
+                ]
+                .map(str::to_owned)[..]
             ),
             "machine-scoped: no -t"
         );

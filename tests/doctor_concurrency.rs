@@ -495,6 +495,7 @@ fn remediation_holds(
     if words[..2] != ["doctor", "fix"] {
         return explain_holds(log, home, argv, env, &finding["instance"]);
     }
+    let forced = words.contains(&"--force");
     let mut args = words;
     args.extend(["--dry-run", "--json"]);
     let ran = doctor(log, home, &args, env);
@@ -503,6 +504,25 @@ fn remediation_holds(
         "{argv:?}: exit {}",
         ran.run.code
     );
+    if forced {
+        // A set-aside (F2): renames only, the journal's own last, nothing delegated.
+        let actions = ran.envelope()["actions_planned"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert!(!actions.is_empty(), "{argv:?}: a set-aside moves its set");
+        assert!(
+            actions.iter().all(|a| a["op"] == "rename_noreplace"),
+            "{argv:?}: {actions:?}"
+        );
+        let last = text(&actions.last().unwrap()["path"]);
+        assert!(
+            last.contains(&format!("/journal/{}", text(&finding["evidence"]["tx"]))),
+            "{argv:?}: the journal moves last: {last}"
+        );
+        assert_eq!(ran.envelope()["delegated_planned"], json!([]), "{argv:?}");
+        return;
+    }
     let planned = &ran.envelope()["delegated_planned"];
     let txs: Vec<&Value> = planned
         .as_array()
@@ -674,6 +694,16 @@ fn status_and_doctor_name_each_state_alike() {
             } else if remediation["argv"].is_null() {
                 assert_eq!(error["fix"], remediation["command"], "{label}: {error}");
                 assert!(error["fix_argv"].is_null(), "{label}: {error}");
+            } else if remediation["argv"]
+                .as_array()
+                .is_some_and(|argv| argv.contains(&json!("--force")))
+            {
+                // A forced set-aside is read before it is consented to: `--check`'s fix is
+                // its `doctor explain`, never an argv with `--force --yes`.
+                let explain = &error["fix_argv"];
+                assert_eq!(&explain[1], "doctor", "{label}: {error}");
+                assert_eq!(&explain[2], "explain", "{label}: {error}");
+                assert_eq!(explain[3], issues[0].1["id"], "{label}: {error}");
             } else {
                 assert_eq!(error["fix_argv"], remediation["argv"], "{label}: {error}");
             }
@@ -1149,8 +1179,9 @@ fn status_prints_each_stuck_title_and_its_command() {
             .iter()
             .filter(|i| ours(i))
         {
+            // Each stuck journal's command is its forced set-aside (F2).
             let line = format!(
-                "  P0 {} → omaddons doctor explain {} -t {client}",
+                "  P0 {} → omaddons doctor fix --only {} -t {client} --force --yes",
                 text(&issue["title"]),
                 text(&issue["id"])
             );

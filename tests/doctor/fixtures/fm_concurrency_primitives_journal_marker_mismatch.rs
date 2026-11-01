@@ -49,6 +49,11 @@ impl Fixture for JournalMarkerMismatch {
         plant::journal_set(home, &self.tx.get(), Some(TARGET))
     }
 
+    /// The forced set-aside (F2); its inverse is `doctor undo`, while its guards hold.
+    fn fixer(&self) -> bool {
+        true
+    }
+
     fn remedy(&self, home: &Home) {
         if let Some(edit) = self.edit.take() {
             edit.undo();

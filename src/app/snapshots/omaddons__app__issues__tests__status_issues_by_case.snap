@@ -67,14 +67,17 @@ expression: by_case
       "title": "An interrupted change was started by a newer omaddons; this build cannot read its journal (format 9.0)",
       "addon": null,
       "remediation": {
-        "command": "omaddons doctor explain fm-concurrency_primitives-journal-too-new -t retail",
+        "command": "omaddons doctor fix --only fm-concurrency_primitives-journal-too-new -t retail --force --yes",
         "argv": [
           "omaddons",
           "doctor",
-          "explain",
+          "fix",
+          "--only",
           "fm-concurrency_primitives-journal-too-new",
           "-t",
-          "retail"
+          "retail",
+          "--force",
+          "--yes"
         ],
         "destructive": false
       }
@@ -246,14 +249,17 @@ expression: by_case
       "title": "An interrupted change was started by a newer omaddons; this build cannot read its journal (format 9.0)",
       "addon": null,
       "remediation": {
-        "command": "omaddons doctor explain fm-concurrency_primitives-journal-too-new -t retail",
+        "command": "omaddons doctor fix --only fm-concurrency_primitives-journal-too-new -t retail --force --yes",
         "argv": [
           "omaddons",
           "doctor",
-          "explain",
+          "fix",
+          "--only",
           "fm-concurrency_primitives-journal-too-new",
           "-t",
-          "retail"
+          "retail",
+          "--force",
+          "--yes"
         ],
         "destructive": false
       }
@@ -266,14 +272,17 @@ expression: by_case
       "title": "An interrupted change's journal holds lines this omaddons cannot read",
       "addon": null,
       "remediation": {
-        "command": "omaddons doctor explain fm-concurrency_primitives-journal-unreadable -t retail",
+        "command": "omaddons doctor fix --only fm-concurrency_primitives-journal-unreadable -t retail --force --yes",
         "argv": [
           "omaddons",
           "doctor",
-          "explain",
+          "fix",
+          "--only",
           "fm-concurrency_primitives-journal-unreadable",
           "-t",
-          "retail"
+          "retail",
+          "--force",
+          "--yes"
         ],
         "destructive": false
       }
@@ -360,14 +369,17 @@ expression: by_case
       "title": "An interrupted change's journal holds lines this omaddons cannot read",
       "addon": null,
       "remediation": {
-        "command": "omaddons doctor explain fm-concurrency_primitives-journal-unreadable -t retail",
+        "command": "omaddons doctor fix --only fm-concurrency_primitives-journal-unreadable -t retail --force --yes",
         "argv": [
           "omaddons",
           "doctor",
-          "explain",
+          "fix",
+          "--only",
           "fm-concurrency_primitives-journal-unreadable",
           "-t",
-          "retail"
+          "retail",
+          "--force",
+          "--yes"
         ],
         "destructive": false
       }

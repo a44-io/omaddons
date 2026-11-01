@@ -359,9 +359,10 @@ impl FailureMode {
     /// when the row has it, else `doctor fix --only <id>`; the `doctor explain` that goes
     /// with it; and whether the fixer runs by default.
     pub fn remediation(&self, f: &Finding) -> Remediation {
+        // `-t` only for a target it resolves (a registered id), as the explain argv's.
         let with_target = |mut argv: Vec<String>| {
-            if let Some(target) = &f.target {
-                argv.extend(["-t".to_owned(), target.id.clone()]);
+            if let Some(id) = registered_id(f) {
+                argv.extend(["-t".to_owned(), id.to_owned()]);
             }
             argv
         };
@@ -464,6 +465,17 @@ const INVENTORY_LAYERS: &[Layer] = &[Layer::Discovery, Layer::Records, Layer::In
 /// for the view building it, so each declares one full inventory of a realistic client.
 const INVENTORY_COST_MS: u32 = 20;
 
+/// A stuck row's `why`: its own opening, then what the set-aside does and when its undo
+/// refuses, the same for rows 3-8.
+macro_rules! set_aside_why {
+    ($opening:literal) => {
+        concat!(
+            $opening,
+            " Setting it aside is a forced repair: it moves the journal, its in-flight lock, its stage and both snapshot halves into quarantine, each on its own filesystem, and deletes nothing. The client is unblocked. Undo puts the whole set back exactly, but only while nothing it depends on has changed: after any install, update or other change omaddons makes on that client, a change to its marker, or (where the journal can be read) a change to a folder it names or to its WTF/ folder, undo refuses with undo_conflict and the set stays in quarantine, readable. Anything listed as not accounted for stays where it is and is not protected afterwards: omaddons' cleanup after a later change on that client may remove a leftover stage whose journal is gone, so copy what you need from it first. The set-aside is never part of a default fix: it needs this failure mode's id with --only, and --force and --yes."
+        )
+    };
+}
+
 /// Every failure mode, sorted by id.
 pub static FAILURE_MODES: &[FailureMode] = &[
     FailureMode {
@@ -472,18 +484,16 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         severity: Severity::P0,
         title: "an interrupted change names a client directory that is not its client's",
         description: "The journal's client directory no longer carries its target's marker: the directory is gone, or it now belongs to another client. A doctor repair's journal that names a skill directory omaddons cannot attribute stops the same way.",
-        why: "Recovery never writes a directory that is not the journal's own client's, so every change on that client fails with scope_denied until it is resolved.",
+        why: set_aside_why!(
+            "The journal names a client directory whose identity marker belongs to another client, so recovery never writes there, and every change on this client fails. A set-aside moves only what it finds by the transaction id on clients whose markers check out; whatever is in the mismatched directory stays where it is and is listed."
+        ),
         tier: Tier::Cached,
         online: false,
         cost_ms: 1,
         requires: &[Layer::Journals],
         detect: Some(concurrency::journal_marker_mismatch),
-        fix: None,
-        manual: Some(Manual {
-            instruction: "look at the journal with doctor explain, then put the client back where the journal expects it, or follow \"journal_pending that does not clear\" under Troubleshooting in the README",
-            why: "recovery never writes a directory that is not the journal's own",
-            remediation: explain_manual,
-        }),
+        fix: Some(SET_ASIDE),
+        manual: None,
     },
     FailureMode {
         id: ids::JOURNAL_PENDING,
@@ -525,18 +535,16 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         severity: Severity::P0,
         title: "an interrupted change stopped at a step it does not recognize",
         description: "Rolling back a change, or a doctor repair, found a recorded step whose paths match neither its before nor its after state.",
-        why: "Recovery stopped there and kept the journal, so nothing more is moved; every change on that client, or for a repair every change that touches what it protects, fails until it is resolved.",
+        why: set_aside_why!(
+            "Rolling back an interrupted change met a step whose paths match neither its before nor its after state, so recovery stopped; the steps after it were already reversed. Every change on this client fails (for a repair transaction, every change that touches what it protects)."
+        ),
         tier: Tier::Cached,
         online: false,
         cost_ms: 1,
         requires: &[Layer::Journals],
         detect: Some(concurrency::journal_step_unrecognized),
-        fix: None,
-        manual: Some(Manual {
-            instruction: "look at the step with doctor explain, then follow \"journal_pending that does not clear\" under Troubleshooting in the README",
-            why: "recovery never moves a path it cannot place",
-            remediation: explain_manual,
-        }),
+        fix: Some(SET_ASIDE),
+        manual: None,
     },
     FailureMode {
         id: ids::JOURNAL_TOO_NEW,
@@ -544,18 +552,16 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         severity: Severity::P0,
         title: "an interrupted change was started by a newer omaddons",
         description: "The journal's format has a newer major version than this build reads.",
-        why: "This build never acts on a journal it cannot read, so every change on that client fails with state_too_new. Finishing it with the build that started it is the safe way out.",
+        why: set_aside_why!(
+            "A newer omaddons started this change, and this build cannot read its journal, so every change on this client fails. The safer way is to finish it with that newer build. If you set it aside instead, this build moves only what it finds by the transaction id in omaddons' own directories, never a path the journal names, and says whether anything may remain unaccounted for."
+        ),
         tier: Tier::Cached,
         online: false,
         cost_ms: 1,
         requires: &[Layer::Journals],
         detect: Some(concurrency::journal_too_new),
-        fix: None,
-        manual: Some(Manual {
-            instruction: "run any change command with the newer omaddons build that started it",
-            why: "this build never acts on a journal it cannot read",
-            remediation: explain_manual,
-        }),
+        fix: Some(SET_ASIDE),
+        manual: None,
     },
     FailureMode {
         id: ids::JOURNAL_UNATTRIBUTED,
@@ -563,18 +569,16 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         severity: Severity::P0,
         title: "an interrupted change cannot be attributed to any client",
         description: "A journal names no target this build can read: its prepared line is missing, unreadable or newer, or the journal or its in-flight lock cannot be read.",
-        why: "Recovery cannot tell whose it is, so every committing command on every client fails until it is resolved.",
+        why: set_aside_why!(
+            "A journal whose client cannot be read blocks every change on every client. A set-aside moves the journal and everything its transaction id names in omaddons' own directories on clients whose markers check out."
+        ),
         tier: Tier::Cached,
         online: false,
         cost_ms: 1,
         requires: &[Layer::Journals],
         detect: Some(concurrency::journal_unattributed),
-        fix: None,
-        manual: Some(Manual {
-            instruction: "look at the journal with doctor explain, then follow \"journal_pending that does not clear\" under Troubleshooting in the README",
-            why: "recovery cannot tell whose it is",
-            remediation: explain_manual,
-        }),
+        fix: Some(SET_ASIDE),
+        manual: None,
     },
     FailureMode {
         id: ids::JOURNAL_UNEXPECTED_STATE,
@@ -582,18 +586,16 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         severity: Severity::P0,
         title: "an interrupted change to WTF/ stopped at a state it does not recognize",
         description: "Rolling back a WTF/ restore found a step whose paths match neither its before nor its after state, and could not place what it found.",
-        why: "Recovery stopped and kept the journal, the stage, both snapshot halves and the in-flight lock, so nothing is lost; every change on that client fails until it is resolved.",
+        why: set_aside_why!(
+            "Recovering an interrupted WTF/ restore found something it did not record where a step left it, and stopped with everything exactly as found. Every change on this client fails until it is resolved. The set-aside, and its undo, need the game closed."
+        ),
         tier: Tier::Cached,
         online: false,
         cost_ms: 1,
         requires: &[Layer::Journals],
         detect: Some(concurrency::journal_unexpected_state),
-        fix: None,
-        manual: Some(Manual {
-            instruction: "look at the step with doctor explain, then follow \"journal_pending that does not clear\" under Troubleshooting in the README",
-            why: "only you can tell which of the settings found are the ones to keep",
-            remediation: explain_manual,
-        }),
+        fix: Some(SET_ASIDE),
+        manual: None,
     },
     FailureMode {
         id: ids::JOURNAL_UNREADABLE,
@@ -601,18 +603,16 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         severity: Severity::P0,
         title: "an interrupted change's journal cannot be read",
         description: "A complete line of the journal does not decode, or no line is a readable prepared line.",
-        why: "Recovery never guesses what an unreadable journal meant, so every change on that client fails with state_corrupt until the journal is dealt with.",
+        why: set_aside_why!(
+            "The journal holds lines this build cannot decode, so recovery cannot tell what ran, and every change on this client fails (on every client when its target cannot be read). A set-aside moves only what it finds by the transaction id in omaddons' own directories, never a path the journal names."
+        ),
         tier: Tier::Cached,
         online: false,
         cost_ms: 1,
         requires: &[Layer::Journals],
         detect: Some(concurrency::journal_unreadable),
-        fix: None,
-        manual: Some(Manual {
-            instruction: "look at the journal with doctor explain, then follow \"journal_pending that does not clear\" under Troubleshooting in the README",
-            why: "recovery never guesses what an unreadable journal meant",
-            remediation: explain_manual,
-        }),
+        fix: Some(SET_ASIDE),
+        manual: None,
     },
     FailureMode {
         id: ids::JOURNAL_WAITS_FOR_GAME,
@@ -937,6 +937,24 @@ const DELEGATE: FixerSpec = FixerSpec {
     preconditions: &[FixerPrecondition::LockHeld],
 };
 
+/// The set-aside (M4-D38) of the six stuck journal states (rows 3-8): it suspends the
+/// journal's set into quarantine on each filesystem, only with its id in `--only` and
+/// `--force --yes` (M4-D39: never part of a default fix).
+const SET_ASIDE: FixerSpec = FixerSpec {
+    plan: super::fixers::set_aside::plan,
+    writes_to: &[ScopeName::State, ScopeName::ClientMeta],
+    ops: &[FixKind::Suspend],
+    enabled: false,
+    needs_force: true,
+    cardinality: Cardinality::Low,
+    preconditions: &[
+        FixerPrecondition::LockHeld,
+        FixerPrecondition::InflightFree,
+        FixerPrecondition::ClientNotRunning,
+        FixerPrecondition::SameFs,
+    ],
+};
+
 /// `journal-preservation-incomplete`, by instance: the fix while recovery would resume it
 /// (`evidence.resumable`), else its evidence, which says what blocks it.
 fn preservation_manual(f: &Finding) -> Remediation {
@@ -946,8 +964,8 @@ fn preservation_manual(f: &Finding) -> Remediation {
     // `-t` as every fixer remediation names it (`FailureMode::remediation`, E6's
     // `remediation_for`), so `status` and `doctor` print the same command.
     let mut argv = argv_of(&["omaddons", "doctor", "fix", "--only", f.id]);
-    if let Some(target) = &f.target {
-        argv.extend(["-t".to_owned(), target.id.clone()]);
+    if let Some(id) = registered_id(f) {
+        argv.extend(["-t".to_owned(), id.to_owned()]);
     }
     Remediation {
         command: shell_words::join(&argv),
@@ -1610,11 +1628,10 @@ mod tests {
             assert_eq!(row.tier, Tier::Cached, "{id}");
             assert_eq!(row.requires, &[requires], "{id}");
             assert!(!row.online && row.cost_ms == 1, "{id}");
-            // Rows 1 and 9 delegate (F2); the stuck states are report-only until their
-            // set-aside lands.
-            let delegates = [ids::JOURNAL_PENDING, ids::JOURNAL_PRESERVATION_INCOMPLETE];
+            // Rows 1 and 9 delegate, rows 3-8 set aside (F2); rows 2 and 10 are advice.
+            let advice = [ids::JOURNAL_WAITS_FOR_GAME, ids::LOCK_HELD_LONG];
             assert!(row.detect.is_some(), "{id}");
-            assert_eq!(row.fix.is_some(), delegates.contains(&id), "{id}");
+            assert_eq!(row.fix.is_none(), advice.contains(&id), "{id}");
             let manual = row.manual.iter().flat_map(|m| [m.instruction, m.why]);
             assert!(
                 row.manual.is_some() || row.fix.is_some(),
@@ -1636,6 +1653,86 @@ mod tests {
             }
         }
         assert!(invariant_violations(FAILURE_MODES).is_empty());
+    }
+
+    /// The six stuck rows (Appendix B rows 3-8).
+    const STUCK: [&str; 6] = [
+        ids::JOURNAL_TOO_NEW,
+        ids::JOURNAL_UNREADABLE,
+        ids::JOURNAL_UNEXPECTED_STATE,
+        ids::JOURNAL_STEP_UNRECOGNIZED,
+        ids::JOURNAL_MARKER_MISMATCH,
+        ids::JOURNAL_UNATTRIBUTED,
+    ];
+
+    /// Rows 3-8 carry the shared set-aside (M4-D38), disabled and forced; rows 1 and 9
+    /// do not.
+    #[test]
+    fn rows_3_to_8_carry_the_set_aside_fixer() {
+        for id in STUCK {
+            let fix = row(id).unwrap().fix.unwrap();
+            assert_eq!(fix.ops, [FixKind::Suspend], "{id}");
+            assert!(!fix.enabled && fix.needs_force, "{id}");
+            assert_eq!(
+                fix.writes_to,
+                [ScopeName::State, ScopeName::ClientMeta],
+                "{id}"
+            );
+            assert_eq!(
+                fix.preconditions,
+                [
+                    FixerPrecondition::LockHeld,
+                    FixerPrecondition::InflightFree,
+                    FixerPrecondition::ClientNotRunning,
+                    FixerPrecondition::SameFs,
+                ],
+                "{id}"
+            );
+        }
+        for id in [ids::JOURNAL_PENDING, ids::JOURNAL_PRESERVATION_INCOMPLETE] {
+            assert_ne!(
+                row(id).unwrap().fix.unwrap().ops,
+                [FixKind::Suspend],
+                "{id}"
+            );
+        }
+        assert!(invariant_violations(FAILURE_MODES).is_empty());
+    }
+
+    /// The texts read at the worst moment say what the set-aside does and when its undo
+    /// refuses, in plain sentences that name no runnable command.
+    #[test]
+    fn why_texts_say_what_they_must() {
+        for id in STUCK {
+            let why = row(id).unwrap().why;
+            for must in ["quarantine", "deletes nothing", "undo refuses", "readable"] {
+                assert!(why.contains(must), "{id}: {must:?} in {why}");
+            }
+            assert!(!why.contains('!'), "{id}");
+            let words: Vec<&str> = why.split_whitespace().collect();
+            assert!(
+                !words.windows(2).any(|pair| pair[0] == "omaddons"
+                    && crate::app::COMMANDS
+                        .iter()
+                        .any(|c| c.name.split_whitespace().next() == Some(pair[1]))),
+                "{id}: names a runnable command: {why}"
+            );
+        }
+        assert!(
+            row(ids::JOURNAL_TOO_NEW)
+                .unwrap()
+                .why
+                .contains("newer build")
+        );
+        for id in [ids::JOURNAL_TOO_NEW, ids::JOURNAL_UNREADABLE] {
+            assert!(
+                row(id)
+                    .unwrap()
+                    .why
+                    .contains("never a path the journal names"),
+                "{id}"
+            );
+        }
     }
 
     /// Rows 1 and 9 carry the delegation (M4-D37): enabled, no force, one op, and row 9's

@@ -27,12 +27,15 @@ expression: by_case
       "title": "An interrupted change cannot be attributed to any client, so every change is refused",
       "addon": null,
       "remediation": {
-        "command": "omaddons doctor explain fm-concurrency_primitives-journal-unattributed",
+        "command": "omaddons doctor fix --only fm-concurrency_primitives-journal-unattributed --force --yes",
         "argv": [
           "omaddons",
           "doctor",
-          "explain",
-          "fm-concurrency_primitives-journal-unattributed"
+          "fix",
+          "--only",
+          "fm-concurrency_primitives-journal-unattributed",
+          "--force",
+          "--yes"
         ],
         "destructive": false
       }
@@ -78,12 +81,15 @@ expression: by_case
       "title": "An interrupted change cannot be attributed to any client, so every change is refused",
       "addon": null,
       "remediation": {
-        "command": "omaddons doctor explain fm-concurrency_primitives-journal-unattributed",
+        "command": "omaddons doctor fix --only fm-concurrency_primitives-journal-unattributed --force --yes",
         "argv": [
           "omaddons",
           "doctor",
-          "explain",
-          "fm-concurrency_primitives-journal-unattributed"
+          "fix",
+          "--only",
+          "fm-concurrency_primitives-journal-unattributed",
+          "--force",
+          "--yes"
         ],
         "destructive": false
       }

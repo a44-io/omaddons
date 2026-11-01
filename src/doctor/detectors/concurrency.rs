@@ -957,15 +957,19 @@ mod tests {
             ],
             "two_journals_of_one_row_are_two_instances"
         );
+        // A stuck journal's remediation is its forced set-aside (F2 s3).
         assert_eq!(
             two[0]["remediation"]["argv"],
             json!([
                 "omaddons",
                 "doctor",
-                "explain",
+                "fix",
+                "--only",
                 ids::JOURNAL_UNREADABLE,
                 "-t",
-                "retail"
+                "retail",
+                "--force",
+                "--yes"
             ])
         );
 
@@ -1004,9 +1008,18 @@ mod tests {
             format!("{}@{other}:tx={TX}", ids::JOURNAL_TOO_NEW)
         );
         let unscoped = json!(["omaddons", "doctor", "explain", ids::JOURNAL_TOO_NEW]);
+        let forced = json!([
+            "omaddons",
+            "doctor",
+            "fix",
+            "--only",
+            ids::JOURNAL_TOO_NEW,
+            "--force",
+            "--yes"
+        ]);
         assert_eq!(
             (&f["remediation"]["argv"], &f["remediation"]["explain_argv"]),
-            (&unscoped, &unscoped),
+            (&forced, &unscoped),
             "an_unregistered_key_is_scoped_by_key_and_explained_without_t"
         );
 

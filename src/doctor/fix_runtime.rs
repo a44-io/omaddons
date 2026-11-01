@@ -78,6 +78,8 @@ pub struct FixOutcome {
     pub commands: Vec<CommandHint>,
     /// `-v` debug notes for the dispatch arm to log.
     pub notes: Vec<String>,
+    /// The set-asides the run planned (M4-D38), for the human output.
+    pub suspended: Vec<crate::doctor::fix::Suspended>,
 }
 
 /// What a `doctor diff` asks for.
@@ -654,6 +656,7 @@ impl RealEffects<'_> {
             warnings,
             commands,
             notes: std::mem::take(&mut self.notes),
+            suspended: plan.map(|plan| plan.suspended).unwrap_or_default(),
         }
     }
 }

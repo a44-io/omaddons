@@ -244,7 +244,8 @@ fn a_journal_this_build_cannot_read_is_left_for_manual_repair() {
         );
         assert!(journal.is_file(), "{reason}: still kept");
 
-        // A reader names the state, and points at its evidence (F1).
+        // A reader names the state, and its remediation is its forced set-aside (F2),
+        // whose evidence its `doctor explain` shows first.
         let status = m.run(&["status", "-t", "retail"]).expect(0);
         let retail = &status["data"]["targets"][0];
         assert_eq!(retail["attention"], json!(["journal_pending"]), "{status}");
@@ -255,7 +256,9 @@ fn a_journal_this_build_cannot_read_is_left_for_manual_repair() {
         assert_eq!(retail["issues"][0]["id"], id, "{status}");
         assert_eq!(
             retail["issues"][0]["remediation"]["argv"],
-            json!(["omaddons", "doctor", "explain", id, "-t", "retail"]),
+            json!([
+                "omaddons", "doctor", "fix", "--only", id, "-t", "retail", "--force", "--yes"
+            ]),
             "{status}"
         );
     }

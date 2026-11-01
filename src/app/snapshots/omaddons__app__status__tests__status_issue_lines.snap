@@ -10,7 +10,7 @@ gone     mainline  12.1.5  live  missing  0 managed · 0 unmanaged · 0 protecte
   P2 The client's directory is gone → omaddons targets rm gone
 retail   mainline  12.1.5  live  missing  0 managed · 0 unmanaged · 0 protected
   P0 An interrupted change waits to be finished → omaddons doctor fix --only fm-concurrency_primitives-journal-pending -t retail
-  P0 An interrupted change was started by a newer omaddons; this build cannot read its journal (format 9.0) → omaddons doctor explain fm-concurrency_primitives-journal-too-new -t retail
+  P0 An interrupted change was started by a newer omaddons; this build cannot read its journal (format 9.0) → omaddons doctor fix --only fm-concurrency_primitives-journal-too-new -t retail --force --yes
   P0 State was written by a newer omaddons → upgrade omaddons
   P1 Aaa's folder is gone → omaddons install Aaa -t retail --reinstall
   P1 Details's folder is gone → omaddons install Details -t retail --reinstall
