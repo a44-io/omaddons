@@ -807,11 +807,11 @@ mod tests {
                             },
                             Guard::Marker {
                                 target: home.key,
-                                sha256: Sha256([2; 32]),
+                                sha256: Some(Sha256([2; 32])),
                             },
                             Guard::Epoch {
                                 path: home.client.addons(),
-                                stamp: Stamp([3; 32]),
+                                stamp: Some(Stamp([3; 32])),
                             },
                         ],
                     )
@@ -830,7 +830,7 @@ mod tests {
                         home,
                         vec![Guard::WtfEpoch {
                             target: home.key,
-                            stamp: Stamp([4; 32]),
+                            stamp: Some(Stamp([4; 32])),
                         }],
                     )
                 },

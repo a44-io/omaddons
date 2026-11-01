@@ -251,6 +251,8 @@ pub(crate) const GAME_RUNNING: DetailSpec = DetailSpec::Object(&[
             "legacy_client",
             "policy_refuse",
             "saved_variables",
+            // The undo of a repair, which never moves a running client's files (E7).
+            "repair",
         ]),
     ),
     // A stuck journal's fence that refused the write (E14).
@@ -346,8 +348,15 @@ pub(crate) const ARCHIVE_TOO_LARGE: DetailSpec = DetailSpec::Object(&[
     Field::opt("reason", &DetailSpec::Enum(&["limit_exceeded"])),
 ]);
 
-/// `engine/undo.rs` overlap, unreadable history, already-undone and restored-folder checks.
+/// `engine/undo.rs` overlap, unreadable history, already-undone and restored-folder checks,
+/// and `engine/repair/undo.rs`'s strict checks of a repair's undo (M4-D46): the paths a
+/// predicate or a later change refused, and the guard kinds a set-aside's manifest found
+/// changed, with the target they are about.
 pub(crate) const UNDO_CONFLICT: DetailSpec = DetailSpec::Object(&[
+    Field::opt(
+        "changed_guards",
+        &DetailSpec::Array(&DetailSpec::Enum(&["epochs", "generation", "marker"])),
+    ),
     Field::opt(
         "conflicting",
         &DetailSpec::Array(&DetailSpec::Object(&[
@@ -358,7 +367,16 @@ pub(crate) const UNDO_CONFLICT: DetailSpec = DetailSpec::Object(&[
     ),
     Field::opt("folder", &STR),
     Field::opt("lines", &INT),
-    Field::opt("reason", &DetailSpec::Enum(&["history_unreadable"])),
+    Field::opt("paths", &STRINGS),
+    Field::opt(
+        "reason",
+        &DetailSpec::Enum(&[
+            "history_unreadable",
+            "changed_since_repair",
+            "changed_since_suspension",
+        ]),
+    ),
+    Field::opt("target", &STR),
     Field::req("tx", &STR),
     Field::opt("undone_by", &STR),
 ]);

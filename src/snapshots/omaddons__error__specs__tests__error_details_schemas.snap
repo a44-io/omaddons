@@ -1674,7 +1674,8 @@ expression: schemas
           "loaded_toc",
           "legacy_client",
           "policy_refuse",
-          "saved_variables"
+          "saved_variables",
+          "repair"
         ]
       },
       "recovery_error": {
@@ -5064,6 +5065,16 @@ expression: schemas
   },
   "undo_conflict": {
     "properties": {
+      "changed_guards": {
+        "items": {
+          "enum": [
+            "epochs",
+            "generation",
+            "marker"
+          ]
+        },
+        "type": "array"
+      },
       "conflicting": {
         "items": {
           "properties": {
@@ -5177,9 +5188,17 @@ expression: schemas
       "lines": {
         "type": "integer"
       },
+      "paths": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
       "reason": {
         "enum": [
-          "history_unreadable"
+          "history_unreadable",
+          "changed_since_repair",
+          "changed_since_suspension"
         ]
       },
       "recovery_error": {
@@ -5202,6 +5221,9 @@ expression: schemas
           "type": "string"
         },
         "type": "array"
+      },
+      "target": {
+        "type": "string"
       },
       "tx": {
         "type": "string"

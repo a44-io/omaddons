@@ -273,7 +273,7 @@ expression: schema
       ]
     },
     "Guard": {
-      "description": "One condition of a set-aside's suspension manifest (M4-D38), recorded when the journal\nwas set aside and checked before its undo reactivates it: a change since refuses the\nundo (`undo_conflict`, `changed_since_suspension`).",
+      "description": "One condition of a set-aside's suspension manifest (M4-D38), recorded when the journal\nwas set aside and checked before its undo reactivates it: a change since refuses the\nundo (`undo_conflict`, `changed_since_suspension`). `engine::repair::guard` observes\nand evaluates them.\n\nWhat it recorded may be that nothing was there: a marker or a folder that was absent\nomits its digest, and its later appearance is a change like any other.",
       "oneOf": [
         {
           "description": "The target's record generation.",
@@ -307,7 +307,15 @@ expression: schema
               "const": "marker"
             },
             "sha256": {
-              "$ref": "#/$defs/Sha256"
+              "description": "Omitted when the client had no marker.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Sha256"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "target": {
               "$ref": "#/$defs/TargetKey"
@@ -315,8 +323,7 @@ expression: schema
           },
           "required": [
             "kind",
-            "target",
-            "sha256"
+            "target"
           ]
         },
         {
@@ -331,13 +338,20 @@ expression: schema
               "type": "string"
             },
             "stamp": {
-              "$ref": "#/$defs/Stamp"
+              "description": "Omitted when the folder was absent.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Stamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
             "kind",
-            "path",
-            "stamp"
+            "path"
           ]
         },
         {
@@ -349,7 +363,15 @@ expression: schema
               "const": "wtf_epoch"
             },
             "stamp": {
-              "$ref": "#/$defs/Stamp"
+              "description": "Omitted when the client had no `WTF/`.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Stamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "target": {
               "$ref": "#/$defs/TargetKey"
@@ -357,8 +379,7 @@ expression: schema
           },
           "required": [
             "kind",
-            "target",
-            "stamp"
+            "target"
           ]
         }
       ]

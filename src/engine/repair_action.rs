@@ -744,18 +744,37 @@ pub enum StepError {
 
 /// One condition of a set-aside's suspension manifest (M4-D38), recorded when the journal
 /// was set aside and checked before its undo reactivates it: a change since refuses the
-/// undo (`undo_conflict`, `changed_since_suspension`).
+/// undo (`undo_conflict`, `changed_since_suspension`). `engine::repair::guard` observes
+/// and evaluates them.
+///
+/// What it recorded may be that nothing was there: a marker or a folder that was absent
+/// omits its digest, and its later appearance is a change like any other.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Guard {
     /// The target's record generation.
     Generation { target: TargetKey, generation: u64 },
     /// The digest of the target's `<meta>/target.json`.
-    Marker { target: TargetKey, sha256: Sha256 },
+    Marker {
+        target: TargetKey,
+        /// Omitted when the client had no marker.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sha256: Option<Sha256>,
+    },
     /// The live stamp of a folder the suspended journal would touch on recovery.
-    Epoch { path: PathBuf, stamp: Stamp },
+    Epoch {
+        path: PathBuf,
+        /// Omitted when the folder was absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stamp: Option<Stamp>,
+    },
     /// One stamp over a client's whole `WTF/`, never a path below it.
-    WtfEpoch { target: TargetKey, stamp: Stamp },
+    WtfEpoch {
+        target: TargetKey,
+        /// Omitted when the client had no `WTF/`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stamp: Option<Stamp>,
+    },
 }
 
 /// What kind of fix it is: `prepared.fixes[].kind`, and capabilities' `ops`.
@@ -1136,15 +1155,15 @@ mod tests {
             },
             Guard::Marker {
                 target: target(),
-                sha256: Sha256([0x44; 32]),
+                sha256: Some(Sha256([0x44; 32])),
             },
             Guard::Epoch {
                 path: "/fixture/client/Interface/AddOns/X".into(),
-                stamp: Stamp([0x55; 32]),
+                stamp: Some(Stamp([0x55; 32])),
             },
             Guard::WtfEpoch {
                 target: target(),
-                stamp: Stamp([0x66; 32]),
+                stamp: Some(Stamp([0x66; 32])),
             },
         ];
         vec![
@@ -1609,7 +1628,7 @@ mod tests {
             &|s| {
                 s.guards.push(Guard::Epoch {
                     path: "Interface/AddOns/X".into(),
-                    stamp: Stamp([0x55; 32]),
+                    stamp: Some(Stamp([0x55; 32])),
                 });
             },
             StepError::RelativePath {

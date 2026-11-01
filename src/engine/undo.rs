@@ -344,22 +344,27 @@ fn undo_whole(
             ]),
         ));
     }
-    whole_conflicts(read, at)?;
+    let conflict_ctx = ConflictCtx {
+        paths: ctx.paths,
+        client_dir: &discovered.target.client_dir,
+    };
+    whole_conflicts(read, at, &conflict_ctx)?;
     // Under the lock, the history is read again: a write of settings since the plan
     // conflicts as it would have then.
     let recheck = || -> Result<()> {
         let read = history::read(ctx.paths, &HistoryFilter::default())?;
         let at = select(&read.entries, UndoSelector::Tx(reverted.tx))?;
-        whole_conflicts(&read, at)
+        whole_conflicts(&read, at, &conflict_ctx)
     };
     super::restore::undo_whole(ctx, req, reverted, discovered, &recheck)
 }
 
 /// M3-D28 rules 1 and 5 for undoing the whole restore `read.entries[at]`: a later write of
 /// settings, or a newer line this build cannot read, refuses it. Keeping SavedVariables
-/// is no way out here, so rule 5 offers no `keep`.
-fn whole_conflicts(read: &HistoryRead, at: usize) -> Result<()> {
-    check_conflicts(&read.entries, at, None, false)?;
+/// is no way out here, so rule 5 offers no `keep`. A later repair that touched its
+/// client's record or its snapshot halves refuses it too (M4-D62).
+fn whole_conflicts(read: &HistoryRead, at: usize, ctx: &ConflictCtx<'_>) -> Result<()> {
+    check_conflicts_in(&read.entries, at, None, false, Some(ctx))?;
     check_unreadable(&read.unreadable, at, &read.entries[at], true).map_err(|mut error| {
         error.alternatives.clear();
         error
@@ -773,7 +778,11 @@ fn plan(
             sv_folders.push(folder);
         }
     }
-    check_conflicts(entries, at, sv_only, restores_sv)?;
+    let conflict_ctx = ConflictCtx {
+        paths,
+        client_dir: &target.client_dir,
+    };
+    check_conflicts_in(entries, at, sv_only, restores_sv, Some(&conflict_ctx))?;
     if !snapshot.is_dir() || !state_snapshot_of(paths, &reverted.tx).is_dir() {
         return Err(pruned(&reverted.tx));
     }
@@ -1003,11 +1012,103 @@ pub(super) fn pending_sv_restores(entries: &[HistoryEntry]) -> BTreeSet<TxId> {
 /// place (M2-D35). A later transaction that a later undo reverted cancels out with that
 /// undo, and neither counts (see [`cancelled_after`]): a restore followed by its own
 /// undo no longer counts as a later restore.
+///
+/// A later repair, or the undo of one, counts when one of its operations touched an
+/// AddOns folder the undo writes back (E12's folder rule). This form applies that rule
+/// alone, which is retention's: fewer conflicts keep more snapshots.
 fn check_conflicts(
     entries: &[HistoryEntry],
     at: usize,
     sv_only: Option<usize>,
     restores_sv: bool,
+) -> Result<()> {
+    check_conflicts_in(entries, at, sv_only, restores_sv, None)
+}
+
+/// Where the transaction being undone lives, for [`check_conflicts_in`]'s resource rule.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ConflictCtx<'a> {
+    pub paths: &'a Paths,
+    /// The discovered directory of its client.
+    pub client_dir: &'a Path,
+}
+
+/// The paths a later repair must not have touched for an undo to write them back
+/// (M4-D62), canonical and each standing for its subtree: the undo's AddOns folders (by
+/// key, below the client's canonical `Interface/AddOns`), its client's record and files
+/// index, and both halves of the reverted transaction's snapshot.
+struct UndoResources {
+    addons: PathBuf,
+    keys: BTreeSet<String>,
+    paths: Vec<PathBuf>,
+}
+
+impl UndoResources {
+    fn of(
+        ctx: &ConflictCtx<'_>,
+        reverted: &HistoryEntry,
+        key: TargetKey,
+        keys: &BTreeSet<&str>,
+    ) -> Self {
+        let whole = |path: PathBuf| crate::fsx::canonical_lenient(&path).unwrap_or(path);
+        let client = ClientPaths::new(ctx.client_dir);
+        let tx = &reverted.tx;
+        Self {
+            addons: whole(client.addons()),
+            keys: keys.iter().map(|key| (*key).to_owned()).collect(),
+            paths: vec![
+                whole(ctx.paths.target_record(&key)),
+                whole(ctx.paths.files_index(&key)),
+                whole(client.snapshots(tx)),
+                whole(client.snapshots_wtf(tx)),
+                whole(ctx.paths.state_snapshot(tx)),
+                whole(ctx.paths.state_snapshot_wtf(tx)),
+            ],
+        }
+    }
+
+    /// The AddOns folders of the undo that `repair` touched by path, and whether it
+    /// touched one of the other paths.
+    fn touched(&self, repair: &RepairEntry) -> (BTreeSet<FolderName>, bool) {
+        let mut folders = BTreeSet::new();
+        let mut other = false;
+        for path in [
+            Some(&repair.path),
+            repair.to.as_ref(),
+            repair.backup.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if let Some(name) = path
+                .strip_prefix(&self.addons)
+                .ok()
+                .and_then(|rel| rel.components().next())
+                .and_then(|first| first.as_os_str().to_str())
+                .and_then(|name| FolderName::new(name).ok())
+                .filter(|folder| self.keys.contains(folder.key()))
+            {
+                folders.insert(name);
+            }
+            other |= self
+                .paths
+                .iter()
+                .any(|held| path.starts_with(held) || held.starts_with(path));
+        }
+        (folders, other)
+    }
+}
+
+/// [`check_conflicts`], and with `ctx` the resource rule (M4-D62) too: a later repair
+/// conflicts when one of its operations' paths overlaps a folder the undo writes back,
+/// its client's record or files index, or the reverted transaction's snapshot halves.
+/// Such an overlap that names no folder lists `folders: []` in `details.conflicting`.
+pub(crate) fn check_conflicts_in(
+    entries: &[HistoryEntry],
+    at: usize,
+    sv_only: Option<usize>,
+    restores_sv: bool,
+    ctx: Option<&ConflictCtx<'_>>,
 ) -> Result<()> {
     let reverted = &entries[at];
     let keys: BTreeSet<&str> = reverted
@@ -1029,10 +1130,22 @@ fn check_conflicts(
         .collect();
     let key = target_of(reverted)?;
     let after = sv_only.unwrap_or(at) + 1;
-    // Every later line on its target, a repair that touched it included.
+    // With a context, the resources a later repair must not have touched (M4-D62).
+    let resources = ctx.map(|ctx| UndoResources::of(ctx, reverted, key, &keys));
+    let by_resource = |e: &HistoryEntry| {
+        resources.as_ref().is_some_and(|resources| {
+            e.repairs.iter().any(|r| {
+                let (folders, other) = resources.touched(r);
+                other || !folders.is_empty()
+            })
+        })
+    };
+    // Every later line on its target, a repair that touched it included, and with a
+    // context a repair whose paths touched what the undo writes back from the home side
+    // (a record it quarantined names no client).
     let later: Vec<&HistoryEntry> = entries[after..]
         .iter()
-        .filter(|e| e.touches_target(key))
+        .filter(|e| e.touches_target(key) || by_resource(e))
         .collect();
     let cancelled = cancelled_after(&entries[after..], reverted.tx);
     let conflicts = |o: &HistoryOp| {
@@ -1054,20 +1167,33 @@ fn check_conflicts(
     };
     // A later repair, or the undo of one, that touched one of the folders this undo
     // writes back: on this target, or on a client its primitive does not name (M4-D31
-    // fails closed). E7 generalizes this to resource sets (M4-D62).
+    // fails closed); with a context, also by the resources of its paths (M4-D62).
     let repaired = |e: &HistoryEntry| -> BTreeSet<FolderName> {
-        e.repairs
+        let mut folders: BTreeSet<FolderName> = e
+            .repairs
             .iter()
             .filter(|r| r.target.is_none_or(|t| t == key))
             .flat_map(RepairEntry::addon_folders)
             .filter(|f| keys.contains(f.key()))
-            .collect()
+            .collect();
+        if let Some(resources) = &resources {
+            for repair in &e.repairs {
+                folders.extend(resources.touched(repair).0);
+            }
+        }
+        folders
+    };
+    let repaired_elsewhere = |e: &HistoryEntry| {
+        resources
+            .as_ref()
+            .is_some_and(|resources| e.repairs.iter().any(|r| resources.touched(r).1))
     };
     let touches = |e: &HistoryEntry| {
         e.ops.iter().any(conflicts)
             || (whole && matches!(e.kind, TxKind::Undo) && may_have_restored(e))
             || restored_sv_of(e)
             || !repaired(e).is_empty()
+            || repaired_elsewhere(e)
     };
     let undid = |e: &HistoryEntry| matches!(e.kind, TxKind::Undo) && e.reverts == Some(reverted.tx);
     let conflicting: Vec<&HistoryEntry> = later
@@ -1320,8 +1446,9 @@ fn unreadable_conflict(reverted: &HistoryEntry, count: usize, overlap: bool) -> 
 /// The transactions of `later` that cancel out: each one reverted by a later undo that is
 /// still in effect, and that undo. Walked newest first, so an undo undone in turn
 /// cancels nothing (the transaction it reverted counts again). An undo of `reverted`
-/// itself is never cancelled here: it means `reverted` was already undone.
-fn cancelled_after(later: &[HistoryEntry], reverted: TxId) -> BTreeSet<TxId> {
+/// itself is never cancelled here: it means `reverted` was already undone. The repair
+/// family's in-effect rule (`repair::undo::undo_state`) reads it too.
+pub(crate) fn cancelled_after(later: &[HistoryEntry], reverted: TxId) -> BTreeSet<TxId> {
     let present: BTreeSet<TxId> = later.iter().map(|e| e.tx).collect();
     let mut cancelled: BTreeSet<TxId> = BTreeSet::new();
     for e in later.iter().rev() {
@@ -4307,6 +4434,224 @@ mod tests {
             .err()
             .map(|e| e.details.clone());
         assert_eq!(output, None, "whole_restore_undo");
+    }
+
+    /// A home's paths, for the resource rule's cases: its client and another's.
+    struct ConflictHome {
+        _dir: tempfile::TempDir,
+        paths: Paths,
+        client_dir: PathBuf,
+        other_dir: PathBuf,
+    }
+
+    fn conflict_home() -> ConflictHome {
+        let dir = tempfile::tempdir().unwrap();
+        let base = std::fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::with_roots(
+            &base,
+            base.join("config"),
+            base.join("state"),
+            base.join("cache"),
+        );
+        ConflictHome {
+            client_dir: base.join("games/wow/_retail_"),
+            other_dir: base.join("games/wow/_classic_"),
+            _dir: dir,
+            paths,
+        }
+    }
+
+    fn text(path: PathBuf) -> String {
+        path.display().to_string()
+    }
+
+    /// With its context, a later repair conflicts by the resources of its paths (M4-D62):
+    /// an AddOns folder the undo writes back, its client's record or files index, or
+    /// either half of the reverted transaction's snapshot, an ancestor of one included;
+    /// without it (retention), only by the folders E12's rule names.
+    #[test]
+    fn with_its_context_a_later_repair_conflicts_by_its_resources() {
+        let home = conflict_home();
+        let key = TargetKey::new();
+        let ctx = ConflictCtx {
+            paths: &home.paths,
+            client_dir: &home.client_dir,
+        };
+        let reverted = line(key, TxKind::Install, &[(FolderOp::Add, "Foo")]);
+        let client = ClientPaths::new(&home.client_dir);
+        let away = text(home.paths.doctor_runs_dir().join("R/quarantine/state/x"));
+        let paths = &home.paths;
+        let cases: Vec<(&str, String, &[&str], bool)> = vec![
+            (
+                "its_folder",
+                text(client.addons().join("Foo/x.lua")),
+                &["Foo"],
+                true,
+            ),
+            ("its_record", text(paths.target_record(&key)), &[], false),
+            ("its_files_index", text(paths.files_index(&key)), &[], false),
+            (
+                "an_ancestor_of_its_record",
+                text(paths.target_record(&key).parent().unwrap().to_path_buf()),
+                &[],
+                false,
+            ),
+            (
+                "its_client_snapshot_half",
+                text(client.snapshots(&reverted.tx).join("AddOns/Foo")),
+                &[],
+                false,
+            ),
+            (
+                "its_state_snapshot_half",
+                text(paths.state_snapshot(&reverted.tx)),
+                &[],
+                false,
+            ),
+        ];
+        for (case, path, folders, without) in cases {
+            // As lowering records them: a client's folder names its client; a home-side
+            // path (a record, the state half of a snapshot) names none, not even in
+            // `targets`, and `touches_target` alone would never see it.
+            let client_side = path.starts_with(&text(home.client_dir.clone()));
+            let target = client_side.then_some(key);
+            let targets: &[TargetKey] = if client_side { &[key] } else { &[] };
+            let repair = repair_with(targets, &[(target, None, &path, Some(&away))]);
+            let entries = vec![reverted.clone(), repair.clone()];
+            let err = check_conflicts_in(&entries, 0, None, false, Some(&ctx)).unwrap_err();
+            assert_eq!(err.code, ErrorCode::UndoConflict, "case {case}: {err:?}");
+            assert_eq!(
+                err.details["conflicting"],
+                serde_json::json!([{"tx": repair.tx, "kind": "repair", "folders": folders}]),
+                "case {case}: {}",
+                err.details
+            );
+            assert_eq!(
+                err.fix.argv().unwrap()[2],
+                repair.tx.to_string(),
+                "case {case}"
+            );
+            assert_eq!(
+                check_conflicts(&entries, 0, None, false).is_err(),
+                without,
+                "case {case}: without a context, only E12's folder rule"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unrelated_later_repair_or_one_on_another_client_does_not_conflict() {
+        let home = conflict_home();
+        let key = TargetKey::new();
+        let other = TargetKey::new();
+        let ctx = ConflictCtx {
+            paths: &home.paths,
+            client_dir: &home.client_dir,
+        };
+        let reverted = line(key, TxKind::Install, &[(FolderOp::Add, "Foo")]);
+        let others = ClientPaths::new(&home.other_dir);
+        let away = text(home.paths.doctor_runs_dir().join("R/quarantine/state/x"));
+        let credential = text(home.paths.credential_file("github"));
+        let in_foo = repair_with(
+            &[key],
+            &[(
+                Some(key),
+                Some("Foo"),
+                &text(ClientPaths::new(&home.client_dir).addons().join("Foo")),
+                Some(&away),
+            )],
+        );
+        let undo_of_it = HistoryEntry {
+            kind: TxKind::Undo,
+            reverts: Some(in_foo.tx),
+            ..in_foo.clone()
+        };
+        let cases: Vec<(&str, Vec<HistoryEntry>)> = vec![
+            (
+                "a_credential",
+                vec![repair_with(&[], &[(None, None, &credential, None)])],
+            ),
+            (
+                "another_clients_record",
+                vec![repair_with(
+                    &[],
+                    &[(None, None, &text(home.paths.target_record(&other)), None)],
+                )],
+            ),
+            (
+                "another_clients_folder",
+                vec![repair_with(
+                    &[other],
+                    &[(
+                        Some(other),
+                        Some("Foo"),
+                        &text(others.addons().join("Foo")),
+                        None,
+                    )],
+                )],
+            ),
+            (
+                "another_folder_of_its_client",
+                vec![repair_with(
+                    &[key],
+                    &[(
+                        Some(key),
+                        Some("Bar"),
+                        &text(ClientPaths::new(&home.client_dir).addons().join("Bar")),
+                        None,
+                    )],
+                )],
+            ),
+            ("a_repair_its_undo_cancelled", vec![in_foo, undo_of_it]),
+        ];
+        for (case, later) in cases {
+            let mut entries = vec![reverted.clone()];
+            entries.extend(later);
+            let output = check_conflicts_in(&entries, 0, None, false, Some(&ctx))
+                .err()
+                .map(|e| e.details.clone());
+            assert_eq!(output, None, "case {case}: {:?}", &entries[1..]);
+        }
+    }
+
+    /// Retention keeps a deferred restore's snapshot by E12's folder rule alone: a later
+    /// repair of only the record leaves it pending there, while the follow-up itself, with
+    /// its context, refuses.
+    #[test]
+    fn retention_keeps_the_conservative_folder_rule() {
+        let home = conflict_home();
+        let key = TargetKey::new();
+        let reverted = line(key, TxKind::Install, &[(FolderOp::Add, "Foo")]);
+        let deferred = HistoryEntry {
+            sv_deferred: true,
+            ..undo_line(key, reverted.tx, Some(0))
+        };
+        let away = text(home.paths.doctor_runs_dir().join("R/quarantine/state/x"));
+        let repair = repair_with(
+            &[],
+            &[(
+                None,
+                None,
+                &text(home.paths.target_record(&key)),
+                Some(&away),
+            )],
+        );
+        let entries = vec![reverted.clone(), deferred, repair];
+        assert!(
+            pending_sv_restores(&entries).contains(&reverted.tx),
+            "retention keeps it"
+        );
+        let ctx = ConflictCtx {
+            paths: &home.paths,
+            client_dir: &home.client_dir,
+        };
+        assert_eq!(
+            check_conflicts_in(&entries, 0, Some(1), true, Some(&ctx))
+                .unwrap_err()
+                .code,
+            ErrorCode::UndoConflict,
+            "the follow-up refuses"
+        );
     }
 
     #[test]

@@ -756,7 +756,7 @@ mod tests {
             vec![(home.paths.journal(&stuck), QuarantineRoot::State)],
             vec![Guard::Epoch {
                 path: home.client.stage(&stuck),
-                stamp: Stamp([1; 32]),
+                stamp: Some(Stamp([1; 32])),
             }],
         );
         // The same repair also moves its own in-flight lock: never a name of its own.

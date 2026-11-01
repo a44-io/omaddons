@@ -18,12 +18,16 @@
 //!    `post` are decided by lowering and never guessed later.
 //!
 //! [`RepairTx`] holds the transaction's id and in-flight lock from planning to cleanup.
+//! [`undo`] plans a repair's undo and checks it strictly (E7), with the guards of a
+//! set-aside read by [`guard`].
 
 pub mod commit;
+pub mod guard;
 pub mod inverse;
 pub mod journal;
 pub mod lower;
 pub mod recover;
+pub mod undo;
 
 pub use commit::{CommitCtx, RepairCleanup, RepairMeta, RepairOutcome, abandon, commit};
 pub use journal::{
