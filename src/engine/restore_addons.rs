@@ -515,7 +515,7 @@ pub fn restore(ctx: &EngineCtx<'_>, req: AddonsRequest<'_>) -> Result<AddonsOutc
     } = req;
     let target = &discovered.target;
     let client = ClientPaths::new(&target.client_dir);
-    let scopes = ScopeTable::new(ctx.paths, std::slice::from_ref(&target.client_dir), None)?;
+    let scopes = super::fence::table(ctx.paths, std::slice::from_ref(&target.client_dir), None)?;
     let names = redactor(&client, backup);
     let staged_dir = client.stage_wtf(&tx).join("WTF");
     let prepared =
@@ -775,6 +775,14 @@ impl Window<'_> {
         };
         failpoint::hit("engine.registered").map_err(fail)?;
         refuse_newer_state(paths, &target)?;
+        // A repair that became stuck since the table was built, or one fencing this
+        // target or its `WTF/` (E14).
+        super::fence::under_lock(
+            self.scopes,
+            paths,
+            Some(&target),
+            std::slice::from_ref(&wtf),
+        )?;
         let current = load_record(paths, &key)?;
         // ubs:ignore — comparing record generations, not secrets
         if current.value.generation != self.plan.generation {

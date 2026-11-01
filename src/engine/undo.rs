@@ -265,7 +265,7 @@ pub fn undo(req: &UndoRequest, ctx: &EngineCtx<'_>) -> Result<UndoOutcome> {
     // Before anything is staged: never refused only at the save, after the swap.
     super::tx::refuse_newer_state(ctx.paths, target)?;
 
-    let scopes = ScopeTable::new(ctx.paths, std::slice::from_ref(&target.client_dir), None)?;
+    let scopes = super::fence::table(ctx.paths, std::slice::from_ref(&target.client_dir), None)?;
     let tx = TxId::new();
     let inflight = InflightLock::create(ctx.paths, &tx)?;
     let client = ClientPaths::new(&target.client_dir);
@@ -438,6 +438,19 @@ fn commit(
     }
     // Again under the lock: a newer omaddons may have written since the first look.
     super::tx::refuse_newer_state(paths, target)?;
+    // A repair that became stuck since the table was built, or one fencing this target,
+    // a folder the undo puts back or the `WTF/` it restores settings in (E14).
+    let addons = client.addons();
+    let mut first_hand: Vec<PathBuf> = before
+        .folders
+        .touched
+        .iter()
+        .map(|folder| addons.join(folder.as_str()))
+        .collect();
+    if !before.sv.restore.is_empty() {
+        first_hand.push(client.wtf());
+    }
+    super::fence::under_lock(scopes, paths, Some(target), &first_hand)?;
 
     let reverts = before.reverts;
     let read = history::read(paths, &HistoryFilter::default())?;

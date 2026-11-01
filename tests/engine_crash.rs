@@ -5479,7 +5479,7 @@ fn a_crashed_repair_is_recovered_by_a_no_op_change() {
 }
 
 #[test]
-fn a_stuck_repair_journal_fails_every_committing_command_until_fences_land() {
+fn a_stuck_repair_journal_warns_and_leaves_unrelated_commits_alone() {
     use std::os::unix::fs::PermissionsExt;
 
     use common::repair::{Child, CrashPhase, Kind, RepairScene};
@@ -5497,19 +5497,17 @@ fn a_stuck_repair_journal_fails_every_committing_command_until_fences_land() {
     fs::set_permissions(&credential, fs::Permissions::from_mode(0o640)).unwrap();
     let journal = r.journal_lines();
 
-    log.step("a committing command fails");
+    // E14: the stuck repair fences only the credential it protects, so an install that
+    // writes nothing of it commits, warned once.
+    log.step("an unrelated committing command proceeds");
     let mut argv = r.s.install_args("gh:o/foo", "v2");
     argv.extend(["--progress".to_owned(), "json".to_owned()]);
-    let failed = log.run(&r.s, &argv);
-    failed.fails(1, "internal").assert_private();
-    let details = &failed.envelope()["error"]["details"];
-    assert_eq!(details["reason"], "step_unrecognized", "{details}");
-    assert_eq!(details["journal_pending"], tx, "{details}");
-    assert_eq!(
-        r.s.record("foo")["version"],
-        "1",
-        "the install changed nothing"
-    );
+    let installed = log.run(&r.s, &argv);
+    installed.ok().assert_private();
+    let pending = naming(installed.envelope(), "journal_pending", &tx);
+    assert_eq!(pending.len(), 1, "{pending:?}");
+    assert!(pending[0].contains("(step_unrecognized)"), "{}", pending[0]);
+    assert_eq!(r.s.record("foo")["version"], "2", "the install committed");
 
     log.step("a settings change only warns");
     let warned = log.run(

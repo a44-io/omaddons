@@ -6,14 +6,18 @@
 //! process) read what recovery did; [`assert_agrees`] holds each diagnosis's `expected()`
 //! to it, under the caller's rules: a committing command fails on a stop of its own
 //! target or of a journal no target owns, and warns of any other; a command that
-//! recovers under the lock without committing (`config set`) only warns. The first
-//! journal that fails the caller ends the run: every later one is left untouched.
+//! recovers under the lock without committing (`config set`) only warns. A doctor repair
+//! recovery stops at only warns (E14): its fences refuse what it protects, and a caller
+//! fails on it only when they are closed (its `prepared` line cannot be read, or the
+//! journal directory cannot be listed), at the caller's first write. The first journal
+//! that fails the caller ends the run: every later one is left untouched.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
+use omaddons::engine::fence;
 use omaddons::engine::journal::{
     self, Diagnoses, Expected, JournalDiagnosis, JournalFamily, StopReason,
 };
@@ -33,6 +37,9 @@ use super::tlog::TestLog;
 pub struct Prediction {
     pub label: String,
     pub diagnoses: Diagnoses,
+    /// The repair journals whose fences are closed (`fence::closes`): every change is
+    /// refused while they are stuck.
+    pub closed: BTreeSet<TxId>,
 }
 
 impl Prediction {
@@ -109,9 +116,16 @@ pub fn predict(
         transcript.display()
     );
     assert_private(&serde_json::to_string(&diagnoses).unwrap_or_default());
+    let closed = diagnoses
+        .journals
+        .iter()
+        .filter(|d| d.family == JournalFamily::Repair && fence::closes(paths, &d.path))
+        .map(|d| d.tx)
+        .collect();
     Prediction {
         label: label.to_owned(),
         diagnoses,
+        closed,
     }
 }
 
@@ -291,13 +305,19 @@ pub fn observe_result(
 }
 
 /// The `<reason>` of a warning's "could not be recovered (<reason>)" or "cannot recover
-/// it (<reason>)".
+/// it (<reason>)", or a stuck repair's "could not settle it (<reason>)" or "cannot read
+/// what it changed (<reason>)".
 fn reason_in(message: &str) -> Option<String> {
-    ["could not be recovered (", "cannot recover it ("]
-        .iter()
-        .find_map(|lead| message.split_once(lead))
-        .and_then(|(_, rest)| rest.split_once(')'))
-        .map(|(reason, _)| reason.to_owned())
+    [
+        "could not be recovered (",
+        "cannot recover it (",
+        "could not settle it (",
+        "cannot read what it changed (",
+    ]
+    .iter()
+    .find_map(|lead| message.split_once(lead))
+    .and_then(|(_, rest)| rest.split_once(')'))
+    .map(|(reason, _)| reason.to_owned())
 }
 
 /// The `<n>` of "journal step <n>".
@@ -308,22 +328,28 @@ fn step_in(message: &str) -> Option<u32> {
 }
 
 /// What recovery should have done to `diagnosis`, as an [`Observed`], under `caller`;
-/// and whether it fails the caller (which ends the run).
-fn wanted(diagnosis: &JournalDiagnosis, caller: &Caller) -> (Observed, bool) {
+/// and whether it fails the caller (which ends the run). `closed` names the repair
+/// journals whose fences are closed.
+fn wanted(
+    diagnosis: &JournalDiagnosis,
+    caller: &Caller,
+    closed: &BTreeSet<TxId>,
+) -> (Observed, bool) {
     match diagnosis.expected() {
         Expected::RolledForward => (Observed::RolledForward, false),
         Expected::RolledBack => (Observed::RolledBack, false),
         Expected::Pruned => (Observed::Pruned, false),
         Expected::Skipped => (Observed::Untouched, false),
-        // A doctor repair names no single target: until E14's fences its stop fails every
-        // committing command, whatever it commits, and only warns one that recovers under
-        // the lock, with its reason (and step) in the warning's text.
-        Expected::Stops { code, reason, step }
-            if diagnosis.family == JournalFamily::Repair && reason != StopReason::Unattributed =>
-        {
-            let fails = matches!(caller, Caller::Commit { .. });
+        // A doctor repair names no single target: its stop never fails recovery's caller
+        // (E14). It warns, with its reason (no step) in the warning's text, and its fences
+        // refuse the caller's writes that overlap what it protects. Closed fences (its
+        // `prepared` line cannot be read) refuse every change: any caller then fails at
+        // its first write, with the journal's own stop.
+        Expected::Stops { code, reason, .. } if diagnosis.family == JournalFamily::Repair => {
+            let fails = closed.contains(&diagnosis.tx);
             let code = fails.then(|| code.wire().to_owned());
             let reason = Some(reason.as_str().to_owned());
+            let step = None;
             (Observed::Stopped { code, reason, step }, fails)
         }
         Expected::Stops { code, reason, step } => {
@@ -364,12 +390,13 @@ pub fn assert_agrees(
     let mut ended = false;
     let mut compared = 0;
     if prediction.diagnoses.unlisted.is_some() {
-        // A committing command fails (`io`, `unattributed`); one recovering under the lock
-        // alone warns that recovery could not run, the reason left out.
-        let commit = matches!(caller, Caller::Commit { .. });
+        // A committing command fails (`io`, `unattributed`). One recovering under the lock
+        // alone warns that recovery could not run, then fails the same way at its first
+        // write: a journal directory that cannot be listed closes every mutating
+        // command's fences (E14), since any stuck repair's resources are unknowable.
         let want = Observed::Stopped {
-            code: commit.then(|| "io".to_owned()),
-            reason: commit.then(|| "unattributed".to_owned()),
+            code: Some("io".to_owned()),
+            reason: Some("unattributed".to_owned()),
             step: None,
         };
         assert_eq!(
@@ -390,7 +417,7 @@ pub fn assert_agrees(
         let (want, fails) = if ended {
             (Observed::Untouched, false)
         } else {
-            wanted(diagnosis, caller)
+            wanted(diagnosis, caller, &prediction.closed)
         };
         ended |= fails;
         compared += 1;

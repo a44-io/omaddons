@@ -1698,12 +1698,18 @@ expression: schemas
         },
         "type": "array"
       },
+      "resource": {
+        "type": "string"
+      },
       "running": {
         "enum": [
           "unknown"
         ]
       },
       "target": {
+        "type": "string"
+      },
+      "tx": {
         "type": "string"
       }
     },
@@ -2190,11 +2196,17 @@ expression: schemas
         },
         "type": "array"
       },
+      "resource": {
+        "type": "string"
+      },
       "target": {
         "type": [
           "string",
           "null"
         ]
+      },
+      "tx": {
+        "type": "string"
       }
     },
     "type": "object"
@@ -2321,6 +2333,18 @@ expression: schemas
           "type": "string"
         },
         "type": "array"
+      },
+      "resource": {
+        "type": "string"
+      },
+      "target": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "tx": {
+        "type": "string"
       }
     },
     "type": "object"
@@ -4382,11 +4406,17 @@ expression: schemas
         },
         "type": "array"
       },
+      "resource": {
+        "type": "string"
+      },
       "target": {
         "type": [
           "string",
           "null"
         ]
+      },
+      "tx": {
+        "type": "string"
       }
     },
     "type": "object"
@@ -4627,6 +4657,9 @@ expression: schemas
         },
         "type": "array"
       },
+      "resource": {
+        "type": "string"
+      },
       "target": {
         "type": [
           "string",
@@ -4753,6 +4786,9 @@ expression: schemas
         },
         "type": "array"
       },
+      "resource": {
+        "type": "string"
+      },
       "schema_version": {
         "type": "string"
       },
@@ -4761,6 +4797,9 @@ expression: schemas
           "string",
           "null"
         ]
+      },
+      "tx": {
+        "type": "string"
       }
     },
     "type": "object"

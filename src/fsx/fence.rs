@@ -212,6 +212,18 @@ impl FenceSet {
     pub fn len(&self) -> usize {
         self.fences.len()
     }
+
+    /// The fences, in path order.
+    pub fn iter(&self) -> impl Iterator<Item = &Fence> {
+        self.fences.iter()
+    }
+
+    /// What closed the set, when it is closed: the resource text and the stop.
+    pub fn closed(&self) -> Option<(&str, &FenceStop)> {
+        self.closed
+            .as_ref()
+            .map(|(resource, stop)| (resource.as_str(), stop))
+    }
 }
 
 #[cfg(test)]

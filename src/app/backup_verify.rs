@@ -16,8 +16,8 @@ use super::world::World;
 use crate::backup::verify::{VerifyOutcome, VerifyRequest, verify};
 use crate::backup::{Baseline, Integrity};
 use crate::cli::Context;
+use crate::engine::fence;
 use crate::error::{Error, Result, Warning};
-use crate::fsx::ScopeTable;
 use crate::model::BackupId;
 use crate::output::{Outcome, Style};
 
@@ -194,7 +194,7 @@ pub fn run(ctx: &Context, args: &BackupVerifyArgs) -> Result<BackupVerifyOutcome
         let Some(ids) = named.get(&d.target.id) else {
             continue;
         };
-        let scopes = ScopeTable::new(
+        let scopes = fence::table(
             &world.paths,
             std::slice::from_ref(&d.target.client_dir),
             None,

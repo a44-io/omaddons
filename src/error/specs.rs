@@ -253,8 +253,11 @@ pub(crate) const GAME_RUNNING: DetailSpec = DetailSpec::Object(&[
             "saved_variables",
         ]),
     ),
+    // A stuck journal's fence that refused the write (E14).
+    Field::opt("resource", &STR),
     Field::opt("running", &DetailSpec::Enum(&["unknown"])),
     Field::opt("target", &STR),
+    Field::opt("tx", &STR),
 ]);
 
 /// `engine/ownership.rs::refused`; fsx and adoption may refuse without evidence.
@@ -375,7 +378,10 @@ pub(crate) const SCOPE_DENIED: DetailSpec = DetailSpec::Object(&[
         "reason",
         &DetailSpec::Enum(&["wtf_symlinked", "marker_mismatch", "skill_dir"]),
     ),
+    // A stuck journal's fence that refused the write (E14).
+    Field::opt("resource", &STR),
     Field::opt("target", &STR).nullable(),
+    Field::opt("tx", &STR),
 ]);
 
 /// `state/store.rs::too_new` and journal unrecoverable/unattributed failures.
@@ -385,8 +391,11 @@ pub(crate) const STATE_TOO_NEW: DetailSpec = DetailSpec::Object(&[
         "reason",
         &DetailSpec::Enum(&["journal_too_new", "unattributed"]),
     ),
+    // A stuck journal's fence that refused the write (E14).
+    Field::opt("resource", &STR),
     Field::opt("schema_version", &STR),
     Field::opt("target", &STR).nullable(),
+    Field::opt("tx", &STR),
 ]);
 
 /// `engine/restore.rs::unsupported` is the sole constructor.
@@ -526,6 +535,8 @@ pub(crate) const STATE_CORRUPT: DetailSpec = DetailSpec::Object(&[
             "unattributed",
         ]),
     ),
+    // A stuck journal's fence that refused the write (E14).
+    Field::opt("resource", &STR),
     Field::opt("target", &STR).nullable(),
     Field::opt("tx", &STR),
 ]);
@@ -539,6 +550,11 @@ pub(crate) const IO: DetailSpec = DetailSpec::Object(&[
         "reason",
         &DetailSpec::Enum(&["unindexable", "unattributed"]),
     ),
+    // A stuck journal's fence that refused the write (E14): its journal and target
+    // (`null` for a repair, or a journal directory that cannot be listed).
+    Field::opt("resource", &STR),
+    Field::opt("target", &STR).nullable(),
+    Field::opt("tx", &STR),
 ]);
 
 /// `doctor --only` naming only online checks: the failure modes that need `--online`.
@@ -584,7 +600,10 @@ pub(crate) const INTERNAL: DetailSpec = DetailSpec::Object(&[
         "reason",
         &DetailSpec::Enum(&["plugin_invalid", "unexpected_state", "step_unrecognized"]),
     ),
+    // A stuck journal's fence that refused the write (E14).
+    Field::opt("resource", &STR),
     Field::opt("target", &STR).nullable(),
+    Field::opt("tx", &STR),
 ]);
 
 pub(super) fn details_schema(code: ErrorCode) -> Value {

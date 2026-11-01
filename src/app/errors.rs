@@ -25,6 +25,7 @@ use super::world::World;
 use crate::cli::Context;
 use crate::contract::actions::Action;
 use crate::discover::running::detect_running;
+use crate::engine::fence;
 use crate::engine::journal::{no_saved_variables, recover_under};
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning};
 use crate::errors::ack::{self, Ack, ErrorsAck, db_key};
@@ -37,7 +38,7 @@ use crate::errors::observe::{
     shown_time,
 };
 use crate::errors::sanitize::{MessageKind, raw_details, strict_frames, strict_message_for};
-use crate::fsx::{FileStamp, GlobalLock, ScopeTable, WriteSession, Writer, ensure_dir_all};
+use crate::fsx::{FileStamp, GlobalLock, WriteSession, Writer, ensure_dir_all};
 use crate::inventory::{Depth, inventory_shared};
 use crate::limits::{ERRORS_MAX_TOTAL_BYTES, ERRORS_SHOWN_PER_ADDON};
 use crate::model::TxKind;
@@ -309,7 +310,7 @@ pub fn dismiss(ctx: &Context) -> Result<DismissOutcome> {
         }
     }
     if targets.iter().any(|t| !t.acknowledged.is_empty()) {
-        let scopes = ScopeTable::new(&world.paths, &[], None)?;
+        let scopes = fence::table(&world.paths, &[], None)?;
         let mut session = WriteSession::untracked(Writer::Mutating, &scopes, "errors-ack");
         ensure_dir_all(&mut session, world.paths.state_dir())?;
         ack::save(&mut session, &world.paths, &acks, loaded_as.as_ref())?;

@@ -21,6 +21,7 @@ use serde_json::{Value, json};
 use super::render::{self, Context as WidgetContext, Rendered};
 use super::{shell, validate};
 use crate::cli::Context;
+use crate::engine::fence;
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{
     self, Content, FsxError, GlobalLock, InflightLock, LockUse, Op, PruneReason, RenameMode,
@@ -213,7 +214,7 @@ fn publish(
 ) -> Result<Installed> {
     let op = TxId::new();
     let inflight = InflightLock::create(paths, &op)?;
-    let scopes = ScopeTable::new(paths, &[], None)?;
+    let scopes = fence::table(paths, &[], None)?;
     reclaim(paths, &scopes, &op);
     let stage = paths.omarchy_stage(&op);
     let staged = stage_and_validate(paths, &scopes, &stage, rendered);
@@ -385,7 +386,7 @@ fn check(dir: &Path) -> Result<()> {
 fn dry_run(paths: &Paths, rendered: &Rendered) -> Result<()> {
     let tx = TxId::new();
     let lock = InflightLock::create_scratch(paths, &tx)?;
-    let scopes = ScopeTable::new(paths, &[], None)?;
+    let scopes = fence::table(paths, &[], None)?;
     let scratch = paths.cache_tmp(&tx);
     let result = (|| {
         let mut s = WriteSession::untracked(Writer::Derived, &scopes, "omarchy install");

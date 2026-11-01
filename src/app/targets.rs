@@ -20,8 +20,9 @@ use crate::discover::registry::{
     resolve_one_in, unknown_id,
 };
 use crate::discover::{DiscoveredTarget, DiscoverySource};
+use crate::engine::fence;
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning};
-use crate::fsx::{GlobalLock, ScopeTable, WriteSession, Writer};
+use crate::fsx::{GlobalLock, WriteSession, Writer};
 use crate::model::{TargetKey, TxKind};
 use crate::output::{Outcome, Style, table};
 use crate::rules::{ClientVersion, Family, InstallKind, ModeName, RulesTable, TargetKind};
@@ -358,7 +359,7 @@ fn locked<T>(
             ctx.actor,
         ));
     }
-    let scopes = ScopeTable::new(paths, dirs, None)?;
+    let scopes = fence::table(paths, dirs, None)?;
     let mut s = WriteSession::untracked(Writer::Mutating, &scopes, "registry");
     let mut registry = LockedRegistry::load(&guard, paths)?;
     f(&mut registry, &mut s)

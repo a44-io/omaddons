@@ -467,7 +467,7 @@ pub struct Begun {
 /// and the preflight with the exchange probed in the transaction's own stage, before
 /// anything is copied. A refusal takes the stage and the lock away again.
 pub fn begin(paths: &Paths, client: &ClientPaths, backup: &BackupRef) -> Result<Begun> {
-    let scopes = ScopeTable::new(paths, &[client.client_dir().to_path_buf()], None)?;
+    let scopes = super::fence::table(paths, &[client.client_dir().to_path_buf()], None)?;
     let tx = TxId::new();
     let inflight = InflightLock::create(paths, &tx)?;
     let probe = client.stage_wtf(&tx).join("probe");
@@ -543,7 +543,7 @@ pub fn restore(ctx: &EngineCtx<'_>, req: RestoreRequest<'_>) -> Result<RestoreOu
     } = req;
     let target = &discovered.target;
     let client = ClientPaths::new(&target.client_dir);
-    let scopes = ScopeTable::new(ctx.paths, std::slice::from_ref(&target.client_dir), None)?;
+    let scopes = super::fence::table(ctx.paths, std::slice::from_ref(&target.client_dir), None)?;
     let names = WtfPathRedactor::for_client(&client);
     let staged_dir = client.stage_wtf(&tx).join("WTF");
     let staged = match stage(ctx, &scopes, backup, plan, &staged_dir, &topology, &names) {
@@ -771,6 +771,9 @@ impl Window<'_> {
         };
         failpoint::hit("engine.registered").map_err(fail)?;
         refuse_newer_state(paths, &target)?;
+        // A repair that became stuck since the table was built, or one fencing this
+        // target or its `WTF/` (E14).
+        super::fence::under_lock(self.scopes, paths, Some(&target), &[client.wtf()])?;
         // Retryable, unless the run is bound to a preview: it then commits only onto what
         // the preview saw (M3-D46).
         let moved = |what: &str| match ctx.binding {
@@ -1181,7 +1184,7 @@ pub(super) fn undo_whole(
     }
     refuse_newer_state(ctx.paths, target)?;
 
-    let scopes = ScopeTable::new(ctx.paths, std::slice::from_ref(&target.client_dir), None)?;
+    let scopes = super::fence::table(ctx.paths, std::slice::from_ref(&target.client_dir), None)?;
     let tx = TxId::new();
     let inflight = InflightLock::create(ctx.paths, &tx)?;
     let probe = client.stage_wtf(&tx).join("probe");

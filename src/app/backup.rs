@@ -48,6 +48,7 @@ use crate::discover::DiscoveredTarget;
 use crate::discover::registry::LockedRegistry;
 use crate::discover::running::{RunningScan, detect_running};
 use crate::engine::Binding;
+use crate::engine::fence;
 use crate::engine::journal::{no_saved_variables, recover_under};
 use crate::engine::restore::{self, Exchange, RestoreFiles, RestoreRequest};
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
@@ -1218,7 +1219,7 @@ impl One<'_> {
     /// count reach the total sooner, which the sink caps.
     fn files_to_copy(&self, auto: Option<(&RunningScan, AutoBackup, &EffectiveLimits)>) -> u64 {
         if let Some((running, mode, limits)) = auto {
-            let Ok(scopes) = ScopeTable::new(
+            let Ok(scopes) = fence::table(
                 &self.world.paths,
                 std::slice::from_ref(&self.d.target.client_dir),
                 None,
@@ -1239,7 +1240,7 @@ impl One<'_> {
         let client = self.client();
         capture::locate(&client, &self.d.target.id)?;
         let (_, low) = self.space();
-        let scopes = ScopeTable::new(
+        let scopes = fence::table(
             &self.world.paths,
             std::slice::from_ref(&self.d.target.client_dir),
             None,
@@ -1289,7 +1290,7 @@ impl One<'_> {
         mode: AutoBackup,
         limits: &EffectiveLimits,
     ) -> Result<(BackupCreateTarget, Vec<Warning>)> {
-        let scopes = ScopeTable::new(
+        let scopes = fence::table(
             &self.world.paths,
             std::slice::from_ref(&self.d.target.client_dir),
             None,
@@ -1331,7 +1332,7 @@ impl One<'_> {
         mode: AutoBackup,
         limits: &EffectiveLimits,
     ) -> Result<(BackupCreateTarget, Vec<Warning>)> {
-        let scopes = ScopeTable::new(
+        let scopes = fence::table(
             &self.world.paths,
             std::slice::from_ref(&self.d.target.client_dir),
             None,
@@ -2147,7 +2148,7 @@ fn keep_current(
     if topology.wtf.is_none() || !clones {
         return Ok(None);
     }
-    let scopes = ScopeTable::new(
+    let scopes = fence::table(
         &world.paths,
         std::slice::from_ref(&d.target.client_dir),
         None,
@@ -2204,7 +2205,7 @@ pub(super) fn retain_source(
         command: RESTORE_COMMAND,
         actor: ctx.actor,
     };
-    let pass = ScopeTable::new(
+    let pass = fence::table(
         &world.paths,
         std::slice::from_ref(&d.target.client_dir),
         None,
@@ -2481,7 +2482,7 @@ pub fn prune_backups(ctx: &Context, args: &BackupPruneArgs) -> Result<BackupPrun
     let mut first_error = None;
     for p in &plans {
         let client = ClientPaths::new(&p.d.target.client_dir);
-        let pass = ScopeTable::new(
+        let pass = fence::table(
             &world.paths,
             std::slice::from_ref(&p.d.target.client_dir),
             None,
@@ -2714,7 +2715,7 @@ pub fn export_backup(ctx: &Context, args: &BackupExportArgs) -> Result<BackupExp
         .iter()
         .map(|t| t.target.client_dir.clone())
         .collect();
-    let mut scopes = ScopeTable::new(&world.paths, &client_dirs, None)?;
+    let mut scopes = fence::table(&world.paths, &client_dirs, None)?;
     let cwd = std::env::current_dir().unwrap_or_default();
     let file = scopes.with_export_file(&cwd.join(&args.file))?;
     let names = WtfPathRedactor::for_client(&ClientPaths::new(&d.target.client_dir));
@@ -2875,7 +2876,7 @@ pub fn import_backup(ctx: &Context, args: &BackupImportArgs) -> Result<BackupImp
     if ctx.dry_run {
         return Ok(BackupImportOutcome { data, warnings });
     }
-    let scopes = ScopeTable::new(
+    let scopes = fence::table(
         &world.paths,
         std::slice::from_ref(&d.target.client_dir),
         None,

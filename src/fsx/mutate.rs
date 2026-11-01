@@ -73,16 +73,22 @@ impl From<FsxError> for Error {
             ),
             FsxError::Io { path, source } => Error::io(&path, &source, status()),
             // The fencing journal's own stop, as recovery reports it (`journal_pending`,
-            // `reason`, `target`), plus the journal and the resource it protects.
+            // `reason`, `target`), plus the journal and the resource it protects. A stop
+            // with no journal (a journal directory that cannot be listed) names none,
+            // rather than a `null` one.
             FsxError::Fenced(fenced) => {
                 let stop = &fenced.stop;
                 let mut details = serde_json::Map::new();
-                details.insert("journal_pending".into(), serde_json::json!(stop.tx));
+                if let Some(tx) = stop.tx {
+                    details.insert("journal_pending".into(), serde_json::json!(tx));
+                }
                 if let Some(reason) = stop.reason {
                     details.insert("reason".into(), reason.into());
                 }
                 details.insert("target".into(), serde_json::json!(stop.target));
-                details.insert("tx".into(), serde_json::json!(stop.tx));
+                if let Some(tx) = stop.tx {
+                    details.insert("tx".into(), serde_json::json!(tx));
+                }
                 details.insert("resource".into(), fenced.resource.clone().into());
                 Error::new(stop.code, fenced.message(), stop.fix.clone())
                     .details(serde_json::Value::Object(details))

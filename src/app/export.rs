@@ -29,10 +29,9 @@ use sha2::{Digest, Sha256};
 use super::world::World;
 use crate::cli::{Context, fix_argv};
 use crate::discover::DiscoveredTarget;
+use crate::engine::fence;
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
-use crate::fsx::{
-    Content, GlobalLock, Op, ScopeTable, WriteSession, Writer, ensure_dir_all, mutate,
-};
+use crate::fsx::{Content, GlobalLock, Op, WriteSession, Writer, ensure_dir_all, mutate};
 use crate::model::{AddonReason, AddonRecord, Channel, Ref, TargetKey, VersionConfidence};
 use crate::output::{Outcome, Style};
 use crate::rules::{Family, TargetKind};
@@ -469,7 +468,7 @@ fn write(
         return Ok(format!("would write {shown} ({n} {entries})"));
     }
     let backup = file.with_extension("toml.bak");
-    let scopes = ScopeTable::new(paths, &[], None)?;
+    let scopes = fence::table(paths, &[], None)?;
     let mut s = WriteSession::untracked(Writer::Config, &scopes, "addons.toml");
     ensure_dir_all(&mut s, paths.config_dir())?;
     if let Some(old) = &existing {

@@ -630,6 +630,12 @@ impl StopReason {
             Self::SkillDir => "skill_dir",
         }
     }
+
+    /// The reason `text` names, as [`StopReason::as_str`] writes it.
+    pub fn parse(text: &str) -> Option<Self> {
+        // ubs:ignore — comparing reason names, not secrets
+        Self::ALL.into_iter().find(|reason| reason.as_str() == text)
+    }
 }
 
 /// Why recovery leaves a journal for manual repair (M3-D45).
@@ -885,13 +891,53 @@ pub fn pending_warnings(paths: &Paths) -> Result<Vec<Warning>> {
             }
         },
     );
-    let repairs = repairs
-        .into_iter()
-        .map(|repair| match repair.unrecoverable {
-            Some(why) => super::repair::recover::unrecoverable_warning(&repair.tx, why),
-            None => unfinished_warning(&format!("repair transaction {}", repair.tx), held),
-        });
+    // A repair recovery will stop at gets the text recovery gives it (E14), so a run that
+    // reads it first and recovers it later reports it once.
+    let mut stuck = stuck_repairs(paths, &repairs);
+    let repairs = repairs.into_iter().map(|repair| {
+        stuck
+            .remove(&repair.tx)
+            .unwrap_or_else(|| match repair.unrecoverable {
+                Some(why) => super::repair::recover::unrecoverable_warning(&repair.tx, why),
+                None => unfinished_warning(&format!("repair transaction {}", repair.tx), held),
+            })
+    });
     Ok(folder.chain(repairs).collect())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread's readers simulated recovery for their repair journals.
+    pub(crate) static REPAIR_DIAGNOSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The `journal_pending` warning of each repair journal recovery stops at, by
+/// transaction (`fence::stuck_warning`). Simulates recovery (`diagnose`) only when a
+/// repair journal waits, so a home without one costs a reader nothing more.
+fn stuck_repairs(
+    paths: &Paths,
+    repairs: &[super::repair::PendingRepair],
+) -> std::collections::BTreeMap<TxId, Warning> {
+    if repairs.is_empty() {
+        return std::collections::BTreeMap::new();
+    }
+    #[cfg(test)]
+    REPAIR_DIAGNOSES.with(|count| count.set(count.get() + 1));
+    diagnose(paths, &[], &no_saved_variables)
+        .journals
+        .iter()
+        .filter(|d| d.family == JournalFamily::Repair)
+        .filter_map(|d| {
+            let Expected::Stops { reason, .. } = d.expected() else {
+                return None;
+            };
+            let closed = super::fence::closes(paths, &d.path);
+            Some((
+                d.tx,
+                super::fence::stuck_warning(d.tx, Some(reason), closed),
+            ))
+        })
+        .collect()
 }
 
 /// What a reader says of an unfinished transaction this build can recover, named by
@@ -978,6 +1024,13 @@ pub struct Recovered {
 /// `journal_recovered` warning per rolled transaction, each followed by what its
 /// roll-forward left; committed and unprepared journals are removed silently.
 pub fn recover_all(env: &RecoveryEnv<'_>) -> Result<Vec<Warning>> {
+    // Recovery writes with the caller's scopes but never its fences (E14): it is ordered,
+    // never refused mid-way.
+    let unfenced = env.scopes.without_fences();
+    let env = &RecoveryEnv {
+        scopes: &unfenced,
+        ..*env
+    };
     let mut warnings = Vec::new();
     for (tx, path) in list(env.paths).map_err(|error| unattributed(error, None))? {
         if InflightLock::is_live(env.paths, &tx).map_err(|error| unattributed(error, Some(&tx)))? {
@@ -1017,8 +1070,9 @@ pub fn recover_all(env: &RecoveryEnv<'_>) -> Result<Vec<Warning>> {
             },
         }
     }
-    // Then the doctor's repairs (E5), which name no single target: until E14's fences, a
-    // repair recovery cannot settle fails every committing command.
+    // Then the doctor's repairs (E5), which name no single target: one recovery cannot
+    // settle is a warning, and the fences every mutating command loads refuse what it
+    // protects (E14).
     warnings.extend(super::repair::recover_repairs(env)?);
     Ok(warnings)
 }
@@ -1152,6 +1206,11 @@ fn journal_scopes(env: &RecoveryEnv<'_>, prepared: &Prepared) -> Option<ScopeTab
 /// rolls back, after `swapped` rolls forward. No liveness check: the caller is the
 /// writer. Leftovers its in-flight lock still protects are pruned at cleanup.
 pub fn recover_tx(env: &RecoveryEnv<'_>, tx: &TxId) -> Result<Option<Recovered>> {
+    let unfenced = env.scopes.without_fences();
+    let env = &RecoveryEnv {
+        scopes: &unfenced,
+        ..*env
+    };
     let Some(path) = existing(env.paths, tx) else {
         return Ok(None);
     };

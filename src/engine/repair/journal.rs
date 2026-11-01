@@ -332,6 +332,46 @@ pub fn read(path: &Path) -> Result<ParsedRepair> {
     Ok(parse(&String::from_utf8_lossy(&bytes)))
 }
 
+/// What a repair journal's first line tells of what the repair may have changed (E14):
+/// the whole `prepared` line, or why this build cannot know.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreparedRead {
+    /// The first complete line is a `prepared` line of a format this build reads. A
+    /// later line that does not read leaves it decoded: recovery keeps such a journal
+    /// whole (M3-D45), and what it changed is still known.
+    Decoded(Box<RepairPrepared>),
+    /// The first complete line is not a `prepared` line this build decodes.
+    Undecodable,
+    /// The first line declares a newer major format.
+    TooNew,
+    /// No complete line: nothing ran.
+    Absent,
+}
+
+impl ParsedRepair {
+    /// [`PreparedRead`] of this journal: a newer major wins over a line that happens to
+    /// decode, as in [`ParsedRepair::unrecoverable`].
+    pub fn prepared_read(&self) -> PreparedRead {
+        if self
+            .format
+            .is_some_and(|format| format.major > FORMAT.major)
+        {
+            PreparedRead::TooNew
+        } else if let Some(prepared) = &self.prepared {
+            PreparedRead::Decoded(Box::new(prepared.clone()))
+        } else if self.lines > 0 {
+            PreparedRead::Undecodable
+        } else {
+            PreparedRead::Absent
+        }
+    }
+}
+
+/// Reads one repair journal for its [`PreparedRead`].
+pub fn read_prepared(path: &Path) -> Result<PreparedRead> {
+    Ok(read(path)?.prepared_read())
+}
+
 // ---------------------------------------------------------------------------------------
 // The history line.
 
@@ -709,6 +749,60 @@ mod tests {
             Some(two),
             "the prepared line reads back whole"
         );
+    }
+
+    #[test]
+    fn prepared_read_decides_what_a_first_line_tells() {
+        let home = repair_home();
+        let two = prepared(&home, &[flatten(&home)]);
+        let p = journal(&two, &[]);
+        let decoded = PreparedRead::Decoded(Box::new(two.clone()));
+        let too_new = p.replacen("\"format\":\"1.0\"", "\"format\":\"9.0\"", 1);
+        let newer_minor = p.replacen("\"format\":\"1.0\"", "\"format\":\"1.7\"", 1);
+        let cases: Vec<(&str, String, PreparedRead)> = vec![
+            ("prepared_alone", p.clone(), decoded.clone()),
+            (
+                "prepared_then_steps",
+                journal(&two, &[step(1)]),
+                decoded.clone(),
+            ),
+            (
+                "a_bad_later_line",
+                journal(&two, &["not json\n".to_owned(), step(1)]),
+                decoded.clone(),
+            ),
+            ("newer_major", too_new.clone(), PreparedRead::TooNew),
+            (
+                "newer_major_with_steps",
+                format!("{too_new}{}", step(1)),
+                PreparedRead::TooNew,
+            ),
+            (
+                "newer_minor",
+                newer_minor.clone(),
+                PreparedRead::Decoded(Box::new(parse(&newer_minor).prepared.unwrap())),
+            ),
+            (
+                "first_line_not_json",
+                format!("not json\n{p}"),
+                PreparedRead::Undecodable,
+            ),
+            ("first_line_a_step", step(1), PreparedRead::Undecodable),
+            (
+                "prepared_missing_a_field",
+                "{\"type\":\"prepared\",\"format\":\"1.0\"}\n".to_owned(),
+                PreparedRead::Undecodable,
+            ),
+            ("empty", String::new(), PreparedRead::Absent),
+            (
+                "torn_prepared",
+                p.trim_end_matches('\n').to_owned(),
+                PreparedRead::Absent,
+            ),
+        ];
+        for (case, text, want) in cases {
+            assert_eq!(parse(&text).prepared_read(), want, "{case}:\n{text}");
+        }
     }
 
     #[test]

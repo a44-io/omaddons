@@ -17,8 +17,11 @@
 //!   changed or a skill directory it cannot attribute, and a recorded step in neither its
 //!   before nor its after state stop recovery with everything in place, the transaction
 //!   in `details.journal_pending` and `target: null` (a repair names no single target).
-//!   Until E14's fences, the first stop fails the command that recovers, so every
-//!   committing command fails while `recover_under`'s callers and readers only warn.
+//!   Such a stop never fails the command that recovers: it is one `journal_pending`
+//!   warning, the same readers give, and recovery goes on. What the stuck repair
+//!   protects is fenced instead (E14, `engine::fence`): every mutating command refuses
+//!   the writes that overlap it, and one whose `prepared` line cannot be read refuses
+//!   every change.
 
 use std::path::{Path, PathBuf};
 
@@ -26,6 +29,7 @@ use serde_json::json;
 
 use super::inverse::{OnDisk, append, manual_repair, pending, roll_back, roll_forward};
 use super::journal::{self, ParsedRepair, RepairLine, RepairPhase, RepairPrepared};
+use crate::engine::fence;
 use crate::engine::journal::{RecoveryEnv, StopReason, Unrecoverable, unattributed};
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{
@@ -68,20 +72,62 @@ pub fn pending_repairs(paths: &Paths) -> Result<Vec<PendingRepair>> {
 }
 
 /// Recovers every repair journal whose writer is gone, in transaction order, under the
-/// lock `env` holds; `env.scopes` serves only the silent prunes. One `journal_recovered`
-/// warning per repair rolled back or forward. The first stop is returned as the error,
-/// with everything that journal left in place.
+/// lock `env` holds; `env.scopes`, unfenced (recovery is never refused mid-way), serves
+/// only the silent prunes. One `journal_recovered` warning per repair rolled back or
+/// forward. A repair recovery cannot settle stays as it is, with everything it left in
+/// place, and becomes one `journal_pending` warning ([`fence::stuck_warning`]): it never
+/// fails the caller, since the fences every mutating command loads refuse exactly the
+/// writes that overlap what it protects (M4-D62), and recovery goes on to the next. Only
+/// a journal directory that cannot be listed is an error.
 pub fn recover_repairs(env: &RecoveryEnv<'_>) -> Result<Vec<Warning>> {
     let mut warnings = Vec::new();
-    for (tx, path) in journal::list(env.paths).map_err(|error| unattributed(error, None))? {
-        if InflightLock::is_live(env.paths, &tx).map_err(|error| unattributed(error, Some(&tx)))? {
-            continue;
+    for settled in settle_all(env)? {
+        match settled.result {
+            Ok(warning) => warnings.extend(warning),
+            Err(error) => warnings.push(fence::recovery_warning(
+                env.paths,
+                settled.tx,
+                &settled.path,
+                &error,
+            )),
         }
-        // A journal that cannot be read names no client, as one with no target does.
-        let parsed = journal::read(&path).map_err(|error| unattributed(error, Some(&tx)))?;
-        warnings.extend(recover_one(env, tx, &path, &parsed)?);
     }
     Ok(warnings)
+}
+
+/// What recovery did with one repair journal: settled (with its `journal_recovered`
+/// warning when it rolled), or the stop or failure that left it as it is.
+pub(crate) struct Settled {
+    pub tx: TxId,
+    pub path: PathBuf,
+    pub result: Result<Option<Warning>>,
+}
+
+/// [`recover_repairs`]'s pass, each journal's own result kept: every repair journal whose
+/// writer is gone, in transaction order, unfenced. Only a journal directory that cannot
+/// be listed is an error.
+pub(crate) fn settle_all(env: &RecoveryEnv<'_>) -> Result<Vec<Settled>> {
+    let unfenced = env.scopes.without_fences();
+    let env = &RecoveryEnv {
+        scopes: &unfenced,
+        ..*env
+    };
+    let mut settled = Vec::new();
+    for (tx, path) in journal::list(env.paths).map_err(|error| unattributed(error, None))? {
+        let result = InflightLock::is_live(env.paths, &tx)
+            .map_err(|error| unattributed(error, Some(&tx)))
+            .and_then(|live| {
+                if live {
+                    return Ok(None);
+                }
+                // A journal that cannot be read names no client, as one with no target does.
+                let parsed =
+                    journal::read(&path).map_err(|error| unattributed(error, Some(&tx)))?;
+                recover_one(env, tx, &path, &parsed)
+            });
+        settled.push(Settled { tx, path, result });
+    }
+    Ok(settled)
 }
 
 /// What recovery does with a repair journal, decided before it writes anything; the
@@ -526,11 +572,17 @@ mod tests {
         }
     }
 
-    /// `recover_repairs` under the global lock, as `recover_all` runs it after the folder
-    /// journals.
+    /// `recover_repairs`' pass under the global lock, as `recover_all` runs it after the
+    /// folder journals: the warnings, or the first journal's own stop or failure as the
+    /// error (which `recover_repairs` reports as that journal's `journal_pending`
+    /// warning, never failing its caller).
     fn recover(home: &RepairHome) -> Result<Vec<Warning>> {
         let lock = GlobalLock::acquire(&home.paths, "test").unwrap();
-        recover_repairs(&env(home, &lock))
+        let mut warnings = Vec::new();
+        for settled in settle_all(&env(home, &lock))? {
+            warnings.extend(settled.result?);
+        }
+        Ok(warnings)
     }
 
     /// Removes the stuck folder journal `repair_home` leaves, and its in-flight lock.
@@ -1143,17 +1195,31 @@ mod tests {
     }
 
     #[test]
-    fn a_stuck_repair_fails_recover_all_and_warns_under() {
+    fn a_stuck_repair_only_warns_recover_all_and_under() {
         let home = repair_home();
         no_folder_journal(&home);
+        // A stuck repair, then a later one recovery settles: it goes on past the stop.
         let tx = crashed(&home, &[chmod(&home)], "fsx.mutate.executed=panic@1");
         set_mode(&home.credential(), 0o640);
+        let later = crashed(&home, &[stray(&home)], "doctor.repair.step=panic@1");
+        let stuck = fence::stuck_warning(tx, Some(StopReason::StepUnrecognized), false);
         let lock = GlobalLock::acquire(&home.paths, "test").unwrap();
-        let err = recover_all(&env(&home, &lock)).unwrap_err();
+        let warnings =
+            recover_all(&env(&home, &lock)).expect("a repair stop never fails the caller");
+        assert_eq!(
+            messages(&warnings, WarningCode::JournalPending),
+            [stuck.message.as_str()],
+            "the stuck one's warning, the one readers give: {warnings:?}"
+        );
+        assert_eq!(messages(&warnings, WarningCode::JournalRecovered).len(), 1);
+        assert_eq!(left(&home, &later), (false, false), "the later one settled");
+        // Its own stop, as recovery stopped with it.
+        let settled = settle_all(&env(&home, &lock)).unwrap();
+        let err = settled[0].result.as_ref().unwrap_err();
         assert_eq!(
             (err.code, err.details["reason"].as_str()),
             (ErrorCode::Internal, Some("step_unrecognized")),
-            "every committing command fails until fences land: {err}"
+            "{err}"
         );
         assert_eq!(err.details["journal_pending"], tx.to_string());
         let warnings = recover_under(
@@ -1163,13 +1229,7 @@ mod tests {
             "test",
             Actor::Human,
         );
-        let pending = messages(&warnings, WarningCode::JournalPending);
-        assert_eq!(pending.len(), 1, "{warnings:?}");
-        assert!(
-            pending[0].contains(&tx.to_string()) && pending[0].contains("(step_unrecognized)"),
-            "the reason in its text: {}",
-            pending[0]
-        );
+        assert_eq!(warnings, [stuck], "under the lock alone, the same warning");
         assert_eq!(left(&home, &tx), (true, true), "kept");
         assert_eq!(mode_of(&home.credential()), 0o640, "left as found");
     }
@@ -1218,10 +1278,13 @@ mod tests {
                 unrecoverable: Some(Unrecoverable::TooNew),
             }]
         );
+        // A stuck one gets the text recovery gives it (E14): its resources cannot be read.
         let newer = pending_warnings(&home.paths).unwrap();
-        assert!(
-            messages(&newer, WarningCode::JournalPending)[0]
-                .contains("cannot recover it (journal_too_new)"),
+        assert_eq!(
+            messages(&newer, WarningCode::JournalPending),
+            [format!(
+                "repair transaction {tx} did not finish, and this omaddons cannot read what it changed (journal_too_new); every change is refused until it is set aside"
+            )],
             "{newer:?}"
         );
     }

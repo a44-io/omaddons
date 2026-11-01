@@ -382,7 +382,9 @@ pub fn run(req: &TxRequest, ctx: &EngineCtx<'_>) -> Result<TxOutcomes> {
         .iter()
         .map(|t| t.discovered.target.client_dir.clone())
         .collect();
-    let scopes = ScopeTable::new(ctx.paths, &client_dirs, None)?;
+    // Fenced (E14): a stuck repair refuses this run's writes that overlap what it
+    // protects, its dry run's included.
+    let scopes = super::fence::table(ctx.paths, &client_dirs, None)?;
     let blobs = BlobCache::new(ctx.paths).with_max_download(ctx.limits.max_download);
     let plan_tx = TxId::new();
     // Planning writes only cache scratch (downloads, inspections), so its lock lives in
@@ -829,6 +831,14 @@ fn register_early(
     if let Some(notes) = ctx.notes {
         notes.warn_all(&recovered);
     }
+    // Registration writes the registry and the client's marker (E14's gate).
+    let marker = ClientPaths::new(&discovered.target.client_dir).marker();
+    super::fence::under_lock(
+        scopes,
+        ctx.paths,
+        None,
+        &[ctx.paths.registry_file(), marker],
+    )?;
     let mut s = WriteSession::untracked(Writer::Mutating, scopes, "registry");
     let mut registry = LockedRegistry::load(&guard, ctx.paths)?;
     let key = registry.ensure_registered(&mut s, discovered)?;
@@ -1210,6 +1220,14 @@ fn locked(
     failpoint::hit("engine.registered").map_err(fail)?;
     // Again under the lock: a newer omaddons may have written since the first look.
     refuse_newer_state(paths, &target)?;
+    // A repair that became stuck since the table was built, or one fencing this target
+    // or a folder the swap writes, refuses before the journal (E14).
+    let addons = client.addons();
+    let first_hand: Vec<PathBuf> = planned_folders
+        .iter()
+        .map(|folder| addons.join(folder.as_str()))
+        .collect();
+    super::fence::under_lock(scopes, paths, Some(&target), &first_hand)?;
 
     // Re-check every addon offline, with running state as it is now.
     let current = load_record(paths, &key)?;

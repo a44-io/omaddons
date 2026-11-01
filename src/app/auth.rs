@@ -20,10 +20,9 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::cli::Context;
+use crate::engine::fence;
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning};
-use crate::fsx::{
-    Content, GlobalLock, Op, ScopeTable, WriteSession, Writer, ensure_dir_all, mutate,
-};
+use crate::fsx::{Content, GlobalLock, Op, WriteSession, Writer, ensure_dir_all, mutate};
 use crate::limits::AUTH_TOKEN_MAX_BYTES;
 use crate::net::{NetConfig, NetLog, Request, stack};
 use crate::output::{Outcome, Style};
@@ -341,7 +340,7 @@ fn write(ctx: &Context, paths: &Paths, content: &[u8]) -> Result<()> {
             ctx.actor,
         ));
     }
-    let scopes = ScopeTable::new(paths, &[], None)?;
+    let scopes = fence::table(paths, &[], None)?;
     let mut s = WriteSession::untracked(Writer::Auth, &scopes, "credentials");
     let dir = paths.credentials_dir();
     let file = paths.credential_file("github");

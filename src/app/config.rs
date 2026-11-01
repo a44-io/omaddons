@@ -11,10 +11,9 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::cli::Context;
+use crate::engine::fence;
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning};
-use crate::fsx::{
-    Content, GlobalLock, Op, ScopeTable, WriteSession, Writer, ensure_dir_all, mutate,
-};
+use crate::fsx::{Content, GlobalLock, Op, WriteSession, Writer, ensure_dir_all, mutate};
 use crate::limits::EffectiveLimits;
 use crate::output::{Outcome, Style};
 use crate::politeness::DEFAULT_CHECK_INTERVAL;
@@ -339,7 +338,7 @@ pub fn set(ctx: &Context, key: &str, raw_value: &str) -> Result<Done<SetData>> {
     let value = lookup(&after, key).map_or(serde_json::Value::Null, json);
     let changed = updated != text;
     if changed && !ctx.dry_run {
-        let scopes = ScopeTable::new(&paths, &[], None)?;
+        let scopes = fence::table(&paths, &[], None)?;
         let mut s = WriteSession::untracked(Writer::Config, &scopes, "config.toml");
         ensure_dir_all(&mut s, paths.config_dir())?;
         let op = Op::WriteFile {

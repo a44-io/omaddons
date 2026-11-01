@@ -31,6 +31,7 @@ use super::view::{DoctorView, ViewOptions};
 use crate::app::precondition::{self, of_doctor_fix};
 use crate::contract::actions::Action;
 use crate::discover::running::{RunningScan, detect_running};
+use crate::engine::fence;
 use crate::engine::journal::JournalVerdict;
 use crate::engine::repair::{
     self, CommitCtx, RepairCleanup, RepairMeta, RepairOutcome, RepairRun, RepairTx,
@@ -708,9 +709,16 @@ impl FixEffects for RealEffects<'_> {
             ));
         };
         self.started = Some(rtx.tx());
+        // The repair writes through a table fenced now, under the lock and after the
+        // delegated recoveries (E14): a stuck repair refuses what overlaps what it
+        // protects. The runtime's own table, which writes the run directory, is not.
+        let fenced = self
+            .scopes
+            .clone()
+            .with_fences(fence::load(self.paths, self.scopes.client_dirs()));
         let ctx = CommitCtx {
             lock,
-            scopes: self.scopes,
+            scopes: &fenced,
             run: &self.run,
             mount_id: &fsx::mount_id,
         };

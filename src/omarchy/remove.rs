@@ -17,8 +17,9 @@ use serde_json::{Value, json};
 use super::install;
 use super::shell;
 use crate::cli::Context;
+use crate::engine::fence;
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
-use crate::fsx::{GlobalLock, InflightLock, ScopeTable, WriteSession, Writer, failpoint};
+use crate::fsx::{GlobalLock, InflightLock, WriteSession, Writer, failpoint};
 use crate::model::{TxId, TxKind};
 use crate::state::history::{self, SettingEntry};
 use crate::state::paths::Paths;
@@ -74,7 +75,7 @@ pub fn remove(ctx: &Context) -> Result<Removal> {
         };
     let op = TxId::new();
     let inflight = InflightLock::create(&paths, &op)?;
-    let scopes = ScopeTable::new(&paths, &[], None)?;
+    let scopes = fence::table(&paths, &[], None)?;
     failpoint::hit(REMOVING).map_err(|err| {
         Error::io(
             &plugin_dir,

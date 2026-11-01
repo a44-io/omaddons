@@ -1313,6 +1313,7 @@ mod differential {
                 journals,
                 unlisted: None,
             },
+            closed: Default::default(),
         }
     }
 
