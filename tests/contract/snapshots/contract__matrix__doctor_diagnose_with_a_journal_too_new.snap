@@ -26,6 +26,7 @@ expression: s.stable(&doctor.envelope)
       "addon": null,
       "confidence": "high",
       "evidence": {
+        "attribution": "complete",
         "family": "folder",
         "format": "9.0",
         "journal": "<root>/state/omaddons/journal/<ulid>.jsonl",
@@ -35,7 +36,8 @@ expression: s.stable(&doctor.envelope)
         "snapshot_folders": 0,
         "stage_folders": 1,
         "target": "<ulid>",
-        "tx": "<ulid>"
+        "tx": "<ulid>",
+        "unattributed_dirs": []
       },
       "folder": null,
       "id": "fm-concurrency_primitives-journal-too-new",

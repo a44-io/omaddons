@@ -17,7 +17,7 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Serialize, Serializer};
 
 use super::budget::Budget;
-use crate::engine::repair_action::{JournalFamily, JournalPhase};
+use crate::engine::repair_action::{Attribution, JournalFamily, JournalPhase};
 use crate::model::{FolderName, TargetKey, TxId, TxKind};
 
 /// How sure a finding is (M4-D41): `high` when the state was observed directly (a hash, a
@@ -249,6 +249,16 @@ pub struct Evidence {
     /// what it replaced. Omitted when no journal is concerned.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub may_hold_only_copy: Option<bool>,
+    /// Whether every artifact of a stuck journal could be attributed to it without its
+    /// payload (M4-D38): `complete`, or `partial` when something may remain unaccounted
+    /// for. Omitted when no stuck journal is concerned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attribution: Option<Attribution>,
+    /// The directories that may hold what a stuck journal owns but could not be
+    /// attributed to it, sorted; never a path below a client's `Interface/` or `WTF/`.
+    /// Omitted when no stuck journal is concerned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unattributed_dirs: Option<Vec<PathBuf>>,
     /// A process's command line as it describes itself (the global lock's holder).
     /// Omitted when no process is concerned.
     #[serde(skip_serializing_if = "Option::is_none")]

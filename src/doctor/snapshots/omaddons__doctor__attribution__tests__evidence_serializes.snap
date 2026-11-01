@@ -1,0 +1,16 @@
+---
+source: src/doctor/attribution.rs
+expression: "[complete, partial]"
+---
+[
+  {
+    "attribution": "complete",
+    "unattributed_dirs": []
+  },
+  {
+    "attribution": "partial",
+    "unattributed_dirs": [
+      "/games/wow/_classic_era_"
+    ]
+  }
+]

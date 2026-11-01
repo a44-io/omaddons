@@ -1,6 +1,7 @@
 //! The doctor (M4): the failure-mode registry every `status` issue and doctor finding
 //! comes from, and the finding model. Pure: nothing here writes.
 
+pub mod attribution;
 pub mod budget;
 pub mod delegate;
 pub(crate) mod detectors;
@@ -237,7 +238,15 @@ pub(crate) mod tests {
             |code: &str| -> Vec<&str> { WRITES.into_iter().filter(|w| code.contains(w)).collect() };
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut found = Vec::new();
-        for (path, text) in sources(&root.join("src/doctor/detectors")) {
+        // Attribution (F2 s2) is the detectors' too: it reads what a set-aside would move.
+        let attribution = root.join("src/doctor/attribution.rs");
+        let scanned = sources(&root.join("src/doctor/detectors"))
+            .into_iter()
+            .chain([(
+                attribution.clone(),
+                std::fs::read_to_string(&attribution).unwrap(),
+            )]);
+        for (path, text) in scanned {
             let code = production_code(&text, Literals::Blank).unwrap_or_default();
             for needle in writes(&code) {
                 found.push(format!("{}: {needle}", path.display()));

@@ -4,6 +4,7 @@
 
 use jiff::Timestamp;
 
+use crate::doctor::attribution::attribute;
 use crate::doctor::budget::Budget;
 use crate::doctor::finding::{
     Confidence, Detected, Evidence, Incomplete, IncompleteLimit, Observation, Subject,
@@ -315,6 +316,28 @@ pub fn plural_title(id: &str, n: usize) -> Option<String> {
 
 /// Row `id`'s detector: the shared mapping, its own observations.
 fn detect_row(id: &'static str, view: &DoctorView) -> Detected {
+    detect_row_with(id, view, None)
+}
+
+/// The stuck rows (Appendix B rows 3-8), whose findings say what a set-aside of them
+/// could attribute (F2 s2).
+const STUCK: [&str; 6] = [
+    ids::JOURNAL_TOO_NEW,
+    ids::JOURNAL_UNREADABLE,
+    ids::JOURNAL_UNEXPECTED_STATE,
+    ids::JOURNAL_STEP_UNRECOGNIZED,
+    ids::JOURNAL_MARKER_MISMATCH,
+    ids::JOURNAL_UNATTRIBUTED,
+];
+
+/// A stuck row's detector: [`detect_row`], each finding with its `attribution` and
+/// `unattributed_dirs` (each journal's payload read under `budget`, whose cut is the
+/// detector's `incomplete`).
+fn detect_stuck(id: &'static str, view: &DoctorView, budget: &mut Budget) -> Detected {
+    detect_row_with(id, view, Some(budget))
+}
+
+fn detect_row_with(id: &'static str, view: &DoctorView, budget: Option<&mut Budget>) -> Detected {
     let Some(journals) = view.journals() else {
         return Detected::default();
     };
@@ -325,15 +348,29 @@ fn detect_row(id: &'static str, view: &DoctorView) -> Detected {
         caller_holds_lock: view.caller_holds_lock(),
         target_id: &target_id,
     };
-    let found = journal_observations(&input)
+    let mut found: Vec<Observation> = journal_observations(&input)
         .into_iter()
         .filter(|(row, _)| *row == id)
         .map(|(_, obs)| obs)
         .collect();
-    Detected {
-        found,
-        incomplete: journal_incomplete(&input, id),
+    let mut incomplete = journal_incomplete(&input, id);
+    if let Some(budget) = budget.filter(|_| STUCK.contains(&id)) {
+        for obs in &mut found {
+            let Some(d) = journals
+                .diagnoses
+                .journals
+                .iter()
+                .find(|d| Some(d.tx) == obs.evidence.tx)
+            else {
+                continue;
+            };
+            let a = attribute(view, d, budget);
+            obs.evidence.attribution = Some(a.attribution);
+            obs.evidence.unattributed_dirs = Some(a.unattributed);
+        }
+        incomplete = incomplete.or_else(|| budget.incomplete());
     }
+    Detected { found, incomplete }
 }
 
 /// `journal-pending`: an interrupted change recovery can settle.
@@ -345,40 +382,48 @@ pub(crate) fn journal_waits_for_game(view: &DoctorView, _: &Selection, _: &mut B
     detect_row(ids::JOURNAL_WAITS_FOR_GAME, view)
 }
 
-pub(crate) fn journal_too_new(view: &DoctorView, _: &Selection, _: &mut Budget) -> Detected {
-    detect_row(ids::JOURNAL_TOO_NEW, view)
+pub(crate) fn journal_too_new(view: &DoctorView, _: &Selection, budget: &mut Budget) -> Detected {
+    detect_stuck(ids::JOURNAL_TOO_NEW, view, budget)
 }
 
-pub(crate) fn journal_unreadable(view: &DoctorView, _: &Selection, _: &mut Budget) -> Detected {
-    detect_row(ids::JOURNAL_UNREADABLE, view)
+pub(crate) fn journal_unreadable(
+    view: &DoctorView,
+    _: &Selection,
+    budget: &mut Budget,
+) -> Detected {
+    detect_stuck(ids::JOURNAL_UNREADABLE, view, budget)
 }
 
 pub(crate) fn journal_unexpected_state(
     view: &DoctorView,
     _: &Selection,
-    _: &mut Budget,
+    budget: &mut Budget,
 ) -> Detected {
-    detect_row(ids::JOURNAL_UNEXPECTED_STATE, view)
+    detect_stuck(ids::JOURNAL_UNEXPECTED_STATE, view, budget)
 }
 
 pub(crate) fn journal_step_unrecognized(
     view: &DoctorView,
     _: &Selection,
-    _: &mut Budget,
+    budget: &mut Budget,
 ) -> Detected {
-    detect_row(ids::JOURNAL_STEP_UNRECOGNIZED, view)
+    detect_stuck(ids::JOURNAL_STEP_UNRECOGNIZED, view, budget)
 }
 
 pub(crate) fn journal_marker_mismatch(
     view: &DoctorView,
     _: &Selection,
-    _: &mut Budget,
+    budget: &mut Budget,
 ) -> Detected {
-    detect_row(ids::JOURNAL_MARKER_MISMATCH, view)
+    detect_stuck(ids::JOURNAL_MARKER_MISMATCH, view, budget)
 }
 
-pub(crate) fn journal_unattributed(view: &DoctorView, _: &Selection, _: &mut Budget) -> Detected {
-    detect_row(ids::JOURNAL_UNATTRIBUTED, view)
+pub(crate) fn journal_unattributed(
+    view: &DoctorView,
+    _: &Selection,
+    budget: &mut Budget,
+) -> Detected {
+    detect_stuck(ids::JOURNAL_UNATTRIBUTED, view, budget)
 }
 
 pub(crate) fn journal_preservation_incomplete(
