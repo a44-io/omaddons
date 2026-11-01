@@ -139,6 +139,9 @@ impl WarningCode {
             Self::JournalRecovered => {
                 "`omaddons history --limit 5` to see what was finished or rolled back"
             }
+            Self::DelegatedRecovery => {
+                "`omaddons undo <tx>` for a transaction recovery completed, `omaddons history --limit 5` for one it rolled back"
+            }
             Self::JournalPending => {
                 "`omaddons status`, or prose saying what to do when this omaddons cannot recover it"
             }

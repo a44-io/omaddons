@@ -253,12 +253,30 @@ pub(crate) mod legacy {
                     let (title, remediation) = if manual {
                         (
                             "An interrupted change needs manual repair",
-                            "see \"journal_pending that does not clear\" under Troubleshooting in the README",
+                            Remediation::prose(
+                                "see \"journal_pending that does not clear\" under Troubleshooting in the README",
+                            ),
                         )
                     } else {
+                        // The doctor's delegation (F2, M4-D53), as `doctor` shows it.
+                        let argv: Vec<String> = [
+                            "omaddons",
+                            "doctor",
+                            "fix",
+                            "--only",
+                            ids::JOURNAL_PENDING,
+                            "-t",
+                            target.id.as_str(),
+                        ]
+                        .map(str::to_owned)
+                        .to_vec();
                         (
                             "An interrupted change waits to be finished",
-                            "quit the game if it is running, then run any change command; it finishes or rolls back the change first",
+                            Remediation {
+                                command: Some(shell_words::join(&argv)),
+                                argv: Some(argv),
+                                destructive: false,
+                            },
                         )
                     };
                     issues.push(Issue {
@@ -266,7 +284,7 @@ pub(crate) mod legacy {
                         severity: Severity::P0,
                         title: title.to_owned(),
                         addon: None,
-                        remediation: Remediation::prose(remediation),
+                        remediation,
                     });
                 }
                 Attention::StateVersionNewer => issues.push(Issue {
@@ -586,10 +604,21 @@ pub(crate) mod tests {
             forget.command.as_deref(),
             Some("omaddons targets rm retail")
         );
-        for prose in [ids::JOURNAL_PENDING, ids::STATE_VERSION_NEWER] {
-            assert_eq!(remediation(prose).argv, None, "{prose}");
-            assert!(remediation(prose).command.is_some(), "{prose}");
-        }
+        // A journal recovery settles is the delegation's (F2, M4-D53).
+        assert_eq!(
+            remediation(ids::JOURNAL_PENDING).argv,
+            argv(&[
+                "omaddons",
+                "doctor",
+                "fix",
+                "--only",
+                ids::JOURNAL_PENDING,
+                "-t",
+                "retail"
+            ])
+        );
+        assert_eq!(remediation(ids::STATE_VERSION_NEWER).argv, None);
+        assert!(remediation(ids::STATE_VERSION_NEWER).command.is_some());
     }
 
     /// A stuck journal names its state, and its remediation is its `doctor explain`, which
@@ -629,19 +658,31 @@ pub(crate) mod tests {
         );
     }
 
+    /// A journal recovery can settle is remediated by the doctor's delegation, as
+    /// `doctor` shows it (M4-D53: `status` no longer says "any change command"); the
+    /// argv parses.
     #[test]
-    fn recoverable_and_waiting_rows_keep_prose() {
+    fn a_recoverable_row_is_the_doctors_fix() {
+        use clap::Parser;
         let mut t = test_target("retail", 0, &[Attention::JournalPending], 0);
         t.key = Some(KEY.parse().unwrap());
         let other = registry_issues(&t, &[recoverable(0)], false);
         assert_eq!(other[0].title, "An interrupted change waits to be finished");
-        assert_eq!(other[0].remediation.argv, None);
+        let argv = other[0].remediation.argv.clone().unwrap();
         assert_eq!(
-            other[0].remediation.command.as_deref(),
-            Some(
-                "quit the game if it is running, then run any change command; it finishes or rolls back the change first"
-            )
+            argv,
+            [
+                "omaddons",
+                "doctor",
+                "fix",
+                "--only",
+                ids::JOURNAL_PENDING,
+                "-t",
+                "retail"
+            ]
         );
+        assert!(crate::cli::Cli::try_parse_from(&argv).is_ok(), "{argv:?}");
+        assert!(!other[0].remediation.destructive);
     }
 
     #[test]

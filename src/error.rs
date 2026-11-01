@@ -416,6 +416,8 @@ macro_rules! warning_codes {
 warning_codes! {
     JournalRecovered            = "journal_recovered",
         "An interrupted transaction was finished or rolled back.";
+    DelegatedRecovery           = "delegated_recovery",
+        "A doctor fix finished an interrupted transaction through the engine's own recovery, as its preview disclosed.";
     JournalPending              = "journal_pending",
         "An interrupted transaction waits for the next change command, or cannot be recovered by this omaddons and is left as it is.";
     TxInProgress                = "tx_in_progress",
@@ -1309,7 +1311,7 @@ mod tests {
             assert!(is_wire_name(wire), "{wire}");
             assert!(seen.insert(wire), "duplicate wire name {wire}");
         }
-        assert_eq!(WarningCode::ALL.len(), 54);
+        assert_eq!(WarningCode::ALL.len(), 55);
         assert_eq!(WarningCode::TargetIdReserved.wire(), "target_id_reserved");
         for code in WarningCode::ALL {
             assert_eq!(serde_json::to_value(code).unwrap(), code.wire());

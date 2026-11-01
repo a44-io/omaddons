@@ -10,6 +10,7 @@ pub mod facts;
 pub mod finding;
 pub mod fix;
 pub mod fix_runtime;
+pub mod fixers;
 pub mod plan;
 pub mod registry;
 pub mod report;

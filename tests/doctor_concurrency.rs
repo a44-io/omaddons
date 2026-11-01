@@ -476,6 +476,46 @@ fn assert_trees(log: &TestLog, home: &Home, status_ran: bool) {
     }
 }
 
+/// Runs `argv`, a remediation an output offers for `finding`: a `doctor explain` as
+/// [`explain_holds`]; a `doctor fix` (the delegation's, F2) as its preview, which must
+/// disclose the recovery of the finding's transaction and nothing else.
+fn remediation_holds(
+    log: &TestLog,
+    home: &Home,
+    argv: &[Value],
+    env: &[(String, String)],
+    finding: &Value,
+) {
+    let words: Vec<&str> = argv[1..]
+        .iter()
+        .map(|word| word.as_str().unwrap())
+        .collect();
+    if words[..2] != ["doctor", "fix"] {
+        return explain_holds(log, home, argv, env, &finding["instance"]);
+    }
+    let mut args = words;
+    args.extend(["--dry-run", "--json"]);
+    let ran = doctor(log, home, &args, env);
+    assert!(
+        matches!(ran.run.code, 0 | 1),
+        "{argv:?}: exit {}",
+        ran.run.code
+    );
+    let planned = &ran.envelope()["delegated_planned"];
+    let txs: Vec<&Value> = planned
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| &r["tx"])
+        .collect();
+    assert_eq!(txs, [&finding["evidence"]["tx"]], "{argv:?}: {planned}");
+    assert_eq!(
+        ran.envelope()["actions_planned"],
+        json!([]),
+        "{argv:?}: a delegation runs no primitive"
+    );
+}
+
 /// Runs `argv` (a `doctor explain` an output offers) with `--json`: exit 0, and its
 /// `instances` hold `instance`.
 fn explain_holds(
@@ -657,14 +697,14 @@ fn status_and_doctor_name_each_state_alike() {
                             && f["target"]["key"].as_str().unwrap_or("machine") == scope
                     })
                     .unwrap();
-                explain_holds(&log, &home, argv, &env, &finding["instance"]);
+                remediation_holds(&log, &home, argv, &env, finding);
             }
         }
         for finding in &found {
             let remediation = &finding["remediation"];
             for argv in [&remediation["argv"], &remediation["explain_argv"]] {
                 if let Some(argv) = argv.as_array() {
-                    explain_holds(&log, &home, argv, &env, &finding["instance"]);
+                    remediation_holds(&log, &home, argv, &env, finding);
                 }
             }
         }
@@ -693,11 +733,15 @@ fn a_recoverable_journal_keeps_its_published_id_and_meaning() {
     assert_eq!(issue["id"], "fm-concurrency_primitives-journal-pending");
     assert_eq!(issue["severity"], "P0");
     assert_eq!(issue["title"], "An interrupted change waits to be finished");
+    // Its remediation is the doctor's delegation (F2, M4-D53), as `doctor` shows it.
     assert_eq!(
         issue["remediation"],
         json!({
-            "command": "quit the game if it is running, then run any change command; it finishes or rolls back the change first",
-            "argv": null,
+            "command": "omaddons doctor fix --only fm-concurrency_primitives-journal-pending -t retail",
+            "argv": [
+                "omaddons", "doctor", "fix", "--only",
+                "fm-concurrency_primitives-journal-pending", "-t", "retail",
+            ],
             "destructive": false,
         })
     );

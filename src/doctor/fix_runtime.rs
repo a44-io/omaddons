@@ -333,6 +333,8 @@ struct RealEffects<'a> {
     clients: Vec<(PathBuf, TargetKey)>,
     skill_dirs: Vec<PathBuf>,
     running: RunningScan,
+    /// The clients the view under the lock discovered, for the delegation.
+    fresh_targets: Vec<Target>,
     /// A real run's transaction, held from planning to its commit.
     rtx: Option<RepairTx>,
     tx: TxId,
@@ -679,6 +681,9 @@ impl FixEffects for RealEffects<'_> {
 
     fn fresh_plan(&mut self, _: &GlobalLockGuard) -> std::result::Result<FixPlan, Stop> {
         let view = self.fresh_view(true);
+        // The clients the delegated recoveries may write SavedVariables in: this view's,
+        // never a second discovery.
+        self.fresh_targets = clients_of(&view).1;
         let findings = if self.modes.is_empty() {
             Vec::new()
         } else {
@@ -699,7 +704,11 @@ impl FixEffects for RealEffects<'_> {
         lock: &GlobalLockGuard,
         disclosed: &[PlannedRecovery],
     ) -> Result<Vec<DelegatedOutcome>> {
-        self.delegate.recover(lock, disclosed)
+        let report = self
+            .delegate
+            .recover(lock, disclosed, &self.fresh_targets)?;
+        self.warnings.extend(report.warnings);
+        Ok(report.delegated)
     }
 
     fn commit(&mut self, lock: &GlobalLockGuard, plan: &FixPlan) -> Result<RepairOutcome> {
@@ -916,6 +925,7 @@ pub fn run_fix_at(
         clients,
         skill_dirs: vec![paths.skill_dir()],
         running,
+        fresh_targets: Vec::new(),
         rtx,
         tx,
         started: None,
@@ -1092,7 +1102,9 @@ mod tests {
         vec![DelegatedOutcome {
             fm: ids::JOURNAL_PENDING,
             tx: recovery().tx,
+            family: recovery().family,
             outcome,
+            reason: None,
         }]
     }
 
@@ -1770,6 +1782,59 @@ mod tests {
             serde_json::from_slice(&std::fs::read(run.join(REPORT_NAME)).unwrap()).unwrap();
         assert_eq!(recorded["kind"], "fix");
         assert_eq!(recorded["state"], "DONE_OK");
+    }
+
+    /// A run whose plan only delegates (M4-D37) runs the engine's recovery through the real
+    /// delegate and commits no repair: `tx`, `undo_command` and `undo_argv` are `null`,
+    /// and history holds no line, while `delegated[]` reports what recovery did.
+    #[test]
+    fn a_run_with_only_delegations_commits_no_repair() {
+        use crate::doctor::delegate::{JournalDelegate, RecoveryOutcome};
+        use crate::doctor::registry::{self, ids};
+        let (_dir, paths) = home();
+        std::fs::create_dir_all(paths.journal_dir()).unwrap();
+        let tx = TxId::new();
+        // No complete line: recovery only removes it, a rollback of nothing.
+        std::fs::write(paths.journal(&tx), "").unwrap();
+        let mut req = request(false);
+        req.checks.rows = vec![*registry::row(ids::JOURNAL_PENDING).unwrap()];
+        req.checks.tiers = vec![Tier::Cached];
+        let delegate = JournalDelegate {
+            paths: &paths,
+            actor: Actor::Human,
+        };
+        let outcome = run_fix_at(&paths, &req, &delegate).unwrap();
+        let report = &outcome.report;
+        assert_eq!(
+            (report.state, outcome.exit),
+            (RunState::DoneOk, Exit::Healthy),
+            "{:?}",
+            outcome.error
+        );
+        let delegated = report.delegated.as_ref().unwrap();
+        assert_eq!(
+            delegated
+                .iter()
+                .map(|d| (d.fm, d.tx, d.outcome, d.reason.clone()))
+                .collect::<Vec<_>>(),
+            [(ids::JOURNAL_PENDING, tx, RecoveryOutcome::RolledBack, None)],
+            "{delegated:?}"
+        );
+        assert!(!paths.journal(&tx).exists(), "recovered");
+        assert!(
+            report.tx.is_none(),
+            "no repair transaction: {:?}",
+            report.tx
+        );
+        assert!(report.undo_command.is_none() && report.undo_argv.is_none());
+        assert_eq!(report.actions.as_deref(), Some(&[][..]));
+        assert_eq!(report.summary.findings_after, Some(0));
+        let history = std::fs::read_to_string(paths.history_file()).unwrap_or_default();
+        assert!(history.is_empty(), "no history line: {history}");
+        assert!(
+            !PathBuf::from(&report.run_dir).join(UNDO_SCRIPT).exists(),
+            "no undo.sh"
+        );
     }
 
     #[test]

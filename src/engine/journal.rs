@@ -22,6 +22,7 @@
 //! "nothing ran", it would be pruned with the only record of the change. Only a torn
 //! last line, a crash mid-append, is ignored.
 
+use std::collections::BTreeSet;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -1094,6 +1095,185 @@ pub fn recover_all(env: &RecoveryEnv<'_>) -> Result<Vec<Warning>> {
     recover_all_with(env, &mut OnDisk)
 }
 
+/// What recovery did with one transaction it reached, for a caller that reports each
+/// one's outcome rather than warnings to show (the doctor's delegation, M4-D37).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TxOutcome {
+    pub tx: TxId,
+    pub family: JournalFamily,
+    pub result: TxResult,
+    /// The warnings recovering it gave: its `journal_recovered` first when it rolled,
+    /// then what its roll-forward left (`saved_variables_deferred`, …).
+    pub warnings: Vec<Warning>,
+}
+
+/// How recovering one transaction ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TxResult {
+    RolledBack,
+    RolledForward,
+    /// Removed with nothing run: never prepared, or committed or rolled back already.
+    Pruned,
+    /// Left as it is: recovery stopped at it, with its error's code and `details.reason`.
+    Stopped {
+        code: ErrorCode,
+        reason: Option<String>,
+    },
+}
+
+/// [`recover_disclosed`]'s result.
+#[derive(Debug, Clone)]
+pub struct Disclosed {
+    /// One per transaction recovery reached, in the order it reached them.
+    pub outcomes: Vec<TxOutcome>,
+    /// The warnings of no one transaction it reached (a journal it left behind a repair,
+    /// one it could not recover on another client), in recovery's order; with no
+    /// restriction, every warning.
+    pub warnings: Vec<Warning>,
+    /// What stopped recovery before it went through every journal, when something did; it
+    /// is also a `journal_pending` warning in `warnings`.
+    pub error: Option<Error>,
+}
+
+/// Recovery's settle, recording each transaction's outcome as it reaches it.
+#[derive(Default)]
+struct Disclosing {
+    outcomes: Vec<TxOutcome>,
+}
+
+impl Disclosing {
+    fn stopped(error: &Error) -> TxResult {
+        TxResult::Stopped {
+            code: error.code,
+            reason: error.details["reason"].as_str().map(str::to_owned),
+        }
+    }
+}
+
+impl Settle for Disclosing {
+    fn folder(&mut self, env: &RecoveryEnv<'_>, tx: &TxId, path: PathBuf) -> Result<Vec<Warning>> {
+        let recovered = recover_one_outcome(env, tx, path);
+        let (result, warnings) = match &recovered {
+            Ok((Some(RecoveryAction::RolledBack), warnings)) => {
+                (TxResult::RolledBack, warnings.clone())
+            }
+            Ok((Some(RecoveryAction::RolledForward), warnings)) => {
+                (TxResult::RolledForward, warnings.clone())
+            }
+            Ok((None, warnings)) => (TxResult::Pruned, warnings.clone()),
+            Err(error) => (Self::stopped(error), Vec::new()),
+        };
+        self.outcomes.push(TxOutcome {
+            tx: *tx,
+            family: JournalFamily::Folder,
+            result,
+            warnings,
+        });
+        recovered.map(|(_, warnings)| warnings)
+    }
+
+    fn repair(&mut self, env: &RecoveryEnv<'_>, tx: TxId, path: &Path) -> Result<Option<Warning>> {
+        use super::repair::recover::Settled;
+        let settled = super::repair::recover::settle_outcome(env, tx, path);
+        let result = match &settled {
+            Ok((Settled::Live, _)) => None,
+            Ok((Settled::Pruned, _)) => Some(TxResult::Pruned),
+            Ok((Settled::Rolled(RecoveryAction::RolledBack), _)) => Some(TxResult::RolledBack),
+            Ok((Settled::Rolled(RecoveryAction::RolledForward), _)) => {
+                Some(TxResult::RolledForward)
+            }
+            Err(error) => Some(Self::stopped(error)),
+        };
+        if let Some(result) = result {
+            let warnings = match &settled {
+                Ok((_, warning)) => warning.iter().cloned().collect(),
+                Err(_) => Vec::new(),
+            };
+            self.outcomes.push(TxOutcome {
+                tx,
+                family: JournalFamily::Repair,
+                result,
+                warnings,
+            });
+        }
+        settled.map(|(_, warning)| warning)
+    }
+}
+
+/// Recovery under the global lock `lock`, as [`recover_under`] runs it, restricted to the
+/// transactions `only` names (`None`: every one), with each reached transaction's outcome.
+/// A journal `only` does not name is skipped in every pass exactly as one whose writer is
+/// alive: left as it is, no warning, no error (so a barrier owner skipped this way holds
+/// back what it names, silently). What stopped recovery is in `error`, and a
+/// `journal_pending` warning. Rolling any journal back or forward rings the doorbell once.
+pub fn recover_disclosed(
+    lock: &GlobalLockGuard,
+    paths: &Paths,
+    sv_writable: &dyn Fn(&Path) -> bool,
+    command: &str,
+    actor: Actor,
+    only: Option<&BTreeSet<TxId>>,
+) -> Disclosed {
+    let left = |error: &Error| {
+        Warning::new(
+            WarningCode::JournalPending,
+            format!(
+                "unfinished transactions could not be recovered: {}",
+                error.message
+            ),
+        )
+        .with_fix(Suggestion::command(["omaddons", "status"]))
+    };
+    let scopes = match ScopeTable::new(paths, &[], None) {
+        Ok(scopes) => scopes,
+        Err(error) => {
+            return Disclosed {
+                outcomes: Vec::new(),
+                warnings: vec![left(&error)],
+                error: Some(error),
+            };
+        }
+    };
+    let env = RecoveryEnv {
+        lock,
+        paths,
+        scopes: &scopes,
+        own: &[],
+        sv_writable,
+    };
+    let mut disclosing = Disclosing::default();
+    let recovered = match only {
+        None => recover_all(&env),
+        Some(only) => recover_all_in(&env, &mut disclosing, Some(only)),
+    };
+    let outcomes = disclosing.outcomes;
+    let (warnings, error) = match recovered {
+        Ok(mut all) => {
+            // What a reached transaction gave is its outcome's; the rest is the run's.
+            for warning in outcomes.iter().flat_map(|o| &o.warnings) {
+                // ubs:ignore — comparing warnings (a code and its text), not secrets
+                if let Some(at) = all.iter().position(|w| w == warning) {
+                    all.remove(at);
+                }
+            }
+            (all, None)
+        }
+        Err(error) => (vec![left(&error)], Some(error)),
+    };
+    if warnings
+        .iter()
+        .chain(outcomes.iter().flat_map(|o| &o.warnings))
+        .any(|w| matches!(w.code, WarningCode::JournalRecovered))
+    {
+        doorbell::ring(paths, command, actor);
+    }
+    Disclosed {
+        outcomes,
+        warnings,
+        error,
+    }
+}
+
 /// What recovery does with one journal whose writer is gone, behind a seam so the unit
 /// tests observe the passes' order without crashing anything.
 pub(crate) trait Settle {
@@ -1121,6 +1301,20 @@ pub(crate) fn recover_all_with(
     env: &RecoveryEnv<'_>,
     settle: &mut dyn Settle,
 ) -> Result<Vec<Warning>> {
+    recover_all_in(env, settle, None)
+}
+
+/// Whether `only` leaves `tx` out.
+fn excluded(only: Option<&BTreeSet<TxId>>, tx: &TxId) -> bool {
+    only.is_some_and(|only| !only.contains(tx))
+}
+
+/// [`recover_all_with`], restricted to the transactions `only` names ([`recover_disclosed`]).
+fn recover_all_in(
+    env: &RecoveryEnv<'_>,
+    settle: &mut dyn Settle,
+    only: Option<&BTreeSet<TxId>>,
+) -> Result<Vec<Warning>> {
     // Recovery writes with the caller's scopes but never its fences (E14): it is ordered,
     // never refused mid-way. Order is what keeps it off a stuck repair's resources.
     let unfenced = env.scopes.without_fences();
@@ -1138,7 +1332,13 @@ pub(crate) fn recover_all_with(
     while let Some(owner) = passes.next_owner() {
         // ubs:ignore — comparing transaction ids (public ULIDs), not secrets
         if let Some(listed) = listing.iter().find(|l| l.listed.tx == owner) {
-            let outcome = repair_pass(env, settle, &passes, listed, &mut warnings);
+            let outcome = if excluded(only, &owner) {
+                Outcome::Live {
+                    finished: listed.finished,
+                }
+            } else {
+                repair_pass(env, settle, &passes, listed, &mut warnings)
+            };
             passes.record(owner, outcome);
         }
     }
@@ -1146,7 +1346,10 @@ pub(crate) fn recover_all_with(
     // its journal back; a reactivation it rolled back has taken one away).
     let mut unresolved: Vec<(TxId, Stuck)> = Vec::new();
     for (tx, path) in list(env.paths).map_err(|error| unattributed(error, None))? {
-        if InflightLock::is_live(env.paths, &tx).map_err(|error| unattributed(error, Some(&tx)))? {
+        if excluded(only, &tx)
+            || InflightLock::is_live(env.paths, &tx)
+                .map_err(|error| unattributed(error, Some(&tx)))?
+        {
             continue;
         }
         // Whose it is, for isolation, from its `prepared` line even when that line does
@@ -1211,6 +1414,15 @@ pub(crate) fn recover_all_with(
         let Some(listed) = relisted.iter().find(|l| l.listed.tx == tx) else {
             continue;
         };
+        if excluded(only, &tx) {
+            passes.record(
+                tx,
+                Outcome::Live {
+                    finished: listed.finished,
+                },
+            );
+            continue;
+        }
         let held = listed.listed.live || passes.behind(&tx).is_some();
         if let (false, false, PreparedRead::Decoded(prepared)) =
             (held, unresolved.is_empty(), &listed.listed.prepared)
@@ -1345,37 +1557,7 @@ pub fn recover_under(
     command: &str,
     actor: Actor,
 ) -> Vec<Warning> {
-    let left = |error: Error| {
-        vec![
-            Warning::new(
-                WarningCode::JournalPending,
-                format!(
-                    "unfinished transactions could not be recovered: {}",
-                    error.message
-                ),
-            )
-            .with_fix(Suggestion::command(["omaddons", "status"])),
-        ]
-    };
-    let scopes = match ScopeTable::new(paths, &[], None) {
-        Ok(scopes) => scopes,
-        Err(error) => return left(error),
-    };
-    let env = RecoveryEnv {
-        lock,
-        paths,
-        scopes: &scopes,
-        own: &[],
-        sv_writable,
-    };
-    let warnings = recover_all(&env).unwrap_or_else(left);
-    if warnings
-        .iter()
-        .any(|w| matches!(w.code, WarningCode::JournalRecovered))
-    {
-        doorbell::ring(paths, command, actor);
-    }
-    warnings
+    recover_disclosed(lock, paths, sv_writable, command, actor, None).warnings
 }
 
 /// For a command that cannot tell whether a client runs: never write SavedVariables.
@@ -1450,11 +1632,21 @@ pub fn recover_tx(env: &RecoveryEnv<'_>, tx: &TxId) -> Result<Option<Recovered>>
 
 /// Recovers one journal and reports it.
 fn recover_one(env: &RecoveryEnv<'_>, tx: &TxId, path: PathBuf) -> Result<Vec<Warning>> {
+    recover_one_outcome(env, tx, path).map(|(_, warnings)| warnings)
+}
+
+/// [`recover_one`], with which way it rolled (`None`: it only removed the journal).
+fn recover_one_outcome(
+    env: &RecoveryEnv<'_>,
+    tx: &TxId,
+    path: PathBuf,
+) -> Result<(Option<RecoveryAction>, Vec<Warning>)> {
     let parsed = read(&path)?;
     let recovered = recover_parsed(env, tx, &path, &parsed)?;
     let (Some(recovered), Some(prepared)) = (recovered, &parsed.prepared) else {
-        return Ok(Vec::new());
+        return Ok((None, Vec::new()));
     };
+    let action = recovered.action;
     let what = match recovered.action {
         RecoveryAction::RolledForward => "completed it (rolled forward)",
         RecoveryAction::RolledBack => "undid it (rolled back)",
@@ -1481,7 +1673,7 @@ fn recover_one(env: &RecoveryEnv<'_>, tx: &TxId, path: PathBuf) -> Result<Vec<Wa
         .with_fix(Suggestion::command(["omaddons", "history", "--limit", "5"])),
     ];
     warnings.extend(recovered.warnings);
-    Ok(warnings)
+    Ok((Some(action), warnings))
 }
 
 /// Rolls forward or back by phase, then prunes what the transaction left: its snapshots
@@ -5163,6 +5355,199 @@ mod tests {
                 "the census found no read in {place:?}: it no longer sees the code"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Recovery restricted to disclosed transactions (M4-D37: the doctor's delegation).
+
+    /// An empty journal of a fresh transaction in `paths`: no complete line, so recovery
+    /// only removes it (`Pruned`); its writer is gone.
+    fn unprepared(paths: &Paths) -> TxId {
+        let tx = TxId::new();
+        plant_text(paths, tx, "");
+        tx
+    }
+
+    /// A `prepared` line with no target that does not decode: it fails every recovery
+    /// that reaches it (`unattributed`).
+    const UNATTRIBUTED: &str = "{\"type\":\"prepared\",\"schema_version\":\"1.1\"}\n";
+
+    /// Journal `tx` of `paths`, holding `text`.
+    fn plant_text(paths: &Paths, tx: TxId, text: &str) {
+        std::fs::create_dir_all(paths.journal_dir()).unwrap();
+        std::fs::write(paths.journal(&tx), text).unwrap();
+    }
+
+    fn disclosed(paths: &Paths, only: Option<&[TxId]>) -> Disclosed {
+        let lock = GlobalLock::acquire(paths, "test").unwrap();
+        let only: Option<BTreeSet<TxId>> = only.map(|txs| txs.iter().copied().collect());
+        recover_disclosed(
+            &lock,
+            paths,
+            &|_| false,
+            "doctor fix",
+            Actor::Human,
+            only.as_ref(),
+        )
+    }
+
+    /// Two interrupted transactions, recovery restricted to one: the other's journal
+    /// bytes, stage and snapshots are left as they were, and only the one given has an
+    /// outcome; then the other, alone.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn recovery_restricted_to_one_transaction_leaves_the_other() {
+        use crate::engine::testing::tree_hash;
+        let scene = interrupted_swap();
+        let other = unprepared(&scene.paths);
+        let journal = std::fs::read(scene.paths.journal(&scene.tx)).unwrap();
+        let stage = tree_hash(&scene.staged.stage_dir);
+        let snapshot = tree_hash(&scene.client.snapshots(&scene.tx));
+        let got = disclosed(&scene.paths, Some(&[other]));
+        assert_eq!(
+            got.outcomes,
+            [TxOutcome {
+                tx: other,
+                family: JournalFamily::Folder,
+                result: TxResult::Pruned,
+                warnings: Vec::new(),
+            }],
+            "{got:#?}"
+        );
+        assert!(got.error.is_none() && got.warnings.is_empty(), "{got:#?}");
+        assert!(
+            !scene.paths.journal(&other).exists(),
+            "the one given is settled"
+        );
+        assert_eq!(
+            std::fs::read(scene.paths.journal(&scene.tx)).unwrap(),
+            journal,
+            "the other's journal, byte for byte"
+        );
+        assert_eq!(tree_hash(&scene.staged.stage_dir), stage, "its stage");
+        assert_eq!(
+            tree_hash(&scene.client.snapshots(&scene.tx)),
+            snapshot,
+            "its snapshot"
+        );
+        let got = disclosed(&scene.paths, Some(&[scene.tx]));
+        let [outcome] = &got.outcomes[..] else {
+            panic!("one outcome: {got:#?}"); // ubs:ignore — fails the test
+        };
+        assert_eq!(
+            (outcome.tx, outcome.result.clone()),
+            (scene.tx, TxResult::RolledBack),
+            "{got:#?}"
+        );
+        assert!(
+            matches!(&outcome.warnings[..], [w] if matches!(w.code, WarningCode::JournalRecovered)),
+            "its own journal_recovered is its outcome's: {got:#?}"
+        );
+        assert!(got.warnings.is_empty(), "{got:#?}");
+        assert_eq!(
+            scene.notes("Foo").as_deref(),
+            Some("old foo"),
+            "rolled back"
+        );
+    }
+
+    /// A journal with no readable target fails every recovery that reaches it: one the
+    /// restriction does not name is skipped like a live writer's, so it never stops the
+    /// transaction that was disclosed, though it sorts first.
+    #[test]
+    fn a_restriction_skips_an_unattributed_journal_it_was_not_given() {
+        let scene = crate::engine::testing::Scene::new();
+        let unattributed: TxId = "01JB8Q2VA00000000000000001".parse().unwrap();
+        plant_text(&scene.paths, unattributed, UNATTRIBUTED);
+        let given = unprepared(&scene.paths);
+        assert!(unattributed < given, "it sorts first");
+        // Unrestricted, it stops recovery before the other is reached.
+        let all = disclosed(&scene.paths, None);
+        assert!(all.error.is_some(), "{all:#?}");
+        assert!(scene.paths.journal(&given).exists(), "{all:#?}");
+        let got = disclosed(&scene.paths, Some(&[given]));
+        assert!(got.error.is_none(), "{got:#?}");
+        assert_eq!(
+            got.outcomes
+                .iter()
+                .map(|o| (o.tx, o.result.clone()))
+                .collect::<Vec<_>>(),
+            [(given, TxResult::Pruned)],
+            "{got:#?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(scene.paths.journal(&unattributed)).unwrap(),
+            UNATTRIBUTED,
+            "the unattributed journal is left as it is"
+        );
+    }
+
+    /// A disclosed journal recovery stops at reports its error's code and reason: one
+    /// whose client no longer carries its target's marker.
+    #[test]
+    fn a_disclosed_journal_that_stops_reports_its_reason() {
+        let scene = planted(|t| format!("{t}\n"));
+        std::fs::remove_file(crate::discover::registry::marker_path(
+            scene.client.client_dir(),
+        ))
+        .unwrap();
+        let got = disclosed(&scene.paths, Some(&[scene.tx]));
+        assert_eq!(
+            got.outcomes
+                .iter()
+                .map(|o| (o.tx, o.result.clone()))
+                .collect::<Vec<_>>(),
+            [(
+                scene.tx,
+                TxResult::Stopped {
+                    code: ErrorCode::ScopeDenied,
+                    reason: Some("marker_mismatch".to_owned()),
+                }
+            )],
+            "{got:#?}"
+        );
+        assert_eq!(left(&scene), [true; 5], "left whole");
+        assert!(
+            got.warnings
+                .iter()
+                .any(|w| matches!(w.code, WarningCode::JournalPending)),
+            "the journal it left is reported: {got:#?}"
+        );
+    }
+
+    /// With no restriction, recovery is `recover_under`'s: every warning in `warnings`
+    /// and no outcome, for a rollback, and for a journal that stops all of recovery.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn no_restriction_is_todays_recover_under() {
+        let scene = interrupted_swap();
+        let got = disclosed(&scene.paths, None);
+        assert!(got.outcomes.is_empty() && got.error.is_none(), "{got:#?}");
+        let [warning] = &got.warnings[..] else {
+            panic!("one warning: {got:#?}"); // ubs:ignore — fails the test
+        };
+        assert_eq!(warning.code, WarningCode::JournalRecovered);
+        assert!(
+            warning.message.ends_with("recovery undid it (rolled back)"),
+            "{}",
+            warning.message
+        );
+        let scene = crate::engine::testing::Scene::new();
+        plant_text(
+            &scene.paths,
+            "01JB8Q2VA00000000000000001".parse().unwrap(),
+            UNATTRIBUTED,
+        );
+        let lock = scene.lock();
+        let under = recover_under(&lock, &scene.paths, &|_| false, "test", Actor::Human);
+        drop(lock);
+        let got = disclosed(&scene.paths, None);
+        assert_eq!(got.warnings, under, "{got:#?}");
+        assert!(
+            matches!(&under[..], [w] if matches!(w.code, WarningCode::JournalPending)
+                && w.message.starts_with("unfinished transactions could not be recovered")),
+            "{under:?}"
+        );
     }
 
     // -----------------------------------------------------------------------------------

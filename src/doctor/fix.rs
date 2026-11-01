@@ -1309,13 +1309,24 @@ pub fn remediation_for(
     spec: &FixerSpec,
     target_id: Option<&str>,
 ) -> Remediation {
+    let planned = (spec.plan)(view, finding);
+    // An instance its detector marks as no default fix's (a preservation recovery would
+    // not resume), and that its fixer plans nothing for, keeps the row's own remediation
+    // (its evidence): a `doctor fix` would do nothing for it, and `status` shows the same.
+    if spec.enabled
+        && !spec.needs_force
+        && !finding.remediation.auto_fixable
+        && planned.as_ref().is_ok_and(Vec::is_empty)
+    {
+        return finding.remediation.clone();
+    }
     let mut argv = argv_of(&["omaddons", "doctor", "fix", "--only", finding.id]);
     with_target(&mut argv, target_id);
     if spec.needs_force {
         argv.extend(argv_of(&["--force", "--yes"]));
     }
     let explain_argv = explain_argv(finding.id, target_id);
-    let estimated_actions = (spec.plan)(view, finding).map_or(0, |fixes| {
+    let estimated_actions = planned.map_or(0, |fixes| {
         fixes
             .iter()
             .map(Fix::primitive_count)

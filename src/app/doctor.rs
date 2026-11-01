@@ -12,7 +12,7 @@ use serde::Deserialize;
 use crate::cli::{Context, fix_argv, fix_argv_with_value};
 use crate::contract::actions::Action;
 use crate::doctor::budget::{self, Budget, parse_budget};
-use crate::doctor::delegate::NoDelegate;
+use crate::doctor::delegate::{DelegatedOutcome, JournalDelegate, RecoveryOutcome};
 use crate::doctor::exit::Exit;
 use crate::doctor::explain::{self, ExplainReport};
 use crate::doctor::finding::{Finding, Severity};
@@ -581,7 +581,11 @@ pub fn run_fix(ctx: &Context, args: &FixArgs) -> std::result::Result<FixRun, Doc
         offline: ctx.offline,
         notes: ctx.notes.clone(),
     };
-    let outcome = runtime::run_fix_at(&paths, &req, &NoDelegate)?;
+    let delegate = JournalDelegate {
+        paths: &paths,
+        actor: ctx.actor,
+    };
+    let outcome = runtime::run_fix_at(&paths, &req, &delegate)?;
     Ok(FixRun {
         outcome,
         roots: Roots::of(&paths, None),
@@ -687,6 +691,21 @@ pub struct DiffRun {
     pub outcome: DiffOutcome,
     roots: Roots,
     verbose: bool,
+}
+
+/// One delegated recovery as a line (M4-D37): a roll-forward with the undo that reverts
+/// it, a wait, or a failure with its reason. Transactions only, never a path.
+fn delegated_line(d: &DelegatedOutcome) -> String {
+    let reason = d.reason.as_deref().unwrap_or("unknown");
+    match d.outcome {
+        RecoveryOutcome::RolledBack => format!("recovered tx {} (rolled back)", d.tx),
+        RecoveryOutcome::RolledForward => format!(
+            "recovered tx {} (rolled forward) · undo: omaddons undo {}",
+            d.tx, d.tx
+        ),
+        RecoveryOutcome::Waiting => format!("tx {} waits for the game to close", d.tx),
+        RecoveryOutcome::Failed => format!("could not recover tx {}: {reason}", d.tx),
+    }
 }
 
 /// One planned or run primitive as a line: its op, its path and a rename's destination.
@@ -846,9 +865,15 @@ impl DoctorOutcome for FixRun {
         let actions = r.actions.as_deref().unwrap_or_default();
         let delegated = r.delegated.as_deref().unwrap_or_default();
         if r.state == RunState::DoneFailed {
+            // What the delegation finished before the repair stands (its lines follow).
+            let changed = if delegated.is_empty() {
+                "; nothing was changed"
+            } else {
+                ""
+            };
             writeln!(
                 w,
-                "{} · rolled back: {} restored; nothing was changed",
+                "{} · rolled back: {} restored{changed}",
                 style.bold("omaddons doctor fix"),
                 crate::output::count(r.summary.backups_restored as usize, "action")
             )?;
@@ -859,7 +884,7 @@ impl DoctorOutcome for FixRun {
                 "nothing to repair"
             };
             writeln!(w, "{} · {what}", style.bold("omaddons doctor fix"))?;
-        } else {
+        } else if !actions.is_empty() {
             let fms: std::collections::BTreeSet<&str> =
                 actions.iter().map(|a| a.step.fm.as_ref()).collect();
             writeln!(
@@ -875,13 +900,7 @@ impl DoctorOutcome for FixRun {
             }
         }
         for d in delegated {
-            let outcome = serde_json::to_value(d.outcome).unwrap_or_default();
-            writeln!(
-                w,
-                "recovered tx {} ({})",
-                d.tx,
-                outcome.as_str().unwrap_or_default()
-            )?;
+            writeln!(w, "{}", delegated_line(d))?;
         }
         let repaired: std::collections::BTreeSet<&str> =
             actions.iter().map(|a| a.step.fm.as_ref()).collect();

@@ -31,7 +31,9 @@ use serde_json::json;
 use super::inverse::{OnDisk, append, manual_repair, pending, roll_back, roll_forward};
 use super::journal::{self, ParsedRepair, PreparedRead, RepairLine, RepairPhase, RepairPrepared};
 use crate::engine::barrier::{self, ListedRepair};
-use crate::engine::journal::{RecoveryEnv, StopReason, Unrecoverable, unattributed};
+use crate::engine::journal::{
+    RecoveryAction, RecoveryEnv, StopReason, Unrecoverable, unattributed,
+};
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::{
     self, InflightLock, LockUse, PruneReason, ScopeTable, WriteSession, Writer, canonical_lenient,
@@ -113,14 +115,35 @@ pub(crate) fn listing(paths: &Paths) -> Result<Vec<RepairListing>> {
 /// never fails on it, since the fences every mutating command loads refuse exactly the
 /// writes that overlap what it protects (M4-D62).
 pub(crate) fn settle_one(env: &RecoveryEnv<'_>, tx: TxId, path: &Path) -> Result<Option<Warning>> {
+    settle_outcome(env, tx, path).map(|(_, warning)| warning)
+}
+
+/// What [`settle_one`] did with a repair journal, for a caller that reports each
+/// transaction's outcome (the doctor's delegation, M4-D37).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Settled {
+    /// Its writer holds its in-flight lock: left as it is.
+    Live,
+    /// Removed with nothing run: never prepared, or committed or rolled back already.
+    Pruned,
+    Rolled(RecoveryAction),
+}
+
+/// [`settle_one`], with what it did.
+pub(crate) fn settle_outcome(
+    env: &RecoveryEnv<'_>,
+    tx: TxId,
+    path: &Path,
+) -> Result<(Settled, Option<Warning>)> {
     let live =
         InflightLock::is_live(env.paths, &tx).map_err(|error| unattributed(error, Some(&tx)))?;
     if live {
-        return Ok(None);
+        return Ok((Settled::Live, None));
     }
     // A journal that cannot be read names no client, as one with no target does.
     let parsed = journal::read(env.paths, path).map_err(|error| unattributed(error, Some(&tx)))?;
-    recover_one(env, tx, path, &parsed)
+    let (action, warning) = recover_one(env, tx, path, &parsed)?;
+    Ok((action.map_or(Settled::Pruned, Settled::Rolled), warning))
 }
 
 /// Every repair journal through [`settle_one`], in transaction order and without the
@@ -169,13 +192,14 @@ pub(crate) fn route(parsed: &ParsedRepair) -> RepairRoute<'_> {
     }
 }
 
-/// Settles one repair journal by its route, then prunes it and its in-flight lock.
+/// Settles one repair journal by its route, then prunes it and its in-flight lock: which
+/// way it rolled (`None`: only pruned), and its `journal_recovered` warning when it did.
 fn recover_one(
     env: &RecoveryEnv<'_>,
     tx: TxId,
     path: &Path,
     parsed: &ParsedRepair,
-) -> Result<Option<Warning>> {
+) -> Result<(Option<RecoveryAction>, Option<Warning>)> {
     let settled = match route(parsed) {
         RepairRoute::Unrecoverable(why) => return Err(unrecoverable(tx, parsed, why)),
         RepairRoute::Prune => None,
@@ -190,14 +214,14 @@ fn recover_one(
                 append(&mut s, path, &RepairLine::RolledBack)
                     .map_err(|error| pending(error, tx))?;
             }
-            Some("undid it (rolled back)")
+            Some(RecoveryAction::RolledBack)
         }
         RepairRoute::Forward(prepared) => {
             let scopes = scopes_of(env.paths, tx, prepared)?;
             let mut s = WriteSession::untracked(Writer::Doctor, &scopes, "repair recovery");
             roll_forward(&mut s, env.paths, path, prepared, parsed.torn_tail)
                 .map_err(|error| pending(error, tx))?;
-            Some("completed it (rolled forward)")
+            Some(RecoveryAction::RolledForward)
         }
     };
     let mut victims = vec![path.to_path_buf()];
@@ -212,13 +236,18 @@ fn recover_one(
         LockUse::Held(env.lock),
     )
     .map_err(|error| pending(error, tx))?;
-    Ok(settled.map(|what| {
+    let warning = settled.map(|action| {
+        let what = match action {
+            RecoveryAction::RolledBack => "undid it (rolled back)",
+            RecoveryAction::RolledForward => "completed it (rolled forward)",
+        };
         Warning::new(
             WarningCode::JournalRecovered,
             format!("repair transaction {tx} was interrupted; recovery {what}"),
         )
         .with_fix(Suggestion::command(["omaddons", "history", "--limit", "5"]))
-    }))
+    });
+    Ok((settled, warning))
 }
 
 /// The scope table a repair's recovery writes with: what [`admit`] admits, the markers

@@ -371,8 +371,18 @@ fn a_leftover_journal_needs_attention_and_a_held_lock_does_not() {
             .iter()
             .any(|w| w["code"] == "journal_pending")
     );
-    // The most urgent issue, and the summary that ranks the machine by it.
+    // The most urgent issue, and the summary that ranks the machine by it. Its
+    // remediation is the doctor's delegation (F2, M4-D53).
     let issue = &retail["issues"][0];
+    let fix = serde_json::json!([
+        "omaddons",
+        "doctor",
+        "fix",
+        "--only",
+        "fm-concurrency_primitives-journal-pending",
+        "-t",
+        retail["id"]
+    ]);
     assert_eq!(
         (
             &issue["id"],
@@ -382,7 +392,7 @@ fn a_leftover_journal_needs_attention_and_a_held_lock_does_not() {
         (
             &Value::from("fm-concurrency_primitives-journal-pending"),
             &Value::from("P0"),
-            &Value::Null
+            &fix
         ),
         "{envelope}"
     );
@@ -515,12 +525,21 @@ fn a_stuck_journal_has_its_own_issue_title_and_remediation() {
         ],
         "{retail:#}"
     );
+    // A journal recovery can settle is the doctor's delegation (F2, M4-D53).
     assert_eq!(
         issues(&classic),
         [(
             "fm-concurrency_primitives-journal-pending".to_owned(),
             "An interrupted change waits to be finished".to_owned(),
-            Value::Null,
+            json!([
+                "omaddons",
+                "doctor",
+                "fix",
+                "--only",
+                "fm-concurrency_primitives-journal-pending",
+                "-t",
+                "classic"
+            ]),
         )],
         "{classic:#}"
     );

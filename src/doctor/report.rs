@@ -585,9 +585,10 @@ mod tests {
                     p2: 1,
                     p3: 1
                 },
-                auto_fixable: 0,
+                // The pending journal is the delegation's (F2).
+                auto_fixable: 1,
                 needs_force: 0,
-                manual: 3,
+                manual: 2,
                 online_required: 0,
                 skipped: 1,
                 incomplete: 1,

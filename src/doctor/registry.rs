@@ -392,7 +392,10 @@ impl FailureMode {
             argv: base.argv,
             explain_command: shell_words::join(&explain_argv),
             explain_argv,
-            auto_fixable: self.fix.is_some_and(|fix| fix.enabled && !fix.needs_force),
+            // An instance its detector marks as one recovery would not resume
+            // (`evidence.resumable: false`) is no fixer's to repair now.
+            auto_fixable: self.fix.is_some_and(|fix| fix.enabled && !fix.needs_force)
+                && f.evidence.resumable != Some(false),
             needs_force: self.fix.is_some_and(|fix| fix.needs_force),
             estimated_actions: 0,
             destructive: base.destructive,
@@ -488,18 +491,14 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         severity: Severity::P0,
         title: "an interrupted change waits to be finished",
         description: "A change's journal is still in the state directory, no omaddons process is writing it, and recovery can settle it: the next command that takes the lock rolls it back, rolls it forward or removes it. An interrupted doctor repair counts too.",
-        why: "Until it is settled the client's folders may be half-swapped, and every change on that client recovers it first.",
+        why: "An interrupted change is waiting to be finished, and until then the client's folders may be half-swapped. The doctor's fix finishes it with omaddons' own recovery, the same one every change command runs first: it rolls the change back, or forward when its renames had all completed. The preview lists every recovery before it runs. This is not a doctor repair, so the doctor's undo does not revert it: a change that recovery completed is undone like any other change, by its transaction id; one it rolled back needs no undo. An interrupted settings restore is finished only while its game is closed.",
         tier: Tier::Cached,
         online: false,
         cost_ms: 1,
         requires: &[Layer::Journals],
         detect: Some(concurrency::journal_pending),
-        fix: None,
-        manual: Some(Manual {
-            instruction: "quit the game, then run any change command on that client: it finishes or rolls back the interrupted change first",
-            why: "only a change command recovers a journal, under the lock and with the game closed",
-            remediation: journal_manual,
-        }),
+        fix: Some(DELEGATE),
+        manual: None,
     },
     FailureMode {
         id: ids::JOURNAL_PRESERVATION_INCOMPLETE,
@@ -507,17 +506,17 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         severity: Severity::P1,
         title: "an interrupted restore has not finished keeping the settings it displaced",
         description: "Rolling back a WTF/ restore found settings played on since, or a staged copy whose backup is gone, and started keeping them as a recovered backup, but did not finish.",
-        why: "Recovery keeps everything until that backup is complete; it retries on every change and succeeds once the cause, usually a full disk, is gone.",
+        why: "Recovering an interrupted WTF/ restore could not finish giving the settings it displaced a home as a recovered backup, usually because the disk was full or an I/O error occurred. Everything is still in place under the transaction's stage. Recovery resumes with the same backup id once the cause is gone: free space or fix the error, then run the fix. When the evidence says resumption would stop for another reason, no fix is offered and the evidence names what blocks it.",
         tier: Tier::Cached,
         online: false,
         cost_ms: 1,
         requires: &[Layer::Journals],
         detect: Some(concurrency::journal_preservation_incomplete),
-        fix: None,
+        fix: Some(DELEGATE),
         manual: Some(Manual {
-            instruction: "free disk space if it is full, then run any change command; recovery retries keeping the settings",
-            why: "recovery keeps everything until the backup is complete",
-            remediation: explain_manual,
+            instruction: "free disk space if it is full or fix the I/O error; the doctor's fix then resumes keeping the settings, and the evidence says when something else blocks it",
+            why: "recovery keeps everything until the backup is complete, and only the cause's removal lets it finish",
+            remediation: preservation_manual,
         }),
     },
     FailureMode {
@@ -923,14 +922,38 @@ pub static FAILURE_MODES: &[FailureMode] = &[
     },
 ];
 
-/// The manual remediations of the seven rows `status` publishes, built with `status`'s
-/// own hints so a finding's remediation equals `status`'s `commands`.
-/// `journal-pending` is a journal recovery settles (F1): the next change finishes it, on
-/// a client or, for a doctor repair, on the machine.
-fn journal_manual(_: &Finding) -> Remediation {
-    prose(
-        "quit the game if it is running, then run any change command; it finishes or rolls back the change first",
-    )
+/// The delegation (M4-D37) of `journal-pending` and `journal-preservation-incomplete`:
+/// `doctor fix` has omaddons' own recovery settle the journals its preview disclosed. The
+/// scopes are those recovery writes as the doctor sees it; a restore's or an undo's
+/// recovery also writes `WTF/` and SavedVariables, under the engine's own writers
+/// (`BackupRestore`, `Undo`) and rules, never as `Writer::Doctor`.
+const DELEGATE: FixerSpec = FixerSpec {
+    plan: super::fixers::recover::plan,
+    writes_to: &[ScopeName::State, ScopeName::ClientMeta, ScopeName::AddOns],
+    ops: &[FixKind::Delegate],
+    enabled: true,
+    needs_force: false,
+    cardinality: Cardinality::Low,
+    preconditions: &[FixerPrecondition::LockHeld],
+};
+
+/// `journal-preservation-incomplete`, by instance: the fix while recovery would resume it
+/// (`evidence.resumable`), else its evidence, which says what blocks it.
+fn preservation_manual(f: &Finding) -> Remediation {
+    if f.evidence.resumable != Some(true) {
+        return explain_manual(f);
+    }
+    // `-t` as every fixer remediation names it (`FailureMode::remediation`, E6's
+    // `remediation_for`), so `status` and `doctor` print the same command.
+    let mut argv = argv_of(&["omaddons", "doctor", "fix", "--only", f.id]);
+    if let Some(target) = &f.target {
+        argv.extend(["-t".to_owned(), target.id.clone()]);
+    }
+    Remediation {
+        command: shell_words::join(&argv),
+        argv: Some(argv),
+        ..Remediation::default()
+    }
 }
 
 /// A settings restore waiting for its game: recovery's own advice.
@@ -1544,9 +1567,11 @@ mod tests {
         for (id, status_id, severity, tier) in cases {
             assert_eq!(id, status_id);
             let row = row(id);
+            // Only `journal-pending` has a fixer among them: the delegation (F2).
+            let report_only = id != ids::JOURNAL_PENDING;
             assert_eq!(
                 row.map(|r| (r.severity, r.tier, r.online, r.fix.is_none())),
-                Some((severity, tier, false, true)),
+                Some((severity, tier, false, report_only)),
                 "{id}"
             );
         }
@@ -1585,15 +1610,20 @@ mod tests {
             assert_eq!(row.tier, Tier::Cached, "{id}");
             assert_eq!(row.requires, &[requires], "{id}");
             assert!(!row.online && row.cost_ms == 1, "{id}");
-            assert!(row.detect.is_some() && row.fix.is_none(), "{id}");
-            let manual = row.manual.unwrap();
-            for text in [
-                row.title,
-                row.description,
-                row.why,
-                manual.instruction,
-                manual.why,
-            ] {
+            // Rows 1 and 9 delegate (F2); the stuck states are report-only until their
+            // set-aside lands.
+            let delegates = [ids::JOURNAL_PENDING, ids::JOURNAL_PRESERVATION_INCOMPLETE];
+            assert!(row.detect.is_some(), "{id}");
+            assert_eq!(row.fix.is_some(), delegates.contains(&id), "{id}");
+            let manual = row.manual.iter().flat_map(|m| [m.instruction, m.why]);
+            assert!(
+                row.manual.is_some() || row.fix.is_some(),
+                "{id}: a remediation"
+            );
+            for text in [row.title, row.description, row.why]
+                .into_iter()
+                .chain(manual)
+            {
                 assert!(!text.is_empty() && !text.contains('\n'), "{id}: {text}");
                 let words: Vec<&str> = text.split_whitespace().collect();
                 assert!(
@@ -1605,6 +1635,49 @@ mod tests {
                 );
             }
         }
+        assert!(invariant_violations(FAILURE_MODES).is_empty());
+    }
+
+    /// Rows 1 and 9 carry the delegation (M4-D37): enabled, no force, one op, and row 9's
+    /// remediation is its fix only while its detector says recovery would resume it.
+    #[test]
+    fn rows_1_and_9_carry_the_delegate_fixer() {
+        for id in [ids::JOURNAL_PENDING, ids::JOURNAL_PRESERVATION_INCOMPLETE] {
+            let fix = row(id).unwrap().fix.unwrap();
+            assert_eq!(fix.ops, [FixKind::Delegate], "{id}");
+            assert!(fix.enabled && !fix.needs_force, "{id}");
+            assert_eq!(fix.cardinality, Cardinality::Low, "{id}");
+            assert_eq!(fix.preconditions, [FixerPrecondition::LockHeld], "{id}");
+            assert_eq!(
+                fix.writes_to,
+                [ScopeName::State, ScopeName::ClientMeta, ScopeName::AddOns],
+                "{id}"
+            );
+        }
+        let row9 = row(ids::JOURNAL_PRESERVATION_INCOMPLETE).unwrap();
+        let instance = |resumable: Option<bool>| {
+            let mut f = finding(row9, true);
+            f.evidence.resumable = resumable;
+            row9.remediation(&f)
+        };
+        let resumable = instance(Some(true));
+        assert_eq!(
+            resumable.argv,
+            Some(argv_of(&[
+                "omaddons",
+                "doctor",
+                "fix",
+                "--only",
+                ids::JOURNAL_PRESERVATION_INCOMPLETE,
+                "-t",
+                "retail"
+            ])),
+            "{resumable:?}"
+        );
+        assert!(resumable.auto_fixable, "{resumable:?}");
+        let stops = instance(Some(false));
+        assert_eq!(stops.argv.as_ref(), Some(&stops.explain_argv), "{stops:?}");
+        assert!(!stops.auto_fixable, "{stops:?}");
         assert!(invariant_violations(FAILURE_MODES).is_empty());
     }
 
@@ -1967,20 +2040,44 @@ mod tests {
             key: K.parse().unwrap(),
         };
         let tx: TxId = "01M7A1B2C3D4E5F6G7H8J9K0MN".parse().unwrap();
-        let journal = |reason: Option<&'static str>, on_target: bool| {
-            let mut f = finding(row(ids::JOURNAL_PENDING).unwrap(), on_target);
+        let journal = |on_target: bool| {
+            let row = row(ids::JOURNAL_PENDING).unwrap();
+            let mut f = finding(row, on_target);
             f.evidence = Evidence {
                 tx: Some(tx),
-                reason,
                 ..Evidence::default()
             };
-            journal_manual(&f).command
+            row.remediation(&f)
         };
-        // `journal-pending` is only a journal recovery settles (F1): today's advice, on a
-        // client and, for a doctor repair, on the machine. Stuck states have rows of their
-        // own, remediated by their `doctor explain`.
-        assert!(journal(None, true).starts_with("quit the game"));
-        assert!(journal(None, false).starts_with("quit the game"));
+        // `journal-pending` is only a journal recovery settles (F1), and its fix is the
+        // delegation (F2): on a client with `-t`, and, for a doctor repair, on the
+        // machine. Stuck states have rows of their own, remediated by their `doctor
+        // explain`.
+        let on_client = journal(true);
+        assert_eq!(
+            on_client.argv,
+            Some(argv_of(&[
+                "omaddons",
+                "doctor",
+                "fix",
+                "--only",
+                ids::JOURNAL_PENDING,
+                "-t",
+                "retail"
+            ])),
+            "{on_client:?}"
+        );
+        assert!(on_client.auto_fixable && !on_client.needs_force);
+        assert_eq!(
+            journal(false).argv,
+            Some(argv_of(&[
+                "omaddons",
+                "doctor",
+                "fix",
+                "--only",
+                ids::JOURNAL_PENDING
+            ]))
+        );
         let mut stuck = finding(row(ids::JOURNAL_TOO_NEW).unwrap(), true);
         stuck.target = Some(target.clone());
         assert_eq!(

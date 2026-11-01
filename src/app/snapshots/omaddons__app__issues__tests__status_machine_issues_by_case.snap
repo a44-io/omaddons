@@ -10,8 +10,14 @@ expression: by_case
       "title": "An interrupted doctor repair waits to be finished",
       "addon": null,
       "remediation": {
-        "command": "quit the game if it is running, then run any change command; it finishes or rolls back the change first",
-        "argv": null,
+        "command": "omaddons doctor fix --only fm-concurrency_primitives-journal-pending",
+        "argv": [
+          "omaddons",
+          "doctor",
+          "fix",
+          "--only",
+          "fm-concurrency_primitives-journal-pending"
+        ],
         "destructive": false
       }
     },
@@ -55,8 +61,14 @@ expression: by_case
       "title": "An interrupted doctor repair waits to be finished",
       "addon": null,
       "remediation": {
-        "command": "quit the game if it is running, then run any change command; it finishes or rolls back the change first",
-        "argv": null,
+        "command": "omaddons doctor fix --only fm-concurrency_primitives-journal-pending",
+        "argv": [
+          "omaddons",
+          "doctor",
+          "fix",
+          "--only",
+          "fm-concurrency_primitives-journal-pending"
+        ],
         "destructive": false
       }
     },

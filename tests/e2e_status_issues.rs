@@ -34,7 +34,6 @@ const JOURNAL: &str = "fm-concurrency_primitives-journal-pending";
 const UNREADABLE: &str = "fm-concurrency_primitives-journal-unreadable";
 const TOO_NEW: &str = "fm-concurrency_primitives-journal-too-new";
 const UNATTRIBUTED: &str = "fm-concurrency_primitives-journal-unattributed";
-const WAITS_PROSE: &str = "quit the game if it is running, then run any change command; it finishes or rolls back the change first";
 
 /// A stuck journal's remediation: its `doctor explain`, with `-t` when it is a client's.
 fn explain(id: &str, target: Option<&str>) -> Value {
@@ -47,8 +46,8 @@ fn explain(id: &str, target: Option<&str>) -> Value {
 
 use support::{
     Planted, assert_human_line, assert_issues, assert_registry_ids, assert_trees_unchanged,
-    command, install, issue, issues, key_of, machine_issues, plant_journal, prose, record_trees,
-    reinstall, status, take_over, trees,
+    command, delegate, install, issue, issues, key_of, machine_issues, plant_journal, prose,
+    record_trees, reinstall, status, take_over, trees,
 };
 
 #[cfg(test)]
@@ -264,6 +263,15 @@ mod support {
         json!({"command": argv.join(" "), "argv": argv, "destructive": destructive})
     }
 
+    /// `omaddons doctor fix --only <fm> -t <target>`: the doctor's delegation (F2), the
+    /// remediation of a journal recovery can settle.
+    pub(super) fn delegate(fm: &str, target: &str) -> Value {
+        command(
+            &["omaddons", "doctor", "fix", "--only", fm, "-t", target],
+            false,
+        )
+    }
+
     /// `omaddons install <addon> -t <target> --reinstall`, the repair of a drifted addon.
     pub(super) fn reinstall(addon: &str, target: &str) -> Value {
         command(
@@ -368,7 +376,7 @@ fn journal_pending_is_one_issue_per_client_and_titled_by_its_journals() {
         "P0",
         "An interrupted change waits to be finished",
         None,
-        prose(WAITS_PROSE)
+        delegate(JOURNAL, "retail")
     )]);
     assert_issues(
         &log,
@@ -395,7 +403,7 @@ fn journal_pending_is_one_issue_per_client_and_titled_by_its_journals() {
             "P0",
             "An interrupted change waits to be finished",
             None,
-            prose(WAITS_PROSE)
+            delegate(JOURNAL, "retail")
         ),
         issue(
             UNREADABLE,

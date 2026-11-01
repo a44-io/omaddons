@@ -1,0 +1,32 @@
+---
+source: src/doctor/delegate.rs
+expression: items
+---
+[
+  {
+    "fm": "fm-concurrency_primitives-journal-pending",
+    "tx": "01JB8Q2VA00000000000000009",
+    "family": "folder",
+    "outcome": "rolled_back"
+  },
+  {
+    "fm": "fm-concurrency_primitives-journal-pending",
+    "tx": "01JB8Q2VA00000000000000009",
+    "family": "repair",
+    "outcome": "rolled_forward"
+  },
+  {
+    "fm": "fm-concurrency_primitives-journal-pending",
+    "tx": "01JB8Q2VA00000000000000009",
+    "family": "folder",
+    "outcome": "waiting",
+    "reason": "saved_variables"
+  },
+  {
+    "fm": "fm-concurrency_primitives-journal-pending",
+    "tx": "01JB8Q2VA00000000000000009",
+    "family": "folder",
+    "outcome": "failed",
+    "reason": "io"
+  }
+]
