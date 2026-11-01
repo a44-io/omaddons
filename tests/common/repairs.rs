@@ -386,6 +386,7 @@ pub fn child_main() -> bool {
                 reason: None,
                 argv: ["omaddons", "doctor", "fix"].map(str::to_owned).to_vec(),
                 command: "doctor fix",
+                undo: None,
             };
             match commit(&ctx, rtx, &lowered, &meta) {
                 Ok((outcome, cleanup)) => {

@@ -1172,6 +1172,7 @@ pub(super) fn undo_whole(
                 wtf: Some(observed.clone()),
             },
             wtf: Some(wtf),
+            repair: None,
         }
     };
     if req.dry_run {

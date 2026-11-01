@@ -31,7 +31,8 @@ use serde_json::json;
 
 use super::inverse::{OnDisk, append, expect_of, pending, roll_back, roll_forward};
 use super::journal::{
-    ClientDirEntry, FORMAT, RepairLine, RepairPrepared, ResourcesWire, RollbackTarget, history_line,
+    ClientDirEntry, FORMAT, RepairKind, RepairLine, RepairPrepared, ResourcesWire, RollbackTarget,
+    history_line,
 };
 use super::lower::{Lowered, LoweredStep};
 use super::{RepairRun, RepairTx};
@@ -55,6 +56,18 @@ pub struct RepairMeta {
     pub argv: Vec<String>,
     /// The doorbell's command (`doctor fix`).
     pub command: &'static str,
+    /// What the transaction undoes, when it is the undo of a repair-family one (E7);
+    /// `None` for a repair.
+    pub undo: Option<UndoOf>,
+}
+
+/// What an undo of a repair-family transaction commits besides a repair's facts (E7): the
+/// transaction it reverts, which its `prepared` line and history line name, and the paths
+/// its primitives may write, which restrict the session that runs them (§6.14.4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UndoOf {
+    pub reverts: TxId,
+    pub paths: fsx::RepairPaths,
 }
 
 /// What a commit runs under: the global lock (its type proves it is held, and is the only
@@ -200,7 +213,8 @@ pub fn commit(
         _ => ctx,
     };
     let journal = paths.journal_repair(&tx);
-    let outcome = run(ctx, lowered, &prepared, &journal)?;
+    let restriction = meta.undo.as_ref().map(|undo| &undo.paths);
+    let outcome = run(ctx, lowered, &prepared, &journal, restriction)?;
     let cleanup = RepairCleanup {
         rtx,
         journal,
@@ -251,6 +265,11 @@ fn prepared_line(
                 })
             })
             .collect(),
+        kind: match meta.undo {
+            Some(_) => RepairKind::Undo,
+            None => RepairKind::Repair,
+        },
+        reverts: meta.undo.as_ref().map(|undo| undo.reverts),
     })
 }
 
@@ -331,12 +350,16 @@ fn same_mount(ctx: &CommitCtx<'_>, from: &Path, to: &Path, moves_from: bool) -> 
     Ok(())
 }
 
-/// The commit itself, from the roots on.
+/// The commit itself, from the roots on. `restriction` narrows the session that runs the
+/// primitives (an undo's, §6.14.4); the untracked one writes the roots, the journal and
+/// the history line, which are no primitives, and the rollback, which inverts only what
+/// the primitives did.
 fn run(
     ctx: &CommitCtx<'_>,
     lowered: &Lowered,
     prepared: &RepairPrepared,
     journal: &Path,
+    restriction: Option<&fsx::RepairPaths>,
 ) -> Result<RepairOutcome> {
     let tx = prepared.tx;
     let paths = ctx.scopes.paths();
@@ -361,6 +384,9 @@ fn run(
         SnapshotRoots::for_repair(ctx.run.dir.join("backups"), &tx),
         ctx.run.dir.join("actions.jsonl"),
     );
+    if let Some(restriction) = restriction {
+        tracked = tracked.with_repair_paths(restriction.clone());
+    }
     let mut bytes_backed_up = 0;
     let mut backups = Vec::new();
     for lowered_step in &lowered.steps {
@@ -648,6 +674,7 @@ mod tests {
             reason: Some("a test repair".to_owned()),
             argv: ["omaddons", "doctor", "fix"].map(str::to_owned).to_vec(),
             command: "doctor fix",
+            undo: None,
         }
     }
 

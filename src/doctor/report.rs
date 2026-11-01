@@ -395,6 +395,32 @@ struct ReportRecord {
 enum RecordedReport {
     Diagnose(Box<DiagnoseReport>),
     Fix(Box<FixReport>),
+    Undo(Box<UndoReport>),
+}
+
+/// An undo run's report (E7, M4-D33): the repair-family transaction it reverted and the
+/// run that made it, the undo's own transaction, and how it ended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct UndoReport {
+    pub doctor_contract_version: &'static str,
+    pub run_id: DoctorRunId,
+    /// The run's directory, absolute.
+    pub run_dir: String,
+    #[schemars(with = "String")]
+    pub started_at: Timestamp,
+    #[schemars(with = "String")]
+    pub finished_at: Timestamp,
+    /// `DONE_OK` committed, `DONE_FAILED` rolled back (or stopped), `REFUSING` refused
+    /// under the lock, `LOCK_LOST` the lock not taken.
+    pub state: RunState,
+    /// The transaction it reverted.
+    pub reverts: TxId,
+    /// The doctor run that made it; `null` when its history line names none.
+    pub reverted_run: Option<String>,
+    /// The undo's own transaction, when one started (committed or rolled back).
+    pub tx: Option<TxId>,
+    /// The inverse primitives it ran.
+    pub actions_taken: u32,
 }
 
 /// The schema of a run's `report.json` (`store::KINDS`' `doctor_report`).
@@ -737,6 +763,9 @@ mod tests {
             "\"run_id\"",
             "\"next_steps\"",
             "\"DONE_FINDINGS\"",
+            // An undo run's (E7): the transaction and the run it reverted.
+            "\"reverts\"",
+            "\"reverted_run\"",
         ] {
             assert!(text.contains(key), "{key} in {text}");
         }

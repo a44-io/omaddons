@@ -87,6 +87,30 @@ pub struct RepairPrepared {
     /// write creates a file.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rollbacks: Vec<RollbackTarget>,
+    /// A repair, or the undo of one (E7), whose history line is then `kind: undo`.
+    /// Omitted for a repair, so a repair's journal reads and writes as before.
+    #[serde(default, skip_serializing_if = "RepairKind::is_repair")]
+    pub kind: RepairKind,
+    /// The repair-family transaction an undo reverts; required exactly on an undo
+    /// ([`ParsedRepair::checked`] reads anything else as undecodable). Omitted otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reverts: Option<TxId>,
+}
+
+/// What a repair-family transaction is.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RepairKind {
+    #[default]
+    Repair,
+    /// The undo of a repair-family transaction (`reverts`).
+    Undo,
+}
+
+impl RepairKind {
+    pub fn is_repair(&self) -> bool {
+        *self == Self::Repair
+    }
 }
 
 /// Where a rollback moves the file step `seq` created: never a delete.
@@ -332,11 +356,13 @@ impl ParsedRepair {
     /// fences close (M3-D45: fail closed on what cannot be fully read). Every reader that
     /// acts on a repair journal reads it through this.
     pub fn checked(mut self, paths: &Paths) -> Self {
-        if self
-            .prepared
-            .as_ref()
-            .is_some_and(|prepared| crate::engine::barrier::validate(prepared, paths).is_err())
-        {
+        // An undo names what it reverts, and only an undo does (E7).
+        let misnamed = |prepared: &RepairPrepared| {
+            (prepared.kind == RepairKind::Undo) != prepared.reverts.is_some()
+        };
+        if self.prepared.as_ref().is_some_and(|prepared| {
+            misnamed(prepared) || crate::engine::barrier::validate(prepared, paths).is_err()
+        }) {
             self.prepared = None;
             self.unknown_lines += 1;
         }
@@ -398,7 +424,8 @@ pub fn read_prepared(paths: &Paths, path: &Path) -> Result<PreparedRead> {
 
 /// The history line a repair writes, built from its `prepared` line alone, so the commit
 /// and recovery's roll-forward append the same bytes: target-less, its clients in
-/// `targets`, no folder `ops`, and each primitive as a `repairs[]` entry.
+/// `targets`, no folder `ops`, and each primitive as a `repairs[]` entry. An undo's line
+/// is `kind: undo` with `reverts`, its `repairs[]` the inverses (E7).
 pub fn history_line(prepared: &RepairPrepared) -> HistoryEntry {
     let target_of = |path: &Path| {
         prepared
@@ -407,10 +434,14 @@ pub fn history_line(prepared: &RepairPrepared) -> HistoryEntry {
             .find(|client| path.starts_with(&client.dir))
             .map(|client| client.target)
     };
+    let kind = match prepared.kind {
+        RepairKind::Repair => TxKind::Repair,
+        RepairKind::Undo => TxKind::Undo,
+    };
     let entry = HistoryEntry {
         schema_version: history::CURRENT,
         tx: prepared.tx,
-        kind: TxKind::Repair,
+        kind,
         at: prepared.at,
         target: None,
         targets: prepared.targets.clone(),
@@ -419,7 +450,7 @@ pub fn history_line(prepared: &RepairPrepared) -> HistoryEntry {
         argv: prepared.argv.clone(),
         ops: Vec::new(),
         result: TxResult::Committed,
-        reverts: None,
+        reverts: prepared.reverts,
         sv_deferred: false,
         sv_restored: None,
         created_addons_dir: false,
@@ -569,6 +600,8 @@ mod tests {
                     })
                 })
                 .collect(),
+            kind: RepairKind::Repair,
+            reverts: None,
         }
     }
 
@@ -870,6 +903,115 @@ mod tests {
                 assert_eq!(read_back.prepared, None, "{case}");
             }
         }
+    }
+
+    /// A repair's journal names no kind and reverts nothing: it reads without them, and
+    /// writes the same bytes as before E7.
+    #[test]
+    fn prepared_kind_and_reverts_default_for_repair_journals() {
+        let home = repair_home();
+        let p = prepared(&home, &[write(&home)]);
+        let text = serde_json::to_string(&RepairLine::Prepared(Box::new(p.clone()))).unwrap();
+        assert!(
+            !text.contains("\"kind\":\"repair\"") && !text.contains("\"reverts\""),
+            "{text}"
+        );
+        let mut value: Value = serde_json::from_str(&text).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("kind");
+        object.remove("reverts");
+        let without: RepairLine = serde_json::from_value(value).unwrap();
+        let RepairLine::Prepared(read_back) = &without else {
+            panic!("{without:?}"); // ubs:ignore — fails the test
+        };
+        assert_eq!(read_back.kind, RepairKind::Repair);
+        assert_eq!(read_back.reverts, None);
+        assert_eq!(
+            serde_json::to_string(&without).unwrap(),
+            text,
+            "re-serializes byte for byte"
+        );
+    }
+
+    /// `kind` and `reverts` go together: either alone reads as a line this build cannot
+    /// act on, and recovery leaves the journal whole.
+    #[test]
+    fn a_kind_without_reverts_is_unreadable() {
+        let home = repair_home();
+        let base = prepared(&home, &[write(&home)]);
+        let dir = home.paths.journal_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let cases = [
+            (
+                "undo_without_reverts",
+                RepairPrepared {
+                    kind: RepairKind::Undo,
+                    reverts: None,
+                    ..base.clone()
+                },
+                false,
+            ),
+            (
+                "reverts_without_undo",
+                RepairPrepared {
+                    kind: RepairKind::Repair,
+                    reverts: Some(TxId::new()),
+                    ..base.clone()
+                },
+                false,
+            ),
+            (
+                "undo_with_reverts",
+                RepairPrepared {
+                    kind: RepairKind::Undo,
+                    reverts: Some(TxId::new()),
+                    ..base.clone()
+                },
+                true,
+            ),
+        ];
+        for (case, p, decodes) in cases {
+            let path = dir.join(format!("{case}.repair.jsonl"));
+            std::fs::write(&path, journal(&p, &[step(1)])).unwrap();
+            let got = read_prepared(&home.paths, &path).unwrap();
+            if decodes {
+                assert_eq!(got, PreparedRead::Decoded(Box::new(p.clone())), "{case}");
+            } else {
+                assert_eq!(got, PreparedRead::Undecodable, "{case}");
+                assert_eq!(
+                    read(&home.paths, &path).unwrap().unrecoverable(),
+                    Some(Unrecoverable::Unreadable),
+                    "{case}: recovery leaves it"
+                );
+            }
+        }
+    }
+
+    /// An undo journal rolls forward into an `undo` line: target-less, reverting its
+    /// repair, its inverses as `repairs[]`, a line history reads back.
+    #[test]
+    fn an_undo_journal_rolls_forward_into_an_undo_line() {
+        let home = repair_home();
+        let reverted = TxId::new();
+        let p = RepairPrepared {
+            kind: RepairKind::Undo,
+            reverts: Some(reverted),
+            ..prepared(&home, &[write(&home)])
+        };
+        let line = history_line(&p);
+        assert!(line.well_formed(), "{line:?}");
+        assert_eq!(line.kind, TxKind::Undo);
+        assert_eq!(line.reverts, Some(reverted));
+        assert_eq!(line.target, None);
+        assert_eq!(line.repairs.len(), p.primitives.len());
+        assert_eq!(
+            line.doctor_run_id.as_deref(),
+            Some(p.doctor_run_id.as_str())
+        );
+        assert_eq!(
+            history_line(&prepared(&home, &[write(&home)])).kind,
+            TxKind::Repair
+        );
     }
 
     #[test]

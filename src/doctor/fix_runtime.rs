@@ -728,6 +728,7 @@ impl FixEffects for RealEffects<'_> {
             reason: self.req.reason.clone(),
             argv: self.req.argv.clone(),
             command: "doctor fix",
+            undo: None,
         };
         let (outcome, cleanup) = repair::commit(&ctx, rtx, &plan.lowered, &meta)?;
         self.cleanup = Some(cleanup);

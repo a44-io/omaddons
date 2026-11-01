@@ -6,7 +6,7 @@
 //! operation as an actions line in a log of its own, with no digests or backups: the
 //! doctor runtime's `runtime.jsonl` (M4-D32).
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -204,12 +204,47 @@ pub(crate) enum SessionKind {
     },
 }
 
+/// What the session of a repair's undo may write (E7, §6.14.4): exactly the paths the
+/// reverted repair named, and, only as a rename's destination, paths strictly below the
+/// undo's own quarantine roots (where the inverse of a created file moves it, a path the
+/// reverted line cannot name). Both are canonical, as `canonical_lenient` gives them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RepairPaths {
+    pub paths: BTreeSet<PathBuf>,
+    pub destination_roots: Vec<PathBuf>,
+}
+
+impl RepairPaths {
+    /// Whether a target `path` (normalized) may be written: one of the named paths.
+    pub(crate) fn admits_target(&self, path: &Path) -> bool {
+        self.paths.contains(&canonical(path))
+    }
+
+    /// Whether a rename may move onto `path` (normalized): a named path, or one strictly
+    /// below a destination root.
+    pub(crate) fn admits_destination(&self, path: &Path) -> bool {
+        let path = canonical(path);
+        self.paths.contains(&path)
+            || self
+                .destination_roots
+                .iter()
+                .any(|root| path != *root && path.starts_with(root))
+    }
+}
+
+/// `path` canonical as the restriction's paths are: a symlinked home still matches.
+fn canonical(path: &Path) -> PathBuf {
+    super::prune::canonical_lenient(path).unwrap_or_else(|| path.to_path_buf())
+}
+
 /// Everything `mutate()` needs to decide and record a write.
 pub struct WriteSession<'a> {
     pub(crate) scopes: &'a ScopeTable,
     pub(crate) writer: Writer,
     pub(crate) owned: OwnedFolders,
     pub(crate) kind: SessionKind,
+    /// A repair undo's restriction; `None` restricts nothing.
+    pub(crate) repair_paths: Option<RepairPaths>,
 }
 
 impl<'a> WriteSession<'a> {
@@ -233,6 +268,7 @@ impl<'a> WriteSession<'a> {
                 actions_log,
                 next_seq: 0,
             }),
+            repair_paths: None,
         }
     }
 
@@ -243,6 +279,7 @@ impl<'a> WriteSession<'a> {
             writer,
             owned: OwnedFolders::default(),
             kind: SessionKind::Untracked { reason },
+            repair_paths: None,
         }
     }
 
@@ -265,6 +302,7 @@ impl<'a> WriteSession<'a> {
                 reason,
                 log: LogSink::new(log),
             },
+            repair_paths: None,
         }
     }
 
@@ -289,6 +327,15 @@ impl<'a> WriteSession<'a> {
     #[must_use]
     pub fn with_owned_folders(mut self, owned: OwnedFolders) -> Self {
         self.owned = owned;
+        self
+    }
+
+    /// Restricts the session to what a repair's undo may write: `mutate` then refuses
+    /// (`scope_denied`) any other target, and any rename destination neither named nor
+    /// strictly below one of `paths.destination_roots`, after the scope checks.
+    #[must_use]
+    pub fn with_repair_paths(mut self, paths: RepairPaths) -> Self {
+        self.repair_paths = Some(paths);
         self
     }
 

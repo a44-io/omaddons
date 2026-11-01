@@ -1023,6 +1023,7 @@ mod tests {
             reason: Some("a test repair".to_owned()),
             argv: ["omaddons", "doctor", "fix"].map(str::to_owned).to_vec(),
             command: "doctor fix",
+            undo: None,
         }
     }
 
@@ -1804,6 +1805,11 @@ mod tests {
             "src/engine/repair/recover.rs",
             1,
             "a repair recovery's own table",
+        ),
+        (
+            "src/engine/repair/undo.rs",
+            1,
+            "the doctor runtime: an undo's own run directory; its commit's table is fenced under the lock",
         ),
         (
             "src/engine/restore.rs",

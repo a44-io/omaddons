@@ -531,6 +531,7 @@ mod tests {
             reason: Some("a test repair".to_owned()),
             argv: ["omaddons", "doctor", "fix"].map(str::to_owned).to_vec(),
             command: "doctor fix",
+            undo: None,
         }
     }
 

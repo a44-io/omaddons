@@ -41,19 +41,37 @@ use serde_json::{Value, json};
 
 use super::guard::{self, GuardValue};
 use super::inverse::expect_of;
-use super::{JournalName, journal_file, provisional_journal};
+use super::{
+    CommitCtx, JournalName, LowerCtx, LowerError, Lowered, RepairCleanup, RepairMeta,
+    RepairOutcome, RepairRun, RepairTx, UndoOf, abandon, commit, journal_file,
+    lowered_from_inverses, provisional_journal,
+};
+use crate::discover::target::DiscoveredTarget;
+use crate::doctor::fix_runtime::ACTIONS_LOG;
+use crate::doctor::report::{RunState, UndoReport};
+use crate::doctor::runtime::Runtime;
+use crate::doctor::undo_script::{UNDO_SCRIPT, undo_script};
+use crate::engine::fence;
+use crate::engine::journal::{RecoveryEnv, recover_all};
 use crate::engine::repair_action::{
     Endpoint, Endpoints, FixEntry, FixKind, Guard, Identity, Mode, Primitive, Stamp, Step,
 };
 use crate::engine::resource::{PathKind, Resource, ResourceSet};
+use crate::engine::tx::{EngineCtx, RunningNow, TxOutcome, running_now};
 use crate::engine::undo::cancelled_after;
+use crate::engine::undo::{SvCounts, UndoFacts, UndoOutcome, UndoRequest};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
+use crate::error::{Warning, WarningCode};
+use crate::fsx::{self, GlobalLock, RepairPaths, failpoint};
 use crate::fsx::{
     Access, Described, Expect, FileId, Found, Mismatch, OwnedFolders, Refusal, ScopeTable,
     StampDigest, Writer, canonical_lenient,
 };
 use crate::limits::DOCTOR_FIX_MAX_ACTIONS;
+use crate::model::Target;
 use crate::model::{FolderName, TargetKey, TxId, TxKind};
+use crate::output::{DoctorEnvelope, Meta, RunKind};
+use crate::state::history::{self, HistoryFilter, HistoryRead};
 use crate::state::history::{HistoryEntry, Reach, RepairEntry, UnreadableLine};
 use crate::state::paths::Paths;
 use crate::state::records::load_record;
@@ -357,7 +375,8 @@ pub fn plan_undo(entries: &[HistoryEntry], at: usize, paths: &Paths) -> Result<R
             ),
         ));
     }
-    let inverses = ordered(inverted);
+    let mut inverses = ordered(inverted);
+    let fixes = renumbered(fixes_of(&steps, &inverses), &mut inverses);
     let mut reads = Vec::new();
     for inverse in inverses
         .iter()
@@ -395,7 +414,7 @@ pub fn plan_undo(entries: &[HistoryEntry], at: usize, paths: &Paths) -> Result<R
         reverted_kind: reverted.kind,
         reverted_run: reverted.doctor_run_id.clone(),
         targets: targets.into_iter().collect(),
-        fixes: fixes_of(&steps, &inverses),
+        fixes,
         guards: steps
             .iter()
             .flat_map(|(_, step)| step.guards.iter().cloned())
@@ -664,6 +683,20 @@ fn fixes_of(steps: &[(&RepairEntry, Step)], inverses: &[InverseStep]) -> Vec<Fix
             FixEntry { fix, fm, kind }
         })
         .collect()
+}
+
+/// Numbers the undo's fixes 1, 2, 3 … in the reverted fixes' order, as a repair journal
+/// requires (`validate_steps`), and each inverse by its fix's new number: a reverted
+/// repair's delegations lowered to no primitive, so its line may name fixes 1 and 3 alone.
+fn renumbered(mut fixes: Vec<FixEntry>, inverses: &mut [InverseStep]) -> Vec<FixEntry> {
+    let numbers: BTreeMap<u32, u32> = fixes.iter().map(|entry| entry.fix).zip(1..).collect();
+    for entry in &mut fixes {
+        entry.fix = numbers.get(&entry.fix).copied().unwrap_or(entry.fix);
+    }
+    for inverse in inverses {
+        inverse.fix = numbers.get(&inverse.fix).copied().unwrap_or(inverse.fix);
+    }
+    fixes
 }
 
 /// Whether `steps` are two or three renames whose sources are entries of one client's
@@ -1746,6 +1779,682 @@ fn path_texts(paths: &BTreeSet<PathBuf>) -> Vec<String> {
         .collect()
 }
 
+// ---------------------------------------------------------------------------------------
+// The undo transaction (E7's second part).
+
+/// What undoing a repair-family line did, beside the folder undo's facts (`UndoOutcome`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepairUndone {
+    /// The plan as verified, under the lock for a real run.
+    pub plan: VerifiedPlan,
+    /// The undo's own doctor run; `None` for a dry run, which makes none.
+    pub undo_run: Option<String>,
+    /// The inverses as the undo's history line records them; empty for a dry run.
+    pub committed: Vec<RepairEntry>,
+}
+
+/// Undoes the repair-family line `read.entries[at]` (M4-D46): planned and verified without
+/// the lock (a dry run stops there, having written nothing), then its own run directory
+/// of kind `undo`, the lock, recovery, the plan and its checks again on the history as it
+/// is now, and the inverses committed as one repair-family transaction of kind `undo`
+/// through E5's machinery, as `Writer::Doctor` restricted to the paths the reverted line
+/// names (§6.14.4). The run's `report.json` names the run reverted.
+pub fn undo_repair(
+    req: &UndoRequest,
+    ctx: &EngineCtx<'_>,
+    read: &HistoryRead,
+    at: usize,
+) -> Result<UndoOutcome> {
+    let paths = ctx.paths;
+    let reverted = read
+        .entries
+        .get(at)
+        .ok_or_else(|| Error::internal(format!("history line {at} does not exist")))?;
+    let reverts = reverted.tx;
+    let plan = plan_undo(&read.entries, at, paths)?;
+    let discovered = discovered_targets(req, reverted, &plan)?;
+    let clients: Vec<UndoClient> = discovered
+        .iter()
+        .filter_map(|d| {
+            Some(UndoClient {
+                key: d.target.key?,
+                id: d.target.id.clone(),
+                dir: d.target.client_dir.clone(),
+            })
+        })
+        .collect();
+    let client_dirs: Vec<PathBuf> = clients.iter().map(|c| c.dir.clone()).collect();
+    let targets: Vec<Target> = discovered.iter().map(|d| d.target.clone()).collect();
+    let scopes = fence::table(paths, &client_dirs, None)?;
+    let ids = clients
+        .iter()
+        .map(|c| c.id.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    // 1. Without the lock.
+    let running = running_now(ctx, &targets);
+    let verified = verify_now(plan, read, at, &clients, &scopes, &running, paths)?;
+    let mut warnings: Vec<Warning> = running.warning().into_iter().collect();
+    let preview = outcome_of(
+        reverts,
+        &ids,
+        verified.clone(),
+        None,
+        Vec::new(),
+        true,
+        &warnings,
+    );
+    if req.dry_run {
+        return Ok(preview);
+    }
+    // 2. A bound run plans what its preview showed, or nothing.
+    if let Some(binding) = ctx.binding {
+        binding.undo(&preview)?;
+    }
+    // 3. Before anything is written.
+    for target in &targets {
+        super::super::tx::refuse_newer_state(paths, target)?;
+    }
+    let command = command_name(ctx.command);
+    let rtx = RepairTx::begin(paths)?;
+    let run_scopes = ScopeTable::new(paths, &client_dirs, None)?;
+    let mut runtime = match Runtime::start(paths, &run_scopes, crate::clock::now()) {
+        Ok(runtime) => runtime,
+        Err(failure) => {
+            warnings.extend(abandon(rtx, &scopes));
+            return Err(failure.error);
+        }
+    };
+    let started_at = crate::clock::now();
+    let run = RepairRun {
+        dir: runtime.dir(),
+        id: runtime.id().as_str().to_owned(),
+    };
+    let ended = committed(
+        ctx,
+        req,
+        &Committing {
+            reverts,
+            clients: &clients,
+            targets: &targets,
+            scopes: &scopes,
+            run: &run,
+            command,
+        },
+        rtx,
+        &mut warnings,
+    );
+    // 6. After the lock: the run's record, then cleanup.
+    let (state, error, tx, done) = match ended {
+        Ok(done) => (done.state, done.error.clone(), Some(done.tx), Some(done)),
+        Err(stop) => (stop.state, Some(stop.error), stop.tx, None),
+    };
+    let actions_taken = done.as_ref().map_or(0, |done| done.primitives);
+    // A committed undo's `undo.sh`; one that cannot be written fails the run after its
+    // record, as `doctor fix`'s does: the undo stands, and history records it.
+    let mut error = error;
+    if let Some(done) = &done
+        && state == RunState::DoneOk
+        && let Err(err) = write_undo_script(&mut runtime, paths, done.tx)
+    {
+        error = Some(err);
+    }
+    let report = UndoReport {
+        doctor_contract_version: crate::doctor::report::DOCTOR_CONTRACT_VERSION,
+        run_id: runtime.id().clone(),
+        run_dir: run.dir.display().to_string(),
+        started_at,
+        finished_at: crate::clock::now(),
+        state,
+        reverts,
+        reverted_run: reverted.doctor_run_id.clone(),
+        tx,
+        actions_taken,
+    };
+    let record = record_of(command, &report, error.as_ref(), &warnings)?;
+    let mut harden = Vec::new();
+    if run.dir.join(ACTIONS_LOG).is_file() {
+        harden.push((ACTIONS_LOG, 0o400));
+    }
+    if run.dir.join(UNDO_SCRIPT).is_file() {
+        harden.push((UNDO_SCRIPT, 0o500));
+    }
+    let finished = runtime.finish_with(&record, state.moves_latest(), &harden);
+    let Some(done) = done else {
+        // The record of a refusal or a rollback stands beside its error.
+        return Err(error.unwrap_or_else(|| Error::internal("an undo ended without its error")));
+    };
+    warnings.extend(done.cleanup.finish());
+    if let Err(failure) = finished {
+        return Err(failure.error);
+    }
+    if let Some(error) = error {
+        return Err(error);
+    }
+    let mut outcome = outcome_of(
+        reverts,
+        &ids,
+        done.verified,
+        Some(done.tx),
+        done.entries,
+        false,
+        &warnings,
+    );
+    if let Some(repair) = &mut outcome.repair {
+        repair.undo_run = Some(run.id);
+    }
+    Ok(outcome)
+}
+
+/// What the commit window needs beside the request.
+struct Committing<'c> {
+    reverts: TxId,
+    clients: &'c [UndoClient],
+    targets: &'c [Target],
+    scopes: &'c ScopeTable,
+    run: &'c RepairRun,
+    command: &'static str,
+}
+
+/// An undo that reached its commit: how it ended there.
+struct Done {
+    state: RunState,
+    /// A rollback's cause, returned after the record.
+    error: Option<Error>,
+    tx: TxId,
+    primitives: u32,
+    verified: VerifiedPlan,
+    entries: Vec<RepairEntry>,
+    cleanup: RepairCleanup,
+}
+
+/// An undo that stopped before its commit, with its run directory made.
+struct Stopped {
+    state: RunState,
+    error: Error,
+    /// The undo's transaction, when its journal was started and kept for recovery.
+    tx: Option<TxId>,
+}
+
+/// Steps 4 and 5 under the lock: recover, plan and check again on the history as it is
+/// now, lower the inverses and commit them.
+fn committed(
+    ctx: &EngineCtx<'_>,
+    req: &UndoRequest,
+    c: &Committing<'_>,
+    rtx: RepairTx,
+    warnings: &mut Vec<Warning>,
+) -> std::result::Result<Done, Stopped> {
+    let paths = ctx.paths;
+    let refuse = |error: Error| Stopped {
+        state: RunState::Refusing,
+        error,
+        tx: None,
+    };
+    let stop = |rtx: RepairTx, warnings: &mut Vec<Warning>, stopped: Stopped| {
+        warnings.extend(abandon(rtx, c.scopes));
+        stopped
+    };
+    if let Err(err) = failpoint::hit("engine.snapshot.prestaged") {
+        return Err(stop(rtx, warnings, refuse(failpoint_error(paths, &err))));
+    }
+    let lock = match GlobalLock::acquire(paths, ctx.command) {
+        Ok(lock) => lock,
+        Err(error) => {
+            let state = if error.code == ErrorCode::Locked {
+                RunState::LockLost
+            } else {
+                RunState::Refusing
+            };
+            return Err(stop(
+                rtx,
+                warnings,
+                Stopped {
+                    state,
+                    error,
+                    tx: None,
+                },
+            ));
+        }
+    };
+    let checked = (|| -> Result<(VerifiedPlan, Lowered, Vec<Warning>)> {
+        failpoint::hit("engine.lock.acquired").map_err(|err| failpoint_error(paths, &err))?;
+        let sv = |dir: &Path| super::super::tx::sv_writable(ctx, dir);
+        let own: Vec<TargetKey> = c.clients.iter().map(|client| client.key).collect();
+        let recovery = RecoveryEnv {
+            lock: &lock,
+            paths,
+            scopes: c.scopes,
+            own: &own,
+            sv_writable: &sv,
+        };
+        // A plan made before recovery may name the journal the undo is about: the one an
+        // undo of a reactivation sets aside again, which recovery cannot settle.
+        let early = plan_undo_of(paths, c.reverts)?;
+        let mut found = match recover_all(&recovery) {
+            Ok(found) => found,
+            Err(error) if subject_of(&error, &early, paths) => {
+                // Recovery stops at the first journal it cannot settle, so any journal
+                // after the subject was never tried: one still there refuses the undo.
+                if let Some(other) = unsettled_besides(paths, &error)? {
+                    return Err(other);
+                }
+                vec![
+                    Warning::new(WarningCode::JournalPending, error.message.clone())
+                        .with_fix(error.fix.clone()),
+                ]
+            }
+            Err(error) => return Err(error),
+        };
+        failpoint::hit("engine.recovered").map_err(|err| failpoint_error(paths, &err))?;
+        for target in c.targets {
+            super::super::tx::refuse_newer_state(paths, target)?;
+        }
+        // Again on the history as it is now: recovery may have appended lines.
+        let read = history::read(paths, &HistoryFilter::default())?;
+        let at = read
+            .entries
+            .iter()
+            .position(|entry| entry.tx == c.reverts)
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::NotFound,
+                    format!("there is no transaction {} in the history", c.reverts),
+                    Suggestion::command(["omaddons", "history"]),
+                )
+            })?;
+        let plan = plan_undo(&read.entries, at, paths)?;
+        let writes = undo_writes(&plan);
+        super::super::fence::under_lock(c.scopes, paths, None, &writes)?;
+        let running = running_now(ctx, c.targets);
+        let verified = verify_now(plan, &read, at, c.clients, c.scopes, &running, paths)?;
+        if let Some(binding) = ctx.binding {
+            let ids = c
+                .clients
+                .iter()
+                .map(|client| client.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            binding.undo(&outcome_of(
+                c.reverts,
+                &ids,
+                verified.clone(),
+                None,
+                Vec::new(),
+                true,
+                &[],
+            ))?;
+        }
+        failpoint::hit("engine.revalidated").map_err(|err| failpoint_error(paths, &err))?;
+        let clients: Vec<(PathBuf, TargetKey)> = c
+            .clients
+            .iter()
+            .map(|client| (client.dir.clone(), client.key))
+            .collect();
+        let skill_dirs = [paths.skill_dir()];
+        let lowered = lowered_from_inverses(
+            &LowerCtx {
+                paths,
+                tx: rtx.tx(),
+                run: c.run,
+                clients: &clients,
+                skill_dirs: &skill_dirs,
+                scopes: c.scopes,
+                mount_id: &fsx::mount_id,
+            },
+            &verified,
+        )
+        .map_err(|err| match err {
+            LowerError::Error(error) => error,
+            LowerError::Refused { message, .. } => Error::new(
+                ErrorCode::UndoConflict,
+                message,
+                Suggestion::command(["omaddons", "history"]),
+            )
+            .details(json!({ "tx": c.reverts, "reason": "changed_since_repair" })),
+        })?;
+        found.extend(running.warning());
+        Ok((verified, lowered, found))
+    })();
+    let (verified, lowered, found) = match checked {
+        Ok(checked) => checked,
+        Err(error) => {
+            drop(lock);
+            return Err(stop(rtx, warnings, refuse(error)));
+        }
+    };
+    warnings.extend(found);
+    let tx = rtx.tx();
+    let undo = UndoOf {
+        reverts: c.reverts,
+        paths: repair_paths(paths, &verified.plan, c, &tx),
+    };
+    let meta = RepairMeta {
+        run: req.run,
+        actor: ctx.actor,
+        reason: req.reason.clone(),
+        argv: ctx.argv.to_vec(),
+        command: c.command,
+        undo: Some(undo),
+    };
+    let commit_ctx = CommitCtx {
+        lock: &lock,
+        scopes: c.scopes,
+        run: c.run,
+        mount_id: &fsx::mount_id,
+    };
+    let result = commit(&commit_ctx, rtx, &lowered, &meta);
+    drop(lock);
+    match result {
+        Ok((RepairOutcome::Committed { primitives, .. }, cleanup)) => {
+            let entries = history::read(paths, &HistoryFilter::default())
+                .ok()
+                .and_then(|read| read.entries.into_iter().find(|entry| entry.tx == tx))
+                .map(|entry| entry.repairs)
+                .unwrap_or_default();
+            Ok(Done {
+                state: RunState::DoneOk,
+                error: None,
+                tx,
+                primitives,
+                verified,
+                entries,
+                cleanup,
+            })
+        }
+        Ok((RepairOutcome::RolledBack { cause, .. }, cleanup)) => Ok(Done {
+            state: RunState::DoneFailed,
+            error: Some(cause),
+            tx,
+            primitives: 0,
+            verified,
+            entries: Vec::new(),
+            cleanup,
+        }),
+        // Nothing was written (a revalidation), or a rollback or roll forward could not
+        // finish: the journal is kept for the next lock-taking command.
+        Err(error) => {
+            let kept = error.details.get("journal_pending").is_some();
+            Err(Stopped {
+                state: if kept {
+                    RunState::DoneFailed
+                } else {
+                    RunState::Refusing
+                },
+                error,
+                tx: kept.then_some(tx),
+            })
+        }
+    }
+}
+
+/// [`plan_undo`] of `reverts` on the history as it is: the subject a recovery stop may be
+/// about.
+fn plan_undo_of(paths: &Paths, reverts: TxId) -> Result<RepairUndoPlan> {
+    let read = history::read(paths, &HistoryFilter::default())?;
+    let at = read
+        .entries
+        .iter()
+        .position(|entry| entry.tx == reverts)
+        .ok_or_else(|| Error::internal(format!("transaction {reverts} left the history")))?;
+    plan_undo(&read.entries, at, paths)
+}
+
+/// Whether a recovery stop is about a journal the undo's own inverses move (the stuck
+/// journal an undo of a reactivation sets aside again): that one is its subject, and E14
+/// lets a set-aside run while it blocks every other change.
+fn subject_of(error: &Error, plan: &RepairUndoPlan, paths: &Paths) -> bool {
+    let Some(pending) = error
+        .details
+        .get("journal_pending")
+        .and_then(Value::as_str)
+        .and_then(|tx| tx.parse::<TxId>().ok())
+    else {
+        return false;
+    };
+    plan.inverses
+        .iter()
+        .flat_map(|inverse| std::iter::once(inverse.path.as_path()).chain(inverse.to.path()))
+        // ubs:ignore — comparing transaction ids, not secrets
+        .any(|path| journal_file(paths, path).is_some_and(|(tx, _)| tx == pending))
+}
+
+/// A journal besides the subject of the recovery stop `stop` that is still in
+/// `<state>/journal/`, as the refusal it is: recovery stopped at the subject without
+/// settling it, so its state is unknown, and the undo writes nothing (fail closed). Every
+/// later change stops at the subject too; `doctor`, which never recovers first, is the
+/// way out.
+fn unsettled_besides(paths: &Paths, stop: &Error) -> Result<Option<Error>> {
+    let subject = stop
+        .details
+        .get("journal_pending")
+        .and_then(Value::as_str)
+        .and_then(|tx| tx.parse::<TxId>().ok());
+    let dir = paths.journal_dir();
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        // ubs:ignore — an io::ErrorKind, not a secret
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(unreadable(&dir, &err)),
+    };
+    let mut others: BTreeSet<TxId> = BTreeSet::new();
+    for entry in entries {
+        let entry = entry.map_err(|err| unreadable(&dir, &err))?;
+        // ubs:ignore — comparing transaction ids, not secrets
+        if let Some((tx, _)) = journal_file(paths, &entry.path())
+            && Some(tx) != subject
+        {
+            others.insert(tx);
+        }
+    }
+    Ok(others.first().map(|other| {
+        Error::new(
+            ErrorCode::StateCorrupt,
+            format!(
+                "transaction {other} did not finish, and recovery stopped at {}, which this undo would set aside, without settling it; nothing was moved",
+                subject.map_or_else(|| "a journal".to_owned(), |tx| tx.to_string())
+            ),
+            Suggestion::command(["omaddons", "doctor"]),
+        )
+        .details(json!({ "journal_pending": other }))
+    }))
+}
+
+/// Every path the plan's inverses write, for the fences' gate under the lock.
+fn undo_writes(plan: &RepairUndoPlan) -> Vec<PathBuf> {
+    plan.resources
+        .writes()
+        .iter()
+        .filter_map(|resource| resource.path().map(Path::to_path_buf))
+        .collect()
+}
+
+/// [`verify`] with the running state `running` read for these clients.
+fn verify_now(
+    plan: RepairUndoPlan,
+    read: &HistoryRead,
+    at: usize,
+    clients: &[UndoClient],
+    scopes: &ScopeTable,
+    running: &RunningNow,
+    paths: &Paths,
+) -> Result<VerifiedPlan> {
+    let running = |key: TargetKey| {
+        clients
+            .iter()
+            .find(|client| client.key == key)
+            .is_none_or(|client| running.contains(&client.dir))
+    };
+    verify(
+        plan,
+        &VerifyCtx {
+            paths,
+            entries: &read.entries,
+            unreadable: &read.unreadable,
+            at,
+            clients,
+            scopes,
+            running: &running,
+            mount_id: &fsx::mount_id,
+        },
+    )
+}
+
+/// The discovered targets the reverted line touched: every key of its `targets` and of
+/// its operations, each on this machine now (`target_not_found` otherwise, before
+/// anything is written).
+fn discovered_targets(
+    req: &UndoRequest,
+    reverted: &HistoryEntry,
+    plan: &RepairUndoPlan,
+) -> Result<Vec<DiscoveredTarget>> {
+    plan.targets
+        .iter()
+        .map(|key| {
+            req.targets
+                .iter()
+                .find(|d| d.target.key == Some(*key))
+                .cloned()
+                .ok_or_else(|| {
+                    Error::new(
+                        ErrorCode::TargetNotFound,
+                        format!(
+                            "transaction {} changed target {key}, which is not on this machine now",
+                            reverted.tx
+                        ),
+                        Suggestion::command(["omaddons", "targets"]),
+                    )
+                })
+        })
+        .collect()
+}
+
+/// What the undo's primitive session may write (§6.14.4): every path and destination the
+/// reverted line names, the provisional names its activations use, and, as destinations,
+/// below this undo's own quarantine roots. All canonical.
+fn repair_paths(
+    paths: &Paths,
+    plan: &RepairUndoPlan,
+    c: &Committing<'_>,
+    tx: &TxId,
+) -> RepairPaths {
+    let whole = |path: &Path| canonical_lenient(path).unwrap_or_else(|| path.to_path_buf());
+    let mut named: BTreeSet<PathBuf> = BTreeSet::new();
+    for inverse in &plan.inverses {
+        named.insert(whole(&inverse.path));
+        if let Some(to) = inverse.to.path() {
+            named.insert(whole(to));
+        }
+    }
+    let mut roots = vec![
+        whole(&c.run.dir.join("quarantine")),
+        whole(&paths.cache_quarantine(&c.run.id)),
+    ];
+    roots.extend(c.clients.iter().map(|client| {
+        whole(
+            &crate::state::paths::ClientPaths::new(&client.dir)
+                .snapshots_repair(tx)
+                .join("quarantine"),
+        )
+    }));
+    RepairPaths {
+        paths: named,
+        destination_roots: roots,
+    }
+}
+
+/// The doorbell's and the record's command: the caller's, among the three that undo a
+/// repair.
+fn command_name(command: &str) -> &'static str {
+    match command {
+        "doctor undo" => "doctor undo",
+        "apply" => "apply",
+        _ => "undo",
+    }
+}
+
+fn outcome_of(
+    reverts: TxId,
+    ids: &str,
+    verified: VerifiedPlan,
+    tx: Option<TxId>,
+    committed: Vec<RepairEntry>,
+    dry_run: bool,
+    warnings: &[Warning],
+) -> UndoOutcome {
+    UndoOutcome {
+        undoes: reverts,
+        outcome: TxOutcome {
+            target: ids.to_owned(),
+            key: None,
+            tx,
+            kind: tx.map(|_| TxKind::Undo),
+            dry_run,
+            changes: Vec::new(),
+            atomic_swap: true,
+            reload_required: crate::model::ReloadRequired::None,
+            warnings: warnings.to_vec(),
+            creates_addons_dir: false,
+            lock_held_ms: None,
+            notes: Vec::new(),
+        },
+        sv: SvCounts::default(),
+        plan: UndoFacts::default(),
+        wtf: None,
+        repair: Some(RepairUndone {
+            plan: verified,
+            undo_run: None,
+            committed,
+        }),
+    }
+}
+
+/// The run's `report.json`: the doctor envelope's record form with the undo's report.
+fn record_of(
+    command: &'static str,
+    report: &UndoReport,
+    error: Option<&Error>,
+    warnings: &[Warning],
+) -> Result<Vec<u8>> {
+    let meta = Meta {
+        elapsed_ms: 0,
+        offline: false,
+    };
+    let envelope = DoctorEnvelope::report(
+        command,
+        report,
+        report.state.exit(),
+        error,
+        warnings,
+        &[],
+        meta,
+    )
+    .record(RunKind::Undo);
+    serde_json::to_vec(&envelope)
+        .map_err(|e| Error::internal(format!("the undo's record could not be serialized: {e}")))
+}
+
+/// `undo.sh`: it undoes this undo, by `doctor undo <this run>`.
+fn write_undo_script(runtime: &mut Runtime<'_>, paths: &Paths, tx: TxId) -> Result<()> {
+    let binary = crate::omarchy::install::current_binary()?;
+    let context = crate::omarchy::render::Context::of(paths);
+    let script = undo_script(&binary, &context, runtime.id(), tx);
+    runtime
+        .write_file(UNDO_SCRIPT, &script, 0o600)
+        .map(|_| ())
+        .map_err(|failure| failure.error)
+}
+
+/// A failpoint's error, before anything of the undo was written.
+fn failpoint_error(paths: &Paths, err: &io::Error) -> Error {
+    Error::io(
+        paths.state_dir(),
+        err,
+        Suggestion::command(["omaddons", "status"]),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::{PermissionsExt, symlink};
@@ -1923,6 +2632,7 @@ mod tests {
             reason: Some("a test repair".to_owned()),
             argv: ["omaddons", "doctor", "fix"].map(str::to_owned).to_vec(),
             command: "doctor fix",
+            undo: None,
         }
     }
 
@@ -3687,5 +4397,529 @@ mod tests {
             let err = refused(check_with(&home, tx, &seams), case);
             assert!(holds(&err), "case {case}: {err:?}");
         }
+    }
+
+    // -----------------------------------------------------------------------------------
+    // The undo transaction.
+
+    /// [`home`] without its stuck journal, which no build reads and which, naming no
+    /// target, refuses every change until it is set aside.
+    fn plain_home() -> RepairHome {
+        let home = home();
+        let stuck = home.stuck();
+        fs::remove_file(home.paths.journal(&stuck)).unwrap();
+        fs::remove_file(home.paths.inflight_lock(&stuck)).unwrap();
+        home
+    }
+
+    /// `home`'s planned client as discovery finds it.
+    fn discovered(home: &RepairHome) -> DiscoveredTarget {
+        let mut target = crate::engine::testing::target(home.client.client_dir());
+        target.id = "retail".into();
+        target.key = Some(home.key);
+        DiscoveredTarget {
+            target,
+            default_id: "retail".into(),
+            qualifier: "battlenet".into(),
+            source: crate::discover::DiscoverySource::Scan,
+        }
+    }
+
+    /// `omaddons undo <tx>` on `home` through the engine (`engine::undo::undo`, which
+    /// routes a repair-family line here), with `targets` discovered.
+    fn engine_undo(
+        home: &RepairHome,
+        tx: TxId,
+        dry_run: bool,
+        targets: Vec<DiscoveredTarget>,
+    ) -> Result<UndoOutcome> {
+        let registry = crate::sources::SourceRegistry::new();
+        let table = crate::rules::RulesTable::builtin();
+        let argv: Vec<String> = ["omaddons", "undo", tx.to_string().as_str()]
+            .map(str::to_owned)
+            .to_vec();
+        let running = BTreeSet::new();
+        let known: Vec<Target> = targets.iter().map(|d| d.target.clone()).collect();
+        let ctx = EngineCtx {
+            paths: &home.paths,
+            http: &crate::engine::testing::NoNetwork,
+            registry: &registry,
+            table: &table,
+            policy: crate::state::config::RunningPolicy::Safe,
+            limits: crate::engine::inspect::ArchiveLimits::default(),
+            retention: crate::engine::retention::RetentionLimits::default(),
+            actor: Actor::Agent,
+            argv: &argv,
+            command: "undo",
+            running: Some(&running),
+            known_targets: &known,
+            cache: None,
+            progress: &crate::output::ProgressSink::none(),
+            catalog: None,
+            default_channel: crate::model::Channel::Stable,
+            downloads: None,
+            indexes: None,
+            notes: None,
+            binding: None,
+            auto_backup: None,
+            applying: None,
+        };
+        let req = UndoRequest {
+            selector: crate::engine::undo::UndoSelector::Tx(tx),
+            sv_policy: crate::engine::undo::SvPolicy::Auto,
+            dry_run,
+            while_running: false,
+            reason: Some("undo it".to_owned()),
+            targets,
+            run: RunId::new(),
+        };
+        crate::engine::undo::undo(&req, &ctx)
+    }
+
+    fn undone(home: &RepairHome, tx: TxId) -> UndoOutcome {
+        engine_undo(home, tx, false, vec![discovered(home)])
+            .unwrap_or_else(|err| panic!("undoing {tx}: {err:?}")) // ubs:ignore — fails the test
+    }
+
+    /// The run directories under `<state>/doctor/runs/`, by name.
+    fn runs(home: &RepairHome) -> BTreeSet<String> {
+        fs::read_dir(home.paths.doctor_runs_dir())
+            .map(|dir| {
+                dir.filter_map(|e| e.ok()?.file_name().into_string().ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn undo_run_dir(home: &RepairHome, outcome: &UndoOutcome) -> PathBuf {
+        let id = outcome
+            .repair
+            .as_ref()
+            .and_then(|repair| repair.undo_run.clone())
+            .unwrap();
+        home.paths.doctor_runs_dir().join(id)
+    }
+
+    fn mode_of(path: &Path) -> u32 {
+        fs::symlink_metadata(path).unwrap().permissions().mode() & 0o7777
+    }
+
+    fn journals(home: &RepairHome) -> Vec<String> {
+        fs::read_dir(home.paths.journal_dir())
+            .map(|dir| {
+                dir.filter_map(|e| e.ok()?.file_name().into_string().ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn an_undo_commits_through_the_repair_journal() {
+        let home = plain_home();
+        let credential = home.credential();
+        let identity = crate::fsx::FileId::of(&credential).unwrap();
+        let tx = repaired(&home, &[chmod(&home)]);
+        assert_eq!(mode_of(&credential), 0o600);
+        let journals_before = journals(&home);
+        let outcome = undone(&home, tx);
+        assert_eq!(mode_of(&credential), 0o644, "the mode is back");
+        assert!(
+            crate::fsx::FileId::same(crate::fsx::FileId::of(&credential), Some(identity)),
+            "the same file"
+        );
+        let undo_tx = outcome.outcome.tx.unwrap();
+        assert_eq!(outcome.undoes, tx);
+        assert_eq!(outcome.outcome.kind, Some(TxKind::Undo));
+        let line = line_of(&home, undo_tx);
+        assert_eq!(line.kind, TxKind::Undo);
+        assert_eq!(line.reverts, Some(tx));
+        assert_eq!(line.target, None);
+        assert!(line.well_formed() && is_repair_family(&line), "{line:?}");
+        assert_eq!(line.repairs.len(), 1);
+        assert_eq!(line.repairs[0].path, credential);
+        let dir = undo_run_dir(&home, &outcome);
+        assert_eq!(
+            line.doctor_run_id.as_deref(),
+            dir.file_name().unwrap().to_str(),
+            "the undo's own run"
+        );
+        assert_eq!(journals(&home), journals_before, "the journal is gone");
+        assert!(
+            !home.paths.inflight_lock(&undo_tx).exists(),
+            "and the in-flight lock"
+        );
+        let actions = fs::read_to_string(dir.join(ACTIONS_LOG)).unwrap();
+        let actions: Vec<Value> = actions
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(actions.len(), 1, "exactly the inverse: {actions:?}");
+        assert_eq!(actions[0]["op"], json!("chmod"), "{actions:?}");
+        assert_eq!(actions[0]["path"], json!(credential), "{actions:?}");
+        assert_eq!(actions[0]["before_hash"], json!("mode:600"), "{actions:?}");
+        assert_eq!(actions[0]["after_hash"], json!("mode:644"), "{actions:?}");
+        assert_eq!(
+            actions[0]["tx"],
+            json!(undo_tx),
+            "the undo's own: {actions:?}"
+        );
+        let report: Value =
+            serde_json::from_slice(&fs::read(dir.join("report.json")).unwrap()).unwrap();
+        assert_eq!(report["kind"], json!("undo"), "{report}");
+        assert_eq!(report["command"], json!("undo"), "{report}");
+        assert_eq!(report["state"], json!("DONE_OK"), "{report}");
+        assert_eq!(report["reverts"], json!(tx), "{report}");
+        assert_eq!(report["reverted_run"], json!(home.run.id), "{report}");
+        assert_eq!(report["tx"], json!(undo_tx), "{report}");
+        assert_eq!(report["actions_taken"], json!(1), "{report}");
+        assert_eq!(mode_of(&dir.join("report.json")), 0o400);
+        assert_eq!(mode_of(&dir.join(ACTIONS_LOG)), 0o400);
+        assert_eq!(mode_of(&dir.join(UNDO_SCRIPT)), 0o500);
+        let script = fs::read_to_string(dir.join(UNDO_SCRIPT)).unwrap();
+        assert!(
+            script.contains("doctor undo")
+                && script.contains(dir.file_name().unwrap().to_str().unwrap()),
+            "{script}"
+        );
+        // And the undo is undone in turn: a redo.
+        let redo = undone(&home, undo_tx);
+        assert_eq!(mode_of(&credential), 0o600, "redone");
+        assert_eq!(
+            line_of(&home, redo.outcome.tx.unwrap()).reverts,
+            Some(undo_tx)
+        );
+    }
+
+    /// Lowering an undo resolves each quarantine below the undo's own run and reserves
+    /// each write's backup there, reads the reverted backup as `backup:<run>/<seq>`, and
+    /// creates nothing: the commit makes the roots.
+    #[test]
+    fn lowered_from_inverses_resolves_destinations_and_reservations() {
+        let home = plain_home();
+        let tx = repaired(&home, &[write_over(&home), write_create(&home)]);
+        let verified = check(&home, tx).unwrap();
+        let undo_run = later_run(&home);
+        let undo_tx = TxId::new();
+        let before = tree_hash(&home.base);
+        let lowered = lowered_from_inverses(
+            &LowerCtx {
+                paths: &home.paths,
+                tx: undo_tx,
+                run: &undo_run,
+                clients: &home.planned,
+                skill_dirs: &home.skill_dirs,
+                scopes: &home.scopes,
+                mount_id: &fsx::mount_id,
+            },
+            &verified,
+        )
+        .unwrap();
+        assert_eq!(tree_hash(&home.base), before, "nothing created");
+        let mut backups = Vec::new();
+        let mut destinations = Vec::new();
+        for step in &lowered.steps {
+            match &step.step.op {
+                Primitive::WriteFile { backup, .. } => backups.push(backup.clone()),
+                Primitive::RenameNoReplace { to, .. } => destinations.push(to.clone()),
+                Primitive::Chmod { .. } => {}
+            }
+        }
+        let seq_of_write = lowered
+            .steps
+            .iter()
+            .find(|s| matches!(s.step.op, Primitive::WriteFile { .. }))
+            .map(|s| s.step.seq)
+            .unwrap();
+        assert_eq!(
+            backups,
+            [Some(
+                undo_run.dir.join("backups").join(seq_of_write.to_string())
+            )],
+            "the undo's own backup"
+        );
+        let rel = notes(&home)
+            .strip_prefix(home.paths.home())
+            .unwrap()
+            .to_path_buf();
+        let parked = undo_run.dir.join("quarantine/skill").join(&rel);
+        assert_eq!(destinations, std::slice::from_ref(&parked));
+        assert!(
+            lowered
+                .roots
+                .contains(&parked.parent().unwrap().to_path_buf()),
+            "{:?}",
+            lowered.roots
+        );
+        assert!(
+            lowered
+                .resources
+                .reads()
+                .contains(&Resource::backup(&home.run.id, 1).unwrap()),
+            "{:?}",
+            lowered.resources
+        );
+        assert!(
+            lowered.steps.iter().all(|s| s.step.validate().is_ok()),
+            "every step validates"
+        );
+    }
+
+    #[test]
+    fn an_overwriting_undo_backs_up_what_it_overwrites() {
+        let home = plain_home();
+        let original = fs::read(home.skill_file()).unwrap();
+        let tx = repaired(&home, &[write_over(&home)]);
+        let outcome = undone(&home, tx);
+        assert_eq!(fs::read(home.skill_file()).unwrap(), original);
+        assert_eq!(mode_of(&home.skill_file()), 0o644);
+        let dir = undo_run_dir(&home, &outcome);
+        assert_eq!(
+            fs::read(dir.join("backups/1")).unwrap(),
+            NEW_GUIDE,
+            "the undo kept the repaired bytes it overwrote"
+        );
+    }
+
+    #[test]
+    fn a_created_file_goes_to_the_undos_quarantine() {
+        let home = plain_home();
+        let tx = repaired(&home, &[write_create(&home)]);
+        let outcome = undone(&home, tx);
+        assert!(!notes(&home).exists(), "the created file left its place");
+        let rel = notes(&home)
+            .strip_prefix(home.paths.home())
+            .unwrap()
+            .to_path_buf();
+        let parked = undo_run_dir(&home, &outcome)
+            .join("quarantine/skill")
+            .join(rel);
+        assert_eq!(fs::read(&parked).unwrap(), b"notes\n", "never deleted");
+    }
+
+    #[test]
+    fn a_flatten_is_undone_one_rename_at_a_time() {
+        // A case: the flatten, and what must hold once it is undone.
+        type Back = fn(&RepairHome, TxId) -> Vec<(&'static str, bool)>;
+        let cases: Vec<(&str, &str, Back)> = vec![
+            ("Wrap/Inner", "Wrap", |h, _| {
+                vec![
+                    (
+                        "inner back in its wrapper",
+                        h.addons("Wrap/Inner/Inner.toc").is_file(),
+                    ),
+                    (
+                        "wrapper's own file back",
+                        h.addons("Wrap/README.txt").is_file(),
+                    ),
+                    ("no lifted folder", !h.addons("Inner").exists()),
+                ]
+            }),
+            ("Same/Same", "Same", |h, tx| {
+                vec![
+                    (
+                        "inner back in its wrapper",
+                        h.addons("Same/Same/Same.toc").is_file(),
+                    ),
+                    (
+                        "wrapper's own file back",
+                        h.addons("Same/notes.txt").is_file(),
+                    ),
+                    (
+                        "no provisional folder",
+                        !h.client.flatten_provisional(&tx).exists(),
+                    ),
+                ]
+            }),
+        ];
+        for (inner, outer, back) in cases {
+            let home = plain_home();
+            let tx = repaired(&home, &[flatten(&home, inner, outer)]);
+            undone(&home, tx);
+            for (what, holds) in back(&home, tx) {
+                assert!(holds, "{inner}: {what}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_failed_inverse_rolls_the_undo_back() {
+        let home = plain_home();
+        let tx = repaired(&home, &[flatten(&home, "Wrap/Inner", "Wrap")]);
+        let addons = crate::engine::testing::tree_hash(&home.addons(""));
+        let runs_before = runs(&home);
+        let result = crate::fsx::with_spec("fsx.mutate.executed=error@2", || {
+            engine_undo(&home, tx, false, vec![discovered(&home)])
+        });
+        assert!(result.is_err(), "{result:?}");
+        assert_eq!(
+            crate::engine::testing::tree_hash(&home.addons("")),
+            addons,
+            "the subject is as the repair left it"
+        );
+        let read = history_of(&home);
+        assert!(
+            !read.entries.iter().any(|e| e.reverts == Some(tx)),
+            "no undo line"
+        );
+        let new: Vec<String> = runs(&home).difference(&runs_before).cloned().collect();
+        assert_eq!(new.len(), 1, "{new:?}");
+        let report: Value = serde_json::from_slice(
+            &fs::read(
+                home.paths
+                    .doctor_runs_dir()
+                    .join(&new[0])
+                    .join("report.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report["state"], json!("DONE_FAILED"), "{report}");
+    }
+
+    #[test]
+    fn the_reverted_run_directory_is_never_written() {
+        let home = plain_home();
+        let tx = repaired(&home, &[write_over(&home)]);
+        let before = crate::engine::testing::tree_hash(&home.run.dir);
+        undone(&home, tx);
+        assert_eq!(
+            crate::engine::testing::tree_hash(&home.run.dir),
+            before,
+            "its backups read, never written"
+        );
+        // A quarantine is the one thing an undo moves out of it.
+        let home = home_with(|h| vec![quarantine(h.record(), QuarantineRoot::State)]);
+        let (home, tx) = home;
+        let backups = home.run.dir.join("backups");
+        let had_backups = backups.exists();
+        undone(&home, tx);
+        assert!(home.record().is_file(), "the record is back");
+        assert_eq!(backups.exists(), had_backups, "nothing else changed there");
+    }
+
+    /// A fresh home and the repair of `fixes` committed on it.
+    fn home_with(fixes: fn(&RepairHome) -> Vec<PlannedFix>) -> (RepairHome, TxId) {
+        let home = plain_home();
+        let tx = repaired(&home, &fixes(&home));
+        (home, tx)
+    }
+
+    #[test]
+    fn a_dry_run_creates_nothing() {
+        let (home, tx) = home_with(|h| vec![chmod(h), write_create(h)]);
+        let before = tree_hash(&home.base);
+        let outcome = engine_undo(&home, tx, true, vec![discovered(&home)]).unwrap();
+        assert_eq!(tree_hash(&home.base), before, "nothing written");
+        assert_eq!(outcome.outcome.tx, None);
+        assert!(outcome.outcome.dry_run);
+        let repair = outcome.repair.unwrap();
+        assert_eq!(repair.undo_run, None);
+        assert_eq!(repair.plan.plan.inverses.len(), 2);
+    }
+
+    #[test]
+    fn a_refusal_before_the_lock_creates_no_run() {
+        let (home, tx) = home_with(|h| vec![chmod(h)]);
+        fs::set_permissions(home.credential(), fs::Permissions::from_mode(0o640)).unwrap();
+        let runs_before = runs(&home);
+        let journals_before = journals(&home);
+        let err = engine_undo(&home, tx, false, vec![discovered(&home)]).unwrap_err();
+        assert_eq!(err.code, ErrorCode::UndoConflict, "{err:?}");
+        assert_eq!(runs(&home), runs_before, "no run directory");
+        assert_eq!(journals(&home), journals_before, "no journal");
+        let inflight: Vec<_> = fs::read_dir(home.paths.inflight_dir())
+            .map(|d| {
+                d.filter_map(std::result::Result::ok)
+                    .map(|e| e.file_name())
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(
+            inflight.iter().all(|name| name
+                .to_str()
+                .is_some_and(|n| n.starts_with(&home.stuck().to_string()))),
+            "only the stuck journal's in-flight lock: {inflight:?}"
+        );
+    }
+
+    #[test]
+    fn a_target_not_on_this_machine_is_refused() {
+        let (home, tx) = home_with(|h| vec![quarantine(h.addons("Stray"), client_root(h))]);
+        let before = tree_hash(&home.base);
+        let err = engine_undo(&home, tx, false, Vec::new()).unwrap_err();
+        assert_eq!(err.code, ErrorCode::TargetNotFound, "{err:?}");
+        assert_eq!(tree_hash(&home.base), before, "nothing written");
+    }
+
+    /// A set-aside's undo reactivates its journal, and the undo of that undo sets it
+    /// aside again, though recovery cannot settle the journal it suspends: that journal
+    /// is the undo's subject. Any other stuck journal still refuses the undo.
+    #[test]
+    fn an_undo_of_a_reactivation_is_not_blocked_by_the_journal_it_suspends() {
+        let home = home();
+        let stuck = home.stuck();
+        let tx = repaired(&home, &[stuck_set_aside(&home, Vec::new())]);
+        assert!(!home.paths.journal(&stuck).exists(), "set aside");
+        let reactivation = undone(&home, tx);
+        assert!(home.paths.journal(&stuck).is_file(), "reactivated");
+        let redo = engine_undo(
+            &home,
+            reactivation.outcome.tx.unwrap(),
+            false,
+            vec![discovered(&home)],
+        )
+        .unwrap_or_else(|err| panic!("{err:?}")); // ubs:ignore — fails the test
+        assert!(!home.paths.journal(&stuck).exists(), "set aside again");
+        let pending: Vec<&Warning> = redo
+            .outcome
+            .warnings
+            .iter()
+            .filter(|w| w.code == WarningCode::JournalPending)
+            .collect();
+        assert_eq!(pending.len(), 1, "{:?}", redo.outcome.warnings);
+    }
+
+    #[test]
+    fn another_stuck_journal_still_blocks_an_undo() {
+        let home = home();
+        let stuck = home.stuck();
+        let tx = repaired(&home, &[stuck_set_aside(&home, Vec::new())]);
+        let reactivation = undone(&home, tx);
+        assert!(home.paths.journal(&stuck).is_file());
+        // Another journal no build reads, which the undo does not move.
+        let other = TxId::new();
+        fs::write(home.paths.journal(&other), "{\"line\":\"prepared\"}\n").unwrap();
+        let runs_before = runs(&home);
+        let err = engine_undo(
+            &home,
+            reactivation.outcome.tx.unwrap(),
+            false,
+            vec![discovered(&home)],
+        )
+        .unwrap_err();
+        assert!(
+            home.paths.journal(&stuck).is_file(),
+            "nothing moved: {err:?}"
+        );
+        assert_eq!(
+            err.details["journal_pending"],
+            json!(other),
+            "refused for the other journal: {err:?}"
+        );
+        assert_eq!(err.code.check_details(&err.details), Ok(()), "{err:?}");
+        // Refused under the lock, after its run was made: that run says so.
+        let new: Vec<String> = runs(&home).difference(&runs_before).cloned().collect();
+        assert_eq!(new.len(), 1, "{new:?}");
+        let report: Value = serde_json::from_slice(
+            &fs::read(
+                home.paths
+                    .doctor_runs_dir()
+                    .join(&new[0])
+                    .join("report.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report["state"], json!("REFUSING"), "{report}");
     }
 }

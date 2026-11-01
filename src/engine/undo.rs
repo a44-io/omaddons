@@ -131,6 +131,10 @@ pub struct UndoOutcome {
     /// The undo of a whole restore: what it reverts besides (M3-D28 rule 4).
     #[serde(skip)]
     pub wtf: Option<WtfUndo>,
+    /// The undo of a repair-family line (E7): its plan as verified, its run and the
+    /// inverses it committed; `None` on every other undo.
+    #[serde(skip)]
+    pub repair: Option<super::repair::undo::RepairUndone>,
 }
 
 /// What undoing a whole restore (or the undo of one) reverts with it.
@@ -218,6 +222,10 @@ pub fn undo(req: &UndoRequest, ctx: &EngineCtx<'_>) -> Result<UndoOutcome> {
     let read = history::read(ctx.paths, &HistoryFilter::default())?;
     let entries = &read.entries;
     let at = select(entries, req.selector)?;
+    // A repair, or the undo of one, is undone by inverting its primitives (E7).
+    if super::repair::undo::is_repair_family(&entries[at]) {
+        return super::repair::undo::undo_repair(req, ctx, &read, at);
+    }
     let reverted = entries[at].clone();
     let key = target_of(&reverted)?;
     let discovered = req
@@ -714,6 +722,7 @@ impl Planned {
                 notes: self.notes.clone(),
             },
             sv: self.sv.counts,
+            repair: None,
         }
     }
 }
@@ -4185,11 +4194,13 @@ mod tests {
             ("tx", UndoSelector::Tx(repair.tx)),
             ("last_by", UndoSelector::LastBy(Actor::Human)),
         ] {
+            // A repair line reaches the repair undo (E7), which finds nothing to invert
+            // in one that names no operation.
             let err = scene.undo(selector, SvPolicy::Auto).unwrap_err();
             assert_eq!(err.code, ErrorCode::NotFound, "{name}: {err:?}");
             assert!(
                 err.message.contains(&repair.tx.to_string())
-                    && err.message.contains("cannot undo yet"),
+                    && err.message.contains("changed no file"),
                 "{name}: {}",
                 err.message
             );

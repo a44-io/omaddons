@@ -29,12 +29,15 @@ pub mod lower;
 pub mod recover;
 pub mod undo;
 
-pub use commit::{CommitCtx, RepairCleanup, RepairMeta, RepairOutcome, abandon, commit};
+pub use commit::{CommitCtx, RepairCleanup, RepairMeta, RepairOutcome, UndoOf, abandon, commit};
 pub use journal::{
-    ClientDirEntry, FORMAT, ParsedRepair, PreparedRead, RepairLine, RepairPhase, RepairPrepared,
-    ResourcesWire, RollbackTarget, history_line, read_prepared,
+    ClientDirEntry, FORMAT, ParsedRepair, PreparedRead, RepairKind, RepairLine, RepairPhase,
+    RepairPrepared, ResourcesWire, RollbackTarget, history_line, read_prepared,
 };
-pub use lower::{LowerCtx, LowerError, Lowered, LoweredStep, PlannedFix, RefusedReason, lower};
+pub use lower::{
+    LowerCtx, LowerError, Lowered, LoweredStep, PlannedFix, RefusedReason, lower,
+    lowered_from_inverses,
+};
 pub use recover::{PendingRepair, pending_repairs};
 
 use std::path::{Path, PathBuf};

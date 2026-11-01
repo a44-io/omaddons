@@ -911,6 +911,7 @@ fn repair(kind: Kind, run_id: &str, client_dir: &Path) -> Value {
         reason: None,
         argv: ["omaddons", "doctor", "fix"].map(str::to_owned).to_vec(),
         command: "doctor fix",
+        undo: None,
     };
     let committed = commit(&ctx, rtx, &lowered, &meta);
     drop(lock);

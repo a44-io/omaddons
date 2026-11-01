@@ -4670,6 +4670,40 @@ mod tests {
             Expected,
         );
 
+        /// The undo of a repair (E7) is a repair journal like any other: each phase is
+        /// diagnosed as the same journal of a repair's is, and one whose `kind` and
+        /// `reverts` disagree reads as a line this build cannot act on.
+        #[test]
+        fn diagnose_reads_an_undo_journal_as_a_repair_journal() {
+            let home = repair_home();
+            let repair = repair_prepared(&home, &[], &[flatten(&home, "Wrap/Inner", "Wrap")]);
+            let undo = RepairPrepared {
+                kind: crate::engine::repair::RepairKind::Undo,
+                reverts: Some(TxId::new()),
+                ..repair.clone()
+            };
+            let done = [steps(2), vec![RepairLine::Done]].concat();
+            for (case, rest, ran) in [
+                ("prepared", Vec::new(), 0),
+                ("stepped", steps(2), 2),
+                ("done", done, 2),
+            ] {
+                let base = after(&repair, ran);
+                let verdict = |p: &RepairPrepared| one(&home, &base, p, text(p, &rest)).verdict;
+                assert_eq!(verdict(&undo), verdict(&repair), "{case}");
+            }
+            let misnamed = RepairPrepared {
+                reverts: None,
+                ..undo
+            };
+            let base = after(&repair, 0);
+            assert_eq!(
+                one(&home, &base, &misnamed, text(&misnamed, &[])).verdict,
+                JournalVerdict::Unreadable,
+                "an undo that names nothing it reverts"
+            );
+        }
+
         #[test]
         fn diagnose_reads_each_repair_phase() {
             let home = repair_home();

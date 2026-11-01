@@ -119,6 +119,9 @@ impl<'a> Envelope<'a, ()> {
 pub enum RunKind {
     Diagnose,
     Fix,
+    /// The undo of a repair (E7, M4-D33): its own `actions.jsonl`, `backups/` and
+    /// `quarantine/`; its report names the run it reverted.
+    Undo,
 }
 
 /// One stdout document of a `doctor` command (M4-D34): the general envelope's keys with

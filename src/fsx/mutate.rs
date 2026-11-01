@@ -396,6 +396,24 @@ pub fn mutate_with(
         }
         _ => None,
     };
+    // A repair undo's restriction (§6.14.4): after the scope checks, so it only ever
+    // narrows them; an undo touches only what its repair touched.
+    if let Some(restriction) = &s.repair_paths {
+        if !restriction.admits_target(&target) {
+            return Err(FsxError::ScopeDenied(format!(
+                "{} is not a path the repair being undone named",
+                target.display()
+            )));
+        }
+        if let Some(to) = to.as_deref()
+            && !restriction.admits_destination(to)
+        {
+            return Err(FsxError::ScopeDenied(format!(
+                "{} is not a path the repair being undone named",
+                to.display()
+            )));
+        }
+    }
     // A stuck journal's fences (M4-D62): after the scope checks, so an out-of-scope path
     // stays `scope_denied`, and before anything is read or written.
     let fenced = match (&op, to.as_deref()) {
@@ -2990,5 +3008,269 @@ mod tests {
         mutate(&mut s, &run.join("report.json"), write(b"{}")).unwrap();
         let mode = fs::metadata(&log).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "{mode:o}");
+    }
+
+    // ---------------------------------------------------------------------------------
+    // A repair undo's restriction (E7, §6.14.4).
+
+    /// What a repair undo on `f` names, created on disk: a credential, a skill file, a
+    /// journal (and its provisional name, unmade), an AddOns folder, and the undo's
+    /// quarantine root.
+    struct Named {
+        credential: PathBuf,
+        skill: PathBuf,
+        journal: PathBuf,
+        provisional: PathBuf,
+        folder: PathBuf,
+        root: PathBuf,
+    }
+
+    fn named(f: &Fixture) -> Named {
+        let named = Named {
+            credential: f.paths.credential_file("github"),
+            skill: f.paths.skill_dir().join("SKILL.md"),
+            journal: f.paths.journal_dir().join("X.jsonl"),
+            provisional: f.paths.journal_dir().join("X.reactivating.jsonl"),
+            folder: f.client.join("Interface/AddOns/Y"),
+            root: f.paths.doctor_runs_dir().join("R/quarantine"),
+        };
+        for file in [&named.credential, &named.skill, &named.journal] {
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, b"x").unwrap();
+        }
+        fs::create_dir_all(&named.folder).unwrap();
+        fs::create_dir_all(named.root.join("client")).unwrap();
+        fs::create_dir_all(f.paths.cache_dir()).unwrap();
+        fs::create_dir_all(f.client.join("Interface/.omaddons")).unwrap();
+        named
+    }
+
+    fn restriction(named: &Named) -> crate::fsx::RepairPaths {
+        let canonical = |path: &Path| {
+            crate::fsx::prune::canonical_lenient(path).unwrap_or_else(|| path.to_path_buf())
+        };
+        crate::fsx::RepairPaths {
+            paths: [
+                &named.credential,
+                &named.skill,
+                &named.journal,
+                &named.provisional,
+                &named.folder,
+            ]
+            .into_iter()
+            .map(|path| canonical(path))
+            .collect(),
+            destination_roots: vec![canonical(&named.root)],
+        }
+    }
+
+    /// Both session kinds the commit of an undo uses, restricted.
+    fn restricted<'a>(f: &'a Fixture, named: &Named, tracked: bool) -> WriteSession<'a> {
+        let session = if tracked {
+            f.tx_session(Writer::Doctor)
+        } else {
+            WriteSession::untracked(Writer::Doctor, &f.scopes, "test")
+        };
+        session.with_repair_paths(restriction(named))
+    }
+
+    #[test]
+    fn a_repair_undo_session_refuses_every_path_its_line_does_not_name() {
+        let f = Fixture::new();
+        let n = named(&f);
+        let addons = f.client.join("Interface/AddOns");
+        // A case: its name, the path, and the operation (a rename's destination in it).
+        type Case = (&'static str, PathBuf, Option<PathBuf>);
+        let cases: Vec<Case> = vec![
+            (
+                "other_config_file",
+                f.paths.config_dir().join("config.toml"),
+                None,
+            ),
+            (
+                "other_skill_file",
+                f.paths.skill_dir().join("OTHER.md"),
+                None,
+            ),
+            (
+                "state_file",
+                f.paths.state_dir().join("registry.json"),
+                None,
+            ),
+            ("cache_file", f.paths.cache_dir().join("x"), None),
+            (
+                "client_meta_file",
+                f.client.join("Interface/.omaddons/target.json"),
+                None,
+            ),
+            (
+                "other_addons_folder",
+                addons.join("WeakAuras"),
+                Some(n.root.join("client/WeakAuras")),
+            ),
+            (
+                "sibling_of_a_named_path",
+                f.paths.journal_dir().join("Z.jsonl"),
+                None,
+            ),
+            ("ancestor_of_a_named_path", f.paths.journal_dir(), None),
+            (
+                "descendant_of_a_named_directory",
+                n.folder.join("x.lua"),
+                None,
+            ),
+            (
+                "destination_outside_the_roots",
+                n.credential.clone(),
+                Some(f.paths.doctor_runs_dir().join("R/github")),
+            ),
+            (
+                "destination_equal_to_a_root",
+                n.credential.clone(),
+                Some(n.root.clone()),
+            ),
+            (
+                "target_below_a_destination_root",
+                n.root.join("client/z"),
+                None,
+            ),
+        ];
+        for tracked in [false, true] {
+            for (case, path, to) in &cases {
+                let before = crate::engine::testing::tree_hash(f.client.parent().unwrap());
+                let home = crate::engine::testing::tree_hash(f.paths.home());
+                let mut s = restricted(&f, &n, tracked);
+                let result = match to {
+                    Some(to) => mutate(
+                        &mut s,
+                        path,
+                        Op::Rename {
+                            to,
+                            mode: RenameMode::NoReplace,
+                        },
+                    ),
+                    None if *case == "ancestor_of_a_named_path" => {
+                        mutate(&mut s, path, Op::Chmod { mode: 0o700 })
+                    }
+                    None => mutate(&mut s, path, write(b"changed")),
+                };
+                let shown = format!(
+                    "case {case} (tracked {tracked}): {} → {to:?}: {result:?}",
+                    path.display()
+                );
+                assert!(
+                    matches!(&result, Err(FsxError::ScopeDenied(message))
+                        if message.contains("not a path the repair being undone named")),
+                    "{shown}"
+                );
+                assert_eq!(
+                    crate::engine::testing::tree_hash(f.client.parent().unwrap()),
+                    before,
+                    "{shown}: nothing written"
+                );
+                assert_eq!(
+                    crate::engine::testing::tree_hash(f.paths.home()),
+                    home,
+                    "{shown}: nothing written"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn named_paths_and_quarantine_destinations_pass() {
+        for tracked in [false, true] {
+            let f = Fixture::new();
+            let n = named(&f);
+            let mut s = restricted(&f, &n, tracked);
+            let case = format!("tracked {tracked}");
+            mutate(&mut s, &n.credential, Op::Chmod { mode: 0o600 })
+                .unwrap_or_else(|err| panic!("{case}: chmod: {err:?}")); // ubs:ignore — fails the test
+            mutate(&mut s, &n.skill, write(b"guide"))
+                .unwrap_or_else(|err| panic!("{case}: write: {err:?}")); // ubs:ignore — fails the test
+            mutate(
+                &mut s,
+                &n.journal,
+                Op::Rename {
+                    to: &n.provisional,
+                    mode: RenameMode::NoReplace,
+                },
+            )
+            .unwrap_or_else(|err| panic!("{case}: rename between named paths: {err:?}")); // ubs:ignore — fails the test
+            mutate(
+                &mut s,
+                &n.folder,
+                Op::Rename {
+                    to: &n.root.join("client/Y"),
+                    mode: RenameMode::NoReplace,
+                },
+            )
+            .unwrap_or_else(|err| panic!("{case}: rename into a root: {err:?}")); // ubs:ignore — fails the test
+            assert!(n.root.join("client/Y").is_dir(), "{case}");
+        }
+    }
+
+    #[test]
+    fn a_symlinked_home_still_matches() {
+        let f = Fixture::through_a_linked_home();
+        let n = named(&f);
+        assert_ne!(
+            crate::fsx::prune::canonical_lenient(&n.credential).unwrap(),
+            n.credential,
+            "the paths are reached through the link"
+        );
+        let mut s = restricted(&f, &n, true);
+        mutate(&mut s, &n.credential, Op::Chmod { mode: 0o600 }).unwrap();
+        mutate(&mut s, &n.skill, write(b"guide")).unwrap();
+    }
+
+    #[test]
+    fn a_session_without_the_restriction_is_unchanged() {
+        let f = Fixture::new();
+        let n = named(&f);
+        let mut s = WriteSession::untracked(Writer::Doctor, &f.scopes, "test");
+        mutate(
+            &mut s,
+            &f.paths.state_dir().join("registry.json"),
+            write(b"{}"),
+        )
+        .unwrap();
+        mutate(&mut s, &n.credential, Op::Chmod { mode: 0o600 }).unwrap();
+    }
+
+    #[test]
+    fn writer_undo_rows_are_unchanged() {
+        use crate::fsx::scope::Scope;
+        let all = [
+            Scope::Config,
+            Scope::State,
+            Scope::NetLog,
+            Scope::History,
+            Scope::Cache,
+            Scope::AddOns,
+            Scope::ClientMeta,
+            Scope::SavedVariables,
+            Scope::Wtf,
+            Scope::Omarchy,
+            Scope::Skill,
+            Scope::RecordFixtures,
+            Scope::ExportFile,
+        ];
+        let admitted: Vec<Scope> = all
+            .into_iter()
+            .filter(|scope| scope.admits(Writer::Undo))
+            .collect();
+        assert_eq!(
+            admitted,
+            [
+                Scope::State,
+                Scope::NetLog,
+                Scope::History,
+                Scope::Cache,
+                Scope::AddOns,
+                Scope::ClientMeta,
+                Scope::SavedVariables,
+            ]
+        );
     }
 }

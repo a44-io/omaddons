@@ -814,6 +814,26 @@ fn write_fuzz_seeds() {
         "malformed-repair-middle-line.jsonl",
         format!("{}not json\n{}", &chmod[..first], &chmod[first..]).as_bytes(),
     );
+    // The undo of a repair (E7): the chmod's journal as an undo's, and one naming no
+    // transaction it reverts, which reads as a line this build cannot act on.
+    let undo = chmod.replacen(
+        "\"format\":\"1.0\"",
+        "\"format\":\"1.0\",\"kind\":\"undo\",\"reverts\":\"01JB8Q2VA00000000000000005\"",
+        1,
+    );
+    assert_ne!(undo, chmod, "the prepared line names its format");
+    write("journal", "repair-undo-step-1.jsonl", undo.as_bytes());
+    write(
+        "journal",
+        "malformed-repair-undo-without-reverts.jsonl",
+        chmod
+            .replacen(
+                "\"format\":\"1.0\"",
+                "\"format\":\"1.0\",\"kind\":\"undo\"",
+                1,
+            )
+            .as_bytes(),
+    );
 }
 
 /// mod_dav_svn's HTML index of BugGrabber v12.1.0, as documented (C2 records the real one).

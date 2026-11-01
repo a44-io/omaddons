@@ -32,6 +32,9 @@ use serde_json::json;
 use sha2::Digest as _;
 
 use super::RepairRun;
+use super::undo::{
+    BackupRead, Dest, InverseKind, InverseStep, QuarantineSide, RepairUndoPlan, VerifiedPlan,
+};
 use crate::engine::repair_action::{
     Endpoint, Endpoints, Fix, FixEntry, Guard, Identity, JournalSet, Mode, Primitive,
     QuarantineRoot, Sha256, Stamp, Step, check_path, validate_steps,
@@ -1400,6 +1403,303 @@ impl Lowering<'_, '_> {
     }
 }
 
+// ---------------------------------------------------------------------------------------
+// The undo of a repair (E7).
+
+/// The undo of a repair-family transaction, lowered from its verified plan: one step per
+/// inverse, in the plan's order, its predicates the plan's (verification proved them
+/// live on what the steps before it leave; nothing is captured again). Each quarantine
+/// destination is resolved below this undo's own run (or its client's `<tx>.repair`
+/// half), each write reserves its backup there and takes its content from the reverted
+/// repair's backup, read again and checked against the digest verification proved, and
+/// every path is admitted and every rename's mounts checked as a repair's are. It writes
+/// nothing: the commit creates the roots, and only the folders no earlier inverse puts in
+/// place are roots.
+pub fn lowered_from_inverses(
+    ctx: &LowerCtx<'_>,
+    verified: &VerifiedPlan,
+) -> Result<Lowered, LowerError> {
+    let plan = &verified.plan;
+    let mut lowering = Lowering {
+        ctx,
+        bases: Bases::new(ctx)?,
+        view: View::default(),
+        steps: Vec::new(),
+        roots: BTreeSet::new(),
+        touched: BTreeSet::new(),
+    };
+    for inverse in &plan.inverses {
+        lowering.inverse(plan, inverse)?;
+    }
+    let mut lowered = lowering.finish(plan.fixes.clone())?;
+    for read in &plan.reads {
+        let resource =
+            Resource::backup(&read.run, read.seq).map_err(|err| internal(err.to_string()))?;
+        lowered.resources.read(resource);
+    }
+    Ok(lowered)
+}
+
+impl Lowering<'_, '_> {
+    fn inverse(&mut self, plan: &RepairUndoPlan, inverse: &InverseStep) -> Result<(), LowerError> {
+        let seq = self.next_seq()?;
+        // ubs:ignore — comparing step numbers, not secrets
+        if seq != inverse.seq {
+            return Err(internal(format!(
+                "the undo's inverse {} would be its step {seq}",
+                inverse.seq
+            )));
+        }
+        let of = FixOf {
+            fix: inverse.fix,
+            fm: Cow::Owned(inverse.fm.clone()),
+        };
+        match (inverse.kind, &inverse.to, inverse.mode) {
+            (InverseKind::RestoreWrite, Dest::None, Some(mode)) => {
+                self.restore_write(plan, &of, inverse, mode)
+            }
+            (InverseKind::ChmodBack, Dest::None, Some(mode)) => {
+                let (path, _) = self.admit(seq, &inverse.path, Access::Write)?;
+                let size = fs::symlink_metadata(&path).map_or(0, |meta| meta.len());
+                let Endpoints::One(post) = &inverse.post else {
+                    return Err(internal(format!("inverse {seq} is a chmod with two ends")));
+                };
+                self.view.events.push(Event::Set {
+                    path: path.clone(),
+                    post: post.clone(),
+                    size,
+                });
+                let mut resources = ResourceSet::new();
+                resources.write(resource(&path, PathKind::File)?);
+                self.push(LoweredStep {
+                    step: Step {
+                        seq,
+                        fix: of.fix,
+                        fm: of.fm,
+                        op: Primitive::Chmod { path, mode },
+                        pre: inverse.pre.clone(),
+                        post: inverse.post.clone(),
+                        guards: Vec::new(),
+                    },
+                    resources,
+                    backup_bytes: 0,
+                    quarantine: None,
+                    rollback_to: None,
+                    content: None,
+                });
+                Ok(())
+            }
+            (InverseKind::QuarantineCreated, Dest::Quarantine { side, rel }, None) => {
+                let place = match side {
+                    QuarantineSide::State => Place::State,
+                    QuarantineSide::Config => Place::Config,
+                    QuarantineSide::Cache => Place::Cache,
+                    QuarantineSide::Skill => Place::Skill,
+                    QuarantineSide::Client(key) => self
+                        .bases
+                        .clients
+                        .iter()
+                        .position(|(_, client)| client == key)
+                        .map(Place::Client)
+                        .ok_or_else(|| {
+                            internal(format!(
+                                "inverse {seq} quarantines a file of target {key}, which this undo was not planned for"
+                            ))
+                        })?,
+                };
+                let Some((base, _)) = self.bases.quarantine(place, &self.ctx.tx) else {
+                    return Err(internal(format!(
+                        "inverse {seq} names a side with no quarantine"
+                    )));
+                };
+                let to = base.join(rel);
+                self.rename_back(&of, inverse, &to, Some(base))
+            }
+            (
+                InverseKind::RenameBack
+                | InverseKind::ToProvisional
+                | InverseKind::Activate
+                | InverseKind::Deactivate,
+                Dest::Path(to),
+                None,
+            ) => self.rename_back(&of, inverse, to, None),
+            _ => Err(internal(format!(
+                "inverse {seq} ({:?}) does not fit its destination or mode",
+                inverse.kind
+            ))),
+        }
+    }
+
+    /// A write of the reverted repair's backup back over its file, with the mode it
+    /// replaced, keeping what it overwrites in this undo's own backup.
+    fn restore_write(
+        &mut self,
+        plan: &RepairUndoPlan,
+        of: &FixOf,
+        inverse: &InverseStep,
+        mode: Mode,
+    ) -> Result<(), LowerError> {
+        let seq = inverse.seq;
+        let (path, side) = self.admit(seq, &inverse.path, Access::Write)?;
+        let read = plan
+            .reads
+            .iter()
+            // ubs:ignore — comparing step numbers, not secrets
+            .find(|read| read.seq == inverse.reverts)
+            .ok_or_else(|| {
+                internal(format!(
+                    "inverse {seq} restores a backup the plan lists not"
+                ))
+            })?;
+        let content = backup_content(plan, read)?;
+        let (backup, kept) = self.backup(seq, &side)?;
+        let backup_bytes = fs::symlink_metadata(&path).map_or(0, |meta| meta.len());
+        let Endpoints::One(post) = &inverse.post else {
+            return Err(internal(format!("inverse {seq} is a write with two ends")));
+        };
+        self.view.events.push(Event::Set {
+            path: path.clone(),
+            post: post.clone(),
+            size: content.len() as u64,
+        });
+        let mut resources = ResourceSet::new();
+        resources
+            .write(resource(&path, PathKind::File)?)
+            .write(kept);
+        self.push(LoweredStep {
+            step: Step {
+                seq,
+                fix: of.fix,
+                fm: of.fm.clone(),
+                op: Primitive::WriteFile {
+                    path,
+                    mode,
+                    backup: Some(backup),
+                },
+                pre: inverse.pre.clone(),
+                post: inverse.post.clone(),
+                guards: Vec::new(),
+            },
+            resources,
+            backup_bytes,
+            quarantine: None,
+            rollback_to: None,
+            content: Some(content),
+        });
+        Ok(())
+    }
+
+    /// One rename of the undo, from the inverse's path to `to`: both admitted, the
+    /// destination free on what the steps before it leave, one mount, and the folders it
+    /// needs that nothing puts in place listed as roots.
+    fn rename_back(
+        &mut self,
+        of: &FixOf,
+        inverse: &InverseStep,
+        to: &Path,
+        quarantine: Option<PathBuf>,
+    ) -> Result<(), LowerError> {
+        let seq = inverse.seq;
+        let (from, _) = self.admit(seq, &inverse.path, Access::Rename)?;
+        let (to, _) = self.admit(seq, to, Access::Rename)?;
+        if !matches!(self.seen(&to)?, Seen::Nothing) {
+            return Err(exists(&to));
+        }
+        let real = match self.view.origin(&from) {
+            Origin::Disk(real) if fs::symlink_metadata(&real).is_ok() => Some(real),
+            _ => None,
+        };
+        // A folder's stamp as the steps before it leave it: a flatten's wrapper back at
+        // its provisional name holds the inner folder again by the time it moves on.
+        // Verification read the stamp from the disk as it is now, before any of them.
+        let mut pre = inverse.pre.clone();
+        if let (
+            Endpoints::Pair {
+                path: Endpoint::Dir { stamp, .. },
+                ..
+            },
+            Some(real),
+        ) = (&mut pre, real.as_deref())
+        {
+            *stamp = Some(self.stamp_of(&from, real)?);
+        }
+        self.same_mount(&from, &to, real.as_deref())?;
+        self.create(parent_of(&to)?)?;
+        let kind = match &inverse.pre {
+            Endpoints::Pair {
+                path: Endpoint::Dir { .. },
+                ..
+            } => PathKind::Subtree,
+            _ => PathKind::File,
+        };
+        let mut resources = ResourceSet::new();
+        resources.rename(resource(&from, kind)?, resource(&to, kind)?);
+        self.view.events.push(Event::Move {
+            from: from.clone(),
+            to: to.clone(),
+        });
+        self.push(LoweredStep {
+            step: Step {
+                seq,
+                fix: of.fix,
+                fm: of.fm.clone(),
+                op: Primitive::RenameNoReplace {
+                    from,
+                    to,
+                    activation: inverse.activation,
+                },
+                pre,
+                post: inverse.post.clone(),
+                guards: Vec::new(),
+            },
+            resources,
+            backup_bytes: 0,
+            quarantine,
+            rollback_to: None,
+            content: None,
+        });
+        Ok(())
+    }
+}
+
+/// The bytes of a reverted write's backup, read again (bounded by the size it has) and
+/// checked against the digest verification proved: anything else is the backup changed
+/// since, refused as verification refuses it.
+fn backup_content(plan: &RepairUndoPlan, read: &BackupRead) -> Result<Vec<u8>, LowerError> {
+    use std::io::Read as _;
+    let changed = || -> LowerError {
+        Error::new(
+            ErrorCode::UndoConflict,
+            format!(
+                "1 path(s) changed since the repair {}; undoing it now could overwrite that",
+                plan.reverted
+            ),
+            Suggestion::command(["omaddons", "history"]),
+        )
+        .details(json!({
+            "tx": plan.reverted,
+            "reason": "changed_since_repair",
+            "paths": [read.path.display().to_string()],
+        }))
+        .into()
+    };
+    let meta = fs::symlink_metadata(&read.path).map_err(|_| changed())?;
+    if !meta.is_file() {
+        return Err(changed());
+    }
+    let file = fs::File::open(&read.path).map_err(|err| io_error(&read.path, &err))?;
+    let mut content = Vec::new();
+    file.take(meta.len().saturating_add(1))
+        .read_to_end(&mut content)
+        .map_err(|err| io_error(&read.path, &err))?;
+    let digest: [u8; 32] = sha2::Sha256::digest(&content).into();
+    // ubs:ignore — a content digest compared for integrity, not a secret
+    if content.len() as u64 != meta.len() || digest != read.sha256 {
+        return Err(changed());
+    }
+    Ok(content)
+}
+
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::symlink;
@@ -1770,6 +2070,7 @@ mod tests {
                     );
                 }
                 let journal_file = matches!(&step.op,
+                    // ubs:ignore — comparing paths, not secrets
                     Primitive::RenameNoReplace { from, .. } if *from == home.paths.journal(&home.stuck()));
                 assert_eq!(
                     !step.guards.is_empty(),
