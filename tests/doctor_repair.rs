@@ -12,6 +12,10 @@ mod undo;
 // F2 s4: the delegation end to end (`delegate::delegate_<scenario>`).
 #[path = "doctor_repair/delegate.rs"]
 mod delegate;
+// F2 s5: the set-aside, its reactivation and its attribution end to end
+// (`set_aside::{set_aside,reactivate,attribution}_<scenario>`).
+#[path = "doctor_repair/set_aside.rs"]
+mod set_aside;
 // The contract suite's strict validator, for the delegation's envelopes.
 #[allow(dead_code)]
 #[path = "contract/validate.rs"]
