@@ -526,6 +526,10 @@ fn readers_report_without_writing() {
     let scene = Scene::new();
     assert!(pending_warnings(&scene.paths).unwrap().is_empty());
     scene.run(1, false, false, false);
+    // The lock the run dropped is free once every copy of its descriptor is closed: a
+    // child another test of this binary forks in that moment holds one until its `exec`
+    // closes it. Taking the lock waits that out, so the reader below sees it free.
+    drop(GlobalLock::acquire(&scene.paths, "test").unwrap());
     let state = scene.env.state();
     let before = tree_hash(&state);
 

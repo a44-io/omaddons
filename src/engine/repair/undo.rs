@@ -575,10 +575,37 @@ fn invert(
                     back,
                 )]);
             }
+            if let Some((_, JournalName::Reactivating)) = journal_file(paths, from) {
+                // A journal moved out of its provisional name: the undo of a reactivation
+                // (a redo) setting it aside again. Its inverse is the provisional restore,
+                // which runs first.
+                return Ok(vec![make(
+                    InverseKind::ToProvisional,
+                    to,
+                    Dest::Path(from.clone()),
+                    None,
+                    pre,
+                    back,
+                )]);
+            }
             if let Some((tx, JournalName::Folder | JournalName::Wtf | JournalName::Repair)) =
                 journal_file(paths, from)
             {
                 let provisional = bases.provisional(paths, &tx);
+                // ubs:ignore — comparing paths, not secrets
+                if *to == provisional {
+                    // A deactivation (an undo's, undoing an activation): the journal moved
+                    // from its own name to its provisional one. Its inverse is the
+                    // activation alone, back under its own name, last.
+                    return Ok(vec![make(
+                        InverseKind::Activate,
+                        to,
+                        Dest::Path(from.clone()),
+                        None,
+                        pre,
+                        back,
+                    )]);
+                }
                 let held = Endpoints::Pair {
                     path: Endpoint::Absent,
                     to: moved.clone(),
@@ -5011,6 +5038,37 @@ mod tests {
             .filter(|w| w.code == WarningCode::JournalPending)
             .collect();
         assert_eq!(pending.len(), 1, "{:?}", redo.outcome.warnings);
+    }
+
+    /// A set-aside's round trip three deep: set aside, reactivated (its undo), set aside
+    /// again (the undo of that), and reactivated again (the undo of the redo), the journal
+    /// back under its own name each time it should be, no provisional name left.
+    #[test]
+    fn a_set_aside_round_trips_three_deep() {
+        let home = home();
+        let stuck = home.stuck();
+        let provisional = home
+            .paths
+            .journal_dir()
+            .join(format!("{stuck}.reactivating.jsonl"));
+        let tx = repaired(&home, &[stuck_set_aside(&home, Vec::new())]);
+        let reactivation = undone(&home, tx).outcome.tx.unwrap();
+        assert!(home.paths.journal(&stuck).is_file(), "reactivated");
+        let redo = undone(&home, reactivation).outcome.tx.unwrap();
+        assert!(!home.paths.journal(&stuck).exists(), "set aside again");
+        let plan = plan_of(&home, redo);
+        let shown: Vec<(InverseKind, PathBuf, Option<PathBuf>)> = plan
+            .inverses
+            .iter()
+            .map(|i| (i.kind, i.path.clone(), i.to.path().map(Path::to_path_buf)))
+            .collect();
+        let again = engine_undo(&home, redo, false, vec![discovered(&home)]);
+        assert!(
+            again.is_ok(),
+            "the undo of the redo: {again:?}\nits inverses: {shown:#?}"
+        );
+        assert!(home.paths.journal(&stuck).is_file(), "reactivated again");
+        assert!(!provisional.exists(), "no provisional name left");
     }
 
     #[test]

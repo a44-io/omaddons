@@ -6,6 +6,18 @@ mod common;
 #[allow(dead_code)]
 #[path = "doctor/mod.rs"]
 mod fixture;
+// E7 s6: the undo of repairs end to end (`undo::<scenario>`).
+#[path = "doctor_repair/undo.rs"]
+mod undo;
+
+/// A child process of E5's synthetic repair scenes, which the undo scenarios reuse (the
+/// round trip of every kind, a repair of an installed folder). Run on its own it does
+/// nothing.
+#[test]
+#[ignore = "a child process of the repair scenes"]
+fn child_repair() {
+    common::repair::child_main();
+}
 
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
