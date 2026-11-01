@@ -693,6 +693,15 @@ pub struct DiffRun {
     verbose: bool,
 }
 
+/// One recovery a preview discloses, as a line: its transaction and which way it settles.
+fn recovery_line(r: &crate::doctor::report::RecoveryPlanned) -> String {
+    let way = match r.direction {
+        crate::engine::repair_action::Direction::RollBack => "rolls back",
+        crate::engine::repair_action::Direction::RollForward => "rolls forward",
+    };
+    format!("recovers tx {} ({way})", r.tx)
+}
+
 /// One delegated recovery as a line (M4-D37): a roll-forward with the undo that reverts
 /// it, a wait, or a failure with its reason. Transactions only, never a path.
 fn delegated_line(d: &DelegatedOutcome) -> String {
@@ -840,13 +849,7 @@ impl DoctorOutcome for FixRun {
                 writeln!(w, "    {}", action_line(&step, &show))?;
             }
             for recovery in recoveries {
-                let direction = serde_json::to_value(recovery.direction).unwrap_or_default();
-                writeln!(
-                    w,
-                    "  recovers tx {} ({})",
-                    recovery.tx,
-                    direction.as_str().unwrap_or_default()
-                )?;
+                writeln!(w, "  {}", recovery_line(recovery))?;
             }
             let left: Vec<&Finding> = r
                 .findings
@@ -995,13 +998,7 @@ impl DoctorOutcome for DiffRun {
             writeln!(w, "    {}", action_line(&step, &show))?;
         }
         for recovery in recoveries {
-            let direction = serde_json::to_value(recovery.direction).unwrap_or_default();
-            writeln!(
-                w,
-                "  recovers tx {} ({})",
-                recovery.tx,
-                direction.as_str().unwrap_or_default()
-            )?;
+            writeln!(w, "  {}", recovery_line(recovery))?;
         }
         if let Some(token) = &r.precondition {
             writeln!(

@@ -13,8 +13,8 @@ use super::finding::{Finding, Severity};
 use super::registry::ids;
 use super::runtime::{Diagnosis, DoctorRunId};
 use super::selection::{SkipReason, Skipped};
-use crate::engine::journal::{Direction, JournalFamily, Phase};
-use crate::engine::repair_action::Step;
+use crate::engine::journal::JournalFamily;
+use crate::engine::repair_action::{Direction, JournalPhase, Step};
 use crate::error::{CommandHint, ErrorBody, Warning};
 use crate::model::TxId;
 use crate::output::RunKind;
@@ -348,12 +348,16 @@ pub struct ActionPlanned {
     pub bytes: u64,
 }
 
-/// One recovery a repair would have the engine run.
+/// One recovery a repair would have the engine run, as M4-D37 discloses a delegation:
+/// the phase its journal stands in (`unprepared` for one recovery only removes, `step`
+/// and `done` for a repair's, `preserve` for a restore keeping what it displaced) and
+/// which way it settles (`roll_back`, also for a journal that never ran, or
+/// `roll_forward`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct RecoveryPlanned {
     pub tx: TxId,
     pub family: JournalFamily,
-    pub phase: Phase,
+    pub phase: JournalPhase,
     pub direction: Direction,
 }
 

@@ -1075,6 +1075,12 @@ mod tests {
             repair_phase: None,
             direction: Direction::Back,
             protected: ResourceSet::new(),
+            disclosed: crate::engine::repair_action::Delegation {
+                tx: "01JB8Q2VA00000000000000009".parse().unwrap(),
+                family: JournalFamily::Folder,
+                phase: crate::engine::repair_action::JournalPhase::Prepared,
+                direction: crate::engine::repair_action::Direction::RollBack,
+            },
         }
     }
 

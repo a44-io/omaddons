@@ -21,9 +21,13 @@ const TARGET: &str = "retail";
 ///
 /// The finding: instance `…@<retail's key>:tx=<tx>`; evidence `reason:
 /// preservation_incomplete`, `resumable: true`, `count` the trees to keep (at least 1),
-/// `phase: preserve`. Remedy: a change that runs discovery recovers again (an install
-/// from a local archive), which completes the preservation: a `recovered` backup then
-/// exists. Subject: the transaction's journal set.
+/// `phase: preserve`. Fixer: the delegation (F2, M4-D37), `doctor fix --only
+/// fm-concurrency_primitives-journal-preservation-incomplete -t retail`, which resumes the
+/// preservation and rolls the restore back; its inverse is M4-D37's, not `doctor undo`: a
+/// rollback needs none (the kept settings are a `recovered` backup). Remedy by hand: a
+/// change that runs discovery recovers again (an install from a local archive), which
+/// completes the preservation: a `recovered` backup then exists. Subject: the
+/// transaction's journal set.
 #[derive(Default)]
 pub struct JournalPreservationIncomplete {
     tx: Tx,
@@ -47,6 +51,10 @@ impl Fixture for JournalPreservationIncomplete {
         plant::journal_set(home, &self.tx.get(), Some(TARGET))
     }
 
+    fn fixer(&self) -> bool {
+        true
+    }
+
     fn remedy(&self, home: &Home) {
         plant::recover_wtf(home, TARGET);
         let recovered = plant::recovered_backups(home, TARGET);
@@ -63,8 +71,10 @@ impl Fixture for JournalPreservationIncomplete {
 ///
 /// The finding: the same instance shape; evidence `reason: preservation_incomplete`,
 /// `resumable: false`, `count` at least 1, and the title "An interrupted change to WTF/
-/// could not finish keeping the settings it displaced". Remedy: move the tree back, then
-/// a change that runs discovery recovers and completes the preservation.
+/// could not finish keeping the settings it displaced". The row's fixer offers nothing
+/// for this instance (its remediation is its `doctor explain`, `auto_fixable: false`).
+/// Remedy: move the tree back, then a change that runs discovery recovers and completes
+/// the preservation.
 #[derive(Default)]
 pub struct JournalPreservationStops {
     tx: Tx,
@@ -88,6 +98,11 @@ impl Fixture for JournalPreservationStops {
 
     fn subject(&self, home: &Home) -> Vec<PathBuf> {
         plant::journal_set(home, &self.tx.get(), Some(TARGET))
+    }
+
+    /// The row's: this instance is one it offers nothing for.
+    fn fixer(&self) -> bool {
+        true
     }
 
     fn remedy(&self, home: &Home) {

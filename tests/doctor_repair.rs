@@ -9,6 +9,13 @@ mod fixture;
 // E7 s6: the undo of repairs end to end (`undo::<scenario>`).
 #[path = "doctor_repair/undo.rs"]
 mod undo;
+// F2 s4: the delegation end to end (`delegate::delegate_<scenario>`).
+#[path = "doctor_repair/delegate.rs"]
+mod delegate;
+// The contract suite's strict validator, for the delegation's envelopes.
+#[allow(dead_code)]
+#[path = "contract/validate.rs"]
+mod validate;
 
 /// A child process of E5's synthetic repair scenes, which the undo scenarios reuse (the
 /// round trip of every kind, a repair of an installed folder). Run on its own it does

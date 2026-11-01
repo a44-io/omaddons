@@ -311,8 +311,10 @@ fn the_concurrency_fixtures_are_registered() {
     {
         assert_eq!(row.tier, Tier::Cached, "{}", row.id);
     }
+    // Rows 1 and 9 delegate (F2); a fixture declares its row's fixer exactly.
     for fixture in &fixtures {
-        assert!(!fixture.fixer(), "{} has no fixer yet", fixture.id());
+        let row = FAILURE_MODES.iter().find(|r| r.id == fixture.id()).unwrap();
+        assert_eq!(fixture.fixer(), row.fix.is_some(), "{}", fixture.id());
     }
 }
 

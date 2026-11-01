@@ -87,7 +87,7 @@ pub fn run(ctx: &Context, args: &DoctorUndoArgs) -> Result<DoctorUndoRun, Doctor
     let entries = &read.entries;
     let at = match select(&paths, entries, given)? {
         Selected::At(at) => at,
-        Selected::Nothing(said) => return Ok(nothing(started_at, said)),
+        Selected::Nothing(said) => return Ok(nothing(&paths, started_at, said)),
     };
     let entry = &entries[at];
     let delegated = delegated_forward(&paths, entry);
@@ -178,12 +178,7 @@ pub fn run(ctx: &Context, args: &DoctorUndoArgs) -> Result<DoctorUndoRun, Doctor
             .collect();
         (report, Said::Undone, ops)
     };
-    commands.extend(delegated.iter().map(|tx| {
-        CommandHint::new(
-            Action::Undo,
-            ["omaddons", "undo", &tx.to_string()].map(str::to_owned),
-        )
-    }));
+    commands.extend(undo_hints(&delegated));
     Ok(DoctorUndoRun {
         report,
         exit: Exit::Healthy,
@@ -307,6 +302,16 @@ fn resolve(
 /// rolled forward), which `doctor undo` does not revert. Read for advice only: a report
 /// that is missing, too large or unreadable lists none.
 fn delegated_forward(paths: &Paths, entry: &HistoryEntry) -> Vec<TxId> {
+    entry
+        .doctor_run_id
+        .as_deref()
+        .and_then(DoctorRunId::parse)
+        .map_or_else(Vec::new, |run| delegated_forward_of(paths, &run))
+}
+
+/// [`delegated_forward`] of the run `run`, which may have committed no repair (a run that
+/// only delegated, M4-D37).
+fn delegated_forward_of(paths: &Paths, run: &DoctorRunId) -> Vec<TxId> {
     #[derive(Deserialize)]
     struct Delegated {
         tx: TxId,
@@ -317,11 +322,8 @@ fn delegated_forward(paths: &Paths, entry: &HistoryEntry) -> Vec<TxId> {
         #[serde(default)]
         delegated: Option<Vec<Delegated>>,
     }
-    let Some(run) = entry.doctor_run_id.as_deref().and_then(DoctorRunId::parse) else {
-        return Vec::new();
-    };
     let mut bytes = Vec::new();
-    let read = fs::File::open(paths.doctor_run(&run).join(REPORT_FILE)).and_then(|file| {
+    let read = fs::File::open(paths.doctor_run(run).join(REPORT_FILE)).and_then(|file| {
         file.take(API_RESPONSE_MAX_BYTES + 1)
             .read_to_end(&mut bytes)
     });
@@ -356,21 +358,40 @@ fn empty_report(started_at: jiff::Timestamp) -> UndoReport {
     }
 }
 
-fn nothing(started_at: jiff::Timestamp, said: Said) -> DoctorUndoRun {
+fn nothing(paths: &Paths, started_at: jiff::Timestamp, said: Said) -> DoctorUndoRun {
     let mut report = empty_report(started_at);
-    if let Said::ChangedNothing(run) = &said {
-        report.reverted_run = Some(run.as_str().to_owned());
-    }
+    // A run that committed no repair may still have completed interrupted changes (a
+    // fix that only delegated): their own undo is named.
+    let delegated = match &said {
+        Said::ChangedNothing(run) => {
+            report.reverted_run = Some(run.as_str().to_owned());
+            delegated_forward_of(paths, run)
+        }
+        _ => Vec::new(),
+    };
     DoctorUndoRun {
         report,
         exit: Exit::Healthy,
         error: None,
         warnings: Vec::new(),
-        commands: Vec::new(),
+        commands: undo_hints(&delegated),
         said,
         ops: Vec::new(),
-        delegated: Vec::new(),
+        delegated,
     }
+}
+
+/// `omaddons undo <tx>` for each interrupted change a run completed (M4-D37).
+fn undo_hints(delegated: &[TxId]) -> Vec<CommandHint> {
+    delegated
+        .iter()
+        .map(|tx| {
+            CommandHint::new(
+                Action::Undo,
+                ["omaddons", "undo", &tx.to_string()].map(str::to_owned),
+            )
+        })
+        .collect()
 }
 
 /// `entry`'s repair was undone by `by` (the doctor contract's undo idempotence): exit 0,
@@ -396,7 +417,7 @@ fn already_undone(
         exit: Exit::Healthy,
         error: None,
         warnings: Vec::new(),
-        commands: Vec::new(),
+        commands: undo_hints(&delegated),
         said: Said::AlreadyUndone,
         ops: Vec::new(),
         delegated,
@@ -429,7 +450,7 @@ fn stopped(
         exit,
         error: Some(error),
         warnings: Vec::new(),
-        commands: Vec::new(),
+        commands: undo_hints(&delegated),
         said: Said::Stopped,
         ops: Vec::new(),
         delegated,

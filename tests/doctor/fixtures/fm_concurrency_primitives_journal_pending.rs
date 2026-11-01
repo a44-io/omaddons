@@ -15,8 +15,12 @@ const TARGET: &str = "retail";
 /// }`, so the next change rolls it back.
 ///
 /// The finding: instance `…@<retail's key>:tx=<tx>`; evidence `tx`, `family: folder`,
-/// `kind: install`, `phase: prepared`, and no `reason`. Remedy: any change that recovers
-/// (`config set check_interval_hours 6`). Subject: the transaction's journal set.
+/// `kind: install`, `phase: prepared`, and no `reason`. Fixer: the delegation (F2,
+/// M4-D37), `doctor fix --only fm-concurrency_primitives-journal-pending -t retail`, which
+/// runs omaddons' own recovery for exactly this transaction. Its inverse is M4-D37's, not
+/// `doctor undo`: nothing after a rollback (this one), `omaddons undo <tx>` after a
+/// roll-forward. Remedy by hand: any change that recovers (`config set
+/// check_interval_hours 6`). Subject: the transaction's journal set.
 #[derive(Default)]
 pub struct JournalPending {
     tx: Tx,
@@ -37,6 +41,10 @@ impl Fixture for JournalPending {
 
     fn subject(&self, home: &Home) -> Vec<PathBuf> {
         plant::journal_set(home, &self.tx.get(), Some(TARGET))
+    }
+
+    fn fixer(&self) -> bool {
+        true
     }
 
     fn remedy(&self, home: &Home) {

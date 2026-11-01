@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 use super::finding::{Finding, Remediation};
+use super::fixers::recover::delegation_for;
 use super::registry::{
     FailureMode, FixerPrecondition, FixerSpec, Refusal, ScopeName, failure_modes, ids,
 };
@@ -35,7 +36,7 @@ use crate::engine::journal::{
     UnattributedCause,
 };
 use crate::engine::repair::{self, LowerCtx, LowerError, Lowered, RepairPhase};
-use crate::engine::repair_action::{Fix, FixKind, Guard, Primitive, Step};
+use crate::engine::repair_action::{Delegation, Fix, FixKind, Guard, Primitive, Step};
 use crate::engine::resource::{PathKind, Resource, ResourceSet};
 use crate::error::{Error, ErrorCode, Suggestion};
 use crate::fsx::{InflightLock, canonical_lenient};
@@ -117,6 +118,9 @@ pub struct PlannedRecovery {
     pub direction: journal::Direction,
     /// What that recovery may touch.
     pub protected: ResourceSet,
+    /// The delegation as the preview discloses it (`delegated_planned`, M4-D37): the
+    /// fixer's own `delegation_for` of the same diagnosis, so the two never disagree.
+    pub disclosed: Delegation,
 }
 
 /// An interrupted journal whose writer is gone, as the plan saw it.
@@ -563,7 +567,9 @@ fn recoveries(inputs: &[repair::PlannedFix], diagnoses: &Diagnoses) -> Vec<Plann
         let Some(d) = diagnosis_of(diagnoses, what.tx).filter(|d| !d.live) else {
             continue;
         };
-        let Some(direction) = d.direction() else {
+        // What recovery would do now, by the fixer's own rule: a journal that would no
+        // longer be settled (it stops, waits, is behind a barrier) is no recovery.
+        let (Some(disclosed), Some(direction)) = (delegation_for(d), d.direction()) else {
             continue;
         };
         if out.iter().any(|r| r.tx == d.tx) {
@@ -581,6 +587,7 @@ fn recoveries(inputs: &[repair::PlannedFix], diagnoses: &Diagnoses) -> Vec<Plann
             repair_phase: d.repair_phase,
             direction,
             protected: protected_set(&d.protected),
+            disclosed,
         });
     }
     out.sort_by_key(|r| r.tx);
@@ -1204,8 +1211,8 @@ impl FixPlan {
             .map(|r| RecoveryPlanned {
                 tx: r.tx,
                 family: r.family,
-                phase: r.phase,
-                direction: r.direction,
+                phase: r.disclosed.phase,
+                direction: r.disclosed.direction,
             })
             .collect()
     }
