@@ -105,6 +105,30 @@ pub struct BlobCache {
     /// Waits out the backoff before a download restarts.
     sleeper: Box<dyn Sleeper>,
     rng: Mutex<XorShift>,
+    /// What [`BlobCache::get`] verifies blobs through: the process memo, a test's own.
+    memo: &'static VerifyMemo,
+    /// The blobs `get` found damaged during this command, by hash; kept when a later
+    /// download heals one (it records what this command found).
+    damaged: Mutex<BTreeMap<String, DamagedBlob>>,
+}
+
+/// A cached blob [`BlobCache::get`] found damaged: a miss, left in place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DamagedBlob {
+    /// Lowercase hex: its name.
+    pub sha256: String,
+    pub path: PathBuf,
+    pub size: u64,
+    pub damage: Damage,
+}
+
+/// How a cached blob is damaged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Damage {
+    /// Its bytes hash to `actual` (64 lowercase hex), not to its name.
+    Differs { actual: String },
+    /// It cannot be read.
+    Unreadable { kind: io::ErrorKind },
 }
 
 impl BlobCache {
@@ -116,7 +140,34 @@ impl BlobCache {
             counter: AtomicU64::new(0),
             sleeper: Box::new(RealSleeper),
             rng: Mutex::new(XorShift::seeded()),
+            memo: &MEMO,
+            damaged: Mutex::new(BTreeMap::new()),
         }
+    }
+
+    /// Another verification memo (tests: cases never share the process's).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_memo(mut self, memo: &'static VerifyMemo) -> Self {
+        self.memo = memo;
+        self
+    }
+
+    /// A blob this cache found damaged during this command.
+    pub fn found_damaged(&self, sha256: &str) -> Option<DamagedBlob> {
+        let damaged = match self.damaged.lock() {
+            Ok(damaged) => damaged,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        damaged.get(&sha256.to_ascii_lowercase()).cloned()
+    }
+
+    fn record_damage(&self, blob: DamagedBlob) {
+        let mut damaged = match self.damaged.lock() {
+            Ok(damaged) => damaged,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        damaged.insert(blob.sha256.clone(), blob);
     }
 
     /// Another sleeper for download restarts (tests).
@@ -305,7 +356,11 @@ impl BlobCache {
         }
     }
 
-    /// The cached blob with this hash, marking it used.
+    /// The cached blob with this hash, marking it used. A returned blob hashed to its name
+    /// when it was returned (M4-D52): one whose bytes differ, or that cannot be read, is a
+    /// miss, recorded for [`BlobCache::found_damaged`] and left in place, never deleted
+    /// here and never marked used. One larger than the download cap is a miss without
+    /// being read. Each blob is hashed once per process while it is unchanged (the memo).
     pub fn get(&self, scopes: &ScopeTable, sha256: &str) -> Result<Option<BlobRef>> {
         let sha256 = sha256.to_ascii_lowercase();
         if !is_sha256(&sha256) {
@@ -315,15 +370,36 @@ impl BlobCache {
         let Ok(meta) = std::fs::symlink_metadata(&path) else {
             return Ok(None);
         };
-        if !meta.is_file() {
+        if !meta.is_file() || meta.len() > self.max_download {
             return Ok(None);
         }
-        self.touch(scopes, &sha256, meta.len())?;
-        Ok(Some(BlobRef {
-            sha256,
-            size: meta.len(),
-            path,
-        }))
+        let size = match self.memo.verify(&path, &sha256, &mut || false, now_ns()) {
+            Verification::Matches { size } => size,
+            Verification::Differs { size, actual } => {
+                let damage = Damage::Differs { actual };
+                self.record_damage(DamagedBlob {
+                    sha256,
+                    path,
+                    size,
+                    damage,
+                });
+                return Ok(None);
+            }
+            Verification::Unreadable { kind } => {
+                let size = meta.len();
+                let damage = Damage::Unreadable { kind };
+                self.record_damage(DamagedBlob {
+                    sha256,
+                    path,
+                    size,
+                    damage,
+                });
+                return Ok(None);
+            }
+            Verification::Gone | Verification::Stopped => return Ok(None),
+        };
+        self.touch(scopes, &sha256, size)?;
+        Ok(Some(BlobRef { sha256, size, path }))
     }
 
     /// Opens a blob for reading.
@@ -758,6 +834,44 @@ impl VerifyMemo {
             }
         }
         verdict(name, size, &sha256)
+    }
+}
+
+/// What a fetch's `error` becomes when the cached blob it was to replace is `damaged`:
+/// the damage itself, when the archive cannot be downloaded again for good (offline, the
+/// source no longer lists the release, or no longer serves the file: 404 or 410). A
+/// transient failure keeps its own error, since a retry heals the cache; without a
+/// damaged blob, every error is unchanged. A mismatch is `hash_mismatch` (retryable:
+/// online, a retry downloads it again) with `details {blob, actual}`; an unreadable file
+/// is `io` with `details.path`. Both fix with `omaddons doctor --include-deep`, whose
+/// detector finds the damage and whose fix quarantines it.
+pub fn damaged_instead(error: Error, damaged: Option<&DamagedBlob>) -> Error {
+    let Some(blob) = damaged else {
+        return error;
+    };
+    let for_good = match error.code {
+        ErrorCode::Offline | ErrorCode::NotFound => true,
+        ErrorCode::HttpStatus => matches!(error.details["status"].as_u64(), Some(404 | 410)),
+        _ => false,
+    };
+    if !for_good {
+        return error;
+    }
+    let fix = Suggestion::command(["omaddons", "doctor", "--include-deep"]);
+    let short = |hex: &str| hex.get(..12).unwrap_or(hex).to_owned();
+    match &blob.damage {
+        Damage::Differs { actual } => Error::hash_mismatch(
+            1,
+            format!(
+                "the cached archive {}… is damaged (its bytes hash to {}…, not to its name), and it cannot be downloaded again: {}",
+                short(&blob.sha256),
+                short(actual),
+                error.message
+            ),
+            fix,
+        )
+        .details(json!({ "blob": blob.sha256, "actual": actual })),
+        Damage::Unreadable { kind } => Error::io(&blob.path, &io::Error::from(*kind), fix),
     }
 }
 
@@ -1768,5 +1882,213 @@ mod tests {
             }
         }
         assert_eq!(memo.reads(), 4, "two remembered, the third read both times");
+    }
+
+    // -----------------------------------------------------------------------------------
+    // `get` verifies (F6 part 2).
+
+    /// A cache whose verifications never share the process memo.
+    fn verifying(paths: &Paths) -> BlobCache {
+        BlobCache::new(paths).with_memo(Box::leak(Box::new(VerifyMemo::new())))
+    }
+
+    fn stored(cache: &BlobCache, f: &Fixture, bytes: &[u8]) -> BlobRef {
+        cache
+            .store_stream(
+                &f.scopes,
+                &TxId::new(),
+                Cursor::new(bytes.to_vec()),
+                None,
+                &Storage::Cache,
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn get_verifies_and_a_damaged_blob_is_a_miss() {
+        let f = fixture();
+        let cache = verifying(&f.paths).with_clock(|| 1_000);
+        let good = b"PK a release archive".to_vec();
+        let blob = stored(&cache, &f, &good);
+        let index = f.paths.blobs_dir().join("index.json");
+        let late = verifying(&f.paths).with_clock(|| 2_000);
+        assert!(
+            late.get(&f.scopes, &blob.sha256).unwrap().is_some(),
+            "matches"
+        );
+        let used = std::fs::read(&index).unwrap();
+        assert_ne!(used, Vec::<u8>::new(), "the hit marked it used");
+
+        let mut flipped = good.clone();
+        flipped[3] ^= 0x01;
+        std::fs::write(&blob.path, &flipped).unwrap();
+        let after = verifying(&f.paths).with_clock(|| 3_000);
+        let got = after.get(&f.scopes, &blob.sha256).unwrap();
+        assert_eq!(got, None, "same_size_flip: a miss");
+        assert_eq!(
+            std::fs::read(&index).unwrap(),
+            used,
+            "a miss is no use: index.json unchanged"
+        );
+        assert_eq!(std::fs::read(&blob.path).unwrap(), flipped, "left in place");
+        assert_eq!(
+            after.found_damaged(&blob.sha256.to_uppercase()),
+            Some(DamagedBlob {
+                sha256: blob.sha256.clone(),
+                path: blob.path.clone(),
+                size: good.len() as u64,
+                damage: Damage::Differs {
+                    actual: sha(&flipped)
+                },
+            }),
+            "recorded, by its name in any case"
+        );
+
+        let healed = stored(&after, &f, &good);
+        assert_eq!(
+            healed.path, blob.path,
+            "the download renames onto the same name"
+        );
+        assert!(
+            after.get(&f.scopes, &blob.sha256).unwrap().is_some(),
+            "healed: a hit"
+        );
+        assert!(
+            after.found_damaged(&blob.sha256).is_some(),
+            "what it found stays recorded"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_blob_is_a_miss() {
+        use std::os::unix::fs::PermissionsExt;
+        if is_root() {
+            // Root reads a mode-000 file: the case cannot be made.
+            return;
+        }
+        let f = fixture();
+        let cache = verifying(&f.paths);
+        let blob = stored(&cache, &f, b"PK an archive");
+        std::fs::set_permissions(&blob.path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let got = cache.get(&f.scopes, &blob.sha256).unwrap();
+        let damage = cache.found_damaged(&blob.sha256).map(|d| d.damage);
+        std::fs::set_permissions(&blob.path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(got, None, "unreadable: a miss");
+        assert_eq!(
+            damage,
+            Some(Damage::Unreadable {
+                kind: io::ErrorKind::PermissionDenied
+            })
+        );
+    }
+
+    #[test]
+    fn get_never_hashes_past_the_download_cap() {
+        let f = fixture();
+        let memo: &'static VerifyMemo = Box::leak(Box::new(VerifyMemo::new()));
+        let cache = BlobCache::new(&f.paths)
+            .with_memo(memo)
+            .with_max_download(10);
+        let bytes = [7u8; 20];
+        let name = sha(&bytes);
+        std::fs::create_dir_all(f.paths.blobs_dir()).unwrap();
+        std::fs::write(f.paths.blob(&name), bytes).unwrap();
+        assert_eq!(
+            cache.get(&f.scopes, &name).unwrap(),
+            None,
+            "20 bytes over a cap of 10"
+        );
+        assert_eq!(cache.found_damaged(&name), None, "nothing recorded");
+        assert_eq!(memo.reads(), 0, "never read");
+    }
+
+    fn damaged(damage: Damage) -> DamagedBlob {
+        DamagedBlob {
+            sha256: "3f9a1c4e2b7d".repeat(5) + "3f9a",
+            path: PathBuf::from("/cache/blobs/x"),
+            size: 7,
+            damage,
+        }
+    }
+
+    #[test]
+    fn damaged_instead_cases() {
+        let fix = || Suggestion::command(["omaddons", "status"]);
+        let actual = "9b0e55a1c3f2".repeat(5) + "9b0e";
+        let differs = damaged(Damage::Differs {
+            actual: actual.clone(),
+        });
+        let unreadable = damaged(Damage::Unreadable {
+            kind: io::ErrorKind::PermissionDenied,
+        });
+        let offline = || Error::new(ErrorCode::Offline, "--offline blocked a request", fix());
+        let not_found = || Error::new(ErrorCode::NotFound, "gh:o/foo has no release v1", fix());
+        let http = |status| Error::http_status(status, format!("HTTP {status}"), fix());
+        let network = || Error::new(ErrorCode::Network, "connection reset", fix());
+        let rate = || Error::new(ErrorCode::RateLimited, "rate limited", fix());
+        let too_large = || Error::new(ErrorCode::ArchiveTooLarge, "too large", fix());
+        let converted: [(&str, Error); 4] = [
+            ("offline_differs", offline()),
+            ("not_found_differs", not_found()),
+            ("http_404_differs", http(404)),
+            ("http_410_differs", http(410)),
+        ];
+        let deep = Some(vec![
+            "omaddons".to_owned(),
+            "doctor".to_owned(),
+            "--include-deep".to_owned(),
+        ]);
+        for (case, input) in converted {
+            let said = format!("{:?} {}", input.code, input.message);
+            let got = damaged_instead(input, Some(&differs));
+            assert_eq!(got.code, ErrorCode::HashMismatch, "{case}: {said}");
+            assert_eq!(got.code.exit().code(), 1, "{case}: exit 1");
+            assert!(got.retryable, "{case}: retryable");
+            assert_eq!(
+                got.details,
+                json!({"blob": differs.sha256, "actual": actual}),
+                "{case}"
+            );
+            assert_eq!(got.fix.argv(), deep.as_deref(), "{case}: fix");
+            assert!(
+                got.message.contains("3f9a1c4e2b7d…") && got.message.contains("9b0e55a1c3f2…"),
+                "{case}: both prefixes in {:?}",
+                got.message
+            );
+        }
+        let got = damaged_instead(offline(), Some(&unreadable));
+        assert_eq!(got.code, ErrorCode::Io, "offline_unreadable");
+        assert_eq!(
+            got.details,
+            json!({"path": "/cache/blobs/x"}),
+            "offline_unreadable"
+        );
+        assert_eq!(got.fix.argv(), deep.as_deref(), "offline_unreadable: fix");
+        let unchanged: [(&str, Error, Option<&DamagedBlob>); 5] = [
+            ("network_differs", network(), Some(&differs)),
+            ("rate_limited_differs", rate(), Some(&differs)),
+            ("http_503_differs", http(503), Some(&differs)),
+            ("archive_too_large_differs", too_large(), Some(&differs)),
+            ("offline_none", offline(), None),
+        ];
+        for (case, input, given) in unchanged {
+            let want = (
+                input.code,
+                input.message.clone(),
+                input.details.clone(),
+                input.retryable,
+            );
+            let got = damaged_instead(input, given);
+            assert_eq!(
+                (
+                    got.code,
+                    got.message.clone(),
+                    got.details.clone(),
+                    got.retryable
+                ),
+                want,
+                "{case}: unchanged"
+            );
+        }
     }
 }

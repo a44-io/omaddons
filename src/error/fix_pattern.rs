@@ -93,7 +93,7 @@ impl ErrorCode {
             }
             Self::HttpStatus => "prose: retry later, and check the source if it persists",
             Self::HashMismatch => {
-                "`omaddons backup verify <id> -t <target>` or `omaddons list -t <id> --unmanaged`, else prose: retry the download once"
+                "`omaddons backup verify <id>`, `omaddons list -t <id> --unmanaged`, `omaddons doctor --include-deep`, else prose: retry"
             }
             Self::PlanStale => {
                 "the same command again after re-planning, or the same command with `--dry-run` for `--if-match`"

@@ -454,10 +454,12 @@ pub(crate) const DOWNLOAD_FAILED: DetailSpec = DetailSpec::EMPTY;
 /// `Error::http_status`; item aggregation can discard status.
 pub(crate) const HTTP_STATUS: DetailSpec = DetailSpec::Object(&[Field::opt("status", &INT)]);
 
-/// `engine/blobs.rs` expected/actual, backup verification's id, and candidate attempts.
+/// `engine/blobs.rs` expected/actual, a damaged cached archive's `blob` (with its
+/// `actual`), backup verification's id, and candidate attempts.
 pub(crate) const HASH_MISMATCH: DetailSpec = DetailSpec::Object(&[
     Field::opt("actual", &STR),
     Field::opt("backup", &STR),
+    Field::opt("blob", &STR),
     Field::opt("expected", &STR),
     Field::opt("tried", &TRIED),
 ]);

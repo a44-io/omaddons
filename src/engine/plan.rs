@@ -22,7 +22,9 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use super::blobs::{BlobCache, BlobRef, DownloadTarget, Fetched, Storage};
+use super::blobs::{
+    BlobCache, BlobRef, DamagedBlob, DownloadTarget, Fetched, Storage, damaged_instead,
+};
 use super::edit::{
     EditField, RecordEdit, RecordGuard, apply_edit, apply_edits, changed_fields, effective_edits,
     sorted_names,
@@ -3711,7 +3713,18 @@ impl TargetPlanner<'_> {
             (Some(file), _, _) => vec![file_candidate(file, wanted)],
             (None, Some(local), _) => vec![local.clone()],
             (None, None, Some(set)) => {
-                let set = set.map_err(|e| self.not_cached(e, wanted, intent))?;
+                let damaged = self.recorded_damage(existing, intent, cached);
+                let set = set.map_err(|e| {
+                    // A damaged cached archive that cannot be fetched again is that damage;
+                    // anything else is as before (an absent one offline: `not_cached`).
+                    let code = e.code;
+                    let e = damaged_instead(e, damaged.as_ref());
+                    if e.code == code {
+                        self.not_cached(e, wanted, intent)
+                    } else {
+                        e
+                    }
+                })?;
                 // A git source already resolved `--version` as the rev it fetched.
                 let pin = match wanted.r#ref {
                     Ref::Git { .. } => None,
@@ -3720,7 +3733,7 @@ impl TargetPlanner<'_> {
                 let selection = select(&set, self.target, wanted.channel, pin);
                 match selection.empty_reason {
                     Some(EmptyReason::PinnedVersionNotFound) => {
-                        return Err(Error::new(
+                        let not_found = Error::new(
                             ErrorCode::NotFound,
                             format!(
                                 "{} has no release {}",
@@ -3732,7 +3745,8 @@ impl TargetPlanner<'_> {
                                 "install".to_owned(),
                                 wanted.r#ref.to_string(),
                             ]),
-                        ));
+                        );
+                        return Err(damaged_instead(not_found, damaged.as_ref()));
                     }
                     Some(reason) => return Err(self.no_release(wanted, &[], reason_text(reason))),
                     None => {
@@ -5018,15 +5032,30 @@ impl TargetPlanner<'_> {
         {
             return Ok(cached(blob, None));
         }
-        if let Some((sha, size)) = ctx.cache.facts().hash(release_id, &asset.filename)
-            // ubs:ignore — comparing archive hashes, not secrets
-            && expected_sha.as_ref().is_none_or(|e| e == sha)
-            && asset.size.is_none_or(|declared| declared == size)
+        let remembered: Option<String> = ctx
+            .cache
+            .facts()
+            .hash(release_id, &asset.filename)
+            .filter(|&(sha, size)| {
+                // ubs:ignore — comparing archive hashes, not secrets
+                expected_sha.as_deref().is_none_or(|e| e == sha)
+                    && asset.size.is_none_or(|declared| declared == size)
+            })
+            .map(|(sha, _)| sha.to_owned());
+        if let Some(sha) = &remembered
             && let Some(blob) = ctx.blobs.get(ctx.scopes, sha)?
         {
             let unverified = self.reused_unverified(release_id, &blob.sha256);
             return Ok(cached(blob, unverified));
         }
+        // A cached hit that declined because its blob is damaged: the download replaces
+        // it, and a download that cannot (offline, or no longer served) fails as the
+        // damage it is (M4-D52).
+        let damaged = [&expected_sha, &remembered]
+            .into_iter()
+            .flatten()
+            .find_map(|sha| ctx.blobs.found_damaged(sha));
+        let instead = |e: Error| damaged_instead(e, damaged.as_ref());
         let mut canonical_url = None;
         let fetched = match &asset.location {
             AssetLocation::Deferred { source, key } => {
@@ -5043,25 +5072,31 @@ impl TargetPlanner<'_> {
                     })
                 };
                 ctx.blobs
-                    .download_resolving(ctx.scopes, &ctx.tx, ctx.http, &mut resolve, true)?
+                    .download_resolving(ctx.scopes, &ctx.tx, ctx.http, &mut resolve, true)
+                    .map_err(instead)?
             }
             AssetLocation::Url(url) => ctx
                 .blobs
-                .download(ctx.scopes, &ctx.tx, ctx.http, url, expected, None)?,
+                .download(ctx.scopes, &ctx.tx, ctx.http, url, expected, None)
+                .map_err(instead)?,
             // Assembled at its pinned revision and packed; no hash comes from the
             // server, so the TOCs and TLS are the check, as on GitHub's no-REST path.
             AssetLocation::WowAceTree { base, revision } => {
                 if ctx.registry.get(SourceId::Wowace).is_none() {
                     return Err(ctx.registry.unavailable(SourceId::Wowace, release_id));
                 }
-                let zip = wowace::assemble(ctx.http, base, *revision, ctx.limits.max_download)?;
-                let blob = ctx.blobs.store_stream(
-                    ctx.scopes,
-                    &ctx.tx,
-                    std::io::Cursor::new(zip),
-                    None,
-                    &Storage::Cache,
-                )?;
+                let zip = wowace::assemble(ctx.http, base, *revision, ctx.limits.max_download)
+                    .map_err(instead)?;
+                let blob = ctx
+                    .blobs
+                    .store_stream(
+                        ctx.scopes,
+                        &ctx.tx,
+                        std::io::Cursor::new(zip),
+                        None,
+                        &Storage::Cache,
+                    )
+                    .map_err(instead)?;
                 Fetched {
                     blob,
                     unverified: None,
@@ -5077,6 +5112,12 @@ impl TargetPlanner<'_> {
             }
         };
         failpoint::hit("engine.plan.downloaded").map_err(|e| fail(ctx, &e))?;
+        if let Some(damaged) = &damaged {
+            let short = damaged.sha256.get(..12).unwrap_or(&damaged.sha256);
+            self.notes.borrow_mut().push(format!(
+                "{release_id}: the cached archive {short}… did not match its name; downloaded it again"
+            ));
+        }
         let item = format!("{release_id} on {}", self.target.id);
         ctx.progress
             .event(Phase::Download, self.candidate_items, &item);
@@ -5088,7 +5129,9 @@ impl TargetPlanner<'_> {
     }
 
     /// Why reusing the cached archive `sha256` of `release_id` goes unchecked: its
-    /// download did (the release memo says so), and the cache cannot check it either.
+    /// download was not checked against a published hash (the release memo says so). The
+    /// cache proves only that the blob still holds the bytes that were downloaded, not
+    /// that they matched a published hash, so the `unverified` reason stands.
     fn reused_unverified(&self, release_id: &str, sha256: &str) -> Option<String> {
         self.ctx
             .cache
@@ -5098,6 +5141,23 @@ impl TargetPlanner<'_> {
                 crate::sources::wowi::unpublished_md5(release_id, None)
                     .unwrap_or_else(|| "the cached download it reuses was never checked".to_owned())
             })
+    }
+
+    /// The damage this command found in the cached archive a reinstall or a locked
+    /// install would have used: the installed record's blob for a reinstall, else the
+    /// locked hash (`cached`).
+    fn recorded_damage(
+        &self,
+        existing: Option<&AddonRecord>,
+        intent: &InstallIntent,
+        cached: Option<&str>,
+    ) -> Option<DamagedBlob> {
+        let sha = if intent.reinstall {
+            existing.and_then(|e| e.blob_sha256.as_deref())
+        } else {
+            cached
+        };
+        sha.and_then(|sha| self.ctx.blobs.found_damaged(sha))
     }
 
     /// A reinstall that needs its source while offline: its archive is not in the blob
@@ -5517,8 +5577,9 @@ fn exact_version(installed: &AddonRecord) -> Option<String> {
 
 /// The cached archive of a recorded release as an install candidate, carrying that
 /// release's identity (`release_id`, `version`) rather than a local file's: `None` when
-/// the blob `sha256` is not in the cache, or no longer hashes to it. Its rank is not
-/// recorded, so it is `Unannotated`. Reinstalls use it, and `sync --locked` will.
+/// the blob `sha256` is not in the cache, or no longer hashes to it (`BlobCache::get`
+/// verifies it, and records the damage). Its rank is not recorded, so it is
+/// `Unannotated`. Reinstalls use it, and `sync --locked` will.
 /// `revision` is the release's source revision, which the archive was built at.
 pub fn local_blob_candidate(
     blobs: &BlobCache,
@@ -5530,10 +5591,7 @@ pub fn local_blob_candidate(
     revision: Option<u32>,
 ) -> Option<Candidate> {
     let blob = blobs.get(scopes, sha256).ok().flatten()?;
-    let (size, hex) = crate::state::files_index::hash_file_streaming(&blob.path).ok()?;
-    if !hex.eq_ignore_ascii_case(sha256) {
-        return None;
-    }
+    let size = blob.size;
     Some(Candidate {
         release_id: release_id.to_owned(),
         version: version.to_owned(),
@@ -5718,7 +5776,8 @@ mod tests {
         let root = dir.path();
         let paths = Paths::with_roots(root, root.join("c"), root.join("s"), root.join("k"));
         let scopes = ScopeTable::new(&paths, &[], None).unwrap();
-        let blobs = BlobCache::new(&paths);
+        let memo = Box::leak(Box::new(crate::engine::blobs::VerifyMemo::new()));
+        let blobs = BlobCache::new(&paths).with_memo(memo);
         let bytes = b"PK fake archive";
         let sha: String = {
             use sha2::{Digest, Sha256};
@@ -5761,6 +5820,10 @@ mod tests {
 
         std::fs::write(paths.blob(&sha), b"changed since").unwrap();
         assert!(build().is_none(), "a blob that no longer hashes to it");
+        assert!(
+            blobs.found_damaged(&sha).is_some(),
+            "the cache recorded the damage"
+        );
     }
 
     fn inspected(names: &[&str]) -> Inspected {

@@ -276,7 +276,7 @@ error_codes! {
         "A host answered with an unexpected HTTP status; an instance is retryable for a 5xx status only.", specs::HTTP_STATUS;
     /// Retryable once; see [`Error::hash_mismatch`].
     HashMismatch        = "hash_mismatch",         Failed,      true,
-        "Bytes did not match the hash they were expected or recorded with; an instance is retryable on a download's first attempt only, never for a backup.", specs::HASH_MISMATCH;
+        "Bytes did not match their expected or recorded hash (a download, a backup's file, a cached archive's name); retryable on a download's first attempt or a damaged cached archive, never a backup.", specs::HASH_MISMATCH;
     /// Retryable when raised by re-planning, not by `apply`; see [`Error::plan_stale`].
     PlanStale           = "plan_stale",            Failed,      true,
         "What a command planned or previewed no longer matches the state it would change; an instance is retryable when re-planning raised it, never under `--if-match`.", specs::PLAN_STALE;
