@@ -295,6 +295,54 @@ pub mod plant {
         fs::write(lua_file(home, target, addon), "local loaded = false\n").unwrap();
     }
 
+    /// `<cache>/omaddons/blobs/<sha>`.
+    pub fn blob_path(home: &Home, sha: &str) -> PathBuf {
+        home.env.cache().join("omaddons/blobs").join(sha)
+    }
+
+    /// `fm-caches-blob-hash-mismatch` (P2, `deep`, `machine:blob=<sha>`): `gh:o/foo` v1
+    /// served and installed on `target`, so its archive is cached as `<cache>/blobs/<sha>`
+    /// and its record names it, then the blob's middle byte flipped (`^ 0xff`) by a plain
+    /// write, keeping its size, inode and mode (its ctime moves). The blob's name. The
+    /// finding's evidence: `{path, expected: "sha256:<sha>", observed: "sha256:<the
+    /// damaged bytes' digest>"}`.
+    pub fn damaged_blob(home: &Home, target: &str) -> String {
+        install(home, "foo", target);
+        let record = crate::common::state::record(home, target);
+        let sha = record.addons["foo"]
+            .blob_sha256
+            .clone()
+            .expect("an archive downloaded through the cache");
+        let path = blob_path(home, &sha);
+        let mut bytes = fs::read(&path).unwrap();
+        let offset = bytes.len() / 2;
+        let old = bytes[offset];
+        bytes[offset] ^= 0xff;
+        fs::write(&path, &bytes).unwrap();
+        planted(json!({
+            "blob": {"sha": sha, "size": bytes.len(), "offset": offset, "old_byte": old, "new_byte": bytes[offset]},
+        }));
+        sha
+    }
+
+    /// The bytes [`damaged_blob`] replaced: the blob's, its middle byte flipped back.
+    pub fn undamaged(home: &Home, sha: &str) -> Vec<u8> {
+        let mut bytes = fs::read(blob_path(home, sha)).unwrap();
+        let offset = bytes.len() / 2;
+        bytes[offset] ^= 0xff;
+        bytes
+    }
+
+    /// Puts `original` back as the blob `sha`, as the cache's own store does: written to a
+    /// temp file beside it and renamed over its name (a new inode).
+    pub fn restore_blob(home: &Home, sha: &str, original: &[u8]) {
+        let path = blob_path(home, sha);
+        let temp = path.with_file_name(format!(".omaddons-restore-{sha}"));
+        fs::write(&temp, original).unwrap();
+        fs::rename(&temp, &path).unwrap();
+        planted(json!({"restored_blob": sha}));
+    }
+
     /// Puts back the bytes [`managed_files_modified`] replaced: the finding is resolved.
     pub fn restore_file(home: &Home, target: &str, addon: &str) {
         fs::write(lua_file(home, target, addon), LUA).unwrap();

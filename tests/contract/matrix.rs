@@ -1464,6 +1464,17 @@ fn status_and_doctor_with_a_journal_too_new() {
     }
 }
 
+/// A damaged cached archive (F6): the deep diagnosis's finding in full. Its digests are
+/// deterministic (the fixture's archive, one byte flipped), and `support::check` parses
+/// every argv the report offers.
+#[test]
+fn doctor_deep_damaged_blob() {
+    let s = Scene::new();
+    common::doctor::plant::damaged_blob(&s.home, "retail");
+    let doctor = s.json(&["doctor", "--include-deep"], 1);
+    insta::assert_json_snapshot!("doctor_deep_damaged_blob", s.stable(&doctor.envelope));
+}
+
 /// `doctor fix` and `doctor diff` (E6) on the Scene's clean home: nothing to repair, the
 /// force gate, a stale token, and diff's two modes.
 #[test]

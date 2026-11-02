@@ -1,5 +1,6 @@
 //! Every fixture, one module each, named after its failure mode's id in snake case.
 
+pub mod fm_caches_blob_hash_mismatch;
 pub mod fm_concurrency_primitives_journal_marker_mismatch;
 pub mod fm_concurrency_primitives_journal_pending;
 pub mod fm_concurrency_primitives_journal_preservation_incomplete;
@@ -25,6 +26,7 @@ use crate::common::home::Home;
 /// Every fixture of a catalog row, in id order.
 pub fn all() -> Vec<Box<dyn Fixture>> {
     vec![
+        Box::new(fm_caches_blob_hash_mismatch::BlobHashMismatch),
         Box::new(fm_concurrency_primitives_journal_marker_mismatch::JournalMarkerMismatch::default()),
         Box::new(fm_concurrency_primitives_journal_pending::JournalPending::default()),
         Box::new(

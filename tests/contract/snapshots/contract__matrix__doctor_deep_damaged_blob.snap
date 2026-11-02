@@ -1,0 +1,92 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&doctor.envelope)
+---
+{
+  "command": "doctor diagnose",
+  "commands": [
+    {
+      "action": "doctor_explain",
+      "argv": [
+        "omaddons",
+        "doctor",
+        "explain",
+        "fm-caches-blob-hash-mismatch"
+      ],
+      "command": "omaddons doctor explain fm-caches-blob-hash-mismatch",
+      "destructive": false
+    }
+  ],
+  "doctor_contract_version": "1.0",
+  "exit_code": 1,
+  "findings": [
+    {
+      "addon": null,
+      "confidence": "high",
+      "evidence": {
+        "expected": "sha256:84e8981e42ebd1e21c7c2e171be97727165f48d743cc7efe99f6a4245fe3111a",
+        "observed": "sha256:753c064a30659efe05e324bf695e1e4127045eea2e7c7ac9f2f9f1aa070b2afb",
+        "path": "<root>/cache/omaddons/blobs/84e8981e42ebd1e21c7c2e171be97727165f48d743cc7efe99f6a4245fe3111a"
+      },
+      "folder": null,
+      "id": "fm-caches-blob-hash-mismatch",
+      "instance": "fm-caches-blob-hash-mismatch@machine:blob=84e8981e42ebd1e21c7c2e171be97727165f48d743cc7efe99f6a4245fe3111a",
+      "label": "machine · blob 84e8981e42eb",
+      "remediation": {
+        "argv": [
+          "omaddons",
+          "doctor",
+          "fix",
+          "--only",
+          "fm-caches-blob-hash-mismatch"
+        ],
+        "auto_fixable": true,
+        "command": "omaddons doctor fix --only fm-caches-blob-hash-mismatch",
+        "destructive": false,
+        "estimated_actions": 1,
+        "explain_argv": [
+          "omaddons",
+          "doctor",
+          "explain",
+          "fm-caches-blob-hash-mismatch"
+        ],
+        "explain_command": "omaddons doctor explain fm-caches-blob-hash-mismatch",
+        "needs_force": false
+      },
+      "severity": "P2",
+      "subsystem": "caches",
+      "target": null,
+      "title": "Cached archive 84e8981e42eb… is damaged"
+    }
+  ],
+  "finished_at": "<time>",
+  "next_steps": [
+    "omaddons doctor explain fm-caches-blob-hash-mismatch"
+  ],
+  "ok": false,
+  "run_dir": "<root>/state/omaddons/doctor/runs/<run>",
+  "run_id": "<run>",
+  "schema_version": "1.0",
+  "skipped": [],
+  "started_at": "<time>",
+  "state": "DONE_FINDINGS",
+  "summary": {
+    "auto_fixable": 1,
+    "by_severity": {
+      "P0": 0,
+      "P1": 0,
+      "P2": 1,
+      "P3": 0
+    },
+    "duration_ms": 0,
+    "incomplete": 0,
+    "manual": 0,
+    "needs_force": 0,
+    "online_required": 0,
+    "skipped": 0,
+    "total_findings": 1
+  },
+  "tool_version": "<version>",
+  "view": "full",
+  "warnings": []
+}
