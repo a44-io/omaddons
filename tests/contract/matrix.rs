@@ -1475,6 +1475,38 @@ fn doctor_deep_damaged_blob() {
     insta::assert_json_snapshot!("doctor_deep_damaged_blob", s.stable(&doctor.envelope));
 }
 
+/// A damaged cached archive on the read path (F6 part 4): the offline reinstall's
+/// `hash_mismatch`, `details.blob` and `actual` beside the item's, and its fix the deep
+/// diagnosis, which `support::check` parses.
+#[test]
+fn damaged_cached_blob() {
+    let s = Scene::new();
+    s.json(&["install", "weakauras", "-t", "retail"], 0);
+    let record = common::state::record(&s.home, "retail");
+    let sha = record
+        .addons
+        .values()
+        .find_map(|a| a.blob_sha256.clone())
+        .unwrap();
+    let blob = s.home.env.cache().join("omaddons/blobs").join(&sha);
+    let mut bytes = std::fs::read(&blob).unwrap();
+    let offset = bytes.len() / 2;
+    bytes[offset] ^= 0xff;
+    std::fs::write(&blob, &bytes).unwrap();
+    let c = s.json(
+        &[
+            "install",
+            "weakauras",
+            "-t",
+            "retail",
+            "--reinstall",
+            "--offline",
+        ],
+        1,
+    );
+    insta::assert_json_snapshot!("reinstall_damaged_blob_offline", s.stable(&c.envelope));
+}
+
 /// `doctor fix` and `doctor diff` (E6) on the Scene's clean home: nothing to repair, the
 /// force gate, a stale token, and diff's two modes.
 #[test]

@@ -1,3 +1,5 @@
+//! e2e suite: sync, including a locked sync that never stages a damaged cached archive
+//!
 //! `omaddons sync` end to end: every client made to match `addons.toml` in one
 //! `sync`-kind transaction per target under one run, a second run that changes nothing
 //! and asks nothing, no updates, pins and channels that follow the file, family
@@ -944,6 +946,110 @@ fn a_cached_blob_without_a_fact_costs_the_metadata_and_a_bad_one_a_download() {
         r.context()
     );
     assert_eq!(record_of(&home, "retail", "Foo").unwrap().version, "v1");
+}
+
+/// F6 part 4: the archive a lock names, damaged in the cache, is never staged. Offline the
+/// locked sync fails `hash_mismatch` and changes nothing; online it downloads the archive
+/// again into the same place.
+#[test]
+fn a_locked_sync_never_stages_a_damaged_blob() {
+    use common::tlog::tlog;
+    let log = tlog!();
+    log.step("home");
+    let home = foo_behind();
+    log.env(&home);
+    let file = exported(&home, "dotfiles");
+    home.run(&["remove", "Foo", "-t", "retail"]).expect(0);
+    let sha = lock_file::locked_sha(&file);
+    let blob = common::http::paths(&home.env).blob(&sha);
+    log.step("damage");
+    let mut bytes = fs::read(&blob).unwrap();
+    let offset = bytes.len() / 2;
+    bytes[offset] ^= 0xff;
+    fs::write(&blob, &bytes).unwrap();
+    log.note(format!("damage: byte {offset} of {}", blob.display()));
+    let state = home.state();
+    log.tree("blobs", blob.parent().unwrap());
+    log.tree("retail", &home.client("_retail_"));
+    log.tree("targets", &state.join("targets"));
+    let history = fs::read(state.join("history.jsonl")).ok();
+    log.step("offline");
+    let offline = log.run(&home, &["sync", &file, "--locked", "--offline", "--json"]);
+    offline.assert_private();
+    offline.fails(1, "hash_mismatch");
+    let error = offline.envelope()["error"].clone();
+    log.json("error", &error);
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains(&format!("{}…", &sha[..12])),
+        "the message names the damaged archive (its details.blob is omad-r86s's): {error}"
+    );
+    log.assert_eq(
+        "its fix",
+        &error["fix_argv"],
+        &serde_json::json!(["omaddons", "doctor", "--include-deep"]),
+    );
+    log.assert_eq(
+        "Foo still absent",
+        &record_of(&home, "retail", "Foo").is_none(),
+        &true,
+    );
+    log.assert_unchanged("blobs", blob.parent().unwrap());
+    log.assert_unchanged("retail", &home.client("_retail_"));
+    log.assert_unchanged("targets", &state.join("targets"));
+    log.assert_eq(
+        "history unchanged",
+        &fs::read(state.join("history.jsonl")).ok(),
+        &history,
+    );
+    log.step("online");
+    let assets = net_log(&home).count_purpose("asset");
+    let online = log.run(&home, &["sync", &file, "--locked", "--json"]);
+    online.assert_private();
+    online.ok();
+    log.assert_eq(
+        "v1 installed",
+        &record_of(&home, "retail", "Foo").unwrap().version,
+        &"v1".to_owned(),
+    );
+    log.assert_eq(
+        "downloaded once more",
+        &net_log(&home).count_purpose("asset"),
+        &(assets + 1),
+    );
+    let healed: String = {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(fs::read(&blob).unwrap())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    };
+    log.assert_eq("healed: it hashes to its name", &healed, &sha);
+}
+
+#[cfg(test)]
+mod lock_file {
+    use std::fs;
+
+    /// The archive hash the lock file `file` records for Foo.
+    pub fn locked_sha(file: &str) -> String {
+        let text = fs::read_to_string(file).unwrap();
+        let parsed: toml::Table = text.parse().unwrap();
+        find_sha(&toml::Value::Table(parsed)).expect("the lock records Foo's sha256")
+    }
+
+    fn find_sha(value: &toml::Value) -> Option<String> {
+        match value {
+            toml::Value::Table(table) => table
+                .get("sha256")
+                .and_then(|v| v.as_str().map(str::to_owned))
+                .or_else(|| table.values().find_map(find_sha)),
+            toml::Value::Array(items) => items.iter().find_map(find_sha),
+            _ => None,
+        }
+    }
 }
 
 #[test]

@@ -1515,3 +1515,45 @@ fn the_approval_check_under_the_lock_costs() {
     report.push(total);
     log.json("report", &report);
 }
+
+/// F6 (M4-D52): what re-hashing a cached archive before its use costs. A printed note,
+/// not a budget (the plan calls it "a perf note"): the median of 21 verifications of a
+/// 5 MiB blob, each on a fresh memo so every run hashes. The checkpoint quotes it beside
+/// "under 10 ms per 5 MiB".
+#[test]
+#[ignore = "a release-build measurement: cargo test --release --test perf -- --ignored"]
+fn blob_reverification_cost() {
+    use omaddons::engine::blobs::{Verification, VerifyMemo};
+    use sha2::{Digest, Sha256};
+    let env = TestEnv::new();
+    let dir = env.cache().join("omaddons/blobs");
+    fs::create_dir_all(&dir).unwrap();
+    // Pseudo-random bytes from a fixed seed (xorshift), so the run is repeatable.
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    let bytes: Vec<u8> = (0..5 * 1024 * 1024)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state.to_le_bytes()[0]
+        })
+        .collect();
+    let name: String = Sha256::digest(&bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let path = dir.join(&name);
+    fs::write(&path, &bytes).unwrap();
+    let now = Timestamp::now().as_nanosecond();
+    let (median, _) = median_of_21(|| {
+        let verdict = VerifyMemo::new().verify(&path, &name, &mut || false, now);
+        assert!(
+            matches!(verdict, Verification::Matches { .. }),
+            "{verdict:?}"
+        );
+    });
+    let ms = median.as_secs_f64() * 1000.0;
+    measured(format_args!(
+        "blob re-verification: {ms:.2} ms per 5 MiB (median of 21)"
+    ));
+}

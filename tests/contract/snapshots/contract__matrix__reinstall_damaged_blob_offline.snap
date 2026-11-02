@@ -1,0 +1,36 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "install",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "hash_mismatch",
+    "details": {
+      "actual": "246883bc0c4240276a81c541684b8586a234260aa2bcd22a3f725fd8eb5a5158",
+      "blob": "ab20ba12ee20f9ddb23de55cdcb7d86b86c46b8b35cd6ff626dd0018fd0b3598",
+      "items": [
+        {
+          "code": "hash_mismatch",
+          "message": "the cached archive ab20ba12ee20… is damaged (its bytes hash to 246883bc0c42…, not to its name), and it cannot be downloaded again: offline: not requesting https://github.com/WeakAuras/WeakAuras2/releases/download/5.19.2/release.json",
+          "request": "weakauras"
+        }
+      ]
+    },
+    "fix": "omaddons doctor --include-deep",
+    "fix_argv": [
+      "omaddons",
+      "doctor",
+      "--include-deep"
+    ],
+    "message": "the cached archive ab20ba12ee20… is damaged (its bytes hash to 246883bc0c42…, not to its name), and it cannot be downloaded again: offline: not requesting https://github.com/WeakAuras/WeakAuras2/releases/download/5.19.2/release.json",
+    "retryable": true
+  },
+  "exit_code": 1,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

@@ -1613,6 +1613,33 @@ fn doctor_on_the_real_home() {
         "doctor fix --dry-run exited {code}: {planned:#}"
     );
     assert_eq!(planned["dry_run"], true, "{planned:#}");
+    // F6: the deep blob check over the real cache, read-only (H6 reviews what it reports;
+    // never a `doctor fix`). Taken before `after`, so its stamps cover this run too.
+    let blob_check = [
+        "doctor",
+        "--include-deep",
+        "--only",
+        "fm-caches-blob-hash-mismatch",
+    ];
+    let (code, deep) = omaddons(&blob_check);
+    assert!(
+        declared("doctor").contains(&u8::try_from(code).unwrap_or(u8::MAX)),
+        "doctor --include-deep exited {code}: {deep:#}"
+    );
+    let blob_findings: Vec<Value> = deep["findings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|f| serde_json::json!({ "instance": f["instance"], "evidence": f["evidence"] }))
+        .collect();
+    note(
+        "deep blob check",
+        &serde_json::json!({
+            "findings": blob_findings,
+            "duration_ms": deep["summary"]["duration_ms"],
+            "incomplete": deep["summary"]["incomplete"],
+        }),
+    );
     // Before any other command runs.
     let after = (
         stamps(&state, "doctor"),
