@@ -173,7 +173,7 @@ impl SourceId {
     }
 
     /// The milestone a source this build lacks arrives in.
-    const fn later(self) -> Option<&'static str> {
+    pub(crate) const fn later(self) -> Option<&'static str> {
         match self {
             Self::Curseforge | Self::Wago => Some("M5"),
             Self::Github

@@ -394,12 +394,59 @@ const RULES_FIELDS: &[&str] = &[
     "interface_floor",
 ];
 
+/// Each limit `config.toml` can override (by its registry name, `limits::REGISTRY`) and
+/// the keys that override it, in [`KEYS`] order. The first key is the one `capabilities`
+/// publishes as the limit's `config_key`: the one `omaddons config set` takes.
+pub const LIMIT_CONFIG_KEYS: &[(&str, &[&str])] = &[
+    ("DEFAULT_CHECK_INTERVAL", &["check_interval_hours"]),
+    ("ARCHIVE_MAX_ENTRIES", &["limits.archive_max_entries"]),
+    (
+        "ARCHIVE_MAX_UNCOMPRESSED",
+        &["limits.archive_max_uncompressed"],
+    ),
+    ("ARCHIVE_MAX_RATIO", &["limits.archive_max_ratio"]),
+    ("DOWNLOAD_MAX_BYTES", &["limits.download_max_bytes"]),
+    (
+        "TX_RETENTION",
+        &["limits.tx_retention_count", "limits.tx_retention_days"],
+    ),
+    ("SNAPSHOT_MAX_BYTES", &["limits.snapshot_max_bytes"]),
+    ("BLOB_CACHE_MAX_BYTES", &["limits.blob_cache_max_bytes"]),
+    ("BACKUP_MIN_FREE", &["limits.backup_min_free_mb"]),
+    ("BACKUP_COPY_MAX", &["limits.backup_copy_max_mb"]),
+    ("BACKUP_AUTO_KEEP_DAYS", &["limits.backup_auto_keep_days"]),
+];
+
+impl Config {
+    /// Whether `config.toml` sets `key`, one of [`LIMIT_CONFIG_KEYS`]'s keys
+    /// (`check_interval_hours` counts only above 0, which keeps the default).
+    pub fn sets_limit_key(&self, key: &str) -> bool {
+        let l = &self.limits;
+        match key {
+            "check_interval_hours" => self.check_interval_hours.is_some_and(|h| h > 0),
+            "limits.archive_max_entries" => l.archive_max_entries.is_some(),
+            "limits.archive_max_uncompressed" => l.archive_max_uncompressed.is_some(),
+            "limits.archive_max_ratio" => l.archive_max_ratio.is_some(),
+            "limits.download_max_bytes" => l.download_max_bytes.is_some(),
+            "limits.tx_retention_count" => l.tx_retention_count.is_some(),
+            "limits.tx_retention_days" => l.tx_retention_days.is_some(),
+            "limits.snapshot_max_bytes" => l.snapshot_max_bytes.is_some(),
+            "limits.blob_cache_max_bytes" => l.blob_cache_max_bytes.is_some(),
+            "limits.backup_min_free_mb" => l.backup_min_free_mb.is_some(),
+            "limits.backup_copy_max_mb" => l.backup_copy_max_mb.is_some(),
+            "limits.backup_auto_keep_days" => l.backup_auto_keep_days.is_some(),
+            _ => false,
+        }
+    }
+}
+
 /// The spec a dotted key matches.
 pub fn spec_for(key: &str) -> Option<&'static KeySpec> {
     let parts: Vec<&str> = key.split('.').collect();
     KEYS.iter().find(|spec| {
         let pattern: Vec<&str> = spec.key.split('.').collect();
         pattern.len() == parts.len()
+            // ubs:ignore — comparing config key segments, not secrets
             && pattern.iter().zip(&parts).all(|(p, k)| *p == "*" || p == k)
             && (spec.kind != KeyKind::RulesField
                 || parts.last().is_some_and(|f| RULES_FIELDS.contains(f)))
@@ -420,6 +467,7 @@ pub fn closest_key(key: &str) -> Option<String> {
                 let mut c: Vec<&str> = pattern[..pattern.len() - 1]
                     .iter()
                     .zip(&parts)
+                    // ubs:ignore — filling config key segments, not comparing secrets
                     .map(|(p, k)| if *p == "*" { *k } else { *p })
                     .collect();
                 c.push(field);
@@ -430,6 +478,7 @@ pub fn closest_key(key: &str) -> Option<String> {
         let filled: Vec<&str> = pattern
             .iter()
             .zip(&parts)
+            // ubs:ignore — filling config key segments, not comparing secrets
             .map(|(p, k)| if *p == "*" { *k } else { *p })
             .collect();
         candidates.push(filled.join("."));
@@ -483,8 +532,66 @@ impl Config {
         })
     }
 
-    /// Parses and validates config text; `path` is for messages.
+    /// Parses and validates config text; `path` is for messages. A broken file is
+    /// `state_corrupt` citing line and column ([`ConfigProblem`]'s error).
     pub fn parse(text: &str, path: &Path) -> Result<(Self, Vec<Warning>)> {
+        Self::parse_checked(text, path).map_err(ConfigProblem::into_error)
+    }
+
+    /// `config.toml` as `capabilities` reads it (M4-D4): never an error. A missing file is
+    /// the default config; a file that cannot be read, or does not parse or validate, is
+    /// the default config and the problem.
+    pub fn load_tolerant(paths: &Paths) -> TolerantConfig {
+        let path = paths.config_file();
+        let failed = |problem: ConfigProblem| TolerantConfig {
+            loaded: LoadedConfig {
+                path: path.clone(),
+                ..LoadedConfig::default()
+            },
+            problem: Some(problem),
+        };
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            // ubs:ignore — an io::ErrorKind, not a secret
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return TolerantConfig {
+                    loaded: LoadedConfig {
+                        path,
+                        ..LoadedConfig::default()
+                    },
+                    problem: None,
+                };
+            }
+            Err(err) => {
+                return failed(ConfigProblem {
+                    path: Some(path.clone()),
+                    line: None,
+                    column: None,
+                    message: err.to_string(),
+                    key: None,
+                });
+            }
+        };
+        match Self::parse_checked(&text, &path) {
+            Ok((config, warnings)) => TolerantConfig {
+                loaded: LoadedConfig {
+                    config,
+                    warnings,
+                    path,
+                    exists: true,
+                    text: Some(text),
+                },
+                problem: None,
+            },
+            Err(problem) => failed(problem),
+        }
+    }
+
+    /// [`Config::parse`], its failure typed rather than an error.
+    pub fn parse_checked(
+        text: &str,
+        path: &Path,
+    ) -> std::result::Result<(Self, Vec<Warning>), ConfigProblem> {
         let raw: toml::Table = toml::from_str(text).map_err(|e| corrupt(path, text, &e))?;
         let warnings = unknown_keys(&raw, path);
         let config: Self = toml::from_str(text).map_err(|e| corrupt(path, text, &e))?;
@@ -789,18 +896,71 @@ fn edit_fix(path: &Path) -> Suggestion {
     Suggestion::text(format!("edit {}", path.display()))
 }
 
-/// `state_corrupt` for a TOML or type error, citing line and column.
-fn corrupt(path: &Path, text: &str, err: &toml::de::Error) -> Error {
+/// Why config.toml could not be used: what `capabilities` reports as `config_error`
+/// instead of failing (M4-D4), and what every other command fails with as
+/// `state_corrupt` ([`ConfigProblem::into_error`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigProblem {
+    /// The file; `None` when HOME gives no config path at all.
+    pub path: Option<PathBuf>,
+    /// 1-based; `None` when the file could not be read at all.
+    pub line: Option<u64>,
+    pub column: Option<u64>,
+    /// What is wrong, without the location: the TOML parser's message, `<key> <rule>`, or
+    /// the OS error.
+    pub message: String,
+    /// The key a value out of range is under, which the error's `details` names.
+    key: Option<String>,
+}
+
+/// config.toml as `capabilities` reads it: never an error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TolerantConfig {
+    /// The default config when there is a problem.
+    pub loaded: LoadedConfig,
+    pub problem: Option<ConfigProblem>,
+}
+
+impl ConfigProblem {
+    /// The `state_corrupt` error every command but `capabilities` fails with for a file
+    /// that does not parse or validate, byte for byte as before the type existed. (A
+    /// file that cannot be read stays [`Config::load`]'s `io`.)
+    fn into_error(self) -> Error {
+        let path = self.path.unwrap_or_default();
+        let (line, column) = (self.line.unwrap_or(1), self.column.unwrap_or(1));
+        match self.key {
+            Some(key) => Error::new(
+                ErrorCode::StateCorrupt,
+                format!("{} line {line}: {}", path.display(), self.message),
+                edit_fix(&path),
+            )
+            .details(serde_json::json!({ "path": path, "line": line, "column": 1, "key": key })),
+            None => Error::new(
+                ErrorCode::StateCorrupt,
+                format!(
+                    "{} line {line}, column {column}: {}",
+                    path.display(),
+                    self.message
+                ),
+                edit_fix(&path),
+            )
+            .details(serde_json::json!({ "path": path, "line": line, "column": column })),
+        }
+    }
+}
+
+/// A TOML or type error, citing line and column.
+fn corrupt(path: &Path, text: &str, err: &toml::de::Error) -> ConfigProblem {
     let (line, column) = err
         .span()
         .map_or((1, 1), |span| line_column(text, span.start));
-    let message = err.message().trim().to_owned();
-    Error::new(
-        ErrorCode::StateCorrupt,
-        format!("{} line {line}, column {column}: {message}", path.display()),
-        edit_fix(path),
-    )
-    .details(serde_json::json!({ "path": path, "line": line, "column": column }))
+    ConfigProblem {
+        path: Some(path.to_path_buf()),
+        line: Some(line as u64),
+        column: Some(column as u64),
+        message: err.message().trim().to_owned(),
+        key: None,
+    }
 }
 
 /// `state_corrupt` for a value out of range, citing the key's line.
@@ -817,18 +977,20 @@ fn limit_message(err: &crate::limits::LimitOverrideError) -> String {
         .map_or_else(|| text.clone(), str::to_owned)
 }
 
-fn invalid(path: &Path, text: &str, key: &str, message: &str) -> Error {
+/// A value out of range, citing the key's line.
+fn invalid(path: &Path, text: &str, key: &str, message: &str) -> ConfigProblem {
     let leaf = key.rsplit('.').next().unwrap_or(key);
     let line = text
         .lines()
         .position(|l| l.trim_start().starts_with(leaf))
         .map_or(1, |i| i + 1);
-    Error::new(
-        ErrorCode::StateCorrupt,
-        format!("{} line {line}: {key} {message}", path.display()),
-        edit_fix(path),
-    )
-    .details(serde_json::json!({ "path": path, "line": line, "column": 1, "key": key }))
+    ConfigProblem {
+        path: Some(path.to_path_buf()),
+        line: Some(line as u64),
+        column: Some(1),
+        message: format!("{key} {message}"),
+        key: Some(key.to_owned()),
+    }
 }
 
 /// 1-based line and column of a byte offset.
@@ -980,6 +1142,31 @@ impl fmt::Display for Secret {
 /// ask it, so they never disagree.
 pub const fn credential_exposed(mode: u32) -> bool {
     mode & 0o077 != 0
+}
+
+/// Whether a credential reference names a credential that is there, found without reading
+/// a secret or running anything (M4-D4: `capabilities` says a credential is configured,
+/// never that it works): a set, non-empty variable; a non-empty regular file, never
+/// opened (one of mode 000 counts); a command, never run.
+pub fn credential_present(credential: &CredentialRef) -> bool {
+    credential_present_with(credential, &|name| std::env::var_os(name))
+}
+
+/// [`credential_present`] with the environment looked up through `var`.
+pub fn credential_present_with(
+    credential: &CredentialRef,
+    var: &dyn Fn(&str) -> Option<std::ffi::OsString>,
+) -> bool {
+    match credential {
+        CredentialRef::Env { env } => var(env).is_some_and(|value| !value.is_empty()),
+        CredentialRef::File { file } => non_empty_file(file),
+        CredentialRef::Command { .. } => true,
+    }
+}
+
+/// A regular file of non-zero length at `path`, by its metadata alone.
+pub fn non_empty_file(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.len() > 0)
 }
 
 /// Resolves a credential reference; a readable-by-others file adds a warning.
@@ -1658,6 +1845,276 @@ max = 11_599
         ] {
             assert_eq!(credential_exposed(mode), exposed, "{mode:04o}");
         }
+    }
+
+    const PATH: &str = "/c/omaddons/config.toml";
+
+    fn problem(text: &str) -> ConfigProblem {
+        Config::parse_checked(text, Path::new(PATH)).unwrap_err()
+    }
+
+    #[test]
+    fn parse_checked_types_each_problem() {
+        let toml_error = problem("limits = [\n");
+        assert_eq!(
+            (toml_error.line, toml_error.path.as_deref()),
+            (Some(1), Some(Path::new(PATH)))
+        );
+        assert!(toml_error.column.is_some(), "{toml_error:?}");
+        assert!(!toml_error.message.contains(PATH), "{toml_error:?}");
+        for (case, text, line, message) in [
+            (
+                "check_interval_over_48",
+                "default_channel = \"stable\"\ncheck_interval_hours = 99\n",
+                2,
+                "check_interval_hours must be from 0 to 48",
+            ),
+            (
+                "git_host_with_scheme",
+                "git_hosts = [\"https://x\"]\n",
+                1,
+                "git_hosts \"https://x\" is not a bare host name (no scheme, port or path)",
+            ),
+            (
+                "limit_not_positive",
+                "[limits]\ndownload_max_bytes = 0\n",
+                2,
+                "limits.download_max_bytes must be greater than zero",
+            ),
+            (
+                "keep_days_out_of_range",
+                "[limits]\nbackup_auto_keep_days = 0\n",
+                2,
+                "limits.backup_auto_keep_days must be from 1 to 100",
+            ),
+        ] {
+            let got = problem(text);
+            assert_eq!(
+                (got.line, got.column, got.message.as_str()),
+                (Some(line), Some(1), message),
+                "case {case}: {text:?}"
+            );
+        }
+        let http = problem("git_hosts = [\"github.com\"]\n");
+        assert!(
+            http.message
+                .starts_with("git_hosts \"github.com\" is a host"),
+            "{http:?}"
+        );
+        let rules = problem("[client_rules.brand_new]\nmulti_toc = true\n");
+        assert!(rules.message.starts_with("client_rules "), "{rules:?}");
+    }
+
+    /// The errors `Config::parse` returns through the problem, pinned as they were before
+    /// it existed.
+    #[test]
+    fn parse_errors_are_unchanged_through_the_problem() {
+        let err = parse("[limits]\ndownload_max_bytes = 0\n").unwrap_err();
+        assert_eq!(err.code, ErrorCode::StateCorrupt);
+        assert_eq!(
+            err.message,
+            format!("{PATH} line 2: limits.download_max_bytes must be greater than zero")
+        );
+        assert_eq!(err.fix.display(), format!("edit {PATH}"));
+        assert_eq!(
+            err.details,
+            serde_json::json!({"path": PATH, "line": 2, "column": 1, "key": "limits.download_max_bytes"})
+        );
+        let err = parse("default_channel = \"nightly\"\n").unwrap_err();
+        let (line, column) = (
+            err.details["line"].as_u64().unwrap(),
+            err.details["column"].as_u64().unwrap(),
+        );
+        assert_eq!((line, column), (1, 19), "{}", err.message);
+        assert!(
+            err.message
+                .starts_with(&format!("{PATH} line 1, column 19: ")),
+            "{}",
+            err.message
+        );
+        assert_eq!(
+            err.details
+                .as_object()
+                .map(|d| d.keys().cloned().collect::<Vec<_>>()),
+            Some(vec![
+                "column".to_owned(),
+                "line".to_owned(),
+                "path".to_owned()
+            ])
+        );
+        assert_eq!(err.fix.display(), format!("edit {PATH}"));
+    }
+
+    #[test]
+    fn load_tolerant_never_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::with_roots(
+            dir.path().join("home"),
+            dir.path().join("config"),
+            dir.path().join("state"),
+            dir.path().join("cache"),
+        );
+        let file = paths.config_file();
+        let reset = || {
+            let _ = std::fs::remove_file(&file);
+            let _ = std::fs::remove_dir(&file);
+        };
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        /// What is at the config path.
+        enum At {
+            Nothing,
+            Bytes(&'static [u8]),
+            Directory,
+        }
+        // (case, what is there, whether a problem is expected: with its line known)
+        let cases: [(&str, At, Option<bool>); 6] = [
+            ("missing", At::Nothing, None),
+            ("valid", At::Bytes(b"default_channel = \"beta\"\n"), None),
+            (
+                "unknown_key",
+                At::Bytes(b"defualt_channel = \"beta\"\n"),
+                None,
+            ),
+            ("a_directory", At::Directory, Some(false)),
+            ("invalid_utf8", At::Bytes(&[0xff, 0xfe]), Some(false)),
+            ("broken", At::Bytes(b"limits = [\n"), Some(true)),
+        ];
+        for (case, at, problem) in cases {
+            reset();
+            match at {
+                At::Nothing => {}
+                At::Bytes(bytes) => std::fs::write(&file, bytes).unwrap(),
+                At::Directory => std::fs::create_dir(&file).unwrap(),
+            }
+            let got = Config::load_tolerant(&paths);
+            assert_eq!(got.loaded.path, file, "{case}");
+            match problem {
+                None => assert_eq!(got.problem, None, "{case}"),
+                Some(located) => {
+                    let p = got.problem.clone().unwrap();
+                    assert_eq!(p.line.is_some(), located, "{case}: {p:?}");
+                    assert_eq!(p.column.is_some(), located, "{case}: {p:?}");
+                    assert_eq!(p.path.as_deref(), Some(file.as_path()), "{case}");
+                    assert_eq!(got.loaded.config, Config::default(), "{case}");
+                    assert!(got.loaded.warnings.is_empty(), "{case}");
+                }
+            }
+            match case {
+                "missing" => assert!(!got.loaded.exists, "{case}"),
+                "valid" => assert_eq!(got.loaded.config.default_channel, Some(Channel::Beta)),
+                "unknown_key" => assert_eq!(got.loaded.warnings.len(), 1, "{case}"),
+                _ => {}
+            }
+        }
+        // A file only its owner could read but cannot: skipped as root, which reads it.
+        reset();
+        std::fs::write(&file, "default_channel = \"beta\"\n").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&file).is_ok() {
+            eprintln!("load_tolerant_never_fails: unreadable case skipped (running as root)"); // ubs:ignore — a test's skip note
+        } else {
+            let got = Config::load_tolerant(&paths);
+            let p = got.problem.unwrap();
+            assert_eq!((p.line, p.column), (None, None), "{p:?}");
+            assert_eq!(got.loaded.config, Config::default());
+        }
+    }
+
+    #[test]
+    fn limit_config_keys_cover_every_overridable_limit() {
+        let mut overridable: Vec<&str> = crate::politeness::REGISTRY
+            .iter()
+            .chain(crate::limits::REGISTRY)
+            .filter(|info| info.config_key.is_some())
+            .map(|info| info.name)
+            .collect();
+        overridable.sort_unstable();
+        let mut listed: Vec<&str> = LIMIT_CONFIG_KEYS.iter().map(|(name, _)| *name).collect();
+        listed.sort_unstable();
+        assert_eq!(listed, overridable);
+    }
+
+    #[test]
+    fn limit_config_keys_are_config_keys() {
+        let keys: Vec<&str> = LIMIT_CONFIG_KEYS
+            .iter()
+            .flat_map(|(_, keys)| keys.iter().copied())
+            .collect();
+        for key in &keys {
+            assert!(spec_for(key).is_some(), "{key} is no config key");
+        }
+        let expected: Vec<&str> = KEYS
+            .iter()
+            .map(|spec| spec.key)
+            .filter(|key| key.starts_with("limits.") || *key == "check_interval_hours")
+            .collect();
+        assert_eq!(keys, expected, "every limit key once, in KEYS order");
+        let config = Config::default();
+        assert!(keys.iter().all(|key| !config.sets_limit_key(key)));
+    }
+
+    #[test]
+    fn credential_present_reads_and_runs_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = |name: &str, text: &str, mode: u32| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, text).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            path
+        };
+        let locked = file("locked", "secret\n", 0o000);
+        let empty = file("empty", "", 0o600);
+        let marker = dir.path().join("ran");
+        let env = |name: &str| match name {
+            "SET" => Some(std::ffi::OsString::from("x")),
+            "EMPTY" => Some(std::ffi::OsString::new()),
+            _ => None,
+        };
+        let cases = [
+            ("env_set", CredentialRef::Env { env: "SET".into() }, true),
+            (
+                "env_unset",
+                CredentialRef::Env {
+                    env: "UNSET".into(),
+                },
+                false,
+            ),
+            (
+                "env_empty",
+                CredentialRef::Env {
+                    env: "EMPTY".into(),
+                },
+                false,
+            ),
+            (
+                "file_present_mode_000",
+                CredentialRef::File { file: locked },
+                true,
+            ),
+            (
+                "file_missing",
+                CredentialRef::File {
+                    file: dir.path().join("missing"),
+                },
+                false,
+            ),
+            ("file_empty", CredentialRef::File { file: empty }, false),
+            (
+                "command_never_runs",
+                CredentialRef::Command {
+                    command: vec![
+                        "sh".into(),
+                        "-c".into(),
+                        format!("touch {}", marker.display()),
+                    ],
+                },
+                true,
+            ),
+        ];
+        for (case, credential, want) in cases {
+            assert_eq!(credential_present_with(&credential, &env), want, "{case}");
+        }
+        assert!(!marker.exists(), "a credential command ran");
     }
 
     use std::os::unix::fs::PermissionsExt;

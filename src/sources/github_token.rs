@@ -80,6 +80,32 @@ impl GithubToken {
     }
 
     /// [`GithubToken::resolve`] with `env` for the environment.
+    /// Whether a token is configured, in [`GithubToken::resolve_with`]'s order, by presence
+    /// alone: the variable is set; or a configured reference names a credential that is
+    /// there (`config::credential_present`: no file read, no command run); or the stored
+    /// file is a non-empty regular file, never opened. "Configured" is not "valid"
+    /// (M4-D4: `capabilities` reads nothing secret).
+    pub fn present(paths: &Paths, sources: &BTreeMap<String, SourceConfig>) -> bool {
+        Self::present_with(&|name| std::env::var(name).ok(), paths, sources)
+    }
+
+    /// [`GithubToken::present`] with the environment looked up through `env`.
+    pub fn present_with(
+        env: &dyn Fn(&str) -> Option<String>,
+        paths: &Paths,
+        sources: &BTreeMap<String, SourceConfig>,
+    ) -> bool {
+        if token_from(env).is_some() {
+            return true;
+        }
+        if let Some(credential) = sources.get("github").and_then(|s| s.credential.as_ref()) {
+            return crate::state::config::credential_present_with(credential, &|name| {
+                env(name).map(std::ffi::OsString::from)
+            });
+        }
+        crate::state::config::non_empty_file(&paths.credential_file("github"))
+    }
+
     pub fn resolve_with(
         env: &dyn Fn(&str) -> Option<String>,
         paths: &Paths,
@@ -384,5 +410,77 @@ mod tests {
         assert!(!broken.configured(), "run, and it gave nothing");
         assert!(!GithubToken::none().configured());
         assert!(GithubToken::fixed(TokenSource::Env, Some("t".into())).configured());
+    }
+
+    #[test]
+    fn github_credential_presence_follows_the_resolution_order() {
+        use std::os::unix::fs::PermissionsExt;
+        let reference = |text: &str| -> BTreeMap<String, SourceConfig> {
+            let config: crate::state::config::Config = toml::from_str(text).unwrap();
+            config.sources
+        };
+        let none = BTreeMap::new();
+        for (case, vars, sources, stored, want) in [
+            (
+                "token_variable",
+                &[(TOKEN_VAR, "ghp_x")][..],
+                none.clone(),
+                None,
+                true,
+            ),
+            (
+                "config_reference_env",
+                &[("MY_TOKEN", "ghp_x")][..],
+                reference("[sources.github]\ncredential = { env = \"MY_TOKEN\" }\n"),
+                None,
+                true,
+            ),
+            (
+                "config_reference_env_unset",
+                &[][..],
+                reference("[sources.github]\ncredential = { env = \"MY_TOKEN\" }\n"),
+                Some("ghp_stored\n"),
+                false,
+            ),
+            (
+                "stored_file",
+                &[][..],
+                none.clone(),
+                Some("ghp_stored\n"),
+                true,
+            ),
+            ("stored_file_empty", &[][..], none.clone(), Some(""), false),
+            ("none", &[][..], none.clone(), None, false),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let paths = paths(dir.path());
+            if let Some(text) = stored {
+                store(&paths, text);
+            }
+            let lookup = |name: &str| {
+                vars.iter()
+                    // ubs:ignore — comparing environment variable names, not secrets
+                    .find(|(k, _)| *k == name)
+                    .map(|(_, v)| (*v).to_owned())
+            };
+            assert_eq!(
+                GithubToken::present_with(&lookup, &paths, &sources),
+                want,
+                "{case}"
+            );
+        }
+        // A configured file and a stored file are counted by their metadata alone: one
+        // nobody can read still counts.
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        store(&paths, "ghp_stored\n");
+        let file = paths.credential_file("github");
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+        assert!(GithubToken::present_with(&|_| None, &paths, &none));
+        let configured = reference(&format!(
+            "[sources.github]\ncredential = {{ file = \"{}\" }}\n",
+            file.display()
+        ));
+        assert!(GithubToken::present_with(&|_| None, &paths, &configured));
     }
 }
