@@ -21,17 +21,17 @@ use fixture::fixtures::{
 
 const TOO_NEW: &str = "fm-concurrency_primitives-journal-too-new";
 const UNREADABLE: &str = "fm-concurrency_primitives-journal-unreadable";
-const UNEXPECTED: &str = "fm-concurrency_primitives-journal-unexpected-state";
-const STEP: &str = "fm-concurrency_primitives-journal-step-unrecognized";
+pub(super) const UNEXPECTED: &str = "fm-concurrency_primitives-journal-unexpected-state";
+pub(super) const STEP: &str = "fm-concurrency_primitives-journal-step-unrecognized";
 const MISMATCH: &str = "fm-concurrency_primitives-journal-marker-mismatch";
 const UNATTRIBUTED: &str = "fm-concurrency_primitives-journal-unattributed";
 
 /// One stuck row: its id, its fixture, the client it is on (`None`: the machine's), and
 /// the `details.reason` a change it blocks fails with.
-struct Row {
-    fm: &'static str,
-    fixture: Box<dyn Fixture>,
-    target: Option<&'static str>,
+pub(super) struct Row {
+    pub(super) fm: &'static str,
+    pub(super) fixture: Box<dyn Fixture>,
+    pub(super) target: Option<&'static str>,
     reason: &'static str,
 }
 
@@ -90,7 +90,7 @@ fn two_clients(log: &TestLog) -> Home {
 }
 
 /// `row` planted on a fresh home, its set recorded.
-fn planted(log: &TestLog, row: &Row) -> Home {
+pub(super) fn planted(log: &TestLog, row: &Row) -> Home {
     let home = two_clients(log);
     log.step("plant");
     // The machine's row names no client; on a home in use both are registered, so its
@@ -106,7 +106,7 @@ fn planted(log: &TestLog, row: &Row) -> Home {
 
 /// Each path of `paths` by what it holds: a file's mode and bytes, a directory's tree, or
 /// nothing.
-fn hashes(paths: &[PathBuf]) -> BTreeMap<PathBuf, Option<String>> {
+pub(super) fn hashes(paths: &[PathBuf]) -> BTreeMap<PathBuf, Option<String>> {
     paths
         .iter()
         .map(|path| {
@@ -136,7 +136,7 @@ fn set_aside(log: &TestLog, home: &Home, row: &Row, extra: &[&str]) -> Ran {
 }
 
 /// A set-aside that must succeed: its run id.
-fn set_aside_ok(log: &TestLog, home: &Home, row: &Row) -> String {
+pub(super) fn set_aside_ok(log: &TestLog, home: &Home, row: &Row) -> String {
     log.step("set-aside");
     let ran = set_aside(log, home, row, &[]);
     ran.ok();
@@ -146,7 +146,7 @@ fn set_aside_ok(log: &TestLog, home: &Home, row: &Row) -> String {
 }
 
 /// A change on `target`: an install of a local archive, which recovers first.
-fn change_on(log: &TestLog, home: &Home, target: &str, name: &str) -> Ran {
+pub(super) fn change_on(log: &TestLog, home: &Home, target: &str, name: &str) -> Ran {
     let dl = home.env.root().join("dl");
     fs::create_dir_all(&dl).unwrap();
     let folder = plant::folder(name);
@@ -178,7 +178,7 @@ fn blocked(row: &Row) -> Vec<&'static str> {
 }
 
 /// What a change on `target` reports: its error's code and `details.reason`.
-fn stuck_state(log: &TestLog, home: &Home, target: &str) -> (String, String) {
+pub(super) fn stuck_state(log: &TestLog, home: &Home, target: &str) -> (String, String) {
     let ran = change_on(log, home, target, "probe");
     assert_ne!(ran.run.code, 0, "a stuck journal blocks {target}");
     let error = &ran.envelope()["error"];
@@ -322,6 +322,11 @@ fn reactivate_restores_the_set_byte_identical() {
             .map(|t| stuck_state(&log, &home, t))
             .collect();
         let issues_before = issue_ids(&log, &home);
+        let elsewhere_before = pending_elsewhere(&log, &home);
+        assert!(
+            !elsewhere_before.is_empty(),
+            "a command elsewhere reports the journal pending"
+        );
         let run_id = set_aside_ok(&log, &home, &row);
         assert!(
             set.iter().all(|p| fs::symlink_metadata(p).is_err()),
@@ -338,7 +343,29 @@ fn reactivate_restores_the_set_byte_identical() {
             .collect();
         log.assert_eq("the same stuck state", &after, &states);
         log.assert_eq("the same issues", &issue_ids(&log, &home), &issues_before);
+        log.assert_eq(
+            "the same warning elsewhere",
+            &pending_elsewhere(&log, &home),
+            &elsewhere_before,
+        );
     }
+}
+
+/// The `journal_pending` warnings of a lock-taking command on no client (`config set`):
+/// how a stuck journal is reported away from its own client's commands.
+fn pending_elsewhere(log: &TestLog, home: &Home) -> Vec<Value> {
+    let ran = run(log, home, &["config", "set", "check_interval_hours", "6"]);
+    ran.ok();
+    let pending: Vec<Value> = ran.envelope()["warnings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        // ubs:ignore — comparing warning codes, not secrets
+        .filter(|w| w["code"] == "journal_pending")
+        .cloned()
+        .collect();
+    log.json("journal_pending elsewhere", &pending);
+    pending
 }
 
 /// `status`'s issue ids and instances, per client.
@@ -407,7 +434,7 @@ fn reactivate_refuses_after_a_later_install() {
 }
 
 /// The row `fm` among [`rows`].
-fn row_of(fm: &str) -> Row {
+pub(super) fn row_of(fm: &str) -> Row {
     rows().into_iter().find(|r| r.fm == fm).unwrap()
 }
 
@@ -886,7 +913,15 @@ fn set_aside_privacy() {
     let log = tlog!();
     let row = row_of(UNEXPECTED);
     let home = planted(&log, &row);
-    run(&log, &home, &["doctor"]);
+    let diagnosed = run(&log, &home, &["doctor"]);
+    let evidence: Vec<Value> = diagnosed.envelope()["findings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|f| f["evidence"].clone())
+        .collect();
+    log.json("evidence", &evidence);
+    no_path_below_wtf("the findings' evidence", &Value::from(evidence).to_string());
     run(
         &log,
         &home,
@@ -905,8 +940,21 @@ fn set_aside_privacy() {
             .join(&run_id)
             .join("report.json"),
     ] {
-        crate::common::privacy::assert_private(&fs::read_to_string(&path).unwrap());
+        let text = fs::read_to_string(&path).unwrap();
+        crate::common::privacy::assert_private(&text);
+        // The history line's repairs and guards, and the report's evidence and
+        // `unattributed_dirs`.
+        no_path_below_wtf(&path.display().to_string(), &text);
     }
+}
+
+/// No path below a client's `WTF/` in `text` (M3-D45: a settings journal's set is named
+/// by its stage and snapshots, never by what it restores).
+fn no_path_below_wtf(label: &str, text: &str) {
+    assert!(
+        !text.contains("/WTF/"),
+        "{label} holds a path below WTF/: {text}"
+    );
 }
 
 // ---------------------------------------------------------------------------------------

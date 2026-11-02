@@ -16,6 +16,11 @@ mod delegate;
 // (`set_aside::{set_aside,reactivate,attribution}_<scenario>`).
 #[path = "doctor_repair/set_aside.rs"]
 mod set_aside;
+// F2 s6: the set-aside and its reactivation crashed at every boundary
+// (`set_aside_crash::*`).
+#[cfg(debug_assertions)]
+#[path = "doctor_repair/set_aside_crash.rs"]
+mod set_aside_crash;
 // The contract suite's strict validator, for the delegation's envelopes.
 #[allow(dead_code)]
 #[path = "contract/validate.rs"]
