@@ -18,6 +18,7 @@ use sha2::{Digest, Sha256};
 use crate::app::outcome::SkipReason;
 use crate::cli::Context;
 use crate::doctor::fix::{BoundRepair, FixPlan};
+use crate::doctor::gc::{LatestChange, Victim};
 use crate::engine::plan::{Change, Plan, PlannedOp, PlannedRelease, TargetPlan};
 use crate::engine::tx::UnderLock;
 use crate::engine::witness::{
@@ -1167,6 +1168,64 @@ pub fn of_prune(parts: &[PrunePart<'_>]) -> Precondition {
 }
 
 // ---------------------------------------------------------------------------------------
+// `doctor gc`.
+
+/// What `doctor gc`'s token binds: the plan's deletions with the identity each was
+/// planned against, `latest`'s move, and the undos the deletions take away.
+pub struct GcTokenParts<'a> {
+    pub victims: &'a [Victim],
+    pub latest: Option<&'a LatestChange>,
+    pub undo_lost: &'a [TxId],
+}
+
+/// `doctor gc`'s precondition (M4-D36). A preview and its bound run are two processes, so
+/// nothing of either run, and no time, enters it:
+/// - the targets: each client a deleted half belongs to, by key and without a generation
+///   (gc neither reads nor changes addon records, as `backup prune`);
+/// - the selection: each deletion (`kind`, `path`) sorted by path, and `latest`'s move;
+/// - what it observed: each deletion's identity (inode and birth time, as decimal
+///   strings, never the device), and the undos the deletions take away, which can grow
+///   while the deletions stay the same and are what the user consents to.
+///
+/// Sizes and `may_hold_only_copy` derive from the set and stay out.
+pub fn of_gc(parts: &GcTokenParts<'_>) -> Precondition {
+    let path = |victim: &Victim| victim.path.to_string_lossy().into_owned();
+    let mut victims: Vec<&Victim> = parts.victims.iter().collect();
+    victims.sort_by(|a, b| (&a.path, a.kind).cmp(&(&b.path, b.kind)));
+    let deletions: Vec<Value> = victims
+        .iter()
+        .map(|v| json!({"kind": v.kind, "path": path(v)}))
+        .collect();
+    let identities: Vec<Value> = victims
+        .iter()
+        .map(|v| {
+            json!({
+                "path": path(v),
+                "ino": v.identity.ino.to_string(),
+                "born_ns": v.identity.born_ns.map(|ns| ns.to_string()),
+            })
+        })
+        .collect();
+    let mut undo_lost: Vec<String> = parts.undo_lost.iter().map(ToString::to_string).collect();
+    undo_lost.sort();
+    undo_lost.dedup();
+    let latest = parts
+        .latest
+        .map_or(Value::Null, |l| json!({"from": l.from, "to": l.to}));
+    Precondition::new(
+        "doctor gc",
+        parts
+            .victims
+            .iter()
+            .filter_map(|v| v.client)
+            .map(|k| (TargetRef::Key(k), None))
+            .collect(),
+        json!({"deletions": deletions, "latest": latest}),
+        json!({"identities": identities, "undo_lost": undo_lost}),
+    )
+}
+
+// ---------------------------------------------------------------------------------------
 // `doctor fix`.
 
 /// `doctor fix`'s precondition (M4-D44). A preview and the run it confirms are two
@@ -1955,6 +2014,188 @@ mod tests {
         )
     }
 
+    const GC_RUN: &str = "2026-10-01T00-00-00Z__01M5000000000000000000000A";
+    const GC_NEWER: &str = "2026-11-01T00-00-00Z__01M5000000000000000000000B";
+    const GC_TX: &str = "01JB8Q2VA00000000000000003";
+
+    /// Two victims (a run and a client's half) and `latest`'s retarget.
+    fn gc_victims() -> Vec<crate::doctor::gc::Victim> {
+        use crate::doctor::gc::{DeletionKind, Victim};
+        use crate::fsx::FileId;
+        vec![
+            Victim {
+                kind: DeletionKind::Run,
+                path: format!("/s/omaddons/doctor/runs/{GC_RUN}").into(),
+                identity: FileId {
+                    dev: 7,
+                    ino: 42,
+                    born_ns: Some(1_700_000_000_000_000_001),
+                },
+                client: None,
+            },
+            Victim {
+                kind: DeletionKind::ClientRepair,
+                path: format!("/games/retail/Interface/.omaddons/snapshots/{GC_TX}.repair").into(),
+                identity: FileId {
+                    dev: 7,
+                    ino: 43,
+                    born_ns: None,
+                },
+                client: Some(key(KEY)),
+            },
+        ]
+    }
+
+    fn gc_latest() -> LatestChange {
+        LatestChange {
+            from: Some(GC_RUN.to_owned()),
+            to: Some(GC_NEWER.to_owned()),
+        }
+    }
+
+    fn gc_token(
+        victims: &[crate::doctor::gc::Victim],
+        latest: Option<&LatestChange>,
+        undo_lost: &[TxId],
+    ) -> Precondition {
+        of_gc(&GcTokenParts {
+            victims,
+            latest,
+            undo_lost,
+        })
+    }
+
+    fn gc_fixture() -> Precondition {
+        gc_token(&gc_victims(), Some(&gc_latest()), &[GC_TX.parse().unwrap()])
+    }
+
+    #[test]
+    fn a_gc_token_never_drifts() {
+        // The fields are the first 8 bytes of the SHA-256 of `"doctor gc"`,
+        // `[{"key":"<KEY>"}]`, `{"deletions":[{"kind":"client_repair","path":
+        // "/games/retail/…/<GC_TX>.repair"},{"kind":"run","path":"/s/…/runs/<GC_RUN>"}],
+        // "latest":{"from":"<GC_RUN>","to":"<GC_NEWER>"}}` and `{"identities":[{"born_ns":
+        // null,"ino":"43","path":"/games/…"},{"born_ns":"1700000000000000001","ino":"42",
+        // "path":"/s/…"}],"undo_lost":["<GC_TX>"]}`, as `sha256sum` gives them.
+        let p = gc_fixture();
+        let [command, targets, selection, observed] = p.parts();
+        assert_eq!(command, r#""doctor gc""#);
+        assert_eq!(targets, format!(r#"[{{"key":"{KEY}"}}]"#));
+        assert_eq!(
+            selection,
+            format!(
+                r#"{{"deletions":[{{"kind":"client_repair","path":"/games/retail/Interface/.omaddons/snapshots/{GC_TX}.repair"}},{{"kind":"run","path":"/s/omaddons/doctor/runs/{GC_RUN}"}}],"latest":{{"from":"{GC_RUN}","to":"{GC_NEWER}"}}}}"#
+            )
+        );
+        assert_eq!(
+            observed,
+            format!(
+                r#"{{"identities":[{{"born_ns":null,"ino":"43","path":"/games/retail/Interface/.omaddons/snapshots/{GC_TX}.repair"}},{{"born_ns":"1700000000000000001","ino":"42","path":"/s/omaddons/doctor/runs/{GC_RUN}"}}],"undo_lost":["{GC_TX}"]}}"#
+            )
+        );
+        assert_eq!(
+            p.token(),
+            "pc1:e77ba9a468492504101f35106b64b5cff5e2b38d2d3e89a8e3f937f9671cd7f3"
+        );
+        assert!(is_token(&p.token()));
+    }
+
+    #[test]
+    fn the_gc_token_ignores_input_order() {
+        let mut victims = gc_victims();
+        victims.reverse();
+        let lost: Vec<TxId> = ["01JB8Q2VA00000000000000004", GC_TX]
+            .iter()
+            .map(|t| t.parse().unwrap())
+            .collect();
+        let mut reversed = lost.clone();
+        reversed.reverse();
+        assert_eq!(
+            gc_token(&victims, Some(&gc_latest()), &reversed).token(),
+            gc_token(&gc_victims(), Some(&gc_latest()), &lost).token()
+        );
+    }
+
+    #[test]
+    fn gc_token_parts_change_as_expected() {
+        use crate::doctor::gc::{DeletionKind, Victim};
+        let field = |t: &str, n: usize| t[4 + 16 * n..4 + 16 * (n + 1)].to_owned();
+        let base = gc_fixture().token();
+        let lost = [GC_TX.parse::<TxId>().unwrap()];
+        let latest = gc_latest();
+        let victims = gc_victims();
+        let mut added = victims.clone();
+        added.push(Victim {
+            kind: DeletionKind::CacheQuarantine,
+            path: format!("/k/omaddons/quarantine/{GC_RUN}").into(),
+            identity: victims[0].identity,
+            client: None,
+        });
+        let mut new_inode = victims.clone();
+        new_inode[0].identity.ino = 99;
+        let mut moved_device = victims.clone();
+        moved_device[0].identity.dev = 8;
+        let mut with_client = victims.clone();
+        with_client[0].client = Some(key("01JB8Q2V9W0000000000000001"));
+        let other_latest = LatestChange {
+            from: Some(GC_RUN.to_owned()),
+            to: None,
+        };
+        let more_lost = [lost[0], "01JB8Q2VA00000000000000004".parse().unwrap()];
+        // Parts: 0 command, 1 targets, 2 selection, 3 observed.
+        let cases: [(&str, Precondition, [bool; 4]); 8] = [
+            (
+                "victim_added",
+                gc_token(&added, Some(&latest), &lost),
+                [false, false, true, true],
+            ),
+            (
+                "victim_removed",
+                gc_token(&victims[..1], Some(&latest), &lost),
+                [false, true, true, true],
+            ),
+            (
+                "same_path_new_inode",
+                gc_token(&new_inode, Some(&latest), &lost),
+                [false, false, false, true],
+            ),
+            (
+                "another_device_alone",
+                gc_token(&moved_device, Some(&latest), &lost),
+                [false, false, false, false],
+            ),
+            (
+                "latest_changed",
+                gc_token(&victims, Some(&other_latest), &lost),
+                [false, false, true, false],
+            ),
+            (
+                "latest_left",
+                gc_token(&victims, None, &lost),
+                [false, false, true, false],
+            ),
+            (
+                "undo_lost_grew",
+                gc_token(&victims, Some(&latest), &more_lost),
+                [false, false, false, true],
+            ),
+            (
+                "a_halfs_client_added",
+                gc_token(&with_client, Some(&latest), &lost),
+                [false, true, false, false],
+            ),
+        ];
+        for (case, p, want) in cases {
+            let token = p.token();
+            let moved: Vec<bool> = (0..4)
+                .map(|n| field(&token, n) != field(&base, n)) // ubs:ignore — public digest fields in a token-format test
+                .collect();
+            assert_eq!(moved, want, "{case}: {token} against {base}");
+        }
+        // Sizes and `may_hold_only_copy` are no part of it: the parts take neither.
+        assert_eq!(gc_fixture().token(), base, "the same parts, the same token");
+    }
+
     #[test]
     fn a_fixture_token_never_drifts() {
         // The fields are the first 8 bytes of the SHA-256 of `"remove"`,
@@ -1978,6 +2219,7 @@ mod tests {
             ("of_remove", of_remove(&remove_plan(Some(key(KEY))))),
             ("of_plan", inputs().precondition()),
             ("of_doctor_fix", of_bound_repair(&bound_repair())),
+            ("of_gc", gc_fixture()),
         ];
         for (name, p) in pinned {
             assert_eq!(token_of_parts(&p.part_values()), p.token(), "{name}");

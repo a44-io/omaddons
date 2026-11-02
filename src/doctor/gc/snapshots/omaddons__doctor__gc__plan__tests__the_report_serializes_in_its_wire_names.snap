@@ -1,0 +1,56 @@
+---
+source: src/doctor/gc/plan.rs
+assertion_line: 1426
+expression: value
+---
+{
+  "before": "2026-10-31T00:00:00Z",
+  "deletions": [
+    {
+      "bytes": 10,
+      "kind": "cache_quarantine",
+      "may_hold_only_copy": false,
+      "path": "/k/omaddons/quarantine/2026-10-21T00-00-00Z__01M5DW3X000000000000000001",
+      "run_id": "2026-10-21T00-00-00Z__01M5DW3X000000000000000001",
+      "target": null,
+      "tx": "01M5DW3X000000000000000001"
+    },
+    {
+      "bytes": 10,
+      "kind": "client_repair",
+      "may_hold_only_copy": false,
+      "path": "/games/retail/Interface/.omaddons/snapshots/01M5DW3X000000000000000001.repair",
+      "run_id": "2026-10-21T00-00-00Z__01M5DW3X000000000000000001",
+      "target": {
+        "id": "retail",
+        "key": "00000000010000000000000001"
+      },
+      "tx": "01M5DW3X000000000000000001"
+    },
+    {
+      "bytes": 10,
+      "kind": "run",
+      "may_hold_only_copy": true,
+      "path": "/s/omaddons/doctor/runs/2026-10-21T00-00-00Z__01M5DW3X000000000000000001",
+      "run_id": "2026-10-21T00-00-00Z__01M5DW3X000000000000000001",
+      "target": null,
+      "tx": "01M5DW3X000000000000000001"
+    }
+  ],
+  "dry_run": false,
+  "excluded": [
+    {
+      "kind": "backup",
+      "path": "/s/omaddons/doctor/runs/2026-10-20T00-00-00Z__01M5B9Q6000000000000000002/backups/2",
+      "pin": "active_undo",
+      "run_id": "2026-10-20T00-00-00Z__01M5B9Q6000000000000000002"
+    }
+  ],
+  "latest": {
+    "from": "2026-10-21T00-00-00Z__01M5DW3X000000000000000001",
+    "to": null
+  },
+  "precondition": null,
+  "remaining": 0,
+  "undo_lost": []
+}

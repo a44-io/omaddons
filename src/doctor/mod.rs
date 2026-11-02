@@ -12,10 +12,12 @@ pub mod finding;
 pub mod fix;
 pub mod fix_runtime;
 pub mod fixers;
+pub mod gc;
 pub mod online;
 pub mod plan;
 pub mod registry;
 pub mod report;
+pub mod runs;
 pub mod runtime;
 pub mod selection;
 #[cfg(debug_assertions)]

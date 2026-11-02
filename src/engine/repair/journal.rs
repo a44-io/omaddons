@@ -374,6 +374,14 @@ impl ParsedRepair {
     }
 }
 
+/// The repair whose client-side half a `<meta>/snapshots/` entry is: exactly a
+/// transaction id as it is written, then [`REPAIR_SUFFIX`] (`<ULID>.repair`), nothing
+/// else. With [`list`], the only parser of repair names (M4-D31).
+pub fn half_tx(name: &str) -> Option<TxId> {
+    let id = name.strip_suffix(REPAIR_SUFFIX)?;
+    id.parse::<TxId>().ok().filter(|tx| tx.to_string() == id)
+}
+
 /// Reads and parses one repair journal of `paths`, [checked](ParsedRepair::checked).
 pub fn read(paths: &Paths, path: &Path) -> Result<ParsedRepair> {
     let bytes = std::fs::read(path)
@@ -517,6 +525,25 @@ mod tests {
 
     fn tx() -> TxId {
         "01JB8Q2VA00000000000000003".parse().unwrap()
+    }
+
+    #[test]
+    fn half_tx_recognizes_exactly_ulid_dot_repair() {
+        let id = tx().to_string();
+        let lower = id.to_lowercase();
+        for (case, name, want) in [
+            ("ulid_dot_repair", format!("{id}.repair"), Some(tx())),
+            ("bare_ulid", id.clone(), None),
+            ("wtf_suffix", format!("{id}.wtf"), None),
+            ("journal_name", format!("{id}.repair.jsonl"), None),
+            ("not_an_id", "x.repair".to_owned(), None),
+            ("suffix_alone", ".repair".to_owned(), None),
+            ("suffix_in_another_case", format!("{id}.Repair"), None),
+            ("id_in_lowercase", format!("{lower}.repair"), None),
+            ("trailing_slash", format!("{id}.repair/"), None),
+        ] {
+            assert_eq!(half_tx(&name), want, "{case}: half_tx({name:?})");
+        }
     }
 
     fn planned(fm: &'static str, fix: Fix) -> PlannedFix {

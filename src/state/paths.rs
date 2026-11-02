@@ -530,9 +530,14 @@ impl Paths {
         self.cache.join("trash")
     }
 
+    /// Where doctor runs set aside what they take from the cache, one folder per run.
+    pub fn cache_quarantine_dir(&self) -> PathBuf {
+        self.cache.join("quarantine")
+    }
+
     /// What one doctor run set aside from the cache (`<cache>/quarantine/<run_id>`).
     pub fn cache_quarantine(&self, run_id: &str) -> PathBuf {
-        self.cache.join("quarantine").join(run_id)
+        self.cache_quarantine_dir().join(run_id)
     }
 }
 
@@ -610,24 +615,26 @@ impl ClientPaths {
             .join(format!("{tx}{WTF_SUFFIX}"))
     }
 
+    /// `<client dir>/Interface/.omaddons/snapshots`: every transaction's client-side
+    /// snapshots, and the repairs' halves.
+    pub fn snapshots_dir(&self) -> PathBuf {
+        self.meta_dir().join("snapshots")
+    }
+
     /// AddOns and SavedVariables snapshots of one transaction.
     pub fn snapshots(&self, tx: &TxId) -> PathBuf {
-        self.meta_dir().join("snapshots").join(tx.to_string())
+        self.snapshots_dir().join(tx.to_string())
     }
 
     /// The snapshots of a transaction that puts settings back, whose `WTF.previous` a
     /// pre-M3 build's orphan sweep would take ([`WTF_SUFFIX`]).
     pub fn snapshots_wtf(&self, tx: &TxId) -> PathBuf {
-        self.meta_dir()
-            .join("snapshots")
-            .join(format!("{tx}{WTF_SUFFIX}"))
+        self.snapshots_dir().join(format!("{tx}{WTF_SUFFIX}"))
     }
 
     /// The client-side half of a doctor repair's snapshots ([`REPAIR_SUFFIX`]).
     pub fn snapshots_repair(&self, tx: &TxId) -> PathBuf {
-        self.meta_dir()
-            .join("snapshots")
-            .join(format!("{tx}{REPAIR_SUFFIX}"))
+        self.snapshots_dir().join(format!("{tx}{REPAIR_SUFFIX}"))
     }
 
     /// A flatten's provisional AddOns folder ([`FLATTEN_PREFIX`]).

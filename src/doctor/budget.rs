@@ -72,6 +72,18 @@ impl Budget {
         Self::new(deadline, DOCTOR_SCAN_MAX_ENTRIES)
     }
 
+    /// At most `max_entries` entries and no deadline: for a reader whose answer must not
+    /// depend on timing (`doctor gc`'s retention plan, which a preview and its bound run
+    /// compute in two processes and compare).
+    pub fn entries_only(max_entries: u64) -> Self {
+        Self {
+            deadline: None,
+            max_entries,
+            used: 0,
+            exhausted: None,
+        }
+    }
+
     /// No limit at all.
     pub fn unlimited() -> Self {
         Self {
