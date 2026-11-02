@@ -1034,6 +1034,70 @@ pub mod plant {
         let target = fs::read_link(home.state().join("doctor/latest")).ok()?;
         target.file_name()?.to_str().map(str::to_owned)
     }
+
+    /// The ref [`records_for_sources`] installs for `source`, and the one folder its
+    /// archive holds.
+    pub fn probe_ref(source: omaddons::sources::SourceId) -> (&'static str, &'static str) {
+        use omaddons::sources::SourceId;
+        match source {
+            SourceId::Github => ("gh:f7probe/Probe", "Probe"),
+            SourceId::Wowi => ("wowi:5995", "WowiProbe"),
+            SourceId::Tukui => ("tukui:elvui", "TukuiProbe"),
+            SourceId::Wowace => ("wowace:bug-grabber", "WowAceProbe"),
+            other => panic!("{other:?} is never probed"), // ubs:ignore — fails the test
+        }
+    }
+
+    /// A record on retail for each of `sources`, installed offline from a local archive
+    /// as that source's ref (`install <ref> --file <zip> -t retail --offline`), so no
+    /// request is made: one folder each, with a TOC retail loads.
+    pub fn records_for_sources(home: &Home, sources: &[omaddons::sources::SourceId]) {
+        for source in sources {
+            let (r, folder) = probe_ref(*source);
+            let zip = local_zip(home, folder);
+            must(
+                home,
+                &["install", r, "--file", &zip, "-t", "retail", "--offline"],
+            );
+        }
+    }
+
+    /// A one-folder archive `<root>/dl/<folder>.zip` retail loads; its path.
+    pub fn local_zip(home: &Home, folder: &str) -> String {
+        let dl = home.env.root().join("dl");
+        fs::create_dir_all(&dl).unwrap();
+        let zip = dl.join(format!("{folder}.zip"));
+        let toc = "## Interface: 120105\n## Version: 1\n";
+        fs::write(&zip, zip_text(&[(&format!("{folder}/{folder}.toc"), toc)])).unwrap();
+        zip.display().to_string()
+    }
+
+    /// `<config>/omaddons/credentials/github`.
+    pub fn token_file(home: &Home) -> PathBuf {
+        home.env.config().join("omaddons/credentials/github")
+    }
+
+    /// The fake `token` stored as `auth github set` leaves it: mode 0600 in a 0700
+    /// directory, written by hand (plain writes, no omaddons command).
+    pub fn stored_token(home: &Home, token: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let file = token_file(home);
+        let dir = file.parent().unwrap();
+        fs::create_dir_all(dir).unwrap();
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(&file, format!("{token}\n")).unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+        file
+    }
+
+    /// `fm-secrets-credential-file-mode` (P2, machine, `path=<config>/omaddons/
+    /// credentials/github`): a fake stored token other users can read (0644).
+    pub fn credential_file_mode(home: &Home) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let file = stored_token(home, "ghp_F7MODE0000000000000000000000000000000");
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+        file
+    }
 }
 
 /// Subjects for the doctor's three test-only fixers (s2 of `doctor fix`): registered only
@@ -1138,6 +1202,174 @@ pub mod test_fixers {
     pub fn register(home: &Home, target: &str) {
         let run = home.run(&["targets", "default", target]);
         assert_eq!(run.code, 0, "registering {target}\n{}", run.context());
+    }
+}
+
+/// Recorded answers for the doctor's online probes (`doctor --online`), written into a
+/// home's replay scenario for exactly the request each check sends: the request builders
+/// are the doctor's own (`online::project_probe`, `github_rest::rate_limit_request`), so a
+/// fixture never names another URL or method. A probe with no fixture is the replay
+/// transport's `internal` error: the check is then `unanswered`, never a real request.
+pub mod probes {
+    use omaddons::doctor::online::{PROBED, PURPOSE, project_probe};
+    use omaddons::model::Ref;
+    use omaddons::sources::SourceId;
+    use omaddons::sources::github_rest::rate_limit_request;
+    use omaddons::state::paths::Paths;
+    use omaddons::state::records::load_record;
+    use omaddons::state::registry::load_registry;
+
+    use super::plant::probe_ref;
+    use crate::common::home::Home;
+    use crate::common::http::{Resp, fixture_method, paths};
+
+    /// What a recorded answer is for, as a scenario logs it.
+    #[derive(Debug, Clone, serde::Serialize)]
+    pub struct Answer {
+        pub method: String,
+        pub url: String,
+        pub status: u16,
+    }
+
+    /// The `/rate_limit` request both GitHub rows send.
+    pub fn rate_limit_url() -> String {
+        rate_limit_request(PURPOSE).url
+    }
+
+    /// `/rate_limit` answered 200 with the core budget `limit`, `remaining` and `reset`
+    /// (epoch seconds), in GitHub's shape.
+    pub fn rate_limit(home: &Home, limit: u64, remaining: u64, reset: i64) -> Answer {
+        let used = limit.saturating_sub(remaining);
+        let core = serde_json::json!({
+            "limit": limit, "remaining": remaining, "reset": reset, "used": used,
+            "resource": "core",
+        });
+        let body = serde_json::json!({
+            "resources": {"core": core, "search": {"limit": 10, "remaining": 10, "reset": reset, "used": 0, "resource": "search"}},
+            "rate": core,
+        });
+        write(
+            home,
+            "doctor-rate-limit",
+            "GET",
+            &rate_limit_url(),
+            Resp::ok(body.to_string()).header("content-type", "application/json"),
+        )
+    }
+
+    /// `/rate_limit` answered `status` with `headers` (a 401, a 403 with
+    /// `x-ratelimit-remaining: 0`, a 500), and `body` when given (`not json`).
+    pub fn rate_limit_status(
+        home: &Home,
+        status: u16,
+        headers: &[(&str, &str)],
+        body: Option<&str>,
+    ) -> Answer {
+        let mut resp = Resp::status(status);
+        for (name, value) in headers {
+            resp = resp.header(name, value);
+        }
+        resp.body = body.map(|b| b.as_bytes().to_vec());
+        write(home, "doctor-rate-limit", "GET", &rate_limit_url(), resp)
+    }
+
+    /// `source`'s probe of the project [`super::plant::records_for_sources`] plants,
+    /// answered `status`: [`healthy`] for its usual answer.
+    pub fn source(home: &Home, source: SourceId, status: u16) -> Answer {
+        let project: Ref = probe_ref(source).0.parse().unwrap();
+        project_answer(home, &project, status)
+    }
+
+    /// The usual healthy status of each source's probe.
+    pub const fn healthy(source: SourceId) -> u16 {
+        match source {
+            SourceId::Github => 302,
+            SourceId::Wowace => 207,
+            _ => 200,
+        }
+    }
+
+    /// The probe of `project` answered `status`: a healthy status with the source's usual
+    /// answer (GitHub's redirect to its tag, WoWInterface's details, Tukui's list,
+    /// WowAce's multistatus), any other status with an empty body.
+    pub fn project_answer(home: &Home, project: &Ref, status: u16) -> Answer {
+        let req = project_probe(project).expect("a probed source's ref");
+        let source = SourceId::of(project);
+        let mut resp = Resp::status(status);
+        // ubs:ignore — two HTTP statuses, not a secret
+        if status == healthy(source) {
+            resp = match source {
+                SourceId::Github => resp.header("location", &req.url.replace("/latest", "/tag/v1")),
+                SourceId::Wowi => {
+                    let id = req
+                        .url
+                        .rsplit('/')
+                        .next()
+                        .unwrap()
+                        .trim_end_matches(".json");
+                    Resp::ok(format!(r#"[{{"UID":"{id}","UIName":"Probe"}}]"#))
+                }
+                SourceId::Tukui => Resp::ok("[]"),
+                SourceId::Wowace => {
+                    let mut multistatus = Resp::status(207);
+                    multistatus.body = Some(
+                        br#"<?xml version="1.0" encoding="utf-8"?><D:multistatus xmlns:D="DAV:"></D:multistatus>"#
+                            .to_vec(),
+                    );
+                    multistatus
+                }
+                _ => resp,
+            };
+        }
+        let name = format!("doctor-probe-{}", source.wire());
+        write(home, &name, req.method.as_str(), &req.url, resp)
+    }
+
+    /// A healthy `/rate_limit` (60, 59 left) and a healthy answer to every probe the
+    /// home's records call for: the first addon of each source by (target id, addon key),
+    /// as the detector picks it.
+    pub fn serve_healthy(home: &Home) -> Vec<Answer> {
+        let mut answers = vec![rate_limit(home, 60, 59, 1_767_225_600)];
+        for project in first_projects(&paths(&home.env)) {
+            let source = SourceId::of(&project);
+            answers.push(project_answer(home, &project, healthy(source)));
+        }
+        answers
+    }
+
+    /// The project each probed source is asked about on the machine under `paths`.
+    pub fn first_projects(paths: &Paths) -> Vec<Ref> {
+        let registry = load_registry(paths).map(|r| r.value).unwrap_or_default();
+        let mut addons: Vec<(String, String, Ref)> = Vec::new();
+        for target in &registry.targets {
+            let Ok(record) = load_record(paths, &target.key) else {
+                continue;
+            };
+            for (key, addon) in &record.value.addons {
+                addons.push((target.id.clone(), key.clone(), addon.r#ref.clone()));
+            }
+        }
+        addons.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+        PROBED
+            .into_iter()
+            .filter_map(|source| {
+                addons
+                    .iter()
+                    // ubs:ignore — two source ids, not a secret
+                    .find(|(_, _, r)| SourceId::of(r) == source)
+                    .map(|(_, _, r)| r.clone())
+            })
+            .collect()
+    }
+
+    fn write(home: &Home, name: &str, method: &str, url: &str, resp: Resp) -> Answer {
+        let status = resp.status;
+        fixture_method(&home.http, name, method, url, &[resp]);
+        Answer {
+            method: method.to_owned(),
+            url: url.to_owned(),
+            status,
+        }
     }
 }
 

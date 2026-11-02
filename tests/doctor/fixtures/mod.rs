@@ -11,6 +11,9 @@ pub mod fm_concurrency_primitives_journal_unexpected_state;
 pub mod fm_concurrency_primitives_journal_unreadable;
 pub mod fm_concurrency_primitives_journal_waits_for_game;
 pub mod fm_concurrency_primitives_lock_held_long;
+pub mod fm_network_credential_rejected;
+pub mod fm_network_github_rate_limited;
+pub mod fm_network_source_unreachable;
 pub mod fm_state_files_check_incomplete;
 pub mod fm_state_files_detector_crashed;
 pub mod fm_test_flatten;
@@ -39,6 +42,9 @@ pub fn all() -> Vec<Box<dyn Fixture>> {
         Box::new(fm_concurrency_primitives_journal_unreadable::JournalUnreadable::default()),
         Box::new(fm_concurrency_primitives_journal_waits_for_game::JournalWaitsForGame::default()),
         Box::new(fm_concurrency_primitives_lock_held_long::LockHeldLong::default()),
+        Box::new(fm_network_credential_rejected::CredentialRejected),
+        Box::new(fm_network_github_rate_limited::GithubRateLimited),
+        Box::new(fm_network_source_unreachable::SourceUnreachable),
         Box::new(fm_state_files_check_incomplete::CheckIncomplete),
         Box::new(fm_state_files_detector_crashed::DetectorCrashed),
     ]
@@ -79,6 +85,21 @@ pub fn found_ids_with(home: &Home, args: &[String], env: &[(&str, &str)]) -> Vec
         .flatten()
         .filter_map(|f| f["id"].as_str().map(str::to_owned))
         .collect()
+}
+
+/// An online fixture's `assert_healthy`: `doctor --online --json --only <id>` exits 0
+/// with no finding at all. Under `--online` the run appends `net.log` lines, which F9's
+/// tree comparisons exclude (§6.15); the line count is returned for the caller to check.
+pub fn assert_online_clean(home: &Home, id: &str) -> usize {
+    let before = crate::common::netlog::net_log(home).len();
+    let argv: Vec<String> = ["doctor", "--json", "--online", "--only", id]
+        .map(str::to_owned)
+        .to_vec();
+    let run = home.exec(&argv);
+    let envelope = crate::common::doctor::check_envelope(&run.stdout, &run.stderr, run.code);
+    assert_eq!(run.code, 0, "{id}: {envelope:#}");
+    assert_eq!(envelope["findings"], serde_json::json!([]), "{id}");
+    crate::common::netlog::net_log(home).len() - before
 }
 
 /// The transaction a journal fixture planted, once its `corrupt` ran.

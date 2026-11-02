@@ -12,7 +12,7 @@
 
 use crate::doctor::budget::Budget;
 use crate::doctor::finding::{Confidence, Detected, Evidence, Observation, SecretOrigin, Subject};
-use crate::doctor::online::{Online, PURPOSE, Probe};
+use crate::doctor::online::{Online, PROBED, PURPOSE, Probe, probe_host, project_probe};
 use crate::doctor::selection::Selection;
 use crate::doctor::view::DoctorView;
 use crate::error::ErrorCode;
@@ -21,7 +21,6 @@ use crate::net::Request;
 use crate::politeness::GITHUB_REST_RESERVE;
 use crate::sources::SourceId;
 use crate::sources::github_rest::{RateLimit, parse_rate_limit, rate_limit_request};
-use crate::sources::{tukui, wowace, wowi};
 
 /// Every `evidence.reason` these checks give: the credential's (`rejected`,
 /// `unresolvable`) and a source's (`no_answer`, `server_error`, `too_many_requests`).
@@ -32,30 +31,6 @@ pub(crate) const REASONS: [&str; 5] = [
     "too_many_requests",
     "unresolvable",
 ];
-
-/// The sources `source-unreachable` asks, in the order it asks them. `git` runs a
-/// subprocess the doctor never starts, `local` and `url` have no API to ask (a `url:`
-/// archive sits on an allowlisted host GitHub's probe covers), and CurseForge and Wago
-/// arrive in M5.
-const PROBED: [SourceId; 4] = [
-    SourceId::Github,
-    SourceId::Wowi,
-    SourceId::Tukui,
-    SourceId::Wowace,
-];
-
-/// The host each probed source is asked on.
-const fn host_of(source: SourceId) -> &'static str {
-    match source {
-        SourceId::Github => "github.com",
-        SourceId::Wowi => "api.mmoui.com",
-        SourceId::Tukui => "api.tukui.org",
-        SourceId::Wowace => "repos.wowace.com",
-        SourceId::Git | SourceId::Url | SourceId::Local | SourceId::Curseforge | SourceId::Wago => {
-            ""
-        }
-    }
-}
 
 /// `/rate_limit` as a probe, with the token when one resolves (`None` when none is
 /// configured); `Err` when a configured one cannot be had.
@@ -233,25 +208,6 @@ fn projects(view: &DoctorView) -> Vec<(SourceId, Ref)> {
         .collect()
 }
 
-/// The cheap request that asks `source` about `project`: GitHub's `releases/latest`
-/// (answered with a redirect), WoWInterface's file details, Tukui's list, WowAce's tag
-/// list.
-fn probe_request(project: &Ref) -> Option<Request> {
-    Some(match project {
-        Ref::GitHub { owner, repo } => {
-            Online::get(format!("https://github.com/{owner}/{repo}/releases/latest"))
-        }
-        Ref::Wowi { id } => Online::get(format!("{}/{id}.json", wowi::DETAILS_URL)),
-        Ref::Tukui { .. } => Online::get(tukui::LIST_URL),
-        Ref::WowAce { slug, .. } => Online::propfind(format!("{}/{slug}/tags/", wowace::REPOS)),
-        Ref::Git { .. }
-        | Ref::Url { .. }
-        | Ref::File { .. }
-        | Ref::CurseForge { .. }
-        | Ref::Wago { .. } => return None,
-    })
-}
-
 /// `source-unreachable`: one request to each enabled source an installed addon comes
 /// from (GitHub, WoWInterface, Tukui, WowAce, in that order), for its first project. An
 /// answer below 500 other than a 429 is an answer, a 404 included (a project that is
@@ -273,13 +229,13 @@ pub(crate) fn source_unreachable(
         if !online.enabled(source) {
             continue;
         }
-        let Some(req) = probe_request(&project) else {
+        let Some(req) = project_probe(&project) else {
             continue;
         };
         if budget.check().is_err() {
             return Detected::cut_short(found, budget);
         }
-        let host = host_of(source);
+        let host = probe_host(source);
         let (reason, http_status, confidence) = match online.send(req, budget) {
             Probe::OutOfTime => return out_of_time(found, budget),
             Probe::Answered { status: 429, .. } => {
@@ -357,7 +313,7 @@ pub(crate) mod tests {
             "wowace:bug-grabber",
             "wowace:bug-grabber#r152",
         ] {
-            urls.push(probe_request(&r.parse().unwrap()).unwrap().url);
+            urls.push(project_probe(&r.parse().unwrap()).unwrap().url);
         }
         urls
     }
@@ -1066,7 +1022,7 @@ pub(crate) mod tests {
                 let source = obs.evidence.source.unwrap();
                 assert_eq!(
                     obs.evidence.host.as_deref(),
-                    Some(host_of(source)),
+                    Some(probe_host(source)),
                     "{}",
                     case.name
                 );
@@ -1151,7 +1107,7 @@ pub(crate) mod tests {
                 found[0].remediation.command,
                 format!(
                     "check this machine's network connection and {}, then run the online checks again later",
-                    host_of(source)
+                    probe_host(source)
                 )
             );
             assert_eq!(found[0].remediation.argv, None);

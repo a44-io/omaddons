@@ -2309,3 +2309,57 @@ mod compat_harness {
         );
     }
 }
+
+/// A `PROPFIND` fixture is matched by its method: the replay transport answers a
+/// `PROPFIND` of its URL, and has no fixture for a `GET` of it.
+#[test]
+fn fixture_method_writes_a_propfind_fixture() {
+    use common::http::{Resp, fixture_method};
+    use omaddons::net::replay::ReplayTransport;
+    use omaddons::net::{Http, Request};
+    let dir = tempfile::tempdir().unwrap();
+    let url = "https://repos.wowace.com/wow/x/tags/";
+    fixture_method(dir.path(), "tags", "PROPFIND", url, &[Resp::status(207)]);
+    let replay = ReplayTransport::load(dir.path()).unwrap();
+    let answer = replay
+        .send(Request::propfind_version_names(url, "test"))
+        .unwrap();
+    assert_eq!(answer.status, 207);
+    let get = replay.send(Request::get(url, "test"));
+    assert!(get.is_err(), "a GET of a PROPFIND fixture has no answer");
+}
+
+/// Each `probes` helper writes its fixture for exactly the request the doctor builds: the
+/// replay transport over the home's scenario answers the doctor's own request builders
+/// (`/rate_limit` and every probed source's project probe) with the status given.
+#[test]
+fn probes_write_the_exact_requests_the_detectors_send() {
+    use common::doctor::{plant, probes};
+    use common::home::Home;
+    use omaddons::doctor::online::{PROBED, PURPOSE, project_probe};
+    use omaddons::net::Http;
+    use omaddons::net::replay::ReplayTransport;
+    use omaddons::sources::github_rest::rate_limit_request;
+    let home = Home::new(&["wow"]);
+    probes::rate_limit(&home, 60, 2, 1_767_225_600);
+    let replay = ReplayTransport::load(&home.http).unwrap();
+    let answer = replay
+        .send(rate_limit_request(PURPOSE).manual_redirects())
+        .unwrap();
+    assert_eq!(answer.status, 200);
+    let body = answer.bytes().unwrap();
+    assert_eq!(
+        omaddons::sources::github_rest::parse_rate_limit(&body).map(|r| (r.limit, r.remaining)),
+        Some((60, 2))
+    );
+    for source in PROBED {
+        for status in [probes::healthy(source), 503, 429] {
+            probes::source(&home, source, status);
+            let replay = ReplayTransport::load(&home.http).unwrap();
+            let project = plant::probe_ref(source).0.parse().unwrap();
+            let request = project_probe(&project).unwrap();
+            let answer = replay.send(request).unwrap();
+            assert_eq!(answer.status, status, "{source:?}");
+        }
+    }
+}

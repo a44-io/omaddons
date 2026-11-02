@@ -3209,6 +3209,7 @@ An interrupted `WTF/` restore adds three cases. While its game runs, it waits (`
 
 The README describes the intended behaviour. A place where the code at HEAD does not match it yet is listed here with its bead (`br show <id>`), and the README changes only if a fix decides otherwise.
 
+- **`doctor fix` exits 0 with findings it did not repair left** (`omad-qunc`). A real run whose repairs all verify ends `DONE_OK`, exit 0, even when its `findings` still hold findings it does not repair (a manual one, such as a token GitHub rejects). [`doctor fix`](#doctor-fix) promises exit 1 then. Read `findings`, not only the exit code.
 - **A forget that no longer applies is reported as `not_managed`** (`omad-z60g`). When every folder of an addon was deleted by hand, `remove` forgets it. If one of those folders is put back in the instant between that plan and the commit lock, the run changes nothing, which is right. It then fails `not_managed`, "Foo is no longer managed in retail", although Foo is still managed and its folder is back. Run `remove` again to remove the folder. A run bound to its preview is refused correctly, as `plan_stale` with `selection`.
 
 ---

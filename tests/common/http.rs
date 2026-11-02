@@ -95,6 +95,11 @@ pub fn gzip_bytes(bytes: &[u8]) -> Vec<u8> {
 /// Replay restarts every sequence in each process, so a sequence never spans two CLI
 /// runs; scenarios spanning commands switch fixture sets with `Home::scenario`.
 pub fn fixture_seq(scenario: &Path, name: &str, url: &str, responses: &[Resp]) {
+    fixture_method(scenario, name, "GET", url, responses);
+}
+
+/// [`fixture_seq`] for a request of `method` (`PROPFIND`, as WowAce's tag list is asked).
+pub fn fixture_method(scenario: &Path, name: &str, method: &str, url: &str, responses: &[Resp]) {
     let dir = scenario.join(host_of(url));
     fs::create_dir_all(&dir).unwrap();
     let responses: Vec<serde_json::Value> = responses
@@ -115,7 +120,7 @@ pub fn fixture_seq(scenario: &Path, name: &str, url: &str, responses: &[Resp]) {
         .collect();
     let doc = json!({
         "schema_version": "1.0",
-        "request": {"method": "GET", "url": url},
+        "request": {"method": method, "url": url},
         "responses": responses,
     });
     fs::write(dir.join(format!("{name}.json")), doc.to_string()).unwrap();

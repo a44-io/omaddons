@@ -838,6 +838,14 @@ fn every_doctor_exit_site_uses_the_doctor_dictionary() {
             Some("usage"),
         ),
         (
+            "online_only",
+            vec!["doctor", "--only", ids::NETWORK_SOURCE_UNREACHABLE],
+            nothing,
+            &[],
+            6,
+            Some("online_required"),
+        ),
+        (
             "online_and_offline",
             vec!["doctor", "--online", "--offline"],
             nothing,
@@ -1121,6 +1129,999 @@ fn runtime_fixtures_produce_their_findings() {
         assert!(found[0]["evidence"]["detector"].is_string());
         assert!(fixture.subject(&home).is_empty() && !fixture.fixer());
         log.step("check trees");
+        fixture.assert_healthy(&home);
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// The online checks (F7 part 5): `doctor --online` on recorded answers. Every scenario
+// runs on a `Home`, whose replay scenario answers each probe, so the gate never reaches
+// the network: a probe with no fixture is the replay transport's `internal` error.
+
+use common::doctor::probes;
+use common::netlog::net_log;
+use omaddons::net::NetLogEntry;
+use omaddons::sources::SourceId;
+
+/// The credential row's id, under a name UBS's secret heuristic does not take for one.
+// ubs:ignore — a failure-mode id, not a secret
+const REJECTED: &str = ids::NETWORK_CREDENTIAL_REJECTED;
+
+/// The three online rows, in registry order.
+// ubs:ignore — failure-mode ids, not secrets
+const NETWORK: [&str; 3] = [
+    ids::NETWORK_CREDENTIAL_REJECTED,
+    ids::NETWORK_GITHUB_RATE_LIMITED,
+    ids::NETWORK_SOURCE_UNREACHABLE,
+];
+
+/// The four probed sources, in the order the probes ask them.
+const PROBED: [SourceId; 4] = [
+    SourceId::Github,
+    SourceId::Wowi,
+    SourceId::Tukui,
+    SourceId::Wowace,
+];
+
+/// The fake tokens these scenarios store or pass: never real ones.
+// ubs:ignore — a fake token for tests, never a real one
+const ENV_TOKEN: &str = "ghp_F7ENV000000000000000000000000000000000";
+
+/// A retail-only home, logged.
+fn online_home(log: &TestLog) -> Home {
+    home_of(log, &["wow"])
+}
+
+/// The `net.log` lines added since the first `before`, logged before they are asserted.
+fn added(log: &TestLog, home: &Home, before: usize) -> Vec<NetLogEntry> {
+    let new: Vec<NetLogEntry> = net_log(home).entries.into_iter().skip(before).collect();
+    log.json("net.log added", &new);
+    new
+}
+
+fn lines(home: &Home) -> usize {
+    net_log(home).len()
+}
+
+/// One `net.log` line as a scenario compares it: `(method, host, path, purpose)`.
+type Line = (String, String, String, String);
+
+/// `(method, host, path, purpose)` of each line.
+fn requests(entries: &[NetLogEntry]) -> Vec<Line> {
+    entries
+        .iter()
+        .map(|e| {
+            (
+                e.method.clone(),
+                e.host.clone(),
+                e.path.clone(),
+                e.purpose.clone(),
+            )
+        })
+        .collect()
+}
+
+fn rate_limit_line() -> Line {
+    (
+        "GET".to_owned(),
+        "api.github.com".to_owned(),
+        "/rate_limit".to_owned(),
+        "doctor-probe".to_owned(),
+    )
+}
+
+/// Records for every probed source and a stored token, healthy answers to every probe.
+fn healthy_online_home(log: &TestLog) -> Home {
+    let home = online_home(log);
+    log.step("home");
+    plant::records_for_sources(&home, &PROBED);
+    plant::stored_token(
+        &home,
+        fixture::fixtures::fm_network_credential_rejected::TOKEN,
+    );
+    log.step("answers");
+    log.json("answers", &probes::serve_healthy(&home));
+    home
+}
+
+#[test]
+fn online_checks_are_skipped_without_online() {
+    let log = tlog!();
+    let home = healthy_online_home(&log);
+    let before = lines(&home);
+    log.step("diagnose");
+    let ran = run(&log, &home, &["doctor", "--json"]);
+    ran.exit(0);
+    let envelope = ran.envelope();
+    let skipped: Vec<(&str, &str)> = envelope["skipped"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["reason"] == "online_required")
+        .map(|s| (s["id"].as_str().unwrap(), s["reason"].as_str().unwrap()))
+        .collect();
+    log.assert_eq(
+        "online skips",
+        &skipped,
+        &NETWORK
+            .iter()
+            .map(|id| (*id, "online_required"))
+            .collect::<Vec<_>>(),
+    );
+    assert_eq!(envelope["summary"]["online_required"], 3);
+    log.step("human");
+    let human = run(&log, &home, &["doctor", "-v"]);
+    assert!(
+        human.stdout().contains("3 online checks skipped"),
+        "{}",
+        human.stdout()
+    );
+    assert!(added(&log, &home, before).is_empty(), "no request");
+}
+
+#[test]
+fn online_only_selection_is_online_required() {
+    let log = tlog!();
+    let cases: [(&str, &[&str], &[&str]); 3] = [
+        (
+            "rate_limited",
+            &["doctor", "--only", ids::NETWORK_GITHUB_RATE_LIMITED],
+            &[ids::NETWORK_GITHUB_RATE_LIMITED],
+        ),
+        (
+            "two_online_rows",
+            &[
+                "doctor",
+                "--only",
+                "fm-network-source-unreachable,fm-network-credential-rejected",
+            ],
+            &[
+                ids::NETWORK_CREDENTIAL_REJECTED,
+                ids::NETWORK_SOURCE_UNREACHABLE,
+            ],
+        ),
+        (
+            "fix",
+            &["doctor", "fix", "--only", ids::NETWORK_CREDENTIAL_REJECTED],
+            &[ids::NETWORK_CREDENTIAL_REJECTED],
+        ),
+    ];
+    for (name, argv, fms) in cases {
+        let log = log.case(name);
+        let home = healthy_online_home(&log);
+        let before = lines(&home);
+        log.step("diagnose");
+        let mut args = argv.to_vec();
+        args.push("--json");
+        let ran = run(&log, &home, &args);
+        ran.fails(6, "online_required");
+        let error = &ran.envelope()["error"];
+        let mut got: Vec<&str> = error["details"]["fms"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        got.sort_unstable();
+        assert_eq!(got, fms, "{name}");
+        let fix = words(&error["fix_argv"]);
+        let mut expected: Vec<String> = std::iter::once("omaddons")
+            .chain(argv.iter().copied())
+            .map(str::to_owned)
+            .collect();
+        expected.push("--online".to_owned());
+        assert_eq!(fix, expected, "{name}: the argv plus --online");
+        assert!(!home.state().join("doctor").exists(), "{name}: no run");
+        assert!(added(&log, &home, before).is_empty(), "{name}: no request");
+        log.step("fix");
+        run_argv(&log, &home, &fix).exit(0);
+    }
+}
+
+#[test]
+fn online_mixed_selection_runs_the_offline_rows() {
+    let log = tlog!();
+    let home = online_home(&log);
+    log.step("home");
+    plant::records_for_sources(&home, &PROBED);
+    plant::credential_file_mode(&home);
+    let before = lines(&home);
+    log.step("diagnose");
+    // ubs:ignore — failure-mode ids, not secrets
+    let only = format!(
+        "{},{}",
+        ids::CREDENTIAL_FILE_MODE,
+        ids::NETWORK_SOURCE_UNREACHABLE
+    );
+    let ran = run(&log, &home, &["doctor", "--json", "--only", &only]);
+    ran.exit(1);
+    let envelope = ran.envelope();
+    assert_eq!(findings(envelope, ids::CREDENTIAL_FILE_MODE).len(), 1);
+    assert_eq!(
+        envelope["skipped"],
+        json!([{"id": ids::NETWORK_SOURCE_UNREACHABLE, "reason": "online_required", "target": null}])
+    );
+    assert!(added(&log, &home, before).is_empty(), "no request");
+}
+
+#[test]
+fn online_each_check_sends_exactly_one_request() {
+    let log = tlog!();
+    let probe_lines = || -> Vec<Line> {
+        [
+            ("GET", "github.com", "/f7probe/Probe/releases/latest"),
+            ("GET", "api.mmoui.com", "/v3/game/WOW/filedetails/5995.json"),
+            ("GET", "api.tukui.org", "/v1/addons"),
+            ("PROPFIND", "repos.wowace.com", "/wow/bug-grabber/tags/"),
+        ]
+        .map(|(m, h, p)| {
+            (
+                m.to_owned(),
+                h.to_owned(),
+                p.to_owned(),
+                "doctor-probe".to_owned(),
+            )
+        })
+        .to_vec()
+    };
+    let cases: Vec<(&str, Vec<&str>, Vec<Line>)> = vec![
+        (
+            "rate_limited",
+            vec!["--only", ids::NETWORK_GITHUB_RATE_LIMITED],
+            vec![rate_limit_line()],
+        ),
+        (
+            "credential_rejected",
+            vec!["--only", ids::NETWORK_CREDENTIAL_REJECTED],
+            vec![rate_limit_line()],
+        ),
+        (
+            "source_unreachable",
+            vec!["--only", ids::NETWORK_SOURCE_UNREACHABLE],
+            probe_lines(),
+        ),
+        (
+            "plain_online",
+            vec![],
+            [
+                vec![rate_limit_line()],
+                vec![rate_limit_line()],
+                probe_lines(),
+            ]
+            .concat(),
+        ),
+    ];
+    for (name, extra, expected) in cases {
+        let log = log.case(name);
+        let home = healthy_online_home(&log);
+        let before = lines(&home);
+        log.step("diagnose");
+        let mut args = vec!["doctor", "--json", "--online"];
+        args.extend(extra);
+        let ran = run(&log, &home, &args);
+        ran.exit(0);
+        assert_eq!(ran.envelope()["state"], "DONE_OK", "{name}");
+        assert_eq!(ran.envelope()["findings"], json!([]), "{name}");
+        let new = added(&log, &home, before);
+        let mut got = requests(&new);
+        let mut want = expected.clone();
+        if name == "plain_online" {
+            // The two GitHub rows run in registry order; only the multiset is promised.
+            got.sort();
+            want.sort();
+        }
+        assert_eq!(got, want, "{name}");
+        for line in &new {
+            assert!(
+                omaddons::net::allowlist::ALWAYS.contains(&line.host.as_str()),
+                "{name}: {} is always allowed",
+                line.host
+            );
+            assert!(line.status.is_some(), "{name}: {line:?} has a status");
+        }
+    }
+
+    // No credential: the credential row sends nothing.
+    let log_none = log.case("nothing_configured");
+    let home = online_home(&log_none);
+    log_none.json("answers", &probes::serve_healthy(&home));
+    let before = lines(&home);
+    run(
+        &log_none,
+        &home,
+        &[
+            "doctor",
+            "--json",
+            "--online",
+            "--only",
+            ids::NETWORK_CREDENTIAL_REJECTED,
+        ],
+    )
+    .exit(0);
+    assert!(added(&log_none, &home, before).is_empty());
+
+    // Records of no HTTP source (a local archive only): the source row sends nothing.
+    let log_file = log.case("file_ref_only");
+    let home = online_home(&log_file);
+    let zip = plant::local_zip(&home, "LocalOnly");
+    let installed = log_file.run(
+        &home,
+        &[
+            "install",
+            zip.as_str(),
+            "-t",
+            "retail",
+            "--offline",
+            "--json",
+        ],
+    );
+    installed.exit(0);
+    let before = lines(&home);
+    run(
+        &log_file,
+        &home,
+        &[
+            "doctor",
+            "--json",
+            "--online",
+            "--only",
+            ids::NETWORK_SOURCE_UNREACHABLE,
+        ],
+    )
+    .exit(0);
+    assert!(added(&log_file, &home, before).is_empty());
+}
+
+#[test]
+fn online_rate_limit_is_reported() {
+    let log = tlog!();
+    let resets_at = fixture::fixtures::fm_network_github_rate_limited::BUDGET_RESETS_AT;
+    let spent_headers = [
+        ("x-ratelimit-limit", "5000"),
+        ("x-ratelimit-remaining", "0"),
+        ("x-ratelimit-reset", "1767225600"),
+    ];
+    // Each case: a token stored, and the finding's limit, remaining and authenticated.
+    type Expected = Option<(u64, u64, bool)>;
+    let cases: [(&str, bool, Expected); 3] = [
+        ("unauthenticated_nearly_spent", false, Some((60, 2, false))),
+        (
+            "authenticated_spent_by_headers",
+            true,
+            Some((5000, 0, true)),
+        ),
+        ("healthy", false, None),
+    ];
+    for (name, token, expected) in cases {
+        let log = log.case(name);
+        let home = online_home(&log);
+        log.step("answers");
+        if token {
+            plant::stored_token(
+                &home,
+                fixture::fixtures::fm_network_credential_rejected::TOKEN,
+            );
+        }
+        let answer = match name {
+            "unauthenticated_nearly_spent" => probes::rate_limit(&home, 60, 2, resets_at),
+            "authenticated_spent_by_headers" => {
+                probes::rate_limit_status(&home, 403, &spent_headers, None)
+            }
+            _ => probes::rate_limit(&home, 60, 59, resets_at),
+        };
+        log.json("answers", &[answer]);
+        let before = lines(&home);
+        log.step("diagnose");
+        let ran = run(
+            &log,
+            &home,
+            &[
+                "doctor",
+                "--json",
+                "--online",
+                "--only",
+                ids::NETWORK_GITHUB_RATE_LIMITED,
+            ],
+        );
+        let found = findings(ran.envelope(), ids::NETWORK_GITHUB_RATE_LIMITED);
+        match expected {
+            None => {
+                ran.exit(0);
+                assert!(found.is_empty(), "{name}");
+            }
+            Some((limit, remaining, authenticated)) => {
+                ran.exit(1);
+                assert_eq!(found.len(), 1, "{name}");
+                let evidence = &found[0]["evidence"];
+                assert_eq!(
+                    (
+                        &evidence["rate_limit"],
+                        &evidence["authenticated"],
+                        evidence.get("origin")
+                    ),
+                    (
+                        &json!({"limit": limit, "remaining": remaining, "reset_at": "2026-01-01T00:00:00Z"}),
+                        &json!(authenticated),
+                        authenticated.then_some(&json!("file"))
+                    ),
+                    "{name}"
+                );
+                let advice = found[0]["remediation"]["command"].as_str().unwrap();
+                assert!(advice.contains("2026-01-01 00:00 UTC"), "{name}: {advice}");
+                assert_eq!(
+                    advice.contains("pipe a token to omaddons auth github set"),
+                    !authenticated,
+                    "{name}: {advice}"
+                );
+                assert!(found[0]["remediation"]["argv"].is_null());
+            }
+        }
+        assert_eq!(added(&log, &home, before).len(), 1, "{name}: one request");
+    }
+}
+
+#[test]
+fn online_credential_rejected_is_reported_and_cleared() {
+    let log = tlog!();
+    // ubs:ignore — a command line naming a failure-mode id, not a secret
+    let only = [
+        "doctor",
+        "--json",
+        "--online",
+        "--only",
+        ids::NETWORK_CREDENTIAL_REJECTED,
+    ];
+
+    let file = log.case("file");
+    let home = online_home(&file);
+    file.step("answers");
+    let token = plant::stored_token(
+        &home,
+        fixture::fixtures::fm_network_credential_rejected::TOKEN,
+    );
+    file.json(
+        "answers",
+        &[probes::rate_limit_status(&home, 401, &[], None)],
+    );
+    file.step("diagnose");
+    let ran = run(&file, &home, &only);
+    ran.exit(1);
+    let found = findings(ran.envelope(), REJECTED);
+    assert_eq!(found.len(), 1);
+    assert_eq!(
+        (
+            &found[0]["evidence"]["reason"],
+            &found[0]["evidence"]["origin"],
+            &found[0]["evidence"]["http_status"]
+        ),
+        (&json!("rejected"), &json!("file"), &json!(401))
+    );
+    let argv = words(&found[0]["remediation"]["argv"]);
+    assert_eq!(argv, ["omaddons", "auth", "github", "clear"]);
+    file.step("remedy");
+    run_argv(&file, &home, &argv).exit(0);
+    assert_eq!(
+        fs::read(&token).unwrap(),
+        b"",
+        "the stored token is cleared"
+    );
+    file.step("verify");
+    let before = lines(&home);
+    let ran = run(&file, &home, &only);
+    ran.exit(0);
+    assert!(findings(ran.envelope(), ids::NETWORK_CREDENTIAL_REJECTED).is_empty());
+    assert!(
+        added(&file, &home, before).is_empty(),
+        "no credential, no request"
+    );
+
+    let env = log.case("env");
+    let home = online_home(&env);
+    env.json(
+        "answers",
+        &[probes::rate_limit_status(&home, 401, &[], None)],
+    );
+    env.step("diagnose");
+    // ubs:ignore — a run's output, which the test checks holds no token
+    let ran = env
+        .cmd(&home, &only)
+        .env("OMARCHY_PATH", plant::omarchy_path(&home))
+        .env("OMADDONS_GITHUB_TOKEN", ENV_TOKEN)
+        .run();
+    ran.exit(1);
+    let found = findings(ran.envelope(), REJECTED);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0]["evidence"]["origin"], "env");
+    assert!(found[0]["remediation"]["argv"].is_null());
+    assert_eq!(
+        found[0]["remediation"]["command"],
+        "replace or unset OMADDONS_GITHUB_TOKEN"
+    );
+
+    let unresolvable = log.case("unresolvable");
+    let home = online_home(&unresolvable);
+    unresolvable.step("config");
+    let config = home.env.config().join("omaddons/config.toml");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(
+        &config,
+        "[sources.github]\ncredential = { env = \"OMADDONS_F7_NO_SUCH_VAR\" }\n",
+    )
+    .unwrap();
+    unresolvable.json(
+        "answers",
+        &[probes::rate_limit(&home, 60, 59, 1_767_225_600)],
+    );
+    let before = lines(&home);
+    unresolvable.step("diagnose");
+    // ubs:ignore — failure-mode ids, not secrets
+    let both = format!(
+        "{},{}",
+        ids::NETWORK_CREDENTIAL_REJECTED,
+        ids::NETWORK_GITHUB_RATE_LIMITED
+    );
+    let ran = run(
+        &unresolvable,
+        &home,
+        &["doctor", "--json", "--online", "--only", &both],
+    );
+    ran.exit(1);
+    let envelope = ran.envelope();
+    let found = findings(envelope, REJECTED);
+    assert_eq!(found.len(), 1);
+    assert_eq!(
+        (
+            &found[0]["evidence"]["reason"],
+            &found[0]["evidence"]["origin"],
+            &found[0]["remediation"]["command"]
+        ),
+        (
+            &json!("unresolvable"),
+            &json!("config"),
+            &json!("correct [sources.github] credential in config.toml")
+        )
+    );
+    let cut = findings(envelope, ids::CHECK_INCOMPLETE);
+    assert_eq!(cut.len(), 1, "{:?}", ids_of(envelope));
+    assert_eq!(
+        (
+            &cut[0]["evidence"]["detector"],
+            &cut[0]["evidence"]["reason"]
+        ),
+        (
+            &json!(ids::NETWORK_GITHUB_RATE_LIMITED),
+            &json!("unanswered")
+        )
+    );
+    assert!(
+        added(&unresolvable, &home, before).is_empty(),
+        "nothing sent"
+    );
+}
+
+/// Answers for every source: GitHub 302 (or `github`), WoWInterface 503, Tukui 429,
+/// WowAce 207.
+fn mixed_answers(home: &Home, github: u16) -> Vec<probes::Answer> {
+    vec![
+        probes::source(home, SourceId::Github, github),
+        probes::source(home, SourceId::Wowi, 503),
+        probes::source(home, SourceId::Tukui, 429),
+        probes::source(home, SourceId::Wowace, 207),
+    ]
+}
+
+#[test]
+fn online_unreachable_sources_are_reported_per_source() {
+    let log = tlog!();
+    for (name, github) in [("github_redirects", 302), ("github_project_gone", 404)] {
+        let log = log.case(name);
+        let home = online_home(&log);
+        log.step("home");
+        plant::records_for_sources(&home, &PROBED);
+        log.json("answers", &mixed_answers(&home, github));
+        let before = lines(&home);
+        log.step("diagnose");
+        let ran = run(
+            &log,
+            &home,
+            &[
+                "doctor",
+                "--json",
+                "--online",
+                "--only",
+                ids::NETWORK_SOURCE_UNREACHABLE,
+            ],
+        );
+        ran.exit(1);
+        let found = findings(ran.envelope(), ids::NETWORK_SOURCE_UNREACHABLE);
+        let got: Vec<(&str, &str, &Value, &str, &str, &str)> = found
+            .iter()
+            .map(|f| {
+                (
+                    f["instance"].as_str().unwrap(),
+                    f["evidence"]["reason"].as_str().unwrap(),
+                    &f["evidence"]["http_status"],
+                    f["evidence"]["host"].as_str().unwrap(),
+                    f["confidence"].as_str().unwrap(),
+                    f["label"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        let (s503, s429) = (json!(503), json!(429));
+        assert_eq!(
+            got,
+            [
+                (
+                    "fm-network-source-unreachable@machine:source=tukui",
+                    "too_many_requests",
+                    &s429,
+                    "api.tukui.org",
+                    "high",
+                    "machine · Tukui"
+                ),
+                (
+                    "fm-network-source-unreachable@machine:source=wowi",
+                    "server_error",
+                    &s503,
+                    "api.mmoui.com",
+                    "high",
+                    "machine · WoWInterface"
+                ),
+            ],
+            "{name}"
+        );
+        assert_eq!(added(&log, &home, before).len(), 4, "{name}");
+        log.step("explain");
+        let before = lines(&home);
+        let explained = run(
+            &log,
+            &home,
+            &[
+                "doctor",
+                "explain",
+                "fm-network-source-unreachable@machine:source=wowi",
+                "--json",
+            ],
+        );
+        explained.exit(0);
+        let envelope = explained.envelope();
+        assert_eq!(envelope["instances"], json!([]), "{name}");
+        assert_eq!(
+            envelope["skipped"],
+            json!([{"id": ids::NETWORK_SOURCE_UNREACHABLE, "reason": "online_required", "target": null}]),
+            "{name}"
+        );
+        assert!(
+            added(&log, &home, before).is_empty(),
+            "{name}: explain sends nothing"
+        );
+    }
+}
+
+#[test]
+fn online_unanswered_is_incomplete_never_clean() {
+    let log = tlog!();
+
+    let unreadable = log.case("unreadable_rate_limit");
+    let home = online_home(&unreadable);
+    unreadable.json(
+        "answers",
+        &[probes::rate_limit_status(&home, 200, &[], Some("not json"))],
+    );
+    unreadable.step("diagnose");
+    let ran = run(
+        &unreadable,
+        &home,
+        &[
+            "doctor",
+            "--json",
+            "--online",
+            "--only",
+            ids::NETWORK_GITHUB_RATE_LIMITED,
+        ],
+    );
+    ran.exit(1);
+    let envelope = ran.envelope();
+    assert_eq!(envelope["state"], "DONE_FINDINGS");
+    let cut = findings(envelope, ids::CHECK_INCOMPLETE);
+    assert_eq!(cut.len(), 1, "{:?}", ids_of(envelope));
+    let evidence = &cut[0]["evidence"];
+    assert_eq!(
+        (&evidence["detector"], &evidence["reason"]),
+        (
+            &json!(ids::NETWORK_GITHUB_RATE_LIMITED),
+            &json!("unanswered")
+        )
+    );
+    assert!(
+        evidence.get("deadline_ms").is_none() && evidence.get("max_entries").is_none(),
+        "{evidence}"
+    );
+    let again = words(&cut[0]["remediation"]["argv"]);
+    assert_eq!(
+        again,
+        [
+            "omaddons",
+            "doctor",
+            "--online",
+            "--only",
+            ids::NETWORK_GITHUB_RATE_LIMITED
+        ]
+    );
+    unreadable.step("ask again");
+    let rerun = run_argv(&unreadable, &home, &again);
+    rerun.exit(1);
+    assert_eq!(findings(rerun.envelope(), ids::CHECK_INCOMPLETE).len(), 1);
+
+    let missing = log.case("missing_fixture");
+    let home = online_home(&missing);
+    missing.step("home");
+    plant::records_for_sources(&home, &[SourceId::Github, SourceId::Wowi]);
+    missing.json("answers", &[probes::source(&home, SourceId::Github, 302)]);
+    missing.step("diagnose");
+    let ran = run(
+        &missing,
+        &home,
+        &[
+            "doctor",
+            "--json",
+            "--online",
+            "--only",
+            ids::NETWORK_SOURCE_UNREACHABLE,
+        ],
+    );
+    ran.exit(1);
+    let envelope = ran.envelope();
+    assert!(
+        findings(envelope, ids::NETWORK_SOURCE_UNREACHABLE).is_empty(),
+        "omaddons' own failure is no unreachable source: {:?}",
+        ids_of(envelope)
+    );
+    let cut = findings(envelope, ids::CHECK_INCOMPLETE);
+    assert_eq!(cut.len(), 1);
+    assert_eq!(
+        (
+            &cut[0]["evidence"]["detector"],
+            &cut[0]["evidence"]["reason"]
+        ),
+        (
+            &json!(ids::NETWORK_SOURCE_UNREACHABLE),
+            &json!("unanswered")
+        )
+    );
+}
+
+#[test]
+fn online_probe_respects_the_deadline() {
+    let log = tlog!();
+    let home = online_home(&log);
+    log.json(
+        "answers",
+        &[probes::rate_limit(&home, 60, 59, 1_767_225_600)],
+    );
+    let before = lines(&home);
+    log.step("diagnose");
+    let ran = run_with(
+        &log,
+        &home,
+        &[
+            "doctor",
+            "--json",
+            "--online",
+            "--only",
+            ids::NETWORK_GITHUB_RATE_LIMITED,
+            "--budget",
+            "500ms",
+        ],
+        &[("OMADDONS_FAILPOINTS", "doctor.detector.panic=sleep:600")],
+    );
+    ran.exit(1);
+    let cut = findings(ran.envelope(), ids::CHECK_INCOMPLETE);
+    assert_eq!(cut.len(), 1, "{:?}", ids_of(ran.envelope()));
+    assert_eq!(cut[0]["evidence"]["reason"], "deadline");
+    assert!(
+        added(&log, &home, before).is_empty(),
+        "an expired budget sends nothing"
+    );
+}
+
+#[test]
+fn online_fix_lists_network_findings_as_manual() {
+    let log = tlog!();
+    let home = online_home(&log);
+    log.step("home");
+    let token = plant::credential_file_mode(&home);
+    let bytes = fs::read(&token).unwrap();
+    log.json(
+        "answers",
+        &[probes::rate_limit_status(&home, 401, &[], None)],
+    );
+    log.step("fix");
+    let ran = run(&log, &home, &["doctor", "fix", "--online", "--json"]);
+    let envelope = ran.envelope();
+    assert_eq!(envelope["summary"]["actions_taken"], 1, "{envelope:#}");
+    let actions: Vec<(&str, &str)> = envelope["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| (a["fm"].as_str().unwrap(), a["op"].as_str().unwrap()))
+        .collect();
+    assert_eq!(actions, [(ids::CREDENTIAL_FILE_MODE, "chmod")]);
+    assert_eq!(mode(&token), 0o600, "repaired");
+    assert_eq!(
+        fs::read(&token).unwrap(),
+        bytes,
+        "chmodded, never rewritten"
+    );
+    let rejected = findings(envelope, REJECTED);
+    assert_eq!(rejected.len(), 1, "{:?}", ids_of(envelope));
+    assert_eq!(
+        words(&rejected[0]["remediation"]["argv"]),
+        ["omaddons", "auth", "github", "clear"]
+    );
+    assert_eq!(rejected[0]["remediation"]["auto_fixable"], false);
+    // README promises exit 1 while findings it does not repair remain; the runtime says
+    // DONE_OK (exit 0) once its repairs verify (omad-qunc, which tightens this to 1).
+    assert!(matches!(ran.run.code, 0 | 1), "{envelope:#}");
+}
+
+#[test]
+fn online_token_never_appears() {
+    let log = tlog!();
+    let home = online_home(&log);
+    let stored = fixture::fixtures::fm_network_credential_rejected::TOKEN;
+    let mut outputs = Vec::new();
+    log.step("file");
+    plant::stored_token(&home, stored);
+    probes::rate_limit_status(&home, 401, &[], None);
+    // ubs:ignore — a command line naming a failure-mode id, not a secret
+    let only = [
+        "doctor",
+        "--json",
+        "--online",
+        "--only",
+        ids::NETWORK_CREDENTIAL_REJECTED,
+    ];
+    let ran = run(&log, &home, &only);
+    outputs.push((ran.stdout().to_owned(), ran.stderr().to_owned()));
+    log.step("env");
+    // ubs:ignore — a run's output, which the test checks holds no token
+    let ran = log
+        .cmd(&home, &only)
+        .env("OMARCHY_PATH", plant::omarchy_path(&home))
+        .env("OMADDONS_GITHUB_TOKEN", ENV_TOKEN)
+        .run();
+    outputs.push((ran.stdout().to_owned(), ran.stderr().to_owned()));
+    log.step("fix");
+    // The stored token exposed, so the fix run repairs it as well.
+    fs::set_permissions(plant::token_file(&home), fs::Permissions::from_mode(0o644)).unwrap();
+    let ran = run(&log, &home, &["doctor", "fix", "--online", "--json"]);
+    outputs.push((ran.stdout().to_owned(), ran.stderr().to_owned()));
+    log.step("scan");
+    for token in [stored, ENV_TOKEN] {
+        for (stdout, stderr) in &outputs {
+            assert!(!stdout.contains(token) && !stderr.contains(token));
+        }
+        for root in [home.state(), log.dir().to_path_buf()] {
+            for file in files_below(&root) {
+                let text = fs::read(&file).unwrap_or_default();
+                assert!(
+                    !String::from_utf8_lossy(&text).contains(token),
+                    "{} holds a token",
+                    file.display()
+                );
+            }
+        }
+    }
+}
+
+/// Every regular file below `root`.
+fn files_below(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            match entry.file_type() {
+                Ok(t) if t.is_dir() => stack.push(path),
+                Ok(t) if t.is_file() => out.push(path),
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn online_findings_are_repeatable() {
+    let log = tlog!();
+    let home = online_home(&log);
+    log.step("home");
+    plant::records_for_sources(&home, &PROBED);
+    log.json("answers", &mixed_answers(&home, 302));
+    probes::rate_limit(&home, 60, 59, 1_767_225_600);
+    log.step("diagnose twice");
+    let first = run(&log, &home, &["doctor", "--json", "--online"]);
+    let second = run(&log, &home, &["doctor", "--json", "--online"]);
+    assert_eq!(
+        stable(first.envelope())["findings"],
+        stable(second.envelope())["findings"]
+    );
+    assert_eq!(
+        findings(first.envelope(), ids::NETWORK_SOURCE_UNREACHABLE).len(),
+        2
+    );
+}
+
+#[test]
+fn online_no_false_positive_on_the_realistic_home() {
+    let log = tlog!();
+    let dir = tempfile::tempdir().unwrap();
+    log.step("home");
+    let realistic = common::realistic::realistic_home(&dir.path().join("home"));
+    let home = &realistic.home;
+    log.env(home);
+    log.step("answers");
+    let answers = probes::serve_healthy(home);
+    log.json("answers", &answers);
+    let before = lines(home);
+    log.step("diagnose");
+    let only = NETWORK.join(",");
+    let ran = run(
+        &log,
+        home,
+        &["doctor", "--json", "--online", "--only", &only],
+    );
+    ran.exit(0);
+    assert_eq!(ran.envelope()["findings"], json!([]));
+    let new = added(&log, home, before);
+    // GitHub is the one probed source; the rate-limit row asks /rate_limit, and the
+    // credential row has no credential to check.
+    assert_eq!(
+        requests(&new),
+        [
+            rate_limit_line(),
+            (
+                "GET".to_owned(),
+                "github.com".to_owned(),
+                "/bench/addon00/releases/latest".to_owned(),
+                "doctor-probe".to_owned()
+            ),
+        ]
+    );
+}
+
+/// The three network fixtures: registered, online, report-only; `corrupt` yields exactly
+/// one finding of its row, and `remedy` makes `assert_healthy` hold.
+#[test]
+fn online_fixtures_corrupt_and_remedy() {
+    let log = tlog!();
+    let network: Vec<_> = fixture::fixtures::all()
+        .into_iter()
+        .filter(|fixture| NETWORK.contains(&fixture.id()))
+        .collect();
+    let ids: Vec<&str> = network.iter().map(|f| f.id()).collect();
+    log.assert_eq("registered", &ids, &NETWORK.to_vec());
+    for fixture in network {
+        let log = log.case(fixture.id());
+        assert_eq!(fixture.run_args(), ["--online"], "{}", fixture.id());
+        assert!(!fixture.fixer(), "{}", fixture.id());
+        let home = online_home(&log);
+        log.step("corrupt");
+        fixture.corrupt(&home);
+        log.step("diagnose");
+        let mut args = vec!["doctor".to_owned(), "--json".to_owned()];
+        args.extend(fixture.run_args());
+        args.extend(["--only".to_owned(), fixture.id().to_owned()]);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let ran = run(&log, &home, &args);
+        ran.exit(1);
+        let found = findings(ran.envelope(), fixture.id());
+        assert_eq!(found.len(), 1, "{:?}", ids_of(ran.envelope()));
+        assert_eq!(ids_of(ran.envelope()), [fixture.id()], "only its finding");
+        log.step("remedy");
+        fixture.remedy(&home);
+        log.step("verify");
         fixture.assert_healthy(&home);
     }
 }

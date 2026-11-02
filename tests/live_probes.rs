@@ -1274,3 +1274,105 @@ fn outdated_over_the_catalog_asks_little_then_nothing() {
         counts.join("\n")
     );
 }
+
+/// `doctor --online` against the real hosts (checkpoint criterion 17): records of one
+/// GitHub, WoWInterface, Tukui and WowAce project planted offline from local archives, no
+/// token, then the rate-limit and source checks. Exactly five requests, every one a
+/// `doctor-probe` line with a status: `/rate_limit` once and each source's host once.
+/// Every source answers; the rate limit may or may not be low on this machine, but the
+/// check always gets an answer it can judge. Writes only under its own temporary home.
+#[test]
+#[ignore = "live network probe: OMADDONS_LIVE=1"]
+fn doctor_online_probes_the_real_hosts() {
+    let Some((env, _http)) = live("doctor_online_probes_the_real_hosts") else {
+        return;
+    };
+    BattlenetRoot::at(Prefix::new(&env, "battlenet").wow_root())
+        .product("wow")
+        .build();
+    let dl = env.root().join("dl");
+    std::fs::create_dir_all(&dl).unwrap();
+    for (r, folder) in [
+        ("gh:WeakAuras/WeakAuras2", "LiveProbeGh"),
+        ("wowi:5995", "LiveProbeWowi"),
+        ("tukui:elvui", "LiveProbeTukui"),
+        ("wowace:bug-grabber", "LiveProbeWowAce"),
+    ] {
+        let zip = dl.join(format!("{folder}.zip"));
+        let toc = "## Interface: 120105\n## Version: 1\n";
+        std::fs::write(
+            &zip,
+            common::archives::zip_text(&[(&format!("{folder}/{folder}.toc"), toc)]),
+        )
+        .unwrap();
+        let out = env
+            .command()
+            .args(["install", r, "--file"])
+            .arg(&zip)
+            .args(["-t", "retail", "--offline", "--json"])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{r}: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+    let before = read_net_log(&paths(&env)).len();
+    let out = env
+        .command()
+        .args([
+            "doctor",
+            "--online",
+            "--json",
+            "--only",
+            "fm-network-github-rate-limited,fm-network-source-unreachable",
+        ])
+        .output()
+        .unwrap();
+    let envelope: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let findings = envelope["findings"].as_array().cloned().unwrap_or_default();
+    for finding in &findings {
+        let _ = writeln!(
+            std::io::stderr(),
+            "finding: {} {} {}",
+            finding["id"],
+            finding["label"],
+            finding["evidence"]
+        );
+    }
+    let lines: Vec<_> = read_net_log(&paths(&env))
+        .into_iter()
+        .skip(before)
+        .collect();
+    let mut seen: Vec<(String, String)> = lines
+        .iter()
+        .map(|l| (l.host.clone(), l.purpose.clone()))
+        .collect();
+    seen.sort();
+    let _ = writeln!(std::io::stderr(), "net.log: {seen:#?}");
+    let mut expected: Vec<(String, String)> = [
+        "api.github.com",
+        "github.com",
+        "api.mmoui.com",
+        "api.tukui.org",
+        "repos.wowace.com",
+    ]
+    .map(|host| (host.to_owned(), "doctor-probe".to_owned()))
+    .to_vec();
+    expected.sort();
+    assert_eq!(seen, expected, "five requests, one per host");
+    assert!(lines.iter().all(|l| l.status.is_some()), "{lines:#?}");
+    let ids: Vec<&str> = findings.iter().filter_map(|f| f["id"].as_str()).collect();
+    assert!(
+        !ids.contains(&"fm-network-source-unreachable"),
+        "every source answered: {findings:#?}"
+    );
+    assert!(
+        !findings
+            .iter()
+            // ubs:ignore — a failure-mode id, not a secret
+            .any(|f| f["id"] == "fm-state_files-check-incomplete"),
+        "every check got an answer it could judge: {findings:#?}"
+    );
+}

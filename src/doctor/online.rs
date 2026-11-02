@@ -17,14 +17,59 @@ use std::sync::Arc;
 
 use super::budget::Budget;
 use crate::error::Error;
+use crate::model::Ref;
 use crate::net::{self, Http, NetConfig, NetLog, Request};
 use crate::sources::github_token::GithubToken;
-use crate::sources::{SourceConfigView, SourceId};
+use crate::sources::{SourceConfigView, SourceId, tukui, wowace, wowi};
 use crate::state::config::Config;
 use crate::state::paths::Paths;
 
 /// Every probe's `net.log` purpose.
 pub const PURPOSE: &str = "doctor-probe";
+
+/// The sources `source-unreachable` asks, in the order it asks them. `git` runs a
+/// subprocess the doctor never starts, `local` and `url` have no API to ask (a `url:`
+/// archive sits on an allowlisted host GitHub's probe covers), and CurseForge and Wago
+/// arrive in M5.
+pub const PROBED: [SourceId; 4] = [
+    SourceId::Github,
+    SourceId::Wowi,
+    SourceId::Tukui,
+    SourceId::Wowace,
+];
+
+/// The host each probed source is asked on; empty for a source never probed.
+pub const fn probe_host(source: SourceId) -> &'static str {
+    match source {
+        SourceId::Github => "github.com",
+        SourceId::Wowi => "api.mmoui.com",
+        SourceId::Tukui => "api.tukui.org",
+        SourceId::Wowace => "repos.wowace.com",
+        SourceId::Git | SourceId::Url | SourceId::Local | SourceId::Curseforge | SourceId::Wago => {
+            ""
+        }
+    }
+}
+
+/// The cheap request that asks a source about `project`: GitHub's `releases/latest`
+/// (answered with a redirect), WoWInterface's file details, Tukui's list, WowAce's tag
+/// list; `None` for a ref of a source never probed. Tests write their recorded answers
+/// for exactly these requests.
+pub fn project_probe(project: &Ref) -> Option<Request> {
+    Some(match project {
+        Ref::GitHub { owner, repo } => {
+            Online::get(format!("https://github.com/{owner}/{repo}/releases/latest"))
+        }
+        Ref::Wowi { id } => Online::get(format!("{}/{id}.json", wowi::DETAILS_URL)),
+        Ref::Tukui { .. } => Online::get(tukui::LIST_URL),
+        Ref::WowAce { slug, .. } => Online::propfind(format!("{}/{slug}/tags/", wowace::REPOS)),
+        Ref::Git { .. }
+        | Ref::Url { .. }
+        | Ref::File { .. }
+        | Ref::CurseForge { .. }
+        | Ref::Wago { .. } => return None,
+    })
+}
 
 /// The probe client of one doctor run.
 pub struct Online {
