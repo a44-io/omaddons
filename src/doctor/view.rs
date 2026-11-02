@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use super::finding::{
     Confidence, Evidence, Finding, FindingTarget, Observation, Severity, Subject,
 };
+use super::online::{Online, OnlineUnavailable};
 use super::registry::{self, Layer, ids};
 use super::selection::SkippedTarget;
 use crate::app::world::World;
@@ -48,6 +49,9 @@ pub struct ViewOptions {
     /// The process building the view holds the global lock itself (`doctor fix` under
     /// its lock, M4-D45): the lock probe then sees that hold, which hides no journal.
     pub caller_holds_lock: bool,
+    /// The run was asked for `--online`: its online checks may build the probe client
+    /// ([`DoctorView::online`]). Off, nothing here sends a request.
+    pub online: bool,
 }
 
 /// How the Discovery layer finds clients.
@@ -93,6 +97,8 @@ pub struct DoctorView {
     widget: OnceCell<LayerState<WidgetLayer>>,
     skill: OnceCell<LayerState<Vec<SkillFile>>>,
     credentials: OnceCell<LayerState<Credentials>>,
+    /// The online checks' client, built at the first ask (not a layer: it reads nothing).
+    online: OnceCell<std::result::Result<Online, OnlineUnavailable>>,
     failures: RefCell<Vec<LayerFailure>>,
     warnings: RefCell<Vec<Warning>>,
     /// What went wrong that no failure mode describes, for a `-v` log.
@@ -123,6 +129,7 @@ impl DoctorView {
             widget: OnceCell::new(),
             skill: OnceCell::new(),
             credentials: OnceCell::new(),
+            online: OnceCell::new(),
             failures: RefCell::default(),
             warnings: RefCell::default(),
             diagnostics: RefCell::default(),
@@ -132,6 +139,22 @@ impl DoctorView {
 
     pub fn paths(&self) -> &Paths {
         &self.paths
+    }
+
+    /// The online checks' probe client, built at the first ask from the Config layer;
+    /// `Disabled` unless the run was asked for `--online`, so a run without it never
+    /// builds one, opens `net.log` or resolves a credential.
+    pub fn online(&self) -> std::result::Result<&Online, OnlineUnavailable> {
+        self.online
+            .get_or_init(|| {
+                if !self.options.online {
+                    return Err(OnlineUnavailable::Disabled);
+                }
+                let config = self.config().ok_or(OnlineUnavailable::NoConfig)?;
+                Online::build(&self.paths, &config.config)
+            })
+            .as_ref()
+            .map_err(Clone::clone)
     }
 
     /// `config.toml`, the default configuration when it is absent; `None` when it cannot
@@ -1584,6 +1607,8 @@ pub(crate) struct Preloaded {
     pub widget: Option<LayerState<WidgetLayer>>,
     pub skill: Option<LayerState<Vec<SkillFile>>>,
     pub credentials: Option<LayerState<Credentials>>,
+    /// The online checks' client; `None` leaves it to build as a run would.
+    pub online: Option<std::result::Result<Online, OnlineUnavailable>>,
     pub failures: Vec<LayerFailure>,
 }
 
@@ -1626,6 +1651,7 @@ impl DoctorView {
             widget: cell(&mut loaded, Layer::Widget, preloaded.widget),
             skill: cell(&mut loaded, Layer::Skill, preloaded.skill),
             credentials: cell(&mut loaded, Layer::Credentials, preloaded.credentials),
+            online: preloaded.online.map_or_else(OnceCell::new, OnceCell::from),
             failures: RefCell::new(preloaded.failures),
             loaded: RefCell::new(loaded),
             ..Self::load_at(paths, ViewOptions::default())

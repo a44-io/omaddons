@@ -24,6 +24,7 @@ pub mod validators;
 use std::io::Read;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
+use std::time::Duration;
 
 pub use allowlist::{Allowlist, GitHosts};
 pub use client::UreqTransport;
@@ -94,6 +95,10 @@ pub struct Request {
     pub redirect: RedirectMode,
     /// Whether to use HTTP validators (net-resilience).
     pub validators: bool,
+    /// A bound on the whole-call timeout, never a longer one: the real transport waits
+    /// for the shorter of this and its `timeout` (a doctor check's remaining budget).
+    /// `None` for every request but a doctor probe.
+    pub deadline: Option<Duration>,
     /// The redirect hop this request is (0 for the first).
     pub(crate) hop: usize,
 }
@@ -109,6 +114,7 @@ impl Request {
             timeout: TimeoutKind::Api,
             redirect: RedirectMode::Follow,
             validators: false,
+            deadline: None,
             hop: 0,
         }
     }
@@ -142,6 +148,14 @@ impl Request {
     #[must_use]
     pub fn manual_redirects(mut self) -> Self {
         self.redirect = RedirectMode::Manual;
+        self
+    }
+
+    /// Ends the whole call within `deadline` when that is sooner than its kind's timeout;
+    /// a longer `deadline` changes nothing.
+    #[must_use]
+    pub fn within(mut self, deadline: Duration) -> Self {
+        self.deadline = Some(deadline);
         self
     }
 }
@@ -382,6 +396,15 @@ pub fn stack_with(
     let validating = Validating::new(core_stack_with(config, log, transport), paths);
     let retrying = Retrying::new(Box::new(validating));
     Box::new(Limited::new(Box::new(retrying)))
+}
+
+/// [`core_stack_with`] over the transport [`select_transport`] picks from the environment:
+/// the doctor's online probes, which a retry or a validator would turn into several
+/// requests.
+pub fn core_stack(config: &NetConfig, log: NetLog, paths: &Paths) -> Box<dyn Http> {
+    let env = |name: &str| std::env::var(name).ok();
+    let transport = select_transport(&env, cfg!(debug_assertions), paths);
+    core_stack_with(config, log, transport)
 }
 
 /// The core without the resilience layers: `Redirecting<Guarded<Decoding<transport>>>`.

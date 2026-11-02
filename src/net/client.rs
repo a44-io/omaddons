@@ -45,12 +45,14 @@ impl UreqTransport {
         }
     }
 
-    /// The whole-call timeout of a request of `kind`.
-    fn timeout_for(&self, kind: TimeoutKind) -> Duration {
-        match kind {
+    /// The whole-call timeout of a request of `kind`, shortened to `deadline` when the
+    /// request sets a sooner one ([`Request::within`]), never lengthened.
+    fn timeout_for(&self, kind: TimeoutKind, deadline: Option<Duration>) -> Duration {
+        let timeout = match kind {
             TimeoutKind::Api => self.api_timeout,
             TimeoutKind::Download => self.download_timeout,
-        }
+        };
+        deadline.map_or(timeout, |deadline| timeout.min(deadline))
     }
 }
 
@@ -62,7 +64,7 @@ impl Default for UreqTransport {
 
 impl Http for UreqTransport {
     fn send(&self, req: Request) -> Result<Response> {
-        let timeout = self.timeout_for(req.timeout);
+        let timeout = self.timeout_for(req.timeout, req.deadline);
         let response = match req.method {
             Method::Get | Method::Head => {
                 let mut builder = match req.method {
@@ -243,11 +245,65 @@ mod tests {
     #[test]
     fn timeouts_follow_the_request_kind() {
         let transport = UreqTransport::new();
-        assert_eq!(transport.timeout_for(TimeoutKind::Api), API_READ_TIMEOUT);
         assert_eq!(
-            transport.timeout_for(TimeoutKind::Download),
+            transport.timeout_for(TimeoutKind::Api, None),
+            API_READ_TIMEOUT
+        );
+        assert_eq!(
+            transport.timeout_for(TimeoutKind::Download, None),
             DOWNLOAD_TIMEOUT
         );
+    }
+
+    /// A deadline longer than the kind's timeout keeps the timeout: `within` only ever
+    /// shortens a call.
+    #[test]
+    fn within_never_lengthens_it() {
+        let transport = UreqTransport::new();
+        let ten_minutes = Duration::from_secs(600);
+        let req = Request::get("https://api.github.com/rate_limit", "test").within(ten_minutes);
+        assert_eq!(req.deadline, Some(ten_minutes));
+        assert_eq!(
+            transport.timeout_for(req.timeout, req.deadline),
+            API_READ_TIMEOUT
+        );
+        let short = Duration::from_millis(250);
+        assert_eq!(
+            transport.timeout_for(TimeoutKind::Download, Some(short)),
+            short,
+            "a sooner deadline wins"
+        );
+        assert_eq!(
+            Request::get("https://github.com/o/r", "test").deadline,
+            None,
+            "a request that does not set one has none"
+        );
+    }
+
+    /// A server that never answers ends a request `within(200 ms)` at that deadline, as a
+    /// `network` error, although the transport's own API timeout is 30 s.
+    #[test]
+    fn within_shortens_the_whole_call_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (done, wait) = std::sync::mpsc::channel::<()>();
+        let server = std::thread::spawn(move || {
+            let stream = accept(&listener);
+            let _ = wait.recv_timeout(SERVER_WAIT);
+            drop(stream);
+        });
+        let started = Instant::now();
+        let err = UreqTransport::new()
+            .send(
+                Request::get(format!("http://{addr}/slow"), "test")
+                    .within(Duration::from_millis(200)),
+            )
+            .unwrap_err();
+        let elapsed = started.elapsed();
+        let _ = done.send(());
+        server.join().unwrap();
+        assert_eq!(err.code, ErrorCode::Network, "{err:?}");
+        assert!(elapsed < SERVER_WAIT, "{elapsed:?}");
     }
 
     /// A 302 comes back to the caller: the hop to its `Location` is the `Redirecting`

@@ -1,6 +1,5 @@
 ---
 source: tests/contract/matrix.rs
-assertion_line: 1452
 expression: s.stable(&c.envelope)
 ---
 {
@@ -44,7 +43,23 @@ expression: s.stable(&c.envelope)
   "run_dir": "<root>/state/omaddons/doctor/runs/<run>",
   "run_id": "<run>",
   "schema_version": "1.0",
-  "skipped": [],
+  "skipped": [
+    {
+      "id": "fm-network-credential-rejected",
+      "reason": "online_required",
+      "target": null
+    },
+    {
+      "id": "fm-network-github-rate-limited",
+      "reason": "online_required",
+      "target": null
+    },
+    {
+      "id": "fm-network-source-unreachable",
+      "reason": "online_required",
+      "target": null
+    }
+  ],
   "started_at": "<time>",
   "state": "REFUSING",
   "summary": {
@@ -66,8 +81,8 @@ expression: s.stable(&c.envelope)
     "incomplete": 0,
     "manual": 0,
     "needs_force": 0,
-    "online_required": 0,
-    "skipped": 0,
+    "online_required": 3,
+    "skipped": 3,
     "total_findings": 0
   },
   "tool_version": "<version>",

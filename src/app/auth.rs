@@ -15,7 +15,6 @@ use std::io::{BufRead, Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use jiff::Timestamp;
 use schemars::JsonSchema;
 use serde::Serialize;
 
@@ -24,9 +23,10 @@ use crate::engine::fence;
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning};
 use crate::fsx::{Content, GlobalLock, Op, WriteSession, Writer, ensure_dir_all, mutate};
 use crate::limits::AUTH_TOKEN_MAX_BYTES;
-use crate::net::{NetConfig, NetLog, Request, stack};
+use crate::net::{NetConfig, NetLog, stack};
 use crate::output::{Outcome, Style};
-use crate::sources::github_rest::TOKEN_VAR;
+pub use crate::sources::github_rest::RateLimit;
+use crate::sources::github_rest::{TOKEN_VAR, parse_rate_limit, rate_limit_request};
 use crate::sources::github_token::{GithubToken, TokenSource, valid};
 use crate::state::config::{Config, CredentialRef, resolve_credential};
 use crate::state::paths::Paths;
@@ -96,15 +96,6 @@ pub struct AuthData {
     pub rate_limit: Option<RateLimit>,
     /// `--dry-run`: nothing was written.
     pub dry_run: bool,
-}
-
-/// GitHub's core REST budget.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct RateLimit {
-    pub limit: u64,
-    pub remaining: u64,
-    #[schemars(with = "String")]
-    pub reset_at: Timestamp,
 }
 
 /// `auth github`'s outcome.
@@ -392,9 +383,7 @@ fn rate_limit(
         ..NetConfig::default()
     };
     let http = stack(&net, NetLog::new(paths)?, paths);
-    let mut req = Request::get("https://api.github.com/rate_limit", "rate-limit")
-        .header("Accept", "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", "2022-11-28");
+    let mut req = rate_limit_request("rate-limit");
     let sent = token.value()?;
     if let Some(t) = sent {
         // ubs:ignore — an outbound request header; github_token::valid rejects controls and spaces
@@ -405,23 +394,13 @@ fn rate_limit(
         return Err(token.rejected());
     }
     let body = resp.error_for_status("GitHub's rate_limit API")?.bytes()?;
-    let json: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
-    let core = &json["resources"]["core"];
-    let reset = core["reset"]
-        .as_i64()
-        .and_then(|s| Timestamp::from_second(s).ok());
-    match (core["limit"].as_u64(), core["remaining"].as_u64(), reset) {
-        (Some(limit), Some(remaining), Some(reset_at)) => Ok(RateLimit {
-            limit,
-            remaining,
-            reset_at,
-        }),
-        _ => Err(Error::new(
+    parse_rate_limit(&body).ok_or_else(|| {
+        Error::new(
             ErrorCode::Network,
             "GitHub's rate_limit API answered something unreadable",
             Suggestion::text("retry later; if it persists, GitHub changed its API"),
-        )),
-    }
+        )
+    })
 }
 
 #[cfg(test)]

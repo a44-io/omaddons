@@ -19,6 +19,9 @@ use serde::{Serialize, Serializer};
 use super::budget::Budget;
 use crate::engine::repair_action::{Attribution, JournalFamily, JournalPhase};
 use crate::model::{FolderName, TargetKey, TxId, TxKind};
+use crate::sources::SourceId;
+use crate::sources::github_rest::RateLimit;
+use crate::sources::github_token::TokenSource;
 
 /// How sure a finding is (M4-D41): `high` when the state was observed directly (a hash, a
 /// mode, a missing file), `medium` when inferred from consistent evidence, `low` for a
@@ -263,6 +266,51 @@ pub struct Evidence {
     /// Omitted when no process is concerned.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
+    /// Where the credential concerned comes from. Omitted when no credential is
+    /// concerned, or none was sent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<SecretOrigin>,
+    /// The addon source concerned (`github`, `wowi`, …). Omitted when no source is
+    /// concerned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<SourceId>,
+    /// The host an online check asked. Omitted when no request is concerned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// The HTTP status an online check was answered with. Omitted when no answer is
+    /// concerned, or none came.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
+    /// GitHub's core REST budget as an online check read it. Omitted when no budget is
+    /// concerned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_limit: Option<RateLimit>,
+    /// Whether an online check sent a token. Omitted when no token could be sent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authenticated: Option<bool>,
+}
+
+/// Where a credential comes from, as evidence names it: `OMADDONS_GITHUB_TOKEN`
+/// (`env`), a `[sources.<source>] credential` in config.toml (`config`), or a file
+/// omaddons stores (`file`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretOrigin {
+    Env,
+    Config,
+    File,
+}
+
+impl SecretOrigin {
+    /// Where a GitHub token comes from; `None` when there is none.
+    pub const fn of_token(source: TokenSource) -> Option<Self> {
+        match source {
+            TokenSource::Env => Some(Self::Env),
+            TokenSource::Config => Some(Self::Config),
+            TokenSource::File => Some(Self::File),
+            TokenSource::None => None,
+        }
+    }
 }
 
 /// Why a journal cannot be attributed to one client, as `Evidence::cause` says it.
@@ -392,6 +440,8 @@ pub enum Discriminator {
     Blob([u8; 32]),
     /// A failure mode's check (the doctor runtime's own findings).
     Detector(&'static str),
+    /// An addon source an online check asked.
+    Source(SourceId),
 }
 
 /// What a finding is about: a scope and at most one resource in it. The one way a
@@ -454,6 +504,11 @@ impl Subject {
     /// The check of the failure mode `fm`.
     pub fn detector(self, fm: &'static str) -> Self {
         self.about(Discriminator::Detector(fm))
+    }
+
+    /// The addon source `source`.
+    pub fn source(self, source: SourceId) -> Self {
+        self.about(Discriminator::Source(source))
     }
 
     /// A second discriminator replaces the first; no detector should set two.
@@ -595,6 +650,10 @@ fn key_and_label(fm_id: &'static str, subject: &Subject) -> (InstanceKey, String
             (format!(":blob={hex}"), format!(" · blob {short}"))
         }
         Some(Discriminator::Detector(fm)) => (format!(":detector={fm}"), format!(" · {fm}")),
+        Some(Discriminator::Source(source)) => (
+            format!(":source={}", source.wire()),
+            format!(" · {}", source.name()),
+        ),
     };
     (
         InstanceKey(format!("{fm_id}@{scope}{key_part}")),
@@ -650,16 +709,18 @@ pub enum DiscriminatorKind {
     Addon,
     Blob,
     Detector,
+    Source,
 }
 
 impl DiscriminatorKind {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::Tx,
         Self::Path,
         Self::Folder,
         Self::Addon,
         Self::Blob,
         Self::Detector,
+        Self::Source,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -670,6 +731,7 @@ impl DiscriminatorKind {
             Self::Addon => "addon",
             Self::Blob => "blob",
             Self::Detector => "detector",
+            Self::Source => "source",
         }
     }
 
@@ -688,6 +750,7 @@ impl DiscriminatorKind {
                         .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
             }
             Self::Detector => is_fm_id(value),
+            Self::Source => SourceId::from_wire(value).is_some(),
         }
     }
 }
@@ -701,7 +764,9 @@ pub enum InstanceParseError {
     BadFmId(String),
     #[error("scope {0:?} is neither `machine` nor a target key")]
     BadScope(String),
-    #[error("{0:?} is not a resource kind: expected tx, path, folder, addon, blob or detector")]
+    #[error(
+        "{0:?} is not a resource kind: expected tx, path, folder, addon, blob, detector or source"
+    )]
     UnknownDiscriminator(String),
     #[error("{value:?} is not a {} value", .kind.as_str())]
     BadValue {
@@ -835,6 +900,20 @@ impl Detected {
             incomplete: budget.incomplete(),
         }
     }
+
+    /// An online check whose request got no answer it could judge: what it found so far,
+    /// and the `unanswered` limit, so it reads as incomplete coverage, never as a clean
+    /// result and never as the failure it checks for.
+    pub fn unanswered(found: Vec<Observation>) -> Self {
+        Self {
+            found,
+            incomplete: Some(Incomplete {
+                limit: IncompleteLimit::Unanswered,
+                deadline_ms: None,
+                max_entries: None,
+            }),
+        }
+    }
 }
 
 /// A detector stopped by a limit (M4-D43): what it found stands, and the run reports a
@@ -856,10 +935,17 @@ pub enum IncompleteLimit {
     Deadline,
     Entries,
     OnlineRequests,
+    /// An online check's request got no answer it could judge.
+    Unanswered,
 }
 
 impl IncompleteLimit {
-    pub const ALL: [Self; 3] = [Self::Deadline, Self::Entries, Self::OnlineRequests];
+    pub const ALL: [Self; 4] = [
+        Self::Deadline,
+        Self::Entries,
+        Self::OnlineRequests,
+        Self::Unanswered,
+    ];
 
     /// The wire name, as a `check-incomplete` finding's `evidence.reason` gives it.
     pub const fn as_str(self) -> &'static str {
@@ -867,12 +953,13 @@ impl IncompleteLimit {
             Self::Deadline => "deadline",
             Self::Entries => "entries",
             Self::OnlineRequests => "online_requests",
+            Self::Unanswered => "unanswered",
         }
     }
 }
 
 /// `Evidence.reason`'s closed set: every reason a layer the view could not read, a stuck
-/// journal and the runtime's limits give.
+/// journal, the runtime's limits and the online checks give.
 fn evidence_reasons() -> Vec<&'static str> {
     let mut reasons: Vec<&'static str> = super::view::FailureReason::ALL
         .iter()
@@ -880,6 +967,7 @@ fn evidence_reasons() -> Vec<&'static str> {
         .collect();
     reasons.extend(crate::engine::journal::StopReason::ALL.map(|r| r.as_str()));
     reasons.extend(IncompleteLimit::ALL.map(IncompleteLimit::as_str));
+    reasons.extend(super::detectors::network::REASONS);
     reasons.sort_unstable();
     reasons.dedup();
     reasons
@@ -1066,6 +1154,30 @@ mod tests {
                 format!("{FM}@machine:detector={PENDING}"),
                 format!("machine · {PENDING}"),
             ),
+            (
+                "source_github",
+                Subject::machine().source(SourceId::Github),
+                format!("{FM}@machine:source=github"),
+                "machine · GitHub".to_owned(),
+            ),
+            (
+                "source_wowi",
+                Subject::machine().source(SourceId::Wowi),
+                format!("{FM}@machine:source=wowi"),
+                "machine · WoWInterface".to_owned(),
+            ),
+            (
+                "source_tukui",
+                Subject::machine().source(SourceId::Tukui),
+                format!("{FM}@machine:source=tukui"),
+                "machine · Tukui".to_owned(),
+            ),
+            (
+                "source_wowace",
+                Subject::machine().source(SourceId::Wowace),
+                format!("{FM}@machine:source=wowace"),
+                "machine · WowAce".to_owned(),
+            ),
         ]
     }
 
@@ -1120,13 +1232,14 @@ mod tests {
                 Discriminator::Addon(_) => DiscriminatorKind::Addon,
                 Discriminator::Blob(_) => DiscriminatorKind::Blob,
                 Discriminator::Detector(_) => DiscriminatorKind::Detector,
+                Discriminator::Source(_) => DiscriminatorKind::Source,
             });
             assert_eq!(kind, expected, "{case}: {instance}");
             assert_eq!(parsed.to_string(), instance, "{case}");
         }
     }
 
-    /// `evidence.reason` is published as a closed set, made of its three sources only.
+    /// `evidence.reason` is published as a closed set, made of its four sources only.
     #[test]
     fn evidence_reasons_are_closed() {
         let mut expected: Vec<&str> = crate::doctor::view::FailureReason::ALL
@@ -1134,7 +1247,14 @@ mod tests {
             .map(|r| r.as_str())
             .collect();
         expected.extend(crate::engine::journal::StopReason::ALL.map(|r| r.as_str()));
-        expected.extend(["deadline", "entries", "online_requests"]);
+        expected.extend(["deadline", "entries", "online_requests", "unanswered"]);
+        expected.extend([
+            "no_answer",
+            "rejected",
+            "server_error",
+            "too_many_requests",
+            "unresolvable",
+        ]);
         expected.sort_unstable();
         assert_eq!(evidence_reasons(), expected);
         let mut generator = schemars::generate::SchemaSettings::draft2020_12()
@@ -1204,6 +1324,16 @@ mod tests {
                 "short_blob",
                 "fm-a-b@machine:blob=abc",
                 bad(DiscriminatorKind::Blob, "abc"),
+            ),
+            (
+                "unknown_source",
+                "fm-a-b@machine:source=nope",
+                bad(DiscriminatorKind::Source, "nope"),
+            ),
+            (
+                "a_source_by_its_name",
+                "fm-a-b@machine:source=GitHub",
+                bad(DiscriminatorKind::Source, "GitHub"),
             ),
         ];
         for (case, text, expected) in cases {

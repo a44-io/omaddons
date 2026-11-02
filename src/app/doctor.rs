@@ -21,7 +21,7 @@ use crate::doctor::plan::{Asked, DiagnosePlan, plan_diagnose};
 use crate::doctor::registry::{Layer, failure_modes, ids};
 use crate::doctor::report::{self, DiagnoseReport, DiffReport, FixReport, FullReport, RunState};
 use crate::doctor::runtime::{self, DoctorRunId, Latest, REPORT_FILE, Runtime};
-use crate::doctor::selection::Selection;
+use crate::doctor::selection::{Selection, SkipReason};
 use crate::doctor::view::{DoctorView, ViewOptions};
 use crate::engine::repair_action::{Attribution, Primitive, Step};
 use crate::error::{CommandHint, Error, ErrorCode, Suggestion, Warning};
@@ -236,11 +236,22 @@ impl DoctorOutcome for DiagnoseOutcome {
         head.push(crate::output::count(self.checks_run as usize, "check"));
         head.push(findings_phrase(&full.findings));
         let mut summary = head.join(" · ");
-        if !full.skipped.is_empty() {
-            summary.push_str(&format!(
-                " ({} skipped)",
-                crate::output::count(full.skipped.len(), "check")
-            ));
+        // The checks only `--online` runs are named apart: every plain run skips them.
+        let online = full
+            .skipped
+            .iter()
+            .filter(|s| s.reason == SkipReason::OnlineRequired)
+            .count();
+        let skipped: Vec<String> = [
+            (full.skipped.len() - online, "check"),
+            (online, "online check"),
+        ]
+        .into_iter()
+        .filter(|(n, _)| *n > 0)
+        .map(|(n, what)| format!("{} skipped", crate::output::count(n, what)))
+        .collect();
+        if !skipped.is_empty() {
+            summary.push_str(&format!(" ({})", skipped.join(", ")));
         }
         writeln!(w, "{summary}")?;
         for finding in &full.findings {
@@ -531,7 +542,13 @@ pub fn run_diagnose(
 ) -> std::result::Result<DiagnoseOutcome, DoctorFailure> {
     let (selection, plan) = checks_of(ctx, &args.select)?;
     let paths = Paths::from_env()?;
-    let view = DoctorView::load_at(paths.clone(), ViewOptions::default());
+    let view = DoctorView::load_at(
+        paths.clone(),
+        ViewOptions {
+            online: plan.online,
+            ..ViewOptions::default()
+        },
+    );
     // -t resolves before the run starts: a client that is not there creates nothing.
     selection.scope(&view)?;
     let since_run = args

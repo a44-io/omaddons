@@ -17,7 +17,8 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use jiff::Timestamp;
-use serde::Deserialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 use super::Wanted;
 use super::github::{GithubRestFallback, ListedRelease, RestReason, encode_segment, release_set};
@@ -89,6 +90,36 @@ impl Budget {
             self.reset = Some(t);
         }
     }
+}
+
+/// GitHub's core REST budget, as `/rate_limit` reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct RateLimit {
+    pub limit: u64,
+    pub remaining: u64,
+    #[schemars(with = "String")]
+    pub reset_at: Timestamp,
+}
+
+/// A GET of `/rate_limit` on the API host, with the API headers and no token (the caller
+/// adds one): it costs none of the budget it reports. `auth github status` and the
+/// doctor's online checks send it, each with its own `purpose`.
+pub fn rate_limit_request(purpose: &'static str) -> Request {
+    Request::get(format!("{API}/rate_limit"), purpose)
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+}
+
+/// The core budget a `/rate_limit` answer's body reports (`resources.core`): `None` for
+/// a body that is not JSON or lacks a number it needs.
+pub fn parse_rate_limit(body: &[u8]) -> Option<RateLimit> {
+    let json: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let core = &json["resources"]["core"];
+    Some(RateLimit {
+        limit: core["limit"].as_u64()?,
+        remaining: core["remaining"].as_u64()?,
+        reset_at: Timestamp::from_second(core["reset"].as_i64()?).ok()?,
+    })
 }
 
 impl GithubRest {
@@ -642,6 +673,73 @@ mod tests {
             draft,
             published_at: published.map(str::to_owned),
             ..ApiRelease::default()
+        }
+    }
+
+    #[test]
+    fn rate_limit_request_has_the_api_headers() {
+        let req = rate_limit_request("doctor-probe");
+        assert_eq!(req.url, "https://api.github.com/rate_limit");
+        assert_eq!(req.purpose, "doctor-probe");
+        assert_eq!(
+            req.headers,
+            [
+                (
+                    "Accept".to_owned(),
+                    "application/vnd.github+json".to_owned()
+                ),
+                ("X-GitHub-Api-Version".to_owned(), "2022-11-28".to_owned()),
+            ],
+            "no Authorization: the caller adds the token"
+        );
+        assert_eq!(
+            (req.method, req.redirect, req.deadline),
+            (
+                crate::net::Method::Get,
+                crate::net::RedirectMode::Follow,
+                None
+            )
+        );
+    }
+
+    #[test]
+    fn parse_rate_limit_cases() {
+        let reset = Timestamp::from_second(1_793_600_000).unwrap();
+        let cases: [(&str, &[u8], Option<RateLimit>); 6] = [
+            (
+                "the recorded shape",
+                br#"{"resources":{"core":{"limit":60,"remaining":57,"reset":1793600000,"used":3},"search":{"limit":10,"remaining":10,"reset":1793596460}},"rate":{"limit":60,"remaining":57,"reset":1793600000}}"#,
+                Some(RateLimit {
+                    limit: 60,
+                    remaining: 57,
+                    reset_at: reset,
+                }),
+            ),
+            (
+                "remaining missing",
+                br#"{"resources":{"core":{"limit":60,"reset":1793600000}}}"#,
+                None,
+            ),
+            (
+                "reset not a number",
+                br#"{"resources":{"core":{"limit":60,"remaining":1,"reset":"soon"}}}"#,
+                None,
+            ),
+            (
+                "no core budget",
+                br#"{"resources":{"search":{"limit":10,"remaining":10,"reset":1}}}"#,
+                None,
+            ),
+            ("not JSON", b"not json", None),
+            ("empty", b"", None),
+        ];
+        for (case, body, expected) in cases {
+            assert_eq!(
+                parse_rate_limit(body),
+                expected,
+                "{case}: {}",
+                String::from_utf8_lossy(body)
+            );
         }
     }
 

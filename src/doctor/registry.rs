@@ -13,10 +13,11 @@ use serde::Serialize;
 
 use super::budget::Budget;
 use super::detectors::{
-    caches, concurrency, configs, external, plugins, schemas, state_files, userland,
+    caches, concurrency, configs, external, network, plugins, schemas, state_files, userland,
 };
 use super::finding::{
-    Detected, Finding, Observation, Remediation, Severity, Subsystem, is_fm_id, subsystem_part,
+    Detected, Finding, Observation, Remediation, SecretOrigin, Severity, Subsystem, is_fm_id,
+    subsystem_part,
 };
 use super::selection::Selection;
 use super::view::{self, DoctorView};
@@ -114,6 +115,14 @@ pub mod ids {
     pub const WRONG_FLAVOR: &str = "fm-external_artifacts-wrong-flavor";
     /// A managed addon loads only as out of date.
     pub const OUT_OF_DATE_TOC: &str = "fm-external_artifacts-out-of-date-toc";
+
+    /// GitHub answers 401 to the configured token, or it cannot be had (`--online`).
+    // ubs:ignore — a failure-mode id, not a secret
+    pub const NETWORK_CREDENTIAL_REJECTED: &str = "fm-network-credential-rejected";
+    /// GitHub's core REST budget is spent (`--online`).
+    pub const NETWORK_GITHUB_RATE_LIMITED: &str = "fm-network-github-rate-limited";
+    /// An enabled source an installed addon comes from does not answer (`--online`).
+    pub const NETWORK_SOURCE_UNREACHABLE: &str = "fm-network-source-unreachable";
 
     /// The test-only failure modes (debug builds with `OMADDONS_TEST_FIXERS=1`,
     /// `doctor::test_fixers`): an ordinary auto-fixer, a forced one and a disabled one.
@@ -816,6 +825,66 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         }),
     },
     FailureMode {
+        id: ids::NETWORK_CREDENTIAL_REJECTED,
+        subsystem: Subsystem::Network,
+        severity: Severity::P1,
+        title: "GitHub rejects the configured token",
+        description: "GitHub answered 401 to the token omaddons sends (from OMADDONS_GITHUB_TOKEN, config.toml's [sources.github] credential or the stored token file), or the configured credential cannot be read at all.",
+        why: "Every REST request fails with auth_rejected or auth_required until the token is replaced or removed; the main GitHub path needs no token and keeps working.",
+        tier: Tier::Default,
+        online: true,
+        // One request to /rate_limit.
+        cost_ms: 500,
+        requires: &[Layer::Config],
+        detect: Some(network::credential_rejected),
+        fix: None,
+        manual: Some(Manual {
+            instruction: "replace or remove the token where it comes from: clear a stored token with auth github clear, unset or replace OMADDONS_GITHUB_TOKEN, or correct [sources.github] credential in config.toml",
+            why: "only you can issue a new token, and which credential to use is yours to decide",
+            remediation: credential_manual,
+        }),
+    },
+    FailureMode {
+        id: ids::NETWORK_GITHUB_RATE_LIMITED,
+        subsystem: Subsystem::Network,
+        severity: Severity::P2,
+        title: "GitHub's REST API budget is spent",
+        description: "GitHub's /rate_limit answer says 5 or fewer core REST requests remain this hour for the token omaddons sends, or for this address without a token.",
+        why: "omaddons stops its REST requests at that reserve, so the beta and alpha channels, repositories without a release.json and search fail with rate_limited until the reset; a stable install needs no REST and keeps working.",
+        tier: Tier::Default,
+        online: true,
+        // One request to /rate_limit, which costs none of the budget.
+        cost_ms: 500,
+        requires: &[Layer::Config],
+        detect: Some(network::github_rate_limited),
+        fix: None,
+        manual: Some(Manual {
+            instruction: "wait until the reset time the finding gives, or pipe a token to omaddons auth github set for 5,000 requests an hour",
+            why: "only time resets GitHub's budget, and a token is an account's to give",
+            remediation: rate_limited_manual,
+        }),
+    },
+    FailureMode {
+        id: ids::NETWORK_SOURCE_UNREACHABLE,
+        subsystem: Subsystem::Network,
+        severity: Severity::P2,
+        title: "an addon source does not answer",
+        description: "One cheap request to an enabled source that an installed addon comes from (GitHub, WoWInterface, Tukui or WowAce) got no HTTP answer, a server error or a 429.",
+        why: "Installs, updates and checks from that source fail until it answers again. The doctor sends one request per source and does not retry it.",
+        tier: Tier::Default,
+        online: true,
+        // One request per source, up to four.
+        cost_ms: 1_500,
+        requires: &[Layer::Config, Layer::Records],
+        detect: Some(network::source_unreachable),
+        fix: None,
+        manual: Some(Manual {
+            instruction: "check this machine's network connection and the source's host, then run the online checks again later",
+            why: "omaddons cannot make a source answer, and an outage usually passes",
+            remediation: unreachable_manual,
+        }),
+    },
+    FailureMode {
         id: ids::WIDGET_VERSION_DRIFT,
         subsystem: Subsystem::Plugins,
         severity: Severity::P3,
@@ -877,7 +946,7 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         subsystem: Subsystem::StateFiles,
         severity: Severity::P3,
         title: "a check could not finish within its limit",
-        description: "A detector stopped at its deadline or its entry limit during this run, so what it checks was only partly checked.",
+        description: "A detector stopped at its deadline or its entry limit during this run, or an online check's request got no answer it could judge, so what it checks was only partly checked.",
         why: "Incomplete coverage must never read as a pass.",
         tier: Tier::Runtime,
         online: false,
@@ -1108,9 +1177,63 @@ fn crashed_manual(_: &Finding) -> Remediation {
     prose("this is a bug in omaddons: report the detector and location above")
 }
 
-/// A check past its deadline runs again alone with ten times as long (a read); one past
-/// its entry cap can only be narrowed.
+/// A token GitHub refuses, or that cannot be had: undone where it comes from, as
+/// `GithubToken::rejected` says it. A stored one is cleared (not destructive: REST then
+/// runs without it); the environment and config.toml are the user's to edit.
+fn credential_manual(f: &Finding) -> Remediation {
+    match f.evidence.origin {
+        Some(SecretOrigin::Env) => prose(&format!(
+            "replace or unset {}",
+            crate::sources::github_rest::TOKEN_VAR
+        )),
+        Some(SecretOrigin::Config) => prose("correct [sources.github] credential in config.toml"),
+        Some(SecretOrigin::File) | None => {
+            let argv = argv_of(&["omaddons", "auth", "github", "clear"]);
+            Remediation {
+                command: shell_words::join(&argv),
+                argv: Some(argv),
+                ..Remediation::default()
+            }
+        }
+    }
+}
+
+/// A spent REST budget: wait for its reset, or, without a token, store one. A token goes
+/// on standard input, never argv, so this stays prose.
+fn rate_limited_manual(f: &Finding) -> Remediation {
+    let wait = f.evidence.rate_limit.map_or_else(
+        || "wait for GitHub's hourly reset".to_owned(),
+        |r| format!("wait until {}", r.reset_at.strftime("%Y-%m-%d %H:%M UTC")),
+    );
+    if f.evidence.authenticated == Some(true) {
+        prose(&wait)
+    } else {
+        prose(&format!(
+            "{wait}, or pipe a token to omaddons auth github set for 5,000 requests an hour"
+        ))
+    }
+}
+
+/// A source that does not answer: advice naming its host.
+fn unreachable_manual(f: &Finding) -> Remediation {
+    let host = f.evidence.host.as_deref().unwrap_or("the source's host");
+    prose(&format!(
+        "check this machine's network connection and {host}, then run the online checks again later"
+    ))
+}
+
+/// A check past its deadline runs again alone with ten times as long (a read); an online
+/// check that got no answer it could judge asks again; one past its entry cap can only be
+/// narrowed.
 fn incomplete_manual(f: &Finding) -> Remediation {
+    if let (Some(fm), Some("unanswered")) = (f.evidence.detector, f.evidence.reason) {
+        let argv = argv_of(&["omaddons", "doctor", "--online", "--only", fm]);
+        return Remediation {
+            command: shell_words::join(&argv),
+            argv: Some(argv),
+            ..Remediation::default()
+        };
+    }
     match (f.evidence.detector, f.evidence.deadline_ms) {
         (Some(fm), Some(ms)) => {
             let budget = format!("{}ms", ms.saturating_mul(10));
@@ -1623,8 +1746,9 @@ mod tests {
         }
         // The seven, the two the doctor's view raises, the two its runtime raises, the four
         // inventory rows of `external_artifacts`, the nine journal and lock rows of
-        // `concurrency_primitives`, and `caches`' blob row (F6).
-        assert_eq!(FAILURE_MODES.len(), 25);
+        // `concurrency_primitives`, `caches`' blob row (F6) and the three online rows of
+        // `network` (F7).
+        assert_eq!(FAILURE_MODES.len(), 28);
     }
 
     /// Appendix B rows 1-10: the journal and lock rows, all `cached` and report-only.
@@ -1860,6 +1984,108 @@ mod tests {
             );
         }
         assert!(invariant_violations(FAILURE_MODES).is_empty());
+    }
+
+    /// Appendix B rows 42-44: the online rows of `network`, `default` (invariant 6: an
+    /// online row is never in a fast tier), report-only.
+    #[test]
+    fn the_three_network_rows_match_appendix_b() {
+        let cases: [(&str, Severity, &[Layer], u32, &str); 3] = [
+            (
+                ids::NETWORK_GITHUB_RATE_LIMITED,
+                Severity::P2,
+                &[Layer::Config],
+                500,
+                "GitHub's REST API budget is spent",
+            ),
+            (
+                ids::NETWORK_CREDENTIAL_REJECTED,
+                Severity::P1,
+                &[Layer::Config],
+                500,
+                "GitHub rejects the configured token",
+            ),
+            (
+                ids::NETWORK_SOURCE_UNREACHABLE,
+                Severity::P2,
+                &[Layer::Config, Layer::Records],
+                1_500,
+                "an addon source does not answer",
+            ),
+        ];
+        for (id, severity, requires, cost_ms, title) in cases {
+            let row = row(id).unwrap();
+            assert_eq!(
+                (
+                    row.subsystem,
+                    row.severity,
+                    row.tier,
+                    row.online,
+                    row.requires,
+                    row.cost_ms,
+                    row.title
+                ),
+                (
+                    Subsystem::Network,
+                    severity,
+                    Tier::Default,
+                    true,
+                    requires,
+                    cost_ms,
+                    title
+                ),
+                "{id}"
+            );
+            assert!(row.detect.is_some() && row.fix.is_none(), "{id}");
+            let manual = row.manual.unwrap();
+            for text in [row.description, row.why, manual.instruction, manual.why] {
+                let words: Vec<&str> = text.split_whitespace().collect();
+                let names_command = words.windows(2).any(|pair| {
+                    pair[0] == "omaddons"
+                        && crate::app::COMMANDS
+                            .iter()
+                            .any(|c| c.name.split_whitespace().next() == Some(pair[1]))
+                });
+                // A token goes on standard input, never argv: `auth github set` is prose.
+                assert!(
+                    !names_command || text.contains("omaddons auth github set"),
+                    "{id}: names a runnable command: {text}"
+                );
+            }
+        }
+        assert!(invariant_violations(FAILURE_MODES).is_empty());
+    }
+
+    /// An online check that got no answer it could judge is asked again, online.
+    #[test]
+    fn unanswered_limit_asks_again() {
+        let row = row(ids::CHECK_INCOMPLETE).unwrap();
+        let f = row.finding(Observation {
+            subject: Subject::machine().detector(ids::NETWORK_SOURCE_UNREACHABLE),
+            title: "t".to_owned(),
+            confidence: Confidence::High,
+            addon: None,
+            folder: None,
+            evidence: Evidence {
+                detector: Some(ids::NETWORK_SOURCE_UNREACHABLE),
+                reason: Some("unanswered"),
+                ..Evidence::default()
+            },
+        });
+        let argv = argv_of(&[
+            "omaddons",
+            "doctor",
+            "--online",
+            "--only",
+            ids::NETWORK_SOURCE_UNREACHABLE,
+        ]);
+        assert_eq!(
+            (f.remediation.command.as_str(), f.remediation.argv.as_ref()),
+            (
+                "omaddons doctor --online --only fm-network-source-unreachable",
+                Some(&argv)
+            )
+        );
     }
 
     #[test]

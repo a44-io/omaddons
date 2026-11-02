@@ -37,6 +37,8 @@ pub struct DiagnosePlan {
     /// Selected checks that need the network, without `--online`; sorted by id.
     pub online_skipped: Vec<Skipped>,
     pub max_severity: Option<Severity>,
+    /// `--online`: the run's view may build the probe client its online checks send with.
+    pub online: bool,
 }
 
 /// Every tier a check can be of; `runtime` rows are no check.
@@ -171,6 +173,7 @@ pub fn plan_diagnose(
         budgets,
         online_skipped,
         max_severity: asked.severity,
+        online: asked.online,
     })
 }
 

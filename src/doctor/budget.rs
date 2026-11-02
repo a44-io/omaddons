@@ -112,6 +112,14 @@ impl Budget {
         self.deadline.is_some_and(|(at, _)| Instant::now() >= at)
     }
 
+    /// The time left until the deadline: zero once it has passed, and `Duration::MAX`
+    /// without one. An online check bounds its request with it.
+    pub fn remaining(&self) -> Duration {
+        self.deadline.map_or(Duration::MAX, |(at, _)| {
+            at.saturating_duration_since(Instant::now())
+        })
+    }
+
     /// The record of the limit that stopped the check, once one did: the limit, and the
     /// value it was set to.
     pub fn incomplete(&self) -> Option<Incomplete> {
@@ -126,7 +134,7 @@ impl Budget {
     }
 
     /// Entries still to spend.
-    fn remaining(&self) -> u64 {
+    fn entries_left(&self) -> u64 {
         self.max_entries.saturating_sub(self.used)
     }
 
@@ -290,7 +298,7 @@ pub fn list_dir(dir: &Path, budget: &mut Budget) -> io::Result<Listing> {
 /// filesystem lists them in, but only one more than the budget can still visit is kept,
 /// so memory stays within the budget; reading stops at the deadline.
 fn read_names(dir: &Path, budget: &mut Budget) -> io::Result<(Vec<(OsString, EntryKind)>, bool)> {
-    let keep = usize::try_from(budget.remaining().saturating_add(1)).unwrap_or(usize::MAX);
+    let keep = usize::try_from(budget.entries_left().saturating_add(1)).unwrap_or(usize::MAX);
     // A max-heap of the smallest names so far: the largest leaves first.
     let mut first = BinaryHeap::new();
     let mut all = true;
@@ -442,6 +450,54 @@ mod tests {
             (Ok(()), Ok(()))
         );
         assert!(!unlimited.expired());
+    }
+
+    #[test]
+    fn remaining_counts_down_to_zero() {
+        let budget = Budget::new(Duration::from_millis(200), 10);
+        let first = budget.remaining();
+        assert!(
+            first > Duration::ZERO && first <= Duration::from_millis(200),
+            "{first:?}"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+        let later = budget.remaining();
+        assert!(later < first, "{first:?} then {later:?}");
+        let spent = Budget::new(Duration::from_millis(1), 10);
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(spent.expired());
+        assert_eq!(spent.remaining(), Duration::ZERO, "zero once expired");
+        assert_eq!(
+            Budget::unlimited().remaining(),
+            Duration::MAX,
+            "no deadline"
+        );
+        let mut entries = Budget::new(HOUR, 1);
+        let _ = entries.charge(2);
+        assert!(
+            entries.remaining() > Duration::from_secs(3_500),
+            "the entry cap leaves the time as it is"
+        );
+    }
+
+    /// An online check's unusable answer has no limit value to report: neither a
+    /// deadline nor an entry cap stopped it.
+    #[test]
+    fn unanswered_detected_has_no_limit_values() {
+        let detected = crate::doctor::finding::Detected::unanswered(Vec::new());
+        assert!(detected.found.is_empty());
+        assert_eq!(
+            detected.incomplete,
+            Some(Incomplete {
+                limit: IncompleteLimit::Unanswered,
+                deadline_ms: None,
+                max_entries: None,
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(detected.incomplete).unwrap(),
+            serde_json::json!({"limit": "unanswered", "deadline_ms": null, "max_entries": null})
+        );
     }
 
     #[test]

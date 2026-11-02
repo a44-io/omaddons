@@ -569,9 +569,17 @@ fn crashed(row: &FailureMode, location: Option<String>) -> Option<Finding> {
 /// to, nothing that varies between two runs of one state.
 fn incomplete_observation(subject: Subject, row: &FailureMode, cut: Incomplete) -> Observation {
     let limit = cut.limit.as_str();
+    let title = match cut.limit {
+        IncompleteLimit::Unanswered => {
+            format!("The check {} got no answer it could judge", row.id)
+        }
+        IncompleteLimit::Deadline | IncompleteLimit::Entries | IncompleteLimit::OnlineRequests => {
+            format!("The check {} stopped at its {limit} limit", row.id)
+        }
+    };
     Observation {
         subject: subject.detector(row.id),
-        title: format!("The check {} stopped at its {limit} limit", row.id),
+        title,
         confidence: Confidence::High,
         addon: None,
         folder: None,

@@ -7,6 +7,7 @@ pub(crate) mod caches;
 pub(crate) mod concurrency;
 pub(crate) mod configs;
 pub(crate) mod external;
+pub(crate) mod network;
 pub(crate) mod plugins;
 pub(crate) mod schemas;
 pub(crate) mod state_files;

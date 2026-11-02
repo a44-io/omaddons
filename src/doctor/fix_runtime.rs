@@ -416,6 +416,7 @@ impl RealEffects<'_> {
             self.paths.clone(),
             ViewOptions {
                 caller_holds_lock: under_lock,
+                online: self.req.checks.online,
                 ..ViewOptions::default()
             },
         )
@@ -884,7 +885,13 @@ pub fn run_fix_at(
     delegate: &dyn RecoveryDelegate,
 ) -> std::result::Result<FixOutcome, DoctorFailure> {
     let clock = Instant::now();
-    let view = DoctorView::load_at(paths.clone(), ViewOptions::default());
+    let view = DoctorView::load_at(
+        paths.clone(),
+        ViewOptions {
+            online: req.checks.online,
+            ..ViewOptions::default()
+        },
+    );
     // -t resolves before the run starts: a client that is not there creates nothing.
     req.selection.scope(&view)?;
     let (clients, targets) = clients_of(&view);
@@ -1736,6 +1743,7 @@ mod tests {
                 budgets: Budgets::TierDefaults,
                 online_skipped: Vec::new(),
                 max_severity: None,
+                online: false,
             },
             force: false,
             dry_run,

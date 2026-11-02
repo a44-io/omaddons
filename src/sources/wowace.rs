@@ -38,7 +38,7 @@ use crate::net::{Http, Request, Response};
 use crate::politeness::MAX_RETRIES;
 
 /// Where every project's repository is.
-const REPOS: &str = "https://repos.wowace.com/wow";
+pub(crate) const REPOS: &str = "https://repos.wowace.com/wow";
 
 /// The packager's version keyword, the only one a TOC may hold.
 const PROJECT_VERSION: &[u8] = b"@project-version@";
