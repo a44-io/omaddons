@@ -1760,3 +1760,552 @@ mod intent {
         }
     }
 }
+
+/// E9's harness (`common::compat`): the toolchain read, the provenance check, the
+/// protected inventory, aging, the bytes check, history and the table. Every assertion
+/// names its case and shows its input and output.
+#[cfg(test)]
+mod compat_harness {
+    use std::collections::BTreeSet;
+    use std::fs;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, SystemTime};
+
+    use super::common::compat::{
+        AGE, COLUMNS, FolderBytes, M4Inventory, Provenance, Row, age, cache, describe_lost,
+        history_prefix_kept, meta, rel, sha256_file, stamped_pre_paths, table, toolchain_channel,
+        verified,
+    };
+    use super::common::home::Home;
+
+    const FULL: &str = "c0ab5e904db26e95cade7fe1ef5129c27bb16ead";
+    const OTHER: &str = "0000000000000000000000000000000000000000";
+    const TX: &str = "01M6CV6Q553BVXXR39XY08EXHK";
+    const TX2: &str = "01M6CV6Q7Z18FX261G63TRCTDK";
+    const REPAIR: &str = "01M6CV6QAPRB2WKJKDE80P4D6W";
+    const RUN: &str = "2026-11-01T00:00:00Z__01M6CV6QBGCRYRX845ZW50DVPZ";
+
+    fn write(path: &Path, bytes: &[u8]) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, bytes).unwrap();
+    }
+
+    fn mkdir(path: &Path) -> PathBuf {
+        fs::create_dir_all(path).unwrap();
+        path.to_path_buf()
+    }
+
+    fn retail(home: &Home) -> PathBuf {
+        home.client("_retail_")
+    }
+
+    /// An unfinished repair journal (a `prepared` line and one step) whose primitives are
+    /// `primitives`, at `<state>/journal/<REPAIR>.repair.jsonl`.
+    fn unfinished(home: &Home, primitives: serde_json::Value) -> PathBuf {
+        let path = home.state().join(format!("journal/{REPAIR}.repair.jsonl"));
+        let prepared = serde_json::json!({
+            "type": "prepared", "format": "1.0", "tx": REPAIR, "primitives": primitives,
+        });
+        write(
+            &path,
+            format!("{prepared}\n{{\"type\":\"step\",\"seq\":1}}\n").as_bytes(),
+        );
+        path
+    }
+
+    fn stamp() -> String {
+        format!("stamp:sha256:{}", "ab".repeat(32))
+    }
+
+    #[test]
+    fn compat_toolchain_channel_reads_rust_toolchain_toml() {
+        let at_c0ab5e9 = "[toolchain]\nchannel = \"1.97.1\"\ncomponents = [\"rustfmt\", \"clippy\"]\nprofile = \"minimal\"\n";
+        for (case, text, want) in [
+            (
+                "plain",
+                "[toolchain]\nchannel = \"1.97.1\"\n",
+                Some("1.97.1"),
+            ),
+            ("as_at_c0ab5e9", at_c0ab5e9, Some("1.97.1")),
+            (
+                "single_quoted",
+                "[toolchain]\nchannel = '1.97.1'\n",
+                Some("1.97.1"),
+            ),
+            ("no_toolchain_table", "channel = \"1.97.1\"\n", None),
+            (
+                "path_toolchain",
+                "[toolchain]\npath = \"toolchains/custom\"\n",
+                None,
+            ),
+            ("not_toml", "this is { not toml", None),
+        ] {
+            let got = toolchain_channel(text);
+            assert_eq!(got.as_deref(), want, "{case}: {text:?} → {got:?}");
+        }
+    }
+
+    #[test]
+    fn compat_provenance_verifies_only_a_matching_binary() {
+        for case in [
+            "match",
+            "binary_byte_changed",
+            "commit_differs",
+            "head_differs",
+            "record_missing",
+            "record_unparsable",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let bin = dir.path().join("omaddons");
+            let record = dir.path().join("c0ab5e9.provenance.json");
+            fs::write(&bin, b"an M3 binary").unwrap();
+            let provenance = Provenance {
+                commit: FULL.to_owned(),
+                toolchain: "1.97.1".to_owned(),
+                rustc: "rustc 1.97.1".to_owned(),
+                profile: "release".to_owned(),
+                locked: true,
+                binary_sha256: sha256_file(&bin).unwrap(),
+                built_at: "2026-11-01T00:00:00Z".to_owned(),
+            };
+            fs::write(&record, serde_json::to_string(&provenance).unwrap()).unwrap();
+            let (mut full, mut head) = (FULL, FULL);
+            match case {
+                "binary_byte_changed" => fs::write(&bin, b"an M3 binarY").unwrap(),
+                "commit_differs" => (full, head) = (OTHER, OTHER),
+                "head_differs" => head = OTHER,
+                "record_missing" => fs::remove_file(&record).unwrap(),
+                "record_unparsable" => fs::write(&record, "{ not json").unwrap(),
+                _ => {}
+            }
+            let got = verified(&record, &bin, full, head);
+            let names = match case {
+                "match" => {
+                    assert_eq!(got.as_ref().ok(), Some(&provenance), "{case}: {got:?}");
+                    continue;
+                }
+                "binary_byte_changed" => "sha256",
+                "commit_differs" => "commit",
+                "head_differs" => "HEAD",
+                "record_missing" => "no provenance record",
+                _ => "does not parse",
+            };
+            let err = got.expect_err(case);
+            assert!(
+                err.contains(names),
+                "{case}: the error names {names:?}: {err}"
+            );
+        }
+    }
+
+    /// One protected entry of each kind, and a registered subject.
+    struct Protected {
+        home: Home,
+        journal: PathBuf,
+        run: PathBuf,
+        run_file: PathBuf,
+        latest: PathBuf,
+        quarantine: PathBuf,
+        lease: PathBuf,
+        subject: PathBuf,
+    }
+
+    fn protected() -> Protected {
+        let home = Home::new(&["wow"]);
+        let state = home.state();
+        let journal = state.join(format!("journal/{REPAIR}.repair.jsonl"));
+        write(
+            &journal,
+            b"{\"type\":\"prepared\"}\n{\"type\":\"committed\"}\n",
+        );
+        let run = state.join("doctor/runs").join(RUN);
+        let run_file = run.join("undo.sh");
+        write(&run.join("report.json"), b"{}\n");
+        write(&run_file, b"#!/bin/sh\n");
+        fs::set_permissions(&run_file, fs::Permissions::from_mode(0o400)).unwrap();
+        let latest = state.join("doctor/latest");
+        symlink(format!("runs/{RUN}"), &latest).unwrap();
+        let quarantine = mkdir(&cache(&home).join("quarantine").join(RUN));
+        write(&quarantine.join("held.lua"), b"held\n");
+        let lease = cache(&home).join("plans/01M6CV6Q8SE3FS1DXS9CBCTS2Z.lease");
+        write(&lease, b"lease\n");
+        let subject = home.env.config().join("omaddons/a.write");
+        write(&subject, b"repaired\n");
+        Protected {
+            home,
+            journal,
+            run,
+            run_file,
+            latest,
+            quarantine,
+            lease,
+            subject,
+        }
+    }
+
+    #[test]
+    fn compat_inventory_sees_every_change_to_a_protected_artifact() {
+        for (case, deleted, overwritten) in [
+            ("unchanged", None, None),
+            ("repair_journal_deleted", Some("journal"), None),
+            ("run_file_bytes_changed", None, Some("run")),
+            ("run_file_mode_changed", None, Some("run")),
+            ("quarantine_entry_added", None, Some("quarantine")),
+            ("quarantine_entry_removed", None, Some("quarantine")),
+            ("latest_retargeted", None, Some("latest")),
+            ("latest_removed", Some("latest"), None),
+            ("plan_lease_deleted", Some("lease"), None),
+            ("subject_rewritten", None, Some("subject")),
+        ] {
+            let p = protected();
+            let mut inventory = M4Inventory::collect(&p.home);
+            inventory.subject(&p.subject);
+            let by_name = |name: &str| match name {
+                "journal" => p.journal.clone(),
+                "run" => p.run.clone(),
+                "latest" => p.latest.clone(),
+                "quarantine" => p.quarantine.clone(),
+                "lease" => p.lease.clone(),
+                _ => p.subject.clone(),
+            };
+            match case {
+                "repair_journal_deleted" => fs::remove_file(&p.journal).unwrap(),
+                "run_file_bytes_changed" => {
+                    fs::set_permissions(&p.run_file, fs::Permissions::from_mode(0o600)).unwrap();
+                    fs::write(&p.run_file, b"#!/bin/sh\nexit 1\n").unwrap();
+                    fs::set_permissions(&p.run_file, fs::Permissions::from_mode(0o400)).unwrap();
+                }
+                "run_file_mode_changed" => {
+                    fs::set_permissions(&p.run_file, fs::Permissions::from_mode(0o600)).unwrap();
+                }
+                "quarantine_entry_added" => write(&p.quarantine.join("new.lua"), b"new\n"),
+                "quarantine_entry_removed" => {
+                    fs::remove_file(p.quarantine.join("held.lua")).unwrap()
+                }
+                "latest_retargeted" => {
+                    fs::remove_file(&p.latest).unwrap();
+                    symlink("runs/elsewhere", &p.latest).unwrap();
+                }
+                "latest_removed" => fs::remove_file(&p.latest).unwrap(),
+                "plan_lease_deleted" => fs::remove_file(&p.lease).unwrap(),
+                "subject_rewritten" => fs::write(&p.subject, b"rewritten\n").unwrap(),
+                _ => {}
+            }
+            let diff = inventory.compare(&inventory.rehash());
+            let want_deleted: Vec<PathBuf> = deleted.map(by_name).into_iter().collect();
+            let want_overwritten: Vec<PathBuf> = overwritten.map(by_name).into_iter().collect();
+            assert_eq!(diff.deleted, want_deleted, "{case}: deleted, in {diff:?}");
+            assert_eq!(
+                diff.overwritten, want_overwritten,
+                "{case}: overwritten, in {diff:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn compat_inventory_collects_exactly_the_m4_locations() {
+        let home = Home::new(&["wow"]);
+        let (state, meta) = (home.state(), meta(&retail(&home)));
+        let mut want = BTreeSet::new();
+        let mut keep = |path: PathBuf| {
+            want.insert(path);
+        };
+        // M4's own.
+        let reactivating = state.join(format!("journal/{TX}.reactivating.jsonl"));
+        write(&reactivating, b"{}\n");
+        keep(reactivating);
+        let run = mkdir(&state.join("doctor/runs").join(RUN));
+        keep(run.clone());
+        let staged = mkdir(&state.join(format!("doctor/runs/.{RUN}.tmp")));
+        keep(staged);
+        let latest = state.join("doctor/latest");
+        symlink(format!("runs/{RUN}"), &latest).unwrap();
+        keep(latest);
+        let temp = state.join("doctor/.omaddons-01M6CV6Q.tmp");
+        write(&temp, b"");
+        keep(temp);
+        let repair_half = mkdir(&meta.join(format!("snapshots/{TX}.repair")));
+        keep(repair_half);
+        let quarantined = mkdir(&cache(&home).join("quarantine").join(RUN));
+        keep(quarantined);
+        let plan = cache(&home).join("plans/01M6CV6Q8SE3FS1DXS9CBCTS2Z.json");
+        write(&plan, b"{}\n");
+        keep(plan);
+        // An unfinished repair: its journal, and the two subjects its primitives name.
+        let staged_tx2 = mkdir(&meta.join(format!("stage/{TX2}")));
+        let destination = mkdir(&run.join(format!("quarantine/state/stage/{TX2}")));
+        let own_lock = state.join(format!("inflight/{REPAIR}.lock"));
+        write(&own_lock, b"");
+        let journal = unfinished(
+            &home,
+            serde_json::json!([
+                {"seq": 1, "op": "rename_noreplace", "path": staged_tx2, "to": destination,
+                 "pre": {"path": {"kind": "dir", "stamp": stamp()}, "to": {"kind": "absent"}}},
+                {"seq": 2, "op": "chmod", "path": own_lock, "mode": "0644", "pre": {"kind": "file"}},
+            ]),
+        );
+        keep(journal);
+        keep(staged_tx2);
+        keep(destination);
+        // Decoys: M3's own, and what no M4 journal names.
+        for decoy in [
+            state.join(format!("journal/{TX}.jsonl")),
+            state.join(format!("journal/{TX}.wtf.jsonl")),
+            state.join(format!("inflight/{TX}.lock")),
+            state.join("plans/01M6CV6Q8SE3FS1DXS9CBCTS2Z.json"),
+        ] {
+            write(&decoy, b"{}\n");
+        }
+        mkdir(&meta.join(format!("stage/{TX}")));
+        mkdir(&meta.join(format!("snapshots/{TX}")));
+        let got: BTreeSet<PathBuf> = M4Inventory::collect(&home).0.into_keys().collect();
+        let show = |set: &BTreeSet<PathBuf>| -> Vec<String> {
+            set.iter().map(|p| rel(&home, p)).collect()
+        };
+        assert_eq!(
+            show(&got),
+            show(&want),
+            "exactly M4's entries and the unfinished repair's subjects"
+        );
+    }
+
+    fn mtime(path: &Path) -> SystemTime {
+        fs::symlink_metadata(path).unwrap().modified().unwrap()
+    }
+
+    /// Whether `path`'s own mtime is about [`AGE`] ago.
+    fn aged(path: &Path) -> bool {
+        let want = SystemTime::now() - AGE;
+        let got = mtime(path);
+        let off = got.duration_since(want).unwrap_or_else(|e| e.duration());
+        off < Duration::from_secs(5)
+    }
+
+    /// Whether `path`'s own mtime is within the last minute.
+    fn recent(path: &Path) -> bool {
+        SystemTime::now()
+            .duration_since(mtime(path))
+            .is_ok_and(|d| d < Duration::from_secs(60))
+    }
+
+    #[test]
+    fn compat_age_sets_top_level_mtimes_and_spares_stamped_subjects() {
+        let home = Home::new(&["wow"]);
+        let (state, client) = (home.state(), retail(&home));
+        let stage = mkdir(&meta(&client).join(format!("stage/{TX}")));
+        let nested = stage.join("Foo/Foo.toc");
+        write(&nested, b"## Interface: 120105\n");
+        let elsewhere = mkdir(&home.env.root().join("a-run-elsewhere"));
+        let latest = state.join("doctor/latest");
+        fs::create_dir_all(latest.parent().unwrap()).unwrap();
+        symlink(&elsewhere, &latest).unwrap();
+        let stamped = mkdir(&meta(&client).join(format!("stage/{TX2}")));
+        unfinished(
+            &home,
+            serde_json::json!([
+                {"seq": 1, "op": "rename_noreplace", "path": stamped,
+                 "to": state.join(format!("doctor/runs/{RUN}/quarantine/x")),
+                 "pre": {"path": {"kind": "dir", "stamp": stamp()}, "to": {"kind": "absent"}}},
+            ]),
+        );
+        let addon = home.addons("_retail_").join("Foo/Foo.toc");
+        write(&addon, b"## Interface: 120105\n");
+        let wtf = client.join("WTF/Config.wtf");
+        write(&wtf, b"SET locale \"enUS\"\n");
+        assert!(
+            !cache(&home).join("tmp").exists(),
+            "missing_directories_ignored: no <cache>/tmp"
+        );
+
+        let spare = stamped_pre_paths(&home);
+        assert_eq!(
+            spare,
+            BTreeSet::from([stamped.clone()]),
+            "stamped_pre_subject_spared: stamped_pre_paths"
+        );
+        let done = age(&home, &spare);
+        for (case, path, want_aged) in [
+            ("stage_entry_aged", &stage, true),
+            ("nested_entry_untouched", &nested, false),
+            ("symlink_aged_not_followed (the link)", &latest, true),
+            ("symlink_aged_not_followed (its target)", &elsewhere, false),
+            ("stamped_pre_subject_spared", &stamped, false),
+            ("addons_and_wtf_never_aged (AddOns)", &addon, false),
+            ("addons_and_wtf_never_aged (WTF)", &wtf, false),
+        ] {
+            let ok = if want_aged { aged(path) } else { recent(path) };
+            assert!(
+                ok,
+                "{case}: {} has mtime {:?} (aged {want_aged} wanted); aged {:?}",
+                rel(&home, path),
+                mtime(path),
+                done.aged
+            );
+        }
+        assert_eq!(
+            done.spared,
+            vec![stamped],
+            "stamped_pre_subject_spared: spared"
+        );
+    }
+
+    /// An addon folder `Foo` under `dir`, as every case builds it.
+    fn foo_at(dir: &Path) -> PathBuf {
+        let foo = dir.join("Foo");
+        write(&foo.join("Foo.toc"), b"## Interface: 120105\n");
+        write(&foo.join("Foo.lua"), b"print(1)\n");
+        foo
+    }
+
+    #[test]
+    fn compat_folder_bytes_follow_a_moved_folder_and_flag_a_deleted_one() {
+        for case in [
+            "moved",
+            "deleted",
+            "content_changed",
+            "wtf_tree_deleted",
+            "copy_elsewhere_counts",
+        ] {
+            let home = Home::new(&["wow"]);
+            let quarantine = mkdir(&cache(&home).join("quarantine").join(RUN));
+            let foo = foo_at(&quarantine);
+            let wtf = quarantine.join("WTF");
+            write(
+                &wtf.join("Account/FAKEACCT/SavedVariables/Foo.lua"),
+                b"FooDB = {}\n",
+            );
+            if case == "copy_elsewhere_counts" {
+                foo_at(&home.env.root().join("src"));
+            }
+            let held = FolderBytes::held(&home, &M4Inventory::collect(&home));
+            assert_eq!(held.0.len(), 2, "{case}: Foo and WTF held: {held:?}");
+            match case {
+                "moved" => {
+                    let to = home.addons("_retail_").join("Foo");
+                    fs::create_dir_all(to.parent().unwrap()).unwrap();
+                    fs::rename(&foo, &to).unwrap();
+                }
+                "deleted" | "copy_elsewhere_counts" => fs::remove_dir_all(&foo).unwrap(),
+                "content_changed" => fs::write(foo.join("Foo.lua"), b"print(2)\n").unwrap(),
+                _ => fs::remove_dir_all(&wtf).unwrap(),
+            }
+            let lost = held.lost(&FolderBytes::anywhere(&home));
+            let said = describe_lost(&home, &lost);
+            match case {
+                "moved" | "copy_elsewhere_counts" => {
+                    assert!(lost.is_empty(), "{case}: nothing lost: {said}");
+                }
+                "wtf_tree_deleted" => {
+                    assert_eq!(lost.len(), 1, "{case}: {said}");
+                    assert!(
+                        said.contains("WTF/…") && !said.contains("FAKEACCT"),
+                        "{case}: its path cut at WTF: {said}"
+                    );
+                }
+                _ => {
+                    assert_eq!(lost.len(), 1, "{case}: {said}");
+                    assert_eq!(
+                        lost[0].1,
+                        vec![foo.clone()],
+                        "{case}: its former path: {said}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The M3 characterization never skips (criterion 16): neither its harness nor its
+    /// suite calls the checkpoint's skip, prints a skip line or reads the variable that
+    /// accepts one.
+    #[test]
+    fn compat_suite_never_skips() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
+        for file in ["tests/common/compat.rs", "tests/compat_m3.rs"] {
+            let text = fs::read_to_string(repo.join(file)).unwrap();
+            for banned in ["checkpoint::skip", "skip(", "ALLOW_SKIP", "\"SKIP "] {
+                assert!(!text.contains(banned), "{file} holds {banned:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn compat_history_prefix() {
+        let before = b"{\"tx\":\"a\"}\n".as_slice();
+        for (case, b, a, want) in [
+            (
+                "appended",
+                before,
+                b"{\"tx\":\"a\"}\n{\"tx\":\"b\"}\n".as_slice(),
+                true,
+            ),
+            (
+                "line_rewritten",
+                before,
+                b"{\"tx\":\"z\"}\n".as_slice(),
+                false,
+            ),
+            ("truncated", before, b"{\"tx\"".as_slice(), false),
+            ("empty_before", b"".as_slice(), before, true),
+        ] {
+            assert_eq!(history_prefix_kept(b, a), want, "{case}: {b:?} then {a:?}");
+        }
+    }
+
+    #[test]
+    fn compat_table_renders_rows_and_cuts_wtf_paths() {
+        let row = Row {
+            family: "control",
+            scene: "a | piped scene".to_owned(),
+            position: "prepared".to_owned(),
+            age: "at once",
+            m3: "omaddons install x".to_owned(),
+            exit: 0,
+            code: "ok".to_owned(),
+            warnings: vec!["journal_recovered".to_owned()],
+            protected: "1 deleted, 0 overwritten: -c/WTF/Account/FAKEACCT/SavedVariables/Foo.lua"
+                .to_owned(),
+            bytes: "accounted".to_owned(),
+            other: vec!["state: + x".to_owned()],
+            m4_next: "status exit 0".to_owned(),
+            class: "recovered_by_m3",
+        };
+        let text = table("Title", std::slice::from_ref(&row));
+        let lines: Vec<&str> = text.lines().collect();
+        let header = format!("| {} |", COLUMNS.join(" | "));
+        assert_eq!(lines[2], header, "the header: {text}");
+        assert_eq!(
+            COLUMNS,
+            [
+                "family",
+                "scene",
+                "position",
+                "age",
+                "m3",
+                "exit",
+                "code",
+                "warnings",
+                "protected",
+                "bytes",
+                "other",
+                "m4_next",
+                "class"
+            ],
+            "the header lists Row's fields in order"
+        );
+        let fields: BTreeSet<String> = serde_json::to_value(&row)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        let columns: BTreeSet<String> = COLUMNS.iter().map(|c| (*c).to_owned()).collect();
+        assert_eq!(fields, columns, "every field of Row is a column");
+        assert!(text.contains("a \\| piped scene"), "a | is escaped: {text}");
+        assert!(
+            text.contains("-c/WTF/…") && !text.contains("FAKEACCT"),
+            "a WTF path is cut: {text}"
+        );
+    }
+}

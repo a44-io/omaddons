@@ -10,8 +10,9 @@
 //! previews bound by `--if-match`, their refusals and what they leave alone
 //! (`binding`), the realistic home of 5,040 managed files, built offline
 //! (`realistic`), release landings for every source (`landing`), WowAce fixtures
-//! over its recording (`wowace`), and crashed repairs of every fix kind, committed in a
-//! child process of the test binary (`repair`).
+//! over its recording (`wowace`), crashed repairs of every fix kind, committed in a
+//! child process of the test binary (`repair`), and the last M3 commit built with its own
+//! toolchain and run against M4 state (`compat`).
 //! Each integration test crate declares `mod common;` and uses the subset it needs.
 //!
 //! Everything is written under a [`env::TestEnv`] tempdir; nothing here touches the real
@@ -28,6 +29,7 @@ pub mod barrier;
 pub mod binding;
 pub mod buggrabber;
 pub mod checkpoint;
+pub mod compat;
 pub mod differential;
 pub mod doctor;
 pub mod drift;
