@@ -297,7 +297,12 @@ fn rolled_forward(log: &TestLog) -> (Home, String, String) {
     );
     log.step("fix");
     let fixed = run(log, &home, &["doctor", "fix"]);
+    // The half-swapped update also showed as Foo's files changed on disk before the fix;
+    // verification checks that mode again, so the settled state reports nothing left.
     fixed.ok();
+    assert_eq!(fixed.envelope()["state"], "DONE_OK");
+    assert_eq!(fixed.envelope()["findings"], json!([]));
+    assert_eq!(fixed.envelope()["summary"]["findings_after"], 0);
     log.json("warnings", &fixed.envelope()["warnings"]);
     log.assert_eq(
         "delegated",

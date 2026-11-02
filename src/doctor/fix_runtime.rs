@@ -281,6 +281,12 @@ fn failpoint_error(err: &std::io::Error) -> Error {
 /// The state and exit of a run that ended as `terminal`, `findings` being whether any
 /// finding remains in its report. A stop is `REFUSING` when its error exits 4,
 /// `LOCK_LOST` when it exits 5, else `DONE_FAILED` with its error's exit.
+/// Whether `f` is the runtime's finding about the check of one of `modes` (its
+/// `evidence.detector`: a check cut short or crashed).
+fn about_check_of(f: &Finding, modes: &BTreeSet<&'static str>) -> bool {
+    f.evidence.detector.is_some_and(|d| modes.contains(d))
+}
+
 pub(crate) fn state_of(terminal: &Terminal, findings: bool) -> (RunState, Exit) {
     let state = match terminal {
         Terminal::Stopped { stop, .. } => {
@@ -307,10 +313,16 @@ pub(crate) fn state_of(terminal: &Terminal, findings: bool) -> (RunState, Exit) 
                     RecoveryOutcome::RolledBack | RecoveryOutcome::RolledForward
                 )
             });
-            if verification.remaining == 0 && settled {
-                RunState::DoneOk
-            } else {
+            // A repaired mode still found, or a recovery left unsettled, is partial; with
+            // the repairs verified, anything else the report still holds (another mode, an
+            // instance its fixer cannot repair, a check that could not finish) is left, so
+            // the run is never called healthy (M4-D43).
+            if verification.remaining > 0 || !settled {
                 RunState::DonePartial
+            } else if findings {
+                RunState::DoneFindings
+            } else {
+                RunState::DoneOk
             }
         }
         Terminal::Planned(_) | Terminal::Done { .. } if findings => RunState::DoneFindings,
@@ -346,6 +358,10 @@ struct RealEffects<'a> {
     modes: BTreeSet<&'static str>,
     /// Those modes' findings as last detected, under the lock and then after it.
     fresh: Option<Vec<Finding>>,
+    /// The failure modes verification checked again, once it did (`fresh` then covers
+    /// them, the runtime's findings about their checks included); `None` while `fresh`
+    /// covers [`Self::modes`] alone.
+    rechecked: Option<BTreeSet<&'static str>>,
     cleanup: Option<RepairCleanup>,
     warnings: Vec<Warning>,
     notes: Vec<String>,
@@ -386,12 +402,23 @@ impl RealEffects<'_> {
 
     /// The planned modes' findings in a fresh view.
     fn detect_again(&self, view: &DoctorView) -> Result<Vec<Finding>> {
+        self.detect_modes(view, &self.modes, false)
+    }
+
+    /// The findings of `modes` in a fresh view, and with `runtime` the runtime's findings
+    /// about their checks (a check cut short or crashed).
+    fn detect_modes(
+        &self,
+        view: &DoctorView,
+        modes: &BTreeSet<&'static str>,
+        runtime: bool,
+    ) -> Result<Vec<Finding>> {
         let rows: Vec<FailureMode> = self
             .req
             .checks
             .rows
             .iter()
-            .filter(|row| self.modes.contains(row.id))
+            .filter(|row| modes.contains(row.id))
             .copied()
             .collect();
         let checks = &self.req.checks;
@@ -405,8 +432,29 @@ impl RealEffects<'_> {
         Ok(found
             .findings
             .into_iter()
-            .filter(|f| self.modes.contains(f.id))
+            .filter(|f| modes.contains(f.id) || runtime && about_check_of(f, modes))
             .collect())
+    }
+
+    /// What verification checks again (M4-D43): the repaired modes, and every other
+    /// offline mode the diagnosis found or could not finish checking, since a repair or a
+    /// recovery may have settled it (a rolled-forward update leaves its files as its
+    /// record says). An online finding is about a remote state no local repair changes,
+    /// so it stands as found, and a runtime row has no check of its own.
+    fn rechecked_modes(&self) -> BTreeSet<&'static str> {
+        let rows = &self.req.checks.rows;
+        let offline_check = |id: &str| {
+            rows.iter()
+                .find(|row| row.id == id)
+                .filter(|row| row.detect.is_some() && !row.online)
+                .map(|row| row.id)
+        };
+        let mut modes = self.modes.clone();
+        for f in &self.diagnosis.findings {
+            modes.extend(offline_check(f.id));
+            modes.extend(f.evidence.detector.and_then(offline_check));
+        }
+        modes
     }
 
     /// A view read afresh; `under_lock` when this process holds the global lock, so its
@@ -428,11 +476,16 @@ impl RealEffects<'_> {
         let Some(fresh) = &self.fresh else {
             return self.diagnosis.findings.clone();
         };
+        // What `fresh` covers replaces what the diagnosis found of it.
+        let stale = |f: &&Finding| match &self.rechecked {
+            Some(modes) => modes.contains(f.id) || about_check_of(f, modes),
+            None => self.modes.contains(f.id),
+        };
         let mut findings: Vec<Finding> = self
             .diagnosis
             .findings
             .iter()
-            .filter(|f| !self.modes.contains(f.id))
+            .filter(|f| !stale(f))
             .cloned()
             .chain(fresh.iter().cloned())
             .collect();
@@ -763,9 +816,10 @@ impl FixEffects for RealEffects<'_> {
 
     fn verify(&mut self, plan: &FixPlan) -> Verification {
         let view = self.fresh_view(false);
+        let rechecked = self.rechecked_modes();
         // A check that cannot run now verifies nothing: every planned instance counts as
         // remaining.
-        let found = self.detect_again(&view).ok();
+        let found = self.detect_modes(&view, &rechecked, true).ok();
         let planned: BTreeSet<&str> = plan.fixes.iter().map(|f| f.instance.as_str()).collect();
         let remaining = match &found {
             Some(findings) => findings
@@ -776,6 +830,7 @@ impl FixEffects for RealEffects<'_> {
         };
         if let Some(findings) = found {
             self.fresh = Some(findings);
+            self.rechecked = Some(rechecked);
         }
         Verification {
             remaining: u32::try_from(remaining).unwrap_or(u32::MAX),
@@ -941,6 +996,7 @@ pub fn run_fix_at(
         started: None,
         modes: BTreeSet::new(),
         fresh: None,
+        rechecked: None,
         cleanup: None,
         warnings,
         notes: Vec::new(),
@@ -1525,22 +1581,53 @@ mod tests {
         }
     }
 
+    /// A committed run's terminal state: partial while a repaired mode is still found or a
+    /// recovery is unsettled; otherwise findings left in the report (`left`) end it
+    /// `DONE_FINDINGS`, exit 1, and only a report with nothing left is `DONE_OK`.
     #[test]
     fn verification_outcomes() {
-        use RunState::{DoneOk, DonePartial};
+        use RunState::{DoneFindings, DoneOk, DonePartial};
+        // (case, planned instances still found, the recovery's outcome, findings left,
+        // state, exit)
         let cases = [
-            ("all_gone", 0, RecoveryOutcome::RolledBack, DoneOk, 0),
+            ("all_gone", 0, RecoveryOutcome::RolledBack, false, DoneOk, 0),
             (
                 "rolled_forward",
                 0,
                 RecoveryOutcome::RolledForward,
+                false,
                 DoneOk,
                 0,
+            ),
+            (
+                "repaired_with_leftovers",
+                0,
+                RecoveryOutcome::RolledBack,
+                true,
+                DoneFindings,
+                1,
+            ),
+            (
+                "rolled_forward_with_leftovers",
+                0,
+                RecoveryOutcome::RolledForward,
+                true,
+                DoneFindings,
+                1,
             ),
             (
                 "one_remains",
                 1,
                 RecoveryOutcome::RolledBack,
+                false,
+                DonePartial,
+                2,
+            ),
+            (
+                "one_remains_with_leftovers",
+                1,
+                RecoveryOutcome::RolledBack,
+                true,
                 DonePartial,
                 2,
             ),
@@ -1548,6 +1635,15 @@ mod tests {
                 "a_recovery_waits",
                 0,
                 RecoveryOutcome::Waiting,
+                false,
+                DonePartial,
+                2,
+            ),
+            (
+                "a_recovery_waits_with_leftovers",
+                0,
+                RecoveryOutcome::Waiting,
+                true,
                 DonePartial,
                 2,
             ),
@@ -1555,18 +1651,19 @@ mod tests {
                 "a_recovery_failed",
                 0,
                 RecoveryOutcome::Failed,
+                false,
                 DonePartial,
                 2,
             ),
         ];
-        for (case, remaining, outcome, state, exit) in cases {
+        for (case, remaining, outcome, left, state, exit) in cases {
             let terminal = Terminal::Done {
                 plan: plan(1, true),
                 delegated: delegated(outcome),
                 commit: Some(committed()),
                 verification: Some(Verification { remaining }),
             };
-            let (got, got_exit) = state_of(&terminal, false);
+            let (got, got_exit) = state_of(&terminal, left);
             assert_eq!((got, got_exit.code()), (state, exit), "{case}");
         }
     }

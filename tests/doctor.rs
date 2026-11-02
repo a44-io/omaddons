@@ -1960,9 +1960,9 @@ fn online_fix_lists_network_findings_as_manual() {
         ["omaddons", "auth", "github", "clear"]
     );
     assert_eq!(rejected[0]["remediation"]["auto_fixable"], false);
-    // README promises exit 1 while findings it does not repair remain; the runtime says
-    // DONE_OK (exit 0) once its repairs verify (omad-qunc, which tightens this to 1).
-    assert!(matches!(ran.run.code, 0 | 1), "{envelope:#}");
+    // Its repairs verified, but findings it does not repair remain: exit 1, never healthy.
+    ran.exit(1);
+    assert_eq!(envelope["state"], "DONE_FINDINGS", "{envelope:#}");
 }
 
 #[test]

@@ -788,9 +788,9 @@ fn inside_and_outside_in_one_run() {
     assert_eq!(envelope["summary"]["actions_taken"], 1, "{envelope:#}");
     assert_eq!(envelope["summary"]["findings_before"], 2);
     // The outside instance is left as manual, never a residual of the repair
-    // (DONE_PARTIAL, exit 2); the exit with it left is omad-qunc's.
-    assert_ne!(envelope["state"], "DONE_PARTIAL", "{envelope:#}");
-    assert!(matches!(ran.run.code, 0 | 1), "{}", ran.run.code);
+    // (DONE_PARTIAL, exit 2), and with it left the run is no healthy one: exit 1.
+    ran.exit(1);
+    assert_eq!(envelope["state"], "DONE_FINDINGS", "{envelope:#}");
     let left = found(envelope, MODE);
     assert_eq!(left.len(), 1, "{envelope:#}");
     assert_eq!(left[0]["evidence"]["path"], elsewhere.display().to_string());
