@@ -3,6 +3,7 @@
 //! A row `status` publishes has a rule over [`crate::doctor::facts`] too, which its
 //! detector feeds from the view's layers.
 
+pub(crate) mod caches;
 pub(crate) mod concurrency;
 pub(crate) mod configs;
 pub(crate) mod external;

@@ -12,7 +12,9 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::budget::Budget;
-use super::detectors::{concurrency, configs, external, plugins, schemas, state_files, userland};
+use super::detectors::{
+    caches, concurrency, configs, external, plugins, schemas, state_files, userland,
+};
 use super::finding::{
     Detected, Finding, Observation, Remediation, Severity, Subsystem, is_fm_id, subsystem_part,
 };
@@ -85,6 +87,8 @@ pub mod ids {
         "fm-concurrency_primitives-journal-preservation-incomplete";
     /// The global lock has been held for longer than `LOCK_HELD_LONG`.
     pub const LOCK_HELD_LONG: &str = "fm-concurrency_primitives-lock-held-long";
+    /// A cached download's bytes no longer hash to its name, or it cannot be read.
+    pub const BLOB_HASH_MISMATCH: &str = "fm-caches-blob-hash-mismatch";
 
     /// The failure mode a recovery stop reports as (E10 points each stop error's fix at
     /// its `doctor explain`).
@@ -478,6 +482,30 @@ macro_rules! set_aside_why {
 
 /// Every failure mode, sorted by id.
 pub static FAILURE_MODES: &[FailureMode] = &[
+    FailureMode {
+        id: ids::BLOB_HASH_MISMATCH,
+        subsystem: Subsystem::Caches,
+        severity: Severity::P2,
+        title: "a cached download no longer matches its hash",
+        description: "A file in omaddons' download cache is named by the SHA-256 of the archive it holds, and its bytes no longer hash to that name, or it cannot be read.",
+        why: "omaddons never installs such a file: each use re-hashes it, so an install downloads it again when online and fails with hash_mismatch when offline. Quarantining it lets the next install download a good copy.",
+        tier: Tier::Deep,
+        online: false,
+        // A full cache (BLOB_CACHE_MAX_BYTES, 1 GiB) at about 1 GB/s: half the deadline.
+        cost_ms: 1_000,
+        requires: &[Layer::Caches],
+        detect: Some(caches::blob_hash_mismatch),
+        fix: Some(FixerSpec {
+            plan: super::fixers::quarantine::blob,
+            writes_to: &[ScopeName::Cache],
+            ops: &[FixKind::Quarantine],
+            enabled: true,
+            needs_force: false,
+            cardinality: Cardinality::Low,
+            preconditions: &[FixerPrecondition::LockHeld, FixerPrecondition::SameFs],
+        }),
+        manual: None,
+    },
     FailureMode {
         id: ids::JOURNAL_MARKER_MISMATCH,
         subsystem: Subsystem::ConcurrencyPrimitives,
@@ -1594,9 +1622,9 @@ mod tests {
             );
         }
         // The seven, the two the doctor's view raises, the two its runtime raises, the four
-        // inventory rows of `external_artifacts`, and the nine journal and lock rows of
-        // `concurrency_primitives`.
-        assert_eq!(FAILURE_MODES.len(), 24);
+        // inventory rows of `external_artifacts`, the nine journal and lock rows of
+        // `concurrency_primitives`, and `caches`' blob row (F6).
+        assert_eq!(FAILURE_MODES.len(), 25);
     }
 
     /// Appendix B rows 1-10: the journal and lock rows, all `cached` and report-only.

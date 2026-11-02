@@ -220,11 +220,12 @@ pub(crate) mod tests {
 
     /// Checks take `&DoctorView` and never write (§6.12): no detector uses fsx's writer, as
     /// the view itself never does (`view_source_never_writes`). fsx's read-only types
-    /// (`LockState`) are fine.
+    /// (`LockState`) are fine. Nor `BlobCache`, whose reads write `blobs/index.json`: the
+    /// blob detector verifies through `blobs::verify_blob` alone (F6).
     #[test]
     fn detectors_never_write() {
         use crate::source_scan::{Literals, production_code, sources};
-        const WRITES: [&str; 8] = [
+        const WRITES: [&str; 9] = [
             "WriteSession",
             "mutate(",
             "ensure_dir_all(",
@@ -233,6 +234,7 @@ pub(crate) mod tests {
             "OpenOptions",
             "fs::write",
             "lock_file",
+            "BlobCache",
         ];
         let writes =
             |code: &str| -> Vec<&str> { WRITES.into_iter().filter(|w| code.contains(w)).collect() };

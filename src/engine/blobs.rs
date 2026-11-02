@@ -29,11 +29,12 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use crate::error::{Error, ErrorCode, Result, Suggestion};
+use crate::fsx::FileStamp;
 use crate::fsx::{
     self, Content, GlobalLock, InflightLock, LockUse, Op, PruneReason, RenameMode, ScopeTable,
     WriteSession, Writer, ensure_dir_all, mutate,
 };
-use crate::limits::DOWNLOAD_MAX_BYTES;
+use crate::limits::{DOCTOR_SCAN_MAX_ENTRIES, DOWNLOAD_MAX_BYTES};
 use crate::model::{ExpectedHash, HashFromHeader, TxId};
 use crate::net::retry::{RealSleeper, Rng, Sleeper, XorShift, backoff_delay};
 use crate::net::{Http, Request};
@@ -569,7 +570,7 @@ fn etag_md5(etag: Option<&str>) -> std::result::Result<ExpectedHash, String> {
     ExpectedHash::md5(quoted).ok_or_else(|| format!("an ETag that is not an MD5 ({etag})"))
 }
 
-fn is_sha256(name: &str) -> bool {
+pub(crate) fn is_sha256(name: &str) -> bool {
     name.len() == 64
         && name
             .bytes()
@@ -597,6 +598,177 @@ fn mtime_ns(meta: &std::fs::Metadata) -> i128 {
 
 fn now_ns() -> i128 {
     jiff::Timestamp::now().as_nanosecond()
+}
+
+// ---------------------------------------------------------------------------------------
+// Verification (F6, M4-D52): a cached blob's bytes against its name.
+
+/// What re-hashing a cached blob found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Verification {
+    /// Its bytes hash to its name.
+    Matches { size: u64 },
+    /// They hash to `actual` (64 lowercase hex).
+    Differs { size: u64, actual: String },
+    /// A regular file that cannot be read.
+    Unreadable { kind: io::ErrorKind },
+    /// No regular file at the path (missing, a directory, a symlink, which is never
+    /// followed), or a name that is no blob's.
+    Gone,
+    /// `stop` asked to stop; nothing is remembered.
+    Stopped,
+}
+
+/// The bytes read at a time.
+const VERIFY_CHUNK: usize = 64 * 1024;
+
+/// The bytes read between two consultations of `stop`.
+const VERIFY_STOP_EVERY: u64 = 1024 * 1024;
+
+/// Re-hashes the blob at `path` against its `name`, consulting `stop` after each MiB.
+/// Read-only. One hash per blob per process while it is unchanged: the process-wide
+/// [`VerifyMemo`] answers again for a file whose stamp is the one it hashed.
+pub fn verify_blob(path: &Path, name: &str, stop: &mut dyn FnMut() -> bool) -> Verification {
+    MEMO.verify(path, name, stop, now_ns())
+}
+
+static MEMO: VerifyMemo = VerifyMemo::new();
+
+/// What a verification hashed, remembered while its file's stamp is unchanged.
+#[derive(Debug, Clone, Copy)]
+struct Seen {
+    stamp: FileStamp,
+    size: u64,
+    sha256: [u8; 32],
+}
+
+/// Verdicts remembered by path, each guarded by the [`FileStamp`] the file had when it
+/// was hashed: an equal stamp of a stamp that was settled when read proves the bytes did
+/// not change (`ctime` moves on every write, truncation, rename and chmod), and an
+/// unsettled stamp is never remembered, as the swap's `predigest` reuses a digest. In
+/// memory only, keyed by path, and capped at [`DOCTOR_SCAN_MAX_ENTRIES`] entries (the
+/// most blobs one detector run visits): past the cap, verification runs and is not
+/// remembered.
+#[derive(Debug)]
+pub struct VerifyMemo {
+    seen: Mutex<BTreeMap<PathBuf, Seen>>,
+    cap: usize,
+    reads: AtomicU64,
+}
+
+impl Default for VerifyMemo {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl VerifyMemo {
+    pub const fn new() -> Self {
+        // A `u64` cap far below `usize::MAX` on every target omaddons builds for.
+        Self::with_cap(DOCTOR_SCAN_MAX_ENTRIES as usize)
+    }
+
+    #[doc(hidden)]
+    pub const fn with_cap(cap: usize) -> Self {
+        Self {
+            seen: Mutex::new(BTreeMap::new()),
+            cap,
+            reads: AtomicU64::new(0),
+        }
+    }
+
+    /// The files opened and hashed so far.
+    #[doc(hidden)]
+    pub fn reads(&self) -> u64 {
+        self.reads.load(Ordering::Relaxed)
+    }
+
+    fn seen(&self) -> std::sync::MutexGuard<'_, BTreeMap<PathBuf, Seen>> {
+        match self.seen.lock() {
+            Ok(guard) => guard,
+            // A verdict is a pure function's; a panicked holder left nothing half-done.
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    /// [`verify_blob`] with this memo and the wall clock read as `now_ns`.
+    pub fn verify(
+        &self,
+        path: &Path,
+        name: &str,
+        stop: &mut dyn FnMut() -> bool,
+        now_ns: i128,
+    ) -> Verification {
+        if !is_sha256(name) {
+            return Verification::Gone;
+        }
+        let stamp = match FileStamp::read(path) {
+            Ok(Some(stamp)) if stamp.is_file() => stamp,
+            Ok(_) => return Verification::Gone,
+            Err(err) => return Verification::Unreadable { kind: err.kind() },
+        };
+        // ubs:ignore — comparing file stamps (inode, size, times), not secrets
+        let remembered = self.seen().get(path).copied().filter(|s| s.stamp == stamp);
+        if let Some(seen) = remembered {
+            return verdict(name, seen.size, &seen.sha256);
+        }
+        let mut file = match std::fs::File::open(path) {
+            Ok(file) => file,
+            // ubs:ignore — an io::ErrorKind, not a secret
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Verification::Gone,
+            Err(err) => return Verification::Unreadable { kind: err.kind() },
+        };
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        let mut hasher = Sha256::new();
+        let mut buf = vec![0u8; VERIFY_CHUNK];
+        let (mut size, mut since_stop) = (0u64, 0u64);
+        loop {
+            let read = match file.read(&mut buf) {
+                Ok(0) => break,
+                Ok(read) => read,
+                // ubs:ignore — an io::ErrorKind, not a secret
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                Err(err) => return Verification::Unreadable { kind: err.kind() },
+            };
+            hasher.update(&buf[..read]);
+            let read = read as u64;
+            size += read;
+            since_stop += read;
+            if since_stop >= VERIFY_STOP_EVERY {
+                since_stop -= VERIFY_STOP_EVERY;
+                if stop() {
+                    return Verification::Stopped;
+                }
+            }
+        }
+        let sha256: [u8; 32] = hasher.finalize().into();
+        // ubs:ignore — comparing file stamps (inode, size, times), not secrets
+        let unchanged = matches!(FileStamp::read(path), Ok(Some(after)) if after == stamp);
+        if unchanged && stamp.settled(now_ns) {
+            let mut seen = self.seen();
+            if seen.len() < self.cap || seen.contains_key(path) {
+                seen.insert(
+                    path.to_path_buf(),
+                    Seen {
+                        stamp,
+                        size,
+                        sha256,
+                    },
+                );
+            }
+        }
+        verdict(name, size, &sha256)
+    }
+}
+
+fn verdict(name: &str, size: u64, sha256: &[u8; 32]) -> Verification {
+    let actual = hex(sha256);
+    // ubs:ignore — a content digest against the file's own name, not a secret
+    if actual == name {
+        Verification::Matches { size }
+    } else {
+        Verification::Differs { size, actual }
+    }
 }
 
 #[cfg(test)]
@@ -1277,5 +1449,324 @@ mod tests {
                 .evicted,
             [blob.sha256]
         );
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Verification.
+
+    const MIB: usize = 1024 * 1024;
+
+    /// A file holding `bytes` under `dir`, named `name`.
+    fn planted(dir: &Path, name: &str, bytes: &[u8]) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    /// A moment `after_ns` past `path`'s ctime.
+    fn after_ctime(path: &Path, after_ns: i128) -> i128 {
+        FileStamp::read(path).unwrap().unwrap().ctime_ns() + after_ns
+    }
+
+    /// Settled whatever the filesystem's timestamp grain (the coarse slack is 2 s).
+    const SETTLED_NS: i128 = 3_000_000_000;
+
+    fn never() -> impl FnMut() -> bool {
+        || false
+    }
+
+    fn is_root() -> bool {
+        rustix::process::geteuid().is_root()
+    }
+
+    #[test]
+    fn verification_cases() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let good = b"PK\x03\x04 a release archive".to_vec();
+        let name = sha(&good);
+        let mut flipped = good.clone();
+        flipped[7] ^= 0x20;
+        let empty_zip = [b"PK\x05\x06".as_slice(), &[0u8; 18]].concat();
+        let big: Vec<u8> = (0..3 * MIB).map(|i| (i % 251) as u8).collect();
+        let big_name = sha(&big);
+        type Case = (&'static str, PathBuf, String, Verification);
+        let mut cases: Vec<Case> = Vec::new();
+        let mut case = |label: &'static str, sub: &str, bytes: Option<&[u8]>, name: &str, want| {
+            let sub = d.join(sub);
+            std::fs::create_dir_all(&sub).unwrap();
+            let path = match bytes {
+                Some(bytes) => planted(&sub, name, bytes),
+                None => sub.join(name),
+            };
+            cases.push((label, path, name.to_owned(), want));
+        };
+        let size = good.len() as u64;
+        case(
+            "matches",
+            "a",
+            Some(&good),
+            &name,
+            Verification::Matches { size },
+        );
+        case(
+            "same_size_flip",
+            "b",
+            Some(&flipped),
+            &name,
+            Verification::Differs {
+                size,
+                actual: sha(&flipped),
+            },
+        );
+        case(
+            "truncated",
+            "c",
+            Some(&good[..5]),
+            &name,
+            Verification::Differs {
+                size: 5,
+                actual: sha(&good[..5]),
+            },
+        );
+        case(
+            "another_archive",
+            "d",
+            Some(&empty_zip),
+            &name,
+            Verification::Differs {
+                size: 22,
+                actual: sha(&empty_zip),
+            },
+        );
+        let empty = sha(b"");
+        case(
+            "empty_named_by_its_hash",
+            "e",
+            Some(b""),
+            &empty,
+            Verification::Matches { size: 0 },
+        );
+        case("missing", "f", None, &name, Verification::Gone);
+        std::fs::create_dir_all(d.join("g").join(&name)).unwrap();
+        case("a_directory", "g", None, &name, Verification::Gone);
+        let target = planted(d, "target", &good);
+        std::fs::create_dir_all(d.join("h")).unwrap();
+        symlink(&target, d.join("h").join(&name)).unwrap();
+        case(
+            "a_symlink_to_a_matching_file",
+            "h",
+            None,
+            &name,
+            Verification::Gone,
+        );
+        case(
+            "index_json",
+            "i",
+            Some(&good),
+            "index.json",
+            Verification::Gone,
+        );
+        case(
+            "uppercase_hex",
+            "j",
+            Some(&good),
+            &name.to_uppercase(),
+            Verification::Gone,
+        );
+        case(
+            "63_digits",
+            "k",
+            Some(&good),
+            &name[..63],
+            Verification::Gone,
+        );
+        case(
+            "stop_is_consulted_per_mib",
+            "l",
+            Some(&big),
+            &big_name,
+            Verification::Matches {
+                size: big.len() as u64,
+            },
+        );
+        for (label, path, name, want) in cases {
+            let memo = VerifyMemo::new();
+            let mut calls = 0;
+            let got = memo.verify(
+                &path,
+                &name,
+                &mut || {
+                    calls += 1;
+                    false
+                },
+                after_ctime_or_now(&path),
+            );
+            assert_eq!(got, want, "{label}: {} named {name}", path.display());
+            if label == "stop_is_consulted_per_mib" {
+                assert_eq!(calls, 3, "{label}: 3 MiB, stop consulted {calls} times");
+            }
+        }
+
+        let memo = VerifyMemo::new();
+        let path = planted(&d.join("a"), &big_name, &big);
+        let got = memo.verify(&path, &big_name, &mut || true, SETTLED_NS);
+        assert_eq!(
+            got,
+            Verification::Stopped,
+            "stopped: 3 MiB, stop true at once"
+        );
+        let got = memo.verify(
+            &path,
+            &big_name,
+            &mut never(),
+            after_ctime(&path, SETTLED_NS),
+        );
+        let reads = memo.reads();
+        assert!(
+            matches!(got, Verification::Matches { .. }) && matches!(reads, 2),
+            "stopped: nothing remembered, so the next verify reads ({got:?}, {reads} reads)"
+        );
+
+        if is_root() {
+            // Root reads a mode-000 file: the case cannot be made.
+            return;
+        }
+        let path = planted(&d.join("a"), &name, &good);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let got = VerifyMemo::new().verify(&path, &name, &mut never(), SETTLED_NS);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(
+            got,
+            Verification::Unreadable {
+                kind: io::ErrorKind::PermissionDenied
+            },
+            "unreadable: mode 000"
+        );
+    }
+
+    /// A moment well past `path`'s ctime when it is a file, else any.
+    fn after_ctime_or_now(path: &Path) -> i128 {
+        match FileStamp::read(path) {
+            Ok(Some(stamp)) => stamp.ctime_ns() + SETTLED_NS,
+            _ => now_ns(),
+        }
+    }
+
+    #[test]
+    fn the_memo_answers_an_unchanged_settled_stamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = b"a blob".to_vec();
+        let name = sha(&good);
+        for (label, bytes) in [("matching", good.clone()), ("damaged", b"a blub".to_vec())] {
+            let path = planted(dir.path(), &name, &bytes);
+            let memo = VerifyMemo::new();
+            let now = after_ctime(&path, SETTLED_NS);
+            let first = memo.verify(&path, &name, &mut never(), now);
+            let second = memo.verify(&path, &name, &mut never(), now);
+            assert_eq!(first, second, "{label}: equal verdicts");
+            assert_eq!(
+                memo.reads(),
+                1,
+                "{label}: one read for two verifies ({first:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn the_memo_never_trusts_an_unsettled_stamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = b"a blob".to_vec();
+        let name = sha(&good);
+        let path = planted(dir.path(), &name, &good);
+        let memo = VerifyMemo::new();
+        let now = after_ctime(&path, 1_000_000);
+        for _ in 0..3 {
+            let got = memo.verify(&path, &name, &mut never(), now);
+            assert_eq!(got, Verification::Matches { size: 6 }, "unsettled: {got:?}");
+        }
+        assert_eq!(memo.reads(), 3, "1 ms past its ctime: every verify reads");
+    }
+
+    #[test]
+    fn the_memo_misses_after_any_change() {
+        use std::os::unix::fs::PermissionsExt;
+        let good = b"a blob".to_vec();
+        let other = b"a blub".to_vec();
+        let name = sha(&good);
+        for label in [
+            "rewritten_in_place_with_the_same_bytes",
+            "replaced_by_rename",
+            "chmod",
+            "mtime_set_back",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = planted(dir.path(), &name, &good);
+            let memo = VerifyMemo::new();
+            let first = memo.verify(&path, &name, &mut never(), after_ctime(&path, SETTLED_NS));
+            assert_eq!(first, Verification::Matches { size: 6 }, "{label}: before");
+            let old_mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+            let want = match label {
+                "rewritten_in_place_with_the_same_bytes" => {
+                    std::fs::write(&path, &good).unwrap();
+                    Verification::Matches { size: 6 }
+                }
+                "replaced_by_rename" => {
+                    let next = planted(dir.path(), "next", &other);
+                    std::fs::rename(next, &path).unwrap();
+                    Verification::Differs {
+                        size: 6,
+                        actual: sha(&other),
+                    }
+                }
+                "chmod" => {
+                    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                        .unwrap();
+                    Verification::Matches { size: 6 }
+                }
+                _ => {
+                    // Same size, other bytes, and the mtime put back: only ctime tells.
+                    std::fs::write(&path, &other).unwrap();
+                    std::fs::File::options()
+                        .write(true)
+                        .open(&path)
+                        .unwrap()
+                        .set_modified(old_mtime)
+                        .unwrap();
+                    Verification::Differs {
+                        size: 6,
+                        actual: sha(&other),
+                    }
+                }
+            };
+            let got = memo.verify(&path, &name, &mut never(), after_ctime(&path, SETTLED_NS));
+            assert_eq!(got, want, "{label}: the verdict follows the new bytes");
+            assert_eq!(memo.reads(), 2, "{label}: read again after the change");
+        }
+    }
+
+    #[test]
+    fn the_memo_is_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let memo = VerifyMemo::with_cap(2);
+        let files: Vec<(PathBuf, String)> = ["one", "two", "three"]
+            .iter()
+            .map(|text| {
+                let name = sha(text.as_bytes());
+                (planted(dir.path(), &name, text.as_bytes()), name)
+            })
+            .collect();
+        for round in 0..2 {
+            for (path, name) in &files {
+                let now = after_ctime(path, SETTLED_NS);
+                let got = memo.verify(path, name, &mut never(), now);
+                assert!(
+                    matches!(got, Verification::Matches { .. }),
+                    "round {round}: {got:?}"
+                );
+            }
+        }
+        assert_eq!(memo.reads(), 4, "two remembered, the third read both times");
     }
 }
