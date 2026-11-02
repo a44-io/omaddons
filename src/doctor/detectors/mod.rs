@@ -10,6 +10,7 @@ pub(crate) mod external;
 pub(crate) mod network;
 pub(crate) mod plugins;
 pub(crate) mod schemas;
+pub(crate) mod secrets;
 pub(crate) mod state_files;
 #[cfg(test)]
 mod tests;

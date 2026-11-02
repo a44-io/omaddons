@@ -2,6 +2,7 @@
 //! `FixerSpec` in the registry. A plan reads the doctor's view and never writes: E5
 //! lowers what it returns, E6 runs it.
 
+pub mod chmod;
 pub mod quarantine;
 pub mod recover;
 pub mod set_aside;

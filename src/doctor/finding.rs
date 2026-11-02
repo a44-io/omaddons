@@ -288,6 +288,11 @@ pub struct Evidence {
     /// Whether an online check sent a token. Omitted when no token could be sent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub authenticated: Option<bool>,
+    /// The detector's per-instance fixable mark: `Some(false)` for an instance its row's
+    /// fixer cannot repair, which `doctor fix` lists as manual and whose remediation is
+    /// the row's manual one. Never on the wire: `remediation.auto_fixable` says it there.
+    #[serde(skip)]
+    pub fixable: Option<bool>,
 }
 
 /// Where a credential comes from, as evidence names it: `OMADDONS_GITHUB_TOKEN`
@@ -523,8 +528,8 @@ impl Subject {
 }
 
 /// `path` without `.`, repeated or trailing separators, and with each `..` taking off the
-/// component before it, by its components alone.
-fn normalize(path: &Path) -> PathBuf {
+/// component before it, by its components alone (an instance key's path).
+pub(crate) fn normalize(path: &Path) -> PathBuf {
     debug_assert!(path.is_absolute(), "{} is not absolute", path.display());
     let mut out = PathBuf::new();
     for component in path.components() {
@@ -968,6 +973,7 @@ fn evidence_reasons() -> Vec<&'static str> {
     reasons.extend(crate::engine::journal::StopReason::ALL.map(|r| r.as_str()));
     reasons.extend(IncompleteLimit::ALL.map(IncompleteLimit::as_str));
     reasons.extend(super::detectors::network::REASONS);
+    reasons.extend(super::detectors::secrets::REASONS);
     reasons.sort_unstable();
     reasons.dedup();
     reasons
@@ -1239,7 +1245,9 @@ mod tests {
         }
     }
 
-    /// `evidence.reason` is published as a closed set, made of its four sources only.
+    /// `evidence.reason` is published as a closed set, made of its sources only: the view's
+    /// failures, recovery's stops, the runtime's limits, and the network and secrets
+    /// checks' reasons.
     #[test]
     fn evidence_reasons_are_closed() {
         let mut expected: Vec<&str> = crate::doctor::view::FailureReason::ALL
@@ -1255,7 +1263,9 @@ mod tests {
             "too_many_requests",
             "unresolvable",
         ]);
+        expected.extend(["other_owner", "outside_config", "symlink"]);
         expected.sort_unstable();
+        expected.dedup();
         assert_eq!(evidence_reasons(), expected);
         let mut generator = schemars::generate::SchemaSettings::draft2020_12()
             .for_serialize()

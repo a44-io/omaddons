@@ -249,6 +249,13 @@ pub fn plan_fix_in(
             target: target_id(finding),
             refusal,
         })?;
+        // A fixer that plans nothing for an instance (one it cannot repair, such as a
+        // credential outside its write scope, or one repaired since) leaves it listed as
+        // manual: never planned, so verification never counts it as a residual.
+        if fixes.is_empty() {
+            unplanned.push((at, unplanned_of(finding, Group::Manual)));
+            continue;
+        }
         proposed.push(Proposed {
             at,
             finding,
@@ -3510,6 +3517,134 @@ mod tests {
         assert!(
             fixes[1].1.ends_with(&format!("tx={owner_tx}")),
             "it names the owner: {refused:#?}"
+        );
+    }
+
+    /// A home with two exposed credentials: the stored GitHub token (fixable) and a file
+    /// config.toml names outside `<config>` (manual), and the row's findings of them, in
+    /// that order, from its detector on a real view.
+    fn exposed_files_home() -> (RepairHome, DoctorView, Vec<Finding>) {
+        use std::os::unix::fs::PermissionsExt;
+        let home = repair_home();
+        // ubs:ignore — a file's path, never compared as a secret
+        let stored = home.paths.credential_file("github");
+        let outside = home.base.join("elsewhere/key");
+        for file in [&stored, &outside] {
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, b"secret").unwrap();
+            std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        std::fs::create_dir_all(home.paths.config_dir()).unwrap();
+        std::fs::write(
+            home.paths.config_file(),
+            format!(
+                "[sources.github]\ncredential = {{ file = \"{}\" }}\n",
+                outside.display()
+            ),
+        )
+        .unwrap();
+        let view = DoctorView::load_at(home.paths.clone(), ViewOptions::default());
+        let row = file_mode_row();
+        let findings = (row.detect.unwrap())(
+            &view,
+            &crate::doctor::selection::Selection::all(),
+            &mut crate::doctor::budget::Budget::unlimited(),
+        )
+        .found
+        .into_iter()
+        .map(|obs| row.finding(obs))
+        .collect::<Vec<_>>();
+        assert_eq!(
+            findings
+                .iter()
+                .map(|f| f.evidence.path.clone().unwrap())
+                .collect::<Vec<_>>(),
+            [stored, outside],
+            "the stored token first, then the configured file"
+        );
+        (home, view, findings)
+    }
+
+    /// The registry's row of exposed credential files.
+    fn file_mode_row() -> FailureMode {
+        // ubs:ignore — a failure-mode id, not a secret
+        let id = crate::doctor::registry::ids::CREDENTIAL_FILE_MODE;
+        *crate::doctor::registry::row(id).unwrap()
+    }
+
+    #[test]
+    fn unfixable_instance_takes_the_manual_remediation() {
+        let (_home, view, findings) = exposed_files_home();
+        let manual = &findings[1];
+        let spec = crate::doctor::fixers::chmod::SPEC;
+        let r = remediation_for(&view, manual, &spec, None);
+        let path = manual
+            .evidence
+            .path
+            .as_deref()
+            .unwrap()
+            .display()
+            .to_string();
+        assert_eq!(
+            (
+                r.command.as_str(),
+                r.argv.as_ref(),
+                r.auto_fixable,
+                r.estimated_actions,
+                r.destructive
+            ),
+            (format!("chmod 600 {path}").as_str(), None, false, 0, false)
+        );
+    }
+
+    #[test]
+    fn fixable_instance_takes_the_doctor_fix_remediation() {
+        let (_home, view, findings) = exposed_files_home();
+        let spec = crate::doctor::fixers::chmod::SPEC;
+        let r = remediation_for(&view, &findings[0], &spec, None);
+        let argv = argv_of(&["omaddons", "doctor", "fix", "--only", file_mode_row().id]);
+        assert_eq!(
+            (
+                r.argv.as_ref(),
+                r.auto_fixable,
+                r.needs_force,
+                r.estimated_actions,
+                r.destructive
+            ),
+            (Some(&argv), true, false, 1, false)
+        );
+    }
+
+    /// `--only` names the row: the fixable instance gets its chmod, and the one its fixer
+    /// plans nothing for is listed as manual, never planned, so verification has nothing
+    /// to count for it.
+    #[test]
+    fn dropped_fix_is_listed_as_manual() {
+        let (home, view, findings) = exposed_files_home();
+        let rows = [file_mode_row()];
+        let roots = roots(&home, &home.run, tx(), &crate::fsx::mount_id);
+        let only = [Pick::Mode(file_mode_row().id)];
+        let running = RunningScan::default();
+        let opts = FixOptions {
+            only: &only,
+            force: false,
+            roots: &roots,
+            running: &running,
+        };
+        let plan = planned("only_the_row", plan_fix_in(&rows, &view, &findings, &opts));
+        let instances: Vec<&str> = plan.fixes.iter().map(|f| f.instance.as_str()).collect();
+        assert_eq!(instances, [findings[0].instance.as_str()]);
+        assert_eq!(plan.unplanned, [unplanned_of(&findings[1], Group::Manual)]);
+
+        // Only the manual instance: nothing planned, the instance listed as manual.
+        let manual_only = planned(
+            "only_the_manual_instance",
+            plan_fix_in(&rows, &view, &findings[1..], &opts),
+        );
+        assert!(manual_only.is_empty(), "{:?}", manual_only.fixes);
+        assert_eq!(
+            manual_only.unplanned,
+            [unplanned_of(&findings[1], Group::Manual)]
         );
     }
 }

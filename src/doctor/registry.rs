@@ -13,7 +13,8 @@ use serde::Serialize;
 
 use super::budget::Budget;
 use super::detectors::{
-    caches, concurrency, configs, external, network, plugins, schemas, state_files, userland,
+    caches, concurrency, configs, external, network, plugins, schemas, secrets, state_files,
+    userland,
 };
 use super::finding::{
     Detected, Finding, Observation, Remediation, SecretOrigin, Severity, Subsystem, is_fm_id,
@@ -62,6 +63,9 @@ pub mod ids {
     pub const CONFIG_PARSE_ERROR: &str = "fm-configs-config-parse-error";
     /// A state file cannot be read (the doctor's view raises it).
     pub const STATE_CORRUPT: &str = "fm-schemas-state-corrupt";
+    /// A credential file other users can read.
+    // ubs:ignore — a failure-mode id, not a secret
+    pub const CREDENTIAL_FILE_MODE: &str = "fm-secrets-credential-file-mode";
 
     /// A check panicked during a doctor run (the runtime raises it).
     pub const DETECTOR_CRASHED: &str = "fm-state_files-detector-crashed";
@@ -407,9 +411,11 @@ impl FailureMode {
             explain_command: shell_words::join(&explain_argv),
             explain_argv,
             // An instance its detector marks as one recovery would not resume
-            // (`evidence.resumable: false`) is no fixer's to repair now.
+            // (`evidence.resumable: false`), or as one its fixer cannot repair
+            // (`evidence.fixable: false`), is no fixer's to repair now.
             auto_fixable: self.fix.is_some_and(|fix| fix.enabled && !fix.needs_force)
-                && f.evidence.resumable != Some(false),
+                && f.evidence.resumable != Some(false)
+                && f.evidence.fixable != Some(false),
             needs_force: self.fix.is_some_and(|fix| fix.needs_force),
             estimated_actions: 0,
             destructive: base.destructive,
@@ -942,6 +948,25 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         }),
     },
     FailureMode {
+        id: ids::CREDENTIAL_FILE_MODE,
+        subsystem: Subsystem::Secrets,
+        severity: Severity::P2,
+        title: "a credential file is readable by other users",
+        description: "A file holding a credential (the stored GitHub token, another key file in omaddons' credentials directory, or a file a [sources] credential in config.toml names) grants its group or others any permission.",
+        why: "Anyone else who can log in to this machine, and any process running as another user, can read the secret and use it. The repair sets mode 0600 when the file lies inside omaddons' config directory; undoing that repair restores the old mode, and with it the exposure. A file elsewhere is reported with the chmod to run.",
+        tier: Tier::Cached,
+        online: false,
+        cost_ms: 1,
+        requires: &[Layer::Credentials],
+        detect: Some(secrets::credential_file_mode),
+        fix: Some(super::fixers::chmod::SPEC),
+        manual: Some(Manual {
+            instruction: "set the file to mode 0600; a symlink, a file outside omaddons' config directory or another user's file is yours to change: chmod 600 <file>",
+            why: "the doctor writes only files inside omaddons' own config directory, as their owner",
+            remediation: credential_mode_manual,
+        }),
+    },
+    FailureMode {
         id: ids::CHECK_INCOMPLETE,
         subsystem: Subsystem::StateFiles,
         severity: Severity::P3,
@@ -1196,6 +1221,31 @@ fn credential_manual(f: &Finding) -> Remediation {
             }
         }
     }
+}
+
+/// An exposed credential: the chmod's `doctor fix` when the doctor can repair it (no `-t`:
+/// a machine finding), else the chmod to run, by why the doctor cannot.
+fn credential_mode_manual(f: &Finding) -> Remediation {
+    if f.evidence.fixable != Some(false) {
+        let argv = argv_of(&["omaddons", "doctor", "fix", "--only", f.id]);
+        return Remediation {
+            command: shell_words::join(&argv),
+            argv: Some(argv),
+            ..Remediation::default()
+        };
+    }
+    let path = f
+        .evidence
+        .path
+        .as_deref()
+        .map_or_else(|| "<file>".to_owned(), |path| path.display().to_string());
+    prose(&match f.evidence.reason {
+        Some("symlink") => format!("{path} is a symlink: run chmod 600 on the file it points to"),
+        Some("other_owner") => {
+            format!("{path} belongs to another user: run chmod 600 on it as that user")
+        }
+        _ => format!("chmod 600 {path}"),
+    })
 }
 
 /// A spent REST budget: wait for its reset, or, without a token, store one. A token goes
@@ -1746,9 +1796,9 @@ mod tests {
         }
         // The seven, the two the doctor's view raises, the two its runtime raises, the four
         // inventory rows of `external_artifacts`, the nine journal and lock rows of
-        // `concurrency_primitives`, `caches`' blob row (F6) and the three online rows of
-        // `network` (F7).
-        assert_eq!(FAILURE_MODES.len(), 28);
+        // `concurrency_primitives`, `caches`' blob row (F6), and F7's three online rows of
+        // `network` and the `secrets` row.
+        assert_eq!(FAILURE_MODES.len(), 29);
     }
 
     /// Appendix B rows 1-10: the journal and lock rows, all `cached` and report-only.
@@ -2053,6 +2103,60 @@ mod tests {
                 );
             }
         }
+        assert!(invariant_violations(FAILURE_MODES).is_empty());
+    }
+
+    /// Appendix B row 41: `secrets`' one row, cached, with the chmod fixer.
+    #[test]
+    fn the_secrets_row_matches_appendix_b() {
+        // ubs:ignore — a failure-mode row, not a secret
+        let row = row(ids::CREDENTIAL_FILE_MODE).unwrap();
+        assert_eq!(
+            (
+                row.subsystem,
+                row.severity,
+                row.tier,
+                row.online,
+                row.cost_ms,
+                row.requires,
+                row.title
+            ),
+            (
+                Subsystem::Secrets,
+                Severity::P2,
+                Tier::Cached,
+                false,
+                1,
+                &[Layer::Credentials][..],
+                "a credential file is readable by other users"
+            )
+        );
+        assert!(
+            row.why
+                .contains("undoing that repair restores the old mode, and with it the exposure"),
+            "{}",
+            row.why
+        );
+        let spec = row.fix.unwrap();
+        assert_eq!(
+            (
+                spec.writes_to,
+                spec.ops,
+                spec.enabled,
+                spec.needs_force,
+                spec.cardinality,
+                spec.preconditions
+            ),
+            (
+                &[ScopeName::Config][..],
+                &[FixKind::Chmod][..],
+                true,
+                false,
+                Cardinality::Low,
+                &[FixerPrecondition::LockHeld][..]
+            )
+        );
+        assert!(row.manual.is_some());
         assert!(invariant_violations(FAILURE_MODES).is_empty());
     }
 

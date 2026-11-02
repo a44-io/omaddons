@@ -975,6 +975,13 @@ impl fmt::Display for Secret {
     }
 }
 
+/// Whether group or others hold any permission on a credential file of `mode`: the
+/// `credential_file_mode` warning and the doctor's `fm-secrets-credential-file-mode` both
+/// ask it, so they never disagree.
+pub const fn credential_exposed(mode: u32) -> bool {
+    mode & 0o077 != 0
+}
+
 /// Resolves a credential reference; a readable-by-others file adds a warning.
 pub fn resolve_credential(credential: &CredentialRef) -> Result<(Secret, Vec<Warning>)> {
     match credential {
@@ -1000,7 +1007,7 @@ pub fn resolve_credential(credential: &CredentialRef) -> Result<(Secret, Vec<War
             let mut warnings = Vec::new();
             if let Ok(meta) = std::fs::metadata(file) {
                 use std::os::unix::fs::PermissionsExt;
-                if meta.permissions().mode() & 0o077 != 0 {
+                if credential_exposed(meta.permissions().mode()) {
                     warnings.push(
                         Warning::new(
                             WarningCode::CredentialFileMode,
@@ -1634,6 +1641,23 @@ max = 11_599
             key_command.sources["x"].credential,
             Some(CredentialRef::Command { .. })
         ));
+    }
+
+    #[test]
+    fn credential_exposed_cases() {
+        for (mode, exposed) in [
+            (0o600, false),
+            (0o400, false),
+            (0o700, false),
+            (0o640, true),
+            (0o604, true),
+            (0o602, true),
+            (0o610, true),
+            (0o644, true),
+            (0o666, true),
+        ] {
+            assert_eq!(credential_exposed(mode), exposed, "{mode:04o}");
+        }
     }
 
     use std::os::unix::fs::PermissionsExt;
