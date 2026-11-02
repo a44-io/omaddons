@@ -375,7 +375,21 @@ pub enum Actor {
     Widget,
 }
 
+/// The value set of the actor flags (`--actor`, `history --by`, `undo --last-by`).
+pub const ACTORS: crate::contract::values::ValueSet =
+    crate::contract::values::ValueSet::Words(&Actor::WORDS);
+
 impl Actor {
+    pub const ALL: [Self; 3] = [Self::Human, Self::Agent, Self::Widget];
+
+    /// The wire names, in [`Actor::ALL`] order: the one list `--actor`, `history --by` and
+    /// `undo --last-by` accept.
+    pub const WORDS: [&'static str; 3] = [
+        Self::Human.as_str(),
+        Self::Agent.as_str(),
+        Self::Widget.as_str(),
+    ];
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Human => "human",
@@ -418,7 +432,7 @@ impl FromStr for Actor {
 
     /// Accepts `human`, `agent` or `widget`, ignoring ASCII case.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        [Self::Human, Self::Agent, Self::Widget]
+        Self::ALL
             .into_iter()
             .find(|a| a.as_str().eq_ignore_ascii_case(s))
             .ok_or(())
@@ -1576,6 +1590,24 @@ mod tests {
     }
 
     // ---- Small enums ---------------------------------------------------------------
+
+    #[test]
+    fn actor_words_are_the_parser_list() {
+        assert_eq!(Actor::ALL.map(Actor::as_str), Actor::WORDS);
+        for (given, want) in [
+            ("human", Ok(Actor::Human)),
+            ("AGENT", Ok(Actor::Agent)),
+            ("Widget", Ok(Actor::Widget)),
+            ("robot", Err(())),
+            ("", Err(())),
+        ] {
+            assert_eq!(given.parse::<Actor>(), want, "{given:?}");
+        }
+        assert_eq!(
+            ACTORS,
+            crate::contract::values::ValueSet::Words(&Actor::WORDS)
+        );
+    }
 
     #[test]
     fn actor_resolution_precedence() {

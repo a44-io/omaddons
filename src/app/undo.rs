@@ -52,7 +52,7 @@ pub struct UndoArgs {
         long,
         value_name = "ACTOR",
         conflicts_with = "tx",
-        value_parser = ["human", "agent", "widget"]
+        value_parser = clap::builder::PossibleValuesParser::new(Actor::WORDS)
     )]
     pub last_by: Option<String>,
     /// Revert every transaction of this run: its id or a unique prefix of 8+ characters

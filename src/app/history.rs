@@ -15,6 +15,7 @@ use serde::Serialize;
 
 use super::world::World;
 use crate::cli::Context;
+use crate::contract::values::{DurationUnit, ValueSet};
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning};
 use crate::model::{Actor, PlanId, RunId, TargetKey, TxId, TxKind};
 use crate::output::{Outcome, Style, table};
@@ -555,8 +556,30 @@ fn repair_summary(repairs: &[RepairEntry], doctor_run_id: Option<&str>) -> Strin
     text
 }
 
+/// The `--since` grammar of `history`, `net-log` and `errors` (and `doctor gc --before`):
+/// an RFC 3339 time, or a whole number of these units before now (M4-D2: declared once,
+/// read by [`parse_since`], `capabilities` and the manifest).
+pub const SINCE: ValueSet = ValueSet::DurationOrTime(&[
+    DurationUnit {
+        suffix: "m",
+        seconds: 60,
+    },
+    DurationUnit {
+        suffix: "h",
+        seconds: 3_600,
+    },
+    DurationUnit {
+        suffix: "d",
+        seconds: 86_400,
+    },
+    DurationUnit {
+        suffix: "w",
+        seconds: 604_800,
+    },
+]);
+
 /// `--since`: an RFC 3339 time, or a whole number of minutes, hours, days or weeks
-/// before `now` (`30m`, `12h`, `1d`, `2w`).
+/// before `now` (`30m`, `12h`, `1d`, `2w`): [`SINCE`]'s units.
 pub fn parse_since(s: &str, now: Timestamp) -> Option<Timestamp> {
     if let Ok(at) = s.parse::<Timestamp>() {
         return Some(at);
@@ -564,13 +587,10 @@ pub fn parse_since(s: &str, now: Timestamp) -> Option<Timestamp> {
     let split = s.find(|c: char| !c.is_ascii_digit())?;
     let (count, unit) = s.split_at(split);
     let count: i64 = count.parse().ok()?;
-    let unit: i64 = match unit {
-        "m" => 60,
-        "h" => 3_600,
-        "d" => 86_400,
-        "w" => 604_800,
-        _ => return None,
+    let ValueSet::DurationOrTime(units) = SINCE else {
+        return None;
     };
+    let unit = units.iter().find(|u| u.suffix == unit)?.seconds;
     now.checked_sub(SignedDuration::from_secs(count.checked_mul(unit)?))
         .ok()
 }
@@ -661,6 +681,68 @@ pub fn kind_name(kind: TxKind) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn since_units_drive_the_parser() {
+        let now: Timestamp = "2026-10-14T12:00:00Z".parse().unwrap();
+        let ValueSet::DurationOrTime(units) = SINCE else {
+            panic!("SINCE is a duration grammar"); // ubs:ignore — the test's own failure
+        };
+        for unit in units {
+            let given = format!("2{}", unit.suffix);
+            assert_eq!(
+                parse_since(&given, now),
+                now.checked_sub(SignedDuration::from_secs(2 * unit.seconds))
+                    .ok(),
+                "{given}"
+            );
+        }
+        for refused in ["2y", "m", "-1d", ""] {
+            assert_eq!(parse_since(refused, now), None, "{refused:?}");
+        }
+        let at: Timestamp = "2026-01-02T03:04:05Z".parse().unwrap();
+        assert_eq!(parse_since("2026-01-02T03:04:05Z", now), Some(at));
+    }
+
+    #[test]
+    fn every_since_help_names_its_units() {
+        use clap::CommandFactory;
+        let ValueSet::DurationOrTime(units) = SINCE else {
+            panic!("SINCE is a duration grammar"); // ubs:ignore — the test's own failure
+        };
+        let mut root = crate::cli::Cli::command();
+        root.build();
+        for row in crate::contract::commands::APP_VALIDATED
+            .iter()
+            .filter(|row| row.long == "since")
+        {
+            let path = row.path.unwrap_or_default();
+            let cmd = path
+                .split(' ')
+                .try_fold(&root, |cmd, word| cmd.find_subcommand(word))
+                .unwrap();
+            let help = cmd
+                .get_arguments()
+                .find(|arg| arg.get_long() == Some("since"))
+                .and_then(clap::Arg::get_help)
+                .map(ToString::to_string)
+                .unwrap_or_default();
+            for unit in units {
+                let named = help
+                    .split(|c: char| !c.is_ascii_alphanumeric())
+                    .any(|word| {
+                        word.strip_suffix(unit.suffix).is_some_and(|digits| {
+                            !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+                        })
+                    });
+                assert!(
+                    named,
+                    "{path} --since's help names no {}: {help}",
+                    unit.suffix
+                );
+            }
+        }
+    }
 
     #[test]
     fn since_takes_durations_and_rfc3339() {

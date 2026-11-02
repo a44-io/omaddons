@@ -5,8 +5,17 @@
 //!
 //! A10 (the manifest) created this module to A4's (`capabilities`) design, because A4 had
 //! not landed; A4 adds the app-validated value sets and the declared requirements.
+//!
+//! Two facts clap cannot give are declared here, each once and cross-checked by a test:
+//! the values of the flags app code validates ([`APP_VALIDATED`]: the actor words and the
+//! `--since` grammar, each set declared beside its parser), and the requirements between
+//! flags ([`REQUIRES`]: clap records them privately; a probe proves the table true).
+//! `--if-match` is listed only where a run binds (`cli::check_if_match` refuses it
+//! everywhere else), and a default is published only for an argument that takes a value.
 
 use clap::{ArgAction, CommandFactory};
+
+use super::values::{DurationUnit, ValueSet};
 
 use crate::app::precondition::BINDING_COMMANDS;
 use crate::app::{COMMANDS, CommandEntry, Dictionary, Group, Network, command_entry};
@@ -85,9 +94,71 @@ pub struct FlagInfo {
 pub enum Values {
     /// Any text clap accepts (a path, a number, an id).
     Any,
-    /// Exactly these words: clap's possible values, hidden ones left out. `String`, not
+    /// Exactly these words: clap's possible values, hidden ones left out, or an
+    /// app-validated flag's declared set ([`APP_VALIDATED`]). `String`, not
     /// `&'static str`: clap builds its possible values on demand.
     Words(Vec<String>),
+    /// A whole number followed by one of these units, or an RFC 3339 time: an open
+    /// grammar (`capabilities` publishes no possible values for it).
+    DurationOrTime(&'static [DurationUnit]),
+}
+
+/// A flag clap does not validate (or validates from the same list), with the value set its
+/// parser reads (M4-D2): `path` is its command, `None` for a global flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppValidated {
+    pub path: Option<&'static str>,
+    pub long: &'static str,
+    pub set: &'static ValueSet,
+}
+
+/// Every app-validated flag. `--actor` and `history --by` are free text clap passes to
+/// `Actor::from_str`; `undo --last-by` is validated by clap from the same list; the three
+/// `--since` flags are parsed by `history::parse_since`.
+pub const APP_VALIDATED: &[AppValidated] = &[
+    AppValidated {
+        path: None,
+        long: "actor",
+        set: &crate::model::ACTORS,
+    },
+    AppValidated {
+        path: Some("history"),
+        long: "by",
+        set: &crate::model::ACTORS,
+    },
+    AppValidated {
+        path: Some("undo"),
+        long: "last-by",
+        set: &crate::model::ACTORS,
+    },
+    AppValidated {
+        path: Some("history"),
+        long: "since",
+        set: &crate::app::history::SINCE,
+    },
+    AppValidated {
+        path: Some("net-log"),
+        long: "since",
+        set: &crate::app::history::SINCE,
+    },
+    AppValidated {
+        path: Some("errors"),
+        long: "since",
+        set: &crate::app::history::SINCE,
+    },
+];
+
+/// The declared values of `--<long>` at `path`, when it is app-validated there.
+pub fn app_validated(path: &str, long: &str) -> Option<Values> {
+    APP_VALIDATED
+        .iter()
+        .find(|row| row.long == long && row.path.is_none_or(|p| p == path))
+        .map(|row| match *row.set {
+            ValueSet::Words(words) => {
+                Values::Words(words.iter().map(|w| (*w).to_owned()).collect())
+            }
+            ValueSet::DurationOrTime(units) => Values::DurationOrTime(units),
+        })
 }
 
 /// Every `COMMANDS` row's facts, in `COMMANDS` order. A row whose path the clap tree does
@@ -177,7 +248,10 @@ pub fn command_info(entry: &CommandEntry, cmd: &clap::Command) -> CommandInfo {
                 takes_value,
                 multiple: multiple(arg),
                 default: if takes_value { default(arg) } else { None },
-                values: values_of(arg),
+                values: arg
+                    .get_long()
+                    .and_then(|long| app_validated(entry.name, long))
+                    .unwrap_or_else(|| values_of(arg)),
                 conflicts_with: conflicts(arg),
                 requires: arg
                     .get_long()
@@ -1068,6 +1142,122 @@ mod tests {
                 got, want,
                 "{case}: {text:?} gave {got} lines, expected {want}"
             );
+        }
+    }
+
+    /// The flag `--<long>` of the command at `path` in the built tree.
+    fn clap_flag(root: &clap::Command, path: &str, long: &str) -> Option<clap::Arg> {
+        at_path(root, path)?
+            .get_arguments()
+            .find(|arg| arg.get_long() == Some(long))
+            .cloned()
+    }
+
+    #[test]
+    fn app_validated_flags_exist_and_share_their_parser_list() {
+        let root = built();
+        let words = crate::model::Actor::WORDS.map(str::to_owned).to_vec();
+        let mut unknown = Vec::new();
+        for row in APP_VALIDATED {
+            // A global flag is checked on every row's command.
+            let paths: Vec<&str> = match row.path {
+                Some(path) => vec![path],
+                None => COMMANDS.iter().map(|entry| entry.name).collect(),
+            };
+            for path in paths {
+                let arg = clap_flag(&root, path, row.long);
+                assert!(arg.is_some(), "{path} --{}: no such flag", row.long);
+                let clap_words = arg.as_ref().map(values_of);
+                match (row.long, row.set) {
+                    // Free text, validated by `Actor::from_str`.
+                    ("actor" | "by", ValueSet::Words(set)) => {
+                        assert_eq!(clap_words, Some(Values::Any), "{path} --{}", row.long);
+                        assert_eq!(set.to_vec(), words, "{path} --{}", row.long);
+                    }
+                    // clap validates it, from the same list.
+                    ("last-by", ValueSet::Words(set)) => {
+                        assert_eq!(
+                            clap_words,
+                            Some(Values::Words(words.clone())),
+                            "{path} --last-by"
+                        );
+                        assert_eq!(set.to_vec(), words, "{path} --last-by");
+                    }
+                    ("since", ValueSet::DurationOrTime(units)) => {
+                        assert_eq!(clap_words, Some(Values::Any), "{path} --since");
+                        assert_eq!(
+                            ValueSet::DurationOrTime(units),
+                            crate::app::history::SINCE,
+                            "{path} --since"
+                        );
+                    }
+                    (long, set) => unknown.push(format!("{path} --{long}: {set:?}")),
+                }
+            }
+        }
+        assert!(
+            unknown.is_empty(),
+            "rows this test does not know: {unknown:?}"
+        );
+    }
+
+    #[test]
+    fn app_validated_values_reach_command_info() {
+        let words = crate::model::Actor::WORDS.map(str::to_owned).to_vec();
+        let since = Values::DurationOrTime(match crate::app::history::SINCE {
+            ValueSet::DurationOrTime(units) => units,
+            ValueSet::Words(_) => &[],
+        });
+        let flag = |path: &str, long: &str| -> Values {
+            info(path)
+                .flags
+                .into_iter()
+                .find(|f| f.long == long)
+                .map(|f| f.values)
+                .unwrap_or(Values::Any)
+        };
+        for (case, path, long, want) in [
+            (
+                "global_actor_on_status",
+                "status",
+                "actor",
+                Values::Words(words.clone()),
+            ),
+            (
+                "global_actor_on_install",
+                "install",
+                "actor",
+                Values::Words(words.clone()),
+            ),
+            (
+                "history_by_words",
+                "history",
+                "by",
+                Values::Words(words.clone()),
+            ),
+            (
+                "undo_last_by_words",
+                "undo",
+                "last-by",
+                Values::Words(words.clone()),
+            ),
+            ("history_since_grammar", "history", "since", since.clone()),
+            ("net_log_since_grammar", "net-log", "since", since.clone()),
+            ("errors_since_grammar", "errors", "since", since.clone()),
+            (
+                "undo_saved_variables_words_stay_claps",
+                "undo",
+                "saved-variables",
+                Values::Words(vec!["auto".into(), "restore".into(), "keep".into()]),
+            ),
+            (
+                "a_free_text_flag_stays_any",
+                "history",
+                "limit",
+                Values::Any,
+            ),
+        ] {
+            assert_eq!(flag(path, long), want, "case {case}: {path} --{long}");
         }
     }
 }

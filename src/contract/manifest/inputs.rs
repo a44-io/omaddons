@@ -716,9 +716,17 @@ mod tests {
                     .find(|a| a.get_long() == Some(flag.long.as_str()))
                     .unwrap();
                 let facts = commands::arg_facts(info.path, cmd, arg);
-                let words = match &flag.values {
-                    Values::Words(words) => words.clone(),
-                    Values::Any => Vec::new(),
+                // An app-validated flag publishes its declared set; the manifest records
+                // what clap accepts, which is that set or free text.
+                let declared = commands::app_validated(info.path, &flag.long);
+                let published = if declared.is_some() {
+                    commands::values_of(arg)
+                } else {
+                    flag.values.clone()
+                };
+                let words = match published {
+                    Values::Words(words) => words,
+                    Values::Any | Values::DurationOrTime(_) => Vec::new(),
                 };
                 let mut sorted_words = words;
                 sorted_words.sort();

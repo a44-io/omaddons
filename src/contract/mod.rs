@@ -9,6 +9,7 @@ pub mod guide;
 pub mod manifest;
 pub mod opaque;
 pub mod schema;
+pub mod values;
 pub mod volatile;
 pub mod wire;
 
