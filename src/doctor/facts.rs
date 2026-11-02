@@ -126,4 +126,6 @@ pub struct MachineFacts {
 pub struct WidgetDrift {
     /// The version it was installed at, when it says.
     pub version: Option<String>,
+    /// Its `Build.js` says which `HOME` and XDG directories it was installed under.
+    pub context_known: bool,
 }

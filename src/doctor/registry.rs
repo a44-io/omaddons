@@ -120,6 +120,9 @@ pub mod ids {
     /// A managed addon loads only as out of date.
     pub const OUT_OF_DATE_TOC: &str = "fm-external_artifacts-out-of-date-toc";
 
+    /// The installed bar widget fails Omarchy's plugin validation.
+    pub const WIDGET_INVALID: &str = "fm-plugins-widget-invalid";
+
     /// GitHub answers 401 to the configured token, or it cannot be had (`--online`).
     // ubs:ignore — a failure-mode id, not a secret
     pub const NETWORK_CREDENTIAL_REJECTED: &str = "fm-network-credential-rejected";
@@ -891,12 +894,32 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         }),
     },
     FailureMode {
+        id: ids::WIDGET_INVALID,
+        subsystem: Subsystem::Plugins,
+        severity: Severity::P2,
+        title: "the installed bar widget fails Omarchy's plugin validation",
+        description: "The bar widget's folder under Omarchy's plugin directory breaks one or more rules of Omarchy's plugin validator (its manifest, its entry points, or a symlink inside it), as omaddons' port of that validator checks them.",
+        why: "Omarchy's shell may refuse to load a plugin that fails validation, so the bar loses the widget. A reinstall renders a valid one; the doctor never runs it itself, because it runs Omarchy's tools in the desktop session and cannot be undone.",
+        tier: Tier::Quick,
+        online: false,
+        // One bounded manifest read and a walk of the widget's few dozen entries.
+        cost_ms: 2,
+        requires: &[Layer::Widget],
+        detect: Some(plugins::widget_invalid),
+        fix: None,
+        manual: Some(Manual {
+            instruction: "reinstall the bar widget from this build with its omarchy install, from the desktop session; omaddons omarchy status lists each problem with its message",
+            why: "the widget lives in your desktop's configuration, which only the omarchy commands change",
+            remediation: widget_invalid_manual,
+        }),
+    },
+    FailureMode {
         id: ids::WIDGET_VERSION_DRIFT,
         subsystem: Subsystem::Plugins,
         severity: Severity::P3,
         title: "the bar widget is from another omaddons build",
         description: "The installed bar widget's code is not what this binary renders for the directories it was installed under.",
-        why: "An outdated widget stays read-only and may misread this build's output.",
+        why: "An outdated widget stays read-only and may misread this build's output. The doctor reports it and never reinstalls it: a reinstall runs Omarchy's own tools in the desktop session and cannot be undone.",
         tier: Tier::Cached,
         online: false,
         cost_ms: 1,
@@ -1151,6 +1174,17 @@ fn forget_manual(f: &Finding) -> Remediation {
 
 fn widget_manual(_: &Finding) -> Remediation {
     hint(&omarchy_status::reinstall_hint())
+}
+
+/// An invalid widget: its reinstall, unless it serves another omaddons state, which a
+/// reinstall from this run would point at this run's state instead (M3-D7): prose then.
+fn widget_invalid_manual(f: &Finding) -> Remediation {
+    if f.evidence.reason == Some(plugins::OTHER_CONTEXT) {
+        return prose(
+            "reinstall the widget with the omaddons binary and the HOME and XDG directories it was installed under",
+        );
+    }
+    widget_manual(f)
 }
 
 /// Which addon owns a folder is the user's choice: prose naming the claimants.
@@ -1797,8 +1831,8 @@ mod tests {
         // The seven, the two the doctor's view raises, the two its runtime raises, the four
         // inventory rows of `external_artifacts`, the nine journal and lock rows of
         // `concurrency_primitives`, `caches`' blob row (F6), and F7's three online rows of
-        // `network` and the `secrets` row.
-        assert_eq!(FAILURE_MODES.len(), 29);
+        // `network`, the `secrets` row and `plugins`' widget-invalid row.
+        assert_eq!(FAILURE_MODES.len(), 30);
     }
 
     /// Appendix B rows 1-10: the journal and lock rows, all `cached` and report-only.
@@ -2157,6 +2191,93 @@ mod tests {
             )
         );
         assert!(row.manual.is_some());
+        assert!(invariant_violations(FAILURE_MODES).is_empty());
+    }
+
+    /// Appendix B rows 38 and 39: `plugins`' widget rows, reported and never repaired
+    /// (M4-D50), each remediated by `omarchy install`, or by prose for a widget serving
+    /// another state.
+    #[test]
+    fn the_plugins_rows_match_appendix_b() {
+        for (id, severity, tier, cost_ms, title) in [
+            (
+                ids::WIDGET_INVALID,
+                Severity::P2,
+                Tier::Quick,
+                2,
+                "the installed bar widget fails Omarchy's plugin validation",
+            ),
+            (
+                ids::WIDGET_VERSION_DRIFT,
+                Severity::P3,
+                Tier::Cached,
+                1,
+                "the bar widget is from another omaddons build",
+            ),
+        ] {
+            let row = row(id).unwrap();
+            assert_eq!(
+                (
+                    row.subsystem,
+                    row.severity,
+                    row.tier,
+                    row.online,
+                    row.cost_ms,
+                    row.requires,
+                    row.title,
+                    row.fix.is_none(),
+                    row.manual.is_some(),
+                ),
+                (
+                    Subsystem::Plugins,
+                    severity,
+                    tier,
+                    false,
+                    cost_ms,
+                    &[Layer::Widget][..],
+                    title,
+                    true,
+                    true,
+                ),
+                "{id}"
+            );
+            assert!(
+                row.why.contains("cannot be undone"),
+                "{id}: never reinstalled by the doctor: {}",
+                row.why
+            );
+            let install = argv_of(&["omaddons", "omarchy", "install"]);
+            let ours = row.finding(Observation {
+                subject: Subject::machine(),
+                title: "t".to_owned(),
+                confidence: Confidence::High,
+                addon: None,
+                folder: None,
+                evidence: Evidence::default(),
+            });
+            assert_eq!(ours.remediation.argv, Some(install), "{id}");
+            assert!(
+                !ours.remediation.auto_fixable && !ours.remediation.destructive,
+                "{id}"
+            );
+        }
+        let row = row(ids::WIDGET_INVALID).unwrap();
+        let theirs = row.finding(Observation {
+            subject: Subject::machine(),
+            title: "t".to_owned(),
+            confidence: Confidence::High,
+            addon: None,
+            folder: None,
+            evidence: Evidence {
+                reason: Some(plugins::OTHER_CONTEXT),
+                ..Evidence::default()
+            },
+        });
+        assert_eq!(theirs.remediation.argv, None, "{:?}", theirs.remediation);
+        assert_eq!(
+            theirs.remediation.command,
+            "reinstall the widget with the omaddons binary and the HOME and XDG directories it was installed under"
+        );
         assert!(invariant_violations(FAILURE_MODES).is_empty());
     }
 

@@ -1,13 +1,92 @@
 //! A port of Omarchy's `omarchy-plugin-validate` (4.0.6), so a rendered widget is
 //! validated whether or not Omarchy's bash script is on the machine. Re-read the script
 //! when Omarchy changes its rules. Unlike the script, every violation is reported, not
-//! only the first.
+//! only the first, each with its [`Rule`] code.
+//!
+//! One rule is the port's own: `manifest.json` is read with at most
+//! [`WIDGET_READBACK_MAX_BYTES`] (64 KiB), and a larger one is [`Rule::ManifestTooLarge`],
+//! never parsed. The installed folder is untrusted input (common rule 15), and the real
+//! widget's manifest is under 1 KiB.
 
-use std::path::Path;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 
+use schemars::JsonSchema;
+use serde::Serialize;
 use serde_json::Value;
 
 use super::assets::MANIFEST;
+use crate::limits::WIDGET_READBACK_MAX_BYTES;
+
+/// The rule a problem breaks: one per message the port reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Rule {
+    /// The plugin folder does not exist.
+    PluginMissing,
+    /// `manifest.json` is missing or cannot be read as text.
+    ManifestMissing,
+    /// `manifest.json` is not JSON.
+    ManifestNotJson,
+    /// `manifest.json` is larger than 64 KiB (the port's own bound).
+    ManifestTooLarge,
+    /// `schemaVersion` is missing or not the number 1.
+    SchemaVersion,
+    /// A required field is missing.
+    FieldMissing,
+    /// `id` is empty.
+    IdEmpty,
+    /// `id` breaks the id pattern or holds `..`.
+    IdInvalid,
+    /// `id` is in Omarchy's reserved `omarchy.*` namespace.
+    IdReserved,
+    /// `kinds` is not a non-empty array.
+    KindsEmpty,
+    /// `entryPoints` is not an object.
+    EntryPointsNotObject,
+    /// `barWidget.defaultSection` is not left, center or right.
+    DefaultSection,
+    /// An entry point is empty.
+    EntryPointEmpty,
+    /// An entry point holds a newline.
+    EntryPointNewline,
+    /// An entry point is an absolute path.
+    EntryPointAbsolute,
+    /// An entry point holds `..`.
+    EntryPointDotdot,
+    /// An entry point names no file.
+    EntryPointMissing,
+    /// A declared kind has no entry point to load it from.
+    KindWithoutEntryPoint,
+    /// The plugin folder holds a symlink.
+    Symlink,
+}
+
+/// One broken rule, and the port's message for it (which may quote manifest values).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Problem {
+    pub rule: Rule,
+    pub message: String,
+}
+
+/// What [`check`] found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Checked {
+    /// In the order the port checks them.
+    pub problems: Vec<Problem>,
+    /// `false` when `charge` stopped the symlink walk before it finished.
+    pub complete: bool,
+}
+
+impl Checked {
+    /// The rules broken, sorted, each once.
+    pub fn rules(&self) -> Vec<Rule> {
+        let mut rules: Vec<Rule> = self.problems.iter().map(|p| p.rule).collect();
+        rules.sort_unstable();
+        rules.dedup();
+        rules
+    }
+}
 
 /// Each kind and the entry point the shell loads it from; a kind not listed is left
 /// alone, as the script leaves it.
@@ -22,60 +101,144 @@ const KIND_ENTRY_POINTS: &[(&str, &str)] = &[
 
 /// Every rule the plugin at `dir` breaks, one line each; empty when it is valid.
 pub fn validate(dir: &Path) -> Vec<String> {
-    let mut problems = Vec::new();
+    check(dir, &mut || true)
+        .problems
+        .into_iter()
+        .map(|problem| problem.message)
+        .collect()
+}
+
+/// Every rule the plugin at `dir` breaks, each with its code; `charge` is called once per
+/// entry the symlink walk visits, and the walk stops (`complete: false`) when it returns
+/// false.
+pub fn check(dir: &Path, charge: &mut dyn FnMut() -> bool) -> Checked {
+    let mut problems = Problems::default();
     if !dir.is_dir() {
-        return vec![format!("plugin folder not found: {}", dir.display())];
+        problems.push(
+            Rule::PluginMissing,
+            format!("plugin folder not found: {}", dir.display()),
+        );
+        return Checked {
+            problems: problems.0,
+            complete: true,
+        };
     }
-    match std::fs::read_to_string(dir.join(MANIFEST)) {
-        Err(_) => problems.push("missing manifest.json".to_owned()),
-        Ok(text) => match serde_json::from_str::<Value>(&text) {
-            Err(_) => problems.push("manifest.json is not valid JSON".to_owned()),
+    match read_manifest(&dir.join(MANIFEST)) {
+        ManifestRead::Missing => problems.push(Rule::ManifestMissing, "missing manifest.json"),
+        ManifestRead::TooLarge => problems.push(
+            Rule::ManifestTooLarge,
+            format!(
+                "manifest.json is larger than {} KiB",
+                WIDGET_READBACK_MAX_BYTES / 1024
+            ),
+        ),
+        ManifestRead::Text(text) => match serde_json::from_str::<Value>(&text) {
+            Err(_) => problems.push(Rule::ManifestNotJson, "manifest.json is not valid JSON"),
             Ok(manifest) => check_manifest(dir, &manifest, &mut problems),
         },
     }
-    if let Some(link) = first_symlink(dir) {
-        problems.push(format!(
-            "symlinks are not allowed inside a plugin folder: {}",
-            link.display()
-        ));
+    let (link, complete) = first_symlink(dir, charge);
+    if let Some(link) = link {
+        problems.push(
+            Rule::Symlink,
+            format!(
+                "symlinks are not allowed inside a plugin folder: {}",
+                link.display()
+            ),
+        );
     }
-    problems
+    Checked {
+        problems: problems.0,
+        complete,
+    }
 }
 
-fn check_manifest(dir: &Path, manifest: &Value, problems: &mut Vec<String>) {
+/// The problems found so far, in the order the port checks them.
+#[derive(Default)]
+struct Problems(Vec<Problem>);
+
+impl Problems {
+    fn push(&mut self, rule: Rule, message: impl Into<String>) {
+        self.0.push(Problem {
+            rule,
+            message: message.into(),
+        });
+    }
+}
+
+/// `manifest.json`, read with at most [`WIDGET_READBACK_MAX_BYTES`].
+enum ManifestRead {
+    /// Missing, unreadable or not UTF-8, as the script's unbounded read reported it.
+    Missing,
+    TooLarge,
+    Text(String),
+}
+
+fn read_manifest(path: &Path) -> ManifestRead {
+    let Ok(file) = std::fs::File::open(path) else {
+        return ManifestRead::Missing;
+    };
+    let mut bytes = Vec::new();
+    if file
+        .take(WIDGET_READBACK_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
+        return ManifestRead::Missing;
+    }
+    if bytes.len() as u64 > WIDGET_READBACK_MAX_BYTES {
+        return ManifestRead::TooLarge;
+    }
+    String::from_utf8(bytes).map_or(ManifestRead::Missing, ManifestRead::Text)
+}
+
+fn check_manifest(dir: &Path, manifest: &Value, problems: &mut Problems) {
     // jq's `==` is type-aware: the string "1" is not the number 1.
     if manifest.get("schemaVersion").and_then(Value::as_f64) != Some(1.0) {
-        problems.push("unsupported or missing schemaVersion (expected 1)".to_owned());
+        problems.push(
+            Rule::SchemaVersion,
+            "unsupported or missing schemaVersion (expected 1)",
+        );
     }
     for field in ["id", "name", "version", "kinds", "entryPoints"] {
         if manifest.get(field).is_none() {
-            problems.push(format!("manifest missing required field '{field}'"));
+            problems.push(
+                Rule::FieldMissing,
+                format!("manifest missing required field '{field}'"),
+            );
         }
     }
     let id = manifest.get("id").and_then(Value::as_str).unwrap_or("");
     if id.is_empty() {
-        problems.push("manifest 'id' is empty".to_owned());
+        problems.push(Rule::IdEmpty, "manifest 'id' is empty");
     } else if !valid_id(id) || id.contains("..") {
-        problems.push(format!("invalid plugin id '{id}'"));
+        problems.push(Rule::IdInvalid, format!("invalid plugin id '{id}'"));
     } else if id.starts_with("omarchy.") {
-        problems.push(format!(
-            "plugin id '{id}' uses the reserved omarchy.* namespace"
-        ));
+        problems.push(
+            Rule::IdReserved,
+            format!("plugin id '{id}' uses the reserved omarchy.* namespace"),
+        );
     }
     let kinds = manifest.get("kinds").and_then(Value::as_array);
     if kinds.is_none_or(Vec::is_empty) {
-        problems.push("'kinds' must be a non-empty array".to_owned());
+        problems.push(Rule::KindsEmpty, "'kinds' must be a non-empty array");
     }
     let entry_points = manifest.get("entryPoints").and_then(Value::as_object);
     if entry_points.is_none() {
-        problems.push("'entryPoints' must be an object".to_owned());
+        problems.push(
+            Rule::EntryPointsNotObject,
+            "'entryPoints' must be an object",
+        );
     }
     let section = manifest
         .get("barWidget")
         .and_then(Value::as_object)
         .and_then(|bar_widget| bar_widget.get("defaultSection"));
     if section.is_some_and(|s| !matches!(s.as_str(), Some("left" | "center" | "right"))) {
-        problems.push("'barWidget.defaultSection' must be left, center, or right".to_owned());
+        problems.push(
+            Rule::DefaultSection,
+            "'barWidget.defaultSection' must be left, center, or right",
+        );
     }
     for value in entry_points.into_iter().flat_map(|m| m.values()) {
         // The script reads each value as text, so a non-string is its JSON.
@@ -83,23 +246,36 @@ fn check_manifest(dir: &Path, manifest: &Value, problems: &mut Vec<String>) {
             .as_str()
             .map_or_else(|| value.to_string(), str::to_owned);
         if entry.is_empty() {
-            problems.push("entry point path is empty".to_owned());
+            problems.push(Rule::EntryPointEmpty, "entry point path is empty");
         } else if entry.contains('\n') {
-            problems.push("entry point may not contain a newline".to_owned());
+            problems.push(
+                Rule::EntryPointNewline,
+                "entry point may not contain a newline",
+            );
         } else if entry.starts_with('/') {
-            problems.push(format!("entry point must be a relative path: '{entry}'"));
+            problems.push(
+                Rule::EntryPointAbsolute,
+                format!("entry point must be a relative path: '{entry}'"),
+            );
         } else if entry.contains("..") {
-            problems.push(format!("entry point may not contain '..': '{entry}'"));
+            problems.push(
+                Rule::EntryPointDotdot,
+                format!("entry point may not contain '..': '{entry}'"),
+            );
         } else if !dir.join(&entry).is_file() {
-            problems.push(format!("entry point file not found: '{entry}'"));
+            problems.push(
+                Rule::EntryPointMissing,
+                format!("entry point file not found: '{entry}'"),
+            );
         }
     }
     for (kind, entry_point) in KIND_ENTRY_POINTS {
         let declared = kinds.is_some_and(|k| k.iter().any(|v| v.as_str() == Some(kind)));
         if declared && !entry_points.is_some_and(|m| m.contains_key(*entry_point)) {
-            problems.push(format!(
-                "kind '{kind}' requires an 'entryPoints.{entry_point}' to load"
-            ));
+            problems.push(
+                Rule::KindWithoutEntryPoint,
+                format!("kind '{kind}' requires an 'entryPoints.{entry_point}' to load"),
+            );
         }
     }
 }
@@ -112,27 +288,31 @@ fn valid_id(id: &str) -> bool {
 }
 
 /// The first symlink under `dir`, never following one, skipping `.git` as the script
-/// does.
-fn first_symlink(dir: &Path) -> Option<std::path::PathBuf> {
+/// does; and whether the walk finished (`false` once `charge`, called before each entry
+/// it visits, refused).
+fn first_symlink(dir: &Path, charge: &mut dyn FnMut() -> bool) -> (Option<PathBuf>, bool) {
     let mut pending = vec![dir.to_path_buf()];
     while let Some(current) = pending.pop() {
         let Ok(entries) = std::fs::read_dir(&current) else {
             continue;
         };
         for entry in entries.flatten() {
+            if !charge() {
+                return (None, false);
+            }
             let path = entry.path();
             let Ok(meta) = std::fs::symlink_metadata(&path) else {
                 continue;
             };
             if meta.file_type().is_symlink() {
-                return Some(path);
+                return (Some(path), true);
             }
             if meta.is_dir() && entry.file_name() != ".git" {
                 pending.push(path);
             }
         }
     }
-    None
+    (None, true)
 }
 
 #[cfg(test)]
@@ -194,17 +374,17 @@ mod tests {
         assert_eq!(validate(plugin(&valid()).path()), Vec::<String>::new());
     }
 
-    /// A case: what is planted, how, and what the report says.
-    type Plant = (&'static str, Box<dyn Fn(&mut Value)>, &'static str);
+    /// A case: what is planted, how, what the report says, and the rule it names.
+    type Plant = (&'static str, Box<dyn Fn(&mut Value)>, &'static str, Rule);
 
-    /// One planted violation at a time, each reported.
-    #[test]
-    fn every_rule_bites() {
-        let cases: Vec<Plant> = vec![
+    /// One planted violation per case, over [`valid`].
+    fn plants() -> Vec<Plant> {
+        vec![
             (
                 "string schemaVersion",
                 Box::new(|m| m["schemaVersion"] = json!("1")),
                 "schemaVersion",
+                Rule::SchemaVersion,
             ),
             (
                 "missing name",
@@ -212,66 +392,79 @@ mod tests {
                     m.as_object_mut().unwrap().remove("name");
                 }),
                 "required field 'name'",
+                Rule::FieldMissing,
             ),
             (
                 "empty id",
                 Box::new(|m| m["id"] = json!("")),
                 "'id' is empty",
+                Rule::IdEmpty,
             ),
             (
                 "bad id",
                 Box::new(|m| m["id"] = json!("-bad")),
                 "invalid plugin id",
+                Rule::IdInvalid,
             ),
             (
                 "dotted id",
                 Box::new(|m| m["id"] = json!("a..b")),
                 "invalid plugin id",
+                Rule::IdInvalid,
             ),
             (
                 "reserved id",
                 Box::new(|m| m["id"] = json!("omarchy.mine")),
                 "reserved omarchy.*",
+                Rule::IdReserved,
             ),
             (
                 "empty kinds",
                 Box::new(|m| m["kinds"] = json!([])),
                 "non-empty array",
+                Rule::KindsEmpty,
             ),
             (
                 "entryPoints not an object",
                 Box::new(|m| m["entryPoints"] = json!([])),
                 "must be an object",
+                Rule::EntryPointsNotObject,
             ),
             (
                 "bad section",
                 Box::new(|m| m["barWidget"]["defaultSection"] = json!("top")),
                 "defaultSection",
+                Rule::DefaultSection,
             ),
             (
                 "dot-dot entry",
                 Box::new(|m| m["entryPoints"]["service"] = json!("../Service.qml")),
                 "may not contain '..'",
+                Rule::EntryPointDotdot,
             ),
             (
                 "absolute entry",
                 Box::new(|m| m["entryPoints"]["service"] = json!("/etc/passwd")),
                 "relative path",
+                Rule::EntryPointAbsolute,
             ),
             (
                 "empty entry",
                 Box::new(|m| m["entryPoints"]["service"] = json!("")),
                 "is empty",
+                Rule::EntryPointEmpty,
             ),
             (
                 "newline entry",
                 Box::new(|m| m["entryPoints"]["service"] = json!("Service\n.qml")),
                 "newline",
+                Rule::EntryPointNewline,
             ),
             (
                 "missing entry file",
                 Box::new(|m| m["entryPoints"]["service"] = json!("Gone.qml")),
                 "not found",
+                Rule::EntryPointMissing,
             ),
             (
                 "kind without entry",
@@ -282,9 +475,15 @@ mod tests {
                         .remove("barWidget");
                 }),
                 "kind 'bar-widget' requires",
+                Rule::KindWithoutEntryPoint,
             ),
-        ];
-        for (what, plant, expected) in cases {
+        ]
+    }
+
+    /// One planted violation at a time, each reported.
+    #[test]
+    fn every_rule_bites() {
+        for (what, plant, expected, _) in plants() {
             let mut manifest = valid();
             plant(&mut manifest);
             let problems = validate(plugin(&manifest).path());
@@ -293,6 +492,141 @@ mod tests {
                 "{what}: {problems:?}"
             );
         }
+    }
+
+    /// Never charges.
+    fn unbounded() -> impl FnMut() -> bool {
+        || true
+    }
+
+    /// Each planted violation is reported with its rule, beside the message `validate`
+    /// gives for it.
+    #[test]
+    fn check_names_the_rule_of_every_problem() {
+        for (what, plant, expected, rule) in plants() {
+            let mut manifest = valid();
+            plant(&mut manifest);
+            let checked = check(plugin(&manifest).path(), &mut unbounded());
+            assert!(checked.complete, "{what}: {checked:?}");
+            assert!(
+                checked
+                    .problems
+                    .iter()
+                    .any(|p| p.rule == rule && p.message.contains(expected)),
+                "{what}: expected {rule:?} with {expected:?}, got {checked:?}"
+            );
+        }
+    }
+
+    /// `validate` is `check`'s messages in order, for every planted violation, the
+    /// rendered widget and the broken folders.
+    #[test]
+    fn validate_is_check_mapped_to_messages() {
+        let mut dirs: Vec<(String, tempfile::TempDir)> = plants()
+            .into_iter()
+            .map(|(what, plant, _, _)| {
+                let mut manifest = valid();
+                plant(&mut manifest);
+                (what.to_owned(), plugin(&manifest))
+            })
+            .collect();
+        dirs.push(("rendered".to_owned(), rendered()));
+        let empty = tempfile::tempdir().unwrap();
+        let broken = tempfile::tempdir().unwrap();
+        fs::write(broken.path().join("manifest.json"), "{").unwrap();
+        dirs.push(("no manifest".to_owned(), empty));
+        dirs.push(("broken manifest".to_owned(), broken));
+        for (what, dir) in &dirs {
+            let messages: Vec<String> = check(dir.path(), &mut unbounded())
+                .problems
+                .into_iter()
+                .map(|p| p.message)
+                .collect();
+            assert_eq!(validate(dir.path()), messages, "{what}");
+        }
+        let gone = dirs[0].1.path().join("nope");
+        let checked = check(&gone, &mut unbounded());
+        assert_eq!(
+            checked.problems.iter().map(|p| p.rule).collect::<Vec<_>>(),
+            vec![Rule::PluginMissing],
+            "{checked:?}"
+        );
+        assert_eq!(
+            validate(&gone),
+            vec![checked.problems[0].message.clone()],
+            "a missing folder"
+        );
+    }
+
+    #[test]
+    fn check_reports_a_symlink_and_skips_git() {
+        let dir = plugin(&valid());
+        fs::create_dir_all(dir.path().join("views/deep")).unwrap();
+        std::os::unix::fs::symlink("/etc/passwd", dir.path().join("views/deep/link")).unwrap();
+        let checked = check(dir.path(), &mut unbounded());
+        assert_eq!(checked.rules(), vec![Rule::Symlink], "{checked:?}");
+        assert!(checked.complete, "{checked:?}");
+
+        let dir = plugin(&valid());
+        fs::create_dir_all(dir.path().join(".git")).unwrap();
+        std::os::unix::fs::symlink("/etc/passwd", dir.path().join(".git/link")).unwrap();
+        let checked = check(dir.path(), &mut unbounded());
+        assert_eq!(checked.problems, Vec::new(), "a link under .git");
+        assert!(checked.complete);
+    }
+
+    /// A manifest over 64 KiB is reported and never parsed; one at the bound is read.
+    #[test]
+    fn check_bounds_the_manifest_read() {
+        let max = usize::try_from(WIDGET_READBACK_MAX_BYTES).unwrap();
+        let dir = plugin(&valid());
+        // Valid JSON past the bound: parsed, it would pass.
+        let mut big = valid();
+        big["padding"] = json!("x".repeat(max));
+        fs::write(dir.path().join("manifest.json"), big.to_string()).unwrap();
+        let checked = check(dir.path(), &mut unbounded());
+        assert_eq!(checked.rules(), vec![Rule::ManifestTooLarge], "{checked:?}");
+        assert_eq!(
+            validate(dir.path()),
+            vec!["manifest.json is larger than 64 KiB".to_owned()]
+        );
+
+        let mut padded = valid();
+        let text = padded.to_string();
+        padded["padding"] = json!("x".repeat(max - text.len() - r#","padding":"""#.len()));
+        let text = padded.to_string();
+        assert_eq!(text.len(), max, "a manifest exactly at the bound");
+        fs::write(dir.path().join("manifest.json"), text).unwrap();
+        assert_eq!(check(dir.path(), &mut unbounded()).problems, Vec::new());
+    }
+
+    /// A refusing charge stops the walk: `complete: false`, no symlink beyond the stop.
+    #[test]
+    fn check_stops_when_charge_refuses() {
+        let dir = plugin(&valid());
+        for n in 0..10 {
+            fs::create_dir_all(dir.path().join(format!("d{n}"))).unwrap();
+        }
+        let mut left = 3;
+        let mut charge = || {
+            if left == 0 {
+                return false;
+            }
+            left -= 1;
+            true
+        };
+        let checked = check(dir.path(), &mut charge);
+        assert!(!checked.complete, "{checked:?}");
+        assert_eq!(checked.problems, Vec::new(), "the manifest is valid");
+
+        let mut calls = 0;
+        let checked = check(dir.path(), &mut || {
+            calls += 1;
+            true
+        });
+        assert!(checked.complete);
+        // Three files and ten directories.
+        assert_eq!(calls, 13, "one charge per entry visited");
     }
 
     #[test]

@@ -1433,6 +1433,7 @@ pub(crate) fn machine_facts(widget: Option<&WidgetInfo>) -> MachineFacts {
     MachineFacts {
         widget: widget.filter(|w| w.needs_reinstall()).map(|w| WidgetDrift {
             version: w.version.clone(),
+            context_known: w.context_matches.is_some(),
         }),
     }
 }

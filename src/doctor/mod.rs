@@ -167,6 +167,7 @@ pub(crate) mod tests {
             machine: MachineFacts {
                 widget: Some(WidgetDrift {
                     version: Some("0.0.9".to_owned()),
+                    context_known: true,
                 }),
             },
         }

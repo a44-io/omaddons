@@ -288,6 +288,10 @@ pub struct Evidence {
     /// Whether an online check sent a token. Omitted when no token could be sent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub authenticated: Option<bool>,
+    /// The plugin rules a widget breaks, sorted, each once; `omaddons omarchy status`
+    /// lists them with their messages. Omitted when no widget rule is concerned.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<crate::omarchy::validate::Rule>,
     /// The detector's per-instance fixable mark: `Some(false)` for an instance its row's
     /// fixer cannot repair, which `doctor fix` lists as manual and whose remediation is
     /// the row's manual one. Never on the wire: `remediation.auto_fixable` says it there.
@@ -974,6 +978,7 @@ fn evidence_reasons() -> Vec<&'static str> {
     reasons.extend(IncompleteLimit::ALL.map(IncompleteLimit::as_str));
     reasons.extend(super::detectors::network::REASONS);
     reasons.extend(super::detectors::secrets::REASONS);
+    reasons.extend(super::detectors::plugins::REASONS);
     reasons.sort_unstable();
     reasons.dedup();
     reasons
@@ -1246,8 +1251,8 @@ mod tests {
     }
 
     /// `evidence.reason` is published as a closed set, made of its sources only: the view's
-    /// failures, recovery's stops, the runtime's limits, and the network and secrets
-    /// checks' reasons.
+    /// failures, recovery's stops, the runtime's limits, and the network, secrets and
+    /// plugins checks' reasons.
     #[test]
     fn evidence_reasons_are_closed() {
         let mut expected: Vec<&str> = crate::doctor::view::FailureReason::ALL
@@ -1264,6 +1269,7 @@ mod tests {
             "unresolvable",
         ]);
         expected.extend(["other_owner", "outside_config", "symlink"]);
+        expected.extend(["code_differs", "context_unknown", "other_context"]);
         expected.sort_unstable();
         expected.dedup();
         assert_eq!(evidence_reasons(), expected);
