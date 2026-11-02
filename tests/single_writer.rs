@@ -825,8 +825,9 @@ fn only_fsx_writes_to_the_filesystem() {
     }
 }
 
-/// Modules allowed to call `prune()`, each with its reason. Doctor fixers must never
-/// appear here (vision §5.5): the doctor removes by renaming into quarantine.
+/// Modules allowed to call `prune()`, each with its reason. In `src/doctor/` the one is
+/// `src/doctor/gc.rs` (M4-D36), the retention plan's deletions: doctor fixers never
+/// appear here (vision §5.5), since they remove by renaming into quarantine.
 const PRUNE_CALLERS: &[(&str, &str)] = &[
     (
         "src/engine/tx.rs",
@@ -872,33 +873,84 @@ const PRUNE_CALLERS: &[(&str, &str)] = &[
         "src/engine/repair/recover.rs",
         "repair journals and their in-flight locks, in recovery, under the held global lock",
     ),
+    (
+        "src/doctor/gc.rs",
+        "doctor gc: the retention plan's deletions, the only doctor file that may prune (M4-D36)",
+    ),
 ];
 
-#[test]
-fn prune_is_called_only_from_its_allowlist() {
-    let allowed: Vec<&str> = PRUNE_CALLERS.iter().map(|(file, _)| *file).collect();
-    assert!(!allowed.iter().any(|file| file.contains("doctor")));
+/// The `prune(` calls in the production code of `files` (each a label and its text)
+/// outside `allowed`, as `<file>:<line>`; one in `src/doctor/` also says which file may.
+fn prune_calls_outside(allowed: &[&str], files: &[(String, String)]) -> Vec<String> {
     let mut calls = Vec::new();
-    for file in rust_files(&root().join("src")) {
-        let name = label(&file);
-        if name == "src/fsx/prune.rs" {
+    for (name, text) in files {
+        if name == "src/fsx/prune.rs" || allowed.contains(&name.as_str()) {
             continue;
         }
-        let text = std::fs::read_to_string(&file).unwrap();
-        for (line, code) in production_lines(&text) {
+        for (line, code) in production_lines(text) {
             let calls_prune = code.match_indices("prune(").any(|(at, _)| {
                 code.get(..at)
                     .and_then(|before| before.chars().last())
                     .is_none_or(|c| !(c.is_alphanumeric() || c == '_'))
             });
-            if calls_prune && !allowed.contains(&name.as_str()) {
-                calls.push(format!("{name}:{line}"));
+            if calls_prune {
+                calls.push(if name.starts_with("src/doctor/") {
+                    format!(
+                        "{name}:{line}: only src/doctor/gc.rs may prune in src/doctor/ (M4-D36)"
+                    )
+                } else {
+                    format!("{name}:{line}")
+                });
             }
         }
     }
+    calls
+}
+
+#[test]
+fn prune_is_called_only_from_its_allowlist() {
+    let allowed: Vec<&str> = PRUNE_CALLERS.iter().map(|(file, _)| *file).collect();
+    let doctor: Vec<&str> = allowed
+        .iter()
+        .copied()
+        .filter(|file| file.contains("doctor"))
+        .collect();
+    assert_eq!(
+        doctor,
+        ["src/doctor/gc.rs"],
+        "the one doctor file that prunes"
+    );
+    let files: Vec<(String, String)> = rust_files(&root().join("src"))
+        .into_iter()
+        .map(|file| (label(&file), std::fs::read_to_string(&file).unwrap()))
+        .collect();
+    let calls = prune_calls_outside(&allowed, &files);
     assert!(
         calls.is_empty(),
         "prune() called outside the allowlist:\n{}",
         calls.join("\n")
+    );
+}
+
+#[test]
+fn a_prune_call_in_another_doctor_file_is_flagged() {
+    let allowed: Vec<&str> = PRUNE_CALLERS.iter().map(|(file, _)| *file).collect();
+    let call = "fn f() {\n    fsx::prune(&scopes, reason, &victims, lock);\n}\n";
+    let files: Vec<(String, String)> = [
+        "src/doctor/gc.rs",
+        "src/doctor/fixers/quarantine.rs",
+        "src/doctor/gc/plan.rs",
+        "src/app/doctor.rs",
+    ]
+    .iter()
+    .map(|name| ((*name).to_owned(), call.to_owned()))
+    .collect();
+    assert_eq!(
+        prune_calls_outside(&allowed, &files),
+        [
+            "src/doctor/fixers/quarantine.rs:2: only src/doctor/gc.rs may prune in src/doctor/ (M4-D36)",
+            "src/doctor/gc/plan.rs:2: only src/doctor/gc.rs may prune in src/doctor/ (M4-D36)",
+            "src/app/doctor.rs:2",
+        ]
     );
 }

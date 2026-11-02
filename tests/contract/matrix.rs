@@ -2620,6 +2620,112 @@ fn robot_docs_guide() {
     insta::assert_json_snapshot!("robot_docs_guide_extra_argument", s.stable(&c.envelope));
 }
 
+/// `doctor gc` (M4-D36) on a home of old doctor runs, 40 days before `OMADDONS_NOW`, and a
+/// young one `latest` will name: its preview, a bound run made stale by another old run,
+/// the bound run, and its two usage errors. The token binds inode identities, which differ
+/// on every home, so the snapshots carry it redacted.
+#[test]
+fn doctor_gc() {
+    use crate::common::doctor::plant::{seed_cache_quarantine, seed_half, seed_run};
+    const TX: &str = "01M5000000000000000000000T";
+    let s = Scene::new();
+    s.install_foo();
+    let env = [("OMADDONS_NOW", "2026-10-15T00:00:00Z")];
+    let fix = seed_run(
+        &s.home,
+        "fix",
+        "DONE_OK",
+        "2026-09-01T00:00:00Z",
+        1,
+        Some(TX),
+        &["backups/1"],
+    );
+    seed_half(&s.home, "retail", TX, &["files/1"]);
+    seed_cache_quarantine(&s.home, &fix, &["blobs/ab"]);
+    seed_run(
+        &s.home,
+        "diagnose",
+        "DONE_FINDINGS",
+        "2026-09-02T00:00:00Z",
+        2,
+        None,
+        &[],
+    );
+    let young = seed_run(
+        &s.home,
+        "diagnose",
+        "DONE_OK",
+        "2026-10-10T00:00:00Z",
+        3,
+        None,
+        &[],
+    );
+    std::os::unix::fs::symlink(format!("runs/{fix}"), s.home.state().join("doctor/latest"))
+        .unwrap();
+    let redacted = |envelope: &Value| {
+        let mut stable = s.stable(envelope);
+        if stable["precondition"].is_string() {
+            stable["precondition"] = json!("<precondition>");
+        }
+        stable
+    };
+    let preview = ["doctor", "gc", "--before", "30d", "--dry-run"];
+    let c = s.json_env(&preview, &env, 0);
+    assert_eq!(c.envelope["deletions"].as_array().map(Vec::len), Some(4));
+    assert_eq!(c.envelope["latest"], json!({"from": fix, "to": young}));
+    insta::assert_json_snapshot!("doctor_gc_dry_run", redacted(&c.envelope));
+    let token = c.envelope["precondition"].as_str().unwrap().to_owned();
+
+    // Another old run appears: the bound run would delete a different set.
+    seed_run(
+        &s.home,
+        "diagnose",
+        "DONE_OK",
+        "2026-09-03T00:00:00Z",
+        4,
+        None,
+        &[],
+    );
+    let bound = |token: &str| -> Vec<String> {
+        [
+            "doctor",
+            "gc",
+            "--before",
+            "30d",
+            "--yes",
+            "--if-match",
+            token,
+        ]
+        .map(str::to_owned)
+        .to_vec()
+    };
+    let argv = bound(&token);
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let c = s.json_env(&argv, &env, 4);
+    assert_eq!(c.envelope["error"]["code"], "plan_stale");
+    insta::assert_json_snapshot!("doctor_gc_stale", redacted(&c.envelope));
+
+    let c = s.json_env(&preview, &env, 0);
+    let token = c.envelope["precondition"].as_str().unwrap().to_owned();
+    let argv = bound(&token);
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let c = s.json_env(&argv, &env, 0);
+    assert_eq!(c.envelope["deletions"].as_array().map(Vec::len), Some(5));
+    assert_eq!(
+        fs::read_link(s.home.state().join("doctor/latest")).unwrap(),
+        std::path::Path::new("runs").join(&young),
+        "latest names the young run"
+    );
+    insta::assert_json_snapshot!("doctor_gc_ok", redacted(&c.envelope));
+
+    let c = s.json_env(&["doctor", "gc", "--before", "30d"], &env, 64);
+    assert_eq!(c.envelope["error"]["details"]["flag"], "--yes");
+    insta::assert_json_snapshot!("doctor_gc_needs_yes", redacted(&c.envelope));
+    let c = s.json_env(&["doctor", "gc", "--dry-run"], &env, 64);
+    assert_eq!(c.envelope["error"]["details"]["flag"], "--before");
+    insta::assert_json_snapshot!("doctor_gc_needs_before", redacted(&c.envelope));
+}
+
 /// `doctor undo` (E7 s4) on a home with one committed `fm-test-write` repair (the test
 /// fixers, a debug build): its dry run, `latest` refused, `undo --run` of a doctor run id
 /// refused, and the undo.

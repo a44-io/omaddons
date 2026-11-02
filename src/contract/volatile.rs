@@ -27,6 +27,11 @@ pub const VOLATILE: &[(&str, &str)] = &[
     ("undo_command", "a new doctor run per invocation"),
     ("undo_argv", "a new doctor run per invocation"),
     ("actions.*.backup", "a new doctor run per invocation"),
+    // `doctor gc`'s cutoff (M4-D36).
+    (
+        "before",
+        "an age resolves against the clock; pass an RFC 3339 time for a fixed value",
+    ),
     // `lock-held-long`'s evidence (`doctor` and `doctor fix`; `doctor explain`'s instances).
     (
         "findings.*.evidence.age_s",

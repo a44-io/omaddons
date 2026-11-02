@@ -57,6 +57,9 @@ pub enum DoctorAction {
     /// Undo a doctor repair: revert a fix run (or the newest one), strictly
     #[command(after_long_help = super::doctor_undo::UNDO_HELP)]
     Undo(super::doctor_undo::DoctorUndoArgs),
+    /// Delete old doctor runs and what they kept, never what an unfinished change needs
+    #[command(after_long_help = super::doctor_gc::GC_HELP)]
+    Gc(super::doctor_gc::GcArgs),
 }
 
 const FIX_HELP: &str = "Examples:\n  omaddons doctor fix --dry-run                 what it would repair, and the token that binds it\n  omaddons doctor fix --if-match <token>        exactly that preview, or nothing\n  omaddons doctor fix --only <id> --force --yes a forced repair, by its failure mode";
@@ -72,6 +75,7 @@ impl DoctorAction {
             Self::Fix(_) => "doctor fix",
             Self::Diff(_) => "doctor diff",
             Self::Undo(_) => "doctor undo",
+            Self::Gc(_) => "doctor gc",
         }
     }
 }
@@ -93,6 +97,7 @@ pub enum Verb<'a> {
     Fix(&'a FixArgs),
     Diff(&'a DiffArgs),
     Undo(&'a super::doctor_undo::DoctorUndoArgs),
+    Gc(&'a super::doctor_gc::GcArgs),
 }
 
 impl DoctorArgs {
@@ -104,6 +109,7 @@ impl DoctorArgs {
             Some(DoctorAction::Fix(fix)) => Verb::Fix(fix),
             Some(DoctorAction::Diff(diff)) => Verb::Diff(diff),
             Some(DoctorAction::Undo(undo)) => Verb::Undo(undo),
+            Some(DoctorAction::Gc(gc)) => Verb::Gc(gc),
         }
     }
 }

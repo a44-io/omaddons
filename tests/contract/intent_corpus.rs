@@ -878,6 +878,49 @@ pub const CORPUS: &[Row] = &[
     )
     .on(plant_test_write, E7_SETUP)
     .by_leaf("E7"),
+    // `doctor gc` (E8, M4-D36): every argument is checked before anything is read, and
+    // each fix is the preview with what was refused corrected.
+    row(
+        DoctorVerb,
+        &["doctor", "gc"],
+        &["doctor gc"],
+        "--before is required: the preview with the suggested age",
+        doctor_usage(
+            &["omaddons", "doctor", "gc", "--before", "30d", "--dry-run"],
+            &[0],
+        ),
+    )
+    .by_leaf("E8"),
+    row(
+        DoctorVerb,
+        &["doctor", "gc", "--before", "30d"],
+        &["doctor gc"],
+        "a real run needs --yes: its preview, never the consent",
+        doctor_usage(
+            &["omaddons", "doctor", "gc", "--before", "30d", "--dry-run"],
+            &[0],
+        ),
+    )
+    .by_leaf("E8"),
+    row(
+        DoctorVerb,
+        &["doctor", "gc", "--before", "30d", "--yes", "-t", "retail"],
+        &["doctor gc"],
+        "gc works on every client and takes no -t: the preview without it",
+        doctor_usage(
+            &[
+                "omaddons",
+                "doctor",
+                "gc",
+                "--before",
+                "30d",
+                "--yes",
+                "--dry-run",
+            ],
+            &[0],
+        ),
+    )
+    .by_leaf("E8"),
     row(
         DoctorVerb,
         &["doctor", "diagnoze"],

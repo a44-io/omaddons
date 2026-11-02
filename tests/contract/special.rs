@@ -616,6 +616,9 @@ fn a_dry_run_leaves_the_state_directory_as_it_was() {
             // `doctor undo` stores nothing (M4-D22) and makes no run.
             (&["doctor", "undo", "--dry-run"], false),
             (&["doctor", "undo", &fix_run, "--dry-run"], false),
+            // `doctor gc` stores nothing either (its token binds a typed run), and its
+            // preview, here listing that repair's run, deletes nothing.
+            (&["doctor", "gc", "--before", "0d", "--dry-run"], false),
         ]);
     }
 
@@ -746,6 +749,22 @@ fn every_binding_path_carries_its_precondition() {
                 )
             }
             "doctor fix" => (argv(&["doctor", "fix", "--dry-run"]), &[]),
+            // A real run needs `--yes`, which its dry run accepts.
+            "doctor gc" => {
+                common::doctor::plant::seed_run(
+                    &s.home,
+                    "diagnose",
+                    "DONE_OK",
+                    "2026-09-01T00:00:00Z",
+                    1,
+                    None,
+                    &[],
+                );
+                (
+                    argv(&["doctor", "gc", "--before", "30d", "--yes", "--dry-run"]),
+                    &now,
+                )
+            }
             other => panic!("add a row for {other}"), // ubs:ignore — the test's own failure
         };
         let dry: Vec<&str> = dry.iter().map(String::as_str).collect();

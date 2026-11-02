@@ -1,0 +1,32 @@
+---
+source: tests/contract/matrix.rs
+assertion_line: 2697
+expression: redacted(&c.envelope)
+---
+{
+  "command": "doctor gc",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "usage",
+    "details": {
+      "flag": "--before"
+    },
+    "fix": "omaddons doctor gc --dry-run --before 30d",
+    "fix_argv": [
+      "omaddons",
+      "doctor",
+      "gc",
+      "--dry-run",
+      "--before",
+      "30d"
+    ],
+    "message": "doctor gc needs --before: what started before it is eligible (an RFC 3339 time or an age such as 30d)",
+    "retryable": false
+  },
+  "exit_code": 64,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

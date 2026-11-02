@@ -1,0 +1,36 @@
+---
+source: tests/contract/matrix.rs
+assertion_line: 2677
+expression: redacted(&c.envelope)
+---
+{
+  "command": "doctor gc",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "plan_stale",
+    "details": {
+      "changed": [
+        "selection",
+        "observed"
+      ]
+    },
+    "fix": "omaddons doctor gc --before 30d --yes --dry-run",
+    "fix_argv": [
+      "omaddons",
+      "doctor",
+      "gc",
+      "--before",
+      "30d",
+      "--yes",
+      "--dry-run"
+    ],
+    "message": "this doctor gc is no longer what its preview showed (selection, observed changed); nothing was changed: preview it again",
+    "retryable": false
+  },
+  "exit_code": 4,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

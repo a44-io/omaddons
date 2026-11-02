@@ -1123,6 +1123,86 @@ pub mod plant {
         names
     }
 
+    /// A synthetic doctor run of `kind` (`diagnose`, `fix`, `undo`) started at `at` (RFC
+    /// 3339), `n` its ULID's random part: a `report.json` in `state` naming `tx` (a fix's
+    /// repair, an undo's own `undo_tx`), `actions.jsonl` for a fix or an undo, and each of
+    /// `files` (`backups/1`, `quarantine/state/x`) below it; E3's modes (the directory
+    /// 0700, the records 0400). Its id.
+    pub fn seed_run(
+        home: &Home,
+        kind: &str,
+        state: &str,
+        at: &str,
+        n: u128,
+        tx: Option<&str>,
+        files: &[&str],
+    ) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let at: Timestamp = at.parse().unwrap();
+        let ms = u64::try_from(at.as_millisecond()).unwrap();
+        let id = omaddons::doctor::runtime::DoctorRunId::new(at, ulid::Ulid::from_parts(ms, n));
+        let dir = home.state().join("doctor/runs").join(id.as_str());
+        fs::create_dir_all(&dir).unwrap();
+        let (tx_key, tx_value) = match kind {
+            "undo" => ("undo_tx", tx),
+            _ => ("tx", tx),
+        };
+        let report = json!({
+            "ok": true,
+            "schema_version": "1.0",
+            "kind": kind,
+            "state": state,
+            tx_key: tx_value,
+        });
+        for (name, text) in [
+            ("report.json", Some(report.to_string())),
+            ("runtime.jsonl", Some(String::new())),
+            ("actions.jsonl", (kind != "diagnose").then(String::new)),
+        ] {
+            if let Some(text) = text {
+                let path = dir.join(name);
+                fs::write(&path, text).unwrap();
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).unwrap();
+            }
+        }
+        for file in files {
+            let path = dir.join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, format!("kept by {}\n", id.as_str())).unwrap();
+        }
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        id.as_str().to_owned()
+    }
+
+    /// A repair's client half on `target`'s client (`<meta>/snapshots/<tx>.repair`), with
+    /// each of `files` below it (`files/1`, `quarantine/x`). Its path.
+    pub fn seed_half(home: &Home, target: &str, tx: &str, files: &[&str]) -> PathBuf {
+        let dir = home
+            .client(client_folder(target))
+            .join("Interface/.omaddons/snapshots")
+            .join(format!("{tx}.repair"));
+        fs::create_dir_all(&dir).unwrap();
+        for file in files {
+            let path = dir.join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, format!("kept by {tx}\n")).unwrap();
+        }
+        dir
+    }
+
+    /// What run `run` set aside from the cache (`<cache>/quarantine/<run>`), holding each
+    /// of `files`. Its path.
+    pub fn seed_cache_quarantine(home: &Home, run: &str, files: &[&str]) -> PathBuf {
+        let dir = home.env.cache().join("omaddons/quarantine").join(run);
+        fs::create_dir_all(&dir).unwrap();
+        for file in files {
+            let path = dir.join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, format!("set aside by {run}\n")).unwrap();
+        }
+        dir
+    }
+
     /// The run `latest` names, when it is there.
     pub fn latest(home: &Home) -> Option<String> {
         let target = fs::read_link(home.state().join("doctor/latest")).ok()?;

@@ -51,10 +51,10 @@ pub struct GcReport {
     /// What is deleted (or, in a preview, would be), in deletion order.
     pub deletions: Vec<GcDeletion>,
     /// What is kept although it is old enough, and why, sorted by path.
-    pub excluded: Vec<GcExclusion>,
+    pub exclusions: Vec<GcExclusion>,
     /// The repairs and undos of repairs whose own undo reads what is deleted: they can no
     /// longer be undone.
-    pub undo_lost: Vec<TxId>,
+    pub lost_undos: Vec<TxId>,
     /// Where `latest` goes; `null` when it stays as it is.
     pub latest: Option<LatestChange>,
     /// Victims the deletion cap left for the next run; `null` when a listing stopped at
@@ -227,15 +227,15 @@ pub fn plan(view: &GcView, cap: usize) -> GcPlan {
         .collect();
     let inside_a_deletion = |path: &Path| gone.iter().any(|g| path.starts_with(g));
 
-    let mut excluded: Vec<GcExclusion> = decided
+    let mut exclusions: Vec<GcExclusion> = decided
         .iter()
         .flatten()
         .filter(|d| !d.pins.is_empty())
         .map(exclusion)
         .collect();
-    excluded.sort_by(|a, b| (&a.path, a.kind).cmp(&(&b.path, b.kind)));
+    exclusions.sort_by(|a, b| (&a.path, a.kind).cmp(&(&b.path, b.kind)));
 
-    let undo_lost: Vec<TxId> = view
+    let lost_undos: Vec<TxId> = view
         .repairs
         .iter()
         .filter(|line| !line.reverted)
@@ -259,8 +259,8 @@ pub fn plan(view: &GcView, cap: usize) -> GcPlan {
         dry_run: false,
         before: view.before,
         deletions: deleted.iter().map(|d| deletion(d)).collect(),
-        excluded,
-        undo_lost,
+        exclusions,
+        lost_undos,
         latest,
         remaining: view.listings_complete.then_some(remaining),
         precondition: None,
@@ -817,8 +817,8 @@ mod tests {
         view: GcView,
         cap: usize,
         deletions: Vec<(DeletionKind, String)>,
-        excluded: Vec<(ExcludedKind, String, Pin)>,
-        undo_lost: Vec<TxId>,
+        exclusions: Vec<(ExcludedKind, String, Pin)>,
+        lost_undos: Vec<TxId>,
         latest: Option<LatestChange>,
         remaining: Option<u64>,
         /// Each deletion's `may_hold_only_copy`, when the case checks it.
@@ -832,8 +832,8 @@ mod tests {
                 view,
                 cap: crate::limits::DOCTOR_GC_MAX_DELETIONS,
                 deletions: Vec::new(),
-                excluded: Vec::new(),
-                undo_lost: Vec::new(),
+                exclusions: Vec::new(),
+                lost_undos: Vec::new(),
                 latest: None,
                 remaining: Some(0),
                 only_copy: None,
@@ -846,7 +846,7 @@ mod tests {
         }
 
         fn excludes(mut self, kind: ExcludedKind, path: String, pin: Pin) -> Self {
-            self.excluded.push((kind, path, pin));
+            self.exclusions.push((kind, path, pin));
             self
         }
     }
@@ -1022,7 +1022,7 @@ mod tests {
         let mut case = Case::new("set_aside_whose_guards_changed_is_deleted", view)
             .deletes(ClientRepair, half_path(s_tx))
             .deletes(Run, run_path(&s_id));
-        case.undo_lost = vec![s_tx];
+        case.lost_undos = vec![s_tx];
         case.only_copy = Some(vec![true, true]);
         cases.push(case);
         let mut view = base(vec![s.clone()]);
@@ -1183,10 +1183,10 @@ mod tests {
                 )],
             ),
         ];
-        let mut case = Case::new("undo_lost_from_inverse_reads", view)
+        let mut case = Case::new("lost_undos_from_inverse_reads", view)
             .deletes(Run, r_path)
             .deletes(Run, u_path);
-        case.undo_lost = vec![lost(1), lost(4), lost(6)];
+        case.lost_undos = vec![lost(1), lost(4), lost(6)];
         cases.push(case);
 
         let backups = kept(run(days(50), 20));
@@ -1375,7 +1375,7 @@ mod tests {
             .deletes(CacheQuarantine, quarantine_path(&id_of(&r)))
             .deletes(Run, run_path(&id_of(&r)))
             .deletes(Run, run_path(&id_of(&s)));
-        case.undo_lost = vec![s_tx];
+        case.lost_undos = vec![s_tx];
         cases.push(case);
         // Unreadable, it may belong to any run that started no later than it.
         let later = run(days(50), 47);
@@ -1407,7 +1407,7 @@ mod tests {
         cases
     }
 
-    /// What a case checks: deletions, exclusions, `undo_lost`, `latest` and `remaining`.
+    /// What a case checks: deletions, exclusions, `lost_undos`, `latest` and `remaining`.
     type Shown = (
         Vec<(DeletionKind, String)>,
         Vec<(ExcludedKind, String, Pin)>,
@@ -1424,11 +1424,11 @@ mod tests {
                 .iter()
                 .map(|d| (d.kind, d.path.clone()))
                 .collect(),
-            r.excluded
+            r.exclusions
                 .iter()
                 .map(|e| (e.kind, e.path.clone(), e.pin))
                 .collect(),
-            r.undo_lost.clone(),
+            r.lost_undos.clone(),
             r.latest.clone(),
             r.remaining,
         )
@@ -1440,15 +1440,15 @@ mod tests {
             let got = plan(&case.view, case.cap);
             let want = (
                 case.deletions.clone(),
-                case.excluded.clone(),
-                case.undo_lost.clone(),
+                case.exclusions.clone(),
+                case.lost_undos.clone(),
                 case.latest.clone(),
                 case.remaining,
             );
             assert_eq!(
                 shown(&got),
                 want,
-                "{}: (deletions, excluded, undo_lost, latest, remaining)",
+                "{}: (deletions, exclusions, lost_undos, latest, remaining)",
                 case.name
             );
             if let Some(only) = &case.only_copy {

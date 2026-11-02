@@ -1,5 +1,6 @@
 ---
 source: tests/completions.rs
+assertion_line: 71
 description: "the completion script of this build; any change to a command, flag, alias, about text or fixed value changes it: re-accept with INSTA_UPDATE=always cargo test --test completions, then review git diff tests/snapshots/"
 ---
 
@@ -1129,6 +1130,7 @@ set edit:completion:arg-completer[omaddons] = {|@words|
             cand fix 'Repair the findings a fixer can repair, as one undoable transaction'
             cand diff 'Show what doctor fix would change, or what changed since a run (changes nothing)'
             cand undo 'Undo a doctor repair: revert a fix run (or the newest one), strictly'
+            cand gc 'Delete old doctor runs and what they kept, never what an unfinished change needs'
         }
         &'omaddons;doctor;diagnose'= {
             cand --only 'Only these checks: failure-mode ids or subsystem names, comma-separated'
@@ -1244,6 +1246,30 @@ set edit:completion:arg-completer[omaddons] = {|@words|
             cand --reason 'Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)'
             cand --if-match 'Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed'
             cand --progress 'Progress events on stderr'
+            cand --json 'One JSON envelope on stdout'
+            cand --robot 'The same as --json'
+            cand --dry-run 'Show the plan without changing anything (ignored by commands that change nothing)'
+            cand --offline 'Fail any network access [env: OMADDONS_OFFLINE=1]'
+            cand --while-running 'Allow folder changes while the client runs (never SavedVariables)'
+            cand --no-color 'No ANSI color'
+            cand --no-progress 'No progress output'
+            cand --quiet 'Only errors on stderr'
+            cand -v 'More detail (repeatable)'
+            cand --verbose 'More detail (repeatable)'
+            cand -h 'Show help'
+            cand --help 'Show help'
+        }
+        &'omaddons;doctor;gc'= {
+            cand --before 'Runs that started before this are eligible: an RFC 3339 time or an age (30m, 12h, 30d, 2w)'
+            cand --format 'Output format'
+            cand -t 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)'
+            cand --target 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)'
+            cand --flavor 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)'
+            cand --actor 'Who is acting: human, agent or widget [env: OMADDONS_ACTOR]'
+            cand --reason 'Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)'
+            cand --if-match 'Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed'
+            cand --progress 'Progress events on stderr'
+            cand --yes 'Consent for a real run (not needed with --dry-run)'
             cand --json 'One JSON envelope on stdout'
             cand --robot 'The same as --json'
             cand --dry-run 'Show the plan without changing anything (ignored by commands that change nothing)'

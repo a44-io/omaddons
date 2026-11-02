@@ -1,5 +1,6 @@
 ---
 source: tests/completions.rs
+assertion_line: 71
 description: "the completion script of this build; any change to a command, flag, alias, about text or fixed value changes it: re-accept with INSTA_UPDATE=always cargo test --test completions, then review git diff tests/snapshots/"
 ---
 _omaddons() {
@@ -187,6 +188,9 @@ _omaddons() {
                 ;;
             omaddons__subcmd__doctor,fix)
                 cmd="omaddons__subcmd__doctor__subcmd__fix"
+                ;;
+            omaddons__subcmd__doctor,gc)
+                cmd="omaddons__subcmd__doctor__subcmd__gc"
                 ;;
             omaddons__subcmd__doctor,undo)
                 cmd="omaddons__subcmd__doctor__subcmd__undo"
@@ -1136,7 +1140,7 @@ _omaddons() {
             return 0
             ;;
         omaddons__subcmd__doctor)
-            opts="-t -v -h --only --skip --severity --quick --include-deep --online --budget --since --json --robot --format --flavor --target --dry-run --actor --reason --offline --while-running --if-match --no-color --no-progress --progress --quiet --verbose --help diagnose explain fix diff undo"
+            opts="-t -v -h --only --skip --severity --quick --include-deep --online --budget --since --json --robot --format --flavor --target --dry-run --actor --reason --offline --while-running --if-match --no-color --no-progress --progress --quiet --verbose --help diagnose explain fix diff undo gc"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1379,6 +1383,56 @@ _omaddons() {
                     return 0
                     ;;
                 --budget)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --format)
+                    COMPREPLY=($(compgen -W "json human" -- "${cur}"))
+                    return 0
+                    ;;
+                --target)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --flavor)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                -t)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --actor)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --reason)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --if-match)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --progress)
+                    COMPREPLY=($(compgen -W "json human none" -- "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        omaddons__subcmd__doctor__subcmd__gc)
+            opts="-t -v -h --before --yes --json --robot --format --flavor --target --dry-run --actor --reason --offline --while-running --if-match --no-color --no-progress --progress --quiet --verbose --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --before)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;

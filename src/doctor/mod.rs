@@ -43,6 +43,8 @@ pub const FAILPOINTS: &[&str] = &[
     "doctor.repair.history",
     "doctor.repair.committed",
     "doctor.recover.step",
+    // `doctor gc`: planned, before the lock (the pause point of the race tests).
+    "doctor.gc.planned",
 ];
 
 use budget::Budget;

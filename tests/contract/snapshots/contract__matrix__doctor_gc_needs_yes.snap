@@ -1,0 +1,32 @@
+---
+source: tests/contract/matrix.rs
+assertion_line: 2694
+expression: redacted(&c.envelope)
+---
+{
+  "command": "doctor gc",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "usage",
+    "details": {
+      "flag": "--yes"
+    },
+    "fix": "omaddons doctor gc --before 30d --dry-run",
+    "fix_argv": [
+      "omaddons",
+      "doctor",
+      "gc",
+      "--before",
+      "30d",
+      "--dry-run"
+    ],
+    "message": "doctor gc deletes what it lists, and the undos that need it: a real run needs --yes (preview it first)",
+    "retryable": false
+  },
+  "exit_code": 64,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

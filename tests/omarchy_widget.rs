@@ -809,6 +809,7 @@ mod support {
         "remove",
         "undo",
         "doctor undo",
+        "doctor gc",
         "backup restore",
         "backup prune",
         "targets rm",

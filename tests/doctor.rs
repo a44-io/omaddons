@@ -2125,3 +2125,396 @@ fn online_fixtures_corrupt_and_remedy() {
         fixture.assert_healthy(&home);
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// `doctor gc` (M4-D36): old runs, 40 days before `OMADDONS_NOW`.
+
+const GC_NOW: (&str, &str) = ("OMADDONS_NOW", "2026-10-15T00:00:00Z");
+const GC_FIX_TX: &str = "01M5000000000000000000000T";
+const GC_HELD_TX: &str = "01M5000000000000000000000V";
+
+/// What [`gc_home`] seeded.
+struct GcSeed {
+    /// An old fix run with a backup and a quarantined file, its client half and its
+    /// cache quarantine.
+    fix: String,
+    /// An old diagnose run.
+    diagnose: String,
+    /// An old fix run whose transaction's in-flight lock the test may hold.
+    held: String,
+    /// A young run, which `latest` will name.
+    young: String,
+}
+
+/// A home whose retail client is registered, with [`GcSeed`]'s runs and `latest` naming
+/// the old fix run.
+fn gc_home(log: &TestLog) -> (Home, GcSeed) {
+    let home = home(log);
+    log.step("seed");
+    common::doctor::test_fixers::register(&home, "retail");
+    let fix = plant::seed_run(
+        &home,
+        "fix",
+        "DONE_OK",
+        "2026-09-01T00:00:00Z",
+        1,
+        Some(GC_FIX_TX),
+        &["backups/1", "quarantine/state/x"],
+    );
+    plant::seed_half(&home, "retail", GC_FIX_TX, &["files/1"]);
+    plant::seed_cache_quarantine(&home, &fix, &["blobs/ab"]);
+    let diagnose = plant::seed_run(
+        &home,
+        "diagnose",
+        "DONE_FINDINGS",
+        "2026-09-02T00:00:00Z",
+        2,
+        None,
+        &[],
+    );
+    let held = plant::seed_run(
+        &home,
+        "fix",
+        "DONE_OK",
+        "2026-09-03T00:00:00Z",
+        3,
+        Some(GC_HELD_TX),
+        &[],
+    );
+    let young = plant::seed_run(
+        &home,
+        "diagnose",
+        "DONE_OK",
+        "2026-10-10T00:00:00Z",
+        4,
+        None,
+        &[],
+    );
+    std::os::unix::fs::symlink(format!("runs/{fix}"), home.state().join("doctor/latest")).unwrap();
+    (
+        home,
+        GcSeed {
+            fix,
+            diagnose,
+            held,
+            young,
+        },
+    )
+}
+
+/// `doctor gc <args> --json` at [`GC_NOW`].
+fn gc(log: &TestLog, home: &Home, args: &[&str]) -> Ran {
+    let mut argv = vec!["doctor", "gc"];
+    argv.extend(args);
+    argv.push("--json");
+    run_with(log, home, &argv, &[GC_NOW])
+}
+
+/// Runs an envelope's `error.fix_argv` (with `--json`) at [`GC_NOW`].
+fn gc_fix(log: &TestLog, home: &Home, envelope: &Value) -> Ran {
+    let fix: Vec<String> = envelope["error"]["fix_argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .skip(1)
+        .map(|a| a.as_str().unwrap().to_owned())
+        .chain(["--json".to_owned()])
+        .collect();
+    let fix: Vec<&str> = fix.iter().map(String::as_str).collect();
+    run_with(log, home, &fix, &[GC_NOW])
+}
+
+/// Every place gc deletes from, by its label. (Taking the global lock rewrites
+/// `<state>/lock`'s holder note, so the state directory as a whole is no measure.)
+fn gc_roots(home: &Home) -> Vec<(&'static str, PathBuf)> {
+    vec![
+        ("doctor", home.state().join("doctor")),
+        (
+            "cache quarantine",
+            home.env.cache().join("omaddons/quarantine"),
+        ),
+        (
+            "client snapshots",
+            home.client("_retail_")
+                .join("Interface/.omaddons/snapshots"),
+        ),
+    ]
+}
+
+fn gc_trees(log: &TestLog, home: &Home) {
+    for (label, root) in gc_roots(home) {
+        log.tree(label, &root);
+    }
+}
+
+fn gc_unchanged(log: &TestLog, home: &Home) {
+    for (label, root) in gc_roots(home) {
+        log.assert_unchanged(label, &root);
+    }
+}
+
+#[test]
+fn gc_cli_requires_before() {
+    let log = tlog!();
+    let (home, _) = gc_home(&log);
+    gc_trees(&log, &home);
+    log.step("no --before");
+    let ran = gc(&log, &home, &[]);
+    ran.exit(64);
+    assert_eq!(ran.envelope()["error"]["details"]["flag"], "--before");
+    log.step("its fix");
+    gc_fix(&log, &home, ran.envelope()).exit(0);
+    gc_unchanged(&log, &home);
+}
+
+#[test]
+fn gc_cli_real_run_requires_yes() {
+    let log = tlog!();
+    let (home, _) = gc_home(&log);
+    gc_trees(&log, &home);
+    log.step("a real run without --yes");
+    let ran = gc(&log, &home, &["--before", "30d"]);
+    ran.exit(64);
+    let error = &ran.envelope()["error"];
+    assert_eq!(error["details"]["flag"], "--yes");
+    assert_eq!(
+        error["fix_argv"].as_array().unwrap().last().unwrap(),
+        "--dry-run"
+    );
+    log.step("its fix: the preview");
+    gc_fix(&log, &home, ran.envelope()).exit(0);
+    gc_unchanged(&log, &home);
+}
+
+#[test]
+fn gc_cli_refuses_a_future_or_malformed_before_and_t() {
+    let log = tlog!();
+    let (home, _) = gc_home(&log);
+    gc_trees(&log, &home);
+    for (case, args, flag) in [
+        (
+            "future",
+            &["--before", "2099-01-01T00:00:00Z", "--dry-run"][..],
+            "--before",
+        ),
+        (
+            "malformed",
+            &["--before", "yesterday", "--dry-run"],
+            "--before",
+        ),
+        (
+            "target",
+            &["--before", "30d", "-t", "retail", "--dry-run"],
+            "-t",
+        ),
+    ] {
+        let log = log.case(case);
+        let ran = gc(&log, &home, args);
+        ran.exit(64);
+        assert_eq!(ran.envelope()["error"]["details"]["flag"], flag, "{case}");
+        gc_fix(&log, &home, ran.envelope()).exit(0);
+    }
+    gc_unchanged(&log, &home);
+}
+
+#[test]
+fn gc_dry_run_deletes_nothing_and_takes_no_lock() {
+    let log = tlog!();
+    let (home, seed) = gc_home(&log);
+    log.step("another process holds the global lock");
+    let (guard, _) = plant::hold_lock(&home, "test");
+    log.tree("the whole home", home.env.root());
+    log.step("preview");
+    let started = std::time::Instant::now();
+    let ran = gc(&log, &home, &["--before", "30d", "--dry-run"]);
+    ran.exit(0);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "a preview never waits for the lock"
+    );
+    let report = ran.envelope();
+    log.json("plan", report);
+    let listed: Vec<&str> = report["deletions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|d| d["run_id"].as_str())
+        .collect();
+    assert!(listed.contains(&seed.fix.as_str()) && listed.contains(&seed.diagnose.as_str()));
+    log.assert_unchanged("the whole home", home.env.root());
+    drop(guard);
+}
+
+#[test]
+fn gc_real_run_waits_for_the_lock() {
+    let log = tlog!();
+    let (home, _) = gc_home(&log);
+    gc_trees(&log, &home);
+    log.step("another process holds the global lock");
+    let (guard, _) = plant::hold_lock(&home, "test");
+    log.step("a consented run");
+    let ran = gc(&log, &home, &["--before", "30d", "--yes"]);
+    ran.exit(5);
+    assert_eq!(ran.envelope()["error"]["code"], "locked");
+    assert!(ran.envelope()["error"]["details"]["holder"].is_object());
+    drop(guard);
+    gc_unchanged(&log, &home);
+}
+
+#[test]
+fn gc_deletes_exactly_what_its_preview_listed() {
+    let log = tlog!();
+    let (home, seed) = gc_home(&log);
+    log.step("the held run's transaction is live");
+    let paths = common::http::paths(&home.env);
+    let held_tx: omaddons::model::TxId = GC_HELD_TX.parse().unwrap();
+    let inflight = omaddons::fsx::InflightLock::create(&paths, &held_tx).unwrap();
+    log.step("preview");
+    let preview = gc(&log, &home, &["--before", "30d", "--dry-run"]);
+    preview.exit(0);
+    let report = preview.envelope().clone();
+    log.json("plan", &report);
+    let listed: Vec<PathBuf> = report["deletions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| PathBuf::from(d["path"].as_str().unwrap()))
+        .collect();
+    let kept: Vec<PathBuf> = report["exclusions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| PathBuf::from(e["path"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        listed.len(),
+        4,
+        "the fix run, its half and quarantine, the diagnose"
+    );
+    assert_eq!(report["exclusions"][0]["pin"], "active_run", "{report}");
+    assert_eq!(
+        report["latest"],
+        json!({"from": seed.fix, "to": seed.young})
+    );
+    let doorbell = home.env.cache().join("omaddons/doorbell.json");
+    let rang = fs::read(&doorbell).ok();
+    log.step("bound run");
+    let token = report["precondition"].as_str().unwrap();
+    let ran = gc(
+        &log,
+        &home,
+        &["--before", "30d", "--yes", "--if-match", token],
+    );
+    ran.exit(0);
+    log.step("assert");
+    let gone: Vec<&PathBuf> = listed.iter().filter(|p| !p.exists()).collect();
+    log.json(
+        "removed vs listed",
+        &json!({"listed": listed, "removed": gone, "kept": kept}),
+    );
+    assert_eq!(gone.len(), listed.len(), "every listed path was removed");
+    assert!(kept.iter().all(|p| p.exists()), "every kept path remains");
+    assert!(home.state().join("doctor/runs").join(&seed.young).is_dir());
+    assert!(home.state().join("doctor/runs").join(&seed.held).is_dir());
+    assert_eq!(
+        fs::read_link(home.state().join("doctor/latest")).unwrap(),
+        Path::new("runs").join(&seed.young)
+    );
+    for trash in [
+        home.state().join("trash"),
+        home.env.cache().join("omaddons/trash"),
+        home.client("_retail_").join("Interface/.omaddons/trash"),
+    ] {
+        let left = fs::read_dir(&trash).map(|d| d.count()).unwrap_or(0);
+        assert_eq!(left, 0, "{} is empty", trash.display());
+    }
+    assert_ne!(fs::read(&doorbell).ok(), rang, "the doorbell rang");
+    drop(inflight);
+}
+
+#[test]
+fn gc_binds_a_dry_run_too() {
+    let log = tlog!();
+    let (home, _) = gc_home(&log);
+    let preview = gc(&log, &home, &["--before", "30d", "--dry-run"]);
+    preview.exit(0);
+    let token = preview.envelope()["precondition"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    log.step("another old run");
+    plant::seed_run(
+        &home,
+        "diagnose",
+        "DONE_OK",
+        "2026-09-05T00:00:00Z",
+        9,
+        None,
+        &[],
+    );
+    let ran = gc(
+        &log,
+        &home,
+        &["--before", "30d", "--dry-run", "--if-match", &token],
+    );
+    ran.exit(4);
+    assert_eq!(ran.envelope()["error"]["code"], "plan_stale");
+}
+
+#[test]
+fn gc_stale_token_deletes_nothing() {
+    let log = tlog!();
+    let (home, _) = gc_home(&log);
+    let preview = gc(&log, &home, &["--before", "30d", "--dry-run"]);
+    preview.exit(0);
+    let token = preview.envelope()["precondition"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    log.step("another old run");
+    plant::seed_run(
+        &home,
+        "diagnose",
+        "DONE_OK",
+        "2026-09-05T00:00:00Z",
+        9,
+        None,
+        &[],
+    );
+    gc_trees(&log, &home);
+    log.step("bound run");
+    let ran = gc(
+        &log,
+        &home,
+        &["--before", "30d", "--yes", "--if-match", &token],
+    );
+    ran.exit(4);
+    let changed = &ran.envelope()["error"]["details"]["changed"];
+    assert!(
+        changed.as_array().unwrap().contains(&json!("selection")),
+        "{changed}"
+    );
+    gc_unchanged(&log, &home);
+}
+
+#[test]
+fn gc_output_is_private() {
+    use common::privacy::assert_private_all;
+    use common::wtf::Wtf;
+    let log = tlog!();
+    let (home, _) = gc_home(&log);
+    Wtf::at(home.client("_retail_"))
+        .saved_variables("Foo", 100)
+        .build();
+    for (case, args) in [
+        ("preview", &["--before", "30d", "--dry-run"][..]),
+        ("run", &["--before", "30d", "--yes"]),
+    ] {
+        let log = log.case(case);
+        let mut argv = args.to_vec();
+        argv.extend(["--progress", "json"]);
+        let ran = gc(&log, &home, &argv);
+        ran.exit(0);
+        assert_private_all(ran.stdout(), ran.stderr());
+    }
+}

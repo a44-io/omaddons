@@ -770,6 +770,9 @@ pub fn usage_error_with(
     if let Some(error) = doctor_force_fix(err, argv, &path) {
         return error;
     }
+    if let Some(error) = doctor_gc_before_fix(err, argv, &path) {
+        return error;
+    }
     let words = UsageWords::new(vocabulary, names_an_addon);
     if let Some(error) =
         misplaced_before_verb(err, argv, &words).or_else(|| misplaced_after_verb(err, argv, &words))
@@ -958,6 +961,30 @@ fn doctor_force_fix(err: &clap::Error, argv: &[String], path: &[String]) -> Opti
             "--force needs --yes: a forced repair needs explicit consent; preview it first",
             argv,
         )
+    })
+}
+
+/// `doctor gc` without `--before` (M4-D36): the fix is the preview with the suggested
+/// age, every other argument a check would refuse corrected too, the user's verb kept.
+fn doctor_gc_before_fix(err: &clap::Error, argv: &[String], path: &[String]) -> Option<Error> {
+    let missing = match err.get(ContextKind::InvalidArg) {
+        Some(ContextValue::Strings(args)) => args.clone(),
+        Some(ContextValue::String(arg)) => vec![arg.clone()],
+        _ => Vec::new(),
+    };
+    // ubs:ignore — comparing a clap error kind and flag names, not secrets
+    let missing_before = err.kind() == ErrorKind::MissingRequiredArgument
+        && path.iter().map(String::as_str).eq(["doctor", "gc"])
+        && missing.iter().any(|arg| arg.starts_with("--before"));
+    missing_before.then(|| {
+        let age = crate::app::doctor_gc::suggested_age_arg();
+        Error::new(
+            ErrorCode::Usage,
+            "doctor gc needs --before: what started before it is eligible (an RFC 3339 time or an age such as 30d)",
+            Suggestion::command(crate::app::doctor_gc::preview_fix(argv, Some(&age))),
+        )
+        .details(serde_json::json!({ "flag": "--before" }))
+        .user_verb()
     })
 }
 

@@ -227,6 +227,7 @@ fn help_walks_a_nested_path() {
         &["doctor", "fix"],
         &["doctor", "diff"],
         &["doctor", "undo"],
+        &["doctor", "gc"],
     ] {
         let mut asked = vec!["help"];
         asked.extend(path);

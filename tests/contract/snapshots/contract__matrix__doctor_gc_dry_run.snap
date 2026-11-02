@@ -1,0 +1,65 @@
+---
+source: tests/contract/matrix.rs
+assertion_line: 2663
+expression: redacted(&c.envelope)
+---
+{
+  "before": "<time>",
+  "command": "doctor gc",
+  "commands": [],
+  "deletions": [
+    {
+      "bytes": 62,
+      "kind": "cache_quarantine",
+      "may_hold_only_copy": false,
+      "path": "<root>/cache/omaddons/quarantine/<run>",
+      "run_id": "<run>",
+      "target": null,
+      "tx": "<ulid>"
+    },
+    {
+      "bytes": 35,
+      "kind": "client_repair",
+      "may_hold_only_copy": true,
+      "path": "<root>/home/Games/battlenet/drive_c/Program Files (x86)/World of Warcraft/_retail_/Interface/.omaddons/snapshots/<ulid>.repair",
+      "run_id": "<run>",
+      "target": {
+        "id": "retail",
+        "key": "<ulid>"
+      },
+      "tx": "<ulid>"
+    },
+    {
+      "bytes": 156,
+      "kind": "run",
+      "may_hold_only_copy": true,
+      "path": "<root>/state/omaddons/doctor/runs/<run>",
+      "run_id": "<run>",
+      "target": null,
+      "tx": "<ulid>"
+    },
+    {
+      "bytes": 86,
+      "kind": "run",
+      "may_hold_only_copy": false,
+      "path": "<root>/state/omaddons/doctor/runs/<run>",
+      "run_id": "<run>",
+      "target": null,
+      "tx": null
+    }
+  ],
+  "dry_run": true,
+  "exclusions": [],
+  "exit_code": 0,
+  "latest": {
+    "from": "<run>",
+    "to": "<run>"
+  },
+  "lost_undos": [],
+  "ok": true,
+  "precondition": "<precondition>",
+  "remaining": 0,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

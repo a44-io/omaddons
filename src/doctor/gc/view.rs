@@ -1248,7 +1248,7 @@ mod tests {
         let planned = plan(&view, DOCTOR_GC_MAX_DELETIONS);
         let pins: Vec<(String, Pin)> = planned
             .report
-            .excluded
+            .exclusions
             .iter()
             .map(|e| (e.path.clone(), e.pin))
             .collect();

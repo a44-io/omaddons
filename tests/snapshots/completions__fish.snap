@@ -1,5 +1,6 @@
 ---
 source: tests/completions.rs
+assertion_line: 71
 description: "the completion script of this build; any change to a command, flag, alias, about text or fixed value changes it: re-accept with INSTA_UPDATE=always cargo test --test completions, then review git diff tests/snapshots/"
 ---
 # Print an optspec for argparse to handle cmd's options that are independent of any subcommand.
@@ -1001,41 +1002,42 @@ complete -c omaddons -n "__fish_omaddons_using_subcommand net-log" -l no-progres
 complete -c omaddons -n "__fish_omaddons_using_subcommand net-log" -l quiet -d 'Only errors on stderr'
 complete -c omaddons -n "__fish_omaddons_using_subcommand net-log" -s v -l verbose -d 'More detail (repeatable)'
 complete -c omaddons -n "__fish_omaddons_using_subcommand net-log" -s h -l help -d 'Show help'
-complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo" -l only -d 'Only these checks: failure-mode ids or subsystem names, comma-separated' -r
-complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo" -l skip -d 'Not these checks (wins over --only)' -r
-complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo" -l severity -d 'Report findings of this severity and more severe ones only' -r -f -a "P0\t''
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo gc" -l only -d 'Only these checks: failure-mode ids or subsystem names, comma-separated' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo gc" -l skip -d 'Not these checks (wins over --only)' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo gc" -l severity -d 'Report findings of this severity and more severe ones only' -r -f -a "P0\t''
 P1\t''
 P2\t''
 P3\t''"
-complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo" -l budget -d 'The whole run\'s time, shared by the checks by their cost: 500ms or 2s' -r
-complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo" -l since -d 'Compare with an earlier run: its id, or latest' -r
-complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo" -l format -d 'Output format' -r -f -a "json\t''
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo gc" -l budget -d 'The whole run\'s time, shared by the checks by their cost: 500ms or 2s' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo gc" -l since -d 'Compare with an earlier run: its id, or latest' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo gc" -l format -d 'Output format' -r -f -a "json\t''
 human\t''"
-complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo" -s t -l target -l flavor -d 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)' -r
-complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo" -l actor -d 'Who is acting: human, agent or widget [env: OMADDONS_ACTOR]' -r
-complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo" -l reason -d 'Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)' -r
-complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo" -l if-match -d 'Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed' -r
-complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo" -l progress -d 'Progress events on stderr' -r -f -a "json\t''
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo gc" -s t -l target -l flavor -d 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo gc" -l actor -d 'Who is acting: human, agent or widget [env: OMADDONS_ACTOR]' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo gc" -l reason -d 'Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo gc" -l if-match -d 'Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo gc" -l progress -d 'Progress events on stderr' -r -f -a "json\t''
 human\t''
 none\t''"
-complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo" -l quick -d 'Only the fast checks (the cached and quick tiers)'
-complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo" -l include-deep -d 'Also the deep checks'
-complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo" -l online -d 'Also the checks that need the network'
-complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo" -l json -d 'One JSON envelope on stdout'
-complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo" -l robot -d 'The same as --json'
-complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo" -l dry-run -d 'Show the plan without changing anything (ignored by commands that change nothing)'
-complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo" -l offline -d 'Fail any network access [env: OMADDONS_OFFLINE=1]'
-complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo" -l while-running -d 'Allow folder changes while the client runs (never SavedVariables)'
-complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo" -l no-color -d 'No ANSI color'
-complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo" -l no-progress -d 'No progress output'
-complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo" -l quiet -d 'Only errors on stderr'
-complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo" -s v -l verbose -d 'More detail (repeatable)'
-complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo" -s h -l help -d 'Show help'
-complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo" -f -a "diagnose" -d 'Find what is broken, with evidence and the exact fix (changes nothing outside its run record)'
-complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo" -f -a "explain" -d 'One failure mode in full: what it is, why it matters, and its live instances (changes nothing)'
-complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo" -f -a "fix" -d 'Repair the findings a fixer can repair, as one undoable transaction'
-complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo" -f -a "diff" -d 'Show what doctor fix would change, or what changed since a run (changes nothing)'
-complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo" -f -a "undo" -d 'Undo a doctor repair: revert a fix run (or the newest one), strictly'
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo gc" -l quick -d 'Only the fast checks (the cached and quick tiers)'
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo gc" -l include-deep -d 'Also the deep checks'
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo gc" -l online -d 'Also the checks that need the network'
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo gc" -l json -d 'One JSON envelope on stdout'
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo gc" -l robot -d 'The same as --json'
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo gc" -l dry-run -d 'Show the plan without changing anything (ignored by commands that change nothing)'
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo gc" -l offline -d 'Fail any network access [env: OMADDONS_OFFLINE=1]'
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo gc" -l while-running -d 'Allow folder changes while the client runs (never SavedVariables)'
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo gc" -l no-color -d 'No ANSI color'
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo gc" -l no-progress -d 'No progress output'
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo gc" -l quiet -d 'Only errors on stderr'
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo gc" -s v -l verbose -d 'More detail (repeatable)'
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo gc" -s h -l help -d 'Show help'
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo gc" -f -a "diagnose" -d 'Find what is broken, with evidence and the exact fix (changes nothing outside its run record)'
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo gc" -f -a "explain" -d 'One failure mode in full: what it is, why it matters, and its live instances (changes nothing)'
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo gc" -f -a "fix" -d 'Repair the findings a fixer can repair, as one undoable transaction'
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo gc" -f -a "diff" -d 'Show what doctor fix would change, or what changed since a run (changes nothing)'
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo gc" -f -a "undo" -d 'Undo a doctor repair: revert a fix run (or the newest one), strictly'
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and not __fish_seen_subcommand_from diagnose explain fix diff undo gc" -f -a "gc" -d 'Delete old doctor runs and what they kept, never what an unfinished change needs'
 complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and __fish_seen_subcommand_from diagnose" -l only -d 'Only these checks: failure-mode ids or subsystem names, comma-separated' -r
 complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and __fish_seen_subcommand_from diagnose" -l skip -d 'Not these checks (wins over --only)' -r
 complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and __fish_seen_subcommand_from diagnose" -l severity -d 'Report findings of this severity and more severe ones only' -r -f -a "P0\t''
@@ -1154,6 +1156,27 @@ complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and __fish_see
 complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and __fish_seen_subcommand_from undo" -l quiet -d 'Only errors on stderr'
 complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and __fish_seen_subcommand_from undo" -s v -l verbose -d 'More detail (repeatable)'
 complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and __fish_seen_subcommand_from undo" -s h -l help -d 'Show help'
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and __fish_seen_subcommand_from gc" -l before -d 'Runs that started before this are eligible: an RFC 3339 time or an age (30m, 12h, 30d, 2w)' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and __fish_seen_subcommand_from gc" -l format -d 'Output format' -r -f -a "json\t''
+human\t''"
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and __fish_seen_subcommand_from gc" -s t -l target -l flavor -d 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and __fish_seen_subcommand_from gc" -l actor -d 'Who is acting: human, agent or widget [env: OMADDONS_ACTOR]' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and __fish_seen_subcommand_from gc" -l reason -d 'Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and __fish_seen_subcommand_from gc" -l if-match -d 'Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and __fish_seen_subcommand_from gc" -l progress -d 'Progress events on stderr' -r -f -a "json\t''
+human\t''
+none\t''"
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and __fish_seen_subcommand_from gc" -l yes -d 'Consent for a real run (not needed with --dry-run)'
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and __fish_seen_subcommand_from gc" -l json -d 'One JSON envelope on stdout'
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and __fish_seen_subcommand_from gc" -l robot -d 'The same as --json'
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and __fish_seen_subcommand_from gc" -l dry-run -d 'Show the plan without changing anything (ignored by commands that change nothing)'
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and __fish_seen_subcommand_from gc" -l offline -d 'Fail any network access [env: OMADDONS_OFFLINE=1]'
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and __fish_seen_subcommand_from gc" -l while-running -d 'Allow folder changes while the client runs (never SavedVariables)'
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and __fish_seen_subcommand_from gc" -l no-color -d 'No ANSI color'
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and __fish_seen_subcommand_from gc" -l no-progress -d 'No progress output'
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and __fish_seen_subcommand_from gc" -l quiet -d 'Only errors on stderr'
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and __fish_seen_subcommand_from gc" -s v -l verbose -d 'More detail (repeatable)'
+complete -c omaddons -n "__fish_omaddons_using_subcommand doctor; and __fish_seen_subcommand_from gc" -s h -l help -d 'Show help'
 complete -c omaddons -n "__fish_omaddons_using_subcommand list" -l format -d 'Output format' -r -f -a "json\t''
 human\t''"
 complete -c omaddons -n "__fish_omaddons_using_subcommand list" -s t -l target -l flavor -d 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)' -r

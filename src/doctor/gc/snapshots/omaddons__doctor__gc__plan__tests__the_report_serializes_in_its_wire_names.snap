@@ -1,6 +1,6 @@
 ---
 source: src/doctor/gc/plan.rs
-assertion_line: 1426
+assertion_line: 1573
 expression: value
 ---
 {
@@ -38,7 +38,7 @@ expression: value
     }
   ],
   "dry_run": false,
-  "excluded": [
+  "exclusions": [
     {
       "kind": "backup",
       "path": "/s/omaddons/doctor/runs/2026-10-20T00-00-00Z__01M5B9Q6000000000000000002/backups/2",
@@ -50,7 +50,7 @@ expression: value
     "from": "2026-10-21T00-00-00Z__01M5DW3X000000000000000001",
     "to": null
   },
+  "lost_undos": [],
   "precondition": null,
-  "remaining": 0,
-  "undo_lost": []
+  "remaining": 0
 }

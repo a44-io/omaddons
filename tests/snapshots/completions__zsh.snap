@@ -1,5 +1,6 @@
 ---
 source: tests/completions.rs
+assertion_line: 71
 description: "the completion script of this build; any change to a command, flag, alias, about text or fixed value changes it: re-accept with INSTA_UPDATE=always cargo test --test completions, then review git diff tests/snapshots/"
 ---
 #compdef omaddons
@@ -1378,6 +1379,32 @@ _arguments "${_arguments_options[@]}" : \
 '::run -- The doctor run to undo\: its run id, as doctor fix printed it (default\: the newest fix run whose repair is still in effect):_default' \
 && ret=0
 ;;
+(gc)
+_arguments "${_arguments_options[@]}" : \
+'--before=[Runs that started before this are eligible\: an RFC 3339 time or an age (30m, 12h, 30d, 2w)]:WHEN:_default' \
+'--format=[Output format]:FORMAT:(json human)' \
+'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
+'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
+'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--progress=[Progress events on stderr]:MODE:(json human none)' \
+'--yes[Consent for a real run (not needed with --dry-run)]' \
+'--json[One JSON envelope on stdout]' \
+'--robot[The same as --json]' \
+'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
+'--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
+'--no-color[No ANSI color]' \
+'--no-progress[No progress output]' \
+'--quiet[Only errors on stderr]' \
+'*-v[More detail (repeatable)]' \
+'*--verbose[More detail (repeatable)]' \
+'-h[Show help]' \
+'--help[Show help]' \
+&& ret=0
+;;
         esac
     ;;
 esac
@@ -2157,6 +2184,7 @@ _omaddons__subcmd__doctor_commands() {
 'fix:Repair the findings a fixer can repair, as one undoable transaction' \
 'diff:Show what doctor fix would change, or what changed since a run (changes nothing)' \
 'undo:Undo a doctor repair\: revert a fix run (or the newest one), strictly' \
+'gc:Delete old doctor runs and what they kept, never what an unfinished change needs' \
     )
     _describe -t commands 'omaddons doctor commands' commands "$@"
 }
@@ -2179,6 +2207,11 @@ _omaddons__subcmd__doctor__subcmd__explain_commands() {
 _omaddons__subcmd__doctor__subcmd__fix_commands() {
     local commands; commands=()
     _describe -t commands 'omaddons doctor fix commands' commands "$@"
+}
+(( $+functions[_omaddons__subcmd__doctor__subcmd__gc_commands] )) ||
+_omaddons__subcmd__doctor__subcmd__gc_commands() {
+    local commands; commands=()
+    _describe -t commands 'omaddons doctor gc commands' commands "$@"
 }
 (( $+functions[_omaddons__subcmd__doctor__subcmd__undo_commands] )) ||
 _omaddons__subcmd__doctor__subcmd__undo_commands() {

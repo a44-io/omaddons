@@ -1,5 +1,6 @@
 ---
 source: tests/contract/matrix.rs
+assertion_line: 976
 expression: s.stable(&c.envelope)
 ---
 {
@@ -15,7 +16,7 @@ expression: s.stable(&c.envelope)
       "help",
       "apply"
     ],
-    "message": "--if-match binds a run to its preview, and only remove, undo, backup restore, backup prune, errors dismiss, install, update, pin, unpin, adopt, sync, copy and doctor fix take it, not apply",
+    "message": "--if-match binds a run to its preview, and only remove, undo, backup restore, backup prune, errors dismiss, install, update, pin, unpin, adopt, sync, copy, doctor fix and doctor gc take it, not apply",
     "retryable": false
   },
   "exit_code": 2,

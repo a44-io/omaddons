@@ -1,5 +1,6 @@
 ---
 source: tests/completions.rs
+assertion_line: 71
 description: "the completion script of this build; any change to a command, flag, alias, about text or fixed value changes it: re-accept with INSTA_UPDATE=always cargo test --test completions, then review git diff tests/snapshots/"
 ---
 
@@ -1174,6 +1175,7 @@ Register-ArgumentCompleter -Native -CommandName 'omaddons' -ScriptBlock {
             [CompletionResult]::new('fix', 'fix', [CompletionResultType]::ParameterValue, 'Repair the findings a fixer can repair, as one undoable transaction')
             [CompletionResult]::new('diff', 'diff', [CompletionResultType]::ParameterValue, 'Show what doctor fix would change, or what changed since a run (changes nothing)')
             [CompletionResult]::new('undo', 'undo', [CompletionResultType]::ParameterValue, 'Undo a doctor repair: revert a fix run (or the newest one), strictly')
+            [CompletionResult]::new('gc', 'gc', [CompletionResultType]::ParameterValue, 'Delete old doctor runs and what they kept, never what an unfinished change needs')
             break
         }
         'omaddons;doctor;diagnose' {
@@ -1294,6 +1296,31 @@ Register-ArgumentCompleter -Native -CommandName 'omaddons' -ScriptBlock {
             [CompletionResult]::new('--reason', '--reason', [CompletionResultType]::ParameterName, 'Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)')
             [CompletionResult]::new('--if-match', '--if-match', [CompletionResultType]::ParameterName, 'Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed')
             [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress events on stderr')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'One JSON envelope on stdout')
+            [CompletionResult]::new('--robot', '--robot', [CompletionResultType]::ParameterName, 'The same as --json')
+            [CompletionResult]::new('--dry-run', '--dry-run', [CompletionResultType]::ParameterName, 'Show the plan without changing anything (ignored by commands that change nothing)')
+            [CompletionResult]::new('--offline', '--offline', [CompletionResultType]::ParameterName, 'Fail any network access [env: OMADDONS_OFFLINE=1]')
+            [CompletionResult]::new('--while-running', '--while-running', [CompletionResultType]::ParameterName, 'Allow folder changes while the client runs (never SavedVariables)')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'No ANSI color')
+            [CompletionResult]::new('--no-progress', '--no-progress', [CompletionResultType]::ParameterName, 'No progress output')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Only errors on stderr')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'More detail (repeatable)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'More detail (repeatable)')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Show help')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Show help')
+            break
+        }
+        'omaddons;doctor;gc' {
+            [CompletionResult]::new('--before', '--before', [CompletionResultType]::ParameterName, 'Runs that started before this are eligible: an RFC 3339 time or an age (30m, 12h, 30d, 2w)')
+            [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterName, 'Output format')
+            [CompletionResult]::new('-t', '-t', [CompletionResultType]::ParameterName, 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)')
+            [CompletionResult]::new('--target', '--target', [CompletionResultType]::ParameterName, 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)')
+            [CompletionResult]::new('--flavor', '--flavor', [CompletionResultType]::ParameterName, 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)')
+            [CompletionResult]::new('--actor', '--actor', [CompletionResultType]::ParameterName, 'Who is acting: human, agent or widget [env: OMADDONS_ACTOR]')
+            [CompletionResult]::new('--reason', '--reason', [CompletionResultType]::ParameterName, 'Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)')
+            [CompletionResult]::new('--if-match', '--if-match', [CompletionResultType]::ParameterName, 'Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed')
+            [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress events on stderr')
+            [CompletionResult]::new('--yes', '--yes', [CompletionResultType]::ParameterName, 'Consent for a real run (not needed with --dry-run)')
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'One JSON envelope on stdout')
             [CompletionResult]::new('--robot', '--robot', [CompletionResultType]::ParameterName, 'The same as --json')
             [CompletionResult]::new('--dry-run', '--dry-run', [CompletionResultType]::ParameterName, 'Show the plan without changing anything (ignored by commands that change nothing)')
