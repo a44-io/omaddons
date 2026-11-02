@@ -20,8 +20,9 @@ use serde::Deserialize;
 
 use super::fence::{Fenced, FencedOp};
 use super::lock::{GlobalLock, GlobalLockGuard, InflightLock, Lease, LeaseGuard};
-use super::scope::{ScopeTable, Writer};
+use super::scope::{Access, ScopeTable, Writer};
 use super::session::WriteSession;
+use super::sys::{self, RenameError};
 use super::{FsxError, Op, RenameMode, ensure_dir_all, failpoint, mutate};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::limits::PLAN_MAX_BYTES;
@@ -63,6 +64,12 @@ impl PruneReason {
 pub enum LockUse<'a> {
     Acquire,
     Held(&'a GlobalLockGuard),
+    /// The caller's guard, handed over: every victim is renamed into trash under it, then
+    /// prune drops it (after `fsx.prune.renamed`, before `fsx.prune.deleting`) and deletes
+    /// the trash entries, as with `Acquire`. A caller that planned under the lock (doctor
+    /// gc) keeps its plan and its renames in one lock hold, and never holds the lock while
+    /// bytes are deleted. On an error the guard is dropped with the call.
+    HandOff(GlobalLockGuard),
     /// No global lock: every victim is named for the transaction whose in-flight lock
     /// the caller holds, and nothing else touches a live transaction's artifacts
     /// (recovery and orphan collection wait for a free in-flight lock). Transactions
@@ -100,6 +107,8 @@ struct Planned {
     inflight: bool,
     /// A transaction journal.
     journal: bool,
+    /// The doctor's `latest` link, moved into trash as a link (never followed).
+    symlink: bool,
 }
 
 /// Deletes `victims` for `reason`. See the module docs for the steps.
@@ -121,7 +130,7 @@ pub fn prune(
     }
     let own = match &lock {
         LockUse::Own(inflight) => Some(inflight.tx().to_string()),
-        LockUse::Acquire | LockUse::Held(_) | LockUse::Expired { .. } => None,
+        LockUse::Acquire | LockUse::Held(_) | LockUse::HandOff(_) | LockUse::Expired { .. } => None,
     };
     let mut report = PruneReport::default();
     let mut planned = Vec::new();
@@ -137,7 +146,7 @@ pub fn prune(
     // Held until every victim is in trash, so an applier never holds a deleted lease.
     let _leases = match &lock {
         LockUse::Expired { now } => only_expired(scopes, &planned, *now)?,
-        LockUse::Acquire | LockUse::Held(_) | LockUse::Own(_) => Vec::new(),
+        LockUse::Acquire | LockUse::Held(_) | LockUse::HandOff(_) | LockUse::Own(_) => Vec::new(),
     };
     if let Some(tx) = &own
         && let Some(stranger) = planned.iter().find(|p| !named_for(&p.victim, tx))
@@ -167,11 +176,16 @@ pub fn prune(
             Suggestion::command(["omaddons", "status"]),
         ));
     }
+    // A handed-off guard is dropped before the deletes, so it is not held after them.
     let lock_held = matches!(lock, LockUse::Held(_));
-    // Trash a crashed prune left is swept only under the global lock.
-    let sweeps = matches!(lock, LockUse::Acquire | LockUse::Held(_));
+    // Trash a crashed prune left is swept only by a prune that held the global lock.
+    let sweeps = matches!(
+        lock,
+        LockUse::Acquire | LockUse::Held(_) | LockUse::HandOff(_)
+    );
     let acquired = match lock {
         LockUse::Acquire => Some(GlobalLock::acquire(scopes.paths(), "prune")?),
+        LockUse::HandOff(guard) => Some(guard),
         LockUse::Held(_) | LockUse::Own(_) | LockUse::Expired { .. } => None,
     };
     let prune_id = ulid::Ulid::generate();
@@ -201,6 +215,11 @@ pub fn prune(
             .map(OsStr::to_string_lossy)
             .unwrap_or_default();
         let entry = plan.trash.join(format!("{prune_id}-{n}-{name}"));
+        if plan.symlink {
+            rename_link(&session, &plan.victim, &entry)?;
+            trashed.push((plan.victim, entry, plan.trash));
+            continue;
+        }
         let into_trash = |mode| Op::Rename { to: &entry, mode };
         match mutate(
             &mut session,
@@ -340,12 +359,19 @@ fn classify(
             ));
         }
     };
-    if meta.as_ref().is_some_and(|m| m.file_type().is_symlink()) {
+    // The doctor's `latest` link is the one symlink prune removes (the link, never its
+    // target); every other symlink is refused before its location matters.
+    let located = location(scopes, &canonical);
+    let symlink = meta.as_ref().is_some_and(|m| m.file_type().is_symlink());
+    if symlink && !matches!(located, Some((Kind::DoctorLatest, _))) {
         return refuse("symlinks are never pruned or followed");
     }
-    let Some((kind, trash)) = location(scopes, &canonical) else {
+    let Some((kind, trash)) = located else {
         return refuse("it is not a prunable location");
     };
+    if kind == Kind::DoctorLatest && meta.is_some() && !symlink {
+        return refuse("prune removes only the doctor's `latest` link");
+    }
     if kind.reason() != reason {
         return refuse(&format!(
             "{kind:?} entries are pruned for {:?}, not {reason:?}",
@@ -366,7 +392,59 @@ fn classify(
         kind,
         inflight: kind == Kind::Inflight,
         journal: matches!(kind, Kind::Journal | Kind::RepairJournal),
+        symlink,
     }))
+}
+
+/// Moves the doctor's `latest` link into trash as a link. `mutate` refuses an existing
+/// final symlink so fsx never writes through one; a rename moves the link itself and
+/// never its target, so this re-checks it is still a link, checks both ends against the
+/// scope table as `mutate` would, renames it without replacing anything, and makes the
+/// rename durable in both directories.
+fn rename_link(
+    session: &WriteSession<'_>,
+    victim: &Path,
+    entry: &Path,
+) -> std::result::Result<(), FsxError> {
+    let io_err = |path: &Path| {
+        let path = path.to_path_buf();
+        move |source: io::Error| FsxError::Io { path, source }
+    };
+    let meta = fs::symlink_metadata(victim).map_err(io_err(victim))?;
+    if !meta.file_type().is_symlink() {
+        return Err(FsxError::Precondition(format!(
+            "{} is no longer a symlink",
+            victim.display()
+        )));
+    }
+    for path in [victim, entry] {
+        session
+            .scopes
+            .check(session.writer, &session.owned, path, Access::Rename)?;
+    }
+    let renamed = match sys::rename_with(victim, entry, RenameMode::NoReplace) {
+        // Without renameat2 flags: the entry's name is unique to this prune, so once it is
+        // confirmed absent a plain rename cannot overwrite anything.
+        Err(RenameError::Unsupported) if fs::symlink_metadata(entry).is_err() => {
+            sys::rename_with(victim, entry, RenameMode::Replace)
+        }
+        other => other,
+    };
+    match renamed {
+        Ok(()) => {}
+        Err(RenameError::Unsupported) => return Err(FsxError::Unsupported),
+        Err(RenameError::TargetExists) => {
+            return Err(FsxError::Precondition(format!(
+                "{} appeared",
+                entry.display()
+            )));
+        }
+        Err(RenameError::Io(source)) => return Err(io_err(victim)(source)),
+    }
+    for dir in [victim.parent(), entry.parent()].into_iter().flatten() {
+        sys::fsync_dir(dir).map_err(io_err(dir))?;
+    }
+    Ok(())
 }
 
 /// `PruneReport.skipped`'s reason for a fenced victim.
@@ -491,7 +569,14 @@ enum Kind {
     Plan,
     /// `<cache>/plans/<id>.lease`
     PlanLease,
+    /// `<state>/doctor/runs/<name>`
     DoctorRun,
+    /// `<client dir>/Interface/.omaddons/snapshots/<tx>.repair`, a repair's client half.
+    ClientRepair,
+    /// `<cache>/quarantine/<name>`, what a doctor repair set aside from the cache.
+    CacheQuarantine,
+    /// `<state>/doctor/latest`, the one symlink prune removes.
+    DoctorLatest,
     Blob,
     CacheTmp,
     /// `<plugins>/.omaddons.stage-<op>`
@@ -511,7 +596,9 @@ impl Kind {
             | Self::CacheTmp => PruneReason::PostCommitCleanup,
             Self::Plan | Self::PlanLease => PruneReason::PlanExpiry,
             Self::ClientBackup => PruneReason::BackupPrune,
-            Self::DoctorRun => PruneReason::DoctorGc,
+            Self::DoctorRun | Self::ClientRepair | Self::CacheQuarantine | Self::DoctorLatest => {
+                PruneReason::DoctorGc
+            }
             Self::OmarchyStage | Self::OmarchyOld => PruneReason::WidgetStage,
         }
     }
@@ -537,6 +624,9 @@ fn location(scopes: &ScopeTable, victim: &Path) -> Option<(Kind, PathBuf)> {
         }
         let kind = match category.to_ascii_lowercase().as_str() {
             "snapshots" if is_tx_named(name) => Kind::ClientSnapshot,
+            // Exactly `<tx>.repair`: a location check, never a lister of repairs
+            // (`tx_named` does not learn the suffix, so no folder listing misreads one).
+            "snapshots" if is_repair_half(name) => Kind::ClientRepair,
             "stage" if is_tx_named(name) => Kind::ClientStage,
             "backups" if is_plain(name) => Kind::ClientBackup,
             _ => return None,
@@ -557,6 +647,7 @@ fn location(scopes: &ScopeTable, victim: &Path) -> Option<(Kind, PathBuf)> {
             }
             ["inflight", name] if name.strip_suffix(".lock").is_some_and(is_tx) => Kind::Inflight,
             ["doctor", "runs", name] if is_plain(name) => Kind::DoctorRun,
+            ["doctor", "latest"] => Kind::DoctorLatest,
             _ => return None,
         };
         return Some((kind, scopes.state_dir().join("trash")));
@@ -572,6 +663,9 @@ fn location(scopes: &ScopeTable, victim: &Path) -> Option<(Kind, PathBuf)> {
             // The store's `.lock` and its temporary files are never victims.
             ["plans", name] if name.strip_suffix(".json").is_some_and(is_plan) => Kind::Plan,
             ["plans", name] if name.strip_suffix(".lease").is_some_and(is_plan) => Kind::PlanLease,
+            // A plain name, not a run-id parse: fsx does not depend on `src/doctor/`,
+            // and gc passes only the names it recognized.
+            ["quarantine", name] if is_plain(name) => Kind::CacheQuarantine,
             _ => return None,
         };
         return Some((kind, scopes.cache_dir().join("trash")));
@@ -639,6 +733,12 @@ pub(crate) fn canonical_lenient(dir: &Path) -> Option<PathBuf> {
     }
 }
 
+/// `<tx>` + [`crate::state::paths::REPAIR_SUFFIX`]: a repair's client-side half.
+fn is_repair_half(name: &str) -> bool {
+    name.strip_suffix(crate::state::paths::REPAIR_SUFFIX)
+        .is_some_and(|tx| tx.parse::<TxId>().is_ok())
+}
+
 fn is_plain(name: &str) -> bool {
     !name.is_empty()
         && name != "."
@@ -670,8 +770,11 @@ fn delete_entry(entry: &Path) -> io::Result<u64> {
     if meta.is_dir() {
         grant_owner(entry);
     }
+    // A link (the doctor's `latest`) holds no file data of its own.
     let bytes = if meta.is_dir() {
         tree_bytes(entry)
+    } else if meta.file_type().is_symlink() {
+        0
     } else {
         meta.len()
     };
@@ -889,6 +992,16 @@ mod tests {
                 state.join("doctor/runs/2026-10-14T21-00-00Z__abc123"),
                 PruneReason::DoctorGc,
             ),
+            (
+                meta.join("snapshots").join(format!("{TX}.repair")),
+                PruneReason::DoctorGc,
+            ),
+            (
+                cache
+                    .join("quarantine")
+                    .join("2026-10-14T21-00-00Z__abc123"),
+                PruneReason::DoctorGc,
+            ),
             (cache.join("blobs").join(&blob), PruneReason::Retention),
             (cache.join("tmp").join(TX), PruneReason::PostCommitCleanup),
             (
@@ -933,6 +1046,222 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A repair's client half and a cache quarantine have exact names: anything else at
+    /// or near those locations is refused for every reason.
+    #[test]
+    fn repair_halves_and_cache_quarantines_have_exact_names() {
+        let f = fixture();
+        let meta = f.client.join("Interface/.omaddons");
+        let cache = f.paths.cache_dir().to_path_buf();
+        let refused = [
+            (
+                "dotted_suffix",
+                meta.join(format!("snapshots/{TX}.repair.old")),
+            ),
+            ("not_a_ulid", meta.join("snapshots/notaulid.repair")),
+            ("bare_suffix", meta.join("snapshots/.repair")),
+            (
+                "below_a_half",
+                meta.join(format!("snapshots/{TX}.repair/files/1")),
+            ),
+            ("quarantine_itself", cache.join("quarantine")),
+            ("below_a_quarantine", cache.join("quarantine/a/b")),
+            (
+                "repair_under_stage",
+                meta.join(format!("stage/{TX}.repair")),
+            ),
+            ("latest_quarantine", cache.join("quarantine/latest")),
+        ];
+        for (case, victim) in &refused {
+            make(victim, true);
+            for reason in REASONS {
+                let code = classify(&f.scopes, reason, victim, None)
+                    .err()
+                    .map(|err| err.code);
+                assert_eq!(
+                    code,
+                    Some(ErrorCode::ScopeDenied),
+                    "{case}: {} for {reason:?}",
+                    victim.display()
+                );
+            }
+        }
+    }
+
+    /// `<state>/doctor/latest` is the one symlink prune removes, through `<state>/trash`,
+    /// its target untouched; anything else there, or any other symlink, is refused.
+    #[test]
+    fn latest_is_the_one_symlink_prune_removes() {
+        let cases = [
+            "live_link",
+            "dangling_link",
+            "regular_file_at_latest",
+            "symlink_under_runs",
+            "latest2",
+            "absent",
+        ];
+        for case in cases {
+            let f = fixture();
+            let doctor = f.paths.state_dir().join("doctor");
+            let run = make(&doctor.join("runs/2026-10-14T21-00-00Z__abc123"), true);
+            let latest = doctor.join("latest");
+            let victim = match case {
+                "live_link" => {
+                    std::os::unix::fs::symlink(&run, &latest).unwrap();
+                    latest.clone()
+                }
+                "dangling_link" => {
+                    std::os::unix::fs::symlink(doctor.join("runs/gone"), &latest).unwrap();
+                    latest.clone()
+                }
+                "regular_file_at_latest" => make(&latest, false),
+                "symlink_under_runs" => {
+                    let link = doctor.join("runs/x");
+                    std::os::unix::fs::symlink(&run, &link).unwrap();
+                    link
+                }
+                "latest2" => {
+                    let link = doctor.join("latest2");
+                    std::os::unix::fs::symlink(&run, &link).unwrap();
+                    link
+                }
+                _ => latest.clone(),
+            };
+            let result = prune(
+                &f.scopes,
+                PruneReason::DoctorGc,
+                std::slice::from_ref(&victim),
+                LockUse::Acquire,
+            );
+            match case {
+                "live_link" | "dangling_link" => {
+                    let report = result.expect(case);
+                    assert_eq!(report.removed, vec![victim.clone()], "{case}");
+                    assert_eq!(report.bytes, 0, "{case}: a link holds no file data");
+                    assert!(fs::symlink_metadata(&victim).is_err(), "{case}: removed");
+                    assert!(
+                        run.join("sub/f").is_file(),
+                        "{case}: the target is untouched"
+                    );
+                    let trash = f.paths.state_dir().join("trash");
+                    let left = fs::read_dir(&trash).map_or(0, Iterator::count);
+                    assert_eq!(left, 0, "{case}: {} is empty", trash.display());
+                }
+                "absent" => {
+                    let report = result.expect(case);
+                    assert_eq!(
+                        report.skipped,
+                        vec![(victim.clone(), "already gone".to_owned())],
+                        "{case}"
+                    );
+                }
+                _ => {
+                    let code = result.err().map(|err| err.code);
+                    assert_eq!(code, Some(ErrorCode::ScopeDenied), "{case}");
+                    assert!(fs::symlink_metadata(&victim).is_ok(), "{case}: kept");
+                }
+            }
+            if case == "regular_file_at_latest" {
+                assert!(latest.is_file(), "{case}: the file is kept");
+            }
+        }
+    }
+
+    /// A handed-off guard renames under the caller's lock, then is dropped: the lock is
+    /// free once prune returns, and another holder takes it at once.
+    #[test]
+    fn a_handed_off_guard_is_dropped_before_deleting() {
+        let f = fixture();
+        let victim = make(
+            &f.paths
+                .state_dir()
+                .join("doctor/runs/2026-10-14T21-00-00Z__abc123"),
+            true,
+        );
+        let guard = GlobalLock::acquire(&f.paths, "doctor gc").unwrap();
+        let report = prune(
+            &f.scopes,
+            PruneReason::DoctorGc,
+            std::slice::from_ref(&victim),
+            LockUse::HandOff(guard),
+        )
+        .unwrap();
+        assert_eq!(report.removed, vec![victim.clone()]);
+        assert!(!victim.exists());
+        assert_eq!(
+            crate::fsx::probe_global(&f.paths).unwrap(),
+            crate::fsx::LockState::Free
+        );
+        let started = std::time::Instant::now();
+        let again = GlobalLock::acquire(&f.paths, "install").unwrap();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "the handed-off lock was released"
+        );
+        drop(again);
+    }
+
+    /// A refused victim fails the call before anything moves, and the handed-off guard is
+    /// released with it.
+    #[test]
+    fn a_handed_off_guard_is_released_on_error() {
+        let f = fixture();
+        let runs = f.paths.state_dir().join("doctor/runs");
+        let run = make(&runs.join("2026-10-14T21-00-00Z__abc123"), true);
+        let link = runs.join("x");
+        std::os::unix::fs::symlink(&run, &link).unwrap();
+        let guard = GlobalLock::acquire(&f.paths, "doctor gc").unwrap();
+        let err = prune(
+            &f.scopes,
+            PruneReason::DoctorGc,
+            &[run.clone(), link.clone()],
+            LockUse::HandOff(guard),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::ScopeDenied, "{err:?}");
+        assert!(run.join("sub/f").is_file(), "nothing renamed");
+        assert!(fs::symlink_metadata(&link).is_ok());
+        assert_eq!(
+            crate::fsx::probe_global(&f.paths).unwrap(),
+            crate::fsx::LockState::Free
+        );
+    }
+
+    /// A finished run's hardened record (0400 files, a 0500 script, in a 0700 directory)
+    /// is deleted as it is.
+    #[test]
+    fn hardened_run_records_are_deleted_as_they_are() {
+        use std::os::unix::fs::PermissionsExt;
+        let f = fixture();
+        let run = f
+            .paths
+            .state_dir()
+            .join("doctor/runs/2026-10-14T21-00-00Z__abc123");
+        fs::create_dir_all(&run).unwrap();
+        let files = [
+            ("report.json", 0o400, 7),
+            ("runtime.jsonl", 0o400, 11),
+            ("undo.sh", 0o500, 13),
+        ];
+        for (name, mode, len) in files {
+            let path = run.join(name);
+            fs::write(&path, vec![b'x'; len]).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+        }
+        fs::set_permissions(&run, fs::Permissions::from_mode(0o700)).unwrap();
+        let report = prune(
+            &f.scopes,
+            PruneReason::DoctorGc,
+            std::slice::from_ref(&run),
+            LockUse::Acquire,
+        )
+        .unwrap();
+        assert_eq!(report.removed, vec![run.clone()]);
+        assert_eq!(report.skipped, Vec::new());
+        assert_eq!(report.bytes, 7 + 11 + 13);
+        assert!(!run.exists());
     }
 
     #[test]

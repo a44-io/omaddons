@@ -247,6 +247,16 @@ pub const SKILL_DIRS_MAX: usize = 8;
 pub const DOCTOR_FIX_MAX_ACTIONS: usize = 1_000;
 /// A global-lock holder older than this is `fm-concurrency_primitives-lock-held-long`.
 pub const LOCK_HELD_LONG: Duration = Duration::from_secs(10 * 60);
+/// `fix` and `undo` run directories past which `doctor-runs-accumulated` reports
+/// (diagnose runs do not count).
+pub const DOCTOR_RUNS_SOFT_MAX: u64 = 200;
+/// The `--before` age remediations and usage fixes suggest (`doctor gc --before 30d
+/// --dry-run`).
+pub const DOCTOR_GC_SUGGESTED_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+/// Victims one `doctor gc` deletes at most; the report says how many remain.
+pub const DOCTOR_GC_MAX_DELETIONS: usize = 1_000;
+/// Quarantine bytes past which `doctor-runs-accumulated` reports.
+pub const DOCTOR_QUARANTINE_SOFT_MAX: u64 = GIB;
 
 /// Snapshot retention: keep everything younger than `min_age`; beyond that, keep the
 /// last `keep_last` transactions per target that are younger than `window`.
@@ -934,6 +944,34 @@ pub const REGISTRY: &[LimitInfo] = &[
         None,
         "A global-lock holder older than this is reported (lock-held-long)",
     ),
+    limit(
+        "DOCTOR_RUNS_SOFT_MAX",
+        LimitValue::Count(DOCTOR_RUNS_SOFT_MAX),
+        "count",
+        None,
+        "fix and undo run directories past which doctor-runs-accumulated reports (diagnose runs do not count)",
+    ),
+    limit(
+        "DOCTOR_GC_SUGGESTED_AGE",
+        LimitValue::Millis(ms(DOCTOR_GC_SUGGESTED_AGE)),
+        "ms",
+        None,
+        "the --before age remediations suggest (doctor gc --before 30d --dry-run)",
+    ),
+    limit(
+        "DOCTOR_GC_MAX_DELETIONS",
+        LimitValue::Count(DOCTOR_GC_MAX_DELETIONS as u64),
+        "count",
+        None,
+        "victims one doctor gc deletes at most; the report says how many remain",
+    ),
+    limit(
+        "DOCTOR_QUARANTINE_SOFT_MAX",
+        LimitValue::Bytes(DOCTOR_QUARANTINE_SOFT_MAX),
+        "bytes",
+        None,
+        "quarantine bytes past which doctor-runs-accumulated reports",
+    ),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -1198,6 +1236,10 @@ mod tests {
         "SKILL_DIRS_MAX",
         "DOCTOR_FIX_MAX_ACTIONS",
         "LOCK_HELD_LONG",
+        "DOCTOR_RUNS_SOFT_MAX",
+        "DOCTOR_GC_SUGGESTED_AGE",
+        "DOCTOR_GC_MAX_DELETIONS",
+        "DOCTOR_QUARANTINE_SOFT_MAX",
     ];
 
     const CONFIG_NAMES: &[&str] = &[
@@ -1216,6 +1258,11 @@ mod tests {
 
     fn names(registry: &[LimitInfo]) -> Vec<&'static str> {
         registry.iter().map(|info| info.name).collect()
+    }
+
+    #[test]
+    fn the_suggested_age_is_thirty_days() {
+        assert_eq!(DOCTOR_GC_SUGGESTED_AGE.as_secs(), 30 * 86_400);
     }
 
     #[test]

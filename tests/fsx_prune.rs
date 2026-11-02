@@ -1,9 +1,15 @@
 //! `prune()` across processes: a prune killed after renaming leaves only trash, which
 //! the next prune sweeps, and deletion runs with the global lock already released.
+//!
+//! e2e suite: prune across processes (a handed-off global lock held while renaming and
+//! free while deleting, logged).
+
+mod common;
 
 use std::fs;
 use std::path::PathBuf;
 
+use common::tlog::tlog;
 use omaddons::error::ErrorCode;
 use omaddons::fsx::{
     GlobalLock, InflightLock, Lease, LockState, LockUse, PruneReason, probe_global, prune,
@@ -54,9 +60,14 @@ mod support {
 
     /// Runs `child_prune` on `victim` with `failpoints` armed.
     pub fn spawn_prune(root: &Path, victim: &Path, failpoints: &str) -> Child {
+        spawn_child("child_prune", root, victim, failpoints)
+    }
+
+    /// Runs the child test `child` on `victim` with `failpoints` armed.
+    pub fn spawn_child(child: &str, root: &Path, victim: &Path, failpoints: &str) -> Child {
         Command::new(std::env::current_exe().unwrap())
             .args([
-                "child_prune",
+                child,
                 "--exact",
                 "--ignored",
                 "--nocapture",
@@ -92,7 +103,80 @@ mod support {
     }
 }
 
-use support::{entries, layout, reached, scopes, snapshot, spawn_prune};
+use support::{entries, layout, reached, scopes, snapshot, spawn_child, spawn_prune};
+
+#[test]
+#[ignore = "child process for the prune tests"]
+fn child_prune_handoff() {
+    // A child process of the hand-off test, not a check: run on its own it does nothing.
+    let Some(root) = std::env::var_os("OMADDONS_PRUNE_TEST_ROOT").map(PathBuf::from) else {
+        return;
+    };
+    let victim = PathBuf::from(std::env::var_os("OMADDONS_PRUNE_TEST_VICTIM").unwrap());
+    let l = layout(&root);
+    let s = scopes(&l.paths, &l.client);
+    let guard = GlobalLock::acquire(&l.paths, "doctor gc").unwrap();
+    prune(
+        &s,
+        PruneReason::DoctorGc,
+        &[victim],
+        LockUse::HandOff(guard),
+    )
+    .unwrap();
+}
+
+/// `LockUse::HandOff`: the caller's lock is held while the victim is renamed into trash
+/// (`fsx.prune.renamed`), and already released while the trash entry is deleted
+/// (`fsx.prune.deleting`).
+#[test]
+fn a_handed_off_lock_is_held_while_renaming_and_free_while_deleting() {
+    let log = tlog!();
+    let dir = tempfile::tempdir().unwrap();
+    let l = layout(dir.path());
+    let runs = l.paths.state_dir().join("doctor/runs");
+    let trash = l.paths.state_dir().join("trash");
+    let run_dir = |name: &str| {
+        let dir = runs.join(name);
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("sub/report.json"), b"{}").unwrap();
+        dir
+    };
+    for (step, failpoint, name) in [
+        (
+            "renamed, lock held",
+            "fsx.prune.renamed",
+            "2026-10-14T21-00-00Z__a",
+        ),
+        (
+            "deleting, lock free",
+            "fsx.prune.deleting",
+            "2026-10-14T21-00-00Z__b",
+        ),
+    ] {
+        log.step(step);
+        let victim = run_dir(name);
+        let spec = format!("{failpoint}=pause");
+        log.note(format!("failpoints: {spec}"));
+        let mut child = spawn_child("child_prune_handoff", &l.root, &victim, &spec);
+        reached(&l.root, failpoint);
+        let state = probe_global(&l.paths).unwrap();
+        log.json("lock", &format!("{state:?}"));
+        log.tree("runs", &runs);
+        log.tree("trash", &trash);
+        assert!(!victim.exists(), "{step}: the victim is in trash");
+        assert_eq!(entries(&trash), 1, "{step}: one trash entry");
+        if failpoint == "fsx.prune.renamed" {
+            assert!(matches!(state, LockState::Held { .. }), "{step}: {state:?}");
+        } else {
+            assert_eq!(state, LockState::Free, "{step}");
+        }
+        fs::write(l.root.join(format!("{failpoint}.resume")), b"").unwrap();
+        let status = child.wait().unwrap();
+        log.note(format!("child exit: {status}"));
+        assert!(status.success(), "{step}: {status}");
+        assert_eq!(entries(&trash), 0, "{step}: the trash is empty");
+    }
+}
 
 #[test]
 #[ignore = "child process for the prune tests"]

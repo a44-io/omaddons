@@ -526,15 +526,28 @@ fn readers_report_without_writing() {
     let scene = Scene::new();
     assert!(pending_warnings(&scene.paths).unwrap().is_empty());
     scene.run(1, false, false, false);
-    // The lock the run dropped is free once every copy of its descriptor is closed: a
-    // child another test of this binary forks in that moment holds one until its `exec`
-    // closes it. Taking the lock waits that out, so the reader below sees it free.
-    drop(GlobalLock::acquire(&scene.paths, "test").unwrap());
     let state = scene.env.state();
-    let before = tree_hash(&state);
-
-    let free = pending_warnings(&scene.paths).unwrap();
-    assert_eq!(tree_hash(&state), before, "reading wrote nothing");
+    // The lock is free once every copy of its descriptor is closed: a child another test
+    // of this binary forks while this test holds it keeps a copy until its `exec` closes
+    // it. Taking the lock waits that out, but the take itself can be copied the same way,
+    // so the free read is retried, bounded: a reader that always says the lock is held
+    // still fails (omad-dgwf). Taking the lock records its holder, so each read is
+    // compared with the state right after its take.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let free = loop {
+        drop(GlobalLock::acquire(&scene.paths, "test").unwrap());
+        let before = tree_hash(&state);
+        let read = pending_warnings(&scene.paths).unwrap();
+        assert_eq!(tree_hash(&state), before, "reading wrote nothing");
+        let held = matches!(
+            read.first().map(|w| w.code),
+            Some(WarningCode::TxInProgress)
+        );
+        if !held || std::time::Instant::now() >= deadline {
+            break read;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
     assert_eq!(free.len(), 1);
     assert_eq!(free[0].code, WarningCode::JournalPending);
     assert!(
