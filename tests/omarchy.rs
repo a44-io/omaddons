@@ -12,7 +12,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use common::env::TestEnv;
-use common::exec::write_executable;
 use common::home::{Run, wait};
 use common::pause::Pause;
 use common::privacy::assert_private_all;
@@ -31,12 +30,7 @@ impl Desk {
     fn new() -> Self {
         let desk = Self::bare();
         fs::create_dir_all(desk.config_omarchy()).unwrap();
-        for tool in [
-            "omarchy-shell",
-            "omarchy-plugin-validate",
-            "omarchy-bar",
-            "omarchy-plugin-disable",
-        ] {
+        for tool in common::omarchy::TOOLS {
             desk.tool(tool);
         }
         desk
@@ -78,59 +72,9 @@ impl Desk {
         self.root().join("tools.log")
     }
 
-    /// A stub tool. `omarchy-bar` answers as `<root>/bar-mode` says (`ok`, `not-running`,
-    /// `unknown:<n>` for n "not a known widget" answers first) and, placing, writes the
-    /// section into `shell.json` as Omarchy's shell would; `omarchy-plugin-validate`
-    /// refuses when `<root>/validate-mode` says `bad`. `omarchy-shell` answers `shell
-    /// ping` as `<root>/shell-mode` says (`ok`, `silent` for `-q`'s bare exit 0, `hang`,
-    /// `orphan` for a hang that leaves a child running, its pid in `<root>/orphan.pid`),
-    /// and `setPluginEnabled`, like `omarchy-plugin-disable` (which fails when
-    /// `<root>/disable-mode` says `fail`), splices the bar layout out of `shell.json`.
+    /// A stub tool, as `common::omarchy::write_tool` writes it.
     fn tool(&self, name: &str) {
-        let root = self.root().display();
-        let log = format!(
-            r#"printf '%s %s\n' "${{0##*/}}" "$*" >> {root}/tools.log
-printf 'OMARCHY_PATH=%s\n' "$OMARCHY_PATH" >> {root}/tools.log"#
-        );
-        let body = match name {
-            "omarchy-bar" => format!(
-                r#"mode=ok; [ -f {root}/bar-mode ] && read mode < {root}/bar-mode
-case "$mode" in
-  not-running) echo "omarchy-shell is not running" >&2; exit 0 ;;
-  unknown:*)
-    n=0; [ -f {root}/bar-count ] && read n < {root}/bar-count; n=$((n+1)); echo $n > {root}/bar-count
-    if [ $n -le "${{mode#unknown:}}" ]; then echo "$2 is not a known widget" >&2; exit 1; fi ;;
-esac
-printf '{{"bar":{{"layout":{{"%s":[{{"id":"%s"}}]}}}}}}' "$4" "$2" > "$XDG_CONFIG_HOME/omarchy/shell.json"
-echo "$2 is on the bar""#
-            ),
-            "omarchy-plugin-validate" => format!(
-                r#"mode=ok; [ -f {root}/validate-mode ] && read mode < {root}/validate-mode
-if [ "$mode" = bad ]; then echo "manifest.json: entryPoints.barWidget is missing" >&2; exit 1; fi"#
-            ),
-            "omarchy-shell" => format!(
-                r#"mode=ok; [ -f {root}/shell-mode ] && read mode < {root}/shell-mode
-case "$1 $2" in
-  "shell ping") case "$mode" in
-      silent) exit 0 ;;
-      hang) exec /bin/sleep 5 ;;
-      orphan) /bin/sleep 30 & echo $! > {root}/orphan.pid; exec /bin/sleep 5 ;;
-      daemon) /bin/sleep 30 & echo $! > {root}/orphan.pid ;;
-    esac; echo ok ;;
-  "shell setPluginEnabled")
-    printf '{{"bar":{{"layout":{{}}}}}}' > "$XDG_CONFIG_HOME/omarchy/shell.json"; echo ok ;;
-esac"#
-            ),
-            "omarchy-plugin-disable" => format!(
-                r#"mode=ok; [ -f {root}/disable-mode ] && read mode < {root}/disable-mode
-if [ "$mode" = fail ]; then echo "omarchy-plugin-disable: plugin '$1' is not known" >&2; exit 1; fi
-printf '{{"bar":{{"layout":{{}}}}}}' > "$XDG_CONFIG_HOME/omarchy/shell.json"
-echo "Disabled $1""#
-            ),
-            _ => String::new(),
-        };
-        let path = self.root().join("bin").join(name);
-        write_executable(&path, &format!("#!/bin/sh\n{log}\n{body}\n"));
+        common::omarchy::write_tool(self.root(), name);
     }
 
     fn set(&self, file: &str, value: &str) {

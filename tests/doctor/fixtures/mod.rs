@@ -14,6 +14,9 @@ pub mod fm_concurrency_primitives_lock_held_long;
 pub mod fm_network_credential_rejected;
 pub mod fm_network_github_rate_limited;
 pub mod fm_network_source_unreachable;
+pub mod fm_plugins_widget_invalid;
+pub mod fm_plugins_widget_version_drift;
+pub mod fm_secrets_credential_file_mode;
 pub mod fm_state_files_check_incomplete;
 pub mod fm_state_files_detector_crashed;
 pub mod fm_test_flatten;
@@ -45,6 +48,9 @@ pub fn all() -> Vec<Box<dyn Fixture>> {
         Box::new(fm_network_credential_rejected::CredentialRejected),
         Box::new(fm_network_github_rate_limited::GithubRateLimited),
         Box::new(fm_network_source_unreachable::SourceUnreachable),
+        Box::new(fm_plugins_widget_invalid::WidgetInvalid),
+        Box::new(fm_plugins_widget_version_drift::WidgetVersionDrift),
+        Box::new(fm_secrets_credential_file_mode::CredentialFileMode),
         Box::new(fm_state_files_check_incomplete::CheckIncomplete),
         Box::new(fm_state_files_detector_crashed::DetectorCrashed),
     ]
@@ -73,11 +79,17 @@ pub fn found_ids(home: &Home, args: &[String]) -> Vec<String> {
     found_ids_with(home, args, &[])
 }
 
-/// [`found_ids`] with extra environment (`OMADDONS_TEST_FIXERS`).
+/// [`found_ids`] with extra environment (`OMADDONS_TEST_FIXERS`). Every run gets
+/// `OMARCHY_PATH` set to [`plant::omarchy_path`] first, as every doctor suite's runs do,
+/// so the widget rows see Omarchy's shell whatever this machine has installed; `env` may
+/// override it.
 pub fn found_ids_with(home: &Home, args: &[String], env: &[(&str, &str)]) -> Vec<String> {
     let mut argv: Vec<String> = vec!["doctor".to_owned(), "--json".to_owned()];
     argv.extend(args.iter().cloned());
-    let run = home.exec_with(&argv, env);
+    let omarchy = plant::omarchy_path(home);
+    let mut extra: Vec<(&str, &str)> = vec![("OMARCHY_PATH", omarchy.to_str().unwrap())];
+    extra.extend(env.iter().copied());
+    let run = home.exec_with(&argv, &extra);
     let envelope = crate::common::doctor::check_envelope(&run.stdout, &run.stderr, run.code);
     envelope["findings"]
         .as_array()

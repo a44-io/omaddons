@@ -2363,3 +2363,45 @@ fn probes_write_the_exact_requests_the_detectors_send() {
         }
     }
 }
+
+/// `plant::widget_invalid` breaks exactly two of Omarchy's plugin rules, as the port of its
+/// validator checks the installed folder in process: `default_section` and `symlink`.
+#[test]
+fn plant_widget_invalid_breaks_exactly_two_rules() {
+    use common::doctor::plant;
+    use common::home::Home;
+    use omaddons::omarchy::validate::{Rule, check};
+    let home = Home::new(&["wow"]);
+    let desk = plant::widget_current(&home);
+    let clean = check(&desk.plugin(), &mut || true);
+    assert_eq!(clean.problems, Vec::new(), "the installed widget validates");
+    plant::widget_invalid(&home);
+    let checked = check(&desk.plugin(), &mut || true);
+    assert!(checked.complete, "{checked:?}");
+    assert_eq!(
+        checked.rules(),
+        vec![Rule::DefaultSection, Rule::Symlink],
+        "{checked:?}"
+    );
+    assert_eq!(checked.problems.len(), 2, "{checked:?}");
+}
+
+/// `plant::credential_file_mode` leaves the stored token at 0644 in a 0700 directory,
+/// holding `plant::MODE_TOKEN`.
+#[test]
+fn plant_credential_file_mode_sets_0644() {
+    use std::os::unix::fs::PermissionsExt;
+
+    use common::doctor::plant;
+    use common::home::Home;
+    let home = Home::new(&["wow"]);
+    let file = plant::credential_file_mode(&home);
+    assert_eq!(file, plant::token_file(&home));
+    let mode = |path: &std::path::Path| fs::metadata(path).unwrap().permissions().mode() & 0o7777;
+    assert_eq!(mode(&file), 0o644);
+    assert_eq!(mode(file.parent().unwrap()), 0o700);
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        format!("{}\n", plant::MODE_TOKEN)
+    );
+}

@@ -11,8 +11,9 @@
 //! (`binding`), the realistic home of 5,040 managed files, built offline
 //! (`realistic`), release landings for every source (`landing`), WowAce fixtures
 //! over its recording (`wowace`), crashed repairs of every fix kind, committed in a
-//! child process of the test binary (`repair`), and the last M3 commit built with its own
-//! toolchain and run against M4 state (`compat`).
+//! child process of the test binary (`repair`), the last M3 commit built with its own
+//! toolchain and run against M4 state (`compat`), and a stub Omarchy desk whose tools
+//! never reach this machine's bar (`omarchy`).
 //! Each integration test crate declares `mod common;` and uses the subset it needs.
 //!
 //! Everything is written under a [`env::TestEnv`] tempdir; nothing here touches the real
@@ -48,6 +49,7 @@ pub mod lua;
 pub mod memo;
 pub mod mounts;
 pub mod netlog;
+pub mod omarchy;
 pub mod pause;
 pub mod pe;
 pub mod planning;

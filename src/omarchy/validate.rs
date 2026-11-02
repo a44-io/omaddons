@@ -18,20 +18,25 @@ use serde_json::Value;
 use super::assets::MANIFEST;
 use crate::limits::WIDGET_READBACK_MAX_BYTES;
 
-/// The rule a problem breaks: one per message the port reports.
+/// The rule a problem breaks: one per message the port reports. Declared in the order of
+/// their wire codes, so sorting rules sorts their codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Rule {
-    /// The plugin folder does not exist.
-    PluginMissing,
-    /// `manifest.json` is missing or cannot be read as text.
-    ManifestMissing,
-    /// `manifest.json` is not JSON.
-    ManifestNotJson,
-    /// `manifest.json` is larger than 64 KiB (the port's own bound).
-    ManifestTooLarge,
-    /// `schemaVersion` is missing or not the number 1.
-    SchemaVersion,
+    /// `barWidget.defaultSection` is not left, center or right.
+    DefaultSection,
+    /// An entry point is an absolute path.
+    EntryPointAbsolute,
+    /// An entry point holds `..`.
+    EntryPointDotdot,
+    /// An entry point is empty.
+    EntryPointEmpty,
+    /// An entry point names no file.
+    EntryPointMissing,
+    /// An entry point holds a newline.
+    EntryPointNewline,
+    /// `entryPoints` is not an object.
+    EntryPointsNotObject,
     /// A required field is missing.
     FieldMissing,
     /// `id` is empty.
@@ -40,26 +45,47 @@ pub enum Rule {
     IdInvalid,
     /// `id` is in Omarchy's reserved `omarchy.*` namespace.
     IdReserved,
-    /// `kinds` is not a non-empty array.
-    KindsEmpty,
-    /// `entryPoints` is not an object.
-    EntryPointsNotObject,
-    /// `barWidget.defaultSection` is not left, center or right.
-    DefaultSection,
-    /// An entry point is empty.
-    EntryPointEmpty,
-    /// An entry point holds a newline.
-    EntryPointNewline,
-    /// An entry point is an absolute path.
-    EntryPointAbsolute,
-    /// An entry point holds `..`.
-    EntryPointDotdot,
-    /// An entry point names no file.
-    EntryPointMissing,
     /// A declared kind has no entry point to load it from.
     KindWithoutEntryPoint,
+    /// `kinds` is not a non-empty array.
+    KindsEmpty,
+    /// `manifest.json` is missing or cannot be read as text.
+    ManifestMissing,
+    /// `manifest.json` is not JSON.
+    ManifestNotJson,
+    /// `manifest.json` is larger than 64 KiB (the port's own bound).
+    ManifestTooLarge,
+    /// The plugin folder does not exist.
+    PluginMissing,
+    /// `schemaVersion` is missing or not the number 1.
+    SchemaVersion,
     /// The plugin folder holds a symlink.
     Symlink,
+}
+
+impl Rule {
+    /// Every rule, in order.
+    pub const ALL: [Self; 19] = [
+        Self::DefaultSection,
+        Self::EntryPointAbsolute,
+        Self::EntryPointDotdot,
+        Self::EntryPointEmpty,
+        Self::EntryPointMissing,
+        Self::EntryPointNewline,
+        Self::EntryPointsNotObject,
+        Self::FieldMissing,
+        Self::IdEmpty,
+        Self::IdInvalid,
+        Self::IdReserved,
+        Self::KindWithoutEntryPoint,
+        Self::KindsEmpty,
+        Self::ManifestMissing,
+        Self::ManifestNotJson,
+        Self::ManifestTooLarge,
+        Self::PluginMissing,
+        Self::SchemaVersion,
+        Self::Symlink,
+    ];
 }
 
 /// One broken rule, and the port's message for it (which may quote manifest values).
@@ -79,7 +105,7 @@ pub struct Checked {
 }
 
 impl Checked {
-    /// The rules broken, sorted, each once.
+    /// The rules broken, sorted by their wire codes, each once.
     pub fn rules(&self) -> Vec<Rule> {
         let mut rules: Vec<Rule> = self.problems.iter().map(|p| p.rule).collect();
         rules.sort_unstable();
@@ -478,6 +504,48 @@ mod tests {
                 Rule::KindWithoutEntryPoint,
             ),
         ]
+    }
+
+    /// `Rule::ALL` lists every rule once, in `Ord`'s order, which is their wire codes'
+    /// lexicographic order (so `rules()` reads sorted on the wire); the schema's enum is
+    /// the same set.
+    #[test]
+    fn rules_sort_as_their_wire_codes() {
+        let codes: Vec<String> = Rule::ALL
+            .iter()
+            .map(|rule| {
+                serde_json::to_value(rule)
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect();
+        let mut sorted = codes.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(codes, sorted, "declared in code order, each once");
+        let mut by_ord = Rule::ALL.to_vec();
+        by_ord.sort_unstable();
+        assert_eq!(by_ord, Rule::ALL.to_vec(), "Ord is the declaration order");
+        let schema = schemars::generate::SchemaSettings::draft2020_12()
+            .for_serialize()
+            .into_generator()
+            .root_schema_for::<Rule>()
+            .to_value();
+        let mut published: Vec<String> = schema["enum"]
+            .as_array()
+            .or_else(|| schema["oneOf"].as_array())
+            .unwrap()
+            .iter()
+            .filter_map(|v| {
+                v.as_str()
+                    .map(str::to_owned)
+                    .or_else(|| v["const"].as_str().map(str::to_owned))
+            })
+            .collect();
+        published.sort_unstable();
+        assert_eq!(published, sorted, "{schema}");
     }
 
     /// One planted violation at a time, each reported.

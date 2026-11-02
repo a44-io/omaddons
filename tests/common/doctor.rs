@@ -200,6 +200,7 @@ pub mod plant {
     use crate::common::archives::zip_text;
     use crate::common::home::{Home, Run};
     use crate::common::http::{Asset, gh_release, paths};
+    use crate::common::omarchy::{StubDesk, stub_desk};
     use crate::common::procfs::FakeProc;
     use crate::common::wtf::Wtf;
 
@@ -423,7 +424,10 @@ pub mod plant {
 
     /// `fm-plugins-widget-version-drift` (P3, about the machine): Omarchy present (with
     /// [`omarchy_path`]) and a bar widget installed without its `Build.js`, which no build
-    /// renders: outdated.
+    /// renders: outdated, serving no known state, so its evidence's `reason` is
+    /// `context_unknown`. Its bare manifest also breaks Omarchy's plugin rules, so
+    /// `fm-plugins-widget-invalid` (P2) is found beside it. [`widget_other_build`] is a
+    /// whole widget from another build instead (`code_differs`).
     pub fn widget_version_drift(home: &Home) {
         fs::create_dir_all(omarchy_path(home).join("shell")).unwrap();
         let plugin = home.env.config().join("omarchy/plugins/omaddons");
@@ -433,6 +437,96 @@ pub mod plant {
             r#"{"id": "a44.omaddons", "version": "0.0.9"}"#,
         )
         .unwrap();
+    }
+
+    /// No finding: this binary's bar widget installed for `home`'s directories through
+    /// the stub desk (`omarchy install`, whose `PATH` holds the stubs alone). Runs see
+    /// Omarchy's shell with [`omarchy_path`] as `OMARCHY_PATH`.
+    pub fn widget_current(home: &Home) -> StubDesk {
+        let desk = stub_desk(&home.env);
+        desk.install(home);
+        desk
+    }
+
+    /// `fm-plugins-widget-invalid` (P2, about the machine): [`widget_current`], then
+    /// `barWidget.defaultSection` set to `"top"` in `manifest.json` (parsed, set and
+    /// written back) and the symlink `views/link → ../manifest.json` made inside the
+    /// plugin folder. `Build.js` is untouched, so the widget is not outdated. The finding:
+    /// evidence `{path: <plugins>/omaddons, count: 2, rules: ["default_section",
+    /// "symlink"]}`, remediation `omaddons omarchy install`; no drift finding.
+    pub fn widget_invalid(home: &Home) -> StubDesk {
+        let desk = widget_current(home);
+        let manifest = desk.plugin().join("manifest.json");
+        let mut doc: Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+        doc["barWidget"]["defaultSection"] = json!("top");
+        fs::write(&manifest, serde_json::to_vec_pretty(&doc).unwrap()).unwrap();
+        fs::create_dir_all(desk.plugin().join("views")).unwrap();
+        std::os::unix::fs::symlink("../manifest.json", desk.plugin().join("views/link")).unwrap();
+        desk
+    }
+
+    /// `fm-plugins-widget-version-drift` (P3, about the machine), as another build leaves
+    /// it: [`widget_current`], then its `Build.js` stamped with another code hash (64
+    /// zeros). The widget serves this state and still validates, so the finding's
+    /// evidence is `{path, observed: <this version>, expected: <this version>, reason:
+    /// code_differs}` (a rebuild of one version keeps the version), and no
+    /// `widget-invalid`.
+    pub fn widget_other_build(home: &Home) -> StubDesk {
+        let desk = widget_current(home);
+        other_build(&desk.plugin());
+        desk
+    }
+
+    /// The installed widget at `plugin` stamped with another code hash (64 zeros), as
+    /// another build's render carries: outdated, its state and its files otherwise kept.
+    pub fn other_build(plugin: &Path) {
+        restamp(
+            plugin,
+            "var CONTENT_SHA256 = ",
+            &format!("\"{}\"", "0".repeat(64)),
+        );
+    }
+
+    /// The installed widget at `plugin` made to serve another omaddons state: its
+    /// `Build.js`'s `CONTEXT` names another `HOME` (the four XDG directories kept), as a
+    /// widget installed by another user or home would. `status` and the doctor then
+    /// recommend no reinstall from this run (M3-D7).
+    pub fn serve_another_state(plugin: &Path) {
+        let text = fs::read_to_string(build_js(plugin)).unwrap();
+        let line = text
+            .lines()
+            .find_map(|line| line.strip_prefix("var CONTEXT = "))
+            .expect("Build.js names its CONTEXT");
+        let mut context: Value = serde_json::from_str(line).unwrap();
+        context["HOME"] = json!("/elsewhere/home");
+        restamp(plugin, "var CONTEXT = ", &context.to_string());
+    }
+
+    /// The installed widget's `Build.js` (in its one code folder).
+    fn build_js(plugin: &Path) -> PathBuf {
+        fs::read_dir(plugin)
+            .unwrap()
+            .map(|entry| entry.unwrap().path().join("Build.js"))
+            .find(|path| path.is_file())
+            .expect("the installed widget has a Build.js")
+    }
+
+    /// The installed widget's `Build.js` line starting with `prefix` replaced by
+    /// `<prefix><value>`, exactly as omaddons writes one (so it still reads).
+    fn restamp(plugin: &Path, prefix: &str, value: &str) {
+        let path = build_js(plugin);
+        let text = fs::read_to_string(&path).unwrap();
+        let lines: Vec<String> = text
+            .lines()
+            .map(|line| {
+                if line.starts_with(prefix) {
+                    format!("{prefix}{value}")
+                } else {
+                    line.to_owned()
+                }
+            })
+            .collect();
+        fs::write(&path, lines.join("\n") + "\n").unwrap();
     }
 
     /// `fm-concurrency_primitives-journal-pending` (P0, `tx=<tx>` on `target`): an install
@@ -1090,13 +1184,54 @@ pub mod plant {
         file
     }
 
+    /// The fake token [`credential_file_mode`] stores: never a real one.
+    // ubs:ignore — a fake token for tests, never a real one
+    pub const MODE_TOKEN: &str = "ghp_F7MODE0000000000000000000000000000000";
+
     /// `fm-secrets-credential-file-mode` (P2, machine, `path=<config>/omaddons/
-    /// credentials/github`): a fake stored token other users can read (0644).
+    /// credentials/github`): a fake stored token ([`MODE_TOKEN`]) other users can read
+    /// (0644), in a 0700 directory. The finding: title "The GitHub token file is readable
+    /// by other users", evidence `{path, expected: "0600", mode: "0644", origin: file,
+    /// source: github}`, auto-fixable by `doctor fix --only
+    /// fm-secrets-credential-file-mode` (one chmod).
     pub fn credential_file_mode(home: &Home) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
-        let file = stored_token(home, "ghp_F7MODE0000000000000000000000000000000");
+        let file = stored_token(home, MODE_TOKEN);
         fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
         file
+    }
+
+    /// `<config>/omaddons/config.toml`.
+    pub fn config_toml(home: &Home) -> PathBuf {
+        home.env.config().join("omaddons/config.toml")
+    }
+
+    /// A fake key at `path` (its parent made as needed) with `mode`, named by
+    /// `[sources.github] credential = { file = "<path>" }` appended to config.toml (a
+    /// plain edit). At a group- or other-readable `mode` it is
+    /// `fm-secrets-credential-file-mode` (P2, `origin: config`): auto-fixable inside
+    /// `<config>/omaddons`, else manual with `reason: outside_config` and the `chmod 600`
+    /// to run.
+    pub fn configured_credential(home: &Home, path: &Path, mode: u32) -> PathBuf {
+        use std::io::Write as _;
+        use std::os::unix::fs::PermissionsExt;
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, "f7-fake-configured-key\n").unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+        let config = config_toml(home);
+        fs::create_dir_all(config.parent().unwrap()).unwrap();
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&config)
+            .unwrap();
+        writeln!(
+            file,
+            "[sources.github]\ncredential = {{ file = {} }}",
+            json!(path.display().to_string())
+        )
+        .unwrap();
+        path.to_path_buf()
     }
 }
 
