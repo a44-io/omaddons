@@ -580,6 +580,13 @@ pub const CORPUS: &[Row] = &[
         "a read-only guess runs",
         error(2, "usage", &["omaddons", "robot-docs", "guide"], &[0]),
     ),
+    row(
+        CommandTypo,
+        &["capabilites"],
+        &[],
+        "a read-only guess runs",
+        error(2, "usage", &["omaddons", "capabilities"], &[0]),
+    ),
     // A mistyped flag.
     row(
         FlagTypo,
@@ -1019,17 +1026,6 @@ const E7_SETUP: &[Step] = &[Step {
 /// Rows of surfaces that have not landed, grouped by leaf. The leaf that adds the last
 /// surface a row needs moves it into `CORPUS` and makes it pass, in that commit.
 pub const PENDING: &[Pending] = &[
-    pending(
-        "A4",
-        &["capabilities"],
-        row(
-            CommandTypo,
-            &["capabilites"],
-            &[],
-            "a read-only guess runs",
-            error(2, "usage", &["omaddons", "capabilities"], &[0]),
-        ),
-    ),
     pending(
         "B3",
         &["robot-docs install-skill"],

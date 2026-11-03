@@ -1,6 +1,5 @@
 ---
 source: tests/completions.rs
-assertion_line: 71
 description: "the completion script of this build; any change to a command, flag, alias, about text or fixed value changes it: re-accept with INSTA_UPDATE=always cargo test --test completions, then review git diff tests/snapshots/"
 ---
 
@@ -89,6 +88,7 @@ Register-ArgumentCompleter -Native -CommandName 'omaddons' -ScriptBlock {
             [CompletionResult]::new('omarchy', 'omarchy', [CompletionResultType]::ParameterValue, 'Put the omaddons widget on Omarchy''s bar')
             [CompletionResult]::new('completions', 'completions', [CompletionResultType]::ParameterValue, 'Print a shell completion script: bash, zsh, fish, elvish or powershell')
             [CompletionResult]::new('robot-docs', 'robot-docs', [CompletionResultType]::ParameterValue, 'Documentation for agents: the guide (bare), the JSON Schemas and the error catalog')
+            [CompletionResult]::new('capabilities', 'capabilities', [CompletionResultType]::ParameterValue, 'Describe this build for agents: commands, flags, exit codes, errors, limits and sources (offline; writes nothing)')
             break
         }
         'omaddons;help' {
@@ -1845,6 +1845,29 @@ Register-ArgumentCompleter -Native -CommandName 'omaddons' -ScriptBlock {
             break
         }
         'omaddons;robot-docs;errors' {
+            [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterName, 'Output format')
+            [CompletionResult]::new('-t', '-t', [CompletionResultType]::ParameterName, 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)')
+            [CompletionResult]::new('--target', '--target', [CompletionResultType]::ParameterName, 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)')
+            [CompletionResult]::new('--flavor', '--flavor', [CompletionResultType]::ParameterName, 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)')
+            [CompletionResult]::new('--actor', '--actor', [CompletionResultType]::ParameterName, 'Who is acting: human, agent or widget [env: OMADDONS_ACTOR]')
+            [CompletionResult]::new('--reason', '--reason', [CompletionResultType]::ParameterName, 'Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)')
+            [CompletionResult]::new('--if-match', '--if-match', [CompletionResultType]::ParameterName, 'Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed')
+            [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress events on stderr')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'One JSON envelope on stdout')
+            [CompletionResult]::new('--robot', '--robot', [CompletionResultType]::ParameterName, 'The same as --json')
+            [CompletionResult]::new('--dry-run', '--dry-run', [CompletionResultType]::ParameterName, 'Show the plan without changing anything (ignored by commands that change nothing)')
+            [CompletionResult]::new('--offline', '--offline', [CompletionResultType]::ParameterName, 'Fail any network access [env: OMADDONS_OFFLINE=1]')
+            [CompletionResult]::new('--while-running', '--while-running', [CompletionResultType]::ParameterName, 'Allow folder changes while the client runs (never SavedVariables)')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'No ANSI color')
+            [CompletionResult]::new('--no-progress', '--no-progress', [CompletionResultType]::ParameterName, 'No progress output')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Only errors on stderr')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'More detail (repeatable)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'More detail (repeatable)')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Show help')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Show help')
+            break
+        }
+        'omaddons;capabilities' {
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterName, 'Output format')
             [CompletionResult]::new('-t', '-t', [CompletionResultType]::ParameterName, 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)')
             [CompletionResult]::new('--target', '--target', [CompletionResultType]::ParameterName, 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)')

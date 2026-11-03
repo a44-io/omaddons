@@ -563,13 +563,10 @@ impl Config {
                 };
             }
             Err(err) => {
-                return failed(ConfigProblem {
-                    path: Some(path.clone()),
-                    line: None,
-                    column: None,
-                    message: err.to_string(),
-                    key: None,
-                });
+                return failed(ConfigProblem::unlocated(
+                    Some(path.clone()),
+                    err.to_string(),
+                ));
             }
         };
         match Self::parse_checked(&text, &path) {
@@ -921,7 +918,33 @@ pub struct TolerantConfig {
     pub problem: Option<ConfigProblem>,
 }
 
+#[cfg(test)]
+impl TolerantConfig {
+    /// What a missing file loads as (the default config, no problem), at a fixed path.
+    pub fn default_for_tests() -> Self {
+        Self {
+            loaded: LoadedConfig {
+                path: PathBuf::from("/x/config.toml"),
+                ..LoadedConfig::default()
+            },
+            problem: None,
+        }
+    }
+}
+
 impl ConfigProblem {
+    /// A problem with no line or column: a file that could not be read at all, or (with
+    /// `path` `None`) no config path, because HOME gives none.
+    pub fn unlocated(path: Option<PathBuf>, message: impl Into<String>) -> Self {
+        Self {
+            path,
+            line: None,
+            column: None,
+            message: message.into(),
+            key: None,
+        }
+    }
+
     /// The `state_corrupt` error every command but `capabilities` fails with for a file
     /// that does not parse or validate, byte for byte as before the type existed. (A
     /// file that cannot be read stays [`Config::load`]'s `io`.)

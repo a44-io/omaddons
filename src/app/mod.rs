@@ -8,6 +8,7 @@ pub mod auth;
 pub mod backup;
 pub mod backup_verify;
 pub mod backups_status;
+pub mod capabilities;
 pub mod completions;
 pub mod config;
 pub mod copy;
@@ -286,6 +287,7 @@ pub const COMMANDS: &[CommandEntry] = &[
     entry("robot-docs schema", Setup, false, &[0, 1, 2], data_schema::<robot_docs::SchemaOutcome>, Network::None),
     entry("robot-docs errors", Setup, false, &[0, 1, 2], data_schema::<robot_docs::ErrorsOutcome>, Network::None),
     entry("robot-docs guide", Setup, false, &[0, 1, 2], data_schema::<robot_docs::GuideOutcome>, Network::None),
+    entry("capabilities", Setup, false, &[0, 1, 2], data_schema::<capabilities::CapabilitiesOutcome>, Network::None),
     entry("help", Setup, false, &[0, 1, 2], data_schema::<help::HelpOutcome>, Network::None),
 ];
 
@@ -431,6 +433,7 @@ pub fn canonical_path(command: &Command) -> &'static str {
             robot_docs::GUIDE_COMMAND,
             robot_docs::RobotDocsAction::command,
         ),
+        Command::Capabilities(_) => "capabilities",
     }
 }
 
@@ -862,6 +865,7 @@ fn run_command(cli: &Cli, ctx: &Context, out: &Out<'_>) -> Exit {
             }
             Some(robot_docs::RobotDocsAction::Errors) => out.emit(robot_docs::errors()),
         },
+        Some(Command::Capabilities(_)) => out.emit(capabilities::run()),
     }
 }
 

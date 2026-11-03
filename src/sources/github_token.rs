@@ -79,7 +79,6 @@ impl GithubToken {
         Self::resolve_with(&|name| std::env::var(name).ok(), paths, sources)
     }
 
-    /// [`GithubToken::resolve`] with `env` for the environment.
     /// Whether a token is configured, in [`GithubToken::resolve_with`]'s order, by presence
     /// alone: the variable is set; or a configured reference names a credential that is
     /// there (`config::credential_present`: no file read, no command run); or the stored
@@ -106,6 +105,7 @@ impl GithubToken {
         crate::state::config::non_empty_file(&paths.credential_file("github"))
     }
 
+    /// [`GithubToken::resolve`] with `env` for the environment.
     pub fn resolve_with(
         env: &dyn Fn(&str) -> Option<String>,
         paths: &Paths,

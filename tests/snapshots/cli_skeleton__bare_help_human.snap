@@ -1,6 +1,5 @@
 ---
 source: tests/cli_skeleton.rs
-assertion_line: 144
 expression: r.stdout
 ---
 World of Warcraft addon manager for Linux and an Omarchy widget
@@ -11,7 +10,8 @@ Look      status  list  outdated  info  search  errors  export  history  plans
           net-log  doctor
 Change    install  update  pin  unpin  adopt  sync  copy  remove  undo  apply
           backup
-Setup     targets  config  auth  omarchy  completions  robot-docs  help
+Setup     targets  config  auth  omarchy  completions  robot-docs  capabilities
+          help
 
 Start with `omaddons status`. Run `omaddons help <command>` for details; add --json for one JSON envelope on stdout.
 
@@ -19,7 +19,7 @@ Exit codes:
   0  ok            Success, including partial success (partial: true)
   1  failed        Runtime failure; see error.retryable
   2  usage         Unknown command or flag, bad argument, bad ref syntax
-  3  not_found     Target, ref, addon, plan or transaction not found, or ambiguous
+  3  not_found     Unknown or ambiguous target, ref, addon, plan or transaction
   4  refused       Safety refusal; fix names the flag or command
   5  locked        Lock held past the acquire timeout; retryable
   6  check_failed  An opt-in assertion (--check, --strict) failed

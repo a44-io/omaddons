@@ -2620,6 +2620,163 @@ fn robot_docs_guide() {
     insta::assert_json_snapshot!("robot_docs_guide_extra_argument", s.stable(&c.envelope));
 }
 
+/// `capabilities` (M4-D4): the success envelope, validated whole against its schema by
+/// `support::check` and snapshotted as a digest, so a later command changes one `paths`
+/// line rather than a 300 KB snapshot; its usage error; and `--if-match`, which it refuses
+/// with the same command without the token as the fix.
+#[test]
+fn capabilities() {
+    use common::tlog::tlog;
+    let log = tlog!();
+    let s = Scene::new();
+    let run = |args: &[&str], code: i32| {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        support::check(log.run(&s.home, &argv).to_run(), code)
+    };
+
+    log.step("success");
+    let c = run(&["capabilities"], 0);
+    assert_eq!(c.envelope["command"], "capabilities");
+    let digest = capabilities_digest(&c.envelope, &c.run.stdout);
+    log.json("digest", &digest);
+    insta::assert_json_snapshot!("capabilities_ok_digest", digest);
+
+    log.step("usage");
+    let c = run(&["capabilities", "--bogus"], 2);
+    log.json("envelope", &c.envelope);
+    assert_eq!(
+        (&c.envelope["error"]["code"], &c.envelope["command"]),
+        (&json!("usage"), &json!("capabilities"))
+    );
+    insta::assert_json_snapshot!("capabilities_usage", s.stable(&c.envelope));
+
+    log.step("if-match refused");
+    let token = format!("pc1:{}", "0".repeat(64));
+    let c = run(&["capabilities", "--if-match", &token], 2);
+    log.json("envelope", &c.envelope);
+    assert_eq!(c.envelope["error"]["code"], "usage");
+    assert_eq!(
+        c.envelope["error"]["fix_argv"],
+        json!(["omaddons", "capabilities"])
+    );
+}
+
+/// What `capabilities_ok_digest` pins of a `capabilities --json` envelope (`text` as
+/// printed): its keys and its data's in written order, the size of each list, every
+/// command path, its own entry, the pointers and `config_error`. The build id and the guide
+/// digest change with the code, so they are checked for form and replaced.
+fn capabilities_digest(envelope: &Value, text: &str) -> Value {
+    let (envelope_keys, data_keys) = written_keys(text);
+    let data = &envelope["data"];
+    let len = |key: &str| data[key].as_array().map_or(0, Vec::len);
+    let commands = data["commands"].as_array().cloned().unwrap_or_default();
+    let hex = |text: &str, digits: usize| {
+        text.len() == digits && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    };
+    let build_id = data["build_id"].as_str().unwrap_or_default();
+    assert!(hex(build_id, 16), "build_id {build_id:?}");
+    let guide_digest = data["guide_digest"].as_str().unwrap_or_default();
+    assert!(
+        guide_digest
+            .strip_prefix("sha256:")
+            .is_some_and(|digest| hex(digest, 64)),
+        "guide_digest {guide_digest:?}"
+    );
+    json!({
+        "envelope_keys": envelope_keys,
+        "data_keys": data_keys,
+        "build_id": "<build_id>",
+        "guide_digest": "<guide_digest>",
+        "counts": {
+            "commands": len("commands"),
+            "error_codes": len("error_codes"),
+            "warning_codes": len("warning_codes"),
+            "actions": len("actions"),
+            "env_vars": len("env_vars"),
+            "limits": len("limits"),
+            "sources": len("sources"),
+            "families": len("families"),
+            "client_rules": len("client_rules"),
+            "target_id_forms": len("target_id_forms"),
+            "features": len("features"),
+        },
+        "paths": commands.iter().map(|entry| &entry["path"]).collect::<Vec<_>>(),
+        "capabilities_entry": commands
+            .iter()
+            .find(|entry| entry["path"] == "capabilities")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "pointers": {
+            "schemas_uri": data["schemas_uri"],
+            "robot_docs_uri": data["robot_docs_uri"],
+            "failure_modes_command": data["failure_modes"]["command"],
+        },
+        "config_error": data["config_error"],
+    })
+}
+
+/// The keys of the one-envelope `text` and of its `data`, in written order: a parsed
+/// `Value` sorts them.
+fn written_keys(text: &str) -> (Vec<String>, Vec<String>) {
+    use serde::Deserialize;
+    use serde::de::{IgnoredAny, MapAccess, Visitor};
+
+    struct Keys(Vec<String>);
+    impl<'de> Deserialize<'de> for Keys {
+        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            struct V;
+            impl<'de> Visitor<'de> for V {
+                type Value = Keys;
+                fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    f.write_str("a JSON object")
+                }
+                fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Keys, A::Error> {
+                    let mut keys = Vec::new();
+                    while let Some(key) = map.next_key::<String>()? {
+                        map.next_value::<IgnoredAny>()?;
+                        keys.push(key);
+                    }
+                    Ok(Keys(keys))
+                }
+            }
+            d.deserialize_map(V)
+        }
+    }
+
+    struct Envelope(Vec<String>, Vec<String>);
+    impl<'de> Deserialize<'de> for Envelope {
+        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            struct V;
+            impl<'de> Visitor<'de> for V {
+                type Value = Envelope;
+                fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    f.write_str("an envelope")
+                }
+                fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Envelope, A::Error> {
+                    let (mut keys, mut data) = (Vec::new(), Vec::new());
+                    while let Some(key) = map.next_key::<String>()? {
+                        // ubs:ignore — comparing a JSON key, not a secret
+                        if key == "data" {
+                            data = map.next_value::<Keys>()?.0;
+                        } else {
+                            map.next_value::<IgnoredAny>()?;
+                        }
+                        keys.push(key);
+                    }
+                    Ok(Envelope(keys, data))
+                }
+            }
+            d.deserialize_map(V)
+        }
+    }
+
+    match serde_json::from_str::<Envelope>(text) {
+        Ok(envelope) => (envelope.0, envelope.1),
+        Err(e) => panic!("not one envelope ({e}):\n{text}"), // ubs:ignore — the test's own failure
+    }
+}
+
 /// `doctor gc` (M4-D36) on a home of old doctor runs, 40 days before `OMADDONS_NOW`, and a
 /// young one `latest` will name: its preview, a bound run made stale by another old run,
 /// the bound run, and its two usage errors. The token binds inode identities, which differ

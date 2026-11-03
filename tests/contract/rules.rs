@@ -114,6 +114,42 @@ const EXCEPTIONS: &[Exception] = &[
         path: "state",
         reason: DOCTOR_CONTRACT,
     },
+    Exception {
+        rule: "r3-array-plural",
+        scope: "command capabilities",
+        path: "commands[].flags[].conflicts_with",
+        reason: "clap's own name for the relation, which capabilities describes",
+    },
+    Exception {
+        rule: "r3-array-plural",
+        scope: "command capabilities",
+        path: "exit_codes.doctor",
+        reason: "named for the exit dictionary it lists, beside `general`",
+    },
+    Exception {
+        rule: "r3-array-plural",
+        scope: "command capabilities",
+        path: "exit_codes.general",
+        reason: "named for the exit dictionary it lists, beside `doctor`",
+    },
+    Exception {
+        rule: "r3-array-plural",
+        scope: "command capabilities",
+        path: "limits[].value",
+        reason: "one value whose JSON type follows `unit`: for a `list` unit, the value is the list",
+    },
+    Exception {
+        rule: "r4-value-case",
+        scope: "command capabilities",
+        path: "client_rules[].family",
+        reason: "game-family names are an input vocabulary users type in `-t` and config.toml (`wrath-legacy`); allowlisted wherever `Family` appears",
+    },
+    Exception {
+        rule: "r4-value-case",
+        scope: "command capabilities",
+        path: "families[].name",
+        reason: "game-family names are an input vocabulary users type in `-t` and config.toml (`wrath-legacy`); allowlisted wherever `Family` appears",
+    },
 ];
 
 const ULID_PATTERN: &str = "^[0-9A-HJKMNP-TV-Z]{26}$";

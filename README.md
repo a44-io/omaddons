@@ -162,7 +162,8 @@ Milestones 1 (the working slice), 2 (updates, dependencies, adoption and desired
 | `robot-docs guide`, `robot-docs schema` and `robot-docs errors`: the agent guide, every output's JSON Schema and the error and warning catalog, from the binary | ✅ Done (milestone 4) |
 | `apply <plan_id>`: a stored preview run exactly, by one applier at a time, every source checked again, each client reported (`committed`, `unchanged`, `stale`, `failed`) | ✅ Done (milestone 4) |
 | `doctor` and `doctor diagnose`: what is broken, with evidence and the exact remediation, each check under a budget and isolated from the others, in a run directory of its own, with the doctor's own exit codes; `--since` compares with an earlier run; `doctor explain` shows one failure mode in full with its live instances; `--online` also checks GitHub's REST budget, whether GitHub takes the configured token and whether the sources your addons come from answer, one logged request each; `doctor gc` deletes old runs and what they kept by a retention plan that keeps whatever an unfinished change needs, previewed and bound | ✅ Done (milestone 4) |
-| `capabilities`, `doctor fix` and its undo, installing the agent skill, the first tag | 🗓️ Milestone 4 |
+| `capabilities`: every command, flag, value, alias, exit code, error and warning code, action, limit, source, family, client-rules row and `-t` form, generated from the code, offline, in milliseconds | ✅ Done (milestone 4) |
+| `doctor fix` and its undo, installing the agent skill, the first tag | 🗓️ Milestone 4 |
 | Optional CurseForge and Wago (bring your own key), release packaging | 🗓️ Milestone 5 |
 
 `omaddons outdated` lists what has updates, and `omaddons update` installs them on every client, one transaction per client, all undone by one `omaddons undo`. Two kinds of addon are left alone. A `url:` ref's release is the URL itself, so there is nothing newer to fetch. A pinned addon (by `pin`, or installed with `--version`) stays where it is (`skipped`, reason `pinned`) until `unpin`.
@@ -422,7 +423,7 @@ A target is **registered** on its first change (or with `targets add`, `rename` 
 
 ### Where discovery looks
 
-Discovery runs whenever a command needs the clients: every command except `auth`, `config`, `net-log`, `help` and `targets rm`. Each walk goes at most 4 levels deep, and all the walks in one run share a budget of 50,000 directories.
+Discovery runs whenever a command needs the clients: every command except `auth`, `config`, `net-log`, `help`, `completions`, `robot-docs`, `capabilities` and `targets rm`. Each walk goes at most 4 levels deep, and all the walks in one run share a budget of 50,000 directories.
 
 It first collects the Wine prefixes (directories containing `drive_c/`):
 
@@ -2226,6 +2227,71 @@ Every registered error code, in registry order, as `{code, exit, doctor_exit, re
 
 The human form is two tables, `-v` adding each code's fix pattern under it.
 
+### `capabilities`
+
+What this build can do, for an agent's first call: one call, offline, in a few milliseconds. Everything in it is generated from the code (the live command tree and the registries), with the values `config.toml` changes as they are in effect.
+
+```bash
+omaddons capabilities           # a summary of under 40 lines
+omaddons capabilities --json    # everything, as data
+```
+
+It reads the binary and `config.toml`, and whether a credential is there: the `OMADDONS_GITHUB_TOKEN` variable, a configured reference, or the stored token file, never its content. It runs no discovery, sends no request, runs no credential command and writes nothing. `-t` and the other global flags change nothing; `--if-match` is a usage error whose fix is the same command without it. It has no volatile key, so two runs over one config print the same bytes.
+
+`data`, in this order:
+
+- `version`, `contract_version` (every envelope's `schema_version`, `"1.0"`), `build_id` (the build's 16 hex digits, which a stored plan records) and `guide_digest` (`sha256:` and the agent guide's 64 hex digits, as its stamp line writes them);
+- `features`: one word per surface this build has (`json_envelope`, `stored_plans`, `doctor`, …);
+- `commands`: every command path in help's order, each `{path, description, group, mutates, json, dictionary, exit_codes, stores_plan, binds, network, aliases, args, flags, data_schema}`. `json` is always `true`; `dictionary` names the exit dictionary its `exit_codes` come from (`general`, or `doctor`); `binds` says whether a run binds to its preview with `--if-match`; `network` is `none`, `optional` or `required`. `args` lists its positionals as `{name, value_name, required, multiple, default, possible_values}`, and `flags` its own flags, then the global ones, as `{long, short, aliases, value_name, takes_value, multiple, default, possible_values, conflicts_with, requires, global, description}`. `possible_values` is the exact list a value must come from, `null` for any text. `data_schema` is the command that prints its data's JSON Schema (`omaddons robot-docs schema backup restore`);
+- `exit_codes`: `{general, doctor}`, the two exit dictionaries, each code with its `name` and `meaning` (and, for `general`, `retryable`: `null` for `ok` and `failed`);
+- `env_vars`: the variables a release build reads, `{name, description, mirrors}`;
+- `limits`: every limit and politeness constant, `{name, value, unit, config_key, source}`. `value` is bare, its type following `unit`: an integer for `bytes`, `ms`, `count`, `ratio` and `chars`, a string for `text`, an array for `list`, `{min_age_ms, keep_last, window_ms}` for `retention`. `config_key` is the `config.toml` key that changes it (`limits.download_max_bytes`), or `null`;
+- `sources`: `{id, enabled, requires_credential, credential_configured, hosts, source}`. `git`'s `hosts` include the `git_hosts` added. `credential_configured` means a credential is present, not that it works: `omaddons auth github` checks GitHub's;
+- `families`: `{name, interface_min, interface_max, legacy, source}`;
+- `client_rules`: every load-rules row (see [Rules overrides](#rules-overrides-advanced)), then the two fallbacks, each field as the row has it (its name as `row`), and `source`;
+- `target_id_forms`: what `-t` accepts, in [selector precedence](#choosing-a-target-with--t), then `all`;
+- `error_codes`: `{code, exit, doctor_exit, retryable, meaning, details_schema}`, as [`robot-docs errors`](#robot-docs-errors) gives them; `warning_codes`: `{code, meaning}`; `actions`: every `commands[].action`, `{action, description, destructive}`;
+- `failure_modes`: `{count, subsystems, command}`: how many failure modes the doctor registers, and the subsystems they belong to;
+- `schemas_uri` (`omaddons robot-docs schema`) and `robot_docs_uri` (`omaddons robot-docs guide`);
+- `config_error`: `null`, or why `config.toml` could not be used, `{path, line, column, message}`.
+
+Each value `config.toml` can change carries `source`: `config` when the file sets a key that applies to it (even to the built-in value), else `builtin`. `check_interval_hours = 0` keeps the default, so it stays `builtin`, and CurseForge and Wago stay `enabled: false` whatever the file says. A pointer (`schemas_uri`, `robot_docs_uri`, `data_schema`, `failure_modes.command`) is a command to run, and `null` in a build that does not have that command: today `failure_modes.command` is `null`.
+
+A `config.toml` that does not parse, holds a value out of range or cannot be read does not fail the command: it exits 0 with the built-in values, every `source` `builtin`, and `config_error` (`line` and `column` `null` for a file that could not be read at all). With `HOME` unset or relative there is no config path: `config_error.path` is `null`. A config that loads with unknown keys warns `config_unknown_key`, as every command does.
+
+The human form names the build, counts the commands by group, prints help's exit-code table, the doctor's exit codes, each source (`on` or `off`, a configured token, `needs a key (M5)`, added git hosts, `(config)`) and the registries' sizes, and ends with `--json for the full description`. It never prints the config's path or a credential.
+
+```text
+$ omaddons capabilities
+omaddons 0.1.0 · contract 1.0 · build e49d5dfe18e17d93
+57 commands: look 18 · change 18 · setup 21 (omaddons help <command> for one)
+Exit codes:
+  0  ok            Success, including partial success (partial: true)
+  1  failed        Runtime failure; see error.retryable
+  2  usage         Unknown command or flag, bad argument, bad ref syntax
+  3  not_found     Unknown or ambiguous target, ref, addon, plan or transaction
+  4  refused       Safety refusal; fix names the flag or command
+  5  locked        Lock held past the acquire timeout; retryable
+  6  check_failed  An opt-in assertion (--check, --strict) failed
+Doctor exit codes: 0 healthy · 1 findings_present · 2 fix_partial
+                   3 fix_failed_rolled_back · 4 refused_unsafe
+                   5 concurrency_lost · 6 online_required · 64 usage_error
+                   66 no_input · 73 cannot_create · 74 io_error
+Sources:
+  github      on   token configured
+  git         on   + codeberg.org (config)
+  url         on
+  local       on
+  wowi        off  (config)
+  tukui       on
+  curseforge  off  needs a key (M5)
+  wago        off  needs a key (M5)
+  wowace      on
+43 error codes · 55 warning codes · 25 actions · 30 failure modes
+  114 limits (0 from config)
+--json for the full description
+```
+
 ### `help [COMMAND]`
 
 ```bash
@@ -3213,7 +3279,7 @@ An interrupted `WTF/` restore adds three cases. While its game runs, it waits (`
 | Capability | State | Planned |
 |---|---|---|
 | Batched GitHub checks (GraphQL, one request for many repositories) | ❌ one `releases/latest` per repository instead | M5 |
-| `capabilities`, `doctor fix` (repairs), installing the agent skill | ❌ | M4 |
+| `doctor fix` (repairs), installing the agent skill | ❌ | M4 |
 | CurseForge, Wago | ❌ | M5, optional, bring your own key |
 | Packages, man page | ❌ build from source | M5 |
 | Windows, macOS | ❌ | Never (non-goal) |

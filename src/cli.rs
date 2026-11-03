@@ -232,6 +232,9 @@ pub enum Command {
     /// Documentation for agents: the guide (bare), the JSON Schemas and the error catalog
     #[command(after_long_help = ROBOT_DOCS_HELP)]
     RobotDocs(crate::app::robot_docs::RobotDocsArgs),
+    /// Describe this build for agents: commands, flags, exit codes, errors, limits and sources (offline; writes nothing)
+    #[command(after_long_help = CAPABILITIES_HELP)]
+    Capabilities(crate::app::capabilities::CapabilitiesArgs),
 }
 
 /// What every command receives (DEC-2).
@@ -653,6 +656,15 @@ Examples:
   omaddons robot-docs schema install --json     the data of one command
   omaddons robot-docs schema backup restore     a nested command, by its path
   omaddons robot-docs errors --json             every error and warning code";
+
+/// `capabilities`' long help.
+const CAPABILITIES_HELP: &str = "\
+Examples:
+  omaddons capabilities           the summary
+  omaddons capabilities --json    everything, as data
+  omaddons capabilities --json | jq '.data.commands[] | select(.mutates) | .path'
+
+It reads only the binary and config.toml, and changes nothing.";
 
 // ---------------------------------------------------------------------------------------
 // Usage errors.

@@ -112,13 +112,14 @@ impl Outcome for HelpOutcome {
     }
 }
 
-/// A short meaning per exit code for the human table; the JSON carries the full one.
-fn short_meaning(exit: Exit) -> &'static str {
+/// A short meaning per exit code for the human table, short enough that every row of
+/// [`exit_table`] stays under 80 columns; the JSON carries the full one.
+pub(crate) const fn short_meaning(exit: Exit) -> &'static str {
     match exit {
         Exit::Ok => "Success, including partial success (partial: true)",
         Exit::Failed => "Runtime failure; see error.retryable",
         Exit::Usage => "Unknown command or flag, bad argument, bad ref syntax",
-        Exit::NotFound => "Target, ref, addon, plan or transaction not found, or ambiguous",
+        Exit::NotFound => "Unknown or ambiguous target, ref, addon, plan or transaction",
         Exit::Refused => "Safety refusal; fix names the flag or command",
         Exit::Locked => "Lock held past the acquire timeout; retryable",
         Exit::CheckFailed => "An opt-in assertion (--check, --strict) failed",
@@ -181,6 +182,13 @@ fn bare_text(usage: &str, commands: &[(&str, Group)]) -> String {
         text.push_str("Start with `omaddons status`. ");
     }
     text.push_str("Run `omaddons help <command>` for details; add --json for one JSON envelope on stdout.\n\nExit codes:\n");
+    text.push_str(&exit_table());
+    text
+}
+
+/// The general exit codes as a table, one line each, every line ending in a newline: bare
+/// help and `capabilities` print the same one.
+pub(crate) fn exit_table() -> String {
     let rows: Vec<Vec<String>> = Exit::ALL
         .iter()
         .map(|e| {
@@ -191,8 +199,7 @@ fn bare_text(usage: &str, commands: &[(&str, Group)]) -> String {
             ]
         })
         .collect();
-    text.push_str(&table(&rows));
-    text
+    table(&rows)
 }
 
 /// Bare `omaddons`: what it is, the verbs by group, and the exit codes.
@@ -462,9 +469,10 @@ mod tests {
             ("auth", Setup),
             ("completions", Setup),
             ("robot-docs", Setup),
+            ("capabilities", Setup),
             ("help", Setup),
         ];
-        assert_eq!(planned.len(), 27);
+        assert_eq!(planned.len(), 28);
         let text = bare_text("omaddons [OPTIONS] <COMMAND>", &planned);
         assert!(
             text.lines().count() < 30,
@@ -479,6 +487,16 @@ mod tests {
             ),
             "{groups}"
         );
+    }
+
+    #[test]
+    fn the_exit_table_stays_under_80_columns() {
+        // `capabilities` prints the same table and holds every line under 80 columns.
+        let text = exit_table();
+        assert_eq!(text.lines().count(), Exit::ALL.len(), "{text}");
+        for line in text.lines() {
+            assert!(line.chars().count() < MAX_WIDTH, "{line:?}\n{text}");
+        }
     }
 
     #[test]

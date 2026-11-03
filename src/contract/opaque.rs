@@ -48,6 +48,7 @@ pub const OPAQUE: &[Opaque] = &[
     Opaque { scope: "command apply", path: "result.transactions[].error.details", source: "ItemError.details", reason: ITEM_ERROR_DETAILS },
     Opaque { scope: "command backup create", path: "targets[].error.details", source: "ItemError.details", reason: ITEM_ERROR_DETAILS },
     Opaque { scope: "command backup prune", path: "targets[].error.details", source: "ItemError.details", reason: ITEM_ERROR_DETAILS },
+    Opaque { scope: "command capabilities", path: "error_codes[].details_schema", source: "ErrorCodeDescription.details_schema", reason: "A code's `details` schema is a JSON Schema fragment, written in JSON Schema's own vocabulary." },
     Opaque { scope: "command config", path: "settings[].value", source: "Setting.value", reason: CONFIG_VALUE },
     Opaque { scope: "command config get", path: "default", source: "GetData.default", reason: CONFIG_VALUE },
     Opaque { scope: "command config get", path: "value", source: "GetData.value", reason: CONFIG_VALUE },

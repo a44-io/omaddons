@@ -1,0 +1,26 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "capabilities",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "usage",
+    "details": {},
+    "fix": "omaddons help capabilities",
+    "fix_argv": [
+      "omaddons",
+      "help",
+      "capabilities"
+    ],
+    "message": "unexpected argument '--bogus' found",
+    "retryable": false
+  },
+  "exit_code": 2,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

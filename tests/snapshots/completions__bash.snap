@@ -1,6 +1,5 @@
 ---
 source: tests/completions.rs
-assertion_line: 71
 description: "the completion script of this build; any change to a command, flag, alias, about text or fixed value changes it: re-accept with INSTA_UPDATE=always cargo test --test completions, then review git diff tests/snapshots/"
 ---
 _omaddons() {
@@ -35,6 +34,9 @@ _omaddons() {
                 ;;
             omaddons,backup)
                 cmd="omaddons__subcmd__backup"
+                ;;
+            omaddons,capabilities)
+                cmd="omaddons__subcmd__capabilities"
                 ;;
             omaddons,check)
                 cmd="omaddons__subcmd__outdated"
@@ -238,7 +240,7 @@ _omaddons() {
 
     case "${cmd}" in
         omaddons)
-            opts="-t -v -h -V --json --robot --format --flavor --target --dry-run --actor --reason --offline --while-running --if-match --no-color --no-progress --progress --quiet --verbose --help --version help status install add update upgrade pin unpin adopt sync copy remove uninstall rm delete undo revert rollback apply backup history log plans outdated check info show search find errors export net-log doctor list ls targets config auth omarchy completions robot-docs"
+            opts="-t -v -h -V --json --robot --format --flavor --target --dry-run --actor --reason --offline --while-running --if-match --no-color --no-progress --progress --quiet --verbose --help --version help status install add update upgrade pin unpin adopt sync copy remove uninstall rm delete undo revert rollback apply backup history log plans outdated check info show search find errors export net-log doctor list ls targets config auth omarchy completions robot-docs capabilities"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 1 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -812,6 +814,52 @@ _omaddons() {
         omaddons__subcmd__backup__subcmd__verify)
             opts="-t -v -h --json --robot --format --flavor --target --dry-run --actor --reason --offline --while-running --if-match --no-color --no-progress --progress --quiet --verbose --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --format)
+                    COMPREPLY=($(compgen -W "json human" -- "${cur}"))
+                    return 0
+                    ;;
+                --target)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --flavor)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                -t)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --actor)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --reason)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --if-match)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --progress)
+                    COMPREPLY=($(compgen -W "json human none" -- "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        omaddons__subcmd__capabilities)
+            opts="-t -v -h --json --robot --format --flavor --target --dry-run --actor --reason --offline --while-running --if-match --no-color --no-progress --progress --quiet --verbose --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi

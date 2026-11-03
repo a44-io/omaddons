@@ -1,6 +1,5 @@
 ---
 source: tests/cli_skeleton.rs
-assertion_line: 177
 expression: envelope
 ---
 {
@@ -196,6 +195,12 @@ expression: envelope
         "aliases": [],
         "group": "setup",
         "name": "robot-docs"
+      },
+      {
+        "about": "Describe this build for agents: commands, flags, exit codes, errors, limits and sources (offline; writes nothing)",
+        "aliases": [],
+        "group": "setup",
+        "name": "capabilities"
       },
       {
         "about": "Show help for omaddons or one command",

@@ -7,7 +7,7 @@ description: Manage World of Warcraft addons on Linux with the omaddons CLI — 
 
 # omaddons for agents
 
-omaddons manages World of Warcraft addons for every client on this Linux machine, with one binary of {{command_count}} commands. Every change is a journaled transaction that `omaddons undo` reverts, and under `--json` every command prints one envelope whose errors carry their fix as argv. The tool describes itself: `omaddons robot-docs schema <command>` and `omaddons robot-docs errors`.
+omaddons manages World of Warcraft addons for every client on this Linux machine, with one binary of {{command_count}} commands. Every change is a journaled transaction that `omaddons undo` reverts, and under `--json` every command prints one envelope whose errors carry their fix as argv. The tool describes itself: `omaddons capabilities --json` (every command, flag, exit code, error code, limit and source, offline), `omaddons robot-docs schema <command>` and `omaddons robot-docs errors`.
 
 ## The core loop
 

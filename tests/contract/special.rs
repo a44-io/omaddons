@@ -130,7 +130,8 @@ fn a_recovered_panic_prints_one_envelope() {
 }
 
 /// A missing or relative HOME is the environment's fault: `usage` (exit 2), with a fix
-/// no omaddons command can carry out. `help` needs no HOME.
+/// no omaddons command can carry out. `help` needs no HOME, and `capabilities` answers
+/// with the built-in values and says why (M4-D4).
 #[test]
 fn a_home_that_is_unset_or_relative_is_a_usage_error() {
     let s = Scene::new();
@@ -169,6 +170,17 @@ fn a_home_that_is_unset_or_relative_is_a_usage_error() {
         );
     }
     check(run(None, &["help"]), 0);
+    for home in [None, Some("relative/home")] {
+        let c = check(run(home, &["capabilities"]), 0);
+        let config_error = &c.envelope["data"]["config_error"];
+        assert!(config_error["path"].is_null(), "{home:?}: {config_error}");
+        assert!(
+            config_error["message"]
+                .as_str()
+                .is_some_and(|m| m.starts_with("HOME")),
+            "{home:?}: {config_error}"
+        );
+    }
 }
 
 #[test]
@@ -832,6 +844,7 @@ fn read_only_commands_ignore_dry_run_and_reason() {
             "robot-docs schema" => &["robot-docs", "schema"],
             "robot-docs errors" => &["robot-docs", "errors"],
             "robot-docs guide" => &["robot-docs", "guide"],
+            "capabilities" => &["capabilities"],
             "help" => &["help"],
             "doctor" => &["doctor"],
             "doctor diagnose" => &["doctor", "diagnose"],
@@ -1019,6 +1032,7 @@ fn repeated_runs_are_byte_identical() {
         (&["completions", "bash"][..], 0),
         (&["robot-docs", "schema", "install"][..], 0),
         (&["robot-docs", "errors"][..], 0),
+        (&["capabilities"][..], 0),
         (&["install", "gh:o/foo", "-t", "retail", "--dry-run"][..], 0),
         (&["update", "--dry-run"][..], 0),
     ] {
