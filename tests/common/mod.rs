@@ -8,7 +8,8 @@
 //! completion scripts (`shells`), planning as a
 //! command plans, with a persistent release cache and approval witnesses (`planning`),
 //! previews bound by `--if-match`, their refusals and what they leave alone
-//! (`binding`), the realistic home of 5,040 managed files, built offline
+//! (`binding`), `capabilities` held to the binary's parser and registries
+//! (`capabilities`), the realistic home of 5,040 managed files, built offline
 //! (`realistic`), release landings for every source (`landing`), WowAce fixtures
 //! over its recording (`wowace`), crashed repairs of every fix kind, committed in a
 //! child process of the test binary (`repair`), the last M3 commit built with its own
@@ -29,6 +30,7 @@ pub mod backups;
 pub mod barrier;
 pub mod binding;
 pub mod buggrabber;
+pub mod capabilities;
 pub mod checkpoint;
 pub mod compat;
 pub mod differential;

@@ -472,6 +472,39 @@ fn update_across_clients_downloads_each_archive_once() {
     common::netlog::assert_no_github_rest(new);
 }
 
+/// `capabilities --json` (M4-D4), an agent's first call, on a home with two clients and a
+/// config.toml of three overrides, median of 21 runs of the binary, process spawn
+/// included: under 20 ms.
+#[test]
+#[ignore = "a release-build budget: cargo test --release --test perf -- --ignored"]
+fn capabilities_answers_in_under_20_ms() {
+    let home = Home::new(&["wow", "wow_classic"]);
+    let config = home.env.config().join("omaddons");
+    fs::create_dir_all(&config).unwrap();
+    fs::write(
+        config.join("config.toml"),
+        "git_hosts = [\"codeberg.org\"]\n\
+         [limits]\ndownload_max_bytes = \"1GiB\"\n\
+         [sources.wowi]\nenabled = false\n",
+    )
+    .unwrap();
+    let first = home.run(&["capabilities", "--json"]);
+    let envelope = first.expect(0);
+    assert!(envelope["data"]["config_error"].is_null(), "{envelope}");
+    let bytes = first.stdout.len();
+    let (median, times) = median_of_21(|| {
+        home.run(&["capabilities", "--json"]).expect(0);
+    });
+    let p95 = times[times.len() * 95 / 100];
+    measured(format_args!(
+        "capabilities --json: median {median:?}, p95 {p95:?}; {bytes} bytes of stdout"
+    ));
+    assert!(
+        median < Duration::from_millis(20),
+        "capabilities median {median:?} (runs {times:?})"
+    );
+}
+
 /// `status --cached` (the widget's view) with 100 records, a memo of 200 entries copied
 /// from recorded release metadata (DBM, BigWigs and WeakAuras), Lua errors, 200 backups
 /// and the bar widget installed, median of 21 runs of the binary: under 5 ms.

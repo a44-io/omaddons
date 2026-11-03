@@ -149,6 +149,8 @@ pub struct FlagDescription {
     /// `null` for a flag that takes no value.
     pub value_name: Option<String>,
     pub takes_value: bool,
+    /// The command is refused without it.
+    pub required: bool,
     /// It may be given more than once, or takes several values.
     pub multiple: bool,
     pub default: Option<String>,
@@ -523,6 +525,7 @@ fn flag_description(flag: &FlagInfo) -> FlagDescription {
         aliases: flag.aliases.clone(),
         value_name: flag.value_name.clone(),
         takes_value: flag.takes_value,
+        required: flag.required,
         multiple: flag.multiple,
         default: flag.default.clone(),
         possible_values: possible_values(&flag.values),

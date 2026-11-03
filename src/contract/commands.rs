@@ -77,6 +77,8 @@ pub struct FlagInfo {
     /// `None` for a flag that takes no value.
     pub value_name: Option<String>,
     pub takes_value: bool,
+    /// clap refuses the command without it (`doctor gc --before`).
+    pub required: bool,
     /// `ArgAction::Append` or `Count`, or an arity above 1.
     pub multiple: bool,
     /// `None` for a flag that takes no value.
@@ -246,6 +248,7 @@ pub fn command_info(entry: &CommandEntry, cmd: &clap::Command) -> CommandInfo {
                     .collect(),
                 value_name: takes_value.then(|| value_name(arg).unwrap_or_else(|| upper_id(arg))),
                 takes_value,
+                required: arg.is_required_set(),
                 multiple: multiple(arg),
                 default: if takes_value { default(arg) } else { None },
                 values: arg
@@ -939,6 +942,12 @@ mod tests {
             (verbose.short, verbose.multiple),
             (Some('v'), true),
             "-v counts"
+        );
+        assert!(!json.required, "no global flag is required");
+        let gc = info("doctor gc");
+        assert!(
+            flag(&gc, "before").is_some_and(|before| before.required),
+            "doctor gc needs --before"
         );
         let format = flag(&install, "format").unwrap();
         assert_eq!(
