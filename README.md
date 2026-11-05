@@ -5,6 +5,7 @@
 **One binary that finds every World of Warcraft client on a Linux machine, installs only the addons each client will actually load, and can undo every change it makes.**
 
 ![status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-orange)
+![milestone: M4 in progress](https://img.shields.io/badge/milestone-M4%20in%20progress-yellow)
 ![platform: Linux](https://img.shields.io/badge/platform-Linux-blue)
 ![rust: 1.97.1](https://img.shields.io/badge/rust-1.97.1-dea584)
 ![accounts: none needed](https://img.shields.io/badge/accounts-none%20needed-brightgreen)
@@ -14,6 +15,7 @@
 
 ```text
 $ omaddons status
+Nothing needs doing
 anniversary  tbc                                           2.5.6.70006   live  anniversary (battlenet)  0 managed · 0 unmanaged · 0 protected
 classic      mists                                         5.5.4.70268   live  classic (battlenet)      0 managed · 0 unmanaged · 0 protected
 era          Classic Era · Hardcore · Season of Discovery  1.15.9.70003  live  era (battlenet)          0 managed · 0 unmanaged · 0 protected
@@ -23,7 +25,7 @@ wotlk        wrath-legacy                                  3.3.5.12340   live  l
 Next: omaddons adopt -t forever
 ```
 
-<sub>Output from a test home laid out like the development machine: five Battle.net clients in one Proton prefix and a 3.3.5a private-server client in another, found with no configuration.</sub>
+<sub>Output from a test home laid out like the development machine: five Battle.net clients in one Proton prefix and a 3.3.5a private-server client in another, found with no configuration. Trimmed: today's `status` also prints a `backups:` line under each client, and may recommend more than one next step (see [`status`](#status)).</sub>
 
 <div align="center">
 <h3>Build and install</h3>
@@ -38,7 +40,13 @@ cargo install --locked --path .
 There is no packaged release, installer or prebuilt binary yet; see [Installation](#installation).
 
 > [!NOTE]
-> **Pre-alpha.** Milestones 1 (the working slice), 2 (updates, dependencies, adoption and desired state) and 3 (the Omarchy widget, Lua errors and `WTF/` backups) are done, and omaddons runs daily on the development machine. There, every client it manages (retail, Mists Classic, Classic Era, Anniversary, WoW: Forever and a 3.3.5a server) has been seen in game loading the addons it installed. Nothing is tagged, the repository is private, and the JSON contract freezes at the first tag (milestone 4, next). `outdated` (with changelogs), `update`, `pin`, `sync`, `export` and `copy` work, installs bring their dependencies (from the catalog, Tukui or WoWInterface), WoWInterface, Tukui (ElvUI) and WowAce (BugGrabber) addons install and update, `search` and `auth github` work, and `adopt` brings addons installed by hand or by other managers under management. `errors` names the addon most likely behind each Lua error BugGrabber captured, on every client. `backup` keeps each client's `WTF/` settings: checkpoints before the day's first change and after play, whole or one-addon restores that undo, and export and import off the disk. `omaddons omarchy install` puts a bar widget on Omarchy that does all of this from a keyboard panel. See [What works today](#what-works-today) and the [Roadmap](#roadmap).
+> **Pre-alpha: milestones 1 to 3 are done, and milestone 4 is in progress.** omaddons runs daily on the development machine, where every client it manages (retail, Mists Classic, Classic Era, Anniversary, WoW: Forever and a 3.3.5a server) has been seen in game loading the addons it installed.
+>
+> - **Done (M1 to M3):** discovery and the load rules, transactions and undo, keyless GitHub, git, WoWInterface, Tukui and WowAce sources, `outdated`, `update`, `pin`, `adopt`, dependencies, `sync`, `export`, `copy`, `search`, `errors` (Lua errors from BugGrabber), `backup` (`WTF/` settings, with automatic checkpoints and undoable restores) and the Omarchy bar widget.
+> - **Shipped in M4 so far:** `capabilities`, `robot-docs guide`, `schema` and `errors`, shell completions, intent inference (a client named in the wrong place or mistyped is corrected in the fix), stored plans with `apply`, `plans show` and `--if-match`, and the doctor: `doctor`, `explain`, `fix`, `diff`, `undo`, `gc` and `--online`.
+> - **Left before the first tag, `v0.1.0`, which freezes the JSON contract:** `robot-docs install-skill`, verbosity levels, a discovery line in `help`, `status` reading the doctor's whole registry, the last contract corrections, the wire-name golden test and a run on the real machine.
+>
+> Nothing is tagged yet, and the repository is private. See [What works today](#what-works-today), [Known issues](#known-issues) and the [Roadmap](#roadmap).
 
 ---
 
@@ -84,12 +92,13 @@ There is no packaged release, installer or prebuilt binary yet; see [Installatio
 | **Zero-config discovery** | Reads Battle.net's `product.db`, `.build.info` and `.flavor.info`, the Lutris, Heroic, Steam and Bottles configs, and scans `~/Games` and `~/.wine`. Knows all 12 Battle.net WoW products and identifies private-server clients 1.12.1 to 5.4.8 from their executable's version resource. |
 | **The game's rules decide** | TOC suffix precedence (`_Mainline`, `_Vanilla`, `_Forever`, …), `## Interface:` lists, `AllowLoadGameType`, interface ranges per family, retail 12's floor of 120000 and the legacy single-TOC rules, applied to what is actually inside the archive. A build for another flavor is never installed, nor one the client never loads. |
 | **Multi-flavor archives** | DBM and BigWigs ship retail-only boss modules in the same zip as their Classic modules. On Classic or Forever, the folders that client would not load are skipped and listed in `folders.skipped`. A stray side folder built only for other clients (ArkInventory's retail-only example module) is left out and said so, and a file its publisher labels for other clients only is refused. |
-| **Transactions, not file copies** | Folders are staged on the same filesystem, then swapped in with `renameat2(RENAME_EXCHANGE)` under a journal. A crash leaves each folder wholly old or wholly new, and the next change command finishes the work or rolls it back. |
+| **Atomic, journaled changes** | Folders are staged on the same filesystem, then swapped in with `renameat2(RENAME_EXCHANGE)` under a journal. A crash leaves each folder wholly old or wholly new, and the next change command finishes the work or rolls it back. |
 | **Undo any change** | Each install, remove and undo snapshots what it replaces. `undo` restores folders as they were (file bytes and modes, directory modes, symlinks, empty directories) and restores SavedVariables only where they changed, until retention prunes its snapshot. An undo is itself undoable, and `undo --last-by agent` reverts the last thing an agent did. |
 | **Keyless** | Stable GitHub releases are read from `release.json` without the REST API, and git branches through GitHub's commits feed and codeload, without the git binary. No account, token or API key is needed for anything that works today. |
 | **Safe around a running game** | With the default policy, updates that keep the loaded TOC can land while you play (`/reload` to pick them up). Removing a loaded addon is refused until the client exits, and SavedVariables are never written while it runs. |
 | **Verifiable privacy** | A hard host allowlist is checked on every redirect hop. Every request that reaches the network and every git run is logged locally (`omaddons net-log`), `--offline` refuses all network access, and there is no telemetry. |
-| **Built for agents** | `--json` gives exactly one envelope on stdout, success or failure. Error codes are typed, fixes come as `fix_argv` and `alternatives` argv arrays whenever they are commands, exit codes 0 to 6 are documented, and every change records its actor and argv. |
+| **Built for agents** | `--json` gives exactly one envelope on stdout, success or failure. Error codes are typed, fixes come as `fix_argv` and `alternatives` argv arrays whenever they are commands, exit codes 0 to 6 are documented, and every change records its actor and argv. `capabilities --json` describes the build in one offline call, `robot-docs` prints the agent guide, every JSON Schema and the error catalog, and a `--dry-run` stores a plan that `apply` runs exactly. |
+| **A doctor that repairs** | `omaddons doctor` checks 30 failure modes and names the evidence and the fix for each finding. `doctor fix` repairs the ones its fixers cover as one undoable transaction: it quarantines a damaged cached archive, finishes an interrupted change through omaddons' own recovery, sets a stuck journal aside (only with `--force --yes`), and makes a credential file private again. |
 | **Settings backups** | Each client's `WTF/` is backed up before the day's first change and after a play session, cloned on btrfs and xfs so a backup costs no space at first. `backup restore` puts back the whole `WTF/` or one addon's settings; it is refused while the game runs and can be undone. |
 | **Lua errors, attributed** | `omaddons errors` reads BugGrabber's captures on every client, names the likely source and how sure it is, marks which errors are new, and says whether an update may fix them. It never shows text an addon wrote unless asked. |
 | **A bar widget** | On [Omarchy](https://omarchy.org), `omaddons omarchy install` puts a button on the bar with updates, issues, Lua errors and backups in a keyboard panel, and every action runs an omaddons command. |
@@ -117,6 +126,10 @@ omaddons install https://github.com/tullamods/OmniCC -t retail
 omaddons history
 omaddons undo
 
+# Something wrong? The evidence and the fix, then the repair, previewed first
+omaddons doctor
+omaddons doctor fix --dry-run
+
 # The same thing, for an agent
 omaddons install plater -t forever --json --actor agent --reason "user asked for nameplates"
 ```
@@ -125,7 +138,7 @@ omaddons install plater -t forever --json --actor agent --reason "user asked for
 
 ## What works today
 
-Milestones 1 (the working slice), 2 (updates, dependencies, adoption and desired state) and 3 (the Omarchy widget, Lua errors and `WTF/` backups) are complete. Everything in this README describes code that exists and is tested, unless it is marked as planned. Bugs the code has today, where it differs from what this README says, are listed under [Known issues](#known-issues).
+Milestones 1 (the working slice), 2 (updates, dependencies, adoption and desired state) and 3 (the Omarchy widget, Lua errors and `WTF/` backups) are complete. Milestone 4 (the agent surface) is in progress: the rows marked milestone 4 below have shipped, and the row marked 🚧 lists what is left of it. Everything in this README describes code that exists and is tested, unless it is marked as planned. Bugs the code has today, where it differs from what this README says, are listed under [Known issues](#known-issues).
 
 | Area | State |
 |---|---|
@@ -134,7 +147,7 @@ Milestones 1 (the working slice), 2 (updates, dependencies, adoption and desired
 | The transaction engine: plan, stage, journal, atomic swap, crash recovery, undo, retention | ✅ Done |
 | Keyless sources: GitHub releases, git (GitHub without the binary, other hosts with it), direct URLs, local zips and folders | ✅ Done |
 | A catalog of 63 verified addons in 66 entries (46 GitHub release entries, 9 WoWInterface entries, ElvUI and Tukui from Tukui, 5 legacy private-server addons from git, and BugGrabber's 4 builds from WowAce) | ✅ Done (BugGrabber in milestone 3) |
-| The CLI contract: one JSON envelope, typed errors with fixes (an argv whenever the fix is a command), exit codes 0 to 6, contract snapshot tests | ✅ Done (freezes in M4) |
+| The CLI contract: one JSON envelope, typed errors with fixes (an argv whenever the fix is a command), exit codes 0 to 6, contract snapshot tests | ✅ Done (freezes at the first tag, `v0.1.0`) |
 | Commands: `status`, `install`, `remove`, `undo`, `history`, `list`, `targets`, `info`, `config`, `net-log`, `help` | ✅ Done |
 | `outdated` (alias `check`): what has updates, on every client | ✅ Done (milestone 2) |
 | `adopt`: where unmanaged addons come from, whether they are exactly a release, and bringing them under management as they are (undoable) | ✅ Done (milestone 2) |
@@ -161,9 +174,13 @@ Milestones 1 (the working slice), 2 (updates, dependencies, adoption and desired
 | `completions`: a static completion script for bash, zsh, fish, elvish and PowerShell (commands, subcommands, aliases, flags and fixed values), generated from the command tree; `--json` gives `{shell, script}` | ✅ Done (milestone 4) |
 | `robot-docs guide`, `robot-docs schema` and `robot-docs errors`: the agent guide, every output's JSON Schema and the error and warning catalog, from the binary | ✅ Done (milestone 4) |
 | `apply <plan_id>`: a stored preview run exactly, by one applier at a time, every source checked again, each client reported (`committed`, `unchanged`, `stale`, `failed`) | ✅ Done (milestone 4) |
-| `doctor` and `doctor diagnose`: what is broken, with evidence and the exact remediation, each check under a budget and isolated from the others, in a run directory of its own, with the doctor's own exit codes; `--since` compares with an earlier run; `doctor explain` shows one failure mode in full with its live instances; `--online` also checks GitHub's REST budget, whether GitHub takes the configured token and whether the sources your addons come from answer, one logged request each; `doctor gc` deletes old runs and what they kept by a retention plan that keeps whatever an unfinished change needs, previewed and bound | ✅ Done (milestone 4) |
+| `doctor` and `doctor diagnose`: what is broken among 30 failure modes, with evidence and the exact remediation, each check under a budget and isolated from the others, in a run directory of its own, with the doctor's own exit codes; `--since` compares with an earlier run; `doctor explain` shows one failure mode in full with its live instances; `--online` also checks GitHub's REST budget, whether GitHub takes the configured token and whether the sources your addons come from answer, one logged request each | ✅ Done (milestone 4) |
+| `doctor fix`: the findings 10 of those failure modes' fixers repair (a damaged cached archive quarantined, an interrupted change finished by omaddons' own recovery, a stuck journal set aside, a credential file made private), as one journaled transaction, previewed and bound with `--if-match`; a forced repair runs only when named, with `--force --yes`. `doctor diff` shows what a fix would change, or what changed since a run. `doctor undo` (or `undo <tx>`) reverts a repair, strictly. `doctor gc` deletes old runs and what they kept by a retention plan that keeps whatever an unfinished change needs, previewed and bound | ✅ Done (milestone 4) |
 | `capabilities`: every command, flag, value, alias, exit code, error and warning code, action, limit, source, family, client-rules row and `-t` form, generated from the code, offline, in milliseconds | ✅ Done (milestone 4) |
-| `doctor fix` and its undo, installing the agent skill, the first tag | 🗓️ Milestone 4 |
+| Intent inference: a client named where a command or argument belongs (`omaddons retail update`), a `-t` within two edits of a client here (`-t retial`), or a mistyped flag or value gets a fix that keeps your command and corrects only that word, and a mistyped command never gets a fix that runs a different command that changes addons (see [Choosing a target](#choosing-a-target-with--t) and [Command reference](#command-reference)) | ✅ Done (milestone 4) |
+| Left in milestone 4, before the first tag (`v0.1.0`) freezes the contract: `robot-docs install-skill` (installing the agent guide as a skill); verbosity levels (`-vv` is accepted but means `-v` today); a discovery line in bare `help` and `discovery` in `help --json`; `status` on the doctor's whole registry (today it runs a fixed 16 of its 30 rows); the pre-freeze contract corrections; the wire-name golden test; a run on the real machine | 🚧 Milestone 4, in progress |
+| A user-first overhaul of the Omarchy bar widget | 🗓️ Planned |
+| Launch-week fixes: the [Known issues](#known-issues), a `--help` overhaul to the standard of `br` and `bv`, and dynamic shell completion of client ids and addon names | 🗓️ Planned |
 | Optional CurseForge and Wago (bring your own key), release packaging | 🗓️ Milestone 5 |
 
 `omaddons outdated` lists what has updates, and `omaddons update` installs them on every client, one transaction per client, all undone by one `omaddons undo`. Two kinds of addon are left alone. A `url:` ref's release is the URL itself, so there is nothing newer to fetch. A pinned addon (by `pin`, or installed with `--version`) stays where it is (`skipped`, reason `pinned`) until `unpin`.
@@ -172,7 +189,7 @@ Milestones 1 (the working slice), 2 (updates, dependencies, adoption and desired
 
 ## Design philosophy
 
-**1. The game's rules decide, not metadata.** A host's flavor tags, a `release.json` and a file name order the candidates; they never make a folder install that the client would not load. What decides is the TOC file the client would load from each folder in the downloaded archive, judged by that client's rules row (suffixes, interface range, game types). So omaddons refuses the retail build of an addon for Classic Era even when the release metadata claims otherwise, and it installs a Classic module on Forever only if Forever would load it.
+**1. The game's rules decide.** A host's flavor tags, a `release.json` and a file name order the candidates; they never make a folder install that the client would not load. What decides is the TOC file the client would load from each folder in the downloaded archive, judged by that client's rules row (suffixes, interface range, game types). So omaddons refuses the retail build of an addon for Classic Era even when the release metadata claims otherwise, and it installs a Classic module on Forever only if Forever would load it.
 
 **2. Every change is a transaction.** There is one engine and one filesystem writer (`src/fsx/`). Every install, update, remove and undo stages its folders on the client's own filesystem and swaps them in under a journal and a lock held only for the commit window. Then it records the actor, the argv and the reason. A test in the gate fails if any `std::fs` write call appears outside `src/fsx/`.
 
@@ -191,7 +208,7 @@ Milestones 1 (the working slice), 2 (updates, dependencies, adoption and desired
 | Interface | CLI + JSON | GUI (Electron) | GUI | CLI, optional GUI | File manager |
 | Native on Linux | ✅ Linux only | ✅ | ✅ AppImage, .deb | ✅ | ✅ |
 | Finds clients inside Wine/Proton, Steam, Lutris, Heroic and Bottles prefixes with no setup | ✅ | ⚠️ ¹ | ⚠️ ¹ | ⚠️ ¹ | ❌ |
-| Private-server clients 1.12.1 to 5.4.8 as first-class targets | ✅ | ❌ | ❌ | ❌ | ⚠️ by hand |
+| Supports private-server clients 1.12.1 to 5.4.8 | ✅ | ❌ | ❌ | ❌ | ⚠️ by hand |
 | Checks the archive's TOCs against the client's load rules before writing | ✅ | ⚠️ host metadata | ⚠️ host metadata | ⚠️ host metadata | ❌ |
 | Undo installs and removals byte for byte, SavedVariables included | ✅ | ❌ | ❌ | ⚠️ `rollback` of updates | ❌ |
 | Settings (`WTF/`) backups and restore | ✅ automatic, whole or one addon's, undoable | ✅ by hand, whole | ❌ ² | ❌ | ⚠️ copy `WTF/` |
@@ -250,7 +267,7 @@ cargo build --locked --release
 ./target/release/omaddons status
 ```
 
-The release profile uses thin LTO, a single codegen unit and stripped symbols.
+The release profile uses thin LTO, a single codegen unit and stripped symbols; the binary is about 23 MB, with the catalog, the agent guide and the bar widget embedded.
 
 ### Shell completions
 
@@ -287,7 +304,7 @@ omaddons completions fish > "${XDG_CONFIG_HOME:-$HOME/.config}/fish/completions/
 
 **PowerShell:** add `omaddons completions powershell | Out-String | Invoke-Expression` to `$PROFILE`.
 
-What completes: commands, subcommands, aliases, flags, and fixed values such as `--format json`, `--progress`, `search --source`, `omarchy install --section`, `auth github`'s actions and the shells. What does not: client ids and addon names, because the scripts are static (see [Known limitations](#known-limitations)). Packaged completions are milestone 5.
+What completes: commands, subcommands, aliases, flags, and fixed values such as `--format json`, `--progress`, `search --source`, `omarchy install --section`, `auth github`'s actions and the shells. What does not: client ids and addon names, because the scripts are static (see [Known limitations](#known-limitations)); completing them is planned among the launch-week fixes. Packaged completions are milestone 5.
 
 ### Why there is no installer or package
 
@@ -423,7 +440,7 @@ A target is **registered** on its first change (or with `targets add`, `rename` 
 
 ### Where discovery looks
 
-Discovery runs whenever a command needs the clients: every command except `auth`, `config`, `net-log`, `help`, `completions`, `robot-docs`, `capabilities` and `targets rm`. Each walk goes at most 4 levels deep, and all the walks in one run share a budget of 50,000 directories.
+Discovery runs whenever a command needs the clients: every command except `auth`, `config`, `net-log`, `help`, `completions`, `robot-docs`, `capabilities`, `plans show` and `targets rm`. The doctor's checks scan only when one of them needs the clients, and never write the discovery cache. Each walk goes at most 4 levels deep, and all the walks in one run share a budget of 50,000 directories.
 
 It first collects the Wine prefixes (directories containing `drive_c/`):
 
@@ -565,8 +582,6 @@ The rows, as built in (`[client_rules]` can patch them; see [Rules overrides](#r
 | `fallback-custom` | a custom client no other row covers (family `unknown`, or below its family's rows) | | plain TOC only | | |
 
 The `mainline`, `mainline-12.0.7` and `mainline-10.2.7` rows carry the interface floor 120000, binding their 12.x clients only; no other row has one. The real Forever client was observed loading `_Camelot` TOCs (2026-10-21); a TOC with the `_Forever` suffix alone, and the client's order when an addon ships both, are not yet observed.
-
-Then the archive as a whole:
 
 The principle is to install what the author built for this client. Each download is then graded as a whole:
 
@@ -732,7 +747,7 @@ remove = true
 
 ## Command reference
 
-`omaddons help` lists the commands. `omaddons help <command>` or `omaddons <command> --help` shows every flag. For subcommands, use `omaddons targets add --help` or `omaddons help targets add`.
+`omaddons help` lists the commands by group (Look, Change, Setup) with the exit codes. `omaddons help <command>` or `omaddons <command> --help` shows every flag. For subcommands, use `omaddons targets add --help` or `omaddons help targets add`. `omaddons help --json` gives the same as data: `commands` (each with its `about`, `aliases` and `group`), `global_flags` and `exit_codes`. Bare help does not yet name the commands an agent should start from: a line naming `omaddons capabilities --json`, `omaddons robot-docs guide` and `omaddons doctor --json`, and a `discovery` key in `help --json`, are planned before the first tag.
 
 A mistyped command, flag or value is a usage error. Its fix is the corrected command when that command only reads, and `omaddons help <command>` when the closest command changes something: a typo never hands you a different command that changes addons. A mistyped flag, or a mistyped value of a flag with fixed choices, of the command you typed is corrected in place (`--channel betaa` → `--channel beta`). A bad value with no close match, such as `--actor robot` or `undo --last-by robot`, gets `omaddons help <command>`. A client named before or after the command is moved into `-t`; that fix keeps your command even when it changes something, because only the client moved. A `-t` value that names no client but is within two edits of one that does is corrected the same way, as the fix of `target_not_found`, keeping your command. Every suggested command parses.
 
@@ -753,7 +768,7 @@ Every global option works before or after the command, except `-V`/`--version`, 
 | `--if-match <TOKEN>` | Change nothing unless the plan is still the one the `--dry-run` that returned this token showed (`data.precondition`); see [Previews, plans and `--if-match`](#previews-plans-and---if-match). Only `remove`, `undo`, `backup restore`, `backup prune`, `errors dismiss`, `install`, `update`, `pin`, `unpin`, `adopt` (when it adopts), `sync`, `copy`, `doctor fix` and `doctor gc` take it; on any other command it is a usage error |
 | `--no-color` | No ANSI color (also `NO_COLOR`). Color is also off with `--json`, in CI, with `TERM=dumb` and when stderr is not a terminal |
 | `--quiet` | Only errors on stderr |
-| `-v, --verbose` | More detail: paths, and debug `log` events on stderr (repeatable) |
+| `-v, --verbose` | More detail: paths, and debug `log` events on stderr. It can be repeated, but `-vv` means the same as `-v` today; verbosity levels are planned before the first tag |
 | `--progress json\|human\|none`, `--no-progress` | Progress of long commands on stderr (`install`, `update`, `outdated`, `adopt`, `sync`, `copy`, `search` and `backup create`, and the stage and commit steps of `remove`, `pin` and `unpin`). Off with `--json`, in CI or when stderr is not a terminal, unless `--progress` names a mode; never with `--quiet` |
 | `-h, --help` | Help |
 | `-V, --version` | Version (before the command only; after a command, `--version` is that command's flag or a usage error) |
@@ -795,7 +810,7 @@ The human view opens with one summary line (`3 updates on 2 clients · 1 issue (
 The JSON adds five keys to `data`:
 
 - **`summary`.** The machine at a glance, for the widget and agents: `targets`, `running` (the ids of clients running now), `updates` (`available`, summed, and the `targets` that have some), `issues` (counts by severity: `p0` to `p3`), `check_due` (a check for updates is recommended), `errors` (`new`, the clients' new local Lua errors summed, and the `targets` that have some), and `widget_outdated`: the bar widget serving this omaddons state is from another build (see `widget`). `issues` counts each client's issues and the machine's own. `state` is the most pressing of `attention` (a P0 or P1 issue), `errors` (new local errors; received ones never count), `updates` and `idle`.
-- **`issues`, on each client.** Its `attention` items as findings: `id` (a failure-mode id from the vision's D20 table, stable across releases), `severity` (`P0` to `P3`), a `title`, the `addon` when it is about one, and a `remediation` (`command`, `argv`, `destructive`; `argv` is `null` when the fix is advice, not a command). Ranked by severity, then id, then addon. `attention` stays as it was. An interrupted change is reported as the state recovery leaves it in, as `omaddons doctor` reports it: one issue per state and client, titled for its one journal or for `<n>` of them. A journal on a client `status` does not list is in the machine's `issues` (without `-t`).
+- **`issues`, on each client.** Its `attention` items as findings: `id` (a failure-mode id from the vision's D20 table, stable across releases), `severity` (`P0` to `P3`), a `title`, the `addon` when it is about one, and a `remediation` (`command`, `argv`, `destructive`; `argv` is `null` when the fix is advice, not a command). Ranked by severity, then id, then addon. `attention` stays as it was. An interrupted change is reported as the state recovery leaves it in, as `omaddons doctor` reports it: one issue per state and client, titled for its one journal or for `<n>` of them. A journal on a client `status` does not list is in the machine's `issues` (without `-t`). `status` runs a fixed 16 of the doctor's 30 failure modes, the ones in this table: the seven it published before the doctor existed, and the journal and lock rows that `journal-pending` was later split into. Reading every `cached` and `quick` row of the [registry](#doctor) instead is planned before the first tag.
 
   | Issue `id` | Severity | Raised by | Remediation |
   |---|---|---|---|
@@ -1123,7 +1138,7 @@ An addon whose folders were all deleted by hand is forgotten: its record and ind
 
 Revert what a command did, as new transactions, SavedVariables included (`revert` and `rollback` are aliases).
 
-A command that changes several clients commits one transaction per client, and all of them share a run id. Bare `undo` reverts the most recent run, every one of its transactions, newest first. After a single-client command that is one transaction, as before. Those undo transactions share a run of their own, so a second `undo` reverts them all again.
+A command that changes several clients commits one transaction per client, and all of them share a run id. Bare `undo` reverts the most recent run, every one of its transactions, newest first. After a single-client command that is one transaction. Those undo transactions share a run of their own, so a second `undo` reverts them all again.
 
 | Flag / argument | Meaning |
 |---|---|
@@ -1387,7 +1402,7 @@ exported backup 01M6Q8PN (retail, today 18:02) to /run/media/me/usb/retail-wtf.t
 
 #### `backup import`
 
-Brings an exported backup back as a backup of the client `-t` names (required): `omaddons backup import <FILE> -t <id>`. Then `backup restore` puts it in place, with its undo, its running-game refusal and its atomic exchange. With `omaddons export` and `sync --locked` for the addons, that is a whole machine moved or rebuilt: settings and addons.
+Brings an exported backup back as a backup of the client `-t` names (required): `omaddons backup import <FILE> -t <id>`. Then `backup restore` puts it in place, with its undo, its running-game refusal and its atomic exchange. With `omaddons export` and `sync --locked` for the addons, that moves or rebuilds a whole machine.
 
 - **What you get.** A new backup of kind `imported`, `integrity: verified` with `baseline: import` (every hash in the archive was just checked, and its `manifest.json` keeps them), its original capture time, and `source` naming the backup it was exported from. It never counts as a checkpoint (`qualifying: false`): an archive says nothing about whether today's settings are backed up, so the day's [automatic backup](#automatic-backups) still runs. [Retention](#retention) never deletes it; `backup prune <id>` does when you ask. It has a history line of kind `backup` (`kind: imported`) and rings the doorbell.
 - **Only an exact export.** The archive becomes files inside a client folder, so anything but an unmodified `backup export` file is refused, before it is kept and mostly before a byte is written: the archive is read through once, checked whole, and only then decompressed again into a staging folder, with each file hashed again as it is written and symlinks created last. Refused, with `details.reason`:
@@ -1707,7 +1722,7 @@ A client without BugGrabber gets the install of the catalog's build for its fami
 
 **`--since`.** A unix time (BugGrabber 12.0.11 and later) is the last occurrence. A string time is the first capture or the last occurrence, depending on the version that wrote it, so an error whose string time is before the cutoff may have recurred since: it is counted as `uncertain` and named in the footer ("1 older first-seen error may have recurred since then (string times cannot tell)"), never silently dropped. `no_time` counts errors without a usable time.
 
-**The observation comes first.** Each client's counts, `new`, the memo and `--check` come from every error read; `--since`, `--addon` and `--limit` only shape what is listed (`summary.matched` and `summary.shown` say what they kept), so a narrow read never makes a client look clean. `errors` exits 0 whether or not there are errors. `--check` exits 6 (`check_failed`, the data kept) when a selected client has new local errors among those `--addon` and `--since` keep (an `uncertain` one counts), with `details.reason` `new_errors`, or when it could not read everything, with `details.reason` `incomplete`; it never looks at `--limit`.
+**Counts and filters.** Each client's counts, `new`, the memo and `--check` come from every error read; `--since`, `--addon` and `--limit` only shape what is listed (`summary.matched` and `summary.shown` say what they kept), so a narrow read never makes a client look clean. `errors` exits 0 whether or not there are errors. `--check` exits 6 (`check_failed`, the data kept) when a selected client has new local errors among those `--addon` and `--since` keep (an `uncertain` one counts), with `details.reason` `new_errors`, or when it could not read everything, with `details.reason` `incomplete`; it never looks at `--limit`.
 
 `commands` holds `omaddons update <addons> -t <id>` for managed addons with new errors and a newer release in the release memo (no request is made), `omaddons errors dismiss -t <id>` (action `dismiss_errors`) for a client with new errors a dismissal would clear, and `omaddons install buggrabber -t <id>` (action `install_buggrabber`) for a client without BugGrabber that the catalog has a build for. `--addon` on clients none of which capture errors is `not_found`.
 
@@ -1743,7 +1758,7 @@ WeakAuras  gh:WeakAuras/WeakAuras2
 
 `catalog` is the entry the query names: for a name with variants, the selected client's build (one `-t`, else the default target's, else the modern one) with its `variant`, and the others' `variants` (`{variant, families}`), shown as `other build (r152): families wrath-legacy`. `latest` is `{version, release_id, channel, flavors, targets, compat}`. `compat` says, for each selected client, how likely the release is to load: `verified` (a plan proved it) or `blocked` (a plan proved it does not), `declared` (its release metadata names the client), `unlikely` (the metadata names other clients only, the catalog lists none of the client's families, or no asset of the release is for the client), else `likely`. `targets` lists the clients that are `verified`, `declared` or `likely`, and the human line reads `likely to load on … · not on …`, or "not likely to load on any client here" (`-v` lists each client, and adds `asset_urls` and `record_path`). A hint only: `install` verifies every TOC.
 
-The newest release comes through the [release memo](#files-and-state): a check made in the last 15 minutes is reused without a request, and `--refresh` checks again anyway. With `--offline`, `latest` is the remembered answer whatever its age, with a `stale_check` warning, or `null` (as above) when nothing is remembered. A missing repository is remembered too, so asking again within the window costs nothing; a network or server error never is. Each installed record carries its `drift {state, files}` (as in [`status`](#status), with the paths under `-v`), checked locally, so `--offline` shows it too, and its `reason`, `required_by`, `orphan` and `any_flavor` (` · any flavor (--any-flavor)` in the human view) on that target. It also carries `left_out`: the folders of the installed release this client does not load, each `{name, reason, …}` exactly as the install's `folders.skipped` gave it (DBM's retail-only modules on Classic, ArkInventory's example module), so "why is this module missing?" has an answer after the run's output is gone. Every install or update replaces it, `undo` restores it with the record, and `export` and `copy` never carry it (each client's install is judged there). The human view says `left out: DBM-Brawlers (gated to other game types), …` under the record's line.
+The newest release comes through the [release memo](#files-and-state): a check made in the last 15 minutes is reused without a request, and `--refresh` checks again anyway. With `--offline`, `latest` is the remembered answer whatever its age, with a `stale_check` warning, or `null` (as above) when nothing is remembered. A missing repository is remembered too, so asking again within the window costs nothing; a network or server error never is. Each installed record carries its `drift {state, files}` (as in [`status`](#status), with the paths under `-v`), checked locally, so `--offline` shows it too, and its `reason`, `required_by`, `orphan` and `any_flavor` (` · any flavor (--any-flavor)` in the human view) on that target. It also carries `left_out`: the folders of the installed release this client does not load, each `{name, reason, …}` exactly as the install's `folders.skipped` gave it (DBM's retail-only modules on Classic, ArkInventory's example module), so the reason a module is missing stays on record after the run's output is gone. Every install or update replaces it, `undo` restores it with the record, and `export` and `copy` never carry it (each client's install is judged there). The human view says `left out: DBM-Brawlers (gated to other game types), …` under the record's line.
 
 `--changelog` adds the release notes of every release newer than the oldest one installed (the latest release's alone when no installed record names a release), as `changelog` and `changelog_unavailable` after `offline`, shaped and sourced as in [`outdated --changelog`](#outdated):
 
@@ -1761,7 +1776,7 @@ WeakAuras  gh:WeakAuras/WeakAuras2
 
 ### `doctor`
 
-What is broken in what omaddons manages, with the evidence and the exact remediation: every check of the doctor's failure-mode registry, each within a budget and isolated from the others. Bare `doctor` is `doctor diagnose`. It changes nothing outside its own run record in `~/.local/state/omaddons/doctor/`, takes no lock and makes no request.
+What is broken in what omaddons manages, with the evidence and the exact remediation: every check of the doctor's failure-mode registry, each within a budget and isolated from the others. Bare `doctor` is `doctor diagnose`. It changes nothing outside its own run record in `~/.local/state/omaddons/doctor/`, takes no lock, and makes no request unless `--online` asks for its network checks.
 
 ```bash
 omaddons doctor                       # every check but the deep ones
@@ -1817,7 +1832,7 @@ The JSON is the [doctor envelope](#the-doctor-envelope), and its report keys are
 
 It exits 0 when `DONE_OK` and 1 when `DONE_FINDINGS`. `run_id`, `run_dir`, `started_at`, `finished_at` and `summary.duration_ms` change with every run; the rest of two runs over one state is the same.
 
-**The failure modes.** The doctor's catalog is code (`src/doctor/registry.rs`), and `status` reports the seven it publishes as its issues ([`status`](#status)).
+**The failure modes.** The doctor's catalog is code (`src/doctor/registry.rs`): 30 failure modes, 10 of them with a fixer (the blob quarantine, the delegation to recovery on two journal rows, the forced set-aside on six, and the credential chmod). `status` reports 16 of them as its issues ([`status`](#status)).
 
 | Id | Severity | Tier | When |
 |---|---|---|---|
@@ -2018,7 +2033,7 @@ omaddons doctor gc --before 30d --dry-run                  # the retention plan:
 omaddons doctor gc --before 30d --yes --if-match pc1:…     # delete exactly what that preview listed
 ```
 
-**Eligible is not deletable.** What started before `--before` (an RFC 3339 time or an age: `30m`, `12h`, `30d`, `2w`) is eligible: a run by its id's time, an orphaned half by its transaction's. The retention plan then keeps, in `exclusions`, each eligible thing something may still need, with its `pin`, strongest first:
+**What is eligible, and what is kept.** What started before `--before` (an RFC 3339 time or an age: `30m`, `12h`, `30d`, `2w`) is eligible: a run by its id's time, an orphaned half by its transaction's. The retention plan then keeps, in `exclusions`, each eligible thing something may still need, with its `pin`, strongest first:
 
 - `unfinished_journal`: an interrupted transaction recovery has not settled may read or write it, or it is the run of a repair whose journal is still there. While a repair journal cannot be read at all (a newer omaddons wrote it, or a line does not decode), everything is kept, and a real run refuses with that journal's error.
 - `active_undo`: an interrupted undo of a repair restores from it.
@@ -2124,7 +2139,7 @@ A left click (or the bar's keybinding) opens its keyboard panel, and a middle cl
 
 Every update, install, reinstall and destructive action (an undo, a removal, a restore, a backup deletion) first runs the command's own dry run, which stores a plan. A reinstall and every destructive action always ask, showing what omaddons would do. The dialog starts on No: `y`, or moving to Yes with `h`/`l` and pressing Enter, confirms, and `n` or Esc cancels. Yes, or a routine matching update, runs `omaddons apply <plan_id>` of exactly that plan. When the plan went stale, expired or is gone, nothing runs: the widget previews again and the dialog comes back with "Changed since you looked" and the new preview. Dismissing Lua errors still binds to the read the panel showed, and forgetting a client (`targets rm`) still confirms the command itself. Only a fresh key press confirms it, never a key still held from before. When the widget finds a binary from another build, the panel turns read-only and keeps only Retry and Reinstall widget. When the binary is missing, it shows the two commands that bring it back.
 
-On its own, the widget looks after a play session without being asked:
+The widget looks after a play session on its own:
 
 - **A game starting or exiting shows within a second.** Hyprland's window events make it ask `status` again, and a window closing while a client runs is followed up 2, 5 and 15 seconds later, because the game process can outlive its window. While a client runs, its refresh behind the doorbell comes at least every 30 seconds.
 - **After play**, when a client stops, it takes that client's post-session settings checkpoint (`backup create --auto`, which skips one when nothing changed) and then reads its Lua errors. When the widget starts, every stopped client gets the same checkpoint, so a session played with the bar off (or before a reboot) is still covered. Either runs quietly in the background, after any change you asked for, and says something only when it fails.
@@ -2206,7 +2221,7 @@ omaddons robot-docs errors --json             # every error and warning code
 
 #### `robot-docs guide`
 
-The agent guide: Markdown that opens with YAML frontmatter, the same bytes as `skills/omaddons/SKILL.md` in this repository (a test holds them equal) and as an installed skill. It reads no file or setting, so it prints the same bytes on every machine. With `--json`, `data` is `{"format":"markdown","content":"…"}`. The line after the frontmatter is the stamp `<!-- omaddons guide sha256:<hex> -->`, the SHA-256 of the document without that line; it names no version or build.
+The agent guide: Markdown that opens with YAML frontmatter, the same bytes as `skills/omaddons/SKILL.md` in this repository (a test holds them equal). A command that installs it as a skill for your coding agent, `omaddons robot-docs install-skill`, is planned before the first tag and does not exist yet; until then, have the agent run `omaddons robot-docs guide`, or copy `skills/omaddons/SKILL.md` into its skills folder yourself. It reads no file or setting, so it prints the same bytes on every machine. With `--json`, `data` is `{"format":"markdown","content":"…"}`. The line after the frontmatter is the stamp `<!-- omaddons guide sha256:<hex> -->`, the SHA-256 of the document without that line; it names no version or build.
 
 #### `robot-docs schema [COMMAND]`
 
@@ -2229,7 +2244,7 @@ The human form is two tables, `-v` adding each code's fix pattern under it.
 
 ### `capabilities`
 
-What this build can do, for an agent's first call: one call, offline, in a few milliseconds. Everything in it is generated from the code (the live command tree and the registries), with the values `config.toml` changes as they are in effect.
+What this build can do, answered offline in a few milliseconds, and the first call an agent should make. Everything in it is generated from the code (the live command tree and the registries), with the values `config.toml` changes as they are in effect.
 
 ```bash
 omaddons capabilities           # a summary of under 40 lines
@@ -2259,7 +2274,7 @@ Each value `config.toml` can change carries `source`: `config` when the file set
 
 A `config.toml` that does not parse, holds a value out of range or cannot be read does not fail the command: it exits 0 with the built-in values, every `source` `builtin`, and `config_error` (`line` and `column` `null` for a file that could not be read at all). With `HOME` unset or relative there is no config path: `config_error.path` is `null`. A config that loads with unknown keys warns `config_unknown_key`, as every command does.
 
-The human form names the build, counts the commands by group, prints help's exit-code table, the doctor's exit codes, each source (`on` or `off`, a configured token, `needs a key (M5)`, added git hosts, `(config)`) and the registries' sizes, and ends with `--json for the full description`. It never prints the config's path or a credential.
+The human form names the build, counts the commands by group, prints help's exit-code table, the doctor's exit codes, each source (`on` or `off`, a configured token, `needs a key (M5)`, added git hosts, `(config)`) and the registries' sizes, and ends with `--json for the full description`. It never prints the config's path or a credential. Here with a stored GitHub token, `git_hosts = ["codeberg.org"]` and WoWInterface turned off (the build id differs with every build):
 
 ```text
 $ omaddons capabilities
@@ -2424,11 +2439,10 @@ Every error code has its doctor exit, from its general exit: 2 → 64, 3 → 66,
 | `host_blocked` | 4 | no | an HTTP request or redirect to a host not on the allowlist, or a `git:` ref to a host not in `git_hosts` |
 | `scope_denied` | 4 | no | the filesystem writer refused a path outside its scope; also recovery's stop for a journal whose client no longer carries its target's marker (`details.reason: "marker_mismatch"`, `details.journal_pending`), or for a doctor repair's journal that names a skill directory omaddons did not install (`details.reason: "skill_dir"`, `details.target: null`). `details.tx` and `details.resource` when a stuck repair's fence refused the write |
 | `state_too_new` | 4 | no | a state file written by a newer omaddons: a change is refused before anything is staged when its client's record or files index, or (to register a client) the registry, is newer; a journal a newer omaddons started (`details.reason: "journal_too_new"`, `details.journal_pending`); a failure recovery cannot attribute to one client, which fails every change on every client (`details.reason: "unattributed"`): here, such a journal that does not say which client it is for. `details.tx` and `details.resource` when a stuck repair's fence refused the write (a repair journal a newer omaddons wrote refuses every change) |
-| `file_exists` | 4 | no | a file omaddons would create exists, at the start or created by another program meanwhile, and is never replaced (`backup export`'s destination); `details.file` |
 | `filesystem_unsupported` | 4 | no | a `WTF/` restore cannot run on this client: `WTF/` is a mount point (`details.reason: "wtf_is_mount_point"`), the client's `Interface/.omaddons/` is on another mount (`stage_cross_mount`), or the filesystem cannot exchange two directories atomically (`no_rename_exchange`); `details.backup_dir` is the backup's folder to copy from by hand, with the game closed. Checked before anything is copied |
+| `file_exists` | 4 | no | a file omaddons would create exists, at the start or created by another program meanwhile, and is never replaced (`backup export`'s destination); `details.file` |
 | `locked` | 5 | yes | lock held past 5 s; `details.holder`. Also a plan's lease another `apply` held past 30 s (`details.lease`, the plan id; `details.holder` with `age_s`) |
 | `check_failed` | 6 | no | `--check` or `--strict` |
-| `doctor_refused` | 4 | no | `doctor` refused before running anything; `details.reason` says why. Today only `over_budget`: the selection's declared cost is over `--budget` (`details.budget_ms`, `details.estimated_ms`; the fix is the budget it needs, rounded up to 100 ms, and the alternative drops `--budget`) |
 | `network` | 1 | yes (no for too many redirects or an undecodable encoding) | connection failure, also mid-body; more than 5 redirects; a `Content-Encoding` omaddons does not decode; a source response it cannot read; a git run that times out, or fails outside clone and fetch |
 | `rate_limited` | 1 | yes | GitHub REST budget exhausted, or any host's rate-limit answer (403/429 with no requests remaining, `Retry-After` over 60 s, a 429 that outlasts the retries); `details.reset_at` |
 | `download_failed` | 1 | no | the git binary could not clone or fetch a `git:` ref on another host: it needs a login (private repositories are not supported), the server refused to send the commit (fix: name a branch or tag), or another git failure |
@@ -2436,7 +2450,6 @@ Every error code has its doctor exit, from its general exit: 2 → 64, 3 → 66,
 | `hash_mismatch` | 1 | first attempt, and a damaged cached archive (never a backup's) | downloaded bytes did not match the expected hash, or a backup's file differs from the hash it was recorded with (`details.backup`): recorded `damaged`, fix `backup verify <id> -t <target>`; or a cached archive whose bytes no longer hash to its name (`details.blob`), when an offline or no longer served install could not download it again; fix `omaddons doctor --include-deep` |
 | `plan_stale` | 1 | yes (no under `--if-match`) | another run changed the target between plan and commit, a folder `adopt` hashed changed before the lock, or a `git:` branch moved between resolve and checkout; under `--if-match`, the run is no longer what its preview showed (`details.changed`, fix the `--dry-run` form; see [Previews, plans and `--if-match`](#previews-plans-and---if-match)); `apply` refusing a plan that can no longer apply, never retryable (`details.reason`: `already_applied` with `details.txs`, `expired`, `binary_changed`, `input_missing` with `details.path`) |
 | `offline` | 1 | no | `--offline` blocked a request |
-| `online_required` | 1 | no | a `doctor` selection holds only checks that need the network, without `--online` (`details.fms`, their ids; doctor exit 6); the fix adds `--online` |
 | `bad_archive` | 1 | no | malformed, encrypted, or not Stored/Deflate |
 | `distribution_disabled` | 1 | no | reserved for CurseForge (M5) |
 | `source_disabled` | 1 | no | a source turned off in `config.toml` (the fix turns it back on); CurseForge or Wago refs and links (M5); a `git:` ref on another host when `git` is missing or older than 2.32, or in a command that does not run git |
@@ -2445,6 +2458,8 @@ Every error code has its doctor exit, from its general exit: 2 → 64, 3 → 66,
 | `state_corrupt` | 1 | no | an unreadable state or config file (with line and column); a SavedVariables snapshot copy that no longer matches its manifest, refused before an undo moves anything (`details.reason: "snapshot_mismatch"`); a journal holding lines this omaddons cannot read, left for manual repair (`details.reason: "journal_unreadable"`, `details.journal_pending`); a failure recovery cannot attribute to one client, which fails every change on every client (`details.reason: "unattributed"`): here, such a journal that does not say which client it is for; the recovery of a `WTF/` restore that could not finish preserving what it displaced (an I/O error, a full disk, or an identity it did not expect inside the protocol), keeping everything for the next one to resume with the same backup id (`details.reason: "preservation_incomplete"`, `details.journal_pending`). `details.tx` and `details.resource` when a stuck repair's fence refused the write (a repair journal whose first line does not decode refuses every change) |
 | `io` | 1 | no (yes for a `WTF/` that changed while a backup copied it) | filesystem error; `details.path` (below `WTF/`, without account, realm or character names). A failure recovery cannot attribute to one client fails every change on every client (`details.reason: "unattributed"`, with `details.journal_pending` when a transaction is known): a journal file that cannot be read, an in-flight lock that cannot be probed, or a journal directory that cannot be listed. `details.tx` and `details.resource` when a stuck repair's fence refused the write; a journal directory that cannot be listed refuses every change, with `details.resource` naming it and no `details.tx` |
 | `internal` | 1 | no | a bug or panic; fix is `omaddons status` (`omaddons status --cached` when `status` itself failed, and a report when that failed too). Also the recovery of a `WTF/` restore that found something it did not record at a step's paths, left for manual repair (`details.reason: "unexpected_state"`, `details.journal_pending`), and of any other journal whose rollback found a step in neither its before nor its after state (`details.reason: "step_unrecognized"`, `details.journal_pending`; `details.target: null` for a doctor repair, which names no single client). `details.tx` and `details.resource` when a stuck repair's fence refused the write |
+| `online_required` | 1 | no | a `doctor` selection holds only checks that need the network, without `--online` (`details.fms`, their ids; doctor exit 6); the fix adds `--online` |
+| `doctor_refused` | 4 | no | a `doctor` command refused before changing anything; `details.reason` says why. `over_budget`: the selection's declared cost is over `--budget` (`details.budget_ms`, `details.estimated_ms`; the fix is the budget it needs, rounded up to 100 ms, and the alternative drops `--budget`). For `doctor fix`: `force_required`, `client_running`, `filesystem_mismatch`, `too_many_actions` or `fixer_conflict` (see [`doctor fix`](#doctor-fix)), or a reason a fixer gives for declining |
 
 </details>
 
@@ -2465,8 +2480,8 @@ Every error code has its doctor exit, from its general exit: 2 → 64, 3 → 66,
 | `snapshot_cap_exceeded` | protected snapshots alone exceed the size cap |
 | `retention_failed` | pruning failed after a commit or a `backup create`; the transaction or the backup stands. After a backup, the fix is `omaddons backup prune -t <id>` |
 | `out_of_date` | the TOC's interface is older than the client's, or its `AllowLoadGameType` names the client and none of its interfaces is in the client's range; it loads only with "Load out of date AddOns" enabled. Never for a TOC below the client's interface floor (retail 12.0 and later: 120000), which does not load at all and is `wrong_flavor` (`below_client_floor`) |
-| `any_flavor` | an addon installed under `--any-flavor` although its publisher labelled the file for other clients, or its folders target other clients; the message names what it allowed. No fix |
 | `folder_left_out` | an install left out a folder of the archive built for other clients only (it lists only other clients' interfaces, has no Interface the client reads, or lies below the client's floor), while the addon itself is built for this client; the message names the folder and what it lists. No fix |
+| `any_flavor` | an addon installed under `--any-flavor` although its publisher labelled the file for other clients, or its folders target other clients; the message names what it allowed. No fix |
 | `older_release_for_client` | a GitHub repository's newest release has no build for this client, so the newest older release whose `release.json` declares it was installed ([look-back](#a-release-per-client-github-look-back)); the message names both releases. No fix |
 | `missing_dependency` | a folder an installed addon's TOC requires was not installed: no keyless source ships it, several projects do, its only build is out of date, a dependency limit was reached, or `--no-deps`; the fix names a candidate when there is one, and searches for the folder (`omaddons search <folder>`) when no keyless source ships it |
 | `toc_comma_on_legacy` | a comma interface list on a client that reads only the first number |
@@ -2488,9 +2503,9 @@ Every error code has its doctor exit, from its general exit: 2 → 64, 3 → 66,
 | `adopt_name_changed` | an adopted addon's name was taken on its client; it is recorded as `<name> (<primary folder>)` |
 | `export_missing_target` | `export`: a registered client whose directory is gone was exported from its records |
 | `export_local_source` | `export`: an addon installed from a local file or folder was left out |
-| `not_locked` | `sync --locked`: entries without a version installed their newest release (one warning per client, naming them) |
 | `local_changes_replaced` | an install or update replaced folders whose files had changed on disk (it names up to 10 and counts them all, and says how long retention keeps the snapshot); the fix is `omaddons undo <tx>`, or under `--dry-run` a reminder that the snapshot keeps them |
 | `snapshot_only_copy` | a transaction moved folders that exist nowhere else into its snapshot (an unmanaged folder replaced under `--force`, an addon adopted as it was or installed from a local archive or directory, removed or replaced); undo can restore them only until retention prunes it, and the message states the configured bounds. It names up to 10 folders; `-v` says where the snapshot keeps each. The fix is `omaddons undo <tx>`, or under `--dry-run` a reminder |
+| `not_locked` | `sync --locked`: entries without a version installed their newest release (one warning per client, naming them) |
 | `still_required` | an addon removed (by `remove` or `undo`) is required by addons that stay, which will not load without it; the fix is `omaddons undo <tx>`, or under `--dry-run` a reminder that undo restores it |
 | `orphaned_dependency` | a remove, update or undo left dependencies required by nothing; the fix is one `omaddons remove <names…> -t <id>` naming them all |
 | `bridge_dependency` | a newly installed addon's other folder (a bridge or plugin) works with an addon that is not installed; nothing is installed for it, and the fix installs it (`omaddons install <name or ref> -t <id>`), or searches for it (`omaddons search <folder>`) when no keyless source ships it. Only on the addon's first install |
@@ -2541,7 +2556,7 @@ omaddons update -t retail --if-match pc1:…         # exactly that update, or p
   - `install`'s, `update`'s, `sync`'s and `copy`'s cover, per client: its record generation; the folder operations, each change and each release (by release id, download address, expected hash and archive digest; a Tukui download by source, key and release id, because its address is resolved fresh); the content of every folder the run replaces or removes, managed or not (every file, edited or clean, every symlink and empty directory); every name it would create, and that it is still absent; the client's marker; local inputs (a `--file` archive's hash, a folder's listing, a git checkout's commit); which addon satisfies which dependency; the rules that judged the releases; and the omaddons build (a preview made by another build is stale). `update`'s also covers what it chose to skip and why; `sync`'s the exact bytes of its file, even a comment; `copy`'s the source client's generation and the content of every source folder it copies. No text a human reads enters a token, so a token never moves because a message changed.
   - `pin`'s and `unpin`'s cover the records and generation of each client they would change, and the record change; when nothing would change, they cover every selected client holding the addon. With `--version`, they also cover the release and every file of every folder they replace. Both tokens also cover the client's identity and the build of omaddons that made them.
   - `adopt`'s covers the folders it records, file by file (each file's path, size and SHA-256, symlinks and empty directories included), the records it writes, and the rules that identified them. A managed folder re-pointed with `--ref` changes only its record, so its token witnesses no folder. When nothing would change, the token covers every examined client's identity and generation.
-- **Releases between preview and run.** A bound run keeps its command's freshness. `install` and `copy` always ask their sources again, so a release published since the preview makes the bound run `plan_stale` (`selection`). `update` and `sync` answer from releases remembered in the last 15 minutes, as they do without `--if-match` (unless `--refresh`), so inside that window a bound run installs exactly the previewed version even when a newer one appeared: it does what you saw.
+- **Releases between preview and run.** A bound run keeps its command's freshness. `install` and `copy` always ask their sources again, so a release published since the preview makes the bound run `plan_stale` (`selection`). `update` and `sync` answer from releases remembered in the last 15 minutes, as they do without `--if-match` (unless `--refresh`), so inside that window a bound run installs exactly the previewed version even when a newer one appeared.
 - **Per client.** The guarantee is per client. On each client a bound run commits exactly the previewed operations or none of them. A run over several clients commits one transaction per client, as every run does: when a client changes after the run's own check (another omaddons command committed there first), that client is refused and the others still commit. The run is then `partial`: `targets[].tx` names each committed transaction, `targets[].error` (`plan_stale`) each refused client, and a client with neither changed nothing. When no client committed, the run fails with that refusal. Nothing calls such a run atomic.
 - **What the guarantee covers.** Other omaddons processes are serialized by the global lock. Every change, by anyone, to what the preview covered is caught up to the second check. After it, each rename re-checks only the identity of the folder it moves and that its destination is still free, so a folder replaced in that interval rolls the transaction back (`plan_stale` with `observed` for a bound run, the retryable `plan_stale` otherwise). omaddons does not promise a compare-and-swap against another program writing into `AddOns` in the last instant before a rename, because Linux offers no "rename this directory only if nothing inside it changed"; what such a write changed is kept in the transaction's snapshot, and `omaddons undo <tx>` brings it back. A folder swapped in the instant between a rename's journal line and the rename stops the transaction for repair, with nothing lost (see [`journal_pending` that does not clear](#journal_pending-that-does-not-clear)).
 - **Nothing left to do.** A bound run that finds nothing left to do still compares its token. If the world moved since the preview it is `plan_stale`, not "nothing to do", so the second of two runs holding one token learns that the first one won.
@@ -2621,7 +2636,7 @@ Exactly one `error` event is emitted per failure, even with `--quiet`. `debug` l
 
 ### Stability
 
-The envelope is `schema_version` 1.0. Until the first tag (milestone 4) the contract can still change. From that tag on, it is frozen. The contract suite (`tests/contract/`) runs a matrix of success and failure cases across the commands. Every envelope the suite produces, and every JSON envelope snapshot in the repository, is validated against its command's JSON Schema (draft 2020-12, generated with the serialize contract), strictly: a key the schema does not declare fails. Every error's `details` is validated against its code's typed specification, and every stderr event against its event's schema. A rule test holds every schema to the contract's naming rules (timestamps, null versus omitted, names, closed enumerations); the violations that predate it are listed in `tests/contract/rules_allowlist.txt`, which may only shrink and is empty at the first tag. Beyond the schemas, it checks key order, `ok`/`exit_code` agreement and registered codes. It also checks that each envelope's `command` is the canonical path of its argv (`help` for `--help`, `version` for `-V`), and that its exit is one that command declares. Two logged scenarios (`tests/contract/canonical_names.rs`, `argc e2e contract canonical_names`) walk every `auth` spelling and every bare parent, alias and envelope-only name. Every `fix_argv`, `alternatives[].argv` and `commands[].argv` must parse as an omaddons command line and round-trip through shell quoting to its display string. A prose fix may not name a runnable omaddons command: a scan of the source and the matrix both fail one that does. A corpus of mistyped commands, and every command name with one letter dropped or two neighbours swapped, check that a fix never names a different command that changes something. The intent corpus (`tests/contract/intent_corpus.rs`) goes further: each common wrong invocation (a client in the wrong place, a mistyped client id, `-t all`, a mistyped command, flag or value) runs on a synthetic home with three clients; its suggested fix then runs on an untouched copy of that home and must reach the exit the corpus states; and a wrong invocation that fails must leave every state file and client tree as it was, byte for byte, and send no request. The suite also checks that every failure emits exactly one stderr `error` event, that suggestions carry no presentation flags, that read-only commands accept and ignore `--dry-run` and `--reason`, that repeated runs print identical bytes, and that `status`'s recommendations run on a fresh home. Snapshots pin representative envelopes.
+The envelope is `schema_version` 1.0. Until the first tag, `v0.1.0` at the end of milestone 4, the contract can still change: a pre-freeze audit is still to correct names, timestamps and typed `details` across it, and a wire-name golden test is still to pin it. From that tag on, it is frozen. The contract suite (`tests/contract/`) runs a matrix of success and failure cases across the commands. Every envelope the suite produces, and every JSON envelope snapshot in the repository, is validated against its command's JSON Schema (draft 2020-12, generated with the serialize contract), strictly: a key the schema does not declare fails. Every error's `details` is validated against its code's typed specification, and every stderr event against its event's schema. A rule test holds every schema to the contract's naming rules (timestamps, null versus omitted, names, closed enumerations); the violations that predate it are listed in `tests/contract/rules_allowlist.txt`, which may only shrink and is empty at the first tag. Beyond the schemas, it checks key order, `ok`/`exit_code` agreement and registered codes. It also checks that each envelope's `command` is the canonical path of its argv (`help` for `--help`, `version` for `-V`), and that its exit is one that command declares. Two logged scenarios (`tests/contract/canonical_names.rs`, `argc e2e contract canonical_names`) walk every `auth` spelling and every bare parent, alias and envelope-only name. Every `fix_argv`, `alternatives[].argv` and `commands[].argv` must parse as an omaddons command line and round-trip through shell quoting to its display string. A prose fix may not name a runnable omaddons command: a scan of the source and the matrix both fail one that does. A corpus of mistyped commands, and every command name with one letter dropped or two neighbours swapped, check that a fix never names a different command that changes something. The intent corpus (`tests/contract/intent_corpus.rs`) goes further: each common wrong invocation (a client in the wrong place, a mistyped client id, `-t all`, a mistyped command, flag or value) runs on a synthetic home with three clients; its suggested fix then runs on an untouched copy of that home and must reach the exit the corpus states; and a wrong invocation that fails must leave every state file and client tree as it was, byte for byte, and send no request. The suite also checks that every failure emits exactly one stderr `error` event, that suggestions carry no presentation flags, that read-only commands accept and ignore `--dry-run` and `--reason`, that repeated runs print identical bytes, and that `status`'s recommendations run on a fresh home. Snapshots pin representative envelopes.
 
 ---
 
@@ -2688,7 +2703,7 @@ Both are skipped, as a success with a reason, in these cases:
 
 - **Nothing changed** (`unchanged`): `WTF/`, entry by entry (path, kind, size and time), is what the newest checkpoint holds.
 - **A checkpoint** is a backup made here (`manual`, `auto` or `before_restore`), whole, and observed stable. An imported, recovered, partial or best-effort backup never counts, so the next trigger tries again.
-- **Clones only** (`no_reflink`): `daily` makes a backup only by cloning, so it costs no space at first. Where the filesystem cannot clone files (ext4, tmpfs, NTFS) it makes none and writes nothing. Whether a clone worked is observed, not assumed: `backup list` and `status` show `auto.capability` and the last attempt (`auto.last: {at, result}`), and `status` keeps recommending `backup create` while no checkpoint is recent, so a client automatic backups cannot cover is never silently unprotected. `daily-copy` byte-copies too, within `limits.backup_copy_max_mb`, pruning older automatic copies first.
+- **Clones only** (`no_reflink`): `daily` makes a backup only by cloning, so it costs no space at first. Where the filesystem cannot clone files (ext4, tmpfs, NTFS) it makes none and writes nothing. Whether a clone worked is recorded from each attempt: `backup list` and `status` show `auto.capability` and the last attempt (`auto.last: {at, result}`), and `status` keeps recommending `backup create` while no checkpoint is recent, so a client automatic backups cannot cover is never silently unprotected. `daily-copy` byte-copies too, within `limits.backup_copy_max_mb`, pruning older automatic copies first.
 - **Space first** (`space_low`): below `limits.backup_min_free_mb` free, eligible automatic backups are pruned oldest first (never your own, the newest checkpoint, or one younger than a day). If that is not enough, the backup is skipped with `backup_space_low`.
 - **One at a time** (`in_progress`): two attempts on one client at once make one backup. The second finds the first's lock on `backups/` and skips.
 
@@ -2701,7 +2716,7 @@ Both are skipped, as a success with a reason, in these cases:
 - Folders come back as they were from `<client>/Interface/.omaddons/snapshots/<tx>/AddOns/`: every file's bytes and mode, directory modes, symlinks and empty directories (restored files get new timestamps, and a directory always keeps owner access); tests compare all of these. Each addon's record and files index are restored, while other addons' later changes stand.
 - **SavedVariables.** Only the touched addons' own files (`WTF/…/SavedVariables/<Folder>.lua` and `.lua.bak`, account-wide and per character) are snapshotted, with a SHA-256 manifest. On undo, a file that is unchanged since is left alone, a changed one is restored, and one the new version created is moved aside. A snapshot copy that no longer matches its manifest fails the undo with `state_corrupt` before anything moves; `omaddons undo <tx> --saved-variables keep`, its fix, reverts the folders without it. With `--saved-variables auto` and the game running, folders revert (if the running policy allows), and the SavedVariables restore is deferred. You get a `saved_variables_deferred` warning carrying the command to run after quitting: `omaddons undo <tx> --saved-variables restore`. SavedVariables directories that lead outside the client directory through a symlink (a `WTF/` kept in a sync folder) are never snapshotted or written; `saved_variables_out_of_scope` counts the files undo cannot restore. Folder names under `WTF/` are matched ignoring case, as Wine does (`wtf/account/…/savedvariables/` works); a folder spelled two ways (`WTF` and `wtf`) is left alone and counted in `saved_variables_out_of_scope`, because the game reads only one of them.
 - **Conflicts.** `undo_conflict` (exit 4) when a later transaction touched the same folders (undo the newest first), when the transaction was already undone, or when a folder it removed has been put back by hand. A snapshot pruned by retention gives `not_found`; for folders with no other copy, the commit said so with `snapshot_only_copy`.
-- **Repairs.** The undo of a `doctor fix` repair is strict, with no best-effort mode and no flag that relaxes it. It reverts the repair only while nothing the repair touched has changed since: every path as the repair left it, every backup intact. Otherwise it refuses before anything moves. Putting a set-aside journal back is guarded as well: the client's record generation, its marker and the folders that journal would recover must not have changed. Each journal comes back under a provisional name first and takes its own name at the end, the activations last, one per journal, so a crash in between is rolled back whole before anything recovers one. A repair stays undoable while nothing it touched has changed. Its record (the doctor run, its backups and quarantine) stays inspectable until `doctor gc`.
+- **Repairs.** The undo of a `doctor fix` repair is strict, with no best-effort mode and no flag that relaxes it. It reverts the repair only while nothing the repair touched has changed since: every path as the repair left it, every backup intact. Otherwise it refuses before anything moves. Putting a set-aside journal back is guarded as well: the client's record generation, its marker and the folders that journal would recover must not have changed. Each journal comes back under a provisional name first and takes its own name at the end, the activations last, one per journal, so a crash in between is rolled back whole before anything recovers one. Its record (the doctor run, its backups and quarantine) stays inspectable until `doctor gc`.
 - **What a repair keeps is never deleted behind your back.** Only [`doctor gc`](#doctor-gc) deletes a doctor run, a repair's client half or a cache quarantine, by its retention plan: never during recovery, never while a change that needs it is unfinished (an interrupted repair or undo, a set-aside that can still be reactivated, a history line it cannot read), only with `--yes`, and bound to its preview with `--if-match`. Its preview names every undo the deletion takes away.
 - **Stuck journals are suspended, never deleted.** A journal recovery cannot settle (too new, unreadable, stopped at a step it cannot place, or naming a client that is no longer its own) is set aside only with its failure mode's id, `--force` and `--yes`. The set-aside moves the journal's whole set into quarantine: its journal file, in-flight lock, state snapshot, stage and client snapshot, each into the quarantine on its own filesystem. What it moves is found by the transaction id alone, in omaddons' own folders on the clients whose identity marker checks out, never by a path the journal names, so an unreadable or newer journal never directs a write; the finding and the dry run say whether anything may remain unaccounted for (`attribution: partial`). It records guards: each touched client's record generation and marker, and, where the journal can be read, the folders it would recover and its `WTF/` as one stamp (never a path below it). `doctor undo` reactivates the set only while every guard holds, the journal back under a provisional name first and its own name last, so recovery never runs it ahead of the undo. The set is kept until `doctor gc`.
 - Registry changes and `target.json` are not reverted.
@@ -2731,13 +2746,13 @@ Running clients are detected live from `/proc` (your own processes only). The ex
 
 | `running_policy` | While the client runs |
 |---|---|
-| `safe` (default) | Adds and replacements that keep the loaded TOC go through, with `reload_required: "reload"` (`/reload` in game). Removing a folder the client does not load goes through with `reload_required: "none"`. Removing a folder the client loads, or an update that deletes or renames the TOC it loads, is refused with `game_running` until it exits. On legacy and unrecognized custom clients, every change is refused, except on 3.3.5a, which re-reads a loaded addon's TOC on `/reload`: there a replacement that keeps the loaded TOC goes through with `reload_required: "reload"`, and a new or removed folder waits for a restart |
+| `safe` (default) | Adds and replacements that keep the loaded TOC go through, with `reload_required: "reload"` (`/reload` in game; an addon new to the client may need a restart instead, see [Known issues](#known-issues)). Removing a folder the client does not load goes through with `reload_required: "none"`. Removing a folder the client loads, or an update that deletes or renames the TOC it loads, is refused with `game_running` until it exits. On legacy and unrecognized custom clients, every change is refused, except on 3.3.5a, which re-reads a loaded addon's TOC on `/reload`: there a replacement that keeps the loaded TOC goes through with `reload_required: "reload"`, and a new or removed folder waits for a restart |
 | `refuse` | Every change is refused |
 | `allow` | Nothing is refused; the result says whether `/reload` or a restart is needed |
 
 `--while-running` lifts these folder rules for one command, even under `refuse`. **SavedVariables are never written while the client runs**, under any policy or flag, because the game rewrites them on logout.
 
-A whole `WTF/` restore is refused while its client runs or may run, whatever the policy or flag, and the running state is checked again under the lock as the last step before the exchange. That check refuses; it cannot exclude. The game takes none of omaddons' locks, so it can still launch in the milliseconds between that check and the exchange. It then reads one consistent tree (the exchange is atomic), and may write its settings in memory over the restored files when it logs out. The restore's `WTF.previous` keeps the pre-restore tree either way.
+A whole `WTF/` restore is refused while its client runs or may run, whatever the policy or flag, and the running state is checked again under the lock as the last step before the exchange. That check can refuse the restore, but it cannot keep the game closed: the game takes none of omaddons' locks, so it can still launch in the milliseconds between that check and the exchange. It then reads one consistent tree (the exchange is atomic), and may write its settings in memory over the restored files when it logs out. The restore's `WTF.previous` keeps the pre-restore tree either way.
 
 ### Retention
 
@@ -2761,7 +2776,7 @@ Retention runs after every commit, for the target just changed:
 
 - **Always kept:** every backup younger than 24 hours (since it was made or imported here), the client's newest checkpoint (`qualifying`) whatever its age, and a backup whose `backup.json` cannot be read.
 - **Your backups** (`manual`, `imported` and `recovered`, which holds a play session an interrupted restore would have lost) are only ever deleted when you ask: by id, with `--keep` or with `--older-than`.
-- **Automatic backups** are thinned by local day. For each of the newest `limits.backup_auto_keep_days` days (7) that hold any, the day's first `pre_change` backup (and its first stable one, when the first was best effort and so no checkpoint), its last `post_session` backup and every `before_restore` backup stay; the rest of those days, and every older day, go. Why per day: with two triggers a day, a bare count of 7 would cover only two or three days of play.
+- **Automatic backups** are thinned by local day. For each of the newest `limits.backup_auto_keep_days` days (7) that hold any, the day's first `pre_change` backup (and its first stable one, when the first was best effort and so no checkpoint), its last `post_session` backup and every `before_restore` backup stay; the rest of those days, and every older day, go. Thinning is per day because, with two triggers a day, a bare count of 7 would cover only two or three days of play.
 - **Under space pressure**, [automatic backups](#automatic-backups) first reclaim space by deleting automatic backups that are not protected above, oldest first, rechecking after each. They never delete one of your backups, the newest checkpoint or one younger than a day. A byte-copy budget only ever deletes byte-copied ones.
 - **Busy:** a backup being read (a restore, an export, a verify) is never deleted under its reader; it is skipped until the next pass.
 - A failed pass after a backup is only `retention_failed`: the backup stands.
@@ -3047,7 +3062,10 @@ The state directory honors `XDG_STATE_HOME`, the cache `XDG_CACHE_HOME`, and the
 | `src/main.rs`, `src/lib.rs` | Entry point and module tree |
 | `src/cli.rs` | clap definitions, global flags, argv for fixes |
 | `src/app/` | One module per command, plus `world.rs` (discovery + registry for a run), `engine.rs` (wiring), `precondition.rs` (the preview tokens `--if-match` binds to) and `issues.rs` (`status`'s findings) |
-| `src/doctor/` | The doctor: the failure-mode registry `status`'s issues come from (`registry.rs`, with its rows' detectors under `detectors/`), the finding model with stable instance keys (`finding.rs`) and the tolerant view (`view.rs`: each layer, such as `config.toml`, the registry and the records, read once, bounded and only when a check asks; one that cannot be read is a finding, never a default); the runtime and fixers follow |
+| `src/doctor/` | The doctor: the failure-mode registry `status`'s issues come from (`registry.rs`, with its rows' detectors under `detectors/`), the finding model with stable instance keys (`finding.rs`), the tolerant view (`view.rs`: each layer, such as `config.toml`, the registry and the records, read once, bounded and only when a check asks; one that cannot be read is a finding, never a default), the selection a run's flags make (`plan.rs`), the runtime with its budgets and run directories (`runtime.rs`, `budget.rs`, `runs.rs`), `explain.rs`, the online checks (`online.rs`), `doctor fix` (`fix.rs`, and the fixers under `fixers/`: `quarantine.rs`, `recover.rs`, `set_aside.rs`, `chmod.rs`) and `doctor gc` (`gc.rs`, `gc/`) |
+| `src/contract/` | The contract's enumerable facts, shared by `capabilities`, `robot-docs` and the tests: commands, actions, environment variables, features, the JSON Schemas, the stderr events, the agent guide's source (`guide/`) and the semantic manifest |
+| `src/build_info/` | The build id (`build.rs` computes it from the input manifest in `inputs.rs`), which stored plans, tokens and `capabilities` name |
+| `src/vocabulary.rs` | The words a client can be called by, in `-t`'s order: what intent inference recognizes as a client named in the wrong place, without running discovery |
 | `src/output/` | The JSON envelope, human rendering, stderr events, terminal detection |
 | `src/error.rs` | The error and warning code registries and the exit-code table |
 | `src/model.rs` | Domain types: refs, folder names, actors, channels, records |
@@ -3073,10 +3091,10 @@ The state directory honors `XDG_STATE_HOME`, the cache `XDG_CACHE_HOME`, and the
 | `src/politeness.rs`, `src/limits.rs` | Every network-politeness constant and every safety limit, each in one place |
 | `catalog/catalog.toml` | The built-in catalog, embedded with `include_str!` |
 | `omarchy/` | The bar widget's QML and JavaScript, embedded by `src/omarchy/assets.rs`: `Model.js` turns envelopes into what the views show and builds every argv the widget may run, `Service.qml` is its one service (the processes, the doorbell, the triggers), `views/` holds the panel's views; its tests are under `omarchy/tests/` (bun and `qmltestrunner`) |
-| `build.rs` | The digest of the widget's files, so `status` compares an installed widget with this build without hashing them on every call |
+| `build.rs` | The digest of the widget's files, so `status` compares an installed widget with this build without hashing them on every call; the build id; and the agent guide's digest |
 | `tests/`, `fuzz/` | Integration, contract, crash, concurrency and live tests; cargo-fuzz targets |
 
-**One doorbell.** Every write that can change what `status --cached` reports rings `~/.cache/omaddons/doorbell.json` once, after the write: each commit window (undo's too, after its lock is released), a recovery that rolled a journal back or forward, a release memo write that changed the memo (`outdated` and the other fetching commands), an errors memo write that changed it (`errors`), a backup inventory write that changed it (a backup made, or a stale summary rebuilt by `backup list`), each backup's history line, and every settings command. `status` never rings it (its one write is the discovery cache a plain scan refreshes), so the bar widget can watch the cache directory for the doorbell instead of polling. The file is a signal, never a source of state: the widget reads `status --cached` again when it rings.
+**One doorbell.** Every write that can change what `status --cached` reports rings `~/.cache/omaddons/doorbell.json` once, after the write: each commit window (undo's too, after its lock is released), a recovery that rolled a journal back or forward, a release memo write that changed the memo (`outdated` and the other fetching commands), an errors memo write that changed it (`errors`), a backup inventory write that changed it (a backup made, or a stale summary rebuilt by `backup list`), each backup's history line, and every settings command. `status` never rings it (its one write is the discovery cache a plain scan refreshes), so the bar widget can watch the cache directory for the doorbell instead of polling. The widget never takes state from the file: it reads `status --cached` again when it rings.
 
 **Invariants the build enforces:**
 
@@ -3183,7 +3201,7 @@ Another omaddons process held the lock for more than 5 seconds. `error.details.h
 
 ### `hash_mismatch` on a cached archive
 
-An archive in the download cache (`~/.cache/omaddons/blobs/<sha256>`) no longer hashes to its name: the disk or another program changed its bytes. omaddons never installs it. The error names it (`details.blob`, with `details.actual`) and changed nothing. It is raised when the archive could not be downloaded again: the command ran offline, or the source no longer serves that release. Online, the same command downloads it again into the same place and goes on; nothing has to be deleted first.
+An archive in the download cache (`~/.cache/omaddons/blobs/<sha256>`) no longer hashes to its name: the disk or another program changed its bytes. omaddons never installs it. The error names it (`details.blob`, with `details.actual`) and changed nothing; a failed `update` loses those two keys today (see [Known issues](#known-issues)), so run `omaddons doctor --include-deep` to find the archive. It is raised when the archive could not be downloaded again: the command ran offline, or the source no longer serves that release. Online, the same command downloads it again into the same place and goes on; nothing has to be deleted first.
 
 ```bash
 omaddons install <addon> --reinstall -t <id>      # the same command, online
@@ -3279,7 +3297,13 @@ An interrupted `WTF/` restore adds three cases. While its game runs, it waits (`
 | Capability | State | Planned |
 |---|---|---|
 | Batched GitHub checks (GraphQL, one request for many repositories) | ❌ one `releases/latest` per repository instead | M5 |
-| `doctor fix` (repairs), installing the agent skill | ❌ | M4 |
+| Installing the agent guide as a skill (`robot-docs install-skill`) | ❌ run `omaddons robot-docs guide`, or copy `skills/omaddons/SKILL.md` | M4, before the first tag |
+| Verbosity levels | ⚠️ `-v` works; `-vv` is accepted and means the same | M4, before the first tag |
+| A discovery line in bare `help` (and `discovery` in `help --json`) | ❌ | M4, before the first tag |
+| `status` on the doctor's whole registry | ⚠️ a fixed 16 of the 30 failure modes ([`status`](#status)); `omaddons doctor` checks them all | M4, before the first tag |
+| A tagged release with a frozen contract | ❌ nothing is tagged; the contract can still change | M4: `v0.1.0` |
+| Completing client ids and addon names in the shell | ❌ the scripts are static ([Shell completions](#shell-completions)) | Launch-week fixes |
+| `doctor health`, `doctor ls`, `doctor capabilities`, `doctor robot-docs`, `doctor --robot-triage`, and doctor checks beyond today's 30 failure modes | ❌ `doctor --quick` runs the cheap checks, the runs are folders under `~/.local/state/omaddons/doctor/runs/`, and `capabilities` and `robot-docs` describe the doctor too | Dropped from M4; may return if real use asks for them |
 | CurseForge, Wago | ❌ | M5, optional, bring your own key |
 | Packages, man page | ❌ build from source | M5 |
 | Windows, macOS | ❌ | Never (non-goal) |
@@ -3297,6 +3321,7 @@ An interrupted `WTF/` restore adds three cases. While its game runs, it waits (`
   - It recovers an interrupted M3 install, or undo of an install, as its own (the two folder shapes `tests/compat_m2.rs` crashes; an update and a remove go through the same engine but are not tested this way). It never sees an interrupted restore, `--addon` restore or undo of either (their journals, stages and snapshots are named `<tx>.wtf`, see [Transactions](#transactions)), and leaves `WTF/` and both snapshot halves alone. Each of those shapes was crashed at each of its steps: after its journal's first line, around each journaled rename, and after `swapped`, the record and the history line. With everything it left two hours old, the M2 build changed something on the same client, and the next M3 change recovered the transaction. `WTF/` came back as it was before the crashed command, rolled back, or rolled forward and then undone. Before `<tx>.wtf`, the M2 build deleted those journals unread, and an hour later its orphan sweep deleted the files a restore had replaced, from its stage or its snapshot.
 
   From M3 on, every build refuses what it cannot read (see [Transactions](#transactions)).
+- Likewise, use the M3 build (`c0ab5e9`) only to read state that M4 has written. `tests/compat_m3.rs`, a checkpoint test, runs it against every kind of file M4 writes and still needs (repair journals and their client halves, quarantines, doctor run directories, stored plans, set-aside journals); its results will be quoted here when the milestone's checkpoint runs.
 - The download cache reuses an asset whose SHA-256 is known: from the source (GitHub REST assets carry a digest) or remembered from an earlier download of that release's asset in the release memo. A release's assets are taken to be immutable, so a publisher re-uploading different bytes under the same tag and file name is not noticed while the old blob is cached (unless the source declares a different size or hash). Within one command, the same asset is still downloaded once per target that tries it. An unchanged release is never downloaded. A cached archive is re-hashed before each use (about 10 ms per 5 MB), once per command.
 - A `url:` ref's release is its URL, so new content published at the same URL is never picked up.
 - Lua errors are only as fresh as BugGrabber's last save, at `/reload` or logout.
@@ -3306,9 +3331,9 @@ An interrupted `WTF/` restore adds three cases. While its game runs, it waits (`
 - "Not while the game runs" is a check, not a lock on the game: a client launched in the milliseconds before a restore's exchange may write its in-memory settings over the restored files at logout. The restore's undo keeps the tree it replaced (see [Transactions](#transactions)).
 - WowAce projects that need packaging steps (externals, ignored or moved folders, build-time keywords such as `--@debug@` blocks, nolib builds) are refused with `packaging_unsupported`, never installed half-built; download a packaged release in a browser instead. A WowAce tree is fetched one request at a time.
 - Private GitHub repositories and HTTP proxies are not supported.
-- Shell completion is static: commands, subcommands, aliases, flags and fixed values complete; client ids and addon names do not (clap's dynamic completion is unstable, and completing them would run discovery on every Tab press). A script is as current as the build that generated it: generate it again after upgrading.
+- Shell completion is static: commands, subcommands, aliases, flags and fixed values complete; client ids and addon names do not (clap's dynamic completion is unstable, and completing them naively would run discovery on every Tab press). Completing them is planned among the launch-week fixes. A script is as current as the build that generated it: generate it again after upgrading.
 - Restores need atomic renames: a whole restore exchanges `WTF/`, and `--addon` exchanges each file in place. On a filesystem without `RENAME_EXCHANGE` (NTFS through ntfs-3g, many FUSE and network filesystems), or with SavedVariables on another mount than `Interface/.omaddons/`, both are refused (`filesystem_unsupported`). The workaround: with the game closed, copy what you need by hand from the backup's own folder, `Interface/.omaddons/backups/<id>/WTF/`, a plain directory (`details.backup_dir` names it).
-- Two clients sharing one AddOns directory (an AddOns symlinked between Classic clients) keep separate records: a folder one records is `shared` on the other, which cannot record it too, so manage those addons from one client. Records made on both before this check stay doubled: `status` warns `target_addons_shared`, a change through either warns the same, and M4's doctor will report them.
+- Two clients sharing one AddOns directory (an AddOns symlinked between Classic clients) keep separate records: a folder one records is `shared` on the other, which cannot record it too, so manage those addons from one client. Records made on both before this check stay doubled: `status` warns `target_addons_shared`, and a change through either warns the same. The doctor has no check for them.
 - A file whose `release.json` or name labels it for other clients only is refused even when its TOCs would load, unless the addon's own folder carries a TOC named for the client (see [archive grading](#how-omaddons-decides-what-loads)). A multi-client plain `Folder.toc` under such metadata is refused. [`--any-flavor`](#a-build-not-made-for-this-client---any-flavor) installs it anyway, on the client it is given for.
 - A [look-back](#a-release-per-client-github-look-back) sees only what `releases.atom` holds, the 10 newest releases; the feed does not page. When those are all prereleases it probes the newest stable tag's siblings, but only as `<version><suffix>`, with the suffixes the feed's tags use. A repository that names per-client tags any other way (`mists-v3.218`), or whose feed shows no tag with a client's suffix, is not reached for that client. VuhDo (`gh:vuhdo-io/VuhDo`) is reached this way: observed 2026-10-24, its latest stable release is `v3.218-catac` and its 100 newest releases are v3.219 alphas and betas, and it installs `v3.218-mopc`, `-tbcc`, `-vanilla` and `v3.218` on Mists Classic, Anniversary, Classic Era and retail.
 - The legacy running behavior was observed only on 3.3.5a: a new addon needs a restart, and a loaded addon's TOC is re-read on `/reload`. So only 3.3.5a takes replacements while it runs; the other legacy clients refuse every change until they are observed. Running detection was observed under umu and GE-Proton for retail, Classic Era, Anniversary and 3.3.5a (Mists Classic's process has the same shape). The Battle.net app itself runs as `CrBrowserMain`, so with no client open the process route relies on Battle.net's agent (`Agent.exe`, run from `ProgramData/Battle.net/Agent/`). Under umu the agent was observed (2026-10-21, the app alone open) carrying the prefix's `WINEPREFIX` (its `pfx` path, a link to the prefix root), so the route holds.
@@ -3319,6 +3344,14 @@ An interrupted `WTF/` restore adds three cases. While its game runs, it waits (`
 The README describes the intended behaviour. A place where the code at HEAD does not match it yet is listed here with its bead (`br show <id>`), and the README changes only if a fix decides otherwise.
 
 - **A forget that no longer applies is reported as `not_managed`** (`omad-z60g`). When every folder of an addon was deleted by hand, `remove` forgets it. If one of those folders is put back in the instant between that plan and the commit lock, the run changes nothing, which is right. It then fails `not_managed`, "Foo is no longer managed in retail", although Foo is still managed and its folder is back. Run `remove` again to remove the folder. A run bound to its preview is refused correctly, as `plan_stale` with `selection`.
+- **A failed `update` drops its items' error details** (`omad-r86s`). When every item of an `update` fails, the command fails with the first item's error, but without that error's `details`. So an offline `update` whose cached archive is damaged fails `hash_mismatch` with the right message, retryability and fix (`omaddons doctor --include-deep`), but with neither `details.blob` nor `details.actual`, which [`hash_mismatch` on a cached archive](#hash_mismatch-on-a-cached-archive) promises; `details` holds only `items`. Other commands that build their failure the same way may drop them too; `install` keeps them.
+- **A recovery that stops at a journal no client owns forgets what it had already recovered** (`omad-ef89`). Settings commands (`config set`, `targets` changes, `auth github set`, `export --write`, `errors dismiss`), and a change command with nothing to commit, recover interrupted journals first. When such a recovery rolls some journals back or forward and then meets one that names no client, the result holds only the `journal_pending` warning for the stuck one: the `journal_recovered` warnings of the ones it finished are lost, and the widget's doorbell does not ring, so the bar catches up only at its next refresh.
+- **A client uninstalled through Battle.net leaves a ghost target** (`omad-launch-week-fixes-bmcx.1`). After Battle.net uninstalls a client, omaddons can still list a target for it, with an `unknown_flavor` warning that points at a family override rather than saying the client is gone.
+- **Retention prunes only the client just changed** (`omad-launch-week-fixes-bmcx.3`). [Retention](#retention) runs after a commit, for that commit's client only, so a client you stop changing keeps its old undo snapshots past the 7-day bound until its next change.
+- **`install` may say `/reload` when the client needs a restart** (`omad-launch-week-fixes-bmcx.5`). Installing an addon that is new to a running modern client reports `reload_required: "reload"` ("/reload in game"), but the client may not load a newly added addon until it restarts.
+- **`search` picks a client for its suggestion without knowing compatibility** (`omad-launch-week-fixes-bmcx.6`). When a result's hint is `unknown` on every selected client (every GitHub result is), the `-t` in its suggested `omaddons install` command comes from the tie-breaks alone (the default target, then a live client, the client with the most managed addons, retail), not from anything known about the addon. The install itself still verifies every TOC.
+- **`list` counts folders as "managed"** (`omad-launch-week-fixes-bmcx.7`). The summary under each client's table (`2 managed · 1 unmanaged · 1 protected · 0 linked`) counts folders, not addons, so an addon that ships several folders (DBM, BigWigs) counts once per folder there, while the table lists it once. `status`'s row counts the same way.
+- **The action registry calls `apply` never destructive** (`omad-launch-week-fixes-bmcx.12`). `capabilities` and the agent guide publish `apply` (and `undo` and `doctor_fix`) with `destructive: false`, while an `apply` is as destructive as the plan it runs, as described here and as each `apply` hint in `commands[]` already says. Trust the hint's own `destructive`, not the registry's default.
 
 ---
 
@@ -3331,8 +3364,10 @@ The README describes the intended behaviour. A place where the code at HEAD does
 | **M2: updates and adoption** | `outdated`, `update`, `pin`/`unpin`; WoWInterface and Tukui; changelogs; dependencies; drift detection; tiered `adopt`; `addons.toml` with `export`, `sync` and `copy`; `search`; `auth github` | ✅ Done (2026-10-16) |
 | Post-M2 audit | An independent audit of M1 and M2 (engine failure paths, contract holes, integrity and privacy statements, discovery and rules fields, test blind spots, this README) and real-world checks on real clients: running detection under Proton, in-game loading on every client, legacy `/reload` behaviour | ✅ Done (2026-10-21) |
 | **M3: the widget** | The Omarchy bar widget (QML, embedded in the binary, managed by `omaddons omarchy install`, `status` and `remove`), `errors` (BugGrabber, installed keyless from a new `wowace:` source), `backup` of `WTF/` (list, create, verify, restore, export and import, automatic backups) | ✅ Done (2026-10-23) |
-| **M4: the agent surface** | `capabilities`, `robot-docs`, `install-skill`, intent inference, the full `doctor`, stored plans (`--dry-run` then `apply`), `completions`, wire-name golden tests; **the first tag freezes the contract** | 🗓️ Planned |
-| **M5: accounts and release** | Optional CurseForge and Wago (bring your own credential, never cached), fingerprint adoption; release engineering: versioning, CHANGELOG, a local PKGBUILD, packaged completions and a man page | 🗓️ Planned |
+| **M4: the agent surface** | Shipped: `capabilities`; `robot-docs guide`, `schema` and `errors`; `completions`; intent inference; stored plans (`--dry-run`, then `apply`), `plans show` and `--if-match`; the doctor (`doctor`, `explain`, `fix`, `diff`, `undo`, `gc`, `--online`). Left: `robot-docs install-skill`, verbosity levels, the discovery line in `help`, `status` on the doctor's registry, the pre-freeze contract corrections, the wire-name golden test and a run on the real machine; then **the first tag, `v0.1.0`, freezes the contract**. Dropped from M4 when it was re-scoped on 2026-11-04, and may return if real use asks for them: `doctor health`, `ls`, `capabilities`, `robot-docs` and `--robot-triage`, and further detector batches (more state-file, config, userland, permission and external-artifact checks) | 🚧 In progress |
+| Omarchy widget overhaul | A user-first overhaul of the bar widget: a UX audit and design system first, then every view rebuilt (Updates, Installed, an addon page, Search, Lua errors, Issues, Backups, History, Settings, first run), a readable plan sheet for every confirmation, a `?` key reference and mouse support (`omad-widget-user-first-1n2p`) | 🗓️ Planned |
+| Launch-week fixes | The [Known issues](#known-issues), a `--help` overhaul to the standard of `br` and `bv`, dynamic completion of client ids and addon names, and an installer for the completion scripts (`omad-launch-week-fixes-bmcx`) | 🗓️ Planned |
+| **M5: accounts and release** | Optional CurseForge and Wago (bring your own credential, never cached), fingerprint adoption; release engineering: versioning, CHANGELOG, a local PKGBUILD, packaged completions and a man page. Not yet broken down into tasks | 🗓️ Planned |
 
 The authoritative design is the pinned vision bead. Its body is revision 2, and comments added after it supersede it.
 
@@ -3368,7 +3403,7 @@ Other tasks: `argc fmt`, `argc lint`, `argc test [filter]`, `argc e2e [filter]` 
 
 ### Tests
 
-With milestone 3's features in, there are 2,279 Rust tests: 1,154 unit tests in `src/`, 1,124 integration tests in 96 test binaries and one doctest. The gate runs 2,211 of them. The other 68 are `#[ignore]`d and run only at checkpoints or by hand: live probes, real-machine and real-client checks, time budgets and the bench homes (`tests/perf.rs`), the M2 build against M3 state (`tests/compat_m2.rs`), fixture recorders, the fuzz-seed writer and child-process helpers. (At the close of the post-M2 audit there were 1,645, and at the M2 checkpoint 1,333.) The widget adds 108 `bun` tests and 116 QML tests under `omarchy/tests/`, run by the gate's widget pipeline. `cargo test -- --list` counts today's.
+The gate runs about 4,500 Rust tests, unit tests in `src/` and integration tests in about 130 test binaries under `tests/`. About 98 more are `#[ignore]`d and run only at checkpoints or by hand: live probes, real-machine and real-client checks, time budgets and the bench homes (`tests/perf.rs`), the M2 build against M3 state (`tests/compat_m2.rs`) and the M3 build against M4 state (`tests/compat_m3.rs`), fixture recorders, the fuzz-seed writer and child-process helpers. (With milestone 3's features in there were 2,279, at the close of the post-M2 audit 1,645, and at the M2 checkpoint 1,333.) The widget adds 166 `bun` tests and the QML tests (132 test functions in `omarchy/tests/qml/`), run by the gate's widget pipeline. `cargo test -- --list` counts today's; the exact counts are recorded when the milestone closes.
 
 | Suite | What it covers |
 |---|---|
@@ -3395,6 +3430,10 @@ With milestone 3's features in, there are 2,279 Rust tests: 1,154 unit tests in 
 | `tests/capabilities.rs` | `capabilities`: the round trip of every command, flag, value, alias, conflict and requirement it lists, against the binary's own parser, and every command's help and pointer run through the binary; completeness against every registry; purity (no request, no write, hashed trees, nothing created on a fresh home); broken configurations and an unusable `HOME`; effective values with their source; credentials detected without being read or run; the human summary; and each check proven to catch a planted fault |
 | `tests/robot_docs.rs` | `robot-docs schema` and `robot-docs errors` end to end: every path, the envelope, the events and the files listed and equal to the library's schemas; one path's entry and every path's own schema command; unknown paths' fixes run; the catalog equal to the registries; the published schemas validating live output, strictly too; byte-identical repeats in other environments; no reads, writes or requests, and no `HOME` needed; `robot-docs guide` the same bytes on every machine (a broken or overriding config, a managed or relative home, any terminal width, verbosity, directory or `-t`), equal to bare `robot-docs` and to its JSON content, its help paths and usage fixes |
 | `tests/skill.rs` | The committed skill is the guide, byte for byte; its frontmatter and stamp; the compiled digest is its stamp; the regeneration's fixed point; every command the guide names parses |
+| `tests/doctor.rs`, `tests/doctor_view.rs`, `tests/doctor_concurrency.rs`, `tests/doctor_caches.rs`, `tests/doctor_plugins_secrets.rs`, `tests/blobs.rs` | The doctor's runtime (run directories, its envelope and exit dictionary, budgets, isolation, `--since` and `explain`), its tolerant view over synthetic homes, the journal and lock detectors with `status`'s journal titles, the damaged-archive detector and its quarantine, the widget and credential failure modes with the chmod repair, and a damaged cached archive never staged |
+| `tests/doctor_repair.rs`, `tests/doctor_repair_fences.rs` | `doctor fix` end to end with test-only fixers (every terminal state, the dry run's purity, a preview bound across processes, concurrent fixers, the force and disabled gates, declared scopes and privacy), and a stuck repair journal refusing only the writes that overlap what it protects |
+| `tests/plans_show.rs`, `tests/plans_show_commands.rs` | `plans show` reconciling a plan from history: a lost output, a partial or interrupted `apply`, a wiped plan store, history past its bound, matching versions that prove nothing, and every storable command's applied plan |
+| `tests/e2e_misplaced_clients.rs`, `tests/e2e_target_typos.rs` | Intent inference: a client in the wrong place or a mistyped selector changes nothing, and the fix it gets runs |
 | `tests/fsx_lock.rs` | The global lock and the in-flight locks |
 | `tests/tlog_selftest.rs` | The test log itself: both files and every field, `net.log` and failpoint capture, redaction, truncation, tree differences, the failure output and the live echo (in child processes), and the e2e marker convention |
 | `tests/e2e_slice2.rs` | Slice 2's exit demo, as tests: install, then `update --dry-run`, then `apply`; a release landing in between (`plan_stale`, and the re-preview shows it); a second `apply` (`already_applied`); a Tukui plan applied from the cache; a late hand edit caught under the lock; two appliers of one plan; `plans show` after a lost output; the widget's three Update scenarios held to their names and to the fixtures the binary writes |
@@ -3437,6 +3476,7 @@ argc fuzz-all --time 600                                   # every fuzz target, 
 argc bench                                                 # hyperfine medians on a synthetic home (needs hyperfine, jq)
 cargo test --release --test perf -- --ignored --skip bench_home --skip live_home --test-threads=1   # the time budgets
 cargo test --test compat_m2 -- --ignored --nocapture       # the M2 build against M3 state (prints its table)
+cargo test --test compat_m3 -- --ignored --nocapture       # the M3 build (c0ab5e9) against M4 state (prints its table)
 OMADDONS_LIVE=1 cargo test --test live_probes -- --ignored  # the real endpoints
 OMADDONS_REAL_MACHINE=1 OMADDONS_LIVE=1 OMADDONS_ALLOW_SKIP=keyless_installs_forever \
   cargo test --test real_machine -- --ignored --test-threads=1   # this machine's clients; every addon change is undone
@@ -3487,7 +3527,7 @@ An addon can write anything into its own error messages, a party member's name i
 
 ### Does it work with Turtle WoW, Warmane or other private servers?
 
-Any client from 1.12.1, 2.4.3, 3.3.5a, 4.3.4 or 5.4.8 with an `Interface/` folder is a first-class target, identified by its executable. Its label comes from `realmlist.wtf`. Server-specific patches are not special-cased: Turtle WoW is a `vanilla-legacy` client, whether its executable reports 1.12.1 or its own 1.17 or 1.18. Give it a name with `targets add <path> --name turtle` or `targets rename`.
+Yes. Any client from 1.12.1, 2.4.3, 3.3.5a, 4.3.4 or 5.4.8 with an `Interface/` folder is a supported target, identified by its executable. Its label comes from `realmlist.wtf`. Server-specific patches are not special-cased: Turtle WoW is a `vanilla-legacy` client, whether its executable reports 1.12.1 or its own 1.17 or 1.18. Give it a name with `targets add <path> --name turtle` or `targets rename`.
 
 ### Can I use CurseForge addons?
 
@@ -3499,11 +3539,11 @@ No. There is no telemetry. Only the hosts on the allowlist are contacted, every 
 
 ### Where does undo data live, and how long is it kept?
 
-Old folders and SavedVariables copies go to `<client>/Interface/.omaddons/snapshots/`, on the same filesystem as the addons, and state-file copies go to `~/.local/state/omaddons/snapshots/`. Per target, everything younger than 24 hours, the latest change, and whatever a deferred SavedVariables restore still needs are always kept. Beyond those, at most the newest 10 changes within 7 days are kept, capped at 2 GiB.
+Old folders and SavedVariables copies go to `<client>/Interface/.omaddons/snapshots/`, on the same filesystem as the addons, and state-file copies go to `~/.local/state/omaddons/snapshots/`. Per target, everything younger than 24 hours, the latest change, and whatever a deferred SavedVariables restore still needs are always kept. Beyond those, at most the newest 10 changes within 7 days are kept, capped at 2 GiB. Pruning runs when that client next changes, so an idle client keeps its older snapshots until then (see [Known issues](#known-issues)).
 
 ### Will automatic backups fill my disk?
 
-No. By default (`auto_backup = "daily"`) they are made only by cloning. On btrfs and xfs a fresh backup shares every byte with `WTF/`, and grows only as the game rewrites files afterwards. Elsewhere none is made at all. `backup list` shows each backup's apparent size, which on those filesystems overstates what it really takes, next to the free space, which is what really counts. Before each automatic backup, omaddons checks that `limits.backup_min_free_mb` (2 GiB) stays free, pruning old automatic backups first and skipping with `backup_space_low` otherwise. Retention keeps the automatic backups of the newest 7 days (see [Retention](#retention)). Your own backups are never deleted unless you ask. `daily-copy` makes byte copies where cloning fails, within `limits.backup_copy_max_mb` (4 GiB) per client.
+No. By default (`auto_backup = "daily"`) they are made only by cloning. On btrfs and xfs a fresh backup shares every byte with `WTF/`, and grows only as the game rewrites files afterwards. Elsewhere none is made at all. `backup list` shows each backup's apparent size, which on those filesystems overstates what it takes, next to the free space, which is what counts. Before each automatic backup, omaddons checks that `limits.backup_min_free_mb` (2 GiB) stays free, pruning old automatic backups first and skipping with `backup_space_low` otherwise. Retention keeps the automatic backups of the newest 7 days (see [Retention](#retention)). Your own backups are never deleted unless you ask. `daily-copy` makes byte copies where cloning fails, within `limits.backup_copy_max_mb` (4 GiB) per client.
 
 ### Where are my backups, and how much space do they use?
 
@@ -3519,7 +3559,7 @@ Yes: `omaddons backup restore <id> --addon <name> -t <client>` puts back only th
 
 ### Can a coding agent drive it?
 
-That is a primary design goal. Use `--json`, read `error.fix_argv` and `commands[].argv`, pass `--actor agent --reason "…"`, and keep `undo --last-by agent` as the escape hatch. An agent is also detected automatically: without `--actor`, a run whose stdin is not a terminal is recorded as `agent`. See [For coding agents](#for-coding-agents).
+Yes, by design. Use `--json`, read `error.fix_argv` and `commands[].argv`, pass `--actor agent --reason "…"`, and keep `undo --last-by agent` as the escape hatch. An agent is also detected automatically: without `--actor`, a run whose stdin is not a terminal is recorded as `agent`. See [For coding agents](#for-coding-agents).
 
 ### Why did `apply` refuse?
 
@@ -3545,12 +3585,13 @@ No, by design. It relies on Linux specifics: `renameat2`, `/proc`, Wine prefix l
 
 ## For coding agents
 
-The full agent guide is `omaddons robot-docs guide` (the same text as `skills/omaddons/SKILL.md`).
+The full agent guide is `omaddons robot-docs guide`, the same text as `skills/omaddons/SKILL.md`. An agent with no prior knowledge needs three calls: `omaddons capabilities --json` (every command, flag, code, limit and source, offline), `omaddons robot-docs guide` and `omaddons status --json`. A command that installs the guide as a skill (`robot-docs install-skill`) is planned and does not exist yet: copy `skills/omaddons/SKILL.md` into your agent's skills folder instead. The block below is a condensed reference.
 
 ```text
 omaddons: WoW addon manager for Linux. One JSON envelope per command, typed errors with fixes as argv.
 
 Core loop
+  omaddons capabilities --json                   # what this build can do (offline, writes nothing)
   omaddons status --json                         # every client (target), running state, attention
   omaddons install <ref>... -t <target> --dry-run --json
   omaddons install <ref>... -t <target> --json --actor agent --reason "<why>"
@@ -3572,6 +3613,7 @@ Core loop
   omaddons doctor --json                         # what is broken: findings with evidence and
                                                  # remediation.argv (changes nothing but its run)
   omaddons doctor explain <fm-id | instance> --json   # one failure mode in full (changes nothing)
+  omaddons doctor fix --dry-run --json           # the repair and its token; then --if-match <token>
 
 Refs     catalog name | gh:Owner/Repo | Owner/Repo | wowi:<id> | tukui:<slug> | wowace:<slug>
          | git:https://…#rev | url:https://… | a pasted GitHub, WoWInterface, Tukui or WowAce link
@@ -3588,8 +3630,9 @@ Read the envelope
 
 Exit codes  0 ok (check partial) · 1 failed (see retryable) · 2 usage · 3 not found/ambiguous
             4 refused (safety) · 5 locked (retry) · 6 --check/--strict failed
-  doctor    0 healthy · 1 findings · 4 refused · 6 needs --online · 64 usage · 66 not found
-            73 run directory not created · 74 failed (robot-docs errors: doctor_exit per code)
+  doctor    0 healthy · 1 findings · 2 fix partial · 3 fix rolled back · 4 refused · 5 locked
+            6 needs --online · 64 usage · 66 not found · 73 run directory not created
+            74 failed (robot-docs errors: doctor_exit per code)
 
 Rules
   - --dry-run first for anything destructive; --force only after reading the refusal.
@@ -3602,6 +3645,8 @@ Rules
   - Bind the real remove, undo, backup restore or backup prune to that preview, and errors dismiss
     to the read it acknowledges: --if-match <data.precondition> (errors: dismiss.precondition).
     A plan_stale answer (not retryable) means the world changed since: preview again.
+  - A forced repair (doctor fix --only <fm> --force --yes) only when the user consents to it, after
+    reading its doctor explain; never add --yes on your own.
   - Restores and SavedVariables writes are refused while the game runs; never work around it.
   - Never write into Interface/AddOns yourself; every change must go through omaddons to stay undoable.
   - --offline for read-only work; net-log shows the requests that reached the network (the 50 most recent; --limit N).
