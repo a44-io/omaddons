@@ -967,6 +967,36 @@ impl RepairHome {
         REPAIR_STUCK_TX.parse().unwrap()
     }
 
+    /// `dir` installed as a skill (`robot-docs install-skill --dir`): its `skill` history
+    /// line, followed by a history projection that matches the history and lists it, as
+    /// the skill folders a repair's recovery attributes (M4-D50).
+    pub fn install_skill_line(&self, dir: &Path) {
+        use crate::state::history::SettingEntry;
+        use crate::state::history_tail;
+        history_tail::rebuild_if_stale(&self.paths, "test", Actor::Human);
+        let entry = SettingEntry {
+            dir: Some(dir.to_path_buf()),
+            ..SettingEntry::now(
+                TxKind::Skill,
+                None,
+                Actor::Human,
+                None,
+                ["omaddons", "robot-docs", "install-skill", "--dir"]
+                    .map(str::to_owned)
+                    .to_vec(),
+            )
+        };
+        let mut s = WriteSession::untracked(Writer::Mutating, &self.scopes, "test");
+        history::append_setting(&mut s, &self.paths, &entry).unwrap();
+        let tail = history_tail::fresh(&self.paths).expect("the projection follows the line");
+        assert_eq!(
+            tail.skill_dirs(),
+            Some(std::slice::from_ref(&dir.to_path_buf())),
+            "the projection lists {}",
+            dir.display()
+        );
+    }
+
     /// Replaces the stuck journal (which holds no line this build reads, and names no
     /// target) with one recovery reads: an install on the planned client, prepared,
     /// nothing stepped, its writer gone.

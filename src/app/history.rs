@@ -100,6 +100,9 @@ pub struct HistoryLine {
     /// line with a target and on a settings change.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repairs: Option<Vec<RepairEntry>>,
+    /// The skill folder a `skill` line installed into. Omitted on every other kind.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dir: Option<std::path::PathBuf>,
 }
 
 /// A target as history names it: its id now (the key when no longer registered).
@@ -447,6 +450,7 @@ fn setting_line_with(
         plan: None,
         doctor_run_id: None,
         repairs: None,
+        dir: e.dir.clone(),
     }
 }
 
@@ -487,6 +491,7 @@ fn line_with(e: &HistoryEntry, verbose: bool, id_of: &dyn Fn(TargetKey) -> Strin
         plan: e.plan,
         doctor_run_id: target_less.then(|| e.doctor_run_id.clone()).flatten(),
         repairs: target_less.then(|| e.repairs.iter().map(shown).collect()),
+        dir: None,
     }
 }
 
@@ -1165,5 +1170,39 @@ mod tests {
             !without.contains("plan"),
             "no column without a plan: {without}"
         );
+    }
+
+    #[test]
+    fn history_line_shows_dir_only_when_set() {
+        let argv = ["omaddons", "robot-docs", "install-skill"].map(str::to_owned);
+        let skill = SettingEntry {
+            dir: Some("/x/skills/omaddons".into()),
+            ..SettingEntry::now(TxKind::Skill, None, Actor::Agent, None, argv.to_vec())
+        };
+        let config = SettingEntry::now(TxKind::Config, None, Actor::Human, None, argv.to_vec());
+        let lines = [
+            ("skill", setting_line_with(&skill, false, &id_of)),
+            ("skill -v", setting_line_with(&skill, true, &id_of)),
+            ("config", setting_line_with(&config, false, &id_of)),
+            (
+                "transaction",
+                line_with(&install("01M9Q00000000000000000000B", None), false, &id_of),
+            ),
+            (
+                "repair",
+                line_with(&repair(&[KEY_A], Vec::new(), None), true, &id_of),
+            ),
+        ];
+        for (name, line) in lines {
+            let json = serde_json::to_value(&line).unwrap();
+            if name.starts_with("skill") {
+                assert_eq!(json["dir"], "/x/skills/omaddons", "{name}: {json}");
+                assert_eq!(json["kind"], "skill", "{name}: {json}");
+                assert_eq!(json["target"], serde_json::Value::Null, "{name}: {json}");
+            } else {
+                assert_eq!(json.get("dir"), None, "{name}: omitted: {json}");
+            }
+        }
+        assert_eq!(kind_name(TxKind::Skill), "skill");
     }
 }

@@ -17,19 +17,24 @@
 //! anything it cannot follow marks it stale (`covers.bytes: null`), and the command
 //! rebuilds it from the whole history after releasing the lock ([`rebuild_if_stale`]).
 //! Writes are best effort: a projection that cannot be written costs one "unknown".
+//!
+//! It also keeps `skill_dirs`, the folders `robot-docs install-skill` wrote, newest first
+//! (M4-D50): a skill line leaves `lines` like any other, so the list is kept apart, and
+//! every installed skill stays known however old its line.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Seek, SeekFrom};
+use std::path::PathBuf;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::history::{self, HistoryEntry, LineFacts, RunKey, line_facts};
+use super::history::{self, HistoryEntry, LineFacts, RunKey, line_facts, skill_dir_of};
 use super::paths::Paths;
 use super::store::{self, SchemaVersion, VersionStatus, Versioned};
 use crate::error::Result;
 use crate::fsx::{Content, Op, ScopeTable, WriteSession, Writer, ensure_dir_all, mutate};
-use crate::limits::{HISTORY_TAIL_MAX_BYTES, HISTORY_TAIL_RUNS};
+use crate::limits::{HISTORY_TAIL_MAX_BYTES, HISTORY_TAIL_RUNS, SKILL_DIRS_MAX};
 use crate::model::Actor;
 
 /// The projection file.
@@ -44,6 +49,12 @@ pub struct HistoryTail {
     #[serde(default)]
     #[schemars(with = "Option<String>")]
     pub dropped_at: Option<jiff::Timestamp>,
+    /// The folders `skill` history lines name, newest first, each once, at most
+    /// [`SKILL_DIRS_MAX`]: every installed skill the skill drift check follows, however
+    /// long ago its line left `lines`. `null` (or absent) when the projection was last
+    /// written by a build that does not track them; [`rebuild_if_stale`] then rebuilds it.
+    #[serde(default)]
+    pub skill_dirs: Option<Vec<PathBuf>>,
     /// Every line from `covers.from` on, without its newline, in file order.
     #[serde(default)]
     pub lines: Vec<String>,
@@ -119,6 +130,12 @@ impl HistoryTail {
     fn end(&self) -> u64 {
         self.covers.from + self.lines.iter().map(|l| l.len() as u64 + 1).sum::<u64>()
     }
+
+    /// The folders `skill` lines installed into, newest first; `None` when this projection
+    /// does not track them (an older build wrote it), so only `Paths::skill_dir()` is known.
+    pub fn skill_dirs(&self) -> Option<&[PathBuf]> {
+        self.skill_dirs.as_deref()
+    }
 }
 
 /// The projection when it matches `history.jsonl` now: one `stat` of the history and,
@@ -182,7 +199,9 @@ pub fn appended(paths: &Paths, before: u64, appended: &[u8]) {
 /// Adds `line` (appended at the projection's end) to `tail`, then [`trim`]s it, reading
 /// each line held once. A run it has not seen that started before the newest line it
 /// dropped may have lines before it, so it is partial (conservative: a false "partial"
-/// costs one rebuild, never a wrong answer).
+/// costs one rebuild, never a wrong answer). A `skill` line's folder moves to the front of
+/// `skill_dirs` when the projection tracks them; one that does not stays untracked until
+/// a rebuild. [`trim`] never touches `skill_dirs`.
 fn follow(tail: &mut HistoryTail, line: &str) {
     let mut facts = facts_of(&tail.lines);
     let new = line_facts(line);
@@ -200,7 +219,28 @@ fn follow(tail: &mut HistoryTail, line: &str) {
     }
     tail.lines.push(line.to_owned());
     facts.push(new);
+    if let (Some(dir), Some(dirs)) = (skill_dir_of(line), tail.skill_dirs.as_mut()) {
+        dirs.retain(|known| *known != dir);
+        dirs.insert(0, dir);
+        dirs.truncate(SKILL_DIRS_MAX);
+    }
     trim(tail, &facts);
+}
+
+/// The folders the `skill` lines among `lines` (in file order) name: newest first, each
+/// once, at most [`SKILL_DIRS_MAX`]. The list [`follow`] keeps over the same lines, since
+/// both are the most recently installed distinct folders.
+fn skill_dirs_of(lines: &[String]) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for dir in lines.iter().rev().filter_map(|line| skill_dir_of(line)) {
+        if dirs.len() == SKILL_DIRS_MAX {
+            break;
+        }
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    }
+    dirs
 }
 
 /// Every line's facts, in order.
@@ -293,12 +333,15 @@ pub fn build(paths: &Paths) -> Result<HistoryTail> {
 }
 
 impl HistoryTail {
-    /// The projection of a whole history's `text`.
+    /// The projection of a whole history's `text`, its skill folders read from every
+    /// complete line before the trim drops any.
     fn from_text(text: &str) -> Self {
         // A last line without its newline is not covered: the next append closes it off.
         let complete = text.rfind('\n').map_or(0, |at| at + 1);
+        let lines: Vec<String> = text[..complete].lines().map(str::to_owned).collect();
         let mut tail = Self {
-            lines: text[..complete].lines().map(str::to_owned).collect(),
+            skill_dirs: Some(skill_dirs_of(&lines)),
+            lines,
             ..Self::default()
         };
         let facts = facts_of(&tail.lines);
@@ -308,14 +351,15 @@ impl HistoryTail {
     }
 }
 
-/// Rebuilds the projection when it is missing, stale or cannot answer (the run it would
-/// select has lines older than it), and rings the doorbell when that rewrote it: `status
-/// --cached` then reports a last change it could not before (M3-D4). Run by a command
-/// that changes something, after it released the global lock; one `stat` and one small
-/// read while the projection is fresh. Best effort.
+/// Rebuilds the projection when it is missing, stale, cannot answer (the run it would
+/// select has lines older than it) or does not track the skill folders (an older build
+/// rewrote it), and rings the doorbell when that rewrote it: `status --cached` then
+/// reports a last change it could not before (M3-D4). Run by a command that changes
+/// something, after it released the global lock; one `stat` and one small read while the
+/// projection is fresh. Best effort.
 pub fn rebuild_if_stale(paths: &Paths, command: &str, actor: Actor) {
     // ubs:ignore — comparing an enum variant, not a secret
-    if fresh(paths).is_some_and(|t| t.answer() != Answer::NeedsOlder) {
+    if fresh(paths).is_some_and(|t| t.answer() != Answer::NeedsOlder && t.skill_dirs.is_some()) {
         return;
     }
     let Ok(tail) = build(paths) else {
@@ -405,6 +449,12 @@ mod tests {
             history::append_setting(&mut s, &self.paths, &entry).unwrap();
         }
 
+        /// `robot-docs install-skill --dir <dir>`'s line.
+        fn skill(&self, dir: &str) {
+            let mut s = WriteSession::untracked(Writer::Mutating, &self.scopes, "test");
+            history::append_setting(&mut s, &self.paths, &skill_entry(dir)).unwrap();
+        }
+
         /// What bare `undo` reverts over the whole history, by transaction.
         fn full(&self) -> Option<Vec<TxId>> {
             let entries = history::read(&self.paths, &HistoryFilter::default())
@@ -464,6 +514,28 @@ mod tests {
             doctor_run_id: Some("2026-10-25T12:00:00Z__01M9Z00000000000000000000".into()),
             ..entry(TxKind::Repair, run, 0)
         }
+    }
+
+    /// A `skill` line naming `dir`.
+    fn skill_entry(dir: &str) -> SettingEntry {
+        SettingEntry {
+            dir: Some(PathBuf::from(dir)),
+            ..SettingEntry::now(
+                TxKind::Skill,
+                None,
+                Actor::Human,
+                None,
+                vec![
+                    "omaddons".into(),
+                    "robot-docs".into(),
+                    "install-skill".into(),
+                ],
+            )
+        }
+    }
+
+    fn paths_of(dirs: &[&str]) -> Vec<PathBuf> {
+        dirs.iter().map(PathBuf::from).collect()
     }
 
     fn found(tail: &HistoryTail) -> Option<Vec<TxId>> {
@@ -707,14 +779,18 @@ mod tests {
         }
     }
 
-    /// A history line of `kind` by `run`, written at `ms`.
+    /// A history line of `kind` by `run`, written at `ms`; a `skill` line names one of 11
+    /// folders, by `ms`, so folders repeat and outnumber [`SKILL_DIRS_MAX`].
     fn line_at(kind: TxKind, run: RunId, ms: i64) -> String {
         let at = jiff::Timestamp::from_millisecond(ms).unwrap();
-        if kind == TxKind::Config {
+        if kind.is_setting() {
             let mut setting =
                 SettingEntry::now(kind, None, Actor::Human, None, vec!["omaddons".into()]);
             setting.run = run;
             setting.at = at;
+            if kind == TxKind::Skill {
+                setting.dir = Some(PathBuf::from(format!("/skills/{}", ms % 11)));
+            }
             serde_json::to_string(&setting).unwrap()
         } else if kind == TxKind::Repair {
             serde_json::to_string(&HistoryEntry { at, ..repair(run) }).unwrap()
@@ -737,6 +813,7 @@ mod tests {
             TxKind::Backup,
             TxKind::Config,
             TxKind::Repair,
+            TxKind::Skill,
         ];
         let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
         let (mut found, mut needs_older) = (0, 0);
@@ -745,7 +822,10 @@ mod tests {
             // later, interleaved; one that is done commits nothing more.
             let mut ms: i64 = 1_790_000_000_000;
             let mut running: Vec<RunId> = Vec::new();
-            let mut tail = HistoryTail::default();
+            let mut tail = HistoryTail {
+                skill_dirs: Some(Vec::new()),
+                ..HistoryTail::default()
+            };
             let mut text = String::new();
             for _ in 0..=rng.next(80) {
                 ms += i64::try_from(rng.next(50)).unwrap() + 2;
@@ -765,6 +845,11 @@ mod tests {
                     running.retain(|r| *r != run);
                 }
             }
+            assert_eq!(
+                tail.skill_dirs,
+                HistoryTail::from_text(&text).skill_dirs,
+                "case {case}: the followed skill folders are the rebuilt ones"
+            );
             let entries = history::parse(&text, &HistoryFilter::default()).entries;
             let full = newest_run(&entries, None, None)
                 .map(|r| r.entries.iter().map(|e| e.tx).collect::<Vec<TxId>>());
@@ -839,5 +924,236 @@ mod tests {
             assert!(tail.partial.is_empty());
             assert!(matches!(tail.answer(), Answer::Found(_)));
         }
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Skill folders (M4-D50).
+
+    #[test]
+    fn skill_dirs_follow_appends_newest_first_and_equal_a_rebuild() {
+        let f = fixture();
+        f.rebuild();
+        f.skill("/a/skills/omaddons");
+        f.append(&entry(TxKind::Install, RunId::new(), 1));
+        f.skill("/b/skills/omaddons");
+        f.setting();
+        f.skill("/c/skills/omaddons");
+        let tail = fresh(&f.paths).expect("kept current by every append");
+        let expected = paths_of(&[
+            "/c/skills/omaddons",
+            "/b/skills/omaddons",
+            "/a/skills/omaddons",
+        ]);
+        assert_eq!(tail.skill_dirs, Some(expected.clone()), "{tail:?}");
+        assert_eq!(tail.skill_dirs(), Some(expected.as_slice()));
+        assert_eq!(tail, build(&f.paths).unwrap(), "a rebuild agrees");
+        assert_eq!(
+            found(&tail),
+            f.full(),
+            "a skill line is no run undo selects"
+        );
+    }
+
+    #[test]
+    fn skill_dirs_keep_at_most_skill_dirs_max_and_move_a_reinstalled_dir_to_the_front() {
+        let numbered =
+            |from: u32, to: u32| -> Vec<String> { (from..=to).map(|n| format!("d{n}")).collect() };
+        let mut nine_then_first = numbered(1, 9);
+        nine_then_first.push("d1".into());
+        let words =
+            |text: &str| -> Vec<String> { text.split_whitespace().map(str::to_owned).collect() };
+        let cases: Vec<(&str, Vec<String>, Vec<String>)> = vec![
+            ("three", words("a b c"), words("c b a")),
+            ("a_reinstall", words("a b a"), words("a b")),
+            ("a_middle_reinstall", words("a b c b"), words("b c a")),
+            (
+                "ten",
+                numbered(1, 10),
+                numbered(3, 10).into_iter().rev().collect(),
+            ),
+            (
+                "nine_then_the_first",
+                nine_then_first,
+                words("d1 d9 d8 d7 d6 d5 d4 d3"),
+            ),
+            ("none", Vec::new(), Vec::new()),
+        ];
+        assert_eq!(SKILL_DIRS_MAX, 8, "the cases are written for 8");
+        for (case, installs, expected) in cases {
+            let expected: Vec<PathBuf> = expected.iter().map(PathBuf::from).collect();
+            let mut followed = HistoryTail {
+                skill_dirs: Some(Vec::new()),
+                ..HistoryTail::default()
+            };
+            let mut text = String::new();
+            for dir in &installs {
+                // A transaction between installs, so the run logic has something to do.
+                let install = line_at(TxKind::Install, RunId::new(), 1_790_000_000_000);
+                for line in [install, serde_json::to_string(&skill_entry(dir)).unwrap()] {
+                    follow(&mut followed, &line);
+                    text.push_str(&line);
+                    text.push('\n');
+                }
+            }
+            let rebuilt = HistoryTail::from_text(&text).skill_dirs;
+            assert_eq!(
+                followed.skill_dirs.as_ref(),
+                Some(&expected),
+                "{case}: installs {installs:?}, followed {:?}, rebuilt {rebuilt:?}",
+                followed.skill_dirs
+            );
+            assert_eq!(
+                rebuilt.as_ref(),
+                Some(&expected),
+                "{case}: installs {installs:?}, followed {:?}, rebuilt {rebuilt:?}",
+                followed.skill_dirs
+            );
+        }
+    }
+
+    #[test]
+    fn skill_dirs_survive_their_lines_being_trimmed() {
+        let f = fixture();
+        f.rebuild();
+        let a = "/a/skills/omaddons";
+        f.skill(a);
+        for _ in 0..20 {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            f.append(&entry(TxKind::Install, RunId::new(), 1));
+        }
+        let tail = fresh(&f.paths).unwrap();
+        assert!(tail.covers.from > 0, "the skill line was trimmed");
+        assert!(
+            tail.lines.iter().all(|line| !line.contains(a)),
+            "no held line names {a}"
+        );
+        assert_eq!(
+            tail.skill_dirs,
+            Some(paths_of(&[a])),
+            "{:?}",
+            tail.skill_dirs
+        );
+        assert_eq!(tail, build(&f.paths).unwrap(), "a rebuild agrees");
+    }
+
+    /// An older build rewrites the projection without the key it does not know: it reads
+    /// as untracked (`None`), stays so through appends, and the next rebuild restores it.
+    #[test]
+    fn a_projection_without_skill_dirs_is_rebuilt() {
+        let f = fixture();
+        f.rebuild();
+        f.skill("/a/skills/omaddons");
+        let file = f.paths.history_tail();
+        let mut json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert!(json.as_object_mut().unwrap().remove("skill_dirs").is_some());
+        std::fs::write(&file, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+        let loaded = fresh(&f.paths).expect("still matches the history");
+        assert_eq!(loaded.skill_dirs, None);
+        assert_eq!(loaded.skill_dirs(), None);
+
+        f.skill("/b/skills/omaddons");
+        let followed = fresh(&f.paths).expect("followed the append");
+        assert_eq!(followed.skill_dirs, None, "an append never starts tracking");
+
+        let bell = f.paths.doorbell_file();
+        let _ = std::fs::remove_file(&bell);
+        f.rebuild();
+        let rebuilt = fresh(&f.paths).unwrap();
+        assert_eq!(
+            rebuilt.skill_dirs,
+            Some(paths_of(&["/b/skills/omaddons", "/a/skills/omaddons"]))
+        );
+        assert!(bell.exists(), "the rewrite rang the doorbell");
+        std::fs::remove_file(&bell).unwrap();
+        f.rebuild();
+        assert!(!bell.exists(), "a tracking projection is fresh");
+    }
+
+    #[test]
+    fn only_skill_lines_name_skill_dirs() {
+        let run = RunId::new();
+        let at = 1_790_000_000_000;
+        let config_with_dir = {
+            let mut config: serde_json::Value =
+                serde_json::from_str(&line_at(TxKind::Config, run, at)).unwrap();
+            config["argv"] = serde_json::json!(["omaddons", "config", "--dir", "/x"]);
+            config.to_string()
+        };
+        let skill_without_dir = {
+            let mut skill: serde_json::Value =
+                serde_json::to_value(skill_entry("/x/skills/omaddons")).unwrap();
+            skill.as_object_mut().unwrap().remove("dir");
+            skill.to_string()
+        };
+        let reason_naming_the_kind = {
+            let mut config: serde_json::Value =
+                serde_json::from_str(&line_at(TxKind::Config, run, at)).unwrap();
+            config["reason"] = serde_json::json!("\"kind\":\"skill\",\"dir\":\"/x\"");
+            config["dir"] = serde_json::json!("/x");
+            config.to_string()
+        };
+        let unknown_kind = serde_json::to_string(&skill_entry("/x/skills/omaddons"))
+            .unwrap()
+            .replace("\"kind\":\"skill\"", "\"kind\":\"skillz\"");
+        let unreadable = "not json \"kind\":\"skill\",\"dir\":\"/x\"".to_owned();
+        let skill = serde_json::to_string(&skill_entry("/x/skills/omaddons")).unwrap();
+        let cases: Vec<(&str, String)> = vec![
+            (
+                "a_config_line_with_a_dir_argument",
+                format!("{config_with_dir}\n"),
+            ),
+            ("a_skill_line_without_dir", format!("{skill_without_dir}\n")),
+            (
+                "a_reason_naming_the_kind",
+                format!("{reason_naming_the_kind}\n"),
+            ),
+            ("an_unknown_kind", format!("{unknown_kind}\n")),
+            ("an_unreadable_line", format!("{unreadable}\n")),
+            ("a_torn_last_line", skill),
+        ];
+        for (case, text) in cases {
+            let mut followed = HistoryTail {
+                skill_dirs: Some(Vec::new()),
+                ..HistoryTail::default()
+            };
+            // Only complete lines are ever followed.
+            for line in text.split_inclusive('\n').filter(|l| l.ends_with('\n')) {
+                follow(&mut followed, line.trim_end_matches('\n'));
+            }
+            assert_eq!(followed.skill_dirs, Some(Vec::new()), "{case}: {text}");
+            assert_eq!(
+                HistoryTail::from_text(&text).skill_dirs,
+                Some(Vec::new()),
+                "{case}: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_merged_skill_line_is_salvaged() {
+        let skill = serde_json::to_string(&skill_entry("/x/skills/omaddons")).unwrap();
+        let fragment = &line_at(TxKind::Install, RunId::new(), 1_790_000_000_000)[..40];
+        let merged = format!("{fragment}{skill}");
+        assert_eq!(
+            skill_dir_of(&merged),
+            Some(PathBuf::from("/x/skills/omaddons")),
+            "{merged}"
+        );
+        let mut followed = HistoryTail {
+            skill_dirs: Some(Vec::new()),
+            ..HistoryTail::default()
+        };
+        follow(&mut followed, &merged);
+        let expected = Some(paths_of(&["/x/skills/omaddons"]));
+        assert_eq!(followed.skill_dirs, expected);
+        assert_eq!(
+            HistoryTail::from_text(&format!("{merged}\n")).skill_dirs,
+            expected
+        );
+        // A cut skill line with another kind's line after it names nothing.
+        let other = line_at(TxKind::Config, RunId::new(), 1_790_000_000_000);
+        let merged = format!("{}{other}", &skill[..skill.len() - 10]);
+        assert_eq!(skill_dir_of(&merged), None, "{merged}");
     }
 }

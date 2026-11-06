@@ -4937,6 +4937,26 @@ mod tests {
             }
         }
 
+        /// A skill folder the history projection lists is attributed in diagnosis as in
+        /// recovery: the repair `unattributed_skill_dir` stops at rolls back then.
+        #[test]
+        fn diagnose_attributes_a_skill_folder_the_projection_lists() {
+            let home = repair_home();
+            let other = home.paths.home().join("agent-2/skills/omaddons");
+            std::fs::create_dir_all(&other).unwrap();
+            std::fs::write(other.join("SKILL.md"), "old\n").unwrap();
+            home.install_skill_line(&other);
+            let fix = write_over(other.join("SKILL.md"));
+            let p = repair_prepared(&home, std::slice::from_ref(&other), &[fix]);
+            let base = after(&p, 1);
+            let d = one(&home, &base, &p, text(&p, &steps(1)));
+            assert!(
+                matches!(d.verdict, JournalVerdict::Recoverable { .. }),
+                "{d:#?}"
+            );
+            assert_eq!(d.expected(), Expected::RolledBack, "{d:#?}");
+        }
+
         #[test]
         fn a_write_and_a_chmod_inverse_are_overlaid() {
             let (dir, file, moved) = (

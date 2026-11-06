@@ -440,9 +440,10 @@ impl HistoryEntry {
 }
 
 /// One settings change ([`TxKind::is_setting`]: `config set`, a `targets` change,
-/// `auth github set` or `clear`, `export --write`), on the same line format as a
-/// transaction: who, why, the argv, no folder ops, and the client's key for a `targets`
-/// change (`null` otherwise). Never undone; undo, retention and recovery never see it.
+/// `auth github set` or `clear`, `export --write`, `errors dismiss`, `omarchy install` or
+/// `remove`, `robot-docs install-skill`), on the same line format as a transaction: who,
+/// why, the argv, no folder ops, and the client's key for a `targets` change or a
+/// dismissal (`null` otherwise). Never undone; undo, retention and recovery never see it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SettingEntry {
     pub schema_version: SchemaVersion,
@@ -464,6 +465,10 @@ pub struct SettingEntry {
     /// `errors dismiss`: what it acknowledged, as counts (never any error's text).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dismissed: Option<Dismissed>,
+    /// The skill folder a `skill` line installed into (canonical, absolute); absent on
+    /// every other kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<PathBuf>,
 }
 
 /// What one `errors dismiss` acknowledged on its target.
@@ -497,6 +502,7 @@ impl SettingEntry {
             result: TxResult::Committed,
             run: RunId::new(),
             dismissed: None,
+            dir: None,
         }
     }
 }
@@ -939,13 +945,19 @@ struct FactFields {
     tx: Option<TxId>,
 }
 
+/// One complete line read as `T`, salvaged like [`read_line`] does (a merged line from its
+/// last line start); `None` when neither reads.
+fn salvaged<T: serde::de::DeserializeOwned>(line: &str) -> Option<T> {
+    serde_json::from_str::<T>(line).ok().or_else(|| {
+        let at = line.rfind(LINE_START).filter(|at| *at > 0)?;
+        serde_json::from_str::<T>(&line[at..]).ok()
+    })
+}
+
 /// One complete line's facts, salvaged like [`read_line`] does; `None` for a line that
 /// does not read.
 pub(crate) fn line_facts(line: &str) -> Option<LineFacts> {
-    let fields = serde_json::from_str::<FactFields>(line).ok().or_else(|| {
-        let at = line.rfind(LINE_START).filter(|at| *at > 0)?;
-        serde_json::from_str::<FactFields>(&line[at..]).ok()
-    })?;
+    let fields = salvaged::<FactFields>(line)?;
     let run = match (fields.run, fields.tx) {
         (Some(run), _) => RunKey::Run(run),
         (None, Some(tx)) if !fields.kind.is_setting() => RunKey::Single(tx),
@@ -956,6 +968,29 @@ pub(crate) fn line_facts(line: &str) -> Option<LineFacts> {
         undoable: fields.kind.is_undoable(),
         at: fields.at,
     })
+}
+
+/// The fields of a line [`skill_dir_of`] reads.
+#[derive(Deserialize)]
+struct SkillFields {
+    kind: TxKind,
+    #[serde(default)]
+    dir: Option<PathBuf>,
+}
+
+/// The folder one complete `skill` line names, salvaged like [`read_line`] does; `None`
+/// for a line of any other kind (or of a kind this build does not know), a skill line
+/// without a `dir`, and a line that does not read.
+pub(crate) fn skill_dir_of(line: &str) -> Option<PathBuf> {
+    // A cheap prefilter: inside a string value the quotes would be escaped, so this marks
+    // the kind key only.
+    if !line.contains("\"kind\":\"skill\"") {
+        return None;
+    }
+    let fields = salvaged::<SkillFields>(line)?;
+    (fields.kind == TxKind::Skill)
+        .then_some(fields.dir)
+        .flatten()
 }
 
 /// The transactions one run selection reverts, newest first, and their run (`None` for a
@@ -2037,19 +2072,138 @@ mod tests {
             ..HistoryFilter::default()
         };
         assert_eq!(read(&f.paths, &by_agent).unwrap().settings, [config]);
-        for kind in [
-            TxKind::Config,
-            TxKind::Target,
-            TxKind::Auth,
-            TxKind::Export,
-            TxKind::Dismiss,
-        ] {
+        for kind in SETTING_KINDS {
             assert!(kind.is_setting() && !kind.is_undoable(), "{kind:?}");
         }
         for kind in [TxKind::Install, TxKind::Undo, TxKind::Pin, TxKind::Sync] {
             assert!(!kind.is_setting() && kind.is_undoable(), "{kind:?}");
         }
         assert!(!TxKind::Backup.is_undoable() && !TxKind::Backup.is_setting());
+    }
+
+    /// Every settings kind.
+    const SETTING_KINDS: [TxKind; 7] = [
+        TxKind::Config,
+        TxKind::Target,
+        TxKind::Auth,
+        TxKind::Export,
+        TxKind::Dismiss,
+        TxKind::Widget,
+        TxKind::Skill,
+    ];
+
+    /// The skill line `robot-docs install-skill` records: by an agent, about no client.
+    fn skill_line(dir: &str) -> SettingEntry {
+        SettingEntry {
+            dir: Some(PathBuf::from(dir)),
+            ..SettingEntry::now(
+                TxKind::Skill,
+                None,
+                Actor::Agent,
+                Some("why".into()),
+                ["omaddons", "robot-docs", "install-skill"]
+                    .map(str::to_owned)
+                    .to_vec(),
+            )
+        }
+    }
+
+    #[test]
+    fn a_skill_line_round_trips_with_its_dir() {
+        let skill = skill_line("/x/skills/omaddons");
+        let line = serde_json::to_string(&skill).unwrap();
+        assert!(
+            line.ends_with(&format!(
+                ",\"run\":\"{}\",\"dir\":\"/x/skills/omaddons\"}}",
+                skill.run
+            )),
+            "dir is the last key: {line}"
+        );
+        assert_eq!(
+            serde_json::from_str::<SettingEntry>(&line).unwrap(),
+            skill,
+            "{line}"
+        );
+        let read = parse(&format!("{line}\n"), &HistoryFilter::default());
+        assert!(read.entries.is_empty(), "never a transaction: {read:?}");
+        assert_eq!(read.settings, std::slice::from_ref(&skill), "{line}");
+        assert_eq!(
+            read.settings[0].dir.as_deref(),
+            Some(Path::new("/x/skills/omaddons"))
+        );
+        assert_eq!(skill_dir_of(&line), skill.dir, "{line}");
+    }
+
+    /// A settings line of every other kind is written byte for byte as before `dir`
+    /// existed, and a line written then reads with no `dir`.
+    #[test]
+    fn setting_lines_without_dir_serialize_as_before() {
+        let tx: TxId = "01JB8Q2VA00000000000000001".parse().unwrap();
+        let run: RunId = "01JB8Q2VA00000000000000002".parse().unwrap();
+        let at: Timestamp = "2026-10-24T18:02:11.123Z".parse().unwrap();
+        for kind in SETTING_KINDS.into_iter().filter(|k| *k != TxKind::Skill) {
+            let setting = SettingEntry {
+                tx,
+                run,
+                at,
+                ..SettingEntry::now(kind, None, Actor::Human, None, vec!["omaddons".into()])
+            };
+            let name = serde_json::to_value(kind).unwrap();
+            let name = name.as_str().unwrap();
+            let before = format!(
+                "{{\"schema_version\":\"1.0\",\"tx\":\"{tx}\",\"kind\":\"{name}\",\"at\":\"2026-10-24T18:02:11.123Z\",\"target\":null,\"actor\":\"human\",\"argv\":[\"omaddons\"],\"ops\":[],\"result\":\"committed\",\"run\":\"{run}\"}}"
+            );
+            assert_eq!(serde_json::to_string(&setting).unwrap(), before, "{name}");
+            let read = parse(&format!("{before}\n"), &HistoryFilter::default());
+            assert_eq!(read.settings, [setting], "{name}: {before}");
+            assert_eq!(read.settings[0].dir, None, "{name}");
+            assert_eq!(skill_dir_of(&before), None, "{name}: no skill folder");
+        }
+    }
+
+    #[test]
+    fn a_skill_line_under_a_filter() {
+        let skill = skill_line("/x/skills/omaddons");
+        let config = SettingEntry::now(
+            TxKind::Config,
+            None,
+            Actor::Human,
+            None,
+            vec!["omaddons".into(), "config".into()],
+        );
+        let install = entry(1, Actor::Agent, TxKind::Install, "2026-10-14T21:00:00Z");
+        let text = [
+            serde_json::to_string(&install).unwrap(),
+            serde_json::to_string(&config).unwrap(),
+            serde_json::to_string(&skill).unwrap(),
+        ]
+        .map(|line| line + "\n")
+        .concat();
+        let settings = |filter: HistoryFilter| parse(&text, &filter).settings;
+        let on_target = HistoryFilter {
+            target: Some(TARGET.parse().unwrap()),
+            ..HistoryFilter::default()
+        };
+        assert!(
+            settings(on_target).is_empty(),
+            "a skill line names no client"
+        );
+        let by_agent = HistoryFilter {
+            actor: Some(Actor::Agent),
+            ..HistoryFilter::default()
+        };
+        assert_eq!(
+            settings(by_agent),
+            std::slice::from_ref(&skill),
+            "its actor"
+        );
+        let of_kind = HistoryFilter {
+            kind: Some(TxKind::Skill),
+            ..HistoryFilter::default()
+        };
+        let read = parse(&text, &of_kind);
+        assert_eq!(read.settings, [skill], "its kind alone");
+        assert!(read.entries.is_empty(), "{:?}", read.entries);
     }
 
     // -----------------------------------------------------------------------------------

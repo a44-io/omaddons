@@ -516,6 +516,9 @@ pub enum TxKind {
     /// `omarchy install` and `remove`: the bar widget put on or taken off the desktop;
     /// recorded, never undone.
     Widget,
+    /// `robot-docs install-skill`: the agent guide installed as a skill; recorded, never
+    /// undone.
+    Skill,
 }
 
 impl TxKind {
@@ -523,13 +526,19 @@ impl TxKind {
         !matches!(self, Self::Backup) && !self.is_setting()
     }
 
-    /// A settings change (`config`, `target`, `auth`, `export`, `dismiss`, `widget`): a
-    /// history line that changes no addon folder, so undo never reverts it (vision §5.9
-    /// Attribution).
+    /// A settings change (`config`, `target`, `auth`, `export`, `dismiss`, `widget`,
+    /// `skill`): a history line that changes no addon folder, so undo never reverts it
+    /// (vision §5.9 Attribution).
     pub fn is_setting(self) -> bool {
         matches!(
             self,
-            Self::Config | Self::Target | Self::Auth | Self::Export | Self::Dismiss | Self::Widget
+            Self::Config
+                | Self::Target
+                | Self::Auth
+                | Self::Export
+                | Self::Dismiss
+                | Self::Widget
+                | Self::Skill
         )
     }
 }
@@ -1690,6 +1699,23 @@ mod tests {
         }
         assert!(!TxKind::Backup.is_undoable());
         assert_eq!(serde_json::to_value(TxKind::Pin).unwrap(), "pin");
+    }
+
+    #[test]
+    fn skill_is_a_setting_never_undone() {
+        let kind = TxKind::Skill;
+        assert!(kind.is_setting(), "{kind:?} is a settings change");
+        assert!(!kind.is_undoable(), "{kind:?} is never undone");
+        assert_eq!(
+            serde_json::to_value(kind).unwrap(),
+            "skill",
+            "{kind:?}'s wire name"
+        );
+        assert_eq!(
+            serde_json::from_value::<TxKind>(serde_json::json!("skill")).unwrap(),
+            kind,
+            "\"skill\" reads back as {kind:?}"
+        );
     }
 
     // ---- Refs ----------------------------------------------------------------------

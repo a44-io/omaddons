@@ -303,10 +303,10 @@ impl Refused {
 /// authority from a payload it cannot attribute independently, M4-D38): each client dir
 /// whose `marker` still names its target (registration writes markers under the lock,
 /// before any journal), and each skill directory a path is below that omaddons attributes
-/// on its own, `Paths::skill_dir()` (B3 adds `history_tail.skill_dirs[]`). Every path a
-/// step or a rollback names is below omaddons' own folders, the bar widget's, an admitted
-/// client dir or an admitted skill directory; anything else is refused. Recovery reads
-/// the markers from the disk, `journal::diagnose` from its base.
+/// on its own ([`attributable_skill_dirs`]). Every path a step or a rollback names is
+/// below omaddons' own folders, the bar widget's, an admitted client dir or an admitted
+/// skill directory; anything else is refused. Recovery reads the markers from the disk,
+/// `journal::diagnose` from its base.
 pub(crate) fn admit(
     paths: &Paths,
     prepared: &RepairPrepared,
@@ -339,7 +339,7 @@ pub(crate) fn admit(
         .chain(clients.iter().cloned())
         .collect(),
     );
-    let attributable = resolved(vec![paths.skill_dir()]);
+    let attributable = resolved(attributable_skill_dirs(paths));
     let below = |path: &Path, dir: &PathBuf| path != dir.as_path() && path.starts_with(dir);
     let mut skills: Vec<PathBuf> = Vec::new();
     for path in named(prepared) {
@@ -356,6 +356,21 @@ pub(crate) fn admit(
         }
     }
     Ok(Admitted { clients, skills })
+}
+
+/// The skill directories omaddons attributes without a journal's word: `Paths::skill_dir()`,
+/// then every folder `history_tail.skill_dirs[]` names (`robot-docs install-skill --dir`),
+/// read while the projection matches the history (recovery holds the global lock every
+/// history append takes). A projection that is missing, stale or does not track them adds
+/// nothing: the default alone, never the journal's paths.
+fn attributable_skill_dirs(paths: &Paths) -> Vec<PathBuf> {
+    let mut dirs = vec![paths.skill_dir()];
+    if let Some(tail) = crate::state::history_tail::fresh(paths)
+        && let Some(listed) = tail.skill_dirs()
+    {
+        dirs.extend(listed.iter().cloned());
+    }
+    dirs
 }
 
 /// Every path a repair's steps and rollbacks name: each primitive's path, a rename's
@@ -1196,6 +1211,73 @@ mod tests {
                 "{case}: everything left in place: journal, lock, roots, backups, quarantine"
             );
             assert_eq!(left(&home, &tx), (true, true), "{case}");
+        }
+    }
+
+    /// A skill folder outside the default is attributed by the history projection, never
+    /// by the journal: a crashed repair of it rolls back while the projection lists it and
+    /// matches the history, and stops as `skill_dir`, everything left in place, once the
+    /// projection is stale (the default folder alone is then attributed).
+    #[test]
+    fn a_skill_folder_the_projection_lists_is_recovered_only_while_it_is_fresh() {
+        for (case, stale) in [("listed", false), ("listed_but_stale", true)] {
+            let home = repair_home();
+            let other = home.paths.home().join("agent-2/skills/omaddons");
+            std::fs::create_dir_all(&other).unwrap();
+            std::fs::write(other.join("SKILL.md"), OLD_GUIDE).unwrap();
+            home.install_skill_line(&other);
+            let fix = planned(
+                SKILL,
+                Fix::Write {
+                    path: other.join("SKILL.md"),
+                    content: NEW_GUIDE.to_vec(),
+                    mode: mode(0o644),
+                },
+            );
+            let dirs = [home.paths.skill_dir(), other.clone()];
+            let tx = crashed_with(&home, &dirs, &[fix], "fsx.mutate.executed=panic@1");
+            assert_eq!(
+                std::fs::read(other.join("SKILL.md")).unwrap(),
+                NEW_GUIDE,
+                "{case}: the crash came after the write"
+            );
+            if stale {
+                // A line written behind the projection's back: it no longer matches.
+                appended(&home.paths.history_file(), "{\"written\":\"elsewhere\"}\n");
+            }
+            let lock = [home.paths.lock_file()];
+            let before = tree_hash_except(&home.base, &lock);
+            let result = recover(&home);
+            if stale {
+                let err = result.unwrap_err();
+                assert_eq!(err.code, ErrorCode::ScopeDenied, "{case}: {err}");
+                assert_eq!(
+                    err.details["reason"], "skill_dir",
+                    "{case}: {}",
+                    err.details
+                );
+                assert_eq!(
+                    tree_hash_except(&home.base, &lock),
+                    before,
+                    "{case}: everything left in place"
+                );
+                assert_eq!(left(&home, &tx), (true, true), "{case}");
+            } else {
+                let warnings = result.unwrap();
+                assert_eq!(
+                    messages(&warnings, WarningCode::JournalRecovered),
+                    [format!(
+                        "repair transaction {tx} was interrupted; recovery undid it (rolled back)"
+                    )],
+                    "{case}"
+                );
+                assert_eq!(
+                    std::fs::read(other.join("SKILL.md")).unwrap(),
+                    OLD_GUIDE,
+                    "{case}: the write was rolled back"
+                );
+                assert_eq!(left(&home, &tx), (false, false), "{case}");
+            }
         }
     }
 
