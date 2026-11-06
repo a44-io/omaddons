@@ -4,6 +4,7 @@
 //! and `install-skill` writes the same bytes.
 
 pub mod render;
+pub mod skill_file;
 pub mod stamp;
 
 /// The guide's template, edited by hand; everything else in the guide is generated.
