@@ -117,7 +117,14 @@ impl Scope {
             Self::NetLog | Self::Cache => true,
             Self::History => matches!(
                 writer,
-                W::Mutating | W::Undo | W::Config | W::Auth | W::Backup | W::Omarchy | W::Doctor
+                W::Mutating
+                    | W::Undo
+                    | W::Config
+                    | W::Auth
+                    | W::Backup
+                    | W::Omarchy
+                    | W::Skill
+                    | W::Doctor
             ),
             Self::AddOns => matches!(writer, W::Mutating | W::Undo | W::Doctor),
             Self::ClientMeta => matches!(
@@ -228,8 +235,12 @@ pub struct ScopeTable {
     net_log_previous: PathBuf,
     /// `<plugins>`, canonical: the widget's entries are named children of it.
     omarchy_plugins: PathBuf,
-    /// The agent skill dirs: the default one first, then those a repair names.
+    /// The agent skill dirs: the default one first (or the one an `install-skill` run
+    /// chose, [`ScopeTable::with_skill_dir`]), then those a repair names. Never empty.
     skills: Vec<PathBuf>,
+    /// The existing folder an `install-skill` run creates its skill folder from: the
+    /// folders strictly between it and `skills[0]` may be created. `None` otherwise.
+    skill_anchor: Option<PathBuf>,
     record_fixtures: Option<PathBuf>,
     /// The file `backup export` writes, once [`ScopeTable::with_export_file`] admits it.
     export_file: Option<PathBuf>,
@@ -258,6 +269,7 @@ impl ScopeTable {
             skills: vec![canonical(
                 &skill_dir.map_or_else(|| paths.skill_dir(), Path::to_path_buf),
             )?],
+            skill_anchor: None,
             record_fixtures: None,
             export_file: None,
             client_dirs: Vec::new(),
@@ -393,32 +405,118 @@ impl ScopeTable {
                 Suggestion::text("create the folder first, or choose one that exists"),
             )
         })?;
-        if let Some(client) = self.client_dirs.iter().find(|c| parent.starts_with(c)) {
-            return Err(refuse(format!(
-                "is inside the game client {}",
-                client.display()
-            )));
-        }
-        if let Some(prefix) = parent
-            .ancestors()
-            .find(|a| a.join("drive_c").is_dir() && a.join("dosdevices").is_dir())
-        {
-            return Err(refuse(format!(
-                "is inside the Wine prefix {}",
-                prefix.display()
-            )));
-        }
-        let own = [
-            (&self.config, "config"),
-            (&self.state, "state"),
-            (&self.cache, "cache"),
-        ];
-        if let Some((_, what)) = own.iter().find(|(root, _)| parent.starts_with(root)) {
-            return Err(refuse(format!("is inside omaddons' own {what} folder")));
+        if let Some(why) = self.inside_refused(&parent) {
+            return Err(refuse(why));
         }
         let target = parent.join(name);
         self.export_file = Some(target.clone());
         Ok(target)
+    }
+
+    /// omaddons' own config, state and cache dirs, canonical, by name.
+    fn own_dirs(&self) -> [(&Path, &'static str); 3] {
+        [
+            (self.config.as_path(), "config"),
+            (self.state.as_path(), "state"),
+            (self.cache.as_path(), "cache"),
+        ]
+    }
+
+    /// Why a destination chosen at run time (canonical) may not be written, as the phrase
+    /// after its path: it is inside a registered client dir, a Wine prefix (an ancestor,
+    /// itself included, holding `drive_c` and `dosdevices`), or omaddons' own config,
+    /// state or cache dir. `None` when it is none of these. `backup export`'s file and
+    /// `install-skill`'s folder share it.
+    fn inside_refused(&self, canonical: &Path) -> Option<String> {
+        if let Some(client) = self.client_dirs.iter().find(|c| canonical.starts_with(c)) {
+            return Some(format!("is inside the game client {}", client.display()));
+        }
+        if let Some(prefix) = canonical
+            .ancestors()
+            .find(|a| a.join("drive_c").is_dir() && a.join("dosdevices").is_dir())
+        {
+            return Some(format!("is inside the Wine prefix {}", prefix.display()));
+        }
+        self.own_dirs()
+            .into_iter()
+            .find(|(root, _)| canonical.starts_with(root))
+            .map(|(_, what)| format!("is inside omaddons' own {what} folder"))
+    }
+
+    /// The one skill folder a `robot-docs install-skill` run writes (M4-D8): `dir`
+    /// replaces the table's skill folders, writable by the Skill row's writers alone, and
+    /// the folders strictly between `create_from` and `dir` become creatable (`CreateDir`
+    /// only). `create_from` must exist as a folder: the default's `$HOME/.claude`, or a
+    /// `--dir`'s parent. Anything missing is `not_found` naming it, and nothing is ever
+    /// created here. A folder inside a registered client dir, a Wine prefix or omaddons'
+    /// own config, state or cache dir, or one holding a client dir or one of those
+    /// (the Skill row admits everything below its folder), is `scope_denied` with
+    /// `details.reason: "skill_dir"`. `dir` is judged where it resolves: a symlinked
+    /// folder or ancestor counts as its target.
+    pub fn with_skill_dir(mut self, dir: &Path, create_from: &Path) -> Result<Self> {
+        let anchor = match std::fs::canonicalize(create_from) {
+            Ok(anchor) if anchor.is_dir() => anchor,
+            found => {
+                let what = if found.is_ok() {
+                    "is not a folder, so it cannot hold"
+                } else {
+                    "does not exist, so it cannot hold"
+                };
+                return Err(Error::new(
+                    ErrorCode::NotFound,
+                    format!(
+                        "{} {what} {}; install-skill creates only the skill folder itself",
+                        create_from.display(),
+                        dir.display()
+                    ),
+                    Suggestion::text(
+                        "create the parent folder first, or choose a --dir whose parent exists",
+                    ),
+                )
+                .details(serde_json::json!({ "path": create_from.display().to_string() })));
+            }
+        };
+        let dir = canonical(dir)?;
+        if let Some(why) = self
+            .inside_refused(&dir)
+            .or_else(|| self.holds_refused(&dir))
+        {
+            return Err(Error::new(
+                ErrorCode::ScopeDenied,
+                format!(
+                    "{} {why}; the skill goes in a folder of your own",
+                    dir.display()
+                ),
+                Suggestion::text(
+                    "install the skill into a folder of your own, outside game clients, Wine prefixes and omaddons' own folders: --dir <dir>",
+                ),
+            )
+            .details(serde_json::json!({
+                "reason": "skill_dir",
+                "path": dir.display().to_string(),
+            })));
+        }
+        self.skills = vec![dir];
+        self.skill_anchor = Some(anchor);
+        Ok(self)
+    }
+
+    /// Why a skill folder that holds what it must stay out of is refused: a registered
+    /// client dir, or omaddons' own config, state or cache dir, below it.
+    fn holds_refused(&self, dir: &Path) -> Option<String> {
+        if let Some(client) = self.client_dirs.iter().find(|c| c.starts_with(dir)) {
+            return Some(format!("holds the game client {}", client.display()));
+        }
+        self.own_dirs()
+            .into_iter()
+            .find(|(root, _)| root.starts_with(dir))
+            .map(|(_, what)| format!("holds omaddons' own {what} folder"))
+    }
+
+    /// The skill folder the Skill row admits first, canonical: the default one, or the
+    /// one [`ScopeTable::with_skill_dir`] chose.
+    pub fn skill_dir(&self) -> &Path {
+        self.skills.first().map_or(Path::new(""), PathBuf::as_path)
     }
 
     /// The paths the table was built from.
@@ -623,6 +721,17 @@ impl ScopeTable {
             } else if path.starts_with(root) {
                 found.push(Candidate::new(scope, Position::Below, Side::Home));
             }
+        }
+        // An `install-skill` run's folders strictly between its anchor and its skill folder
+        // (the default's `$HOME/.claude/skills`): created only, by `check`'s rule for any
+        // position but `Below`.
+        if let (Some(anchor), Some(skill)) = (&self.skill_anchor, self.skills.first())
+            && path != skill.as_path()
+            && skill.starts_with(path)
+            && path != anchor.as_path()
+            && path.starts_with(anchor)
+        {
+            found.push(Candidate::new(Scope::Skill, Position::Ancestor, Side::Home));
         }
         for client in &self.client_dirs {
             let Some(c) = client_components(client, path) else {
@@ -1008,6 +1117,403 @@ mod tests {
         }
     }
 
+    // -----------------------------------------------------------------------------------
+    // `install-skill`'s one chosen skill folder (M4-D8).
+
+    /// A real home under a tempdir: a registered client dir outside any prefix, a Wine
+    /// prefix, the three app dirs and `$HOME/.claude`.
+    struct Real {
+        _dir: tempfile::TempDir,
+        root: PathBuf,
+        paths: Paths,
+        client: PathBuf,
+    }
+
+    fn real() -> Real {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let mk = |rel: &str| {
+            let path = root.join(rel);
+            std::fs::create_dir_all(&path).unwrap();
+            path
+        };
+        let home = mk("home");
+        let client = mk("games/wow/_retail_/Interface/AddOns")
+            .parent()
+            .and_then(Path::parent)
+            .unwrap()
+            .to_path_buf();
+        mk("prefix/drive_c/users/me");
+        mk("prefix/dosdevices");
+        mk("home/.claude");
+        let paths = Paths::with_roots(
+            &home,
+            home.join(".config"),
+            home.join(".local/state"),
+            home.join(".cache"),
+        );
+        for app in [paths.config_dir(), paths.state_dir(), paths.cache_dir()] {
+            std::fs::create_dir_all(app).unwrap();
+        }
+        Real {
+            _dir: dir,
+            root,
+            paths,
+            client,
+        }
+    }
+
+    impl Real {
+        fn table(&self) -> ScopeTable {
+            ScopeTable::new(&self.paths, std::slice::from_ref(&self.client), None).unwrap()
+        }
+
+        fn at(&self, rel: &str) -> PathBuf {
+            self.root.join(rel)
+        }
+
+        /// Every entry under the root, by relative path and kind, no link followed.
+        fn listing(&self) -> BTreeSet<String> {
+            fn walk(base: &Path, dir: &Path, found: &mut BTreeSet<String>) {
+                for entry in std::fs::read_dir(dir).unwrap() {
+                    let path = entry.unwrap().path();
+                    let meta = std::fs::symlink_metadata(&path).unwrap();
+                    let rel = path.strip_prefix(base).unwrap().display().to_string();
+                    let kind = if meta.file_type().is_symlink() {
+                        "L"
+                    } else if meta.is_dir() {
+                        "D"
+                    } else {
+                        "F"
+                    };
+                    found.insert(format!("{kind} {rel}"));
+                    if meta.is_dir() {
+                        walk(base, &path, found);
+                    }
+                }
+            }
+            let mut found = BTreeSet::new();
+            walk(&self.root, &self.root, &mut found);
+            found
+        }
+    }
+
+    /// The writers of `ALL` that `t` lets write `path` with `access`.
+    fn writers(t: &ScopeTable, path: &Path, access: Access) -> Vec<Writer> {
+        let none = OwnedFolders::default();
+        ALL.into_iter()
+            .filter(|&w| t.check(w, &none, path, access).is_ok())
+            .collect()
+    }
+
+    #[test]
+    fn the_history_row_admits_the_skill_writer() {
+        let t = table();
+        let none = OwnedFolders::default();
+        let history = p("home/.local/state/omaddons/history.jsonl");
+        let matched = t.check(Writer::Skill, &none, &history, Access::Write);
+        assert_eq!(matched.map(|m| m.scope), Ok(Scope::History));
+        let registry = p("home/.local/state/omaddons/registry.json");
+        assert!(
+            t.check(Writer::Skill, &none, &registry, Access::Write)
+                .is_err(),
+            "the rest of the state dir stays refused"
+        );
+    }
+
+    #[test]
+    fn a_chosen_skill_dir_replaces_the_slot_for_skill_and_doctor_only() {
+        use Writer as W;
+        let home = real();
+        let parent = home.at("home/.codex/skills");
+        std::fs::create_dir_all(&parent).unwrap();
+        let dir = parent.join("omaddons");
+        let t = home.table().with_skill_dir(&dir, &parent).unwrap();
+        assert_eq!(t.skill_dir(), dir.as_path());
+        let cases = [
+            (
+                "skill_file",
+                dir.join("SKILL.md"),
+                Access::Write,
+                vec![W::Skill, W::Doctor],
+            ),
+            (
+                "backup_rename",
+                dir.join("SKILL.md.bak"),
+                Access::Rename,
+                vec![W::Skill, W::Doctor],
+            ),
+            (
+                "the_folder_created",
+                dir.clone(),
+                Access::CreateDir,
+                vec![W::Skill, W::Doctor],
+            ),
+            ("the_folder_written", dir.clone(), Access::Write, vec![]),
+            (
+                "the_default_folder",
+                home.at("home/.claude/skills/omaddons/SKILL.md"),
+                Access::Write,
+                vec![],
+            ),
+            (
+                "a_sibling",
+                parent.join("other/SKILL.md"),
+                Access::Write,
+                vec![],
+            ),
+        ];
+        for (case, path, access, want) in cases {
+            let got = writers(&t, &path, access);
+            assert_eq!(got, want, "{case}: {} {access:?} → {got:?}", path.display());
+        }
+    }
+
+    #[test]
+    fn skill_dirs_inside_clients_prefixes_or_own_dirs_are_refused() {
+        let home = real();
+        std::fs::create_dir_all(home.paths.state_dir().join("x")).unwrap();
+        std::os::unix::fs::symlink(&home.client, home.at("home/link")).unwrap();
+        std::os::unix::fs::symlink(home.paths.state_dir().join("x"), home.at("home/sk")).unwrap();
+        let client = home.client.clone();
+        let cases: Vec<(&str, PathBuf, PathBuf, &str)> = vec![
+            (
+                "client_dir_itself",
+                client.clone(),
+                client.clone(),
+                "is inside the game client",
+            ),
+            (
+                "inside_client_interface",
+                client.join("Interface/skills"),
+                client.join("Interface/skills"),
+                "is inside the game client",
+            ),
+            (
+                "inside_wine_prefix",
+                home.at("prefix/drive_c/users/me/skills"),
+                home.at("prefix/drive_c/users/me/skills"),
+                "is inside the Wine prefix",
+            ),
+            (
+                "inside_config",
+                home.paths.config_dir().join("skills"),
+                home.paths.config_dir().join("skills"),
+                "is inside omaddons' own config folder",
+            ),
+            (
+                "inside_state",
+                home.paths.state_dir().join("skills"),
+                home.paths.state_dir().join("skills"),
+                "is inside omaddons' own state folder",
+            ),
+            (
+                "inside_cache",
+                home.paths.cache_dir().join("skills"),
+                home.paths.cache_dir().join("skills"),
+                "is inside omaddons' own cache folder",
+            ),
+            (
+                "through_a_symlinked_ancestor",
+                home.at("home/link/skills"),
+                client.join("skills"),
+                "is inside the game client",
+            ),
+            (
+                "symlinked_dir_into_state",
+                home.at("home/sk"),
+                home.paths.state_dir().join("x"),
+                "is inside omaddons' own state folder",
+            ),
+            (
+                "holding_a_client",
+                home.at("games"),
+                home.at("games"),
+                "holds the game client",
+            ),
+            (
+                "holding_the_state_dir",
+                home.at("home/.local"),
+                home.at("home/.local"),
+                "holds omaddons' own state folder",
+            ),
+        ];
+        for (case, dir, canonical, why) in cases {
+            let before = home.listing();
+            let err = home.table().with_skill_dir(&dir, &home.root).unwrap_err();
+            assert_eq!(err.code, ErrorCode::ScopeDenied, "{case}: {}", err.message);
+            assert!(err.message.contains(why), "{case}: {}", err.message);
+            assert_eq!(
+                err.details,
+                serde_json::json!({
+                    "reason": "skill_dir",
+                    "path": canonical.display().to_string(),
+                }),
+                "{case}"
+            );
+            assert!(
+                err.code.check_details(&err.details).is_ok(),
+                "{case}: the details fit scope_denied's spec: {}",
+                err.details
+            );
+            let fix = err.fix.display();
+            assert!(
+                fix.contains('<') && !fix.contains("omaddons "),
+                "{case}: a prose fix naming no runnable command: {fix}"
+            );
+            assert_eq!(home.listing(), before, "{case}: nothing was created");
+        }
+        let planted = serde_json::json!({"reason": "skill_dirs", "path": "/x"});
+        assert!(
+            ErrorCode::ScopeDenied.check_details(&planted).is_err(),
+            "an unknown reason is refused by the spec"
+        );
+    }
+
+    #[test]
+    fn a_missing_create_from_is_not_found() {
+        let home = real();
+        std::fs::write(home.at("a-file"), b"").unwrap();
+        for (case, create_from, why) in [
+            ("missing", home.at("nope"), "does not exist"),
+            ("a_file", home.at("a-file"), "is not a folder"),
+        ] {
+            let before = home.listing();
+            let err = home
+                .table()
+                .with_skill_dir(&create_from.join("omaddons"), &create_from)
+                .unwrap_err();
+            assert_eq!(err.code, ErrorCode::NotFound, "{case}: {}", err.message);
+            assert!(err.message.contains(why), "{case}: {}", err.message);
+            assert_eq!(
+                err.details,
+                serde_json::json!({"path": create_from.display().to_string()}),
+                "{case}"
+            );
+            assert!(
+                err.code.check_details(&err.details).is_ok(),
+                "{case}: the details fit not_found's spec: {}",
+                err.details
+            );
+            assert_eq!(home.listing(), before, "{case}: nothing was created");
+        }
+    }
+
+    #[test]
+    fn only_folders_between_the_anchor_and_the_skill_dir_are_creatable() {
+        use Access::{CreateDir, Rename, Write};
+        let home = real();
+        let claude = home.at("home/.claude");
+        let t = home
+            .table()
+            .with_skill_dir(&claude.join("skills/omaddons"), &claude)
+            .unwrap();
+        let cases = [
+            ("the_anchor", "home/.claude", CreateDir, false),
+            ("skills_created", "home/.claude/skills", CreateDir, true),
+            ("skills_written", "home/.claude/skills", Write, false),
+            ("skills_renamed", "home/.claude/skills", Rename, false),
+            (
+                "another_skill",
+                "home/.claude/skills/other",
+                CreateDir,
+                false,
+            ),
+            (
+                "the_folder_created",
+                "home/.claude/skills/omaddons",
+                CreateDir,
+                true,
+            ),
+            (
+                "the_folder_written",
+                "home/.claude/skills/omaddons",
+                Write,
+                false,
+            ),
+            (
+                "the_skill_file",
+                "home/.claude/skills/omaddons/SKILL.md",
+                Write,
+                true,
+            ),
+            (
+                "claude_settings",
+                "home/.claude/settings.json",
+                Write,
+                false,
+            ),
+        ];
+        let none = OwnedFolders::default();
+        for (case, rel, access, want) in cases {
+            let path = home.at(rel);
+            let got = t.check(Writer::Skill, &none, &path, access);
+            assert_eq!(got.is_ok(), want, "{case}: {rel} {access:?} → {got:?}");
+        }
+        for writer in [Writer::Mutating, Writer::Config, Writer::Omarchy] {
+            assert!(
+                t.check(writer, &none, &home.at("home/.claude/skills"), CreateDir)
+                    .is_err(),
+                "{writer} never creates it"
+            );
+        }
+
+        // A `--dir` whose parent is the anchor: only the folder itself is created.
+        let work = home.at("work/skills");
+        std::fs::create_dir_all(&work).unwrap();
+        let t = home
+            .table()
+            .with_skill_dir(&work.join("omaddons"), &work)
+            .unwrap();
+        for (case, rel, want) in [
+            ("custom_folder", "work/skills/omaddons", true),
+            ("custom_anchor", "work/skills", false),
+            ("above_the_anchor", "work", false),
+            ("default_skills", "home/.claude/skills", false),
+        ] {
+            let got = t.check(Writer::Skill, &none, &home.at(rel), CreateDir);
+            assert_eq!(got.is_ok(), want, "{case}: {rel} → {got:?}");
+        }
+    }
+
+    #[test]
+    fn a_symlinked_skill_dir_is_judged_where_it_points() {
+        let home = real();
+        let real_skill = home.at("home/real-skill");
+        std::fs::create_dir_all(&real_skill).unwrap();
+        std::fs::create_dir_all(home.at("home/.claude/skills")).unwrap();
+        let link = home.at("home/.claude/skills/omaddons");
+        std::os::unix::fs::symlink(&real_skill, &link).unwrap();
+        let t = home
+            .table()
+            .with_skill_dir(&link, &home.at("home/.claude"))
+            .unwrap();
+        assert_eq!(t.skill_dir(), real_skill.as_path());
+        assert_eq!(
+            writers(&t, &real_skill.join("SKILL.md"), Access::Write),
+            vec![Writer::Skill, Writer::Doctor]
+        );
+    }
+
+    #[test]
+    fn without_with_skill_dir_the_table_is_unchanged() {
+        let t = table();
+        assert_eq!(t.skill_dir(), p("home/.claude/skills/omaddons").as_path());
+        assert_eq!(
+            writers(
+                &t,
+                &p("home/.claude/skills/omaddons/SKILL.md"),
+                Access::Write
+            ),
+            vec![Writer::Skill, Writer::Doctor]
+        );
+        assert_eq!(
+            writers(&t, &p("home/.claude/skills"), Access::CreateDir),
+            vec![],
+            "no folder above the skill folder is creatable"
+        );
+    }
+
     #[test]
     fn rows_admit_exactly_their_writers() {
         use Writer as W;
@@ -1020,6 +1526,20 @@ mod tests {
             (
                 "home/.local/state/omaddons/registry.json",
                 vec![W::Mutating, W::Undo, W::Backup, W::BackupRestore, W::Doctor],
+            ),
+            (
+                "home/.local/state/omaddons/history.jsonl",
+                vec![
+                    W::Config,
+                    W::Auth,
+                    W::Mutating,
+                    W::Undo,
+                    W::Backup,
+                    W::BackupRestore,
+                    W::Omarchy,
+                    W::Skill,
+                    W::Doctor,
+                ],
             ),
             ("home/.local/state/omaddons/net.log", ALL.to_vec()),
             ("home/.local/state/omaddons/net.log.1", ALL.to_vec()),

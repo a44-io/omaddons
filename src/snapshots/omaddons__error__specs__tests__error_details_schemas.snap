@@ -4382,6 +4382,9 @@ expression: schemas
       "journal_pending": {
         "type": "string"
       },
+      "path": {
+        "type": "string"
+      },
       "reason": {
         "enum": [
           "wtf_symlinked",

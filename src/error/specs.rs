@@ -389,9 +389,11 @@ pub(crate) const HOST_BLOCKED: DetailSpec = DetailSpec::Object(&[
 ]);
 
 /// fsx scope refusals, restore topology, and journal marker mismatch; a repair journal's
-/// recovery stops name no single target (`target: null`).
+/// recovery stops name no single target (`target: null`). `install-skill`'s refused
+/// folder (`fsx::ScopeTable::with_skill_dir`) is `{reason: "skill_dir", path}`.
 pub(crate) const SCOPE_DENIED: DetailSpec = DetailSpec::Object(&[
     Field::opt("backup_dir", &STR),
+    Field::opt("path", &STR),
     Field::opt(
         "reason",
         &DetailSpec::Enum(&["wtf_symlinked", "marker_mismatch", "skill_dir"]),
