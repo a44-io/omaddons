@@ -54,7 +54,8 @@ Writes the agent guide, the same bytes as omaddons robot-docs guide, as SKILL.md
 the skill folder. The default needs $HOME/.claude and creates skills/omaddons in it; a
 --dir folder is created when its parent exists. A SKILL.md you edited is kept as
 SKILL.md.bak. It never writes through a symlink, into a game client, a Wine prefix or
-omaddons' own folders. Remove the skill by deleting the folder.";
+omaddons' own folders. omaddons doctor reports an installed skill that holds another
+guide than this build's. Remove the skill by deleting the folder.";
 
 /// `robot-docs install-skill`'s arguments.
 #[derive(Debug, Clone, Default, clap::Args)]

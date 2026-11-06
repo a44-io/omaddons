@@ -1078,7 +1078,8 @@ fn guide_usage_fix_runs() {
 /// `robot-docs install-skill` into a throwaway `HOME` that has used Claude Code (M4-D64):
 /// a dry run changes no file anywhere; the install writes the committed skill byte for
 /// byte, mode 0644, records a `skill` line naming its folder, which the history
-/// projection keeps and bare `undo` steps over; and a second run changes nothing.
+/// projection keeps and bare `undo` steps over; a second run changes nothing; a pristine
+/// older guide is replaced without a copy, and an edited file is kept as `SKILL.md.bak`.
 #[test]
 fn install_skill_round_trip_on_a_throwaway_home() {
     use std::os::unix::fs::PermissionsExt;
@@ -1140,4 +1141,46 @@ fn install_skill_round_trip_on_a_throwaway_home() {
     ran.ok();
     log.assert_eq("written", &ran.data()["written"], &json!("unchanged"));
     log.assert_unchanged("root", env.root());
+
+    log.step("a pristine older guide is replaced without a copy");
+    let older = {
+        use omaddons::contract::guide::stamp::{digest_without_stamp, hex, line};
+        let zeros = "0".repeat(64);
+        let provisional = format!(
+            "---\nname: omaddons\n---\n{}\nan older guide\n",
+            line(&zeros)
+        );
+        let digest = digest_without_stamp(&provisional).unwrap();
+        provisional.replacen(&zeros, &hex(&digest), 1)
+    };
+    std::fs::write(&file, &older).unwrap();
+    let ran = log.run(&env, &["robot-docs", "install-skill", "--json"]);
+    ran.ok();
+    log.assert_eq("written", &ran.data()["written"], &json!("replaced"));
+    assert!(
+        std::fs::read(&file).unwrap() == committed,
+        "the guide again"
+    );
+    let copy = dir.join("SKILL.md.bak");
+    assert!(!copy.exists(), "an older guide's own bytes are not kept");
+
+    log.step("an edited copy is kept as SKILL.md.bak, byte for byte");
+    let edited = b"my own notes on omaddons\n";
+    std::fs::write(&file, edited).unwrap();
+    let ran = log.run(&env, &["robot-docs", "install-skill", "--json"]);
+    ran.ok();
+    log.assert_eq("written", &ran.data()["written"], &json!("replaced"));
+    assert!(
+        std::fs::read(&file).unwrap() == committed,
+        "the guide again"
+    );
+    log.assert_eq("kept", &std::fs::read(&copy).unwrap(), &edited.to_vec());
+    let ran = log.run(&env, &["history", "--json"]);
+    let skill_lines = ran.data()["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["kind"] == "skill")
+        .count();
+    log.assert_eq("skill lines", &skill_lines, &3);
 }

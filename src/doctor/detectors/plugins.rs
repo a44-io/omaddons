@@ -1,15 +1,19 @@
-//! `plugins`: the bar widget. Both rows are reported, never repaired (M4-D50): a
-//! reinstall runs Omarchy's own tools in the desktop session and cannot be undone, so the
-//! remediation is `omaddons omarchy install`, the user's to run.
+//! `plugins`: the bar widget and the agent skill. Each row is reported, never repaired
+//! (M4-D50, M4-D64): a widget reinstall runs Omarchy's own tools in the desktop session
+//! and cannot be undone, so its remediation is `omaddons omarchy install`, the user's to
+//! run; an outdated or edited skill is reinstalled with `robot-docs install-skill`, which
+//! keeps an edited copy.
 
 use std::path::Path;
 
 use crate::app::status::machine_facts;
+use crate::contract::guide::EXPECTED_DIGEST;
+use crate::contract::guide::stamp::{Stamp, hex, inspect};
 use crate::doctor::budget::Budget;
 use crate::doctor::facts::StatusFacts;
 use crate::doctor::finding::{Confidence, Detected, Evidence, Observation, Subject};
 use crate::doctor::selection::Selection;
-use crate::doctor::view::DoctorView;
+use crate::doctor::view::{BoundedRead, DoctorView, SkillFile};
 use crate::omarchy::status::WidgetInfo;
 use crate::omarchy::validate::{self, Checked};
 
@@ -24,8 +28,194 @@ pub(crate) const CONTEXT_UNKNOWN: &str = "context_unknown";
 /// reinstall from this run (M3-D7).
 pub(crate) const OTHER_CONTEXT: &str = "other_context";
 
+/// `skill-version-drift`'s `evidence.reason`: a pristine skill of another guide.
+pub(crate) const SKILL_OUTDATED: &str = "outdated";
+/// `skill-version-drift`'s `evidence.reason`: a skill whose bytes no longer match its own
+/// stamp, which is not this build's.
+pub(crate) const SKILL_EDITED: &str = "edited";
+/// `skill-version-drift`'s `evidence.reason`: a `SKILL.md` without a guide stamp.
+pub(crate) const SKILL_UNSTAMPED: &str = "unstamped";
+/// `skill-version-drift`'s `evidence.reason`: a `SKILL.md` larger than any guide.
+pub(crate) const SKILL_TOO_LARGE: &str = "too_large";
+/// `skill-version-drift`'s `evidence.reason`: a symlinked `SKILL.md` whose target is not
+/// this build's guide.
+pub(crate) const SKILL_SYMLINK: &str = "symlink";
+/// `skill-version-drift`'s `evidence.reason`: a `SKILL.md` that is not a regular file.
+pub(crate) const SKILL_NOT_A_FILE: &str = "not_a_file";
+/// `skill-version-drift`'s `evidence.reason`: a `SKILL.md` that cannot be read.
+pub(crate) const SKILL_UNREADABLE: &str = "unreadable";
+
 /// Every `evidence.reason` these checks give.
-pub(crate) const REASONS: [&str; 3] = [CODE_DIFFERS, CONTEXT_UNKNOWN, OTHER_CONTEXT];
+pub(crate) const REASONS: [&str; 10] = [
+    CODE_DIFFERS,
+    CONTEXT_UNKNOWN,
+    OTHER_CONTEXT,
+    SKILL_OUTDATED,
+    SKILL_EDITED,
+    SKILL_UNSTAMPED,
+    SKILL_TOO_LARGE,
+    SKILL_SYMLINK,
+    SKILL_NOT_A_FILE,
+    SKILL_UNREADABLE,
+];
+
+/// Why an installed skill was changed by hand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EditedCause {
+    /// Its bytes no longer match its own stamp.
+    Changed,
+    /// It has no guide stamp.
+    Unstamped,
+    /// It is larger than any guide, so never read whole.
+    TooLarge,
+}
+
+/// What an installed skill's `SKILL.md` (read through a symlink) is, judged by its stamp
+/// against this build's guide digest, never by rendering the guide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SkillState {
+    /// No file there (a deleted skill, or a dangling link): never a finding.
+    Absent,
+    /// This build's guide, pristine or edited (an edited copy of the current guide is no
+    /// finding: M4-D50 reports an edit only when its stamp also differs).
+    Current,
+    /// Another guide's pristine bytes.
+    Outdated {
+        digest: [u8; 32],
+    },
+    /// Changed by hand; `claimed` is its stamp when it has one.
+    Edited {
+        claimed: Option<[u8; 32]>,
+        cause: EditedCause,
+    },
+    NotAFile,
+    Unreadable,
+}
+
+/// `read`'s state against `expected`, this build's guide digest in lowercase hex.
+pub(crate) fn classify(read: &BoundedRead, expected: &str) -> SkillState {
+    match read {
+        BoundedRead::Missing => SkillState::Absent,
+        BoundedRead::Unreadable { kind } if *kind == std::io::ErrorKind::NotFound => {
+            SkillState::Absent
+        }
+        BoundedRead::Unreadable { .. } => SkillState::Unreadable,
+        BoundedRead::NotAFile => SkillState::NotAFile,
+        BoundedRead::TooLarge { .. } => SkillState::Edited {
+            claimed: None,
+            cause: EditedCause::TooLarge,
+        },
+        BoundedRead::Bytes(bytes) => match inspect(bytes) {
+            Stamp::Stamped { claimed, actual } => {
+                let current = hex(&claimed).eq(expected);
+                if current {
+                    SkillState::Current
+                } else if claimed == actual {
+                    SkillState::Outdated { digest: actual }
+                } else {
+                    SkillState::Edited {
+                        claimed: Some(claimed),
+                        cause: EditedCause::Changed,
+                    }
+                }
+            }
+            Stamp::Unstamped => SkillState::Edited {
+                claimed: None,
+                cause: EditedCause::Unstamped,
+            },
+        },
+    }
+}
+
+/// `skill-version-drift`: each installed agent skill (the default folder and every folder
+/// the history projection lists) whose `SKILL.md` is not this build's guide. A missing
+/// skill, or a link to nothing, is no finding; nothing is rendered or written.
+pub(crate) fn skill_version_drift(view: &DoctorView, _: &Selection, _: &mut Budget) -> Detected {
+    let found = view
+        .skill()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|skill| skill_observation(skill, EXPECTED_DIGEST))
+        .collect();
+    Detected::complete(found)
+}
+
+/// The finding for one installed skill, if it is one.
+pub(crate) fn skill_observation(skill: &SkillFile, expected: &str) -> Option<Observation> {
+    let state = classify(&skill.read, expected);
+    let digest = |d: &[u8; 32]| format!("sha256:{}", hex(d));
+    let (observed, edited) = match state {
+        SkillState::Absent | SkillState::Current => return None,
+        SkillState::Outdated { digest: d } => (Some(digest(&d)), Some(false)),
+        SkillState::Edited { claimed, .. } => (claimed.as_ref().map(digest), Some(true)),
+        SkillState::NotAFile | SkillState::Unreadable => (None, None),
+    };
+    let (title, reason) = match (&skill.link_target, state) {
+        (Some(_), _) => (
+            "The installed agent skill is a symbolic link to a file that is not this binary's guide",
+            SKILL_SYMLINK,
+        ),
+        (None, SkillState::Outdated { .. }) => (
+            "The installed agent skill carries another guide than this binary's",
+            SKILL_OUTDATED,
+        ),
+        (
+            None,
+            SkillState::Edited {
+                cause: EditedCause::Changed,
+                ..
+            },
+        ) => (
+            "The installed agent skill was edited by hand, and its guide is not this binary's",
+            SKILL_EDITED,
+        ),
+        (
+            None,
+            SkillState::Edited {
+                cause: EditedCause::Unstamped,
+                ..
+            },
+        ) => (
+            "The installed agent skill has no guide stamp, so it was changed by hand",
+            SKILL_UNSTAMPED,
+        ),
+        (
+            None,
+            SkillState::Edited {
+                cause: EditedCause::TooLarge,
+                ..
+            },
+        ) => (
+            "The installed agent skill is larger than any guide, so it was changed by hand",
+            SKILL_TOO_LARGE,
+        ),
+        (None, SkillState::NotAFile) => (
+            "The installed agent skill's SKILL.md is not a regular file",
+            SKILL_NOT_A_FILE,
+        ),
+        (None, _) => ("The installed agent skill cannot be read", SKILL_UNREADABLE),
+    };
+    let mut evidence = Evidence {
+        path: Some(skill.file.clone()),
+        observed,
+        expected: Some(format!("sha256:{expected}")),
+        reason: Some(reason),
+        edited,
+        link_target: skill.link_target.clone(),
+        ..Evidence::default()
+    };
+    if !evidence.is_private_safe() {
+        evidence.link_target = None;
+    }
+    Some(Observation {
+        subject: Subject::machine().path(&skill.file),
+        title: title.to_owned(),
+        confidence: Confidence::High,
+        addon: None,
+        folder: None,
+        evidence,
+    })
+}
 
 /// `widget-version-drift`, from the Widget layer: the status rule's observation, with the
 /// plugin folder it is about.
@@ -157,6 +347,209 @@ mod tests {
                 ..Preloaded::default()
             },
         )
+    }
+
+    /// A small document stamped as the renderer stamps the guide: another guide than this
+    /// build's.
+    fn guide_doc(body: &str) -> Vec<u8> {
+        use crate::contract::guide::stamp::{digest_without_stamp, line};
+        let zeros = "0".repeat(64);
+        let provisional = format!("---\nname: omaddons\n---\n{}\n{body}", line(&zeros));
+        let digest = digest_without_stamp(&provisional).unwrap();
+        provisional.replacen(&zeros, &hex(&digest), 1).into_bytes()
+    }
+
+    /// `bytes` with its second-to-last byte changed.
+    fn edited(mut bytes: Vec<u8>) -> Vec<u8> {
+        let last = bytes.len() - 2;
+        bytes[last] ^= 0x01;
+        bytes
+    }
+
+    #[test]
+    fn skill_states_classify_by_stamp() {
+        let doc = guide_doc("a guide\n");
+        let digest = crate::contract::guide::stamp::digest_bytes_without_stamp(&doc).unwrap();
+        let this = hex(&digest);
+        let other = "1".repeat(64);
+        let cases: Vec<(&str, BoundedRead, &str, SkillState)> = vec![
+            ("missing", BoundedRead::Missing, &this, SkillState::Absent),
+            (
+                "dangling_link",
+                BoundedRead::Unreadable {
+                    kind: std::io::ErrorKind::NotFound,
+                },
+                &this,
+                SkillState::Absent,
+            ),
+            (
+                "this_guide",
+                BoundedRead::Bytes(doc.clone()),
+                &this,
+                SkillState::Current,
+            ),
+            (
+                "this_guide_edited",
+                BoundedRead::Bytes(edited(doc.clone())),
+                &this,
+                SkillState::Current,
+            ),
+            (
+                "another_guide",
+                BoundedRead::Bytes(doc.clone()),
+                &other,
+                SkillState::Outdated { digest },
+            ),
+            (
+                "another_guide_edited",
+                BoundedRead::Bytes(edited(doc.clone())),
+                &other,
+                SkillState::Edited {
+                    claimed: Some(digest),
+                    cause: EditedCause::Changed,
+                },
+            ),
+            (
+                "unstamped",
+                BoundedRead::Bytes(b"# my notes\n".to_vec()),
+                &other,
+                SkillState::Edited {
+                    claimed: None,
+                    cause: EditedCause::Unstamped,
+                },
+            ),
+            (
+                "too_large",
+                BoundedRead::TooLarge { bytes: 2 << 20 },
+                &other,
+                SkillState::Edited {
+                    claimed: None,
+                    cause: EditedCause::TooLarge,
+                },
+            ),
+            (
+                "not_a_file",
+                BoundedRead::NotAFile,
+                &other,
+                SkillState::NotAFile,
+            ),
+            (
+                "unreadable",
+                BoundedRead::Unreadable {
+                    kind: std::io::ErrorKind::PermissionDenied,
+                },
+                &other,
+                SkillState::Unreadable,
+            ),
+        ];
+        for (case, read, expected, want) in cases {
+            let got = classify(&read, expected);
+            assert_eq!(got, want, "{case}: against {expected} → {got:?}");
+        }
+    }
+
+    /// Through the view: the default folder and each folder the history projection lists,
+    /// each finding about its own file; a listed folder that is gone is none.
+    #[test]
+    fn skill_findings_name_each_installed_folder() {
+        use crate::fsx::{ScopeTable, WriteSession, Writer};
+        use crate::model::{Actor, TxKind};
+        use crate::state::history::{self, SettingEntry};
+        let (_dir, paths) = home();
+        let home = paths.home().to_path_buf();
+        let old = guide_doc("an older guide\n");
+        let default = paths.skill_dir();
+        fs::create_dir_all(&default).unwrap();
+        fs::write(default.join("SKILL.md"), &old).unwrap();
+        let custom = home.join("work/skills/omaddons");
+        fs::create_dir_all(&custom).unwrap();
+        fs::write(custom.join("SKILL.md"), edited(old.clone())).unwrap();
+        let linked = home.join("dots/skills/omaddons");
+        fs::create_dir_all(&linked).unwrap();
+        fs::write(home.join("dots/guide.md"), &old).unwrap();
+        symlink(home.join("dots/guide.md"), linked.join("SKILL.md")).unwrap();
+        let gone = home.join("gone/skills/omaddons");
+
+        fs::create_dir_all(paths.state_dir()).unwrap();
+        let scopes = ScopeTable::new(&paths, &[], None).unwrap();
+        let mut s = WriteSession::untracked(Writer::Mutating, &scopes, "test");
+        for dir in [&gone, &linked, &custom] {
+            let entry = SettingEntry {
+                dir: Some(dir.clone()),
+                ..SettingEntry::now(TxKind::Skill, None, Actor::Human, None, vec![])
+            };
+            history::append_setting(&mut s, &paths, &entry).unwrap();
+        }
+        crate::state::history_tail::rebuild_if_stale(&paths, "test", Actor::Human);
+
+        let view = crate::doctor::view::tests::view_at(paths.clone());
+        let detected = skill_version_drift(&view, &Selection::all(), &mut Budget::unlimited());
+        let found = findings(ids::SKILL_VERSION_DRIFT, &detected);
+        let digest = format!(
+            "sha256:{}",
+            hex(&crate::contract::guide::stamp::digest_bytes_without_stamp(&old).unwrap())
+        );
+        let by_path = |dir: &std::path::Path| {
+            let file = dir.join("SKILL.md");
+            found
+                .iter()
+                .find(|f| f.evidence.path.as_deref() == Some(file.as_path()))
+                .unwrap_or_else(|| panic!("no finding about {}: {found:#?}", file.display())) // ubs:ignore — the test's own failure
+        };
+        assert_eq!(found.len(), 3, "{found:#?}");
+        let outdated = by_path(&default);
+        assert_eq!(
+            (
+                outdated.evidence.reason,
+                outdated.evidence.edited,
+                outdated.evidence.observed.as_deref()
+            ),
+            (Some(SKILL_OUTDATED), Some(false), Some(digest.as_str()))
+        );
+        // The remediation omits --dir only for this process's own default folder (the
+        // registry's test covers it); this temporary home is not the process's HOME.
+        assert_eq!(
+            outdated.remediation.argv,
+            Some(
+                ["omaddons", "robot-docs", "install-skill", "--dir"]
+                    .map(str::to_owned)
+                    .into_iter()
+                    .chain([default.display().to_string()])
+                    .collect()
+            ),
+            "{:?}",
+            outdated.remediation
+        );
+        let changed = by_path(&custom);
+        assert_eq!(
+            (changed.evidence.reason, changed.evidence.edited),
+            (Some(SKILL_EDITED), Some(true))
+        );
+        assert!(
+            changed.remediation.argv.as_ref().is_some_and(
+                |argv| argv.ends_with(&["--dir".to_owned(), custom.display().to_string()])
+            ),
+            "{:?}",
+            changed.remediation
+        );
+        let link = by_path(&linked);
+        assert_eq!(
+            (
+                link.evidence.reason,
+                link.evidence.edited,
+                link.evidence.link_target.as_deref()
+            ),
+            (
+                Some(SKILL_SYMLINK),
+                Some(false),
+                Some(home.join("dots/guide.md").as_path())
+            )
+        );
+        assert_eq!(link.remediation.argv, None, "a link gets prose");
+        for finding in &found {
+            assert_eq!(finding.severity, crate::doctor::finding::Severity::P3);
+            assert!(finding.evidence.is_private_safe(), "{:?}", finding.evidence);
+        }
     }
 
     fn findings(id: &str, detected: &Detected) -> Vec<Finding> {

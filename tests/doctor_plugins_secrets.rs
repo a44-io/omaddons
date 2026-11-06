@@ -223,6 +223,64 @@ fn widget_evidence(id: &str, home: &Home) -> Value {
     }
 }
 
+const SKILL_DRIFT: &str = "fm-plugins-skill-version-drift";
+
+/// The skill drift row (M4-D64) on its fixture, through the binary: an older guide in
+/// Claude Code's default skill folder is one P3 finding about that file, outdated and not
+/// edited, remediated by `robot-docs install-skill` (no `--dir`: the run's own default),
+/// never auto-fixable; running that remedy clears it.
+#[test]
+fn the_skill_drift_fixture_is_found_then_cleared_by_install_skill() {
+    let log = tlog!();
+    let fx = fixture::fixtures::all()
+        .into_iter()
+        .find(|f| f.id() == SKILL_DRIFT)
+        .expect("the skill drift fixture is registered");
+    let home = home(&log);
+    let file = home.env.home().join(".claude/skills/omaddons/SKILL.md");
+    log.step("plant");
+    fx.corrupt(&home);
+    log.step("diagnose");
+    let ran = run(&log, &home, &["doctor", "--json"]);
+    ran.exit(1);
+    let envelope = ran.envelope();
+    let ours = found(envelope, SKILL_DRIFT);
+    assert_eq!(ours.len(), 1, "{envelope:#}");
+    let f = &ours[0];
+    log.json("finding", f);
+    assert_eq!(f["severity"], "P3");
+    assert_eq!(f["target"], Value::Null);
+    let instance = f["instance"].as_str().unwrap();
+    assert!(
+        instance.starts_with(&format!("{SKILL_DRIFT}@machine:"))
+            && instance.ends_with(&file.display().to_string()),
+        "{instance}"
+    );
+    let evidence = &f["evidence"];
+    assert_eq!(evidence["path"], json!(file.display().to_string()));
+    assert_eq!(evidence["reason"], "outdated");
+    assert_eq!(evidence["edited"], false);
+    assert_eq!(
+        evidence["expected"],
+        json!(format!(
+            "sha256:{}",
+            omaddons::contract::guide::EXPECTED_DIGEST
+        ))
+    );
+    assert_ne!(evidence["observed"], evidence["expected"], "{evidence}");
+    let remediation = &f["remediation"];
+    assert_eq!(
+        remediation["argv"],
+        argv(&["omaddons", "robot-docs", "install-skill"])
+    );
+    assert_eq!(remediation["auto_fixable"], false);
+    assert_eq!(remediation["destructive"], false);
+    log.step("remedy");
+    fx.remedy(&home);
+    log.step("verify");
+    fx.assert_healthy(&home);
+}
+
 #[test]
 fn widget_fixtures_are_found_and_cleared() {
     let log = tlog!();

@@ -122,6 +122,8 @@ pub mod ids {
 
     /// The installed bar widget fails Omarchy's plugin validation.
     pub const WIDGET_INVALID: &str = "fm-plugins-widget-invalid";
+    /// An installed agent skill holds another guide than this build's, or was edited.
+    pub const SKILL_VERSION_DRIFT: &str = "fm-plugins-skill-version-drift";
 
     /// GitHub answers 401 to the configured token, or it cannot be had (`--online`).
     // ubs:ignore — a failure-mode id, not a secret
@@ -894,6 +896,26 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         }),
     },
     FailureMode {
+        id: ids::SKILL_VERSION_DRIFT,
+        subsystem: Subsystem::Plugins,
+        severity: Severity::P3,
+        title: "an installed agent skill holds another version of the guide",
+        description: "A SKILL.md omaddons installed for coding agents (in the default skill folder, or in a folder robot-docs install-skill wrote) carries a guide stamp other than this build's guide, or no longer matches its own stamp.",
+        why: "Coding agents load SKILL.md to learn omaddons, so an outdated guide teaches commands, codes and rules this build may not have. The check compares the stamp on the line after the file's frontmatter with this build's guide digest and never renders the guide. The doctor never rewrites a skill: reinstall it, and install-skill keeps a copy you edited as SKILL.md.bak.",
+        tier: Tier::Cached,
+        online: false,
+        // At most SKILL_DIRS_MAX + 1 bounded single-file reads, no walk.
+        cost_ms: 1,
+        requires: &[Layer::Skill],
+        detect: Some(plugins::skill_version_drift),
+        fix: None,
+        manual: Some(Manual {
+            instruction: "reinstall the skill from this build with robot-docs install-skill, with --dir <dir> for a folder other than the default",
+            why: "the skill is yours: the doctor never rewrites it, and install-skill keeps an edited copy",
+            remediation: skill_manual,
+        }),
+    },
+    FailureMode {
         id: ids::WIDGET_INVALID,
         subsystem: Subsystem::Plugins,
         severity: Severity::P2,
@@ -1174,6 +1196,54 @@ fn forget_manual(f: &Finding) -> Remediation {
 
 fn widget_manual(_: &Finding) -> Remediation {
     hint(&omarchy_status::reinstall_hint())
+}
+
+/// An installed skill: its reinstall from this build (`--dir` for a folder other than the
+/// default), which keeps an edited copy as `SKILL.md.bak`. A symlinked `SKILL.md`, which
+/// install-skill never writes through, and a file it cannot replace (not a regular file,
+/// or unreadable) get prose.
+fn skill_manual(f: &Finding) -> Remediation {
+    let Some(file) = f.evidence.path.as_deref() else {
+        return prose("reinstall the agent skill from this build with robot-docs install-skill");
+    };
+    let dir = file.parent().unwrap_or(file);
+    match f.evidence.reason {
+        Some(plugins::SKILL_SYMLINK) => {
+            return prose(&format!(
+                "{} is a symbolic link, which install-skill never writes through: update the file it points to with this build's guide, or replace the link with a regular file and reinstall the skill",
+                file.display()
+            ));
+        }
+        Some(plugins::SKILL_NOT_A_FILE) => {
+            return prose(&format!(
+                "{} is not a regular file: move it out of the skill folder, then reinstall the skill",
+                file.display()
+            ));
+        }
+        Some(plugins::SKILL_UNREADABLE) => {
+            return prose(&format!(
+                "{} cannot be read: check its permissions, then reinstall the skill",
+                file.display()
+            ));
+        }
+        _ => {}
+    }
+    let mut argv: Vec<String> = ["omaddons", "robot-docs", "install-skill"]
+        .map(str::to_owned)
+        .to_vec();
+    let default = crate::state::paths::Paths::from_env()
+        .ok()
+        .map(|paths| paths.skill_dir());
+    let resolved =
+        |path: &std::path::Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if default.as_deref().map(resolved) != Some(resolved(dir)) {
+        argv.push("--dir".to_owned());
+        argv.push(dir.display().to_string());
+    }
+    hint(&CommandHint::new(
+        crate::contract::actions::Action::InstallSkill,
+        argv,
+    ))
 }
 
 /// An invalid widget: its reinstall, unless it serves another omaddons state, which a
@@ -1831,8 +1901,9 @@ mod tests {
         // The seven, the two the doctor's view raises, the two its runtime raises, the four
         // inventory rows of `external_artifacts`, the nine journal and lock rows of
         // `concurrency_primitives`, `caches`' blob row (F6), and F7's three online rows of
-        // `network`, the `secrets` row and `plugins`' widget-invalid row.
-        assert_eq!(FAILURE_MODES.len(), 30);
+        // `network`, the `secrets` row, `plugins`' widget-invalid row and its
+        // skill-version-drift row (M4-D64).
+        assert_eq!(FAILURE_MODES.len(), 31);
     }
 
     /// Appendix B rows 1-10: the journal and lock rows, all `cached` and report-only.
@@ -2279,6 +2350,93 @@ mod tests {
             "reinstall the widget with the omaddons binary and the HOME and XDG directories it was installed under"
         );
         assert!(invariant_violations(FAILURE_MODES).is_empty());
+    }
+
+    /// `plugins`' skill row (M4-D64): report-only, `cached`, reading the Skill layer; its
+    /// remediation reinstalls the skill (`--dir` for a folder other than the default), and
+    /// a link, a non-file or an unreadable file get prose naming no runnable command.
+    #[test]
+    fn the_skill_drift_row_reports_and_reinstalls() {
+        let row = row(ids::SKILL_VERSION_DRIFT).unwrap();
+        assert_eq!(
+            (
+                row.subsystem,
+                row.severity,
+                row.tier,
+                row.online,
+                row.cost_ms,
+                row.requires,
+                row.fix.is_none(),
+                row.manual.is_some(),
+            ),
+            (
+                Subsystem::Plugins,
+                Severity::P3,
+                Tier::Cached,
+                false,
+                1,
+                &[Layer::Skill][..],
+                true,
+                true,
+            )
+        );
+        let finding = |file: &std::path::Path, reason: &'static str| {
+            row.finding(Observation {
+                subject: Subject::machine().path(file),
+                title: "t".to_owned(),
+                confidence: Confidence::High,
+                addon: None,
+                folder: None,
+                evidence: Evidence {
+                    path: Some(file.to_path_buf()),
+                    reason: Some(reason),
+                    ..Evidence::default()
+                },
+            })
+        };
+        let default = crate::state::paths::Paths::from_env()
+            .unwrap()
+            .skill_dir()
+            .join("SKILL.md");
+        let custom = std::path::Path::new("/x/skills/omaddons/SKILL.md");
+        for (case, file, reason, argv) in [
+            (
+                "default_outdated",
+                default.as_path(),
+                plugins::SKILL_OUTDATED,
+                Some(argv_of(&["omaddons", "robot-docs", "install-skill"])),
+            ),
+            (
+                "custom_edited",
+                custom,
+                plugins::SKILL_EDITED,
+                Some(argv_of(&[
+                    "omaddons",
+                    "robot-docs",
+                    "install-skill",
+                    "--dir",
+                    "/x/skills/omaddons",
+                ])),
+            ),
+            ("symlink", custom, plugins::SKILL_SYMLINK, None),
+            ("not_a_file", custom, plugins::SKILL_NOT_A_FILE, None),
+            ("unreadable", custom, plugins::SKILL_UNREADABLE, None),
+        ] {
+            let found = finding(file, reason);
+            let remediation = &found.remediation;
+            assert_eq!(remediation.argv, argv, "{case}: {remediation:?}");
+            assert!(
+                !remediation.auto_fixable && !remediation.destructive,
+                "{case}: {remediation:?}"
+            );
+            if argv.is_none() {
+                assert!(
+                    !remediation.command.contains("omaddons "),
+                    "{case}: prose names no runnable command: {}",
+                    remediation.command
+                );
+            }
+        }
     }
 
     /// An online check that got no answer it could judge is asked again, online.

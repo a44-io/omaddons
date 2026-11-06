@@ -292,6 +292,15 @@ pub struct Evidence {
     /// lists them with their messages. Omitted when no widget rule is concerned.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub rules: Vec<crate::omarchy::validate::Rule>,
+    /// Whether an installed agent skill's `SKILL.md` was changed by hand (its bytes no
+    /// longer match its own stamp, it has none, or it is larger than any guide). Omitted
+    /// when no skill is concerned, or when it cannot be told.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edited: Option<bool>,
+    /// Where a symbolic link concerned points, as it is written. Omitted when no link is
+    /// concerned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link_target: Option<PathBuf>,
     /// The detector's per-instance fixable mark: `Some(false)` for an instance its row's
     /// fixer cannot repair, which `doctor fix` lists as manual and whose remediation is
     /// the row's manual one. Never on the wire: `remediation.auto_fixable` says it there.
@@ -390,6 +399,7 @@ impl Evidence {
         };
         let names_wtf = |text: &str| text.to_ascii_lowercase().contains("/wtf/");
         !(self.path.as_deref().is_some_and(below_wtf)
+            || self.link_target.as_deref().is_some_and(below_wtf)
             || self.paths.iter().flatten().any(|path| below_wtf(path))
             || self.observed.as_deref().is_some_and(names_wtf)
             || self.expected.as_deref().is_some_and(names_wtf))
@@ -1270,6 +1280,15 @@ mod tests {
         ]);
         expected.extend(["other_owner", "outside_config", "symlink"]);
         expected.extend(["code_differs", "context_unknown", "other_context"]);
+        expected.extend([
+            "outdated",
+            "edited",
+            "unstamped",
+            "too_large",
+            "symlink",
+            "not_a_file",
+            "unreadable",
+        ]);
         expected.sort_unstable();
         expected.dedup();
         assert_eq!(evidence_reasons(), expected);

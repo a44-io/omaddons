@@ -718,11 +718,40 @@ impl DoctorView {
         }
     }
 
+    /// Every folder the skill may be installed in: the default one, then each folder the
+    /// history projection lists (`history_tail.skill_dirs[]`, believed only while it
+    /// matches the history), each once. Each `SKILL.md` is read bounded, through a
+    /// symlink, whose target is kept as written: at most `SKILL_DIRS_MAX` + 1 single-file
+    /// reads, and no walk.
     fn load_skill(&self) -> LayerState<Vec<SkillFile>> {
-        let dir = self.paths.skill_dir();
-        let file = dir.join("SKILL.md");
-        let read = read_bounded(&file, DISCOVERY_FILE_MAX_BYTES);
-        LayerState::Available(vec![SkillFile { dir, file, read }])
+        let mut dirs = vec![self.paths.skill_dir()];
+        if let Some(listed) =
+            crate::state::history_tail::fresh(&self.paths).and_then(|tail| tail.skill_dirs)
+        {
+            dirs.extend(listed);
+        }
+        let mut seen: Vec<PathBuf> = Vec::new();
+        let mut files = Vec::new();
+        for dir in dirs {
+            let resolved = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+            if seen.contains(&resolved) {
+                continue;
+            }
+            seen.push(resolved);
+            let file = dir.join("SKILL.md");
+            let link_target = std::fs::symlink_metadata(&file)
+                .is_ok_and(|meta| meta.file_type().is_symlink())
+                .then(|| std::fs::read_link(&file).ok())
+                .flatten();
+            let read = read_bounded(&file, DISCOVERY_FILE_MAX_BYTES);
+            files.push(SkillFile {
+                dir,
+                file,
+                link_target,
+                read,
+            });
+        }
+        LayerState::Available(files)
     }
 
     fn load_credentials(&self) -> LayerState<Credentials> {
@@ -1430,6 +1459,9 @@ pub struct WidgetLayer {
 pub struct SkillFile {
     pub dir: PathBuf,
     pub file: PathBuf,
+    /// Where `file` points when it is a symlink, as it is written; `read` is then what
+    /// it points at.
+    pub link_target: Option<PathBuf>,
     pub read: BoundedRead,
 }
 

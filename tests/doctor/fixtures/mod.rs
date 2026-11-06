@@ -14,6 +14,7 @@ pub mod fm_concurrency_primitives_lock_held_long;
 pub mod fm_network_credential_rejected;
 pub mod fm_network_github_rate_limited;
 pub mod fm_network_source_unreachable;
+pub mod fm_plugins_skill_version_drift;
 pub mod fm_plugins_widget_invalid;
 pub mod fm_plugins_widget_version_drift;
 pub mod fm_secrets_credential_file_mode;
@@ -48,6 +49,7 @@ pub fn all() -> Vec<Box<dyn Fixture>> {
         Box::new(fm_network_credential_rejected::CredentialRejected),
         Box::new(fm_network_github_rate_limited::GithubRateLimited),
         Box::new(fm_network_source_unreachable::SourceUnreachable),
+        Box::new(fm_plugins_skill_version_drift::SkillVersionDrift),
         Box::new(fm_plugins_widget_invalid::WidgetInvalid),
         Box::new(fm_plugins_widget_version_drift::WidgetVersionDrift),
         Box::new(fm_secrets_credential_file_mode::CredentialFileMode),
