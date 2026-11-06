@@ -45,6 +45,20 @@ pub fn count(n: usize, noun: &str) -> String {
     }
 }
 
+/// `18432` as `18,432`: digits grouped by three with commas, the house style for byte
+/// counts in human output.
+pub fn thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, digit) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
 /// Rows as left-aligned columns separated by two spaces, without trailing spaces.
 /// Widths count visible characters, so a colored cell aligns like a plain one.
 pub fn table(rows: &[Vec<String>]) -> String {

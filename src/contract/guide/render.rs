@@ -329,6 +329,11 @@ pub const NEVER: &[&str] = &[
     "Act on state it cannot read (a newer or damaged journal, record or history line): it refuses and says why.",
 ];
 
+/// The other coding agents' skill roots, relative to `$HOME` (M4-D8): `robot-docs
+/// install-skill` offers one `--dir <root>/omaddons` hint for each that exists, and never
+/// writes there unasked. Claude Code's (`.claude/skills`) is the default.
+pub const OTHER_SKILL_ROOTS: &[&str] = &[".codex/skills", ".agents/skills"];
+
 /// Where a placeholder may stand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {

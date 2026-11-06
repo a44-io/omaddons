@@ -1,0 +1,25 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "robot-docs install-skill",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "scope_denied",
+    "details": {
+      "path": "<root>/state/omaddons/skill",
+      "reason": "skill_dir"
+    },
+    "fix": "install the skill into a folder of your own, outside game clients, Wine prefixes and omaddons' own folders: --dir <dir>",
+    "fix_argv": null,
+    "message": "<root>/state/omaddons/skill is inside omaddons' own state folder; the skill goes in a folder of your own",
+    "retryable": false
+  },
+  "exit_code": 4,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

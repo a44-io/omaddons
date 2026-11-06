@@ -288,6 +288,12 @@ impl Paths {
         self.home.join(".claude/skills/omaddons")
     }
 
+    /// Claude Code's folder, `<home>/.claude`: `robot-docs install-skill` installs into
+    /// [`Paths::skill_dir`] only when it exists, creating `skills/` and `skills/omaddons/`.
+    pub fn claude_dir(&self) -> PathBuf {
+        self.home.join(".claude")
+    }
+
     // ---- <state>/omaddons --------------------------------------------------------------
 
     /// Registered targets.
@@ -797,6 +803,7 @@ mod tests {
                 "/c/omarchy/plugins/.omaddons.trash".into(),
             ),
             (p.skill_dir(), "/h/.claude/skills/omaddons".into()),
+            (p.claude_dir(), "/h/.claude".into()),
             (p.registry_file(), "/s/omaddons/registry.json".into()),
             (p.targets_dir(), "/s/omaddons/targets".into()),
             (

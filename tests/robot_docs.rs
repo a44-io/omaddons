@@ -6,6 +6,9 @@
 //! registries; the published schemas, fetched from the binary, validating live output;
 //! byte-identical repeats in other environments; the human forms; no reads, writes or
 //! requests, and no `HOME` needed; bare `robot-docs` as its help until the guide exists.
+//! And `robot-docs install-skill` into a throwaway `HOME`: a dry run writes nothing, the
+//! install is the committed skill byte for byte with its `skill` history line and
+//! projection folder, undo steps over it, and a second run changes nothing.
 //!
 //! A schema entry runs to hundreds of kilobytes, so large values are compared as the list
 //! of what differs, expected empty: the transcript then names the entry, not the bytes.
@@ -1070,4 +1073,71 @@ fn guide_usage_fix_runs() {
         let words: Vec<&str> = words.iter().skip(1).filter_map(Value::as_str).collect();
         log.run(&env, &words).ok();
     }
+}
+
+/// `robot-docs install-skill` into a throwaway `HOME` that has used Claude Code (M4-D64):
+/// a dry run changes no file anywhere; the install writes the committed skill byte for
+/// byte, mode 0644, records a `skill` line naming its folder, which the history
+/// projection keeps and bare `undo` steps over; and a second run changes nothing.
+#[test]
+fn install_skill_round_trip_on_a_throwaway_home() {
+    use std::os::unix::fs::PermissionsExt;
+    let log = tlog!();
+    let env = TestEnv::new();
+    let home = env.home();
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    let committed =
+        std::fs::read(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("skills/omaddons/SKILL.md"))
+            .unwrap();
+
+    log.step("a dry run writes nothing");
+    log.tree("root", env.root());
+    let ran = log.run(
+        &env,
+        &["robot-docs", "install-skill", "--dry-run", "--json"],
+    );
+    ran.ok();
+    log.assert_eq("written", &ran.data()["written"], &json!("fresh"));
+    log.assert_unchanged("root", env.root());
+
+    log.step("the install");
+    let ran = log.run(&env, &["robot-docs", "install-skill", "--json"]);
+    ran.ok();
+    log.assert_eq("written", &ran.data()["written"], &json!("fresh"));
+    let dir = std::fs::canonicalize(home.join(".claude/skills/omaddons")).unwrap();
+    let file = dir.join("SKILL.md");
+    assert!(
+        std::fs::read(&file).unwrap() == committed,
+        "the installed skill is the committed one, byte for byte"
+    );
+    let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+    log.assert_eq("mode", &mode, &0o644);
+    log.assert_eq("bytes", &ran.data()["bytes"], &json!(committed.len()));
+
+    log.step("its history line and the projection");
+    let ran = log.run(&env, &["history", "--json"]);
+    ran.ok();
+    let entry = &ran.data()["entries"][0];
+    log.json("entry", entry);
+    assert_eq!(entry["kind"], "skill", "{entry}");
+    assert_eq!(entry["target"], Value::Null, "{entry}");
+    assert_eq!(entry["dir"], json!(dir.display().to_string()), "{entry}");
+    let tail: Value = serde_json::from_slice(
+        &std::fs::read(env.cache().join("omaddons/history_tail.json")).unwrap(),
+    )
+    .unwrap();
+    log.assert_eq(
+        "skill_dirs",
+        &tail["skill_dirs"],
+        &json!([dir.display().to_string()]),
+    );
+    let ran = log.run(&env, &["undo", "--json"]);
+    ran.fails(3, "not_found");
+
+    log.step("a second run changes nothing");
+    log.tree("root", env.root());
+    let ran = log.run(&env, &["robot-docs", "install-skill", "--json"]);
+    ran.ok();
+    log.assert_eq("written", &ran.data()["written"], &json!("unchanged"));
+    log.assert_unchanged("root", env.root());
 }

@@ -542,14 +542,24 @@ fn fence_a_stuck_skill_rewrite_guards_only_that_file() {
         other => panic!("SKILL.md was not fenced: {other:?}"), // ubs:ignore — fails the test
     }
     write(&mut session, &skills.join("notes.md")).unwrap();
-    // `robot-docs install-skill` (B3) is not a command yet: its table will be fenced
-    // through `fence::table`, which the scan test holds every mutating table to.
-    assert!(
-        !omaddons::app::COMMANDS
-            .iter()
-            .any(|c| c.name == "robot-docs install-skill"),
-        "B3 landed: add its refusal here"
+
+    log.step("robot-docs install-skill is refused by the fence, the edited file kept");
+    log.tree("skill", &skills);
+    let refused = run(&log, &f, &args(&["robot-docs", "install-skill"]));
+    fenced(
+        &refused,
+        1,
+        "internal",
+        "step_unrecognized",
+        &s.tx,
+        &skill.display().to_string(),
     );
+    assert_eq!(
+        fs::read(&skill).unwrap(),
+        b"edited by hand\n",
+        "the edited SKILL.md is untouched"
+    );
+    log.assert_unchanged("skill", &skills);
 
     log.step("everything else proceeds");
     let set = run(

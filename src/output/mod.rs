@@ -20,7 +20,7 @@ use std::time::Instant;
 use serde::Serialize;
 
 pub use envelope::{DoctorEnvelope, DoctorFailure, Envelope, Meta, RunKind, SCHEMA_VERSION};
-pub use human::{count, table};
+pub use human::{count, table, thousands};
 pub use notes::RunNotes;
 pub use stderr::{LogLevel, Phase, ProgressSink, Reporter, SharedReporter, lock, shared_stderr};
 pub use term::{

@@ -2580,6 +2580,92 @@ fn robot_docs() {
     assert_eq!(c.envelope["error"]["code"], "usage");
 }
 
+/// `robot-docs install-skill`'s rows (B3): each on a fresh scene, one command each.
+#[test]
+fn robot_docs_install_skill() {
+    use common::tlog::tlog;
+    let log = tlog!();
+    let run = |s: &Scene, args: &[&str], code: i32| {
+        let mut argv = vec!["robot-docs", "install-skill"];
+        argv.extend_from_slice(args);
+        argv.push("--json");
+        support::check(log.run(&s.home, &argv).to_run(), code)
+    };
+    let committed_skill =
+        fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/omaddons/SKILL.md"))
+            .unwrap();
+
+    log.step("ok: into Claude Code's skill folder");
+    let s = Scene::new();
+    let home = s.home.env.home();
+    fs::create_dir_all(home.join(".claude")).unwrap();
+    let c = run(&s, &[], 0);
+    assert_eq!(c.envelope["command"], "robot-docs install-skill");
+    assert_eq!(c.envelope["data"]["written"], "fresh");
+    let file = home.join(".claude/skills/omaddons/SKILL.md");
+    assert_eq!(
+        fs::read(&file).unwrap(),
+        committed_skill,
+        "the installed skill is the committed one, byte for byte"
+    );
+    assert_eq!(
+        c.envelope["data"]["bytes"],
+        json!(committed_skill.len()),
+        "bytes is the guide's length"
+    );
+    insta::assert_json_snapshot!("robot_docs_install_skill_ok", s.stable(&c.envelope));
+
+    log.step("dry run: what it would write");
+    let s = Scene::new();
+    let home = s.home.env.home();
+    fs::create_dir_all(home.join(".claude")).unwrap();
+    let c = run(&s, &["--dry-run"], 0);
+    assert_eq!(c.envelope["data"]["written"], "fresh");
+    assert!(
+        !home.join(".claude/skills").exists(),
+        "a dry run creates nothing"
+    );
+    insta::assert_json_snapshot!("robot_docs_install_skill_dry_run", s.stable(&c.envelope));
+
+    log.step("not found: no $HOME/.claude");
+    let s = Scene::new();
+    let c = run(&s, &[], 3);
+    assert_eq!(c.envelope["error"]["code"], "not_found");
+    assert_eq!(c.envelope["error"]["fix_argv"], Value::Null);
+    insta::assert_json_snapshot!("robot_docs_install_skill_not_found", s.stable(&c.envelope));
+
+    log.step("scope denied: a folder inside omaddons' state");
+    let s = Scene::new();
+    let state = s.home.env.state().join("omaddons");
+    fs::create_dir_all(&state).unwrap();
+    let dir = state.join("skill");
+    let c = run(&s, &["--dir", dir.to_str().unwrap()], 4);
+    assert_eq!(c.envelope["error"]["code"], "scope_denied");
+    assert_eq!(c.envelope["error"]["details"]["reason"], "skill_dir");
+    assert!(!dir.exists(), "nothing created");
+    insta::assert_json_snapshot!(
+        "robot_docs_install_skill_scope_denied",
+        s.stable(&c.envelope)
+    );
+
+    log.step("symlink: a linked SKILL.md is never written through");
+    let s = Scene::new();
+    let home = s.home.env.home();
+    let skill = home.join(".claude/skills/omaddons");
+    fs::create_dir_all(&skill).unwrap();
+    fs::create_dir_all(home.join("dotfiles")).unwrap();
+    fs::write(home.join("dotfiles/SKILL.md"), b"my dotfiles copy\n").unwrap();
+    std::os::unix::fs::symlink(home.join("dotfiles/SKILL.md"), skill.join("SKILL.md")).unwrap();
+    let c = run(&s, &[], 4);
+    assert_eq!(c.envelope["error"]["details"]["reason"], "symlink");
+    assert_eq!(
+        fs::read(home.join("dotfiles/SKILL.md")).unwrap(),
+        b"my dotfiles copy\n",
+        "the link's target is untouched"
+    );
+    insta::assert_json_snapshot!("robot_docs_install_skill_symlink", s.stable(&c.envelope));
+}
+
 #[test]
 fn robot_docs_guide() {
     use common::tlog::tlog;

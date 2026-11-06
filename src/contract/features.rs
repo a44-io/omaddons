@@ -16,6 +16,7 @@ pub const FEATURES: &[&str] = &[
     "lua_errors",
     "omarchy_widget",
     "completions",
+    "agent_skill",
 ];
 
 #[cfg(test)]

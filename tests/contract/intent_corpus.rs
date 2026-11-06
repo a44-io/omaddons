@@ -988,6 +988,32 @@ pub const CORPUS: &[Row] = &[
             &[0],
         ),
     ),
+    row(
+        CommandTypo,
+        &["robot-docs", "install-skil"],
+        &[],
+        "a mutating guess becomes help",
+        error(
+            2,
+            "usage",
+            &["omaddons", "help", "robot-docs", "install-skill"],
+            &[0],
+        ),
+    )
+    .by_leaf("B3"),
+    row(
+        FlagTypo,
+        &["robot-docs", "install-skill", "--dry-rn"],
+        &["robot-docs install-skill"],
+        "the corpus home has no $HOME/.claude: the fix exits 3",
+        error(
+            2,
+            "usage",
+            &["omaddons", "robot-docs", "install-skill", "--dry-run"],
+            &[3],
+        ),
+    )
+    .by_leaf("B3"),
 ];
 
 /// A row whose surface another leaf owns and that has not landed yet (common rule 18).
@@ -1000,6 +1026,10 @@ pub struct Pending {
     pub leaf: &'static str,
 }
 
+#[allow(
+    dead_code,
+    reason = "PENDING is empty until a leaf files a row for a surface that has not landed"
+)]
 const fn pending(leaf: &'static str, needs: &'static [&'static str], row: Row) -> Pending {
     Pending { row, needs, leaf }
 }
@@ -1025,42 +1055,7 @@ const E7_SETUP: &[Step] = &[Step {
 
 /// Rows of surfaces that have not landed, grouped by leaf. The leaf that adds the last
 /// surface a row needs moves it into `CORPUS` and makes it pass, in that commit.
-pub const PENDING: &[Pending] = &[
-    pending(
-        "B3",
-        &["robot-docs install-skill"],
-        row(
-            CommandTypo,
-            &["robot-docs", "install-skil"],
-            &[],
-            "a mutating guess becomes help",
-            error(
-                2,
-                "usage",
-                &["omaddons", "help", "robot-docs", "install-skill"],
-                &[0],
-            ),
-        )
-        .by_leaf("B3"),
-    ),
-    pending(
-        "B3",
-        &["robot-docs install-skill"],
-        row(
-            FlagTypo,
-            &["robot-docs", "install-skill", "--dry-rn"],
-            &["robot-docs install-skill"],
-            "the corpus home has no $HOME/.claude: the fix exits 3",
-            error(
-                2,
-                "usage",
-                &["omaddons", "robot-docs", "install-skill", "--dry-run"],
-                &[3],
-            ),
-        )
-        .by_leaf("B3"),
-    ),
-];
+pub const PENDING: &[Pending] = &[];
 
 /// Whether every path of `needs` is among `commands`.
 fn ready(needs: &[&str], commands: &[&str]) -> bool {

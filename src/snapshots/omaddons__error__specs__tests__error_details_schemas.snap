@@ -4382,6 +4382,9 @@ expression: schemas
       "journal_pending": {
         "type": "string"
       },
+      "link_target": {
+        "type": "string"
+      },
       "path": {
         "type": "string"
       },
@@ -4389,7 +4392,8 @@ expression: schemas
         "enum": [
           "wtf_symlinked",
           "marker_mismatch",
-          "skill_dir"
+          "skill_dir",
+          "symlink"
         ]
       },
       "recovery_error": {

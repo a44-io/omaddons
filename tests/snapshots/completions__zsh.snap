@@ -2015,6 +2015,31 @@ _arguments "${_arguments_options[@]}" : \
 '--help[Show help]' \
 && ret=0
 ;;
+(install-skill)
+_arguments "${_arguments_options[@]}" : \
+'--dir=[The skill folder to write SKILL.md into (default\: \$HOME/.claude/skills/omaddons; created if its parent exists)]:DIR:_files' \
+'--format=[Output format]:FORMAT:(json human)' \
+'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
+'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
+'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--progress=[Progress events on stderr]:MODE:(json human none)' \
+'--json[One JSON envelope on stdout]' \
+'--robot[The same as --json]' \
+'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
+'--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
+'--no-color[No ANSI color]' \
+'--no-progress[No progress output]' \
+'--quiet[Only errors on stderr]' \
+'*-v[More detail (repeatable)]' \
+'*--verbose[More detail (repeatable)]' \
+'-h[Show help]' \
+'--help[Show help]' \
+&& ret=0
+;;
         esac
     ;;
 esac
@@ -2351,6 +2376,7 @@ _omaddons__subcmd__robot-docs_commands() {
 'guide:The agent guide as Markdown\: the same text as the skill' \
 'schema:The JSON Schema of every command'\''s data, the envelope, the stderr events and the files, or of one command'\''s data' \
 'errors:Every error and warning code\: exit, retryability, meaning, details schema and fix pattern' \
+'install-skill:Install the agent guide as a skill (SKILL.md) where coding agents load skills' \
     )
     _describe -t commands 'omaddons robot-docs commands' commands "$@"
 }
@@ -2363,6 +2389,11 @@ _omaddons__subcmd__robot-docs__subcmd__errors_commands() {
 _omaddons__subcmd__robot-docs__subcmd__guide_commands() {
     local commands; commands=()
     _describe -t commands 'omaddons robot-docs guide commands' commands "$@"
+}
+(( $+functions[_omaddons__subcmd__robot-docs__subcmd__install-skill_commands] )) ||
+_omaddons__subcmd__robot-docs__subcmd__install-skill_commands() {
+    local commands; commands=()
+    _describe -t commands 'omaddons robot-docs install-skill commands' commands "$@"
 }
 (( $+functions[_omaddons__subcmd__robot-docs__subcmd__schema_commands] )) ||
 _omaddons__subcmd__robot-docs__subcmd__schema_commands() {

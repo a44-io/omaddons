@@ -1726,6 +1726,7 @@ set edit:completion:arg-completer[omaddons] = {|@words|
             cand guide 'The agent guide as Markdown: the same text as the skill'
             cand schema 'The JSON Schema of every command''s data, the envelope, the stderr events and the files, or of one command''s data'
             cand errors 'Every error and warning code: exit, retryability, meaning, details schema and fix pattern'
+            cand install-skill 'Install the agent guide as a skill (SKILL.md) where coding agents load skills'
         }
         &'omaddons;robot-docs;guide'= {
             cand --format 'Output format'
@@ -1772,6 +1773,29 @@ set edit:completion:arg-completer[omaddons] = {|@words|
             cand --help 'Show help'
         }
         &'omaddons;robot-docs;errors'= {
+            cand --format 'Output format'
+            cand -t 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)'
+            cand --target 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)'
+            cand --flavor 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)'
+            cand --actor 'Who is acting: human, agent or widget [env: OMADDONS_ACTOR]'
+            cand --reason 'Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)'
+            cand --if-match 'Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed'
+            cand --progress 'Progress events on stderr'
+            cand --json 'One JSON envelope on stdout'
+            cand --robot 'The same as --json'
+            cand --dry-run 'Show the plan without changing anything (ignored by commands that change nothing)'
+            cand --offline 'Fail any network access [env: OMADDONS_OFFLINE=1]'
+            cand --while-running 'Allow folder changes while the client runs (never SavedVariables)'
+            cand --no-color 'No ANSI color'
+            cand --no-progress 'No progress output'
+            cand --quiet 'Only errors on stderr'
+            cand -v 'More detail (repeatable)'
+            cand --verbose 'More detail (repeatable)'
+            cand -h 'Show help'
+            cand --help 'Show help'
+        }
+        &'omaddons;robot-docs;install-skill'= {
+            cand --dir 'The skill folder to write SKILL.md into (default: $HOME/.claude/skills/omaddons; created if its parent exists)'
             cand --format 'Output format'
             cand -t 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)'
             cand --target 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)'

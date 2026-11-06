@@ -1544,28 +1544,29 @@ complete -c omaddons -n "__fish_omaddons_using_subcommand completions" -l no-pro
 complete -c omaddons -n "__fish_omaddons_using_subcommand completions" -l quiet -d 'Only errors on stderr'
 complete -c omaddons -n "__fish_omaddons_using_subcommand completions" -s v -l verbose -d 'More detail (repeatable)'
 complete -c omaddons -n "__fish_omaddons_using_subcommand completions" -s h -l help -d 'Show help'
-complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors" -l format -d 'Output format' -r -f -a "json\t''
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors install-skill" -l format -d 'Output format' -r -f -a "json\t''
 human\t''"
-complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors" -s t -l target -l flavor -d 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)' -r
-complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors" -l actor -d 'Who is acting: human, agent or widget [env: OMADDONS_ACTOR]' -r
-complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors" -l reason -d 'Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)' -r
-complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors" -l if-match -d 'Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed' -r
-complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors" -l progress -d 'Progress events on stderr' -r -f -a "json\t''
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors install-skill" -s t -l target -l flavor -d 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors install-skill" -l actor -d 'Who is acting: human, agent or widget [env: OMADDONS_ACTOR]' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors install-skill" -l reason -d 'Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors install-skill" -l if-match -d 'Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors install-skill" -l progress -d 'Progress events on stderr' -r -f -a "json\t''
 human\t''
 none\t''"
-complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors" -l json -d 'One JSON envelope on stdout'
-complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors" -l robot -d 'The same as --json'
-complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors" -l dry-run -d 'Show the plan without changing anything (ignored by commands that change nothing)'
-complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors" -l offline -d 'Fail any network access [env: OMADDONS_OFFLINE=1]'
-complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors" -l while-running -d 'Allow folder changes while the client runs (never SavedVariables)'
-complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors" -l no-color -d 'No ANSI color'
-complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors" -l no-progress -d 'No progress output'
-complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors" -l quiet -d 'Only errors on stderr'
-complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors" -s v -l verbose -d 'More detail (repeatable)'
-complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors" -s h -l help -d 'Show help'
-complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors" -f -a "guide" -d 'The agent guide as Markdown: the same text as the skill'
-complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors" -f -a "schema" -d 'The JSON Schema of every command\'s data, the envelope, the stderr events and the files, or of one command\'s data'
-complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors" -f -a "errors" -d 'Every error and warning code: exit, retryability, meaning, details schema and fix pattern'
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors install-skill" -l json -d 'One JSON envelope on stdout'
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors install-skill" -l robot -d 'The same as --json'
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors install-skill" -l dry-run -d 'Show the plan without changing anything (ignored by commands that change nothing)'
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors install-skill" -l offline -d 'Fail any network access [env: OMADDONS_OFFLINE=1]'
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors install-skill" -l while-running -d 'Allow folder changes while the client runs (never SavedVariables)'
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors install-skill" -l no-color -d 'No ANSI color'
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors install-skill" -l no-progress -d 'No progress output'
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors install-skill" -l quiet -d 'Only errors on stderr'
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors install-skill" -s v -l verbose -d 'More detail (repeatable)'
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors install-skill" -s h -l help -d 'Show help'
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors install-skill" -f -a "guide" -d 'The agent guide as Markdown: the same text as the skill'
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors install-skill" -f -a "schema" -d 'The JSON Schema of every command\'s data, the envelope, the stderr events and the files, or of one command\'s data'
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors install-skill" -f -a "errors" -d 'Every error and warning code: exit, retryability, meaning, details schema and fix pattern'
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and not __fish_seen_subcommand_from guide schema errors install-skill" -f -a "install-skill" -d 'Install the agent guide as a skill (SKILL.md) where coding agents load skills'
 complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and __fish_seen_subcommand_from guide" -l format -d 'Output format' -r -f -a "json\t''
 human\t''"
 complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and __fish_seen_subcommand_from guide" -s t -l target -l flavor -d 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)' -r
@@ -1623,6 +1624,26 @@ complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and __fish
 complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and __fish_seen_subcommand_from errors" -l quiet -d 'Only errors on stderr'
 complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and __fish_seen_subcommand_from errors" -s v -l verbose -d 'More detail (repeatable)'
 complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and __fish_seen_subcommand_from errors" -s h -l help -d 'Show help'
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and __fish_seen_subcommand_from install-skill" -l dir -d 'The skill folder to write SKILL.md into (default: $HOME/.claude/skills/omaddons; created if its parent exists)' -r -F
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and __fish_seen_subcommand_from install-skill" -l format -d 'Output format' -r -f -a "json\t''
+human\t''"
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and __fish_seen_subcommand_from install-skill" -s t -l target -l flavor -d 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and __fish_seen_subcommand_from install-skill" -l actor -d 'Who is acting: human, agent or widget [env: OMADDONS_ACTOR]' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and __fish_seen_subcommand_from install-skill" -l reason -d 'Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and __fish_seen_subcommand_from install-skill" -l if-match -d 'Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and __fish_seen_subcommand_from install-skill" -l progress -d 'Progress events on stderr' -r -f -a "json\t''
+human\t''
+none\t''"
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and __fish_seen_subcommand_from install-skill" -l json -d 'One JSON envelope on stdout'
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and __fish_seen_subcommand_from install-skill" -l robot -d 'The same as --json'
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and __fish_seen_subcommand_from install-skill" -l dry-run -d 'Show the plan without changing anything (ignored by commands that change nothing)'
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and __fish_seen_subcommand_from install-skill" -l offline -d 'Fail any network access [env: OMADDONS_OFFLINE=1]'
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and __fish_seen_subcommand_from install-skill" -l while-running -d 'Allow folder changes while the client runs (never SavedVariables)'
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and __fish_seen_subcommand_from install-skill" -l no-color -d 'No ANSI color'
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and __fish_seen_subcommand_from install-skill" -l no-progress -d 'No progress output'
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and __fish_seen_subcommand_from install-skill" -l quiet -d 'Only errors on stderr'
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and __fish_seen_subcommand_from install-skill" -s v -l verbose -d 'More detail (repeatable)'
+complete -c omaddons -n "__fish_omaddons_using_subcommand robot-docs; and __fish_seen_subcommand_from install-skill" -s h -l help -d 'Show help'
 complete -c omaddons -n "__fish_omaddons_using_subcommand capabilities" -l format -d 'Output format' -r -f -a "json\t''
 human\t''"
 complete -c omaddons -n "__fish_omaddons_using_subcommand capabilities" -s t -l target -l flavor -d 'The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)' -r

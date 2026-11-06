@@ -1,0 +1,26 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "robot-docs install-skill",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "scope_denied",
+    "details": {
+      "link_target": "<root>/home/dotfiles/SKILL.md",
+      "path": "<root>/home/.claude/skills/omaddons/SKILL.md",
+      "reason": "symlink"
+    },
+    "fix": "install into the link's real folder with --dir <dir>, or replace the link with a regular file",
+    "fix_argv": null,
+    "message": "<root>/home/.claude/skills/omaddons/SKILL.md is a symlink to <root>/home/dotfiles/SKILL.md; omaddons never writes through a symlink",
+    "retryable": false
+  },
+  "exit_code": 4,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

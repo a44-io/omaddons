@@ -1,7 +1,9 @@
 //! `omaddons robot-docs`: documentation for programs and agents, generated from the code
 //! (M4-D2). `guide` (and bare `robot-docs`) prints the agent guide, `schema [<command>]`
 //! publishes `contract::schema`'s JSON Schemas unchanged, and `errors` the error and
-//! warning catalog. None reads a file, needs `HOME`, sends a request or writes anything.
+//! warning catalog. None of these reads a file, needs `HOME`, sends a request or writes
+//! anything. `install-skill` (`super::install_skill`) writes the guide where coding
+//! agents load skills.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -35,6 +37,9 @@ pub enum RobotDocsAction {
     /// Every error and warning code: exit, retryability, meaning, details schema and fix
     /// pattern
     Errors,
+    /// Install the agent guide as a skill (SKILL.md) where coding agents load skills
+    #[command(after_long_help = super::install_skill::INSTALL_SKILL_HELP)]
+    InstallSkill(super::install_skill::InstallSkillArgs),
 }
 
 impl RobotDocsAction {
@@ -44,6 +49,7 @@ impl RobotDocsAction {
             Self::Guide => GUIDE_COMMAND,
             Self::Schema(_) => SCHEMA_COMMAND,
             Self::Errors => ERRORS_COMMAND,
+            Self::InstallSkill(_) => super::install_skill::INSTALL_SKILL_COMMAND,
         }
     }
 }

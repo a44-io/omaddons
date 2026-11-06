@@ -1,0 +1,24 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "robot-docs install-skill",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "not_found",
+    "details": {
+      "path": "<root>/home/.claude"
+    },
+    "fix": "set up Claude Code first, or choose a skills folder with --dir <dir>",
+    "fix_argv": null,
+    "message": "Claude Code's folder <root>/home/.claude does not exist, so there is no default place to install the skill",
+    "retryable": false
+  },
+  "exit_code": 3,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

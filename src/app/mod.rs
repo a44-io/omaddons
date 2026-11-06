@@ -24,6 +24,7 @@ pub mod help;
 pub mod history;
 pub mod info;
 pub mod install;
+pub mod install_skill;
 pub mod intent;
 pub mod issues;
 pub mod list;
@@ -287,6 +288,7 @@ pub const COMMANDS: &[CommandEntry] = &[
     entry("robot-docs schema", Setup, false, &[0, 1, 2], data_schema::<robot_docs::SchemaOutcome>, Network::None),
     entry("robot-docs errors", Setup, false, &[0, 1, 2], data_schema::<robot_docs::ErrorsOutcome>, Network::None),
     entry("robot-docs guide", Setup, false, &[0, 1, 2], data_schema::<robot_docs::GuideOutcome>, Network::None),
+    entry("robot-docs install-skill", Setup, true, &[0, 1, 2, 3, 4, 5], data_schema::<install_skill::InstallSkillOutcome>, Network::None),
     entry("capabilities", Setup, false, &[0, 1, 2], data_schema::<capabilities::CapabilitiesOutcome>, Network::None),
     entry("help", Setup, false, &[0, 1, 2], data_schema::<help::HelpOutcome>, Network::None),
 ];
@@ -864,6 +866,9 @@ fn run_command(cli: &Cli, ctx: &Context, out: &Out<'_>) -> Exit {
                 out.emit(robot_docs::schema(&schema.command))
             }
             Some(robot_docs::RobotDocsAction::Errors) => out.emit(robot_docs::errors()),
+            Some(robot_docs::RobotDocsAction::InstallSkill(skill)) => {
+                out.emit(install_skill::run(ctx, skill))
+            }
         },
         Some(Command::Capabilities(_)) => out.emit(capabilities::run()),
     }
@@ -954,6 +959,7 @@ mod tests {
             (&["robot-docs"], "robot-docs guide"),
             (&["robot-docs", "guide"], "robot-docs guide"),
             (&["robot-docs", "errors"], "robot-docs errors"),
+            (&["robot-docs", "install-skill"], "robot-docs install-skill"),
         ];
         for (argv, expected) in cases {
             let parsed =
