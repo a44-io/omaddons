@@ -6,17 +6,6 @@ Guidelines for AI coding agents working in this repository.
 
 If Goku gives a direct instruction, follow it. Project-local guidance exists to encode standing preferences, not to overrule the user.
 
-## This Project
-
-omaddons is a single Rust binary that manages WoW addons for every client on a Linux machine. The design is the pinned bead `omad-vision-8qa` (`br show omad-vision-8qa`); its body is authoritative, and comments added after body revision 2 supersede it.
-
-- **Local gate, no CI (D16).** `argc gate` must pass before any commit that changes code: `*.rs`, `Cargo.*`, `rust-toolchain.toml`, `deny.toml`, lint config, embedded assets (`omarchy/`, `catalog/`, `skills/omaddons/SKILL.md`), test fixtures and snapshots. Commits that touch only `.beads/`, README or CLAUDE.md may skip it.
-- **One writer.** Every filesystem mutation goes through `src/fsx/`. A test fails if `std::fs` write, rename, remove or create calls appear elsewhere.
-- **Commands never print.** They return typed outcomes that `src/output/` renders. `print!`/`eprint!` are denied by clippy.
-- **No `unwrap`/`expect` outside tests**, and no `unsafe` (both enforced by lints).
-- **Constants live in one place:** politeness in `src/politeness.rs`, safety limits in `src/limits.rs`.
-- **Dependencies:** M1 crates are already declared in `Cargo.toml`. Add a crate only when the bead needs it, and run `argc gate --all` afterwards (cargo deny). tokio, reqwest, native-tls, openssl and aws-lc are banned.
-
 ## Integrating with Beads (dependency-aware task planning)
 
 Beads provides a lightweight, dependency-aware issue database and a CLI (`br`) for selecting "ready work," setting priorities, and tracking status.
@@ -181,6 +170,17 @@ Parse: `file:line:col` → location | 💡 → how to fix | Exit 0 pass · 1 fix
 - **Critical (always fix):** Memory safety, use-after-free, data races, SQL injection
 - **Important (production):** Unwrap panics, resource leaks, overflow checks
 - **Contextual (judgment):** TODO/FIXME, println! debugging
+
+## This Project - omaddons
+
+omaddons is a single Rust binary that manages WoW addons for every client on a Linux machine. The design is the pinned bead `omad-vision-8qa` (`br show omad-vision-8qa`); its body is authoritative, and comments added after body revision 2 supersede it.
+
+- **Local gate, no CI (D16).** `argc gate` must pass before any commit that changes code: `*.rs`, `Cargo.*`, `rust-toolchain.toml`, `deny.toml`, lint config, embedded assets (`omarchy/`, `catalog/`, `skills/omaddons/SKILL.md`), test fixtures and snapshots. Commits that touch only `.beads/`, README or CLAUDE.md may skip it.
+- **One writer.** Every filesystem mutation goes through `src/fsx/`. A test fails if `std::fs` write, rename, remove or create calls appear elsewhere.
+- **Commands never print.** They return typed outcomes that `src/output/` renders. `print!`/`eprint!` are denied by clippy.
+- **No `unwrap`/`expect` outside tests**, and no `unsafe` (both enforced by lints).
+- **Constants live in one place:** politeness in `src/politeness.rs`, safety limits in `src/limits.rs`.
+- **Dependencies:** M1 crates are already declared in `Cargo.toml`. Add a crate only when the bead needs it, and run `argc gate --all` afterwards (cargo deny). tokio, reqwest, native-tls, openssl and aws-lc are banned.
 
 ## Code Editing Discipline
 
