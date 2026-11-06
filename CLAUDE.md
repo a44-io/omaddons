@@ -136,7 +136,16 @@ git push                # Push to remote
 
 ## UBS (Ultimate Bug Scanner)
 
-**Golden Rule:** `ubs <changed-files>` before every commit. Exit 0 = safe. Exit >0 = fix & re-run.
+**Golden Rule:** `ubs <changed-files>` before every commit, then act on the exit code:
+
+| Exit | Meaning | Do |
+|------|---------|----|
+| 0 | No critical findings | Commit |
+| 1 | Critical findings, or any warning under `--fail-on-warning` | Fix & re-run |
+| 2 | The scan didn't finish: bad arguments, an environment error, or a scanner that timed out, crashed or hit its analysis limit | Not a pass. Fix the arguments or environment; if a scanner hit its limit, fix what it did report and say the scan was partial |
+| 3 | Nothing scanned: UBS has no scanner for these files' languages | Not a pass, and nothing to fix. Say so and move on |
+
+Never set `UBS_ALLOW_PARTIAL` or `UBS_ALLOW_NO_SCAN` to turn a 2 or 3 into a 0.
 
 ### Commands
 
@@ -156,7 +165,7 @@ ubs .                                   # Whole project (ignores target/, Cargo.
 Exit code: 1
 ```
 
-Parse: `file:line:col` → location | 💡 → how to fix | Exit 0/1 → pass/fail
+Parse: `file:line:col` → location | 💡 → how to fix | Exit 0 pass · 1 fix · 2 incomplete · 3 not scanned
 
 ### Fix Workflow
 
@@ -164,7 +173,7 @@ Parse: `file:line:col` → location | 💡 → how to fix | Exit 0/1 → pass/fa
 2. Navigate `file:line:col` → view context
 3. Verify real issue (not false positive)
 4. Fix root cause (not symptom)
-5. Re-run `ubs <file>` → exit 0
+5. Re-run `ubs <file>` → exit 0 (or 3 when UBS has no scanner for that language)
 6. Commit
 
 ### Bug Severity
