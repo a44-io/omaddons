@@ -298,7 +298,10 @@ fn id_examples(rules: &RulesTable) -> Vec<String> {
 }
 
 /// The codes the core loop meets: a wrong invocation, an unresolved client or ref, a
-/// refused install, a running game, a contended lock, a stale preview, the network.
+/// refused install, a running game, a stale or vanished preview, the network. `locked`
+/// is left out: the lock is held for milliseconds, and the guide's prose names it as the
+/// example of a retryable code. `plan_not_found` is in: every agent that applies a plan
+/// after its 24 hours, or after the cache was cleared, meets it (M4-D21).
 pub const ERRORS_COMMON: [ErrorCode; 15] = [
     ErrorCode::Usage,
     ErrorCode::TargetNotFound,
@@ -311,8 +314,8 @@ pub const ERRORS_COMMON: [ErrorCode; 15] = [
     ErrorCode::GameRunning,
     ErrorCode::UnmanagedFolder,
     ErrorCode::UndoConflict,
-    ErrorCode::Locked,
     ErrorCode::PlanStale,
+    ErrorCode::PlanNotFound,
     ErrorCode::Network,
     ErrorCode::RateLimited,
 ];
@@ -1228,6 +1231,20 @@ mod tests {
             ERRORS_COMMON.iter().all(|c| ErrorCode::ALL.contains(c)),
             "registered"
         );
+    }
+
+    /// A code the guide tells agents they will meet must be one a command raises: a
+    /// meaning that still says "reserved" names a code nothing constructs yet.
+    #[test]
+    fn errors_common_holds_no_reserved_code() {
+        for code in ERRORS_COMMON {
+            let meaning = code.meaning();
+            assert!(
+                !meaning.to_lowercase().contains("reserved"),
+                "ERRORS_COMMON lists `{}`, whose meaning says it is reserved: {meaning:?}. Rewrite the meaning in src/error.rs once a command raises the code, or take it out of ERRORS_COMMON",
+                code.wire()
+            );
+        }
     }
 
     #[test]

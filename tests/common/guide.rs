@@ -175,6 +175,14 @@ pub const SAMPLES: &[(&str, &str)] = &[
     ("<folder>", "DBM-Core"),
     ("<tx>", ULID),
     ("<path>", "/games/World of Warcraft"),
+    // The core loop, the doctor loop and the pointers.
+    ("<why>", "the user asked for it"),
+    ("<words>", "damage meter"),
+    ("<fm>", "fm-userland_state-target-vanished"),
+    (
+        "<token>",
+        "pc1:0000000000000000000000000000000000000000000000000000000000000000",
+    ),
 ];
 
 const ULID: &str = "01J00000000000000000000000";

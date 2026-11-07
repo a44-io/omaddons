@@ -2745,6 +2745,19 @@ fn robot_docs_install_skill() {
     let committed_skill =
         fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/omaddons/SKILL.md"))
             .unwrap();
+    // `bytes` is asserted exactly against the committed skill, then stood in for in the
+    // snapshot, so regenerating the guide (common rule 17) re-accepts no snapshot here,
+    // as the capabilities snapshot redacts `guide_digest`.
+    let without_length = |s: &Scene, envelope: &Value| {
+        assert_eq!(
+            envelope["data"]["bytes"],
+            json!(committed_skill.len()),
+            "bytes is the guide's length"
+        );
+        let mut projection = s.stable(envelope);
+        projection["data"]["bytes"] = json!("<bytes>");
+        projection
+    };
 
     log.step("ok: into Claude Code's skill folder");
     let s = Scene::new();
@@ -2759,12 +2772,10 @@ fn robot_docs_install_skill() {
         committed_skill,
         "the installed skill is the committed one, byte for byte"
     );
-    assert_eq!(
-        c.envelope["data"]["bytes"],
-        json!(committed_skill.len()),
-        "bytes is the guide's length"
+    insta::assert_json_snapshot!(
+        "robot_docs_install_skill_ok",
+        without_length(&s, &c.envelope)
     );
-    insta::assert_json_snapshot!("robot_docs_install_skill_ok", s.stable(&c.envelope));
 
     log.step("dry run: what it would write");
     let s = Scene::new();
@@ -2776,7 +2787,10 @@ fn robot_docs_install_skill() {
         !home.join(".claude/skills").exists(),
         "a dry run creates nothing"
     );
-    insta::assert_json_snapshot!("robot_docs_install_skill_dry_run", s.stable(&c.envelope));
+    insta::assert_json_snapshot!(
+        "robot_docs_install_skill_dry_run",
+        without_length(&s, &c.envelope)
+    );
 
     log.step("not found: no $HOME/.claude");
     let s = Scene::new();

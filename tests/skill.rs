@@ -274,22 +274,35 @@ omaddons frobnicate
     );
 }
 
-/// The guide's size beside the budget B2 enforces. A report: it never fails.
+/// The rendered guide stays under 500 lines and 32 KiB (M4-D7): an agent loads all of it
+/// as a skill, so detail belongs to `capabilities`, `robot-docs errors` and `robot-docs
+/// schema`. A new command or code grows the generated blocks; trim prose first.
 #[test]
-fn guide_size_is_reported() {
+fn guide_meets_its_size_budget() {
     const LINES_BUDGET: usize = 500;
     const BYTES_BUDGET: usize = 32 << 10;
     let log = tlog!();
     let env = TestEnv::new();
     log.step("size");
     let text = guide::rendered(&log, &env);
+    let (lines, bytes) = (text.lines().count(), text.len());
     log.json(
         "size",
         &json!({
-            "lines": text.lines().count(),
+            "lines": lines,
             "lines_budget": LINES_BUDGET,
-            "bytes": text.len(),
+            "bytes": bytes,
             "bytes_budget": BYTES_BUDGET,
         }),
+    );
+    log.assert_eq(
+        &format!("the guide is under {LINES_BUDGET} lines (it has {lines}); trim src/contract/guide/guide.md's prose"),
+        &(lines < LINES_BUDGET),
+        &true,
+    );
+    log.assert_eq(
+        &format!("the guide is under {BYTES_BUDGET} bytes (it has {bytes}); trim src/contract/guide/guide.md's prose"),
+        &(bytes < BYTES_BUDGET),
+        &true,
     );
 }

@@ -1,12 +1,12 @@
 ---
 source: tests/contract/matrix.rs
-expression: s.stable(&c.envelope)
+expression: "without_length(&s, &c.envelope)"
 ---
 {
   "command": "robot-docs install-skill",
   "commands": [],
   "data": {
-    "bytes": 23454,
+    "bytes": "<bytes>",
     "dir": "<root>/home/.claude/skills/omaddons",
     "dry_run": false,
     "file": "<root>/home/.claude/skills/omaddons/SKILL.md",

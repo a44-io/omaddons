@@ -7,18 +7,31 @@ description: Manage World of Warcraft addons on Linux with the omaddons CLI — 
 
 # omaddons for agents
 
-omaddons manages World of Warcraft addons for every client on this Linux machine, with one binary of {{command_count}} commands. Every change is a journaled transaction that `omaddons undo` reverts, and under `--json` every command prints one envelope whose errors carry their fix as argv. The tool describes itself: `omaddons capabilities --json` (every command, flag, exit code, error code, limit and source, offline), `omaddons robot-docs schema <command>` and `omaddons robot-docs errors`.
+omaddons manages World of Warcraft addons for every client on this Linux machine, with one binary of {{command_count}} commands. Every addon change is a journaled transaction that `omaddons undo` reverts, a preview can be applied exactly as it was shown, and with `--json` every command prints one envelope whose errors name their fix, as an argv when the fix is a command. Ask the binary for the rest: `omaddons capabilities --json`, `omaddons robot-docs schema <command>` and `omaddons robot-docs errors`.
 
 ## The core loop
 
-1. `omaddons status --json`: every client, what needs attention, and what to run next in `commands[]`.
-2. Preview anything that changes addons with `--dry-run --json`, and show the user what it would do.
-3. Run it, and report its `data` and `warnings`.
-4. `omaddons undo --last-by agent --json` reverts what an agent changed.
+1. `omaddons status --json`: every client, what needs attention, and the next commands in `commands[]`.
+2. Preview a change before you make it, unless the user asked for exactly that change: add `--dry-run --json`. A preview changes no addon or setting; when it would change something, it stores a plan and returns `data.plan_id` (else `null`).
+3. Show the user `data.approval.selection` (each change) and `data.approval.reasons` (each effect beyond a routine change). When they approve, run `omaddons apply <plan_id> --json --actor agent --reason "<why>"`.
+4. Lost an `apply`'s output? Run `omaddons plans show <plan_id> --json` before you preview or change anything again: it says whether the plan committed.
+5. Something broken? See the doctor loop.
+6. The escape hatch: `omaddons undo --last-by agent --json` reverts the newest run an agent made.
+
+Pass `--actor agent` and `--reason` on every change: history records both.
 
 ## Reading the envelope
 
-Read `ok`, `exit_code`, `data`, `error`, `warnings` and `commands`. An error carries `code`, `message`, `fix`, `fix_argv`, `alternatives` and `retryable`. Run `fix_argv`, `alternatives[].argv` and `commands[].argv` as argv arrays, and never parse display strings. Each `commands[]` entry names its `action`:
+With `--json`, stdout is one JSON object: `ok`, `schema_version`, `tool_version`, `command` and `exit_code`; then `partial` and `data` on success, or `error` on failure; then `warnings`, `commands` and `meta`.
+
+- `ok` is `exit_code == 0`. A failure's `error` carries `code`, `message`, `fix`, `fix_argv`, `alternatives`, `retryable` and `details`; `fix_argv` is `null` when the fix is prose or needs a value only you can supply. `check_failed` (exit 6, from `--check` or `--strict`) keeps `data` and `partial` too.
+- `partial: true` (exit 0) means some items failed; `data` says which and why.
+- `warnings` never change the exit code. `commands` are the suggested next steps, each with `action`, `command`, `argv` and `destructive`; ask the user before running one marked `destructive: true`.
+- Run `fix_argv`, `alternatives[].argv` and `commands[].argv` as argv arrays, never through a shell. Never parse `message`, `fix`, `command` or human output: branch on `exit_code`, `error.code` and `data`.
+- Doctor commands put their report (`state`, `summary`, `findings`) at the top level, with no `data`; there findings (exit 1) are a report with no `error`.
+- `schema_version` is the contract version. A `1.x` release only adds keys, enum values, codes and actions, so ignore the ones you do not know.
+
+Each `commands[]` entry names its `action`; trust its own `destructive` over this table's, as an `apply` is as destructive as its plan.
 
 {{actions}}
 
@@ -30,17 +43,23 @@ Read `ok`, `exit_code`, `data`, `error`, `warnings` and `commands`. An error car
 
 ## Targets and refs
 
-`-t` selects clients by any of these forms, tried in this order:
+`-t` names a client in any of these forms, tried in this order:
 
 {{targets}}
 
-Refs: a catalog name, `gh:Owner/Repo`, `wowi:<id>`, `tukui:<slug>`, `wowace:<slug>`, `git:https://…#rev`, `url:https://…` or a local `./zip`.
+The client always goes in `-t`, as in `omaddons update -t retail`. A command that acts on one client, such as `install` or `remove`, answers `target_ambiguous` when `-t` matches several, with one candidate per `fix_argv` and `alternatives` entry. `-t all` selects every client, test clients included. `omaddons targets --json` lists the clients.
+
+Refs: a catalog name, `gh:Owner/Repo` or `Owner/Repo`, `wowi:<id>`, `tukui:<slug>`, `wowace:<slug>`, `git:https://…#<rev>`, `url:https://…`, a pasted GitHub, WoWInterface, Tukui or WowAce link, or a local zip or folder. `omaddons search <words> --json` finds one.
 
 ## The safety model
 
-- Each change is one transaction per client: journaled, crash-safe and undoable.
-- SavedVariables are never written while the client runs.
-- A preview (`--dry-run`) changes no addon, setting or record.
+- **Transactions.** Each change to a client is one journaled transaction, and a crash leaves each client wholly old or wholly new. Bare `omaddons undo` reverts the newest run, `--last-by agent` the newest run by an agent, `undo <tx>` one transaction and `undo --run <run>` one run, SavedVariables included. An undo is a change too: running the same undo again puts the change back. Settings commands, `errors dismiss` and every `backup` command but `restore` are never undone.
+- **Running clients.** While a modern or 3.3.5a client runs, the default policy lets an update that keeps the loaded TOC land (`data.reload_required: "reload"`: the user types `/reload`) and refuses what the game would notice, such as removing a loaded addon, with `game_running`; other private-server clients refuse every change. `--while-running` lifts those refusals; add it only when the user asks. SavedVariables are never written while the client runs, whatever the flags.
+- **Previews bind.** `omaddons apply <plan_id>` runs exactly the stored preview, and `--if-match <data.precondition>` binds a typed run the same way. If anything changed since, the run refuses with `plan_stale`, never retryable here: `details.changed` names what moved, or `details.reason` says why the plan cannot apply (`expired`, `binary_changed`, `input_missing`, `already_applied`), and `fix_argv` previews again. A plan lives 24 hours; once it is gone from the cache, `apply` answers `plan_not_found`.
+- **Per client.** On each client a bound run commits exactly the approved operations or none of them. A run over several clients is one transaction per client and can end partial: `data.outcomes[]` gives each client's `status` (`committed`, `unchanged`, `stale` or `failed`) with its `tx` or `error_code`. No run over several clients is atomic.
+- **Lost output.** `plans show` changes nothing. Its `state` is `pending`, `completed`, `partial`, `expired` or `unknown`, and `evidence.targets` lists each client that committed, with its `tx`. A second `apply` of an applied plan refuses with `already_applied`.
+- **The doctor.** `omaddons doctor` changes nothing outside its own run record. `doctor fix` keeps what it overwrites or sets aside, and deletes nothing. An undo reverts a repair only while nothing the repair touched has changed since; otherwise it refuses with `undo_conflict` before moving anything.
+- **Two kinds of run.** History's `run` (one invocation, a ULID) is reverted with `undo --run <run>`. A doctor run (a directory named by its UTC time and a ULID) is reverted with `doctor undo <doctor_run>`, which is the fix `undo --run` gives a doctor run.
 
 ## Things omaddons will NEVER do
 
@@ -48,19 +67,77 @@ Refs: a catalog name, `gh:Owner/Repo`, `wowi:<id>`, `tukui:<slug>`, `wowace:<slu
 
 ## Recipes
 
-The core loop above covers the common intents.
+Run each recipe's commands in order; a `#` line says where a value comes from. Preview anything the user did not ask for exactly.
+
+Update every addon on every client; one `omaddons undo` reverts it all:
+
+```sh
+omaddons update --json --actor agent --reason "the user asked to update every addon"
+```
+
+What is broken (`doctor` exits 1 on findings):
+
+```sh
+omaddons status --json
+omaddons doctor --json
+```
+
+Install an addon on one client:
+
+```sh
+omaddons install weakauras -t era --json --actor agent
+```
+
+A legacy addon from git:
+
+```sh
+omaddons install git:https://github.com/fondlez/GroupBulletinBoard#main -t wotlk --json
+```
+
+Preview, then apply exactly what was shown:
+
+```sh
+omaddons install dbm -t retail --dry-run --json
+# <plan_id> is data.plan_id of the command above
+omaddons apply <plan_id> --json
+```
+
+Undo what the agent did today (an earlier run: `undo --run <run>` from the list):
+
+```sh
+omaddons history --by agent --since 1d --json
+omaddons undo --last-by agent --json
+```
+
+Pending updates with their release notes:
+
+```sh
+omaddons outdated --changelog --json
+```
+
+A fresh machine, from the old one's `omaddons export`, at its versions:
+
+```sh
+omaddons sync addons.toml --locked --json
+```
 
 ## Errors you will meet
 
-omaddons has {{error_code_count}} error codes and {{warning_code_count}} warning codes. These are the ones agents meet most:
+omaddons has {{error_code_count}} error codes and {{warning_code_count}} warning codes. `retryable: true` means the same command may succeed if run again, as for `locked` (another omaddons is committing) or `rate_limited` after `details.reset_at`. `game_running` means the game must exit first; when its `fix_argv` adds `--while-running`, run it only if the user asks. The ones agents meet most:
 
 {{errors_common}}
 
 ## The doctor loop
 
-`omaddons status --json` lists what needs attention, and its `commands[]` say what to run.
+1. `omaddons doctor --json` runs the checks (`omaddons status --check --json` only the cheap ones). Each finding has a `severity`, its `evidence` and a `remediation`: the `argv` to run, `auto_fixable`, `needs_force` and `destructive`.
+2. `omaddons doctor explain <fm> --json` shows one failure mode in full, with its live instances, and changes nothing.
+3. `omaddons doctor fix --dry-run --json` lists what the repair would change (`actions_planned`) and returns its `precondition`. When the user approves, run the `doctor_fix` entry of its `commands[]` (`omaddons doctor fix --if-match <token>`) with `--json --actor agent --reason "<why>"`: it repairs exactly that, or nothing.
+4. A finding with `needs_force: true` is the user's decision. Show them its `doctor explain`, and never add `--force --yes` yourself.
+5. `omaddons doctor undo --json` reverts the newest repair still in effect.
 
 ## Commands
+
+Every command path; `mutates` changes something, and `stores plan` keeps its preview for `apply`:
 
 {{commands}}
 
@@ -70,4 +147,6 @@ omaddons has {{error_code_count}} error codes and {{warning_code_count}} warning
 
 ## Where to look next
 
-`omaddons help <command>`, `omaddons robot-docs schema`, `omaddons robot-docs errors`, and README.
+- `omaddons capabilities --json`, `omaddons robot-docs schema <command>`, `omaddons robot-docs errors` and `omaddons help <command>`: every command, flag, code, limit, JSON Schema and error `details`.
+- `omaddons robot-docs install-skill` installs this guide as a skill (`--dir` for another agent's skill folder).
+- README, for people.
