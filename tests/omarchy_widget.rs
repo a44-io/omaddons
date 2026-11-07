@@ -2087,4 +2087,28 @@ fn write_widget_fixtures() {
         !search["data"]["results"].as_array().unwrap().is_empty(),
         "{search}"
     );
+
+    // The published contract: the inputs of omarchy/tests/contract-reads.test.js, which
+    // holds every key the widget reads to a key these schemas declare (H1's guard). Not
+    // reducer fixtures; `errors.json` is already the Lua errors envelope.
+    let schemas = write_fixture(
+        &dir,
+        "contract-schemas",
+        &home.run(&["robot-docs", "schema"]),
+        0,
+    );
+    assert!(
+        schemas["data"]["commands"].is_object() && schemas["data"]["envelope"].is_object(),
+        "{schemas}"
+    );
+    let errors = write_fixture(
+        &dir,
+        "contract-errors",
+        &home.run(&["robot-docs", "errors"]),
+        0,
+    );
+    assert!(
+        errors["data"]["error_codes"].is_array() && errors["data"]["warning_codes"].is_array(),
+        "{errors}"
+    );
 }
