@@ -15,8 +15,11 @@ use omaddons::contract::env;
 use omaddons::contract::events::{EventName, LogLevel, Phase};
 use omaddons::contract::manifest::{Manifest, build_checked, classify, report, section_counts};
 use omaddons::contract::wire;
+use omaddons::doctor::exit::Exit as DoctorExit;
+use omaddons::doctor::registry::FAILURE_MODES;
 use omaddons::error::{ErrorCode, Exit, WarningCode};
 use omaddons::state::config::KEYS;
+use omaddons::state::history::RepairOp;
 use omaddons::state::store::KINDS;
 use serde_json::json;
 
@@ -104,11 +107,10 @@ fn manifest_report() {
         .iter()
         .filter(|only| !paths.contains(&only.name.to_owned()))
         .count();
-    let exit_general = m
-        .nodes
-        .keys()
-        .filter(|id| id.starts_with("exit general "))
-        .count();
+    let exits = |dictionary: &str| {
+        let prefix = format!("exit {dictionary} ");
+        m.nodes.keys().filter(|id| id.starts_with(&prefix)).count()
+    };
     let expected = [
         (
             "commands",
@@ -133,6 +135,8 @@ fn manifest_report() {
             KINDS.len() + 2,
             "store::KINDS and both journal families",
         ),
+        ("fm", FAILURE_MODES.len(), "doctor::registry::FAILURE_MODES"),
+        ("doctor-ops", RepairOp::ALL.len(), "RepairOp::ALL"),
     ];
     for (section, want, registry) in expected {
         let got = counts.get(section).copied().unwrap_or(0);
@@ -141,12 +145,16 @@ fn manifest_report() {
             "section {section}: the manifest has {got}, {registry} has {want}"
         );
     }
-    assert_eq!(
-        exit_general,
-        Exit::ALL.len(),
-        "exit general: the manifest has {exit_general}, Exit::ALL has {}",
-        Exit::ALL.len()
-    );
+    for (dictionary, want, registry) in [
+        ("general", Exit::ALL.len(), "Exit::ALL"),
+        ("doctor", DoctorExit::ALL.len(), "doctor::exit::Exit::ALL"),
+    ] {
+        let got = exits(dictionary);
+        assert_eq!(
+            got, want,
+            "exit {dictionary}: the manifest has {got}, {registry} has {want}"
+        );
+    }
 
     log.step("report");
     let text = report(&m, None);

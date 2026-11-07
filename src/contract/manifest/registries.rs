@@ -1,11 +1,9 @@
 //! The manifest's registries (M4-D56): every enumerable fact a consumer may switch on.
 //! Error codes with their exits (general and doctor) and retryability, warning codes,
 //! actions, events, phases, log levels, both exit dictionaries, the `release` environment
-//! variables, and every persisted kind with its own version. Meanings and descriptions
-//! are prose and are not recorded.
-//!
-//! Not recorded yet, because their registries are not in this build: failure-mode ids (E1)
-//! and the doctor's allowed operations (E4).
+//! variables, every persisted kind with its own version, the doctor's failure-mode ids
+//! and the operations a doctor repair is made of. Meanings and descriptions are prose and
+//! are not recorded.
 
 use std::collections::BTreeMap;
 
@@ -15,8 +13,10 @@ use crate::contract::actions::Action;
 use crate::contract::env;
 use crate::contract::events::{EventName, LogLevel, Phase};
 use crate::doctor::exit::{Exit as DoctorExit, exit_for};
+use crate::doctor::registry::FAILURE_MODES;
 use crate::engine::journal;
 use crate::error::{ErrorCode, Exit, Retryability, WarningCode};
+use crate::state::history::RepairOp;
 use crate::state::store::{KINDS, SchemaVersion};
 
 /// The folder journal's kind, outside `KINDS`.
@@ -115,6 +115,23 @@ pub(crate) fn collect(b: &mut Builder) {
             ids::anchored(section::FILE, kind, None),
             NodeKind::FileKind,
             facts,
+        );
+    }
+    // The catalog alone, never `registry::failure_modes()`: that appends the test-only
+    // rows (`fm-test-*`) in a debug build run with `OMADDONS_TEST_FIXERS=1`, and the
+    // manifest depends on neither the build profile nor the environment.
+    for mode in FAILURE_MODES {
+        b.insert(
+            ids::registry(section::FAILURE_MODE, mode.id),
+            NodeKind::FailureMode,
+            [],
+        );
+    }
+    for op in RepairOp::ALL {
+        b.insert(
+            ids::registry(section::DOCTOR_OPS, op.wire()),
+            NodeKind::DoctorOp,
+            [],
         );
     }
 }
@@ -337,6 +354,47 @@ mod tests {
             Some(&Fact::Text(crate::engine::repair::FORMAT.to_string())),
             "the repair journal's version is its prepared line's format"
         );
+    }
+
+    /// One `fm <id>` node per catalog row, and none for a test-only failure mode, whatever
+    /// the environment (this build may register `fm-test-*` rows; the manifest never does).
+    #[test]
+    fn failure_modes_are_recorded() {
+        let nodes = nodes();
+        let want: BTreeSet<String> = FAILURE_MODES
+            .iter()
+            .map(|mode| ids::registry(section::FAILURE_MODE, mode.id))
+            .collect();
+        assert!(!want.is_empty());
+        assert_eq!(of_kind(&nodes, NodeKind::FailureMode), want);
+        assert!(
+            !nodes.keys().any(|id| id.starts_with("fm fm-test-")),
+            "a test-only failure mode is in the manifest"
+        );
+        assert!(
+            FAILURE_MODES
+                .iter()
+                .all(|mode| !mode.id.starts_with("fm-test-")),
+            "the catalog holds only production failure modes"
+        );
+    }
+
+    /// One `doctor-ops <op>` node per operation a repair is made of, by its wire name.
+    #[test]
+    fn doctor_ops_are_recorded() {
+        let nodes = nodes();
+        let want: BTreeSet<String> = RepairOp::ALL
+            .iter()
+            .map(|op| ids::registry(section::DOCTOR_OPS, op.wire()))
+            .collect();
+        assert_eq!(of_kind(&nodes, NodeKind::DoctorOp), want);
+        for id in [
+            "doctor-ops write_file",
+            "doctor-ops chmod",
+            "doctor-ops rename_noreplace",
+        ] {
+            assert!(nodes.contains_key(id), "{id}");
+        }
     }
 
     #[test]

@@ -170,6 +170,22 @@ pub enum RepairOp {
     RenameNoReplace,
 }
 
+impl RepairOp {
+    /// Every operation a repair is made of, in declaration order: the doctor's allowed
+    /// operations, as the semantic manifest records them (`doctor-ops <op>`).
+    pub const ALL: [RepairOp; 3] = [Self::WriteFile, Self::Chmod, Self::RenameNoReplace];
+
+    /// The operation's wire name, as every repair line, undo report and fix preview
+    /// serializes it.
+    pub fn wire(self) -> &'static str {
+        match self {
+            Self::WriteFile => "write_file",
+            Self::Chmod => "chmod",
+            Self::RenameNoReplace => "rename_noreplace",
+        }
+    }
+}
+
 /// What a repair operation's paths hold: a rename's source and destination, or the one
 /// path of any other operation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1419,6 +1435,36 @@ mod tests {
     use crate::fsx::{ScopeTable, Writer, failpoint, sys};
 
     const TARGET: &str = "01JB8Q2V9W0000000000000000";
+
+    /// `RepairOp::ALL` is every operation its schema lists, each under its serde name.
+    #[test]
+    fn repair_ops_are_all_listed_under_their_serde_names() {
+        for op in RepairOp::ALL {
+            assert_eq!(serde_json::to_value(op).unwrap(), op.wire(), "{op:?}");
+        }
+        let derived = serde_json::to_value(schemars::schema_for!(RepairOp)).unwrap();
+        let mut published = std::collections::BTreeSet::new();
+        crate::contract::schema::walk(&derived, &mut |visit| {
+            if let crate::contract::schema::Visit::Position { node, .. } = visit {
+                published.extend(
+                    node.get("const")
+                        .into_iter()
+                        .chain(
+                            node.get("enum")
+                                .and_then(|v| v.as_array())
+                                .into_iter()
+                                .flatten(),
+                        )
+                        .filter_map(|v| v.as_str().map(str::to_owned)),
+                );
+            }
+        });
+        let listed: std::collections::BTreeSet<String> = RepairOp::ALL
+            .iter()
+            .map(|op| op.wire().to_owned())
+            .collect();
+        assert_eq!(listed, published, "RepairOp::ALL against its schema");
+    }
 
     struct Fixture {
         _dir: tempfile::TempDir,
