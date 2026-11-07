@@ -252,6 +252,12 @@ pub const ENV_VARS: &[EnvVar] = &[
         "1 makes tests/skill.rs rewrite skills/omaddons/SKILL.md from the rendered guide",
         None,
     ),
+    var(
+        "OMADDONS_UPDATE_WIRE_NAMES",
+        EnvKind::Harness,
+        "1 makes tests/contract/wire_names.rs regenerate the contract's current golden",
+        None,
+    ),
 ];
 
 /// The rows capabilities publishes.

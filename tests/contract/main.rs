@@ -35,6 +35,8 @@ use crate::validate;
 mod verbose_fields;
 #[cfg(test)]
 mod verbosity;
+#[cfg(test)]
+mod wire_names;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -279,7 +281,11 @@ mod support {
         assert_eq!(keys.0, expected, "envelope key order\n{ctx}");
 
         // ok, exit_code and the registered exit agree.
-        assert_eq!(envelope["schema_version"], "1.0", "{ctx}");
+        assert_eq!(
+            envelope["schema_version"],
+            omaddons::output::SCHEMA_VERSION,
+            "{ctx}"
+        );
         assert_eq!(envelope["exit_code"], code, "{ctx}");
         assert_eq!(envelope["ok"], code == 0, "{ctx}");
         if code == 0 {
@@ -717,6 +723,22 @@ mod support {
         pub fn stable(&self, envelope: &Value) -> Value {
             stable(envelope, self.home.env.root())
         }
+    }
+
+    /// This build's semantic manifest, built once per process; an id two collectors
+    /// produced differently fails the test that asks for it.
+    pub fn manifest() -> &'static omaddons::contract::manifest::Manifest {
+        use omaddons::contract::Registry;
+        use omaddons::contract::manifest::{Manifest, build_checked};
+        static MANIFEST: std::sync::OnceLock<Manifest> = std::sync::OnceLock::new();
+        MANIFEST.get_or_init(|| {
+            let (manifest, conflicts) = build_checked(&Registry::builtin());
+            assert!(
+                conflicts.is_empty(),
+                "ids two collectors produced differently: {conflicts:#?}"
+            );
+            manifest
+        })
     }
 
     /// An envelope without `meta`, for byte comparisons.

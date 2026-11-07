@@ -7,7 +7,14 @@ use std::path::{Path, PathBuf};
 use assert_cmd::Command;
 
 /// Variables cleared from every child, so the developer's settings never leak in.
-const CLEARED: &[&str] = &["CI", "NO_COLOR", "TERM", "XDG_DATA_DIRS", "XDG_CONFIG_DIRS"];
+const CLEARED: &[&str] = &[
+    "CI",
+    "NO_COLOR",
+    "TERM",
+    "XDG_DATA_DIRS",
+    "XDG_CONFIG_DIRS",
+    "OMADDONS_UPDATE_WIRE_NAMES",
+];
 
 /// Settings every child gets: local times in UTC (M3 common rule 13), a filesystem that
 /// clones no file (a debug-build hint), so automatic backups, which clone or do nothing,
