@@ -3090,3 +3090,46 @@ fn doctor_undo() {
     assert_eq!(fs::read(&file).unwrap(), b"broken\n", "undone");
     insta::assert_json_snapshot!("doctor_undo_ok", s.stable(&c.envelope));
 }
+
+/// A WoWInterface file that answers with a web page (a bot check served with a 200): the
+/// install fails `network`, naming the page, never `hash_mismatch` or "no candidate loads",
+/// and the file is asked for once.
+#[test]
+fn a_download_that_serves_a_web_page() {
+    use common::http::fixture_bytes;
+    use common::netlog::net_log;
+    use common::wowi::{details, file_url, wowi_details};
+
+    let s = Scene::new();
+    let page = b"<!DOCTYPE html><html><head><title>Just a moment...</title></head></html>";
+    fixture_bytes(
+        &s.home.http,
+        "wowi-file-5342",
+        &file_url(5342),
+        200,
+        &[("content-type", "text/html; charset=UTF-8")],
+        Some(page),
+    );
+    wowi_details(
+        &s.home.http,
+        &[5342],
+        &[details(
+            5342,
+            "WIM",
+            "3.19.3",
+            "3da2c05258ecd223747fbae09b837068",
+        )],
+    );
+    let c = s.json(&["install", "wowi:5342", "-t", "retail"], 1);
+    let error = &c.envelope["error"];
+    assert_eq!(error["code"], "network", "{error}");
+    assert!(
+        error["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("served a web page, not the file")),
+        "{error}"
+    );
+    let downloads = net_log(&s.home).count("cdn.wowinterface.com", "asset");
+    assert_eq!(downloads, 1, "the page is asked for once");
+    insta::assert_json_snapshot!("install_served_a_web_page", s.stable(&c.envelope));
+}

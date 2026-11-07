@@ -1,0 +1,35 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "install",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "network",
+    "details": {
+      "items": [
+        {
+          "error": {
+            "code": "network",
+            "fix": "retry later, or download the file in a browser and install it with --file",
+            "fix_argv": null,
+            "message": "https://cdn.wowinterface.com/downloads/getfile.php served a web page, not the file: the site may be asking for a browser check"
+          },
+          "request": "wowi:5342",
+          "target": "retail"
+        }
+      ]
+    },
+    "fix": "retry later, or download the file in a browser and install it with --file",
+    "fix_argv": null,
+    "message": "https://cdn.wowinterface.com/downloads/getfile.php served a web page, not the file: the site may be asking for a browser check",
+    "retryable": true
+  },
+  "exit_code": 1,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

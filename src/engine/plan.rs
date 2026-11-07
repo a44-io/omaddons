@@ -3967,6 +3967,15 @@ impl TargetPlanner<'_> {
                 }
                 return Err(error.clone().details(details));
             }
+            // Likewise when no candidate could be downloaded at all and none was judged (a
+            // connection that failed after its retries, a web page served instead of the
+            // file): the download is the problem, and saying "no candidate loads" would
+            // send the user looking at the client. `network` carries no details of its own.
+            if !refused
+                && let Some(error) = unreadable.as_ref().filter(|e| e.code == ErrorCode::Network)
+            {
+                return Err(error.clone());
+            }
             // A release that does not exist at all (a git rev naming nothing), or one
             // whose archive cannot be downloaded offline, is not a question of flavor;
             // nor is a WowAce tree that cannot be assembled (a collision, a bound).

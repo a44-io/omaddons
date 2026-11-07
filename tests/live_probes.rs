@@ -339,6 +339,9 @@ fn catalog_matches_declared_flavors() {
     // The matrix, then the mismatches.
     let mut matrix = String::new();
     let mut mismatches = Vec::new();
+    // Downloads the source answered with a web page (a bot check): upstream, not a verdict
+    // of omaddons', so printed and dated by the run, never a mismatch.
+    let mut upstream = Vec::new();
     for (name, request, legacy, declared, listed) in &rows {
         let families = if *legacy {
             &legacy_families[..]
@@ -381,6 +384,12 @@ fn catalog_matches_declared_flavors() {
                     Ok("↩")
                 }
                 (Some(Ok(_)), false) => Err("installed on a family it does not declare".to_owned()),
+                (Some(Err((code, message))), _)
+                    if code == "network" && message.contains("served a web page") =>
+                {
+                    upstream.push(format!("{name} on {} ({family}): {message}", id_of[family]));
+                    Ok("⊘")
+                }
                 (Some(Err((code, message))), _) => Err(format!("{code}: {message}")),
                 (None, _) => Err("no result".to_owned()),
             };
@@ -401,14 +410,47 @@ fn catalog_matches_declared_flavors() {
     let _ = writeln!(
         std::io::stderr(),
         "catalog x declared flavors (✓ declared and installs, · refused and not declared, \
-         ↩ an older release that declares it, ~ a recorded publisher mismatch, ✗ a mismatch):\n{matrix}"
+         ↩ an older release that declares it, ~ a recorded publisher mismatch, ⊘ the source \
+         served a web page, ✗ a mismatch):\n{matrix}"
     );
+    if !upstream.is_empty() {
+        let _ = writeln!(
+            std::io::stderr(),
+            "upstream on {} (the source served a web page; not omaddons' verdict):\n{}",
+            jiff::Timestamp::now().strftime("%Y-%m-%d"),
+            upstream.join("\n")
+        );
+    }
     assert!(
         mismatches.is_empty(),
         "omaddons disagrees with what publishers declare:\n{}",
         mismatches.join("\n")
     );
-    assert_no_github_rest(&read_net_log(&paths(&env)));
+    // No REST but the look-back's one confirmation of each release it found (README "A
+    // release per client": the feed does not mark prereleases, so the release is asked
+    // for by its tag); anything else on api.github.com is a regression.
+    let log = read_net_log(&paths(&env));
+    let rest: Vec<String> = log
+        .iter()
+        .filter(|e| e.host == "api.github.com")
+        .filter(|e| {
+            !(e.method == "GET"
+                && e.purpose == "rest-releases"
+                && e.path.starts_with("/repos/")
+                && e.path.contains("/releases/tags/"))
+        })
+        .map(|e| format!("{} {}{} ({})", e.method, e.host, e.path, e.purpose))
+        .collect();
+    assert!(
+        rest.is_empty(),
+        "GitHub REST requests beyond look-back confirmations:\n{}",
+        rest.join("\n")
+    );
+    let confirmations = log.iter().filter(|e| e.host == "api.github.com").count();
+    let _ = writeln!(
+        std::io::stderr(),
+        "look-back confirmations through the REST API: {confirmations}"
+    );
 }
 
 #[test]

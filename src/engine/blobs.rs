@@ -330,6 +330,12 @@ impl BlobCache {
                 continue;
             }
             let resp = resp.error_for_status("asset")?;
+            // A web page where an archive was asked for (a bot check, a login or an error
+            // page served with a 200): refused before a byte is read, and not downloaded
+            // again here, since asking again at once would get the same page.
+            if serves_a_page(resp.header("content-type")) {
+                return Err(page_served(&target.url));
+            }
             let declared_md5 = matches!(target.declared, Some(ExpectedHash::Md5(_)));
             let mut expected: Vec<ExpectedHash> = target.declared.into_iter().collect();
             let mut unverified = None;
@@ -628,6 +634,29 @@ impl<R: Read> Read for Guard<R> {
         }
         Ok(n)
     }
+}
+
+/// Whether a download's `Content-Type` is an HTML page: never a release's archive.
+fn serves_a_page(content_type: Option<&str>) -> bool {
+    content_type
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|media| media.trim().eq_ignore_ascii_case("text/html"))
+}
+
+/// The error for a download that answered with a web page: `network` (a source response
+/// omaddons cannot read), retryable later, naming the page, never the MD5s a hash check
+/// of it would print.
+fn page_served(url: &str) -> Error {
+    Error::new(
+        ErrorCode::Network,
+        format!(
+            "{} served a web page, not the file: the site may be asking for a browser check",
+            crate::net::redact(url)
+        ),
+        Suggestion::text(
+            "retry later, or download the file in a browser and install it with --file",
+        ),
+    )
 }
 
 /// The MD5 a strong, quoted, 32-hex `ETag` carries; otherwise why there is none to
@@ -1263,6 +1292,69 @@ mod tests {
         let declared = ExpectedHash::md5(&md5(b"elvui")).unwrap();
         let got = download(&Serve::new(b"elvui", Some(&wrong)), Some(&declared)).unwrap();
         assert_eq!(got.unverified, None);
+    }
+
+    /// Answers every request with a 200 page of `content_type`, counting them.
+    struct Page {
+        content_type: &'static str,
+        sent: AtomicU64,
+    }
+
+    impl Http for Page {
+        fn send(&self, req: Request) -> Result<crate::net::Response> {
+            self.sent.fetch_add(1, Ordering::Relaxed);
+            Ok(crate::net::Response::new(
+                200,
+                vec![("Content-Type".to_owned(), self.content_type.to_owned())],
+                req.url,
+                Box::new(Cursor::new(
+                    b"<!DOCTYPE html><title>Just a moment</title>".to_vec(),
+                )),
+            ))
+        }
+    }
+
+    #[test]
+    fn a_web_page_is_refused_before_it_is_read_and_never_asked_again() {
+        let f = fixture();
+        let cache = BlobCache::new(&f.paths);
+        let url = "https://cdn.wowinterface.com/downloads/getfile.php?id=5342";
+        let declared = ExpectedHash::md5(&md5(b"the zip")).unwrap();
+        for (case, content_type) in [
+            ("html", "text/html"),
+            ("html_charset", "text/html; charset=UTF-8"),
+            ("upper", "TEXT/HTML"),
+        ] {
+            let http = Page {
+                content_type,
+                sent: AtomicU64::new(0),
+            };
+            let err = cache
+                .download(&f.scopes, &TxId::new(), &http, url, Some(&declared), None)
+                .unwrap_err();
+            assert_eq!(err.code, ErrorCode::Network, "{case}: {err:?}");
+            assert!(
+                err.message.contains("served a web page, not the file")
+                    && !err.message.contains("MD5"),
+                "{case}: {}",
+                err.message
+            );
+            assert_eq!(err.details, json!({}), "{case}: no details of its own");
+            assert_eq!(http.sent.load(Ordering::Relaxed), 1, "{case}: asked once");
+        }
+        for (case, content_type, page) in [
+            ("zip", Some("application/zip"), false),
+            ("octet", Some("application/octet-stream"), false),
+            ("none", None, false),
+            ("html", Some("text/html"), true),
+            ("xhtml_is_not_html", Some("application/xhtml+xml"), false),
+        ] {
+            assert_eq!(
+                serves_a_page(content_type),
+                page,
+                "{case}: {content_type:?}"
+            );
+        }
     }
 
     /// Answers each URL its route names (404 otherwise): `(status, ETag)`, serving
