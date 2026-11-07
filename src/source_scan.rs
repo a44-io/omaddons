@@ -242,8 +242,9 @@ fn char_literal_end(chars: &[char], i: usize) -> Option<usize> {
     }
 }
 
-/// The index of the bracket closing the one at `open` (any of `()[]{}`).
-fn matching(code: &[char], open: usize) -> Option<usize> {
+/// The index of the bracket closing the one at `open` (any of `()[]{}`), in a view whose
+/// comments and literals are blanked.
+pub(crate) fn matching(code: &[char], open: usize) -> Option<usize> {
     let mut depth = 0usize;
     for (j, c) in code.iter().enumerate().skip(open) {
         match c {
