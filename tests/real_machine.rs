@@ -435,9 +435,21 @@ mod support {
     }
 
     /// How many of `names` (account folder names) appear in `text` as a whole token,
-    /// ignoring case; the count only, so a failure never prints a name.
+    /// ignoring case, outside the home directory's own path; the count only, so a
+    /// failure never prints a name.
     pub fn names_in(text: &str, names: &[String]) -> usize {
-        let text = text.to_lowercase();
+        names_outside_home(text, names, &std::env::var("HOME").unwrap_or_default())
+    }
+
+    /// [`names_in`] for the home directory `home`. A name inside `home`'s path is the
+    /// user's, which every absolute path carries (an account folder may share it), so
+    /// it is read as `<home>` first; anywhere else a name still counts.
+    pub fn names_outside_home(text: &str, names: &[String], home: &str) -> usize {
+        let text = if home.is_empty() {
+            text.to_lowercase()
+        } else {
+            text.replace(home, "<home>").to_lowercase()
+        };
         let bounded = |at: usize, len: usize| {
             let before = text[..at].chars().next_back();
             let after = text[at + len..].chars().next();
@@ -540,6 +552,44 @@ mod support {
             assert!(item["status"] == "installed" || refused, "{item:#}");
         }
         installed
+    }
+}
+
+/// `names_in`'s rule (this one runs in the gate): an account name that is only the home
+/// directory's user counts nothing, and anywhere else it counts, in any case.
+#[test]
+fn names_in_ignores_the_home_path() {
+    let names = vec!["Alice".to_owned(), "Realmless".to_owned()];
+    let home = "/home/alice";
+    let cases = [
+        (
+            "only_inside_the_home_path",
+            r#"{"run_dir":"/home/alice/.local/state/omaddons/doctor/runs/x","path":"/home/alice/Games/a"}"#,
+            0,
+        ),
+        (
+            "elsewhere_too",
+            r#"{"path":"/home/alice/Games/a","message":"account alice"}"#,
+            1,
+        ),
+        (
+            "another_case_elsewhere",
+            r#"{"message":"ALICE wrote it"}"#,
+            1,
+        ),
+        (
+            "a_longer_word_is_no_token",
+            r#"{"message":"malice and alicebeth"}"#,
+            0,
+        ),
+        ("both_names", r#"{"a":"alice","b":"realmless"}"#, 2),
+    ];
+    for (name, text, want) in cases {
+        assert_eq!(
+            support::names_outside_home(text, &names, home),
+            want,
+            "case {name}: {text}"
+        );
     }
 }
 
