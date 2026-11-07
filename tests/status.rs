@@ -597,7 +597,7 @@ fn a_deleted_client_is_missing() {
         serde_json::json!([{
             "id": "fm-userland_state-target-vanished",
             "severity": "P2",
-            "title": "The client's directory is gone",
+            "title": "The client is gone or no longer installed",
             "addon": null,
             "remediation": {
                 "command": rm.join(" "),
@@ -614,7 +614,7 @@ fn a_deleted_client_is_missing() {
     let human = m.home.exec(&["status".to_owned()]);
     assert!(
         human.stdout.contains(&format!(
-            "  P2 The client's directory is gone → {}",
+            "  P2 The client is gone or no longer installed → {}",
             rm.join(" ")
         )),
         "{}",

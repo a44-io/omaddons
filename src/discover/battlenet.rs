@@ -32,7 +32,8 @@ pub fn is_battlenet_root(dir: &Path) -> bool {
 }
 
 /// Every flavor folder of `root` as a target, sorted by folder name, except those of
-/// other Blizzard games ([`RulesTable::is_wow_product`]), plus warnings
+/// other Blizzard games ([`RulesTable::is_wow_product`]) and the leftovers of clients
+/// Battle.net uninstalled ([`uninstalled`]), plus warnings
 /// (`client_not_launched_since_patch`; `unknown_flavor` is said once config overrides
 /// applied, [`super::unknown_flavor`]). Reads only.
 pub fn discover_root(
@@ -42,7 +43,13 @@ pub fn discover_root(
     qualifier: &str,
     source: &DiscoverySource,
 ) -> (Vec<DiscoveredTarget>, Vec<Warning>) {
-    let rows = read_text(&root.join(".build.info"))
+    let build_info = root.join(".build.info");
+    // Read whole or not at all for the products it lists: a file cut at the bound
+    // could leave out the row of an installed product.
+    let whole = super::read_bytes(&build_info).map(|b| String::from_utf8_lossy(&b).into_owned());
+    let listed = whole.as_deref().and_then(bpsv::build_info_products);
+    let rows = whole
+        .or_else(|| read_text(&build_info))
         .and_then(|text| bpsv::build_info_rows(&text).ok())
         .unwrap_or_default();
     let mut targets = Vec::new();
@@ -59,6 +66,19 @@ pub fn discover_root(
             continue;
         }
         let known = product.as_deref().and_then(|p| table.product_by_code(p));
+        let exe_name = exe_name(&client_dir, known.map(|p| p.exe.as_str()));
+        // What Battle.net leaves of a client it uninstalled is no client, and is
+        // skipped without a word too; a registered one is then a missing target.
+        if uninstalled(
+            &client_dir,
+            &folder,
+            product.as_deref(),
+            listed.as_deref(),
+            hints,
+            exe_name.is_some(),
+        ) {
+            continue;
+        }
         let version = version_for(product.as_deref(), &rows, hints)
             .and_then(|v| v.parse::<ClientVersion>().ok());
 
@@ -97,7 +117,6 @@ pub fn discover_root(
             |p| p.kind,
         );
         let default_id = known.map_or_else(|| unknown_folder_id(&folder), |p| p.default_id.clone());
-        let exe_name = exe_name(&client_dir, known.map(|p| p.exe.as_str()));
 
         // Only a `Config.wtf` that predates the client: launching it once clears that,
         // never a newer one (a version read from a stale hint).
@@ -155,6 +174,43 @@ fn flavor_folders(root: &Path) -> Vec<String> {
         .collect();
     folders.sort();
     folders
+}
+
+/// Whether a flavor folder is what Battle.net leaves when it uninstalls a client (its
+/// `Interface/`, fonts and shader caches), so no client at all. Every one of these must
+/// hold; anything less certain keeps the folder a target, because hiding a live client
+/// is the worst outcome:
+/// - the folder can be listed, and holds no `.flavor.info` in any case (a client being
+///   patched keeps its own);
+/// - `.build.info` says which products are installed (`listed`, see
+///   [`bpsv::build_info_products`]), and the folder's product is not one of them (a
+///   client being installed has its row before its executable);
+/// - the folder holds no client executable (`has_exe`, [`exe_name`]'s rule);
+/// - no `product.db` hint names the folder or its product.
+///
+/// A folder whose product nothing names (`_xyz_`) is never judged uninstalled.
+fn uninstalled(
+    client_dir: &Path,
+    folder: &str,
+    product: Option<&str>,
+    listed: Option<&[String]>,
+    hints: &BattlenetHints,
+    has_exe: bool,
+) -> bool {
+    let (Some(product), Some(listed)) = (product, listed) else {
+        return false;
+    };
+    let named = |name: &String, wanted: &str| name.eq_ignore_ascii_case(wanted);
+    std::fs::read_dir(client_dir).is_ok()
+        && super::find_child(client_dir, ".flavor.info").is_none()
+        && !listed.iter().any(|p| named(p, product))
+        && !has_exe
+        && !hints.product_by_folder.keys().any(|f| named(f, folder))
+        && !hints
+            .product_by_folder
+            .values()
+            .chain(hints.version_by_product.keys())
+            .any(|p| named(p, product))
 }
 
 /// The folder's version string: its product's `.build.info` row (an active one when
@@ -405,6 +461,148 @@ mod tests {
             launch.exe_name, None,
             "half-installed folders are still targets"
         );
+    }
+
+    /// What Battle.net leaves of `_classic_` once it uninstalled Mists Classic (2026-11-04,
+    /// the development machine): omaddons' `Interface/` data, fonts and a loader DLL; no
+    /// `.flavor.info`, no executable, no `WTF/`, and no `.build.info` row.
+    fn ghost(root: &Path) {
+        let dir = root.join("_classic_");
+        write(
+            dir.join("Interface").join(".omaddons").join("target.json"),
+            "{}",
+        );
+        fs::create_dir_all(dir.join("Interface").join("AddOns").join("EllesmereUI")).unwrap();
+        fs::create_dir_all(dir.join("Fonts")).unwrap();
+        write(dir.join("libxell.dll"), "MZ");
+        write(dir.join("WowClassic_loader.dll"), "MZ");
+        write(dir.join("vkd3d-proton.cache"), "");
+    }
+
+    /// A live client: its `.flavor.info`, executable and `Interface/AddOns/`.
+    fn live(root: &Path, folder: &str, product: &str, exe: &str) {
+        flavor(root, folder, product);
+        write(root.join(folder).join(exe), "MZ");
+        fs::create_dir_all(root.join(folder).join("Interface").join("AddOns")).unwrap();
+    }
+
+    fn folders(targets: &[DiscoveredTarget]) -> Vec<&str> {
+        targets
+            .iter()
+            .filter_map(|t| t.target.flavor_dir.as_deref())
+            .collect()
+    }
+
+    /// An uninstalled client's folder is no target, and says nothing; the live folders
+    /// beside it are found as before, and nothing is written.
+    #[test]
+    fn an_uninstalled_flavor_folder_is_no_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(
+            root.join(".build.info"),
+            &build_info(&[
+                ("wow", "12.1.5.70391", true),
+                ("wow_classic_era", "1.15.9.70003", true),
+            ]),
+        );
+        live(root, "_retail_", "wow", "Wow.exe");
+        live(root, "_classic_era_", "wow_classic_era", "WoWClassic.exe");
+        ghost(root);
+        let before = tree(root);
+        let (targets, warnings) = discover(root, &BattlenetHints::default());
+        let context = dump(&targets, &warnings);
+        assert_eq!(
+            folders(&targets),
+            ["_classic_era_", "_retail_"],
+            "{context}"
+        );
+        assert!(warnings.is_empty(), "{context}");
+        assert_eq!(tree(root), before, "discovery writes nothing");
+
+        // Every client uninstalled but the one `.build.info` still lists.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(
+            root.join(".build.info"),
+            &build_info(&[("wowf", "1.60.1.70790", true)]),
+        );
+        live(root, "_forever_", "wowf", "Wow.exe");
+        ghost(root);
+        for folder in ["_retail_", "_classic_era_", "_anniversary_"] {
+            let dir = root.join(folder);
+            fs::create_dir_all(dir.join("Interface").join("AddOns")).unwrap();
+            write(dir.join("wow_loader.dll"), "MZ");
+        }
+        let (targets, warnings) = discover(root, &BattlenetHints::default());
+        let context = dump(&targets, &warnings);
+        assert_eq!(folders(&targets), ["_forever_"], "{context}");
+        assert!(warnings.is_empty(), "{context}");
+    }
+
+    /// Each sign of a client, alone, keeps the folder a target: the predicate needs all
+    /// four conditions, and evidence it cannot read is no evidence.
+    #[test]
+    fn any_sign_of_a_client_keeps_the_folder_a_target() {
+        let listed = build_info(&[("wowf", "1.60.1.70790", true)]);
+        let padded = {
+            let mut text = listed.clone();
+            let line = format!("## {}\n", "x".repeat(1_000));
+            while text.len() as u64 <= crate::limits::DISCOVERY_FILE_MAX_BYTES {
+                text.push_str(&line);
+            }
+            text
+        };
+        type Plant = fn(&Path);
+        #[rustfmt::skip]
+        let cases: &[(&str, Plant, Option<&str>, BattlenetHints)] = &[
+            ("all_four_hold_the_control", |_| {}, None, BattlenetHints::default()),
+            ("a_flavor_info", |r| flavor(r, "_classic_", "wow_classic"), None, BattlenetHints::default()),
+            ("a_flavor_info_in_another_case", |r| write(r.join("_classic_").join(".Flavor.Info"), "x"), None, BattlenetHints::default()),
+            ("an_executable", |r| write(r.join("_classic_").join("WowClassic.exe"), "MZ"), None, BattlenetHints::default()),
+            ("another_wow_executable", |r| write(r.join("_classic_").join("WowB.exe"), "MZ"), None, BattlenetHints::default()),
+            ("a_build_info_row_for_the_product", |_| {}, Some("row"), BattlenetHints::default()),
+            ("a_build_info_without_a_product_column", |_| {}, Some("Branch!STRING:0|Active!DEC:1|Version!STRING:0\nus|1|1.60.1.70790\n"), BattlenetHints::default()),
+            ("a_build_info_that_is_no_bpsv", |_| {}, Some("not bpsv at all"), BattlenetHints::default()),
+            ("a_build_info_past_the_read_bound", |_| {}, Some("padded"), BattlenetHints::default()),
+            ("a_build_info_that_is_a_directory", |r| fs::create_dir_all(r.join(".build.info")).unwrap(), Some("none"), BattlenetHints::default()),
+            ("a_product_db_entry_for_the_folder", |_| {}, None, BattlenetHints {
+                product_by_folder: BTreeMap::from([("_CLASSIC_".into(), "wow_classic".into())]),
+                ..BattlenetHints::default()
+            }),
+            ("a_product_db_entry_for_the_product", |_| {}, None, BattlenetHints {
+                version_by_product: BTreeMap::from([("wow_classic".into(), "5.5.4.63000".into())]),
+                ..BattlenetHints::default()
+            }),
+        ];
+        for (name, plant, text, hints) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            match *text {
+                None => write(root.join(".build.info"), &listed),
+                Some("row") => write(
+                    root.join(".build.info"),
+                    &build_info(&[
+                        ("wowf", "1.60.1.70790", true),
+                        ("wow_classic", "5.5.4.63000", true),
+                    ]),
+                ),
+                Some("padded") => write(root.join(".build.info"), &padded),
+                Some("none") => {}
+                Some(text) => write(root.join(".build.info"), text),
+            }
+            live(root, "_forever_", "wowf", "Wow.exe");
+            ghost(root);
+            plant(root);
+            let (targets, warnings) = discover(root, hints);
+            let context = format!("case {name}:\n{}", dump(&targets, &warnings));
+            let want: &[&str] = if *name == "all_four_hold_the_control" {
+                &["_forever_"]
+            } else {
+                &["_classic_", "_forever_"]
+            };
+            assert_eq!(folders(&targets), want, "{context}");
+        }
     }
 
     #[test]

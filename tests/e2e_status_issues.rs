@@ -754,7 +754,7 @@ fn a_vanished_client_is_target_vanished() {
     let expected = json!([issue(
         "fm-userland_state-target-vanished",
         "P2",
-        "The client's directory is gone",
+        "The client is gone or no longer installed",
         None,
         Some(&id),
         command(&["omaddons", "targets", "rm", &id], true),
@@ -772,7 +772,7 @@ fn a_vanished_client_is_target_vanished() {
     assert_human_line(
         &log,
         &home,
-        &format!("  P2 The client's directory is gone → omaddons targets rm {id}"),
+        &format!("  P2 The client is gone or no longer installed → omaddons targets rm {id}"),
     );
     assert_trees_unchanged(&log, &trees);
 }

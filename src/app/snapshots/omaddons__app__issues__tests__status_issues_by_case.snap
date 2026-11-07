@@ -602,7 +602,7 @@ expression: by_case
     {
       "id": "fm-userland_state-target-vanished",
       "severity": "P2",
-      "title": "The client's directory is gone",
+      "title": "The client is gone or no longer installed",
       "addon": null,
       "remediation": {
         "command": "omaddons targets rm retail",
@@ -632,7 +632,7 @@ expression: by_case
     {
       "id": "fm-userland_state-target-vanished",
       "severity": "P2",
-      "title": "The client's directory is gone",
+      "title": "The client is gone or no longer installed",
       "addon": null,
       "remediation": {
         "command": "omaddons targets rm retail",
@@ -693,7 +693,7 @@ expression: by_case
     {
       "id": "fm-userland_state-target-vanished",
       "severity": "P2",
-      "title": "The client's directory is gone",
+      "title": "The client is gone or no longer installed",
       "addon": null,
       "remediation": {
         "command": "omaddons targets rm retail",

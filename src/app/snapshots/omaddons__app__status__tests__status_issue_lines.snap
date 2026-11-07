@@ -7,7 +7,7 @@ classic  mainline  12.1.5  live  -        0 managed · 0 unmanaged · 0 protecte
   P2 1 addon lost a folder to another addon → omaddons list -t classic -v
 gone     mainline  12.1.5  live  missing  0 managed · 0 unmanaged · 0 protected
   P0 An interrupted change waits to be finished → omaddons doctor fix --only fm-concurrency_primitives-journal-pending -t gone
-  P2 The client's directory is gone → omaddons targets rm gone
+  P2 The client is gone or no longer installed → omaddons targets rm gone
 retail   mainline  12.1.5  live  -        0 managed · 0 unmanaged · 0 protected
   P0 An interrupted change waits to be finished → omaddons doctor fix --only fm-concurrency_primitives-journal-pending -t retail
   P0 An interrupted change was started by a newer omaddons; this build cannot read its journal (format 9.0) → omaddons doctor explain fm-concurrency_primitives-journal-too-new -t retail (read it before the forced repair: omaddons doctor fix --only fm-concurrency_primitives-journal-too-new -t retail --force --yes)

@@ -21,7 +21,8 @@ pub(crate) fn target_vanished(view: &DoctorView, _: &Selection, _: &mut Budget) 
     Detected::complete(target_vanished_in(&targets))
 }
 
-/// `target-vanished`'s rule: a registered client whose directory is gone.
+/// `target-vanished`'s rule: a registered client whose directory is gone, or whose folder
+/// holds only what Battle.net left when it uninstalled the client.
 pub(crate) fn target_vanished_in(targets: &[TargetFacts]) -> Vec<Observation> {
     targets
         .iter()
@@ -29,7 +30,7 @@ pub(crate) fn target_vanished_in(targets: &[TargetFacts]) -> Vec<Observation> {
             let dir = t.vanished.as_ref()?;
             Some(Observation {
                 subject: Subject::target(&t.id, t.key),
-                title: "The client's directory is gone".to_owned(),
+                title: "The client is gone or no longer installed".to_owned(),
                 confidence: Confidence::High,
                 addon: None,
                 folder: None,

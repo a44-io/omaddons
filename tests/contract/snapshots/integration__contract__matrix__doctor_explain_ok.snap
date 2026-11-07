@@ -7,7 +7,7 @@ expression: s.stable(&c.envelope)
   "commands": [],
   "exit_code": 0,
   "failure_mode": {
-    "description": "A client in the target registry no longer has its directory on disk.",
+    "description": "A client in the target registry no longer has its directory on disk, or Battle.net uninstalled it and its folder holds only what the uninstall left.",
     "fixer": null,
     "id": "fm-userland_state-target-vanished",
     "manual": {
@@ -17,7 +17,7 @@ expression: s.stable(&c.envelope)
     "severity": "P2",
     "subsystem": "userland_state",
     "tier": "cached",
-    "title": "a registered client's directory is gone",
+    "title": "a registered client is gone or no longer installed",
     "why": "Nothing can be installed there; its record and history are kept until the client is forgotten."
   },
   "incomplete": null,

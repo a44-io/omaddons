@@ -148,6 +148,23 @@ pub fn build_info_rows(text: &str) -> Result<Vec<BuildInfoRow>, BpsvError> {
         .collect())
 }
 
+/// The product codes a `.build.info` lists, one per row, when it can say which products
+/// are installed: it parses, it has a `Product` column, and every row names a product.
+/// `None` otherwise (an old layout without the column, a short row, a broken header),
+/// which is no evidence about any product. `Some` of an empty list: no product at all.
+pub fn build_info_products(text: &str) -> Option<Vec<String>> {
+    let bpsv = Bpsv::parse(text).ok()?;
+    bpsv.column("Product")?;
+    bpsv.rows()
+        .map(|row| {
+            row.get("Product")
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
@@ -235,6 +252,30 @@ mod tests {
             ),
             (Some("3.3.5.12340"), true, None)
         );
+    }
+
+    /// `build_info_products` says which products are installed only when the file can
+    /// say it: a `Product` column, and a product on every row.
+    #[test]
+    fn build_info_products_by_case() {
+        #[rustfmt::skip]
+        let cases: &[(&str, &str, Option<&[&str]>)] = &[
+            ("one_product", "Active!DEC:1|Version!STRING:0|Product!STRING:0\n1|1.60.1.70790|wowf\n", Some(&["wowf"])),
+            ("two_products_in_file_order", "Product!STRING:0|Version!STRING:0\nwow|12.1.5\nwowf|1.60.1\n", Some(&["wow", "wowf"])),
+            ("a_header_and_no_row", "Version!STRING:0|Product!STRING:0\n", Some(&[])),
+            ("the_column_named_in_another_case", "PRODUCT!STRING:0\n wowf \n", Some(&["wowf"])),
+            ("no_product_column", "Branch!STRING:0|Active!DEC:1|Version!STRING:0\nus|1|3.3.5.12340\n", None),
+            ("a_row_too_short_to_name_its_product", "Version!STRING:0|Product!STRING:0\n12.1.5|wow\n1.60.1\n", None),
+            ("a_row_with_an_empty_product", "Version!STRING:0|Product!STRING:0\n12.1.5|\n", None),
+            ("no_header", "", None),
+            ("a_bad_header", "A!STRING:0|!DEC:1\nx|y\n", None),
+        ];
+        for (name, text, want) in cases {
+            let got = build_info_products(text);
+            let want: Option<Vec<String>> =
+                want.map(|w| w.iter().map(|p| (*p).to_owned()).collect());
+            assert_eq!(got, want, "case {name}: input {text:?}");
+        }
     }
 
     #[test]

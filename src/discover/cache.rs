@@ -75,16 +75,22 @@ impl Versioned for DiscoveryCache {
 /// What a root's parse yields, beyond the rules: bumped when it changes while the
 /// package version does not. 2: `unknown_flavor` is no longer the parse's but the
 /// World's, said once config overrides applied. 3: other Blizzard games' flavor folders
-/// are no targets.
-const PARSE_REVISION: u8 = 3;
+/// are no targets. 4: neither are the folders Battle.net leaves of a client it
+/// uninstalled (omad-launch-week-fixes-bmcx.1).
+const PARSE_REVISION: u8 = 4;
 
 /// SHA-256 of this binary's version, [`PARSE_REVISION`] and the effective rules table
 /// (builtin plus `[rules]` and `[client_rules.*]`): a rules edit or an upgrade re-parses
 /// every root once, as `targets --rescan` would.
 pub fn basis(table: &RulesTable) -> String {
+    basis_at(table, PARSE_REVISION)
+}
+
+/// [`basis`] as a build whose parse is at `revision` computes it.
+fn basis_at(table: &RulesTable, revision: u8) -> String {
     let mut hash = Sha256::new();
     hash.update(env!("CARGO_PKG_VERSION").as_bytes());
-    hash.update([0, PARSE_REVISION, 0]);
+    hash.update([0, revision, 0]);
     // A table that does not encode still yields a basis, just one shared by every such
     // table; the builtin and validated overrides always encode.
     hash.update(serde_json::to_vec(table).unwrap_or_default());
@@ -562,6 +568,122 @@ mod tests {
             "case full_rewrites_the_stale_cache (the control): {stats:?}"
         );
         assert_ne!(std::fs::read(paths.discovery_cache()).unwrap(), stale);
+    }
+
+    /// A cache parsed before revision 4, which still listed an uninstalled client's
+    /// folder as a target, reuses nothing: `status --cached` (`NoScan`) parses the root
+    /// again without writing, and one plain `status` (`Full`) writes the new parse,
+    /// which `--cached` then reuses. The control: on this build's basis the same
+    /// stand-in is reused, so the test would see a stale parse if the revision did not
+    /// move.
+    #[test]
+    fn a_cache_parsed_before_revision_4_is_parsed_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = std::fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::with_roots(
+            &home,
+            home.join("config"),
+            home.join("state"),
+            home.join("cache"),
+        );
+        let root = home.join("wow");
+        let write = |path: PathBuf, text: &str| {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        write(
+            root.join(".build.info"),
+            "Active!DEC:1|Version!STRING:0|Product!STRING:0\n1|1.60.1.70790|wowf\n",
+        );
+        write(
+            root.join("_forever_").join(".flavor.info"),
+            "Product Flavor!STRING:0\nwowf\n",
+        );
+        write(root.join("_forever_").join("Wow.exe"), "MZ");
+        std::fs::create_dir_all(root.join("_forever_/Interface/AddOns")).unwrap();
+        // The ghost: no `.flavor.info`, no executable, no `.build.info` row.
+        std::fs::create_dir_all(root.join("_classic_/Interface/AddOns")).unwrap();
+        write(root.join("_classic_").join("WowClassic_loader.dll"), "MZ");
+
+        let table = RulesTable::builtin();
+        let input = DiscoveryInput {
+            home: home.clone(),
+            extra_roots: vec![root.clone()],
+            ..DiscoveryInput::default()
+        };
+        let run = |mode| discover_cached(&input, &table, &paths, ScanLimits::default(), mode);
+        let folders = |discovery: &Discovery| -> Vec<String> {
+            discovery
+                .targets
+                .iter()
+                .filter_map(|d| d.target.flavor_dir.clone())
+                .collect()
+        };
+        let (found, stats) = run(DiscoveryMode::Full);
+        assert_eq!(folders(&found), ["_forever_"], "case first_scan: {stats:?}");
+        assert!(stats.written, "case first_scan: {stats:?}");
+
+        // A cache as a revision-3 build wrote it: the same stamps, its own basis, and
+        // the ghost among the root's targets.
+        let plant = |revision: u8| {
+            let mut cache = load_cache(&paths).unwrap();
+            cache.basis = basis_at(&table, revision);
+            let parsed = &mut cache.roots[0];
+            let mut ghost = parsed.targets[0].clone();
+            ghost.target.flavor_dir = Some("_classic_".to_owned());
+            ghost.target.client_dir = root.join("_classic_");
+            ghost.target.id = "classic".to_owned();
+            ghost.default_id = "classic".to_owned();
+            parsed.targets.push(ghost);
+            std::fs::write(paths.discovery_cache(), store::encode(&cache).unwrap()).unwrap();
+        };
+        assert_ne!(basis(&table), basis_at(&table, 3), "the revision moved");
+
+        plant(PARSE_REVISION);
+        let (found, stats) = run(DiscoveryMode::NoScan);
+        assert_eq!(
+            folders(&found),
+            ["_classic_", "_forever_"],
+            "case control_this_basis_is_reused: {stats:?}"
+        );
+        assert_eq!(
+            (stats.parsed, stats.reused),
+            (0, 1),
+            "case control: {stats:?}"
+        );
+
+        plant(3);
+        for case in ["cached_parses_again", "cached_again_still_parses"] {
+            let (found, stats) = run(DiscoveryMode::NoScan);
+            assert_eq!(folders(&found), ["_forever_"], "case {case}: {stats:?}");
+            assert_eq!(
+                (stats.parsed, stats.reused, stats.written),
+                (1, 0, false),
+                "case {case}: --cached parses, and writes nothing"
+            );
+        }
+        let (found, stats) = run(DiscoveryMode::Full);
+        assert_eq!(
+            folders(&found),
+            ["_forever_"],
+            "case plain_status: {stats:?}"
+        );
+        assert_eq!(
+            (stats.parsed, stats.reused, stats.written),
+            (1, 0, true),
+            "case plain_status: parsed once, and written"
+        );
+        let (found, stats) = run(DiscoveryMode::NoScan);
+        assert_eq!(
+            folders(&found),
+            ["_forever_"],
+            "case cached_after: {stats:?}"
+        );
+        assert_eq!(
+            (stats.parsed, stats.reused),
+            (0, 1),
+            "case cached_after: the new parse is reused"
+        );
     }
 
     #[test]

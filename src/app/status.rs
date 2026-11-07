@@ -1566,7 +1566,7 @@ fn attention_fixes(targets: &[StatusTarget]) -> (Vec<CommandHint>, Option<(Strin
                 Attention::TargetMissing => {
                     let hint = forget_target_hint(&t.id);
                     (
-                        format!("{}'s client directory is gone", t.id),
+                        format!("{}'s client is gone or no longer installed", t.id),
                         Suggestion::command(hint.argv().to_vec()),
                         Some(hint),
                     )
@@ -2434,7 +2434,7 @@ mod tests {
                 vec![client_with("retail", &[Attention::TargetMissing], vec![])],
                 vec![],
                 fails(
-                    "retail's client directory is gone",
+                    "retail's client is gone or no longer installed",
                     "omaddons targets rm retail",
                     words(&retail_rm),
                 ),
@@ -2482,7 +2482,7 @@ mod tests {
                     ..newer
                 }],
                 fails(
-                    "retail's client directory is gone",
+                    "retail's client is gone or no longer installed",
                     "omaddons targets rm retail",
                     words(&retail_rm),
                 ),

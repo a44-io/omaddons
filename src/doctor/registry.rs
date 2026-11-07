@@ -42,7 +42,7 @@ pub mod ids {
     pub const MANAGED_FILES_MODIFIED: &str = "fm-external_artifacts-managed-files-modified";
     /// Addons lost a folder to another addon (`--force`).
     pub const OWNERSHIP_TRANSFERRED: &str = "fm-external_artifacts-ownership-transferred";
-    /// A registered client's directory is gone.
+    /// A registered client is gone or no longer installed.
     pub const TARGET_VANISHED: &str = "fm-userland_state-target-vanished";
     /// The bar widget is from another omaddons build (E4 raises it).
     pub const WIDGET_VERSION_DRIFT: &str = "fm-plugins-widget-version-drift";
@@ -1086,8 +1086,8 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         id: ids::TARGET_VANISHED,
         subsystem: Subsystem::UserlandState,
         severity: Severity::P2,
-        title: "a registered client's directory is gone",
-        description: "A client in the target registry no longer has its directory on disk.",
+        title: "a registered client is gone or no longer installed",
+        description: "A client in the target registry no longer has its directory on disk, or Battle.net uninstalled it and its folder holds only what the uninstall left.",
         why: "Nothing can be installed there; its record and history are kept until the client is forgotten.",
         tier: Tier::Cached,
         online: false,

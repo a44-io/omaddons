@@ -148,6 +148,7 @@ mod tlog_selftest;
 mod toc_loaded;
 mod toc_matrix;
 mod undo_history;
+mod uninstalled_client;
 mod update;
 mod witness;
 mod wowi_index;

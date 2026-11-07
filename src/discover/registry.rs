@@ -859,7 +859,8 @@ fn path_names(path: &Path, d: &DiscoveredTarget) -> bool {
 }
 
 /// `target_not_found` when `selector` names, by key or id, a registered client whose
-/// directory is gone (`missing`) and no discovered target by either: a later kind of
+/// directory is gone or that Battle.net uninstalled (`missing`) and no discovered target
+/// by either: a later kind of
 /// selector (a family its id shadows, a mode) would pick another client.
 pub fn missing_named(
     selector: &str,
@@ -877,7 +878,7 @@ pub fn missing_named(
         Some(e) => Err(Error::new(
             ErrorCode::TargetNotFound,
             format!(
-                "{} is registered, but {} is gone",
+                "{} is registered, but its client is gone or no longer installed ({})",
                 e.id,
                 e.client_dir.display()
             ),
