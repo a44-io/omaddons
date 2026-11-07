@@ -10,7 +10,11 @@
 //! makes, the automatic one before a client's first change of the day included, is
 //! pruned. A test that cannot run (a variable unset, its client
 //! running) prints a `SKIP <test>: <reason>` line and fails unless `OMADDONS_ALLOW_SKIP`
-//! names it (`common::checkpoint`).
+//! names it (`common::checkpoint`). So does a test whose client is not installed on this
+//! machine, a missing target (`skip_unless_installed`): its directory is gone, or
+//! Battle.net uninstalled it, as it did retail and the three Classic clients of the
+//! development machine on 2026-11-04 and 2026-11-06. A test never moves to another
+//! client: the checkpoint's approval names the runs it allows (omad-ch8w).
 
 use crate::common;
 
@@ -24,9 +28,9 @@ use common::trees::tree_hash;
 use serde_json::Value;
 use support::{
     LIVE, MACHINE, addons_of, all_backups, blizzard_hashes, clients, declares, entries, flavors_of,
-    forever_guard, hashes, install_then_undo, names_in, net_log_lines, note, omaddons,
-    prune_new_backups, recent_tags, skip_if_running, snapshot_all, target, target_where, tx_of,
-    undo_all,
+    forever_guard, hashes, install_then_undo, installed, names_in, net_log_lines, note, omaddons,
+    prune_new_backups, recent_commits, recent_tags, reported_missing, skip_if_running,
+    skip_unless_installed, snapshot_all, target, target_where, tx_of, undo_all,
 };
 
 /// The live Classic clients: family, product, interface, version prefix.
@@ -169,6 +173,70 @@ mod support {
         running
     }
 
+    /// Whether `status` lists a target whose `key` is `value` and that is installed: not
+    /// a missing target (its directory gone, or Battle.net uninstalled it). A target
+    /// `status` does not list at all is not installed either.
+    pub fn installed(status: &Value, key: &str, value: &str) -> bool {
+        status["data"]["targets"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|t| t[key] == value && t["missing"] != true)
+    }
+
+    /// True when the client whose `key` is `value` is not installed (`installed`):
+    /// `test` skips by name (`checkpoint::skip`), which fails it unless the run accepts
+    /// that skip. Checked before anything changes.
+    pub fn skip_unless_installed(test: &str, status: &Value, key: &str, value: &str) -> bool {
+        if installed(status, key, value) {
+            return false;
+        }
+        let id = status["data"]["targets"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|t| t[key] == value)
+            .and_then(|t| t["id"].as_str())
+            .unwrap_or(value)
+            .to_owned();
+        checkpoint::skip(
+            test,
+            &format!("{id} is not installed on this machine (missing target)"),
+        );
+        true
+    }
+
+    /// Asserts that `status` reports every target whose `key` is `value` truthfully as
+    /// not installed: missing, with attention `target_missing` (or not listed at all),
+    /// and named by no `unknown_flavor` warning (omad-launch-week-fixes-bmcx.1).
+    pub fn reported_missing(status: &Value, key: &str, value: &str) {
+        for t in status["data"]["targets"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|t| t[key] == value)
+        {
+            assert_eq!(
+                (&t["missing"], &t["attention"]),
+                (&Value::from(true), &serde_json::json!(["target_missing"])),
+                "{value}: not installed, so a missing target: {t:#}"
+            );
+            let id = t["id"].as_str().unwrap_or_default();
+            let named = status["warnings"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|w| w["code"] == "unknown_flavor")
+                .filter(|w| {
+                    w["message"]
+                        .as_str()
+                        .is_some_and(|m| m.starts_with(&format!("{id}:")))
+                })
+                .count();
+            assert_eq!(named, 0, "no unknown_flavor names {id}: {status:#}");
+        }
+    }
+
     /// Hashes of every `Blizzard_*` folder in `addons`.
     pub fn blizzard_hashes(addons: &std::path::Path) -> BTreeMap<String, String> {
         fs::read_dir(addons)
@@ -186,7 +254,9 @@ mod support {
             .collect()
     }
 
-    /// Every registered client: (id, key, `Interface/AddOns`, `WTF`), from `targets`.
+    /// Every client on this machine: (id, key, `Interface/AddOns`, `WTF`), from
+    /// `targets`. A missing target is left out: no command may name it (`-t` refuses
+    /// it), and what is left of its folder belongs to no client.
     pub fn clients() -> Vec<(String, String, PathBuf, PathBuf)> {
         let (code, targets) = omaddons(&["targets"]);
         assert_eq!(code, 0, "{targets:#}");
@@ -194,6 +264,7 @@ mod support {
             .as_array()
             .into_iter()
             .flatten()
+            .filter(|t| t["missing"] != true)
             .filter_map(|t| {
                 let dir = PathBuf::from(t["client_dir"].as_str()?);
                 Some((
@@ -407,6 +478,32 @@ mod support {
             .collect()
     }
 
+    /// The full shas of the newest commits on `owner/repo`'s default branch, newest
+    /// first, from its commits feed (an isolated environment, as for `recent_tags`):
+    /// a git ref's `--version` takes a full sha.
+    pub fn recent_commits(owner: &str, repo: &str) -> Vec<String> {
+        use omaddons::net::{Http, NetConfig, NetLog, Request, stack};
+        use omaddons::sources::{atom, git_github::commit_sha};
+        use omaddons::state::paths::Paths;
+        let env = super::common::env::TestEnv::new();
+        let paths = Paths::with_roots(env.home(), env.config(), env.state(), env.cache());
+        let http: Box<dyn Http> =
+            stack(&NetConfig::default(), NetLog::new(&paths).unwrap(), &paths);
+        let req = Request::get(
+            format!("https://github.com/{owner}/{repo}/commits.atom"),
+            "commits-atom",
+        );
+        let body = http
+            .send(req)
+            .and_then(|r| r.error_for_status("commits atom"))
+            .and_then(|r| r.bytes())
+            .unwrap_or_default();
+        atom::parse(&String::from_utf8_lossy(&body))
+            .into_iter()
+            .filter_map(|e| commit_sha(&e.id).or_else(|| e.link.as_deref().and_then(commit_sha)))
+            .collect()
+    }
+
     /// Installs `refs` into `id` and undoes the transaction at once, so no failed check
     /// leaves the machine changed; then checks every item landed (those in `may_refuse`
     /// may instead fail with `no_compatible_release`, never another way).
@@ -443,6 +540,29 @@ mod support {
             assert!(item["status"] == "installed" || refused, "{item:#}");
         }
         installed
+    }
+}
+
+/// `installed` over a `status` envelope (this one runs in the gate): an installed target,
+/// a missing one, and a value no target has.
+#[test]
+fn installed_tells_a_missing_target_from_an_installed_one() {
+    let status = serde_json::json!({"data": {"targets": [
+        {"id": "retail", "product": "wow", "missing": true},
+        {"id": "wotlk", "product": null, "missing": false},
+    ]}});
+    for (key, value, want) in [
+        ("id", "retail", false),
+        ("product", "wow", false),
+        ("id", "wotlk", true),
+        ("id", "era", false),
+        ("product", "wow_classic_era", false),
+    ] {
+        assert_eq!(
+            installed(&status, key, value),
+            want,
+            "case {key} = {value}: installed should be {want}"
+        );
     }
 }
 
@@ -483,22 +603,29 @@ fn status_reports_every_client() {
         "list reports the AddOns folder as it is on disk: {list:#}"
     );
 
-    let retail = target(&status, "mainline");
-    assert_eq!(
-        (&retail["id"], &retail["product"], &retail["kind"]),
-        (
-            &Value::from("retail"),
-            &Value::from("wow"),
-            &Value::from("live")
-        )
-    );
-    assert!(
-        retail["version"]
-            .as_str()
-            .unwrap_or("")
-            .starts_with("12.1."),
-        "{retail:#}"
-    );
+    // Retail and the Classic clients are asserted as installed clients where they are
+    // installed, and as reported missing where Battle.net uninstalled them.
+    if installed(&status, "product", "wow") {
+        let retail = target(&status, "mainline");
+        assert_eq!(
+            (&retail["id"], &retail["product"], &retail["kind"]),
+            (
+                &Value::from("retail"),
+                &Value::from("wow"),
+                &Value::from("live")
+            )
+        );
+        assert!(
+            retail["version"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("12.1."),
+            "{retail:#}"
+        );
+    } else {
+        reported_missing(&status, "product", "wow");
+        note("wow is not installed: reported missing", &Value::Null);
+    }
     let wotlk = target(&status, "wrath-legacy");
     assert_eq!(
         (
@@ -515,6 +642,14 @@ fn status_reports_every_client() {
 
     // The live Classic clients (each booted once on 2026-10-15).
     for (family, product, interface, prefix) in CLASSIC {
+        if !installed(&status, "product", product) {
+            reported_missing(&status, "product", product);
+            note(
+                &format!("{product} is not installed: reported missing"),
+                &Value::Null,
+            );
+            continue;
+        }
         let t = target(&status, family);
         assert_eq!(
             (&t["product"], &t["interface"], &t["kind"]),
@@ -543,23 +678,28 @@ fn status_reports_every_client() {
     }
 
     // Classic Era, Hardcore and Season of Discovery share the Classic Era client.
-    let era = target(&status, "vanilla");
-    let modes: Vec<&str> = era["modes"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|m| m["name"].as_str())
-        .collect();
-    assert_eq!(
-        modes,
-        ["Classic Era", "Hardcore", "Season of Discovery"],
-        "{era:#}"
-    );
-    for (selector, family) in [
-        ("sod", "vanilla"),
-        ("hardcore", "vanilla"),
-        ("mop", "mists"),
+    if installed(&status, "product", "wow_classic_era") {
+        let era = target(&status, "vanilla");
+        let modes: Vec<&str> = era["modes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|m| m["name"].as_str())
+            .collect();
+        assert_eq!(
+            modes,
+            ["Classic Era", "Hardcore", "Season of Discovery"],
+            "{era:#}"
+        );
+    }
+    for (selector, family, product) in [
+        ("sod", "vanilla", "wow_classic_era"),
+        ("hardcore", "vanilla", "wow_classic_era"),
+        ("mop", "mists", "wow_classic"),
     ] {
+        if !installed(&status, "product", product) {
+            continue;
+        }
         let (code, one) = omaddons(&["status", "-t", selector]);
         assert_eq!(code, 0, "{selector}: {one:#}");
         assert_eq!(
@@ -577,6 +717,9 @@ fn keyless_installs_retail() {
         return;
     }
     let (_, status) = omaddons(&["status"]);
+    if skip_unless_installed("keyless_installs_retail", &status, "product", "wow") {
+        return;
+    }
     let retail = target(&status, "mainline");
     if skip_if_running("keyless_installs_retail", &retail) {
         return;
@@ -614,6 +757,12 @@ fn keyless_installs_classic() {
     }
     let started = jiff::Timestamp::now();
     let (_, status) = omaddons(&["status"]);
+    if CLASSIC
+        .iter()
+        .any(|c| skip_unless_installed("keyless_installs_classic", &status, "product", c.1))
+    {
+        return;
+    }
     let clients: Vec<Value> = CLASSIC.iter().map(|c| target(&status, c.0)).collect();
     if clients
         .iter()
@@ -922,7 +1071,9 @@ fn m2_pin_unpin_update_on_era() {
         return;
     }
     let (_, status) = omaddons(&["status"]);
-    if skip_if_running(test, &target_where(&status, "id", "era")) {
+    if skip_unless_installed(test, &status, "id", "era")
+        || skip_if_running(test, &target_where(&status, "id", "era"))
+    {
         return;
     }
     let (guard, snapshot, backups) = (forever_guard(), snapshot_all(), all_backups());
@@ -983,17 +1134,27 @@ fn apply_one_update_and_undo() {
     let (code, status) = omaddons(&["status"]);
     assert_eq!(code, 0, "{status:#}");
     let mut candidates: Vec<String> = Vec::new();
+    let mut families: BTreeMap<String, String> = BTreeMap::new();
     for t in status["data"]["targets"].as_array().into_iter().flatten() {
         let id = t["id"].as_str().unwrap_or_default().to_owned();
         if id == "forever" || t["family"] == "forever" {
+            continue;
+        }
+        if t["missing"] == true {
+            note(&format!("{id} is not installed: left out"), &Value::Null);
             continue;
         }
         if t["running"] == true {
             note(&format!("{id} is running: left out"), &Value::Null);
             continue;
         }
+        families.insert(
+            id.clone(),
+            t["family"].as_str().unwrap_or_default().to_owned(),
+        );
         candidates.push(id);
     }
+    let legacy = |id: &str| families.get(id).is_some_and(|f| f.ends_with("-legacy"));
     candidates.sort();
     note("candidates", &serde_json::json!(candidates));
     if candidates.is_empty() {
@@ -1030,7 +1191,7 @@ fn apply_one_update_and_undo() {
         // None anywhere: an older Dominos tag, installed (and pinned) then unpinned.
         let tags = recent_tags("tullamods", "Dominos");
         note("Dominos tags", &serde_json::json!(tags));
-        'made: for id in &candidates {
+        'made: for id in candidates.iter().filter(|id| !legacy(id)) {
             let (code, list) = omaddons(&["list", "-t", id]);
             let has_dominos = list["data"]["targets"][0]["addons"]
                 .as_array()
@@ -1058,13 +1219,44 @@ fn apply_one_update_and_undo() {
             }
         }
     }
+    if pending.is_empty() {
+        // None on a modern client either: on a 3.3.5a client, GroupBulletinBoard from
+        // its default branch at an older commit, installed (and pinned) then unpinned.
+        // Its catalog ref names `#main`, which a `--version` would disagree with, so the
+        // ref is the repository's without a rev, and the commit is a full sha.
+        let commits = recent_commits("fondlez", "GroupBulletinBoard");
+        note("GroupBulletinBoard commits", &serde_json::json!(commits));
+        let repo = "git:https://github.com/fondlez/GroupBulletinBoard";
+        'made: for id in candidates
+            .iter()
+            .filter(|id| families.get(*id).is_some_and(|f| f == "wrath-legacy"))
+        {
+            for sha in commits.iter().skip(1).take(3) {
+                let (code, installed) = omaddons(&["install", repo, "--version", sha, "-t", id]);
+                note(
+                    &format!("install {repo} --version {sha} -t {id}"),
+                    &installed,
+                );
+                txs.extend(tx_of(&installed));
+                let item = &installed["data"]["items"][0];
+                if code == 0 && item["status"] == "installed" {
+                    let name = item["name"].as_str().unwrap_or_default().to_owned();
+                    let (_, unpinned) = omaddons(&["unpin", &name, "-t", id]);
+                    note(&format!("unpin {name} -t {id}"), &unpinned);
+                    txs.extend(tx_of(&unpinned));
+                    pending.push((id.clone(), name));
+                    break 'made;
+                }
+            }
+        }
+    }
     note("pending updates", &serde_json::json!(pending));
     if pending.is_empty() {
         undo_all(&txs);
         prune_new_backups(&backups);
         checkpoint::skip(
             test,
-            "no non-Forever client has an update, and no older Dominos tag installs on one",
+            "no non-Forever client has an update, and neither an older Dominos tag nor an older GroupBulletinBoard commit installs on one",
         );
         return;
     }
@@ -1221,7 +1413,9 @@ fn m2_dependency_install_on_retail() {
         return;
     }
     let (_, status) = omaddons(&["status"]);
-    if skip_if_running(test, &target_where(&status, "id", "retail")) {
+    if skip_unless_installed(test, &status, "id", "retail")
+        || skip_if_running(test, &target_where(&status, "id", "retail"))
+    {
         return;
     }
     let (guard, snapshot, backups) = (forever_guard(), snapshot_all(), all_backups());
@@ -1354,7 +1548,9 @@ fn backup_create_list_prune_on_retail() {
         return;
     }
     let (_, status) = omaddons(&["status"]);
-    if skip_if_running(test, &target_where(&status, "id", "retail")) {
+    if skip_unless_installed(test, &status, "id", "retail")
+        || skip_if_running(test, &target_where(&status, "id", "retail"))
+    {
         return;
     }
     let (guard, snapshot, backups) = (forever_guard(), snapshot_all(), all_backups());
@@ -1429,7 +1625,9 @@ fn restore_addon_then_undo_on_classic() {
         return;
     }
     let (_, status) = omaddons(&["status"]);
-    if skip_if_running(test, &target_where(&status, "id", "classic")) {
+    if skip_unless_installed(test, &status, "id", "classic")
+        || skip_if_running(test, &target_where(&status, "id", "classic"))
+    {
         return;
     }
     let (guard, snapshot, backups) = (forever_guard(), snapshot_all(), all_backups());
@@ -1494,48 +1692,58 @@ fn restore_addon_then_undo_on_classic() {
     );
 }
 
-/// BugGrabber from WowAce, keyless: the newest tag on retail and r152 on 3.3.5a, each
-/// installed and undone; AddOns as before.
-#[test]
-#[ignore = "real machine and live network: OMADDONS_REAL_MACHINE=1 OMADDONS_LIVE=1"]
-fn buggrabber_installs_then_undo() {
-    let test = "buggrabber_installs_then_undo";
+/// BugGrabber from WowAce on client `id`, installed and undone, with AddOns as before:
+/// the install's (ref, version), or `None` when `test` skipped (the client not
+/// installed, or running).
+fn buggrabber_installs_then_undo_on(test: &str, id: &str) -> Option<(String, String)> {
     if !checkpoint::require(test, LIVE) {
-        return;
+        return None;
     }
     let (_, status) = omaddons(&["status"]);
-    for id in ["retail", "wotlk"] {
-        if skip_if_running(test, &target_where(&status, "id", id)) {
-            return;
-        }
+    if skip_unless_installed(test, &status, "id", id)
+        || skip_if_running(test, &target_where(&status, "id", id))
+    {
+        return None;
     }
     let (guard, snapshot, backups) = (forever_guard(), snapshot_all(), all_backups());
-    let retail = install_then_undo("retail", &["buggrabber"], &[]);
-    let wotlk = install_then_undo("wotlk", &["buggrabber"], &[]);
+    let installed = install_then_undo(id, &["buggrabber"], &[]);
     prune_new_backups(&backups);
     assert_eq!(snapshot_all(), snapshot, "every AddOns and WTF/ as before");
     assert_eq!(forever_guard(), guard, "the Forever set untouched");
-    let shown = |installed: &Value| {
-        let item = &installed["data"]["items"][0];
-        (
-            item["ref"].as_str().unwrap_or_default().to_owned(),
-            item["to_version"].as_str().unwrap_or_default().to_owned(),
-        )
+    let item = &installed["data"]["items"][0];
+    let shown = (
+        item["ref"].as_str().unwrap_or_default().to_owned(),
+        item["to_version"].as_str().unwrap_or_default().to_owned(),
+    );
+    note(&format!("buggrabber on {id}"), &serde_json::json!(shown));
+    Some(shown)
+}
+
+/// BugGrabber's newest WowAce tag on retail, keyless.
+#[test]
+#[ignore = "real machine and live network: OMADDONS_REAL_MACHINE=1 OMADDONS_LIVE=1"]
+fn buggrabber_installs_then_undo_retail() {
+    let Some((r, version)) =
+        buggrabber_installs_then_undo_on("buggrabber_installs_then_undo_retail", "retail")
+    else {
+        return;
     };
-    let (retail_ref, retail_version) = shown(&retail);
-    let (wotlk_ref, wotlk_version) = shown(&wotlk);
-    note(
-        "buggrabber",
-        &serde_json::json!({
-            "retail": [retail_ref, retail_version],
-            "wotlk": [wotlk_ref, wotlk_version],
-        }),
-    );
     assert!(
-        retail_ref.starts_with("wowace:bug-grabber") && retail_version.starts_with('v'),
-        "{retail:#}"
+        r.starts_with("wowace:bug-grabber") && version.starts_with('v'),
+        "{r} {version}"
     );
-    assert!(wotlk_ref.ends_with("#r152"), "{wotlk:#}");
+}
+
+/// BugGrabber's r152 build on 3.3.5a, keyless.
+#[test]
+#[ignore = "real machine and live network: OMADDONS_REAL_MACHINE=1 OMADDONS_LIVE=1"]
+fn buggrabber_installs_then_undo_wotlk() {
+    let Some((r, _)) =
+        buggrabber_installs_then_undo_on("buggrabber_installs_then_undo_wotlk", "wotlk")
+    else {
+        return;
+    };
+    assert!(r.ends_with("#r152"), "{r}");
 }
 
 /// Every entry below `dir` (relative path, kind, length, modification time), skipping
