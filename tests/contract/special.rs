@@ -41,20 +41,21 @@ fn a_held_lock_is_locked_and_retryable() {
     assert_eq!(done.code, 0, "{}", done.context());
 }
 
-/// One internal envelope, whose fix never reruns the command that failed: `status`
-/// points to `status --cached`, which in turn leaves only a report.
+/// One internal envelope, whose fix never reruns the command that failed (M4-D53): any
+/// command points to `omaddons doctor`; `status` and the doctor tree (exit 74) to `status
+/// --cached`, which in turn leaves only a report. Each fix runs, and exits 0.
 #[test]
 fn a_panic_is_one_internal_envelope() {
     let s = Scene::new();
     let panic = [("OMADDONS_FAILPOINTS", "cli.panic=panic")];
-    let error = |args: &[&str]| s.json_env(args, &panic, 1).envelope["error"].clone();
-    let status = error(&["status"]);
+    let error = |args: &[&str], code| s.json_env(args, &panic, code).envelope["error"].clone();
+    let status = error(&["status"], 1);
     assert_eq!(status["code"], "internal");
     assert_eq!(
         status["fix_argv"],
         serde_json::json!(["omaddons", "status", "--cached"])
     );
-    let cached = error(&["status", "--cached"]);
+    let cached = error(&["status", "--cached"], 1);
     assert_eq!(cached["fix_argv"], Value::Null);
     assert!(
         cached["fix"]
@@ -62,10 +63,25 @@ fn a_panic_is_one_internal_envelope() {
             .is_some_and(|f| f.starts_with("this is a bug in omaddons")),
         "{cached}"
     );
+    let list = error(&["list"], 1);
+    assert_eq!(list["fix_argv"], serde_json::json!(["omaddons", "doctor"]));
+    let doctor = error(&["doctor"], 74);
+    assert_eq!(doctor["code"], "internal");
     assert_eq!(
-        error(&["list"])["fix_argv"],
-        serde_json::json!(["omaddons", "status"])
+        doctor["fix_argv"],
+        serde_json::json!(["omaddons", "status", "--cached"])
     );
+    // Each fix, run without the failpoint, works: the Scene's home is clean.
+    for fix in [&list["fix_argv"], &doctor["fix_argv"]] {
+        let words: Vec<&str> = fix
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w.as_str().unwrap())
+            .collect();
+        let ran = s.json(&words[1..], 0);
+        assert_eq!(ran.envelope["ok"], true, "{words:?}: {}", ran.envelope);
+    }
 }
 
 /// A panic after a transaction committed is one internal envelope, whose commands offer

@@ -1541,6 +1541,80 @@ fn status_check_passes_on_p2_and_p3_issues() {
     );
 }
 
+/// The fixes that point at the doctor (M4-D53), each run once it is given: an internal
+/// error's is `omaddons doctor`; a journal a newer omaddons started fails a change on its
+/// client with that state's `doctor explain -t retail`; a registry that does not decode
+/// fails `list` with `fm-schemas-state-corrupt`'s explanation.
+#[test]
+fn fixes_point_at_the_doctor() {
+    let words = |fix: &Value| -> Vec<String> {
+        fix.as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w.as_str().unwrap().to_owned())
+            .collect()
+    };
+    // Each fix runs: `doctor explain` exits 0 and lists an instance, `doctor` 0.
+    let runs = |s: &Scene, fix: &[String]| {
+        let args: Vec<&str> = fix[1..].iter().map(String::as_str).collect();
+        let ran = s.json(&args, 0);
+        if args.get(1) == Some(&"explain") {
+            assert!(
+                !ran.envelope["instances"].as_array().unwrap().is_empty(),
+                "{fix:?}: {}",
+                ran.envelope
+            );
+        }
+    };
+
+    let s = Scene::new();
+    let c = s.json_env(&["list"], &[("OMADDONS_FAILPOINTS", "cli.panic=error")], 1);
+    let fix = words(&c.envelope["error"]["fix_argv"]);
+    assert_eq!(fix, ["omaddons", "doctor"], "{}", c.envelope);
+    insta::assert_json_snapshot!("internal_fix_is_the_doctor", s.stable(&c.envelope));
+    runs(&s, &fix);
+
+    let s = Scene::new();
+    common::doctor::plant::journal_too_new(&s.home, "retail");
+    let zip = s.zip("foo");
+    let c = s.json(&["install", "gh:o/foo", "--file", &zip, "-t", "retail"], 4);
+    let fix = words(&c.envelope["error"]["fix_argv"]);
+    assert_eq!(
+        fix,
+        [
+            "omaddons",
+            "doctor",
+            "explain",
+            "fm-concurrency_primitives-journal-too-new",
+            "-t",
+            "retail"
+        ],
+        "{}",
+        c.envelope
+    );
+    insta::assert_json_snapshot!("install_journal_too_new", s.stable(&c.envelope));
+    runs(&s, &fix);
+
+    let s = Scene::new();
+    s.install_foo();
+    std::fs::write(s.home.state().join("registry.json"), "{\"schema_version\":").unwrap();
+    let c = s.json(&["list"], 1);
+    assert_eq!(
+        c.envelope["error"]["code"], "state_corrupt",
+        "{}",
+        c.envelope
+    );
+    let fix = words(&c.envelope["error"]["fix_argv"]);
+    assert_eq!(
+        fix,
+        ["omaddons", "doctor", "explain", "fm-schemas-state-corrupt"],
+        "{}",
+        c.envelope
+    );
+    insta::assert_json_snapshot!("list_registry_corrupt", s.stable(&c.envelope));
+    runs(&s, &fix);
+}
+
 /// A damaged cached archive (F6): the deep diagnosis's finding in full. Its digests are
 /// deterministic (the fixture's archive, one byte flipped), and `support::check` parses
 /// every argv the report offers.

@@ -14,7 +14,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 
 use super::{Http, Request, Response};
-use crate::error::{Error, ErrorCode, Result, Suggestion};
+use crate::error::{Error, Result};
 
 /// Query parameters that carry credentials or signatures; never stored or matched.
 const SECRET_PARAMS: &[&str] = &[
@@ -163,11 +163,8 @@ impl Http for ReplayTransport {
             if let Ok(mut unmatched) = self.unmatched.lock() {
                 unmatched.push(key.clone());
             }
-            return Err(Error::new(
-                ErrorCode::Internal,
-                format!("replay: no fixture for {key}"),
-                Suggestion::command(["omaddons", "status"]),
-            ));
+            // Through `Error::internal`, so the command boundary gives it its fix.
+            return Err(Error::internal(format!("replay: no fixture for {key}")));
         };
         let index = {
             let mut next = entry.next.lock().unwrap_or_else(|p| p.into_inner());
@@ -198,6 +195,7 @@ impl Http for ReplayTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::ErrorCode;
 
     #[test]
     fn secrets_are_stripped_and_the_rest_sorted() {

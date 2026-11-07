@@ -2888,7 +2888,14 @@ mod tests {
                 ErrorCode::Io,
                 Some("unattributed"),
                 &["path", "reason"],
-                Some(argv_of(&["omaddons", "status"])),
+                // A journal directory that does not list is the state directory's
+                // failure: its explanation (M4-D53).
+                Some(argv_of(&[
+                    "omaddons",
+                    "doctor",
+                    "explain",
+                    ids::STATE_CORRUPT,
+                ])),
             ),
             (
                 "fixer_conflict_of_two_modes",

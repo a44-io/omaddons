@@ -407,7 +407,17 @@ fn a_pending_journal_is_reported_not_recovered() {
     // A `swapped` line without a `prepared` one is a journal no build can tell the
     // story of (M3-D45): left for manual repair, never taken for "nothing ran".
     assert!(message.contains("journal_unreadable"), "{message}");
-    assert_eq!(pending["fix_argv"], serde_json::Value::Null);
+    // Its fix is the doctor's explanation of that state (M4-D53); no `-t`: no target
+    // reads from a journal without its `prepared` line.
+    assert_eq!(
+        pending["fix_argv"],
+        serde_json::json!([
+            "omaddons",
+            "doctor",
+            "explain",
+            "fm-concurrency_primitives-journal-unreadable"
+        ])
+    );
     assert!(journal.exists(), "readers never recover");
     assert_eq!(tree_hash(&env.state()), before);
 }

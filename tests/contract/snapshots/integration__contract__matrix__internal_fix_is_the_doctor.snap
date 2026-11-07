@@ -1,0 +1,25 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "list",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "internal",
+    "details": {},
+    "fix": "omaddons doctor",
+    "fix_argv": [
+      "omaddons",
+      "doctor"
+    ],
+    "message": "failpoint cli.panic",
+    "retryable": false
+  },
+  "exit_code": 1,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

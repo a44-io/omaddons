@@ -1,0 +1,54 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "install",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "state_too_new",
+    "details": {
+      "items": [
+        {
+          "code": "state_too_new",
+          "message": "transaction <ulid> on target <ulid> was started by a newer omaddons (journal version 9.0; this one reads 1.1), so it is left as it is",
+          "request": "gh:o/foo"
+        }
+      ],
+      "journal_pending": "<ulid>",
+      "reason": "journal_too_new",
+      "target": "<ulid>"
+    },
+    "fix": "omaddons doctor explain fm-concurrency_primitives-journal-too-new -t retail",
+    "fix_argv": [
+      "omaddons",
+      "doctor",
+      "explain",
+      "fm-concurrency_primitives-journal-too-new",
+      "-t",
+      "retail"
+    ],
+    "message": "transaction <ulid> on target <ulid> was started by a newer omaddons (journal version 9.0; this one reads 1.1), so it is left as it is",
+    "retryable": false
+  },
+  "exit_code": 4,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": [
+    {
+      "code": "journal_pending",
+      "fix": "omaddons doctor explain fm-concurrency_primitives-journal-too-new -t retail",
+      "fix_argv": [
+        "omaddons",
+        "doctor",
+        "explain",
+        "fm-concurrency_primitives-journal-too-new",
+        "-t",
+        "retail"
+      ],
+      "message": "transaction <ulid> on target <ulid> did not finish, and this omaddons cannot recover it (journal_too_new); it is left as it is"
+    }
+  ]
+}

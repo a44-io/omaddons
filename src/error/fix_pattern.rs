@@ -71,10 +71,10 @@ impl ErrorCode {
                 "`omaddons config set git_hosts <hosts>` for a git host, else prose: download the file yourself or use another ref"
             }
             Self::ScopeDenied => {
-                "`omaddons status`, or prose: move the path aside, or copy or export by hand to a folder of your own"
+                "`omaddons status`, a stuck journal's `omaddons doctor explain <fm>`, or prose: move the path aside or copy it by hand"
             }
             Self::StateTooNew => {
-                "prose: upgrade omaddons, or finish the change with the newer omaddons that started it"
+                "`omaddons doctor explain <fm> -t <id>` for a journal a newer omaddons started, else prose: upgrade omaddons"
             }
             Self::FilesystemUnsupported => {
                 "prose: copy what you need from `details.backup_dir` by hand, with the game closed"
@@ -115,13 +115,13 @@ impl ErrorCode {
                 "`omaddons auth github clear` for a stored token, else prose: replace or unset the credential where it came from"
             }
             Self::StateCorrupt => {
-                "`omaddons status`, `omaddons backup list` or `omaddons undo <tx> --saved-variables keep`, else prose naming the file"
+                "`omaddons doctor explain <fm>` or `omaddons doctor`, `omaddons backup list`, `omaddons undo <tx> …`, else prose"
             }
             Self::Io => {
-                "`omaddons status`, or `omaddons backup list` for a backup, else prose naming the path to fix (space, permissions)"
+                "`omaddons status`, `omaddons doctor explain <fm>` for a state file, `omaddons backup list`, else prose naming the path"
             }
             Self::Internal => {
-                "`omaddons status` (`omaddons status --cached` when `status` failed), else prose: report the bug or see the README"
+                "`omaddons doctor` (`omaddons status --cached` from `status` or `doctor`), a stuck journal's `doctor explain`, or prose"
             }
             Self::OnlineRequired => "the same command with `--online`",
             Self::DoctorRefused => {
@@ -143,7 +143,7 @@ impl WarningCode {
                 "`omaddons undo <tx>` for a transaction recovery completed, `omaddons history --limit 5` for one it rolled back"
             }
             Self::JournalPending => {
-                "`omaddons status`, or prose saying what to do when this omaddons cannot recover it"
+                "`omaddons status`, or `omaddons doctor explain <fm> -t <id>` for a journal recovery cannot finish"
             }
             Self::TxInProgress => "prose: wait for the running omaddons command to finish",
             Self::AtomicSwapUnavailable => {

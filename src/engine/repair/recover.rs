@@ -295,7 +295,13 @@ impl Refused {
                 ),
             ),
         };
-        stop(ErrorCode::ScopeDenied, tx, reason, what, manual_repair())
+        stop(
+            ErrorCode::ScopeDenied,
+            tx,
+            reason,
+            what,
+            manual_repair(reason),
+        )
     }
 }
 

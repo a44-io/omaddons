@@ -224,8 +224,29 @@ fn a_journal_this_build_cannot_read_is_left_for_manual_repair() {
             "{}",
             run.context()
         );
-        assert_eq!(error["fix_argv"], Value::Null, "prose: no command helps");
+        // The fix is the doctor's explanation of exactly this state, on retail (M4-D53).
+        let id = match reason {
+            "journal_too_new" => "fm-concurrency_primitives-journal-too-new",
+            _ => "fm-concurrency_primitives-journal-unreadable",
+        };
+        let explain = json!(["omaddons", "doctor", "explain", id, "-t", "retail"]);
+        assert_eq!(error["fix_argv"], explain, "{}", run.context());
         assert!(journal.is_file(), "{reason}: kept");
+        // It runs, writes nothing, and lists this journal.
+        let state = tree_hash(&m.home.env.state());
+        let explained = m.run(&["doctor", "explain", id, "-t", "retail"]).expect(0);
+        let instances = explained["instances"].as_array().unwrap();
+        assert!(
+            instances.iter().any(|i| i["instance"]
+                .as_str()
+                .is_some_and(|key| key.ends_with(&format!(":tx={tx}")))),
+            "{reason}: {explained}"
+        );
+        assert_eq!(
+            tree_hash(&m.home.env.state()),
+            state,
+            "{reason}: explain writes nothing"
+        );
 
         // Another target's change goes on, and says so.
         let run = m.run(&["install", "gh:o/foo", "-t", "classic"]);
@@ -242,6 +263,7 @@ fn a_journal_this_build_cannot_read_is_left_for_manual_repair() {
             "{}",
             run.context()
         );
+        assert_eq!(pending[0]["fix_argv"], explain, "{}", run.context());
         assert!(journal.is_file(), "{reason}: still kept");
 
         // A reader names the state, and its remediation is its forced set-aside (F2),
@@ -249,10 +271,6 @@ fn a_journal_this_build_cannot_read_is_left_for_manual_repair() {
         let status = m.run(&["status", "-t", "retail"]).expect(0);
         let retail = &status["data"]["targets"][0];
         assert_eq!(retail["attention"], json!(["journal_pending"]), "{status}");
-        let id = match reason {
-            "journal_too_new" => "fm-concurrency_primitives-journal-too-new",
-            _ => "fm-concurrency_primitives-journal-unreadable",
-        };
         assert_eq!(retail["issues"][0]["id"], id, "{status}");
         assert_eq!(
             retail["issues"][0]["remediation"]["argv"],

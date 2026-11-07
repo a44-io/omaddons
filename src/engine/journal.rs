@@ -661,16 +661,18 @@ impl Unrecoverable {
         }
     }
 
-    /// What to do about it: prose, since no command of this build can help.
-    pub fn fix(self) -> Suggestion {
+    /// Its stop reason.
+    pub fn stop_reason(self) -> StopReason {
         match self {
-            Self::TooNew => Suggestion::text(
-                "a newer omaddons started this change; finish it with that version",
-            ),
-            Self::Unreadable => Suggestion::text(
-                "see \"journal_pending that does not clear\" under Troubleshooting in the README",
-            ),
+            Self::TooNew => StopReason::JournalTooNew,
+            Self::Unreadable => StopReason::JournalUnreadable,
         }
+    }
+
+    /// What to do about it: the doctor's explanation of its state, without `-t` (M4-D53).
+    /// A folder journal's stop names its client through [`stop_fix`].
+    pub fn fix(self) -> Suggestion {
+        fence::explain_fix(Some(self.stop_reason()))
     }
 }
 
@@ -897,7 +899,7 @@ pub fn pending_warnings(paths: &Paths) -> Result<Vec<Warning>> {
                 .map(|t| format!(" on target {t}"))
                 .unwrap_or_default();
             said.remove(&tx).unwrap_or_else(|| match unrecoverable {
-                Some(why) => unrecoverable_warning(&tx, target, why),
+                Some(why) => unrecoverable_warning(paths, &tx, target, why),
                 None => unfinished_warning(&format!("transaction {tx}{on}"), held),
             })
         },
@@ -1018,8 +1020,14 @@ fn unfinished_warning(what: &str, held: bool) -> Warning {
 }
 
 /// What a reader, and another target's recovery, say of a journal this build cannot
-/// recover: the same warning both ways, so a run reports it once.
-fn unrecoverable_warning(tx: &TxId, target: Option<TargetKey>, why: Unrecoverable) -> Warning {
+/// recover: the same warning both ways, so a run reports it once, with the fix its stop
+/// error carries ([`stop_fix`]).
+fn unrecoverable_warning(
+    paths: &Paths,
+    tx: &TxId,
+    target: Option<TargetKey>,
+    why: Unrecoverable,
+) -> Warning {
     let on = target
         .map(|t| format!(" on target {t}"))
         .unwrap_or_default();
@@ -1030,7 +1038,7 @@ fn unrecoverable_warning(tx: &TxId, target: Option<TargetKey>, why: Unrecoverabl
             why.reason()
         ),
     )
-    .with_fix(why.fix())
+    .with_fix(stop_fix(paths, why.stop_reason(), target).unwrap_or_else(|| why.fix()))
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1216,6 +1224,7 @@ pub fn recover_disclosed(
     actor: Actor,
     only: Option<&BTreeSet<TxId>>,
 ) -> Disclosed {
+    // A stop that ends recovery (an `unattributed` journal's, say) keeps the stop's fix.
     let left = |error: &Error| {
         Warning::new(
             WarningCode::JournalPending,
@@ -1224,7 +1233,11 @@ pub fn recover_disclosed(
                 error.message
             ),
         )
-        .with_fix(Suggestion::command(["omaddons", "status"]))
+        .with_fix(if is_stop(error) {
+            error.fix.clone()
+        } else {
+            Suggestion::command(["omaddons", "status"])
+        })
     };
     let scopes = match ScopeTable::new(paths, &[], None) {
         Ok(scopes) => scopes,
@@ -1386,10 +1399,17 @@ fn recover_all_in(
         match settle.folder(env, &tx, path) {
             Ok(recovered) => warnings.extend(recovered),
             Err(error) => {
+                let error = with_stop_fix(env.paths, error);
                 let reason = error.details["reason"].as_str().and_then(StopReason::parse);
+                // A stop's warning carries the stop's own fix; a wait's, `status`.
+                let fix = if is_stop(&error) {
+                    error.fix.clone()
+                } else {
+                    Suggestion::command(["omaddons", "status"])
+                };
                 match (target.filter(|t| !env.own.contains(t)), unrecoverable) {
                     (Some(other), Some(why)) => {
-                        warnings.push(unrecoverable_warning(&tx, Some(other), why));
+                        warnings.push(unrecoverable_warning(env.paths, &tx, Some(other), why));
                     }
                     // A warning has no details: a stop's or a wait's reason goes in its text.
                     (Some(other), None) => warnings.push(
@@ -1403,7 +1423,7 @@ fn recover_all_in(
                                 error.message
                             ),
                         )
-                        .with_fix(Suggestion::command(["omaddons", "status"])),
+                        .with_fix(fix),
                     ),
                     (None, _) if owner_unknown => return Err(unattributed(error, Some(&tx))),
                     // The caller's own target keeps its stop's reason.
@@ -1547,7 +1567,68 @@ pub(crate) fn unattributed(mut error: Error, tx: Option<&TxId>) -> Error {
                 .or_insert_with(|| serde_json::json!(tx));
         }
     }
+    // The doctor's explanation (M4-D53): of the journal it names, machine-scoped; of the
+    // state directory when it names none (the journal directory could not be listed).
+    error.fix = if error.details["journal_pending"].is_null() {
+        crate::doctor::registry::explain_fix(crate::doctor::registry::ids::STATE_CORRUPT, None)
+    } else {
+        fence::explain_fix(Some(StopReason::Unattributed))
+    };
     error
+}
+
+/// The fix of a recovery stop (M4-D53): the doctor's explanation of exactly that state,
+/// `omaddons doctor explain <fm> [-t <id>]`. `-t` names the journal's target by its id
+/// when the registry has it; with no entry, or a registry that cannot be read, there is
+/// no `-t`, so the command still runs and lists every instance; never `-t <key>`.
+/// `unattributed` is machine-scoped. `None` for `saved_variables`: that journal waits for
+/// the game, and its own prose fix is true.
+pub(crate) fn stop_fix(
+    paths: &Paths,
+    reason: StopReason,
+    target: Option<TargetKey>,
+) -> Option<Suggestion> {
+    match reason {
+        StopReason::SavedVariables => None,
+        StopReason::Unattributed => Some(fence::explain_fix(Some(reason))),
+        _ => {
+            let id = target.and_then(|key| {
+                crate::state::registry::load_registry(paths)
+                    .ok()
+                    .and_then(|loaded| loaded.value.entry(&key).map(|entry| entry.id.clone()))
+            });
+            Some(crate::doctor::registry::explain_fix(
+                crate::doctor::registry::ids::for_stop_reason(reason),
+                id.as_deref(),
+            ))
+        }
+    }
+}
+
+/// `error` with its fix replaced by [`stop_fix`] when it is a recovery stop of one
+/// journal: its `details.reason` a [`StopReason`] other than `saved_variables`, its
+/// target `details.target`. An `unattributed` failure keeps the fix [`unattributed`]
+/// gave it. Any other error comes back unchanged.
+pub(crate) fn with_stop_fix(paths: &Paths, mut error: Error) -> Error {
+    let reason = error.details["reason"].as_str().and_then(StopReason::parse);
+    let target = error.details["target"]
+        .as_str()
+        .and_then(|key| key.parse::<TargetKey>().ok());
+    if let Some(reason) = reason.filter(|r| *r != StopReason::Unattributed)
+        && let Some(fix) = stop_fix(paths, reason, target)
+    {
+        error.fix = fix;
+    }
+    error
+}
+
+/// Whether `error` is a recovery stop the doctor explains: its `details.reason` a
+/// [`StopReason`] other than `saved_variables`. Its fix is then that explanation.
+pub(crate) fn is_stop(error: &Error) -> bool {
+    error.details["reason"]
+        .as_str()
+        .and_then(StopReason::parse)
+        .is_some_and(|reason| reason != StopReason::SavedVariables)
 }
 
 /// Recovery under the global lock `lock`, for a command that takes it without committing
@@ -1635,7 +1716,7 @@ pub fn recover_tx(env: &RecoveryEnv<'_>, tx: &TxId) -> Result<Option<Recovered>>
         return Ok(None);
     };
     let parsed = read(&path)?;
-    recover_parsed(env, tx, &path, &parsed)
+    recover_parsed(env, tx, &path, &parsed).map_err(|error| with_stop_fix(env.paths, error))
 }
 
 /// Recovers one journal and reports it.
@@ -1861,7 +1942,8 @@ fn marker_mismatch(tx: &TxId, prepared: &Prepared) -> Error {
             prepared.client_dir.display(),
             prepared.target_key
         ),
-        Suggestion::command(["omaddons", "status"]),
+        // Without `-t` until recovery's entry point names the client (`with_stop_fix`).
+        fence::explain_fix(Some(StopReason::MarkerMismatch)),
     )
     .details(serde_json::json!({
         "reason": StopReason::MarkerMismatch.as_str(),
@@ -1933,11 +2015,15 @@ enum Stop {
 }
 
 impl Stop {
-    fn reason(self) -> &'static str {
+    fn stop_reason(self) -> StopReason {
         match self {
-            Self::UnexpectedState => StopReason::UnexpectedState.as_str(),
-            Self::PreservationIncomplete => StopReason::PreservationIncomplete.as_str(),
+            Self::UnexpectedState => StopReason::UnexpectedState,
+            Self::PreservationIncomplete => StopReason::PreservationIncomplete,
         }
+    }
+
+    fn reason(self) -> &'static str {
+        self.stop_reason().as_str()
     }
 }
 
@@ -1954,9 +2040,8 @@ fn stopped(tx: &TxId, prepared: &Prepared, stop: Stop, why: &str) -> Error {
             "transaction {tx} on target {} was putting settings back and did not finish; recovery stopped and keeps everything: {why}",
             prepared.target_key
         ),
-        Suggestion::text(
-            "see \"journal_pending that does not clear\" under Troubleshooting in the README",
-        ),
+        // Without `-t` until recovery's entry point names the client (`with_stop_fix`).
+        fence::explain_fix(Some(stop.stop_reason())),
     )
     .details(serde_json::json!({
         "reason": stop.reason(),
@@ -3424,7 +3509,14 @@ mod tests {
             err.message.contains("whose marker is not target"),
             "{err:?}"
         );
-        assert_eq!(err.fix, Suggestion::command(["omaddons", "status"]));
+        // The doctor's explanation of the state; no `-t`: the registry names no target.
+        assert_eq!(
+            err.fix,
+            crate::doctor::registry::explain_fix(
+                crate::doctor::registry::ids::JOURNAL_MARKER_MISMATCH,
+                None
+            )
+        );
 
         // Its own marker: B's command rolls A back and prunes A's stage dir.
         crate::engine::testing::mark(&a, key);
@@ -3771,9 +3863,15 @@ mod tests {
                 "{name}"
             );
             assert_eq!(err.details["target"], scene.key.to_string(), "{name}");
-            assert_eq!(err.fix.argv(), None, "{name}: prose, no command helps");
+            // The doctor's explanation of the state (M4-D53); no `-t`: the scene's
+            // registry names no target.
+            let explained = crate::doctor::registry::explain_fix(
+                crate::doctor::registry::ids::for_stop_reason(why.stop_reason()),
+                None,
+            );
+            assert_eq!(err.fix, explained, "{name}");
             assert_eq!(left(&scene), [true; 5], "{name}: everything left");
-            // Another target's command goes on, with a warning.
+            // Another target's command goes on, with a warning carrying the same fix.
             let warnings = recover_planted(&scene, false).unwrap();
             assert_eq!(warnings.len(), 1, "{name}: {warnings:?}");
             assert_eq!(warnings[0].code, WarningCode::JournalPending, "{name}");
@@ -3781,6 +3879,7 @@ mod tests {
                 warnings[0].message.contains(why.reason()),
                 "{name}: {warnings:?}"
             );
+            assert_eq!(warnings[0].fix.as_ref(), Some(&explained), "{name}");
             assert_eq!(left(&scene), [true; 5], "{name}: everything still left");
             // Readers report it, with why; its own cleanup never prunes it.
             let pending = pending(&scene.paths).unwrap();
@@ -3796,7 +3895,166 @@ mod tests {
             assert!(unfinished(&scene.paths, &scene.tx), "{name}");
             let read = pending_warnings(&scene.paths).unwrap();
             assert!(read[0].message.contains(why.reason()), "{name}: {read:?}");
+            assert_eq!(read[0].fix.as_ref(), Some(&explained), "{name}: a reader's");
         }
+    }
+
+    /// Paths under a fresh directory whose registry, when `registered`, names `key` as
+    /// `retail`; `garbled` writes a registry that is not JSON instead.
+    fn paths_with_registry(
+        key: TargetKey,
+        registered: bool,
+        garbled: bool,
+    ) -> (tempfile::TempDir, Paths) {
+        use crate::state::registry::{Origin, Registry, RegistryEntry, save_registry};
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::with_roots(
+            dir.path(),
+            dir.path().join("c"),
+            dir.path().join("s"),
+            dir.path().join("k"),
+        );
+        std::fs::create_dir_all(paths.state_dir()).unwrap();
+        if garbled {
+            std::fs::write(paths.registry_file(), "not json").unwrap();
+        } else if registered {
+            let registry = Registry {
+                targets: vec![RegistryEntry {
+                    key,
+                    id: "retail".into(),
+                    install_root: "/games/wow".into(),
+                    client_dir: "/games/wow/_retail_".into(),
+                    flavor_dir: Some("_retail_".into()),
+                    product: Some("wow".into()),
+                    qualifier: "battlenet".into(),
+                    origin: Origin::Discovered,
+                    registered_at: "2026-10-14T12:00:00Z".parse().unwrap(),
+                }],
+                default: None,
+            };
+            let scopes = ScopeTable::new(&paths, &[], None).unwrap();
+            let mut s = WriteSession::untracked(Writer::Mutating, &scopes, "registry.json");
+            save_registry(&mut s, &paths, &registry, &store::VersionStatus::Current).unwrap();
+        }
+        (dir, paths)
+    }
+
+    const REGISTERED: &str = "01M5ZQ7Y3KJ8V9W2X4C6B0N1RT";
+
+    /// Each stop points at the doctor's explanation of its own failure mode, `-t` naming
+    /// the target by its registry id; `unattributed` is machine-scoped, and the game wait
+    /// keeps its prose (no stop fix).
+    #[test]
+    fn stop_fix_names_each_stops_failure_mode() {
+        use crate::doctor::registry::{explain_fix, ids};
+        let key: TargetKey = REGISTERED.parse().unwrap();
+        let (_dir, paths) = paths_with_registry(key, true, false);
+        for reason in StopReason::ALL {
+            let expected = match reason {
+                StopReason::SavedVariables => None,
+                StopReason::Unattributed => Some(explain_fix(ids::JOURNAL_UNATTRIBUTED, None)),
+                _ => Some(explain_fix(ids::for_stop_reason(reason), Some("retail"))),
+            };
+            assert_eq!(
+                stop_fix(&paths, reason, Some(key)),
+                expected,
+                "{}",
+                reason.as_str()
+            );
+        }
+    }
+
+    /// Without a registry entry for the target, a stop's fix has no `-t`, never the key.
+    #[test]
+    fn a_stop_fix_has_no_t_without_a_registry_entry() {
+        use crate::doctor::registry::{explain_fix, ids};
+        let key: TargetKey = REGISTERED.parse().unwrap();
+        let other: TargetKey = "01M7A1B2C3D4E5F6G7H8J9K0MN".parse().unwrap();
+        let expected = Some(explain_fix(ids::JOURNAL_TOO_NEW, None));
+        for (case, registered, garbled, target) in [
+            ("no_registry_file", false, false, Some(key)),
+            ("registry_without_the_key", true, false, Some(other)),
+            ("registry_not_json", false, true, Some(key)),
+            ("no_target", true, false, None),
+        ] {
+            let (_dir, paths) = paths_with_registry(key, registered, garbled);
+            assert_eq!(
+                stop_fix(&paths, StopReason::JournalTooNew, target),
+                expected,
+                "{case}"
+            );
+        }
+    }
+
+    /// `with_stop_fix` replaces the fix of a stop only; an `io` error, an error of another
+    /// reason, the game wait and an `unattributed` failure keep theirs.
+    #[test]
+    fn with_stop_fix_leaves_other_errors_alone() {
+        let key: TargetKey = REGISTERED.parse().unwrap();
+        let (_dir, paths) = paths_with_registry(key, true, false);
+        let status = Suggestion::command(["omaddons", "status"]);
+        let with = |code: ErrorCode, details: serde_json::Value| {
+            Error::new(code, "x", status.clone()).details(details)
+        };
+        for (case, error) in [
+            (
+                "io_without_a_reason",
+                with(ErrorCode::Io, serde_json::json!({})),
+            ),
+            (
+                "another_reason",
+                with(
+                    ErrorCode::StateCorrupt,
+                    serde_json::json!({"reason": "snapshot_mismatch"}),
+                ),
+            ),
+            (
+                "the_game_wait",
+                with(
+                    ErrorCode::GameRunning,
+                    serde_json::json!({"reason": "saved_variables", "target": key}),
+                ),
+            ),
+            (
+                "unattributed",
+                with(ErrorCode::Io, serde_json::json!({"reason": "unattributed"})),
+            ),
+        ] {
+            assert_eq!(with_stop_fix(&paths, error).fix, status, "{case}");
+        }
+        let stop = with(
+            ErrorCode::StateTooNew,
+            serde_json::json!({"reason": "journal_too_new", "target": key}),
+        );
+        assert_eq!(
+            with_stop_fix(&paths, stop).fix,
+            crate::doctor::registry::explain_fix(
+                crate::doctor::registry::ids::JOURNAL_TOO_NEW,
+                Some("retail")
+            ),
+            "a stop on a registered target"
+        );
+    }
+
+    /// An `unattributed` failure points at the journal-unattributed explanation when it
+    /// names a journal, and at the state directory's when it names none.
+    #[test]
+    fn an_unattributed_failure_points_at_its_explanation() {
+        use crate::doctor::registry::{explain_fix, ids};
+        let io = || {
+            Error::new(
+                ErrorCode::Io,
+                "x",
+                Suggestion::command(["omaddons", "status"]),
+            )
+        };
+        let tx: TxId = "01M7A1B2C3D4E5F6G7H8J9K0MN".parse().unwrap();
+        let named = unattributed(io(), Some(&tx));
+        assert_eq!(named.fix, explain_fix(ids::JOURNAL_UNATTRIBUTED, None));
+        assert_eq!(named.details["journal_pending"], tx.to_string());
+        let unlisted = unattributed(io(), None);
+        assert_eq!(unlisted.fix, explain_fix(ids::STATE_CORRUPT, None));
+        assert_eq!(unlisted.details["reason"], "unattributed");
     }
 
     #[test]
@@ -3930,7 +4188,15 @@ mod tests {
                     .contains("matches neither its before nor its after state"),
             "{context}"
         );
-        assert_eq!(err.fix, crate::error::internal_fix(), "{context}");
+        // The doctor's explanation of the state; no `-t`: the registry names no target.
+        assert_eq!(
+            err.fix,
+            crate::doctor::registry::explain_fix(
+                crate::doctor::registry::ids::JOURNAL_STEP_UNRECOGNIZED,
+                None
+            ),
+            "{context}"
+        );
         let (addons, kept) = (scene.client.addons(), scene.snapshot().join("AddOns"));
         assert!(
             addons.join("Foo").is_dir() && !kept.join("Foo").exists(),
@@ -3959,6 +4225,15 @@ mod tests {
         assert!(
             warnings[0].message.contains("(step_unrecognized)")
                 && warnings[0].message.contains("journal step 2 ("),
+            "{warnings:?}"
+        );
+        // The stop's own fix, as the error on its own target carries it.
+        assert_eq!(
+            warnings[0].fix,
+            Some(crate::doctor::registry::explain_fix(
+                crate::doctor::registry::ids::JOURNAL_STEP_UNRECOGNIZED,
+                None
+            )),
             "{warnings:?}"
         );
         assert!(

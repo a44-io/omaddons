@@ -232,8 +232,15 @@ expression: s.stable(&status.envelope)
   "warnings": [
     {
       "code": "journal_pending",
-      "fix": "a newer omaddons started this change; finish it with that version",
-      "fix_argv": null,
+      "fix": "omaddons doctor explain fm-concurrency_primitives-journal-too-new -t retail",
+      "fix_argv": [
+        "omaddons",
+        "doctor",
+        "explain",
+        "fm-concurrency_primitives-journal-too-new",
+        "-t",
+        "retail"
+      ],
       "message": "transaction <ulid> on target <ulid> did not finish, and this omaddons cannot recover it (journal_too_new); it is left as it is"
     }
   ]

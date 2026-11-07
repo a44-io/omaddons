@@ -458,7 +458,7 @@ fn unrecognized(prepared: &RepairPrepared, seq: u32, why: &str) -> Error {
             prepared.tx,
             StopReason::StepUnrecognized.as_str(),
         ),
-        manual_repair(),
+        manual_repair(StopReason::StepUnrecognized),
     )
     .details(json!({
         "journal_pending": prepared.tx,
@@ -467,12 +467,10 @@ fn unrecognized(prepared: &RepairPrepared, seq: u32, why: &str) -> Error {
     }))
 }
 
-/// The fix of a repair journal recovery stopped for: advice, since no command of this
-/// build settles it.
-pub(crate) fn manual_repair() -> Suggestion {
-    Suggestion::text(
-        "see \"journal_pending that does not clear\" under Troubleshooting in the README",
-    )
+/// The fix of a repair journal recovery stopped for `reason`: the doctor's explanation
+/// of that state, without `-t`, since a repair names no single target (M4-D53).
+pub(crate) fn manual_repair(reason: StopReason) -> Suggestion {
+    crate::engine::fence::explain_fix(Some(reason))
 }
 
 /// `err` with `details.journal_pending` naming `tx`, whose journal is kept.

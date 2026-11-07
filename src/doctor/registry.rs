@@ -148,6 +148,17 @@ pub mod ids {
     pub const TEST_SUSPEND: &str = "fm-test-suspend";
 }
 
+/// `omaddons doctor explain <fm> [-t <target id>]`: the fix that sends a failing command
+/// to the doctor's explanation of the state it met (M4-D53). Without `-t` it lists every
+/// instance.
+pub fn explain_fix(fm: &str, target_id: Option<&str>) -> crate::error::Suggestion {
+    let mut argv = vec!["omaddons", "doctor", "explain", fm];
+    if let Some(id) = target_id {
+        argv.extend(["-t", id]);
+    }
+    crate::error::Suggestion::command(argv)
+}
+
 // ---------------------------------------------------------------------------------------
 // The row type and its closed sets.
 
@@ -1609,6 +1620,26 @@ mod tests {
 
     fn no_fixes(_: &DoctorView, _: &Finding) -> Result<Vec<Fix>, Refusal> {
         Ok(Vec::new())
+    }
+
+    /// `doctor explain <fm>`, with `-t <id>` for a target; its display is its argv joined.
+    #[test]
+    fn explain_fix_forms() {
+        for (case, fm, target, tail) in [
+            ("machine_scoped", ids::STATE_CORRUPT, None, &[][..]),
+            (
+                "on_a_target",
+                ids::JOURNAL_TOO_NEW,
+                Some("retail"),
+                &["-t", "retail"][..],
+            ),
+        ] {
+            let fix = explain_fix(fm, target);
+            let mut argv = argv_of(&["omaddons", "doctor", "explain", fm]);
+            argv.extend(argv_of(tail));
+            assert_eq!(fix.argv(), Some(&argv[..]), "{case}");
+            assert_eq!(fix.display(), shell_words::join(&argv), "{case}");
+        }
     }
 
     fn manual(_: &Finding) -> Remediation {

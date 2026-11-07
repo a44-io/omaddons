@@ -219,7 +219,7 @@ pub fn load<T: Versioned>(path: &Path) -> Result<Option<Loaded<T>>> {
         Ok(bytes) => bytes,
         // ubs:ignore — an io::ErrorKind, not a secret
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(Error::io(path, &err, status_fix())),
+        Err(err) => return Err(Error::io(path, &err, state_file_fix())),
     };
     load_bytes(path, &bytes).map(Some)
 }
@@ -363,7 +363,7 @@ fn corrupt(path: &Path, why: &str) -> Error {
     Error::new(
         ErrorCode::StateCorrupt,
         format!("{} is corrupt: {why}", path.display()),
-        status_fix(),
+        state_file_fix(),
     )
     .details(serde_json::json!({ "path": path.display().to_string() }))
 }
@@ -382,9 +382,12 @@ fn too_new<T: Versioned>(path: &Path, version: SchemaVersion) -> Error {
     .details(serde_json::json!({ "path": path.display().to_string(), "schema_version": version.to_string() }))
 }
 
-/// DEC-5 until the doctor lands.
-fn status_fix() -> Suggestion {
-    Suggestion::command(["omaddons", "status"])
+/// The fix of a state file that cannot be read or decoded: the doctor's explanation of
+/// `fm-schemas-state-corrupt`, which names the file (M4-D53; was DEC-5's `omaddons
+/// status`). No `-t`: a store does not know whose file it is, and the explanation lists
+/// every instance.
+fn state_file_fix() -> Suggestion {
+    crate::doctor::registry::explain_fix(crate::doctor::registry::ids::STATE_CORRUPT, None)
 }
 
 #[cfg(test)]
@@ -676,6 +679,11 @@ mod tests {
             );
             assert!(err.message.contains("doc.json"), "{}", err.message);
             assert_eq!(err.details["path"], f.path.display().to_string());
+            assert_eq!(
+                err.fix.argv(),
+                Some(&STATE_FILE_FIX.map(str::to_owned)[..]),
+                "{content:?}: the doctor's explanation"
+            );
             let err = save_doc(&f, &doc(), None).unwrap_err();
             assert_eq!(
                 err.code,
@@ -683,6 +691,56 @@ mod tests {
                 "saving over a corrupt file: {content:?}"
             );
         }
+    }
+
+    /// The fix of a state file that does not read or decode (M4-D53).
+    const STATE_FILE_FIX: [&str; 4] = ["omaddons", "doctor", "explain", "fm-schemas-state-corrupt"];
+
+    /// A state file that cannot be read (a directory in its place) is an `io` error with
+    /// the same fix as a corrupt one: the doctor reports both under one failure mode.
+    #[test]
+    fn an_unreadable_state_file_points_at_the_doctor() {
+        let f = fixture();
+        std::fs::create_dir_all(&f.path).unwrap();
+        let err = load::<TestDoc>(&f.path).unwrap_err();
+        assert_eq!(err.code, ErrorCode::Io, "{err:?}");
+        assert_eq!(
+            err.fix.argv(),
+            Some(&STATE_FILE_FIX.map(str::to_owned)[..]),
+            "{err:?}"
+        );
+        assert_eq!(err.details["path"], f.path.display().to_string());
+    }
+
+    /// A newer state file keeps its advice: upgrade omaddons.
+    #[test]
+    fn a_newer_file_keeps_upgrade_omaddons() {
+        let f = fixture();
+        std::fs::write(&f.path, r#"{"schema_version":"9.0","name":3}"#).unwrap();
+        let err = load::<TestDoc>(&f.path).unwrap_err();
+        assert_eq!(err.code, ErrorCode::StateTooNew, "{err:?}");
+        assert_eq!(
+            (err.fix.display(), err.fix.argv()),
+            ("upgrade omaddons", None),
+            "{err:?}"
+        );
+    }
+
+    /// The fix names a registered failure mode of the schemas subsystem.
+    #[test]
+    fn the_state_file_fix_names_a_registered_failure_mode() {
+        let fm = STATE_FILE_FIX[3];
+        let row = crate::doctor::registry::FAILURE_MODES
+            .iter()
+            .find(|row| row.id == fm);
+        assert!(
+            row.is_some_and(|row| row.subsystem == crate::doctor::finding::Subsystem::Schemas),
+            "{fm}"
+        );
+        assert_eq!(
+            state_file_fix().argv(),
+            Some(&STATE_FILE_FIX.map(str::to_owned)[..])
+        );
     }
 
     /// A current document decodes straight from its bytes to what the general path gives;

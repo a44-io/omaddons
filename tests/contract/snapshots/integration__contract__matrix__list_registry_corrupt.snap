@@ -1,0 +1,29 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "list",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "state_corrupt",
+    "details": {
+      "path": "<root>/state/omaddons/registry.json"
+    },
+    "fix": "omaddons doctor explain fm-schemas-state-corrupt",
+    "fix_argv": [
+      "omaddons",
+      "doctor",
+      "explain",
+      "fm-schemas-state-corrupt"
+    ],
+    "message": "<root>/state/omaddons/registry.json is corrupt: it is not valid JSON: EOF while parsing a value at line 1 column 18",
+    "retryable": false
+  },
+  "exit_code": 1,
+  "ok": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

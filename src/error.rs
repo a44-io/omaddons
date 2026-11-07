@@ -591,23 +591,31 @@ pub(crate) mod sentence;
 // ---------------------------------------------------------------------------------------
 // Suggestions and command hints.
 
-/// The fix for internal errors (DEC-5). M4 switches it to `omaddons doctor`.
+/// The default fix of an `internal` error: the doctor, which isolates every check and
+/// names what is broken (M4-D53, which retires DEC-5's `omaddons status`).
 pub fn internal_fix() -> Suggestion {
-    Suggestion::command(["omaddons", "status"])
+    Suggestion::command(["omaddons", "doctor"])
 }
 
+/// What an internal error says when no command is left to suggest.
+const BUG_REPORT: &str =
+    "this is a bug in omaddons: report the message above with the output of omaddons --version";
+
 /// The fix for an internal error raised while `command` ran with `argv`, never the
-/// failing command itself: `status` points to `status --cached` (no discovery, no
-/// network), which failing in turn leaves only a report; any other command gets
-/// [`internal_fix`].
+/// failing command itself (M4-D53):
+/// - `status` → `status --cached` (no discovery, no network); `status --cached` → a report;
+/// - every `doctor` path → `status --cached`, which runs the doctor's cheap checks without
+///   a run directory (`doctor health`, which M4-D53 named, was dropped);
+/// - any other command, and a panic before the command is known → `omaddons doctor`.
+///
+/// Following the fixes always ends in a report, within three hops, and never repeats an
+/// argv: `list` → `doctor` → `status --cached` → the report.
 pub fn internal_fix_for(command: &str, argv: &[String]) -> Suggestion {
+    let cached = || Suggestion::command(["omaddons", "status", "--cached"]);
     match command {
-        "status" if !argv.iter().any(|a| a == "--cached") => {
-            Suggestion::command(["omaddons", "status", "--cached"])
-        }
-        "status" => Suggestion::text(
-            "this is a bug in omaddons: report the message above with the output of omaddons --version",
-        ),
+        "status" if !argv.iter().any(|a| a == "--cached") => cached(),
+        "status" => Suggestion::text(BUG_REPORT),
+        c if c == "doctor" || c.starts_with("doctor ") => cached(),
         _ => internal_fix(),
     }
 }
@@ -1424,20 +1432,129 @@ mod tests {
 
     #[test]
     fn an_internal_fix_never_reruns_the_failing_command() {
-        let argv = |args: &[&str]| -> Vec<String> {
-            std::iter::once("omaddons")
-                .chain(args.iter().copied())
+        let words =
+            |text: &str| -> Vec<String> { text.split_whitespace().map(str::to_owned).collect() };
+        // (case, command, argv, the fix's argv, or `None` for the bug-report prose)
+        let cases: [(&str, &str, &str, Option<&str>); 13] = [
+            (
+                "status_plain",
+                "status",
+                "omaddons status",
+                Some("omaddons status --cached"),
+            ),
+            (
+                "status_with_flags",
+                "status",
+                "omaddons status --check -t retail",
+                Some("omaddons status --cached"),
+            ),
+            ("status_cached", "status", "omaddons status --cached", None),
+            (
+                "doctor_bare",
+                "doctor",
+                "omaddons doctor",
+                Some("omaddons status --cached"),
+            ),
+            (
+                "doctor_diagnose",
+                "doctor diagnose",
+                "omaddons doctor diagnose",
+                Some("omaddons status --cached"),
+            ),
+            (
+                "doctor_explain",
+                "doctor explain",
+                "omaddons doctor explain fm-x",
+                Some("omaddons status --cached"),
+            ),
+            (
+                "doctor_fix",
+                "doctor fix",
+                "omaddons doctor fix --dry-run",
+                Some("omaddons status --cached"),
+            ),
+            (
+                "doctor_undo",
+                "doctor undo",
+                "omaddons doctor undo",
+                Some("omaddons status --cached"),
+            ),
+            ("list", "list", "omaddons list", Some("omaddons doctor")),
+            (
+                "install",
+                "install",
+                "omaddons install dbm -t retail",
+                Some("omaddons doctor"),
+            ),
+            ("help", "help", "omaddons --json", Some("omaddons doctor")),
+            (
+                "before_the_command_is_known",
+                "omaddons",
+                "",
+                Some("omaddons doctor"),
+            ),
+            (
+                "doctor_without_a_space",
+                "doctors",
+                "omaddons doctors",
+                Some("omaddons doctor"),
+            ),
+        ];
+        for (case, command, argv, expected) in cases {
+            let got = internal_fix_for(command, &words(argv));
+            assert_eq!(
+                got.argv().map(<[String]>::to_vec),
+                expected.map(words),
+                "{case}: internal_fix_for({command:?}, {argv:?}) gave {got:?}, expected {expected:?}"
+            );
+            if expected.is_none() {
+                assert_eq!(got.display(), BUG_REPORT, "{case}");
+            }
+        }
+    }
+
+    /// From every command, following the internal fix reaches the bug-report prose within
+    /// three hops, each fix parses, none repeats an argv, and the first is never the
+    /// command that failed.
+    #[test]
+    fn following_internal_fixes_reaches_a_report() {
+        use clap::Parser;
+        for entry in crate::app::COMMANDS {
+            let start: Vec<String> = std::iter::once("omaddons")
+                .chain(entry.name.split(' '))
                 .map(str::to_owned)
-                .collect()
-        };
-        assert_eq!(
-            internal_fix_for("status", &argv(&["status", "--json"])).argv(),
-            Some(&["omaddons", "status", "--cached"].map(str::to_owned)[..])
-        );
-        let cached = internal_fix_for("status", &argv(&["status", "--cached"]));
-        assert_eq!(cached.argv(), None);
-        assert!(cached.display().starts_with("this is a bug in omaddons"));
-        assert_eq!(internal_fix_for("list", &argv(&["list"])), internal_fix());
+                .collect();
+            let mut chain = vec![start.clone()];
+            let (mut name, mut argv) = (entry.name, start.clone());
+            let mut ended = false;
+            for _ in 0..3 {
+                let fix = internal_fix_for(name, &argv);
+                let Some(next) = fix.argv().map(<[String]>::to_vec) else {
+                    ended = true;
+                    break;
+                };
+                let parsed = crate::cli::Cli::try_parse_from(&next);
+                assert!(
+                    parsed.is_ok(),
+                    "{}: {next:?} does not parse; {chain:?}",
+                    entry.name
+                );
+                assert!(
+                    !chain.contains(&next),
+                    "{}: {next:?} repeats; {chain:?}",
+                    entry.name
+                );
+                name = crate::app::command_name(parsed.ok().and_then(|cli| cli.command).as_ref());
+                chain.push(next.clone());
+                argv = next;
+            }
+            assert!(
+                ended,
+                "{}: no report within three hops: {chain:?}",
+                entry.name
+            );
+            assert_ne!(chain.get(1), Some(&start), "{}: reruns itself", entry.name);
+        }
     }
 
     #[test]
@@ -1449,12 +1566,78 @@ mod tests {
         let reload = Suggestion::text("/reload in game");
         assert_eq!(reload.display(), "/reload in game");
         assert_eq!(reload.argv(), None);
+    }
 
+    /// An internal error's default fix is the doctor (M4-D53).
+    #[test]
+    fn the_internal_default_is_the_doctor() {
         let internal = Error::internal("boom");
-        assert_eq!(internal.fix.display(), "omaddons status");
-        assert_eq!(internal.fix.argv().unwrap(), ["omaddons", "status"]);
+        assert_eq!(internal.fix.display(), "omaddons doctor");
+        assert_eq!(internal.fix.argv().unwrap(), ["omaddons", "doctor"]);
         assert_eq!(internal.exit(), Exit::Failed);
         assert_eq!(internal.to_string(), "error[internal]: boom");
+    }
+
+    /// The `Error::new(ErrorCode::Internal, …)` constructions in `code` whose fix is a
+    /// command: the command boundary replaces only [`internal_fix`] itself, so such a fix
+    /// would reach the user unchecked. Whitespace and literals do not count.
+    fn internal_with_a_command(code: &str) -> Vec<String> {
+        let code: String = code.chars().filter(|c| !c.is_whitespace()).collect();
+        let mut found = Vec::new();
+        for opening in [
+            "Error::new(ErrorCode::Internal,",
+            "Error::new(crate::error::ErrorCode::Internal,",
+        ] {
+            for (at, _) in code.match_indices(opening) {
+                let args = &code[at + "Error::new(".len()..];
+                let mut depth = 1usize;
+                let end = args
+                    .char_indices()
+                    .find(|&(_, c)| {
+                        match c {
+                            '(' | '[' | '{' => depth += 1,
+                            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+                            _ => {}
+                        }
+                        depth == 0
+                    })
+                    .map_or(args.len(), |(end, _)| end);
+                if args[..end].contains("Suggestion::command(") {
+                    found.push(args[..end].to_owned());
+                }
+            }
+        }
+        found
+    }
+
+    /// Every production `internal` error is built by `Error::internal`, gets its fix from
+    /// recovery (a stop), or carries prose: never a command the boundary would not check
+    /// (the replay transport's "no fixture" error was one).
+    #[test]
+    fn internal_errors_are_built_by_error_internal() {
+        use crate::source_scan::{Literals, production_code, sources};
+        let planted = "fn f() -> Error {\n    Error::new(\n        ErrorCode::Internal,\n        \"x\",\n        Suggestion::command([\"omaddons\", \"status\"]),\n    )\n}";
+        let planted = production_code(planted, Literals::Blank).unwrap_or_default();
+        assert_eq!(
+            internal_with_a_command(&planted).len(),
+            1,
+            "the scan sees one"
+        );
+        let prose = "Error::new(ErrorCode::Internal, \"x\", Suggestion::text(\"report it\"))";
+        assert!(internal_with_a_command(prose).is_empty(), "prose is fine");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut offending = Vec::new();
+        for (path, text) in sources(&root.join("src")) {
+            let code = production_code(&text, Literals::Blank).unwrap_or_default();
+            for found in internal_with_a_command(&code) {
+                offending.push(format!("{}: {found}", path.display()));
+            }
+        }
+        assert!(
+            offending.is_empty(),
+            "internal errors with a command fix:\n{}",
+            offending.join("\n")
+        );
     }
 
     proptest! {

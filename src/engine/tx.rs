@@ -636,7 +636,13 @@ pub(super) fn recovery_failed(mut error: Error, tx: &TxId, recovery: &Error) -> 
         error.message, recovery.message
     );
     error.retryable = false;
-    error.fix = Suggestion::command(["omaddons", "status"]);
+    // A recovery that stopped leaves the journal in exactly that state: the doctor's
+    // explanation of it (M4-D53). One that failed on I/O is retried by the next commit.
+    error.fix = if super::journal::is_stop(recovery) {
+        recovery.fix.clone()
+    } else {
+        Suggestion::command(["omaddons", "status"])
+    };
     if !error.details.is_object() {
         error.details = serde_json::json!({});
     }
@@ -1892,6 +1898,52 @@ mod tests {
         ("Foo/Foo.toc", "## Interface: 120105\n## Notes: v2\n"),
         ("Foo/new.lua", "--"),
     ];
+
+    /// A commit whose in-process recovery stopped carries the stop's fix (the doctor's
+    /// explanation); one whose recovery failed on I/O, or waits for the game, keeps
+    /// `omaddons status`. Both keep the journal and the recovery's error in `details`.
+    #[test]
+    fn recovery_failed_keeps_a_stops_fix() {
+        let tx: TxId = "01M7A1B2C3D4E5F6G7H8J9K0MN".parse().unwrap();
+        let status = Suggestion::command(["omaddons", "status"]);
+        let explained = crate::doctor::registry::explain_fix(
+            crate::doctor::registry::ids::JOURNAL_UNEXPECTED_STATE,
+            Some("retail"),
+        );
+        for (case, recovery, fix) in [
+            (
+                "recovery_is_io",
+                Error::new(ErrorCode::Io, "disk", status.clone()),
+                status.clone(),
+            ),
+            (
+                "recovery_is_a_stop",
+                Error::new(ErrorCode::Internal, "stopped", explained.clone())
+                    .details(serde_json::json!({"reason": "unexpected_state"})),
+                explained.clone(),
+            ),
+            (
+                "recovery_is_the_game_wait",
+                Error::new(
+                    ErrorCode::GameRunning,
+                    "waits",
+                    Suggestion::text("quit the game; the next change finishes or undoes it"),
+                )
+                .details(serde_json::json!({"reason": "saved_variables"})),
+                status.clone(),
+            ),
+        ] {
+            let cause = Error::new(ErrorCode::Io, "commit", status.clone());
+            let failed = recovery_failed(cause, &tx, &recovery);
+            assert_eq!(failed.fix, fix, "{case}");
+            assert_eq!(failed.details["journal_pending"], tx.to_string(), "{case}");
+            assert_eq!(
+                failed.details["recovery_error"]["code"],
+                serde_json::to_value(recovery.code).unwrap(),
+                "{case}"
+            );
+        }
+    }
 
     #[test]
     fn a_dependency_goes_only_when_every_requester_in_the_transaction_dropped_out() {

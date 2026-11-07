@@ -374,7 +374,7 @@ pub(crate) fn stop_of_error(tx: TxId, error: &Error, closed: bool) -> FenceStop 
 /// No `-t`: a repair has no target, and `doctor explain <fm>` lists every instance.
 pub(crate) fn explain_fix(reason: Option<StopReason>) -> Suggestion {
     let fm = reason.map_or(ids::JOURNAL_PENDING, ids::for_stop_reason);
-    Suggestion::command(["omaddons", "doctor", "explain", fm])
+    crate::doctor::registry::explain_fix(fm, None)
 }
 
 /// What stopped, as a sentence with exactly one parenthesized reason (E11's differential

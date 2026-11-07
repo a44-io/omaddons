@@ -427,9 +427,10 @@ fn a_panic_is_one_internal_envelope() {
     assert_eq!(r.code, 1, "{}", r.context());
     let envelope = r.envelope();
     assert_eq!(envelope["error"]["code"], "internal");
+    // A panic of bare `--json` (`help`): the doctor (M4-D53).
     assert_eq!(
         envelope["error"]["fix_argv"],
-        serde_json::json!(["omaddons", "status"])
+        serde_json::json!(["omaddons", "doctor"])
     );
     let events = r.events();
     assert_eq!(events.len(), 1, "{}", r.context());
