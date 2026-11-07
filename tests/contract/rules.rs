@@ -1,10 +1,11 @@
 //! The contract's rules over every published shape (M4-D55, rules 1–4 and 6): timestamps,
 //! null versus omitted, names, closed enumerations and `details` objects, checked on every
 //! command's data, the envelope frame, every error variant, every event and every file
-//! kind name. The violations that predate this test are listed in
-//! `tests/contract/rules_allowlist.txt`, which may only shrink. Pure: no command runs.
+//! kind name. The violations that predated this test were listed in
+//! `tests/contract/rules_allowlist.txt` until H1 emptied it; the list is closed, and its
+//! loader refuses any entry (M4-D55). Pure: no command runs.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use omaddons::contract::schema::{self, Visit, walk};
@@ -685,39 +686,27 @@ fn violations(roots: &[Root], file_kinds: &[String]) -> BTreeSet<String> {
     out
 }
 
-/// The allowlist's lines, or every malformed, unsorted or duplicate line with its number.
-fn parse_allowlist(text: &str) -> Result<Vec<String>, Vec<String>> {
-    let mut lines: Vec<String> = Vec::new();
-    let mut problems = Vec::new();
-    for (index, raw) in text.lines().enumerate() {
-        let number = index + 1;
-        let trimmed = raw.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        let fields: Vec<&str> = raw.split(" | ").collect();
-        let well_formed = fields.len() == 3
-            && RULES.iter().any(|(id, _)| *id == fields[0])
-            && fields.iter().all(|f| !f.is_empty() && f.trim() == *f);
-        if !well_formed {
-            problems.push(format!(
-                "line {number}: `{raw}` is not `<rule> | <scope> | <path>` with a known rule"
-            ));
-            continue;
-        }
-        if let Some(previous) = lines.last() {
-            if raw == previous {
-                problems.push(format!("line {number}: `{raw}` is listed twice"));
-                continue;
-            }
-            if raw < previous.as_str() {
-                problems.push(format!("line {number}: `{raw}` is out of order"));
-            }
-        }
-        lines.push(raw.to_owned());
-    }
+/// The closed allowlist (M4-D55): comments and blank lines only. `Err` names every entry
+/// line with its number, since H1 emptied the list and the rules admit no exception from
+/// then on: a shape that breaks a rule is fixed, never listed.
+fn parse_allowlist(text: &str) -> Result<(), Vec<String>> {
+    let problems: Vec<String> = text
+        .lines()
+        .enumerate()
+        .filter(|(_, raw)| {
+            let trimmed = raw.trim();
+            !trimmed.is_empty() && !trimmed.starts_with('#')
+        })
+        .map(|(index, raw)| {
+            format!(
+                "line {}: `{raw}` is an entry, and `tests/contract/rules_allowlist.txt` is \
+                 closed (M4-D55): fix the shape it names instead",
+                index + 1
+            )
+        })
+        .collect();
     if problems.is_empty() {
-        Ok(lines)
+        Ok(())
     } else {
         Err(problems)
     }
@@ -740,18 +729,6 @@ fn scope_matches(pattern: &str, scope: &str) -> bool {
         })
 }
 
-/// Whether the allowlist `line` covers `violation`: the same line, or a `<prefix> *` scope
-/// with the same rule and path, for a shape defined once and carried by every scope below
-/// it (the error wrapper's keys).
-fn line_matches(line: &str, violation: &str) -> bool {
-    match (fields(line), fields(violation)) {
-        (Some((rule, scope, path)), Some((found_rule, found_scope, found_path))) => {
-            rule == found_rule && path == found_path && scope_matches(scope, found_scope)
-        }
-        _ => false,
-    }
-}
-
 fn exception_matches(exception: &Exception, violation: &str) -> bool {
     let Some((rule, scope, path)) = fields(violation) else {
         return false;
@@ -769,19 +746,17 @@ fn exception_matches(exception: &Exception, violation: &str) -> bool {
     exception.rule == rule && scope_matches && path_matches
 }
 
-/// Compares the violations with the allowlist and the exceptions: `Err` names every new
-/// violation, stale line and stale exception, then the allowlist's count per rule.
+/// Compares the violations with the exceptions, after the closed allowlist: `Err` names
+/// every allowlist entry, every new violation and every stale exception.
 fn compare(
     violations: &BTreeSet<String>,
     allowlist: &str,
     exceptions: &[Exception],
 ) -> Result<(), String> {
-    let listed = parse_allowlist(allowlist).map_err(|problems| problems.join("\n"))?;
+    parse_allowlist(allowlist).map_err(|problems| problems.join("\n"))?;
     let mut failures = Vec::new();
     for violation in violations {
-        if listed.iter().any(|line| line_matches(line, violation))
-            || exceptions.iter().any(|e| exception_matches(e, violation))
-        {
+        if exceptions.iter().any(|e| exception_matches(e, violation)) {
             continue;
         }
         let id = violation.split(" | ").next().unwrap_or_default();
@@ -793,16 +768,6 @@ fn compare(
             "a new shape breaks rule {rule} (`{id}`): `{violation}`. Fix the shape; never add to \
              `tests/contract/rules_allowlist.txt` (M4-D55)"
         ));
-    }
-    for line in &listed {
-        if !violations
-            .iter()
-            .any(|violation| line_matches(line, violation))
-        {
-            failures.push(format!(
-                "`{line}` no longer matches a violation: remove it (the allowlist may only shrink)"
-            ));
-        }
     }
     for exception in exceptions {
         if !violations.iter().any(|v| exception_matches(exception, v)) {
@@ -820,22 +785,8 @@ fn compare(
     if failures.is_empty() {
         Ok(())
     } else {
-        Err(format!("{}\n{}", failures.join("\n"), counts(&listed)))
+        Err(failures.join("\n"))
     }
-}
-
-fn counts(listed: &[String]) -> String {
-    let mut per_rule: BTreeMap<&str, usize> = RULES.iter().map(|(id, _)| (*id, 0)).collect();
-    for line in listed {
-        if let Some(count) = line.split(" | ").next().and_then(|id| per_rule.get_mut(id)) {
-            *count += 1;
-        }
-    }
-    let shown: Vec<String> = per_rule
-        .iter()
-        .map(|(id, count)| format!("{id} {count}"))
-        .collect();
-    format!("allowlisted lines per rule: {}", shown.join(", "))
 }
 
 fn allowlist() -> String {
@@ -853,8 +804,6 @@ fn every_schema_follows_the_contract_rules() {
         compared.as_ref().err().map_or("", String::as_str),
         found.iter().cloned().collect::<Vec<_>>().join("\n")
     );
-    let listed = parse_allowlist(&allowlist()).unwrap();
-    eprintln!("{}", counts(&listed));
 }
 
 /// One synthetic root of `kind`, scoped `scope`.
@@ -1581,51 +1530,42 @@ fn the_error_union_is_checked_once_under_each_code() {
     );
 }
 
+/// The allowlist is closed (M4-D55): the committed file holds only comments, and any entry
+/// line, well formed or not, is refused with its number and the decision's name.
 #[test]
-fn allowlist_parses_sorted_and_unique() {
-    let header = "# a comment\n\n";
-    let cases: &[(&str, String, Result<usize, &str>)] = &[
+fn the_allowlist_is_closed() {
+    let header = "# a comment\n\n# another\n";
+    let cases: &[(&str, String, Option<&[&str]>)] = &[
+        ("the_committed_file", allowlist(), None),
+        ("comments_and_blank_lines", header.to_owned(), None),
         (
-            "well_formed",
-            format!("{header}r1-at-type | command a | x\nr3-name-case | file | Bad\n"),
-            Ok(2),
+            "a_well_formed_entry",
+            format!("{header}r1-at-type | command a | x\n"),
+            Some(&["line 4: `r1-at-type | command a | x` is an entry", "M4-D55"]),
         ),
         (
-            "unsorted",
-            "r3-name-case | file | Bad\nr1-at-type | command a | x\n".to_owned(),
-            Err("line 2:"),
-        ),
-        (
-            "duplicate",
-            "r1-at-type | command a | x\nr1-at-type | command a | x\n".to_owned(),
-            Err("listed twice"),
-        ),
-        (
-            "unknown_rule_id",
-            "r9-made-up | command a | x\n".to_owned(),
-            Err("known rule"),
-        ),
-        (
-            "missing_field",
-            "r1-at-type | command a\n".to_owned(),
-            Err("line 1:"),
-        ),
-        (
-            "comment_and_blank_lines_ignored",
-            format!("{header}# another\n\n"),
-            Ok(0),
+            "any_other_text",
+            "not an entry at all\n".to_owned(),
+            Some(&["line 1: `not an entry at all`", "M4-D55"]),
         ),
     ];
-    for (name, text, expected) in cases {
-        match (parse_allowlist(text), expected) {
-            (Ok(lines), Ok(count)) => assert_eq!(lines.len(), *count, "case {name}"),
-            (Err(problems), Err(phrase)) => assert!(
-                problems.iter().any(|p| p.contains(phrase)),
-                "case {name}: {problems:?}"
-            ),
+    for (name, text, refused) in cases {
+        match (parse_allowlist(text), refused) {
+            (Ok(()), None) => {}
+            (Err(problems), Some(phrases)) => {
+                assert_eq!(problems.len(), 1, "case {name}: {problems:?}");
+                for phrase in *phrases {
+                    assert!(problems[0].contains(phrase), "case {name}: {problems:?}");
+                }
+            }
             (got, _) => panic!("case {name}: {got:?} for\n{text}"), // ubs:ignore — a table case's own failure
         }
     }
+    let failure = compare(&BTreeSet::new(), "r1-at-type | command a | x\n", EXCEPTIONS);
+    assert!(
+        failure.as_ref().is_err_and(|f| f.contains("M4-D55")),
+        "compare refuses an entry first: {failure:?}"
+    );
 }
 
 /// One synthetic root breaking exactly `rule`.
@@ -1697,55 +1637,6 @@ fn a_new_violation_fails_with_the_rule_message() {
             );
         }
     }
-}
-
-#[test]
-fn a_stale_line_fails() {
-    let mut found = violations(&roots(), &file_kinds());
-    let listed = parse_allowlist(&allowlist()).unwrap();
-    let Some(removed) = listed.first() else {
-        return;
-    };
-    found.remove(removed);
-    let failure = compare(&found, &allowlist(), EXCEPTIONS).unwrap_err();
-    assert!(
-        failure.contains(&format!("`{removed}` no longer matches"))
-            && failure.contains("may only shrink"),
-        "{failure}"
-    );
-}
-
-/// A `<prefix> *` line covers its rule and path in every scope below the prefix, and is
-/// stale only when none of them has it.
-#[test]
-fn a_wildcard_line_covers_every_scope_below_it() {
-    let line = "r3-array-plural | error * | details.required_by";
-    for (violation, covered) in [
-        ("r3-array-plural | error usage | details.required_by", true),
-        (
-            "r3-array-plural | error doctor_refused | details.required_by",
-            true,
-        ),
-        ("r3-array-plural | error usage | details.tried", false),
-        ("r3-name-case | error usage | details.required_by", false),
-        (
-            "r3-array-plural | errors usage | details.required_by",
-            false,
-        ),
-        (
-            "r3-array-plural | command usage | details.required_by",
-            false,
-        ),
-    ] {
-        assert_eq!(line_matches(line, violation), covered, "{violation}");
-    }
-    let found: BTreeSet<String> =
-        ["r3-array-plural | error usage | details.tried".to_owned()].into();
-    let failure = compare(&found, &format!("{line}\n"), &[]).unwrap_err();
-    assert!(
-        failure.contains(&format!("`{line}` no longer matches")),
-        "{failure}"
-    );
 }
 
 #[test]

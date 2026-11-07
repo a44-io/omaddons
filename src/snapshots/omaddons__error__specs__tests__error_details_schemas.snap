@@ -399,7 +399,6 @@ expression: schemas
           "decoder_window",
           "truncated",
           "metadata_unreadable",
-          "packaging_unsupported",
           "tree_collision",
           "not_a_listing",
           "duplicate_name",
@@ -426,12 +425,6 @@ expression: schemas
           "type": "string"
         },
         "type": "array"
-      },
-      "unsupported": {
-        "items": {
-          "type": "string"
-        },
-        "type": "array"
       }
     },
     "type": "object"
@@ -441,16 +434,6 @@ expression: schemas
       "folders": {
         "items": {
           "properties": {
-            "class": {
-              "enum": [
-                "protected",
-                "managed",
-                "shared",
-                "linked",
-                "unmanaged",
-                "invalid"
-              ]
-            },
             "code": {
               "type": "string"
             },
@@ -468,18 +451,12 @@ expression: schemas
             },
             "reason": {
               "enum": [
-                "protected",
-                "linked",
                 "case_duplicates",
                 "owned_on_shared_target",
                 "case_collision",
                 "owned_by_another",
-                "unmanaged",
-                "same_name_other_ref"
+                "unmanaged"
               ]
-            },
-            "ref": {
-              "type": "string"
             },
             "spellings": {
               "items": {
@@ -489,7 +466,9 @@ expression: schemas
             }
           },
           "required": [
-            "folder"
+            "code",
+            "folder",
+            "reason"
           ],
           "type": "object"
         },
@@ -2792,16 +2771,6 @@ expression: schemas
       "folders": {
         "items": {
           "properties": {
-            "class": {
-              "enum": [
-                "protected",
-                "managed",
-                "shared",
-                "linked",
-                "unmanaged",
-                "invalid"
-              ]
-            },
             "code": {
               "type": "string"
             },
@@ -2819,11 +2788,7 @@ expression: schemas
             },
             "reason": {
               "enum": [
-                "protected",
-                "linked",
-                "case_duplicates",
                 "owned_on_shared_target",
-                "case_collision",
                 "owned_by_another",
                 "unmanaged",
                 "same_name_other_ref"
@@ -2831,12 +2796,6 @@ expression: schemas
             },
             "ref": {
               "type": "string"
-            },
-            "spellings": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
             }
           },
           "required": [
@@ -3180,12 +3139,7 @@ expression: schemas
           "properties": {
             "class": {
               "enum": [
-                "protected",
-                "managed",
-                "shared",
-                "linked",
-                "unmanaged",
-                "invalid"
+                "linked"
               ]
             },
             "code": {
@@ -3211,12 +3165,8 @@ expression: schemas
                 "owned_on_shared_target",
                 "case_collision",
                 "owned_by_another",
-                "unmanaged",
-                "same_name_other_ref"
+                "unmanaged"
               ]
-            },
-            "ref": {
-              "type": "string"
             },
             "spellings": {
               "items": {
@@ -3226,7 +3176,9 @@ expression: schemas
             }
           },
           "required": [
-            "folder"
+            "code",
+            "folder",
+            "reason"
           ],
           "type": "object"
         },
@@ -4503,12 +4455,7 @@ expression: schemas
           "properties": {
             "class": {
               "enum": [
-                "protected",
-                "managed",
-                "shared",
-                "linked",
-                "unmanaged",
-                "invalid"
+                "linked"
               ]
             },
             "code": {
@@ -4528,18 +4475,13 @@ expression: schemas
             },
             "reason": {
               "enum": [
-                "protected",
                 "linked",
                 "case_duplicates",
                 "owned_on_shared_target",
                 "case_collision",
                 "owned_by_another",
-                "unmanaged",
-                "same_name_other_ref"
+                "unmanaged"
               ]
-            },
-            "ref": {
-              "type": "string"
             },
             "spellings": {
               "items": {
@@ -4549,7 +4491,9 @@ expression: schemas
             }
           },
           "required": [
-            "folder"
+            "code",
+            "folder",
+            "reason"
           ],
           "type": "object"
         },

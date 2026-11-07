@@ -501,35 +501,3 @@ pub fn observed_details(envelope: &Value) -> BTreeSet<(String, String)> {
     }
     out
 }
-
-/// Appends to `file` each pair of `envelope`'s [`observed_details`] this process has not
-/// recorded yet, one JSON line each, in one append. The declared-details report's child
-/// run sets the file through `CONTRACT_DETAILS_OBSERVED`.
-pub fn record_observed(envelope: &Value, file: &std::path::Path) {
-    use std::io::Write;
-    static SEEN: std::sync::Mutex<BTreeSet<(String, String)>> =
-        std::sync::Mutex::new(BTreeSet::new());
-    let mut seen = SEEN
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut text = String::new();
-    for (code, path) in observed_details(envelope) {
-        if seen.insert((code.clone(), path.clone())) {
-            text.push_str(&serde_json::json!({"code": code, "path": path}).to_string());
-            text.push('\n');
-        }
-    }
-    if text.is_empty() {
-        return;
-    }
-    let appended = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(file)
-        .and_then(|mut f| f.write_all(text.as_bytes()));
-    assert!(
-        appended.is_ok(),
-        "recording observed details in {}: {appended:?}",
-        file.display()
-    );
-}

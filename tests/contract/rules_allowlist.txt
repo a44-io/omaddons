@@ -1,4 +1,4 @@
-# Contract rule violations that predate the rule test (M4-D55). This list may only shrink:
-# a new shape that breaks a rule is fixed, never added here. H1 empties it before the freeze.
-# Format: <rule> | <scope> | <path>. A scope `<prefix> *` covers every scope below the prefix,
-# for a shape defined once that each of them carries (the error wrapper's keys).
+# Contract rule violations that predated the rule test (M4-D55). H1 emptied this list before
+# the freeze, and it is closed: the rule test refuses any entry line here. A shape that breaks
+# a rule is fixed, or, for a vocabulary omaddons does not own, given a reasoned exception in
+# `EXCEPTIONS` (tests/contract/rules.rs); it is never listed here.

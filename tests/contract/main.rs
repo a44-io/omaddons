@@ -11,7 +11,7 @@ use crate::common;
 
 mod canonical_names;
 #[cfg(test)]
-mod details_report;
+mod details_coverage;
 mod doctor_fix_binding;
 mod exit_sites;
 mod intent_corpus;
@@ -250,11 +250,6 @@ mod support {
                 "{}\n{ctx}",
                 validated.err().unwrap_or_default()
             );
-        }
-
-        // The declared-details report's child run records the `details` paths it sees.
-        if let Some(file) = std::env::var_os("CONTRACT_DETAILS_OBSERVED") {
-            super::validate::record_observed(&envelope, Path::new(&file));
         }
         Checked { run, envelope }
     }

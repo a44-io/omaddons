@@ -25,18 +25,26 @@ const FOLDER_CLASSES: DetailSpec = DetailSpec::Enum(&[
     "invalid",
 ]);
 
-/// `engine/ownership.rs::check` and `refused`, and `engine/plan.rs::takeover_refused`.
-/// Within-transaction conflicts carry only `folder` and `owner`, so code and reason
-/// are optional in this shared shape as well as the conditional evidence fields.
-pub(crate) const REFUSED_FOLDER: DetailSpec = DetailSpec::Object(&[
-    Field::opt("class", &FOLDER_CLASSES),
-    Field::opt("code", &STR),
-    // The live folder the change meets (for two live spellings, the first).
+/// One refused folder of `engine/ownership.rs::refusal`: every violation of the change,
+/// under the code of the most serious one, so a code's `folders[]` holds its own rank's
+/// entries and every lower rank's (protected, then linked, then case, then ownership,
+/// then unmanaged). Each code's shape below declares exactly the keys those entries
+/// carry. The evidence keys:
+/// - `existing`: the live folder the change meets (for two live spellings, the first);
+/// - `owner`: the addon that owns it (`owner_target` too when it is another client's,
+///   in an AddOns directory the two share);
+/// - `spellings` (`case_duplicates`): every live spelling of the folder, two or more;
+/// - `class` (`linked`): the live folder is a symlink.
+///
+/// `protected_folder`'s entries: every rank.
+const PROTECTED_REFUSAL: DetailSpec = DetailSpec::Object(&[
+    Field::opt("class", &DetailSpec::Enum(&["linked"])),
+    Field::req("code", &STR),
     Field::opt("existing", &STR),
     Field::req("folder", &STR),
     Field::opt("owner", &STR),
     Field::opt("owner_target", &STR),
-    Field::opt(
+    Field::req(
         "reason",
         &DetailSpec::Enum(&[
             "protected",
@@ -46,12 +54,73 @@ pub(crate) const REFUSED_FOLDER: DetailSpec = DetailSpec::Object(&[
             "case_collision",
             "owned_by_another",
             "unmanaged",
+        ]),
+    ),
+    Field::opt("spellings", &STRINGS),
+]);
+
+/// `unmanaged_folder`'s entries: a symlink's rank and every one below it.
+const UNMANAGED_REFUSAL: DetailSpec = DetailSpec::Object(&[
+    Field::opt("class", &DetailSpec::Enum(&["linked"])),
+    Field::req("code", &STR),
+    Field::opt("existing", &STR),
+    Field::req("folder", &STR),
+    Field::opt("owner", &STR),
+    Field::opt("owner_target", &STR),
+    Field::req(
+        "reason",
+        &DetailSpec::Enum(&[
+            "linked",
+            "case_duplicates",
+            "owned_on_shared_target",
+            "case_collision",
+            "owned_by_another",
+            "unmanaged",
+        ]),
+    ),
+    Field::opt("spellings", &STRINGS),
+]);
+
+/// `case_collision`'s entries: a case conflict's rank and every one below it.
+const CASE_REFUSAL: DetailSpec = DetailSpec::Object(&[
+    Field::req("code", &STR),
+    Field::opt("existing", &STR),
+    Field::req("folder", &STR),
+    Field::opt("owner", &STR),
+    Field::opt("owner_target", &STR),
+    Field::req(
+        "reason",
+        &DetailSpec::Enum(&[
+            "case_duplicates",
+            "owned_on_shared_target",
+            "case_collision",
+            "owned_by_another",
+            "unmanaged",
+        ]),
+    ),
+    Field::opt("spellings", &STRINGS),
+]);
+
+/// `ownership_conflict`'s entries: an owned folder's rank and an unmanaged one's; a
+/// takeover of an addon of the same name from another ref (`engine/plan.rs::
+/// takeover_refused`, with its `ref`); and a conflict within the transaction, which
+/// carries only `folder` and `owner`.
+const OWNERSHIP_REFUSAL: DetailSpec = DetailSpec::Object(&[
+    Field::opt("code", &STR),
+    Field::opt("existing", &STR),
+    Field::req("folder", &STR),
+    Field::opt("owner", &STR),
+    Field::opt("owner_target", &STR),
+    Field::opt(
+        "reason",
+        &DetailSpec::Enum(&[
+            "owned_on_shared_target",
+            "owned_by_another",
+            "unmanaged",
             "same_name_other_ref",
         ]),
     ),
     Field::opt("ref", &STR),
-    // `case_duplicates`: every live spelling of the folder, two or more.
-    Field::opt("spellings", &STRINGS),
 ]);
 
 /// `app/outcome.rs::ItemError`; its deliberately retained subset of details is opaque.
@@ -276,33 +345,35 @@ pub(crate) const GAME_RUNNING: DetailSpec = DetailSpec::Object(&[
     Field::opt("tx", &STR),
 ]);
 
-/// `engine/ownership.rs::refused`; fsx and adoption may refuse without evidence.
-pub(crate) const PROTECTED_FOLDER: DetailSpec =
-    DetailSpec::Object(&[Field::opt("folders", &DetailSpec::Array(&REFUSED_FOLDER))]);
+/// `engine/ownership.rs::refusal`; fsx and adoption may refuse without evidence.
+pub(crate) const PROTECTED_FOLDER: DetailSpec = DetailSpec::Object(&[Field::opt(
+    "folders",
+    &DetailSpec::Array(&PROTECTED_REFUSAL),
+)]);
 
 /// `engine/ownership.rs`, `engine/plan.rs::takeover_refused` and adoption conflicts.
 pub(crate) const OWNERSHIP_CONFLICT: DetailSpec = DetailSpec::Object(&[
     Field::opt("folder", &STR),
-    Field::opt("folders", &DetailSpec::Array(&REFUSED_FOLDER)),
+    Field::opt("folders", &DetailSpec::Array(&OWNERSHIP_REFUSAL)),
     Field::opt("owner", &STR),
     Field::opt("owner_target", &STR),
     Field::opt("reason", &DetailSpec::Enum(&["owned_on_shared_target"])),
     Field::opt("within_transaction", &BOOL),
 ]);
 
-/// `app/adopt/apply.rs::not_addon` and `engine/ownership.rs::refused`.
+/// `app/adopt/apply.rs::not_addon` and `engine/ownership.rs::refusal`.
 pub(crate) const UNMANAGED_FOLDER: DetailSpec = DetailSpec::Object(&[
     Field::opt(
         "class",
         &DetailSpec::Enum(&["linked", "invalid", "unmanaged"]),
     ),
     Field::opt("folder", &STR),
-    Field::opt("folders", &DetailSpec::Array(&REFUSED_FOLDER)),
+    Field::opt("folders", &DetailSpec::Array(&UNMANAGED_REFUSAL)),
 ]);
 
 /// `engine/plan.rs::one_addons_dir` and ownership's case-folded folder refusals.
 pub(crate) const CASE_COLLISION: DetailSpec = DetailSpec::Object(&[
-    Field::opt("folders", &DetailSpec::Array(&REFUSED_FOLDER)),
+    Field::opt("folders", &DetailSpec::Array(&CASE_REFUSAL)),
     Field::opt("paths", &STRINGS),
 ]);
 
@@ -521,8 +592,11 @@ pub(crate) const OFFLINE: DetailSpec = DetailSpec::Object(&[
 const FILE_MEASUREMENT: DetailSpec =
     DetailSpec::Object(&[Field::req("sha256", &STR), Field::req("size", &INT)]);
 
-/// Inspection, local source, stage extraction, backup import and WowAce listing/package.
-/// `stage.rs` adds expected/actual measurements on extraction disagreement.
+/// Inspection, local source, stage extraction, backup import and WowAce listing.
+/// `stage.rs` adds expected/actual measurements on extraction disagreement. A WowAce
+/// project that needs the packager is no `bad_archive` on the wire: the candidate loop
+/// (`engine/plan.rs`, `wowace::packaging_refusal`) refuses it as a `tried[]` entry of
+/// code `packaging_unsupported`, so its internal `{reason, unsupported}` is not declared.
 pub(crate) const BAD_ARCHIVE: DetailSpec = DetailSpec::Object(&[
     Field::opt("actual", &FILE_MEASUREMENT),
     Field::opt("expected", &FILE_MEASUREMENT),
@@ -540,14 +614,12 @@ pub(crate) const BAD_ARCHIVE: DetailSpec = DetailSpec::Object(&[
             "decoder_window",
             "truncated",
             "metadata_unreadable",
-            "packaging_unsupported",
             "tree_collision",
             "not_a_listing",
             "duplicate_name",
             "bad_name",
         ]),
     ),
-    Field::opt("unsupported", &STRINGS),
 ]);
 
 /// Reserved, with no construction site.
@@ -893,21 +965,26 @@ mod tests {
                 "{class:?}: serde spelling"
             );
         }
-        for spec in [&REFUSED_FOLDER, &NOT_MANAGED] {
-            assert_eq!(
-                spec.field("class").unwrap().spec.enum_values().unwrap(),
-                expected,
-                "{spec:?}"
-            );
-        }
-        for value in UNMANAGED_FOLDER
-            .field("class")
-            .unwrap()
-            .spec
-            .enum_values()
-            .unwrap()
-        {
-            assert!(expected.contains(value), "unmanaged subset {value:?}");
+        assert_eq!(
+            NOT_MANAGED
+                .field("class")
+                .unwrap()
+                .spec
+                .enum_values()
+                .unwrap(),
+            expected,
+            "not_managed"
+        );
+        // A refusal's `class` names only a symlink; `unmanaged_folder`'s own, what adopt
+        // refused. Each is one of the inventory's classes.
+        for (name, spec) in [
+            ("unmanaged_folder", &UNMANAGED_FOLDER),
+            ("protected entry", &PROTECTED_REFUSAL),
+            ("unmanaged entry", &UNMANAGED_REFUSAL),
+        ] {
+            for value in spec.field("class").unwrap().spec.enum_values().unwrap() {
+                assert!(expected.contains(value), "{name}: {value:?}");
+            }
         }
     }
 
