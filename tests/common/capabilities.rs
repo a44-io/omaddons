@@ -176,10 +176,6 @@ pub fn round_trip(data: &Value) -> Vec<String> {
     let mut pointers: Vec<(String, &Value)> = vec![
         ("schemas_uri".to_owned(), &data["schemas_uri"]),
         ("robot_docs_uri".to_owned(), &data["robot_docs_uri"]),
-        (
-            "failure_modes.command".to_owned(),
-            &data["failure_modes"]["command"],
-        ),
     ];
     for command in list(data, "commands") {
         let path = command["path"].as_str().unwrap_or_default();
@@ -848,12 +844,13 @@ pub fn completeness(data: &Value) -> Vec<String> {
         .collect();
     let got: Vec<String> = list(summary, "subsystems").iter().map(text).collect();
     same_names(&mut failures, "failure_modes.subsystems", &got, &subsystems);
-    let row = COMMANDS.iter().any(|row| row.name == "doctor capabilities");
-    if summary["command"].is_null() == row {
+    let keys: Vec<&String> = summary
+        .as_object()
+        .map(|o| o.keys().collect())
+        .unwrap_or_default();
+    if keys != ["count", "subsystems"] {
         failures.push(format!(
-            "failure_modes.command: {} while doctor capabilities is {}a command",
-            summary["command"],
-            if row { "" } else { "not " }
+            "failure_modes holds {keys:?}, not exactly count and subsystems"
         ));
     }
     failures
@@ -915,7 +912,6 @@ pub fn digest(printed: &str) -> Value {
         "pointers": {
             "schemas_uri": data["schemas_uri"],
             "robot_docs_uri": data["robot_docs_uri"],
-            "failure_modes_command": data["failure_modes"]["command"],
         },
         "config_error": data["config_error"],
     })

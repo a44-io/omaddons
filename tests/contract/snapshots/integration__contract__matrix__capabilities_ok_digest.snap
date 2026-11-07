@@ -373,7 +373,6 @@ expression: digest
     "help"
   ],
   "pointers": {
-    "failure_modes_command": null,
     "robot_docs_uri": "omaddons robot-docs guide",
     "schemas_uri": "omaddons robot-docs schema"
   }

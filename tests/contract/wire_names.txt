@@ -5936,7 +5936,6 @@ output capabilities data.exit_codes.general[].meaning string!
 output capabilities data.exit_codes.general[].name string!
 output capabilities data.exit_codes.general[].retryable boolean?!
 output capabilities data.failure_modes object!
-output capabilities data.failure_modes.command string?!
 output capabilities data.failure_modes.count integer! minimum=0
 output capabilities data.failure_modes.subsystems array!
 output capabilities data.failure_modes.subsystems[] string

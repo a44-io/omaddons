@@ -2284,11 +2284,11 @@ It reads the binary and `config.toml`, and whether a credential is there: the `O
 - `client_rules`: every load-rules row (see [Rules overrides](#rules-overrides-advanced)), then the two fallbacks, each field as the row has it (its name as `row`), and `source`;
 - `target_id_forms`: what `-t` accepts, in [selector precedence](#choosing-a-target-with--t), then `all`;
 - `error_codes`: `{code, exit, doctor_exit, retryable, meaning, details_schema}`, as [`robot-docs errors`](#robot-docs-errors) gives them; `warning_codes`: `{code, meaning}`; `actions`: every `commands[].action`, `{action, description, destructive}`;
-- `failure_modes`: `{count, subsystems, command}`: how many failure modes the doctor registers, and the subsystems they belong to;
+- `failure_modes`: `{count, subsystems}`: how many failure modes the doctor registers, and the subsystems they belong to (`omaddons doctor explain <id>` describes one in full);
 - `schemas_uri` (`omaddons robot-docs schema`) and `robot_docs_uri` (`omaddons robot-docs guide`);
 - `config_error`: `null`, or why `config.toml` could not be used, `{path, line, column, message}`.
 
-Each value `config.toml` can change carries `source`: `config` when the file sets a key that applies to it (even to the built-in value), else `builtin`. `check_interval_hours = 0` keeps the default, so it stays `builtin`, and CurseForge and Wago stay `enabled: false` whatever the file says. A pointer (`schemas_uri`, `robot_docs_uri`, `data_schema`, `failure_modes.command`) is a command to run, and `null` in a build that does not have that command: today `failure_modes.command` is `null`.
+Each value `config.toml` can change carries `source`: `config` when the file sets a key that applies to it (even to the built-in value), else `builtin`. `check_interval_hours = 0` keeps the default, so it stays `builtin`, and CurseForge and Wago stay `enabled: false` whatever the file says. A pointer (`schemas_uri`, `robot_docs_uri`, `data_schema`) is a command to run, and `null` in a build that does not have that command.
 
 A `config.toml` that does not parse, holds a value out of range or cannot be read does not fail the command: it exits 0 with the built-in values, every `source` `builtin`, and `config_error` (`line` and `column` `null` for a file that could not be read at all). With `HOME` unset or relative there is no config path: `config_error.path` is `null`. A config that loads with unknown keys warns `config_unknown_key`, as every command does.
 

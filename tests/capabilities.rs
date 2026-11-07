@@ -189,14 +189,10 @@ fn capabilities_round_trips() {
     }
 
     log.step("pointers run");
-    let mut pointers: Vec<&str> = [
-        &data["schemas_uri"],
-        &data["robot_docs_uri"],
-        &data["failure_modes"]["command"],
-    ]
-    .into_iter()
-    .filter_map(Value::as_str)
-    .collect();
+    let mut pointers: Vec<&str> = [&data["schemas_uri"], &data["robot_docs_uri"]]
+        .into_iter()
+        .filter_map(Value::as_str)
+        .collect();
     pointers.extend(commands.iter().filter_map(|c| c["data_schema"].as_str()));
     log.json("pointers", &pointers.len());
     for pointer in pointers {

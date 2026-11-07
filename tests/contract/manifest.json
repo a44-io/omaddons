@@ -6592,7 +6592,6 @@
     "output capabilities data.exit_codes.general[].name": {"kind":"output_position","nullable":false,"required":true,"types":["string"]},
     "output capabilities data.exit_codes.general[].retryable": {"kind":"output_position","nullable":true,"required":true,"types":["boolean"]},
     "output capabilities data.failure_modes": {"kind":"output_position","nullable":false,"required":true,"types":["object"]},
-    "output capabilities data.failure_modes.command": {"kind":"output_position","nullable":true,"required":true,"types":["string"]},
     "output capabilities data.failure_modes.count": {"kind":"output_position","minimum":0,"nullable":false,"required":true,"types":["integer"]},
     "output capabilities data.failure_modes.subsystems": {"kind":"output_position","nullable":false,"required":true,"types":["array"]},
     "output capabilities data.failure_modes.subsystems[]": {"enum":["caches","concurrency_primitives","configs","external_artifacts","hooks","network","permissions","plugins","schemas","secrets","sockets","state_files","userland_state"],"kind":"output_position","nullable":false,"types":["string"]},

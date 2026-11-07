@@ -322,10 +322,9 @@ pub struct ActionDescription {
 pub struct FailureModeSummary {
     /// How many failure modes are registered.
     pub count: usize,
-    /// The subsystems they belong to, each once.
+    /// The subsystems they belong to, each once. `omaddons doctor explain <id>` describes
+    /// one in full; no command lists them all.
     pub subsystems: Vec<Subsystem>,
-    /// The command that describes each in full; `null` in a build without it.
-    pub command: Option<String>,
 }
 
 /// Why `config.toml` could not be used.
@@ -456,7 +455,6 @@ pub fn data_of(registry: &Registry) -> Result<CapabilitiesData> {
                 .copied()
                 .filter(|subsystem| FAILURE_MODES.iter().any(|fm| fm.subsystem == *subsystem))
                 .collect(),
-            command: pointer(&["doctor", "capabilities", "--json"], "doctor capabilities"),
         },
         schemas_uri: pointer(&["robot-docs", "schema"], "robot-docs schema"),
         robot_docs_uri: pointer(&["robot-docs", "guide"], "robot-docs guide"),
@@ -963,14 +961,9 @@ mod tests {
     fn pointers_are_null_exactly_when_their_command_is_missing() {
         let data = builtin();
         let has = |path: &str| COMMANDS.iter().any(|row| row.name == path);
-        let cases: [(&str, &Option<String>, &str); 3] = [
+        let cases: [(&str, &Option<String>, &str); 2] = [
             ("schemas_uri", &data.schemas_uri, "robot-docs schema"),
             ("robot_docs_uri", &data.robot_docs_uri, "robot-docs guide"),
-            (
-                "failure_modes.command",
-                &data.failure_modes.command,
-                "doctor capabilities",
-            ),
         ];
         let mut pointers: Vec<(String, &Option<String>)> = cases
             .iter()
