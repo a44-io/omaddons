@@ -10,7 +10,7 @@ use common::archives::{RawEntry, raw_zip};
 use common::home::Home;
 use common::tlog::{Ran, TestLog, tlog};
 use omaddons::error::ErrorCode;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 const FOO_TOC: (&str, &[u8]) = ("Foo/Foo.toc", b"## Interface: 120105\n");
 
@@ -262,10 +262,13 @@ fn every_item_failing_lists_items_in_a_declared_shape() {
     let details = checked_details(&case, &ran);
     let items = details["items"].as_array().unwrap();
     case.assert_eq("both requests failed", &items.len(), &2);
+    // One shape at every site (rule 6): install's items are `{target, request, error}`
+    // as every other command's are.
     for item in items {
         let item_log = case.case(item["request"].as_str().unwrap());
         item_log.json("failed item", item);
-        keys(&item_log, item, &["code", "message", "request"]);
+        keys(&item_log, item, &["error", "request", "target"]);
+        item_log.assert_eq("item error code", &item["error"]["code"], &json!("offline"));
     }
     let case = log.case("target item failures");
     case.step("two unknown managed-addon names both fail update");
@@ -309,10 +312,10 @@ fn catalog(home: &Home, text: &str) {
 }
 
 #[test]
-fn ref_ambiguous_candidates_come_in_their_two_declared_shapes() {
+fn ref_ambiguous_candidates_are_strings_at_every_site() {
     let log = tlog!();
     let home = Home::new(&["wow"]);
-    let case = log.case("object candidates");
+    let case = log.case("ref resolver candidates");
     install(&case, &home, "gh:a/foo", "Foo");
     catalog(
         &home,
@@ -348,10 +351,20 @@ fn ref_ambiguous_candidates_come_in_their_two_declared_shapes() {
     );
     ran.fails(3, "ref_ambiguous");
     let details = checked_details(&case, &ran);
+    // The refs to pass instead are strings, as everywhere; where each came from is
+    // `matches` (rule 6: one shape per key).
     let candidates = details["candidates"].as_array().unwrap();
     case.assert_eq("both references are candidates", &candidates.len(), &2);
-    for candidate in candidates {
-        keys(&case, candidate, &["from", "ref"]);
+    case.assert_eq(
+        "candidates are ref strings",
+        &candidates.iter().all(Value::is_string),
+        &true,
+    );
+    let matches = details["matches"].as_array().unwrap();
+    case.assert_eq("each candidate has its match", &matches.len(), &2);
+    for (candidate, matched) in candidates.iter().zip(matches) {
+        keys(&case, matched, &["from", "ref"]);
+        case.assert_eq("the match names its candidate", &matched["ref"], candidate);
     }
     case.assert_unchanged("retail AddOns", &home.addons("_retail_"));
     no_network(&case, &home);

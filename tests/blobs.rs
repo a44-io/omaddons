@@ -336,7 +336,7 @@ fn offline_a_damaged_blob_is_hash_mismatch_and_changes_nothing() {
     log.assert_eq("details' keys", &keys, &vec!["actual", "blob", "items"]);
     log.assert_eq(
         "its item",
-        &details["items"][0]["code"],
+        &details["items"][0]["error"]["code"],
         &json!("hash_mismatch"),
     );
     log.assert_eq("its fix", &error["fix_argv"], &json!(DEEP));

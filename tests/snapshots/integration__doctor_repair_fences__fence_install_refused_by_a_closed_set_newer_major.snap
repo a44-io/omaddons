@@ -11,9 +11,26 @@ expression: "stable(&f, ran.envelope(), &tx)"
     "details": {
       "items": [
         {
-          "code": "state_too_new",
-          "message": "repair transaction <tx> did not finish, and this omaddons cannot read what it changed (journal_too_new); every change is refused until it is set aside",
-          "request": "gh:o/bar"
+          "error": {
+            "code": "state_too_new",
+            "details": {
+              "journal_pending": "<tx>",
+              "reason": "journal_too_new",
+              "resource": "journal:<tx>",
+              "target": null,
+              "tx": "<tx>"
+            },
+            "fix": "omaddons doctor explain fm-concurrency_primitives-journal-too-new",
+            "fix_argv": [
+              "omaddons",
+              "doctor",
+              "explain",
+              "fm-concurrency_primitives-journal-too-new"
+            ],
+            "message": "repair transaction <tx> did not finish, and this omaddons cannot read what it changed (journal_too_new); every change is refused until it is set aside"
+          },
+          "request": "gh:o/bar",
+          "target": "retail"
         }
       ],
       "journal_pending": "<tx>",

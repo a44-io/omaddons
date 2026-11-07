@@ -270,12 +270,15 @@ pub fn check_in(
             );
             continue;
         }
-        if let [first, second, ..] = live.as_slice() {
+        if let [first, _, ..] = live.as_slice() {
+            // `existing` is a name at every refusal (rule 6); every live spelling is
+            // `spellings`.
+            let spellings: Vec<&str> = live.iter().map(|entry| entry.name.as_str()).collect();
             refuse(
                 name.as_str(),
                 ErrorCode::CaseCollision,
                 "case_duplicates",
-                json!({ "existing": [first.name, second.name] }),
+                json!({ "existing": first.name, "spellings": spellings }),
             );
             continue;
         }
@@ -497,7 +500,13 @@ fn refusal(violations: &[Violation], argv: &[String], adopt: Option<AdoptFix<'_>
         (ErrorCode::CaseCollision, "case_duplicates") => (
             format!(
                 "AddOns holds folders that differ only in case ({}); the client sees one of them",
-                top.extra["existing"]
+                top.extra["spellings"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(serde_json::Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
             Suggestion::text("remove or rename one of the case variants first"),
             Vec::new(),

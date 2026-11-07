@@ -1070,7 +1070,12 @@ fn an_unreadable_addons_folder_fails_every_item() {
         .as_array()
         .unwrap()
         .iter()
-        .map(|i| (i["request"].as_str().unwrap(), i["code"].as_str().unwrap()))
+        .map(|i| {
+            (
+                i["request"].as_str().unwrap(),
+                i["error"]["code"].as_str().unwrap(),
+            )
+        })
         .collect();
     assert_eq!(
         listed,
@@ -2321,7 +2326,7 @@ fn retail_twelve_refuses_an_addon_below_its_interface_floor() {
         "{}",
         r.context()
     );
-    let tried = &error["details"]["tried"][0]["reason"];
+    let tried = &error["details"]["tried"][0]["message"];
     assert!(
         tried.as_str().unwrap().contains("\"below_client_floor\""),
         "{}",

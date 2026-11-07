@@ -417,11 +417,10 @@ fn a_wrong_flavor_candidate_falls_back_and_none_fails_listing_every_try() {
         .map(|t| t["asset"].as_str().unwrap())
         .collect();
     assert_eq!(tried, ["Foo-a.zip", "Foo-b.zip"]);
-    assert!(
-        error.details["tried"][0]["reason"]
-            .as_str()
-            .unwrap()
-            .starts_with("wrong_flavor")
+    assert_eq!(
+        error.details["tried"][0]["code"], "wrong_flavor",
+        "{:?}",
+        error.details
     );
     assert!(plan.targets[0].changes.is_empty());
 }
@@ -984,8 +983,8 @@ fn a_published_hash_of_either_algorithm_is_checked_and_shown_in_the_plan() {
         (omaddons::error::ErrorCode::HashMismatch, false)
     );
     assert!(error.message.contains("MD5"), "{}", error.message);
-    let reason = error.details["tried"][0]["reason"].as_str().unwrap();
-    assert!(reason.starts_with("hash_mismatch:"), "{reason}");
+    let tried = &error.details["tried"][0];
+    assert_eq!(tried["code"], "hash_mismatch", "{tried}");
     assert!(error.details["expected"].is_string(), "{:?}", error.details);
     assert!(plan.targets[0].changes.is_empty());
     assert!(!env.paths.blob(&sha).exists());

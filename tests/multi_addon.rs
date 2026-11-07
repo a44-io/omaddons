@@ -211,7 +211,7 @@ fn a_failed_update_hands_over_nothing() {
     let preview = home.run(&["install", "gh:o/a", "gh:o/b", "-t", "retail", "--dry-run"]);
     let previewed = preview.expect(4);
     assert_eq!(
-        previewed["error"]["details"]["items"][1]["code"],
+        previewed["error"]["details"]["items"][1]["error"]["code"],
         "ownership_conflict",
         "{}",
         preview.context()
@@ -225,7 +225,7 @@ fn a_failed_update_hands_over_nothing() {
         .map(|i| {
             (
                 i["request"].as_str().unwrap_or_default().to_owned(),
-                i["code"].as_str().unwrap_or_default().to_owned(),
+                i["error"]["code"].as_str().unwrap_or_default().to_owned(),
             )
         })
         .collect();

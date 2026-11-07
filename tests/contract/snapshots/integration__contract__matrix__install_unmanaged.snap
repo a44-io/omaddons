@@ -1,6 +1,5 @@
 ---
 source: tests/contract/matrix.rs
-assertion_line: 518
 expression: s.stable(&c.envelope)
 ---
 {
@@ -34,9 +33,22 @@ expression: s.stable(&c.envelope)
       ],
       "items": [
         {
-          "code": "unmanaged_folder",
-          "message": "Foo is not managed by omaddons",
-          "request": "gh:o/foo"
+          "error": {
+            "code": "unmanaged_folder",
+            "fix": "omaddons adopt Foo --ref gh:o/foo -t retail",
+            "fix_argv": [
+              "omaddons",
+              "adopt",
+              "Foo",
+              "--ref",
+              "gh:o/foo",
+              "-t",
+              "retail"
+            ],
+            "message": "Foo is not managed by omaddons"
+          },
+          "request": "gh:o/foo",
+          "target": "retail"
         }
       ]
     },

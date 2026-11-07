@@ -1685,7 +1685,7 @@ mod tests {
                 )
                 .alternative(Suggestion::command(["omaddons", "info", "DBM"]))
                 .details(serde_json::json!({
-                    "tried": [{ "asset": "DBM.zip", "reason": "wrong_flavor: mainline" }],
+                    "tried": [{ "asset": "DBM.zip", "code": "wrong_flavor", "message": "mainline" }],
                 })),
                 vec!["items", "tried"],
             ),
@@ -1933,13 +1933,14 @@ mod tests {
         let replan = all_failed_with(
             Error::plan_stale(
                 crate::error::PlanStaleSource::Replan,
+                &[crate::error::StalePart::Targets],
                 format!(
                     "the target changed while this command planned: {}",
                     cause.message
                 ),
                 Suggestion::text("run the command again; it re-plans against the current state"),
             )
-            .details(
+            .extend_details(
                 serde_json::json!({ "cause": cause.code.wire(), "cause_message": cause.message }),
             ),
         );
@@ -1999,6 +2000,7 @@ mod tests {
         );
         let replan = Error::plan_stale(
             crate::error::PlanStaleSource::Replan,
+            &[crate::error::StalePart::Targets],
             "the target changed while this command planned",
             Suggestion::text("run the command again"),
         );

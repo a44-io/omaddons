@@ -493,7 +493,7 @@ fn without_metadata_only_gated_folders_are_skipped() {
         "{}",
         r.context()
     );
-    let reason = envelope["error"]["details"]["tried"][0]["reason"].to_string();
+    let reason = envelope["error"]["details"]["tried"][0]["message"].to_string();
     assert!(reason.contains("interface_not_in_family"), "{reason}");
     // The same holds when the addon's own folder is gated. Each scenario is a release of
     // its own: a tag's archive is remembered by its hash.
@@ -999,7 +999,7 @@ fn a_file_labelled_for_other_clients_only_is_refused_naming_the_evidence() {
         r.context()
     );
     assert!(
-        error["details"]["tried"][0]["reason"]
+        error["details"]["tried"][0]["message"]
             .as_str()
             .unwrap()
             .contains(said),

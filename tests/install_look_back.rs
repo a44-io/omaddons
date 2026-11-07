@@ -275,7 +275,7 @@ fn each_client_installs_the_newest_release_declared_for_it() {
         r.context()
     );
     let reasons = error["details"]["tried"].to_string();
-    assert!(reasons.contains("look_back: "), "{reasons}");
+    assert!(reasons.contains(r#""code":"look_back""#), "{reasons}");
     // Nothing found asks the API nothing.
     assert_eq!(rest_requests(&home), 2, "{}", net_log(&home).context());
     assert!(!home.addons("_classic_era_").join("VuhDo").exists());
@@ -530,11 +530,9 @@ fn a_spent_api_budget_stops_the_look_back() {
     let tried = error["details"]["tried"].as_array().unwrap();
     let last = tried.last().unwrap();
     assert_eq!(last["asset"], "look_back", "{}", r.context());
+    assert_eq!(last["code"], "rate_limited", "{last}");
     assert!(
-        last["reason"]
-            .as_str()
-            .unwrap()
-            .starts_with("rate_limited: "),
+        last["message"].as_str().is_some_and(|m| !m.is_empty()),
         "{last}"
     );
     assert_eq!(rest_requests(&home), 1, "{}", net_log(&home).context());
@@ -594,7 +592,7 @@ fn a_single_track_repository_stops_the_look_back_early() {
         .as_array()
         .unwrap()
         .iter()
-        .map(|t| t["reason"].as_str().unwrap().to_owned())
+        .map(|t| t["message"].as_str().unwrap().to_owned())
         .collect();
     assert!(
         reasons.last().is_some_and(|r| r.contains("one track")),

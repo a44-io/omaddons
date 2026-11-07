@@ -1183,6 +1183,7 @@ mod tests {
     fn stale() -> Error {
         Error::plan_stale(
             PlanStaleSource::Apply,
+            &[crate::error::StalePart::Observed],
             "the world moved since the preview",
             Suggestion::text("preview it again"),
         )

@@ -11,9 +11,14 @@ expression: s.stable(&c.envelope)
     "details": {
       "items": [
         {
-          "code": "offline",
-          "message": "WeakAuras: its archive is not in the blob cache, and getting it again needs the network",
-          "request": "weakauras"
+          "error": {
+            "code": "offline",
+            "fix": "run without --offline and with OMADDONS_OFFLINE unset",
+            "fix_argv": null,
+            "message": "WeakAuras: its archive is not in the blob cache, and getting it again needs the network"
+          },
+          "request": "weakauras",
+          "target": "retail"
         }
       ],
       "reason": "not_cached",

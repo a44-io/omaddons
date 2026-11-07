@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use super::journal::{Journal, Step, StepOp, StepPurpose};
 use super::stage::Staged;
 use crate::discover::find_children;
-use crate::error::{Error, PlanStaleSource, Result, Suggestion, Warning, WarningCode};
+use crate::error::{Error, PlanStaleSource, Result, StalePart, Suggestion, Warning, WarningCode};
 use crate::fsx::{
     CloneKind, ClonePolicy, Expect, FileId, FileKind, FileStamp, FsxError, MutateOpts, Op,
     Predicate, RenameMode, TreeDigest, TreeStamp, WriteSession, ensure_dir_all, failpoint, mutate,
@@ -1031,9 +1031,11 @@ fn absent(addons: &Path, name: &MutableFolderName) -> Result<()> {
     Ok(())
 }
 
+/// The live folders (or a name meant to be free) are not what was planned: `observed`.
 fn stale(message: String) -> Error {
     Error::plan_stale(
         PlanStaleSource::Replan,
+        &[StalePart::Observed],
         message,
         Suggestion::text("run the command again; it re-plans against the current folders"),
     )

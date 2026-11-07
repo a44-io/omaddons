@@ -44,7 +44,7 @@ pub(crate) const REPOS: &str = "https://repos.wowace.com/wow";
 const PROJECT_VERSION: &[u8] = b"@project-version@";
 
 /// `details.reason` of a project refused for needing the packager.
-const PACKAGING_UNSUPPORTED: &str = "packaging_unsupported";
+pub const PACKAGING_UNSUPPORTED: &str = "packaging_unsupported";
 
 /// The `wowace:` source.
 #[derive(Debug, Default)]
@@ -300,9 +300,10 @@ fn pinned(base: &str, revision: u32) -> Result<Pinned> {
     })
 }
 
-/// When `error` is [`assemble`] refusing a project that needs the packager, the reason a
-/// candidate's `tried[]` entry gives (`packaging_unsupported: .pkgmeta: externals; …`):
-/// the candidate is refused like one that does not load here, not failed to read.
+/// When `error` is [`assemble`] refusing a project that needs the packager, the message
+/// of a candidate's `tried[]` entry, whose code is [`PACKAGING_UNSUPPORTED`]
+/// (`.pkgmeta: externals; …`): the candidate is refused like one that does not load
+/// here, not failed to read.
 pub fn packaging_refusal(error: &Error) -> Option<String> {
     let refused = error.code == ErrorCode::BadArchive
         && matches!(
@@ -316,7 +317,7 @@ pub fn packaging_refusal(error: &Error) -> Option<String> {
         .as_array()
         .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
         .unwrap_or_default();
-    Some(format!("{PACKAGING_UNSUPPORTED}: {}", named.join("; ")))
+    Some(named.join("; "))
 }
 
 /// The tree at `base` (a [`AssetLocation::WowAceTree`]), fetched at `revision` and built
@@ -948,7 +949,7 @@ mod tests {
         assert_eq!(
             packaging_refusal(&err).as_deref(),
             Some(
-                "packaging_unsupported: .pkgmeta: externals; .pkgmeta: move-folders; \
+                ".pkgmeta: externals; .pkgmeta: move-folders; \
                  BugGrabber.lua:2: --@debug@; BugGrabber.lua:4: --@end-debug@"
             )
         );

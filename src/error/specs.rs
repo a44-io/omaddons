@@ -31,7 +31,8 @@ const FOLDER_CLASSES: DetailSpec = DetailSpec::Enum(&[
 pub(crate) const REFUSED_FOLDER: DetailSpec = DetailSpec::Object(&[
     Field::opt("class", &FOLDER_CLASSES),
     Field::opt("code", &STR),
-    Field::opt("existing", &DetailSpec::OneOf(&[&STR, &STRINGS])),
+    // The live folder the change meets (for two live spellings, the first).
+    Field::opt("existing", &STR),
     Field::req("folder", &STR),
     Field::opt("owner", &STR),
     Field::opt("owner_target", &STR),
@@ -49,6 +50,8 @@ pub(crate) const REFUSED_FOLDER: DetailSpec = DetailSpec::Object(&[
         ]),
     ),
     Field::opt("ref", &STR),
+    // `case_duplicates`: every live spelling of the folder, two or more.
+    Field::opt("spellings", &STRINGS),
 ]);
 
 /// `app/outcome.rs::ItemError`; its deliberately retained subset of details is opaque.
@@ -74,28 +77,26 @@ pub(crate) const HOLDER: DetailSpec = DetailSpec::Object(&[
     Field::req("started_at", &INSTANT),
 ]);
 
-/// `engine/plan.rs` candidate attempts: reason includes interpolated prose.
+/// `engine/plan.rs` candidate attempts: `code` is a refusal's (`wrong_flavor`,
+/// `older_than_installed`, `packaging_unsupported`), `look_back` for a release a look-back
+/// passed over, or the error code of an asset that could not be judged or of a look-back
+/// that could not be made; `message` says why, in words.
 pub(crate) const TRIED: DetailSpec = DetailSpec::Array(&DetailSpec::Object(&[
     Field::req("asset", &STR),
-    Field::req("reason", &STR),
+    Field::req("code", &STR),
+    Field::req("message", &STR),
 ]));
 
 /// `app/install.rs::all_failed`, `app/outcome.rs::all_failed`,
 /// `engine/plan.rs` dependency failures and `engine/tx.rs::recovery_failed`.
 pub(crate) const COMMON: DetailSpec = DetailSpec::Object(&[
+    // One shape at every site: `target` is `null` when no client was chosen yet.
     Field::opt(
         "items",
-        &DetailSpec::Array(&DetailSpec::OneOf(&[
-            &DetailSpec::Object(&[
-                Field::req("code", &STR),
-                Field::req("message", &STR),
-                Field::req("request", &STR),
-            ]),
-            &DetailSpec::Object(&[
-                Field::req("error", &ITEM_ERROR).nullable(),
-                Field::req("request", &STR),
-                Field::req("target", &STR),
-            ]),
+        &DetailSpec::Array(&DetailSpec::Object(&[
+            Field::req("error", &ITEM_ERROR).nullable(),
+            Field::req("request", &STR),
+            Field::req("target", &STR).nullable(),
         ])),
     ),
     Field::opt("journal_pending", &STR),
@@ -166,13 +167,8 @@ pub(crate) const TARGET_AMBIGUOUS: DetailSpec = DetailSpec::Object(&[
 /// `sources/refs.rs::ambiguous`, backup prefix, remove, adoption and addon restore.
 pub(crate) const REF_AMBIGUOUS: DetailSpec = DetailSpec::Object(&[
     Field::opt("addon", &STR),
-    Field::opt(
-        "candidates",
-        &DetailSpec::Array(&DetailSpec::OneOf(&[
-            &STR,
-            &DetailSpec::Object(&[Field::req("from", &STR), Field::req("ref", &STR)]),
-        ])),
-    ),
+    // What the user can pass instead, at every site.
+    Field::opt("candidates", &STRINGS),
     // `backup restore --addon`: the folders the addon had then that another addon has now.
     Field::opt(
         "current_owners",
@@ -183,6 +179,14 @@ pub(crate) const REF_AMBIGUOUS: DetailSpec = DetailSpec::Object(&[
     ),
     Field::opt("folder", &STR),
     Field::opt("input", &STR),
+    // The ref resolver only: each candidate and where it came from.
+    Field::opt(
+        "matches",
+        &DetailSpec::Array(&DetailSpec::Object(&[
+            Field::req("from", &STR),
+            Field::req("ref", &STR),
+        ])),
+    ),
     Field::opt("prefix", &STR),
     Field::opt("refs", &STRINGS),
     Field::opt("target", &STR),
@@ -484,7 +488,9 @@ pub(crate) const HASH_MISMATCH: DetailSpec = DetailSpec::Object(&[
 pub(crate) const PLAN_STALE: DetailSpec = DetailSpec::Object(&[
     Field::opt("cause", &STR),
     Field::opt("cause_message", &STR),
-    Field::opt(
+    // On every instance (`Error::plan_stale` takes it): the parts that moved, empty only
+    // for a stored plan `apply` refuses for itself (`reason`).
+    Field::req(
         "changed",
         &DetailSpec::Array(&DetailSpec::Enum(&[
             "command",
@@ -762,7 +768,8 @@ mod tests {
             let paths = code.declared_detail_paths();
             for path in [
                 "items",
-                "items[].code",
+                "items[].target",
+                "items[].error.code",
                 "items[].error.details",
                 "required_by",
                 "journal_pending",
@@ -791,14 +798,24 @@ mod tests {
         assert_eq!(COMMON.opaque_paths(), ["items[].error.details"]);
     }
 
+    /// Every `plan_stale` names what moved (rule 6): the spec requires `changed`, and the
+    /// one constructor sets it.
     #[test]
     fn changed_is_the_precondition_parts() {
-        let values = PLAN_STALE
-            .field("changed")
-            .unwrap()
-            .spec
-            .enum_values()
-            .unwrap();
+        let field = PLAN_STALE.field("changed").unwrap();
+        assert_eq!(
+            field.presence,
+            super::super::Presence::Required,
+            "{field:?}"
+        );
+        let made = Error::plan_stale(
+            crate::error::PlanStaleSource::Replan,
+            &[Part::Observed],
+            "x",
+            Suggestion::text("y"),
+        );
+        assert_eq!(made.details, serde_json::json!({"changed": ["observed"]}));
+        let values = field.spec.enum_values().unwrap();
         assert_eq!(
             values,
             Part::ALL.map(Part::wire),
@@ -994,8 +1011,10 @@ mod tests {
         }
     }
 
+    /// Rule 6: a `details` key has one shape, so an agent reads it one way. No spec, the
+    /// shared keys included, holds a `OneOf` (H1 gave the last three keys one shape).
     #[test]
-    fn two_shape_keys_are_the_known_ones() {
+    fn no_details_key_has_two_shapes() {
         let mut got = BTreeSet::new();
         for (name, spec) in ErrorCode::ALL
             .iter()
@@ -1006,20 +1025,10 @@ mod tests {
             one_of_paths(spec, "", &mut paths);
             got.extend(paths.into_iter().map(|path| (name.to_owned(), path)));
         }
-        let expected: BTreeSet<_> = [
-            ("ref_ambiguous", "candidates"),
-            ("case_collision", "folders[].existing"),
-            ("ownership_conflict", "folders[].existing"),
-            ("protected_folder", "folders[].existing"),
-            ("unmanaged_folder", "folders[].existing"),
-            ("COMMON", "items"),
-        ]
-        .map(|(code, path)| (code.to_owned(), path.to_owned()))
-        .into_iter()
-        .collect();
         assert_eq!(
-            got, expected,
-            "a new two-shape key needs a reason in its leaf's close comment; prefer one shape"
+            got,
+            BTreeSet::new(),
+            "a details key with two shapes: give it one (a second key for the other shape)"
         );
     }
 
@@ -1064,7 +1073,7 @@ mod tests {
             "journal_pending":"tx", "required_by":["Foo"],
             "recovery_error":{"code":"io","message":"failed"},
         });
-        for code in [ErrorCode::Network, ErrorCode::PlanStale] {
+        for code in [ErrorCode::Network, ErrorCode::Usage] {
             assert_eq!(code.check_details(&details), Ok(()), "{code}: {details}");
             let invalid =
                 serde_json::json!({"recovery_error":{"code":"io","message":"failed","extra":1}});

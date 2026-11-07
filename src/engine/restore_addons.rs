@@ -39,7 +39,7 @@ use super::tx::{
 use crate::backup::{BackupRef, EntryKind, Integrity, Manifest, ManifestEntry};
 use crate::discover::registry::LockedRegistry;
 use crate::discover::target::DiscoveredTarget;
-use crate::error::{Error, ErrorCode, PlanStaleSource, Result, Suggestion, Warning};
+use crate::error::{Error, ErrorCode, PlanStaleSource, Result, StalePart, Suggestion, Warning};
 use crate::fsx::{
     CloneKind, ClonePolicy, FileStamp, FsxError, GlobalLock, InflightLock, MutateOpts, Op,
     RenameMode, ScopeTable, SnapshotRoots, StampDigest, WriteSession, Writer, ensure_dir_all,
@@ -712,6 +712,7 @@ fn stage(
 fn changed(target: &str) -> Error {
     Error::plan_stale(
         PlanStaleSource::Replan,
+        &[StalePart::Observed],
         format!("{target}'s SavedVariables changed since the restore was planned"),
         Suggestion::text("run the command again; it plans against the current state"),
     )
@@ -790,6 +791,7 @@ impl Window<'_> {
                 Some(binding) => binding.moved(&target.id),
                 None => Error::plan_stale(
                     PlanStaleSource::Replan,
+                    &[StalePart::Targets],
                     format!(
                         "{}'s records changed since the restore was planned",
                         target.id

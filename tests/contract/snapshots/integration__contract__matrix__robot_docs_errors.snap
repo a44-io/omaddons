@@ -1,6 +1,5 @@
 ---
 source: tests/contract/matrix.rs
-assertion_line: 2373
 expression: projection
 ---
 {
@@ -14,80 +13,60 @@ expression: projection
           "properties": {
             "items": {
               "items": {
-                "oneOf": [
-                  {
+                "properties": {
+                  "error": {
                     "properties": {
                       "code": {
                         "type": "string"
                       },
-                      "message": {
+                      "details": {
+                        "additionalProperties": true,
+                        "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                        "type": "object"
+                      },
+                      "fix": {
                         "type": "string"
                       },
-                      "request": {
+                      "fix_argv": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": [
+                          "array",
+                          "null"
+                        ]
+                      },
+                      "message": {
                         "type": "string"
                       }
                     },
                     "required": [
                       "code",
-                      "message",
-                      "request"
+                      "fix",
+                      "fix_argv",
+                      "message"
                     ],
-                    "type": "object"
+                    "type": [
+                      "object",
+                      "null"
+                    ]
                   },
-                  {
-                    "properties": {
-                      "error": {
-                        "properties": {
-                          "code": {
-                            "type": "string"
-                          },
-                          "details": {
-                            "additionalProperties": true,
-                            "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                            "type": "object"
-                          },
-                          "fix": {
-                            "type": "string"
-                          },
-                          "fix_argv": {
-                            "items": {
-                              "type": "string"
-                            },
-                            "type": [
-                              "array",
-                              "null"
-                            ]
-                          },
-                          "message": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "code",
-                          "fix",
-                          "fix_argv",
-                          "message"
-                        ],
-                        "type": [
-                          "object",
-                          "null"
-                        ]
-                      },
-                      "request": {
-                        "type": "string"
-                      },
-                      "target": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "error",
-                      "request",
-                      "target"
-                    ],
-                    "type": "object"
+                  "request": {
+                    "type": "string"
+                  },
+                  "target": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
-                ]
+                },
+                "required": [
+                  "error",
+                  "request",
+                  "target"
+                ],
+                "type": "object"
               },
               "type": "array"
             },

@@ -11,9 +11,17 @@ expression: s.stable(&c.envelope)
     "details": {
       "items": [
         {
-          "code": "not_managed",
-          "message": "Nope is not managed by omaddons in retail",
-          "request": "Nope"
+          "error": {
+            "code": "not_managed",
+            "fix": "omaddons list",
+            "fix_argv": [
+              "omaddons",
+              "list"
+            ],
+            "message": "Nope is not managed by omaddons in retail"
+          },
+          "request": "Nope",
+          "target": null
         }
       ]
     },

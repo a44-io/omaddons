@@ -32,7 +32,9 @@ use crate::backup::tree::{CloneOpts, TreeCopy, clone_tree, hash_files, walk};
 use crate::backup::{BackupRef, EntryKind, Integrity, Manifest, ManifestEntry};
 use crate::discover::registry::LockedRegistry;
 use crate::discover::target::DiscoveredTarget;
-use crate::error::{Error, ErrorCode, PlanStaleSource, Result, Suggestion, Warning, WarningCode};
+use crate::error::{
+    Error, ErrorCode, PlanStaleSource, Result, StalePart, Suggestion, Warning, WarningCode,
+};
 use crate::fsx::{
     ClonePolicy, DirLock, FsxError, GlobalLock, InflightLock, MutateOpts, Op, RenameMode,
     ScopeTable, SnapshotRoots, StampDigest, WriteSession, Writer, ensure_dir_all, failpoint,
@@ -776,10 +778,13 @@ impl Window<'_> {
         super::fence::under_lock(self.scopes, paths, Some(&target), &[client.wtf()])?;
         // Retryable, unless the run is bound to a preview: it then commits only onto what
         // the preview saw (M3-D46).
-        let moved = |what: &str| match ctx.binding {
+        // The records are the client's generation (`targets`); its `WTF/` is what the
+        // restore saw (`observed`).
+        let moved = |what: &str, part: StalePart| match ctx.binding {
             Some(binding) => binding.moved(&target.id),
             None => Error::plan_stale(
                 PlanStaleSource::Replan,
+                &[part],
                 format!(
                     "{}'s {what} changed since the restore was planned",
                     target.id
@@ -792,7 +797,7 @@ impl Window<'_> {
             WtfChange::Restore { plan, .. } => {
                 // ubs:ignore — comparing record generations, not secrets
                 if current.value.generation != plan.generation {
-                    return Err(moved("records"));
+                    return Err(moved("records", StalePart::Targets));
                 }
             }
             WtfChange::Undo { recheck, .. } => recheck(current.value.generation)?,
@@ -806,7 +811,7 @@ impl Window<'_> {
         }
         // ubs:ignore — comparing paths, not secrets
         if seen.wtf != self.topology.wtf {
-            return Err(moved("WTF/"));
+            return Err(moved("WTF/", StalePart::Observed));
         }
         // The last running check before the live transition (M3-D29): a refusal check,
         // not exclusion; `--while-running` never lifts it.

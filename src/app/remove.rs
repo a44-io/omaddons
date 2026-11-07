@@ -241,7 +241,7 @@ pub fn run(ctx: &Context, args: &RemoveArgs) -> Result<RemoveOutcome> {
                         .map(|e| (r.request.clone(), e.clone()))
                 })
                 .collect();
-            return Err(all_failed(&errors));
+            return Err(all_failed(&errors, None));
         }
         1 => hit.iter().next().copied().unwrap_or_default(),
         _ => return Err(spans(ctx, &hit)),
@@ -305,7 +305,7 @@ pub fn run(ctx: &Context, args: &RemoveArgs) -> Result<RemoveOutcome> {
         .filter_map(|(i, e)| e.clone().map(|e| (i.request.clone(), e)))
         .collect();
     if errors.len() == built.len() {
-        return Err(all_failed(&errors));
+        return Err(all_failed(&errors, Some(target_id)));
     }
 
     let outcome = done.outcomes.first();

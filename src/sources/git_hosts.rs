@@ -26,7 +26,7 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use super::Wanted;
-use crate::error::{Error, ErrorCode, PlanStaleSource, Result, Suggestion};
+use crate::error::{Error, ErrorCode, PlanStaleSource, Result, StalePart, Suggestion};
 use crate::fsx::{Op, ScopeTable, WriteSession, Writer, ensure_dir_all, mutate};
 use crate::limits::API_RESPONSE_MAX_BYTES;
 use crate::model::{Asset, AssetLocation, Channel, Ref, Release, ReleaseSet};
@@ -487,6 +487,7 @@ impl GitRunner {
         if !head.eq_ignore_ascii_case(sha) {
             return Err(Error::plan_stale(
                 PlanStaleSource::Replan,
+                &[StalePart::Selection],
                 format!("{url}#{rev} moved from {sha} to {head} since it was resolved"),
                 Suggestion::text("run the command again"),
             ));
@@ -1706,10 +1707,13 @@ mod tests {
         assert_eq!(done.failures.len(), 1, "{:?}", done.failures);
         let failure = &done.failures[0];
         assert_eq!(failure.error.code, ErrorCode::NoCompatibleRelease);
-        let reason = failure.error.details["tried"][0]["reason"]
-            .as_str()
-            .unwrap();
-        assert!(reason.starts_with("archive_too_large: "), "{reason}");
+        let tried = &failure.error.details["tried"][0];
+        assert_eq!(tried["code"], "archive_too_large", "{tried}");
+        assert!(
+            tried["message"].as_str().is_some_and(|m| !m.is_empty()),
+            "{tried}"
+        );
+        assert!(tried.get("reason").is_none(), "{tried}");
         assert!(done.outcomes.iter().all(|o| o.tx.is_none()));
         assert!(!scene.client.addons().join("Big").exists());
         let tmp = scene.paths.cache_dir().join("tmp");

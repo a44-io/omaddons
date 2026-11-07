@@ -586,7 +586,7 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
                     .map(|e| (i.request.clone(), e.clone()))
             })
             .collect();
-        return Err(all_failed(&errors));
+        return Err(all_failed(&errors, None));
     }
     // Someone installing now expects now's release; --offline answers from the memo.
     let freshness = if ctx.offline {
@@ -645,7 +645,7 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
                     .map(|e| (i.request.clone(), e.clone()))
             })
             .collect();
-        return Err(all_failed(&errors));
+        return Err(all_failed(&errors, None));
     }
 
     let req = TxRequest {
@@ -732,7 +732,8 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
         .filter_map(|(item, e)| e.clone().map(|e| (item.request.clone(), e)))
         .collect();
     if errors.len() == built.len() {
-        return Err(all_failed(&errors));
+        let id = outcome.map_or_else(|| target.target.id.clone(), |o| o.target.clone());
+        return Err(all_failed(&errors, Some(&id)));
     }
     for (request, error) in &errors {
         let mut warning = Warning::item(error);
@@ -1079,7 +1080,7 @@ fn choose_target<'w>(
                 (i.request.clone(), error)
             })
             .collect();
-        return Err(all_failed(&errors));
+        return Err(all_failed(&errors, None));
     }
     let deciding: Vec<(&str, &ParsedRef)> = parsed
         .iter()
@@ -1497,13 +1498,18 @@ fn mode_note(selector: &str, target: &DiscoveredTarget, table: &RulesTable) -> O
 }
 
 /// Every item failed: the first item's error, with every item's error in details.
-pub(super) fn all_failed(errors: &[(String, Error)]) -> Error {
+/// Every request failed: the first one's error, with `details.items` listing each in the
+/// one shape every command's `items[]` has (rule 6): `{target, request, error}`, `target`
+/// `null` when no client was chosen yet (a ref that does not parse, none that loads).
+pub(super) fn all_failed(errors: &[(String, Error)], target: Option<&str>) -> Error {
     let Some((_, first)) = errors.first() else {
         return Error::internal("install without items");
     };
     let listed: Vec<serde_json::Value> = errors
         .iter()
-        .map(|(request, e)| json!({ "request": request, "code": e.code.wire(), "message": e.message }))
+        .map(|(request, e)| {
+            json!({ "target": target, "request": request, "error": ItemError::from(e) })
+        })
         .collect();
     let mut details = first.details.clone();
     if let Some(map) = details.as_object_mut() {
@@ -1723,18 +1729,52 @@ mod tests {
                 Error::new(ErrorCode::RefInvalid, "bad", Suggestion::text("y")),
             ),
         ];
-        let error = all_failed(&errors);
-        assert_eq!(
-            (error.code, error.exit().code()),
-            (ErrorCode::NoCompatibleRelease, 3)
-        );
-        assert_eq!(
-            error.details["items"],
-            json!([
-                {"request": "gh:o/bar", "code": "no_compatible_release", "message": "none"},
-                {"request": "gh:", "code": "ref_invalid", "message": "bad"},
-            ])
-        );
+        // Before a client was chosen, and on one: `{target, request, error}` either way.
+        for (case, target) in [("no_target", None), ("on_retail", Some("retail"))] {
+            let error = all_failed(&errors, target);
+            assert_eq!(
+                (error.code, error.exit().code()),
+                (ErrorCode::NoCompatibleRelease, 3),
+                "{case}"
+            );
+            let items = error.details["items"].as_array().unwrap();
+            let shown: Vec<_> = items
+                .iter()
+                .map(|i| {
+                    (
+                        i["target"].clone(),
+                        i["request"].clone(),
+                        i["error"]["code"].clone(),
+                        i["error"]["message"].clone(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                shown,
+                [
+                    (
+                        json!(target),
+                        json!("gh:o/bar"),
+                        json!("no_compatible_release"),
+                        json!("none")
+                    ),
+                    (
+                        json!(target),
+                        json!("gh:"),
+                        json!("ref_invalid"),
+                        json!("bad")
+                    ),
+                ],
+                "{case}: {items:?}"
+            );
+            assert!(
+                ErrorCode::NoCompatibleRelease
+                    .check_details(&error.details)
+                    .is_ok(),
+                "{case}: {}",
+                error.details
+            );
+        }
     }
 
     #[test]

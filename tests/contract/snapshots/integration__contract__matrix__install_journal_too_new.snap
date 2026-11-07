@@ -11,9 +11,21 @@ expression: s.stable(&c.envelope)
     "details": {
       "items": [
         {
-          "code": "state_too_new",
-          "message": "transaction <ulid> on target <ulid> was started by a newer omaddons (journal version 9.0; this one reads 1.1), so it is left as it is",
-          "request": "gh:o/foo"
+          "error": {
+            "code": "state_too_new",
+            "fix": "omaddons doctor explain fm-concurrency_primitives-journal-too-new -t retail",
+            "fix_argv": [
+              "omaddons",
+              "doctor",
+              "explain",
+              "fm-concurrency_primitives-journal-too-new",
+              "-t",
+              "retail"
+            ],
+            "message": "transaction <ulid> on target <ulid> was started by a newer omaddons (journal version 9.0; this one reads 1.1), so it is left as it is"
+          },
+          "request": "gh:o/foo",
+          "target": "retail"
         }
       ],
       "journal_pending": "<ulid>",

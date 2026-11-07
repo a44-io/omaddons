@@ -794,6 +794,40 @@ impl std::ops::DerefMut for Error {
     }
 }
 
+/// A part of what a run planned, or of its preview's token, that moved: the names
+/// every `plan_stale` carries in `details.changed` (rule 6). In token order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum StalePart {
+    /// The token is another command's.
+    Command,
+    /// A client's records changed (their generation), or the client registered.
+    Targets,
+    /// The run would change something else: another release, another set of changes.
+    Selection,
+    /// What the run saw changed: live folders, files, SavedVariables, a marker, a local
+    /// input, the rules or the build.
+    Observed,
+}
+
+impl StalePart {
+    pub const ALL: [Self; 4] = [
+        Self::Command,
+        Self::Targets,
+        Self::Selection,
+        Self::Observed,
+    ];
+
+    /// The name `details.changed` uses.
+    pub const fn wire(self) -> &'static str {
+        match self {
+            Self::Command => "command",
+            Self::Targets => "targets",
+            Self::Selection => "selection",
+            Self::Observed => "observed",
+        }
+    }
+}
+
 /// Who raised `plan_stale`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlanStaleSource {
@@ -904,13 +938,34 @@ impl Error {
             .details(serde_json::json!({ "status": status }))
     }
 
-    /// Retryable when raised by re-planning, not when raised by `apply`.
+    /// Retryable when raised by re-planning, not when raised by `apply`. `changed` names
+    /// the parts that moved, `details.changed` on every `plan_stale` (rule 6); it is
+    /// empty only for a stored plan refused for itself (`details.reason`).
     pub fn plan_stale(
         source: PlanStaleSource,
+        changed: &[StalePart],
         message: impl Into<String>,
         fix: Suggestion,
     ) -> Self {
-        Self::new(ErrorCode::PlanStale, message, fix).retryable(source == PlanStaleSource::Replan)
+        let names: Vec<&str> = changed.iter().map(|part| part.wire()).collect();
+        Self::new(ErrorCode::PlanStale, message, fix)
+            .retryable(source == PlanStaleSource::Replan)
+            .details(serde_json::json!({ "changed": names }))
+    }
+
+    /// `details` with `extra`'s keys added (both objects), keeping the keys already set:
+    /// what a constructor that sets its own key (`plan_stale`'s `changed`) is given more by.
+    #[must_use]
+    pub fn extend_details(mut self, extra: serde_json::Value) -> Self {
+        match (self.details.as_object_mut(), extra) {
+            (Some(details), serde_json::Value::Object(extra)) => {
+                for (key, value) in extra {
+                    details.entry(key).or_insert(value);
+                }
+            }
+            (_, extra) => self.details = extra,
+        }
+        self
     }
 
     /// A downloaded file did not match its expected hash; retryable on the first
@@ -1355,8 +1410,9 @@ mod tests {
         assert!(Error::http_status(503, "x", fix()).retryable);
         assert!(Error::http_status(500, "x", fix()).retryable);
         assert!(!Error::http_status(404, "x", fix()).retryable);
-        assert!(Error::plan_stale(PlanStaleSource::Replan, "x", fix()).retryable);
-        assert!(!Error::plan_stale(PlanStaleSource::Apply, "x", fix()).retryable);
+        let observed = [StalePart::Observed];
+        assert!(Error::plan_stale(PlanStaleSource::Replan, &observed, "x", fix()).retryable);
+        assert!(!Error::plan_stale(PlanStaleSource::Apply, &observed, "x", fix()).retryable);
         assert!(Error::hash_mismatch(1, "x", fix()).retryable);
         assert!(!Error::hash_mismatch(2, "x", fix()).retryable);
         assert!(Error::new(ErrorCode::Locked, "x", fix()).retryable);

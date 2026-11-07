@@ -931,13 +931,16 @@ fn check_lifecycle(
     missing: Option<&AbsPath>,
 ) -> Result<()> {
     let id = plan.plan_id;
+    // The plan refused for itself: none of its token's parts moved (`changed: []`), and
+    // `details.reason` says why.
     let stale = |message: String, details: serde_json::Value| {
         Error::plan_stale(
             PlanStaleSource::Apply,
+            &[],
             message,
             Suggestion::command(precondition::preview_argv(&plan.display_argv)),
         )
-        .details(details)
+        .extend_details(details)
     };
     if !evidence.lines.is_empty() {
         let txs: Vec<String> = evidence.lines.iter().map(|l| l.tx.to_string()).collect();
@@ -1031,14 +1034,14 @@ fn check_dry_run_token(plan: &StoredPlan, executed: &StorableOutcome) -> Result<
     let names: Vec<&str> = changed.iter().map(|p| p.wire()).collect();
     Err(Error::plan_stale(
         PlanStaleSource::Apply,
+        &changed,
         format!(
             "plan {} no longer describes the world ({} changed); nothing was changed: preview it again",
             plan.plan_id,
             names.join(", ")
         ),
         Suggestion::command(precondition::preview_argv(&plan.display_argv)),
-    )
-    .details(json!({ "changed": names })))
+    ))
 }
 
 #[cfg(test)]

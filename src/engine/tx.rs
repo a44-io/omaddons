@@ -49,7 +49,8 @@ use crate::discover::registry::{LockedRegistry, same_dir};
 use crate::discover::running::{RunningScan, detect_running, running_unknown};
 use crate::discover::target::DiscoveredTarget;
 use crate::error::{
-    Error, ErrorBody, ErrorCode, PlanStaleSource, Result, Suggestion, Warning, WarningCode,
+    Error, ErrorBody, ErrorCode, PlanStaleSource, Result, StalePart, Suggestion, Warning,
+    WarningCode,
 };
 use crate::fsx::{
     self, GlobalLock, GlobalLockGuard, InflightLock, LockUse, PruneReason, ScopeTable,
@@ -1562,13 +1563,16 @@ pub(super) fn millis(guard: &GlobalLockGuard) -> u64 {
 pub(super) fn stale(cause: &Error) -> Error {
     Error::plan_stale(
         PlanStaleSource::Replan,
+        &[StalePart::Targets],
         format!(
             "the target changed while this command planned: {}",
             cause.message
         ),
         Suggestion::text("run the command again; it re-plans against the current state"),
     )
-    .details(serde_json::json!({ "cause": cause.code.wire(), "cause_message": cause.message }))
+    .extend_details(
+        serde_json::json!({ "cause": cause.code.wire(), "cause_message": cause.message }),
+    )
 }
 
 /// Who a work is for, when another work asked for it: a dependency install's
@@ -2000,6 +2004,7 @@ mod tests {
             if self.refuse {
                 Err(Error::plan_stale(
                     crate::error::PlanStaleSource::Apply,
+                    &[crate::error::StalePart::Selection],
                     "refused by the test binding",
                     Suggestion::text("preview again"),
                 ))
@@ -3325,6 +3330,7 @@ mod tests {
     fn refused_by(check: &str) -> Error {
         Error::plan_stale(
             crate::error::PlanStaleSource::Apply,
+            &[crate::error::StalePart::Observed],
             format!("refused by the test binding's {check}"),
             Suggestion::text("preview again"),
         )

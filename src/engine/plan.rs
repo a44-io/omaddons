@@ -2833,7 +2833,7 @@ pub fn check_release(
                         left_out.get_or_insert(winner);
                     }
                     Ok(Err(refusal)) => {
-                        refused.push(format!("{}: {}", candidate.asset.filename, refusal.reason))
+                        refused.push(format!("{}: {}", candidate.asset.filename, refusal.line()))
                     }
                     Err(error) => {
                         unreadable.get_or_insert(error);
@@ -3560,8 +3560,11 @@ struct Winner {
 
 /// A candidate that does not install here.
 struct Refusal {
-    /// Its `tried[]` reason.
-    reason: String,
+    /// Its `tried[]` code: `wrong_flavor`, `older_than_installed` or
+    /// `packaging_unsupported`.
+    code: &'static str,
+    /// Its `tried[]` message: what refused it, folder by folder or by evidence.
+    detail: String,
     /// Why, in words, for the refusal's message.
     why: String,
     /// `--any-flavor` would lift it: evidence against, or folders built for other clients
@@ -3573,19 +3576,32 @@ struct Refusal {
 }
 
 impl Refusal {
-    /// A refusal whose `tried[]` reason (`<code>: <text>`) also says it in words.
-    fn new(reason: String) -> Self {
-        let why = reason
-            .split_once(": ")
-            .map_or(reason.as_str(), |(_, text)| text)
-            .to_owned();
+    /// A refusal whose `tried[]` message also says it in words.
+    fn new(code: &'static str, detail: String) -> Self {
         Self {
-            reason,
-            why,
+            code,
+            why: detail.clone(),
+            detail,
             overridable: false,
             wrong_flavor: false,
         }
     }
+
+    /// Its `tried[]` entry for `asset` (rule 6: `{asset, code, message}`).
+    fn tried(&self, asset: &str) -> Value {
+        json!({ "asset": asset, "code": self.code, "message": self.detail })
+    }
+
+    /// `<code>: <message>`, as a line of a refusal's own message.
+    fn line(&self) -> String {
+        format!("{}: {}", self.code, self.detail)
+    }
+}
+
+/// A `tried[]` entry for an asset that could not be judged, or a look-back that could
+/// not be made: the error's code and message.
+fn tried_error(asset: &str, error: &Error) -> Value {
+    json!({ "asset": asset, "code": error.code.wire(), "message": error.message })
 }
 
 impl WrongFlavorReason {
@@ -3861,18 +3877,15 @@ impl TargetPlanner<'_> {
                     refused = true;
                     overridable |= refusal.overridable;
                     wrong_flavor |= refusal.wrong_flavor;
+                    tried.push(refusal.tried(&candidate.asset.filename));
                     first_why.get_or_insert((candidate.asset.filename.clone(), refusal.why));
-                    tried.push(
-                        json!({ "asset": candidate.asset.filename, "reason": refusal.reason }),
-                    );
                 }
                 // A stuck journal's fence refused writing the download (E14): no verdict
                 // on this candidate, nor on the next. The run fails with that journal's
                 // stop, and nothing is remembered as not loading.
                 Err(error) if error.fenced.is_some() => return Err(error),
                 Err(error) => {
-                    let reason = format!("{}: {}", error.code.wire(), error.message);
-                    tried.push(json!({ "asset": candidate.asset.filename, "reason": reason }));
+                    tried.push(tried_error(&candidate.asset.filename, &error));
                     unreadable.get_or_insert(error);
                 }
             }
@@ -3934,14 +3947,11 @@ impl TargetPlanner<'_> {
                             );
                         }
                         None => tried.extend(look_back.ruled_out.iter().map(|(tag, why)| {
-                            json!({ "asset": format!("{tag}/release.json"), "reason": format!("look_back: {why}") })
+                            json!({ "asset": format!("{tag}/release.json"), "code": "look_back", "message": why })
                         })),
                     },
                     // A look-back that could not be made, as a download that failed is.
-                    Err(error) => tried.push(json!({
-                        "asset": "look_back",
-                        "reason": format!("{}: {}", error.code.wire(), error.message),
-                    })),
+                    Err(error) => tried.push(tried_error("look_back", &error)),
                 }
             }
             // Every candidate failed its published hash and none was judged: the
@@ -4664,8 +4674,8 @@ impl TargetPlanner<'_> {
                     Ok(done) => done,
                     // A WowAce project that needs the packager is refused by name, as
                     // one that does not load here is.
-                    Err(e) if let Some(reason) = wowace::packaging_refusal(&e) => {
-                        return Ok(Err(Refusal::new(reason)));
+                    Err(e) if let Some(named) = wowace::packaging_refusal(&e) => {
+                        return Ok(Err(Refusal::new(wowace::PACKAGING_UNSUPPORTED, named)));
                     }
                     Err(e) => {
                         return Err(match &candidate.asset.location {
@@ -4802,7 +4812,8 @@ impl TargetPlanner<'_> {
                 |s| self.describe(&s.name, &s.reason),
             );
             return Ok(Err(Refusal {
-                reason: format!("wrong_flavor: {}", reasons.join("; ")),
+                code: "wrong_flavor",
+                detail: reasons.join("; "),
                 why,
                 overridable: !any_flavor
                     && deciding.is_some_and(|s| s.reason.admitted_by_any_flavor()),
@@ -4811,7 +4822,8 @@ impl TargetPlanner<'_> {
         }
         if let Some(evidence) = against {
             return Ok(Err(Refusal {
-                reason: format!("wrong_flavor: {evidence}"),
+                code: "wrong_flavor",
+                detail: evidence.clone(),
                 why: evidence,
                 overridable: true,
                 wrong_flavor: true,
@@ -4830,7 +4842,7 @@ impl TargetPlanner<'_> {
                     || "it is out of date on this client".to_owned(),
                     |i| format!("its interface {i} is below the installed {floor}"),
                 );
-                return Ok(Err(Refusal::new(format!("older_than_installed: {why}"))));
+                return Ok(Err(Refusal::new("older_than_installed", why)));
             }
         }
         let mut inspected = inspected;

@@ -65,7 +65,13 @@ mod support {
             .as_array()
             .unwrap()
             .iter()
-            .map(|t| t["reason"].as_str().unwrap().to_owned())
+            .map(|t| {
+                format!(
+                    "{}: {}",
+                    t["code"].as_str().unwrap(),
+                    t["message"].as_str().unwrap()
+                )
+            })
             .collect()
     }
 

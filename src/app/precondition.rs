@@ -53,33 +53,9 @@ const PREFIX: &str = "pc1:";
 /// Hex digits per part.
 const FIELD: usize = 16;
 
-/// The parts of a precondition, in token order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Part {
-    Command,
-    Targets,
-    Selection,
-    Observed,
-}
-
-impl Part {
-    pub const ALL: [Self; 4] = [
-        Self::Command,
-        Self::Targets,
-        Self::Selection,
-        Self::Observed,
-    ];
-
-    /// The name `details.changed` uses.
-    pub const fn wire(self) -> &'static str {
-        match self {
-            Self::Command => "command",
-            Self::Targets => "targets",
-            Self::Selection => "selection",
-            Self::Observed => "observed",
-        }
-    }
-}
+/// The parts of a precondition, in token order: the names `plan_stale`'s
+/// `details.changed` uses, which every `plan_stale` carries.
+pub use crate::error::StalePart as Part;
 
 /// What a destructive run would do, from the plan it executes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -275,13 +251,13 @@ pub fn stale(command: &str, changed: &[Part], preview: &[String]) -> Error {
     let names: Vec<&str> = changed.iter().map(|p| p.wire()).collect();
     Error::plan_stale(
         PlanStaleSource::Apply,
+        changed,
         format!(
             "this {command} is no longer what its preview showed ({} changed); nothing was changed: preview it again",
             names.join(", ")
         ),
         Suggestion::command(preview.to_vec()),
     )
-    .details(json!({ "changed": names }))
 }
 
 /// [`stale`], its message also saying what changed (`why`, by folder key): the refusal

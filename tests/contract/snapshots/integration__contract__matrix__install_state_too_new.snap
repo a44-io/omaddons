@@ -11,9 +11,14 @@ expression: s.stable(&c.envelope)
     "details": {
       "items": [
         {
-          "code": "state_too_new",
-          "message": "<root>/state/omaddons/targets/<ulid>.json was written by a newer omaddons (target_record version 1.99; this binary writes 1.0)",
-          "request": "gh:o/foo"
+          "error": {
+            "code": "state_too_new",
+            "fix": "upgrade omaddons",
+            "fix_argv": null,
+            "message": "<root>/state/omaddons/targets/<ulid>.json was written by a newer omaddons (target_record version 1.99; this binary writes 1.0)"
+          },
+          "request": "gh:o/foo",
+          "target": "retail"
         }
       ],
       "path": "<root>/state/omaddons/targets/<ulid>.json",

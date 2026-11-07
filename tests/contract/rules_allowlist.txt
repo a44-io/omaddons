@@ -2,6 +2,3 @@
 # a new shape that breaks a rule is fixed, never added here. H1 empties it before the freeze.
 # Format: <rule> | <scope> | <path>. A scope `<prefix> *` covers every scope below the prefix,
 # for a shape defined once that each of them carries (the error wrapper's keys).
-r4-open-enum | error hash_mismatch | details.tried[].reason
-r4-open-enum | error no_compatible_release | details.tried[].reason
-r4-open-enum | error wrong_flavor | details.tried[].reason

@@ -262,7 +262,7 @@ fn the_setting_never_installs_what_the_client_refuses() {
     let r = home.run(&["install", "gh:o/bar", "-t", "classic", "--any-flavor"]);
     let error = &r.expect(3)["error"];
     assert!(
-        error["details"]["tried"][0]["reason"]
+        error["details"]["tried"][0]["message"]
             .as_str()
             .is_some_and(|t| t.contains("no_loadable_toc")),
         "{}",
@@ -281,7 +281,7 @@ fn the_setting_never_installs_what_the_client_refuses() {
     let envelope = r.expect(3);
     let error = &envelope["error"];
     assert!(
-        error["details"]["tried"][0]["reason"]
+        error["details"]["tried"][0]["message"]
             .as_str()
             .is_some_and(|t| t.contains("below_client_floor")),
         "{}",

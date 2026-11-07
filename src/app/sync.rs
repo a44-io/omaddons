@@ -337,7 +337,7 @@ fn ambiguous_refs(error: &Error) -> Vec<Ref> {
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|c| c["ref"].as_str()?.parse().ok())
+        .filter_map(|c| c.as_str()?.parse().ok())
         .collect()
 }
 

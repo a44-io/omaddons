@@ -16,80 +16,60 @@ expression: schemas
       },
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -135,80 +115,60 @@ expression: schemas
     "properties": {
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -243,80 +203,60 @@ expression: schemas
     "properties": {
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -381,80 +321,60 @@ expression: schemas
       },
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -535,17 +455,7 @@ expression: schemas
               "type": "string"
             },
             "existing": {
-              "oneOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                }
-              ]
+              "type": "string"
             },
             "folder": {
               "type": "string"
@@ -570,6 +480,12 @@ expression: schemas
             },
             "ref": {
               "type": "string"
+            },
+            "spellings": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
             }
           },
           "required": [
@@ -581,80 +497,60 @@ expression: schemas
       },
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -695,80 +591,60 @@ expression: schemas
     "properties": {
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -815,80 +691,60 @@ expression: schemas
       },
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -950,80 +806,60 @@ expression: schemas
     "properties": {
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -1088,80 +924,60 @@ expression: schemas
       },
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -1220,80 +1036,60 @@ expression: schemas
     "properties": {
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -1331,80 +1127,60 @@ expression: schemas
       },
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -1445,80 +1221,60 @@ expression: schemas
       },
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -1564,80 +1320,60 @@ expression: schemas
     "properties": {
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -1732,80 +1468,60 @@ expression: schemas
       },
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -1839,13 +1555,17 @@ expression: schemas
             "asset": {
               "type": "string"
             },
-            "reason": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
               "type": "string"
             }
           },
           "required": [
             "asset",
-            "reason"
+            "code",
+            "message"
           ],
           "type": "object"
         },
@@ -1864,80 +1584,60 @@ expression: schemas
       },
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -1975,80 +1675,60 @@ expression: schemas
     "properties": {
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -2086,80 +1766,60 @@ expression: schemas
     "properties": {
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -2225,80 +1885,60 @@ expression: schemas
       },
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -2383,80 +2023,60 @@ expression: schemas
       },
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -2494,80 +2114,60 @@ expression: schemas
     "properties": {
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -2608,80 +2208,60 @@ expression: schemas
       },
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -2721,13 +2301,17 @@ expression: schemas
             "asset": {
               "type": "string"
             },
-            "reason": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
               "type": "string"
             }
           },
           "required": [
             "asset",
-            "reason"
+            "code",
+            "message"
           ],
           "type": "object"
         },
@@ -2773,80 +2357,60 @@ expression: schemas
       },
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -2940,80 +2504,60 @@ expression: schemas
       },
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -3051,80 +2595,60 @@ expression: schemas
     "properties": {
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -3173,80 +2697,60 @@ expression: schemas
       },
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -3302,17 +2806,7 @@ expression: schemas
               "type": "string"
             },
             "existing": {
-              "oneOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                }
-              ]
+              "type": "string"
             },
             "folder": {
               "type": "string"
@@ -3337,6 +2831,12 @@ expression: schemas
             },
             "ref": {
               "type": "string"
+            },
+            "spellings": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
             }
           },
           "required": [
@@ -3348,80 +2848,60 @@ expression: schemas
       },
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -3470,80 +2950,60 @@ expression: schemas
     "properties": {
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -3609,80 +3069,60 @@ expression: schemas
       },
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -3728,6 +3168,9 @@ expression: schemas
         "type": "array"
       }
     },
+    "required": [
+      "changed"
+    ],
     "type": "object"
   },
   "protected_folder": {
@@ -3749,17 +3192,7 @@ expression: schemas
               "type": "string"
             },
             "existing": {
-              "oneOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                }
-              ]
+              "type": "string"
             },
             "folder": {
               "type": "string"
@@ -3784,6 +3217,12 @@ expression: schemas
             },
             "ref": {
               "type": "string"
+            },
+            "spellings": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
             }
           },
           "required": [
@@ -3795,80 +3234,60 @@ expression: schemas
       },
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -3903,80 +3322,60 @@ expression: schemas
     "properties": {
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -4021,26 +3420,7 @@ expression: schemas
       },
       "candidates": {
         "items": {
-          "oneOf": [
-            {
-              "type": "string"
-            },
-            {
-              "properties": {
-                "from": {
-                  "type": "string"
-                },
-                "ref": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "from",
-                "ref"
-              ],
-              "type": "object"
-            }
-          ]
+          "type": "string"
         },
         "type": "array"
       },
@@ -4070,85 +3450,83 @@ expression: schemas
       },
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
       "journal_pending": {
         "type": "string"
+      },
+      "matches": {
+        "items": {
+          "properties": {
+            "from": {
+              "type": "string"
+            },
+            "ref": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "from",
+            "ref"
+          ],
+          "type": "object"
+        },
+        "type": "array"
       },
       "prefix": {
         "type": "string"
@@ -4193,80 +3571,60 @@ expression: schemas
       },
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -4304,80 +3662,60 @@ expression: schemas
       },
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -4438,80 +3776,60 @@ expression: schemas
     "properties": {
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -4552,80 +3870,60 @@ expression: schemas
       },
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -4689,80 +3987,60 @@ expression: schemas
     "properties": {
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -4833,80 +4111,60 @@ expression: schemas
       },
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -4956,80 +4214,60 @@ expression: schemas
       },
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -5136,80 +4374,60 @@ expression: schemas
       },
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -5297,17 +4515,7 @@ expression: schemas
               "type": "string"
             },
             "existing": {
-              "oneOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                }
-              ]
+              "type": "string"
             },
             "folder": {
               "type": "string"
@@ -5332,6 +4540,12 @@ expression: schemas
             },
             "ref": {
               "type": "string"
+            },
+            "spellings": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
             }
           },
           "required": [
@@ -5343,80 +4557,60 @@ expression: schemas
       },
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -5460,80 +4654,60 @@ expression: schemas
       },
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -5616,80 +4790,60 @@ expression: schemas
       },
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -5733,80 +4887,60 @@ expression: schemas
       },
       "items": {
         "items": {
-          "oneOf": [
-            {
+          "properties": {
+            "error": {
               "properties": {
                 "code": {
                   "type": "string"
                 },
-                "message": {
+                "details": {
+                  "additionalProperties": true,
+                  "description": "An item error's kept details: the subset of its own code's details an item keeps",
+                  "type": "object"
+                },
+                "fix": {
                   "type": "string"
                 },
-                "request": {
+                "fix_argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "message": {
                   "type": "string"
                 }
               },
               "required": [
                 "code",
-                "message",
-                "request"
+                "fix",
+                "fix_argv",
+                "message"
               ],
-              "type": "object"
+              "type": [
+                "object",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "error": {
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "details": {
-                      "additionalProperties": true,
-                      "description": "An item error's kept details: the subset of its own code's details an item keeps",
-                      "type": "object"
-                    },
-                    "fix": {
-                      "type": "string"
-                    },
-                    "fix_argv": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": [
-                        "array",
-                        "null"
-                      ]
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "fix",
-                    "fix_argv",
-                    "message"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "request": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "error",
-                "request",
-                "target"
-              ],
-              "type": "object"
+            "request": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
-          ]
+          },
+          "required": [
+            "error",
+            "request",
+            "target"
+          ],
+          "type": "object"
         },
         "type": "array"
       },
@@ -5849,13 +4983,17 @@ expression: schemas
             "asset": {
               "type": "string"
             },
-            "reason": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
               "type": "string"
             }
           },
           "required": [
             "asset",
-            "reason"
+            "code",
+            "message"
           ],
           "type": "object"
         },

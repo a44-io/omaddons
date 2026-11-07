@@ -658,9 +658,12 @@ fn ambiguous(input: &str, candidates: &[(Ref, String)]) -> Error {
         format!("{input:?} could mean {}: {}", candidates.len(), listed.join(", ")),
         install(first),
     )
+    // `candidates` are what the user can pass instead, as at every other site of the
+    // code (rule 6: one shape per key); where each came from is `matches`.
     .details(serde_json::json!({
         "input": input,
-        "candidates": candidates.iter().map(|(r, from)| serde_json::json!({ "ref": r.to_string(), "from": from })).collect::<Vec<_>>(),
+        "candidates": candidates.iter().map(|(r, _)| r.to_string()).collect::<Vec<_>>(),
+        "matches": candidates.iter().map(|(r, from)| serde_json::json!({ "ref": r.to_string(), "from": from })).collect::<Vec<_>>(),
     }));
     for (r, _) in rest {
         error = error.alternative(install(r));
@@ -1142,15 +1145,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         with_ctx(dir.path(), |ctx| {
             let err = parse_user_ref("details", ctx).unwrap_err();
+            // `candidates` are the refs to pass instead, `matches` where each came from.
             let candidates = err.details["candidates"].as_array().unwrap();
             assert_eq!(candidates.len(), 2);
-            assert_eq!(candidates[0]["ref"], "gh:Tercioo/Details-Damage-Meter");
-            assert!(
-                candidates[0]["from"]
-                    .as_str()
-                    .unwrap()
-                    .contains("installed")
-            );
+            assert_eq!(candidates[0], "gh:Tercioo/Details-Damage-Meter");
+            let matches = err.details["matches"].as_array().unwrap();
+            assert_eq!(matches.len(), 2);
+            assert_eq!(matches[0]["ref"], candidates[0]);
+            assert!(matches[0]["from"].as_str().unwrap().contains("installed"));
             assert_eq!(
                 err.fix.argv().unwrap(),
                 ["omaddons", "install", "gh:Tercioo/Details-Damage-Meter"]
