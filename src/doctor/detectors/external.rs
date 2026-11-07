@@ -5,8 +5,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use super::TargetFacts;
 use crate::doctor::budget::Budget;
-use crate::doctor::facts::{StatusFacts, TargetFacts};
 use crate::doctor::finding::{
     Confidence, Detected, Evidence, FolderEvidence, Observation, Subject,
 };
@@ -443,24 +443,21 @@ fn addon_observation(
 // `managed-files-modified`, `ownership-transferred`.
 
 /// `managed-files-modified`, from the Discovery and Records layers: each managed file
-/// checked stat-first, as plain `status` checks it.
+/// checked stat-first, as plain `status` checks it (`status --deep`'s report, every file
+/// re-hashed, answers when it seeded one).
 pub(crate) fn managed_files_modified(
     view: &DoctorView,
     sel: &Selection,
     _: &mut Budget,
 ) -> Detected {
-    let facts = StatusFacts {
-        targets: super::drift_facts(view, sel, DriftMode::Stat),
-        machine: Default::default(),
-    };
-    Detected::complete(managed_files_modified_in(&facts))
+    let targets = super::drift_facts(view, sel, DriftMode::Stat);
+    Detected::complete(managed_files_modified_in(&targets))
 }
 
 /// `managed-files-modified`'s rule: one finding per managed addon whose files changed on
 /// disk.
-pub(crate) fn managed_files_modified_in(facts: &StatusFacts) -> Vec<Observation> {
-    facts
-        .targets
+pub(crate) fn managed_files_modified_in(targets: &[TargetFacts]) -> Vec<Observation> {
+    targets
         .iter()
         .flat_map(|t| {
             t.drift
@@ -484,13 +481,23 @@ pub(crate) fn managed_files_modified_in(facts: &StatusFacts) -> Vec<Observation>
         .collect()
 }
 
-/// `ownership-transferred`, from the Records layer alone: each record with degraded
-/// addons.
+/// `ownership-transferred`, from the Records layer: each record with degraded addons, but
+/// a client the Discovery layer reports gone, whose finding is `target-vanished` (its
+/// remediation, `list -t <id> -v`, cannot run there). Discovery is not required: without
+/// a readable configuration or registry it does not load (and runs no scan), and every
+/// record is reported, named by key.
 pub(crate) fn ownership_transferred(view: &DoctorView, _: &Selection, _: &mut Budget) -> Detected {
-    let targets = view
+    let vanished: BTreeSet<TargetKey> = view
+        .world()
+        .into_iter()
+        .flat_map(|world| &world.resolved.missing)
+        .map(|entry| entry.key)
+        .collect();
+    let targets: Vec<TargetFacts> = view
         .records()
         .into_iter()
         .flat_map(|records| records.available())
+        .filter(|(key, _)| !vanished.contains(key))
         .map(|(key, loaded)| TargetFacts {
             degraded: loaded
                 .value
@@ -501,18 +508,13 @@ pub(crate) fn ownership_transferred(view: &DoctorView, _: &Selection, _: &mut Bu
             ..TargetFacts::new(view.target_ref(*key).id, *key)
         })
         .collect();
-    let facts = StatusFacts {
-        targets,
-        machine: Default::default(),
-    };
-    Detected::complete(ownership_transferred_in(&facts))
+    Detected::complete(ownership_transferred_in(&targets))
 }
 
 /// `ownership-transferred`'s rule: a target whose addons lost folders to other addons
 /// (`--force`).
-pub(crate) fn ownership_transferred_in(facts: &StatusFacts) -> Vec<Observation> {
-    facts
-        .targets
+pub(crate) fn ownership_transferred_in(targets: &[TargetFacts]) -> Vec<Observation> {
+    targets
         .iter()
         .filter(|t| t.degraded > 0)
         .map(|t| {

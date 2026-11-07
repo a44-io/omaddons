@@ -9,8 +9,8 @@
 //! same inode with the same bytes, recorded as one `repair` history line, verified, and
 //! a second run does nothing; its preview binds across processes; credentials outside
 //! `<config>`, symlinked or another user's are reported with prose and never touched.
-//! Detection is repeatable and pure, the fake token appears nowhere, and `status` is
-//! unchanged by these rows.
+//! Detection is repeatable and pure, the fake token appears nowhere, and `status` reports
+//! the three rows as the doctor finds them (F8).
 #![cfg(test)]
 
 mod common;
@@ -1081,33 +1081,59 @@ fn the_fake_token_never_appears() {
     }
 }
 
+/// `status` reports the three rows as the doctor finds them (F8): each the machine's,
+/// `widget-invalid` (a `quick` check) without `--cached` only, ranked by severity then id,
+/// with the doctor's remediation.
 #[test]
-fn status_is_unchanged_by_these_rows() {
+fn status_reports_these_rows_as_the_doctor_does() {
     let log = tlog!();
     let home = home(&log);
     log.step("plant");
     plant_all(&home);
-    let expected = json!({
-        "id": DRIFT,
-        "severity": "P3",
-        "title": "The bar widget is from another omaddons build",
-        "addon": null,
-        "remediation": {
-            "command": "omaddons omarchy install",
-            "argv": ["omaddons", "omarchy", "install"],
-            "destructive": false
-        }
-    });
-    for args in [
-        vec!["status", "--json"],
-        vec!["status", "--cached", "--json"],
+    let issue = |id: &str, severity: &str, title: &str, argv: &[&str]| {
+        json!({
+            "id": id,
+            "severity": severity,
+            "title": title,
+            "addon": null,
+            "remediation": {
+                "command": argv.join(" "),
+                "argv": argv,
+                "destructive": false
+            }
+        })
+    };
+    let invalid = issue(
+        INVALID,
+        "P2",
+        "The bar widget fails Omarchy's plugin validation (2 problems)",
+        &["omaddons", "omarchy", "install"],
+    );
+    let mode = issue(
+        MODE,
+        "P2",
+        "The GitHub token file is readable by other users",
+        &["omaddons", "doctor", "fix", "--only", MODE],
+    );
+    let drift = issue(
+        DRIFT,
+        "P3",
+        "The bar widget is from another omaddons build",
+        &["omaddons", "omarchy", "install"],
+    );
+    for (args, expected) in [
+        (
+            vec!["status", "--json"],
+            json!([invalid, mode.clone(), drift.clone()]),
+        ),
+        (vec!["status", "--cached", "--json"], json!([mode, drift])),
     ] {
         log.step(&args.join(" "));
         let ran = run(&log, &home, &args);
         ran.ok();
         let data = ran.data();
         log.json("issues", &data["issues"]);
-        assert_eq!(data["issues"], json!([expected]), "{args:?}");
+        assert_eq!(data["issues"], expected, "{args:?}");
         for target in data["targets"].as_array().unwrap() {
             for issue in target["issues"].as_array().into_iter().flatten() {
                 assert!(

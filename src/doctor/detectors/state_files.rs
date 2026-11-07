@@ -1,30 +1,26 @@
 //! `state_files`: records that no longer match the disk.
 
+use super::TargetFacts;
 use crate::doctor::budget::Budget;
-use crate::doctor::facts::StatusFacts;
 use crate::doctor::finding::{Confidence, Detected, Evidence, Observation, Subject};
 use crate::doctor::selection::Selection;
 use crate::doctor::view::DoctorView;
 use crate::drift::{DriftMode, DriftState};
 
 /// `record-folder-missing`, from the Discovery and Records layers: a presence check, as
-/// `status --cached` makes it.
+/// `status --cached` makes it (a deeper report answers: the gone folders are the same).
 pub(crate) fn record_folder_missing(
     view: &DoctorView,
     sel: &Selection,
     _: &mut Budget,
 ) -> Detected {
-    let facts = StatusFacts {
-        targets: super::drift_facts(view, sel, DriftMode::Presence),
-        machine: Default::default(),
-    };
-    Detected::complete(record_folder_missing_in(&facts))
+    let targets = super::drift_facts(view, sel, DriftMode::Presence);
+    Detected::complete(record_folder_missing_in(&targets))
 }
 
 /// `record-folder-missing`'s rule: one finding per managed addon whose folder is gone.
-pub(crate) fn record_folder_missing_in(facts: &StatusFacts) -> Vec<Observation> {
-    facts
-        .targets
+pub(crate) fn record_folder_missing_in(targets: &[TargetFacts]) -> Vec<Observation> {
+    targets
         .iter()
         .flat_map(|t| {
             t.drift

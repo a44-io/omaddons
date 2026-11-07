@@ -1,7 +1,7 @@
 //! `schemas`: state this build cannot read or write.
 
+use super::{NewerFile, TargetFacts};
 use crate::doctor::budget::Budget;
-use crate::doctor::facts::{NewerFile, StatusFacts, TargetFacts};
 use crate::doctor::finding::{Confidence, Detected, Evidence, Observation, Subject};
 use crate::doctor::registry::ids;
 use crate::doctor::selection::Selection;
@@ -24,7 +24,7 @@ pub(crate) fn state_corrupt(view: &DoctorView, _: &Selection, _: &mut Budget) ->
 /// and each state file a newer omaddons wrote that does not decode (the view's
 /// failures).
 pub(crate) fn state_version_newer(view: &DoctorView, _: &Selection, _: &mut Budget) -> Detected {
-    let targets = view
+    let targets: Vec<TargetFacts> = view
         .records()
         .into_iter()
         .flat_map(|records| records.available())
@@ -38,19 +38,15 @@ pub(crate) fn state_version_newer(view: &DoctorView, _: &Selection, _: &mut Budg
             ..TargetFacts::new(view.target_ref(*key).id, *key)
         })
         .collect();
-    let mut found = state_version_newer_in(&StatusFacts {
-        targets,
-        machine: Default::default(),
-    });
+    let mut found = state_version_newer_in(&targets);
     view.registry();
     found.extend(view.failure_observations(ids::STATE_VERSION_NEWER));
     Detected::complete(found)
 }
 
 /// `state-version-newer`'s rule: a target's record written by a newer omaddons.
-pub(crate) fn state_version_newer_in(facts: &StatusFacts) -> Vec<Observation> {
-    facts
-        .targets
+pub(crate) fn state_version_newer_in(targets: &[TargetFacts]) -> Vec<Observation> {
+    targets
         .iter()
         .filter_map(|t| {
             let newer = t.newer_record.as_ref()?;

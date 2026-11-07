@@ -28,8 +28,10 @@ use crate::model::{FolderName, Target};
 use crate::state::files_index::{FilesIndex, FolderIndex, hash_file_streaming, mtime_ns};
 use crate::state::records::TargetRecord;
 
-/// How deep a check looks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+/// How deep a check looks, shallowest first: a deeper report answers a shallower ask
+/// (its `missing` addons are the same in every mode, since a gone folder is `missing`
+/// whatever the files say).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DriftMode {
     /// Each folder exists and is a real directory.

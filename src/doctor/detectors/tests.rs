@@ -1,13 +1,13 @@
-//! The seven rows `status` publishes, detected from the view's layers: what each reads,
-//! and that each says what `status` said before the registry (the legacy oracle).
+//! The seven rows `status` published before the registry, detected from the view's
+//! layers on disk: what each reads, and that each says what `status`'s pinned cases say
+//! (`issues::tests`' characterization snapshots).
 
 #![cfg(test)]
 
 use std::collections::BTreeMap;
 
-use crate::app::drift::DriftItem;
-use crate::app::issues::{self, Issue, legacy};
-use crate::app::status::{Attention, test_target};
+use crate::app::issues::tests::{issues_of_case, machine_issues_of_case, machine_named, named};
+use crate::app::issues::{self, Issue};
 use crate::doctor::budget::Budget;
 use crate::doctor::finding::Finding;
 use crate::doctor::registry::{self, Layer, ids};
@@ -16,7 +16,6 @@ use crate::doctor::view::tests::{
     K, K2, Plant, client, committed_journal, home, key, plant, registry_bytes, world_of,
 };
 use crate::doctor::view::{DoctorView, LayerState, Preloaded, Records, Unavailable, WidgetLayer};
-use crate::drift::DriftState;
 use crate::fsx::GlobalLock;
 use crate::model::{
     AddonReason, AddonRecord, AddonState, Channel, FolderName, TxId, VersionConfidence,
@@ -149,28 +148,9 @@ fn retail_home() -> (tempfile::TempDir, Paths) {
     (dir, paths)
 }
 
-/// What `status` said about retail (`K`) before the registry: the legacy rules over a
-/// target with these facts.
-fn oracle(
-    attention: &[Attention],
-    degraded: usize,
-    drift: Vec<DriftItem>,
-    reason: Option<&str>,
-) -> Vec<Issue> {
-    let mut target = test_target("retail", 0, attention, 0);
-    target.key = Some(key(K));
-    target.addons.degraded = degraded;
-    target.drift = drift;
-    legacy::issues_for(&target, reason)
-}
-
-fn drift(state: DriftState, files: u64) -> Vec<DriftItem> {
-    vec![DriftItem {
-        addon: "Foo".to_owned(),
-        state,
-        files,
-        folders: None,
-    }]
+/// What `status` says for the pinned case `name` (retail, `K`).
+fn pinned(name: &str) -> Vec<Issue> {
+    issues_of_case(&named(name))
 }
 
 /// Retail (`K`) discovered at its client directory, with `Interface/AddOns/` created.
@@ -213,18 +193,14 @@ fn moved_rules_match_status() {
     let view = DoctorView::load_at(paths.clone(), Default::default());
     assert_eq!(
         on_retail(&view, ids::JOURNAL_PENDING),
-        oracle(&[Attention::JournalPending], 0, Vec::new(), None),
+        pinned("journal_waits"),
         "case journal_pending_free_lock"
     );
     let guard = GlobalLock::acquire(&paths, "test").unwrap();
     let held = DoctorView::load_at(paths.clone(), Default::default());
     let found = on_retail(&held, ids::JOURNAL_PENDING);
     drop(guard);
-    assert_eq!(
-        found,
-        oracle(&[], 0, Vec::new(), None),
-        "case journal_pending_held_lock"
-    );
+    assert_eq!(found, Vec::new(), "case journal_pending_held_lock");
 
     // The states recovery stops at have rows of their own (F1); `status` reports them as
     // `journal-pending` until part 2 puts it on the same mapping.
@@ -289,13 +265,13 @@ fn moved_rules_match_status() {
     let view = DoctorView::load_at(paths, Default::default());
     assert_eq!(
         on_retail(&view, ids::STATE_VERSION_NEWER),
-        oracle(&[Attention::StateVersionNewer], 0, Vec::new(), None),
+        pinned("state_newer"),
         "case state_version_newer"
     );
 
-    for (case, n) in [
-        ("ownership_transferred_one", 1),
-        ("ownership_transferred_two", 2),
+    for (case, n, pinned_case) in [
+        ("ownership_transferred_one", 1, "degraded_one"),
+        ("ownership_transferred_two", 2, "degraded_two"),
     ] {
         let (_dir, paths) = retail_home();
         let names = ["Foo", "Bar"];
@@ -305,38 +281,47 @@ fn moved_rules_match_status() {
             .collect();
         let bytes = store::encode(&record(K, &degraded)).unwrap();
         plant(&paths.target_record(&key(K)), &Plant::Bytes(bytes));
-        let view = DoctorView::load_at(paths, Default::default());
+        // Discovered: a registered client discovery does not find is gone, and its
+        // finding is `target-vanished`.
+        let view = with_retail(&paths);
         assert_eq!(
             on_retail(&view, ids::OWNERSHIP_TRANSFERRED),
-            oracle(&[Attention::AddonDegraded], n, Vec::new(), None),
+            pinned(pinned_case),
             "case {case}"
+        );
+        let gone = DoctorView::load_at(paths, Default::default());
+        assert_eq!(
+            on_retail(&gone, ids::OWNERSHIP_TRANSFERRED),
+            Vec::new(),
+            "case {case}_vanished"
         );
     }
 
     let (_dir, paths) = retail_home();
-    let bytes = store::encode(&record(K, &[("Foo", AddonState::Ok)])).unwrap();
+    let bytes = store::encode(&record(K, &[("Details", AddonState::Ok)])).unwrap();
     plant(&paths.target_record(&key(K)), &Plant::Bytes(bytes));
     let view = with_retail(&paths);
     assert_eq!(
         on_retail(&view, ids::RECORD_FOLDER_MISSING),
-        oracle(
-            &[Attention::AddonFolderMissing],
-            0,
-            drift(DriftState::Missing, 0),
-            None
-        ),
+        pinned("folder_missing"),
         "case record_folder_missing"
     );
 
-    for (case, n) in [
-        ("managed_files_modified_one_file", 1),
-        ("managed_files_modified_three_files", 3),
+    for (case, n, pinned_case) in [
+        ("managed_files_modified_one_file", 1, "files_modified_one"),
+        (
+            "managed_files_modified_three_files",
+            3,
+            "files_modified_three",
+        ),
     ] {
         let (_dir, paths) = retail_home();
-        let bytes = store::encode(&record(K, &[("Foo", AddonState::Ok)])).unwrap();
+        let bytes = store::encode(&record(K, &[("Plater", AddonState::Ok)])).unwrap();
         plant(&paths.target_record(&key(K)), &Plant::Bytes(bytes));
         let view = with_retail(&paths);
-        let folder = paths.home().join("Games/wow/_retail_/Interface/AddOns/Foo");
+        let folder = paths
+            .home()
+            .join("Games/wow/_retail_/Interface/AddOns/Plater");
         // Each file on disk differs in size from what the index recorded.
         let entries: Vec<FileEntry> = (0..n)
             .map(|i| {
@@ -356,7 +341,7 @@ fn moved_rules_match_status() {
         let index = FilesIndex {
             key: key(K),
             written_at_ns: 0,
-            folders: BTreeMap::from([("foo".to_owned(), FolderIndex::new("Foo", entries))]),
+            folders: BTreeMap::from([("plater".to_owned(), FolderIndex::new("Plater", entries))]),
         };
         plant(
             &paths.files_index(&key(K)),
@@ -364,12 +349,7 @@ fn moved_rules_match_status() {
         );
         assert_eq!(
             on_retail(&view, ids::MANAGED_FILES_MODIFIED),
-            oracle(
-                &[Attention::AddonModified],
-                0,
-                drift(DriftState::Modified, n),
-                None
-            ),
+            pinned(pinned_case),
             "case {case}"
         );
     }
@@ -396,7 +376,7 @@ fn moved_rules_match_status() {
     );
     assert_eq!(
         on_retail(&view, ids::TARGET_VANISHED),
-        oracle(&[Attention::TargetMissing], 0, Vec::new(), None),
+        pinned("vanished"),
         "case target_vanished"
     );
 
@@ -420,7 +400,7 @@ fn moved_rules_match_status() {
     );
     assert_eq!(
         issues::for_machine(&detected(&view, ids::WIDGET_VERSION_DRIFT)),
-        legacy::machine_issues(Some(&info), false),
+        machine_issues_of_case(&machine_named("machine_widget_outdated")),
         "case widget_drift"
     );
 }

@@ -163,22 +163,6 @@ expression: by_case
         ],
         "destructive": false
       }
-    },
-    {
-      "id": "fm-userland_state-target-vanished",
-      "severity": "P2",
-      "title": "The client's directory is gone",
-      "addon": null,
-      "remediation": {
-        "command": "omaddons targets rm retail",
-        "argv": [
-          "omaddons",
-          "targets",
-          "rm",
-          "retail"
-        ],
-        "destructive": true
-      }
     }
   ],
   "files_modified_one": [

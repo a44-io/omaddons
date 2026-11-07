@@ -7,7 +7,6 @@ pub mod delegate;
 pub(crate) mod detectors;
 pub mod exit;
 pub mod explain;
-pub mod facts;
 pub mod finding;
 pub mod fix;
 pub mod fix_runtime;
@@ -47,62 +46,59 @@ pub const FAILPOINTS: &[&str] = &[
     "doctor.gc.planned",
 ];
 
-use budget::Budget;
-use finding::{Finding, Incomplete};
+use crate::error::Result;
+use finding::Finding;
 use registry::{FailureMode, Tier};
-use selection::Selection;
+use runtime::Budgets;
+use selection::{Selection, Skipped};
 use view::DoctorView;
 
-/// What a run's detectors found, and which of them a limit stopped short.
+/// What a run's detectors found, and the checks it could not make (never a pass).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Detection {
     pub findings: Vec<Finding>,
-    pub incomplete: Vec<(&'static str, Incomplete)>,
+    pub skipped: Vec<Skipped>,
 }
 
-/// Runs every selected row up to `max_tier`, in registry order, and turns what each
-/// detector found into findings. Pure: reads only the view. (Budgets and isolating a
-/// detector that panics are E3's.)
-pub fn detect(view: &DoctorView, selection: &Selection, max_tier: Tier) -> Detection {
-    detect_rows(registry::failure_modes(), view, selection, max_tier)
+/// The registry's rows of `tiers` that `selection` includes, through the doctor's own
+/// detector loop ([`runtime::detect`]), each under its tier's budget: a check that panics
+/// is `detector-crashed`, one cut short `check-incomplete`, and one whose layers are
+/// unavailable skipped (M4-D43). `status` runs it with the `cached` tier (`--cached`) or
+/// the `cached` and `quick` tiers (M4-D29). Fails only when `-t` cannot be resolved. Pure:
+/// reads only the view.
+pub fn detect(view: &DoctorView, selection: &Selection, tiers: &[Tier]) -> Result<Detection> {
+    detect_rows(view, selection, registry::failure_modes(), tiers)
 }
 
-fn detect_rows(
-    rows: &[FailureMode],
+/// [`detect`] over an explicit row slice: the testable core (synthetic rows).
+#[doc(hidden)]
+pub fn detect_rows(
     view: &DoctorView,
     selection: &Selection,
-    max_tier: Tier,
-) -> Detection {
-    let mut out = Detection::default();
-    for row in rows {
-        if !selection.includes(row) || row.tier > max_tier {
-            continue;
-        }
-        let Some(detect) = row.detect else {
-            continue;
-        };
-        let detected = detect(view, selection, &mut Budget::unlimited());
-        out.findings
-            .extend(detected.found.into_iter().map(|obs| row.finding(obs)));
-        if let Some(incomplete) = detected.incomplete {
-            out.incomplete.push((row.id, incomplete));
-        }
-    }
-    out
+    rows: &[FailureMode],
+    tiers: &[Tier],
+) -> Result<Detection> {
+    let diagnosis = runtime::detect(rows, view, selection, tiers, Budgets::TierDefaults)?;
+    Ok(Detection {
+        findings: diagnosis.findings,
+        skipped: diagnosis.skipped,
+    })
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use std::path::PathBuf;
 
-    use super::facts::{
-        AddonDriftFact, MachineFacts, NewerFile, StatusFacts, TargetFacts, WidgetDrift,
-    };
-    use super::registry::FAILURE_MODES;
-    use super::registry::ids;
+    use super::budget::Budget;
+    use super::detectors::{AddonDriftFact, NewerFile, TargetFacts};
+    use super::detectors::{external, plugins, schemas, state_files, userland};
+    use super::registry::{FAILURE_MODES, Layer, ids};
+    use super::selection::SkipReason;
+    use super::view::{LayerState, Preloaded, Unavailable};
     use super::*;
     use crate::drift::DriftState;
     use crate::model::TargetKey;
+    use crate::omarchy::status::WidgetInfo;
     use crate::state::paths::Paths;
     use crate::state::store::SchemaVersion;
 
@@ -113,7 +109,8 @@ pub(crate) mod tests {
         K.parse().unwrap()
     }
 
-    /// Paths of a home that does not exist, for views built from facts (which read none).
+    /// Paths of a home that does not exist, for views whose layers are preloaded (or read
+    /// nothing).
     pub(crate) fn fixture_paths() -> Paths {
         Paths::with_roots(
             "/fixture/home",
@@ -138,21 +135,9 @@ pub(crate) mod tests {
         }
     }
 
-    /// A retail target with nothing wrong.
-    pub(crate) fn retail() -> TargetFacts {
+    /// A retail target holding every state the facts rules read.
+    fn retail() -> TargetFacts {
         TargetFacts {
-            id: "retail".to_owned(),
-            key: key(),
-            newer_record: None,
-            vanished: None,
-            degraded: 0,
-            drift: Vec::new(),
-        }
-    }
-
-    /// Facts holding every state the facts rules read (the journal rows read journals).
-    fn facts() -> StatusFacts {
-        let target = TargetFacts {
             newer_record: Some(NewerFile {
                 path: RECORD.into(),
                 on_disk: SchemaVersion::new(2, 0),
@@ -164,16 +149,7 @@ pub(crate) mod tests {
                 drift("Details", DriftState::Missing, 0),
                 drift("Plater", DriftState::Modified, 3),
             ],
-            ..retail()
-        };
-        StatusFacts {
-            targets: vec![target],
-            machine: MachineFacts {
-                widget: Some(WidgetDrift {
-                    version: Some("0.0.9".to_owned()),
-                    context_known: true,
-                }),
-            },
+            ..TargetFacts::new("retail", key())
         }
     }
 
@@ -183,19 +159,42 @@ pub(crate) mod tests {
         ids
     }
 
+    fn observation() -> finding::Observation {
+        finding::Observation {
+            subject: finding::Subject::machine(),
+            title: "t".to_owned(),
+            confidence: finding::Confidence::High,
+            addon: None,
+            folder: None,
+            evidence: finding::Evidence::default(),
+        }
+    }
+
     /// A detector that reads nothing and finds one machine instance.
     fn one_machine_finding(_: &DoctorView, _: &Selection, _: &mut Budget) -> finding::Detected {
-        finding::Detected {
-            found: vec![finding::Observation {
-                subject: finding::Subject::machine(),
-                title: "t".to_owned(),
-                confidence: finding::Confidence::High,
-                addon: None,
-                folder: None,
-                evidence: finding::Evidence::default(),
-            }],
-            incomplete: None,
+        finding::Detected::complete(vec![observation()])
+    }
+
+    /// A detector that panics: the loop isolates it.
+    fn panics(_: &DoctorView, _: &Selection, _: &mut Budget) -> finding::Detected {
+        panic!("a check that fails"); // ubs:ignore — the panicking check the loop isolates
+    }
+
+    /// A detector its entry cap stops before it finds anything.
+    fn cut_short(_: &DoctorView, _: &Selection, budget: &mut Budget) -> finding::Detected {
+        let _ = budget.charge(u64::MAX);
+        finding::Detected::cut_short(Vec::new(), budget)
+    }
+
+    /// The registry with every row given `detect` and no required layer, so a view of
+    /// nothing runs them all.
+    fn synthetic(detect: registry::DetectFn) -> Vec<FailureMode> {
+        let mut rows = FAILURE_MODES.to_vec();
+        for row in &mut rows {
+            row.detect = Some(detect);
+            row.requires = &[];
         }
+        rows
     }
 
     #[test]
@@ -273,75 +272,205 @@ pub(crate) mod tests {
         );
     }
 
+    /// `status --cached` runs the `cached` rows, `status` the `cached` and `quick` ones;
+    /// never a `default`, `deep` or runtime row; `--only` narrows as in `doctor`.
     #[test]
-    fn status_rules_run_up_to_the_tier() {
-        let cached = facts::findings(&facts(), Tier::Cached);
-        let ids_of = |found: &[Finding]| {
-            let mut ids: Vec<&str> = found.iter().map(|f| f.id).collect();
-            ids.dedup();
+    fn detect_runs_the_rows_of_its_tiers() {
+        let view = DoctorView::load_at(fixture_paths(), view::ViewOptions::default());
+        let rows = synthetic(one_machine_finding);
+        let all = Selection::all();
+        // Findings come merged and ranked (severity, id, …), so compare sorted ids.
+        let run = |sel: &Selection, tiers: &[Tier]| {
+            let mut ids = ids_of(&detect_rows(&view, sel, &rows, tiers).unwrap());
+            ids.sort_unstable();
             ids
         };
-        assert_eq!(
-            ids_of(&cached),
-            [
-                ids::OWNERSHIP_TRANSFERRED,
-                ids::WIDGET_VERSION_DRIFT,
-                ids::STATE_VERSION_NEWER,
-                ids::RECORD_FOLDER_MISSING,
-                ids::TARGET_VANISHED,
-            ],
-            "cached runs no managed-files-modified"
-        );
-        let quick = facts::findings(&facts(), Tier::Quick);
-        assert_eq!(ids_of(&quick).len(), 6, "{:?}", ids_of(&quick));
-        assert!(ids_of(&quick).contains(&ids::MANAGED_FILES_MODIFIED));
-    }
-
-    #[test]
-    fn detect_runs_selected_rows_up_to_the_tier() {
-        let view = DoctorView::load_at(fixture_paths(), view::ViewOptions::default());
-        let mut rows = FAILURE_MODES.to_vec();
-        for row in &mut rows {
-            row.detect = Some(one_machine_finding);
+        let of_tiers = |tiers: &[Tier]| -> Vec<&str> {
+            let mut ids: Vec<&str> = rows
+                .iter()
+                .filter(|row| tiers.contains(&row.tier))
+                .map(|row| row.id)
+                .collect();
+            ids.sort_unstable();
+            ids
+        };
+        for (case, tiers) in [
+            ("cached", &[Tier::Cached][..]),
+            ("cached_and_quick", &[Tier::Cached, Tier::Quick][..]),
+        ] {
+            let ran = run(&all, tiers);
+            assert_eq!(ran, of_tiers(tiers), "{case}");
+            assert!(
+                ran.iter()
+                    .all(|id| registry::row(id).is_some_and(|row| tiers.contains(&row.tier))),
+                "{case}: {ran:?} holds a row of another tier"
+            );
         }
-        let all = Selection::all();
-        let run = |sel: &Selection, tier| ids_of(&detect_rows(&rows, &view, sel, tier));
-        let cached: Vec<&str> = rows
-            .iter()
-            .filter(|row| row.tier == Tier::Cached)
-            .map(|row| row.id)
-            .collect();
-        assert_eq!(run(&all, Tier::Cached), cached);
-        // Every row but the runtime's, which no tier selects.
+        assert!(
+            !of_tiers(&[Tier::Quick]).is_empty(),
+            "the registry has quick rows"
+        );
+        // No tier selects the runtime's own rows.
+        let every = [Tier::Cached, Tier::Quick, Tier::Default, Tier::Deep];
         let detecting = rows.iter().filter(|row| row.tier != Tier::Runtime).count();
-        assert_eq!(run(&all, Tier::Deep).len(), detecting);
+        assert_eq!(run(&all, &every).len(), detecting);
         assert!(
             detecting < rows.len(),
             "the runtime's rows are in the registry"
         );
         assert_eq!(
-            run(&Selection::only(&[ids::TARGET_VANISHED]), Tier::Deep),
+            run(&Selection::only(&[ids::TARGET_VANISHED]), &every),
             [ids::TARGET_VANISHED]
         );
 
-        // A row without a detector is skipped.
-        for row in &mut rows {
+        // A row without a detector runs nothing.
+        let mut silent = rows.clone();
+        for row in &mut silent {
             row.detect = None;
         }
         assert_eq!(
-            detect_rows(&rows, &view, &all, Tier::Deep),
+            detect_rows(&view, &all, &silent, &every).unwrap(),
             Detection::default()
         );
-        assert_eq!(view.loaded_layers(), std::collections::BTreeSet::new());
     }
 
+    /// A row whose required layer is unavailable is skipped with that layer's cause, never
+    /// run on defaults or reported clean.
+    #[test]
+    fn a_row_with_an_unavailable_layer_is_skipped_not_clean() {
+        let view = DoctorView::preloaded(
+            fixture_paths(),
+            Preloaded {
+                caches: Some(LayerState::Unavailable(Unavailable {
+                    layer: Layer::Caches,
+                    cause: Layer::Caches,
+                })),
+                ..Preloaded::default()
+            },
+        );
+        let mut rows = synthetic(one_machine_finding);
+        rows.retain(|row| row.id == ids::LOCK_HELD_LONG);
+        rows[0].requires = &[Layer::Caches];
+        let found = detect_rows(&view, &Selection::all(), &rows, &[Tier::Cached]).unwrap();
+        assert_eq!(found.findings, Vec::new(), "never run");
+        assert_eq!(
+            found
+                .skipped
+                .iter()
+                .map(|s| (s.id, s.reason))
+                .collect::<Vec<_>>(),
+            [(ids::LOCK_HELD_LONG, SkipReason::CachesUnavailable)]
+        );
+    }
+
+    /// A panicking row is one `detector-crashed` finding naming it, and the next row runs.
+    #[test]
+    fn a_panicking_row_is_detector_crashed_and_the_loop_goes_on() {
+        let view = DoctorView::load_at(fixture_paths(), view::ViewOptions::default());
+        let mut rows = synthetic(one_machine_finding);
+        rows.retain(|row| [ids::LOCK_HELD_LONG, ids::TARGET_VANISHED].contains(&row.id));
+        rows[0].detect = Some(panics);
+        let crashing = rows[0].id;
+        let found = detect_rows(&view, &Selection::all(), &rows, &[Tier::Cached]).unwrap();
+        let crashed: Vec<Option<&str>> = found
+            .findings
+            .iter()
+            .filter(|f| f.id == ids::DETECTOR_CRASHED)
+            .map(|f| f.evidence.detector)
+            .collect();
+        assert_eq!(crashed, [Some(crashing)], "{:?}", found.findings);
+        assert!(
+            found.findings.iter().any(|f| f.id == rows[1].id),
+            "the second row ran: {:?}",
+            found.findings
+        );
+        let _ = crate::cli::take_caught_panic();
+    }
+
+    /// A row a limit stopped short is `check-incomplete`, never a pass.
+    #[test]
+    fn an_incomplete_row_is_check_incomplete() {
+        let view = DoctorView::load_at(fixture_paths(), view::ViewOptions::default());
+        let mut rows = synthetic(cut_short);
+        rows.retain(|row| row.id == ids::LOCK_HELD_LONG);
+        let found = detect_rows(&view, &Selection::all(), &rows, &[Tier::Cached]).unwrap();
+        let ids: Vec<(&str, Option<&str>)> = found
+            .findings
+            .iter()
+            .map(|f| (f.id, f.evidence.detector))
+            .collect();
+        assert_eq!(ids, [(ids::CHECK_INCOMPLETE, Some(ids::LOCK_HELD_LONG))]);
+    }
+
+    /// `doctor`'s runtime and `status` share one loop: over rows without a fixer (whose
+    /// remediation `diagnose` refines), the runtime's findings are `detect_rows`'.
+    #[test]
+    fn the_runtime_and_status_share_the_loop() {
+        let view = DoctorView::load_at(fixture_paths(), view::ViewOptions::default());
+        let mut rows = synthetic(one_machine_finding);
+        rows.retain(|row| row.fix.is_none());
+        rows[0].detect = Some(panics);
+        let tiers = [Tier::Cached, Tier::Quick, Tier::Default];
+        let shared = detect_rows(&view, &Selection::all(), &rows, &tiers).unwrap();
+        let _ = crate::cli::take_caught_panic();
+        let runtime = runtime::diagnose(
+            &rows,
+            &view,
+            &Selection::all(),
+            &tiers,
+            Budgets::TierDefaults,
+        )
+        .unwrap();
+        let _ = crate::cli::take_caught_panic();
+        assert_eq!(runtime.findings, shared.findings);
+        assert_eq!(runtime.skipped, shared.skipped);
+        assert!(!shared.findings.is_empty());
+    }
+
+    /// The facts rules give findings with their rows' meta and stable instance keys, and
+    /// content-free evidence.
     #[test]
     fn findings_carry_their_rows_meta_and_keys() {
-        let found = Detection {
-            findings: facts::findings(&facts(), Tier::Quick),
-            incomplete: Vec::new(),
+        let targets = [retail()];
+        let widget = WidgetInfo {
+            omarchy: true,
+            installed: true,
+            enabled: true,
+            version: Some("0.0.9".to_owned()),
+            outdated: true,
+            context_matches: Some(true),
         };
-        for f in &found.findings {
+        let rules: [(&str, Vec<finding::Observation>); 6] = [
+            (
+                ids::MANAGED_FILES_MODIFIED,
+                external::managed_files_modified_in(&targets),
+            ),
+            (
+                ids::OWNERSHIP_TRANSFERRED,
+                external::ownership_transferred_in(&targets),
+            ),
+            (
+                ids::WIDGET_VERSION_DRIFT,
+                plugins::widget_version_drift_in(Some(&widget)),
+            ),
+            (
+                ids::STATE_VERSION_NEWER,
+                schemas::state_version_newer_in(&targets),
+            ),
+            (
+                ids::RECORD_FOLDER_MISSING,
+                state_files::record_folder_missing_in(&targets),
+            ),
+            (ids::TARGET_VANISHED, userland::target_vanished_in(&targets)),
+        ];
+        let found: Vec<Finding> = rules
+            .into_iter()
+            .flat_map(|(id, observations)| {
+                let row = registry::row(id).unwrap();
+                observations.into_iter().map(|obs| row.finding(obs))
+            })
+            .collect();
+        for f in &found {
             let row = registry::row(f.id).unwrap();
             assert_eq!(
                 (f.severity, f.subsystem),
@@ -353,7 +482,6 @@ pub(crate) mod tests {
             assert_eq!(f.confidence, finding::Confidence::High, "{}", f.id);
         }
         let keys: Vec<(&str, &str)> = found
-            .findings
             .iter()
             .map(|f| (f.instance.as_str(), f.label.as_str()))
             .collect();

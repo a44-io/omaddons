@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{ErrorKind, Read};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use super::finding::{
     Confidence, Evidence, Finding, FindingTarget, Observation, Severity, Subject,
@@ -25,6 +26,7 @@ use crate::discover::cache::DiscoveryMode;
 use crate::discover::registry::read_marker;
 use crate::discover::running::detect_running;
 use crate::discover::shared::siblings;
+use crate::drift::{DriftMode, DriftReport};
 use crate::engine::journal::{self, Pending};
 use crate::engine::retention;
 use crate::engine::simulate::{self, Artifact, ArtifactKind, Diagnoses};
@@ -99,6 +101,8 @@ pub struct DoctorView {
     credentials: OnceCell<LayerState<Credentials>>,
     /// The online checks' client, built at the first ask (not a layer: it reads nothing).
     online: OnceCell<std::result::Result<Online, OnlineUnavailable>>,
+    /// Each registered client's drift, the deepest report made so far ([`DoctorView::drift`]).
+    drift: RefCell<BTreeMap<TargetKey, Rc<DriftReport>>>,
     failures: RefCell<Vec<LayerFailure>>,
     warnings: RefCell<Vec<Warning>>,
     /// What went wrong that no failure mode describes, for a `-v` log.
@@ -130,6 +134,7 @@ impl DoctorView {
             skill: OnceCell::new(),
             credentials: OnceCell::new(),
             online: OnceCell::new(),
+            drift: RefCell::default(),
             failures: RefCell::default(),
             warnings: RefCell::default(),
             diagnostics: RefCell::default(),
@@ -137,8 +142,80 @@ impl DoctorView {
         }
     }
 
+    /// The view of a command that has read the machine already (`status`, F8): the
+    /// Discovery, Journals, Lock and Widget layers are available from the start, holding
+    /// exactly what `seed` holds, and its drift reports answer [`DoctorView::drift`]; every
+    /// other layer loads lazily, as [`DoctorView::load_at`]'s do. Never writes: the seed's
+    /// world was assembled by its command, which wrote the discovery cache if it does. No
+    /// detector reads the world's `github_token` (no `cached` or `quick` row makes a
+    /// request).
+    pub fn seeded(options: ViewOptions, seed: Seed) -> Self {
+        let inventories = seed
+            .world
+            .resolved
+            .targets
+            .iter()
+            .map(|_| OnceCell::new())
+            .collect();
+        let view = Self::load_at(seed.world.paths.clone(), options);
+        let loaded = BTreeSet::from([
+            Layer::Discovery,
+            Layer::Journals,
+            Layer::Lock,
+            Layer::Widget,
+        ]);
+        let drift = seed
+            .drift
+            .into_iter()
+            .map(|(key, report)| (key, Rc::new(report)))
+            .collect();
+        Self {
+            discovered: OnceCell::from(LayerState::Available(Discovered {
+                world: seed.world,
+                inventories,
+            })),
+            journals: OnceCell::from(LayerState::Available(seed.journals)),
+            lock: OnceCell::from(LayerState::Available(seed.lock)),
+            widget: OnceCell::from(LayerState::Available(WidgetLayer { info: seed.widget })),
+            drift: RefCell::new(drift),
+            loaded: RefCell::new(loaded),
+            ..view
+        }
+    }
+
     pub fn paths(&self) -> &Paths {
         &self.paths
+    }
+
+    /// The drift of the registered client `key` in at least `mode`, computed once per
+    /// client from the Discovery and Records layers: a stored report as deep or deeper
+    /// answers (Presence < Stat < Deep), and a shallower one is replaced. `None` when the
+    /// client is not discovered or its record is unavailable.
+    pub fn drift(&self, key: TargetKey, mode: DriftMode) -> Option<Rc<DriftReport>> {
+        let stored = self
+            .drift
+            .borrow()
+            .get(&key)
+            .filter(|report| report.mode >= mode)
+            .cloned();
+        if stored.is_some() {
+            return stored;
+        }
+        let world = self.world()?;
+        let target = world
+            .resolved
+            .targets
+            .iter()
+            .find(|d| d.target.key == Some(key))?;
+        let record = self.records()?.get(&key)?;
+        let report = Rc::new(crate::app::drift::report(
+            &self.paths,
+            &target.target,
+            &record.value,
+            mode,
+        ));
+        self.drift.borrow_mut().insert(key, Rc::clone(&report));
+        Some(report)
     }
 
     /// The online checks' probe client, built at the first ask from the Config layer;
@@ -235,7 +312,7 @@ impl DoctorView {
     /// or the registry cannot be read: discovery never runs on defaults in place of the
     /// user's broken file. Its `github_token` is none: the view resolves no credential.
     pub fn world(&self) -> Option<&World> {
-        Some(&self.discovered()?.world)
+        self.discovered().map(|discovered| &*discovered.world)
     }
 
     /// `target`'s `AddOns/`, classified at full depth when a check first asks for this
@@ -647,7 +724,10 @@ impl DoctorView {
                     .iter()
                     .map(|_| OnceCell::new())
                     .collect();
-                LayerState::Available(Discovered { world, inventories })
+                LayerState::Available(Discovered {
+                    world: Rc::new(world),
+                    inventories,
+                })
             }
             Err(err) => self.fail_error(Layer::Discovery, &err, None),
         }
@@ -988,11 +1068,24 @@ fn cause_of<T>(cell: &OnceCell<LayerState<T>>, layer: Layer) -> Layer {
 }
 
 /// The Discovery layer: the world, and one Inventory layer per discovered client, in
-/// `world.resolved.targets`' order.
+/// `world.resolved.targets`' order. The world is shared with the command that seeded the
+/// view, which reads it after the view exists ([`DoctorView::seeded`]).
 #[derive(Debug)]
 struct Discovered {
-    world: World,
+    world: Rc<World>,
     inventories: Vec<OnceCell<LayerState<Inventory>>>,
+}
+
+/// What a command read before building its view ([`DoctorView::seeded`]): its world, its
+/// journals, the lock as it probed it, the bar widget as it read it, and each registered
+/// client's drift report by key.
+#[derive(Debug)]
+pub struct Seed {
+    pub world: Rc<World>,
+    pub journals: Journals,
+    pub lock: LockState,
+    pub widget: Option<WidgetInfo>,
+    pub drift: BTreeMap<TargetKey, DriftReport>,
 }
 
 /// Whether a layer could be read; when not, the layer whose failure made it so.
@@ -1641,6 +1734,8 @@ pub(crate) struct Preloaded {
     pub credentials: Option<LayerState<Credentials>>,
     /// The online checks' client; `None` leaves it to build as a run would.
     pub online: Option<std::result::Result<Online, OnlineUnavailable>>,
+    /// Drift reports [`DoctorView::drift`] answers from, as a seeded view's.
+    pub drift: BTreeMap<TargetKey, DriftReport>,
     pub failures: Vec<LayerFailure>,
 }
 
@@ -1666,7 +1761,10 @@ impl DoctorView {
                     .iter()
                     .map(|_| OnceCell::new())
                     .collect();
-                LayerState::Available(Discovered { world, inventories })
+                LayerState::Available(Discovered {
+                    world: Rc::new(world),
+                    inventories,
+                })
             }
             LayerState::Unavailable(unavailable) => LayerState::Unavailable(unavailable),
         });
@@ -1684,6 +1782,13 @@ impl DoctorView {
             skill: cell(&mut loaded, Layer::Skill, preloaded.skill),
             credentials: cell(&mut loaded, Layer::Credentials, preloaded.credentials),
             online: preloaded.online.map_or_else(OnceCell::new, OnceCell::from),
+            drift: RefCell::new(
+                preloaded
+                    .drift
+                    .into_iter()
+                    .map(|(key, report)| (key, Rc::new(report)))
+                    .collect(),
+            ),
             failures: RefCell::new(preloaded.failures),
             loaded: RefCell::new(loaded),
             ..Self::load_at(paths, ViewOptions::default())
@@ -3615,6 +3720,304 @@ pub(crate) mod tests {
         // Order does not depend on the input's.
         let reversed = merge_findings(Vec::new(), from_view.into_iter().rev().collect());
         assert_eq!(reversed, merged);
+    }
+
+    // ---- The seeded view (F8): `status`'s world, journals, lock, widget and drift.
+
+    fn no_journals() -> Journals {
+        Journals {
+            pending: Vec::new(),
+            diagnoses: Diagnoses {
+                journals: Vec::new(),
+                unlisted: None,
+            },
+            counts: BTreeMap::new(),
+        }
+    }
+
+    /// A managed addon `name`, owning the one folder of its name.
+    fn managed(name: &str) -> crate::model::AddonRecord {
+        use crate::model::{AddonReason, AddonState, Channel, FolderName, VersionConfidence};
+        crate::model::AddonRecord {
+            r#ref: "gh:example/Foo".parse().unwrap(),
+            name: name.into(),
+            version: "1.0".into(),
+            version_confidence: VersionConfidence::Release,
+            release_id: None,
+            channel: Channel::Stable,
+            pinned: false,
+            reason: AddonReason::Explicit,
+            required_by: vec![],
+            folders: vec![FolderName::new(name).unwrap()],
+            state: AddonState::Ok,
+            installed_at: "2026-10-14T21:00:00Z".parse().unwrap(),
+            tx_id: "01JB8Q2VA00000000000000000".parse().unwrap(),
+            blob_sha256: None,
+            revision: None,
+            left_out: Vec::new(),
+            any_flavor: false,
+        }
+    }
+
+    /// Retail (`K`) on disk, its record holding `Gone` (its folder deleted), `Edited` (a
+    /// file whose size changed), `Touched` (a file whose time alone changed) and `Quiet`
+    /// (in no index), with the files index of the first three.
+    fn drift_home() -> (tempfile::TempDir, Paths, DiscoveredTarget, TargetRecord) {
+        use crate::state::files_index::{FileEntry, FilesIndex, FolderIndex};
+        use sha2::{Digest, Sha256};
+        let (dir, paths) = home();
+        let client_dir = paths.home().join("Games/wow/_retail_");
+        let addons = client_dir.join("Interface/AddOns");
+        for (name, body) in [
+            ("Edited", "edited by hand"),
+            ("Touched", "same"),
+            ("Quiet", "q"),
+        ] {
+            plant(
+                &addons.join(name).join("f.lua"),
+                &Plant::Bytes(body.as_bytes().to_vec()),
+            );
+        }
+        let entry = |size: u64, content: &[u8]| FileEntry {
+            path: "f.lua".to_owned(),
+            size,
+            mtime_ns: 0,
+            sha256: Sha256::digest(content)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect(),
+        };
+        let folders = [
+            ("Gone", entry(4, b"gone")),
+            ("Edited", entry(3, b"old")),
+            ("Touched", entry(4, b"same")),
+        ]
+        .into_iter()
+        .map(|(name, file)| (name.to_lowercase(), FolderIndex::new(name, vec![file])))
+        .collect();
+        let index = FilesIndex {
+            key: key(K),
+            written_at_ns: 0,
+            folders,
+        };
+        plant(
+            &paths.files_index(&key(K)),
+            &Plant::Bytes(store::encode(&index).unwrap()),
+        );
+        let record = TargetRecord {
+            generation: 1,
+            addons: ["Gone", "Edited", "Touched", "Quiet"]
+                .into_iter()
+                .map(|name| (TargetRecord::addon_key(name), managed(name)))
+                .collect(),
+            ..TargetRecord::empty(key(K))
+        };
+        let target = client("retail", &client_dir, Some(K));
+        (dir, paths, target, record)
+    }
+
+    /// A view of `paths` whose world holds `target` and whose records hold `record`,
+    /// with `drift` stored.
+    fn drift_view(
+        paths: &Paths,
+        target: DiscoveredTarget,
+        record: TargetRecord,
+        drift: BTreeMap<TargetKey, DriftReport>,
+    ) -> DoctorView {
+        let records = Records::from_states(BTreeMap::from([(
+            key(K),
+            LayerState::Available(Loaded {
+                value: record,
+                version: TargetRecord::CURRENT,
+                status: VersionStatus::Current,
+            }),
+        )]));
+        DoctorView::preloaded(
+            paths.clone(),
+            Preloaded {
+                world: Some(LayerState::Available(world_of(paths, vec![target]))),
+                records: Some(LayerState::Available(records)),
+                drift,
+                ..Preloaded::default()
+            },
+        )
+    }
+
+    /// The memo's one assumption: a gone folder is `missing` in every mode, so a deeper
+    /// report can answer a presence check.
+    #[test]
+    fn missing_is_the_same_in_every_drift_mode() {
+        let (_dir, paths, target, record) = drift_home();
+        let states = |mode: DriftMode| -> BTreeMap<String, crate::drift::DriftState> {
+            crate::app::drift::report(&paths, &target.target, &record, mode)
+                .addons
+                .into_iter()
+                .map(|a| (a.addon, a.state))
+                .collect()
+        };
+        let missing = |mode: DriftMode| -> Vec<String> {
+            states(mode)
+                .into_iter()
+                .filter(|(_, state)| *state == crate::drift::DriftState::Missing)
+                .map(|(addon, _)| addon)
+                .collect()
+        };
+        for mode in [DriftMode::Presence, DriftMode::Stat, DriftMode::Deep] {
+            assert_eq!(missing(mode), ["Gone"], "{mode:?}: {:?}", states(mode));
+        }
+        // The fixture holds what makes the modes differ elsewhere.
+        use crate::drift::DriftState::{Clean, Modified, Unindexed};
+        for (mode, edited, touched, quiet) in [
+            (DriftMode::Presence, Clean, Clean, Clean),
+            (DriftMode::Stat, Modified, Clean, Unindexed),
+            (DriftMode::Deep, Modified, Clean, Unindexed),
+        ] {
+            let got = states(mode);
+            assert_eq!(
+                (got["Edited"], got["Touched"], got["Quiet"]),
+                (edited, touched, quiet),
+                "{mode:?}: {got:?}"
+            );
+        }
+    }
+
+    /// A stored report as deep or deeper answers; a shallower one is computed again and
+    /// replaced.
+    #[test]
+    fn a_stronger_drift_report_answers_a_weaker_request() {
+        for (case, stored, asked) in [
+            ("stat_for_presence", DriftMode::Stat, DriftMode::Presence),
+            ("deep_for_stat", DriftMode::Deep, DriftMode::Stat),
+            ("deep_for_presence", DriftMode::Deep, DriftMode::Presence),
+            ("stat_for_stat", DriftMode::Stat, DriftMode::Stat),
+        ] {
+            let (_dir, paths, target, record) = drift_home();
+            let seeded = crate::app::drift::report(&paths, &target.target, &record, stored);
+            let view = drift_view(
+                &paths,
+                target,
+                record,
+                BTreeMap::from([(key(K), seeded.clone())]),
+            );
+            let got = view.drift(key(K), asked).unwrap();
+            assert_eq!(*got, seeded, "{case}: the stored report answers");
+        }
+
+        let (_dir, paths, target, record) = drift_home();
+        let view = drift_view(&paths, target, record, BTreeMap::new());
+        let presence = view.drift(key(K), DriftMode::Presence).unwrap();
+        assert_eq!(presence.mode, DriftMode::Presence);
+        let stat = view.drift(key(K), DriftMode::Stat).unwrap();
+        assert_eq!(stat.mode, DriftMode::Stat, "presence_then_stat_recomputes");
+        assert!(
+            !Rc::ptr_eq(&presence, &stat),
+            "presence_then_stat_recomputes"
+        );
+        let again = view.drift(key(K), DriftMode::Presence).unwrap();
+        assert!(
+            Rc::ptr_eq(&stat, &again),
+            "presence_then_stat_recomputes: the memo holds the stat report"
+        );
+    }
+
+    /// Two asks of one client in one mode compute one report; a client not discovered has
+    /// none.
+    #[test]
+    fn drift_is_computed_once_per_client() {
+        let (_dir, paths, target, record) = drift_home();
+        let view = drift_view(&paths, target, record, BTreeMap::new());
+        let first = view.drift(key(K), DriftMode::Stat).unwrap();
+        let second = view.drift(key(K), DriftMode::Stat).unwrap();
+        assert!(Rc::ptr_eq(&first, &second));
+        assert_eq!(view.drift(key(K2), DriftMode::Presence), None);
+    }
+
+    /// A seed of `world` with no journal, a free lock and no widget.
+    fn seed_of(world: Rc<World>) -> Seed {
+        Seed {
+            world,
+            journals: no_journals(),
+            lock: LockState::Free,
+            widget: None,
+            drift: BTreeMap::new(),
+        }
+    }
+
+    /// The seeded layers are available from the start, holding the seed's values; the
+    /// world is the seed's own, shared, not a second discovery.
+    #[test]
+    fn a_seeded_view_holds_the_seeded_world() {
+        let (_dir, paths, target, _) = drift_home();
+        let world = Rc::new(world_of(&paths, vec![target]));
+        let view = DoctorView::seeded(ViewOptions::default(), seed_of(Rc::clone(&world)));
+        assert_eq!(
+            view.loaded_layers(),
+            BTreeSet::from([
+                Layer::Discovery,
+                Layer::Journals,
+                Layer::Lock,
+                Layer::Widget
+            ])
+        );
+        assert!(std::ptr::eq(view.world().unwrap(), Rc::as_ptr(&world)));
+        assert_eq!(view.journals(), Some(&no_journals()));
+        assert_eq!(view.lock(), Some(&LockState::Free));
+        assert_eq!(view.widget().map(|w| &w.info), Some(&None));
+        assert_eq!(
+            view.loaded_layers().len(),
+            4,
+            "asking a seeded layer loads nothing"
+        );
+    }
+
+    /// Nothing a seeded view reads writes: every layer and the drift memo, on a home with
+    /// a record and files to check.
+    #[test]
+    fn the_seeded_view_writes_nothing() {
+        let (dir, paths, target, record) = drift_home();
+        plant(
+            &paths.target_record(&key(K)),
+            &Plant::Bytes(store::encode(&record).unwrap()),
+        );
+        let before = tree(dir.path());
+        let world = Rc::new(world_of(&paths, vec![target]));
+        let view = DoctorView::seeded(ViewOptions::default(), seed_of(world));
+        view.config();
+        view.registry();
+        view.records();
+        view.history();
+        view.caches();
+        view.skill();
+        view.credentials();
+        for mode in [DriftMode::Presence, DriftMode::Stat, DriftMode::Deep] {
+            assert!(view.drift(key(K), mode).is_some(), "{mode:?}");
+        }
+        assert_eq!(tree(dir.path()), before);
+    }
+
+    /// `status`'s tiers read only what `status` reads, plus single-file reads: the
+    /// `cached` and `quick` rows load no history, cache listing or inventory.
+    #[test]
+    fn the_status_tiers_load_no_history_caches_or_inventory() {
+        use crate::doctor::registry::Tier;
+        use crate::doctor::selection::Selection;
+        for (case, tiers) in [
+            ("cached", &[Tier::Cached][..]),
+            ("cached_and_quick", &[Tier::Cached, Tier::Quick][..]),
+        ] {
+            let (_dir, paths, target, record) = drift_home();
+            plant(
+                &paths.target_record(&key(K)),
+                &Plant::Bytes(store::encode(&record).unwrap()),
+            );
+            let world = Rc::new(world_of(&paths, vec![target]));
+            let view = DoctorView::seeded(ViewOptions::default(), seed_of(world));
+            crate::doctor::detect(&view, &Selection::all(), tiers).unwrap();
+            let loaded = view.loaded_layers();
+            for layer in [Layer::History, Layer::Caches, Layer::Inventory] {
+                assert!(!loaded.contains(&layer), "{case}: {loaded:?}");
+            }
+        }
     }
 
     #[test]

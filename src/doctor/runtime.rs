@@ -365,14 +365,30 @@ fn record_failure(path: &Path, err: FsxError) -> DoctorFailure {
     )
 }
 
-/// `DIAGNOSING`: every row of `registry` the selection includes, of `tiers`, whose layers
-/// are available, in registry order, each isolated from panics and held to its budget. A
-/// check that panics is a `detector-crashed` finding and one a limit cut short a
-/// `check-incomplete` finding; the run goes on either way. A finding whose failure mode
-/// has a fixer carries that fixer's remediation (`fix::remediation_for`), keeping the
+/// `DIAGNOSING`: [`detect`], then each finding whose failure mode has a fixer given that
+/// fixer's remediation (`fix::remediation_for`, which asks the fixer to plan), keeping the
 /// user's `-t`. Fails only when `-t` cannot be resolved. Writes nothing, so `doctor diff`
 /// diagnoses without a run directory.
 pub fn diagnose(
+    registry: &[FailureMode],
+    view: &DoctorView,
+    selection: &Selection,
+    tiers: &[Tier],
+    budgets: Budgets,
+) -> Result<Diagnosis> {
+    detect(registry, view, selection, tiers, budgets)
+        .map(|diagnosis| with_fixer_remediations(registry, view, selection, diagnosis))
+}
+
+/// The one detector loop (M4-D29), which `status` runs too (`doctor::detect`): every row
+/// of `registry` the selection includes, of `tiers`, whose layers are available, in
+/// registry order, each isolated from panics and held to its budget. A check that panics
+/// is a `detector-crashed` finding and one a limit cut short a `check-incomplete` finding;
+/// the run goes on either way. The view's failures the selection shows are findings too,
+/// and only findings within `-t`'s scope are kept. Each finding keeps its row's own
+/// remediation: no fixer is asked to plan. Fails only when `-t` cannot be resolved.
+/// Writes nothing.
+pub fn detect(
     registry: &[FailureMode],
     view: &DoctorView,
     selection: &Selection,
@@ -449,7 +465,6 @@ pub fn diagnose(
         finished_at: crate::clock::now(),
         duration_ms: u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX),
     })
-    .map(|diagnosis| with_fixer_remediations(registry, view, selection, diagnosis))
 }
 
 /// `diagnosis` with each finding whose failure mode has a fixer given that fixer's

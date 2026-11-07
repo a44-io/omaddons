@@ -15,10 +15,16 @@
 //! Backups (M3-D37): both modes read each client's block from the backup inventory,
 //! validated by listing, and never rebuild it; a client without a recent checkpoint is
 //! offered `backup create` whatever `auto_backup` says.
+//!
+//! Issues (F8, M4-D29): the doctor's own detector loop over every `cached` row
+//! (`--cached`) or every `cached` and `quick` row, on a view seeded with what `status`
+//! read itself (its world, journals, lock, widget and drift), so nothing is discovered
+//! or checked twice and `status` and `doctor` never disagree.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::Duration;
 
 use jiff::Timestamp;
@@ -42,14 +48,10 @@ use crate::discover::cache::{CacheStats, DiscoveryMode};
 use crate::discover::running::detect_running;
 use crate::discover::shared::{SharedAddons, shared_addons};
 use crate::doctor;
-use crate::doctor::detectors::concurrency::{JournalInput, journal_observations, lock_observation};
-use crate::doctor::facts::{
-    AddonDriftFact, MachineFacts, NewerFile, StatusFacts, TargetFacts, WidgetDrift,
-};
-use crate::doctor::finding::Finding;
-use crate::doctor::registry::{self, Tier};
-use crate::doctor::view::Journals;
-use crate::drift::{AddonDrift, DriftMode, DriftState};
+use crate::doctor::registry::Tier;
+use crate::doctor::selection::{Selection, Skipped};
+use crate::doctor::view::{DoctorView, Journals, Seed, ViewDiscovery, ViewOptions};
+use crate::drift::{AddonDrift, DriftMode, DriftReport, DriftState};
 use crate::engine::journal;
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::errors::observe::{Observe, read_target};
@@ -69,7 +71,7 @@ use crate::state::history_tail::{self, Answer};
 use crate::state::paths::ClientPaths;
 use crate::state::records::{TargetRecord, load_record};
 use crate::state::registry::RegistryEntry;
-use crate::state::store::{VersionStatus, Versioned};
+use crate::state::store::VersionStatus;
 
 /// `status`'s own flags.
 #[derive(Debug, Clone, Copy, Default, clap::Args)]
@@ -328,6 +330,19 @@ pub struct StatusOutcome {
     pub notes: Vec<String>,
 }
 
+impl StatusOutcome {
+    /// The human lines of the machine's issues (`data.issues`), in order, but the bar
+    /// widget's, which has its own `bar widget:` line.
+    fn machine_issue_lines(&self) -> Vec<String> {
+        self.data
+            .issues
+            .iter()
+            .filter(|issue| issue.id != ids::WIDGET_VERSION_DRIFT)
+            .map(issue_line)
+            .collect()
+    }
+}
+
 impl Outcome for StatusOutcome {
     type Data = StatusData;
 
@@ -366,6 +381,9 @@ impl Outcome for StatusOutcome {
                 w,
                 "No WoW client found. Add one with: omaddons targets add <path>"
             )?;
+            for line in self.machine_issue_lines() {
+                writeln!(w, "{line}")?;
+            }
             if let Some(line) = widget_line(self.data.widget.as_ref()) {
                 writeln!(w, "{line}")?;
             }
@@ -425,11 +443,7 @@ impl Outcome for StatusOutcome {
         for (row, t) in text.lines().zip(&self.data.targets) {
             writeln!(w, "{row}")?;
             for issue in &t.issues {
-                let mut line = format!("  {} {}", wire(issue.severity), issue.title);
-                if let Some(command) = &issue.remediation.command {
-                    line.push_str(&format!(" → {command}"));
-                }
-                writeln!(w, "{line}")?;
+                writeln!(w, "{}", issue_line(issue))?;
             }
             if let Some(line) = errors_status::human_line(&t.id, &t.errors) {
                 writeln!(w, "{line}")?;
@@ -444,6 +458,10 @@ impl Outcome for StatusOutcome {
                     t.any_flavor.join(", ")
                 )?;
             }
+        }
+        // The issues of no client, after every client's block.
+        for line in self.machine_issue_lines() {
+            writeln!(w, "{line}")?;
         }
         for line in &self.drift_lines {
             writeln!(w, "{line}")?;
@@ -630,7 +648,8 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
     } else {
         DiscoveryMode::Full
     };
-    let world = World::load_with(ctx, mode)?;
+    // Shared with the doctor's view below, which reads it as its Discovery layer.
+    let world = Rc::new(World::load_with(ctx, mode)?);
     let verbose = ctx.output.style.verbose > 0;
     let mut warnings = world.warnings.clone();
 
@@ -645,9 +664,9 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
     warnings.extend(running.warning());
     let pending = journal::pending(&world.paths)?;
     let lock = probe_global(&world.paths)?;
-    // The journal and lock rows (F1), as the doctor reports them: every client's journals
-    // diagnosed, a settings restore's game judged by the selected clients' running state
-    // (an unselected client's counts as possibly running).
+    // What the journal and lock rows read (F1), seeded into the doctor's view: every
+    // client's journals diagnosed, a settings restore's game judged by the selected
+    // clients' running state (an unselected client's counts as possibly running).
     let mut client_dirs: Vec<PathBuf> = world
         .resolved
         .targets
@@ -668,18 +687,6 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
         &sv_writable,
         DOCTOR_SCAN_MAX_ENTRIES,
     )?;
-    let target_id = |key: TargetKey| {
-        world
-            .registry
-            .entry(&key)
-            .map_or_else(|| key.to_string(), |e| e.id.clone())
-    };
-    let journal_found = journal_findings(&journals, &lock, &target_id, crate::clock::now());
-    let journal_keys: BTreeSet<TargetKey> = journal_found
-        .iter()
-        .filter(|f| JOURNAL_ROWS.contains(&f.id))
-        .filter_map(|f| f.target.as_ref().map(|t| t.key))
-        .collect();
     // Read once: what earlier commands learned about releases.
     let remembered = Remembered::load(&world);
     let mut notes: Vec<String> = remembered.note.iter().cloned().collect();
@@ -726,8 +733,9 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
     }
 
     let mut targets = Vec::new();
-    // Each registered target's facts for the failure-mode registry.
-    let mut facts = Vec::new();
+    // Each registered client's drift report, for the doctor's view to answer from: its
+    // drift rows then check no file again, and `drift[]` and the issues agree.
+    let mut drift_seed: BTreeMap<TargetKey, DriftReport> = BTreeMap::new();
     for d in &selected {
         let t = &d.target;
         let record = match t.key {
@@ -757,10 +765,8 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
         let addons = record
             .as_ref()
             .map_or_else(AddonCounts::default, |l| counts(&l.value));
+        // `journal_pending` comes first, from the journal rows' findings (below).
         let mut attention = Vec::new();
-        if t.key.is_some_and(|key| journal_keys.contains(&key)) {
-            attention.push(Attention::JournalPending);
-        }
         if record
             .as_ref()
             .is_some_and(|l| l.status == VersionStatus::Newer)
@@ -891,39 +897,14 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             install_root: verbose.then(|| t.install_root.clone()),
             exe_name: if verbose { t.exe_name.clone() } else { None },
         };
-        if let Some(key) = target.key {
-            let newer_record = record
-                .as_ref()
-                .filter(|l| l.status == VersionStatus::Newer)
-                .map(|l| NewerFile {
-                    path: world.paths.target_record(&key),
-                    on_disk: l.version,
-                    writes: <TargetRecord as Versioned>::CURRENT,
-                });
-            let missing_folders = |addon: &str| -> Vec<PathBuf> {
-                drifted
-                    .iter()
-                    .filter(|a| a.addon == addon)
-                    .flat_map(|a| a.folders.iter().filter(|f| !f.present))
-                    .map(|f| client.addons().join(f.folder.as_str()))
-                    .collect()
-            };
-            facts.push(target_facts(
-                &target,
-                key,
-                newer_record,
-                None,
-                &missing_folders,
-            ));
+        if let (Some(key), Some(report)) = (target.key, report) {
+            drift_seed.insert(key, report);
         }
         targets.push(target);
     }
     for e in &missing {
         let record = load_record(&world.paths, &e.key)?.value;
-        let mut attention = vec![Attention::TargetMissing];
-        if journal_keys.contains(&e.key) {
-            attention.insert(0, Attention::JournalPending);
-        }
+        let attention = vec![Attention::TargetMissing];
         let target = StatusTarget {
             id: e.id.clone(),
             key: Some(e.key),
@@ -962,13 +943,6 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             install_root: verbose.then(|| e.install_root.clone()),
             exe_name: None,
         };
-        facts.push(target_facts(
-            &target,
-            e.key,
-            None,
-            Some(e.client_dir.clone()),
-            &|_| Vec::new(),
-        ));
         targets.push(target);
     }
     targets.sort_by(|a, b| a.id.cmp(&b.id));
@@ -985,43 +959,55 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             .with_fix(Suggestion::command(["omaddons", "omarchy", "install"])),
         );
     }
-    // Each issue is a finding of the failure-mode registry, by its rows' own rules over
-    // the facts gathered above: `--cached` runs the `cached` rows, plain `status` the
-    // `quick` ones too. The journal and lock rows (all `cached`) read the journals.
-    let machine = machine_facts(widget.as_ref());
-    let facts = StatusFacts {
-        targets: facts,
-        machine,
-    };
-    let max_tier = if args.cached {
-        Tier::Cached
+    // Each issue is a finding of the failure-mode registry (F8, M4-D29): the doctor's own
+    // detector loop over its `cached` rows (`--cached`) or its `cached` and `quick` rows,
+    // on a view seeded with what `status` read above, so nothing is discovered or checked
+    // twice. `-t` narrows the per-client rows as `doctor -t` does; `-t all` lists every
+    // client, a vanished one too, as no `-t` does.
+    let in_progress = matches!(lock, LockState::Held { .. });
+    let view = DoctorView::seeded(
+        ViewOptions {
+            discovery: if args.cached {
+                ViewDiscovery::Cached
+            } else {
+                ViewDiscovery::Scan
+            },
+            ..ViewOptions::default()
+        },
+        Seed {
+            world: Rc::clone(&world),
+            journals,
+            lock,
+            widget: widget.clone(),
+            drift: drift_seed,
+        },
+    );
+    let scope = if world.selects_all(ctx) {
+        None
     } else {
-        Tier::Quick
+        ctx.target.as_deref()
     };
-    let mut found = doctor::facts::findings(&facts, max_tier);
-    // A journal on a client `status` does not list is the machine's without `-t`, so a P0
-    // is never invisible; with `-t`, it is out of scope like the client.
+    let found = doctor::detect(
+        &view,
+        &Selection::parse(scope, &[], &[], &[])?,
+        status_tiers(&args),
+    )?;
+    // A check `status` could not make is the doctor's `skipped[]`; here a `-v` note.
+    notes.extend(skipped_notes(&found.skipped));
     let listed: BTreeSet<TargetKey> = targets.iter().filter_map(|t| t.key).collect();
-    for mut f in journal_found {
-        if f.target.as_ref().is_some_and(|t| !listed.contains(&t.key)) {
-            if ctx.target.is_some() {
-                continue;
-            }
-            f.target = None;
-        }
-        found.push(f);
-    }
+    let (mut per_client, issues) = issues::assign(&found.findings, &listed, ctx.target.is_some());
     for t in &mut targets {
         t.issues = t
             .key
-            .map(|key| issues::for_target(&found, key))
+            .and_then(|key| per_client.remove(&key))
             .unwrap_or_default();
+        // An interrupted change on the client: its first attention item.
+        if t.issues.iter().any(|i| JOURNAL_ROWS.contains(&i.id)) {
+            t.attention.insert(0, Attention::JournalPending);
+        }
     }
-    let issues = issues::for_machine(&found);
     // An interrupted change no listed client carries is attention too.
-    let unattributed = found
-        .iter()
-        .any(|f| JOURNAL_ROWS.contains(&f.id) && f.target.is_none());
+    let unattributed = issues.iter().any(|i| JOURNAL_ROWS.contains(&i.id));
 
     let (mut commands, mut first_fix) = recommendations(&targets, check_due, widget_outdated);
     if unattributed && first_fix.is_none() {
@@ -1042,7 +1028,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             targets,
             journal: JournalState {
                 pending: pending.len(),
-                in_progress: matches!(lock, LockState::Held { .. }),
+                in_progress,
             },
             needs_attention,
             summary,
@@ -1320,66 +1306,41 @@ fn change_of(world: &World, entries: &[&HistoryEntry]) -> LastChange {
     }
 }
 
-/// A registered target's facts for the failure-mode registry (E1), mirroring its
-/// `attention` exactly: each fact is kept only when `status` raised the attention item it
-/// stands for, so the registry finds what `status` reports. `missing_folders` gives a
-/// drifted addon's folders gone from `Interface/AddOns`.
-pub(crate) fn target_facts(
-    target: &StatusTarget,
-    key: TargetKey,
-    newer_record: Option<NewerFile>,
-    vanished: Option<PathBuf>,
-    missing_folders: &dyn Fn(&str) -> Vec<PathBuf>,
-) -> TargetFacts {
-    let raised = |attention| target.attention.contains(&attention);
-    TargetFacts {
-        id: target.id.clone(),
-        key,
-        newer_record: newer_record.filter(|_| raised(Attention::StateVersionNewer)),
-        vanished: vanished.filter(|_| raised(Attention::TargetMissing)),
-        degraded: if raised(Attention::AddonDegraded) {
-            target.addons.degraded
-        } else {
-            0
-        },
-        drift: target
-            .drift
-            .iter()
-            .filter(|d| needs_reinstall(d.state))
-            .map(|d| AddonDriftFact {
-                addon: d.addon.clone(),
-                state: d.state,
-                files: d.files,
-                missing_folders: missing_folders(&d.addon),
-            })
-            .collect(),
+/// The tiers `status` runs (M4-D29): the `cached` rows under `--cached`, else the
+/// `cached` and `quick` rows. `--deep` runs the same rows: its depth reaches the issues
+/// through the drift report it seeds.
+pub(crate) fn status_tiers(args: &StatusArgs) -> &'static [Tier] {
+    if args.cached {
+        &[Tier::Cached]
+    } else {
+        &[Tier::Cached, Tier::Quick]
     }
 }
 
-/// The journal and lock findings (F1), as the doctor's rows report them: every journal
-/// that is neither live nor committed while no other process holds the lock (`status`
-/// never holds it), and a holder that has kept it too long.
-pub(crate) fn journal_findings(
-    journals: &Journals,
-    lock: &LockState,
-    target_id: &dyn Fn(TargetKey) -> String,
-    now: Timestamp,
-) -> Vec<Finding> {
-    let input = JournalInput {
-        journals,
-        lock: Some(lock),
-        caller_holds_lock: false,
-        target_id,
-    };
-    let mut found: Vec<Finding> = journal_observations(&input)
-        .into_iter()
-        .filter_map(|(id, obs)| registry::row(id).map(|row| row.finding(obs)))
-        .collect();
-    found.extend(
-        lock_observation(lock, false, now)
-            .and_then(|obs| registry::row(ids::LOCK_HELD_LONG).map(|row| row.finding(obs))),
-    );
-    found
+/// Each check `status` could not make (a layer it reads could not be loaded), as a `-v`
+/// note: `status: <fm id> not checked (<reason>)`, with ` on <client>` for one client.
+/// Never a data key or an issue: `doctor` reports each in `skipped[]` (§8.1 rule 2).
+pub(crate) fn skipped_notes(skipped: &[Skipped]) -> Vec<String> {
+    skipped
+        .iter()
+        .map(|s| {
+            let mut note = format!("status: {} not checked ({})", s.id, wire(s.reason));
+            if let Some(target) = &s.target {
+                note.push_str(&format!(" on {}", target.id));
+            }
+            note
+        })
+        .collect()
+}
+
+/// One issue as the human view prints it, under its client or after them all:
+/// `  P2 <title> → <remediation>`.
+fn issue_line(issue: &Issue) -> String {
+    let mut line = format!("  {} {}", wire(issue.severity), issue.title);
+    if let Some(command) = &issue.remediation.command {
+        line.push_str(&format!(" → {command}"));
+    }
+    line
 }
 
 /// The `--check` fix for a scope's interrupted changes: its most blocking journal issue
@@ -1426,16 +1387,6 @@ fn journal_fix(issues: &[Issue], target: Option<&str>) -> Option<(String, Sugges
         None => issue.title.clone(),
     };
     Some((message, fix))
-}
-
-/// The machine's facts: the bar widget when it needs a reinstall.
-pub(crate) fn machine_facts(widget: Option<&WidgetInfo>) -> MachineFacts {
-    MachineFacts {
-        widget: widget.filter(|w| w.needs_reinstall()).map(|w| WidgetDrift {
-            version: w.version.clone(),
-            context_known: w.context_matches.is_some(),
-        }),
-    }
 }
 
 /// `targets rm <id>`, the fix for a client whose directory is gone.
@@ -2114,6 +2065,122 @@ mod tests {
         );
         assert_eq!(fix.argv().unwrap(), unattributed_argv);
         assert!(journal_fix(&[], Some("retail")).is_none());
+    }
+
+    #[test]
+    fn status_tiers_by_flags() {
+        let args = |cached, deep| StatusArgs {
+            cached,
+            check: false,
+            deep,
+        };
+        for (case, flags, tiers) in [
+            ("cached", args(true, false), &[Tier::Cached][..]),
+            (
+                "plain",
+                args(false, false),
+                &[Tier::Cached, Tier::Quick][..],
+            ),
+            ("deep", args(false, true), &[Tier::Cached, Tier::Quick][..]),
+        ] {
+            assert_eq!(status_tiers(&flags), tiers, "{case}: {flags:?}");
+        }
+    }
+
+    /// The machine's issues print after every client's block, the widget's not doubled
+    /// (it has its `bar widget:` line); with no client, after the "No WoW client" line.
+    #[test]
+    fn machine_issues_print_after_the_clients() {
+        use crate::app::issues::Remediation;
+        let credential = Issue {
+            id: ids::CREDENTIAL_FILE_MODE,
+            severity: crate::app::issues::Severity::P2,
+            title: "the GitHub token file is readable by other users".to_owned(),
+            addon: None,
+            remediation: Remediation {
+                command: Some(
+                    "omaddons doctor fix --only fm-secrets-credential-file-mode".to_owned(),
+                ),
+                argv: None,
+                destructive: false,
+            },
+        };
+        let drift = Issue {
+            id: ids::WIDGET_VERSION_DRIFT,
+            severity: crate::app::issues::Severity::P3,
+            title: "The bar widget is from another omaddons build".to_owned(),
+            addon: None,
+            remediation: Remediation {
+                command: Some("omaddons omarchy install".to_owned()),
+                argv: None,
+                destructive: false,
+            },
+        };
+        let line = "  P2 the GitHub token file is readable by other users → omaddons doctor fix --only fm-secrets-credential-file-mode";
+        let render = |outcome: StatusOutcome| {
+            let mut out = Vec::new();
+            outcome.render_human(&mut out, &Style::default()).unwrap();
+            String::from_utf8(out).unwrap()
+        };
+        let mut retail = target("retail", 0, &[Attention::AddonDegraded], 0);
+        retail.issues = vec![Issue {
+            title: "1 addon lost a folder to another addon".to_owned(),
+            id: ids::OWNERSHIP_TRANSFERRED,
+            ..credential.clone()
+        }];
+        let text = render(outcome_for(
+            vec![retail],
+            vec![credential.clone(), drift.clone()],
+        ));
+        let lines: Vec<&str> = text.lines().collect();
+        let client = lines
+            .iter()
+            .position(|l| l.contains("lost a folder"))
+            .unwrap();
+        // ubs:ignore — compares a rendered human line in a test, not a secret
+        let machine = lines.iter().position(|l| *l == line).unwrap();
+        assert!(client < machine, "with_clients: {text}");
+        assert!(
+            !text.contains("The bar widget is from another omaddons build"),
+            "with_clients: the widget's issue keeps its own line: {text}"
+        );
+
+        let text = render(outcome_for(Vec::new(), vec![credential, drift]));
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(
+            lines[0].starts_with("No WoW client found"),
+            "no_client: {text}"
+        );
+        assert_eq!(lines[1], line, "no_client: {text}");
+    }
+
+    /// A check `status` could not make becomes one `-v` note, naming its client when it
+    /// was skipped for one.
+    #[test]
+    fn skipped_rows_become_verbose_notes() {
+        use crate::doctor::selection::{SkipReason, SkippedTarget};
+        let skipped = [
+            Skipped {
+                id: ids::CREDENTIAL_FILE_MODE,
+                reason: SkipReason::CredentialsUnavailable,
+                target: None,
+            },
+            Skipped {
+                id: ids::RECORD_FOLDER_MISSING,
+                reason: SkipReason::RecordsUnavailable,
+                target: Some(SkippedTarget {
+                    id: "retail".to_owned(),
+                    key: None,
+                }),
+            },
+        ];
+        assert_eq!(
+            skipped_notes(&skipped),
+            [
+                "status: fm-secrets-credential-file-mode not checked (credentials_unavailable)",
+                "status: fm-state_files-record-folder-missing not checked (records_unavailable) on retail",
+            ]
+        );
     }
 
     /// the failure-mode registry: each target's issues come from `issues_of_case`, so this

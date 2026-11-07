@@ -6,11 +6,9 @@
 
 use std::path::Path;
 
-use crate::app::status::machine_facts;
 use crate::contract::guide::EXPECTED_DIGEST;
 use crate::contract::guide::stamp::{Stamp, hex, inspect};
 use crate::doctor::budget::Budget;
-use crate::doctor::facts::StatusFacts;
 use crate::doctor::finding::{Confidence, Detected, Evidence, Observation, Subject};
 use crate::doctor::selection::Selection;
 use crate::doctor::view::{BoundedRead, DoctorView, SkillFile};
@@ -217,29 +215,23 @@ pub(crate) fn skill_observation(skill: &SkillFile, expected: &str) -> Option<Obs
     })
 }
 
-/// `widget-version-drift`, from the Widget layer: the status rule's observation, with the
-/// plugin folder it is about.
+/// `widget-version-drift`, from the Widget layer: the rule's observation, with the plugin
+/// folder it is about.
 pub(crate) fn widget_version_drift(view: &DoctorView, _: &Selection, _: &mut Budget) -> Detected {
     let widget = view.widget().and_then(|layer| layer.info.as_ref());
-    let facts = StatusFacts {
-        targets: Vec::new(),
-        machine: machine_facts(widget),
-    };
-    let mut found = widget_version_drift_in(&facts);
+    let mut found = widget_version_drift_in(widget);
     for obs in &mut found {
         obs.evidence.path = Some(view.paths().omarchy_plugin_dir());
     }
     Detected::complete(found)
 }
 
-/// `widget-version-drift`'s rule, which `status` runs too: the bar widget serving this
-/// state is from another build. `observed` and `expected` can be equal (a rebuild of one
+/// `widget-version-drift`'s rule: the bar widget serving this state is from another build
+/// (`status`'s `widget_outdated`). `observed` and `expected` can be equal (a rebuild of one
 /// version), which is why `reason` says what differs.
-pub(crate) fn widget_version_drift_in(facts: &StatusFacts) -> Vec<Observation> {
-    facts
-        .machine
-        .widget
-        .iter()
+pub(crate) fn widget_version_drift_in(widget: Option<&WidgetInfo>) -> Vec<Observation> {
+    widget
+        .filter(|widget| widget.needs_reinstall())
         .map(|widget| Observation {
             subject: Subject::machine(),
             title: "The bar widget is from another omaddons build".to_owned(),
@@ -249,7 +241,8 @@ pub(crate) fn widget_version_drift_in(facts: &StatusFacts) -> Vec<Observation> {
             evidence: Evidence {
                 observed: widget.version.clone(),
                 expected: Some(env!("CARGO_PKG_VERSION").to_owned()),
-                reason: Some(if widget.context_known {
+                // `Build.js` says which state it serves when `context_matches` is known.
+                reason: Some(if widget.context_matches.is_some() {
                     CODE_DIFFERS
                 } else {
                     CONTEXT_UNKNOWN
@@ -257,6 +250,7 @@ pub(crate) fn widget_version_drift_in(facts: &StatusFacts) -> Vec<Observation> {
                 ..Evidence::default()
             },
         })
+        .into_iter()
         .collect()
 }
 
@@ -623,26 +617,38 @@ mod tests {
         }
     }
 
-    /// The rule `status` runs gives the issue `status` printed before the doctor gave it
-    /// evidence.
+    /// The rule gives the issue `status` printed before the doctor gave it evidence, and
+    /// nothing for a current widget.
     #[test]
     fn drift_issue_matches_status() {
         let row = registry::row(ids::WIDGET_VERSION_DRIFT).unwrap();
-        for context in [Some(true), None] {
-            let info = info(true, true, true, context);
-            let facts = StatusFacts {
-                targets: Vec::new(),
-                machine: machine_facts(Some(&info)),
-            };
-            let found: Vec<Finding> = widget_version_drift_in(&facts)
+        let expected = issues::Issue {
+            id: ids::WIDGET_VERSION_DRIFT,
+            severity: issues::Severity::P3,
+            title: "The bar widget is from another omaddons build".to_owned(),
+            addon: None,
+            remediation: issues::Remediation {
+                command: Some("omaddons omarchy install".to_owned()),
+                argv: Some(vec!["omaddons".into(), "omarchy".into(), "install".into()]),
+                destructive: false,
+            },
+        };
+        for (case, outdated, context) in [
+            ("outdated_context_known", true, Some(true)),
+            ("outdated_context_unknown", true, None),
+            ("current", false, Some(true)),
+        ] {
+            let info = info(true, true, outdated, context);
+            let found: Vec<Finding> = widget_version_drift_in(Some(&info))
                 .into_iter()
                 .map(|obs| row.finding(obs))
                 .collect();
-            assert_eq!(
-                issues::for_machine(&found),
-                issues::legacy::machine_issues(Some(&info), false),
-                "{info:?}"
-            );
+            let want = if outdated {
+                vec![expected.clone()]
+            } else {
+                Vec::new()
+            };
+            assert_eq!(issues::for_machine(&found), want, "{case}: {info:?}");
         }
     }
 

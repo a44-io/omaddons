@@ -2518,3 +2518,121 @@ fn gc_output_is_private() {
         assert_private_all(ran.stdout(), ran.stderr());
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// `status` on the registry (F8, c6cm.6.8.1, M4-D29).
+
+/// The failure-mode ids of `status`'s issues, the machine's and every client's, sorted
+/// and once each (a client's journals of one row are one issue).
+fn status_issue_ids(data: &Value) -> Vec<String> {
+    let clients = data["targets"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|t| t["issues"].as_array().into_iter().flatten());
+    let mut ids: Vec<String> = data["issues"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .chain(clients)
+        .filter_map(|issue| issue["id"].as_str().map(str::to_owned))
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+/// A tree hash of each of `home`'s config, state and cache roots (`None` while absent).
+fn roots_hash(home: &Home) -> Vec<(PathBuf, Option<String>)> {
+    [home.env.config(), home.env.state(), home.env.cache()]
+        .into_iter()
+        .map(|root| {
+            let hash = root.exists().then(|| common::trees::tree_hash(&root));
+            (root, hash)
+        })
+        .collect()
+}
+
+/// `status --cached` reports exactly the doctor's `cached`-tier findings, by failure mode,
+/// on the credential-mode fixture, a stuck journal, an outdated agent skill and a clean
+/// realistic home, and leaves the config, state and cache roots as they were (no doctor
+/// run directory is made). Plain `status` lists the skill's drift with its remediation.
+#[test]
+fn status_and_doctor_agree_on_the_cached_tier() {
+    use fixture::Fixture;
+    use fixture::fixtures::fm_concurrency_primitives_journal_too_new::JournalTooNew;
+    use fixture::fixtures::fm_plugins_skill_version_drift::SkillVersionDrift;
+    use fixture::fixtures::fm_secrets_credential_file_mode::CredentialFileMode;
+    let log = tlog!();
+    let dir = tempfile::tempdir().unwrap();
+    let realistic = common::realistic::realistic_home(&dir.path().join("realistic"));
+    let planted: [Box<dyn Fixture>; 3] = [
+        Box::new(CredentialFileMode),
+        Box::new(JournalTooNew::default()),
+        Box::new(SkillVersionDrift),
+    ];
+    let mut homes: Vec<(&str, Option<&str>, Home)> = planted
+        .iter()
+        .map(|fixture| {
+            let home = home(&log);
+            fixture.corrupt(&home);
+            (fixture.id(), Some(fixture.id()), home)
+        })
+        .collect();
+    homes.push(("realistic_clean", None, realistic.home));
+    for (case, expected, home) in &homes {
+        let log = log.case(case);
+        log.step("status --cached");
+        let before = roots_hash(home);
+        let ran = run(&log, home, &["status", "--cached", "--json"]);
+        ran.ok();
+        let from_status = status_issue_ids(ran.data());
+        log.json("status", &from_status);
+        assert_eq!(roots_hash(home), before, "{case}: status wrote nothing");
+        assert!(
+            !home.state().join("doctor").exists(),
+            "{case}: status made no doctor run"
+        );
+        log.step("doctor --quick");
+        let ran = run(&log, home, &["doctor", "--json", "--quick"]);
+        let mut from_doctor: Vec<String> = ran.envelope()["findings"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|f| f["id"].as_str())
+            .filter(|id| {
+                omaddons::doctor::registry::row(id).is_some_and(|row| row.tier == Tier::Cached)
+            })
+            .map(str::to_owned)
+            .collect();
+        from_doctor.sort();
+        from_doctor.dedup();
+        log.json("doctor", &from_doctor);
+        assert_eq!(from_status, from_doctor, "{case}");
+        match expected {
+            Some(id) => assert!(
+                from_status.iter().any(|f| f == id),
+                "{case}: {from_status:?}"
+            ),
+            None => assert_eq!(from_status, Vec::<String>::new(), "{case}"),
+        }
+    }
+
+    // The skill's drift through plain `status`, as `doctor` remediates it.
+    let (_, _, home) = &homes[2];
+    let log = log.case("skill_version_drift_plain");
+    let ran = run(&log, home, &["status", "--json"]);
+    ran.ok();
+    let skill: Vec<&Value> = ran.data()["issues"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|issue| issue["id"] == ids::SKILL_VERSION_DRIFT)
+        .collect();
+    assert_eq!(skill.len(), 1, "{skill:?}");
+    assert_eq!(skill[0]["severity"], "P3");
+    assert_eq!(
+        skill[0]["remediation"]["argv"],
+        json!(["omaddons", "robot-docs", "install-skill"])
+    );
+}

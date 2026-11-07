@@ -807,6 +807,9 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         tier: Tier::Cached,
         online: false,
         cost_ms: 1,
+        // Records alone: it runs, naming clients by key, while the configuration or the
+        // registry cannot be read. Discovery, when it loads, says which clients are gone
+        // (theirs is `target-vanished`).
         requires: &[Layer::Records],
         detect: Some(external::ownership_transferred),
         fix: None,
