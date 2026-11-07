@@ -467,7 +467,7 @@ fn what_happens_meanwhile_is_never_clobbered_or_pruned() {
     );
     pause.reached(point);
     let r = run(&home, &["backup", "prune", &id, "-t", "retail"]);
-    let busy = &r.expect(0)["data"]["targets"][0]["busy"];
+    let busy = &r.expect(0)["data"]["targets"][0]["busy_backups"];
     assert_eq!(busy, &json!([{"id": id}]), "{}", r.context());
     fs::write(&file, "theirs").unwrap();
     pause.resume(point);

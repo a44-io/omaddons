@@ -951,7 +951,7 @@ fn a_prune_finds_a_paused_export_and_a_paused_restore_busy() {
     pe.reached("fsx.write_atomic.after");
     pr.reached("engine.restore.staged");
     let pruned = s.ok(&["backup", "prune", &exported, &restored, "-t", "retail"]);
-    let mut busy: Vec<&str> = pruned["data"]["targets"][0]["busy"]
+    let mut busy: Vec<&str> = pruned["data"]["targets"][0]["busy_backups"]
         .as_array()
         .unwrap()
         .iter()
@@ -992,7 +992,7 @@ fn a_verify_racing_a_prune_of_its_backup_ends_busy_or_gone() {
     pause.reached("fsx.write_atomic.before");
     let pruned = s.ok(&["backup", "prune", &id, "-t", "retail"]);
     assert_eq!(
-        pruned["data"]["targets"][0]["busy"],
+        pruned["data"]["targets"][0]["busy_backups"],
         serde_json::json!([{"id": id}]),
         "{pruned}"
     );

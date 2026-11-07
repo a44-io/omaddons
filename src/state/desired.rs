@@ -350,7 +350,7 @@ impl Parser<'_> {
         let mut details = json!({
             "path": path.to_string(),
             "line": line,
-            "key": key,
+            "toml_key": key,
             "reason": reason.wire(),
         });
         if let (Some(first), Some(map)) = (first, details.as_object_mut()) {
@@ -1039,7 +1039,8 @@ addons = ["git:https://github.com/fondlez/GroupBulletinBoard#main"]
         assert_eq!(e.code, ErrorCode::DesiredStateInvalid, "{e:?}");
         assert_eq!(e.details["path"], path().display().to_string());
         let line = e.details["line"].as_u64().unwrap();
-        let key = e.details["key"].as_str().unwrap().to_owned();
+        let key = e.details["toml_key"].as_str().unwrap().to_owned();
+        assert!(e.details.get("key").is_none(), "{:?}", e.details);
         let reason = e.details["reason"].as_str().unwrap().to_owned();
         (line, key, reason, e)
     }

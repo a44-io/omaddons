@@ -71,6 +71,7 @@ pub struct HistoryLine {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub targets: Option<Vec<TargetRef>>,
     pub actor: Actor,
+    #[schemars(schema_with = "crate::contract::schema::reason_text")]
     pub reason: Option<String>,
     pub argv: Vec<String>,
     /// Folder counts; `-v` shows `ops` instead.

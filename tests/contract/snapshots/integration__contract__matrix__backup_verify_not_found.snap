@@ -9,7 +9,7 @@ expression: s.stable(&c.envelope)
     "alternatives": [],
     "code": "not_found",
     "details": {
-      "newest": [
+      "newest_ids": [
         "<ulid>"
       ],
       "prefix": "01ZZZZZZZZ",

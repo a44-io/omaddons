@@ -239,10 +239,11 @@ fn help_walks_a_nested_path() {
         assert_eq!(via_help.stdout, flag.stdout, "{path:?}");
         asked.push("--json");
         let envelope = run(&asked).envelope();
-        // The envelope is help's; the data names the subcommand, as `help "targets add"`.
+        // The envelope is help's; the data names the subcommand by its canonical path
+        // (rule 5), as `help "targets add"`.
         assert_eq!(
             (&envelope["command"], &envelope["data"]["command"]),
-            (&Value::from("help"), &Value::from(path[1])),
+            (&Value::from("help"), &Value::from(path.join(" "))),
             "{envelope}"
         );
     }
@@ -296,7 +297,7 @@ fn help_for_auth_and_its_github_subcommand() {
         let envelope = run(&json).envelope();
         assert_eq!(
             (&envelope["command"], &envelope["data"]["command"]),
-            (&Value::from("help"), &Value::from("github")),
+            (&Value::from("help"), &Value::from("auth github")),
             "{envelope}"
         );
     }

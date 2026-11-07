@@ -116,7 +116,8 @@ pub enum Capability {
 pub struct AutoLast {
     #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub at: Timestamp,
-    /// What it did (`created`, a skip reason, …), as automatic backups name it.
+    /// What it did (`created`, a skip reason, `failed`), as automatic backups name it.
+    #[schemars(schema_with = "crate::backup::auto::last_result_schema")]
     pub result: String,
 }
 

@@ -22,7 +22,7 @@ use std::collections::BTreeMap;
 pub use loaded::{
     DiskFolder, FolderView, JUDGE_VERSION, LoadedToc, LoadedTocSummary, TocLevel, Verdict,
     VerdictReport, WrongFlavorReason, best_in_family, effective_interfaces, judge, judge_digest,
-    loaded_toc, primary_interface, read_bounded, verdict, verify_target,
+    loaded_toc, primary_interface, read_bounded, reason_names_schema, verdict, verify_target,
 };
 
 use schemars::JsonSchema;

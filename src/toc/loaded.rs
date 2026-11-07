@@ -306,6 +306,25 @@ pub enum WrongFlavorReason {
     DependencySkipped { folder: FolderName },
 }
 
+/// The schema of a [`WrongFlavorReason`]'s wire name alone (a record's
+/// `left_out[].reason`): every reason's tag, taken from this type's own schema, which
+/// `folders.skipped[].reason` publishes, so the two sets never differ (rule 4).
+pub fn reason_names_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    let derived = serde_json::to_value(schemars::schema_for!(WrongFlavorReason))
+        .unwrap_or(serde_json::Value::Null);
+    let mut names: Vec<String> = Vec::new();
+    crate::contract::schema::walk(&derived, &mut |visit| {
+        if let crate::contract::schema::Visit::Property { name, node, .. } = visit
+            && *name == "reason"
+            && let Some(tag) = node.get("const").and_then(serde_json::Value::as_str)
+            && !names.iter().any(|known| known == tag)
+        {
+            names.push(tag.to_owned());
+        }
+    });
+    schemars::json_schema!({"type": "string", "enum": names})
+}
+
 /// The verdict on one folder, with the TOC it rests on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct VerdictReport {
@@ -568,6 +587,35 @@ mod tests {
 
     use super::*;
     use crate::rules::{ClientVersion, InstallKind};
+
+    /// A record's `left_out[].reason` publishes exactly the tags `folders.skipped` has, in
+    /// declaration order (rule 4).
+    #[test]
+    fn left_out_reasons_are_the_wrong_flavor_tags() {
+        let schema = reason_names_schema(&mut schemars::SchemaGenerator::default());
+        let schema = schema.as_value();
+        let names: Vec<&str> = schema["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "game_type_excluded",
+                "no_interface",
+                "interface_not_in_family",
+                "below_client_floor",
+                "target_interface_unknown",
+                "no_loadable_toc",
+                "dependency_skipped",
+            ],
+            "{schema:?}"
+        );
+        let serialized = serde_json::to_value(WrongFlavorReason::NoLoadableToc).unwrap();
+        assert!(names.contains(&serialized["reason"].as_str().unwrap()));
+    }
 
     /// An in-memory folder.
     struct Memory {

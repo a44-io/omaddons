@@ -322,7 +322,7 @@ fn unknown_section(state: &DesiredState, known: &[&str], path: &Path) -> Option<
         .details(json!({
             "path": path.display().to_string(),
             "line": section.line,
-            "key": format!("target.{id}"),
+            "toml_key": format!("target.{id}"),
             "reason": "unknown_target_section",
         })),
     )
@@ -548,7 +548,7 @@ fn target_work(
         .details(json!({
             "path": path.display().to_string(),
             "line": a.entry.line,
-            "key": "",
+            "toml_key": "",
             "reason": "duplicate",
             "other_line": b.entry.line,
         }));

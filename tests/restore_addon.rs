@@ -247,7 +247,7 @@ fn an_addon_restore_puts_its_files_back_and_undo_returns_each_state() {
             "folders_from": "backup",
             "captured_version": "5.19.2",
             "installed_version": "5.20.0",
-            "not_in_backup": [],
+            "new_folders": [],
             "files": {"replaced": 2, "restored": 0, "created_since": 1},
         }])
     );
@@ -422,7 +422,7 @@ fn the_folders_are_those_the_addon_owned_when_the_backup_was_taken() {
     let done = s.restore(&["WeakAuras"], &[], &[]).expect(0);
     let wa = &addons(&done)[0];
     assert_eq!(
-        (&wa["folders"], &wa["not_in_backup"]),
+        (&wa["folders"], &wa["new_folders"]),
         (
             &json!(["WeakAuras", "WeakAurasOptions"]),
             &json!(["WeakAurasConfig"])

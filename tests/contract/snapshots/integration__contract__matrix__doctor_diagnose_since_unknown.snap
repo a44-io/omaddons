@@ -20,7 +20,7 @@ expression: s.stable(&c.envelope)
     ],
     "code": "not_found",
     "details": {
-      "newest": [
+      "newest_ids": [
         "<run>",
         "<run>"
       ],

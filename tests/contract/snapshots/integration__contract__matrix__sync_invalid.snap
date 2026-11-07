@@ -1,6 +1,5 @@
 ---
 source: tests/contract/matrix.rs
-assertion_line: 110
 expression: s.stable(&c.envelope)
 ---
 {
@@ -10,10 +9,10 @@ expression: s.stable(&c.envelope)
     "alternatives": [],
     "code": "desired_state_invalid",
     "details": {
-      "key": "family.mainline.addons",
       "line": 2,
       "path": "<root>/config/omaddons/addons.toml",
-      "reason": "bad_value"
+      "reason": "bad_value",
+      "toml_key": "family.mainline.addons"
     },
     "fix": "correct line 2 of <root>/config/omaddons/addons.toml",
     "fix_argv": null,

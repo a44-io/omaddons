@@ -352,7 +352,7 @@ fn one_backup_by_id_prefix() {
     let unknown = run(&home, &["backup", "list", "01ZZZZZZ", "-t", "retail"]).expect(3);
     assert_eq!(unknown["error"]["code"], "not_found");
     assert_eq!(
-        unknown["error"]["details"]["newest"],
+        unknown["error"]["details"]["newest_ids"],
         json!([c.id.to_string(), a.id.to_string()])
     );
     assert_eq!(

@@ -79,14 +79,6 @@ const NET_LOG_LINE: &str = "The net.log line, which `net-log` echoes verbatim; i
 /// Outside vocabularies omaddons publishes as they are.
 const EXCEPTIONS: &[Exception] = &[
     Exception {
-        rule: "r3-array-plural",
-        scope: "command doctor *",
-        path: "skipped",
-        kind: ExceptionKind::External,
-        reason: DOCTOR_CONTRACT,
-        source: DOCTOR_CONTRACT_SOURCE,
-    },
-    Exception {
         rule: "r3-name-case",
         scope: "command doctor *",
         path: "summary.by_severity.P0",
@@ -119,30 +111,6 @@ const EXCEPTIONS: &[Exception] = &[
         source: DOCTOR_CONTRACT_SOURCE,
     },
     Exception {
-        rule: "r3-array-plural",
-        scope: "command doctor *",
-        path: "actions_planned",
-        kind: ExceptionKind::External,
-        reason: DOCTOR_CONTRACT,
-        source: DOCTOR_CONTRACT_SOURCE,
-    },
-    Exception {
-        rule: "r3-array-plural",
-        scope: "command doctor *",
-        path: "delegated",
-        kind: ExceptionKind::External,
-        reason: DOCTOR_CONTRACT,
-        source: DOCTOR_CONTRACT_SOURCE,
-    },
-    Exception {
-        rule: "r3-array-plural",
-        scope: "command doctor *",
-        path: "delegated_planned",
-        kind: ExceptionKind::External,
-        reason: "pairs with the doctor contract's `delegated` as its `actions_planned` pairs with `actions` (M4-D37, A.5)",
-        source: "M4-D37; the doctor contract, A.5",
-    },
-    Exception {
         rule: "r4-open-enum",
         scope: "command doctor *",
         path: "**.mode",
@@ -166,47 +134,63 @@ const EXCEPTIONS: &[Exception] = &[
         reason: DOCTOR_CONTRACT,
         source: DOCTOR_CONTRACT_SOURCE,
     },
-    Exception {
-        rule: "r3-array-plural",
-        scope: "command capabilities",
-        path: "commands[].flags[].conflicts_with",
-        kind: ExceptionKind::External,
-        reason: "clap's own name for the relation, which capabilities describes",
-        source: "clap: Arg::conflicts_with",
-    },
-    // Rule 3's owner (c6cm.8.1.4) re-judges the next three: each names a shape omaddons
-    // defines, which none of the three kinds describes exactly.
+    // Re-judged by c6cm.8.1.4 and kept: `exit_codes` is the plural, a map whose keys are
+    // the two exit dictionaries' own names, the values `commands[].dictionary` publishes.
     Exception {
         rule: "r3-array-plural",
         scope: "command capabilities",
         path: "exit_codes.doctor",
         kind: ExceptionKind::External,
-        reason: "named for the exit dictionary it lists, beside `general`",
-        source: "the doctor contract's exit dictionary (M4-D40), as capabilities.commands[].dictionary names it",
+        reason: "a key of the `exit_codes` map: the doctor contract's exit dictionary, by the name `commands[].dictionary` gives it",
+        source: "the doctor contract's exit dictionary (M4-D40)",
     },
     Exception {
         rule: "r3-array-plural",
         scope: "command capabilities",
         path: "exit_codes.general",
         kind: ExceptionKind::External,
-        reason: "named for the exit dictionary it lists, beside `doctor`",
-        source: "the general exit dictionary, as capabilities.commands[].dictionary names it",
-    },
-    Exception {
-        rule: "r3-array-plural",
-        scope: "command capabilities",
-        path: "limits[].value",
-        kind: ExceptionKind::External,
-        reason: "one value whose JSON type follows `unit`: for a `list` unit, the value is the list",
-        source: "src/limits.rs: LimitValue, whose unit decides its JSON type",
+        reason: "a key of the `exit_codes` map: the general exit dictionary, by the name `commands[].dictionary` gives it beside `doctor`",
+        source: "the doctor contract's two dictionaries (M4-D40); README: Exit codes",
     },
     Exception {
         rule: "r4-value-case",
-        scope: "command capabilities",
-        path: "client_rules[].family",
+        scope: "command *",
+        path: "**.family",
         kind: ExceptionKind::Input,
         reason: FAMILIES,
         source: FAMILIES_SOURCE,
+    },
+    Exception {
+        rule: "r4-value-case",
+        scope: "command *",
+        path: "**.families[]",
+        kind: ExceptionKind::Input,
+        reason: FAMILIES,
+        source: FAMILIES_SOURCE,
+    },
+    Exception {
+        rule: "r4-value-case",
+        scope: "command *",
+        path: "**.auto.mode",
+        kind: ExceptionKind::Input,
+        reason: "`auto_backup`'s values (`daily-copy`), which users type in config.toml and the widget compares",
+        source: "README: Configuration",
+    },
+    Exception {
+        rule: "r4-value-case",
+        scope: "command status",
+        path: "**.severity",
+        kind: ExceptionKind::External,
+        reason: "status's issues are the doctor's findings, with the doctor contract's severities `P0`–`P3`",
+        source: DOCTOR_CONTRACT_SOURCE,
+    },
+    Exception {
+        rule: "r4-open-enum",
+        scope: "command history",
+        path: "**.mode",
+        kind: ExceptionKind::External,
+        reason: "a repair's POSIX permission mode, four octal digits checked by a pattern: no enumeration",
+        source: "POSIX file permission modes, as chmod(1) writes them",
     },
     Exception {
         rule: "r4-value-case",
@@ -307,6 +291,8 @@ struct Facts {
     /// Some merged node says `format: date-time`: the value is an instant, whatever its
     /// key (`contract::schema::timestamp`).
     date_time: bool,
+    /// Some merged node bounds a string's length: free text, not a vocabulary.
+    max_length: Option<u64>,
 }
 
 fn json_type(value: &Value) -> &'static str {
@@ -382,6 +368,9 @@ fn merge<'a>(root: &'a Value, node: &'a Value, facts: &mut Facts, seen: &mut Vec
     }
     if object.get("format").and_then(Value::as_str) == Some("date-time") {
         facts.date_time = true;
+    }
+    if facts.max_length.is_none() {
+        facts.max_length = object.get("maxLength").and_then(Value::as_u64);
     }
     if let Some(reference) = object.get("$ref").and_then(Value::as_str)
         && !seen.contains(&reference)
@@ -495,6 +484,49 @@ const ENUM_NAMES: &[&str] = &[
     "result",
 ];
 
+// Narrowed (H1, c6cm.8.1.4): rule 3 asks a plural so an array's name says it holds many.
+// Three other kinds of name say so too:
+// - a past participle naming the set an operation acted on (`restored`, `pruned`,
+//   `dependencies_added`, `sources_skipped`), or a participle phrase naming the members by
+//   their relation (`required_by`, `shared_with`, `left_out`, `owned_on`);
+// - a present participle naming the members in that state (`running`, `existing`);
+// - a collective noun, each listed with its reason.
+// A singular count noun (`item`, `top`, `busy`) is still a violation.
+const PARTICIPLE_PHRASE_ENDINGS: &[&str] = &["_by", "_with", "_out", "_on"];
+const PRESENT_PARTICIPLES: &[&str] = &["running", "pending", "missing", "existing", "conflicting"];
+const COLLECTIVE_NOUNS: &[(&str, &str)] = &[
+    (
+        "evidence",
+        "the claims an identification or a finding rests on",
+    ),
+    (
+        "attention",
+        "what needs attention, the word `status --check` asserts on",
+    ),
+    (
+        "drift",
+        "the managed addons whose files drifted from their commit",
+    ),
+    (
+        "stack",
+        "a Lua error's frames, as BugGrabber's own field names them",
+    ),
+    (
+        "selection",
+        "the changes a preview selected; `plan_stale.details.changed` names this set `selection`",
+    ),
+];
+
+/// Whether an array's singular-looking `name` names a set (see above).
+fn names_a_set(name: &str) -> bool {
+    name.ends_with("ed")
+        || PARTICIPLE_PHRASE_ENDINGS
+            .iter()
+            .any(|end| name.ends_with(end))
+        || PRESENT_PARTICIPLES.contains(&name)
+        || COLLECTIVE_NOUNS.iter().any(|(noun, _)| *noun == name)
+}
+
 /// The rules a property breaks, by id.
 fn property_rules(kind: Kind, name: &str, required: bool, facts: &Facts) -> Vec<&'static str> {
     let types = &facts.types;
@@ -550,7 +582,12 @@ fn property_rules(kind: Kind, name: &str, required: bool, facts: &Facts) -> Vec<
     if !snake(name) {
         broken.push("r3-name-case");
     }
-    if has("array") && !(name.ends_with('s') || name.ends_with("argv")) {
+    // Only a property that is an array in every branch holds a list: one whose type
+    // follows another key (`limits[].value`, a list only for a `list` unit) holds one value.
+    if has("array")
+        && types.iter().all(|t| matches!(*t, "array" | "null"))
+        && !(name.ends_with('s') || name.ends_with("argv") || names_a_set(name))
+    {
         broken.push("r3-array-plural");
     }
     if has("boolean") && name.starts_with("is_") {
@@ -565,9 +602,13 @@ fn property_rules(kind: Kind, name: &str, required: bool, facts: &Facts) -> Vec<
     if name == "key" && facts.pattern.as_deref() != Some(ULID_PATTERN) {
         broken.push("r3-key-ulid");
     }
+    // Narrowed (H1, c6cm.8.1.4): a string with a `maxLength` is bounded free text, never
+    // a vocabulary: the `--reason` a person gave (`REASON_MAX_CHARS`), which every shape
+    // that echoes one publishes so (`contract::schema::reason_text`).
     if ENUM_NAMES.contains(&name)
         && (exactly(&["string"]) || exactly(&["string", "null"]))
         && facts.enum_values.is_empty()
+        && facts.max_length.is_none()
     {
         broken.push("r4-open-enum");
     }
@@ -1231,19 +1272,57 @@ fn r3_name_case() {
 #[test]
 fn r3_array_plural() {
     let strings = json!({"type": "array", "items": {"type": "string"}});
-    table(
-        "r3-array-plural",
-        vec![
-            ("plural", C, property("entries", strings.clone(), true), &[]),
-            ("argv", C, property("fix_argv", strings.clone(), true), &[]),
-            (
-                "singular",
-                C,
-                property("left_out", strings, true),
-                &["left_out"],
+    let mut cases: Vec<(&str, Kind, Value, &[&str])> = vec![
+        ("plural", C, property("entries", strings.clone(), true), &[]),
+        ("argv", C, property("fix_argv", strings.clone(), true), &[]),
+        (
+            "nullable_singular",
+            C,
+            property(
+                "item",
+                json!({"type": ["array", "null"], "items": {}}),
+                true,
             ),
-        ],
-    );
+            &["item"],
+        ),
+        (
+            "an_array_in_one_branch_only",
+            C,
+            property(
+                "value",
+                json!({"anyOf": [{"type": "integer"}, {"type": "array", "items": {}}]}),
+                true,
+            ),
+            &[],
+        ),
+    ];
+    // Participles and the listed collective nouns name a set (the narrowing's reason is
+    // beside `names_a_set`).
+    for name in [
+        "restored",
+        "dependencies_added",
+        "sources_skipped",
+        "required_by",
+        "shared_with",
+        "left_out",
+        "owned_on",
+        "running",
+        "existing",
+        "evidence",
+        "selection",
+    ] {
+        cases.push((name, C, property(name, strings.clone(), true), &[]));
+    }
+    // A singular count noun still breaks the rule.
+    cases.push((
+        "item",
+        C,
+        property("item", strings.clone(), true),
+        &["item"],
+    ));
+    cases.push(("top", C, property("top", strings.clone(), true), &["top"]));
+    cases.push(("busy", C, property("busy", strings, true), &["busy"]));
+    table("r3-array-plural", cases);
 }
 
 #[test]
@@ -1401,6 +1480,16 @@ fn r4_open_enum() {
                 property("reason", json!({"type": ["string", "null"]}), true),
                 &["reason"],
             ),
+            (
+                "bounded_free_text",
+                C,
+                property(
+                    "reason",
+                    json!({"type": ["string", "null"], "maxLength": 200}),
+                    true,
+                ),
+                &[],
+            ),
         ],
     );
 }
@@ -1556,7 +1645,7 @@ fn planted(rule: &str) -> Root {
         )),
         "r3-name-case" => command(property("badName", json!({"type": "string"}), true)),
         "r3-array-plural" => command(property(
-            "left_out",
+            "top",
             json!({"type": "array", "items": {"type": "string"}}),
             true,
         )),

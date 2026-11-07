@@ -131,6 +131,7 @@ pub struct RepairEntry {
     pub to: Option<PathBuf>,
     /// The mode it sets, as octal digits (`"0600"`). Omitted on a rename.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(pattern(r"^[0-7]{4}$"))]
     pub mode: Option<String>,
     /// What its paths held before it ran.
     pub pre: RepairEndpoints,
@@ -193,6 +194,7 @@ pub struct RepairPredicate {
     pub sha256: Option<String>,
     /// The mode, as octal digits; omitted when it is not checked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(pattern(r"^[0-7]{4}$"))]
     pub mode: Option<String>,
     /// A directory's stamp digest (`stamp:sha256:…`); omitted when it is not checked.
     #[serde(default, skip_serializing_if = "Option::is_none")]

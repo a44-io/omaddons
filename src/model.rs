@@ -219,6 +219,10 @@ pub struct IdParseError {
     pub input: String,
 }
 
+/// The pattern every ULID key and id publishes (Crockford base32, 26 characters): what
+/// rule 3 holds a property named `key` to.
+pub const ULID_PATTERN: &str = "^[0-9A-HJKMNP-TV-Z]{26}$";
+
 macro_rules! ulid_id {
     ($(#[$doc:meta])* $name:ident, $kind:literal) => {
         $(#[$doc])*
@@ -270,7 +274,7 @@ macro_rules! ulid_id {
             fn json_schema(_: &mut SchemaGenerator) -> Schema {
                 json_schema!({
                     "type": "string",
-                    "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+                    "pattern": $crate::model::ULID_PATTERN
                 })
             }
         }
@@ -700,10 +704,12 @@ pub struct AddonRecord {
 /// A folder of an addon's release that an install left out, as `folders.skipped`
 /// showed it: `reason` is its wire name (`game_type_excluded`), and `details` holds the
 /// reason's other fields (`interfaces`, `family`, `floor`, `folder`). Kept as written,
-/// so a reason a newer omaddons wrote still reads.
+/// so a reason a newer omaddons wrote still reads; this build writes, and publishes,
+/// only the reasons `folders.skipped` has.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct LeftOutFolder {
     pub name: FolderName,
+    #[schemars(schema_with = "crate::toc::reason_names_schema")]
     pub reason: String,
     #[serde(flatten)]
     pub details: serde_json::Map<String, serde_json::Value>,

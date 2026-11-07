@@ -56,7 +56,7 @@ expression: s.stable(&c.envelope)
     "precondition": "<precondition>",
     "targets": [
       {
-        "busy": [],
+        "busy_backups": [],
         "error": null,
         "kept": 2,
         "pruned": [

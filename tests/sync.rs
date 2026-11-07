@@ -1248,7 +1248,7 @@ fn prune_refuses_a_file_with_a_section_for_no_known_client() {
             (
                 &error["code"],
                 &error["details"]["reason"],
-                &error["details"]["key"]
+                &error["details"]["toml_key"]
             ),
             (
                 &json!("desired_state_invalid"),

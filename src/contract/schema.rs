@@ -60,6 +60,19 @@ pub fn timestamp_opt(_: &mut SchemaGenerator) -> Schema {
     schemars::json_schema!({"type": ["string", "null"], "format": "date-time"})
 }
 
+/// The schema of the `--reason` a person gave, recorded verbatim and echoed back (a
+/// history line's, a backup's, the last change's): bounded free text, at most
+/// [`REASON_MAX_CHARS`](crate::limits::REASON_MAX_CHARS) characters, or `null` when none
+/// was given. Its `maxLength` says it is no vocabulary (`tests/contract/rules.rs`,
+/// `r4-open-enum`). Used as
+/// `#[schemars(schema_with = "crate::contract::schema::reason_text")]`.
+pub fn reason_text(_: &mut SchemaGenerator) -> Schema {
+    schemars::json_schema!({
+        "type": ["string", "null"],
+        "maxLength": crate::limits::REASON_MAX_CHARS,
+    })
+}
+
 /// One command's data schema, titled with its canonical command path.
 pub fn command_schema(entry: &CommandEntry) -> Schema {
     let mut schema = (entry.data)(&mut generator());

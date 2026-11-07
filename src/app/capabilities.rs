@@ -210,7 +210,7 @@ pub struct LimitDescription {
     pub value: PublishedValue,
     /// `bytes`, `ms`, `count`, `ratio` or `chars` (an integer), `text` (a string), `list`
     /// (an array of strings) or `retention` (an object).
-    pub unit: &'static str,
+    pub unit: crate::limits::LimitUnit,
     /// The `config.toml` key that changes it (the one `omaddons config set` takes);
     /// `null` for a constant config cannot change.
     pub config_key: Option<&'static str>,
@@ -1049,7 +1049,7 @@ mod tests {
             assert_eq!(
                 serde_json::to_value(&limit.value).unwrap(),
                 want,
-                "{case}: {name} ({})",
+                "{case}: {name} ({:?})",
                 limit.unit
             );
         }

@@ -895,9 +895,6 @@ expression: schemas
       "journal_pending": {
         "type": "string"
       },
-      "key": {
-        "type": "string"
-      },
       "line": {
         "type": "integer"
       },
@@ -938,6 +935,9 @@ expression: schemas
           "type": "string"
         },
         "type": "array"
+      },
+      "toml_key": {
+        "type": "string"
       }
     },
     "required": [
@@ -2856,7 +2856,7 @@ expression: schemas
       "name": {
         "type": "string"
       },
-      "newest": {
+      "newest_ids": {
         "items": {
           "type": "string"
         },
@@ -4044,6 +4044,24 @@ expression: schemas
         },
         "type": "array"
       },
+      "current_owners": {
+        "items": {
+          "properties": {
+            "folder": {
+              "type": "string"
+            },
+            "owner": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "folder",
+            "owner"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      },
       "folder": {
         "type": "string"
       },
@@ -4131,24 +4149,6 @@ expression: schemas
       },
       "journal_pending": {
         "type": "string"
-      },
-      "owned_now": {
-        "items": {
-          "properties": {
-            "folder": {
-              "type": "string"
-            },
-            "owner": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "folder",
-            "owner"
-          ],
-          "type": "object"
-        },
-        "type": "array"
       },
       "prefix": {
         "type": "string"
@@ -4632,9 +4632,6 @@ expression: schemas
       "journal_pending": {
         "type": "string"
       },
-      "key": {
-        "type": "string"
-      },
       "line": {
         "type": "integer"
       },
@@ -4678,6 +4675,9 @@ expression: schemas
           "string",
           "null"
         ]
+      },
+      "toml_key": {
+        "type": "string"
       },
       "tx": {
         "type": "string"
@@ -4951,6 +4951,9 @@ expression: schemas
         },
         "type": "array"
       },
+      "game_mode": {
+        "type": "string"
+      },
       "items": {
         "items": {
           "oneOf": [
@@ -5034,13 +5037,11 @@ expression: schemas
         "type": "string"
       },
       "key": {
+        "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
         "type": "string"
       },
       "missing": {
         "type": "boolean"
-      },
-      "mode": {
-        "type": "string"
       },
       "path": {
         "type": "string"
@@ -5097,7 +5098,25 @@ expression: schemas
               "type": "array"
             },
             "kind": {
-              "type": "string"
+              "enum": [
+                "install",
+                "update",
+                "remove",
+                "undo",
+                "adopt",
+                "sync",
+                "restore",
+                "repair",
+                "backup",
+                "pin",
+                "config",
+                "target",
+                "auth",
+                "export",
+                "dismiss",
+                "widget",
+                "skill"
+              ]
             },
             "tx": {
               "type": "string"

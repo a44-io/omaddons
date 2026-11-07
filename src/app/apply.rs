@@ -1310,7 +1310,7 @@ mod tests {
                             bytes: 10,
                         })
                         .collect(),
-                    busy: Vec::new(),
+                    busy_backups: Vec::new(),
                     kept: 1,
                     reclaimed_for_space: false,
                     error: failed.map(item_error),

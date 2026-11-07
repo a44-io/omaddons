@@ -122,7 +122,7 @@ TestCase {
       targets.push({ "id": id, "label": id, "running": c.running === undefined ? false : c.running,
         "updates": { "available": c.updates || 0 }, "issues": [],
         "errors": { "state": errors.state || "ok", "coverage": "complete", "new": fresh, "total": fresh,
-          "addons": (errors.top || []).length, "top": errors.top || [], "last_session_at": null } })
+          "addons": (errors.top || []).length, "top_addons": errors.top || [], "last_session_at": null } })
       if (c.running === true) running.push(id)
       errorsNew += fresh
       if (fresh > 0) errorTargets.push(id)

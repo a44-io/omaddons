@@ -76,6 +76,8 @@ pub struct ExitInfo {
 /// `omaddons help <command>`.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct CommandHelp {
+    /// The command's canonical path (`install`, `targets add`, `auth github`), as the
+    /// envelope's `command` names it (rule 5); an alias asked for names its command.
     pub command: String,
     pub about: String,
     pub usage: String,
@@ -263,6 +265,9 @@ pub fn for_command(name: Option<&str>, argv: &[String]) -> Result<HelpOutcome, E
     // suggested among the subcommands and values the command it follows takes.
     let mut sub = &mut root;
     let mut walked: Vec<&str> = Vec::new();
+    // The canonical path of the command reached: each subcommand's own name, whatever
+    // alias was typed, and never a positional value (`auth github set` is `auth github`).
+    let mut path: Vec<String> = Vec::new();
     let mut values = 0;
     for part in name.split_whitespace() {
         if values == 0 && sub.find_subcommand(part).is_some() {
@@ -272,6 +277,7 @@ pub fn for_command(name: Option<&str>, argv: &[String]) -> Result<HelpOutcome, E
                     "{part} vanished from the command tree"
                 )));
             };
+            path.push(next.get_name().to_owned());
             sub = next;
             continue;
         }
@@ -345,7 +351,7 @@ pub fn for_command(name: Option<&str>, argv: &[String]) -> Result<HelpOutcome, E
     Ok(HelpOutcome {
         command: "help",
         data: HelpData::Command(CommandHelp {
-            command: sub.get_name().to_owned(),
+            command: path.join(" "),
             about: sub.get_about().map(ToString::to_string).unwrap_or_default(),
             usage,
             args,
@@ -368,6 +374,31 @@ pub fn version() -> HelpOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `help <path> --json` names the command by its canonical path (rule 5): a leaf name
+    /// alone is ambiguous (`add` is also `install`'s alias), and a value or an alias typed
+    /// never enters it.
+    #[test]
+    fn nested_help_names_the_canonical_path() {
+        for (asked, expected) in [
+            ("targets add", "targets add"),
+            ("auth github", "auth github"),
+            ("auth github set", "auth github"),
+            ("backup restore", "backup restore"),
+            ("config set", "config set"),
+            ("errors dismiss", "errors dismiss"),
+            ("doctor fix", "doctor fix"),
+            ("install", "install"),
+            ("add", "install"),
+            ("backup", "backup"),
+        ] {
+            let outcome = for_command(Some(asked), &[]).unwrap();
+            let HelpData::Command(help) = &outcome.data else {
+                panic!("{asked:?}: not a command's help"); // ubs:ignore — a table case's own failure
+            };
+            assert_eq!(help.command, expected, "help {asked} --json: data.command");
+        }
+    }
 
     #[test]
     fn bare_help_lists_commands_and_every_exit_code() {
@@ -526,7 +557,7 @@ mod tests {
         for name in ["auth github", "auth github set", "auth github status"] {
             let help = for_command(Some(name), &[]).unwrap();
             let data = serde_json::to_value(&help.data).unwrap();
-            assert_eq!(data["command"], "github", "{name}");
+            assert_eq!(data["command"], "auth github", "{name}");
             let usage = data["usage"].as_str().unwrap();
             assert!(
                 usage.contains("auth github") && usage.contains("[ACTION]"),

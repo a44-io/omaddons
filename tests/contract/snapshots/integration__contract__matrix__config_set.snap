@@ -8,7 +8,7 @@ expression: s.stable(&c.envelope)
   "data": {
     "changed": true,
     "dry_run": false,
-    "key": "default_channel",
+    "name": "default_channel",
     "previous": null,
     "value": "beta"
   },

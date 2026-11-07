@@ -1,6 +1,5 @@
 ---
 source: tests/contract/matrix.rs
-assertion_line: 1459
 expression: s.stable(&c.envelope)
 ---
 {
@@ -29,7 +28,7 @@ expression: s.stable(&c.envelope)
     ],
     "code": "not_found",
     "details": {
-      "newest": [
+      "newest_ids": [
         "<run>",
         "<run>",
         "<run>"

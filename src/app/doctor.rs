@@ -1411,7 +1411,7 @@ fn since_not_found(paths: &Paths, given: &str, argv: &[String], how: SinceArg) -
     }
     error.details(serde_json::json!({
         "path": paths.doctor_runs_dir().display().to_string(),
-        "newest": named,
+        "newest_ids": named,
     }))
 }
 

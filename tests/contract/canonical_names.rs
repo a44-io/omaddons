@@ -134,7 +134,11 @@ fn auth_answers_as_auth_github_on_every_path() {
     .map(|argv| {
         let ran = run(argv, 0);
         names(&log, &ran, "help");
-        log.assert_eq("data.command", &ran.data()["command"], &json!("github"));
+        log.assert_eq(
+            "data.command",
+            &ran.data()["command"],
+            &json!("auth github"),
+        );
         ran.data().clone()
     })
     .collect();

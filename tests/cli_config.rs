@@ -47,7 +47,7 @@ fn config_file(env: &TestEnv) -> std::path::PathBuf {
 fn setting<'a>(envelope: &'a Value, key: &str) -> &'a Value {
     envelope["data"]["settings"]
         .as_array()
-        .and_then(|s| s.iter().find(|s| s["key"] == key))
+        .and_then(|s| s.iter().find(|s| s["name"] == key))
         .unwrap_or(&Value::Null)
 }
 
@@ -61,7 +61,7 @@ fn a_missing_file_is_all_defaults() {
     );
     assert_eq!(
         setting(&envelope, "default_channel"),
-        &json!({"key": "default_channel", "value": "stable", "source": "default"})
+        &json!({"name": "default_channel", "value": "stable", "source": "default"})
     );
     assert_eq!(
         setting(&envelope, "limits.snapshot_max_bytes")["value"],

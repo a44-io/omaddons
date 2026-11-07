@@ -316,6 +316,7 @@ pub struct BackupItem {
     pub kind: Option<BackupKind>,
     pub trigger: Option<Trigger>,
     pub actor: Option<Actor>,
+    #[schemars(schema_with = "crate::contract::schema::reason_text")]
     pub reason: Option<String>,
     pub files: Option<u64>,
     pub bytes: Option<u64>,
@@ -1616,8 +1617,9 @@ pub struct AddonRestore {
     pub captured_version: Option<String>,
     /// The version installed now, when it is managed.
     pub installed_version: Option<String>,
-    /// Folders it owns now that it did not when the backup was taken: left as they are.
-    pub not_in_backup: Vec<FolderName>,
+    /// Folders it owns now that it did not when the backup was taken, so the backup holds
+    /// no settings of theirs: left as they are.
+    pub new_folders: Vec<FolderName>,
     pub files: crate::engine::restore_addons::AddonFiles,
 }
 
@@ -1831,8 +1833,8 @@ fn render_addons(
                 "  {name} is not in this backup's addon record; using today's folders"
             )?;
         }
-        if !a.not_in_backup.is_empty() {
-            let left: Vec<&str> = a.not_in_backup.iter().map(FolderName::as_str).collect();
+        if !a.new_folders.is_empty() {
+            let left: Vec<&str> = a.new_folders.iter().map(FolderName::as_str).collect();
             writeln!(
                 w,
                 "  not in this backup; left as it is: {}",
@@ -2268,8 +2270,8 @@ pub struct BackupPruneTarget {
     /// The backups deleted (with `--dry-run`, that would be), newest capture first.
     pub pruned: Vec<Pruned>,
     /// Backups a reader (a restore, an export, a verify) held: skipped, and pruned by a
-    /// later run once free.
-    pub busy: Vec<BusyBackup>,
+    /// later run once free. (`backup list`'s `busy` is the state of one backup.)
+    pub busy_backups: Vec<BusyBackup>,
     /// The backups left.
     pub kept: u64,
     /// The deletions came from a pass under space pressure, which `backup prune` never
@@ -2357,7 +2359,7 @@ impl Outcome for BackupPruneOutcome {
                     t.kept
                 )?;
             }
-            for b in &t.busy {
+            for b in &t.busy_backups {
                 let short = super::history::short_id(&b.id.to_string());
                 writeln!(w, "{id}: {short} is in use, skipped")?;
             }
@@ -2508,7 +2510,7 @@ pub fn prune_backups(ctx: &Context, args: &BackupPruneArgs) -> Result<BackupPrun
                 targets.push(BackupPruneTarget {
                     target,
                     pruned: Vec::new(),
-                    busy: Vec::new(),
+                    busy_backups: Vec::new(),
                     kept: p.backups.len() as u64,
                     reclaimed_for_space: false,
                     error: Some(ItemError::from(&error)),
@@ -2979,7 +2981,7 @@ fn would_prune(p: &PrunePlan<'_>) -> BackupPruneTarget {
         target: target_ref(p.d),
         kept: p.backups.len().saturating_sub(pruned.len()) as u64,
         pruned,
-        busy,
+        busy_backups: busy,
         reclaimed_for_space: false,
         error: None,
     }
@@ -2989,7 +2991,7 @@ fn pruned_target(target: TargetRef, report: PruneReport) -> BackupPruneTarget {
     BackupPruneTarget {
         target,
         pruned: report.pruned,
-        busy: report
+        busy_backups: report
             .busy
             .into_iter()
             .map(|id| BusyBackup { id })

@@ -31,7 +31,7 @@ expression: s.stable(&c.envelope)
         ],
         "folders_from": "folder",
         "installed_version": null,
-        "not_in_backup": []
+        "new_folders": []
       }
     ],
     "approval": null,

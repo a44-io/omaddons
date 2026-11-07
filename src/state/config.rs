@@ -957,7 +957,9 @@ impl ConfigProblem {
                 format!("{} line {line}: {}", path.display(), self.message),
                 edit_fix(&path),
             )
-            .details(serde_json::json!({ "path": path, "line": line, "column": 1, "key": key })),
+            .details(
+                serde_json::json!({ "path": path, "line": line, "column": 1, "toml_key": key }),
+            ),
             None => Error::new(
                 ErrorCode::StateCorrupt,
                 format!(
@@ -1488,7 +1490,8 @@ multi_toc = true
             "{}",
             err.message
         );
-        assert_eq!(err.details["key"], "limits.tx_retention_count");
+        assert_eq!(err.details["toml_key"], "limits.tx_retention_count");
+        assert!(err.details.get("key").is_none(), "{:?}", err.details);
         let err = parse("[limits]\ntx_retention_days = 99999999999\n").unwrap_err();
         assert!(
             err.message
@@ -1760,7 +1763,7 @@ max = 11_599
             let err = Config::parse(&text, path).unwrap_err();
             assert_eq!(err.code, ErrorCode::StateCorrupt, "{http}");
             assert_eq!(
-                (&err.details["line"], &err.details["key"]),
+                (&err.details["line"], &err.details["toml_key"]),
                 (&serde_json::json!(2), &serde_json::json!("git_hosts")),
                 "{http}"
             );
@@ -1941,7 +1944,7 @@ max = 11_599
         assert_eq!(err.fix.display(), format!("edit {PATH}"));
         assert_eq!(
             err.details,
-            serde_json::json!({"path": PATH, "line": 2, "column": 1, "key": "limits.download_max_bytes"})
+            serde_json::json!({"path": PATH, "line": 2, "column": 1, "toml_key": "limits.download_max_bytes"})
         );
         let err = parse("default_channel = \"nightly\"\n").unwrap_err();
         let (line, column) = (

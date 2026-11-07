@@ -11,6 +11,11 @@ const INSTANT: DetailSpec = DetailSpec::Instant;
 const INT: DetailSpec = DetailSpec::Int;
 const BOOL: DetailSpec = DetailSpec::Bool;
 const STRINGS: DetailSpec = DetailSpec::Array(&STR);
+/// A history line's kind (`TxKind`), every value it serializes to.
+const TX_KINDS: DetailSpec = DetailSpec::Enum(&[
+    "install", "update", "remove", "undo", "adopt", "sync", "restore", "repair", "backup", "pin",
+    "config", "target", "auth", "export", "dismiss", "widget", "skill",
+]);
 const FOLDER_CLASSES: DetailSpec = DetailSpec::Enum(&[
     "protected",
     "managed",
@@ -119,7 +124,6 @@ pub(crate) const REF_INVALID: DetailSpec = DetailSpec::Object(&[Field::opt("host
 /// Item aggregation preserves this code's whole details object.
 pub(crate) const DESIRED_STATE_INVALID: DetailSpec = DetailSpec::Object(&[
     Field::opt("first_line", &INT),
-    Field::opt("key", &STR),
     Field::opt("line", &INT),
     Field::opt("other_line", &INT),
     Field::req("path", &STR),
@@ -135,14 +139,17 @@ pub(crate) const DESIRED_STATE_INVALID: DetailSpec = DetailSpec::Object(&[
             "edited",
         ]),
     ),
+    // The TOML key the line holds (`target.<id>`, `limits.…`); empty for a duplicate.
+    Field::opt("toml_key", &STR),
 ]);
 
 /// `discover/registry.rs` selectors and missing clients; install/backup live selection.
 pub(crate) const TARGET_NOT_FOUND: DetailSpec = DetailSpec::Object(&[
     Field::opt("candidates", &STRINGS),
-    Field::opt("key", &STR),
+    // A game mode's id: config.toml's `[rules] products` can add modes, so it stays open.
+    Field::opt("game_mode", &STR),
+    Field::opt("key", &DetailSpec::Key),
     Field::opt("missing", &BOOL),
-    Field::opt("mode", &STR),
     Field::opt("path", &STR),
     Field::opt("product", &STR),
     Field::opt("selector", &STR),
@@ -166,15 +173,16 @@ pub(crate) const REF_AMBIGUOUS: DetailSpec = DetailSpec::Object(&[
             &DetailSpec::Object(&[Field::req("from", &STR), Field::req("ref", &STR)]),
         ])),
     ),
-    Field::opt("folder", &STR),
-    Field::opt("input", &STR),
+    // `backup restore --addon`: the folders the addon had then that another addon has now.
     Field::opt(
-        "owned_now",
+        "current_owners",
         &DetailSpec::Array(&DetailSpec::Object(&[
             Field::req("folder", &STR),
             Field::req("owner", &STR),
         ])),
     ),
+    Field::opt("folder", &STR),
+    Field::opt("input", &STR),
     Field::opt("prefix", &STR),
     Field::opt("refs", &STRINGS),
     Field::opt("target", &STR),
@@ -191,7 +199,8 @@ pub(crate) const NOT_FOUND: DetailSpec = DetailSpec::Object(&[
     Field::opt("family", &STR),
     Field::opt("id", &STR),
     Field::opt("name", &STR),
-    Field::opt("newest", &STRINGS),
+    // The newest ids where the one asked for matched nothing: backups, or doctor runs.
+    Field::opt("newest_ids", &STRINGS),
     Field::opt("owner", &STR),
     Field::opt("path", &STR),
     Field::opt("prefix", &STR),
@@ -362,7 +371,7 @@ pub(crate) const UNDO_CONFLICT: DetailSpec = DetailSpec::Object(&[
         "conflicting",
         &DetailSpec::Array(&DetailSpec::Object(&[
             Field::req("folders", &STRINGS),
-            Field::req("kind", &STR),
+            Field::req("kind", &TX_KINDS),
             Field::req("tx", &STR),
         ])),
     ),
@@ -548,7 +557,6 @@ pub(crate) const AUTH_REJECTED: DetailSpec = DetailSpec::EMPTY;
 pub(crate) const STATE_CORRUPT: DetailSpec = DetailSpec::Object(&[
     Field::opt("backup", &STR),
     Field::opt("column", &INT),
-    Field::opt("key", &STR),
     Field::opt("line", &INT),
     Field::opt("path", &STR),
     Field::opt(
@@ -563,6 +571,8 @@ pub(crate) const STATE_CORRUPT: DetailSpec = DetailSpec::Object(&[
     // A stuck journal's fence that refused the write (E14).
     Field::opt("resource", &STR),
     Field::opt("target", &STR).nullable(),
+    // A config.toml value out of range: the TOML key it sits under.
+    Field::opt("toml_key", &STR),
     Field::opt("tx", &STR),
 ]);
 
@@ -810,6 +820,31 @@ mod tests {
                 "{reason:?}: missing from {values:?}"
             );
         }
+    }
+
+    #[test]
+    fn tx_kinds_are_every_history_kind() {
+        let derived = serde_json::to_value(schemars::schema_for!(crate::model::TxKind)).unwrap();
+        let mut kinds: BTreeSet<String> = BTreeSet::new();
+        crate::contract::schema::walk(&derived, &mut |visit| {
+            if let crate::contract::schema::Visit::Position { node, .. } = visit {
+                kinds.extend(node.get("const").and_then(Value::as_str).map(str::to_owned));
+                kinds.extend(
+                    node.get("enum")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|v| v.as_str().map(str::to_owned)),
+                );
+            }
+        });
+        let declared: BTreeSet<String> = TX_KINDS
+            .enum_values()
+            .unwrap()
+            .iter()
+            .map(|v| (*v).to_owned())
+            .collect();
+        assert_eq!(declared, kinds, "undo_conflict.conflicting[].kind");
     }
 
     #[test]

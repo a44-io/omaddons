@@ -44,7 +44,7 @@ pub struct TargetErrors {
     /// Errors other players sent: never new, never in the counts above.
     pub received: usize,
     /// The addons with the most new errors, then occurrences, then by name; at most 5.
-    pub top: Vec<TopAddon>,
+    pub top_addons: Vec<TopAddon>,
     /// When the client last wrote a BugGrabber file (at logout or `/reload`).
     #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
     pub last_session_at: Option<Timestamp>,
@@ -98,7 +98,7 @@ impl TargetErrors {
             total: 0,
             addons: 0,
             received: 0,
-            top: Vec::new(),
+            top_addons: Vec::new(),
             last_session_at: None,
             dismissed_at: None,
             incomplete: None,
@@ -139,7 +139,7 @@ pub fn live(observation: &Observation) -> TargetErrors {
         total: local.len(),
         addons: tallies.len(),
         received: observation.received().count(),
-        top: top(tallies),
+        top_addons: top(tallies),
         last_session_at: observation
             .databases
             .iter()
@@ -250,7 +250,7 @@ pub fn cached(
         total: counts.total,
         addons: counts.tallies.len(),
         received: usize::try_from(memo.received).unwrap_or(usize::MAX),
-        top: top(counts.tallies),
+        top_addons: top(counts.tallies),
         last_session_at,
         dismissed_at: counts.dismissed_at,
         incomplete,
@@ -432,13 +432,13 @@ pub fn human_line(id: &str, e: &TargetErrors) -> Option<String> {
         }
         ErrorsState::Ok if e.new > 0 => {
             let named: Vec<String> = e
-                .top
+                .top_addons
                 .iter()
                 .filter(|a| a.new > 0)
                 .map(|a| format!("{} {}", a.addon, a.new))
                 .collect();
-            // New errors of addons `top` leaves out.
-            let shown: usize = e.top.iter().map(|a| a.new).sum();
+            // New errors of addons `top_addons` leaves out.
+            let shown: usize = e.top_addons.iter().map(|a| a.new).sum();
             let more = if shown < e.new { ", …" } else { "" };
             vec![format!("{} new ({}{more})", e.new, named.join(", ")), look]
         }
@@ -673,12 +673,12 @@ mod tests {
             prop_assert_eq!(live.addons, again.tallies.len());
             prop_assert_eq!(live.received as u64, memo.received);
             prop_assert_eq!(live.dismissed_at, again.dismissed_at);
-            prop_assert_eq!(&live.top, &top(again.tallies));
+            prop_assert_eq!(&live.top_addons, &top(again.tallies));
             // And per addon, every one of them, as `errors` lists them.
             let local: Vec<&Observed> = obs.local().collect();
             let groups = group(&local);
             prop_assert_eq!(live.new, groups.iter().map(|g| g.new).sum::<usize>());
-            for (g, t) in groups.iter().zip(&live.top) {
+            for (g, t) in groups.iter().zip(&live.top_addons) {
                 prop_assert_eq!((&g.name, g.new, g.count), (&t.addon, t.new, t.count));
             }
         }
@@ -793,7 +793,7 @@ mod tests {
         );
         assert_eq!((e.new, e.total, e.addons, e.received), (3, 5, 1, 1));
         assert_eq!(
-            e.top,
+            e.top_addons,
             [TopAddon {
                 addon: "Foo".to_owned(),
                 folder: Some("Foo".to_owned()),
@@ -827,7 +827,7 @@ mod tests {
         };
         let e = cached(&c, &bug_grabber, Some(&memo), Some(&ack), now());
         assert_eq!((e.state, e.new, e.total), (ErrorsState::Ok, 0, 5));
-        assert_eq!(e.top[0].new, 0);
+        assert_eq!(e.top_addons[0].new, 0);
         assert_eq!(e.dismissed_at, Some(dismissed));
         // Without a memo (the cache emptied), it is unchecked, never new, and the
         // dismissal is still known.
@@ -949,7 +949,7 @@ mod tests {
             new,
             total: new + 2,
             addons: top.len(),
-            top: top
+            top_addons: top
                 .iter()
                 .map(|(addon, new)| TopAddon {
                     addon: (*addon).to_owned(),

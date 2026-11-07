@@ -9,10 +9,10 @@ expression: s.stable(&c.envelope)
     "alternatives": [],
     "code": "desired_state_invalid",
     "details": {
-      "key": "target.retial",
       "line": 1,
       "path": "<root>/config/omaddons/addons.toml",
-      "reason": "unknown_target_section"
+      "reason": "unknown_target_section",
+      "toml_key": "target.retial"
     },
     "fix": "omaddons targets",
     "fix_argv": [

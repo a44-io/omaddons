@@ -55,6 +55,18 @@ pub enum Skip {
 }
 
 impl Skip {
+    /// Every skip, in declaration order.
+    pub const ALL: [Self; 8] = [
+        Self::Off,
+        Self::NoWtf,
+        Self::Running,
+        Self::DoneToday,
+        Self::Unchanged,
+        Self::NoReflink,
+        Self::SpaceLow,
+        Self::InProgress,
+    ];
+
     /// The wire name (`skipped.reason`, `auto.last.result`).
     pub const fn wire(self) -> &'static str {
         match self {
@@ -68,6 +80,22 @@ impl Skip {
             Self::InProgress => "in_progress",
         }
     }
+}
+
+/// `auto.last.result` of an attempt that made a backup.
+pub const LAST_CREATED: &str = "created";
+/// `auto.last.result` of an attempt that failed.
+pub const LAST_FAILED: &str = "failed";
+
+/// The schema of `auto.last.result`: [`LAST_CREATED`], a [`Skip`]'s wire name, or
+/// [`LAST_FAILED`], the only values [`note`] records. The inventory keeps it a string, so
+/// a value a newer build records still reads.
+pub fn last_result_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    let values: Vec<&str> = std::iter::once(LAST_CREATED)
+        .chain(Skip::ALL.iter().map(|skip| skip.wire()))
+        .chain(std::iter::once(LAST_FAILED))
+        .collect();
+    schemars::json_schema!({"type": "string", "enum": values})
 }
 
 /// What [`decide`] says.
@@ -239,7 +267,7 @@ pub fn run(req: &AutoRun<'_>, register: &dyn Fn() -> Result<Target>) -> AutoOutc
             // must never keep saying a failing schedule works. A client with no key
             // records nothing.
             let target = outcome.target.as_ref().unwrap_or(&req.target.target);
-            note(req, target, "failed", None);
+            note(req, target, LAST_FAILED, None);
             AutoResult::Failed(error)
         }
     };
@@ -319,7 +347,7 @@ fn attempt(
                 Reflinked::All | Reflinked::Some => Capability::Supported,
                 Reflinked::None => Capability::Unsupported,
             };
-            note(req, &target, "created", Some(capability));
+            note(req, &target, LAST_CREATED, Some(capability));
             outcome.warnings.extend(created.warnings.iter().cloned());
             Ok(AutoResult::Created(Box::new(created)))
         }
@@ -540,6 +568,47 @@ mod tests {
     use crate::backup::{BackupMeta, Consistency, Integrity};
     use crate::model::{BackupId, TargetKey};
     use crate::rules::Family;
+
+    /// `auto.last.result` publishes a closed set (rule 4): created, failed and every skip,
+    /// whose list is complete because it equals the skips `Skip`'s own schema derives.
+    #[test]
+    fn last_results_are_a_closed_set_of_every_skip() {
+        let published = last_result_schema(&mut schemars::SchemaGenerator::default());
+        let published = published.as_value();
+        let values: Vec<&str> = published["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        let derived = serde_json::to_value(schemars::schema_for!(Skip)).unwrap();
+        let mut skips: Vec<String> = Vec::new();
+        crate::contract::schema::walk(&derived, &mut |visit| {
+            if let crate::contract::schema::Visit::Position { node, .. } = visit {
+                skips.extend(
+                    node.get("const")
+                        .and_then(|c| c.as_str())
+                        .map(str::to_owned),
+                );
+                skips.extend(
+                    node.get("enum")
+                        .and_then(|e| e.as_array())
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|v| v.as_str().map(str::to_owned)),
+                );
+            }
+        });
+        let mut expected: Vec<&str> = vec![LAST_CREATED];
+        expected.extend(skips.iter().map(String::as_str));
+        expected.push(LAST_FAILED);
+        assert_eq!(values, expected, "auto.last.result's published values");
+        assert_eq!(
+            skips.len(),
+            Skip::ALL.len(),
+            "Skip::ALL lists every skip: {skips:?}"
+        );
+    }
 
     fn at(s: &str) -> Timestamp {
         s.parse().unwrap()

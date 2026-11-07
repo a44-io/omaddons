@@ -41,7 +41,7 @@ expression: s.stable(&c.envelope)
         "WeakAuras",
         "WeakAurasOptions"
       ],
-      "owned_now": [
+      "current_owners": [
         {
           "folder": "WeakAurasOptions",
           "owner": "WeakAurasOptions"

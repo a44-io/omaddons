@@ -796,7 +796,7 @@ function targetOf(target) {
     "errors": errors ? {
       "state": str(errors.state), "coverage": str(errors.coverage), "new": num(errors["new"]),
       "total": num(errors.total), "addons": num(errors.addons),
-      "top": Array.isArray(errors.top) ? errors.top.map(function(t) {
+      "top": Array.isArray(errors.top_addons) ? errors.top_addons.map(function(t) {
         return { "addon": str(t.addon), "folder": str(t.folder), "new": num(t["new"]), "count": num(t.count) }
       }) : [],
       "lastSessionAt": strOrNull(errors.last_session_at)
@@ -1499,7 +1499,7 @@ function restoreLines(data, env) {
       if (captured && installed && captured !== installed) {
         out.push("Settings written by " + str(a.addon) + " " + captured + "; installed now: " + installed)
       }
-      var absent = stringList(a.not_in_backup)
+      var absent = stringList(a.new_folders)
       for (var j = 0; j < absent.length; j++) out.push(absent[j] + ": not in this backup; left as it is")
     }
     return out
@@ -1526,7 +1526,7 @@ function pruneLines(data) {
       out.push("Delete backup " + str(pruned[j].id) + " (" + kindText({ "kind": str(pruned[j].kind), "trigger": null }) + ", "
         + bytesText(num(pruned[j].bytes)) + ")" + where)
     }
-    var busy = Array.isArray(t.busy) ? t.busy : []
+    var busy = Array.isArray(t.busy_backups) ? t.busy_backups : []
     for (var k = 0; k < busy.length; k++) out.push(str(busy[k].id || busy[k]) + " is in use and is kept")
   }
   return out

@@ -803,7 +803,7 @@ fn no_match(selector: &str, targets: &[DiscoveredTarget], table: &RulesTable) ->
         )
         .details(serde_json::json!({
             "selector": selector,
-            "mode": mode.id,
+            "game_mode": mode.id,
             "product": product.code,
         }));
     }

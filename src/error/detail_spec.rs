@@ -15,6 +15,9 @@ pub enum DetailSpec {
     /// An RFC 3339 UTC instant (`…Z`), as a `jiff::Timestamp` prints it; published as a
     /// `date-time` string, like every instant in the contract (rule 1).
     Instant,
+    /// A ULID key (a target's `key`), published with its pattern, as every `key` is
+    /// (rule 3).
+    Key,
     Int,
     Num,
     Bool,
@@ -129,6 +132,7 @@ impl DetailSpec {
         let mut schema = match self {
             Self::Str => json!({"type": "string"}),
             Self::Instant => json!({"type": "string", "format": "date-time"}),
+            Self::Key => json!({"type": "string", "pattern": crate::model::ULID_PATTERN}),
             Self::Int => json!({"type": "integer"}),
             Self::Num => json!({"type": "number"}),
             Self::Bool => json!({"type": "boolean"}),
@@ -186,6 +190,7 @@ impl DetailSpec {
         match self {
             Self::Str => "string".to_owned(),
             Self::Instant => "an RFC 3339 instant".to_owned(),
+            Self::Key => "a ULID key".to_owned(),
             Self::Int => "integer".to_owned(),
             Self::Num => "number".to_owned(),
             Self::Bool => "boolean".to_owned(),
@@ -210,6 +215,9 @@ impl DetailSpec {
             Self::Instant => value
                 .as_str()
                 .is_some_and(|text| text.parse::<jiff::Timestamp>().is_ok()),
+            Self::Key => value
+                .as_str()
+                .is_some_and(|text| text.parse::<crate::model::TargetKey>().is_ok()),
             Self::Int => value.is_i64() || value.is_u64(),
             Self::Num => value.is_number(),
             Self::Bool => value.is_boolean(),
@@ -483,6 +491,9 @@ pub(crate) fn check_rendered(schema: &Value) -> Result<(), String> {
             // An instant (`DetailSpec::Instant`), the only format a detail carries.
             "format" if value == "date-time" => {}
             "format" => return Err("format must be date-time".to_owned()),
+            // A key (`DetailSpec::Key`), the only pattern a detail carries.
+            "pattern" if value == crate::model::ULID_PATTERN => {}
+            "pattern" => return Err("pattern must be the ULID pattern".to_owned()),
             // Only an opaque object opens its keys; nothing renders a closed one.
             "additionalProperties" if value == &Value::Bool(true) => {}
             "additionalProperties" => return Err("additionalProperties must be true".to_owned()),

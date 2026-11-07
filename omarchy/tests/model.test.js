@@ -1030,7 +1030,7 @@ describe("the Backups view and the restore chooser", () => {
     expect(addon[0]).toMatch(/^Restore WeakAuras's settings from the backup of \d{4}-\d\d-\d\d \d\d:\d\d: 2 replaced, 0 restored \(absent now\), 0 created since \(moved aside\)$/)
     expect(addon[1]).toBe("Settings written by WeakAuras 5.19.2; installed now: 5.20.0")
     const notIn = JSON.parse(JSON.stringify(fixture("restore-addon-preview")))
-    notIn.data.addons[0].not_in_backup = ["WeakAurasOptions"]
+    notIn.data.addons[0].new_folders = ["WeakAurasOptions"]
     expect(M.confirmText("restore_addon", notIn)).toContain("WeakAurasOptions: not in this backup; left as it is")
     const whole = M.confirmText("restore", fixture("restore-preview")).split("\n")
     expect(whole[0]).toContain("Restore the whole WTF/ from the backup of")

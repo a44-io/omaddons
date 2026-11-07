@@ -421,7 +421,7 @@ pub fn not_found(prefix: &str, backups: &[BackupRef], target_id: Option<&str>) -
         None => Suggestion::command(["omaddons", "backup", "list"]),
     };
     Error::new(ErrorCode::NotFound, message, fix)
-        .details(serde_json::json!({ "prefix": prefix, "target": target_id, "newest": newest }))
+        .details(serde_json::json!({ "prefix": prefix, "target": target_id, "newest_ids": newest }))
 }
 
 /// `ref_ambiguous` for `prefix`, with one `backup list <id> -t <target>` per candidate.
@@ -801,7 +801,7 @@ mod tests {
         let unknown = resolve(&c, "retail", "01ZZZZZZ").unwrap_err();
         assert_eq!(unknown.code, ErrorCode::NotFound);
         let body = crate::error::ErrorBody::from(unknown);
-        assert_eq!(body.details["newest"], serde_json::json!([C, b, a]));
+        assert_eq!(body.details["newest_ids"], serde_json::json!([C, b, a]));
         assert_eq!(
             body.fix_argv,
             Some(argv(&["omaddons", "backup", "list", "-t", "retail"]))

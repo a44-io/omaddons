@@ -123,7 +123,7 @@ fn the_setting_installs_a_retail_only_addon_and_persists_until_cleared() {
     assert_eq!(info["data"]["installed"][0]["any_flavor"], true, "{info}");
     let status = home.run(&["status"]).expect(0);
     assert_eq!(
-        status["data"]["targets"][0]["any_flavor"],
+        status["data"]["targets"][0]["any_flavor_addons"],
         json!(["Foo"]),
         "{status}"
     );

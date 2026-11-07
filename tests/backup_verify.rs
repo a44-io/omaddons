@@ -351,7 +351,7 @@ fn a_prune_meanwhile_finds_the_backup_busy_and_a_global_lock_never_stops_it() {
     pause.reached("fsx.write_atomic.before");
     let prune = run(&home, &["backup", "prune", &id, "-t", "retail"], &[]).expect(0);
     assert_eq!(
-        prune["data"]["targets"][0]["busy"],
+        prune["data"]["targets"][0]["busy_backups"],
         json!([{"id": id}]),
         "{prune:#}"
     );

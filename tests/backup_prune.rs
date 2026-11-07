@@ -182,7 +182,7 @@ fn retention_keeps_each_days_first_and_last_and_the_users_backups() {
     assert_eq!(t["target"]["id"], "retail");
     assert_eq!(pruned(t), &all - &kept);
     assert_eq!(
-        (t["kept"].clone(), t["busy"].clone()),
+        (t["kept"].clone(), t["busy_backups"].clone()),
         (json!(19), json!([]))
     );
     assert_eq!(t["reclaimed_for_space"], false);
@@ -334,11 +334,11 @@ fn a_backup_being_read_is_skipped_busy_and_pruned_once_its_reader_dies() {
     let envelope = run(&home, &["backup", "prune", "-t", "retail"], &[]).expect(0);
     let t = &envelope["data"]["targets"][0];
     assert_eq!(pruned(t), BTreeSet::from([free]));
-    assert_eq!(t["busy"], json!([{"id": held.to_string()}]));
+    assert_eq!(t["busy_backups"], json!([{"id": held.to_string()}]));
     assert_eq!(t["kept"], 2, "the busy one stays");
     let envelope = run(&home, &["backup", "prune", &held.to_string()], &[]).expect(0);
     assert_eq!(
-        envelope["data"]["targets"][0]["busy"],
+        envelope["data"]["targets"][0]["busy_backups"],
         json!([{"id": held.to_string()}]),
         "named, it is still in use"
     );

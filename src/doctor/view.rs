@@ -609,7 +609,7 @@ impl DoctorView {
                         .as_u64()
                         .and_then(|n| u32::try_from(n).ok())
                 };
-                let key = err.details["key"].as_str().map(str::to_owned);
+                let key = err.details["toml_key"].as_str().map(str::to_owned);
                 let reason = if key.is_some() {
                     FailureReason::InvalidValue
                 } else {
@@ -1948,7 +1948,7 @@ pub(crate) mod tests {
     /// `Config::parse` reports.
     fn parse_failure(text: &str) -> Shown {
         let err = Config::parse(text, Path::new("/fixture/config.toml")).unwrap_err();
-        assert_eq!(err.details["key"], serde_json::Value::Null, "{text:?}");
+        assert_eq!(err.details["toml_key"], serde_json::Value::Null, "{text:?}");
         let number = |name: &str| {
             err.details[name]
                 .as_u64()

@@ -132,7 +132,7 @@ expression: s.stable(&c.envelope)
           "total": 0
         },
         "adoptable": 0,
-        "any_flavor": [],
+        "any_flavor_addons": [],
         "attention": [],
         "backups": {
           "auto": {
@@ -159,7 +159,7 @@ expression: s.stable(&c.envelope)
           "new": 0,
           "received": 0,
           "state": "ok",
-          "top": [],
+          "top_addons": [],
           "total": 0
         },
         "family": "mists",
@@ -206,7 +206,7 @@ expression: s.stable(&c.envelope)
           "total": 0
         },
         "adoptable": 0,
-        "any_flavor": [],
+        "any_flavor_addons": [],
         "attention": [],
         "backups": {
           "auto": {
@@ -233,7 +233,7 @@ expression: s.stable(&c.envelope)
           "new": 0,
           "received": 0,
           "state": "ok",
-          "top": [],
+          "top_addons": [],
           "total": 0
         },
         "family": "mainline",

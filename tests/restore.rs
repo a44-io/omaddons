@@ -461,7 +461,7 @@ fn a_concurrent_prune_finds_the_source_busy() {
     pause.reached("engine.restore.staged");
     let envelope = run(&home, &["backup", "prune", "-t", "retail", &id], &[]).expect(0);
     assert_eq!(
-        envelope["data"]["targets"][0]["busy"],
+        envelope["data"]["targets"][0]["busy_backups"],
         json!([{"id": id}]),
         "{envelope}"
     );

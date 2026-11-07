@@ -397,7 +397,7 @@ fn captured(
         return Err(error.details(serde_json::json!({
             "addon": one.name,
             "candidates": folders,
-            "owned_now": owned,
+            "current_owners": owned,
             "target": target_id,
         })));
     }
@@ -526,7 +526,7 @@ fn restored(resolved: &[Resolved], plan: &AddonPlan) -> Vec<AddonRestore> {
             folders_from: r.from,
             captured_version: r.captured_version.clone(),
             installed_version: r.installed_version.clone(),
-            not_in_backup: r.not_in_backup.clone(),
+            new_folders: r.not_in_backup.clone(),
             files: *files,
         })
         .collect()
@@ -711,7 +711,7 @@ mod tests {
             alternatives,
             ["folder:WeakAuras", "folder:WeakAurasOptions"]
         );
-        assert_eq!(err.details["owned_now"][0]["owner"], "Opts");
+        assert_eq!(err.details["current_owners"][0]["owner"], "Opts");
 
         let err = resolved("Nothing", &backup, None).unwrap_err();
         assert_eq!(err.code, ErrorCode::NotFound);

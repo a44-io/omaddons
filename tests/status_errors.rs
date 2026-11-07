@@ -206,7 +206,7 @@ fn cached_status_counts_what_errors_read_and_plain_status_reads_it_live() {
             .filter(|a| a["origin"] == "local")
             .map(|a| json!([a["addon"], a["folders"][0], a["new"], a["count"]]))
             .collect();
-        let top: Vec<Value> = e["top"]
+        let top: Vec<Value> = e["top_addons"]
             .as_array()
             .unwrap()
             .iter()
@@ -467,7 +467,7 @@ fn received_reports_alone_never_make_the_errors_state() {
             "{status:#}"
         );
         assert_eq!(status["data"]["summary"]["state"], "idle");
-        assert_eq!(block(&status)["top"], json!([]));
+        assert_eq!(block(&status)["top_addons"], json!([]));
     }
 }
 

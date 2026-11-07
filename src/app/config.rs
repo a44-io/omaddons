@@ -60,7 +60,8 @@ impl ConfigAction {
 /// One setting.
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct Setting {
-    pub key: String,
+    /// The setting's name, as `config get <KEY>` takes it (`limits.download_max_bytes`).
+    pub name: String,
     pub value: serde_json::Value,
     pub source: SettingSource,
 }
@@ -80,14 +81,15 @@ pub enum SettingSource {
 pub struct ConfigData {
     pub path: PathBuf,
     pub exists: bool,
-    /// Sorted by key; patterned keys appear only when set.
+    /// Sorted by name; patterned names (`sources.<id>.enabled`) appear only when set.
     pub settings: Vec<Setting>,
 }
 
 /// `config get`.
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct GetData {
-    pub key: String,
+    /// The setting's name, as given.
+    pub name: String,
     pub value: serde_json::Value,
     pub source: SettingSource,
     pub default: serde_json::Value,
@@ -96,7 +98,8 @@ pub struct GetData {
 /// `config set`.
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct SetData {
-    pub key: String,
+    /// The setting's name, as given.
+    pub name: String,
     pub value: serde_json::Value,
     pub previous: serde_json::Value,
     pub changed: bool,
@@ -190,12 +193,12 @@ pub fn list() -> Result<Done<ConfigData>> {
         .filter(|spec| !spec.key.contains('*'))
         .map(|spec| match lookup(&raw, spec.key) {
             Some(v) => Setting {
-                key: spec.key.to_owned(),
+                name: spec.key.to_owned(),
                 value: json(v),
                 source: SettingSource::File,
             },
             None => Setting {
-                key: spec.key.to_owned(),
+                name: spec.key.to_owned(),
                 value: default_value(spec.key),
                 source: SettingSource::Default,
             },
@@ -213,7 +216,7 @@ pub fn list() -> Result<Done<ConfigData>> {
                 let key = format!("{section}.{name}.{field}");
                 if spec_for(&key).is_some() {
                     settings.push(Setting {
-                        key,
+                        name: key,
                         value: json(v),
                         source: SettingSource::File,
                     });
@@ -221,7 +224,7 @@ pub fn list() -> Result<Done<ConfigData>> {
             }
         }
     }
-    settings.sort_by(|a, b| a.key.cmp(&b.key));
+    settings.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(Done {
         command: "config",
         data: ConfigData {
@@ -246,7 +249,7 @@ pub fn list() -> Result<Done<ConfigData>> {
                     SettingSource::Default => "  # default",
                     SettingSource::File => "",
                 };
-                writeln!(w, "{} = {}{note}", s.key, s.value)?;
+                writeln!(w, "{} = {}{note}", s.name, s.value)?;
             }
             Ok(())
         },
@@ -282,13 +285,13 @@ pub fn get(key: &str) -> Result<Done<GetData>> {
     Ok(Done {
         command: "config get",
         data: GetData {
-            key: key.to_owned(),
+            name: key.to_owned(),
             value,
             source,
             default,
         },
         warnings,
-        render: |data, w| writeln!(w, "{} = {}", data.key, data.value),
+        render: |data, w| writeln!(w, "{} = {}", data.name, data.value),
     })
 }
 
@@ -352,7 +355,7 @@ pub fn set(ctx: &Context, key: &str, raw_value: &str) -> Result<Done<SetData>> {
     Ok(Done {
         command: "config set",
         data: SetData {
-            key: key.to_owned(),
+            name: key.to_owned(),
             value,
             previous,
             changed,
@@ -365,7 +368,7 @@ pub fn set(ctx: &Context, key: &str, raw_value: &str) -> Result<Done<SetData>> {
                 (true, true) => "would set",
                 (false, true) => "set",
             };
-            writeln!(w, "{verb} {} = {}", data.key, data.value)
+            writeln!(w, "{verb} {} = {}", data.name, data.value)
         },
     })
 }

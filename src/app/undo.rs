@@ -190,6 +190,7 @@ pub struct Reverted {
     pub argv: Vec<String>,
     /// `-v` only.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "crate::contract::schema::reason_text")]
     pub reason: Option<String>,
 }
 
