@@ -63,7 +63,7 @@ pub fn run(ctx: &Context, args: &GcArgs) -> Result<GcRun, DoctorFailure> {
     )?;
     Ok(GcRun {
         report,
-        verbose: ctx.output.style.verbose > 0,
+        verbose: ctx.output.style.detail(),
     })
 }
 

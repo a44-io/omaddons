@@ -174,7 +174,7 @@ struct InScope<'w> {
 pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
     let channel = check_args(ctx, args)?;
     let world = World::load(ctx)?;
-    let verbose = ctx.output.style.verbose > 0;
+    let verbose = ctx.output.style.detail();
     let mut warnings = world.warnings.clone();
     let mut notes = Vec::new();
     let (catalog, catalog_warnings) = world.catalog(ctx);

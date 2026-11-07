@@ -611,7 +611,7 @@ pub fn run_diagnose(
         notes: Vec::new(),
         clients,
         checks_run,
-        verbose: ctx.output.style.verbose > 0,
+        verbose: ctx.output.style.detail(),
     };
     let record = record_of(ctx, &outcome)?;
     match runtime.finish(&record) {
@@ -677,7 +677,7 @@ pub fn run_fix(ctx: &Context, args: &FixArgs) -> std::result::Result<FixRun, Doc
     Ok(FixRun {
         outcome,
         roots: Roots::of(&paths, None),
-        verbose: ctx.output.style.verbose > 0,
+        verbose: ctx.output.style.detail(),
     })
 }
 
@@ -720,7 +720,7 @@ pub fn run_diff(ctx: &Context, args: &DiffArgs) -> std::result::Result<DiffRun, 
     Ok(DiffRun {
         outcome,
         roots: Roots::of(&paths, Some("<run>")),
-        verbose: ctx.output.style.verbose > 0,
+        verbose: ctx.output.style.detail(),
     })
 }
 

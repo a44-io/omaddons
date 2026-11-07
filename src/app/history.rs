@@ -195,7 +195,7 @@ impl Outcome for HistoryOutcome {
             .iter()
             .any(|e| e.run.is_some_and(|r| self.shared_runs.contains(&r)));
         // With `-v`, a plan column when some row was applied from a stored plan.
-        let with_plans = style.verbose > 0 && self.data.entries.iter().any(|e| e.plan.is_some());
+        let with_plans = style.detail() && self.data.entries.iter().any(|e| e.plan.is_some());
         let rows: Vec<Vec<String>> = self
             .data
             .entries
@@ -380,7 +380,7 @@ pub fn run(ctx: &Context, args: &HistoryArgs, actor: Option<&str>) -> Result<His
             },
         )?,
     };
-    let verbose = ctx.output.style.verbose > 0;
+    let verbose = ctx.output.style.detail();
     // Transactions and settings changes, in the order they were recorded.
     let mut lines: Vec<HistoryLine> = read
         .entries

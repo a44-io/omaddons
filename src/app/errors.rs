@@ -848,7 +848,7 @@ pub fn run(ctx: &Context, args: &ErrorsArgs) -> Result<ErrorsOutcome> {
         ));
     }
     let world = World::load(ctx)?;
-    let verbose = ctx.output.style.verbose > 0;
+    let verbose = ctx.output.style.detail();
     let mut warnings = world.warnings.clone();
     let remembered = Remembered::load(&world);
     let (mut memo, writable) = memo::load(&world.paths);

@@ -331,7 +331,7 @@ impl Outcome for InfoOutcome {
                     ),
                 };
                 writeln!(w, "  {line}")?;
-                if style.verbose > 0 {
+                if style.detail() {
                     for (id, hint) in &l.compat {
                         let hint = serde_json::to_value(hint).unwrap_or_default();
                         writeln!(w, "    {id}: {}", hint.as_str().unwrap_or_default())?;
@@ -354,7 +354,7 @@ impl Outcome for InfoOutcome {
 /// Runs `info`.
 pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
     let world = World::load(ctx)?;
-    let verbose = ctx.output.style.verbose > 0;
+    let verbose = ctx.output.style.detail();
     let mut warnings = world.warnings.clone();
     let (catalog, catalog_warnings) = world.catalog(ctx);
     warnings.extend(catalog_warnings);

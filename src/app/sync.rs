@@ -640,7 +640,7 @@ fn target_work(
 /// Runs `sync`.
 pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
     let world = World::load(ctx)?;
-    let verbose = ctx.output.style.verbose > 0;
+    let verbose = ctx.output.style.detail();
     let mut warnings = world.warnings.clone();
     let mut notes = Vec::new();
     let path = file_path(&world, args);

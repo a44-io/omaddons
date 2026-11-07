@@ -290,8 +290,10 @@ impl<W: Write> Reporter<W> {
         }
     }
 
+    /// A `log` event, shown from its level's verbosity on (`debug` with `-v`, `trace`
+    /// with `-vv`), never under `--quiet`.
     pub fn log(&mut self, level: LogLevel, message: &str) {
-        if self.quiet || (level == LogLevel::Debug && self.verbose == 0) {
+        if self.quiet || self.verbose < level.min_verbosity() {
             return;
         }
         match self.mode {
@@ -642,6 +644,92 @@ mod tests {
              info: checking 3 addons\n\
              error[target_ambiguous]: weakauras is compatible with 2 targets\n\
              fix: omaddons install weakauras -t retail\n  or: omaddons install weakauras -t forever\n"
+        );
+    }
+
+    fn cfg_at(mode: StderrMode, verbose: u8, quiet: bool, color: bool) -> OutputConfig {
+        OutputConfig {
+            stderr: mode,
+            progress: ProgressMode::None,
+            style: Style {
+                verbose,
+                quiet,
+                ..Style::default()
+            },
+            stderr_color: color,
+            ..OutputConfig::machine()
+        }
+    }
+
+    #[test]
+    fn log_events_show_by_level_and_verbosity() {
+        for level in LogLevel::ALL.iter().copied() {
+            for verbose in 0..=3u8 {
+                for quiet in [false, true] {
+                    for mode in [StderrMode::Ndjson, StderrMode::Human] {
+                        let case = format!(
+                            "{}_at_v{verbose}_{}_{}",
+                            level.wire(),
+                            if mode == StderrMode::Ndjson {
+                                "ndjson"
+                            } else {
+                                "human"
+                            },
+                            if quiet { "quiet" } else { "not_quiet" }
+                        );
+                        let mut r = Reporter::new(Vec::new(), &cfg_at(mode, verbose, quiet, false));
+                        r.log(level, "m");
+                        let text = String::from_utf8(r.into_sink()).unwrap();
+                        let shown = !quiet && verbose >= level.min_verbosity();
+                        assert_eq!(!text.is_empty(), shown, "{case}: wrote {text:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_trace_event_is_a_log_event() {
+        let written = |mode, color| {
+            let mut r = Reporter::new(Vec::new(), &cfg_at(mode, 2, false, color));
+            r.log(LogLevel::Trace, "m");
+            String::from_utf8(r.into_sink()).unwrap()
+        };
+        let cases = [
+            (
+                "ndjson",
+                written(StderrMode::Ndjson, false),
+                "{\"event\":\"log\",\"level\":\"trace\",\"message\":\"m\"}\n",
+            ),
+            ("human", written(StderrMode::Human, false), "trace: m\n"),
+            (
+                "human_colored",
+                written(StderrMode::Human, true),
+                "\u{1b}[2mtrace:\u{1b}[0m m\n",
+            ),
+        ];
+        for (case, got, want) in cases {
+            assert_eq!(got, want, "{case}: the trace event as written");
+        }
+    }
+
+    #[test]
+    fn a_trace_event_clears_a_human_progress_line() {
+        let config = OutputConfig {
+            progress: ProgressMode::Human,
+            ..cfg_at(StderrMode::Human, 2, false, false)
+        };
+        let (reporter, captured) = shared(&config);
+        let sink = ProgressSink::new(&reporter, &config);
+        sink.event(Phase::Download, 3, "WeakAuras");
+        lock(&reporter).log(
+            LogLevel::Trace,
+            "release memo gh:o/foo|stable: not remembered",
+        );
+        let text = captured.text();
+        assert!(
+            text.starts_with("\r\u{1b}[2Kdownload: WeakAuras 1/3\r\u{1b}[2Ktrace: release memo"),
+            "{text:?}"
         );
     }
 

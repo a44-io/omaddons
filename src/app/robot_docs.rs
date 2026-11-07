@@ -410,7 +410,7 @@ fn section(
     writeln!(w, "{}", style.bold(heading))?;
     for (index, line) in table(rows).lines().enumerate() {
         writeln!(w, "{line}")?;
-        if style.paths_visible()
+        if style.detail()
             && let Some(pattern) = index.checked_sub(1).and_then(|i| patterns.get(i))
         {
             writeln!(w, "      fix: {pattern}")?;

@@ -37,6 +37,8 @@ use serde::Serialize;
 pub use scan::ScanLimits;
 pub use target::{DiscoveredTarget, DiscoverySource};
 
+use crate::output::trace;
+
 use self::battlenet::BattlenetHints;
 use self::scan::{Base, RootKind, Scanner};
 use crate::error::{Suggestion, Warning, WarningCode};
@@ -460,6 +462,26 @@ impl Route {
     }
 }
 
+/// A route as a `-vv` trace names it: its source's kind as it serializes
+/// (`launcher <name>` for a launcher), then ` (<qualifier>)` when it has one.
+pub(crate) fn route_label(route: &Route) -> String {
+    let source = match &route.source {
+        DiscoverySource::ProductDb => "product_db".to_owned(),
+        DiscoverySource::Launcher { name } => format!("launcher {name}"),
+        DiscoverySource::Process => "process".to_owned(),
+        DiscoverySource::ExtraRoot => "extra_root".to_owned(),
+        DiscoverySource::Scan => "scan".to_owned(),
+        DiscoverySource::Manual => "manual".to_owned(),
+        DiscoverySource::Registered => "registered".to_owned(),
+        DiscoverySource::Remembered => "remembered".to_owned(),
+    };
+    if route.qualifier.is_empty() {
+        source
+    } else {
+        format!("{source} ({})", route.qualifier)
+    }
+}
+
 /// A Wine prefix to read `product.db` from and scan.
 struct Prefix {
     path: PathBuf,
@@ -590,6 +612,14 @@ impl Candidates {
             }
         };
         if let Some(existing) = self.0.iter_mut().find(|c| c.canonical == canonical) {
+            trace::emit(|| {
+                format!(
+                    "discovery route {}: {}, already reached by {}; hints merged",
+                    route_label(&route),
+                    path.display(),
+                    route_label(&existing.route)
+                )
+            });
             for (folder, product) in hints.product_by_folder {
                 existing
                     .hints
@@ -612,6 +642,13 @@ impl Candidates {
             existing.kind = existing.kind.or(kind);
             return;
         }
+        trace::emit(|| {
+            format!(
+                "discovery route {}: {}, first route to reach it",
+                route_label(&route),
+                path.display()
+            )
+        });
         self.0.push(RootRequest {
             path,
             canonical,
@@ -767,5 +804,75 @@ mod tests {
         assert_eq!(find_child(dir.path(), "nope"), None);
         fs::write(dir.path().join("WTF"), "exact wins").unwrap();
         assert_eq!(find_child(dir.path(), "WTF"), Some(dir.path().join("WTF")));
+    }
+
+    #[test]
+    fn route_labels() {
+        let cases = [
+            (
+                "product_db",
+                Route::new("battlenet", DiscoverySource::ProductDb),
+                "product_db (battlenet)",
+            ),
+            (
+                "launcher",
+                Route::new(
+                    "lutris",
+                    DiscoverySource::Launcher {
+                        name: "lutris".into(),
+                    },
+                ),
+                "launcher lutris (lutris)",
+            ),
+            ("scan", Route::new("", DiscoverySource::Scan), "scan"),
+            (
+                "remembered",
+                Route::new("umu", DiscoverySource::Remembered),
+                "remembered (umu)",
+            ),
+        ];
+        for (case, route, want) in cases {
+            assert_eq!(route_label(&route), want, "{case}: {route:?}");
+        }
+    }
+
+    #[test]
+    fn each_root_is_traced_with_the_route_that_reached_it_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let (one, two) = (dir.path().join("one"), dir.path().join("two"));
+        fs::create_dir_all(&one).unwrap();
+        fs::create_dir_all(&two).unwrap();
+        let mut roots = Candidates::default();
+        let mut diagnostics = Vec::new();
+        let ((), lines) = crate::output::trace::capture(|| {
+            for (path, route) in [
+                (&one, Route::new("battlenet", DiscoverySource::ProductDb)),
+                (&one, Route::new("", DiscoverySource::Scan)),
+                (&two, Route::new("", DiscoverySource::Scan)),
+            ] {
+                roots.add(
+                    path.clone(),
+                    None,
+                    route,
+                    BattlenetHints::default(),
+                    None,
+                    &mut diagnostics,
+                );
+            }
+        });
+        let (one, two) = (one.display(), two.display());
+        assert_eq!(
+            lines,
+            [
+                format!("discovery route product_db (battlenet): {one}, first route to reach it"),
+                format!(
+                    "discovery route scan: {one}, already reached by product_db (battlenet); \
+                     hints merged"
+                ),
+                format!("discovery route scan: {two}, first route to reach it"),
+            ],
+            "in route order, each root once"
+        );
+        assert_eq!(roots.0.len(), 2, "two roots kept");
     }
 }

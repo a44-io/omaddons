@@ -23,6 +23,7 @@ use super::{FsxError, ensure_dir_all, failpoint, sys};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::limits::{LOCK_ACQUIRE_TIMEOUT, PLAN_MAX_BYTES};
 use crate::model::TxId;
+use crate::output::trace;
 use crate::state::paths::Paths;
 
 /// Who holds the global lock, as written by the holder. Diagnostic only.
@@ -100,18 +101,39 @@ impl GlobalLock {
             .map_err(|err| io(&err))?;
         let started = Instant::now();
         let mut pause = Duration::from_millis(5);
+        let mut retries: u32 = 0;
         loop {
             match file.try_lock() {
                 Ok(()) => break,
                 Err(TryLockError::WouldBlock) => {
+                    if retries == 0 {
+                        trace_wait(&path, timeout);
+                    }
                     if started.elapsed() >= timeout {
+                        trace::emit(|| {
+                            format!(
+                                "global lock: not acquired within {} ms",
+                                timeout.as_millis()
+                            )
+                        });
                         return Err(locked(&path, timeout));
                     }
                     std::thread::sleep(pause.min(timeout.saturating_sub(started.elapsed())));
                     pause = (pause * 2).min(Duration::from_millis(50));
+                    retries = retries.saturating_add(1);
                 }
                 Err(TryLockError::Error(err)) => return Err(io(&err)),
             }
+        }
+        if retries == 0 {
+            trace::emit(|| "global lock: acquired at once".to_owned());
+        } else {
+            trace::emit(|| {
+                format!(
+                    "global lock: acquired after {} ms ({retries} retries)",
+                    started.elapsed().as_millis()
+                )
+            });
         }
         let acquired_at = Instant::now();
         failpoint::hit("fsx.lock.acquired").map_err(|err| io(&err))?;
@@ -141,6 +163,28 @@ fn write_holder(file: &mut File, command: &str) -> io::Result<()> {
 fn read_holder(path: &Path) -> Option<HolderInfo> {
     let text = fs::read_to_string(path).ok()?;
     serde_json::from_str(text.trim()).ok()
+}
+
+/// The `-vv` line of a wait for the global lock: who holds it, read only when tracing.
+fn trace_wait(path: &Path, timeout: Duration) {
+    if !trace::enabled() {
+        return;
+    }
+    let holder = read_holder(path).map_or_else(
+        || "another omaddons process".to_owned(),
+        |h| {
+            format!(
+                "omaddons {} (pid {}, since {})",
+                h.command, h.pid, h.started_at
+            )
+        },
+    );
+    trace::emit(|| {
+        format!(
+            "global lock: held by {holder}; waiting up to {} ms",
+            timeout.as_millis()
+        )
+    });
 }
 
 fn locked(path: &Path, timeout: Duration) -> Error {
@@ -584,6 +628,69 @@ mod tests {
         assert!(guard.held_for() < Duration::from_secs(5));
         guard.release();
         assert!(freed(|| probe_global(&p).unwrap() == LockState::Free));
+    }
+
+    #[test]
+    fn an_uncontended_acquire_is_traced_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = paths(dir.path());
+        let (guard, lines) = crate::output::trace::capture(|| GlobalLock::acquire(&p, "install"));
+        assert!(guard.is_ok());
+        assert_eq!(lines, ["global lock: acquired at once"]);
+    }
+
+    #[test]
+    fn a_contended_acquire_traces_the_wait_and_its_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = paths(dir.path());
+        let (held, release) = (std::sync::mpsc::channel(), std::sync::mpsc::channel::<()>());
+        let holder_paths = p.clone();
+        let holder = std::thread::spawn(move || {
+            let guard = GlobalLock::acquire(&holder_paths, "holder").unwrap();
+            held.0.send(()).unwrap();
+            release.1.recv().unwrap();
+            std::thread::sleep(Duration::from_millis(100));
+            drop(guard);
+        });
+        held.1.recv().unwrap();
+        let (guard, lines) = crate::output::trace::capture(|| {
+            release.0.send(()).unwrap();
+            GlobalLock::acquire_with_timeout(&p, "waiter", Duration::from_secs(2))
+        });
+        holder.join().unwrap();
+        assert!(guard.is_ok(), "{lines:?}");
+        let pid = std::process::id();
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(
+            lines[0].starts_with(&format!(
+                "global lock: held by omaddons holder (pid {pid}, since "
+            )) && lines[0].ends_with("); waiting up to 2000 ms"),
+            "{lines:?}"
+        );
+        let (ms, retries) = lines[1]
+            .strip_prefix("global lock: acquired after ")
+            .and_then(|rest| rest.strip_suffix(" retries)"))
+            .and_then(|rest| rest.split_once(" ms ("))
+            .map(|(ms, retries)| (ms.parse::<u64>().unwrap(), retries.parse::<u32>().unwrap()))
+            .unwrap_or_else(|| panic!("not an acquired-after line: {lines:?}"));
+        assert!(ms >= 50 && retries >= 1, "{lines:?}");
+    }
+
+    #[test]
+    fn a_timed_out_acquire_traces_the_wait_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = paths(dir.path());
+        let _held = GlobalLock::acquire(&p, "holder").unwrap();
+        let (result, lines) = crate::output::trace::capture(|| {
+            GlobalLock::acquire_with_timeout(&p, "waiter", Duration::from_millis(60))
+        });
+        assert_eq!(result.map(|_| ()).unwrap_err().code, ErrorCode::Locked);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(
+            lines[0].ends_with("; waiting up to 60 ms"),
+            "the wait first: {lines:?}"
+        );
+        assert_eq!(lines[1], "global lock: not acquired within 60 ms");
     }
 
     #[test]

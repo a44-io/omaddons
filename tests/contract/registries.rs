@@ -141,6 +141,9 @@ fn live_stderr_events_are_the_registered_events() {
         .unwrap();
     events.extend(checked(log.run(&s.home, &["history", "--json"]), 0).events());
 
+    log.step("a trace log");
+    events.extend(checked(log.run(&s.home, &["status", "-vv", "--json"]), 0).events());
+
     log.step("an error");
     let failed = checked(log.run(&s.home, &["status", "-t", "nosuch", "--json"]), 3);
     failed.fails(3, "target_not_found");

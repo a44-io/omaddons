@@ -36,7 +36,8 @@ pub enum ProgressMode {
 pub struct Style {
     /// ANSI color on stdout.
     pub color: bool,
-    /// `-v` count.
+    /// `-v` count: 0, 1 (`-v`) or 2 and more (`-vv`). Read it through
+    /// [`Style::detail`] and [`Style::trace`].
     pub verbose: u8,
     /// `--quiet`.
     pub quiet: bool,

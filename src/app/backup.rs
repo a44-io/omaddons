@@ -536,7 +536,7 @@ pub fn list(ctx: &Context, args: &BackupListArgs) -> Result<BackupListOutcome> {
     let world = World::load(ctx)?;
     let mut warnings = world.warnings.clone();
     let mode = world.config.auto_backup.unwrap_or_default();
-    let verbose = ctx.output.style.verbose > 0;
+    let verbose = ctx.output.style.detail();
     let mut listed = listed(ctx, &world, &mut warnings)?;
     let mut show = None;
     if let Some(prefix) = &args.id {

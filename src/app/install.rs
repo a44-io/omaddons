@@ -423,7 +423,7 @@ impl Outcome for InstallOutcome {
         super::intent::render_plan_line(w, d.plan_id.as_ref(), d.plan_expires_at.as_ref())?;
         // Behind `-v`: the stored plan's `apply` is the default way to run the preview.
         match d.precondition.as_deref() {
-            Some(token) if style.verbose > 0 => {
+            Some(token) if style.detail() => {
                 super::intent::render_bind_line(w, token, d.plan_id.is_some())
             }
             _ => Ok(()),
@@ -692,7 +692,7 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
         .transpose()?
         .map(|l| l.value)
         .or(record);
-    let verbose = ctx.output.style.verbose > 0;
+    let verbose = ctx.output.style.detail();
     let mut built = build_items(&items, &done, outcome, after.as_ref(), verbose);
     // Only what is installed can be reinstalled: the fix installs it.
     if args.reinstall {

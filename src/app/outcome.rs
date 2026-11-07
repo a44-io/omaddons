@@ -1169,7 +1169,7 @@ impl Outcome for TargetsOutcome {
         )?;
         // Behind `-v`: the stored plan's `apply` is the default way to run the preview.
         match self.data.precondition.as_deref() {
-            Some(token) if style.verbose > 0 => {
+            Some(token) if style.detail() => {
                 render_bind_line(w, token, self.data.plan_id.is_some())
             }
             _ => Ok(()),

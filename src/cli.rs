@@ -461,6 +461,7 @@ fn run_with(
     // One reporter for the whole run: the command's progress and the outcome's output.
     let reporter = output::shared_stderr(&output);
     ctx.progress = output::ProgressSink::new(&reporter, &output);
+    output::trace::install(&reporter, &output);
     crate::app::dispatch(&cli, &ctx, &reporter)
 }
 
@@ -2174,6 +2175,30 @@ mod tests {
     fn global(args: &[&str]) -> GlobalArgs {
         let raw: Vec<String> = argv(args);
         Cli::try_parse_from(&raw).unwrap().global
+    }
+
+    /// clap counts a global flag within one command level, as README's Global options
+    /// row says: change that row with this test.
+    #[test]
+    fn a_repeated_v_counts_within_one_command_level() {
+        let cases: [(&str, &[&str], u8); 8] = [
+            ("v", &["-v"], 1),
+            ("vv", &["-vv"], 2),
+            ("v_v", &["-v", "-v"], 2),
+            ("long_long", &["--verbose", "--verbose"], 2),
+            ("after_the_command", &["status", "-vv"], 2),
+            ("vvv_before", &["-vvv", "status"], 3),
+            ("either_side", &["-v", "status", "-v"], 1),
+            ("three_levels", &["-v", "backup", "-v", "list", "-v"], 1),
+        ];
+        for (case, args, want) in cases {
+            assert_eq!(
+                global(args).verbose,
+                want,
+                "{case}: omaddons {args:?} gives -v count {want}; README's Global options row \
+                 describes this counting"
+            );
+        }
     }
 
     #[test]

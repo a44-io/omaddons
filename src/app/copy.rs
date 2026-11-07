@@ -176,7 +176,7 @@ impl Outcome for CopyOutcome {
         intent::render_plan_line(w, data.plan_id.as_ref(), data.plan_expires_at.as_ref())?;
         // Behind `-v`: the stored plan's `apply` is the default way to run the preview.
         match data.precondition.as_deref() {
-            Some(token) if style.verbose > 0 => {
+            Some(token) if style.detail() => {
                 intent::render_bind_line(w, token, data.plan_id.is_some())
             }
             _ => Ok(()),
@@ -205,7 +205,7 @@ pub fn run(ctx: &Context, args: &CopyArgs) -> Result<CopyOutcome> {
         ));
     }
     let world = World::load(ctx)?;
-    let verbose = ctx.output.style.verbose > 0;
+    let verbose = ctx.output.style.detail();
     let mut warnings = world.warnings.clone();
     let mut notes = Vec::new();
     let (catalog, catalog_warnings) = world.catalog(ctx);

@@ -385,7 +385,7 @@ fn plural(n: usize, word: &str) -> String {
 /// Runs `outdated`.
 pub fn run(ctx: &Context, args: &OutdatedArgs) -> Result<OutdatedOutcome> {
     let world = World::load(ctx)?;
-    let verbose = ctx.output.style.verbose > 0;
+    let verbose = ctx.output.style.detail();
     let mut warnings = world.warnings.clone();
     let mut notes = Vec::new();
     let targets: Vec<&DiscoveredTarget> = world.select_many(ctx)?;

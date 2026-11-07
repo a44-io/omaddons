@@ -777,7 +777,7 @@ impl PlansShowOutcome {
         if let Some(advice) = self.advice() {
             writeln!(w, "{advice}")?;
         }
-        if style.paths_visible() {
+        if style.detail() {
             if let Some(approval) = &d.approval {
                 let reasons: Vec<String> = approval
                     .reasons

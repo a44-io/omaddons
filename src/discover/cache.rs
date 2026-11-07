@@ -21,6 +21,7 @@ use super::{
 };
 use crate::error::Warning;
 use crate::fsx::{Content, Op, ScopeTable, WriteSession, Writer, ensure_dir_all, mutate};
+use crate::output::trace;
 use crate::rules::RulesTable;
 use crate::state::paths::Paths;
 use crate::state::store::{self, SchemaVersion, VersionStatus, Versioned};
@@ -249,6 +250,12 @@ pub fn discover_cached(
         });
         let (found, root_warnings) = match hit {
             Some(cached) => {
+                trace::emit(|| {
+                    format!(
+                        "discovery root {}: reused from the discovery cache",
+                        req.path.display()
+                    )
+                });
                 stats.reused += 1;
                 let found = cached
                     .targets
@@ -262,6 +269,7 @@ pub fn discover_cached(
                 (found, cached.warnings.clone())
             }
             None => {
+                trace::emit(|| format!("discovery root {}: parsed", req.path.display()));
                 stats.parsed += 1;
                 match parse_root(req, table) {
                     Ok(parsed) => parsed,

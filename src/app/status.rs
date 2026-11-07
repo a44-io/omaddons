@@ -652,7 +652,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
     };
     // Shared with the doctor's view below, which reads it as its Discovery layer.
     let world = Rc::new(World::load_with(ctx, mode)?);
-    let verbose = ctx.output.style.verbose > 0;
+    let verbose = ctx.output.style.detail();
     let mut warnings = world.warnings.clone();
 
     let selected: Vec<&DiscoveredTarget> = world.select_many(ctx)?;

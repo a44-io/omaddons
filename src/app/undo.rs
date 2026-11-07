@@ -985,7 +985,7 @@ fn outcome(
     done: Vec<(Selected<'_>, Result<EngineUndo>)>,
     precondition: Option<String>,
 ) -> Result<UndoOutcome> {
-    let verbose = ctx.output.style.verbose > 0;
+    let verbose = ctx.output.style.detail();
     let mut attempts = Vec::new();
     let mut transactions = Vec::new();
     let mut warnings: Vec<Warning> = Vec::new();

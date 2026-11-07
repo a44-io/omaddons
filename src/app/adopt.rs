@@ -705,7 +705,7 @@ pub fn run(ctx: &Context, args: &AdoptArgs) -> Result<AdoptOutcome> {
         } else {
             None
         };
-        let data = committed.data.listing(ctx.output.style.verbose > 0);
+        let data = committed.data.listing(ctx.output.style.detail());
         let commands = data.undo_commands();
         return Ok(AdoptOutcome {
             data: AdoptData::Adopted(Box::new(data)),

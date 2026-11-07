@@ -149,7 +149,7 @@ pub fn unpin(ctx: &Context, args: &UnpinArgs) -> Result<PinOutcome> {
 fn run(ctx: &Context, addon: &str, mode: Mode<'_>) -> Result<PinOutcome> {
     let command = mode.command();
     let world = World::load(ctx)?;
-    let verbose = ctx.output.style.verbose > 0;
+    let verbose = ctx.output.style.detail();
     let mut warnings = world.warnings.clone();
     let mut notes = Vec::new();
     let (catalog, catalog_warnings) = world.catalog(ctx);

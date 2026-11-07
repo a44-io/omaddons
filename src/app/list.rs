@@ -234,7 +234,7 @@ impl Outcome for ListOutcome {
 /// Runs `list`.
 pub fn run(ctx: &Context, args: ListArgs) -> Result<ListOutcome> {
     let world = World::load(ctx)?;
-    let verbose = ctx.output.style.verbose > 0;
+    let verbose = ctx.output.style.detail();
     let depth = if args.unmanaged || verbose {
         Depth::Full
     } else {
@@ -446,7 +446,7 @@ fn render_target(w: &mut dyn Write, style: &Style, t: &ListTarget) -> std::io::R
             .filter(|l| *l != format!("{} (battlenet)", t.id)),
     );
     writeln!(w, "{} ({})", style.bold(&t.id), head.join(", "))?;
-    if style.paths_visible()
+    if style.detail()
         && let Some(dir) = &t.client_dir
     {
         writeln!(w, "  {}", style.dim(&dir.display().to_string()))?;
@@ -465,7 +465,7 @@ fn render_target(w: &mut dyn Write, style: &Style, t: &ListTarget) -> std::io::R
             if a.orphan {
                 flags.push(style.warn("orphan"));
             } else if a.reason == AddonReason::Dependency {
-                flags.push(if style.verbose > 0 && !a.required_by.is_empty() {
+                flags.push(if style.detail() && !a.required_by.is_empty() {
                     format!("dependency of {}", a.required_by.join(", "))
                 } else {
                     "dep".into()

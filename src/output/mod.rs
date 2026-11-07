@@ -12,6 +12,7 @@ mod human;
 mod notes;
 mod stderr;
 mod term;
+pub mod trace;
 
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};

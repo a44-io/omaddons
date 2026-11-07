@@ -215,7 +215,7 @@ pub fn list(ctx: &Context, rescan: bool) -> Result<Done<TargetsData>> {
         DiscoveryMode::Full
     };
     let world = World::load_with(ctx, mode)?;
-    let verbose = ctx.output.style.verbose > 0;
+    let verbose = ctx.output.style.detail();
     let default = world.registry.default;
     let mut targets: Vec<TargetInfo> = world
         .resolved

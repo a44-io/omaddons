@@ -63,12 +63,28 @@ wire_enum! {
 }
 
 wire_enum! {
-    /// A `log` event's level.
+    /// A `log` event's level, and the verbosity that shows it (M4-D17).
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
     pub enum LogLevel {
         Info = "info",
         /// Shown only with `-v`.
         Debug = "debug",
+        /// Shown only with `-vv`: the release memo's decisions with their probe and
+        /// fetch times, discovery's routes, and waits for the global lock. Its messages
+        /// are for reading, not parsing.
+        Trace = "trace",
+    }
+}
+
+impl LogLevel {
+    /// The `-v` count from which events of this level are shown: the one place the
+    /// verbosity levels are numbered (level 1 is `-v`, level 2 `-vv`).
+    pub const fn min_verbosity(self) -> u8 {
+        match self {
+            Self::Info => 0,
+            Self::Debug => 1,
+            Self::Trace => 2,
+        }
     }
 }
 
@@ -214,7 +230,7 @@ mod tests {
                     .iter()
                     .map(|x| (x.wire(), serde_json::to_value(x).unwrap()))
                     .collect(),
-                vec!["info", "debug"],
+                vec!["info", "debug", "trace"],
             ),
         ];
         for (case, entries, expected) in cases {
@@ -407,6 +423,24 @@ mod tests {
                 "{name:?}: discriminator in {event}"
             );
         }
+    }
+
+    #[test]
+    fn min_verbosity_per_level() {
+        let cases = [
+            ("info", LogLevel::Info, 0),
+            ("debug", LogLevel::Debug, 1),
+            ("trace", LogLevel::Trace, 2),
+        ];
+        for (case, level, want) in cases {
+            assert_eq!(level.min_verbosity(), want, "{case}: min_verbosity");
+            assert_eq!(level.wire(), case, "{case}: wire name");
+        }
+        assert_eq!(
+            serde_json::to_string(&LogLevel::Trace).unwrap(),
+            "\"trace\"",
+            "trace serializes as its wire name"
+        );
     }
 
     #[test]
