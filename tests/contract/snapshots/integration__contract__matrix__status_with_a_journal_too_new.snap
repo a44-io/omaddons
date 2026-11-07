@@ -164,6 +164,18 @@ expression: s.stable(&status.envelope)
         "issues": [
           {
             "addon": null,
+            "auto_fixable": false,
+            "explain": {
+              "argv": [
+                "omaddons",
+                "doctor",
+                "explain",
+                "fm-concurrency_primitives-journal-too-new",
+                "-t",
+                "retail"
+              ],
+              "command": "omaddons doctor explain fm-concurrency_primitives-journal-too-new -t retail"
+            },
             "id": "fm-concurrency_primitives-journal-too-new",
             "remediation": {
               "argv": [

@@ -402,14 +402,18 @@ pub(crate) mod tests {
         assert_eq!(ids, [(ids::CHECK_INCOMPLETE, Some(ids::LOCK_HELD_LONG))]);
     }
 
-    /// `doctor`'s runtime and `status` share one loop: over rows without a fixer (whose
-    /// remediation `diagnose` refines), the runtime's findings are `detect_rows`'.
+    /// `doctor`'s runtime and `status` share one loop and one remediation (M4-D53): the
+    /// runtime's findings are `detect_rows`', fixer-backed ones included, but for the
+    /// estimate only the runtime asks a fixer's plan for.
     #[test]
     fn the_runtime_and_status_share_the_loop() {
         let view = DoctorView::load_at(fixture_paths(), view::ViewOptions::default());
         let mut rows = synthetic(one_machine_finding);
-        rows.retain(|row| row.fix.is_none());
         rows[0].detect = Some(panics);
+        assert!(
+            rows.iter().any(|row| row.fix.is_some()),
+            "fixer-backed rows are in the loop"
+        );
         let tiers = [Tier::Cached, Tier::Quick, Tier::Default];
         let shared = detect_rows(&view, &Selection::all(), &rows, &tiers).unwrap();
         let _ = crate::cli::take_caught_panic();
@@ -422,9 +426,25 @@ pub(crate) mod tests {
         )
         .unwrap();
         let _ = crate::cli::take_caught_panic();
-        assert_eq!(runtime.findings, shared.findings);
+        let unestimated: Vec<Finding> = runtime
+            .findings
+            .into_iter()
+            .map(|mut f| {
+                f.remediation.estimated_actions = 0;
+                f
+            })
+            .collect();
+        assert_eq!(unestimated, shared.findings);
         assert_eq!(runtime.skipped, shared.skipped);
-        assert!(!shared.findings.is_empty());
+        assert!(
+            shared.findings.iter().any(|f| f
+                .remediation
+                .argv
+                .as_ref()
+                .is_some_and(|argv| argv.windows(2).any(|w| w == ["doctor", "fix"]))),
+            "a fixer's own remediation: {:?}",
+            shared.findings
+        );
     }
 
     /// The facts rules give findings with their rows' meta and stable instance keys, and

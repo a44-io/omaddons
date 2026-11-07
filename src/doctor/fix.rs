@@ -1338,27 +1338,30 @@ pub struct TriageAction {
 // ---------------------------------------------------------------------------------------
 // Remediations and refusals.
 
-/// A fixer-backed finding's remediation (M4-D53): `omaddons doctor fix --only <fm>
-/// [-t <target_id>]`, with `--force --yes` for a forced fixer (shown to a person, who
-/// reads `explain` first; never a refusal's fix), and the `doctor explain` beside it. It
-/// is auto-fixable when the fixer is enabled, needs no force and the finding says so; its
-/// estimate is the primitives the fixer's fixes lower to (none when the fixer refuses).
-/// Detectors never spell a `doctor fix` argv: the runtime applies this.
+/// A fixer-backed finding's remediation (M4-D53), with its estimate: [`remediation_of`],
+/// and the primitives the fixer's fixes lower to ([`estimated_actions`]).
 pub fn remediation_for(
     view: &DoctorView,
     finding: &Finding,
     spec: &FixerSpec,
     target_id: Option<&str>,
 ) -> Remediation {
-    let planned = (spec.plan)(view, finding);
-    // An instance its detector marks as no default fix's (a preservation recovery would
-    // not resume), and that its fixer plans nothing for, keeps the row's own remediation
-    // (its evidence): a `doctor fix` would do nothing for it, and `status` shows the same.
-    if spec.enabled
-        && !spec.needs_force
-        && !finding.remediation.auto_fixable
-        && planned.as_ref().is_ok_and(Vec::is_empty)
-    {
+    let mut remediation = remediation_of(finding, spec, target_id);
+    remediation.estimated_actions = estimated_actions(view, finding, spec);
+    remediation
+}
+
+/// A fixer-backed finding's remediation (M4-D53), which never asks the fixer to plan, so
+/// `status` gives it too: `omaddons doctor fix --only <fm> [-t <target_id>]`, with
+/// `--force --yes` for a forced fixer (shown to a person, who reads `explain` first; never
+/// a refusal's fix), and the `doctor explain` beside it. It is auto-fixable when the fixer
+/// is enabled, needs no force and the finding says so. An instance its detector marks as
+/// no fix's (`evidence.fixable: false`, or a preservation recovery that would not resume)
+/// keeps the row's own remediation: its fixer plans nothing for it, so a `doctor fix`
+/// would do nothing. The estimate is 0. Detectors never spell a `doctor fix` argv: the
+/// runtime applies this.
+pub fn remediation_of(finding: &Finding, spec: &FixerSpec, target_id: Option<&str>) -> Remediation {
+    if keeps_its_own(finding, spec) {
         return finding.remediation.clone();
     }
     let mut argv = argv_of(&["omaddons", "doctor", "fix", "--only", finding.id]);
@@ -1367,12 +1370,6 @@ pub fn remediation_for(
         argv.extend(argv_of(&["--force", "--yes"]));
     }
     let explain_argv = explain_argv(finding.id, target_id);
-    let estimated_actions = planned.map_or(0, |fixes| {
-        fixes
-            .iter()
-            .map(Fix::primitive_count)
-            .fold(0u32, u32::saturating_add)
-    });
     Remediation {
         command: shell_words::join(&argv),
         argv: Some(argv),
@@ -1380,9 +1377,32 @@ pub fn remediation_for(
         explain_argv,
         auto_fixable: spec.enabled && !spec.needs_force && finding.remediation.auto_fixable,
         needs_force: spec.needs_force,
-        estimated_actions,
+        estimated_actions: 0,
         destructive: false,
     }
+}
+
+/// How many filesystem operations the fixer's fixes for `finding` lower to: none when it
+/// refuses, and none, unplanned, for an instance that keeps its row's own remediation.
+pub fn estimated_actions(view: &DoctorView, finding: &Finding, spec: &FixerSpec) -> u32 {
+    if keeps_its_own(finding, spec) {
+        return 0;
+    }
+    (spec.plan)(view, finding).map_or(0, |fixes| {
+        fixes
+            .iter()
+            .map(Fix::primitive_count)
+            .fold(0u32, u32::saturating_add)
+    })
+}
+
+/// Whether `finding` is an instance its detector marks as no default fix's though its
+/// enabled, unforced fixer is (`auto_fixable` false only by the instance's evidence). The
+/// shipped fixers plan nothing for such an instance (the chmod fixer for a manual
+/// credential file, the delegation for a stopping preservation recovery). Idempotent: a
+/// remediation [`remediation_of`] gave answers the same.
+fn keeps_its_own(finding: &Finding, spec: &FixerSpec) -> bool {
+    spec.enabled && !spec.needs_force && !finding.remediation.auto_fixable
 }
 
 fn argv_of(parts: &[&str]) -> Vec<String> {
@@ -3017,7 +3037,6 @@ mod tests {
                 false,
                 1,
             ),
-            ("unfixable_instance", unfixable, None, &[], false, false, 1),
             (
                 "refusing",
                 finding(REFUSING, &home, at(home.credential())),
@@ -3061,6 +3080,26 @@ mod tests {
                 ),
                 (auto, force, actions, false),
                 "{case}"
+            );
+            // `status`'s remediation is the same, with no estimate (it never plans).
+            assert_eq!(
+                remediation_of(&f, &spec_of(f.id), target),
+                Remediation {
+                    estimated_actions: 0,
+                    ..got
+                },
+                "{case}: without the plan"
+            );
+        }
+
+        // An instance its detector marks as no fix's keeps its row's own remediation,
+        // whatever `-t` says, and is never planned: its estimate is 0, though the fixer
+        // would write one file.
+        for target in [None, Some("retail")] {
+            assert_eq!(
+                remediation_for(&view, &unfixable, &spec_of(WRITE), target),
+                unfixable.remediation,
+                "unfixable_instance: {target:?}"
             );
         }
 

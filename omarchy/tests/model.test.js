@@ -868,6 +868,30 @@ describe("the Issues and Search views", () => {
     expect(narrowed.every((r) => r.target !== "")).toBe(true)
   })
 
+  // An issue's remediation reaches the row through cliAction: a forced repair (M4-D38)
+  // is text until its explanation has been read, never one key away.
+  const remediated = (argv) => {
+    const env = JSON.parse(JSON.stringify(fixture("status-attention")))
+    env.data.targets[0].issues[0].remediation = { command: argv.join(" "), argv: argv, destructive: false }
+    return M.reduceStatus(env, NOW).targets[0].issues[0].remediation
+  }
+  const FIX = ["omaddons", "doctor", "fix", "--only", "fm-x", "-t", "retail"]
+
+  test("cliAction refuses an argv holding --force", () => {
+    const forced = remediated(FIX.concat(["--force", "--yes"]))
+    expect([forced.runnable, forced.argv, forced.command]).toEqual([false, null, FIX.concat(["--force", "--yes"]).join(" ")])
+  })
+
+  test("cliAction keeps an argv without --force", () => {
+    const fix = remediated(FIX)
+    expect([fix.runnable, fix.argv]).toEqual([true, FIX])
+  })
+
+  test("--force after -- is an argument, not a flag", () => {
+    const install = remediated(["omaddons", "install", "--", "--force"])
+    expect([install.runnable, install.argv]).toEqual([true, ["omaddons", "install", "--", "--force"]])
+  })
+
   test("a remediation the classifier refuses is text", () => {
     const status = M.reduceStatus(fixture("status-attention"), NOW)
     const t = JSON.parse(JSON.stringify(status.targets))

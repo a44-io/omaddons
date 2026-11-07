@@ -30,8 +30,8 @@ use super::budget::{self, Budget};
 use super::finding::{
     Confidence, Detected, Evidence, Finding, Incomplete, IncompleteLimit, Observation, Subject,
 };
-use super::fix::remediation_for;
-use super::registry::{self, DetectFn, FailureMode, Tier, ids};
+use super::fix::{estimated_actions, remediation_of};
+use super::registry::{self, DetectFn, FailureMode, FixerSpec, Tier, ids};
 use super::selection::{Selection, Skipped, partition, target_skips, visible_failures};
 use super::view::{DoctorView, merge_findings};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
@@ -365,10 +365,9 @@ fn record_failure(path: &Path, err: FsxError) -> DoctorFailure {
     )
 }
 
-/// `DIAGNOSING`: [`detect`], then each finding whose failure mode has a fixer given that
-/// fixer's remediation (`fix::remediation_for`, which asks the fixer to plan), keeping the
-/// user's `-t`. Fails only when `-t` cannot be resolved. Writes nothing, so `doctor diff`
-/// diagnoses without a run directory.
+/// `DIAGNOSING`: [`detect`], then each fixer-backed finding's estimate
+/// (`fix::estimated_actions`, which asks the fixer to plan). Fails only when `-t` cannot
+/// be resolved. Writes nothing, so `doctor diff` diagnoses without a run directory.
 pub fn diagnose(
     registry: &[FailureMode],
     view: &DoctorView,
@@ -377,7 +376,7 @@ pub fn diagnose(
     budgets: Budgets,
 ) -> Result<Diagnosis> {
     detect(registry, view, selection, tiers, budgets)
-        .map(|diagnosis| with_fixer_remediations(registry, view, selection, diagnosis))
+        .map(|diagnosis| with_estimates(registry, view, diagnosis))
 }
 
 /// The one detector loop (M4-D29), which `status` runs too (`doctor::detect`): every row
@@ -385,9 +384,9 @@ pub fn diagnose(
 /// registry order, each isolated from panics and held to its budget. A check that panics
 /// is a `detector-crashed` finding and one a limit cut short a `check-incomplete` finding;
 /// the run goes on either way. The view's failures the selection shows are findings too,
-/// and only findings within `-t`'s scope are kept. Each finding keeps its row's own
-/// remediation: no fixer is asked to plan. Fails only when `-t` cannot be resolved.
-/// Writes nothing.
+/// and only findings within `-t`'s scope are kept. Each finding whose failure mode has a
+/// fixer gets that fixer's remediation (`fix::remediation_of`), keeping the user's `-t`;
+/// no fixer is asked to plan. Fails only when `-t` cannot be resolved. Writes nothing.
 pub fn detect(
     registry: &[FailureMode],
     view: &DoctorView,
@@ -452,10 +451,11 @@ pub fn detect(
     let mut skipped = part.skipped.clone();
     skipped.extend(target_skips(view, &part));
     let failures = visible_failures(view, selection, &part, &skipped);
-    let findings = merge_findings(failures, detected)
+    let mut findings: Vec<Finding> = merge_findings(failures, detected)
         .into_iter()
         .filter(|f| part.scope.includes(f.target.as_ref()))
         .collect();
+    with_fixer_remediations(registry, selection, &mut findings);
     Ok(Diagnosis {
         findings,
         skipped,
@@ -467,20 +467,23 @@ pub fn detect(
     })
 }
 
-/// `diagnosis` with each finding whose failure mode has a fixer given that fixer's
-/// remediation, `-t` as the user typed it, else the finding's client.
+/// The fixer of `finding`'s failure mode, when it has one.
+fn fixer_of<'r>(registry: &'r [FailureMode], finding: &Finding) -> Option<&'r FixerSpec> {
+    registry
+        .iter()
+        .find(|row| row.id == finding.id)
+        .and_then(|row| row.fix.as_ref())
+}
+
+/// Each finding whose failure mode has a fixer given that fixer's remediation, `-t` as
+/// the user typed it, else the finding's client. Never plans.
 fn with_fixer_remediations(
     registry: &[FailureMode],
-    view: &DoctorView,
     selection: &Selection,
-    mut diagnosis: Diagnosis,
-) -> Diagnosis {
-    for finding in &mut diagnosis.findings {
-        let Some(spec) = registry
-            .iter()
-            .find(|row| row.id == finding.id)
-            .and_then(|row| row.fix.as_ref())
-        else {
+    findings: &mut [Finding],
+) {
+    for finding in findings {
+        let Some(spec) = fixer_of(registry, finding) else {
             continue;
         };
         // `-t` only for a target it resolves: a registered id (an unregistered key's id
@@ -492,7 +495,20 @@ fn with_fixer_remediations(
                 .filter(|t| t.id != t.key.to_string())
                 .map(|t| t.id.clone())
         });
-        finding.remediation = remediation_for(view, finding, spec, target.as_deref());
+        finding.remediation = remediation_of(finding, spec, target.as_deref());
+    }
+}
+
+/// `diagnosis` with each fixer-backed finding's estimate, which its fixer's plan gives.
+fn with_estimates(
+    registry: &[FailureMode],
+    view: &DoctorView,
+    mut diagnosis: Diagnosis,
+) -> Diagnosis {
+    for finding in &mut diagnosis.findings {
+        if let Some(spec) = fixer_of(registry, finding) {
+            finding.remediation.estimated_actions = estimated_actions(view, finding, spec);
+        }
     }
     diagnosis
 }

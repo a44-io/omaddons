@@ -1088,7 +1088,8 @@ fn status_reports_these_rows_as_the_doctor_does() {
     let home = home(&log);
     log.step("plant");
     plant_all(&home);
-    let issue = |id: &str, severity: &str, title: &str, argv: &[&str]| {
+    // The machine's: no `-t` on its explain command.
+    let issue = |id: &str, severity: &str, title: &str, argv: &[&str], auto_fixable: bool| {
         json!({
             "id": id,
             "severity": severity,
@@ -1098,6 +1099,11 @@ fn status_reports_these_rows_as_the_doctor_does() {
                 "command": argv.join(" "),
                 "argv": argv,
                 "destructive": false
+            },
+            "auto_fixable": auto_fixable,
+            "explain": {
+                "command": format!("omaddons doctor explain {id}"),
+                "argv": ["omaddons", "doctor", "explain", id]
             }
         })
     };
@@ -1106,18 +1112,21 @@ fn status_reports_these_rows_as_the_doctor_does() {
         "P2",
         "The bar widget fails Omarchy's plugin validation (2 problems)",
         &["omaddons", "omarchy", "install"],
+        false,
     );
     let mode = issue(
         MODE,
         "P2",
         "The GitHub token file is readable by other users",
         &["omaddons", "doctor", "fix", "--only", MODE],
+        true,
     );
     let drift = issue(
         DRIFT,
         "P3",
         "The bar widget is from another omaddons build",
         &["omaddons", "omarchy", "install"],
+        false,
     );
     for (args, expected) in [
         (
@@ -1141,6 +1150,71 @@ fn status_reports_these_rows_as_the_doctor_does() {
             }
         }
     }
+}
+
+/// The issue `status` reports of a token file other users can read (F8 part 2, M4-D64):
+/// auto-fixable, its explain argv runs, and its remediation, the doctor's own `doctor fix
+/// --only`, repairs the file, after which `status` no longer reports it.
+#[test]
+fn status_runs_its_credential_issues_explain_and_fix() {
+    let log = tlog!();
+    let home = home(&log);
+    log.step("plant");
+    let file = plant::credential_file_mode(&home);
+    let mode_issue = |ran: &Ran| -> Option<Value> {
+        ran.data()["issues"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|issue| issue["id"] == MODE)
+            .cloned()
+    };
+    let words = |argv: &Value| -> Vec<String> {
+        argv.as_array()
+            .into_iter()
+            .flatten()
+            .map(|word| word.as_str().unwrap_or_default().to_owned())
+            .collect()
+    };
+    // `omaddons <argv after omaddons> --json`, which exits `code`.
+    let run_argv = |step: &str, argv: &[String], code: i32| {
+        log.step(step);
+        assert_eq!(
+            argv.first().map(String::as_str),
+            Some("omaddons"),
+            "{argv:?}"
+        );
+        let mut args: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
+        args.push("--json");
+        run(&log, &home, &args).exit(code);
+    };
+
+    log.step("status --json");
+    let ran = run(&log, &home, &["status", "--json"]);
+    ran.ok();
+    let issue = mode_issue(&ran);
+    assert!(issue.is_some(), "no {MODE} issue: {}", ran.envelope());
+    let issue = issue.unwrap_or_default();
+    log.json("issue", &issue);
+    assert_eq!(issue["auto_fixable"], true, "{issue}");
+    let explain = words(&issue["explain"]["argv"]);
+    let fix = words(&issue["remediation"]["argv"]);
+    assert_eq!(explain, ["omaddons", "doctor", "explain", MODE], "{issue}");
+    assert_eq!(
+        fix,
+        ["omaddons", "doctor", "fix", "--only", MODE],
+        "{issue}"
+    );
+
+    run_argv("the issue's explain argv", &explain, 0);
+    assert_eq!(mode_of(&file), 0o644, "explaining repairs nothing");
+    run_argv("the issue's remediation", &fix, 0);
+    assert_eq!(mode_of(&file), 0o600, "the doctor's fix repaired the file");
+
+    log.step("status --json after the fix");
+    let ran = run(&log, &home, &["status", "--json"]);
+    ran.ok();
+    assert_eq!(mode_issue(&ran), None, "{}", ran.envelope());
 }
 
 // ---------------------------------------------------------------------------------------

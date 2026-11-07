@@ -19,6 +19,16 @@ expression: by_case
           "fm-concurrency_primitives-journal-pending"
         ],
         "destructive": false
+      },
+      "auto_fixable": true,
+      "explain": {
+        "command": "omaddons doctor explain fm-concurrency_primitives-journal-pending",
+        "argv": [
+          "omaddons",
+          "doctor",
+          "explain",
+          "fm-concurrency_primitives-journal-pending"
+        ]
       }
     },
     {
@@ -38,6 +48,16 @@ expression: by_case
           "--yes"
         ],
         "destructive": false
+      },
+      "auto_fixable": false,
+      "explain": {
+        "command": "omaddons doctor explain fm-concurrency_primitives-journal-unattributed",
+        "argv": [
+          "omaddons",
+          "doctor",
+          "explain",
+          "fm-concurrency_primitives-journal-unattributed"
+        ]
       }
     },
     {
@@ -53,6 +73,16 @@ expression: by_case
           "install"
         ],
         "destructive": false
+      },
+      "auto_fixable": false,
+      "explain": {
+        "command": "omaddons doctor explain fm-plugins-widget-version-drift",
+        "argv": [
+          "omaddons",
+          "doctor",
+          "explain",
+          "fm-plugins-widget-version-drift"
+        ]
       }
     }
   ],
@@ -73,6 +103,16 @@ expression: by_case
           "fm-concurrency_primitives-journal-pending"
         ],
         "destructive": false
+      },
+      "auto_fixable": true,
+      "explain": {
+        "command": "omaddons doctor explain fm-concurrency_primitives-journal-pending",
+        "argv": [
+          "omaddons",
+          "doctor",
+          "explain",
+          "fm-concurrency_primitives-journal-pending"
+        ]
       }
     },
     {
@@ -92,6 +132,16 @@ expression: by_case
           "--yes"
         ],
         "destructive": false
+      },
+      "auto_fixable": false,
+      "explain": {
+        "command": "omaddons doctor explain fm-concurrency_primitives-journal-unattributed",
+        "argv": [
+          "omaddons",
+          "doctor",
+          "explain",
+          "fm-concurrency_primitives-journal-unattributed"
+        ]
       }
     }
   ],
@@ -110,6 +160,16 @@ expression: by_case
           "install"
         ],
         "destructive": false
+      },
+      "auto_fixable": false,
+      "explain": {
+        "command": "omaddons doctor explain fm-plugins-widget-version-drift",
+        "argv": [
+          "omaddons",
+          "doctor",
+          "explain",
+          "fm-plugins-widget-version-drift"
+        ]
       }
     }
   ]

@@ -632,6 +632,16 @@ mod tests {
                 argv: Some(vec!["omaddons".into(), "omarchy".into(), "install".into()]),
                 destructive: false,
             },
+            auto_fixable: false,
+            explain: issues::ExplainCommand {
+                command: format!("omaddons doctor explain {}", ids::WIDGET_VERSION_DRIFT),
+                argv: vec![
+                    "omaddons".into(),
+                    "doctor".into(),
+                    "explain".into(),
+                    ids::WIDGET_VERSION_DRIFT.into(),
+                ],
+            },
         };
         for (case, outdated, context) in [
             ("outdated_context_known", true, Some(true)),

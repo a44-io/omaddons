@@ -1464,6 +1464,24 @@ fn status_and_doctor_with_a_journal_too_new() {
     }
 }
 
+/// A token file other users can read (F8 part 2): `status`'s machine issue in full,
+/// auto-fixable, its remediation the doctor's own `doctor fix --only` beside its explain
+/// command; `support::check` parses both argvs.
+#[test]
+fn status_issue_auto_fixable() {
+    let s = Scene::new();
+    common::doctor::plant::credential_file_mode(&s.home);
+    let status = s.json(&["status"], 0);
+    let issue = &status.envelope["data"]["issues"][0];
+    assert_eq!(
+        (&issue["id"], &issue["auto_fixable"]),
+        (&json!("fm-secrets-credential-file-mode"), &json!(true)),
+        "{}",
+        status.envelope
+    );
+    insta::assert_json_snapshot!("status_issue_auto_fixable", s.stable(&status.envelope));
+}
+
 /// A damaged cached archive (F6): the deep diagnosis's finding in full. Its digests are
 /// deterministic (the fixture's archive, one byte flipped), and `support::check` parses
 /// every argv the report offers.

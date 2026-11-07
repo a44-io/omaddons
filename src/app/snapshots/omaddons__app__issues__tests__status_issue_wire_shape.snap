@@ -1,0 +1,96 @@
+---
+source: src/app/issues.rs
+expression: issues
+---
+[
+  {
+    "id": "fm-secrets-credential-file-mode",
+    "severity": "P2",
+    "title": "The GitHub token file is readable by other users",
+    "addon": null,
+    "remediation": {
+      "command": "omaddons doctor fix --only fm-secrets-credential-file-mode",
+      "argv": [
+        "omaddons",
+        "doctor",
+        "fix",
+        "--only",
+        "fm-secrets-credential-file-mode"
+      ],
+      "destructive": false
+    },
+    "auto_fixable": true,
+    "explain": {
+      "command": "omaddons doctor explain fm-secrets-credential-file-mode",
+      "argv": [
+        "omaddons",
+        "doctor",
+        "explain",
+        "fm-secrets-credential-file-mode"
+      ]
+    }
+  },
+  {
+    "id": "fm-state_files-record-folder-missing",
+    "severity": "P1",
+    "title": "Details's folder is gone",
+    "addon": "Details",
+    "remediation": {
+      "command": "omaddons install Details -t retail --reinstall",
+      "argv": [
+        "omaddons",
+        "install",
+        "Details",
+        "-t",
+        "retail",
+        "--reinstall"
+      ],
+      "destructive": false
+    },
+    "auto_fixable": false,
+    "explain": {
+      "command": "omaddons doctor explain fm-state_files-record-folder-missing -t retail",
+      "argv": [
+        "omaddons",
+        "doctor",
+        "explain",
+        "fm-state_files-record-folder-missing",
+        "-t",
+        "retail"
+      ]
+    }
+  },
+  {
+    "id": "fm-concurrency_primitives-journal-too-new",
+    "severity": "P0",
+    "title": "An interrupted change was started by a newer omaddons; this build cannot read its journal (format 9.0)",
+    "addon": null,
+    "remediation": {
+      "command": "omaddons doctor fix --only fm-concurrency_primitives-journal-too-new -t retail --force --yes",
+      "argv": [
+        "omaddons",
+        "doctor",
+        "fix",
+        "--only",
+        "fm-concurrency_primitives-journal-too-new",
+        "-t",
+        "retail",
+        "--force",
+        "--yes"
+      ],
+      "destructive": false
+    },
+    "auto_fixable": false,
+    "explain": {
+      "command": "omaddons doctor explain fm-concurrency_primitives-journal-too-new -t retail",
+      "argv": [
+        "omaddons",
+        "doctor",
+        "explain",
+        "fm-concurrency_primitives-journal-too-new",
+        "-t",
+        "retail"
+      ]
+    }
+  }
+]

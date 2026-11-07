@@ -189,6 +189,18 @@ expression: s.stable(&c.envelope)
         "issues": [
           {
             "addon": null,
+            "auto_fixable": true,
+            "explain": {
+              "argv": [
+                "omaddons",
+                "doctor",
+                "explain",
+                "fm-concurrency_primitives-journal-pending",
+                "-t",
+                "retail"
+              ],
+              "command": "omaddons doctor explain fm-concurrency_primitives-journal-pending -t retail"
+            },
             "id": "fm-concurrency_primitives-journal-pending",
             "remediation": {
               "argv": [

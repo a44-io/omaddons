@@ -723,11 +723,16 @@ function stringList(value) {
 // A CLI-provided argv as a button, or as text when the classifier refuses it.
 function cliAction(command, argv, destructive) {
   var verdict = Array.isArray(argv) ? classifyCliArgv(argv) : null
+  // A forced repair is never one key away (M4-D38): a person reads its explanation
+  // first, so an argv holding `--force` before any `--` shows as text.
+  var end = Array.isArray(argv) ? argv.indexOf("--") : -1
+  var forced = Array.isArray(argv) && argv.slice(0, end === -1 ? argv.length : end).indexOf("--force") !== -1
+  var runnable = verdict !== null && verdict.ok && !forced
   return {
     "command": str(command),
-    "argv": verdict && verdict.ok ? argv.slice() : null,
+    "argv": runnable ? argv.slice() : null,
     "destructive": destructive === true || (verdict !== null && verdict.destructive),
-    "runnable": verdict !== null && verdict.ok
+    "runnable": runnable
   }
 }
 

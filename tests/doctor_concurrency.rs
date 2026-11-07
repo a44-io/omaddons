@@ -1177,11 +1177,12 @@ fn status_prints_each_stuck_title_and_its_command() {
             .iter()
             .filter(|i| ours(i))
         {
-            // Each stuck journal's command is its forced set-aside (F2).
+            // Each stuck journal's command is its forced set-aside (F2), shown after the
+            // explain command a person reads first (M4-D38).
+            let id = text(&issue["id"]);
             let line = format!(
-                "  P0 {} → omaddons doctor fix --only {} -t {client} --force --yes",
+                "  P0 {} → omaddons doctor explain {id} -t {client} (read it before the forced repair: omaddons doctor fix --only {id} -t {client} --force --yes)",
                 text(&issue["title"]),
-                text(&issue["id"])
             );
             expected.push((client.clone(), line));
         }

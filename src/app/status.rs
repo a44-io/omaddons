@@ -1334,11 +1334,18 @@ pub(crate) fn skipped_notes(skipped: &[Skipped]) -> Vec<String> {
 }
 
 /// One issue as the human view prints it, under its client or after them all:
-/// `  P2 <title> → <remediation>`.
+/// `  P2 <title> → <remediation>`. A forced repair shows its explain command first, so a
+/// person reads the evidence before consenting (M4-D38): `  P0 <title> → <explain> (read
+/// it before the forced repair: <remediation>)`.
 fn issue_line(issue: &Issue) -> String {
     let mut line = format!("  {} {}", wire(issue.severity), issue.title);
-    if let Some(command) = &issue.remediation.command {
-        line.push_str(&format!(" → {command}"));
+    match &issue.remediation.command {
+        Some(command) if issue.remediation.forced() => line.push_str(&format!(
+            " → {} (read it before the forced repair: {command})",
+            issue.explain.command
+        )),
+        Some(command) => line.push_str(&format!(" → {command}")),
+        None => {}
     }
     line
 }
@@ -1364,21 +1371,8 @@ fn journal_fix(issues: &[Issue], target: Option<&str>) -> Option<(String, Sugges
     }
     // A forced repair (a stuck journal's set-aside) is read before it is consented to: its
     // `doctor explain`, never an argv with `--force --yes` that a caller might run as is.
-    let forced = issue
-        .remediation
-        .argv
-        .as_ref()
-        .is_some_and(|argv| argv.iter().any(|a| a == "--force"));
     let fix = match &issue.remediation.argv {
-        Some(_) if forced => {
-            let mut argv: Vec<String> = ["omaddons", "doctor", "explain", issue.id]
-                .map(str::to_owned)
-                .to_vec();
-            if let Some(id) = target {
-                argv.extend(["-t".to_owned(), id.to_owned()]);
-            }
-            Suggestion::command(argv)
-        }
+        Some(_) if issue.remediation.forced() => Suggestion::command(issue.explain.argv.clone()),
         Some(argv) => Suggestion::command(argv.clone()),
         None => Suggestion::text(issue.remediation.command.clone().unwrap_or_default()),
     };
@@ -1987,9 +1981,28 @@ mod tests {
     /// `--check`'s journal fix takes the most blocking state: a stuck one names itself and
     /// gives its `doctor explain`; a settleable one keeps today's text byte for byte; the
     /// game-waiting one gives its advice; the machine's names its title.
-    #[test]
-    fn check_fix_prefers_the_blocking_state() {
-        let issue = |id: &'static str, severity, title: &str, argv: Option<&[&str]>| Issue {
+    /// `omaddons doctor explain <id> [-t <target>]`, as the doctor builds it.
+    fn explain_of(id: &str, target: Option<&str>) -> issues::ExplainCommand {
+        let mut argv: Vec<String> = ["omaddons", "doctor", "explain", id]
+            .map(str::to_owned)
+            .to_vec();
+        if let Some(target) = target {
+            argv.extend(["-t".to_owned(), target.to_owned()]);
+        }
+        issues::ExplainCommand {
+            command: argv.join(" "),
+            argv,
+        }
+    }
+
+    /// An issue of `id` remediated by `argv`, or by advice when it has none; on retail.
+    fn issue_with(
+        id: &'static str,
+        severity: issues::Severity,
+        title: &str,
+        argv: Option<&[&str]>,
+    ) -> Issue {
+        Issue {
             id,
             severity,
             title: title.to_owned(),
@@ -1999,7 +2012,14 @@ mod tests {
                 argv: argv.map(|a| a.iter().map(|w| (*w).to_owned()).collect()),
                 destructive: false,
             },
-        };
+            auto_fixable: false,
+            explain: explain_of(id, Some("retail")),
+        }
+    }
+
+    #[test]
+    fn check_fix_prefers_the_blocking_state() {
+        let issue = issue_with;
         let pending = issue(
             ids::JOURNAL_PENDING,
             issues::Severity::P0,
@@ -2091,31 +2111,24 @@ mod tests {
     /// (it has its `bar widget:` line); with no client, after the "No WoW client" line.
     #[test]
     fn machine_issues_print_after_the_clients() {
-        use crate::app::issues::Remediation;
-        let credential = Issue {
-            id: ids::CREDENTIAL_FILE_MODE,
-            severity: crate::app::issues::Severity::P2,
-            title: "the GitHub token file is readable by other users".to_owned(),
-            addon: None,
-            remediation: Remediation {
-                command: Some(
-                    "omaddons doctor fix --only fm-secrets-credential-file-mode".to_owned(),
-                ),
-                argv: None,
-                destructive: false,
-            },
-        };
-        let drift = Issue {
-            id: ids::WIDGET_VERSION_DRIFT,
-            severity: crate::app::issues::Severity::P3,
-            title: "The bar widget is from another omaddons build".to_owned(),
-            addon: None,
-            remediation: Remediation {
-                command: Some("omaddons omarchy install".to_owned()),
-                argv: None,
-                destructive: false,
-            },
-        };
+        let credential = issue_with(
+            ids::CREDENTIAL_FILE_MODE,
+            issues::Severity::P2,
+            "the GitHub token file is readable by other users",
+            Some(&[
+                "omaddons",
+                "doctor",
+                "fix",
+                "--only",
+                ids::CREDENTIAL_FILE_MODE,
+            ]),
+        );
+        let drift = issue_with(
+            ids::WIDGET_VERSION_DRIFT,
+            issues::Severity::P3,
+            "The bar widget is from another omaddons build",
+            Some(&["omaddons", "omarchy", "install"]),
+        );
         let line = "  P2 the GitHub token file is readable by other users → omaddons doctor fix --only fm-secrets-credential-file-mode";
         let render = |outcome: StatusOutcome| {
             let mut out = Vec::new();
@@ -2152,6 +2165,95 @@ mod tests {
             "no_client: {text}"
         );
         assert_eq!(lines[1], line, "no_client: {text}");
+    }
+
+    /// A forced repair's line shows its explain command first and the forced command after
+    /// it; an auto-fixable and a manual one show their remediation. The machine's lines
+    /// follow the same rule.
+    #[test]
+    fn a_forced_remediation_prints_the_explain_command_first() {
+        let forced_argv = [
+            "omaddons",
+            "doctor",
+            "fix",
+            "--only",
+            ids::JOURNAL_TOO_NEW,
+            "-t",
+            "retail",
+            "--force",
+            "--yes",
+        ];
+        let forced = issue_with(
+            ids::JOURNAL_TOO_NEW,
+            issues::Severity::P0,
+            "An interrupted change was started by a newer omaddons",
+            Some(&forced_argv),
+        );
+        let fixable = Issue {
+            auto_fixable: true,
+            ..issue_with(
+                ids::CREDENTIAL_FILE_MODE,
+                issues::Severity::P2,
+                "The GitHub token file is readable by other users",
+                Some(&[
+                    "omaddons",
+                    "doctor",
+                    "fix",
+                    "--only",
+                    ids::CREDENTIAL_FILE_MODE,
+                ]),
+            )
+        };
+        let manual = issue_with(
+            ids::RECORD_FOLDER_MISSING,
+            issues::Severity::P1,
+            "Details's folder is gone",
+            Some(&[
+                "omaddons",
+                "install",
+                "Details",
+                "-t",
+                "retail",
+                "--reinstall",
+            ]),
+        );
+        // `--force` after `--` is an argument, never the flag.
+        let argument = issue_with(
+            ids::RECORD_FOLDER_MISSING,
+            issues::Severity::P1,
+            "--force's folder is gone",
+            Some(&["omaddons", "install", "-t", "retail", "--", "--force"]),
+        );
+        for (case, issue, line) in [
+            (
+                "forced",
+                &forced,
+                "  P0 An interrupted change was started by a newer omaddons → omaddons doctor explain fm-concurrency_primitives-journal-too-new -t retail (read it before the forced repair: omaddons doctor fix --only fm-concurrency_primitives-journal-too-new -t retail --force --yes)",
+            ),
+            (
+                "auto_fixable",
+                &fixable,
+                "  P2 The GitHub token file is readable by other users → omaddons doctor fix --only fm-secrets-credential-file-mode",
+            ),
+            (
+                "manual",
+                &manual,
+                "  P1 Details's folder is gone → omaddons install Details -t retail --reinstall",
+            ),
+            (
+                "force_as_an_argument",
+                &argument,
+                "  P1 --force's folder is gone → omaddons install -t retail -- --force",
+            ),
+        ] {
+            assert_eq!(issue_line(issue), line, "{case}: {issue:?}");
+        }
+        let outcome = outcome_for(Vec::new(), vec![forced.clone()]);
+        assert_eq!(
+            outcome.machine_issue_lines(),
+            [issue_line(&forced)],
+            "machine"
+        );
     }
 
     /// A check `status` could not make becomes one `-v` note, naming its client when it

@@ -43,6 +43,18 @@ pub struct Remediation {
     pub destructive: bool,
 }
 
+impl Remediation {
+    /// Its argv passes `--force` (before any `--`): a forced repair, which a person
+    /// consents to after reading the issue's explain command (M4-D38).
+    pub fn forced(&self) -> bool {
+        self.argv.as_ref().is_some_and(|argv| {
+            argv.iter()
+                .take_while(|arg| *arg != "--")
+                .any(|arg| arg == "--force")
+        })
+    }
+}
+
 /// One finding about a target.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct Issue {
@@ -52,7 +64,21 @@ pub struct Issue {
     pub title: String,
     /// The addon it is about, when it is about one.
     pub addon: Option<String>,
+    /// The doctor's own (M4-D53): `omaddons doctor fix --only <id> [-t <client>]` for a
+    /// repair the doctor makes, ending `--force --yes` for a forced one; else a command
+    /// or advice.
     pub remediation: Remediation,
+    /// `omaddons doctor fix --only <id> [-t <client>]` repairs it, with no force.
+    pub auto_fixable: bool,
+    /// The command that shows this issue's evidence and what its repair would do.
+    pub explain: ExplainCommand,
+}
+
+/// A command and its argv.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct ExplainCommand {
+    pub command: String,
+    pub argv: Vec<String>,
 }
 
 /// The issues of no client: the machine's own, the bar widget's (E4) and a pending
@@ -99,9 +125,12 @@ pub fn assign(
 
 /// One issue per finding, except that a scope's journals, one finding each (M4-D30),
 /// show as one issue per row: the first finding's own title for one, the row's plural
-/// for more (F1). Ranked by severity, then id, then addon, then the (first) finding's
-/// instance key, which never reaches the wire but keeps two issues of one row and scope
-/// (two skill folders) in a stable order (M4-D30).
+/// for more (F1). Such an issue is auto-fixable only when every finding of it is, so one
+/// Fix never leaves part of what it shows unrepaired; its remediation is then the first
+/// finding's, else the first finding's that is not auto-fixable; its explain command is
+/// the row's for the scope, which lists every instance. Ranked by severity, then id, then
+/// addon, then the (first) finding's instance key, which never reaches the wire but keeps
+/// two issues of one row and scope (two skill folders) in a stable order (M4-D30).
 fn ranked<'a>(findings: impl Iterator<Item = &'a Finding>) -> Vec<Issue> {
     let mut journals: Vec<(&'static str, Vec<&Finding>)> = Vec::new();
     let mut issues: Vec<(Issue, &str)> = Vec::new();
@@ -119,6 +148,10 @@ fn ranked<'a>(findings: impl Iterator<Item = &'a Finding>) -> Vec<Issue> {
             continue;
         };
         let mut issue = issue_of(first);
+        if let Some(manual) = group.iter().find(|f| !f.remediation.auto_fixable) {
+            issue.remediation = issue_remediation(manual);
+            issue.auto_fixable = false;
+        }
         if group.len() > 1
             && let Some(plural) = concurrency::plural_title(id, group.len())
         {
@@ -132,17 +165,27 @@ fn ranked<'a>(findings: impl Iterator<Item = &'a Finding>) -> Vec<Issue> {
     issues.into_iter().map(|(issue, _)| issue).collect()
 }
 
+/// A finding as `status` publishes it: every key the doctor's, never `status`'s own.
 fn issue_of(f: &Finding) -> Issue {
     Issue {
         id: f.id,
         severity: f.severity,
         title: f.title.clone(),
         addon: f.addon.clone(),
-        remediation: Remediation {
-            command: Some(f.remediation.command.clone()),
-            argv: f.remediation.argv.clone(),
-            destructive: f.remediation.destructive,
+        remediation: issue_remediation(f),
+        auto_fixable: f.remediation.auto_fixable,
+        explain: ExplainCommand {
+            command: f.remediation.explain_command.clone(),
+            argv: f.remediation.explain_argv.clone(),
         },
+    }
+}
+
+fn issue_remediation(f: &Finding) -> Remediation {
+    Remediation {
+        command: Some(f.remediation.command.clone()),
+        argv: f.remediation.argv.clone(),
+        destructive: f.remediation.destructive,
     }
 }
 
@@ -187,14 +230,18 @@ pub(crate) mod tests {
     use super::*;
     use crate::app::drift::DriftItem;
     use crate::app::status::{Attention, StatusTarget, test_target};
-    use crate::doctor::finding::{Confidence, Evidence, Observation, Subject};
-    use crate::doctor::registry::{self, Tier};
+    use crate::doctor::budget::Budget;
+    use crate::doctor::finding::{Confidence, Detected, Evidence, Observation, Subject};
+    use crate::doctor::registry::{self, FailureMode, FixerSpec, Refusal, Tier};
     use crate::doctor::selection::{Pick, Selection};
     use crate::doctor::tests::fixture_paths;
     use crate::doctor::view::tests::{client, world_of};
-    use crate::doctor::view::{DoctorView, Journals, LayerState, Preloaded, Records, WidgetLayer};
+    use crate::doctor::view::{
+        DoctorView, Journals, LayerState, Preloaded, Records, ViewOptions, WidgetLayer,
+    };
     use crate::drift::{AddonDrift, DriftMode, DriftReport, DriftState, FolderDrift};
     use crate::engine::journal::{Phase, Unrecoverable};
+    use crate::engine::repair_action::Fix;
     use crate::engine::repair_action::JournalFamily;
     use crate::engine::simulate::{
         Diagnoses, Direction, JournalDiagnosis, JournalEvidence, JournalVerdict, ProtectedPaths,
@@ -776,6 +823,423 @@ pub(crate) mod tests {
                 "{case}: the P2 lock first, then the P3 skills by instance"
             );
         }
+    }
+
+    // ---- The doctor's remediation (F8 part 2, M4-D53): each issue copies its finding's.
+
+    thread_local! {
+        /// What [`planted`] finds: each case sets it before it runs the loop.
+        static PLANTED: std::cell::RefCell<Vec<Observation>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    /// A check that finds what its case planted.
+    fn planted(_: &DoctorView, _: &Selection, _: &mut Budget) -> Detected {
+        Detected::complete(PLANTED.take())
+    }
+
+    /// `row`'s findings for `found`, through the doctor's own loop, as `status` runs it:
+    /// each remediation is the one `status` gets (the fixer's, when the row has one).
+    fn through_the_loop(row: &FailureMode, found: Vec<Observation>) -> Vec<Finding> {
+        let row = FailureMode {
+            detect: Some(planted),
+            requires: &[],
+            ..*row
+        };
+        PLANTED.set(found);
+        let view = DoctorView::load_at(fixture_paths(), ViewOptions::default());
+        crate::doctor::detect_rows(&view, &Selection::all(), &[row], &[row.tier])
+            .unwrap()
+            .findings
+    }
+
+    /// An observation about `subject`, about `addon` when one is named.
+    fn observed(subject: Subject, addon: Option<&str>, evidence: Evidence) -> Observation {
+        Observation {
+            subject,
+            title: "a test state".to_owned(),
+            confidence: Confidence::High,
+            addon: addon.map(str::to_owned),
+            folder: None,
+            evidence,
+        }
+    }
+
+    /// The cases' registered client, retail.
+    fn retail() -> Subject {
+        Subject::target("retail", KEY.parse().unwrap())
+    }
+
+    fn production(id: &str) -> FailureMode {
+        *registry::row(id).unwrap()
+    }
+
+    /// The credential row's finding about one file, fixable or not by its detector's mark.
+    fn credential(fixable: bool) -> Observation {
+        let path = PathBuf::from("/fixture/config/omaddons/credentials/github");
+        observed(
+            Subject::machine().path(&path),
+            None,
+            Evidence {
+                path: Some(path),
+                origin: Some(crate::doctor::finding::SecretOrigin::File),
+                fixable: Some(fixable),
+                ..Evidence::default()
+            },
+        )
+    }
+
+    fn argv_vec(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|p| (*p).to_owned()).collect()
+    }
+
+    /// `omaddons doctor explain <id> [-t retail]`.
+    fn explain(id: &str, on_retail: bool) -> ExplainCommand {
+        let mut argv = argv_vec(&["omaddons", "doctor", "explain", id]);
+        if on_retail {
+            argv.extend(argv_vec(&["-t", "retail"]));
+        }
+        ExplainCommand {
+            command: argv.join(" "),
+            argv,
+        }
+    }
+
+    /// Every key of an issue is its finding's: the remediation (command, argv,
+    /// destructive), `auto_fixable` and the explain pair. An auto-fixable finding's
+    /// remediation is `doctor fix --only`, a forced one ends `--force --yes` and is not
+    /// auto-fixable, and a manual one keeps its command or prose.
+    #[test]
+    fn issue_of_copies_the_doctor_remediation() {
+        let of_tx = || Evidence {
+            tx: Some(tx(0)),
+            ..Evidence::default()
+        };
+        let disabled = {
+            let mut row = production(ids::CREDENTIAL_FILE_MODE);
+            row.fix = row.fix.map(|spec| FixerSpec {
+                enabled: false,
+                ..spec
+            });
+            row
+        };
+        let fix_only = |id: &str, tail: &[&str]| {
+            let mut argv = argv_vec(&["omaddons", "doctor", "fix", "--only", id]);
+            argv.extend(argv_vec(tail));
+            Some(argv)
+        };
+        let row_own = |row: &FailureMode, obs: Observation| row.finding(obs).remediation.argv;
+        // (case, row, observation, argv, auto_fixable, destructive, explain on retail)
+        type Case = (
+            &'static str,
+            FailureMode,
+            Observation,
+            Option<Vec<String>>,
+            bool,
+            bool,
+            bool,
+        );
+        let cases: Vec<Case> = vec![
+            (
+                "manual_argv",
+                production(ids::RECORD_FOLDER_MISSING),
+                observed(retail(), Some("Details"), Evidence::default()),
+                Some(argv_vec(&[
+                    "omaddons",
+                    "install",
+                    "Details",
+                    "-t",
+                    "retail",
+                    "--reinstall",
+                ])),
+                false,
+                false,
+                true,
+            ),
+            (
+                "prose",
+                production(ids::STATE_VERSION_NEWER),
+                observed(retail(), None, Evidence::default()),
+                None,
+                false,
+                false,
+                true,
+            ),
+            (
+                "destructive_manual",
+                production(ids::TARGET_VANISHED),
+                observed(retail(), None, Evidence::default()),
+                Some(argv_vec(&["omaddons", "targets", "rm", "retail"])),
+                false,
+                true,
+                true,
+            ),
+            (
+                "auto_fixable_machine",
+                production(ids::CREDENTIAL_FILE_MODE),
+                credential(true),
+                fix_only(ids::CREDENTIAL_FILE_MODE, &[]),
+                true,
+                false,
+                false,
+            ),
+            (
+                "auto_fixable_client",
+                production(ids::JOURNAL_PENDING),
+                observed(retail().tx(tx(0)), None, of_tx()),
+                fix_only(ids::JOURNAL_PENDING, &["-t", "retail"]),
+                true,
+                false,
+                true,
+            ),
+            (
+                "forced",
+                production(ids::JOURNAL_TOO_NEW),
+                observed(retail().tx(tx(0)), None, of_tx()),
+                fix_only(ids::JOURNAL_TOO_NEW, &["-t", "retail", "--force", "--yes"]),
+                false,
+                false,
+                true,
+            ),
+            (
+                "disabled_fixer",
+                disabled,
+                credential(true),
+                fix_only(ids::CREDENTIAL_FILE_MODE, &[]),
+                false,
+                false,
+                false,
+            ),
+            (
+                "unfixable_instance",
+                production(ids::CREDENTIAL_FILE_MODE),
+                credential(false),
+                row_own(&production(ids::CREDENTIAL_FILE_MODE), credential(false)),
+                false,
+                false,
+                false,
+            ),
+        ];
+        for (case, row, obs, argv, auto_fixable, destructive, on_retail) in cases {
+            let found = through_the_loop(&row, vec![obs]);
+            let [finding] = found.as_slice() else {
+                panic!("{case}: one finding, not {found:?}");
+            };
+            let issue = issue_of(finding);
+            let r = &finding.remediation;
+            assert_eq!(
+                (
+                    &issue.remediation,
+                    issue.auto_fixable,
+                    &issue.explain.command,
+                    &issue.explain.argv
+                ),
+                (
+                    &Remediation {
+                        command: Some(r.command.clone()),
+                        argv: r.argv.clone(),
+                        destructive: r.destructive,
+                    },
+                    r.auto_fixable,
+                    &r.explain_command,
+                    &r.explain_argv
+                ),
+                "{case}: {finding:?} gave {issue:?}"
+            );
+            assert_eq!(
+                (
+                    &issue.remediation.argv,
+                    issue.auto_fixable,
+                    issue.remediation.destructive
+                ),
+                (&argv, auto_fixable, destructive),
+                "{case}: {finding:?} gave {issue:?}"
+            );
+            assert_eq!(
+                issue.explain,
+                explain(row.id, on_retail),
+                "{case}: {finding:?} gave {issue:?}"
+            );
+            assert_eq!(
+                issue.remediation.forced(),
+                case == "forced",
+                "{case}: {issue:?}"
+            );
+            if case == "prose" {
+                assert_eq!(
+                    issue.remediation.command.as_deref(),
+                    Some("upgrade omaddons"),
+                    "{case}: prose"
+                );
+            }
+        }
+    }
+
+    /// The explain command names `-t` for a registered client, and none for the machine
+    /// or for a client neither registered nor recorded (its id is its key, which `-t`
+    /// does not take).
+    #[test]
+    fn explain_by_case() {
+        let key: TargetKey = KEY.parse().unwrap();
+        let row = production(ids::RECORD_FOLDER_MISSING);
+        for (case, subject, on_retail) in [
+            ("client", retail(), true),
+            ("machine", Subject::machine(), false),
+            (
+                "unregistered_client_without_t",
+                Subject::target(&key.to_string(), key),
+                false,
+            ),
+        ] {
+            let found = through_the_loop(
+                &row,
+                vec![observed(subject, Some("Details"), Evidence::default())],
+            );
+            let issue = issue_of(&found[0]);
+            assert_eq!(
+                issue.explain,
+                explain(row.id, on_retail),
+                "{case}: {:?} gave {issue:?}",
+                found[0]
+            );
+        }
+    }
+
+    /// One issue stands for a client's journals of one row: auto-fixable only when every
+    /// finding is, with the first finding's remediation then, else the first unfixable
+    /// one's; the row's explain command for the client either way.
+    #[test]
+    fn a_journal_group_is_auto_fixable_only_when_every_finding_is() {
+        let row = production(ids::JOURNAL_PRESERVATION_INCOMPLETE);
+        let journal = |n: usize, resumable: bool| {
+            observed(
+                retail().tx(tx(n)),
+                None,
+                Evidence {
+                    tx: Some(tx(n)),
+                    resumable: Some(resumable),
+                    ..Evidence::default()
+                },
+            )
+        };
+        for (case, resumable, auto_fixable, remediated_by) in [
+            ("all_fixable", [true, true], true, 0),
+            ("one_unfixable", [true, false], false, 1),
+            ("none_fixable", [false, false], false, 0),
+        ] {
+            let found = through_the_loop(
+                &row,
+                vec![journal(0, resumable[0]), journal(1, resumable[1])],
+            );
+            let by_tx = |n: usize| found.iter().find(|f| f.evidence.tx == Some(tx(n))).unwrap();
+            let issues = for_target(&found, KEY.parse().unwrap());
+            let [issue] = issues.as_slice() else {
+                panic!("{case}: one issue, not {issues:?}");
+            };
+            let want = issue_of(by_tx(remediated_by));
+            assert_eq!(
+                (&issue.remediation, issue.auto_fixable, &issue.explain),
+                (&want.remediation, auto_fixable, &explain(row.id, true)),
+                "{case}: {found:?} gave {issue:?}"
+            );
+            if auto_fixable {
+                assert_eq!(
+                    issue.remediation.argv.as_deref(),
+                    Some(
+                        &argv_vec(&[
+                            "omaddons", "doctor", "fix", "--only", row.id, "-t", "retail"
+                        ])[..]
+                    ),
+                    "{case}: the fix"
+                );
+            } else {
+                assert!(
+                    !issue.remediation.argv.iter().flatten().any(|a| a == "fix"),
+                    "{case}: an unfixable instance's own remediation: {issue:?}"
+                );
+            }
+        }
+    }
+
+    /// The wire shape of three issues: an auto-fixable machine one, a manual one on a
+    /// client and a forced one; keys in A.11's order, `explain` never null.
+    #[test]
+    fn an_issue_serializes_in_a11_order() {
+        let mut credential_finding = through_the_loop(
+            &production(ids::CREDENTIAL_FILE_MODE),
+            vec![credential(true)],
+        );
+        credential_finding[0].title = "The GitHub token file is readable by other users".to_owned();
+        let mut missing = through_the_loop(
+            &production(ids::RECORD_FOLDER_MISSING),
+            vec![observed(retail(), Some("Details"), Evidence::default())],
+        );
+        missing[0].title = "Details's folder is gone".to_owned();
+        let mut too_new = through_the_loop(
+            &production(ids::JOURNAL_TOO_NEW),
+            vec![observed(
+                retail().tx(tx(0)),
+                None,
+                Evidence {
+                    tx: Some(tx(0)),
+                    ..Evidence::default()
+                },
+            )],
+        );
+        too_new[0].title = "An interrupted change was started by a newer omaddons; this build cannot read its journal (format 9.0)".to_owned();
+        let issues: Vec<Issue> = [&credential_finding[0], &missing[0], &too_new[0]]
+            .into_iter()
+            .map(issue_of)
+            .collect();
+        const KEYS: [&str; 7] = [
+            "id",
+            "severity",
+            "title",
+            "addon",
+            "remediation",
+            "auto_fixable",
+            "explain",
+        ];
+        for issue in &issues {
+            // The text, since a `serde_json::Value` sorts its keys.
+            let text = serde_json::to_string(issue).unwrap();
+            let at: Vec<Option<usize>> = KEYS
+                .iter()
+                .map(|key| text.find(&format!("\"{key}\":")))
+                .collect();
+            assert!(
+                at.iter().all(Option::is_some) && at.is_sorted(),
+                "{text}: {at:?}"
+            );
+            let value = serde_json::to_value(issue).unwrap();
+            assert!(value["explain"].is_object(), "{text}");
+            assert!(value["auto_fixable"].is_boolean(), "{text}");
+        }
+        insta::assert_json_snapshot!("status_issue_wire_shape", issues);
+    }
+
+    /// `status` never asks a fixer to plan (the `cached` tier forbids what a plan may
+    /// read): a fixer whose plan panics gives its remediation through the loop all the
+    /// same.
+    #[test]
+    fn status_never_plans_a_fixer() {
+        fn never(_: &DoctorView, _: &Finding) -> Result<Vec<Fix>, Refusal> {
+            panic!("status asked a fixer to plan"); // ubs:ignore — the plan the test forbids
+        }
+        let mut row = production(ids::CREDENTIAL_FILE_MODE);
+        row.fix = row.fix.map(|spec| FixerSpec {
+            plan: never,
+            ..spec
+        });
+        let found = through_the_loop(&row, vec![credential(true)]);
+        let issues = for_machine(&found);
+        assert_eq!(issues.len(), 1, "{found:?}");
+        assert!(issues[0].auto_fixable, "{issues:?}");
+        assert_eq!(
+            issues[0].remediation.argv.as_deref(),
+            Some(&argv_vec(&["omaddons", "doctor", "fix", "--only", row.id])[..])
+        );
+        assert_eq!(found[0].remediation.estimated_actions, 0, "never estimated");
     }
 
     // ---- Characterization (E1 part 1): what `status` emits for every issue it can

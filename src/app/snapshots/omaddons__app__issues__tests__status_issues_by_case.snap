@@ -19,6 +19,18 @@ expression: by_case
           "-v"
         ],
         "destructive": false
+      },
+      "auto_fixable": false,
+      "explain": {
+        "command": "omaddons doctor explain fm-external_artifacts-ownership-transferred -t retail",
+        "argv": [
+          "omaddons",
+          "doctor",
+          "explain",
+          "fm-external_artifacts-ownership-transferred",
+          "-t",
+          "retail"
+        ]
       }
     }
   ],
@@ -38,6 +50,18 @@ expression: by_case
           "-v"
         ],
         "destructive": false
+      },
+      "auto_fixable": false,
+      "explain": {
+        "command": "omaddons doctor explain fm-external_artifacts-ownership-transferred -t retail",
+        "argv": [
+          "omaddons",
+          "doctor",
+          "explain",
+          "fm-external_artifacts-ownership-transferred",
+          "-t",
+          "retail"
+        ]
       }
     }
   ],
@@ -59,6 +83,18 @@ expression: by_case
           "retail"
         ],
         "destructive": false
+      },
+      "auto_fixable": true,
+      "explain": {
+        "command": "omaddons doctor explain fm-concurrency_primitives-journal-pending -t retail",
+        "argv": [
+          "omaddons",
+          "doctor",
+          "explain",
+          "fm-concurrency_primitives-journal-pending",
+          "-t",
+          "retail"
+        ]
       }
     },
     {
@@ -80,6 +116,18 @@ expression: by_case
           "--yes"
         ],
         "destructive": false
+      },
+      "auto_fixable": false,
+      "explain": {
+        "command": "omaddons doctor explain fm-concurrency_primitives-journal-too-new -t retail",
+        "argv": [
+          "omaddons",
+          "doctor",
+          "explain",
+          "fm-concurrency_primitives-journal-too-new",
+          "-t",
+          "retail"
+        ]
       }
     },
     {
@@ -91,6 +139,18 @@ expression: by_case
         "command": "upgrade omaddons",
         "argv": null,
         "destructive": false
+      },
+      "auto_fixable": false,
+      "explain": {
+        "command": "omaddons doctor explain fm-schemas-state-version-newer -t retail",
+        "argv": [
+          "omaddons",
+          "doctor",
+          "explain",
+          "fm-schemas-state-version-newer",
+          "-t",
+          "retail"
+        ]
       }
     },
     {
@@ -109,6 +169,18 @@ expression: by_case
           "--reinstall"
         ],
         "destructive": false
+      },
+      "auto_fixable": false,
+      "explain": {
+        "command": "omaddons doctor explain fm-state_files-record-folder-missing -t retail",
+        "argv": [
+          "omaddons",
+          "doctor",
+          "explain",
+          "fm-state_files-record-folder-missing",
+          "-t",
+          "retail"
+        ]
       }
     },
     {
@@ -127,6 +199,18 @@ expression: by_case
           "--reinstall"
         ],
         "destructive": false
+      },
+      "auto_fixable": false,
+      "explain": {
+        "command": "omaddons doctor explain fm-state_files-record-folder-missing -t retail",
+        "argv": [
+          "omaddons",
+          "doctor",
+          "explain",
+          "fm-state_files-record-folder-missing",
+          "-t",
+          "retail"
+        ]
       }
     },
     {
@@ -145,6 +229,18 @@ expression: by_case
           "--reinstall"
         ],
         "destructive": false
+      },
+      "auto_fixable": false,
+      "explain": {
+        "command": "omaddons doctor explain fm-external_artifacts-managed-files-modified -t retail",
+        "argv": [
+          "omaddons",
+          "doctor",
+          "explain",
+          "fm-external_artifacts-managed-files-modified",
+          "-t",
+          "retail"
+        ]
       }
     },
     {
@@ -162,6 +258,18 @@ expression: by_case
           "-v"
         ],
         "destructive": false
+      },
+      "auto_fixable": false,
+      "explain": {
+        "command": "omaddons doctor explain fm-external_artifacts-ownership-transferred -t retail",
+        "argv": [
+          "omaddons",
+          "doctor",
+          "explain",
+          "fm-external_artifacts-ownership-transferred",
+          "-t",
+          "retail"
+        ]
       }
     }
   ],
@@ -182,6 +290,18 @@ expression: by_case
           "--reinstall"
         ],
         "destructive": false
+      },
+      "auto_fixable": false,
+      "explain": {
+        "command": "omaddons doctor explain fm-external_artifacts-managed-files-modified -t retail",
+        "argv": [
+          "omaddons",
+          "doctor",
+          "explain",
+          "fm-external_artifacts-managed-files-modified",
+          "-t",
+          "retail"
+        ]
       }
     }
   ],
@@ -202,6 +322,18 @@ expression: by_case
           "--reinstall"
         ],
         "destructive": false
+      },
+      "auto_fixable": false,
+      "explain": {
+        "command": "omaddons doctor explain fm-external_artifacts-managed-files-modified -t retail",
+        "argv": [
+          "omaddons",
+          "doctor",
+          "explain",
+          "fm-external_artifacts-managed-files-modified",
+          "-t",
+          "retail"
+        ]
       }
     }
   ],
@@ -223,6 +355,18 @@ expression: by_case
           "--reinstall"
         ],
         "destructive": false
+      },
+      "auto_fixable": false,
+      "explain": {
+        "command": "omaddons doctor explain fm-state_files-record-folder-missing -t retail",
+        "argv": [
+          "omaddons",
+          "doctor",
+          "explain",
+          "fm-state_files-record-folder-missing",
+          "-t",
+          "retail"
+        ]
       }
     }
   ],
@@ -246,6 +390,18 @@ expression: by_case
           "--yes"
         ],
         "destructive": false
+      },
+      "auto_fixable": false,
+      "explain": {
+        "command": "omaddons doctor explain fm-concurrency_primitives-journal-too-new -t retail",
+        "argv": [
+          "omaddons",
+          "doctor",
+          "explain",
+          "fm-concurrency_primitives-journal-too-new",
+          "-t",
+          "retail"
+        ]
       }
     }
   ],
@@ -269,6 +425,18 @@ expression: by_case
           "--yes"
         ],
         "destructive": false
+      },
+      "auto_fixable": false,
+      "explain": {
+        "command": "omaddons doctor explain fm-concurrency_primitives-journal-unreadable -t retail",
+        "argv": [
+          "omaddons",
+          "doctor",
+          "explain",
+          "fm-concurrency_primitives-journal-unreadable",
+          "-t",
+          "retail"
+        ]
       }
     }
   ],
@@ -290,6 +458,18 @@ expression: by_case
           "retail"
         ],
         "destructive": false
+      },
+      "auto_fixable": true,
+      "explain": {
+        "command": "omaddons doctor explain fm-concurrency_primitives-journal-pending -t retail",
+        "argv": [
+          "omaddons",
+          "doctor",
+          "explain",
+          "fm-concurrency_primitives-journal-pending",
+          "-t",
+          "retail"
+        ]
       }
     }
   ],
@@ -303,6 +483,18 @@ expression: by_case
         "command": "upgrade omaddons",
         "argv": null,
         "destructive": false
+      },
+      "auto_fixable": false,
+      "explain": {
+        "command": "omaddons doctor explain fm-schemas-state-version-newer -t retail",
+        "argv": [
+          "omaddons",
+          "doctor",
+          "explain",
+          "fm-schemas-state-version-newer",
+          "-t",
+          "retail"
+        ]
       }
     }
   ],
@@ -324,6 +516,18 @@ expression: by_case
           "retail"
         ],
         "destructive": false
+      },
+      "auto_fixable": true,
+      "explain": {
+        "command": "omaddons doctor explain fm-concurrency_primitives-journal-pending -t retail",
+        "argv": [
+          "omaddons",
+          "doctor",
+          "explain",
+          "fm-concurrency_primitives-journal-pending",
+          "-t",
+          "retail"
+        ]
       }
     }
   ],
@@ -345,6 +549,18 @@ expression: by_case
           "retail"
         ],
         "destructive": false
+      },
+      "auto_fixable": true,
+      "explain": {
+        "command": "omaddons doctor explain fm-concurrency_primitives-journal-pending -t retail",
+        "argv": [
+          "omaddons",
+          "doctor",
+          "explain",
+          "fm-concurrency_primitives-journal-pending",
+          "-t",
+          "retail"
+        ]
       }
     },
     {
@@ -366,6 +582,18 @@ expression: by_case
           "--yes"
         ],
         "destructive": false
+      },
+      "auto_fixable": false,
+      "explain": {
+        "command": "omaddons doctor explain fm-concurrency_primitives-journal-unreadable -t retail",
+        "argv": [
+          "omaddons",
+          "doctor",
+          "explain",
+          "fm-concurrency_primitives-journal-unreadable",
+          "-t",
+          "retail"
+        ]
       }
     }
   ],
@@ -385,6 +613,18 @@ expression: by_case
           "retail"
         ],
         "destructive": true
+      },
+      "auto_fixable": false,
+      "explain": {
+        "command": "omaddons doctor explain fm-userland_state-target-vanished -t retail",
+        "argv": [
+          "omaddons",
+          "doctor",
+          "explain",
+          "fm-userland_state-target-vanished",
+          "-t",
+          "retail"
+        ]
       }
     }
   ],
@@ -403,6 +643,18 @@ expression: by_case
           "retail"
         ],
         "destructive": true
+      },
+      "auto_fixable": false,
+      "explain": {
+        "command": "omaddons doctor explain fm-userland_state-target-vanished -t retail",
+        "argv": [
+          "omaddons",
+          "doctor",
+          "explain",
+          "fm-userland_state-target-vanished",
+          "-t",
+          "retail"
+        ]
       }
     }
   ],
@@ -424,6 +676,18 @@ expression: by_case
           "retail"
         ],
         "destructive": false
+      },
+      "auto_fixable": true,
+      "explain": {
+        "command": "omaddons doctor explain fm-concurrency_primitives-journal-pending -t retail",
+        "argv": [
+          "omaddons",
+          "doctor",
+          "explain",
+          "fm-concurrency_primitives-journal-pending",
+          "-t",
+          "retail"
+        ]
       }
     },
     {
@@ -440,6 +704,18 @@ expression: by_case
           "retail"
         ],
         "destructive": true
+      },
+      "auto_fixable": false,
+      "explain": {
+        "command": "omaddons doctor explain fm-userland_state-target-vanished -t retail",
+        "argv": [
+          "omaddons",
+          "doctor",
+          "explain",
+          "fm-userland_state-target-vanished",
+          "-t",
+          "retail"
+        ]
       }
     }
   ]

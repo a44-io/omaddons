@@ -603,6 +603,11 @@ fn a_deleted_client_is_missing() {
                 "command": rm.join(" "),
                 "argv": rm,
                 "destructive": true
+            },
+            "auto_fixable": false,
+            "explain": {
+                "command": format!("omaddons doctor explain fm-userland_state-target-vanished -t {legacy_id}"),
+                "argv": ["omaddons", "doctor", "explain", "fm-userland_state-target-vanished", "-t", legacy_id.as_str()]
             }
         }])
     );

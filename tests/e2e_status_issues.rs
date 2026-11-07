@@ -36,8 +36,8 @@ const TOO_NEW: &str = "fm-concurrency_primitives-journal-too-new";
 const UNATTRIBUTED: &str = "fm-concurrency_primitives-journal-unattributed";
 
 /// A stuck journal's remediation: its forced set-aside (F2), with `-t` when it is a
-/// client's.
-fn set_aside(id: &str, target: Option<&str>) -> Value {
+/// client's; never auto-fixable (M4-D38).
+fn set_aside(id: &str, target: Option<&str>) -> support::Remedy {
     let mut argv = vec!["omaddons", "doctor", "fix", "--only", id];
     if let Some(target) = target {
         argv.extend(["-t", target]);
@@ -247,35 +247,66 @@ mod support {
         envelope["data"]["issues"].clone()
     }
 
+    /// An issue's remediation, and whether `doctor fix` repairs it with no force.
+    pub(super) struct Remedy {
+        remediation: Value,
+        auto_fixable: bool,
+    }
+
+    /// The issue `status` publishes for `id`, on `client` (`None`: the machine's). Its
+    /// explain command is `omaddons doctor explain <id>`, with `-t` on a client.
     pub(super) fn issue(
         id: &str,
         severity: &str,
         title: &str,
         addon: Option<&str>,
-        remediation: Value,
+        client: Option<&str>,
+        remedy: Remedy,
     ) -> Value {
-        json!({"id": id, "severity": severity, "title": title, "addon": addon, "remediation": remediation})
+        let mut explain = vec!["omaddons", "doctor", "explain", id];
+        if let Some(client) = client {
+            explain.extend(["-t", client]);
+        }
+        json!({
+            "id": id,
+            "severity": severity,
+            "title": title,
+            "addon": addon,
+            "remediation": remedy.remediation,
+            "auto_fixable": remedy.auto_fixable,
+            "explain": {"command": explain.join(" "), "argv": explain},
+        })
     }
 
-    pub(super) fn prose(text: &str) -> Value {
-        json!({"command": text, "argv": null, "destructive": false})
+    pub(super) fn prose(text: &str) -> Remedy {
+        Remedy {
+            remediation: json!({"command": text, "argv": null, "destructive": false}),
+            auto_fixable: false,
+        }
     }
 
-    pub(super) fn command(argv: &[&str], destructive: bool) -> Value {
-        json!({"command": argv.join(" "), "argv": argv, "destructive": destructive})
+    /// A command the doctor does not run for the issue.
+    pub(super) fn command(argv: &[&str], destructive: bool) -> Remedy {
+        Remedy {
+            remediation: json!({"command": argv.join(" "), "argv": argv, "destructive": destructive}),
+            auto_fixable: false,
+        }
     }
 
     /// `omaddons doctor fix --only <fm> -t <target>`: the doctor's delegation (F2), the
-    /// remediation of a journal recovery can settle.
-    pub(super) fn delegate(fm: &str, target: &str) -> Value {
-        command(
-            &["omaddons", "doctor", "fix", "--only", fm, "-t", target],
-            false,
-        )
+    /// remediation of a journal recovery can settle, which is auto-fixable.
+    pub(super) fn delegate(fm: &str, target: &str) -> Remedy {
+        Remedy {
+            auto_fixable: true,
+            ..command(
+                &["omaddons", "doctor", "fix", "--only", fm, "-t", target],
+                false,
+            )
+        }
     }
 
     /// `omaddons install <addon> -t <target> --reinstall`, the repair of a drifted addon.
-    pub(super) fn reinstall(addon: &str, target: &str) -> Value {
+    pub(super) fn reinstall(addon: &str, target: &str) -> Remedy {
         command(
             &["omaddons", "install", addon, "-t", target, "--reinstall"],
             false,
@@ -378,6 +409,7 @@ fn journal_pending_is_one_issue_per_client_and_titled_by_its_journals() {
         "P0",
         "An interrupted change waits to be finished",
         None,
+        Some("retail"),
         delegate(JOURNAL, "retail")
     )]);
     assert_issues(
@@ -405,6 +437,7 @@ fn journal_pending_is_one_issue_per_client_and_titled_by_its_journals() {
             "P0",
             "An interrupted change waits to be finished",
             None,
+            Some("retail"),
             delegate(JOURNAL, "retail")
         ),
         issue(
@@ -412,6 +445,7 @@ fn journal_pending_is_one_issue_per_client_and_titled_by_its_journals() {
             "P0",
             "An interrupted change's journal holds lines this omaddons cannot read",
             None,
+            Some("retail"),
             set_aside(UNREADABLE, Some("retail"))
         ),
     ]);
@@ -439,7 +473,7 @@ fn journal_pending_is_one_issue_per_client_and_titled_by_its_journals() {
         &log,
         &home,
         &format!(
-            "  P0 An interrupted change's journal holds lines this omaddons cannot read → omaddons doctor fix --only {UNREADABLE} -t retail --force --yes"
+            "  P0 An interrupted change's journal holds lines this omaddons cannot read → omaddons doctor explain {UNREADABLE} -t retail (read it before the forced repair: omaddons doctor fix --only {UNREADABLE} -t retail --force --yes)"
         ),
     );
     log.step("status --check");
@@ -484,6 +518,7 @@ fn an_unattributed_journal_is_the_machines_issue() {
         UNATTRIBUTED,
         "P0",
         "An interrupted change cannot be attributed to any client, so every change is refused",
+        None,
         None,
         set_aside(UNATTRIBUTED, None)
     )]);
@@ -535,6 +570,7 @@ fn a_newer_record_is_state_version_newer() {
         "P0",
         "State was written by a newer omaddons",
         None,
+        Some("retail"),
         prose("upgrade omaddons"),
     );
     for (step, args) in [
@@ -573,6 +609,7 @@ fn a_missing_folder_is_record_folder_missing_in_both_modes() {
         "P1",
         &format!("{foo}'s folder is gone"),
         Some(&foo),
+        Some("retail"),
         reinstall(&foo, "retail"),
     )]);
     for (step, args) in [
@@ -617,6 +654,7 @@ fn modified_files_show_in_plain_status_only() {
         "P2",
         &format!("{foo}'s files changed on disk (1 file)"),
         Some(&foo),
+        Some("retail"),
         reinstall(&foo, "retail"),
     )]);
     assert_issues(
@@ -660,6 +698,7 @@ fn a_forced_takeover_is_ownership_transferred() {
         "P2",
         "1 addon lost a folder to another addon",
         None,
+        Some("retail"),
         command(&["omaddons", "list", "-t", "retail", "-v"], false),
     );
     for (step, args) in [
@@ -717,6 +756,7 @@ fn a_vanished_client_is_target_vanished() {
         "P2",
         "The client's directory is gone",
         None,
+        Some(&id),
         command(&["omaddons", "targets", "rm", &id], true),
     )]);
     for (step, args) in [
@@ -793,6 +833,7 @@ fn an_outdated_widget_is_widget_version_drift() {
         "P3",
         "The bar widget is from another omaddons build",
         None,
+        None,
         command(&["omaddons", "omarchy", "install"], false),
     )]);
     for (step, args) in [
@@ -848,6 +889,7 @@ fn several_states_rank_by_severity_id_and_addon() {
             "P0",
             "An interrupted change (install) was started by a newer omaddons; this build cannot read its journal (format 2.0)",
             None,
+            Some("retail"),
             set_aside(TOO_NEW, Some("retail"))
         ),
         issue(
@@ -855,6 +897,7 @@ fn several_states_rank_by_severity_id_and_addon() {
             "P1",
             &format!("{aaa}'s folder is gone"),
             Some(&aaa),
+            Some("retail"),
             reinstall(&aaa, "retail"),
         ),
         issue(
@@ -862,6 +905,7 @@ fn several_states_rank_by_severity_id_and_addon() {
             "P2",
             &format!("{foo}'s files changed on disk (1 file)"),
             Some(&foo),
+            Some("retail"),
             reinstall(&foo, "retail"),
         ),
         issue(
@@ -869,6 +913,7 @@ fn several_states_rank_by_severity_id_and_addon() {
             "P2",
             "1 addon lost a folder to another addon",
             None,
+            Some("retail"),
             command(&["omaddons", "list", "-t", "retail", "-v"], false),
         ),
     ]);
@@ -886,7 +931,7 @@ fn several_states_rank_by_severity_id_and_addon() {
     human.exit(0);
     let lines = [
         format!(
-            "  P0 An interrupted change (install) was started by a newer omaddons; this build cannot read its journal (format 2.0) → omaddons doctor fix --only {TOO_NEW} -t retail --force --yes"
+            "  P0 An interrupted change (install) was started by a newer omaddons; this build cannot read its journal (format 2.0) → omaddons doctor explain {TOO_NEW} -t retail (read it before the forced repair: omaddons doctor fix --only {TOO_NEW} -t retail --force --yes)"
         ),
         format!("  P1 {aaa}'s folder is gone → omaddons install {aaa} -t retail --reinstall"),
         format!(
