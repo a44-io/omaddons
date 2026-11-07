@@ -369,7 +369,7 @@ notes = "9.3.5: TitanAmmo's TOC lists 205056 (a typo for a 2.5.x interface) unde
 [[addon]]
 name = "Clique"
 ref = "wowi:5108"
-families = ["mainline", "vanilla", "tbc", "titan", "mists"]
+families = ["mainline", "vanilla", "tbc", "titan", "cata", "mists", "forever"]
 folders = ["Clique"]
 
 [[addon]]
@@ -394,7 +394,7 @@ folders = ["GTFO"]
 [[addon]]
 name = "HandyNotes"
 ref = "wowi:15716"
-families = ["mainline", "vanilla", "tbc", "mists"]
+families = ["mainline", "vanilla", "tbc", "mists", "forever"]
 folders = ["HandyNotes"]
 
 # ---- Tukui -----------------------------------------------------------------------------

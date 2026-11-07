@@ -76,7 +76,8 @@ mod support {
             .then_some(family)
     }
 
-    /// Each item of an install envelope by request: `Ok(folders)` when installed,
+    /// Each item of an install envelope by request: `Ok(item)` when installed (its
+    /// `folders`, and its `to_version`, which names the release a look-back took),
     /// `Err((code, message))` when it failed (also from an all-failed error envelope).
     pub fn outcomes(envelope: &Value) -> BTreeMap<String, Result<Value, (String, String)>> {
         let text = |v: &Value| v.as_str().unwrap_or_default().to_owned();
@@ -89,7 +90,7 @@ mod support {
                         text(&item["error"]["message"]),
                     ))
                 } else {
-                    Ok(item["folders"].clone())
+                    Ok(item.clone())
                 };
                 out.insert(text(&item["request"]), result);
             }
@@ -174,6 +175,12 @@ fn catalog_matches_declared_flavors() {
             "2026-10-15: declares only mainline, but ships RaiderIO_Classic.toc, which \
              Mists Classic loads",
         ),
+        (
+            "RaiderIO",
+            "forever",
+            "2026-11-07, v202611070600: declares only mainline (120100, 120105), but ships \
+             RaiderIO_Camelot.toc at 16001, which WoW: Forever loads",
+        ),
     ];
     let live_families = [
         Family::Mainline,
@@ -242,6 +249,10 @@ fn catalog_matches_declared_flavors() {
     let table = RulesTable::builtin();
     let (catalog, _) = Catalog::load(&paths(&env));
     let mut rows: Vec<Row> = Vec::new();
+    // A GitHub entry's newest release: an install of another one on a client the newest
+    // does not declare is the look-back (README "A release per client"), which installs
+    // only an older release that declares that client.
+    let mut newest: BTreeMap<String, String> = BTreeMap::new();
     for entry in catalog.entries() {
         match &entry.r#ref {
             Ref::GitHub { .. } => {
@@ -249,6 +260,9 @@ fn catalog_matches_declared_flavors() {
                     .fetch(&[Wanted::stable(entry.r#ref.clone())], http.as_ref())
                     .pop()
                     .and_then(Result::ok);
+                if let Some(release) = fetched.iter().flat_map(|set| set.releases.first()).next() {
+                    newest.insert(entry.name.clone(), release.version.clone());
+                }
                 let assets: Vec<_> = fetched
                     .iter()
                     .flat_map(|set| set.releases.first())
@@ -343,7 +357,8 @@ fn catalog_matches_declared_flavors() {
                 .iter()
                 .any(|(e, f, _)| e == name && *f == family.as_str());
             let cell = match (result, expected) {
-                (Some(Ok(folders)), true) => {
+                (Some(Ok(item)), true) => {
+                    let folders = &item["folders"];
                     let unexplained = folders["skipped"]
                         .as_array()
                         .into_iter()
@@ -356,6 +371,15 @@ fn catalog_matches_declared_flavors() {
                     }
                 }
                 (Some(Err((code, _))), false) if code == "no_compatible_release" => Ok("·"),
+                // An older release than the newest: the look-back, which installs only a
+                // release that declares the client.
+                (Some(Ok(item)), false)
+                    if newest.get(name).is_some_and(|latest| {
+                        item["to_version"].as_str().is_some_and(|v| v != latest)
+                    }) =>
+                {
+                    Ok("↩")
+                }
                 (Some(Ok(_)), false) => Err("installed on a family it does not declare".to_owned()),
                 (Some(Err((code, message))), _) => Err(format!("{code}: {message}")),
                 (None, _) => Err("no result".to_owned()),
@@ -374,7 +398,11 @@ fn catalog_matches_declared_flavors() {
         }
         matrix.push_str(&format!("{name:<24} {}\n", cells.join("  ")));
     }
-    let _ = writeln!(std::io::stderr(), "catalog x declared flavors:\n{matrix}");
+    let _ = writeln!(
+        std::io::stderr(),
+        "catalog x declared flavors (✓ declared and installs, · refused and not declared, \
+         ↩ an older release that declares it, ~ a recorded publisher mismatch, ✗ a mismatch):\n{matrix}"
+    );
     assert!(
         mismatches.is_empty(),
         "omaddons disagrees with what publishers declare:\n{}",
