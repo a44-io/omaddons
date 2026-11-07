@@ -1,10 +1,9 @@
 ---
 source: src/doctor/gc/plan.rs
-assertion_line: 1573
 expression: value
 ---
 {
-  "before": "2026-10-31T00:00:00Z",
+  "before_at": "2026-10-31T00:00:00Z",
   "deletions": [
     {
       "bytes": 10,

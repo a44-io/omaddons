@@ -43,8 +43,10 @@ pub struct NetLogData {
     pub summary: Summary,
     /// Lines that do not parse.
     pub skipped: usize,
-    #[schemars(with = "Option<String>")]
-    pub since: Option<Timestamp>,
+    /// The instant `--since` resolved to: only requests at or after it are counted and
+    /// shown. `null` without `--since`.
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
+    pub since_at: Option<Timestamp>,
 }
 
 /// Requests per host and per transport (`http`, `git`).
@@ -184,7 +186,7 @@ fn data(
         truncated,
         summary,
         skipped,
-        since,
+        since_at: since,
     }
 }
 

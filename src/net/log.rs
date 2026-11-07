@@ -29,7 +29,7 @@ pub enum Via {
 /// One `net.log` line.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct NetLogEntry {
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub time: Timestamp,
     /// `GET`, `HEAD`, `PROPFIND` (WowAce's tag list), or `GIT` for subprocesses.
     pub method: String,

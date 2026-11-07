@@ -2,15 +2,6 @@
 # a new shape that breaks a rule is fixed, never added here. H1 empties it before the freeze.
 # Format: <rule> | <scope> | <path>. A scope `<prefix> *` covers every scope below the prefix,
 # for a shape defined once that each of them carries (the error wrapper's keys).
-r1-instant-name | command backup list | targets[].auto.last.at
-r1-instant-name | command backup | targets[].auto.last.at
-r1-instant-name | command errors | targets[].addons[].errors[].last_seen.at
-r1-instant-name | command errors | targets[].addons[].last_seen.at
-r1-instant-name | command history | entries[].at
-r1-instant-name | command net-log | entries[].time
-r1-instant-name | command status | last_change.at
-r1-instant-name | command status | targets[].backups.auto.last.at
-r1-instant-name | command undo | reverted.at
 r3-array-plural | command adopt | approval.scope.dependencies_added
 r3-array-plural | command adopt | approval.scope.folders_removed
 r3-array-plural | command adopt | approval.scope.source_changed

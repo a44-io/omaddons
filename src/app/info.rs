@@ -126,7 +126,7 @@ pub struct InstalledInfo {
     pub left_out: Vec<LeftOutFolder>,
     /// Whether its files changed on disk (stat-first, local), with paths under `-v`.
     pub drift: DriftSummary,
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub installed_at: jiff::Timestamp,
     pub tx: TxId,
     /// `-v` only: the record file.

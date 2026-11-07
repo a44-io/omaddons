@@ -41,7 +41,7 @@ pub struct TargetAck {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Ack {
     pub acked_session: u32,
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub acked_at: Timestamp,
 }
 

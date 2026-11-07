@@ -72,7 +72,7 @@ pub struct RepairPrepared {
     pub reason: Option<String>,
     pub argv: Vec<String>,
     /// When the repair started.
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub at: Timestamp,
     /// The clients whose files a step touches, by key.
     pub targets: Vec<TargetKey>,

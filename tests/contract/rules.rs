@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 const RULES: &[(&str, u8)] = &[
     ("r1-at-type", 1),
     ("r1-instant-name", 1),
+    ("r1-instant-type", 1),
     ("r1-duration-type", 1),
     ("r1-duration-name", 1),
     ("r2-omittable-undocumented", 2),
@@ -38,7 +39,24 @@ struct Exception {
     scope: &'static str,
     /// A walk path; a leading `**.` matches at any depth.
     path: &'static str,
+    /// Which vocabulary it is: the only three that may keep their own spelling.
+    kind: ExceptionKind,
     reason: &'static str,
+    /// Where that vocabulary is defined: a decision, a README section, an outside tool.
+    source: &'static str,
+}
+
+/// The vocabularies an exception may keep (M4-D55; README, "Naming rules"). Anything else
+/// that breaks a rule is renamed, or the checker is narrowed with its reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExceptionKind {
+    /// Defined by a contract or tool omaddons follows: the doctor contract, POSIX, clap.
+    External,
+    /// A spelling users type, in `-t`, `config.toml` or the catalog.
+    Input,
+    /// A persisted line a command echoes verbatim, whose fields change only with that
+    /// file's own format (M4-D56).
+    Persisted,
 }
 
 /// The doctor contract's report (M4-D34, A.4) names its severities and run states as
@@ -46,109 +64,173 @@ struct Exception {
 const DOCTOR_CONTRACT: &str =
     "the doctor contract's own names (M4-D34, A.4), which generic doctor consumers read";
 
+/// Where the doctor contract's names are defined.
+const DOCTOR_CONTRACT_SOURCE: &str = "M4-D34; vision D20";
+
+/// Game-family names, which users type.
+const FAMILIES: &str = "game-family names are an input vocabulary users type in `-t` and config.toml (`wrath-legacy`); allowlisted wherever `Family` appears";
+
+/// Where the game-family names are published as input.
+const FAMILIES_SOURCE: &str = "README: Families and interface ranges; Choosing a target with `-t`";
+
+/// The net.log line `net-log` echoes in `entries[]`.
+const NET_LOG_LINE: &str = "The net.log line, which `net-log` echoes verbatim; its fields change only with the line format README documents.";
+
 /// Outside vocabularies omaddons publishes as they are.
 const EXCEPTIONS: &[Exception] = &[
     Exception {
         rule: "r3-array-plural",
         scope: "command doctor *",
         path: "skipped",
+        kind: ExceptionKind::External,
         reason: DOCTOR_CONTRACT,
+        source: DOCTOR_CONTRACT_SOURCE,
     },
     Exception {
         rule: "r3-name-case",
         scope: "command doctor *",
         path: "summary.by_severity.P0",
+        kind: ExceptionKind::External,
         reason: DOCTOR_CONTRACT,
+        source: DOCTOR_CONTRACT_SOURCE,
     },
     Exception {
         rule: "r3-name-case",
         scope: "command doctor *",
         path: "summary.by_severity.P1",
+        kind: ExceptionKind::External,
         reason: DOCTOR_CONTRACT,
+        source: DOCTOR_CONTRACT_SOURCE,
     },
     Exception {
         rule: "r3-name-case",
         scope: "command doctor *",
         path: "summary.by_severity.P2",
+        kind: ExceptionKind::External,
         reason: DOCTOR_CONTRACT,
+        source: DOCTOR_CONTRACT_SOURCE,
     },
     Exception {
         rule: "r3-name-case",
         scope: "command doctor *",
         path: "summary.by_severity.P3",
+        kind: ExceptionKind::External,
         reason: DOCTOR_CONTRACT,
+        source: DOCTOR_CONTRACT_SOURCE,
     },
     Exception {
         rule: "r3-array-plural",
         scope: "command doctor *",
         path: "actions_planned",
+        kind: ExceptionKind::External,
         reason: DOCTOR_CONTRACT,
+        source: DOCTOR_CONTRACT_SOURCE,
     },
     Exception {
         rule: "r3-array-plural",
         scope: "command doctor *",
         path: "delegated",
+        kind: ExceptionKind::External,
         reason: DOCTOR_CONTRACT,
+        source: DOCTOR_CONTRACT_SOURCE,
     },
     Exception {
         rule: "r3-array-plural",
         scope: "command doctor *",
         path: "delegated_planned",
+        kind: ExceptionKind::External,
         reason: "pairs with the doctor contract's `delegated` as its `actions_planned` pairs with `actions` (M4-D37, A.5)",
+        source: "M4-D37; the doctor contract, A.5",
     },
     Exception {
         rule: "r4-open-enum",
         scope: "command doctor *",
         path: "**.mode",
+        kind: ExceptionKind::External,
         reason: "a POSIX permission mode, four octal digits checked by a pattern: no enumeration",
+        source: "POSIX file permission modes, as chmod(1) writes them",
     },
     Exception {
         rule: "r4-value-case",
         scope: "command doctor *",
         path: "**.severity",
+        kind: ExceptionKind::External,
         reason: DOCTOR_CONTRACT,
+        source: DOCTOR_CONTRACT_SOURCE,
     },
     Exception {
         rule: "r4-value-case",
         scope: "command doctor *",
         path: "state",
+        kind: ExceptionKind::External,
         reason: DOCTOR_CONTRACT,
+        source: DOCTOR_CONTRACT_SOURCE,
     },
     Exception {
         rule: "r3-array-plural",
         scope: "command capabilities",
         path: "commands[].flags[].conflicts_with",
+        kind: ExceptionKind::External,
         reason: "clap's own name for the relation, which capabilities describes",
+        source: "clap: Arg::conflicts_with",
     },
+    // Rule 3's owner (c6cm.8.1.4) re-judges the next three: each names a shape omaddons
+    // defines, which none of the three kinds describes exactly.
     Exception {
         rule: "r3-array-plural",
         scope: "command capabilities",
         path: "exit_codes.doctor",
+        kind: ExceptionKind::External,
         reason: "named for the exit dictionary it lists, beside `general`",
+        source: "the doctor contract's exit dictionary (M4-D40), as capabilities.commands[].dictionary names it",
     },
     Exception {
         rule: "r3-array-plural",
         scope: "command capabilities",
         path: "exit_codes.general",
+        kind: ExceptionKind::External,
         reason: "named for the exit dictionary it lists, beside `doctor`",
+        source: "the general exit dictionary, as capabilities.commands[].dictionary names it",
     },
     Exception {
         rule: "r3-array-plural",
         scope: "command capabilities",
         path: "limits[].value",
+        kind: ExceptionKind::External,
         reason: "one value whose JSON type follows `unit`: for a `list` unit, the value is the list",
+        source: "src/limits.rs: LimitValue, whose unit decides its JSON type",
     },
     Exception {
         rule: "r4-value-case",
         scope: "command capabilities",
         path: "client_rules[].family",
-        reason: "game-family names are an input vocabulary users type in `-t` and config.toml (`wrath-legacy`); allowlisted wherever `Family` appears",
+        kind: ExceptionKind::Input,
+        reason: FAMILIES,
+        source: FAMILIES_SOURCE,
     },
     Exception {
         rule: "r4-value-case",
         scope: "command capabilities",
         path: "families[].name",
-        reason: "game-family names are an input vocabulary users type in `-t` and config.toml (`wrath-legacy`); allowlisted wherever `Family` appears",
+        kind: ExceptionKind::Input,
+        reason: FAMILIES,
+        source: FAMILIES_SOURCE,
+    },
+    Exception {
+        rule: "r1-instant-name",
+        scope: "command net-log",
+        path: "entries[].time",
+        kind: ExceptionKind::Persisted,
+        reason: NET_LOG_LINE,
+        source: "README: Files and state",
+    },
+    Exception {
+        rule: "r1-instant-type",
+        scope: "command net-log",
+        path: "entries[].time",
+        kind: ExceptionKind::Persisted,
+        reason: NET_LOG_LINE,
+        source: "README: Files and state",
     },
 ];
 
@@ -222,6 +304,9 @@ struct Facts {
     enum_values: Vec<Value>,
     pattern: Option<String>,
     description: Option<String>,
+    /// Some merged node says `format: date-time`: the value is an instant, whatever its
+    /// key (`contract::schema::timestamp`).
+    date_time: bool,
 }
 
 fn json_type(value: &Value) -> &'static str {
@@ -294,6 +379,9 @@ fn merge<'a>(root: &'a Value, node: &'a Value, facts: &mut Facts, seen: &mut Vec
             .get("pattern")
             .and_then(Value::as_str)
             .map(str::to_owned);
+    }
+    if object.get("format").and_then(Value::as_str) == Some("date-time") {
+        facts.date_time = true;
     }
     if let Some(reference) = object.get("$ref").and_then(Value::as_str)
         && !seen.contains(&reference)
@@ -370,7 +458,11 @@ const OMISSION_MARKERS: &[&str] = &[
     "--raw-details",
 ];
 
-const INSTANT_NAMES: &[&str] = &["at", "time", "date", "timestamp", "when"];
+// Narrowed (H1, c6cm.8.1.3): a bare `at` is the `_at` form with nothing before it, the
+// moment of the object itself, unambiguous as an instant. The persisted history line has
+// the same key, so renaming only the wire key would make `history` disagree with its own
+// file. `time`, `date`, `timestamp` and `when` stay flagged.
+const INSTANT_NAMES: &[&str] = &["time", "date", "timestamp", "when"];
 const INSTANT_SUFFIXES: &[&str] = &["_time", "_date", "_timestamp", "_on"];
 const DURATION_NAMES: &[&str] = &["duration", "elapsed", "timeout", "ttl", "age", "interval"];
 const DURATION_SUFFIXES: &[&str] = &[
@@ -417,8 +509,15 @@ fn property_rules(kind: Kind, name: &str, required: bool, facts: &Facts) -> Vec<
         .unwrap_or_default()
         .to_lowercase();
     let mut broken = Vec::new();
-    if name.ends_with("_at") && !(exactly(&["string"]) || exactly(&["string", "null"])) {
+    let instant_key = name == "at" || name.ends_with("_at");
+    if name.ends_with("_at")
+        && !((exactly(&["string"]) || exactly(&["string", "null"])) && facts.date_time)
+    {
         broken.push("r1-at-type");
+    }
+    // By type, so an instant under any other key is found, not only the names below.
+    if facts.date_time && !instant_key {
+        broken.push("r1-instant-type");
     }
     // Narrowed (both flagged compliant fields): only a string or a number can hold an
     // instant (`owned_on` lists owners), and `no_<noun>` counts what lacks one (`no_time`).
@@ -663,8 +762,13 @@ fn compare(
     for exception in exceptions {
         if !violations.iter().any(|v| exception_matches(exception, v)) {
             failures.push(format!(
-                "the exception `{} | {} | {}` ({}) matches no violation: remove it",
-                exception.rule, exception.scope, exception.path, exception.reason
+                "the exception `{} | {} | {}` ({:?}: {}; source: {}) matches no violation: remove it",
+                exception.rule,
+                exception.scope,
+                exception.path,
+                exception.kind,
+                exception.reason,
+                exception.source
             ));
         }
     }
@@ -748,16 +852,30 @@ fn r1_at_type() {
         "r1-at-type",
         vec![
             (
-                "string",
+                "date_time",
                 C,
-                property("started_at", json!({"type": "string"}), true),
+                property(
+                    "started_at",
+                    json!({"type": "string", "format": "date-time"}),
+                    true,
+                ),
                 &[],
             ),
             (
-                "nullable",
+                "nullable_date_time",
                 C,
-                property("started_at", json!({"type": ["string", "null"]}), true),
+                property(
+                    "started_at",
+                    json!({"type": ["string", "null"], "format": "date-time"}),
+                    true,
+                ),
                 &[],
+            ),
+            (
+                "a_string_that_is_no_instant",
+                C,
+                property("started_at", json!({"type": "string"}), true),
+                &["started_at"],
             ),
             (
                 "integer",
@@ -787,10 +905,34 @@ fn r1_instant_name() {
                 &[],
             ),
             (
-                "bare_at",
+                "bare_at_is_the_suffix_alone",
                 C,
                 property("at", json!({"type": "string"}), true),
-                &["at"],
+                &[],
+            ),
+            (
+                "bare_time",
+                C,
+                property("time", json!({"type": "string"}), true),
+                &["time"],
+            ),
+            (
+                "bare_date",
+                C,
+                property("date", json!({"type": "string"}), true),
+                &["date"],
+            ),
+            (
+                "bare_timestamp",
+                C,
+                property("timestamp", json!({"type": "string"}), true),
+                &["timestamp"],
+            ),
+            (
+                "bare_when",
+                C,
+                property("when", json!({"type": "string"}), true),
+                &["when"],
             ),
             (
                 "time_suffix",
@@ -827,6 +969,103 @@ fn r1_instant_name() {
                 &[],
             ),
         ],
+    );
+}
+
+#[test]
+fn r1_instant_type() {
+    let instant = json!({"type": "string", "format": "date-time"});
+    let nullable = json!({"type": ["string", "null"], "format": "date-time"});
+    table(
+        "r1-instant-type",
+        vec![
+            (
+                "an_instant_without_its_suffix",
+                C,
+                property("since", instant.clone(), true),
+                &["since"],
+            ),
+            (
+                "a_nullable_instant_without_its_suffix",
+                C,
+                property("dismissed", nullable.clone(), true),
+                &["dismissed"],
+            ),
+            (
+                "an_instant_named_at",
+                C,
+                property("at", instant.clone(), true),
+                &[],
+            ),
+            (
+                "an_instant_named_for_it",
+                C,
+                property("checked_at", nullable, true),
+                &[],
+            ),
+            (
+                "a_string_that_is_no_instant",
+                C,
+                property("since", json!({"type": "string"}), true),
+                &[],
+            ),
+            (
+                "an_instant_behind_a_ref",
+                C,
+                json!({
+                    "$defs": {"Instant": instant},
+                    "type": "object",
+                    "properties": {"when_seen": {"$ref": "#/$defs/Instant"}},
+                    "required": ["when_seen"],
+                }),
+                &["when_seen"],
+            ),
+        ],
+    );
+}
+
+/// The net.log line's `time` is excepted where `net-log` echoes it, and nowhere else.
+#[test]
+fn persisted_exception_covers_its_path_only() {
+    let entries = |time: Value| {
+        json!({
+            "type": "object",
+            "properties": {"entries": {"type": "array", "items": {
+                "type": "object", "properties": {"time": time}, "required": ["time"],
+            }}},
+            "required": ["entries"],
+        })
+    };
+    let instant = json!({"type": "string", "format": "date-time"});
+    let found = |scope: &str| {
+        violations(
+            &[synthetic(Kind::Command, scope, entries(instant.clone()))],
+            &[],
+        )
+    };
+    let persisted: Vec<Exception> = EXCEPTIONS
+        .iter()
+        .copied()
+        .filter(|e| e.kind == ExceptionKind::Persisted)
+        .collect();
+    assert_eq!(
+        found("command net-log"),
+        BTreeSet::from([
+            line("r1-instant-name", "command net-log", "entries[].time"),
+            line("r1-instant-type", "command net-log", "entries[].time"),
+        ]),
+        "the shape breaks both rule 1 name and type checks"
+    );
+    assert_eq!(
+        compare(&found("command net-log"), "", &persisted),
+        Ok(()),
+        "net-log's entries[].time is excepted"
+    );
+    let elsewhere = compare(&found("command history"), "", &persisted).unwrap_err();
+    assert!(
+        elsewhere.contains("a new shape breaks rule 1 (`r1-instant-name`): `r1-instant-name | command history | entries[].time`")
+            && elsewhere.contains("a new shape breaks rule 1 (`r1-instant-type`)"),
+        "the same key in another command is not excepted: {elsewhere}"
     );
 }
 
@@ -1302,6 +1541,11 @@ fn planted(rule: &str) -> Root {
     match rule {
         "r1-at-type" => command(property("started_at", json!({"type": "integer"}), true)),
         "r1-instant-name" => command(property("when", json!({"type": "string"}), true)),
+        "r1-instant-type" => command(property(
+            "since",
+            json!({"type": "string", "format": "date-time"}),
+            true,
+        )),
         "r1-duration-type" => command(property("wait_ms", json!({"type": "string"}), true)),
         "r1-duration-name" => command(property("timeout", json!({"type": "integer"}), true)),
         "r2-omittable-undocumented" => command(property("extra", json!({"type": "string"}), false)),
@@ -1417,7 +1661,9 @@ fn a_stale_exception_fails() {
         rule: "r4-value-case",
         scope: "command *",
         path: "**.no_such_field",
+        kind: ExceptionKind::External,
         reason: "an outside vocabulary",
+        source: "a test",
     }];
     let found = violations(&roots(), &file_kinds());
     let failure = compare(&found, &allowlist(), &stale).unwrap_err();
@@ -1430,7 +1676,9 @@ fn a_stale_exception_fails() {
         rule: "r4-value-case",
         scope: "command planted",
         path: "color",
+        kind: ExceptionKind::External,
         reason: "an outside vocabulary",
+        source: "a test",
     });
     let mut with_planted = found.clone();
     with_planted.extend(violations(&[planted("r4-value-case")], &[]));
@@ -1445,7 +1693,9 @@ fn a_stale_exception_fails() {
         rule: "r4-value-case",
         scope: "command doctor *",
         path: "state",
+        kind: ExceptionKind::External,
         reason: "an outside vocabulary",
+        source: "a test",
     };
     for (scope, matches) in [
         ("command doctor", true),

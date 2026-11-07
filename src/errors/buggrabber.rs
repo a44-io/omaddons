@@ -121,7 +121,7 @@ pub enum TzEvidence {
 /// An instant with what it means and how sure its zone is: the wire's `last_seen`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TimeEvidence {
-    #[schemars(with = "Option<String>")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
     pub at: Option<Timestamp>,
     pub meaning: TimeMeaning,
     pub tz: TzEvidence,

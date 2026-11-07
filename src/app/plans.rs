@@ -85,9 +85,9 @@ pub struct PlansShowData {
     pub stored: bool,
     /// It read; `false` whenever nothing was read.
     pub readable: bool,
-    #[schemars(with = "Option<String>")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
     pub created_at: Option<Timestamp>,
-    #[schemars(with = "Option<String>")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
     pub expires_at: Option<Timestamp>,
     pub build_id: Option<String>,
     /// The plan was made by this build of omaddons.
@@ -134,7 +134,7 @@ pub struct EvidenceTarget {
     pub tx: TxId,
     pub result: TxResult,
     /// When its history line was appended, under the commit lock.
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub committed_at: Timestamp,
 }
 

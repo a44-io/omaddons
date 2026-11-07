@@ -4,7 +4,7 @@ assertion_line: 2690
 expression: redacted(&c.envelope)
 ---
 {
-  "before": "<time>",
+  "before_at": "<time>",
   "command": "doctor gc",
   "commands": [],
   "deletions": [

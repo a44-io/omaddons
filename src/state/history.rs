@@ -61,7 +61,7 @@ pub struct HistoryEntry {
     pub schema_version: SchemaVersion,
     pub tx: TxId,
     pub kind: TxKind,
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub at: Timestamp,
     /// The client the transaction changed; `null` on a repair and on the undo of one,
     /// which name the clients they touched in `targets`. Always written; a line without
@@ -449,7 +449,7 @@ pub struct SettingEntry {
     pub schema_version: SchemaVersion,
     pub tx: TxId,
     pub kind: TxKind,
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub at: Timestamp,
     /// The client a `targets` change is about; `null` for the others.
     pub target: Option<TargetKey>,

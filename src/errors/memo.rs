@@ -72,7 +72,7 @@ pub struct DbMemo {
     /// The file's stamp as read (`FileStamp::fingerprint`).
     pub stamp: String,
     /// When the client last wrote it.
-    #[schemars(with = "Option<String>")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
     pub written_at: Option<Timestamp>,
     pub state: ReadState,
     pub session: Option<u32>,

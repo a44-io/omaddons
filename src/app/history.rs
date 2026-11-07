@@ -60,7 +60,7 @@ pub struct HistoryLine {
     /// The command invocation it belongs to; `null` for transactions from before M2.
     pub run: Option<RunId>,
     pub kind: TxKind,
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub at: Timestamp,
     /// `null` for a settings change about no client (`config`, `auth`, `export`), and on
     /// a repair or the undo of one, which name their clients in `targets`.

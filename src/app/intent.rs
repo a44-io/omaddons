@@ -662,7 +662,7 @@ pub struct RestoreIntent {
 pub struct PruneIntent {
     pub ids: Vec<BackupId>,
     pub keep: Option<u64>,
-    #[schemars(with = "Option<String>")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
     pub older_than: Option<Timestamp>,
     pub scope: TargetScope,
 }

@@ -27,7 +27,7 @@ pub struct CachedMeta {
     pub last_modified: Option<String>,
     pub status: u16,
     pub headers: Vec<(String, String)>,
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub stored_at: Timestamp,
 }
 

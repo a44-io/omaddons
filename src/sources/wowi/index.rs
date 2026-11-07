@@ -62,7 +62,7 @@ pub struct WowiCompat {
 /// `<cache>/omaddons/wowi/index.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct StoredIndex {
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub fetched_at: Timestamp,
     /// The response's `Cache-Control: max-age`, 0 when it had none.
     pub max_age_s: u64,

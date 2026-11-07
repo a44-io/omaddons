@@ -35,7 +35,7 @@ pub struct Changelog {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct ChangelogEntry {
     pub version: String,
-    #[schemars(with = "Option<String>")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
     pub published_at: Option<Timestamp>,
     /// Plain text, at most `CHANGELOG_MAX_CHARS`.
     pub text: String,

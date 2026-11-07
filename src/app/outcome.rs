@@ -315,7 +315,7 @@ pub struct TargetsData {
     /// The stored preview's id; `null` on real runs, no-ops and declined stores.
     pub plan_id: Option<PlanId>,
     /// The stored preview's expiry; `null` when no plan was stored.
-    #[schemars(with = "Option<String>")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
     pub plan_expires_at: Option<Timestamp>,
     /// What approving this dry run covers; `null` on a real run.
     pub approval: Option<Approval>,

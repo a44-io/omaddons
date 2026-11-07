@@ -135,9 +135,9 @@ pub struct ImportSource {
     pub id: BackupId,
     pub target_id: String,
     pub family: Family,
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub created_at: Timestamp,
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub captured_at: Timestamp,
     pub tool_version: String,
 }
@@ -160,10 +160,10 @@ pub struct BackupMeta {
     pub target_id: String,
     pub family: Family,
     /// When it was published here.
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub created_at: Timestamp,
     /// When its content was captured (an import's: the original's capture).
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub captured_at: Timestamp,
     pub kind: BackupKind,
     /// Automatic backups only.
@@ -184,7 +184,7 @@ pub struct BackupMeta {
     pub unsettled: u64,
     pub consistency: Consistency,
     pub integrity: Integrity,
-    #[schemars(with = "Option<String>")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
     pub verified_at: Option<Timestamp>,
     pub baseline: Option<Baseline>,
     pub tool_version: String,

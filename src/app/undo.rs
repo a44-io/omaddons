@@ -108,7 +108,7 @@ pub struct UndoData {
     /// The stored preview's id; `null` on a real run or when no plan was stored.
     pub plan_id: Option<PlanId>,
     /// When the stored preview expires; `null` when `plan_id` is.
-    #[schemars(with = "Option<String>")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
     pub plan_expires_at: Option<Timestamp>,
     /// What approving this preview covers; `null` on a real run.
     pub approval: Option<Approval>,
@@ -179,7 +179,7 @@ pub enum UndoKind {
 pub struct Reverted {
     pub tx: TxId,
     pub kind: TxKind,
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub at: jiff::Timestamp,
     /// The client it changed; `null` for a repair, which names its clients in `targets`.
     pub target: Option<TargetRef>,

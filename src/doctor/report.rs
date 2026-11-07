@@ -38,9 +38,9 @@ pub struct FullReport {
     pub run_id: DoctorRunId,
     /// The run's directory, absolute.
     pub run_dir: String,
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub started_at: Timestamp,
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub finished_at: Timestamp,
     pub state: RunState,
     pub summary: Summary,
@@ -283,9 +283,9 @@ pub struct FixReport {
     pub run_id: DoctorRunId,
     /// The run's directory, absolute.
     pub run_dir: String,
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub started_at: Timestamp,
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub finished_at: Timestamp,
     pub state: RunState,
     pub dry_run: bool,
@@ -413,9 +413,9 @@ pub struct UndoReport {
     pub run_id: Option<DoctorRunId>,
     /// That run's directory, absolute; `null` with `run_id`.
     pub run_dir: Option<String>,
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub started_at: Timestamp,
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub finished_at: Timestamp,
     /// The doctor run that made the transaction reverted; `null` when nothing was selected
     /// or its history line names none.

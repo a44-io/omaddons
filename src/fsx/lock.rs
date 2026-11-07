@@ -30,7 +30,7 @@ use crate::state::paths::Paths;
 pub struct HolderInfo {
     pub pid: u32,
     pub command: String,
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub started_at: Timestamp,
 }
 

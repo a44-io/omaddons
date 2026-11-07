@@ -79,7 +79,7 @@ pub struct Covers {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Latest {
     pub id: BackupId,
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub captured_at: Timestamp,
     pub kind: BackupKind,
     pub trigger: Option<Trigger>,
@@ -89,7 +89,7 @@ pub struct Latest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Qualifying {
     pub id: BackupId,
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub captured_at: Timestamp,
 }
 
@@ -114,7 +114,7 @@ pub enum Capability {
 /// The last automatic attempt.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AutoLast {
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub at: Timestamp,
     /// What it did (`created`, a skip reason, …), as automatic backups name it.
     pub result: String,

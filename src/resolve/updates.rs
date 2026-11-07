@@ -102,7 +102,7 @@ pub enum UncheckedReason {
 pub struct ReleaseBrief {
     pub version: String,
     pub release_id: String,
-    #[schemars(with = "Option<String>")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
     pub published_at: Option<Timestamp>,
     pub channel: Channel,
     /// The release's source revision, when its source has one (WowAce). Omitted

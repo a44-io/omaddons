@@ -672,7 +672,7 @@ pub struct AddonRecord {
     pub required_by: Vec<String>,
     pub folders: Vec<FolderName>,
     pub state: AddonState,
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub installed_at: Timestamp,
     pub tx_id: TxId,
     /// The blob-cache archive this release was installed from, which retention keeps;
@@ -1214,7 +1214,7 @@ pub struct Release {
     pub release_id: String,
     pub version: String,
     pub channel: Channel,
-    #[schemars(with = "Option<String>")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
     pub published_at: Option<Timestamp>,
     pub assets: Vec<Asset>,
     pub changelog_url: Option<String>,

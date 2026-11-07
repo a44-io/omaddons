@@ -12,6 +12,9 @@ use serde_json::{Value, json};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DetailSpec {
     Str,
+    /// An RFC 3339 UTC instant (`…Z`), as a `jiff::Timestamp` prints it; published as a
+    /// `date-time` string, like every instant in the contract (rule 1).
+    Instant,
     Int,
     Num,
     Bool,
@@ -125,6 +128,7 @@ impl DetailSpec {
     fn render(&self, nullable: bool) -> Value {
         let mut schema = match self {
             Self::Str => json!({"type": "string"}),
+            Self::Instant => json!({"type": "string", "format": "date-time"}),
             Self::Int => json!({"type": "integer"}),
             Self::Num => json!({"type": "number"}),
             Self::Bool => json!({"type": "boolean"}),
@@ -181,6 +185,7 @@ impl DetailSpec {
     fn expected(&self) -> String {
         match self {
             Self::Str => "string".to_owned(),
+            Self::Instant => "an RFC 3339 instant".to_owned(),
             Self::Int => "integer".to_owned(),
             Self::Num => "number".to_owned(),
             Self::Bool => "boolean".to_owned(),
@@ -202,6 +207,9 @@ impl DetailSpec {
     fn admit_at(&self, value: &Value, path: &str) -> Result<(), Mismatch> {
         let matches = match self {
             Self::Str => value.is_string(),
+            Self::Instant => value
+                .as_str()
+                .is_some_and(|text| text.parse::<jiff::Timestamp>().is_ok()),
             Self::Int => value.is_i64() || value.is_u64(),
             Self::Num => value.is_number(),
             Self::Bool => value.is_boolean(),
@@ -472,6 +480,9 @@ pub(crate) fn check_rendered(schema: &Value) -> Result<(), String> {
             }
             "description" if value.as_str().is_some_and(|value| !value.trim().is_empty()) => {}
             "description" => return Err("description must be a non-empty string".to_owned()),
+            // An instant (`DetailSpec::Instant`), the only format a detail carries.
+            "format" if value == "date-time" => {}
+            "format" => return Err("format must be date-time".to_owned()),
             // Only an opaque object opens its keys; nothing renders a closed one.
             "additionalProperties" if value == &Value::Bool(true) => {}
             "additionalProperties" => return Err("additionalProperties must be true".to_owned()),
@@ -595,6 +606,42 @@ mod tests {
                 "case {name}: deterministic bytes"
             );
         }
+    }
+
+    /// An instant renders as a `date-time` string (nullable too) and admits only what a
+    /// `jiff::Timestamp` prints.
+    #[test]
+    fn an_instant_is_a_date_time_string() {
+        const INSTANT: DetailSpec = DetailSpec::Instant;
+        assert_eq!(
+            INSTANT.to_json_schema(),
+            json!({"type": "string", "format": "date-time"})
+        );
+        const HELD: DetailSpec = DetailSpec::Object(&[Field::req("reset_at", &INSTANT).nullable()]);
+        assert_eq!(
+            HELD.to_json_schema()["properties"]["reset_at"],
+            json!({"type": ["string", "null"], "format": "date-time"})
+        );
+        assert_eq!(check_rendered(&HELD.to_json_schema()), Ok(()));
+        let printed = "2026-10-14T22:00:00Z"
+            .parse::<jiff::Timestamp>()
+            .unwrap()
+            .to_string();
+        for (case, value, admitted) in [
+            ("as a timestamp prints it", json!(printed), true),
+            ("with an offset", json!("2026-10-14T23:00:00+01:00"), true),
+            ("a date alone", json!("2026-10-14"), false),
+            ("prose", json!("yesterday"), false),
+            ("epoch seconds", json!(1_760_479_200), false),
+        ] {
+            assert_eq!(
+                INSTANT.admits(&value).is_ok(),
+                admitted,
+                "case {case}: {value}"
+            );
+        }
+        let refused = INSTANT.admits(&json!("yesterday")).unwrap_err();
+        assert_eq!(refused.expected, "an RFC 3339 instant", "{refused}");
     }
 
     #[test]

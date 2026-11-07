@@ -97,7 +97,7 @@ impl Budget {
 pub struct RateLimit {
     pub limit: u64,
     pub remaining: u64,
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub reset_at: Timestamp,
 }
 

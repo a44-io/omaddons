@@ -29,7 +29,7 @@ pub const VOLATILE: &[(&str, &str)] = &[
     ("actions.*.backup", "a new doctor run per invocation"),
     // `doctor gc`'s cutoff (M4-D36).
     (
-        "before",
+        "before_at",
         "an age resolves against the clock; pass an RFC 3339 time for a fixed value",
     ),
     // `lock-held-long`'s evidence (`doctor` and `doctor fix`; `doctor explain`'s instances).

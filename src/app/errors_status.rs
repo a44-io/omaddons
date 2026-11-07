@@ -46,10 +46,10 @@ pub struct TargetErrors {
     /// The addons with the most new errors, then occurrences, then by name; at most 5.
     pub top: Vec<TopAddon>,
     /// When the client last wrote a BugGrabber file (at logout or `/reload`).
-    #[schemars(with = "Option<String>")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
     pub last_session_at: Option<Timestamp>,
     /// When the newest dismissal in effect was made; `null` when none.
-    #[schemars(with = "Option<String>")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
     pub dismissed_at: Option<Timestamp>,
     /// Why the read was incomplete (`partial`, `unreadable`), for the human line.
     #[serde(skip)]

@@ -45,7 +45,7 @@ pub struct SourceSkipped {
     /// When a rate limit lifts; omitted unless `reason` is `rate_limited` and the reset
     /// time is known.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "Option<String>")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
     pub reset_at: Option<jiff::Timestamp>,
 }
 

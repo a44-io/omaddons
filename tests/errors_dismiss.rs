@@ -191,7 +191,7 @@ fn a_dismissal_clears_new_records_itself_and_survives_a_cache_wipe() {
     assert_eq!(support::new_errors(&home, "retail"), 0);
     let read = support::run(&home, &["errors", "-t", "retail"]).expect(0);
     assert_eq!(support::first(&read)["databases"][0]["acknowledged"], 10);
-    assert!(support::first(&read)["dismissed"].is_string());
+    assert!(support::first(&read)["dismissed_at"].is_string());
     assert!(
         !read["commands"]
             .as_array()

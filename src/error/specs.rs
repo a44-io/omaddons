@@ -7,6 +7,7 @@ use serde_json::{Map, Value};
 use super::{DetailSpec, ErrorCode, Field, Mismatch};
 
 const STR: DetailSpec = DetailSpec::Str;
+const INSTANT: DetailSpec = DetailSpec::Instant;
 const INT: DetailSpec = DetailSpec::Int;
 const BOOL: DetailSpec = DetailSpec::Bool;
 const STRINGS: DetailSpec = DetailSpec::Array(&STR);
@@ -65,7 +66,7 @@ pub(crate) const HOLDER: DetailSpec = DetailSpec::Object(&[
     Field::opt("age_s", &INT),
     Field::req("command", &STR),
     Field::req("pid", &INT),
-    Field::req("started_at", &STR),
+    Field::req("started_at", &INSTANT),
 ]);
 
 /// `engine/plan.rs` candidate attempts: reason includes interpolated prose.
@@ -452,7 +453,7 @@ pub(crate) const CHECK_FAILED: DetailSpec = DetailSpec::Object(&[
 /// Network transport/decoding constructors carry no own details.
 pub(crate) const NETWORK: DetailSpec = DetailSpec::EMPTY;
 /// `Error::rate_limited`; item aggregation retains reset_at.
-pub(crate) const RATE_LIMITED: DetailSpec = DetailSpec::Object(&[Field::req("reset_at", &STR)]);
+pub(crate) const RATE_LIMITED: DetailSpec = DetailSpec::Object(&[Field::req("reset_at", &INSTANT)]);
 /// Git subprocess download failures carry no own details.
 pub(crate) const DOWNLOAD_FAILED: DetailSpec = DetailSpec::EMPTY;
 /// `Error::http_status`; item aggregation can discard status.

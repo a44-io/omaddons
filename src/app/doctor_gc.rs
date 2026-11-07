@@ -165,7 +165,7 @@ impl DoctorOutcome for GcRun {
 /// The human output: what is (or would be) deleted, what it costs, what is kept, where
 /// `latest` goes, and the token or what remains.
 fn render(r: &GcReport, verbose: bool, w: &mut dyn Write) -> std::io::Result<()> {
-    let before = r.before.strftime("%Y-%m-%d %H:%M UTC");
+    let before = r.before_at.strftime("%Y-%m-%d %H:%M UTC");
     let kept = r.exclusions.len();
     if r.deletions.is_empty() {
         writeln!(w, "nothing to delete before {before} (kept {kept})")?;
@@ -560,7 +560,7 @@ mod tests {
     fn report() -> GcReport {
         GcReport {
             dry_run: true,
-            before: "2026-09-30T18:03:00Z".parse().unwrap(),
+            before_at: "2026-09-30T18:03:00Z".parse().unwrap(),
             deletions: vec![
                 deletion(
                     DeletionKind::CacheQuarantine,

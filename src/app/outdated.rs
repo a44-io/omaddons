@@ -72,7 +72,7 @@ pub struct OutdatedArgs {
 pub struct OutdatedData {
     /// When the oldest release metadata this check used was fetched; `null` when nothing
     /// was checked.
-    #[schemars(with = "Option<String>")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
     pub checked_at: Option<Timestamp>,
     pub requests: Requests,
     /// Every selected target, sorted by id.

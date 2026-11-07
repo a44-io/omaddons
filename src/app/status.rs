@@ -163,7 +163,7 @@ pub struct LastChange {
     pub run: Option<RunId>,
     /// Its newest transaction's kind (`undo` for an undo, which the widget calls a redo).
     pub kind: TxKind,
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub at: Timestamp,
     pub actor: Actor,
     pub reason: Option<String>,
@@ -281,7 +281,7 @@ pub struct UpdateCounts {
     pub failed: usize,
     pub unchecked: usize,
     /// The oldest check of its checkable addons; `null` when one was never checked.
-    #[schemars(with = "Option<String>")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
     pub checked_at: Option<Timestamp>,
     /// `checked_at` is older than `check_interval_hours` (or in the future).
     pub stale: bool,

@@ -46,6 +46,20 @@ pub fn generator() -> SchemaGenerator {
     settings().into_generator()
 }
 
+/// The schema of a serialized `jiff::Timestamp`, an RFC 3339 UTC string (`…Z`). Its
+/// `format: date-time` lets the contract's rule 1 find every instant by its type, under
+/// whatever key it sits (`tests/contract/rules.rs`, `r1-instant-type`). Used as
+/// `#[schemars(schema_with = "crate::contract::schema::timestamp")]` on every
+/// `Timestamp` field; `format` is an annotation, so the schema stays as open as before.
+pub fn timestamp(_: &mut SchemaGenerator) -> Schema {
+    schemars::json_schema!({"type": "string", "format": "date-time"})
+}
+
+/// [`timestamp`] for an `Option<Timestamp>`: the instant, or `null`.
+pub fn timestamp_opt(_: &mut SchemaGenerator) -> Schema {
+    schemars::json_schema!({"type": ["string", "null"], "format": "date-time"})
+}
+
 /// One command's data schema, titled with its canonical command path.
 pub fn command_schema(entry: &CommandEntry) -> Schema {
     let mut schema = (entry.data)(&mut generator());
@@ -318,6 +332,40 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
+
+    /// Both helpers publish `format: date-time`, the optional one admitting `null`, and
+    /// leave a field's presence to serde as `with = "String"` did (M4-D9): an
+    /// `Option` that is always serialized stays required, one skipped when `None` does not.
+    #[test]
+    fn timestamps_publish_format_date_time() {
+        #[derive(Serialize, JsonSchema)]
+        struct Instants {
+            #[schemars(schema_with = "crate::contract::schema::timestamp")]
+            at: jiff::Timestamp,
+            #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
+            checked_at: Option<jiff::Timestamp>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
+            dismissed_at: Option<jiff::Timestamp>,
+        }
+        let schema = serde_json::to_value(generator().into_root_schema_for::<Instants>()).unwrap();
+        let properties = &schema["properties"];
+        assert_eq!(
+            properties["at"],
+            serde_json::json!({"type": "string", "format": "date-time"}),
+            "{schema}"
+        );
+        assert_eq!(
+            properties["checked_at"],
+            serde_json::json!({"type": ["string", "null"], "format": "date-time"}),
+            "{schema}"
+        );
+        assert_eq!(
+            strings(&schema["required"]),
+            BTreeSet::from(["at", "checked_at"]),
+            "an always-serialized Option is required, a skipped one is not: {schema}"
+        );
+    }
 
     fn strings(value: &Value) -> BTreeSet<&str> {
         value

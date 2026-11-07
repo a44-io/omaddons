@@ -124,7 +124,7 @@ expression: s.stable(&c.envelope)
           "databases": 1,
           "precondition": "<precondition>"
         },
-        "dismissed": null,
+        "dismissed_at": null,
         "files": {
           "accounts": 1,
           "partial": 0,

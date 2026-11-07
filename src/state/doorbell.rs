@@ -23,7 +23,7 @@ use crate::model::Actor;
 /// The last ring.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Doorbell {
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub at: Timestamp,
     /// The command that rang, as its envelope's `command` names it.
     pub command: String,

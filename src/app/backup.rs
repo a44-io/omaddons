@@ -309,9 +309,9 @@ pub struct AutoView {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct BackupItem {
     pub id: BackupId,
-    #[schemars(with = "Option<String>")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
     pub created_at: Option<Timestamp>,
-    #[schemars(with = "Option<String>")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
     pub captured_at: Option<Timestamp>,
     pub kind: Option<BackupKind>,
     pub trigger: Option<Trigger>,
@@ -324,7 +324,7 @@ pub struct BackupItem {
     pub unsettled: Option<u64>,
     pub consistency: Option<Consistency>,
     pub integrity: Option<Integrity>,
-    #[schemars(with = "Option<String>")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
     pub verified_at: Option<Timestamp>,
     pub baseline: Option<Baseline>,
     pub restorable: bool,
@@ -1590,7 +1590,7 @@ pub struct BackupRestoreData {
     /// The stored preview's id; `null` on a real run or when storage declined.
     pub plan_id: Option<PlanId>,
     /// The stored preview's expiry; `null` when no plan was stored.
-    #[schemars(with = "Option<String>")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
     pub plan_expires_at: Option<Timestamp>,
     /// What approving this dry run covers; `null` on a real run.
     pub approval: Option<Approval>,
@@ -1634,7 +1634,7 @@ pub enum FoldersFrom {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct RestoreSource {
     pub id: BackupId,
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub captured_at: Timestamp,
     pub kind: BackupKind,
     /// What its content is proved to be (M3-D47): `verified` only when the copy put back
@@ -2255,7 +2255,7 @@ pub struct BackupPruneData {
     /// The stored preview's id; `null` on real runs, no-ops and declined stores.
     pub plan_id: Option<PlanId>,
     /// The stored preview's expiry; `null` when no plan was stored.
-    #[schemars(with = "Option<String>")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
     pub plan_expires_at: Option<Timestamp>,
     /// What approving this dry run covers; `null` on a real run.
     pub approval: Option<Approval>,

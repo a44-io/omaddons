@@ -151,7 +151,7 @@ pub struct Prepared {
     pub target_key: TargetKey,
     pub client_dir: PathBuf,
     pub kind: TxKind,
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub started_at: Timestamp,
     /// Directories the transaction creates before its first rename: the
     /// `Interface/AddOns` of a client that has never been launched. Recovery leaves

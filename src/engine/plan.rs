@@ -490,9 +490,9 @@ pub struct Plan {
     pub schema_version: &'static str,
     /// Stored plans arrive in M4.
     pub plan_id: Option<String>,
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub created_at: Timestamp,
-    #[schemars(with = "Option<String>")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
     pub expires_at: Option<Timestamp>,
     pub argv: Vec<String>,
     pub actor: Actor,

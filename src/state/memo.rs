@@ -49,7 +49,7 @@ pub struct LookBackMemo {
     pub newest: String,
     #[serde(flatten)]
     pub look_back: crate::sources::LookBack,
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub at: Timestamp,
 }
 
@@ -85,7 +85,7 @@ impl Versioned for ReleaseMemo {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MemoEntry {
     pub wanted: MemoWanted,
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub fetched_at: Timestamp,
     /// The source's cheap re-check token: the newest release id, until a source offers a
     /// cheaper probe (a GitHub tag, a git sha).
@@ -113,7 +113,7 @@ pub struct MemoWanted {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct KnownRelease {
     pub release_id: String,
-    #[schemars(with = "Option<String>")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
     pub published_at: Option<Timestamp>,
 }
 
@@ -122,7 +122,7 @@ pub struct KnownRelease {
 pub struct MemoFailure {
     pub code: ErrorCode,
     pub message: String,
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub at: Timestamp,
 }
 
@@ -156,7 +156,7 @@ pub struct VerdictFact {
     /// The interface the addon's own folder declares.
     #[serde(default)]
     pub primary_interface: Option<u32>,
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub at: Timestamp,
     /// The [`crate::toc::judge_digest`] it was judged under: believed only while the
     /// client's is the same. `None` (written before 1.1) is another judge's.
@@ -167,7 +167,7 @@ pub struct VerdictFact {
 /// The Tukui index: version metadata only, never URLs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TukuiList {
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub fetched_at: Timestamp,
     pub entries: Vec<TukuiEntry>,
 }

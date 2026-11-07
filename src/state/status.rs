@@ -22,7 +22,7 @@ use crate::model::{AddonState, TargetKey};
 /// The summary file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct StatusFile {
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub generated_at: Timestamp,
     pub generations: BTreeMap<TargetKey, u64>,
     pub targets: BTreeMap<TargetKey, TargetSummary>,

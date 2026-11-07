@@ -428,8 +428,8 @@ pub struct ErrorsTarget {
     /// token that binds it to this read (`--if-match`).
     pub dismiss: DismissInfo,
     /// When the newest of this client's valid dismissals was made; `null` when none.
-    #[schemars(with = "Option<String>")]
-    pub dismissed: Option<Timestamp>,
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
+    pub dismissed_at: Option<Timestamp>,
 }
 
 /// A dismissal's preview, from the read.
@@ -1262,7 +1262,7 @@ impl View<'_> {
             },
             addons,
             dismiss,
-            dismissed,
+            dismissed_at: dismissed,
         }
     }
 

@@ -42,7 +42,7 @@ pub struct RegistryEntry {
     /// What discovery qualified the id with on a collision.
     pub qualifier: String,
     pub origin: Origin,
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub registered_at: Timestamp,
 }
 

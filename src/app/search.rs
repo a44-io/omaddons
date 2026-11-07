@@ -84,7 +84,7 @@ pub struct SearchResult {
     pub summary: Option<String>,
     /// `{downloads}` (WoWInterface) or `{stars}` (GitHub); `null` otherwise.
     pub popularity: Option<Popularity>,
-    #[schemars(with = "Option<String>")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
     pub updated_at: Option<Timestamp>,
     /// A hint per selected client, by target id; `install` verifies.
     pub compat: BTreeMap<String, Compat>,

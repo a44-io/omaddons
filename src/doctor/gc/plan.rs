@@ -45,9 +45,10 @@ const LATEST_STATES: [&str; 3] = ["DONE_OK", "DONE_FINDINGS", "DONE_PARTIAL"];
 pub struct GcReport {
     /// A preview: nothing was deleted.
     pub dry_run: bool,
-    /// What started before this is eligible.
-    #[schemars(with = "String")]
-    pub before: Timestamp,
+    /// What started before this instant is eligible: `--before`, resolved when the
+    /// command started. Pass it back as `--before` to bind a run exactly to a preview.
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
+    pub before_at: Timestamp,
     /// What is deleted (or, in a preview, would be), in deletion order.
     pub deletions: Vec<GcDeletion>,
     /// What is kept although it is old enough, and why, sorted by path.
@@ -257,7 +258,7 @@ pub fn plan(view: &GcView, cap: usize) -> GcPlan {
     let latest = latest_change(view, &deleted);
     let report = GcReport {
         dry_run: false,
-        before: view.before,
+        before_at: view.before,
         deletions: deleted.iter().map(|d| deletion(d)).collect(),
         exclusions,
         lost_undos,

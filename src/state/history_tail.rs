@@ -47,7 +47,7 @@ pub struct HistoryTail {
     /// When the newest line before `covers.from` was written: a run started later has no
     /// line before it.
     #[serde(default)]
-    #[schemars(with = "Option<String>")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
     pub dropped_at: Option<jiff::Timestamp>,
     /// The folders `skill` history lines name, newest first, each once, at most
     /// [`SKILL_DIRS_MAX`]: every installed skill the skill drift check follows, however

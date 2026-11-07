@@ -40,10 +40,10 @@ use crate::state::store::{self, SchemaVersion, VersionStatus, Versioned};
 #[serde(deny_unknown_fields)]
 pub struct StoredPlan {
     pub plan_id: PlanId,
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub created_at: Timestamp,
     /// `created_at` and `PLAN_TTL`.
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub expires_at: Timestamp,
     pub tool_version: String,
     pub build_id: String,

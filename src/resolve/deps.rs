@@ -226,7 +226,7 @@ pub struct DepCandidate {
     pub name: String,
     pub via: DepVia,
     /// When the project last changed (WoWInterface), so a message can say why.
-    #[schemars(with = "Option<String>")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
     pub updated_at: Option<Timestamp>,
 }
 
