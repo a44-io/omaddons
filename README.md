@@ -3017,7 +3017,7 @@ Every rules edit applies on the next command. The discovery cache records the ru
 | `OMARCHY_PATH` | Where `omarchy install` also looks for Omarchy's shell (`$OMARCHY_PATH/shell`) when `omarchy-shell` is not on `PATH`. Omarchy's tools get it, with the rest of the environment, unchanged |
 | `PATH` | Where `gh`, `git` and `omarchy-shell` are found; `git` runs with only `PATH` from your environment |
 
-Debug builds also read `OMADDONS_FAILPOINTS`, `OMADDONS_FAILPOINT_DIR`, `OMADDONS_HTTP_FIXTURES`, `OMADDONS_RECORD`, `OMADDONS_PROC_ROOT`, `OMADDONS_NOW` (an RFC 3339 time that freezes the clock), `OMADDONS_FS_CLONE` (`yes` or `no`: whether the filesystem under a client clones files), `OMADDONS_FS_FREE_MB` (the free space backups see), `OMADDONS_WIDGET_ID` (a suffix of up to 32 lowercase letters, digits and `-` that installs a separate copy of the bar widget) and `OMADDONS_TEST_FIXERS` (`1` registers the doctor's test-only fixers) for testing. Release builds ignore them. `OMADDONS_ALLOW_SKIP`, `OMADDONS_REAL_MACHINE`, `OMADDONS_LIVE`, `OMADDONS_REAL_CUSTOM_ROOT`, `OMADDONS_WRITE_SEEDS`, `OMADDONS_WIDGET_OUT`, `OMADDONS_TEST_LOG`, `OMADDONS_UPDATE_SKILL`, `OMADDONS_UPDATE_WIRE_NAMES`, `BENCH_HOME`, `LIVE_HOME` and `COVERAGE_HOME` are read only by the test harness, never by the binary (see [Milestone checkpoints](#milestone-checkpoints-not-part-of-the-gate) and [Test logs and `argc e2e`](#test-logs-and-argc-e2e)).
+Debug builds also read `OMADDONS_FAILPOINTS`, `OMADDONS_FAILPOINT_DIR`, `OMADDONS_HTTP_FIXTURES`, `OMADDONS_RECORD`, `OMADDONS_PROC_ROOT`, `OMADDONS_NOW` (an RFC 3339 time that freezes the clock), `OMADDONS_FS_CLONE` (`yes` or `no`: whether the filesystem under a client clones files), `OMADDONS_FS_FREE_MB` (the free space backups see), `OMADDONS_WIDGET_ID` (a suffix of up to 32 lowercase letters, digits and `-` that installs a separate copy of the bar widget) and `OMADDONS_TEST_FIXERS` (`1` registers the doctor's test-only fixers) for testing. Release builds ignore them. `OMADDONS_ALLOW_SKIP`, `OMADDONS_REAL_MACHINE`, `OMADDONS_LIVE`, `OMADDONS_REAL_CUSTOM_ROOT`, `OMADDONS_WRITE_SEEDS`, `OMADDONS_WIDGET_OUT`, `OMADDONS_TEST_LOG`, `OMADDONS_UPDATE_SKILL`, `OMADDONS_UPDATE_WIRE_NAMES`, `OMADDONS_ADVANCE_RELEASED_BASELINE`, `BENCH_HOME`, `LIVE_HOME` and `COVERAGE_HOME` are read only by the test harness, never by the binary (see [Milestone checkpoints](#milestone-checkpoints-not-part-of-the-gate) and [Test logs and `argc e2e`](#test-logs-and-argc-e2e)).
 
 A test fails when the binary reads a variable this section does not list.
 
@@ -3548,7 +3548,10 @@ OMADDONS_REAL_MACHINE=1 OMADDONS_LIVE=1 OMADDONS_ALLOW_SKIP=keyless_installs_for
   cargo test --test integration real_machine:: -- --ignored --test-threads=1   # this machine's clients; every addon change is undone
 OMADDONS_ALLOW_SKIP=zsh_accepts_its_script,fish_accepts_its_script \
   cargo test --test integration completions:: -- --ignored   # zsh -n and fish --no-execute over the generated scripts
+OMADDONS_ADVANCE_RELEASED_BASELINE=1.0 cargo test --test integration contract::wire_names   # the release step: writes tests/contract/released/1.0.json and flips the golden's header (the tag commit)
 ```
+
+The release step refuses unless `output::SCHEMA_VERSION` is that version, the committed golden matches the code, the baseline does not exist yet, and the change since the previous baseline carries its bump; it is run once per release, in the tag commit.
 
 Where zsh or fish is not installed, its check prints `SKIP` and the variable accepts it: the M4 plan pre-accepts exactly these two skips. bash's check runs in every gate and is never skipped.
 

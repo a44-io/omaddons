@@ -14,6 +14,7 @@ const CLEARED: &[&str] = &[
     "XDG_DATA_DIRS",
     "XDG_CONFIG_DIRS",
     "OMADDONS_UPDATE_WIRE_NAMES",
+    "OMADDONS_ADVANCE_RELEASED_BASELINE",
 ];
 
 /// Settings every child gets: local times in UTC (M3 common rule 13), a filesystem that

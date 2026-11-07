@@ -258,6 +258,12 @@ pub const ENV_VARS: &[EnvVar] = &[
         "1 makes tests/contract/wire_names.rs regenerate the contract's current golden",
         None,
     ),
+    var(
+        "OMADDONS_ADVANCE_RELEASED_BASELINE",
+        EnvKind::Harness,
+        "A contract version: the release step writes tests/contract/released/<version>.json",
+        None,
+    ),
 ];
 
 /// The rows capabilities publishes.

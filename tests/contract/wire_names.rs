@@ -71,16 +71,20 @@ impl Workspace {
 pub struct Mode {
     /// Rewrite the current golden first ([`Mode::UPDATE_VAR`] is `1`).
     pub update_golden: bool,
-    /// Write a released baseline at this version (the release step, a later subtask).
+    /// Write a released baseline at this version first ([`Mode::ADVANCE_VAR`]): the
+    /// release step, run once per release, in the tag commit.
     pub advance: Option<SchemaVersion>,
 }
 
 impl Mode {
     pub const UPDATE_VAR: &'static str = "OMADDONS_UPDATE_WIRE_NAMES";
+    pub const ADVANCE_VAR: &'static str = "OMADDONS_ADVANCE_RELEASED_BASELINE";
 
     /// The mode the variables give: [`Mode::UPDATE_VAR`] unset or empty compares only,
     /// exactly `1` regenerates, and any other value is refused, so a typo never compares
-    /// silently instead.
+    /// silently instead. [`Mode::ADVANCE_VAR`] names a canonical `MAJOR.MINOR` to release,
+    /// and never goes with the updater: a baseline is cut only from a golden that already
+    /// matched the code.
     pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<Mode, String> {
         let update_golden = match lookup(Self::UPDATE_VAR).as_deref() {
             None | Some("") => false,
@@ -92,9 +96,28 @@ impl Mode {
                 ));
             }
         };
+        let advance = match lookup(Self::ADVANCE_VAR).as_deref() {
+            None | Some("") => None,
+            Some(value) => match value.parse::<SchemaVersion>() {
+                Ok(version) if version.to_string() == value => Some(version),
+                _ => {
+                    return Err(format!(
+                        "{} must be a contract version such as 1.0 (it is {value:?})",
+                        Self::ADVANCE_VAR
+                    ));
+                }
+            },
+        };
+        if update_golden && advance.is_some() {
+            return Err(format!(
+                "{} and {} are exclusive: regenerate and commit the golden first, then advance the baseline from it",
+                Self::UPDATE_VAR,
+                Self::ADVANCE_VAR
+            ));
+        }
         Ok(Mode {
             update_golden,
-            advance: None,
+            advance,
         })
     }
 
@@ -572,10 +595,119 @@ pub fn write_golden(ws: &Workspace, expected: &Golden) -> Result<Vec<PathBuf>, S
     Ok(written)
 }
 
-/// The gate's run on `ws`: the release step (a later subtask), the header, the updater
-/// when `mode` asks, then comparison 1 whenever a released baseline exists, then
-/// comparison 2. Every failure is collected; the updater writes even when comparison 1
-/// then fails, so the semantic diff shows in `git diff`, and the run still fails.
+/// The release step: writes `released/<version>.json`, the manifest with its provenance,
+/// and returns its path. It refuses, writing nothing, at the first check that fails: the
+/// version is not the contract's; the committed golden does not match the code; the
+/// baseline exists already; the version is not newer than the newest baseline, or the
+/// change since it does not carry its bump; the provenance cannot be had (asked last, so
+/// no refusal needs `git`).
+pub fn advance(
+    ws: &Workspace,
+    version: SchemaVersion,
+    current: &Manifest,
+    contract: SchemaVersion,
+    provenance: &dyn Fn() -> Result<Provenance, String>,
+) -> Result<PathBuf, String> {
+    release_to(ws, version, current, contract, provenance).map(|(path, _)| path)
+}
+
+/// [`advance`], also returning the provenance it recorded.
+fn release_to(
+    ws: &Workspace,
+    version: SchemaVersion,
+    current: &Manifest,
+    contract: SchemaVersion,
+    provenance: &dyn Fn() -> Result<Provenance, String>,
+) -> Result<(PathBuf, Provenance), String> {
+    if version != contract {
+        return Err(format!(
+            "the release step advances to {version}, but output::SCHEMA_VERSION is {contract}"
+        ));
+    }
+    let expected = golden(current, &header(ws, contract)?);
+    compare_with_golden(ws, &expected, current).map_err(|e| {
+        format!(
+            "the current golden must match the code before a release: regenerate and commit it first ({REGENERATE})\n{e}"
+        )
+    })?;
+    let path = ws.released_dir().join(format!("{version}.json"));
+    if path.exists() {
+        let tag = fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .and_then(|value| value["provenance"]["tag"].as_str().map(str::to_owned))
+            .unwrap_or_else(|| "an unreadable tag".to_owned());
+        return Err(format!(
+            "{} exists (contract {version} was released at tag {tag}): a released baseline is never rewritten",
+            ws.name(&path)
+        ));
+    }
+    if let Some(baseline) = newest_baseline(ws)? {
+        if baseline.version >= version {
+            return Err(format!(
+                "contract {version} is not newer than the released {}",
+                baseline.version
+            ));
+        }
+        compare_with_released(&baseline, current, version)?;
+    }
+    let mut recorded = provenance()
+        .map_err(|e| format!("the release step records the commit it was generated from: {e}"))?;
+    // The file's own version, which `newest_baseline` checks against its name.
+    recorded.contract_version = version.to_string();
+    let value = serde_json::to_value(&recorded).map_err(|e| format!("provenance: {e}"))?;
+    let text = current.render(&[("provenance", &value)]);
+    let dir = ws.released_dir();
+    let temporary = dir.join(format!(".{version}.json.tmp"));
+    fs::create_dir_all(&dir)
+        .and_then(|()| fs::write(&temporary, text))
+        .and_then(|()| fs::rename(&temporary, &path))
+        .map_err(|e| format!("{} could not be written: {e}", ws.name(&path)))?;
+    Ok((path, recorded))
+}
+
+/// The provenance of a baseline released now at `version`: the tag the crate version
+/// gives (the tag is made after the commit that holds the baseline, so it cannot be
+/// read), the commit `git rev-parse HEAD` names, and the time in whole UTC seconds.
+pub fn real_provenance(version: SchemaVersion) -> Result<Provenance, String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .map_err(|e| format!("git rev-parse HEAD could not run: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "git rev-parse HEAD failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let commit = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let hex = commit.len() == 40
+        && commit
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    if !hex {
+        return Err(format!(
+            "git rev-parse HEAD printed {commit:?}, not a 40-digit commit"
+        ));
+    }
+    let now = jiff::Timestamp::now().as_second();
+    let created_at = jiff::Timestamp::from_second(now)
+        .map_err(|e| format!("the clock: {e}"))?
+        .to_string();
+    Ok(Provenance {
+        contract_version: version.to_string(),
+        tag: format!("v{}", env!("CARGO_PKG_VERSION")),
+        commit,
+        created_at,
+    })
+}
+
+/// The gate's run on `ws`: the release step when `mode` asks (a refusal is then the run's
+/// only failure), the header, the updater when `mode` asks or a release was written, then
+/// comparison 1 whenever a released baseline exists, then comparison 2. Every failure is
+/// collected; the updater writes even when comparison 1 then fails, so the semantic diff
+/// shows in `git diff`, and the run still fails.
 pub fn gate(
     ws: &Workspace,
     mode: &Mode,
@@ -584,16 +716,37 @@ pub fn gate(
     provenance: &dyn Fn() -> Result<Provenance, String>,
 ) -> Outcome {
     let mut out = Outcome::default();
-    out.notes.push(if mode.update_golden {
-        format!(
+    out.notes.push(match (mode.update_golden, mode.advance) {
+        (_, Some(release)) => format!(
+            "mode: release contract {release} ({}={release}), then regenerate the golden's header and compare",
+            Mode::ADVANCE_VAR
+        ),
+        (true, None) => format!(
             "mode: regenerate the current golden ({}=1), then compare",
             Mode::UPDATE_VAR
-        )
-    } else {
-        "mode: compare".to_owned()
+        ),
+        (false, None) => "mode: compare".to_owned(),
     });
-    // The release step writes a baseline from `provenance` (omad-m4-agent-surface-doctor-c6cm.8.2.2).
-    let _ = provenance;
+    let mut update_golden = mode.update_golden;
+    if let Some(release) = mode.advance {
+        match release_to(ws, release, current, version, provenance) {
+            Ok((path, recorded)) => {
+                let short: String = recorded.commit.chars().take(12).collect();
+                out.notes.push(format!(
+                    "wrote {} (contract {release}, tag {}, commit {short}); the current golden's header now says frozen: true; commit both in the tag commit",
+                    ws.name(&path),
+                    recorded.tag
+                ));
+                out.written.push(path);
+                // The header is computed after the baseline exists: only its lines change.
+                update_golden = true;
+            }
+            Err(e) => {
+                out.failures.push(e);
+                return out;
+            }
+        }
+    }
     let header = match header(ws, version) {
         Ok(header) => Some(header),
         Err(e) => {
@@ -602,7 +755,7 @@ pub fn gate(
         }
     };
     let expected = header.map(|header| golden(current, &header));
-    if let (true, Some(expected)) = (mode.update_golden, &expected) {
+    if let (true, Some(expected)) = (update_golden, &expected) {
         match write_golden(ws, expected) {
             Ok(written) if written.is_empty() => {
                 out.notes
@@ -662,9 +815,8 @@ pub fn run_from_env(ws: &Workspace) -> Outcome {
             };
         }
     };
-    let provenance = || -> Result<Provenance, String> {
-        Err("the release step arrives with omad-m4-agent-surface-doctor-c6cm.8.2.2".to_owned())
-    };
+    let release = mode.advance.unwrap_or(version);
+    let provenance = || real_provenance(release);
     gate(ws, &mode, support::manifest(), version, &provenance)
 }
 
@@ -1397,5 +1549,393 @@ mod tests {
         );
         assert!(out.failures[0].starts_with("compared with the released baseline"));
         assert!(out.failures[1].starts_with("the current golden is out of date"));
+    }
+
+    #[test]
+    fn mode_advance_cases() {
+        let mode = |update: Option<&str>, advance: Option<&str>| {
+            let vars: BTreeMap<&str, &str> =
+                [(Mode::UPDATE_VAR, update), (Mode::ADVANCE_VAR, advance)]
+                    .into_iter()
+                    .filter_map(|(key, value)| value.map(|value| (key, value)))
+                    .collect();
+            Mode::from_lookup(|key| vars.get(key).map(|v| (*v).to_owned()))
+        };
+        for (case, value, want) in [
+            ("advance_one_zero", "1.0", Some(v(1, 0))),
+            ("advance_two_three", "2.3", Some(v(2, 3))),
+            ("advance_empty_is_off", "", None),
+        ] {
+            assert_eq!(
+                mode(None, Some(value)),
+                Ok(Mode {
+                    update_golden: false,
+                    advance: want
+                }),
+                "{case}: {value:?}"
+            );
+        }
+        for (case, value) in [
+            ("advance_leading_zero_fails", "01.0"),
+            ("advance_three_parts_fails", "1.0.0"),
+            ("advance_v_prefix_fails", "v1.0"),
+            ("advance_word_fails", "latest"),
+        ] {
+            let got = mode(None, Some(value));
+            assert!(
+                got.as_ref().is_err_and(
+                    |e| e.contains(Mode::ADVANCE_VAR) && e.contains(&format!("{value:?}"))
+                ),
+                "{case}: {got:?}"
+            );
+        }
+        let both = mode(Some("1"), Some("1.0"));
+        assert!(
+            both.as_ref().is_err_and(|e| e.contains("are exclusive")),
+            "both_set_fails: {both:?}"
+        );
+    }
+
+    /// A release closure with fixed values that counts its calls.
+    struct Releaser {
+        calls: std::cell::Cell<usize>,
+        fail: bool,
+    }
+
+    impl Releaser {
+        fn new(fail: bool) -> Self {
+            Self {
+                calls: std::cell::Cell::new(0),
+                fail,
+            }
+        }
+
+        fn provenance(&self) -> Result<Provenance, String> {
+            self.calls.set(self.calls.get() + 1);
+            if self.fail {
+                return Err("no git here".to_owned());
+            }
+            Ok(Provenance {
+                contract_version: "set by advance".to_owned(),
+                tag: "v0.1.0".to_owned(),
+                commit: "0".repeat(40),
+                created_at: "2026-01-01T00:00:00Z".to_owned(),
+            })
+        }
+    }
+
+    fn releasing(version: SchemaVersion) -> Mode {
+        Mode {
+            update_golden: false,
+            advance: Some(version),
+        }
+    }
+
+    fn updating() -> Mode {
+        Mode {
+            update_golden: true,
+            advance: None,
+        }
+    }
+
+    #[test]
+    fn advance_refusal_cases() {
+        let m = synthetic(&base());
+        let breaking = without(base(), &["input install --channel"]);
+        let open = Header {
+            contract: v(1, 0),
+            frozen: false,
+        };
+        let current_golden = |ws: &Workspace| workspace_with(ws, &golden(&m, &open));
+        let first_release = |ws: &Workspace| {
+            current_golden(ws);
+            let ok = Releaser::new(false);
+            let out = gate(ws, &releasing(v(1, 0)), &m, v(1, 0), &|| ok.provenance());
+            assert!(
+                out.failures.is_empty(),
+                "the first release: {:?}",
+                out.failures
+            );
+        };
+        // (case, setup, the release, the contract version, the manifest, the phrase)
+        type Refusal<'a> = (
+            &'a str,
+            Setup<'a>,
+            SchemaVersion,
+            SchemaVersion,
+            &'a Manifest,
+            &'a str,
+            bool,
+        );
+        let cases: [Refusal<'_>; 7] = [
+            (
+                "wrong_version",
+                &current_golden,
+                v(1, 1),
+                v(1, 0),
+                &m,
+                "the release step advances to 1.1, but output::SCHEMA_VERSION is 1.0",
+                false,
+            ),
+            (
+                "golden_missing",
+                &|_| {},
+                v(1, 0),
+                v(1, 0),
+                &m,
+                "is missing",
+                false,
+            ),
+            (
+                "golden_stale",
+                &|ws| workspace_with(ws, &golden(&synthetic(&base()[..4]), &open)),
+                v(1, 0),
+                v(1, 0),
+                &m,
+                "the current golden must match the code before a release",
+                false,
+            ),
+            (
+                "baseline_exists",
+                &first_release,
+                v(1, 0),
+                v(1, 0),
+                &m,
+                "tests/contract/released/1.0.json exists (contract 1.0 was released at tag v0.1.0): a released baseline is never rewritten",
+                false,
+            ),
+            (
+                "not_newer",
+                &|ws| {
+                    release(ws, "1.1.json", &m, "1.1");
+                    workspace_with(
+                        ws,
+                        &golden(
+                            &m,
+                            &Header {
+                                contract: v(1, 0),
+                                frozen: true,
+                            },
+                        ),
+                    );
+                },
+                v(1, 0),
+                v(1, 0),
+                &m,
+                "contract 1.0 is not newer than the released 1.1",
+                false,
+            ),
+            (
+                "previous_unsatisfied",
+                &|ws| {
+                    first_release(ws);
+                    let out = gate(ws, &updating(), &breaking, v(1, 1), &|| Err(String::new()));
+                    assert_eq!(out.written.len(), 2, "the golden regenerated at 1.1");
+                },
+                v(1, 1),
+                v(1, 1),
+                &breaking,
+                "a breaking change needs schema_version 2.0",
+                false,
+            ),
+            (
+                "provenance_error",
+                &current_golden,
+                v(1, 0),
+                v(1, 0),
+                &m,
+                "the release step records the commit it was generated from: no git here",
+                true,
+            ),
+        ];
+        for (case, setup, release_to, contract, current, phrase, called) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let ws = Workspace::at(dir.path());
+            setup(&ws);
+            let before = tree(dir.path());
+            let releaser = Releaser::new(case == "provenance_error");
+            let out = gate(&ws, &releasing(release_to), current, contract, &|| {
+                releaser.provenance()
+            });
+            assert_eq!(out.failures.len(), 1, "{case}: {:?}", out.failures);
+            assert!(
+                out.failures[0].contains(phrase),
+                "{case}: {}",
+                out.failures[0]
+            );
+            assert!(out.written.is_empty(), "{case}: wrote {:?}", out.written);
+            assert_eq!(
+                tree(dir.path()),
+                before,
+                "{case}: the workspace is unchanged"
+            );
+            assert_eq!(
+                releaser.calls.get(),
+                usize::from(called),
+                "{case}: provenance asked"
+            );
+        }
+    }
+
+    #[test]
+    fn a_release_writes_its_baseline_and_flips_the_header() {
+        let m = synthetic(&base());
+        let dir = tempfile::tempdir().unwrap();
+        let ws = Workspace::at(dir.path());
+        workspace_with(
+            &ws,
+            &golden(
+                &m,
+                &Header {
+                    contract: v(1, 0),
+                    frozen: false,
+                },
+            ),
+        );
+        let releaser = Releaser::new(false);
+        let out = gate(&ws, &releasing(v(1, 0)), &m, v(1, 0), &|| {
+            releaser.provenance()
+        });
+        assert!(out.failures.is_empty(), "first_release: {:?}", out.failures);
+        assert_eq!(releaser.calls.get(), 1);
+        let baseline = ws.released_dir().join("1.0.json");
+        assert_eq!(
+            out.written,
+            [baseline.clone(), ws.manifest_json(), ws.wire_names_txt()],
+            "the baseline, then both golden files"
+        );
+        assert!(
+            out.notes.iter().any(|n| n.starts_with(
+                "wrote tests/contract/released/1.0.json (contract 1.0, tag v0.1.0, commit 000000000000)"
+            )),
+            "{:?}",
+            out.notes
+        );
+        let frozen = golden(
+            &m,
+            &Header {
+                contract: v(1, 0),
+                frozen: true,
+            },
+        );
+        assert_eq!(
+            fs::read_to_string(ws.manifest_json()).unwrap(),
+            frozen.manifest_json
+        );
+        assert_eq!(
+            fs::read_to_string(ws.wire_names_txt()).unwrap(),
+            frozen.wire_names_txt
+        );
+
+        // baseline_file_layout
+        let text = fs::read_to_string(&baseline).unwrap();
+        assert_eq!(
+            Manifest::parse(&text).unwrap(),
+            m,
+            "the baseline is the manifest"
+        );
+        let recorded = json!({"commit": "0".repeat(40), "contract_version": "1.0", "created_at": "2026-01-01T00:00:00Z", "tag": "v0.1.0"});
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).unwrap()["provenance"],
+            recorded
+        );
+        assert_eq!(
+            text,
+            m.render(&[("provenance", &recorded)]),
+            "the whole text"
+        );
+        let leftovers: Vec<_> = fs::read_dir(ws.released_dir())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .filter(|name| name != "1.0.json")
+            .collect();
+        assert!(leftovers.is_empty(), "no .tmp left: {leftovers:?}");
+
+        // The gate right after it passes, comparing an unchanged manifest with itself.
+        let out = gate(
+            &ws,
+            &Mode {
+                update_golden: false,
+                advance: None,
+            },
+            &m,
+            v(1, 0),
+            &|| Err(String::new()),
+        );
+        assert!(out.failures.is_empty(), "{:?}", out.failures);
+        assert!(
+            out.notes.iter().any(|n| n.ends_with(": no change")),
+            "{:?}",
+            out.notes
+        );
+
+        // previous_satisfied: a breaking change released as 2.0 at contract 2.0.
+        let breaking = without(base(), &["input install --channel"]);
+        let out = gate(&ws, &updating(), &breaking, v(2, 0), &|| Err(String::new()));
+        assert!(
+            out.failures.is_empty(),
+            "regenerated at 2.0: {:?}",
+            out.failures
+        );
+        let out = gate(&ws, &releasing(v(2, 0)), &breaking, v(2, 0), &|| {
+            releaser.provenance()
+        });
+        assert!(
+            out.failures.is_empty(),
+            "previous_satisfied: {:?}",
+            out.failures
+        );
+        assert!(ws.released_dir().join("2.0.json").is_file());
+        let out = gate(
+            &ws,
+            &Mode {
+                update_golden: false,
+                advance: None,
+            },
+            &breaking,
+            v(2, 0),
+            &|| Err(String::new()),
+        );
+        assert!(
+            out.failures.is_empty()
+                && out
+                    .notes
+                    .iter()
+                    .any(|n| n == "comparing with tests/contract/released/2.0.json"),
+            "comparison 1 now uses 2.0: {:?} {:?}",
+            out.notes,
+            out.failures
+        );
+
+        // A release is cut once: advancing to 2.0 again refuses and writes nothing.
+        let before = tree(dir.path());
+        let again = advance(&ws, v(2, 0), &breaking, v(2, 0), &|| releaser.provenance());
+        assert!(
+            again
+                .as_ref()
+                .is_err_and(|e| e.contains("a released baseline is never rewritten")),
+            "{again:?}"
+        );
+        assert_eq!(tree(dir.path()), before);
+    }
+
+    #[test]
+    fn real_provenance_shape() {
+        let p = real_provenance(v(1, 0)).unwrap();
+        assert!(
+            p.commit.len() == 40
+                && p.commit
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+            "{p:?}"
+        );
+        assert_eq!(p.tag, format!("v{}", env!("CARGO_PKG_VERSION")));
+        assert_eq!(p.contract_version, "1.0");
+        assert!(
+            p.created_at.parse::<jiff::Timestamp>().is_ok()
+                && p.created_at.ends_with('Z')
+                && !p.created_at.contains('.'),
+            "whole UTC seconds: {p:?}"
+        );
     }
 }
