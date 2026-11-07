@@ -15,7 +15,7 @@ expression: s.stable(&c.envelope)
         "<ulid>"
       ],
       "command": "omaddons undo <ulid>",
-      "destructive": false
+      "destructive": true
     }
   ],
   "doctor_contract_version": "1.0",

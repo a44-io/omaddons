@@ -14,7 +14,7 @@ expression: stable(&unpinned)
         "<run>"
       ],
       "command": "omaddons undo --run <run>",
-      "destructive": false
+      "destructive": true
     },
     {
       "action": "undo",
@@ -24,7 +24,7 @@ expression: stable(&unpinned)
         "<tx:era>"
       ],
       "command": "omaddons undo <tx:era>",
-      "destructive": false
+      "destructive": true
     },
     {
       "action": "undo",
@@ -34,7 +34,7 @@ expression: stable(&unpinned)
         "<tx:retail>"
       ],
       "command": "omaddons undo <tx:retail>",
-      "destructive": false
+      "destructive": true
     },
     {
       "action": "undo",
@@ -44,7 +44,7 @@ expression: stable(&unpinned)
         "<tx:turtle>"
       ],
       "command": "omaddons undo <tx:turtle>",
-      "destructive": false
+      "destructive": true
     }
   ],
   "data": {

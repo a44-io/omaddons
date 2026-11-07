@@ -1714,7 +1714,7 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_string(&hint).unwrap(),
-            r#"{"action":"undo","command":"omaddons undo 01JB8Q2VA00000000000000000","argv":["omaddons","undo","01JB8Q2VA00000000000000000"],"destructive":false}"#
+            r#"{"action":"undo","command":"omaddons undo 01JB8Q2VA00000000000000000","argv":["omaddons","undo","01JB8Q2VA00000000000000000"],"destructive":true}"#
         );
     }
 
@@ -1731,7 +1731,8 @@ mod tests {
                 vec!["omaddons", "targets", "rm", "classic"],
                 true,
             ),
-            (Action::Undo, vec!["omaddons", "undo"], false),
+            (Action::Undo, vec!["omaddons", "undo"], true),
+            (Action::Install, vec!["omaddons", "install", "Foo"], false),
         ];
         for (action, argv, expected) in cases {
             let hint = CommandHint::new(action, argv);

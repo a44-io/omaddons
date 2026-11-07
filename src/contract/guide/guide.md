@@ -31,7 +31,7 @@ With `--json`, stdout is one JSON object: `ok`, `schema_version`, `tool_version`
 - Doctor commands put their report (`state`, `summary`, `findings`) at the top level, with no `data`; there findings (exit 1) are a report with no `error`.
 - `schema_version` is the contract version. A `1.x` release only adds keys, enum values, codes and actions, so ignore the ones you do not know.
 
-Each `commands[]` entry names its `action`; trust its own `destructive` over this table's, as an `apply` is as destructive as its plan.
+Each `commands[]` entry names its `action`. This table's `Destructive` is the action's worst case; an entry's own `destructive` is that instance's, so trust it over the table: an `apply` is as destructive as its plan.
 
 {{actions}}
 

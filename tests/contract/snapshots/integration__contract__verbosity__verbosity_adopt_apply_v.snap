@@ -13,7 +13,7 @@ expression: s.stable(&checked.envelope)
         "<ulid>"
       ],
       "command": "omaddons undo <ulid>",
-      "destructive": false
+      "destructive": true
     }
   ],
   "data": {

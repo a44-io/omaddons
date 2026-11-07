@@ -13,7 +13,7 @@ expression: "support::stable(&envelope)"
         "<tx>"
       ],
       "command": "omaddons undo <tx>",
-      "destructive": false
+      "destructive": true
     },
     {
       "action": "install",

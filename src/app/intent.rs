@@ -1591,7 +1591,7 @@ mod tests {
                     .collect();
                 assert_eq!(
                     actions,
-                    [(Action::Apply, true), (Action::Undo, false)],
+                    [(Action::Apply, true), (Action::Undo, true)],
                     "{name}"
                 );
                 assert_eq!(

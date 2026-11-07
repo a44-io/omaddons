@@ -18,7 +18,9 @@ macro_rules! actions {
             pub const fn wire(self) -> &'static str { match self { $(Self::$variant => $wire,)+ } }
             /// One line of plain text, no trailing period.
             pub const fn description(self) -> &'static str { match self { $(Self::$variant => $description,)+ } }
-            /// Whether this action's hint is destructive by default.
+            /// Whether this action may be destructive (it removes addons, undoes a change,
+            /// restores settings or prunes backups), its worst case: confirm before running
+            /// one unless the hint's own `destructive`, the instance's value, says otherwise.
             pub const fn destructive(self) -> bool { match self { $(Self::$variant => $destructive,)+ } }
             /// The action named `name`, if one is.
             pub fn from_wire(name: &str) -> Option<Self> {
@@ -31,10 +33,11 @@ macro_rules! actions {
 }
 
 actions! {
-    /// Offered after every committed change, for one transaction.
-    Undo = "undo", false, "Undo one transaction";
+    /// Offered after every committed change, for one transaction: it removes what the
+    /// change added and puts back what it replaced, settings included.
+    Undo = "undo", true, "Undo one transaction";
     /// Offered after a change on several clients.
-    UndoRun = "undo_run", false, "Undo every transaction of one run";
+    UndoRun = "undo_run", true, "Undo every transaction of one run";
     /// Offered by status, outdated and errors.
     Update = "update", false, "Install the available updates";
     /// Offered by status when an update check is due.
@@ -75,9 +78,9 @@ actions! {
     ReinstallWidget = "reinstall_widget", false, "Bring the bar widget up to date";
     /// Offered by omarchy status for a widget absent from the bar.
     EnableWidget = "enable_widget", false, "Put the omaddons widget on the bar";
-    /// Offered by a dry run that stored its plan, and by apply's own dry run; as
-    /// destructive as the plan's command.
-    Apply = "apply", false, "Run exactly what a dry run stored";
+    /// Offered by a dry run that stored its plan, and by apply's own dry run. Each hint is
+    /// as destructive as its plan's command; the default is the worst case.
+    Apply = "apply", true, "Run exactly what a dry run stored";
     /// Offered by doctor diagnose, once per failure mode it found.
     DoctorExplain = "doctor_explain", false, "Explain one failure mode and its instances";
     /// Offered by a doctor fix dry run that plans a repair, bound to its token.
@@ -196,8 +199,8 @@ mod tests {
     #[test]
     fn destructive_defaults_are_pinned() {
         let cases = [
-            (Action::Undo, false),
-            (Action::UndoRun, false),
+            (Action::Undo, true),
+            (Action::UndoRun, true),
             (Action::Update, false),
             (Action::CheckUpdates, false),
             (Action::Adopt, false),
@@ -218,7 +221,7 @@ mod tests {
             (Action::InstallBuggrabber, false),
             (Action::ReinstallWidget, false),
             (Action::EnableWidget, false),
-            (Action::Apply, false),
+            (Action::Apply, true),
             (Action::DoctorExplain, false),
             (Action::DoctorFix, false),
             (Action::InstallSkill, false),

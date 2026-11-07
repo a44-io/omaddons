@@ -1139,7 +1139,7 @@ fn the_harness_rejects_schema_violations() {
         vec!["frame /warnings/0:", "extra"],
     ));
     let mut hinted = envelope(0);
-    hinted["commands"] = json!([{"action": "undo", "command": "omaddons undo", "argv": ["omaddons", "undo"], "destructive": false, "extra": 1}]);
+    hinted["commands"] = json!([{"action": "undo", "command": "omaddons undo", "argv": ["omaddons", "undo"], "destructive": true, "extra": 1}]);
     planted.push((
         "command_hint_unknown_key",
         rerun(0, &hinted, None),

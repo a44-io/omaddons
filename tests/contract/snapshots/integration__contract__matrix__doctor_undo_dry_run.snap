@@ -38,7 +38,7 @@ expression: s.stable(&c.envelope)
         "--dry-run"
       ],
       "command": "omaddons undo <ulid> --dry-run",
-      "destructive": false
+      "destructive": true
     }
   ],
   "doctor_contract_version": "1.0",

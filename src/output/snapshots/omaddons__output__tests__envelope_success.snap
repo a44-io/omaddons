@@ -34,7 +34,7 @@ expression: stable(success)
         "undo",
         "01JB8Q2VA00000000000000000"
       ],
-      "destructive": false
+      "destructive": true
     }
   ],
   "meta": {

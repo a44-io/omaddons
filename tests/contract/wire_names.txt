@@ -3,7 +3,7 @@
 action adopt destructive=false
 action adopt_folder destructive=false
 action adopt_with_ref destructive=false
-action apply destructive=false
+action apply destructive=true
 action backup_create destructive=false
 action check_errors destructive=false
 action check_updates destructive=false
@@ -23,8 +23,8 @@ action reinstall_widget destructive=false
 action remove_orphans destructive=true
 action search destructive=false
 action status destructive=false
-action undo destructive=false
-action undo_run destructive=false
+action undo destructive=true
+action undo_run destructive=true
 action update destructive=false
 command adopt exits=0,1,2,3,4,5 dictionary=general mutates=true binds=true stores_plan=true network=optional
 command apply exits=0,1,2,3,4,5 dictionary=general mutates=true binds=false stores_plan=false network=optional

@@ -13,7 +13,7 @@ expression: stable(&envelope)
         "<tx:retail>"
       ],
       "command": "omaddons undo <tx:retail>",
-      "destructive": false
+      "destructive": true
     }
   ],
   "data": {
