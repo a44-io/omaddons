@@ -941,8 +941,7 @@ fn unlock_fixes(data: &mut TargetsData, locked: &BTreeMap<String, Vec<String>>, 
                 && error.code == ErrorCode::NotFound
                 && requests.contains(&i.request)
             {
-                error.fix = fix.display().to_owned();
-                error.fix_argv = fix.argv().map(<[String]>::to_vec);
+                error.set_fix(fix.clone());
             }
         }
     }
@@ -970,16 +969,14 @@ fn settle_failures(data: &mut TargetsData, argv: &[String]) {
                 || i.name.clone().unwrap_or_else(|| i.request.clone()),
                 ToString::to_string,
             );
-            let fix = Suggestion::command([
+            error.set_fix(Suggestion::command([
                 "omaddons".to_owned(),
                 "install".to_owned(),
                 what,
                 "--force".to_owned(),
                 "-t".to_owned(),
                 id.clone(),
-            ]);
-            error.fix = fix.display().to_owned();
-            error.fix_argv = fix.argv().map(<[String]>::to_vec);
+            ]));
         }
     }
     data.recount();

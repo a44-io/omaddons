@@ -666,9 +666,7 @@ fn install_fixes(data: &mut TargetsData, argv: &[String]) {
             if !extra.iter().any(|a| a == "-t" || a == "--target") {
                 install.extend(["-t".to_owned(), id.clone()]);
             }
-            let fix = Suggestion::command(install);
-            error.fix = fix.display().to_owned();
-            error.fix_argv = fix.argv().map(<[String]>::to_vec);
+            error.set_fix(Suggestion::command(install));
         }
     }
 }

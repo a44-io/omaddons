@@ -184,6 +184,12 @@ pub struct ItemError {
     /// `resource`). Omitted otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<serde_json::Value>,
+    /// The error the item failed with, whole: its own `details`, alternatives and
+    /// retryability, which the fields above keep none or only some of. A command whose
+    /// every item failed fails with the first one's ([`TargetsData::all_failed`]). Not
+    /// serialized.
+    #[serde(skip)]
+    pub original: Option<Error>,
 }
 
 /// The details an item error with `code` carries: a within-transaction conflict's, a
@@ -229,6 +235,7 @@ impl From<&Error> for ItemError {
             fix: e.fix.display().to_owned(),
             fix_argv: e.fix.argv().map(<[String]>::to_vec),
             details: item_details(e.code, &e.details),
+            original: Some(e.clone()),
         }
     }
 }
@@ -241,11 +248,28 @@ impl From<&ErrorBody> for ItemError {
             fix: e.fix.clone(),
             fix_argv: e.fix_argv.clone(),
             details: item_details(e.code, &e.details),
+            original: Some(error_of(e)),
         }
     }
 }
 
 impl ItemError {
+    /// The error the item failed with, whole when it was kept, else [`Self::error`].
+    pub fn original_error(&self) -> Error {
+        self.original.clone().unwrap_or_else(|| self.error())
+    }
+
+    /// Replaces the fix, on the wire fields and the kept original alike: a command whose
+    /// engine fix adds a flag it does not have (`--force`) says how with `install`, and
+    /// the command-level error built from this item must say the same.
+    pub fn set_fix(&mut self, fix: Suggestion) {
+        self.fix = fix.display().to_owned();
+        self.fix_argv = fix.argv().map(<[String]>::to_vec);
+        if let Some(original) = &mut self.original {
+            original.fix = fix;
+        }
+    }
+
     /// Back to an error, with its code's exit code and the details it kept.
     pub fn error(&self) -> Error {
         let fix = match &self.fix_argv {
@@ -665,8 +689,8 @@ impl TargetsData {
     }
 
     /// When every item failed (nothing changed, stayed unchanged or was skipped): the
-    /// first failure's error, its kept details beside every item's error in
-    /// `details.items`.
+    /// first failure's error, whole (its own `details`, alternatives and retryability,
+    /// as `install`'s), with every item's error beside them in `details.items`.
     ///
     /// A run bound to a preview (`--if-match`) that changed nothing and that a target's
     /// lock refused is that refusal too, whatever else was unchanged or skipped: what
@@ -701,16 +725,17 @@ impl TargetsData {
                 })
             })
             .collect();
-        // A target's own error keeps its form, which an item's error keeps none of: a
+        // A target's own error keeps its form, which the item's wire fields do not: a
         // binding's refusal its retryability and `details.changed`, a stopped journal its
-        // `journal_pending` and `reason`, a lock its `holder`.
+        // `journal_pending` and `reason`, a lock its `holder`. Without one, the first
+        // item's original error keeps its own (a damaged archive's `blob` and `actual`).
         let mut error = match refusal {
             Some(body) => error_of(body),
             None => {
                 let (first_target, first_item) = failed.first()?;
                 match &first_target.error {
                     Some(body) => error_of(body),
-                    None => first_item.error.as_ref()?.error(),
+                    None => first_item.error.as_ref()?.original_error(),
                 }
             }
         };
@@ -1615,6 +1640,110 @@ mod tests {
         assert_eq!(error.code, ErrorCode::GameRunning);
         assert_eq!(error.details["items"].as_array().unwrap().len(), 2);
         assert_eq!(data.run, None, "nothing committed");
+    }
+
+    /// The command's error is the first failed item's own (omad-r86s): its `details` keys
+    /// beside `items`, its retryability and alternatives, while each item's wire `error`
+    /// keeps only what it always kept.
+    #[test]
+    fn all_failed_keeps_the_first_items_own_error() {
+        let failed_with = |error: Error| {
+            let failure = PlanFailure {
+                r#ref: None,
+                addon: Some("DBM".to_owned()),
+                target: "retail".to_owned(),
+                error: ErrorBody::from(error.clone()),
+                cause: Some(error),
+            };
+            TargetsData::assemble(
+                &[planned("retail", &[])],
+                &[outcome("retail", None, Vec::new())],
+                &[failure],
+                false,
+                run(),
+                &[request("retail", "DBM")],
+            )
+        };
+        let cases = [
+            (
+                "a damaged cached archive",
+                Error::new(
+                    ErrorCode::HashMismatch,
+                    "cached archive 0a1b… is damaged",
+                    Suggestion::command(["omaddons", "doctor", "--include-deep"]),
+                )
+                .retryable(true)
+                .details(serde_json::json!({ "blob": "0a1b", "actual": "ffee" })),
+                vec!["actual", "blob", "items"],
+            ),
+            (
+                "no build loads here",
+                Error::new(
+                    ErrorCode::NoCompatibleRelease,
+                    "no build of DBM loads on retail",
+                    Suggestion::text("use an archive built for this client"),
+                )
+                .alternative(Suggestion::command(["omaddons", "info", "DBM"]))
+                .details(serde_json::json!({
+                    "tried": [{ "asset": "DBM.zip", "reason": "wrong_flavor: mainline" }],
+                })),
+                vec!["items", "tried"],
+            ),
+        ];
+        for (case, original, keys) in cases {
+            let data = failed_with(original.clone());
+            let error = data.all_failed().unwrap();
+            let mut found: Vec<&str> = error
+                .details
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            found.sort_unstable();
+            assert_eq!(found, keys, "{case}: {error:?}");
+            for key in keys.iter().filter(|k| **k != "items") {
+                assert_eq!(error.details[*key], original.details[*key], "{case}: {key}");
+            }
+            assert_eq!(
+                (error.code, error.retryable, &error.alternatives),
+                (original.code, original.retryable, &original.alternatives),
+                "{case}: the original error whole"
+            );
+            let items = error.details["items"].as_array().unwrap();
+            assert_eq!(items.len(), 1, "{case}: {error:?}");
+            assert!(
+                items[0]["error"].get("details").is_none(),
+                "{case}: no item error gains a key: {}",
+                items[0]
+            );
+            let wire = serde_json::to_value(&data.targets[0].items[0]).unwrap();
+            assert!(
+                wire["error"].get("details").is_none() && wire["error"].get("original").is_none(),
+                "{case}: the item's wire error is unchanged: {wire}"
+            );
+
+            // A fix the command rewrites on the item (`install … --force` for a command
+            // without `--force`) is the command-level error's fix too.
+            let mut rewritten = data.clone();
+            let install = Suggestion::command(["omaddons", "install", "DBM", "--force"]);
+            rewritten.targets[0].items[0]
+                .error
+                .as_mut()
+                .unwrap()
+                .set_fix(install.clone());
+            let error = rewritten.all_failed().unwrap();
+            assert_eq!(error.fix, install, "{case}: {error:?}");
+            assert_eq!(
+                rewritten.targets[0].items[0]
+                    .error
+                    .as_ref()
+                    .unwrap()
+                    .fix_argv,
+                install.argv().map(<[String]>::to_vec),
+                "{case}"
+            );
+        }
     }
 
     #[test]

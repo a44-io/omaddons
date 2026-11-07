@@ -424,7 +424,7 @@ fn an_update_never_installs_a_damaged_cached_archive() {
     assert_eq!(new.len(), 1, "the dry run cached v2's archive: {new:?}");
     let v2 = new[0].clone();
     log.step("damage");
-    flip(&log, &plant::blob_path(&home, &v2));
+    let damaged = flip(&log, &plant::blob_path(&home, &v2));
     let trees = snapshot(&log, &home, &["_retail_"]);
     log.step("offline");
     let ran = run(&log, &home, &["update", "--offline"]);
@@ -434,12 +434,14 @@ fn an_update_never_installs_a_damaged_cached_archive() {
         "update --offline could not answer v2's listing from the release memo: {}",
         ran.envelope()
     );
-    // `update` returns its one failed item's error, and an item's error keeps no
-    // `details` (`TargetsData::all_failed`): the damage is named by the message, and its
-    // `details.blob` is lost on the way (omad-r86s, discovered here).
-    ran.fails(1, "hash_mismatch");
-    let error = ran.envelope()["error"].clone();
-    log.json("error", &error);
+    // `update` fails with its one failed item's own error, whole (omad-r86s): the damage's
+    // `details.blob` and `actual` beside `items`, as `install`'s carries them.
+    let error = damage_error(&log, &ran, &v2);
+    log.assert_eq(
+        "details.actual",
+        &error["details"]["actual"],
+        &json!(sha(&damaged)),
+    );
     log.assert_eq("retryable", &error["retryable"], &json!(true));
     log.assert_eq("its fix", &error["fix_argv"], &json!(DEEP));
     assert!(

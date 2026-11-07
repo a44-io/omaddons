@@ -775,16 +775,14 @@ fn settle_failures(data: &mut TargetsData, done: &TxOutcomes) {
                     .is_some_and(|argv| argv.iter().any(|a| a == "--force"))
             {
                 let name = i.name.clone().unwrap_or_else(|| i.request.clone());
-                let fix = Suggestion::command([
+                error.set_fix(Suggestion::command([
                     "omaddons".to_owned(),
                     "install".to_owned(),
                     name,
                     "--force".to_owned(),
                     "-t".to_owned(),
                     id.clone(),
-                ]);
-                error.fix = fix.display().to_owned();
-                error.fix_argv = fix.argv().map(<[String]>::to_vec);
+                ]));
             }
         }
     }
