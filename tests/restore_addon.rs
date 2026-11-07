@@ -9,7 +9,7 @@
 //! partial restores conflict with undo where SavedVariables are written, both ways. Every
 //! run is checked for the fake account, realm and character names on both streams.
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeMap;
 use std::fs;

@@ -11,10 +11,8 @@
 //! run is never quarantined, whether the run is bound or re-plans under the lock.
 #![cfg(test)]
 
-mod common;
-#[allow(dead_code)]
-#[path = "doctor/mod.rs"]
-mod fixture;
+use crate::common;
+use crate::fixture;
 
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};

@@ -4,7 +4,7 @@
 //! one folder never has two owners. Records doubled before this was refused still
 //! change, with a `target_addons_shared` warning.
 
-mod common;
+use crate::common;
 
 use std::fs;
 

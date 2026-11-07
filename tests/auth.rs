@@ -4,7 +4,7 @@
 //! never), `credential_file_mode`, a rejected token, `--from-gh` with a fake `gh` and
 //! without one, and the token never in any output, log or state file.
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;

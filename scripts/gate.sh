@@ -41,9 +41,16 @@ fi
 step "widget pipeline"
 scripts/widget-test.sh "${widget[@]}"
 
-if ((${#changed[@]})); then
-    step "ubs on ${#changed[@]} changed file(s)"
-    ubs "${changed[@]}"
+# ubs gets every changed file but Cargo's manifests: given Cargo.toml (ubs 5.5.26 on),
+# it builds a copy of the changed files alone, which cannot compile, and ends partial
+# (exit 2) without scanning more. The cargo steps above and cargo deny below check them.
+scan=()
+for f in ${changed[@]+"${changed[@]}"}; do
+    case $f in Cargo.toml | Cargo.lock) ;; *) scan+=("$f") ;; esac
+done
+if ((${#scan[@]})); then
+    step "ubs on ${#scan[@]} changed file(s)"
+    ubs "${scan[@]}"
 else
     step "ubs: no changed files, skipped"
 fi

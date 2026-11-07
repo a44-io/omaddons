@@ -1,7 +1,7 @@
 //! e2e suite: declared error details agree with hostile archives and ambiguous or failed requests.
 #![cfg(test)]
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::path::PathBuf;

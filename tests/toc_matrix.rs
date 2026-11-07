@@ -6,7 +6,7 @@
 //! in `tests/fixtures/toc/matrix/cases.toml`, so a new flavor is new rows. The literal
 //! guard keeps client versions out of the TOC and inventory code.
 
-mod common;
+use crate::common;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;

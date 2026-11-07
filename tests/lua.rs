@@ -2,7 +2,7 @@
 //! the client could write reads back equal in both writer formats, any bytes parse
 //! within the bounds, and an oversized file is refused before it is read.
 
-mod common;
+use crate::common;
 
 use std::fs;
 

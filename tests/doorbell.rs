@@ -3,7 +3,7 @@
 //! actor, and never after a read. Each step starts from a sentinel doorbell an hour old:
 //! a ring replaces its bytes and moves its mtime, and no ring leaves both as they were.
 
-mod common;
+use crate::common;
 
 use std::fs;
 

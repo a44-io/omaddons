@@ -3,7 +3,7 @@
 //! install hints (which run), `--offline`, a spent GitHub search, `--source`, a disabled
 //! source, `--limit`, progress and determinism. Only GitHub receives the query.
 
-mod common;
+use crate::common;
 
 use std::fs;
 

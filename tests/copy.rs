@@ -4,7 +4,7 @@
 //! are skipped, never failed; a network failure makes the run partial and `--strict`
 //! exit 6; named addons, `--no-deps`, `--dry-run`, undo, and the usage errors.
 
-mod common;
+use crate::common;
 
 use common::home::Home;
 use common::netlog::{assert_no_github_rest, net_log};

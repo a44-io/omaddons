@@ -7,7 +7,7 @@
 //! something, appends no history line, keeps the inventory projection true and leaves no
 //! trash behind. Every run is checked for the fake account, realm and character names.
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -94,7 +94,7 @@ mod support {
     pub fn spawn_reader(home: &Home, dir: &Path) -> std::process::Child {
         std::process::Command::new(std::env::current_exe().unwrap())
             .args([
-                "child_reader",
+                "backup_prune::child_reader",
                 "--exact",
                 "--ignored",
                 "--nocapture",
@@ -114,7 +114,7 @@ mod support {
         let out = home.env.root().join("reclaimed.json");
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
-                "child_reclaim",
+                "backup_prune::child_reclaim",
                 "--exact",
                 "--ignored",
                 "--nocapture",

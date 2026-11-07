@@ -7,8 +7,7 @@
 //! round-trips through shell-words or a documented non-CLI text, and NDJSON on stderr
 //! with exactly one `error` event per failure. Plus the exit-site scan of `src/`.
 
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 
 mod canonical_names;
 #[cfg(test)]
@@ -31,8 +30,7 @@ mod state_files;
 #[cfg(test)]
 mod strict;
 mod usage_fixes;
-#[cfg(test)]
-mod validate;
+use crate::validate;
 #[cfg(test)]
 mod verbose_fields;
 

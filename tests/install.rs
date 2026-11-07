@@ -4,7 +4,7 @@
 //! GitHub releases replayed from synthetic fixtures (`OMADDONS_HTTP_FIXTURES`) and, for
 //! running clients, a synthetic `/proc` (`OMADDONS_PROC_ROOT`).
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::path::Path;

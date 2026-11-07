@@ -3,7 +3,7 @@
 //! retried failures, a corrupt memo, two writers at once, and `install`'s probe and real
 //! runs sharing one fetch.
 
-mod common;
+use crate::common;
 
 use std::fs;
 

@@ -11,7 +11,7 @@
 //! checks the refusal (`plan_stale`, not retryable, `details.changed`, the preview as
 //! `fix_argv`) and that nothing moved. The D2 and D3 scenarios log through `TestLog`.
 
-mod common;
+use crate::common;
 
 use common::binding as b;
 use common::engine::Scene;

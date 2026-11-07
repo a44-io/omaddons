@@ -859,6 +859,8 @@ pub fn pending(paths: &Paths) -> Result<Vec<Pending>> {
                 continue;
             }
             Ok(parsed) => (parsed.target, parsed.unrecoverable()),
+            // Pruned by its writer's cleanup since the listing: nothing is pending.
+            Err(_) if existing(paths, &tx).is_none() => continue,
             Err(_) => (None, None),
         };
         found.push(Pending {
@@ -1355,6 +1357,12 @@ fn recover_all_in(
         // Whose it is, for isolation, from its `prepared` line even when that line does
         // not decode: a journal whose owner cannot be told fails the caller as before.
         let parsed = read(&path).ok();
+        // Gone since the listing: a writer's cleanup prunes its finished journal under its
+        // own in-flight lock, never the global one, so it can go between the listing and
+        // the read. Nothing is left to recover, as if it had not been listed.
+        if parsed.is_none() && existing(env.paths, &tx).is_none() {
+            continue;
+        }
         let target = parsed.as_ref().and_then(|p| p.target);
         let unrecoverable = parsed.as_ref().and_then(Parsed::unrecoverable);
         // No target to attribute its failure to: it fails every committing command.

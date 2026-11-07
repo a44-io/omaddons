@@ -5,7 +5,7 @@
 //! leaves the index alone; and `index_live_folder` over a committed folder equals the
 //! commit's entries.
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeMap;
 use std::fs;

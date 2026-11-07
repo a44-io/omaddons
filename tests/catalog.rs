@@ -2,7 +2,7 @@
 //! upstream responses recorded in `tests/fixtures/http/catalog/` (the Tukui entries are
 //! `tests/sources_tukui.rs`'s).
 
-mod common;
+use crate::common;
 
 use common::addons::{toc, unpack};
 use common::env::TestEnv;
@@ -68,7 +68,7 @@ fn wowi(r: &Ref) -> bool {
 
 /// Re-records the scenario from live GitHub. Delete the directory first, then review
 /// the diff (fixtures are public; trim contributor names from changelogs).
-/// `OMADDONS_RECORD=1 cargo test --test catalog -- --ignored record`
+/// `OMADDONS_RECORD=1 cargo test --test integration -- --ignored catalog::record`
 #[test]
 #[ignore = "records live fixtures: OMADDONS_RECORD=1"]
 fn record_catalog() {
@@ -91,7 +91,7 @@ fn record_catalog() {
 /// Re-records the legacy (`git:`) entries' commits feeds into the same scenario, without
 /// touching the GitHub ones. Trim each feed to its newest entry with the author
 /// replaced by "contributor".
-/// `OMADDONS_RECORD=1 cargo test --test catalog -- --ignored record_git`
+/// `OMADDONS_RECORD=1 cargo test --test integration -- --ignored catalog::record_git`
 #[test]
 #[ignore = "records live fixtures: OMADDONS_RECORD=1"]
 fn record_catalog_git() {
@@ -115,7 +115,7 @@ fn record_catalog_git() {
 /// touching the others: one `filedetails` request names every id. Then empty each
 /// file's `UIChangeLog` and `UIDescription` in the gzipped body: nothing reads them
 /// here, and they can name contributors.
-/// `OMADDONS_RECORD=1 cargo test --test catalog -- --ignored record_catalog_wowi`
+/// `OMADDONS_RECORD=1 cargo test --test integration -- --ignored catalog::record_catalog_wowi`
 #[test]
 #[ignore = "records live fixtures: OMADDONS_RECORD=1"]
 fn record_catalog_wowi() {

@@ -5,7 +5,7 @@
 //! change. `--apply`, named folders and `--ref`: records-only `adopt` transactions that
 //! leave every folder as it was, undone by `undo`.
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeMap;
 use std::fs;

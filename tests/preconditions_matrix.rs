@@ -20,7 +20,7 @@
 
 #![cfg(debug_assertions)]
 
-mod common;
+use crate::common;
 
 use std::path::PathBuf;
 

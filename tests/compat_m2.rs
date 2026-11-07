@@ -10,10 +10,10 @@
 //! (named `<tx>.wtf` too), and M3 recovers the rest. What it does not, the blind SavedVariables undo, is asserted as
 //! observed, so a change in it is noticed. Ignored by default: it builds an old commit.
 //! The current binary must be a debug build (its failpoints interrupt the restores):
-//! `cargo test --test compat_m2 -- --ignored --nocapture`
+//! `cargo test --test integration compat_m2:: -- --ignored --nocapture`
 #![cfg(debug_assertions)]
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -362,7 +362,7 @@ mod support {
 }
 
 #[test]
-#[ignore = "builds the M2 commit: cargo test --test compat_m2 -- --ignored --nocapture"]
+#[ignore = "builds the M2 commit: cargo test --test integration compat_m2:: -- --ignored --nocapture"]
 fn the_m2_binary_against_state_m3_wrote() {
     let Some(m2) = m2_binary() else {
         common::checkpoint::skip(
@@ -597,7 +597,7 @@ fn the_m2_binary_against_state_m3_wrote() {
 /// `journal_recovered`), or never sees it, and the next M3 change recovers it. M2 never
 /// deletes one unread.
 #[test]
-#[ignore = "builds the M2 commit: cargo test --test compat_m2 -- --ignored --nocapture"]
+#[ignore = "builds the M2 commit: cargo test --test integration compat_m2:: -- --ignored --nocapture"]
 fn every_m3_journal_is_recovered_by_m2_or_left_for_m3() {
     let Some(m2) = m2_binary() else {
         common::checkpoint::skip(
@@ -685,7 +685,7 @@ fn every_m3_journal_is_recovered_by_m2_or_left_for_m3() {
 /// rolled forward and then undone, which needs the undo data M2 used to sweep (a whole
 /// restore's `WTF.previous`, a partial one's copies).
 #[test]
-#[ignore = "builds the M2 commit: cargo test --test compat_m2 -- --ignored --nocapture"]
+#[ignore = "builds the M2 commit: cargo test --test integration compat_m2:: -- --ignored --nocapture"]
 fn every_interrupted_settings_change_survives_m2_two_hours_on() {
     let Some(m2) = m2_binary() else {
         common::checkpoint::skip(

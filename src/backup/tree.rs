@@ -739,18 +739,18 @@ mod tests {
 
     impl Drop for Fixture {
         fn drop(&mut self) {
-            // Let the tempdir go: read-only directories are made writable again.
-            for root in [self.wtf(), ClientPaths::new(&self.client).meta_dir()] {
-                for entry in walk(&root, usize::MAX, usize::MAX)
-                    .map(|w| w.entries)
-                    .unwrap_or_default()
-                {
-                    if entry.kind == EntryKind::Dir {
-                        let _ = fs::set_permissions(
-                            join(&root, &entry.path),
-                            fs::Permissions::from_mode(0o755),
-                        );
-                    }
+            // Let the tempdir go: read-only directories anywhere under the client are made
+            // writable again, `WTF/`, the meta dir and a tree a test moved aside
+            // (`WTF.old/`) alike.
+            for entry in walk(&self.client, usize::MAX, usize::MAX)
+                .map(|w| w.entries)
+                .unwrap_or_default()
+            {
+                if entry.kind == EntryKind::Dir {
+                    let _ = fs::set_permissions(
+                        join(&self.client, &entry.path),
+                        fs::Permissions::from_mode(0o755),
+                    );
                 }
             }
         }

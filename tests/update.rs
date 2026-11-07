@@ -4,7 +4,7 @@
 //! fetch failures, `--strict`, running clients, ownership fixes and usage errors.
 //! Request counts come from `net.log`.
 
-mod common;
+use crate::common;
 
 use std::fs;
 

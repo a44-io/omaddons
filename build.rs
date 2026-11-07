@@ -60,7 +60,7 @@ fn guide_digest() {
         Some(Ok(digest)) => stamp::hex(&digest),
         _ => {
             println!(
-                "cargo::warning={SKILL} is missing or unstamped; run OMADDONS_UPDATE_SKILL=1 cargo test --test skill"
+                "cargo::warning={SKILL} is missing or unstamped; run OMADDONS_UPDATE_SKILL=1 cargo test --test integration skill::"
             );
             "0".repeat(64)
         }

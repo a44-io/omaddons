@@ -14,6 +14,9 @@ use omaddons::app::precondition::preview_argv;
 use omaddons::backup::BackupKind;
 use serde_json::{Value, json};
 
+use super::drift_support::{
+    Built, Changed, FOO_V1, built, built_undo_played, published, run, stale, stale_with_fix,
+};
 use crate::common::archives::zip_text;
 use crate::common::backups::seed_backup;
 use crate::common::home::Home;
@@ -24,9 +27,6 @@ use crate::common::privacy::ACCOUNT;
 use crate::common::state::record;
 use crate::common::tlog::{Ran, TestLog, tlog};
 use crate::common::trees::tree_hash;
-use crate::drift_support::{
-    Built, Changed, FOO_V1, built, built_undo_played, published, run, stale, stale_with_fix,
-};
 
 /// A command's concurrent changes: each case and the `details.changed` its stale `apply`
 /// must carry (`Contains` for the engine commands, whose witness may name more parts;

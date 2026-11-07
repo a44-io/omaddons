@@ -4,7 +4,7 @@
 //! argument order and undone byte for byte, a ref asked for twice installs once, and a
 //! dry run is deterministic.
 
-mod common;
+use crate::common;
 
 use common::home::Home;
 use common::http::gh_release;

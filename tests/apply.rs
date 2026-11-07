@@ -6,7 +6,7 @@
 mod applying;
 #[path = "apply/commands.rs"]
 mod commands;
-mod common;
+use crate::common;
 #[path = "apply/drift.rs"]
 mod drift;
 #[path = "apply/drift_support.rs"]

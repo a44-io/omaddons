@@ -1,7 +1,7 @@
 //! The semantic manifest's report: its section counts, each checked against its registry,
 //! and the classifier's verdict against an empty baseline and against the previous run, so
 //! a change's semantic diff is one test run away:
-//! `cargo test --test contract manifest_report -- --nocapture`.
+//! `cargo test --test integration contract::manifest_report -- --nocapture`.
 
 use std::path::PathBuf;
 use std::time::Instant;

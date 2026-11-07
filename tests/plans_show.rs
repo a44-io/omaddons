@@ -1,7 +1,7 @@
 //! e2e suite: plans show reconciles a stored plan from history: a lost-output apply, a partial one, a plan pending then expired, a wiped plan store, ambiguity and short prefixes, history past its bound, unreadable plan files, matching versions that are no evidence, an interrupted apply, and every run read-only, offline and deterministic.
 #![cfg(test)]
 
-mod common;
+use crate::common;
 
 use std::fs;
 

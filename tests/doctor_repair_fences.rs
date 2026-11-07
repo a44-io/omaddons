@@ -2,11 +2,8 @@
 #![cfg(test)]
 #![cfg(debug_assertions)]
 
-mod common;
-// The contract suite's schema validator, shared as its module doc allows.
-#[allow(dead_code)]
-#[path = "contract/validate.rs"]
-mod validate;
+use crate::common;
+use crate::validate;
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -40,14 +37,6 @@ const TOKEN: &str = "ghp_FENCEc4n4ry0123456789";
 const TOKEN2: &str = "ghp_FENCEs3c0nd0123456789";
 /// The failure mode a stuck chmod's fix explains.
 const STEP_UNRECOGNIZED: &str = "fm-concurrency_primitives-journal-step-unrecognized";
-
-/// A child process of the repair scenes (`common::repair::child_main`). Run on its own
-/// it does nothing.
-#[test]
-#[ignore = "a child process of the repair scenes"]
-fn child_repair() {
-    common::repair::child_main();
-}
 
 /// `args` with `--json --progress json`.
 fn args(args: &[&str]) -> Vec<String> {

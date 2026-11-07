@@ -2,8 +2,8 @@
 //! and a validator. Published schemas stay open, so a newer minor's additions never break
 //! an older consumer's validator; the suite closes them here, so an emitted key a schema
 //! lacks fails. The validator crate is used in this file only. It depends only on the
-//! library, `serde_json` and the validator, so another test binary can include it with
-//! `#[path = "contract/validate.rs"] mod validate;`.
+//! library, `serde_json` and the validator, so any suite can use it: the integration test
+//! crate declares it once, as `crate::validate` (`tests/main.rs`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;

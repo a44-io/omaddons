@@ -3,7 +3,7 @@
 //! not shown (`--if-match`), and never hides an error that happened after it, even after
 //! a reset; it is a settings line in history, never undone.
 
-mod common;
+use crate::common;
 
 use std::fs;
 

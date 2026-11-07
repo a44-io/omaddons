@@ -2,7 +2,7 @@
 //! publishers replayed from `tests/fixtures/http/github-stable`, and synthetic
 //! scenarios for the failure paths.
 
-mod common;
+use crate::common;
 
 use common::env::TestEnv;
 use common::http::{fixture, paths, record, replay, scenario};
@@ -50,7 +50,7 @@ mod support {
 
 /// Re-records `github-stable` from live GitHub. Delete the scenario directory first,
 /// then review the diff: fixtures are public.
-/// `OMADDONS_RECORD=1 cargo test --test sources_github -- --ignored record`
+/// `OMADDONS_RECORD=1 cargo test --test integration -- --ignored sources_github::record`
 #[test]
 #[ignore = "records live fixtures: OMADDONS_RECORD=1"]
 fn record_github_stable() {

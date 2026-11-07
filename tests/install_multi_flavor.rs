@@ -7,7 +7,7 @@
 //! from synthetic fixtures shaped like the real releases (layouts verified 2026-10-15:
 //! DBM-Core 12.1.14, BigWigs v427.6).
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::path::Path;

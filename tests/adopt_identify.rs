@@ -6,7 +6,7 @@
 //! `exact`, no unloaded folders, alternatives capped and never the group's own ref, only
 //! installable refs, every ref named by some evidence, and the same result in any order.
 
-mod common;
+use crate::common;
 
 use common::env::TestEnv;
 use omaddons::model::Ref;

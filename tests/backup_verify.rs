@@ -8,7 +8,7 @@
 //! the doorbell rings only for a recorded result. Every run is checked for the fake
 //! account, realm and character names on both streams.
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::path::PathBuf;

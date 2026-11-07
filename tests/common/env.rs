@@ -29,7 +29,16 @@ pub struct TestEnv {
 
 impl TestEnv {
     pub fn new() -> Self {
-        let dir = tempfile::tempdir().unwrap();
+        Self::owning(tempfile::tempdir().unwrap())
+    }
+
+    /// [`TestEnv::new`] in a new tempdir under `parent` (the target's tmp dir, on btrfs on
+    /// the development machine, where files clone), removed with the environment.
+    pub fn new_in(parent: &Path) -> Self {
+        Self::owning(tempfile::tempdir_in(parent).unwrap())
+    }
+
+    fn owning(dir: tempfile::TempDir) -> Self {
         let root = dir.path().to_path_buf();
         Self::layout(&root);
         Self {
@@ -148,5 +157,44 @@ impl TestEnv {
 impl Default for TestEnv {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Drop for TestEnv {
+    /// Gives the owner write permission back on every directory of an environment it owns,
+    /// just before the tempdir is removed. Tests seal directories on purpose (a fixture's
+    /// `0o500` directory, and the exact copies omaddons keeps of it in snapshots and
+    /// backups), and `TempDir` gives up silently at the first entry it cannot unlink, which
+    /// left the whole tree in `/tmp` or `target/tmp` on every run. A kept environment
+    /// ([`TestEnv::at`]) is left as it is.
+    fn drop(&mut self) {
+        if self.dir.is_some() {
+            unseal(&self.root);
+        }
+    }
+}
+
+/// Adds `u+rwx` to `dir` and to every directory under it, never following a symlink.
+/// Best effort: a directory it cannot open is left behind, as before.
+fn unseal(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Ok(meta) = std::fs::symlink_metadata(dir) else {
+        return;
+    };
+    if !meta.is_dir() {
+        return;
+    }
+    let mode = meta.permissions().mode();
+    if mode & 0o700 != 0o700 {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(mode | 0o700)).ok();
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            unseal(&entry.path());
+        }
     }
 }

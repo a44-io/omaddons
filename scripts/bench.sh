@@ -29,7 +29,7 @@ echo "generating the bench home at $home…" >&2
 rm -rf "$work"
 mkdir -p "$results"
 # A debug build: its installs replay the fixtures.
-BENCH_HOME="$home" cargo test --locked --quiet --test perf bench_home \
+BENCH_HOME="$home" cargo test --locked --quiet --test integration perf::bench_home \
     -- --ignored --exact >/dev/null
 cp -a "$home" "$pristine"
 
@@ -73,7 +73,7 @@ measure "status --cached" release -N --warmup 3 --runs 50 \
 measure "status (drift)" release -N --warmup 3 --runs 20 "$(run "$release" status --json)"
 # One fixtures warmup caches the blobs and candidate facts; the timed release runs then
 # make no request.
-eval "$(run "$fixtures" update --all --dry-run --json)" >/dev/null
+eval "$(run "$fixtures" update --all --dry-run --json)" >/dev/null # ubs:ignore — the command line run() built, as hyperfine gets it
 before="$(lines)"
 measure "update --all --dry-run warm" release --warmup 1 --runs 10 \
     "$(run "$release" update --all --dry-run --json)"

@@ -10,7 +10,7 @@
 #![cfg(test)]
 #![cfg(debug_assertions)]
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeMap;
 use std::fs;

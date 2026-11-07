@@ -1,10 +1,8 @@
 //! e2e suite: the journal and lock detectors, and status's journal titles
 #![cfg(test)]
 
-mod common;
-#[path = "doctor/mod.rs"]
-#[allow(dead_code)]
-mod fixture;
+use crate::common;
+use crate::fixture;
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -1213,15 +1211,6 @@ fn status_prints_each_stuck_title_and_its_command() {
             "`{line}` is under `{row}`, not {client}'s row"
         );
     }
-}
-
-/// A child process of the repair scenes (`common::repair::child_main`). Run on its own it
-/// does nothing.
-#[cfg(debug_assertions)]
-#[test]
-#[ignore = "a child process of the repair scenes"]
-fn child_repair() {
-    common::repair::child_main();
 }
 
 /// E5's crashed repair (a chmod, killed after its step ran): `doctor` reports it as

@@ -27,7 +27,7 @@
 //! and the prediction is held to what it did.
 #![cfg(debug_assertions)]
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -2551,7 +2551,7 @@ mod restore_support {
                 NEXT.fetch_add(1, Ordering::SeqCst)
             ));
             let args = [
-                "child_restore",
+                "engine_crash::child_restore",
                 "--exact",
                 "--ignored",
                 "--nocapture",
@@ -5339,14 +5339,6 @@ mod repair_support {
         }
         left
     }
-}
-
-/// A child process of the repair scenes: the kind's repair, lowered and committed in
-/// process (`common::repair::child_main`). Run on its own it does nothing.
-#[test]
-#[ignore = "a child process of the repair scenes"]
-fn child_repair() {
-    common::repair::child_main();
 }
 
 #[test]

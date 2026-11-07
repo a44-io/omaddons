@@ -1,7 +1,7 @@
 //! The discovery cache: reuse, invalidation by file stamps and listing, the three modes,
 //! poisoned and corrupt caches.
 
-mod common;
+use crate::common;
 
 use std::fs;
 

@@ -2,7 +2,7 @@
 //! `filelist.json` request at most per `max(1 h, max-age)`, a slim stored index,
 //! sanitised folders, the stale fallback, offline use, and an unreadable store.
 
-mod common;
+use crate::common;
 
 use std::fs;
 

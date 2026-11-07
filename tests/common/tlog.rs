@@ -11,7 +11,7 @@
 //!   the omaddons contract, and versioned by the header's `format: 1`.
 //! - `<suite>/<test>/transcript.md`: the same records, readable.
 //!
-//! `let log = tlog!();` names the directory after the test crate and the test function
+//! `let log = tlog!();` names the directory after the suite and the test function
 //! (`fn x` in `mod m` is `m.x`). Call it in the test function itself; a helper names
 //! its log with [`TestLog::new`]. One log per test: a rerun replaces its directory, and
 //! nothing else deletes logs (`cargo clean` does, and nothing is committed).
@@ -71,7 +71,7 @@
 //! **Conventions.**
 //!
 //! 1. Every M4 integration or end-to-end test that runs more than one command logs
-//!    through `TestLog`, and its crate carries a `//! e2e suite: <purpose>` line.
+//!    through `TestLog`, and its suite carries a `//! e2e suite: <purpose>` line.
 //! 2. Each phase of a scenario is a [`TestLog::step`].
 //! 3. Every state assertion goes through the log's tree checks, or
 //!    [`TestLog::assert_eq`], or logs the values it compares with [`TestLog::json`]
@@ -122,8 +122,8 @@ pub const RUN_TIMEOUT: Duration = Duration::from_secs(300);
 pub const SCRUB_MIN_LEN: usize = 8;
 /// The variable that chooses the log mode.
 pub const LOG_MODE_VAR: &str = "OMADDONS_TEST_LOG";
-/// The crate-doc line that marks a test crate as an end-to-end suite for `argc e2e`,
-/// followed by the suite's purpose.
+/// The module-doc line that marks a suite (`tests/<suite>.rs`, or a directory suite's
+/// `main.rs`) as an end-to-end suite for `argc e2e`, followed by the suite's purpose.
 pub const E2E_MARKER: &str = "//! e2e suite:";
 
 /// The record format, in the header.
@@ -458,13 +458,13 @@ pub fn sanitize_component(name: &str) -> String {
     }
 }
 
-/// The suite and test names [`tlog!`] derives: the suite is `module_path`'s first
-/// segment (the test crate), and the test is the function's path without that segment,
-/// the macro's own `__tlog_here` and any `{{closure}}`, joined with `.` so one test's
-/// directory never nests inside another's.
+/// The suite and test names [`tlog!`] derives: the suite is `module_path`'s second
+/// segment (the suite's module under the one `integration` test crate), and the test is
+/// the function's path without those two segments, the macro's own `__tlog_here` and any
+/// `{{closure}}`, joined with `.` so one test's directory never nests inside another's.
 pub fn split_location(module_path: &str, fn_type_name: &str) -> (String, String) {
-    let suite = module_path.split("::").next().unwrap_or_default();
-    let mut segments: Vec<&str> = fn_type_name.split("::").skip(1).collect();
+    let suite = module_path.split("::").nth(1).unwrap_or_default();
+    let mut segments: Vec<&str> = fn_type_name.split("::").skip(2).collect();
     if segments.last() == Some(&"__tlog_here") {
         segments.pop();
     }
@@ -2693,8 +2693,8 @@ pub fn root_allowed(root: &Path, env_roots: &[PathBuf]) -> bool {
     })
 }
 
-/// A [`TestLog`] named after the test crate and the function it is called in:
-/// `<log root>/<crate>/<module path>.<fn>/`. Call it in the test function itself.
+/// A [`TestLog`] named after the suite and the function it is called in:
+/// `<log root>/<suite>/<module path>.<fn>/`. Call it in the test function itself.
 #[allow(unused_macros)]
 macro_rules! tlog {
     () => {{

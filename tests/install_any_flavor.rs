@@ -4,7 +4,7 @@
 //! clears when asked, and it never installs what the client itself refuses: a game-type
 //! gate, TOCs the client never reads, retail 12's interface floor.
 
-mod common;
+use crate::common;
 
 use std::fs;
 

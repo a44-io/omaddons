@@ -1,7 +1,7 @@
 //! `discover()` over a synthetic home: hints, the bounded scan, de-duplication and
 //! deterministic output.
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};

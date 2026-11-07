@@ -5,7 +5,7 @@
 //! undo leaves the empty folder. A case variant (`interface/addons`) is the client's own
 //! folder and is used; two variants are refused, since the game reads only one.
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::path::{Path, PathBuf};

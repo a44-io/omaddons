@@ -3,7 +3,7 @@
 //! releases) in `tests/fixtures/http/git-github/`; synthetic scenarios cover tags, shas
 //! and a moved branch. The checkpoint case installs it into a 3.3.5a client.
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::path::Path;
@@ -53,7 +53,7 @@ mod support {
 /// Re-records the GroupBulletinBoard scenario from live GitHub. Delete the directory
 /// first, then trim the Atom bodies to their newest entry with the author replaced by
 /// "contributor" (fixtures are public).
-/// `OMADDONS_RECORD=1 cargo test --test git_github -- --ignored record`
+/// `OMADDONS_RECORD=1 cargo test --test integration -- --ignored git_github::record`
 #[test]
 #[ignore = "records live fixtures: OMADDONS_RECORD=1"]
 fn record_git_github() {

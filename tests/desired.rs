@@ -3,7 +3,7 @@
 //! overrides), canonical refs, pasted links, names installed on that target only, and
 //! relative paths against the file's own directory.
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeMap;
 use std::fs;

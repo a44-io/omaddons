@@ -3,7 +3,7 @@
 //! after the first install; no writes; `--cached` without a scan or without a cache;
 //! live running state; leftover journals with the lock free and held; a deleted client.
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::path::{Path, PathBuf};

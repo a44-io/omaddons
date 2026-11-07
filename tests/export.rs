@@ -3,7 +3,7 @@
 //! for the rest), printed by default and written with `--write`, which keeps a backup
 //! and refuses hand edits.
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::path::Path;

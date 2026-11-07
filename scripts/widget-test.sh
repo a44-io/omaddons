@@ -47,7 +47,7 @@ export OMADDONS_WIDGET_OUT
 trap 'rm -rf "$OMADDONS_WIDGET_OUT"' EXIT
 
 step "widget 1/4: envelopes from the real binary"
-cargo test --locked --test omarchy_widget -- --ignored --exact write_widget_fixtures
+cargo test --locked --test integration -- --ignored --exact omarchy_widget::write_widget_fixtures
 
 step "widget 2/4: bun test omarchy/tests"
 # From inside omarchy/: bun's test discovery walks its working directory first, and
@@ -55,7 +55,7 @@ step "widget 2/4: bun test omarchy/tests"
 (cd omarchy && bun test tests)
 
 step "widget 3/4: the argv bun built, parsed by clap"
-cargo test --locked --test omarchy_widget -- --ignored --exact validate_built_argv
+cargo test --locked --test integration -- --ignored --exact omarchy_widget::validate_built_argv
 
 if ((qml)); then
     step "widget 4/4: qmltestrunner omarchy/tests/qml"

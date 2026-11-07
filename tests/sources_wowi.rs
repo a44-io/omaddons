@@ -6,7 +6,7 @@
 //! recording of the live API and CDN (gzipped as served) that the source decodes and
 //! installs from.
 
-mod common;
+use crate::common;
 
 use common::addons::toc;
 use common::archives::zip_text;
@@ -162,7 +162,7 @@ fn triples(expected: &[(&str, &str, &str)]) -> Vec<(String, String, String)> {
 /// `filedetails`, its file, and a batch of an id that does not exist. Delete the
 /// directory first, then review the diff (fixtures are public; trim contributor names
 /// from changelogs).
-/// `OMADDONS_RECORD=1 cargo test --test sources_wowi -- --ignored record`
+/// `OMADDONS_RECORD=1 cargo test --test integration -- --ignored sources_wowi::record`
 #[test]
 #[ignore = "records live fixtures: OMADDONS_RECORD=1"]
 fn record_wowi() {

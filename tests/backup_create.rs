@@ -8,7 +8,7 @@
 //! list` hint that offers one. Every run is checked for the fake account, realm and
 //! character names, on both streams, progress included.
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::path::Path;

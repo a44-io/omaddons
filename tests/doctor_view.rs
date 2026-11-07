@@ -9,7 +9,7 @@
 //! scopes per-client findings and keeps the machine's; and nothing names an account, realm
 //! or character.
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeMap;
 use std::fs;

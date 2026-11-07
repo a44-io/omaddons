@@ -2,7 +2,7 @@
 //! extraction, addon roots are found through wrappers, files are measured from their
 //! real bytes, nothing is written, and verification applies the target's TOC rules.
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::io::Cursor;

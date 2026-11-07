@@ -5,7 +5,7 @@
 //! and asks nothing, no updates, pins and channels that follow the file, family
 //! sections that never reach a test client, failures per entry, dependencies, and undo.
 
-mod common;
+use crate::common;
 
 use std::fs;
 

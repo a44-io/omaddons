@@ -6,7 +6,7 @@
 //! unit tests prove the normalizer on synthetic schemas; this proves it on what the binary
 //! prints.
 
-mod common;
+use crate::common;
 
 use std::collections::{BTreeMap, BTreeSet};
 

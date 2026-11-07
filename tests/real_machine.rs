@@ -1,7 +1,7 @@
 //! Real-machine smoke tests for the M1 checkpoint (vision §5.12, §7): the real HOME and
 //! XDG directories, never tempdirs. Ignored by default and additionally gated on
 //! `OMADDONS_REAL_MACHINE=1`; the installs also need `OMADDONS_LIVE=1`:
-//! `OMADDONS_REAL_MACHINE=1 OMADDONS_LIVE=1 cargo test --test real_machine -- --ignored --test-threads=1`
+//! `OMADDONS_REAL_MACHINE=1 OMADDONS_LIVE=1 cargo test --test integration real_machine:: -- --ignored --test-threads=1`
 //!
 //! Every transaction a test makes is undone before it ends, and every AddOns folder it
 //! touched must hash as it did before. Target keys and markers written on the first
@@ -12,7 +12,7 @@
 //! running) prints a `SKIP <test>: <reason>` line and fails unless `OMADDONS_ALLOW_SKIP`
 //! names it (`common::checkpoint`).
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeMap;
 use std::fs;

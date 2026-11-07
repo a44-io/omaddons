@@ -13,7 +13,7 @@
 // The rows' homes and edits are test setup: a failed write is the test's failure.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;

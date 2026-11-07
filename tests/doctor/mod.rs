@@ -1,6 +1,6 @@
 //! The doctor's fixtures (M4-D47): one per failure mode, each breaking a home on purpose.
-//! A test crate includes this directory as `#[path = "doctor/mod.rs"] mod fixture;`
-//! (beside its own `mod common;`, which the fixtures build on).
+//! The integration test crate declares this directory once, as `crate::fixture`
+//! (`tests/main.rs`); a suite has `use crate::fixture;`. The fixtures build on `common`.
 
 use std::path::PathBuf;
 

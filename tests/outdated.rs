@@ -4,7 +4,7 @@
 //! nothing but the memo, the blob cache and `net.log`. Request counts come from
 //! `net.log`, never from timing.
 
-mod common;
+use crate::common;
 
 use std::fs;
 

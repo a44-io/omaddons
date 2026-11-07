@@ -12,10 +12,10 @@
 //!
 //! Ignored by default (it builds an old commit). Run with a debug build of this test,
 //! whose failpoints crash the M4 scenes:
-//! `cargo test --test compat_m3 -- --ignored --nocapture`
+//! `cargo test --test integration compat_m3:: -- --ignored --nocapture`
 #![cfg(debug_assertions)]
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -468,7 +468,7 @@ mod support {
 /// The binary under test is `c0ab5e9`'s, built with its recorded toolchain, and it is
 /// pre-M4: it has no `capabilities` command.
 #[test]
-#[ignore = "builds the M3 commit: cargo test --test compat_m3 -- --ignored --nocapture"]
+#[ignore = "builds the M3 commit: cargo test --test integration compat_m3:: -- --ignored --nocapture"]
 fn the_m3_build_is_c0ab5e9_built_with_its_recorded_toolchain() {
     let log = tlog!();
     log.step("build");
@@ -564,7 +564,7 @@ mod control {
 /// `prepared` line, or before its first swap, is recovered by the M3 build's next install
 /// (rolled back), at once and two hours on, and nothing of M4's is touched.
 #[test]
-#[ignore = "builds the M3 commit: cargo test --test compat_m3 -- --ignored --nocapture"]
+#[ignore = "builds the M3 commit: cargo test --test integration compat_m3:: -- --ignored --nocapture"]
 fn the_m3_build_recovers_an_interrupted_m4_folder_transaction() {
     let log = tlog!();
     let build = m3();

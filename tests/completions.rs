@@ -7,7 +7,7 @@
 //! write, no request, no home needed. zsh's and fish's syntax checks are checkpoint tests
 //! (`--ignored`), which skip only where their shell is missing.
 
-mod common;
+use crate::common;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -27,7 +27,7 @@ use sha2::{Digest, Sha256};
 
 const SHELLS: [&str; 5] = ["bash", "zsh", "fish", "elvish", "powershell"];
 
-const RE_ACCEPT: &str = "the completion script of this build; any change to a command, flag, alias, about text or fixed value changes it: re-accept with INSTA_UPDATE=always cargo test --test completions, then review git diff tests/snapshots/";
+const RE_ACCEPT: &str = "the completion script of this build; any change to a command, flag, alias, about text or fixed value changes it: re-accept with INSTA_UPDATE=always cargo test --test integration completions::, then review git diff tests/snapshots/";
 
 /// `omaddons completions <shell>` on `env`, which must succeed with nothing on stderr.
 #[track_caller]

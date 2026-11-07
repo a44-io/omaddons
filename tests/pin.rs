@@ -3,7 +3,7 @@
 //! through the install pipeline, no-ops, fan-out across clients, carry-over of reason
 //! and channel, the offline hint after `unpin`, and `addon_pinned`'s `unpin` fix.
 
-mod common;
+use crate::common;
 
 use std::fs;
 

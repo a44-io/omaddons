@@ -4,7 +4,7 @@
 //! e2e suite: the builders' self-checks, E11's differential among them (each comparison
 //! logged).
 
-mod common;
+use crate::common;
 
 use std::fs;
 

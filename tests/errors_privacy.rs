@@ -4,7 +4,7 @@
 //! replaces this client's names and every player GUID and link; and an error keeps its
 //! fingerprint whichever writer format stored it.
 
-mod common;
+use crate::common;
 
 use common::buggrabber::{self, Writer};
 use common::privacy::assert_private;

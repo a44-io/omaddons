@@ -2,7 +2,7 @@
 //! every file), `list -v` and `--deep`, `info`, and the `local_changes_replaced`
 //! warning when an install or update replaces files changed by hand.
 
-mod common;
+use crate::common;
 
 use std::fs;
 

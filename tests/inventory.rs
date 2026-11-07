@@ -1,7 +1,7 @@
 //! The folder inventory over synthetic clients: classes, ownership, duplicates, TOC
 //! details, read-only behavior and a snapshot of a mixed inventory.
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};

@@ -8,7 +8,7 @@
 //! longer serves it, the command fails `hash_mismatch` naming it and changes nothing.
 #![cfg(test)]
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeSet;
 use std::fs;

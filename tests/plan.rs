@@ -6,7 +6,7 @@
 //! equal for two dry runs of an unchanged home, for every source when the second is
 //! served from the blob cache, and for an unchanged `--file <dir>`.
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeSet;
 use std::fs;

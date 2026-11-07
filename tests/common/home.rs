@@ -28,6 +28,11 @@ impl Home {
         Self::in_env(TestEnv::new(), products)
     }
 
+    /// [`Home::new`] in a new tempdir under `parent`, removed with the home.
+    pub fn new_in(parent: &Path, products: &[&str]) -> Self {
+        Self::in_env(TestEnv::new_in(parent), products)
+    }
+
     /// [`Home::new`] at `root`, which is kept (`argc bench`'s home).
     pub fn at(root: &Path, products: &[&str]) -> Self {
         Self::in_env(TestEnv::at(root), products)

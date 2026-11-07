@@ -603,7 +603,7 @@ fn reinstall() {
     // The verb: install with --reinstall, and that runs.
     let c = s.json(&["reinstall", "weakauras", "-t", "retail"], 2);
     insta::assert_json_snapshot!("reinstall_verb", s.stable(&c.envelope));
-    let fix = crate::support::strings(&c.envelope["error"]["fix_argv"]);
+    let fix = super::support::strings(&c.envelope["error"]["fix_argv"]);
     let args: Vec<&str> = fix[1..].iter().map(String::as_str).collect();
     let c = s.json(&args, 0);
     assert_eq!(c.envelope["data"]["items"][0]["status"], "updated");

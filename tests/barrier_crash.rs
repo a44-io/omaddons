@@ -8,7 +8,7 @@
 //! wholly before or wholly after the repair, never a mixture, and F is never recovered
 //! ahead of the repair that exposed it.
 //!
-//! Its own test crate, apart from `tests/engine_crash.rs`, so its matrices run in
+//! A suite of its own, apart from `tests/engine_crash.rs`, so its matrices run in
 //! parallel with the engine's.
 //!
 //! Debug builds only: failpoints exist only there (DEC-7).
@@ -18,13 +18,7 @@
 //! recovery's three passes, and the prediction is held to what it did.
 #![cfg(debug_assertions)]
 
-mod common;
-
-#[test]
-#[ignore = "a child process of the repair scenes"]
-fn child_repair() {
-    common::repair::child_main();
-}
+use crate::common;
 
 // ---------------------------------------------------------------------------------------
 // E14: recovery in barrier order, crashed at every boundary (the leaf's design gate,

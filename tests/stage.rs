@@ -2,7 +2,7 @@
 //! `Interface/.omaddons/stage/<tx>/`, verified, normalized and indexed, with one
 //! `syncfs` and AddOns untouched.
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;

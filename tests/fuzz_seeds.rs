@@ -1,12 +1,12 @@
 //! The committed fuzz seeds under `fuzz/seeds/<target>/`: written from the test builders
 //! and fixtures by an ignored generator, and checked here so every fuzz target keeps a
 //! source file and at least three seeds, one of them malformed.
-//! `OMADDONS_WRITE_SEEDS=1 cargo test --test fuzz_seeds -- --ignored write`
+//! `OMADDONS_WRITE_SEEDS=1 cargo test --test integration -- --ignored fuzz_seeds::write`
 //!
 //! e2e suite: the `journal` fuzz property on every committed journal seed, each seed's
 //! diagnosis logged.
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -126,14 +126,6 @@ fn journal_seeds_satisfy_the_fuzz_property() {
         }
         fuzz_disk_property(&paths);
     }
-}
-
-/// A child process of the repair scenes `write_fuzz_seeds` crashes
-/// (`common::repair::child_main`). Run on its own it does nothing.
-#[test]
-#[ignore = "a child process of the repair scenes"]
-fn child_repair() {
-    common::repair::child_main();
 }
 
 #[test]

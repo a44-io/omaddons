@@ -2,7 +2,7 @@
 //! assignment, moves and copies, id stability, selectors, and read paths that never
 //! write.
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::path::PathBuf;

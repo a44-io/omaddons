@@ -6,7 +6,7 @@
 //! two appliers; `plans show` after a lost output; a Tukui plan from the cache; the widget's
 //! Update scenarios. The slice's demo is recorded from a run of `argc e2e slice2`.
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -2005,7 +2005,7 @@ fn demo_widget_update_qml_scenarios_read_only_fixtures_the_binary_writes() {
     let order = widget::in_order(
         &script,
         &[
-            "--exact write_widget_fixtures",
+            "--exact omarchy_widget::write_widget_fixtures",
             "cp -r omarchy \"$plugin\"",
             "omarchy/tests/qml_fixtures.js",
             "\"$runner\" -input",

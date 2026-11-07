@@ -461,7 +461,7 @@ fn run_child_with(
     let exe = std::env::current_exe().unwrap();
     let mut cmd = Command::new(exe); // ubs:ignore — the test binary running itself
     cmd.args([
-        "child_repair",
+        super::repair::CHILD_REPAIR,
         "--exact",
         "--ignored",
         "--nocapture",

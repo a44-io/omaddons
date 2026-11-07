@@ -4,7 +4,7 @@
 //! changes with its `journal_pending` details, other targets go on, and `status` says it
 //! needs manual repair.
 
-mod common;
+use crate::common;
 
 use common::state::key_of;
 use common::trees::tree_hash;

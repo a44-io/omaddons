@@ -1,7 +1,7 @@
 //! e2e suite: plan retention: live plans pin archives, commits sweep expired plans, and bound runs hash local archives again.
 #![cfg(test)]
 
-mod common;
+use crate::common;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;

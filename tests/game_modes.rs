@@ -4,7 +4,7 @@
 //! and an install says when the folder is shared. Verified on a real machine on
 //! 2026-10-15.
 
-mod common;
+use crate::common;
 
 use common::addons::toc;
 use common::home::Home;

@@ -1,10 +1,8 @@
 //! e2e suite: the doctor runtime: run directories, the doctor envelope and exit dictionary, budgets, isolation, --since and explain
 #![cfg(test)]
 
-mod common;
-#[path = "doctor/mod.rs"]
-#[allow(dead_code)]
-mod fixture;
+use crate::common;
+use crate::fixture;
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;

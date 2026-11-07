@@ -3,7 +3,7 @@
 //! follow-up, undo of undo, --last-by) and tests/undo_history.rs (the CLI surface): an
 //! update reverted byte for byte, and `undo_conflict` across transaction kinds.
 
-mod common;
+use crate::common;
 
 use common::engine::Scene;
 use common::trees::tree_hash;

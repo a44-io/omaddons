@@ -1,6 +1,6 @@
 //! Custom and legacy client discovery over synthetic roots with real PE stubs.
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::path::Path;
@@ -265,7 +265,7 @@ fn a_non_pe_exe_is_usable_and_warns() {
 }
 
 /// The development machine's own custom client (vision §4.7), when its path is given:
-/// `OMADDONS_REAL_CUSTOM_ROOT=<root> cargo test --test discover_custom -- --ignored`.
+/// `OMADDONS_REAL_CUSTOM_ROOT=<root> cargo test --test integration discover_custom:: -- --ignored`.
 #[test]
 #[ignore = "needs a real custom client"]
 fn real_custom_client() {

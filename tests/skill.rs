@@ -1,11 +1,11 @@
 //! e2e suite: skill
 //!
 //! `skills/omaddons/SKILL.md` is the guide `omaddons robot-docs guide` renders, byte for
-//! byte (M4-D7). `OMADDONS_UPDATE_SKILL=1 cargo test --test skill` rewrites it from a
+//! byte (M4-D7). `OMADDONS_UPDATE_SKILL=1 cargo test --test integration skill::` rewrites it from a
 //! hermetic home, never the developer's. Only `skill_md_is_the_guide` reads or writes the
 //! file, so a regeneration never races a reader.
 
-mod common;
+use crate::common;
 
 use common::env::TestEnv;
 use common::guide::{self, REGENERATE, SKILL_FILE};
@@ -57,10 +57,10 @@ fn skill_md_is_the_guide() {
         }
         std::fs::write(&path, &rendered).unwrap();
         log.note(format!(
-            "wrote {SKILL_FILE}; run cargo test --test skill again to check the compiled digest"
+            "wrote {SKILL_FILE}; run cargo test --test integration skill:: again to check the compiled digest"
         ));
         log.step("digest");
-        log.note("digest check deferred: this test binary was compiled before the file changed; run cargo test --test skill again");
+        log.note("digest check deferred: this test binary was compiled before the file changed; run cargo test --test integration skill:: again");
         return;
     }
     let size = |text: &str| format!("{} lines / {} bytes", text.lines().count(), text.len());

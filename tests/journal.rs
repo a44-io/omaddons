@@ -6,7 +6,7 @@
 //! the six-step transaction, each stuck state and each unreadable input, and recovery
 //! then does what it predicted.
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -841,15 +841,6 @@ fn diagnose_after_recovery_finds_nothing() {
 // binary's recovery then does, for every repair crash state of every fix kind, every
 // planted stop and a crashed recovery. Each repair runs in a child process of this test
 // binary (`child_repair`), crashed by a real `abort`.
-
-/// A child process of the repair scenes (`common::repair::child_main`). Run on its own
-/// it does nothing.
-#[cfg(debug_assertions)]
-#[test]
-#[ignore = "a child process of the repair scenes"]
-fn child_repair() {
-    common::repair::child_main();
-}
 
 #[cfg(test)]
 #[cfg(debug_assertions)]

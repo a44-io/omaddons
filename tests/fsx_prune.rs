@@ -4,7 +4,7 @@
 //! e2e suite: prune across processes (a handed-off global lock held while renaming and
 //! free while deleting, logged).
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::path::PathBuf;
@@ -63,11 +63,13 @@ mod support {
         spawn_child("child_prune", root, victim, failpoints)
     }
 
-    /// Runs the child test `child` on `victim` with `failpoints` armed.
+    /// Runs the child test `child` (a test of this suite) on `victim` with `failpoints`
+    /// armed.
     pub fn spawn_child(child: &str, root: &Path, victim: &Path, failpoints: &str) -> Child {
+        let test = format!("fsx_prune::{child}");
         Command::new(std::env::current_exe().unwrap())
             .args([
-                child,
+                test.as_str(),
                 "--exact",
                 "--ignored",
                 "--nocapture",

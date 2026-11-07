@@ -3399,7 +3399,8 @@ There is no CI (decision D16). Every commit that changes code (`*.rs`, `Cargo.*`
 
 ```bash
 argc gate          # cargo fmt --check, clippy --all-targets -D warnings, cargo test, the widget
-                   # pipeline, ubs on changed files, cargo deny when Cargo.toml/Cargo.lock/deny.toml changed
+                   # pipeline, ubs on changed files (Cargo.toml and Cargo.lock aside), cargo deny
+                   # when Cargo.toml/Cargo.lock/deny.toml changed
 argc gate --all    # also run cargo deny, and the widget's QML step, unconditionally
 argc widget-test   # the widget pipeline alone, QML step included
 ```
@@ -3412,15 +3413,15 @@ Other tasks: `argc fmt`, `argc lint`, `argc test [filter]`, `argc e2e [filter]` 
 
 ### The agent guide
 
-`skills/omaddons/SKILL.md` is generated: it is what `omaddons robot-docs guide` prints. Edit `src/contract/guide/guide.md` for its prose, or the registries for its tables, then run `OMADDONS_UPDATE_SKILL=1 cargo test --test skill` and commit both. Never edit or merge the file by hand; after a rebase, regenerate it. `.rumdl.toml` keeps the Markdown formatter from putting a blank line between the frontmatter and the stamp in either file.
+`skills/omaddons/SKILL.md` is generated: it is what `omaddons robot-docs guide` prints. Edit `src/contract/guide/guide.md` for its prose, or the registries for its tables, then run `OMADDONS_UPDATE_SKILL=1 cargo test --test integration skill::` and commit both. Never edit or merge the file by hand; after a rebase, regenerate it. `.rumdl.toml` keeps the Markdown formatter from putting a blank line between the frontmatter and the stamp in either file.
 
 ### Tests
 
-The gate runs about 4,500 Rust tests, unit tests in `src/` and integration tests in about 130 test binaries under `tests/`. About 98 more are `#[ignore]`d and run only at checkpoints or by hand: live probes, real-machine and real-client checks, time budgets and the bench homes (`tests/perf.rs`), the M2 build against M3 state (`tests/compat_m2.rs`) and the M3 build against M4 state (`tests/compat_m3.rs`), fixture recorders, the fuzz-seed writer and child-process helpers. (With milestone 3's features in there were 2,279, at the close of the post-M2 audit 1,645, and at the M2 checkpoint 1,333.) The widget adds 166 `bun` tests and the QML tests (132 test functions in `omarchy/tests/qml/`), run by the gate's widget pipeline. `cargo test -- --list` counts today's; the exact counts are recorded when the milestone closes.
+The gate runs about 4,500 Rust tests, unit tests in `src/` and integration tests in about 130 suites under `tests/`. Every suite (`tests/<suite>.rs`, and `tests/contract/`) is a module of one test binary, `integration` (`tests/main.rs`), and its tests are named `<suite>::…`, so `cargo test --test integration restore::` runs one suite. A binary per suite linked the whole library about 130 times, and a one-line change wrote about 16 GB to the disk; one binary links it once. For the same reason debug and test builds carry line tables only, enough for file and line in panics and backtraces, and dependencies no debuginfo (`[profile.dev]`; `CARGO_PROFILE_DEV_DEBUG=true` for a debugger). About 98 more are `#[ignore]`d and run only at checkpoints or by hand: live probes, real-machine and real-client checks, time budgets and the bench homes (`tests/perf.rs`), the M2 build against M3 state (`tests/compat_m2.rs`) and the M3 build against M4 state (`tests/compat_m3.rs`), fixture recorders, the fuzz-seed writer and child-process helpers. (With milestone 3's features in there were 2,279, at the close of the post-M2 audit 1,645, and at the M2 checkpoint 1,333.) The widget adds 166 `bun` tests and the QML tests (132 test functions in `omarchy/tests/qml/`), run by the gate's widget pipeline. `cargo test -- --list` counts today's; the exact counts are recorded when the milestone closes.
 
 | Suite | What it covers |
 |---|---|
-| `tests/contract/` | A matrix of success and failure envelopes across the commands: key order, exit codes, registered codes, suggested argvs that parse and round-trip, usage fixes that never name another changing command; schema validation of every envelope, `details` and stderr event, and every envelope snapshot; snapshots; the intent corpus, whose fixes run on a synthetic home and whose wrong invocations change nothing; the semantic manifest's report (`cargo test --test contract manifest_report -- --nocapture` prints its section counts and, run before and after a change, that change's semantic diff) |
+| `tests/contract/` | A matrix of success and failure envelopes across the commands: key order, exit codes, registered codes, suggested argvs that parse and round-trip, usage fixes that never name another changing command; schema validation of every envelope, `details` and stderr event, and every envelope snapshot; snapshots; the intent corpus, whose fixes run on a synthetic home and whose wrong invocations change nothing; the semantic manifest's report (`cargo test --test integration contract::manifest_report -- --nocapture` prints its section counts and, run before and after a change, that change's semantic diff) |
 | `tests/e2e_manifest.rs` | The semantic manifest against the live binary: every flag and positional `help --json` reports is an input node with the same facts, and every key path of real envelopes, data, error details and stderr events is located in its outputs |
 | `tests/engine_crash.rs` | All 34 engine failpoints, every journaled rename (atomic and two-rename), and crashes during recovery, armed as real `abort`s in a child process over SavedVariables; undo included; torn journal, history and actions lines; whole-`WTF/` restores, single addons' restores (`--addon`) and their undos run by the engine in a child of the test binary, with injected I/O failures, a game started mid-restore, the preservation of displaced trees and files (crashed and failed at each of its steps) and bind-mounted topologies |
 | `tests/barrier_crash.rs` | The activation barrier (E14): a doctor set-aside of a crashed update and its undo (the reactivation), and the undo of a set-aside of two (one per client, an activation each), each committed in a child of the test binary and killed at every primitive boundary and repair failpoint, then recovered by three lock-taking commands; their recovery crashed at every inverse and repeated, or failed on I/O; a set-aside recovery cannot settle, an unreadable repair, and a repair waiting behind an unsettled folder journal. Recovery takes them in its three passes, never runs a restored journal ahead of the repair that exposed it, and leaves every state wholly before or wholly after, as E11's differential predicts |
@@ -3467,14 +3468,15 @@ A rerun replaces a test's directory, `cargo clean` removes them all, and nothing
 ```bash
 argc e2e                         # every end-to-end suite, logs echoed live
 argc e2e slice1                  # the suites whose name contains slice1
-argc e2e all --test-threads=1    # every suite, with arguments for the test binaries
+argc e2e all --test-threads=1    # every suite, with arguments for the test binary
+argc e2e slice2 demo_a_second    # in each matching suite, the tests whose name starts with demo_a_second
 ```
 
-`argc e2e [filter] [args…]` runs every test crate whose crate doc has a `//! e2e suite: <purpose>` line, with `OMADDONS_TEST_LOG=verbose`, then prints how many logs it wrote, which ones panicked or have no end record (a killed test), and the log root (`==> test logs: target/tmp/test-logs`). It exits with cargo's status, and a filter that matches no suite exits 2 naming them. It runs the same tests as the gate's `cargo test`, and deletes nothing.
+`argc e2e [filter] [args…]` runs every suite whose module doc has a `//! e2e suite: <purpose>` line (a test name among the arguments is looked up in each selected suite, `<suite>::<name>`), with `OMADDONS_TEST_LOG=verbose`, then prints how many logs it wrote, which ones panicked or have no end record (a killed test), and the log root (`==> test logs: target/tmp/test-logs`). It exits with cargo's status, and a filter that matches no suite exits 2 naming them. It runs the same tests as the gate's `cargo test`, and deletes nothing.
 
 The conventions:
 
-- a test that runs more than one command logs through `TestLog` (`let log = tlog!();`), and its crate carries the `//! e2e suite:` line (`tests/tlog_selftest.rs` checks both ways);
+- a test that runs more than one command logs through `TestLog` (`let log = tlog!();`), and its suite carries the `//! e2e suite:` line (`tests/tlog_selftest.rs` checks both ways);
 - each phase of a scenario is a `log.step`;
 - a state assertion goes through `log.tree`, `log.assert_unchanged` or `log.diff`, or `log.assert_eq`, or logs what it compares with `log.json` first;
 - unit tests are table-driven, with a name per case and messages that show the input and the output;
@@ -3489,14 +3491,14 @@ Privacy: the log holds only synthetic homes, and refuses to hash a tree outside 
 ```bash
 argc fuzz-all --time 600                                   # every fuzz target, 10 minutes each
 argc bench                                                 # hyperfine medians on a synthetic home (needs hyperfine, jq)
-cargo test --release --test perf -- --ignored --skip bench_home --skip live_home --test-threads=1   # the time budgets
-cargo test --test compat_m2 -- --ignored --nocapture       # the M2 build against M3 state (prints its table)
-cargo test --test compat_m3 -- --ignored --nocapture       # the M3 build (c0ab5e9) against M4 state (prints its table)
-OMADDONS_LIVE=1 cargo test --test live_probes -- --ignored  # the real endpoints
+cargo test --release --test integration perf:: -- --ignored --skip bench_home --skip live_home --test-threads=1   # the time budgets
+cargo test --test integration compat_m2:: -- --ignored --nocapture   # the M2 build against M3 state (prints its table)
+cargo test --test integration compat_m3:: -- --ignored --nocapture   # the M3 build (c0ab5e9) against M4 state (prints its table)
+OMADDONS_LIVE=1 cargo test --test integration live_probes:: -- --ignored   # the real endpoints
 OMADDONS_REAL_MACHINE=1 OMADDONS_LIVE=1 OMADDONS_ALLOW_SKIP=keyless_installs_forever \
-  cargo test --test real_machine -- --ignored --test-threads=1   # this machine's clients; every addon change is undone
+  cargo test --test integration real_machine:: -- --ignored --test-threads=1   # this machine's clients; every addon change is undone
 OMADDONS_ALLOW_SKIP=zsh_accepts_its_script,fish_accepts_its_script \
-  cargo test --test completions -- --ignored     # zsh -n and fish --no-execute over the generated scripts
+  cargo test --test integration completions:: -- --ignored   # zsh -n and fish --no-execute over the generated scripts
 ```
 
 Where zsh or fish is not installed, its check prints `SKIP` and the variable accepts it: the M4 plan pre-accepts exactly these two skips. bash's check runs in every gate and is never skipped.

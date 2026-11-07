@@ -1,5 +1,5 @@
 //! Time budgets, measured on release builds only, one at a time:
-//! `cargo test --release --test perf -- --ignored --skip bench_home --skip live_home --test-threads=1`
+//! `cargo test --release --test integration perf:: -- --ignored --skip bench_home --skip live_home --test-threads=1`
 //! (the milestone checkpoint runs them and quotes the printed numbers; the two 500 MiB
 //! tests also never overlap when run in parallel, through `HALF_GIB`). A debug build is
 //! several times slower and proves nothing, so each test is ignored. Every speed budget
@@ -16,7 +16,7 @@
 //! release, and a gate test proves that home and the cost note's numbers, never a time.
 //! e2e suite: the under-lock approval check on the realistic home, reported in release and proven in the gate.
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::path::PathBuf;
@@ -233,7 +233,7 @@ const TARGETS: &[&str] = &["retail", "classic", "era"];
 /// environment every benchmarked command runs with. The cache is then deleted, so the
 /// home starts cold: no memo, no blobs.
 #[test]
-#[ignore = "argc bench's home (a debug build, which replays fixtures): BENCH_HOME=<dir> cargo test --test perf bench_home -- --ignored"]
+#[ignore = "argc bench's home (a debug build, which replays fixtures): BENCH_HOME=<dir> cargo test --test integration perf::bench_home -- --ignored"]
 fn bench_home() {
     // A builder for `argc bench`, not a budget: without its directory it builds nothing.
     let Some(dir) = std::env::var_os("BENCH_HOME").map(PathBuf::from) else {
@@ -270,7 +270,7 @@ fn bench_home() {
 /// environment. The release binary then installs catalog addons into it from the real
 /// sources; it never touches a real client.
 #[test]
-#[ignore = "the live run's home: LIVE_HOME=<dir> cargo test --test perf live_home -- --ignored"]
+#[ignore = "the live run's home: LIVE_HOME=<dir> cargo test --test integration perf::live_home -- --ignored"]
 fn live_home() {
     // A builder for the live run, not a budget: without its directory it builds nothing.
     let Some(dir) = std::env::var_os("LIVE_HOME").map(PathBuf::from) else {
@@ -289,7 +289,7 @@ fn live_home() {
 /// `coverage.env`, its environment. A release binary then dry-runs installs from the
 /// real sources into it; it never touches a real client.
 #[test]
-#[ignore = "the coverage study's home: COVERAGE_HOME=<dir> cargo test --test perf coverage_home -- --ignored"]
+#[ignore = "the coverage study's home: COVERAGE_HOME=<dir> cargo test --test integration perf::coverage_home -- --ignored"]
 fn coverage_home() {
     // A builder for the study, not a budget: without its directory it builds nothing.
     let Some(dir) = std::env::var_os("COVERAGE_HOME").map(PathBuf::from) else {
@@ -345,7 +345,7 @@ fn release_build_lists_no_test_fixers() {
 /// The budget: 5,000 files in 20 folders, installed through the engine, checked by Stat
 /// right after in under 30 ms warm, with at most 1% re-hashed. (Moved from `drift.rs`.)
 #[test]
-#[ignore = "a release-build budget: cargo test --release --test perf -- --ignored"]
+#[ignore = "a release-build budget: cargo test --release --test integration perf:: -- --ignored"]
 fn five_thousand_files_check_in_thirty_milliseconds() {
     let home = Home::new(&["wow"]);
     let mut entries: Vec<(String, String)> = Vec::new();
@@ -390,7 +390,7 @@ fn five_thousand_files_check_in_thirty_milliseconds() {
 /// Loading the stored WoWInterface index (8,218 entries, as on WoWInterface) stays under
 /// 40 ms. (Moved from `wowi_index.rs`.)
 #[test]
-#[ignore = "a release-build budget: cargo test --release --test perf -- --ignored"]
+#[ignore = "a release-build budget: cargo test --release --test integration perf:: -- --ignored"]
 fn a_full_wowi_index_loads_under_40_ms() {
     let env = TestEnv::new();
     let scenario = env.root().join("scenario");
@@ -476,7 +476,7 @@ fn update_across_clients_downloads_each_archive_once() {
 /// config.toml of three overrides, median of 21 runs of the binary, process spawn
 /// included: under 20 ms.
 #[test]
-#[ignore = "a release-build budget: cargo test --release --test perf -- --ignored"]
+#[ignore = "a release-build budget: cargo test --release --test integration perf:: -- --ignored"]
 fn capabilities_answers_in_under_20_ms() {
     let home = Home::new(&["wow", "wow_classic"]);
     let config = home.env.config().join("omaddons");
@@ -509,7 +509,7 @@ fn capabilities_answers_in_under_20_ms() {
 /// from recorded release metadata (DBM, BigWigs and WeakAuras), Lua errors, 200 backups
 /// and the bar widget installed, median of 21 runs of the binary: under 5 ms.
 #[test]
-#[ignore = "a release-build budget: cargo test --release --test perf -- --ignored"]
+#[ignore = "a release-build budget: cargo test --release --test integration perf:: -- --ignored"]
 fn status_cached_stays_under_5_ms_with_a_realistic_memo() {
     // Realistic release sets, from the recorded catalog scenario.
     let env = TestEnv::new();
@@ -745,7 +745,7 @@ fn status_cached_stays_under_5_ms_with_a_realistic_memo() {
 /// addon, then three addons installed in one transaction, removed together, and that
 /// remove undone. Local archives only: release builds replay no fixture.
 #[test]
-#[ignore = "a release-build budget: cargo test --release --test perf -- --ignored"]
+#[ignore = "a release-build budget: cargo test --release --test integration perf:: -- --ignored"]
 fn commits_hold_the_lock_under_50_ms() {
     let s = Scene::new();
     for name in ["Baz", "Qux"] {
@@ -798,7 +798,7 @@ fn commits_hold_the_lock_under_50_ms() {
 /// change, with `auto_backup = "daily-copy"` over 16 MiB of settings, still holds the
 /// lock under 50 ms (the copy is made before it).
 #[test]
-#[ignore = "a release-build budget: cargo test --release --test perf -- --ignored"]
+#[ignore = "a release-build budget: cargo test --release --test integration perf:: -- --ignored"]
 fn a_change_with_an_automatic_backup_holds_the_lock_under_50_ms() {
     let s = Scene::new();
     common::wtf::Wtf::at(s.home.client("_retail_"))
@@ -827,7 +827,7 @@ fn a_change_with_an_automatic_backup_holds_the_lock_under_50_ms() {
 /// can be copied or hashed is done before the lock. A release build ignores failpoints,
 /// so SavedVariables are copied the way this filesystem allows (reflinks where it can).
 #[test]
-#[ignore = "a release-build budget: cargo test --release --test perf -- --ignored"]
+#[ignore = "a release-build budget: cargo test --release --test integration perf:: -- --ignored"]
 fn large_saved_variables_and_folders_hold_the_lock_under_50_ms() {
     let s = Scene::new();
     s.heavy_saved_variables();
@@ -867,7 +867,7 @@ fn large_saved_variables_and_folders_hold_the_lock_under_50_ms() {
 
 /// `status --cached` budgets 5 ms, so classes depth over 500 folders stays under it.
 #[test]
-#[ignore = "a release-build budget: cargo test --release --test perf -- --ignored"]
+#[ignore = "a release-build budget: cargo test --release --test integration perf:: -- --ignored"]
 fn classes_inventory_of_500_folders_under_5_ms() {
     use omaddons::inventory::{Depth, inventory};
     use omaddons::rules::RulesTable;
@@ -894,7 +894,7 @@ fn classes_inventory_of_500_folders_under_5_ms() {
 
 /// Discovery from the cache, with nothing scanned, takes under 5 ms for 10 roots.
 #[test]
-#[ignore = "a release-build budget: cargo test --release --test perf -- --ignored"]
+#[ignore = "a release-build budget: cargo test --release --test integration perf:: -- --ignored"]
 fn cached_discovery_of_10_roots_under_5_ms() {
     use omaddons::discover::cache::{DiscoveryMode, discover_cached};
     use omaddons::discover::{DiscoveryInput, ScanLimits};
@@ -932,7 +932,7 @@ fn cached_discovery_of_10_roots_under_5_ms() {
 
 /// Staging an archive of 5,001 small files takes under a second.
 #[test]
-#[ignore = "a release-build budget: cargo test --release --test perf -- --ignored"]
+#[ignore = "a release-build budget: cargo test --release --test integration perf:: -- --ignored"]
 fn staging_5001_files_under_1_s() {
     use omaddons::engine::inspect::{ArchiveLimits, inspect};
     use omaddons::engine::stage::stage;
@@ -975,7 +975,7 @@ fn staging_5001_files_under_1_s() {
 /// Running-client detection on the real `/proc` takes under 2 ms
 /// (omad-m1-working-slice-ejl.3.10). It only reads `/proc`.
 #[test]
-#[ignore = "a release-build budget: cargo test --release --test perf -- --ignored"]
+#[ignore = "a release-build budget: cargo test --release --test integration perf:: -- --ignored"]
 fn detect_running_on_the_real_proc_under_2_ms() {
     use omaddons::discover::DiscoverySource;
     use omaddons::discover::battlenet::{BattlenetHints, discover_root};
@@ -1019,7 +1019,7 @@ fn detect_running_on_the_real_proc_under_2_ms() {
 }
 
 #[test]
-#[ignore = "a release-build budget on btrfs: cargo test --release --test perf -- --ignored"]
+#[ignore = "a release-build budget on btrfs: cargo test --release --test integration perf:: -- --ignored"]
 fn clone_tree_500_mb() {
     use common::wtf::Wtf;
     use omaddons::backup::tree::{CloneOpts, clone_tree};
@@ -1088,7 +1088,7 @@ fn clone_tree_500_mb() {
 /// restore of that tree holding the global lock under 50 ms (stamp digests, so nothing
 /// is hashed under the lock). One test, so the 500 MiB runs never overlap each other.
 #[test]
-#[ignore = "a release-build budget on btrfs: cargo test --release --test perf -- --ignored"]
+#[ignore = "a release-build budget on btrfs: cargo test --release --test integration perf:: -- --ignored"]
 fn backups_of_500_mb_meet_their_budgets() {
     use common::wtf::Wtf;
 
@@ -1181,7 +1181,7 @@ fn backups_of_500_mb_meet_their_budgets() {
 /// A 4 MB BugGrabber file as a modern client writes it, median of 21 parses: under
 /// 20 ms (M3 checkpoint criterion 6).
 #[test]
-#[ignore = "a release-build budget: cargo test --release --test perf -- --ignored"]
+#[ignore = "a release-build budget: cargo test --release --test integration perf:: -- --ignored"]
 fn a_4_mb_buggrabber_file_parses_under_20_ms() {
     use common::buggrabber::{self, Writer};
     let sample = buggrabber::modern_int(Writer::Modern);
@@ -1226,14 +1226,14 @@ const LUA_WORKLOADS: &[&str] = &[
 /// Each workload in a child process, so the harness's own memory does not count: peak
 /// RSS at most 3 × the input plus 16 MiB, and at most 1 s per 64 MiB parsed.
 #[test]
-#[ignore = "a release-build budget: cargo test --release --test perf -- --ignored"]
+#[ignore = "a release-build budget: cargo test --release --test integration perf:: -- --ignored"]
 fn the_savedvariables_parser_stays_within_its_memory_and_time_budgets() {
     const MIB: u64 = 1 << 20;
     let exe = std::env::current_exe().unwrap();
     for workload in LUA_WORKLOADS {
         let out = std::process::Command::new(&exe) // ubs:ignore — the test binary itself
             .args([
-                "lua_resource_child",
+                "perf::lua_resource_child",
                 "--exact",
                 "--ignored",
                 "--nocapture",
@@ -1471,7 +1471,7 @@ fn realistic_home_builds_and_one_bound_update_logs_its_cost() {
 /// notes and the bound and unbound windows' lock holds. A report, not a budget: it
 /// asserts only what makes the numbers trustworthy.
 #[test]
-#[ignore = "a release-build report: cargo test --release --test perf -- --ignored"]
+#[ignore = "a release-build report: cargo test --release --test integration perf:: -- --ignored"]
 fn the_approval_check_under_the_lock_costs() {
     use common::realistic::{ADDONS, REALISTIC_TARGETS, realistic_home};
     const ROUNDS: usize = 3;
@@ -1554,7 +1554,7 @@ fn the_approval_check_under_the_lock_costs() {
 /// 5 MiB blob, each on a fresh memo so every run hashes. The checkpoint quotes it beside
 /// "under 10 ms per 5 MiB".
 #[test]
-#[ignore = "a release-build measurement: cargo test --release --test perf -- --ignored"]
+#[ignore = "a release-build measurement: cargo test --release --test integration perf:: -- --ignored"]
 fn blob_reverification_cost() {
     use omaddons::engine::blobs::{Verification, VerifyMemo};
     use sha2::{Digest, Sha256};

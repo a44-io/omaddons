@@ -3,7 +3,7 @@
 //! `outdated` and `update` on a client that manages nothing yet, is adopted where it is.
 //! Every argv given runs.
 
-mod common;
+use crate::common;
 
 use common::addons::{addon_folder, toc};
 use common::graph::{Folder, Node, release_graph};

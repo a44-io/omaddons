@@ -4,7 +4,7 @@
 //! time of the call (errors age out, dismissals hold with the cache emptied), never count
 //! received reports, and say when a read was incomplete instead of reporting zero.
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::path::PathBuf;

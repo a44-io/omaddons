@@ -1,11 +1,8 @@
 //! e2e suite: doctor fix end to end with the test-only fixers: every terminal state, the dry run's purity, a preview bound across processes, stale runs that touch nothing, concurrent fixers, the force and disabled gates, quarantine roots, declared scopes and privacy
 #![cfg(test)]
 
-mod common;
-// Shared with `tests/doctor.rs`: this suite uses only the test fixers' fixtures.
-#[allow(dead_code)]
-#[path = "doctor/mod.rs"]
-mod fixture;
+use crate::common;
+use crate::fixture;
 // E7 s6: the undo of repairs end to end (`undo::<scenario>`).
 #[path = "doctor_repair/undo.rs"]
 mod undo;
@@ -22,18 +19,7 @@ mod set_aside;
 #[path = "doctor_repair/set_aside_crash.rs"]
 mod set_aside_crash;
 // The contract suite's strict validator, for the delegation's envelopes.
-#[allow(dead_code)]
-#[path = "contract/validate.rs"]
-mod validate;
-
-/// A child process of E5's synthetic repair scenes, which the undo scenarios reuse (the
-/// round trip of every kind, a repair of an installed folder). Run on its own it does
-/// nothing.
-#[test]
-#[ignore = "a child process of the repair scenes"]
-fn child_repair() {
-    common::repair::child_main();
-}
+use crate::validate;
 
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};

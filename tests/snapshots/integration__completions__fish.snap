@@ -1,6 +1,6 @@
 ---
 source: tests/completions.rs
-description: "the completion script of this build; any change to a command, flag, alias, about text or fixed value changes it: re-accept with INSTA_UPDATE=always cargo test --test completions, then review git diff tests/snapshots/"
+description: "the completion script of this build; any change to a command, flag, alias, about text or fixed value changes it: re-accept with INSTA_UPDATE=always cargo test --test integration completions::, then review git diff tests/snapshots/"
 ---
 # Print an optspec for argparse to handle cmd's options that are independent of any subcommand.
 function __fish_omaddons_global_optspecs

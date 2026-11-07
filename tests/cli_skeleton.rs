@@ -2,7 +2,7 @@
 //! panic hook, run as a real process with HOME and XDG_* in a tempdir (DEC-6). Every
 //! test checks that each captured stderr line is an NDJSON event.
 
-mod common;
+use crate::common;
 
 use serde_json::Value;
 use support::{run, run_env};

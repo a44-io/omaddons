@@ -6,7 +6,7 @@
 //! an identified adoption; and the reasons when there is none. Request counts come from
 //! `net.log`.
 
-mod common;
+use crate::common;
 
 use common::archives::zip_text;
 use common::home::Home;

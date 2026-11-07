@@ -5,7 +5,7 @@
 //! e2e suite: the undo of a `doctor fix` repair (E7), from selection and its bound
 //! preview to the reverted subject and history's `undo` line.
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::path::PathBuf;

@@ -2,7 +2,7 @@
 //! Flatpak, over a synthetic home whose configs point at prefixes and clients outside
 //! the bounded scan. Malformed configs never fail discovery, and nothing is written.
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::path::{Path, PathBuf};

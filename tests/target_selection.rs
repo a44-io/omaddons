@@ -6,7 +6,7 @@
 //! which; a client already named `all` wins with `target_id_reserved`; `all` cannot be a
 //! new id.
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::path::Path;

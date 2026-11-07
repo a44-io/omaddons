@@ -2,7 +2,7 @@
 //! and classic clients; removal is checked on disk, in state, through `undo`, and
 //! against a fake `/proc` for the running client.
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::os::unix::fs::symlink;

@@ -6,7 +6,7 @@
 //! stored or shown. Request counts come from `net.log`. `tests/fixtures/http/tukui/`
 //! is a recording of the live list and one resolve (its token long dead).
 
-mod common;
+use crate::common;
 
 use common::archives::zip_text;
 use common::env::TestEnv;
@@ -126,7 +126,7 @@ const ELVUI: [&str; 3] = ["ElvUI", "ElvUI_Libraries", "ElvUI_Options"];
 /// `/v1/addon/elvui`. The download is not recorded (3 MB; the live probe checks it), and
 /// the recorded token dies within seconds. Delete the directory first, then review the
 /// diff (fixtures are public).
-/// `OMADDONS_RECORD=1 cargo test --test sources_tukui -- --ignored record`
+/// `OMADDONS_RECORD=1 cargo test --test integration -- --ignored sources_tukui::record`
 #[test]
 #[ignore = "records live fixtures: OMADDONS_RECORD=1"]
 fn record_tukui() {

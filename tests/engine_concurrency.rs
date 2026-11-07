@@ -5,7 +5,7 @@
 //! same and of different addons, and the lock hold of commits, measured and printed (its
 //! 50 ms budget is a release-build check in `tests/perf.rs`).
 
-mod common;
+use crate::common;
 
 use std::fs;
 

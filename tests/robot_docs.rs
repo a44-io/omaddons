@@ -13,11 +13,8 @@
 //! A schema entry runs to hundreds of kilobytes, so large values are compared as the list
 //! of what differs, expected empty: the transcript then names the entry, not the bytes.
 
-mod common;
-// The contract suite's validator; this suite uses only part of it.
-#[path = "contract/validate.rs"]
-#[allow(dead_code)]
-mod validate;
+use crate::common;
+use crate::validate;
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;

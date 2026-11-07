@@ -2,7 +2,7 @@
 //! targets and records written as install will write them.
 //! e2e suite: `list`'s update entry names the release its status was judged on, as `update`'s approval does.
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::os::unix::fs::symlink;

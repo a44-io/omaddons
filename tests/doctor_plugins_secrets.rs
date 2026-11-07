@@ -13,10 +13,8 @@
 //! the three rows as the doctor finds them (F8).
 #![cfg(test)]
 
-mod common;
-#[allow(dead_code)]
-#[path = "doctor/mod.rs"]
-mod fixture;
+use crate::common;
+use crate::fixture;
 
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};

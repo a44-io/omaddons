@@ -6,7 +6,7 @@
 //! Downloads are shared by the run's targets (M2-D28): one `asset` request per archive,
 //! failures included, and a `Deferred` asset resolved right before its download.
 
-mod common;
+use crate::common;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

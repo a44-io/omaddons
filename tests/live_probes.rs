@@ -1,11 +1,11 @@
 //! Live probes of the keyless M1 endpoints, run at milestone checkpoints only:
-//! `OMADDONS_LIVE=1 cargo test --test live_probes -- --ignored`. Each probe makes one
+//! `OMADDONS_LIVE=1 cargo test --test integration live_probes:: -- --ignored`. Each probe makes one
 //! request (two for the conditional atom check) through the production stack against
 //! `gh:WeakAuras/WeakAuras2` and checks raw shape only; source beads add decoder-level
 //! probes here. Without `OMADDONS_LIVE=1` a probe prints `SKIP <probe>: …` and fails
 //! unless `OMADDONS_ALLOW_SKIP` names it (`common::checkpoint`).
 
-mod common;
+use crate::common;
 
 use std::io::{Read, Write};
 

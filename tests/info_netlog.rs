@@ -2,7 +2,7 @@
 //! GitHub releases, installed records, offline and failing fetches; the request log
 //! with its summary, `--since`, a corrupt line, the rotated file and a planted secret.
 
-mod common;
+use crate::common;
 
 use std::fs;
 

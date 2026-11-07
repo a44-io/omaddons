@@ -2,7 +2,7 @@
 //! holding `blizzard_auctionui/` is refused before anything is written, with or
 //! without `--force`.
 
-mod common;
+use crate::common;
 
 use std::io::Cursor;
 

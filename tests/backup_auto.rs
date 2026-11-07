@@ -7,7 +7,7 @@
 //! client; and a failure that never fails the change. Every run is checked for the fake
 //! account, realm and character names, on both streams.
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -105,9 +105,9 @@ mod support {
 
     /// A home with settings under the target dir (btrfs on the development machine),
     /// where clones work; `None`, with a `SKIP` line, elsewhere.
-    pub fn cloning(test: &str) -> Option<(tempfile::TempDir, Home)> {
-        let base = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
-        let btrfs = i128::from(rustix::fs::statfs(base.path()).unwrap().f_type) == 0x9123_683E;
+    pub fn cloning(test: &str) -> Option<Home> {
+        let home = Home::new_in(std::path::Path::new(env!("CARGO_TARGET_TMPDIR")), &["wow"]);
+        let btrfs = i128::from(rustix::fs::statfs(home.env.root()).unwrap().f_type) == 0x9123_683E;
         if !btrfs {
             super::common::checkpoint::skip(
                 test,
@@ -115,11 +115,10 @@ mod support {
             );
             return None;
         }
-        let home = Home::at(base.path(), &["wow"]);
         Wtf::at(home.client("_retail_"))
             .saved_variables("Foo", 200)
             .build();
-        Some((base, home))
+        Some(home)
     }
 
     /// Retail's settings: one SavedVariables file.
@@ -518,7 +517,7 @@ fn two_attempts_at_once_make_one_backup() {
 
 #[test]
 fn daily_clones_only_and_says_what_it_observed() {
-    let Some((_base, home)) = cloning("daily_clones_only_and_says_what_it_observed") else {
+    let Some(home) = cloning("daily_clones_only_and_says_what_it_observed") else {
         return;
     };
     let clones = ("OMADDONS_FS_CLONE", "yes");

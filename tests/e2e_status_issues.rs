@@ -6,7 +6,7 @@
 //! It is the regression net for the seven published ids while the catalog leaves rewrite
 //! their detectors and F8 moves `status` onto the whole registry.
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::path::PathBuf;

@@ -1,6 +1,6 @@
 //! Running-client detection against fake `/proc` trees and real-shaped targets.
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeMap;
 use std::os::unix::fs::MetadataExt;

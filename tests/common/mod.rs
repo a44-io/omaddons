@@ -15,7 +15,8 @@
 //! child process of the test binary (`repair`), the last M3 commit built with its own
 //! toolchain and run against M4 state (`compat`), and a stub Omarchy desk whose tools
 //! never reach this machine's bar (`omarchy`).
-//! Each integration test crate declares `mod common;` and uses the subset it needs.
+//! The integration test crate declares it once (`tests/main.rs`); each suite has
+//! `use crate::common;` and uses the subset it needs.
 //!
 //! Everything is written under a [`env::TestEnv`] tempdir; nothing here touches the real
 //! home directory or the test process's environment (tests run on parallel threads).

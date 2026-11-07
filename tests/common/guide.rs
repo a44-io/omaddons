@@ -14,7 +14,7 @@ use super::tlog::{Runner, TestLog};
 /// The committed skill, relative to the repository.
 pub const SKILL_FILE: &str = "skills/omaddons/SKILL.md";
 /// The command that rewrites it from the rendered guide.
-pub const REGENERATE: &str = "OMADDONS_UPDATE_SKILL=1 cargo test --test skill";
+pub const REGENERATE: &str = "OMADDONS_UPDATE_SKILL=1 cargo test --test integration skill::";
 
 const STAMP_PREFIX: &str = "<!-- omaddons guide sha256:";
 const STAMP_SUFFIX: &str = " -->";

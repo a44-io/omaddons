@@ -4,7 +4,7 @@
 //! present folders, optional dependencies, the client's own folders and the archive's
 //! own folders install nothing; what cannot install warns or makes the run partial.
 
-mod common;
+use crate::common;
 
 use std::fs;
 

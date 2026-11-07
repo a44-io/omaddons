@@ -1,7 +1,7 @@
 //! `omaddons targets` end to end: listing, add, rm, rename, default, --rescan, the lock
 //! and --dry-run, through the binary over a synthetic home.
 
-mod common;
+use crate::common;
 
 use std::fs;
 

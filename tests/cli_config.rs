@@ -1,6 +1,6 @@
 //! `omaddons config` end to end, and config.toml's effect on other commands.
 
-mod common;
+use crate::common;
 
 use std::fs;
 

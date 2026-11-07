@@ -2,7 +2,7 @@
 //! releases), then changed on disk with the drift mutators, then checked in-process
 //! against the records and files index the commits wrote.
 
-mod common;
+use crate::common;
 
 use std::fs;
 

@@ -7,7 +7,7 @@
 //! for `--version` or a pasted asset link. (No Cata client exists any more, so Titan
 //! plays the newest release's part.)
 
-mod common;
+use crate::common;
 
 use common::home::Home;
 use common::netlog::net_log;

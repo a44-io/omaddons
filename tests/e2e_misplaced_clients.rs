@@ -9,7 +9,7 @@
 //! a FIFO, newer) falls back without blocking or changing, and a FIFO at the discovery
 //! cache proves the usage path never opens it.
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::os::unix::fs::{FileTypeExt as _, PermissionsExt as _};

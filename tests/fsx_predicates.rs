@@ -13,7 +13,7 @@
 // The homes and the changes are test setup: a failed write is the test's failure.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-mod common;
+use crate::common;
 
 use std::fs::{self, File};
 use std::os::unix::fs::{PermissionsExt, symlink};

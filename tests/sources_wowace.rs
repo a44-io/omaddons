@@ -4,7 +4,7 @@
 //! tests edit copies of it: a poisoned live tag path, moved tags, packaging that needs
 //! the packager, collisions, a tree past its bounds.
 
-mod common;
+use crate::common;
 
 use std::fs;
 
@@ -191,7 +191,7 @@ mod support {
 
 /// Re-records `tests/fixtures/http/wowace-bug-grabber/` from the live server. Review the
 /// diff (fixtures are public).
-/// `OMADDONS_RECORD=1 cargo test --test sources_wowace -- --ignored record`
+/// `OMADDONS_RECORD=1 cargo test --test integration -- --ignored sources_wowace::record`
 #[test]
 #[ignore = "records live fixtures: OMADDONS_RECORD=1"]
 fn record_wowace() {

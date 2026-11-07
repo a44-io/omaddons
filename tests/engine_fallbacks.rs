@@ -4,7 +4,7 @@
 //! (SavedVariables still snapshotted and restored), hostile archives refused with
 //! nothing written to the client, and `blizzard_auctionui` on a 3.3.5a client.
 
-mod common;
+use crate::common;
 
 use std::fs;
 

@@ -3,7 +3,7 @@
 //! checked here: progress cut to the terminal's width, and a panic's message starting on
 //! a cleared line, never after leftover progress text.
 
-mod common;
+use crate::common;
 
 use support::{CLEAR, home_with_a_zip, on_terminal};
 

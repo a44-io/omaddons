@@ -6,7 +6,7 @@
 //! command typed did nothing, and the scenarios hash `<state>`, `<config>` and every
 //! client directory around it to prove so.
 
-mod common;
+use crate::common;
 
 use common::home::Home;
 use common::tlog::{Ran, tlog};

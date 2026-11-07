@@ -1,8 +1,8 @@
 //! The cross-cutting cases: `locked`, a panic, `--offline`, CI/TERM, format spellings,
 //! determinism and human-mode failures.
 
+use super::support::check;
 use super::*;
-use crate::support::check;
 use common::home::wait;
 
 /// Arguments and extra environment of one way to ask for JSON.

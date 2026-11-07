@@ -3,7 +3,7 @@
 //! repository whose newest release is a prerelease (WowUp/WowUp), replayed from
 //! `tests/fixtures/http/github-rest`; and a synthetic rate-limit reserve stop.
 
-mod common;
+use crate::common;
 
 use std::fs;
 
@@ -48,7 +48,7 @@ mod support {
 /// Re-records `github-rest` from live GitHub (three REST requests). Delete the scenario
 /// first, then trim each API body to the fields the decoder reads, without logins or
 /// release notes (fixtures are public).
-/// `OMADDONS_RECORD=1 cargo test --test sources_github_rest -- --ignored record`
+/// `OMADDONS_RECORD=1 cargo test --test integration -- --ignored sources_github_rest::record`
 #[test]
 #[ignore = "records live fixtures: OMADDONS_RECORD=1"]
 fn record_github_rest() {

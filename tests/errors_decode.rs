@@ -1,7 +1,7 @@
 //! Every BugGrabber scenario (`tests/common/buggrabber.rs`), rendered as both client
 //! writers write it, read by the SavedVariables parser and decoded into the one model.
 
-mod common;
+use crate::common;
 
 use common::buggrabber::{self, Writer};
 use common::privacy::SENDER;

@@ -7,7 +7,7 @@
 //! fresh `$OMADDONS_WIDGET_OUT`.
 //! e2e suite: the widget's contract with the CLI, and the plan runner's scenes (M4-D28) as the real binary answers them.
 
-mod common;
+use crate::common;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;

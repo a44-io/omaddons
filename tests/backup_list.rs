@@ -4,7 +4,7 @@
 //! listing 200 backups reads only their `backup.json` files. Every output is checked for
 //! the fake account, realm and character names.
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;

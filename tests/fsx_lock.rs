@@ -38,7 +38,7 @@ mod support {
     pub fn spawn_holder(home: &Path, mode: &str, hold_ms: u64, failpoints: &str) -> Child {
         Command::new(std::env::current_exe().unwrap())
             .args([
-                "child_holder",
+                "fsx_lock::child_holder",
                 "--exact",
                 "--ignored",
                 "--nocapture",

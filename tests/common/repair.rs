@@ -600,7 +600,7 @@ impl RepairScene {
             Some(dir) => super::mounts::under_bind(dir, exe),
         };
         cmd.args([
-            "child_repair",
+            CHILD_REPAIR,
             "--exact",
             "--ignored",
             "--nocapture",
@@ -837,8 +837,19 @@ pub fn checked_sweep(scene: impl Fn() -> RepairScene, log: &TestLog) -> Vec<(u64
     panic!("a repair still crashed at fsx.mutate.checked@{CHECKED_SWEEP_MAX}"); // ubs:ignore — fails the test
 }
 
-/// The body of each test binary's `child_repair` (an ignored test, as `child_restore`):
-/// reads `HOME`/`XDG_*`, `OMADDONS_REPAIR_KIND`, `OMADDONS_REPAIR_RUN`,
+/// The libtest name of [`child_repair`], which every repair scene's child process runs.
+pub const CHILD_REPAIR: &str = "common::repair::child_repair";
+
+/// A child process of the repair scenes: the kind's repair, lowered and committed in
+/// process ([`child_main`]). Run on its own it does nothing.
+#[test]
+#[ignore = "a child process of the repair scenes"]
+fn child_repair() {
+    child_main();
+}
+
+/// The body of [`child_repair`] (an ignored test, as `child_restore`): reads
+/// `HOME`/`XDG_*`, `OMADDONS_REPAIR_KIND`, `OMADDONS_REPAIR_RUN`,
 /// `OMADDONS_REPAIR_CLIENT` and `OMADDONS_REPAIR_OUT`, lowers and commits the kind's
 /// repair in process (the failpoints come from `OMADDONS_FAILPOINTS`), finishes its
 /// cleanup, and writes the outcome JSON. Run on its own it does nothing.

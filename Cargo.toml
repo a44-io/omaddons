@@ -5,6 +5,10 @@ edition = "2024"
 rust-version = "1.97"
 description = "World of Warcraft addon manager for Linux: every client, one journaled transaction engine, a machine-readable CLI"
 publish = false
+# Every suite under tests/ is a module of the one `integration` test binary below, not a
+# binary of its own: each binary links the whole library, so ~130 of them wrote ~16 GB to
+# the disk for a one-line change.
+autotests = false
 
 [lib]
 path = "src/lib.rs"
@@ -12,6 +16,10 @@ path = "src/lib.rs"
 [[bin]]
 name = "omaddons"
 path = "src/main.rs"
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive", "env", "wrap_help"] }
@@ -67,6 +75,15 @@ expect_used = "deny"
 dbg_macro = "deny"
 print_stdout = "deny"
 print_stderr = "deny"
+
+# Debug and test builds keep line tables (file:line in panics and backtraces) but no full
+# DWARF, and dependencies none: full debuginfo was most of every test binary's size. For a
+# debugger session: CARGO_PROFILE_DEV_DEBUG=true.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
 
 [profile.release]
 lto = "thin"

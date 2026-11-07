@@ -1,7 +1,7 @@
 //! e2e suite: every storable command's applied plan reconciles from history: after apply, plans show says completed with exactly the transactions apply reported and history lists, except backup prune, which records no history line and stays unknown.
 #![cfg(test)]
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeMap;
 use std::fs;

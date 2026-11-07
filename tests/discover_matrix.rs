@@ -9,7 +9,7 @@
 //! Battle.net clients, patch omitted for legacy ones. A mismatch is a defect in the
 //! pieces, not in this table.
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;

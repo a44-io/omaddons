@@ -8,7 +8,7 @@
 //! source; a concurrent prune finds the source busy. Every run is checked for the fake
 //! account, realm and character names, on both streams.
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::path::PathBuf;
@@ -89,9 +89,9 @@ mod support {
 
     /// A home under the target dir (btrfs on the development machine), where
     /// [`CLONES`] holds; `None`, with a `SKIP` line, elsewhere.
-    pub fn cloning_home(test: &str) -> Option<(tempfile::TempDir, Home)> {
-        let base = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
-        let btrfs = i128::from(rustix::fs::statfs(base.path()).unwrap().f_type) == 0x9123_683E;
+    pub fn cloning_home(test: &str) -> Option<Home> {
+        let home = Home::new_in(std::path::Path::new(env!("CARGO_TARGET_TMPDIR")), &["wow"]);
+        let btrfs = i128::from(rustix::fs::statfs(home.env.root()).unwrap().f_type) == 0x9123_683E;
         if !btrfs {
             super::common::checkpoint::skip(
                 test,
@@ -99,8 +99,7 @@ mod support {
             );
             return None;
         }
-        let home = Home::at(base.path(), &["wow"]);
-        Some((base, home))
+        Some(home)
     }
 
     /// The clone hint a cloning home's runs take.
@@ -474,7 +473,7 @@ fn a_concurrent_prune_finds_the_source_busy() {
 
 #[test]
 fn the_current_wtf_is_kept_as_a_backup_where_the_filesystem_clones() {
-    let Some((_base, home)) =
+    let Some(home) =
         cloning_home("the_current_wtf_is_kept_as_a_backup_where_the_filesystem_clones")
     else {
         return;
@@ -511,7 +510,7 @@ fn the_current_wtf_is_kept_as_a_backup_where_the_filesystem_clones() {
 
 #[test]
 fn a_refusal_at_the_preflight_makes_no_backup_and_a_failure_after_one_keeps_its_line() {
-    let Some((_base, home)) = cloning_home(
+    let Some(home) = cloning_home(
         "a_refusal_at_the_preflight_makes_no_backup_and_a_failure_after_one_keeps_its_line",
     ) else {
         return;

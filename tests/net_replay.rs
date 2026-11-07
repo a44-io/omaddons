@@ -1,7 +1,7 @@
 //! Fixture replay through the full network stack: redirects, the allowlist, `net.log`,
 //! and unmatched requests.
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::path::Path;

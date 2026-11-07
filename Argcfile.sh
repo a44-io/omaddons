@@ -43,11 +43,11 @@ test_() {
     cargo test --locked ${argc_filter:+"$argc_filter"}
 }
 
-# @cmd Run the end-to-end suites (each test crate marked `//! e2e suite:`) with verbose test logs, then print where the logs are
+# @cmd Run the end-to-end suites (each suite whose module doc has `//! e2e suite:`) with verbose test logs, then print where the logs are
 # @arg filter  Only the suites whose name contains this; `all` or nothing runs every suite
-# @arg args~   Passed to the test binaries after `--` (a test name, --exact, --test-threads=1, --nocapture)
+# @arg args~   Passed to the test binary after `--` (a test name, --exact, --test-threads=1, --nocapture); a test name is looked up in each selected suite
 e2e() {
-    local suites=() selected=() tests=() file name filter target root start status=0
+    local suites=() selected=() filters=() names=() flags=() file name filter target root start arg value=0 status=0
     while IFS= read -r file; do
         name=${file#tests/}
         name=${name%.rs}
@@ -59,7 +59,6 @@ e2e() {
     for name in ${suites[@]+"${suites[@]}"}; do
         if [[ $filter == all || $name == *"$filter"* ]]; then
             selected+=("$name")
-            tests+=(--test "$name")
         fi
     done
     if ((${#selected[@]} == 0)); then
@@ -67,12 +66,39 @@ e2e() {
         exit 2
     fi
 
+    # Every suite is a module of the one `integration` test binary, so a suite is selected
+    # by its tests' name prefix: `<suite>::`, or `<suite>::<name>` for each test name among
+    # the arguments (what `--test <suite> -- <name>` ran when each suite was a binary).
+    # Flags pass through as they are, with the value of those that take one.
+    for arg in ${argc_args[@]+"${argc_args[@]}"}; do
+        if ((value)); then
+            flags+=("$arg")
+            value=0
+        elif [[ $arg == --skip || $arg == --test-threads || $arg == --format || $arg == --color || $arg == --logfile ]]; then
+            flags+=("$arg")
+            value=1
+        elif [[ $arg == -* ]]; then
+            flags+=("$arg")
+        else
+            names+=("$arg")
+        fi
+    done
+    for name in "${selected[@]}"; do
+        if ((${#names[@]} == 0)); then
+            filters+=("$name::")
+        else
+            for arg in "${names[@]}"; do
+                filters+=("$name::$arg")
+            done
+        fi
+    done
+
     target=$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')
     root="$target/tmp/test-logs"
     # Fractional, so a log an earlier run wrote within this second is not counted.
     start=$(date +%s.%N)
     printf '==> e2e: %d suite(s): %s (OMADDONS_TEST_LOG=verbose)\n' "${#selected[@]}" "${selected[*]}" >&2
-    OMADDONS_TEST_LOG=verbose cargo test --locked "${tests[@]}" -- ${argc_args[@]+"${argc_args[@]}"} || status=$?
+    OMADDONS_TEST_LOG=verbose cargo test --locked --test integration -- "${filters[@]}" ${flags[@]+"${flags[@]}"} || status=$?
 
     _e2e_summary "$root" "$start" "${selected[@]}"
     exit "$status"
@@ -164,4 +190,4 @@ _fuzz_run() {
         -- "-max_total_time=$time" -rss_limit_mb=2048
 }
 
-eval "$(argc --argc-eval "$0" "$@")"
+eval "$(argc --argc-eval "$0" "$@")" # ubs:ignore — argc's own entry point: it generates this code from the tags above

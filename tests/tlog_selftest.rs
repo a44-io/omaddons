@@ -9,8 +9,6 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-mod common;
-
 mod core_units {
     use std::fs;
     use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -195,19 +193,25 @@ mod core_units {
         let cases = [
             (
                 "root_fn",
-                ("tlog_selftest", "tlog_selftest::x::__tlog_here"),
+                (
+                    "integration::tlog_selftest",
+                    "integration::tlog_selftest::x::__tlog_here",
+                ),
                 ("tlog_selftest", "x"),
             ),
             (
                 "nested",
-                ("contract::matrix", "contract::matrix::row::__tlog_here"),
+                (
+                    "integration::contract::matrix",
+                    "integration::contract::matrix::row::__tlog_here",
+                ),
                 ("contract", "matrix.row"),
             ),
             (
                 "closure",
                 (
-                    "tlog_selftest::m",
-                    "tlog_selftest::m::x::{{closure}}::{{closure}}::__tlog_here",
+                    "integration::tlog_selftest::m",
+                    "integration::tlog_selftest::m::x::{{closure}}::{{closure}}::__tlog_here",
                 ),
                 ("tlog_selftest", "m.x"),
             ),
@@ -1114,16 +1118,16 @@ mod run_units {
     }
 }
 
-/// The `//! e2e suite:` marker tells `argc e2e` which test crates are end-to-end suites;
-/// these tests keep it honest, from source text alone (no build, no process).
+/// The `//! e2e suite:` marker tells `argc e2e` which suites are end-to-end suites; these
+/// tests keep it honest, from source text alone (no build, no process).
 mod convention {
     use std::fs;
     use std::path::{Path, PathBuf};
 
     use crate::common::tlog::E2E_MARKER;
 
-    /// One test crate's source: its name, its root file's text, and the texts of its
-    /// other files (a directory crate's modules).
+    /// One suite's source: its name, its root file's text, and the texts of its other
+    /// files (a directory suite's modules).
     struct CrateText {
         name: String,
         root: String,
@@ -1143,9 +1147,9 @@ mod convention {
         root.lines().any(|line| line.starts_with(E2E_MARKER))
     }
 
-    /// Every crate that breaks the convention, with its fix: a crate that logs through
-    /// `TestLog` carries the marker, a marked crate logs through it, and every `e2e_*`
-    /// crate is marked.
+    /// Every suite that breaks the convention, with its fix: a suite that logs through
+    /// `TestLog` carries the marker, a marked suite logs through it, and every `e2e_*`
+    /// suite is marked.
     fn convention_offenders(crates: &[CrateText]) -> Vec<String> {
         let mut offenders = Vec::new();
         for krate in crates {
@@ -1154,7 +1158,7 @@ mod convention {
             let name = &krate.name;
             if used && !marked {
                 offenders.push(format!(
-                    "{name}: logs through TestLog without the marker: add `{E2E_MARKER} <purpose>` to its crate doc"
+                    "{name}: logs through TestLog without the marker: add `{E2E_MARKER} <purpose>` to its module doc"
                 ));
             } else if marked && !used {
                 offenders.push(format!(
@@ -1162,7 +1166,7 @@ mod convention {
                 ));
             } else if name.starts_with("e2e_") && !marked {
                 offenders.push(format!(
-                    "{name}: an e2e_ crate without the marker: add `{E2E_MARKER} <purpose>` to its crate doc"
+                    "{name}: an e2e_ suite without the marker: add `{E2E_MARKER} <purpose>` to its module doc"
                 ));
             }
         }
@@ -1183,14 +1187,18 @@ mod convention {
         files
     }
 
-    /// The repository's test crates: each `tests/<name>.rs`, and each
-    /// `tests/<name>/main.rs` with every other `.rs` file under `tests/<name>/`.
+    /// The repository's suites: each `tests/<name>.rs` but the test crate's own root
+    /// (`tests/main.rs`), and each `tests/<name>/main.rs` with every other `.rs` file under
+    /// `tests/<name>/`.
     fn test_crates() -> Vec<CrateText> {
         let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
         let mut crates = Vec::new();
         for entry in fs::read_dir(&tests).unwrap() {
             let path = entry.unwrap().path();
             let name = path.file_stem().unwrap().to_string_lossy().into_owned();
+            if path == tests.join("main.rs") {
+                continue;
+            }
             if path.is_dir() {
                 let main = path.join("main.rs");
                 if !main.is_file() {
@@ -1251,7 +1259,7 @@ mod convention {
             (
                 "e2e_unmarked",
                 crate_text("e2e_slice9", "fn x() {}\n", &[]),
-                Some("an e2e_ crate without the marker"),
+                Some("an e2e_ suite without the marker"),
             ),
             (
                 "comment_only",
@@ -1291,12 +1299,12 @@ mod convention {
         let crates = test_crates();
         assert!(
             crates.iter().any(|krate| krate.name == "tlog_selftest"),
-            "the scan found this crate"
+            "the scan found this suite"
         );
         let offenders = convention_offenders(&crates);
         assert!(
             offenders.is_empty(),
-            "test crates that break the e2e convention:\n{}",
+            "suites that break the e2e convention:\n{}",
             offenders.join("\n")
         );
     }
@@ -2080,7 +2088,7 @@ mod scenarios {
 
 /// What only a separate process shows: libtest's failure output with the guard's lines,
 /// the live echo, and the mode error. Each parent runs one child test of this binary
-/// (`--ignored --exact child::<name>`) with `OMADDONS_TEST_LOG` set or removed
+/// (`--ignored --exact tlog_selftest::child::<name>`) with `OMADDONS_TEST_LOG` set or removed
 /// explicitly, never inherited (`argc e2e` sets it for the parent).
 mod child {
     use std::io::Read;
@@ -2121,10 +2129,10 @@ mod child {
         })
     }
 
-    /// Runs the child test `child::<name>` with `mode` as `OMADDONS_TEST_LOG` (`None`
-    /// removes it), and logs its argv, exit and output.
+    /// Runs the child test `tlog_selftest::child::<name>` with `mode` as
+    /// `OMADDONS_TEST_LOG` (`None` removes it), and logs its argv, exit and output.
     fn run_child(log: &TestLog, name: &str, mode: Option<&str>) -> Output {
-        let test = format!("child::{name}");
+        let test = format!("tlog_selftest::child::{name}");
         let args = ["--ignored", "--exact", test.as_str(), "--test-threads=1"];
         let mut command = Command::new(std::env::current_exe().unwrap());
         command

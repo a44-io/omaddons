@@ -4,7 +4,7 @@
 //! `--check` derive from before any filter, the "new" rule per database, incomplete
 //! reads, and its one write, the errors memo.
 
-mod common;
+use crate::common;
 
 use std::fs;
 

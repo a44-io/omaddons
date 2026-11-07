@@ -1,7 +1,7 @@
 //! `DiskFolder` over real files: symlinks are never followed, odd entries are skipped,
 //! and a huge single-line TOC is read with bounded memory.
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::io::Write;
