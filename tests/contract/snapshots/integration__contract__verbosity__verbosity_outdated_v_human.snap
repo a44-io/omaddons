@@ -1,0 +1,10 @@
+---
+source: tests/contract/verbosity.rs
+expression: text
+---
+retail (12.1.5, mainline)
+  BigWigs     v1      current
+  Foo         1       static (nothing upstream to check)
+  LittleWigs  v1      current
+  WeakAuras   5.19.2  current
+No updates on 2 clients · checked just now (0 requests, 3 reused)

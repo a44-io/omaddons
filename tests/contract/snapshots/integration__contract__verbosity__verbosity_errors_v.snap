@@ -1,0 +1,139 @@
+---
+source: tests/contract/verbosity.rs
+expression: s.stable(&checked.envelope)
+---
+{
+  "command": "errors",
+  "commands": [
+    {
+      "action": "dismiss_errors",
+      "argv": [
+        "omaddons",
+        "errors",
+        "dismiss",
+        "-t",
+        "retail"
+      ],
+      "command": "omaddons errors dismiss -t retail",
+      "destructive": false
+    }
+  ],
+  "data": {
+    "raw_details": false,
+    "summary": {
+      "addons": 1,
+      "new": 1,
+      "received": 0,
+      "targets": 1,
+      "uncertain": 0
+    },
+    "targets": [
+      {
+        "addons": [
+          {
+            "addon": "Foo",
+            "count": 4,
+            "entries": 1,
+            "errors": [
+              {
+                "attribution": {
+                  "confidence": "high",
+                  "method": "first_addon_frame"
+                },
+                "count": 4,
+                "database": "db-1",
+                "fingerprint": "e:87db00f6ab6136f1",
+                "last_seen": {
+                  "at": "<time>",
+                  "meaning": "last",
+                  "tz": "explicit"
+                },
+                "location": "Foo/core.lua:12",
+                "message": "attempt to index a nil value (field 'x')",
+                "message_kind": "lua_runtime",
+                "new": true,
+                "origin": "local",
+                "sessions": 1,
+                "stack": [
+                  "Foo/core.lua:12: in function 'Refresh'",
+                  "… (1 C frame)"
+                ],
+                "type": "error"
+              }
+            ],
+            "folders": [
+              "Foo"
+            ],
+            "kind": "addon",
+            "last_seen": {
+              "at": "<time>",
+              "meaning": "last",
+              "tz": "explicit"
+            },
+            "latest": {
+              "asset": null,
+              "release_id": null,
+              "source": null,
+              "status": "static",
+              "version": null
+            },
+            "managed": true,
+            "new": 1,
+            "origin": "local",
+            "version": "1"
+          }
+        ],
+        "capture": "buggrabber",
+        "coverage": "complete",
+        "databases": [
+          {
+            "account": "account 1",
+            "acknowledged": null,
+            "baseline": 9,
+            "id": "db-1",
+            "path": "WTF/Account/account 1/SavedVariables/!BugGrabber.lua",
+            "provider": "!BugGrabber",
+            "session": 10,
+            "shape": "modern",
+            "state": "complete"
+          }
+        ],
+        "dismiss": {
+          "databases": 1,
+          "precondition": "<precondition>"
+        },
+        "dismissed_at": null,
+        "files": {
+          "accounts": 1,
+          "partial": 0,
+          "read": 1,
+          "skipped": {
+            "symlinked": 0,
+            "two_spellings": 0
+          }
+        },
+        "summary": {
+          "addons": 1,
+          "entries": 1,
+          "matched": 1,
+          "new": 1,
+          "no_time": 0,
+          "occurrences": 4,
+          "received": 0,
+          "shown": 1,
+          "uncertain": 0
+        },
+        "target": {
+          "id": "retail",
+          "key": "<ulid>"
+        }
+      }
+    ]
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

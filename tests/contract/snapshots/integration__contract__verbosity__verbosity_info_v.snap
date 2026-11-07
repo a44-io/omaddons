@@ -1,0 +1,100 @@
+---
+source: tests/contract/verbosity.rs
+expression: s.stable(&checked.envelope)
+---
+{
+  "command": "info",
+  "commands": [],
+  "data": {
+    "catalog": {
+      "aliases": [
+        "wa",
+        "weakauras2"
+      ],
+      "families": [
+        "vanilla",
+        "tbc",
+        "cata",
+        "mists",
+        "titan"
+      ],
+      "folders": [
+        "WeakAuras",
+        "WeakAurasArchive",
+        "WeakAurasModelPaths",
+        "WeakAurasOptions",
+        "WeakAurasTemplates"
+      ],
+      "name": "WeakAuras",
+      "notes": "5.22.1's release.json lists no mainline build and the zip ships no Mainline TOC"
+    },
+    "installed": [
+      {
+        "any_flavor": false,
+        "channel": "stable",
+        "drift": {
+          "files": 0,
+          "folders": [
+            {
+              "added": [],
+              "changed": 0,
+              "deleted": [],
+              "folder": "WeakAuras",
+              "indexed": true,
+              "modified": [],
+              "present": true,
+              "truncated": false
+            }
+          ],
+          "state": "clean"
+        },
+        "folders": [
+          "WeakAuras"
+        ],
+        "installed_at": "<time>",
+        "left_out": [],
+        "orphan": false,
+        "pinned": false,
+        "reason": "explicit",
+        "record_path": "<root>/state/omaddons/targets/<ulid>.json",
+        "required_by": [],
+        "state": "ok",
+        "target": {
+          "id": "retail",
+          "key": "<ulid>"
+        },
+        "tx": "<ulid>",
+        "version": "5.19.2",
+        "version_confidence": "release"
+      }
+    ],
+    "latest": {
+      "asset_urls": [
+        "https://github.com/WeakAuras/WeakAuras2/releases/download/5.19.2/WeakAuras.zip"
+      ],
+      "channel": "stable",
+      "compat": {
+        "retail": "verified"
+      },
+      "flavors": [
+        "mainline",
+        "mists"
+      ],
+      "release_id": "gh:WeakAuras/WeakAuras2@5.19.2",
+      "targets": [
+        "retail"
+      ],
+      "version": "5.19.2"
+    },
+    "name": "WeakAuras",
+    "offline": false,
+    "query": "weakauras",
+    "ref": "gh:WeakAuras/WeakAuras2"
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

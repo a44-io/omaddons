@@ -1,0 +1,113 @@
+---
+source: tests/contract/verbosity.rs
+expression: s.stable(&checked.envelope)
+---
+{
+  "command": "history",
+  "commands": [],
+  "data": {
+    "entries": [
+      {
+        "actor": "agent",
+        "argv": [
+          "omaddons",
+          "install",
+          "littlewigs",
+          "-t",
+          "retail",
+          "--json"
+        ],
+        "at": "<time>",
+        "kind": "install",
+        "ops": [
+          {
+            "addon": "LittleWigs",
+            "folder": "LittleWigs",
+            "op": "add"
+          },
+          {
+            "addon": "BigWigs",
+            "folder": "BigWigs",
+            "op": "add"
+          }
+        ],
+        "plan": null,
+        "reason": null,
+        "result": "committed",
+        "run": "<ulid>",
+        "target": {
+          "id": "retail",
+          "key": "<ulid>"
+        },
+        "tx": "<ulid>"
+      },
+      {
+        "actor": "agent",
+        "argv": [
+          "omaddons",
+          "install",
+          "weakauras",
+          "-t",
+          "retail",
+          "--json"
+        ],
+        "at": "<time>",
+        "kind": "install",
+        "ops": [
+          {
+            "addon": "WeakAuras",
+            "folder": "WeakAuras",
+            "op": "add"
+          }
+        ],
+        "plan": null,
+        "reason": null,
+        "result": "committed",
+        "run": "<ulid>",
+        "target": {
+          "id": "retail",
+          "key": "<ulid>"
+        },
+        "tx": "<ulid>"
+      },
+      {
+        "actor": "agent",
+        "argv": [
+          "omaddons",
+          "install",
+          "gh:o/foo",
+          "--file",
+          "<root>/dl/foo.zip",
+          "-t",
+          "retail",
+          "--json"
+        ],
+        "at": "<time>",
+        "kind": "install",
+        "ops": [
+          {
+            "addon": "Foo",
+            "folder": "Foo",
+            "op": "add"
+          }
+        ],
+        "plan": null,
+        "reason": null,
+        "result": "committed",
+        "run": "<ulid>",
+        "target": {
+          "id": "retail",
+          "key": "<ulid>"
+        },
+        "tx": "<ulid>"
+      }
+    ],
+    "truncated": false
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

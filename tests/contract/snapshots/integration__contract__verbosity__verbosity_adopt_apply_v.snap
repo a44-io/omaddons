@@ -1,0 +1,81 @@
+---
+source: tests/contract/verbosity.rs
+expression: s.stable(&checked.envelope)
+---
+{
+  "command": "adopt",
+  "commands": [
+    {
+      "action": "undo",
+      "argv": [
+        "omaddons",
+        "undo",
+        "<ulid>"
+      ],
+      "command": "omaddons undo <ulid>",
+      "destructive": false
+    }
+  ],
+  "data": {
+    "approval": null,
+    "dry_run": false,
+    "plan_expires_at": null,
+    "plan_id": null,
+    "precondition": null,
+    "run": "<ulid>",
+    "summary": {
+      "changed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "targets": 1,
+      "unchanged": 0
+    },
+    "targets": [
+      {
+        "atomic_swap": true,
+        "creates_addons_dir": false,
+        "error": null,
+        "items": [
+          {
+            "bridge_dependencies": [],
+            "error": null,
+            "folders": {
+              "added": [],
+              "recorded": [
+                "!BugGrabber"
+              ],
+              "removed": [],
+              "replaced": [],
+              "skipped": []
+            },
+            "from_version": null,
+            "name": "BugGrabber",
+            "optional_dependencies": [],
+            "reason": "explicit",
+            "ref": "wowace:bug-grabber",
+            "request": "!BugGrabber",
+            "required_by": [],
+            "skip_reason": null,
+            "status": "adopted",
+            "to_version": "unknown",
+            "unresolved": []
+          }
+        ],
+        "kind": "adopt",
+        "no_section": false,
+        "reload_required": "none",
+        "target": {
+          "id": "retail",
+          "key": "<ulid>"
+        },
+        "tx": "<ulid>"
+      }
+    ]
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

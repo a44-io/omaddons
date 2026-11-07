@@ -1,0 +1,80 @@
+---
+source: tests/contract/verbosity.rs
+expression: s.stable(&checked.envelope)
+---
+{
+  "command": "backup list",
+  "commands": [
+    {
+      "action": "backup_create",
+      "argv": [
+        "omaddons",
+        "backup",
+        "create",
+        "-t",
+        "retail"
+      ],
+      "command": "omaddons backup create -t retail",
+      "destructive": false
+    }
+  ],
+  "data": {
+    "targets": [
+      {
+        "auto": {
+          "capability": "unknown",
+          "last": null,
+          "mode": "daily"
+        },
+        "backups": [
+          {
+            "actor": "human",
+            "addons": [
+              {
+                "folders": [
+                  "WeakAuras",
+                  "WeakAurasOptions"
+                ],
+                "name": "WeakAuras",
+                "version": "5.19.2"
+              }
+            ],
+            "baseline": null,
+            "busy": false,
+            "bytes": 200,
+            "captured_at": "<time>",
+            "client_running": false,
+            "consistency": "stable",
+            "created_at": "<time>",
+            "files": 2,
+            "id": "<ulid>",
+            "integrity": "metadata_only",
+            "kind": "manual",
+            "qualifying": true,
+            "reason": null,
+            "reflinked": "all",
+            "restorable": true,
+            "trigger": null,
+            "unsettled": 0,
+            "verified_at": null
+          }
+        ],
+        "bytes": 200,
+        "free_bytes": 1073741824,
+        "shown": 1,
+        "snapshot_bytes": 0,
+        "target": {
+          "id": "retail",
+          "key": "<ulid>"
+        },
+        "total": 1
+      }
+    ]
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

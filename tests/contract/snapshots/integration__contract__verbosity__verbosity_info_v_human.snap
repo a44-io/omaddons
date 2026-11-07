@@ -1,0 +1,9 @@
+---
+source: tests/contract/verbosity.rs
+expression: text
+---
+WeakAuras  gh:WeakAuras/WeakAuras2
+  catalog: folders WeakAuras, WeakAurasArchive, WeakAurasModelPaths, WeakAurasOptions, WeakAurasTemplates · families vanilla, tbc, cata, mists, titan
+  retail: 5.19.2 (release, stable) installed <date> <clock>
+  latest: 5.19.2 · likely to load on retail
+    retail: verified

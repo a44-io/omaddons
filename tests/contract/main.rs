@@ -33,6 +33,8 @@ mod usage_fixes;
 use crate::validate;
 #[cfg(test)]
 mod verbose_fields;
+#[cfg(test)]
+mod verbosity;
 
 use std::collections::BTreeMap;
 use std::fs;

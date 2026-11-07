@@ -1,0 +1,106 @@
+---
+source: tests/contract/verbosity.rs
+expression: s.stable(&checked.envelope)
+---
+{
+  "command": "install",
+  "commands": [
+    {
+      "action": "apply",
+      "argv": [
+        "omaddons",
+        "apply",
+        "<ulid>"
+      ],
+      "command": "omaddons apply <ulid>",
+      "destructive": false
+    }
+  ],
+  "data": {
+    "approval": {
+      "reasons": [],
+      "routine": true,
+      "scope": {
+        "dependencies_added": [],
+        "folders_removed": [],
+        "local_changes_replaced": {
+          "count": 0,
+          "folders": []
+        },
+        "source_changed": [],
+        "while_running": false
+      },
+      "selection": [
+        {
+          "addon": "Foo",
+          "asset": "foo2.zip",
+          "backup": null,
+          "channel": "stable",
+          "fields": [],
+          "from_version": "1",
+          "op": "update",
+          "release_id": "gh:o/foo@sha256:59fe4208270fa7d13fec322d5f42d836917c2b7b60b81b471e0149e03475ba18",
+          "source": "github",
+          "target_id": "retail",
+          "target_key": "<ulid>",
+          "to_version": "2",
+          "tx": null
+        }
+      ]
+    },
+    "atomic_swap": null,
+    "client_dir": "<root>/home/Games/battlenet/drive_c/Program Files (x86)/World of Warcraft/_retail_",
+    "creates_addons_dir": false,
+    "dry_run": true,
+    "items": [
+      {
+        "bridge_dependencies": [],
+        "channel": "stable",
+        "error": null,
+        "folders": {
+          "added": [],
+          "recorded": [],
+          "removed": [],
+          "replaced": [
+            "Foo"
+          ],
+          "skipped": []
+        },
+        "from_version": "1",
+        "name": "Foo",
+        "optional_dependencies": [],
+        "reason": "explicit",
+        "ref": "gh:o/foo",
+        "request": "gh:o/foo",
+        "required_by": [],
+        "status": "updated",
+        "to_version": "2",
+        "unresolved": [],
+        "version_confidence": "toc"
+      }
+    ],
+    "kind": "update",
+    "plan_expires_at": "<time>",
+    "plan_id": "<ulid>",
+    "precondition": "<precondition>",
+    "reload_required": "none",
+    "target": {
+      "id": "retail",
+      "key": "<ulid>"
+    },
+    "tx": null
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": [
+    {
+      "code": "snapshot_only_copy",
+      "fix": "nothing is moved under --dry-run; after the run, its snapshot holds the only copy until retention prunes it",
+      "fix_argv": null,
+      "message": "On retail, the transaction's snapshot will hold the only copy of Foo: undo brings them back until retention prunes it (kept at least 24 hours; then pruned once 10 newer transactions on this client exist, after 7 days, or past the 2 GiB snapshot cap)"
+    }
+  ]
+}

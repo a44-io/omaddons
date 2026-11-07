@@ -1,0 +1,131 @@
+---
+source: tests/contract/verbosity.rs
+expression: s.stable(&checked.envelope)
+---
+{
+  "command": "copy",
+  "commands": [
+    {
+      "action": "apply",
+      "argv": [
+        "omaddons",
+        "apply",
+        "<ulid>"
+      ],
+      "command": "omaddons apply <ulid>",
+      "destructive": false
+    }
+  ],
+  "data": {
+    "approval": {
+      "reasons": [],
+      "routine": true,
+      "scope": {
+        "dependencies_added": [],
+        "folders_removed": [],
+        "local_changes_replaced": {
+          "count": 0,
+          "folders": []
+        },
+        "source_changed": [],
+        "while_running": false
+      },
+      "selection": [
+        {
+          "addon": "WeakAuras",
+          "asset": "WeakAuras.zip",
+          "backup": null,
+          "channel": "stable",
+          "fields": [],
+          "from_version": null,
+          "op": "install",
+          "release_id": "gh:WeakAuras/WeakAuras2@5.19.2",
+          "source": "github",
+          "target_id": "classic",
+          "target_key": null,
+          "to_version": "5.19.2",
+          "tx": null
+        }
+      ]
+    },
+    "dry_run": true,
+    "plan_expires_at": "<time>",
+    "plan_id": "<ulid>",
+    "precondition": "<precondition>",
+    "run": null,
+    "summary": {
+      "changed": 1,
+      "failed": 0,
+      "skipped": 2,
+      "targets": 1,
+      "unchanged": 0
+    },
+    "targets": [
+      {
+        "atomic_swap": null,
+        "creates_addons_dir": false,
+        "error": null,
+        "items": [
+          {
+            "error": null,
+            "from_version": null,
+            "name": "Foo",
+            "ref": "gh:o/foo",
+            "request": "Foo",
+            "skip_reason": "no_build_for_target",
+            "status": "skipped",
+            "to_version": null
+          },
+          {
+            "error": null,
+            "from_version": null,
+            "name": "LittleWigs",
+            "ref": "gh:o/littlewigs",
+            "request": "LittleWigs",
+            "skip_reason": "no_build_for_target",
+            "status": "skipped",
+            "to_version": null
+          },
+          {
+            "bridge_dependencies": [],
+            "error": null,
+            "folders": {
+              "added": [
+                "WeakAuras"
+              ],
+              "recorded": [],
+              "removed": [],
+              "replaced": [],
+              "skipped": []
+            },
+            "from_version": null,
+            "name": "WeakAuras",
+            "optional_dependencies": [],
+            "reason": "explicit",
+            "ref": "gh:WeakAuras/WeakAuras2",
+            "request": "WeakAuras",
+            "required_by": [],
+            "skip_reason": null,
+            "status": "installed",
+            "to_version": "5.19.2",
+            "unresolved": []
+          }
+        ],
+        "kind": "install",
+        "no_section": false,
+        "reload_required": "none",
+        "target": {
+          "id": "classic",
+          "key": null
+        },
+        "tx": null
+      }
+    ]
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

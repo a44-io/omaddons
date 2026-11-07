@@ -1,0 +1,7 @@
+---
+source: tests/contract/verbosity.rs
+expression: text
+---
+retail: would update Foo 2 (1 folder)
+Plan <id> stored for 24 hours. Run exactly this: omaddons apply <id>
+Or bind a typed run to it: --if-match <precondition>

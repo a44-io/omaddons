@@ -1,0 +1,7 @@
+---
+source: tests/contract/verbosity.rs
+expression: text
+---
+<id>…  <date> <clock>  agent  install  retail  +2 ~0 -0
+<id>…  <date> <clock>  agent  install  retail  +1 ~0 -0
+<id>…  <date> <clock>  agent  install  retail  +1 ~0 -0

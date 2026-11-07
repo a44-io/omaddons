@@ -1,0 +1,21 @@
+---
+source: tests/contract/verbosity.rs
+expression: s.stable(&checked.envelope)
+---
+{
+  "before_at": "<time>",
+  "command": "doctor gc",
+  "commands": [],
+  "deletions": [],
+  "dry_run": true,
+  "exclusions": [],
+  "exit_code": 0,
+  "latest": null,
+  "lost_undos": [],
+  "ok": true,
+  "precondition": "<precondition>",
+  "remaining": 0,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

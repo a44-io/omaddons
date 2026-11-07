@@ -1,0 +1,82 @@
+---
+source: tests/contract/verbosity.rs
+expression: s.stable(&checked.envelope)
+---
+{
+  "command": "targets",
+  "commands": [],
+  "data": {
+    "default": null,
+    "rescanned": false,
+    "targets": [
+      {
+        "client_dir": "<root>/home/Games/battlenet/drive_c/Program Files (x86)/World of Warcraft/_classic_",
+        "default": false,
+        "details": {
+          "aliases": [
+            "classic"
+          ],
+          "exe_name": "WoWClassic.exe",
+          "flavor_dir": "_classic_",
+          "install_root": "<root>/home/Games/battlenet/drive_c/Program Files (x86)/World of Warcraft",
+          "rules": "mists"
+        },
+        "family": "mists",
+        "found_by": "scan",
+        "id": "classic",
+        "install_kind": "battlenet",
+        "interface": 50504,
+        "key": null,
+        "kind": "live",
+        "label": "classic (battlenet)",
+        "missing": false,
+        "modes": [
+          {
+            "id": "mists-classic",
+            "name": "Mists of Pandaria Classic"
+          }
+        ],
+        "product": "wow_classic",
+        "registered": false,
+        "version": "5.5.4.63854"
+      },
+      {
+        "client_dir": "<root>/home/Games/battlenet/drive_c/Program Files (x86)/World of Warcraft/_retail_",
+        "default": false,
+        "details": {
+          "aliases": [
+            "retail"
+          ],
+          "exe_name": "WoW.exe",
+          "flavor_dir": "_retail_",
+          "install_root": "<root>/home/Games/battlenet/drive_c/Program Files (x86)/World of Warcraft",
+          "rules": "mainline"
+        },
+        "family": "mainline",
+        "found_by": "scan",
+        "id": "retail",
+        "install_kind": "battlenet",
+        "interface": 120105,
+        "key": "<ulid>",
+        "kind": "live",
+        "label": "retail (battlenet)",
+        "missing": false,
+        "modes": [
+          {
+            "id": "retail",
+            "name": "Retail"
+          }
+        ],
+        "product": "wow",
+        "registered": true,
+        "version": "12.1.5.70391"
+      }
+    ]
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

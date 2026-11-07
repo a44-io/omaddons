@@ -1,0 +1,127 @@
+---
+source: tests/contract/verbosity.rs
+expression: s.stable(&checked.envelope)
+---
+{
+  "command": "undo",
+  "commands": [
+    {
+      "action": "apply",
+      "argv": [
+        "omaddons",
+        "apply",
+        "<ulid>"
+      ],
+      "command": "omaddons apply <ulid>",
+      "destructive": true
+    }
+  ],
+  "data": {
+    "approval": {
+      "reasons": [
+        "folders_removed",
+        "destructive"
+      ],
+      "routine": false,
+      "scope": {
+        "dependencies_added": [],
+        "folders_removed": [
+          "BigWigs",
+          "LittleWigs"
+        ],
+        "local_changes_replaced": {
+          "count": 0,
+          "folders": []
+        },
+        "source_changed": [],
+        "while_running": false
+      },
+      "selection": [
+        {
+          "addon": null,
+          "asset": null,
+          "backup": null,
+          "channel": null,
+          "fields": [],
+          "from_version": null,
+          "op": "undo",
+          "release_id": null,
+          "source": null,
+          "target_id": "retail",
+          "target_key": "<ulid>",
+          "to_version": null,
+          "tx": "<ulid>"
+        }
+      ]
+    },
+    "atomic_swap": null,
+    "client_dir": "<root>/home/Games/battlenet/drive_c/Program Files (x86)/World of Warcraft/_retail_",
+    "doctor_run_id": null,
+    "dry_run": true,
+    "folders": {
+      "removed": [
+        "BigWigs",
+        "LittleWigs"
+      ],
+      "restored": []
+    },
+    "kind": "folders",
+    "plan_expires_at": "<time>",
+    "plan_id": "<ulid>",
+    "precondition": "<precondition>",
+    "reload_required": "none",
+    "repairs": null,
+    "reverted": {
+      "actor": "agent",
+      "argv": [
+        "omaddons",
+        "install",
+        "littlewigs",
+        "-t",
+        "retail",
+        "--json"
+      ],
+      "at": "<time>",
+      "kind": "install",
+      "target": {
+        "id": "retail",
+        "key": "<ulid>"
+      },
+      "targets": [
+        {
+          "id": "retail",
+          "key": "<ulid>"
+        }
+      ],
+      "tx": "<ulid>"
+    },
+    "reverted_run": "<ulid>",
+    "run": null,
+    "saved_variables": {
+      "deferred": 0,
+      "kept": 0,
+      "policy": "auto",
+      "restored": 0,
+      "unchanged": 0
+    },
+    "transactions": [
+      {
+        "error": null,
+        "reverted": "<ulid>",
+        "status": "undone",
+        "target": {
+          "id": "retail",
+          "key": "<ulid>"
+        },
+        "tx": null
+      }
+    ],
+    "tx": null
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

@@ -1,0 +1,128 @@
+---
+source: tests/contract/verbosity.rs
+expression: s.stable(&checked.envelope)
+---
+{
+  "command": "outdated",
+  "commands": [],
+  "data": {
+    "checked_at": "<time>",
+    "requests": {
+      "fetched": 0,
+      "probed": 0,
+      "reused": 3
+    },
+    "summary": {
+      "ahead": 0,
+      "blocked": 0,
+      "current": 3,
+      "failed": 0,
+      "pinned": 0,
+      "static": 1,
+      "unchecked": 0,
+      "update_available": 0
+    },
+    "targets": [
+      {
+        "items": [],
+        "target": {
+          "id": "classic",
+          "key": null
+        }
+      },
+      {
+        "items": [
+          {
+            "blocked_reason": null,
+            "channel": "stable",
+            "confidence": null,
+            "error": null,
+            "installed": {
+              "release_id": "gh:o/bigwigs@v1",
+              "version": "v1"
+            },
+            "latest": {
+              "channel": "stable",
+              "published_at": null,
+              "release_id": "gh:o/bigwigs@v1",
+              "version": "v1"
+            },
+            "name": "BigWigs",
+            "pinned": false,
+            "ref": "gh:o/bigwigs",
+            "status": "current",
+            "unchecked_reason": null
+          },
+          {
+            "blocked_reason": null,
+            "channel": "stable",
+            "confidence": null,
+            "error": null,
+            "installed": {
+              "release_id": "gh:o/foo@sha256:7d368d9716a47c82e9f352818e9171bd38e5bbe8a93f51cfe92f8e410f0f886f",
+              "version": "1"
+            },
+            "latest": null,
+            "name": "Foo",
+            "pinned": false,
+            "ref": "gh:o/foo",
+            "status": "static",
+            "unchecked_reason": null
+          },
+          {
+            "blocked_reason": null,
+            "channel": "stable",
+            "confidence": null,
+            "error": null,
+            "installed": {
+              "release_id": "gh:o/littlewigs@v1",
+              "version": "v1"
+            },
+            "latest": {
+              "channel": "stable",
+              "published_at": null,
+              "release_id": "gh:o/littlewigs@v1",
+              "version": "v1"
+            },
+            "name": "LittleWigs",
+            "pinned": false,
+            "ref": "gh:o/littlewigs",
+            "status": "current",
+            "unchecked_reason": null
+          },
+          {
+            "blocked_reason": null,
+            "channel": "stable",
+            "confidence": null,
+            "error": null,
+            "installed": {
+              "release_id": "gh:WeakAuras/WeakAuras2@5.19.2",
+              "version": "5.19.2"
+            },
+            "latest": {
+              "channel": "stable",
+              "published_at": null,
+              "release_id": "gh:WeakAuras/WeakAuras2@5.19.2",
+              "version": "5.19.2"
+            },
+            "name": "WeakAuras",
+            "pinned": false,
+            "ref": "gh:WeakAuras/WeakAuras2",
+            "status": "current",
+            "unchecked_reason": null
+          }
+        ],
+        "target": {
+          "id": "retail",
+          "key": "<ulid>"
+        }
+      }
+    ]
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

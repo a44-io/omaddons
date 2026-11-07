@@ -1,0 +1,261 @@
+---
+source: tests/contract/verbosity.rs
+expression: s.stable(&checked.envelope)
+---
+{
+  "command": "status",
+  "commands": [
+    {
+      "action": "adopt",
+      "argv": [
+        "omaddons",
+        "adopt",
+        "-t",
+        "retail"
+      ],
+      "command": "omaddons adopt -t retail",
+      "destructive": false
+    },
+    {
+      "action": "refresh_backups",
+      "argv": [
+        "omaddons",
+        "backup",
+        "list",
+        "-t",
+        "retail"
+      ],
+      "command": "omaddons backup list -t retail",
+      "destructive": false
+    }
+  ],
+  "data": {
+    "cached": false,
+    "issues": [],
+    "journal": {
+      "in_progress": false,
+      "pending": 0
+    },
+    "last_change": {
+      "actor": "agent",
+      "at": "<time>",
+      "changes": {
+        "added": 2,
+        "recorded": 0,
+        "removed": 0,
+        "replaced": 0,
+        "restored": 0
+      },
+      "kind": "install",
+      "reason": null,
+      "run": "<ulid>",
+      "targets": [
+        "retail"
+      ],
+      "undo": {
+        "argv": [
+          "omaddons",
+          "undo",
+          "--run",
+          "<ulid>"
+        ],
+        "command": "omaddons undo --run <ulid>"
+      }
+    },
+    "last_change_state": "ok",
+    "needs_attention": false,
+    "summary": {
+      "check_due": false,
+      "errors": {
+        "new": 1,
+        "targets": [
+          "retail"
+        ]
+      },
+      "issues": {
+        "p0": 0,
+        "p1": 0,
+        "p2": 0,
+        "p3": 0
+      },
+      "running": [],
+      "state": "errors",
+      "targets": 2,
+      "updates": {
+        "available": 0,
+        "targets": []
+      },
+      "widget_outdated": false
+    },
+    "targets": [
+      {
+        "addons": {
+          "degraded": 0,
+          "total": 0
+        },
+        "adoptable": 0,
+        "any_flavor_addons": [],
+        "attention": [],
+        "backups": {
+          "auto": {
+            "capability": "unsupported",
+            "last": null,
+            "mode": "daily"
+          },
+          "bytes": null,
+          "count": 0,
+          "free_bytes": 68719476736,
+          "latest": null,
+          "latest_qualifying": null,
+          "snapshot_bytes": null,
+          "stale": false
+        },
+        "client_dir": "<root>/home/Games/battlenet/drive_c/Program Files (x86)/World of Warcraft/_classic_",
+        "default": false,
+        "drift": [],
+        "errors": {
+          "addons": 0,
+          "capture": "none",
+          "coverage": "complete",
+          "dismissed_at": null,
+          "last_session_at": null,
+          "new": 0,
+          "received": 0,
+          "state": "ok",
+          "top_addons": [],
+          "total": 0
+        },
+        "exe_name": "WoWClassic.exe",
+        "family": "mists",
+        "folders": {
+          "invalid": 0,
+          "linked": 0,
+          "managed": 0,
+          "protected": 0,
+          "shared": 0,
+          "unmanaged": 0
+        },
+        "id": "classic",
+        "install_kind": "battlenet",
+        "install_root": "<root>/home/Games/battlenet/drive_c/Program Files (x86)/World of Warcraft",
+        "interface": 50504,
+        "issues": [],
+        "key": null,
+        "kind": "live",
+        "label": "classic (battlenet)",
+        "missing": false,
+        "modes": [
+          {
+            "id": "mists-classic",
+            "name": "Mists of Pandaria Classic"
+          }
+        ],
+        "orphans": 0,
+        "product": "wow_classic",
+        "registered": false,
+        "running": false,
+        "updates": {
+          "available": 0,
+          "blocked": 0,
+          "checked_at": null,
+          "failed": 0,
+          "pinned": 0,
+          "stale": false,
+          "unchecked": 0
+        },
+        "version": "5.5.4.63854"
+      },
+      {
+        "addons": {
+          "degraded": 0,
+          "total": 4
+        },
+        "adoptable": 1,
+        "any_flavor_addons": [],
+        "attention": [],
+        "backups": {
+          "auto": {
+            "capability": "unsupported",
+            "last": null,
+            "mode": "daily"
+          },
+          "bytes": null,
+          "count": 1,
+          "free_bytes": 68719476736,
+          "latest": null,
+          "latest_qualifying": null,
+          "snapshot_bytes": null,
+          "stale": true
+        },
+        "client_dir": "<root>/home/Games/battlenet/drive_c/Program Files (x86)/World of Warcraft/_retail_",
+        "default": false,
+        "drift": [],
+        "errors": {
+          "addons": 1,
+          "capture": "buggrabber",
+          "coverage": "complete",
+          "dismissed_at": null,
+          "last_session_at": "<time>",
+          "new": 1,
+          "received": 0,
+          "state": "ok",
+          "top_addons": [
+            {
+              "addon": "Foo",
+              "count": 4,
+              "folder": "Foo",
+              "new": 1
+            }
+          ],
+          "total": 1
+        },
+        "exe_name": "WoW.exe",
+        "family": "mainline",
+        "folders": {
+          "invalid": 0,
+          "linked": 0,
+          "managed": 4,
+          "protected": 0,
+          "shared": 0,
+          "unmanaged": 1
+        },
+        "id": "retail",
+        "install_kind": "battlenet",
+        "install_root": "<root>/home/Games/battlenet/drive_c/Program Files (x86)/World of Warcraft",
+        "interface": 120105,
+        "issues": [],
+        "key": "<ulid>",
+        "kind": "live",
+        "label": "retail (battlenet)",
+        "missing": false,
+        "modes": [
+          {
+            "id": "retail",
+            "name": "Retail"
+          }
+        ],
+        "orphans": 0,
+        "product": "wow",
+        "registered": true,
+        "running": false,
+        "updates": {
+          "available": 0,
+          "blocked": 0,
+          "checked_at": "<time>",
+          "failed": 0,
+          "pinned": 0,
+          "stale": false,
+          "unchecked": 0
+        },
+        "version": "12.1.5.70391"
+      }
+    ],
+    "widget": null
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

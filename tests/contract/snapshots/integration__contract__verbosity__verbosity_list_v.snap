@@ -1,0 +1,269 @@
+---
+source: tests/contract/verbosity.rs
+expression: s.stable(&checked.envelope)
+---
+{
+  "command": "list",
+  "commands": [],
+  "data": {
+    "targets": [
+      {
+        "addons": [],
+        "addons_dir_missing": false,
+        "client_dir": "<root>/home/Games/battlenet/drive_c/Program Files (x86)/World of Warcraft/_classic_",
+        "counts": {
+          "invalid": 0,
+          "linked": 0,
+          "managed": 0,
+          "protected": 0,
+          "shared": 0,
+          "unmanaged": 0
+        },
+        "family": "mists",
+        "id": "classic",
+        "key": null,
+        "label": "classic (battlenet)",
+        "protected": null,
+        "unmanaged": null,
+        "version": "5.5.4.63854"
+      },
+      {
+        "addons": [
+          {
+            "any_flavor": false,
+            "channel": "stable",
+            "drift": {
+              "files": 0,
+              "folders": [
+                {
+                  "added": [],
+                  "changed": 0,
+                  "deleted": [],
+                  "folder": "BigWigs",
+                  "indexed": true,
+                  "modified": [],
+                  "present": true,
+                  "truncated": false
+                }
+              ],
+              "state": "clean"
+            },
+            "folder_tocs": [
+              {
+                "case_duplicate": false,
+                "class": "managed",
+                "folder": "BigWigs",
+                "interface": 120105,
+                "title": "BigWigs",
+                "verdict": "compatible",
+                "version": "v1"
+              }
+            ],
+            "folders": [
+              "BigWigs"
+            ],
+            "latest": {
+              "asset": "bigwigs.zip",
+              "release_id": "gh:o/bigwigs@v1",
+              "source": "github",
+              "status": "current",
+              "version": "v1"
+            },
+            "left_out": [],
+            "missing_folders": [],
+            "name": "BigWigs",
+            "orphan": false,
+            "pinned": false,
+            "reason": "dependency",
+            "ref": "gh:o/bigwigs",
+            "required_by": [
+              "LittleWigs"
+            ],
+            "state": "ok",
+            "version": "v1",
+            "version_confidence": "release"
+          },
+          {
+            "any_flavor": false,
+            "channel": "stable",
+            "drift": {
+              "files": 0,
+              "folders": [
+                {
+                  "added": [],
+                  "changed": 0,
+                  "deleted": [],
+                  "folder": "Foo",
+                  "indexed": true,
+                  "modified": [],
+                  "present": true,
+                  "truncated": false
+                }
+              ],
+              "state": "clean"
+            },
+            "folder_tocs": [
+              {
+                "case_duplicate": false,
+                "class": "managed",
+                "folder": "Foo",
+                "interface": 120105,
+                "title": null,
+                "verdict": "compatible",
+                "version": "1"
+              }
+            ],
+            "folders": [
+              "Foo"
+            ],
+            "latest": {
+              "asset": null,
+              "release_id": null,
+              "source": null,
+              "status": "static",
+              "version": null
+            },
+            "left_out": [],
+            "missing_folders": [],
+            "name": "Foo",
+            "orphan": false,
+            "pinned": false,
+            "reason": "explicit",
+            "ref": "gh:o/foo",
+            "required_by": [],
+            "state": "ok",
+            "version": "1",
+            "version_confidence": "toc"
+          },
+          {
+            "any_flavor": false,
+            "channel": "stable",
+            "drift": {
+              "files": 0,
+              "folders": [
+                {
+                  "added": [],
+                  "changed": 0,
+                  "deleted": [],
+                  "folder": "LittleWigs",
+                  "indexed": true,
+                  "modified": [],
+                  "present": true,
+                  "truncated": false
+                }
+              ],
+              "state": "clean"
+            },
+            "folder_tocs": [
+              {
+                "case_duplicate": false,
+                "class": "managed",
+                "folder": "LittleWigs",
+                "interface": 120105,
+                "title": "LittleWigs",
+                "verdict": "compatible",
+                "version": "v1"
+              }
+            ],
+            "folders": [
+              "LittleWigs"
+            ],
+            "latest": {
+              "asset": "littlewigs.zip",
+              "release_id": "gh:o/littlewigs@v1",
+              "source": "github",
+              "status": "current",
+              "version": "v1"
+            },
+            "left_out": [],
+            "missing_folders": [],
+            "name": "LittleWigs",
+            "orphan": false,
+            "pinned": false,
+            "reason": "explicit",
+            "ref": "gh:o/littlewigs",
+            "required_by": [],
+            "state": "ok",
+            "version": "v1",
+            "version_confidence": "release"
+          },
+          {
+            "any_flavor": false,
+            "channel": "stable",
+            "drift": {
+              "files": 0,
+              "folders": [
+                {
+                  "added": [],
+                  "changed": 0,
+                  "deleted": [],
+                  "folder": "WeakAuras",
+                  "indexed": true,
+                  "modified": [],
+                  "present": true,
+                  "truncated": false
+                }
+              ],
+              "state": "clean"
+            },
+            "folder_tocs": [
+              {
+                "case_duplicate": false,
+                "class": "managed",
+                "folder": "WeakAuras",
+                "interface": 120105,
+                "title": null,
+                "verdict": "compatible",
+                "version": "3"
+              }
+            ],
+            "folders": [
+              "WeakAuras"
+            ],
+            "latest": {
+              "asset": "WeakAuras.zip",
+              "release_id": "gh:WeakAuras/WeakAuras2@5.19.2",
+              "source": "github",
+              "status": "current",
+              "version": "5.19.2"
+            },
+            "left_out": [],
+            "missing_folders": [],
+            "name": "WeakAuras",
+            "orphan": false,
+            "pinned": false,
+            "reason": "explicit",
+            "ref": "gh:WeakAuras/WeakAuras2",
+            "required_by": [],
+            "state": "ok",
+            "version": "5.19.2",
+            "version_confidence": "release"
+          }
+        ],
+        "addons_dir_missing": false,
+        "client_dir": "<root>/home/Games/battlenet/drive_c/Program Files (x86)/World of Warcraft/_retail_",
+        "counts": {
+          "invalid": 0,
+          "linked": 0,
+          "managed": 4,
+          "protected": 0,
+          "shared": 0,
+          "unmanaged": 1
+        },
+        "family": "mainline",
+        "id": "retail",
+        "key": "<ulid>",
+        "label": "retail (battlenet)",
+        "protected": null,
+        "unmanaged": null,
+        "version": "12.1.5.70391"
+      }
+    ]
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

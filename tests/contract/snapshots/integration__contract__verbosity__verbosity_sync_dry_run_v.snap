@@ -1,0 +1,94 @@
+---
+source: tests/contract/verbosity.rs
+expression: s.stable(&checked.envelope)
+---
+{
+  "command": "sync",
+  "commands": [],
+  "data": {
+    "approval": {
+      "reasons": [],
+      "routine": true,
+      "scope": {
+        "dependencies_added": [],
+        "folders_removed": [],
+        "local_changes_replaced": {
+          "count": 0,
+          "folders": []
+        },
+        "source_changed": [],
+        "while_running": false
+      },
+      "selection": []
+    },
+    "dry_run": true,
+    "plan_expires_at": null,
+    "plan_id": null,
+    "precondition": "<precondition>",
+    "run": null,
+    "summary": {
+      "changed": 0,
+      "failed": 0,
+      "skipped": 0,
+      "targets": 2,
+      "unchanged": 2
+    },
+    "targets": [
+      {
+        "atomic_swap": null,
+        "creates_addons_dir": false,
+        "error": null,
+        "items": [],
+        "kind": null,
+        "no_section": true,
+        "reload_required": "none",
+        "target": {
+          "id": "classic",
+          "key": null
+        },
+        "tx": null
+      },
+      {
+        "atomic_swap": null,
+        "creates_addons_dir": false,
+        "error": null,
+        "items": [
+          {
+            "error": null,
+            "from_version": "5.19.2",
+            "name": "WeakAuras",
+            "ref": "gh:WeakAuras/WeakAuras2",
+            "request": "weakauras",
+            "skip_reason": null,
+            "status": "unchanged",
+            "to_version": "5.19.2"
+          },
+          {
+            "error": null,
+            "from_version": "1",
+            "name": "Foo",
+            "ref": "gh:o/foo",
+            "request": "gh:o/foo",
+            "skip_reason": null,
+            "status": "unchanged",
+            "to_version": "1"
+          }
+        ],
+        "kind": null,
+        "no_section": false,
+        "reload_required": "none",
+        "target": {
+          "id": "retail",
+          "key": "<ulid>"
+        },
+        "tx": null
+      }
+    ]
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}
