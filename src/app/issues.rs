@@ -74,6 +74,13 @@ pub struct Issue {
     pub explain: ExplainCommand,
 }
 
+impl Issue {
+    /// P0 or P1: the bar turns urgent, and `status --check` fails on it (M4-D53).
+    pub fn urgent(&self) -> bool {
+        matches!(self.severity, Severity::P0 | Severity::P1)
+    }
+}
+
 /// A command and its argv.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct ExplainCommand {
@@ -822,6 +829,27 @@ pub(crate) mod tests {
                 ["t", "/a/SKILL.md", "/b/SKILL.md"],
                 "{case}: the P2 lock first, then the P3 skills by instance"
             );
+        }
+    }
+
+    #[test]
+    fn urgent_is_p0_or_p1() {
+        let row = production(ids::LOCK_HELD_LONG);
+        let found = through_the_loop(
+            &row,
+            vec![observed(Subject::machine(), None, Evidence::default())],
+        );
+        for (severity, urgent) in [
+            (Severity::P0, true),
+            (Severity::P1, true),
+            (Severity::P2, false),
+            (Severity::P3, false),
+        ] {
+            let issue = Issue {
+                severity,
+                ..issue_of(&found[0])
+            };
+            assert_eq!(issue.urgent(), urgent, "{severity:?}");
         }
     }
 

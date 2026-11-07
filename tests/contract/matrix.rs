@@ -1482,6 +1482,65 @@ fn status_issue_auto_fixable() {
     insta::assert_json_snapshot!("status_issue_auto_fixable", s.stable(&status.envelope));
 }
 
+/// `status --check` fails on a P0 or P1 issue no attention reason explains (F8 part 3,
+/// M4-D53), with that issue's message and fix. Here the only issue is a check that
+/// crashed: P1, about the machine, its fix the row's advice.
+#[test]
+fn status_check_failed_on_an_issue() {
+    let s = Scene::new();
+    let c = s.json_env(
+        &["status", "--check"],
+        &[("OMADDONS_FAILPOINTS", "doctor.detector.panic=panic@1")],
+        6,
+    );
+    let data = &c.envelope["data"];
+    let issues = data["issues"].as_array().unwrap();
+    assert_eq!(issues.len(), 1, "{}", c.envelope);
+    assert_eq!(
+        (&issues[0]["id"], &issues[0]["severity"]),
+        (&json!("fm-state_files-detector-crashed"), &json!("P1"))
+    );
+    for target in data["targets"].as_array().unwrap() {
+        assert_eq!(target["attention"], json!([]), "{target}");
+    }
+    let error = &c.envelope["error"];
+    assert_eq!(error["code"], "check_failed");
+    assert_eq!(error["message"], issues[0]["title"], "{}", c.envelope);
+    assert_eq!(error["fix"], issues[0]["remediation"]["command"]);
+    assert_eq!(data["needs_attention"], true);
+    insta::assert_json_snapshot!("status_check_failed_on_an_issue", s.stable(&c.envelope));
+}
+
+/// A home whose issues are all P2 or P3 passes `status --check` (F8 part 3): a token file
+/// other users can read, and a bar widget that breaks Omarchy's plugin rules and comes
+/// from no known build.
+#[test]
+fn status_check_passes_on_p2_and_p3_issues() {
+    let s = Scene::new();
+    common::doctor::plant::credential_file_mode(&s.home);
+    common::doctor::plant::widget_version_drift(&s.home);
+    let omarchy = common::doctor::plant::omarchy_path(&s.home);
+    let c = s.json_env(
+        &["status", "--check"],
+        &[("OMARCHY_PATH", omarchy.to_str().unwrap())],
+        0,
+    );
+    let data = &c.envelope["data"];
+    let severities: Vec<&str> = data["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|issue| issue["severity"].as_str().unwrap())
+        .collect();
+    assert_eq!(severities, ["P2", "P2", "P3"], "{}", c.envelope);
+    assert_eq!(data["needs_attention"], false);
+    assert_eq!(data["summary"]["state"], "idle", "{}", c.envelope);
+    insta::assert_json_snapshot!(
+        "status_check_passes_on_p2_and_p3_issues",
+        s.stable(&c.envelope)
+    );
+}
+
 /// A damaged cached archive (F6): the deep diagnosis's finding in full. Its digests are
 /// deterministic (the fixture's archive, one byte flipped), and `support::check` parses
 /// every argv the report offers.

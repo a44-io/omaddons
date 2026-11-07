@@ -1,0 +1,228 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "status",
+  "commands": [],
+  "data": {
+    "cached": false,
+    "issues": [
+      {
+        "addon": null,
+        "auto_fixable": false,
+        "explain": {
+          "argv": [
+            "omaddons",
+            "doctor",
+            "explain",
+            "fm-state_files-detector-crashed"
+          ],
+          "command": "omaddons doctor explain fm-state_files-detector-crashed"
+        },
+        "id": "fm-state_files-detector-crashed",
+        "remediation": {
+          "argv": null,
+          "command": "this is a bug in omaddons: report the detector and location above",
+          "destructive": false
+        },
+        "severity": "P1",
+        "title": "The check fm-concurrency_primitives-journal-marker-mismatch stopped with an internal error"
+      }
+    ],
+    "journal": {
+      "in_progress": false,
+      "pending": 0
+    },
+    "last_change": null,
+    "last_change_state": "ok",
+    "needs_attention": true,
+    "summary": {
+      "check_due": false,
+      "errors": {
+        "new": 0,
+        "targets": []
+      },
+      "issues": {
+        "p0": 0,
+        "p1": 1,
+        "p2": 0,
+        "p3": 0
+      },
+      "running": [],
+      "state": "attention",
+      "targets": 2,
+      "updates": {
+        "available": 0,
+        "targets": []
+      },
+      "widget_outdated": false
+    },
+    "targets": [
+      {
+        "addons": {
+          "degraded": 0,
+          "total": 0
+        },
+        "adoptable": 0,
+        "any_flavor": [],
+        "attention": [],
+        "backups": {
+          "auto": {
+            "capability": "unsupported",
+            "last": null,
+            "mode": "daily"
+          },
+          "bytes": null,
+          "count": 0,
+          "free_bytes": 68719476736,
+          "latest": null,
+          "latest_qualifying": null,
+          "snapshot_bytes": null,
+          "stale": false
+        },
+        "default": false,
+        "drift": [],
+        "errors": {
+          "addons": 0,
+          "capture": "none",
+          "coverage": "complete",
+          "dismissed_at": null,
+          "last_session_at": null,
+          "new": 0,
+          "received": 0,
+          "state": "ok",
+          "top": [],
+          "total": 0
+        },
+        "family": "mists",
+        "folders": {
+          "invalid": 0,
+          "linked": 0,
+          "managed": 0,
+          "protected": 0,
+          "shared": 0,
+          "unmanaged": 0
+        },
+        "id": "classic",
+        "install_kind": "battlenet",
+        "interface": 50504,
+        "issues": [],
+        "key": null,
+        "kind": "live",
+        "label": "classic (battlenet)",
+        "missing": false,
+        "modes": [
+          {
+            "id": "mists-classic",
+            "name": "Mists of Pandaria Classic"
+          }
+        ],
+        "orphans": 0,
+        "product": "wow_classic",
+        "registered": false,
+        "running": false,
+        "updates": {
+          "available": 0,
+          "blocked": 0,
+          "checked_at": null,
+          "failed": 0,
+          "pinned": 0,
+          "stale": false,
+          "unchecked": 0
+        },
+        "version": "5.5.4.63854"
+      },
+      {
+        "addons": {
+          "degraded": 0,
+          "total": 0
+        },
+        "adoptable": 0,
+        "any_flavor": [],
+        "attention": [],
+        "backups": {
+          "auto": {
+            "capability": "unsupported",
+            "last": null,
+            "mode": "daily"
+          },
+          "bytes": null,
+          "count": 0,
+          "free_bytes": 68719476736,
+          "latest": null,
+          "latest_qualifying": null,
+          "snapshot_bytes": null,
+          "stale": false
+        },
+        "default": false,
+        "drift": [],
+        "errors": {
+          "addons": 0,
+          "capture": "none",
+          "coverage": "complete",
+          "dismissed_at": null,
+          "last_session_at": null,
+          "new": 0,
+          "received": 0,
+          "state": "ok",
+          "top": [],
+          "total": 0
+        },
+        "family": "mainline",
+        "folders": {
+          "invalid": 0,
+          "linked": 0,
+          "managed": 0,
+          "protected": 0,
+          "shared": 0,
+          "unmanaged": 0
+        },
+        "id": "retail",
+        "install_kind": "battlenet",
+        "interface": 120105,
+        "issues": [],
+        "key": null,
+        "kind": "live",
+        "label": "retail (battlenet)",
+        "missing": false,
+        "modes": [
+          {
+            "id": "retail",
+            "name": "Retail"
+          }
+        ],
+        "orphans": 0,
+        "product": "wow",
+        "registered": false,
+        "running": false,
+        "updates": {
+          "available": 0,
+          "blocked": 0,
+          "checked_at": null,
+          "failed": 0,
+          "pinned": 0,
+          "stale": false,
+          "unchecked": 0
+        },
+        "version": "12.1.5.70391"
+      }
+    ],
+    "widget": null
+  },
+  "error": {
+    "alternatives": [],
+    "code": "check_failed",
+    "details": {},
+    "fix": "this is a bug in omaddons: report the detector and location above",
+    "fix_argv": null,
+    "message": "The check fm-concurrency_primitives-journal-marker-mismatch stopped with an internal error",
+    "retryable": false
+  },
+  "exit_code": 6,
+  "ok": false,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": []
+}

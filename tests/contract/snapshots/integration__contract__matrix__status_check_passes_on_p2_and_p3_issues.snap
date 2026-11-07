@@ -1,0 +1,310 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "status",
+  "commands": [
+    {
+      "action": "reinstall_widget",
+      "argv": [
+        "omaddons",
+        "omarchy",
+        "install"
+      ],
+      "command": "omaddons omarchy install",
+      "destructive": false
+    }
+  ],
+  "data": {
+    "cached": false,
+    "issues": [
+      {
+        "addon": null,
+        "auto_fixable": false,
+        "explain": {
+          "argv": [
+            "omaddons",
+            "doctor",
+            "explain",
+            "fm-plugins-widget-invalid"
+          ],
+          "command": "omaddons doctor explain fm-plugins-widget-invalid"
+        },
+        "id": "fm-plugins-widget-invalid",
+        "remediation": {
+          "argv": [
+            "omaddons",
+            "omarchy",
+            "install"
+          ],
+          "command": "omaddons omarchy install",
+          "destructive": false
+        },
+        "severity": "P2",
+        "title": "The bar widget fails Omarchy's plugin validation (6 problems)"
+      },
+      {
+        "addon": null,
+        "auto_fixable": true,
+        "explain": {
+          "argv": [
+            "omaddons",
+            "doctor",
+            "explain",
+            "fm-secrets-credential-file-mode"
+          ],
+          "command": "omaddons doctor explain fm-secrets-credential-file-mode"
+        },
+        "id": "fm-secrets-credential-file-mode",
+        "remediation": {
+          "argv": [
+            "omaddons",
+            "doctor",
+            "fix",
+            "--only",
+            "fm-secrets-credential-file-mode"
+          ],
+          "command": "omaddons doctor fix --only fm-secrets-credential-file-mode",
+          "destructive": false
+        },
+        "severity": "P2",
+        "title": "The GitHub token file is readable by other users"
+      },
+      {
+        "addon": null,
+        "auto_fixable": false,
+        "explain": {
+          "argv": [
+            "omaddons",
+            "doctor",
+            "explain",
+            "fm-plugins-widget-version-drift"
+          ],
+          "command": "omaddons doctor explain fm-plugins-widget-version-drift"
+        },
+        "id": "fm-plugins-widget-version-drift",
+        "remediation": {
+          "argv": [
+            "omaddons",
+            "omarchy",
+            "install"
+          ],
+          "command": "omaddons omarchy install",
+          "destructive": false
+        },
+        "severity": "P3",
+        "title": "The bar widget is from another omaddons build"
+      }
+    ],
+    "journal": {
+      "in_progress": false,
+      "pending": 0
+    },
+    "last_change": null,
+    "last_change_state": "ok",
+    "needs_attention": false,
+    "summary": {
+      "check_due": false,
+      "errors": {
+        "new": 0,
+        "targets": []
+      },
+      "issues": {
+        "p0": 0,
+        "p1": 0,
+        "p2": 2,
+        "p3": 1
+      },
+      "running": [],
+      "state": "idle",
+      "targets": 2,
+      "updates": {
+        "available": 0,
+        "targets": []
+      },
+      "widget_outdated": true
+    },
+    "targets": [
+      {
+        "addons": {
+          "degraded": 0,
+          "total": 0
+        },
+        "adoptable": 0,
+        "any_flavor": [],
+        "attention": [],
+        "backups": {
+          "auto": {
+            "capability": "unsupported",
+            "last": null,
+            "mode": "daily"
+          },
+          "bytes": null,
+          "count": 0,
+          "free_bytes": 68719476736,
+          "latest": null,
+          "latest_qualifying": null,
+          "snapshot_bytes": null,
+          "stale": false
+        },
+        "default": false,
+        "drift": [],
+        "errors": {
+          "addons": 0,
+          "capture": "none",
+          "coverage": "complete",
+          "dismissed_at": null,
+          "last_session_at": null,
+          "new": 0,
+          "received": 0,
+          "state": "ok",
+          "top": [],
+          "total": 0
+        },
+        "family": "mists",
+        "folders": {
+          "invalid": 0,
+          "linked": 0,
+          "managed": 0,
+          "protected": 0,
+          "shared": 0,
+          "unmanaged": 0
+        },
+        "id": "classic",
+        "install_kind": "battlenet",
+        "interface": 50504,
+        "issues": [],
+        "key": null,
+        "kind": "live",
+        "label": "classic (battlenet)",
+        "missing": false,
+        "modes": [
+          {
+            "id": "mists-classic",
+            "name": "Mists of Pandaria Classic"
+          }
+        ],
+        "orphans": 0,
+        "product": "wow_classic",
+        "registered": false,
+        "running": false,
+        "updates": {
+          "available": 0,
+          "blocked": 0,
+          "checked_at": null,
+          "failed": 0,
+          "pinned": 0,
+          "stale": false,
+          "unchecked": 0
+        },
+        "version": "5.5.4.63854"
+      },
+      {
+        "addons": {
+          "degraded": 0,
+          "total": 0
+        },
+        "adoptable": 0,
+        "any_flavor": [],
+        "attention": [],
+        "backups": {
+          "auto": {
+            "capability": "unsupported",
+            "last": null,
+            "mode": "daily"
+          },
+          "bytes": null,
+          "count": 0,
+          "free_bytes": 68719476736,
+          "latest": null,
+          "latest_qualifying": null,
+          "snapshot_bytes": null,
+          "stale": false
+        },
+        "default": false,
+        "drift": [],
+        "errors": {
+          "addons": 0,
+          "capture": "none",
+          "coverage": "complete",
+          "dismissed_at": null,
+          "last_session_at": null,
+          "new": 0,
+          "received": 0,
+          "state": "ok",
+          "top": [],
+          "total": 0
+        },
+        "family": "mainline",
+        "folders": {
+          "invalid": 0,
+          "linked": 0,
+          "managed": 0,
+          "protected": 0,
+          "shared": 0,
+          "unmanaged": 0
+        },
+        "id": "retail",
+        "install_kind": "battlenet",
+        "interface": 120105,
+        "issues": [],
+        "key": null,
+        "kind": "live",
+        "label": "retail (battlenet)",
+        "missing": false,
+        "modes": [
+          {
+            "id": "retail",
+            "name": "Retail"
+          }
+        ],
+        "orphans": 0,
+        "product": "wow",
+        "registered": false,
+        "running": false,
+        "updates": {
+          "available": 0,
+          "blocked": 0,
+          "checked_at": null,
+          "failed": 0,
+          "pinned": 0,
+          "stale": false,
+          "unchecked": 0
+        },
+        "version": "12.1.5.70391"
+      }
+    ],
+    "widget": {
+      "context_matches": null,
+      "enabled": false,
+      "installed": true,
+      "omarchy": true,
+      "outdated": true,
+      "version": "0.0.9"
+    }
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.0",
+  "tool_version": "<version>",
+  "warnings": [
+    {
+      "code": "credential_file_mode",
+      "fix": "chmod 600 <root>/config/omaddons/credentials/github",
+      "fix_argv": null,
+      "message": "<root>/config/omaddons/credentials/github is readable by other users"
+    },
+    {
+      "code": "widget_outdated",
+      "fix": "omaddons omarchy install",
+      "fix_argv": [
+        "omaddons",
+        "omarchy",
+        "install"
+      ],
+      "message": "the bar widget is from another omaddons build, so it stays read-only"
+    }
+  ]
+}

@@ -1009,17 +1009,15 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
     // An interrupted change no listed client carries is attention too.
     let unattributed = issues.iter().any(|i| JOURNAL_ROWS.contains(&i.id));
 
-    let (mut commands, mut first_fix) = recommendations(&targets, check_due, widget_outdated);
-    if unattributed && first_fix.is_none() {
-        first_fix = journal_fix(&issues, None);
-    }
+    let (mut commands, attention_fix) = recommendations(&targets, check_due, widget_outdated);
+    let first_fix = check_fix(&targets, &issues, attention_fix);
     if let Some(selector) = ctx.target.as_deref() {
         scope_update(&mut commands, selector);
     }
     if args.cached && !world.paths.discovery_cache().exists() {
         commands.push(CommandHint::new(Action::Status, ["omaddons", "status"]));
     }
-    let needs_attention = unattributed || targets.iter().any(|t| !t.attention.is_empty());
+    let needs_attention = needs_attention(&targets, &issues, unattributed);
     let summary = summary(&targets, &issues, &commands, widget_outdated);
     let (last_change, last_change_state) = last_change(&world, args.cached);
     Ok(StatusOutcome {
@@ -1350,6 +1348,66 @@ fn issue_line(issue: &Issue) -> String {
     line
 }
 
+/// Whether `status --check` fails (M4-D53): an attention item on a client, an interrupted
+/// change no listed client carries (`unattributed`), or a P0 or P1 issue, a client's or
+/// the machine's. P2 and P3 issues alone never do: `--check` stays a health check.
+/// `data.needs_attention` is this value, so it holds whenever `summary.state` is
+/// `attention` for an urgent issue.
+fn needs_attention(targets: &[StatusTarget], machine: &[Issue], unattributed: bool) -> bool {
+    unattributed
+        || targets
+            .iter()
+            .any(|t| !t.attention.is_empty() || t.issues.iter().any(Issue::urgent))
+        || machine.iter().any(Issue::urgent)
+}
+
+/// The `--check` failure's message and fix, the first that applies: the first attention
+/// item's (`attention`, as [`recommendations`] gives it), then the interrupted change no
+/// listed client carries ([`journal_fix`]), then the most urgent P0 or P1 issue's
+/// ([`urgent_fix`]).
+fn check_fix(
+    targets: &[StatusTarget],
+    machine: &[Issue],
+    attention: Option<(String, Suggestion)>,
+) -> Option<(String, Suggestion)> {
+    attention
+        .or_else(|| journal_fix(machine, None))
+        .or_else(|| urgent_fix(targets, machine))
+}
+
+/// The most urgent P0 or P1 issue's `--check` message and fix: by severity, then the
+/// clients in `status`'s order with the machine's issues last, then the issue's id. A
+/// client's issue reads `<client id>: <title>`, the machine's `<title>`; its fix is
+/// [`issue_fix`].
+fn urgent_fix(targets: &[StatusTarget], machine: &[Issue]) -> Option<(String, Suggestion)> {
+    let on_clients = targets.iter().enumerate().flat_map(|(at, t)| {
+        t.issues
+            .iter()
+            .map(move |issue| (at, Some(t.id.as_str()), issue))
+    });
+    let on_machine = machine.iter().map(|issue| (targets.len(), None, issue));
+    let (_, client, issue) = on_clients
+        .chain(on_machine)
+        .filter(|(_, _, issue)| issue.urgent())
+        .min_by_key(|(at, _, issue)| (issue.severity, *at, issue.id))?;
+    let message = match client {
+        Some(id) => format!("{id}: {}", issue.title),
+        None => issue.title.clone(),
+    };
+    Some((message, issue_fix(issue)))
+}
+
+/// An issue's `--check` fix: its remediation's argv, or its advice. A forced repair is
+/// read before it is consented to (M4-D38): its `doctor explain`, never an argv with
+/// `--force --yes` that a caller might run as is.
+fn issue_fix(issue: &Issue) -> Suggestion {
+    match &issue.remediation.argv {
+        Some(_) if issue.remediation.forced() => Suggestion::command(issue.explain.argv.clone()),
+        Some(argv) => Suggestion::command(argv.clone()),
+        None => Suggestion::text(issue.remediation.command.clone().unwrap_or_default()),
+    }
+}
+
 /// The `--check` fix for a scope's interrupted changes: its most blocking journal issue
 /// (by severity, `journal-pending` last within one). A settleable change keeps today's
 /// message and advice; a stuck one names its state, with its `doctor explain` (or its
@@ -1369,13 +1427,8 @@ fn journal_fix(issues: &[Issue], target: Option<&str>) -> Option<(String, Sugges
             ),
         ));
     }
-    // A forced repair (a stuck journal's set-aside) is read before it is consented to: its
-    // `doctor explain`, never an argv with `--force --yes` that a caller might run as is.
-    let fix = match &issue.remediation.argv {
-        Some(_) if issue.remediation.forced() => Suggestion::command(issue.explain.argv.clone()),
-        Some(argv) => Suggestion::command(argv.clone()),
-        None => Suggestion::text(issue.remediation.command.clone().unwrap_or_default()),
-    };
+    // A stuck journal's set-aside is forced: its `doctor explain`.
+    let fix = issue_fix(issue);
     let message = match target {
         Some(id) => format!("{id}: {}", issue.title),
         None => issue.title.clone(),
@@ -1947,11 +2000,17 @@ mod tests {
     }
 
     /// A `status` outcome of `targets` and the machine's own issues, nothing else:
-    /// no warning, recommendation, drift line, last change or widget.
+    /// no warning, recommendation, drift line, last change or widget. `needs_attention`
+    /// and the `--check` fix are `run`'s own rules over them.
     fn outcome_for(targets: Vec<StatusTarget>, machine: Vec<Issue>) -> StatusOutcome {
         let summary = summary(&targets, &machine, &[], false);
-        let needs_attention =
-            !machine.is_empty() || targets.iter().any(|t| !t.attention.is_empty());
+        let unattributed = machine.iter().any(|i| JOURNAL_ROWS.contains(&i.id));
+        let needs_attention = needs_attention(&targets, &machine, unattributed);
+        let first_fix = check_fix(
+            &targets,
+            &machine,
+            recommendations(&targets, false, false).1,
+        );
         StatusOutcome {
             data: StatusData {
                 cached: false,
@@ -1970,17 +2029,13 @@ mod tests {
             warnings: Vec::new(),
             commands: Vec::new(),
             check: false,
-            first_fix: None,
+            first_fix,
             drift_lines: Vec::new(),
             discovery: CacheStats::default(),
             notes: Vec::new(),
         }
     }
 
-    /// The human lines `status` prints for issues (E1 part 1), pinned before the move onto
-    /// `--check`'s journal fix takes the most blocking state: a stuck one names itself and
-    /// gives its `doctor explain`; a settleable one keeps today's text byte for byte; the
-    /// game-waiting one gives its advice; the machine's names its title.
     /// `omaddons doctor explain <id> [-t <target>]`, as the doctor builds it.
     fn explain_of(id: &str, target: Option<&str>) -> issues::ExplainCommand {
         let mut argv: Vec<String> = ["omaddons", "doctor", "explain", id]
@@ -2017,6 +2072,10 @@ mod tests {
         }
     }
 
+    /// The human lines `status` prints for issues (E1 part 1), pinned before the move onto
+    /// `--check`'s journal fix takes the most blocking state: a stuck one names itself and
+    /// gives its `doctor explain`; a settleable one keeps today's text byte for byte; the
+    /// game-waiting one gives its advice; the machine's names its title.
     #[test]
     fn check_fix_prefers_the_blocking_state() {
         let issue = issue_with;
@@ -2253,6 +2312,443 @@ mod tests {
             outcome.machine_issue_lines(),
             [issue_line(&forced)],
             "machine"
+        );
+    }
+
+    // ---- `--check` on the registry's issues (F8 part 3, M4-D53).
+
+    /// The `--check` outcome of `targets` and the machine's issues.
+    fn checked(targets: Vec<StatusTarget>, machine: Vec<Issue>) -> StatusOutcome {
+        StatusOutcome {
+            check: true,
+            ..outcome_for(targets, machine)
+        }
+    }
+
+    /// An issue of no client: its explain command has no `-t`.
+    fn machine_issue(
+        id: &'static str,
+        severity: issues::Severity,
+        title: &str,
+        argv: Option<&[&str]>,
+    ) -> Issue {
+        Issue {
+            explain: explain_of(id, None),
+            ..issue_with(id, severity, title, argv)
+        }
+    }
+
+    /// `id` on `attention`, carrying `issues`.
+    fn client_with(id: &str, attention: &[Attention], issues: Vec<Issue>) -> StatusTarget {
+        let mut t = target(id, 0, attention, 0);
+        t.issues = issues;
+        t
+    }
+
+    /// A crashed check: P1, about the machine, with advice.
+    fn crashed() -> Issue {
+        machine_issue(
+            ids::DETECTOR_CRASHED,
+            issues::Severity::P1,
+            "The check fm-x stopped with an internal error",
+            None,
+        )
+    }
+
+    /// What a `--check` failure says: its message, its fix's display and its argv.
+    type Failure = (String, String, Option<Vec<String>>);
+
+    fn failure_of(outcome: &StatusOutcome) -> Option<Failure> {
+        outcome.assertion_failure().map(|error| {
+            assert_eq!(error.code, ErrorCode::CheckFailed);
+            (
+                error.message.clone(),
+                error.fix.display().to_owned(),
+                error.fix.argv().map(<[String]>::to_vec),
+            )
+        })
+    }
+
+    /// (case, targets, the machine's issues, the failure, or `None` for a pass)
+    type CheckCase = (&'static str, Vec<StatusTarget>, Vec<Issue>, Option<Failure>);
+
+    fn check_cases() -> Vec<CheckCase> {
+        use issues::Severity::{P0, P2, P3};
+        let words = |argv: &[&str]| Some(argv.iter().map(|w| (*w).to_owned()).collect());
+        let fails = |message: &str, display: &str, argv: Option<Vec<String>>| {
+            Some((message.to_owned(), display.to_owned(), argv))
+        };
+        let newer = issue_with(
+            ids::STATE_VERSION_NEWER,
+            P0,
+            "State was written by a newer omaddons",
+            None,
+        );
+        let quiet = vec![
+            machine_issue(
+                ids::CREDENTIAL_FILE_MODE,
+                P2,
+                "The GitHub token file is readable by other users",
+                Some(&[
+                    "omaddons",
+                    "doctor",
+                    "fix",
+                    "--only",
+                    ids::CREDENTIAL_FILE_MODE,
+                ]),
+            ),
+            machine_issue(
+                ids::SKILL_VERSION_DRIFT,
+                P3,
+                "The agent skill is from another omaddons build",
+                Some(&["omaddons", "robot-docs", "install-skill"]),
+            ),
+        ];
+        let unattributed_argv = [
+            "omaddons",
+            "doctor",
+            "fix",
+            "--only",
+            ids::JOURNAL_UNATTRIBUTED,
+            "--force",
+            "--yes",
+        ];
+        let unattributed = machine_issue(
+            ids::JOURNAL_UNATTRIBUTED,
+            P0,
+            "An interrupted change cannot be attributed to any client, so every change is refused",
+            Some(&unattributed_argv),
+        );
+        let retail_rm = ["omaddons", "targets", "rm", "retail"];
+        vec![
+            (
+                "nothing",
+                vec![client_with("retail", &[], vec![])],
+                vec![],
+                None,
+            ),
+            (
+                "p2_attention_only",
+                vec![client_with("retail", &[Attention::TargetMissing], vec![])],
+                vec![],
+                fails(
+                    "retail's client directory is gone",
+                    "omaddons targets rm retail",
+                    words(&retail_rm),
+                ),
+            ),
+            (
+                "p0_issue_without_attention",
+                vec![client_with("retail", &[], vec![newer.clone()])],
+                vec![],
+                fails(
+                    "retail: State was written by a newer omaddons",
+                    "advice",
+                    None,
+                ),
+            ),
+            (
+                "p1_machine_issue",
+                vec![client_with("retail", &[], vec![])],
+                vec![crashed()],
+                fails(
+                    "The check fm-x stopped with an internal error",
+                    "advice",
+                    None,
+                ),
+            ),
+            (
+                "p2_and_p3_issues_only",
+                vec![client_with(
+                    "retail",
+                    &[],
+                    vec![issue_with(
+                        ids::OWNERSHIP_TRANSFERRED,
+                        P2,
+                        "1 addon lost a folder to another addon",
+                        Some(&["omaddons", "list", "-t", "retail", "-v"]),
+                    )],
+                )],
+                quiet.clone(),
+                None,
+            ),
+            (
+                "attention_and_p0_issue",
+                vec![client_with("retail", &[Attention::TargetMissing], vec![])],
+                vec![Issue {
+                    explain: explain_of(ids::STATE_VERSION_NEWER, None),
+                    ..newer
+                }],
+                fails(
+                    "retail's client directory is gone",
+                    "omaddons targets rm retail",
+                    words(&retail_rm),
+                ),
+            ),
+            (
+                "unattributed_and_p1_issue",
+                vec![client_with("retail", &[], vec![])],
+                vec![unattributed, crashed()],
+                fails(
+                    "An interrupted change cannot be attributed to any client, so every change is refused",
+                    &format!("omaddons doctor explain {}", ids::JOURNAL_UNATTRIBUTED),
+                    words(&["omaddons", "doctor", "explain", ids::JOURNAL_UNATTRIBUTED]),
+                ),
+            ),
+            (
+                "detector_crashed",
+                vec![client_with("retail", &[], vec![])],
+                [quiet, vec![crashed()]].concat(),
+                fails(
+                    "The check fm-x stopped with an internal error",
+                    "advice",
+                    None,
+                ),
+            ),
+        ]
+    }
+
+    /// `--check` fails on every attention reason as before, and also on any P0 or P1
+    /// issue, a client's or the machine's; P2 and P3 issues alone pass. An attention item's
+    /// fix comes first, then the unattributed journal's, then the urgent issue's.
+    #[test]
+    fn check_fails_on_attention_or_an_urgent_issue() {
+        for (case, targets, machine, expected) in check_cases() {
+            let outcome = checked(targets, machine);
+            let got = failure_of(&outcome);
+            assert_eq!(
+                got, expected,
+                "{case}: needs_attention {}, targets {:?}, machine {:?}",
+                outcome.data.needs_attention, outcome.data.targets, outcome.data.issues
+            );
+        }
+    }
+
+    /// `data.needs_attention` is the `--check` rule itself.
+    #[test]
+    fn needs_attention_equals_the_check_rule() {
+        for (case, targets, machine, expected) in check_cases() {
+            let outcome = checked(targets, machine);
+            assert_eq!(
+                outcome.data.needs_attention,
+                outcome.assertion_failure().is_some(),
+                "{case}: needs_attention {}, expected {}; error {:?}",
+                outcome.data.needs_attention,
+                expected.is_some(),
+                outcome.assertion_failure()
+            );
+        }
+    }
+
+    /// The fix of the most urgent issue: by severity, then client order with the
+    /// machine's last, then id; its argv as a command, its advice as text, a forced
+    /// repair's explain command.
+    #[test]
+    fn the_first_fix_of_an_issue() {
+        use issues::Severity::{P0, P1};
+        let reinstall = [
+            "omaddons",
+            "install",
+            "Details",
+            "-t",
+            "retail",
+            "--reinstall",
+        ];
+        let missing = |client: &str| {
+            issue_with(
+                ids::RECORD_FOLDER_MISSING,
+                P1,
+                "Details's folder is gone",
+                Some(&[
+                    "omaddons",
+                    "install",
+                    "Details",
+                    "-t",
+                    client,
+                    "--reinstall",
+                ]),
+            )
+        };
+        let newer_machine = machine_issue(
+            ids::STATE_VERSION_NEWER,
+            P0,
+            "The target registry was written by a newer omaddons",
+            None,
+        );
+        let forced_argv = [
+            "omaddons",
+            "doctor",
+            "fix",
+            "--only",
+            ids::JOURNAL_TOO_NEW,
+            "-t",
+            "retail",
+            "--force",
+            "--yes",
+        ];
+        let forced = issue_with(
+            ids::JOURNAL_TOO_NEW,
+            P0,
+            "An interrupted change was started by a newer omaddons",
+            Some(&forced_argv),
+        );
+        let words = |argv: &[&str]| argv.iter().map(|w| (*w).to_owned()).collect::<Vec<_>>();
+        // (case, targets, the machine's issues, the message, the fix's argv)
+        type FixCase = (
+            &'static str,
+            Vec<StatusTarget>,
+            Vec<Issue>,
+            &'static str,
+            Option<Vec<String>>,
+        );
+        let cases: Vec<FixCase> = vec![
+            (
+                "client_argv",
+                vec![client_with("retail", &[], vec![missing("retail")])],
+                vec![],
+                "retail: Details's folder is gone",
+                Some(words(&reinstall)),
+            ),
+            (
+                "client_prose",
+                vec![client_with(
+                    "retail",
+                    &[],
+                    vec![issue_with(
+                        ids::STATE_VERSION_NEWER,
+                        P0,
+                        "State was written by a newer omaddons",
+                        None,
+                    )],
+                )],
+                vec![],
+                "retail: State was written by a newer omaddons",
+                None,
+            ),
+            (
+                "machine_title_only",
+                vec![],
+                vec![newer_machine.clone()],
+                "The target registry was written by a newer omaddons",
+                None,
+            ),
+            (
+                "severity_then_client_then_id",
+                vec![
+                    client_with("classic", &[], vec![missing("classic")]),
+                    client_with("retail", &[], vec![missing("retail")]),
+                ],
+                vec![newer_machine],
+                "The target registry was written by a newer omaddons",
+                None,
+            ),
+            (
+                "client_before_client_before_machine",
+                vec![
+                    client_with("classic", &[], vec![missing("classic")]),
+                    client_with("retail", &[], vec![missing("retail")]),
+                ],
+                vec![crashed()],
+                "classic: Details's folder is gone",
+                Some(words(&[
+                    "omaddons",
+                    "install",
+                    "Details",
+                    "-t",
+                    "classic",
+                    "--reinstall",
+                ])),
+            ),
+            (
+                "forced_is_explained_first",
+                vec![client_with("retail", &[], vec![forced])],
+                vec![],
+                "retail: An interrupted change was started by a newer omaddons",
+                Some(words(&[
+                    "omaddons",
+                    "doctor",
+                    "explain",
+                    ids::JOURNAL_TOO_NEW,
+                    "-t",
+                    "retail",
+                ])),
+            ),
+        ];
+        for (case, targets, machine, message, argv) in cases {
+            let got = urgent_fix(&targets, &machine);
+            let (got_message, fix) = got.clone().unwrap_or_else(|| panic!("{case}: no fix"));
+            assert_eq!(
+                (got_message.as_str(), fix.argv().map(<[String]>::to_vec)),
+                (message, argv.clone()),
+                "{case}: {targets:?} {machine:?} gave {got:?}"
+            );
+            if argv.is_none() {
+                assert_eq!(fix.display(), "advice", "{case}: prose as text");
+            }
+        }
+        assert!(
+            urgent_fix(&[client_with("retail", &[], vec![])], &[]).is_none(),
+            "no urgent issue, no fix"
+        );
+    }
+
+    /// `summary.issues` counts every issue `status` lists, once: a client's journals of
+    /// one row are one issue, and a finding on a client `status` does not list is counted
+    /// in the machine's list only.
+    #[test]
+    fn summary_counts_every_listed_issue_once() {
+        use crate::doctor::finding::{Confidence, Evidence, Observation, Subject};
+        use crate::model::{TargetKey, TxId};
+        let listed: TargetKey = "01M5ZQ7Y3KJ8V9W2X4C6B0N1RT".parse().unwrap();
+        let unlisted: TargetKey = "01M7A1B2C3D4E5F6G7H8J9K0MN".parse().unwrap();
+        let finding = |id: &str, subject: Subject| {
+            crate::doctor::registry::row(id)
+                .unwrap()
+                .finding(Observation {
+                    subject,
+                    title: "t".to_owned(),
+                    confidence: Confidence::High,
+                    addon: None,
+                    folder: None,
+                    evidence: Evidence::default(),
+                })
+        };
+        let journal = |n: u8| {
+            let tx: TxId = format!("01M7A1B2C3D4E5F6G7H8J9K0M{}", char::from(b'0' + n))
+                .parse()
+                .unwrap();
+            finding(
+                ids::JOURNAL_PENDING,
+                Subject::target("retail", listed).tx(tx),
+            )
+        };
+        let findings = vec![
+            journal(1),
+            journal(2),
+            journal(3),
+            finding(ids::LOCK_HELD_LONG, Subject::machine()),
+            finding(ids::TARGET_VANISHED, Subject::target("gone", unlisted)),
+        ];
+        let (mut clients, machine) = issues::assign(&findings, &BTreeSet::from([listed]), false);
+        let mut retail = target("retail", 0, &[], 0);
+        retail.key = Some(listed);
+        retail.issues = clients.remove(&listed).unwrap_or_default();
+        assert_eq!(
+            retail.issues.len(),
+            1,
+            "one journal issue: {:?}",
+            retail.issues
+        );
+        assert_eq!(
+            machine.len(),
+            2,
+            "the lock and the unlisted client: {machine:?}"
+        );
+        let counts = summary(&[retail], &machine, &[], false).issues;
+        assert_eq!(
+            (counts.p0, counts.p1, counts.p2, counts.p3, counts.total()),
+            (1, 0, 2, 0, 3),
+            "{counts:?}"
         );
     }
 
