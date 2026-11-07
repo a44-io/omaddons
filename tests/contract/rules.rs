@@ -515,6 +515,10 @@ const COLLECTIVE_NOUNS: &[(&str, &str)] = &[
         "selection",
         "the changes a preview selected; `plan_stale.details.changed` names this set `selection`",
     ),
+    (
+        "discovery",
+        "bare help's discovery trio (vision §5.10), the commands an agent starts from; README names the key",
+    ),
 ];
 
 /// Whether an array's singular-looking `name` names a set (see above).

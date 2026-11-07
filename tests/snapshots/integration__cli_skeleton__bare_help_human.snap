@@ -13,7 +13,10 @@ Change    install  update  pin  unpin  adopt  sync  copy  remove  undo  apply
 Setup     targets  config  auth  omarchy  completions  robot-docs  capabilities
           help
 
-Start with `omaddons status`. Run `omaddons help <command>` for details; add --json for one JSON envelope on stdout.
+Start with `omaddons status`. Run `omaddons help <command>` for details; add
+--json for one JSON envelope on stdout.
+Agents: omaddons capabilities --json · omaddons robot-docs guide
+        omaddons doctor --json
 
 Exit codes:
   0  ok            Success, including partial success (partial: true)

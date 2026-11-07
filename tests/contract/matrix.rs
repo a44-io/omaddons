@@ -16,6 +16,38 @@ fn bare_and_help() {
     );
     let c = s.json(&[], 0);
     assert_eq!(c.envelope["command"], "help");
+    // The discovery trio bare help names for agents: each argv parses and runs here.
+    let discovery = c.envelope["data"]["discovery"].as_array().unwrap().clone();
+    assert_eq!(discovery.len(), 3, "{discovery:?}");
+    for entry in &discovery {
+        let argv = support::strings(&entry["argv"]);
+        support::parses(&argv, &format!("{entry}"));
+        let ran = s.home.exec(&argv[1..]);
+        let words: Vec<&str> = argv.iter().map(String::as_str).collect();
+        match words[1..] {
+            ["capabilities", "--json"] => {
+                assert_eq!(ran.code, 0, "{}", ran.context());
+                assert_eq!(ran.envelope()["command"], "capabilities");
+            }
+            ["robot-docs", "guide"] => {
+                assert_eq!(ran.code, 0, "{}", ran.context());
+                assert!(ran.stdout.starts_with("---\n"), "{}", ran.context());
+            }
+            ["doctor", "--json"] => {
+                assert!(matches!(ran.code, 0 | 1), "{}", ran.context());
+                let envelope = ran.envelope();
+                assert_eq!(envelope["command"], "doctor diagnose");
+                assert!(
+                    matches!(
+                        envelope["state"].as_str(),
+                        Some("DONE_OK" | "DONE_FINDINGS")
+                    ),
+                    "{envelope}"
+                );
+            }
+            _ => panic!("an unexpected discovery entry: {entry}"), // ubs:ignore — the test's own failure
+        }
+    }
     let c = s.json(&["--bogus"], 2);
     assert_eq!(c.envelope["error"]["code"], "usage");
     let c = s.json(&["help", "install"], 0);

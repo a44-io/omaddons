@@ -209,6 +209,35 @@ expression: envelope
         "name": "help"
       }
     ],
+    "discovery": [
+      {
+        "argv": [
+          "omaddons",
+          "capabilities",
+          "--json"
+        ],
+        "command": "omaddons capabilities --json",
+        "purpose": "Everything this build can do, as data: commands, flags, exit codes, error codes, limits and sources (offline; writes nothing)"
+      },
+      {
+        "argv": [
+          "omaddons",
+          "robot-docs",
+          "guide"
+        ],
+        "command": "omaddons robot-docs guide",
+        "purpose": "The agent guide in Markdown, the same text as the omaddons skill: the core loop, the safety rules and the recipes"
+      },
+      {
+        "argv": [
+          "omaddons",
+          "doctor",
+          "--json"
+        ],
+        "command": "omaddons doctor --json",
+        "purpose": "What is broken in what omaddons manages, with evidence and an exact remediation for each finding"
+      }
+    ],
     "exit_codes": [
       {
         "code": 0,

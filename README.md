@@ -43,8 +43,8 @@ There is no packaged release, installer or prebuilt binary yet; see [Installatio
 > **Pre-alpha: milestones 1 to 3 are done, and milestone 4 is in progress.** omaddons runs daily on the development machine, where every client it manages (retail, Mists Classic, Classic Era, Anniversary, WoW: Forever and a 3.3.5a server) has been seen in game loading the addons it installed.
 >
 > - **Done (M1 to M3):** discovery and the load rules, transactions and undo, keyless GitHub, git, WoWInterface, Tukui and WowAce sources, `outdated`, `update`, `pin`, `adopt`, dependencies, `sync`, `export`, `copy`, `search`, `errors` (Lua errors from BugGrabber), `backup` (`WTF/` settings, with automatic checkpoints and undoable restores) and the Omarchy bar widget.
-> - **Shipped in M4 so far:** `capabilities`, `robot-docs guide`, `schema`, `errors` and `install-skill`, shell completions, intent inference (a client named in the wrong place or mistyped is corrected in the fix), stored plans with `apply`, `plans show` and `--if-match`, the doctor (`doctor`, `explain`, `fix`, `diff`, `undo`, `gc` and `--online`), and `status`'s issues taken from the doctor's cheap checks.
-> - **Left before the first tag, `v0.1.0`, which freezes the JSON contract:** verbosity levels, a discovery line in `help`, the last contract corrections, the wire-name golden test and a run on the real machine.
+> - **Shipped in M4 so far:** `capabilities`, `robot-docs guide`, `schema`, `errors` and `install-skill`, shell completions, intent inference (a client named in the wrong place or mistyped is corrected in the fix), stored plans with `apply`, `plans show` and `--if-match`, the doctor (`doctor`, `explain`, `fix`, `diff`, `undo`, `gc` and `--online`), `status`'s issues taken from the doctor's cheap checks, and bare help's line naming the commands agents start from.
+> - **Left before the first tag, `v0.1.0`, which freezes the JSON contract:** verbosity levels, the last contract corrections, the wire-name golden test and a run on the real machine.
 >
 > Nothing is tagged yet, and the repository is private. See [What works today](#what-works-today), [Known issues](#known-issues) and the [Roadmap](#roadmap).
 
@@ -180,7 +180,7 @@ Milestones 1 (the working slice), 2 (updates, dependencies, adoption and desired
 | `capabilities`: every command, flag, value, alias, exit code, error and warning code, action, limit, source, family, client-rules row and `-t` form, generated from the code, offline, in milliseconds | ✅ Done (milestone 4) |
 | `status` on the doctor's registry: its issues are the doctor's findings of every `cached` check (`--cached`) or every `cached` and `quick` check, from the doctor's own detector loop on what `status` already read, so the two never disagree | ✅ Done (milestone 4) |
 | Intent inference: a client named where a command or argument belongs (`omaddons retail update`), a `-t` within two edits of a client here (`-t retial`), or a mistyped flag or value gets a fix that keeps your command and corrects only that word, and a mistyped command never gets a fix that runs a different command that changes addons (see [Choosing a target](#choosing-a-target-with--t) and [Command reference](#command-reference)) | ✅ Done (milestone 4) |
-| Left in milestone 4, before the first tag (`v0.1.0`) freezes the contract: verbosity levels (`-vv` is accepted but means `-v` today); a discovery line in bare `help` and `discovery` in `help --json`; the pre-freeze contract corrections; the wire-name golden test; a run on the real machine | 🚧 Milestone 4, in progress |
+| Left in milestone 4, before the first tag (`v0.1.0`) freezes the contract: verbosity levels (`-vv` is accepted but means `-v` today); the pre-freeze contract corrections; the wire-name golden test; a run on the real machine | 🚧 Milestone 4, in progress |
 | A user-first overhaul of the Omarchy bar widget | 🗓️ Planned |
 | Launch-week fixes: the [Known issues](#known-issues), a `--help` overhaul to the standard of `br` and `bv`, and dynamic shell completion of client ids and addon names | 🗓️ Planned |
 | Optional CurseForge and Wago (bring your own key), release packaging | 🗓️ Milestone 5 |
@@ -752,7 +752,7 @@ remove = true
 
 ## Command reference
 
-`omaddons help` lists the commands by group (Look, Change, Setup) with the exit codes. `omaddons help <command>` or `omaddons <command> --help` shows every flag. For subcommands, use `omaddons targets add --help` or `omaddons help targets add`. `omaddons help --json` gives the same as data: `commands` (each with its `about`, `aliases` and `group`), `global_flags` and `exit_codes`; `omaddons help <command> --json` names that command by its canonical path (`data.command`: `targets add`, `auth github`, and `install` for `help add`), with its `about`, `usage`, `args` and `flags`. Bare help does not yet name the commands an agent should start from: a line naming `omaddons capabilities --json`, `omaddons robot-docs guide` and `omaddons doctor --json`, and a `discovery` key in `help --json`, are planned before the first tag.
+`omaddons help` lists the commands by group (Look, Change, Setup) with the exit codes. `omaddons help <command>` or `omaddons <command> --help` shows every flag. For subcommands, use `omaddons targets add --help` or `omaddons help targets add`. `omaddons help --json` gives the same as data: `commands` (each with its `about`, `aliases` and `group`), `global_flags` and `exit_codes`; `omaddons help <command> --json` names that command by its canonical path (`data.command`: `targets add`, `auth github`, and `install` for `help add`), with its `about`, `usage`, `args` and `flags`. Bare help also names the commands an agent with no prior knowledge starts from (see [`help`](#help-command)), and `help --json` lists them as `discovery`.
 
 A mistyped command, flag or value is a usage error. Its fix is the corrected command when that command only reads, and `omaddons help <command>` when the closest command changes something: a typo never hands you a different command that changes addons. A mistyped flag, or a mistyped value of a flag with fixed choices, of the command you typed is corrected in place (`--channel betaa` → `--channel beta`). A bad value with no close match, such as `--actor robot` or `undo --last-by robot`, gets `omaddons help <command>`. A client named before or after the command is moved into `-t`; that fix keeps your command even when it changes something, because only the client moved. A `-t` value that names no client but is within two edits of one that does is corrected the same way, as the fix of `target_not_found`, keeping your command. Every suggested command parses.
 
@@ -2330,6 +2330,23 @@ omaddons help install
 omaddons help targets add      # a subcommand by its path; the same as omaddons targets add --help
 ```
 
+Bare help (`omaddons`, `omaddons -h` or `omaddons help`) is one screen: what omaddons is, the usage, the commands by group, where to start, the commands for agents and the exit codes. It never runs an action, opens a pager or prompts. Its lines above the exit codes stay under 80 columns. It ends:
+
+```text
+Start with `omaddons status`. Run `omaddons help <command>` for details; add
+--json for one JSON envelope on stdout.
+Agents: omaddons capabilities --json · omaddons robot-docs guide
+        omaddons doctor --json
+
+Exit codes:
+  0  ok            Success, including partial success (partial: true)
+  …
+```
+
+The `Agents:` line is the discovery trio: `capabilities --json` (everything this build can do, as data), `robot-docs guide` (the agent guide) and `doctor --json` (what is broken, with each remediation). Each is a command that changes nothing, and a test holds the line to the command tree.
+
+With `--json`, bare help's `data` is `{name, version, usage, commands, global_flags, exit_codes, discovery}`. `commands` holds each `{name, about, aliases, group}`, and `exit_codes` each `{code, name, meaning, retryable}`. `discovery` lists the trio in the line's order, each `{command, argv, purpose}`. `argv` starts with `omaddons`, and `command` is that argv shell-quoted. `help <command> --json`'s `data` is `{command, about, usage, args, flags}`, where `command` is the canonical path (`targets add`).
+
 ---
 
 ## The JSON contract
@@ -3337,7 +3354,6 @@ An interrupted `WTF/` restore adds three cases. While its game runs, it waits (`
 |---|---|---|
 | Batched GitHub checks (GraphQL, one request for many repositories) | ❌ one `releases/latest` per repository instead | M5 |
 | Verbosity levels | ⚠️ `-v` works; `-vv` is accepted and means the same | M4, before the first tag |
-| A discovery line in bare `help` (and `discovery` in `help --json`) | ❌ | M4, before the first tag |
 | A tagged release with a frozen contract | ❌ nothing is tagged; the contract can still change | M4: `v0.1.0` |
 | Completing client ids and addon names in the shell | ❌ the scripts are static ([Shell completions](#shell-completions)) | Launch-week fixes |
 | `doctor health`, `doctor ls`, `doctor capabilities`, `doctor robot-docs`, `doctor --robot-triage`, and doctor checks beyond today's 31 failure modes | ❌ `doctor --quick` runs the cheap checks, the runs are folders under `~/.local/state/omaddons/doctor/runs/`, and `capabilities` and `robot-docs` describe the doctor too | Dropped from M4; may return if real use asks for them |
@@ -3401,7 +3417,7 @@ The README describes the intended behaviour. A place where the code at HEAD does
 | **M2: updates and adoption** | `outdated`, `update`, `pin`/`unpin`; WoWInterface and Tukui; changelogs; dependencies; drift detection; tiered `adopt`; `addons.toml` with `export`, `sync` and `copy`; `search`; `auth github` | ✅ Done (2026-10-16) |
 | Post-M2 audit | An independent audit of M1 and M2 (engine failure paths, contract holes, integrity and privacy statements, discovery and rules fields, test blind spots, this README) and real-world checks on real clients: running detection under Proton, in-game loading on every client, legacy `/reload` behaviour | ✅ Done (2026-10-21) |
 | **M3: the widget** | The Omarchy bar widget (QML, embedded in the binary, managed by `omaddons omarchy install`, `status` and `remove`), `errors` (BugGrabber, installed keyless from a new `wowace:` source), `backup` of `WTF/` (list, create, verify, restore, export and import, automatic backups) | ✅ Done (2026-10-23) |
-| **M4: the agent surface** | Shipped: `capabilities`; `robot-docs guide`, `schema`, `errors` and `install-skill`; `completions`; intent inference; stored plans (`--dry-run`, then `apply`), `plans show` and `--if-match`; the doctor (`doctor`, `explain`, `fix`, `diff`, `undo`, `gc`, `--online`). Left: verbosity levels, the discovery line in `help`, `status` on the doctor's registry, the pre-freeze contract corrections, the wire-name golden test and a run on the real machine; then **the first tag, `v0.1.0`, freezes the contract**. Dropped from M4 when it was re-scoped on 2026-11-04, and may return if real use asks for them: `doctor health`, `ls`, `capabilities`, `robot-docs` and `--robot-triage`, and further detector batches (more state-file, config, userland, permission and external-artifact checks) | 🚧 In progress |
+| **M4: the agent surface** | Shipped: `capabilities`; `robot-docs guide`, `schema`, `errors` and `install-skill`; `completions`; intent inference; stored plans (`--dry-run`, then `apply`), `plans show` and `--if-match`; the doctor (`doctor`, `explain`, `fix`, `diff`, `undo`, `gc`, `--online`); bare help's discovery line and `help --json`'s `discovery`. Left: verbosity levels, `status` on the doctor's registry, the pre-freeze contract corrections, the wire-name golden test and a run on the real machine; then **the first tag, `v0.1.0`, freezes the contract**. Dropped from M4 when it was re-scoped on 2026-11-04, and may return if real use asks for them: `doctor health`, `ls`, `capabilities`, `robot-docs` and `--robot-triage`, and further detector batches (more state-file, config, userland, permission and external-artifact checks) | 🚧 In progress |
 | Omarchy widget overhaul | A user-first overhaul of the bar widget: a UX audit and design system first, then every view rebuilt (Updates, Installed, an addon page, Search, Lua errors, Issues, Backups, History, Settings, first run), a readable plan sheet for every confirmation, a `?` key reference and mouse support (`omad-widget-user-first-1n2p`) | 🗓️ Planned |
 | Launch-week fixes | The [Known issues](#known-issues), a `--help` overhaul to the standard of `br` and `bv`, dynamic completion of client ids and addon names, and an installer for the completion scripts (`omad-launch-week-fixes-bmcx`) | 🗓️ Planned |
 | **M5: accounts and release** | Optional CurseForge and Wago (bring your own credential, never cached), fingerprint adoption; release engineering: versioning, CHANGELOG, a local PKGBUILD, packaged completions and a man page. Not yet broken down into tasks | 🗓️ Planned |

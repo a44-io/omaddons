@@ -1,6 +1,7 @@
 //! `omaddons`, `omaddons help [<command>]`, `-h` and `-V`. Help is data: generated
-//! from the live clap tree and the exit dictionary, so it never advertises a command
-//! this build does not have, and it is concise enough for an agent's first contact.
+//! from the live clap tree, the exit dictionary and the discovery table, so it never
+//! advertises a command this build does not have (a test holds every discovery entry to
+//! the clap tree and `COMMANDS`), and it is concise enough for an agent's first contact.
 
 use std::io::Write;
 
@@ -15,8 +16,40 @@ use crate::output::{Outcome, Style, table};
 
 /// The column the command names of a group line start at.
 const GROUP_COLUMN: usize = 10;
-/// Bare help's lines stay narrower than this.
+/// Bare help's group lines and prose stay narrower than this many characters (the exit
+/// table is as wide as its meanings).
 const MAX_WIDTH: usize = 80;
+/// What the discovery line starts with.
+const AGENTS: &str = "Agents: ";
+/// Between the discovery line's commands.
+const DISCOVERY_SEPARATOR: &str = " · ";
+
+/// A command bare help names for agents.
+#[derive(Debug, Clone, Copy)]
+pub struct Discovery {
+    /// The argv, `omaddons` first, exactly as the line shows it.
+    pub argv: &'static [&'static str],
+    /// What an agent gets from it (`help --json` only).
+    pub purpose: &'static str,
+}
+
+/// The discovery trio (vision §5.10), in the order bare help names it. Each entry parses
+/// and runs a command whose `COMMANDS` row does not mutate (tests); bare help builds no
+/// registry, so it reads no file.
+pub const DISCOVERY: &[Discovery] = &[
+    Discovery {
+        argv: &["omaddons", "capabilities", "--json"],
+        purpose: "Everything this build can do, as data: commands, flags, exit codes, error codes, limits and sources (offline; writes nothing)",
+    },
+    Discovery {
+        argv: &["omaddons", "robot-docs", "guide"],
+        purpose: "The agent guide in Markdown, the same text as the omaddons skill: the core loop, the safety rules and the recipes",
+    },
+    Discovery {
+        argv: &["omaddons", "doctor", "--json"],
+        purpose: "What is broken in what omaddons manages, with evidence and an exact remediation for each finding",
+    },
+];
 
 /// Help or version, as data and as text.
 #[derive(Debug)]
@@ -44,6 +77,29 @@ pub struct BareHelp {
     pub commands: Vec<CommandInfo>,
     pub global_flags: Vec<FlagInfo>,
     pub exit_codes: Vec<ExitInfo>,
+    /// The commands an agent with no prior knowledge starts from (vision §5.10), in the
+    /// order the human line names them.
+    pub discovery: Vec<DiscoveryEntry>,
+}
+
+/// One command bare help names for agents.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct DiscoveryEntry {
+    /// `argv`, shell-quoted, as the human line shows it.
+    pub command: String,
+    pub argv: Vec<String>,
+    /// What an agent gets from it.
+    pub purpose: String,
+}
+
+impl From<&Discovery> for DiscoveryEntry {
+    fn from(entry: &Discovery) -> Self {
+        Self {
+            command: shell_words::join(entry.argv),
+            argv: entry.argv.iter().map(|word| (*word).to_owned()).collect(),
+            purpose: entry.purpose.to_owned(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -153,37 +209,93 @@ fn render_groups(commands: &[(&str, Group)]) -> String {
             .filter(|(_, g)| *g == group)
             .map(|(name, _)| *name)
             .collect();
-        let Some((first, rest)) = names.split_first() else {
-            continue;
-        };
-        let mut line = format!("{:<GROUP_COLUMN$}{first}", group.label());
-        for name in rest {
-            if line.len() + 2 + name.len() >= MAX_WIDTH {
-                text.push_str(&line);
-                text.push('\n');
-                line = format!("{:GROUP_COLUMN$}{name}", "");
-            } else {
-                line.push_str("  ");
-                line.push_str(name);
-            }
-        }
-        text.push_str(&line);
-        text.push('\n');
+        let lead = format!("{:<GROUP_COLUMN$}", group.label());
+        text.push_str(&wrap(&lead, &names, "  ", GROUP_COLUMN));
     }
     text
 }
 
-/// Bare help's text for `commands` (name and group, in display order).
-fn bare_text(usage: &str, commands: &[(&str, Group)]) -> String {
+/// `items` after `lead`, joined by `separator`, wrapped so every line is narrower than
+/// `MAX_WIDTH` characters: an item that would make the line reach `MAX_WIDTH` starts the
+/// next line, after `indent` spaces, and the separator before it is dropped. An item is
+/// never split, so one wider than a line stands on a line of its own. Widths are
+/// characters, not bytes (`·` is two bytes); help text carries no color sequences.
+/// No items, no text. Every line ends with `\n`.
+fn wrap<S: AsRef<str>>(lead: &str, items: &[S], separator: &str, indent: usize) -> String {
+    let width = |text: &str| text.chars().count();
+    let Some((first, rest)) = items.split_first() else {
+        return String::new();
+    };
+    let mut text = String::new();
+    let mut line = format!("{lead}{}", first.as_ref());
+    for item in rest {
+        let item = item.as_ref();
+        if width(&line) + width(separator) + width(item) >= MAX_WIDTH {
+            text.push_str(&line);
+            text.push('\n');
+            line = format!("{:indent$}{item}", "");
+        } else {
+            line.push_str(separator);
+            line.push_str(item);
+        }
+    }
+    text.push_str(&line);
+    text.push('\n');
+    text
+}
+
+/// The words of a sentence for [`wrap`]: split at whitespace, except inside a backtick
+/// span, so a quoted command never breaks across lines. A run of whitespace counts as one
+/// space; an unclosed span runs to the end.
+fn prose_words(text: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut quoted = false;
+    for c in text.chars() {
+        if c == '`' {
+            quoted = !quoted;
+        }
+        if c.is_whitespace() && !quoted {
+            if !word.is_empty() {
+                words.push(std::mem::take(&mut word));
+            }
+        } else {
+            word.push(c);
+        }
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+    words
+}
+
+/// Bare help's text for `commands` (name and group, in display order) and the commands
+/// it names for agents.
+fn bare_text(usage: &str, commands: &[(&str, Group)], discovery: &[Discovery]) -> String {
     let mut text = String::new();
     text.push_str("World of Warcraft addon manager for Linux and an Omarchy widget\n\n");
     text.push_str(&format!("Usage: {usage}\n\n"));
     text.push_str(&render_groups(commands));
     text.push('\n');
+    let mut sentence = String::new();
     if commands.iter().any(|(name, _)| *name == "status") {
-        text.push_str("Start with `omaddons status`. ");
+        sentence.push_str("Start with `omaddons status`. ");
     }
-    text.push_str("Run `omaddons help <command>` for details; add --json for one JSON envelope on stdout.\n\nExit codes:\n");
+    sentence.push_str(
+        "Run `omaddons help <command>` for details; add --json for one JSON envelope on stdout.",
+    );
+    text.push_str(&wrap("", &prose_words(&sentence), " ", 0));
+    let shown: Vec<String> = discovery
+        .iter()
+        .map(|entry| shell_words::join(entry.argv))
+        .collect();
+    text.push_str(&wrap(
+        AGENTS,
+        &shown,
+        DISCOVERY_SEPARATOR,
+        AGENTS.chars().count(),
+    ));
+    text.push_str("\nExit codes:\n");
     text.push_str(&exit_table());
     text
 }
@@ -237,7 +349,7 @@ pub fn bare() -> HelpOutcome {
         .iter()
         .map(|c| (c.name.as_str(), c.group))
         .collect();
-    let text = bare_text(&usage, &listed);
+    let text = bare_text(&usage, &listed, DISCOVERY);
 
     HelpOutcome {
         command: "help",
@@ -248,6 +360,7 @@ pub fn bare() -> HelpOutcome {
             commands,
             global_flags: flags(&cmd),
             exit_codes,
+            discovery: DISCOVERY.iter().map(DiscoveryEntry::from).collect(),
         }),
         text,
     }
@@ -440,6 +553,125 @@ mod tests {
         );
     }
 
+    /// Bare help names the discovery trio for agents, after the wrapped "Start with"
+    /// sentence and before the exit codes, and `--json` carries the same as `discovery`.
+    #[test]
+    fn bare_help_names_the_discovery_trio() {
+        let help = bare();
+        let tail = "Start with `omaddons status`. Run `omaddons help <command>` for details; add\n\
+                    --json for one JSON envelope on stdout.\n\
+                    Agents: omaddons capabilities --json · omaddons robot-docs guide\n        \
+                    omaddons doctor --json\n\nExit codes:\n";
+        assert!(help.text.contains(tail), "{}", help.text);
+        let data = serde_json::to_value(&help.data).unwrap();
+        let entries = data["discovery"].as_array().unwrap();
+        assert_eq!(entries.len(), DISCOVERY.len());
+        for (entry, declared) in entries.iter().zip(DISCOVERY) {
+            assert_eq!(entry["argv"], serde_json::json!(declared.argv), "{entry}");
+            assert_eq!(entry["argv"][0], "omaddons", "{entry}");
+            assert_eq!(
+                entry["command"],
+                shell_words::join(declared.argv),
+                "{entry}"
+            );
+            assert!(
+                entry["purpose"].as_str().is_some_and(|p| !p.is_empty()),
+                "{entry}"
+            );
+        }
+        let again = bare();
+        assert_eq!(help.text, again.text, "bare help renders the same bytes");
+        assert_eq!(
+            serde_json::to_string(&help.data).unwrap(),
+            serde_json::to_string(&again.data).unwrap()
+        );
+        // Only bare help carries it.
+        let one = serde_json::to_value(&for_command(Some("install"), &[]).unwrap().data).unwrap();
+        assert!(one.get("discovery").is_none(), "{one}");
+        assert!(
+            serde_json::to_value(&version().data)
+                .unwrap()
+                .get("discovery")
+                .is_none()
+        );
+    }
+
+    /// Bare help never names a command this build does not have, nor one that changes
+    /// something: each discovery argv parses and names a read-only `COMMANDS` row.
+    #[test]
+    fn every_discovery_argv_parses_to_a_read_only_command() {
+        use clap::Parser;
+        for (entry, row) in
+            DISCOVERY
+                .iter()
+                .zip(["capabilities", "robot-docs guide", "doctor diagnose"])
+        {
+            let parsed = Cli::try_parse_from(entry.argv)
+                .unwrap_or_else(|e| panic!("{:?} does not parse: {e}", entry.argv)); // ubs:ignore — a table case's own failure
+            let name = super::super::command_name(parsed.command.as_ref());
+            assert_eq!(name, row, "{:?}", entry.argv);
+            let found = super::super::COMMANDS.iter().find(|c| c.name == name);
+            assert!(
+                found.is_some_and(|c| !c.mutates),
+                "{:?}: {name} is no read-only row",
+                entry.argv
+            );
+        }
+    }
+
+    /// One wrapping rule: items never split, separators dropped at a break, the
+    /// continuation indented, widths in characters; prose breaks between words, never
+    /// inside a backtick span.
+    #[test]
+    fn wrap_breaks_between_items_by_characters() {
+        /// A case: its name, the lead, the items, the separator, the indent, the text.
+        type Case<'a> = (&'a str, &'a str, Vec<&'a str>, &'a str, usize, &'a str);
+        let (long, wide) = ("x".repeat(70), "w".repeat(90));
+        let cases: &[Case<'_>] = &[
+            ("no_items", "Lead ", vec![], " · ", 4, ""),
+            (
+                "one_line",
+                "Agents: ",
+                vec!["a", "b"],
+                " · ",
+                8,
+                "Agents: a · b\n",
+            ),
+            (
+                "breaks_before_the_item_that_reaches_the_width",
+                "",
+                vec![&long, "yyyyyyy", "z"],
+                " · ",
+                2,
+                // 70 + 3 + 7 = 80 reaches MAX_WIDTH: `yyyyyyy` starts the next line.
+                "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n  yyyyyyy · z\n",
+            ),
+            (
+                "an_item_wider_than_a_line_stands_alone",
+                "",
+                vec!["a", &wide],
+                " ",
+                0,
+                "a\nwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww\n",
+            ),
+        ];
+        for (name, lead, items, separator, indent, expected) in cases {
+            assert_eq!(
+                wrap(lead, items, separator, *indent),
+                *expected,
+                "case {name}: {items:?}"
+            );
+        }
+        // The middle dot is one column, two bytes: a byte count would break early.
+        let dots = wrap("", &[&"x".repeat(74), "y"], " · ", 0);
+        assert_eq!(dots.lines().count(), 1, "{dots}");
+        assert_eq!(
+            prose_words("Start  with `omaddons help <command>` now."),
+            ["Start", "with", "`omaddons help <command>`", "now."],
+        );
+        assert_eq!(prose_words("an `unclosed span"), ["an", "`unclosed span"]);
+    }
+
     #[test]
     fn groups_render_one_line_each_and_wrap_under_the_first_name() {
         let commands = [
@@ -504,12 +736,17 @@ mod tests {
             ("help", Setup),
         ];
         assert_eq!(planned.len(), 28);
-        let text = bare_text("omaddons [OPTIONS] <COMMAND>", &planned);
+        let text = bare_text("omaddons [OPTIONS] <COMMAND>", &planned, DISCOVERY);
         assert!(
             text.lines().count() < 30,
             "{} lines\n{text}",
             text.lines().count()
         );
+        // Every line above the exit table, counted in characters (`·` is two bytes).
+        let above = text.split("\nExit codes:").next().unwrap_or_default();
+        for line in above.lines() {
+            assert!(line.chars().count() < MAX_WIDTH, "{line:?} in\n{text}");
+        }
         let groups = render_groups(&planned);
         assert!(groups.lines().all(|l| l.len() < MAX_WIDTH), "{groups}");
         assert!(

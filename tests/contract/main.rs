@@ -787,7 +787,7 @@ fn the_harness_rejects_broken_envelopes() {
     };
     let argv = |words: &[&str]| -> Vec<String> { words.iter().map(|w| (*w).to_owned()).collect() };
     // A bare help's data, so the good envelope below also passes schema validation.
-    let two = r#"{"ok":true,"schema_version":"1.0","tool_version":"x","command":"help","exit_code":0,"data":{"name":"omaddons","version":"x","usage":"omaddons <COMMAND>","commands":[],"global_flags":[],"exit_codes":[]},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#;
+    let two = r#"{"ok":true,"schema_version":"1.0","tool_version":"x","command":"help","exit_code":0,"data":{"name":"omaddons","version":"x","usage":"omaddons <COMMAND>","commands":[],"global_flags":[],"exit_codes":[],"discovery":[]},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#;
     let doubled = format!("{two}\n{two}");
     rejects(run(&doubled, 0), 0, "exactly one envelope");
     // `info` declares 3, so these fail for their fix, not their exit.
