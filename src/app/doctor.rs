@@ -198,19 +198,20 @@ pub fn doctor_help() -> String {
             "that repair, exactly as previewed",
         ),
     ]);
-    let rows: Vec<(String, String, String)> = Exit::ALL
+    // Unwrapped: the page fits each row to its width, hanging the meaning at its column.
+    let rows: Vec<Vec<String>> = Exit::ALL
         .iter()
         .map(|exit| {
-            (
-                exit.code().to_string(),
+            vec![
+                format!("  {}", exit.code()),
                 exit.name().to_owned(),
                 exit.meaning().to_owned(),
-            )
+            ]
         })
         .collect();
     format!(
         "{examples}\n\nThe doctor exits with its own codes:\n{}",
-        super::help::hanging_table(&rows)
+        crate::output::table(&rows).trim_end()
     )
 }
 

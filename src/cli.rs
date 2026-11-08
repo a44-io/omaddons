@@ -31,6 +31,8 @@ use crate::vocabulary::{self, TargetVocabulary};
     bin_name = "omaddons",
     about = "World of Warcraft addon manager for Linux and an Omarchy widget",
     color = clap::ColorChoice::Never,
+    styles = crate::app::help::STYLES,
+    max_term_width = crate::app::help::HELP_MAX_COLUMNS,
     disable_help_flag = true,
     disable_version_flag = true,
     disable_help_subcommand = true,

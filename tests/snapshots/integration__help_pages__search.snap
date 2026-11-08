@@ -18,8 +18,7 @@ Options:
                          windows
 
 Examples:
-  omaddons search damage meter -t retail    every source at once, judged for
-                                            retail
+  omaddons search damage meter -t retail    every source at once, judged for retail
   omaddons search questie --source catalog  the built-in catalog only
 
 Global: -t <TARGET>  --json  --dry-run  -v  --quiet  --no-color  --offline  (--help lists them all)

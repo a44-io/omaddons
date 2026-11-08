@@ -30,7 +30,7 @@ pub struct GcArgs {
     pub yes: bool,
 }
 
-pub const GC_HELP: &str = "Examples:\n  omaddons doctor gc --before 30d --dry-run                the retention plan: what would be deleted, what is kept and why, which undos are lost\n  omaddons doctor gc --before 30d --yes --if-match <token> delete exactly what that preview listed";
+pub const GC_HELP: &str = "Examples:\n  omaddons doctor gc --before 30d --dry-run                 the retention plan: what would be deleted, what is kept and why, which undos are lost\n  omaddons doctor gc --before 30d --yes --if-match <token>  delete exactly what that preview listed";
 
 /// What a `doctor gc` did, as the command renders it.
 #[derive(Debug)]

@@ -26,7 +26,7 @@ Arguments:
 
 Examples:
   omaddons install weakauras -t era --dry-run    the preview stores a plan: Plan 01M8Q2… stored for
-  24 hours
+                                                 24 hours
   omaddons apply 01M8Q2VA                        exactly that install, or plan_stale
   omaddons apply 01M8Q2VA --dry-run              check it against the world now; changes nothing
 

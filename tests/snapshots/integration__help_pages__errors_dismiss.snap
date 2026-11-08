@@ -8,10 +8,8 @@ Mark the errors read as seen, every client's or -t's: they stop being new (it ca
 Usage: omaddons errors dismiss [OPTIONS]
 
 Examples:
-  omaddons errors dismiss                      every client's new errors,
-                                               marked seen
-  omaddons errors dismiss -t retail --dry-run  what it would mark, and its
-                                               token
+  omaddons errors dismiss                      every client's new errors, marked seen
+  omaddons errors dismiss -t retail --dry-run  what it would mark, and its token
 
 Global: -t <TARGET>  --json  --dry-run  -v  --quiet  --no-color  --offline  (--help lists them all)
 ==> omaddons errors dismiss --help <==

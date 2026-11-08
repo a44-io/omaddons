@@ -6,6 +6,7 @@
 use std::io::Write;
 
 use clap::CommandFactory;
+use clap::builder::styling::{AnsiColor, Style as Ansi, Styles};
 use schemars::JsonSchema;
 use serde::Serialize;
 
@@ -19,6 +20,48 @@ const GROUP_COLUMN: usize = 10;
 /// Bare help's group lines and prose stay narrower than this many characters (the exit
 /// table is as wide as its meanings).
 const MAX_WIDTH: usize = 80;
+/// The widest a command's page gets: it wraps to the terminal, never wider than this.
+pub const HELP_MAX_COLUMNS: usize = 100;
+/// How help looks where the output policy allows color: headings bold and underlined,
+/// usage and literals (flags, commands) bold, placeholders dimmed, fixed values green.
+pub const STYLES: Styles = Styles::styled()
+    .header(Ansi::new().bold().underline())
+    .usage(Ansi::new().bold())
+    .literal(Ansi::new().bold())
+    .placeholder(Ansi::new().dimmed())
+    .valid(Ansi::new().fg_color(Some(clap::builder::styling::Color::Ansi(AnsiColor::Green))));
+
+/// Styles help text the way [`STYLES`] styles clap's part of it, or leaves it plain: one
+/// rendering of a page is plain (`--json`, a pipe, `NO_COLOR`, …) and one styled.
+#[derive(Debug, Clone, Copy)]
+struct Paint {
+    ansi: bool,
+}
+
+impl Paint {
+    fn with(self, style: &Ansi, text: &str) -> String {
+        if self.ansi {
+            format!("{}{text}{}", style.render(), style.render_reset())
+        } else {
+            text.to_owned()
+        }
+    }
+
+    /// A heading, as clap styles `Usage:` and `Options:`.
+    fn header(self, text: &str) -> String {
+        self.with(STYLES.get_header(), text)
+    }
+
+    /// A command or flag, as clap styles `--json`.
+    fn literal(self, text: &str) -> String {
+        self.with(STYLES.get_literal(), text)
+    }
+
+    /// The usage heading, as clap styles a command's `Usage:`.
+    fn usage(self, text: &str) -> String {
+        self.with(STYLES.get_usage(), text)
+    }
+}
 /// What the discovery line starts with.
 const AGENTS: &str = "Agents: ";
 /// Between the discovery line's commands.
@@ -56,7 +99,10 @@ pub const DISCOVERY: &[Discovery] = &[
 pub struct HelpOutcome {
     command: &'static str,
     data: HelpData,
+    /// The page without any escape sequence.
     text: String,
+    /// The same page styled, shown when the output policy allows color on stdout.
+    styled: String,
 }
 
 /// The `data` of a help or version envelope.
@@ -165,8 +211,15 @@ impl Outcome for HelpOutcome {
         &self.data
     }
 
-    fn render_human(&self, w: &mut dyn Write, _style: &Style) -> std::io::Result<()> {
-        w.write_all(self.text.as_bytes())
+    /// The styled page where the output policy allows color on stdout (a terminal, no
+    /// `NO_COLOR`, `--no-color`, `TERM=dumb` or CI), else the plain one.
+    fn render_human(&self, w: &mut dyn Write, style: &Style) -> std::io::Result<()> {
+        let page = if style.color {
+            &self.styled
+        } else {
+            &self.text
+        };
+        w.write_all(page.as_bytes())
     }
 }
 
@@ -201,7 +254,7 @@ fn flags(cmd: &clap::Command) -> Vec<FlagInfo> {
 /// One line per group that has commands, in group order: the label, then the command
 /// names. A line that would reach `MAX_WIDTH` columns continues on the next, under the
 /// first name.
-fn render_groups(commands: &[(&str, Group)]) -> String {
+fn render_groups(commands: &[(&str, Group)], paint: Paint) -> String {
     let mut text = String::new();
     for group in Group::ALL {
         let names: Vec<&str> = commands
@@ -209,34 +262,75 @@ fn render_groups(commands: &[(&str, Group)]) -> String {
             .filter(|(_, g)| *g == group)
             .map(|(name, _)| *name)
             .collect();
-        let lead = format!("{:<GROUP_COLUMN$}", group.label());
-        text.push_str(&wrap(&lead, &names, "  ", GROUP_COLUMN));
+        let label = group.label();
+        let pad = " ".repeat(GROUP_COLUMN.saturating_sub(label.chars().count()));
+        let lead = Lead {
+            plain: &format!("{label}{pad}"),
+            shown: &format!("{}{pad}", paint.literal(label)),
+        };
+        text.push_str(&wrap_painted(
+            MAX_WIDTH,
+            lead,
+            &names,
+            "  ",
+            GROUP_COLUMN,
+            &|name| paint.literal(name),
+        ));
     }
     text
+}
+
+/// What a wrapped line starts with: its text as counted, and as printed (styled).
+#[derive(Clone, Copy)]
+struct Lead<'a> {
+    plain: &'a str,
+    shown: &'a str,
 }
 
 /// `items` after `lead`, joined by `separator`, wrapped so every line is narrower than
 /// `MAX_WIDTH` characters: an item that would make the line reach `MAX_WIDTH` starts the
 /// next line, after `indent` spaces, and the separator before it is dropped. An item is
 /// never split, so one wider than a line stands on a line of its own. Widths are
-/// characters, not bytes (`·` is two bytes); help text carries no color sequences.
-/// No items, no text. Every line ends with `\n`.
+/// characters, not bytes (`·` is two bytes). No items, no text. Every line ends with
+/// `\n`.
 fn wrap<S: AsRef<str>>(lead: &str, items: &[S], separator: &str, indent: usize) -> String {
+    let lead = Lead {
+        plain: lead,
+        shown: lead,
+    };
+    wrap_painted(MAX_WIDTH, lead, items, separator, indent, &|item| {
+        item.to_owned()
+    })
+}
+
+/// [`wrap`] narrower than `limit` columns, printing `lead.shown` and each item through
+/// `paint` while counting widths on the plain text, so styling never moves a break.
+fn wrap_painted<S: AsRef<str>>(
+    limit: usize,
+    lead: Lead<'_>,
+    items: &[S],
+    separator: &str,
+    indent: usize,
+    paint: &dyn Fn(&str) -> String,
+) -> String {
     let width = |text: &str| text.chars().count();
     let Some((first, rest)) = items.split_first() else {
         return String::new();
     };
     let mut text = String::new();
-    let mut line = format!("{lead}{}", first.as_ref());
+    let mut columns = width(lead.plain) + width(first.as_ref());
+    let mut line = format!("{}{}", lead.shown, paint(first.as_ref()));
     for item in rest {
         let item = item.as_ref();
-        if width(&line) + width(separator) + width(item) >= MAX_WIDTH {
+        if columns + width(separator) + width(item) >= limit {
             text.push_str(&line);
             text.push('\n');
-            line = format!("{:indent$}{item}", "");
+            line = format!("{:indent$}{}", "", paint(item));
+            columns = indent + width(item);
         } else {
             line.push_str(separator);
-            line.push_str(item);
+            line.push_str(&paint(item));
+            columns += width(separator) + width(item);
         }
     }
     text.push_str(&line);
@@ -271,11 +365,16 @@ fn prose_words(text: &str) -> Vec<String> {
 
 /// Bare help's text for `commands` (name and group, in display order) and the commands
 /// it names for agents.
-fn bare_text(usage: &str, commands: &[(&str, Group)], discovery: &[Discovery]) -> String {
+fn bare_text(
+    usage: &str,
+    commands: &[(&str, Group)],
+    discovery: &[Discovery],
+    paint: Paint,
+) -> String {
     let mut text = String::new();
     text.push_str("World of Warcraft addon manager for Linux and an Omarchy widget\n\n");
-    text.push_str(&format!("Usage: {usage}\n\n"));
-    text.push_str(&render_groups(commands));
+    text.push_str(&format!("{} {usage}\n\n", paint.usage("Usage:")));
+    text.push_str(&render_groups(commands, paint));
     text.push('\n');
     let mut sentence = String::new();
     if commands.iter().any(|(name, _)| *name == "status") {
@@ -295,7 +394,7 @@ fn bare_text(usage: &str, commands: &[(&str, Group)], discovery: &[Discovery]) -
         DISCOVERY_SEPARATOR,
         AGENTS.chars().count(),
     ));
-    text.push_str("\nExit codes:\n");
+    text.push_str(&format!("\n{}\n", paint.header("Exit codes:")));
     text.push_str(&exit_table());
     text
 }
@@ -349,10 +448,12 @@ pub fn bare() -> HelpOutcome {
         .iter()
         .map(|c| (c.name.as_str(), c.group))
         .collect();
-    let text = bare_text(&usage, &listed, DISCOVERY);
+    let text = bare_text(&usage, &listed, DISCOVERY, Paint { ansi: false });
+    let styled = bare_text(&usage, &listed, DISCOVERY, Paint { ansi: true });
 
     HelpOutcome {
         command: "help",
+        styled,
         data: HelpData::Bare(BareHelp {
             name: "omaddons".to_owned(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -480,7 +581,9 @@ fn at_depth(name: Option<&str>, argv: &[String], depth: Depth) -> Result<HelpOut
         error.alternatives = alternatives;
         return Err(error);
     }
-    let text = page(sub, &path.join(" "), depth);
+    let width = help_width();
+    let text = page(sub, &path.join(" "), depth, width, Paint { ansi: false });
+    let styled = page(sub, &path.join(" "), depth, width, Paint { ansi: true });
     let usage = sub
         .render_usage()
         .to_string()
@@ -506,6 +609,7 @@ fn at_depth(name: Option<&str>, argv: &[String], depth: Depth) -> Result<HelpOut
             flags: flags(sub),
         }),
         text,
+        styled,
     })
 }
 
@@ -520,22 +624,46 @@ pub(crate) const GLOBAL_SUMMARY: &[&str] = &[
     "--no-color",
     "--offline",
 ];
-/// The line every complete page ends with.
-const LEARN_MORE: &str = "Learn more: omaddons robot-docs guide";
+/// Where every complete page points last.
+const LEARN_MORE: &str = "omaddons robot-docs guide";
 /// The widest example command that keeps its description on its own line's right.
 const EXAMPLE_COMMAND_MAX: usize = 44;
+/// The fewest columns a wrapped line's continuation keeps for its words: a hanging
+/// indent deeper than that falls back to four past the line's own indent.
+const HANG_MIN_ROOM: usize = 20;
 
-/// A command's page at `depth`. It is rendered from a copy of `sub`, so the tree that
-/// `help --json`, `capabilities` and the contract read never changes for presentation:
+/// The width clap wraps this run's help at: the terminal's, else `COLUMNS`, else 100,
+/// never more than [`HELP_MAX_COLUMNS`]. omaddons reads no width itself (no terminal call,
+/// no variable): it lets clap wrap a probe of one-letter words and measures the widest
+/// line, which is the width or one less.
+fn help_width() -> usize {
+    let probe = vec!["x"; HELP_MAX_COLUMNS].join(" ");
+    clap::Command::default()
+        .name("omaddons")
+        .max_term_width(HELP_MAX_COLUMNS)
+        .help_template("{about}")
+        .about(probe)
+        .render_help()
+        .to_string()
+        .lines()
+        .map(|line| line.trim_end().chars().count())
+        .max()
+        .unwrap_or(HELP_MAX_COLUMNS)
+}
+
+/// A command's page at `depth`, `width` columns at most. It is rendered from a copy of
+/// `sub`, so the tree that `help --json`, `capabilities` and the contract read never
+/// changes for presentation:
 ///
 /// - the global options leave the options list for a block of their own after the
 ///   command's: one summary line under `-h`, one line each under `--help`, `--if-match`
 ///   only where the command binds and `--robot` (`--json` by another name) nowhere;
 /// - an enumeration the option's prose already spells out is not repeated as clap's
 ///   `[possible values]`;
-/// - the command's aliases follow its usage, and its examples and related commands
-///   ([`super::help_extras`]) follow its options.
-fn page(sub: &clap::Command, path: &str, depth: Depth) -> String {
+/// - the command's aliases follow its usage, and its examples, notes and related
+///   commands ([`super::help_extras`]) follow its options, wrapped here at `width` with
+///   hanging indents (clap would wrap them back to column 0).
+fn page(sub: &clap::Command, path: &str, depth: Depth, width: usize, paint: Paint) -> String {
     let usage = sub.clone().render_usage().to_string();
     let usage = usage.trim_start_matches("Usage: ").trim_end().to_owned();
     let globals: Vec<clap::Arg> = sub
@@ -559,49 +687,62 @@ fn page(sub: &clap::Command, path: &str, depth: Depth) -> String {
     let aliases = if aliases.is_empty() {
         String::new()
     } else {
-        format!("\nAliases: {}", aliases.join(", "))
+        format!("\n{} {}", paint.header("Aliases:"), aliases.join(", "))
     };
     let shows_args = copy.get_arguments().any(|arg| !arg.is_hide_set())
         || copy.get_subcommands().any(|cmd| !cmd.is_hide_set());
     let between = if shows_args { "\n\n{all-args}" } else { "" };
-    let extras = super::help_extras::of(path);
-    let short_after = extras.map(|extras| examples_block(extras.examples));
-    let long_after = long_after(sub.get_after_long_help().map(ToString::to_string), extras);
     copy = copy
         .help_template(format!(
-            "{{about-with-newline}}\n{{usage-heading}} {{usage}}{aliases}{between}{{after-help}}"
+            "{{about-with-newline}}\n{{usage-heading}} {{usage}}{aliases}{between}"
         ))
-        .override_usage(usage)
-        .after_help(short_after.unwrap_or_default())
-        .after_long_help(long_after.unwrap_or_default());
+        .override_usage(fit_usage(&usage, width));
     let rendered = match depth {
         Depth::Short => copy.render_help(),
         Depth::Long => copy.render_long_help(),
     };
-    let mut text = rendered.to_string().trim_end().to_owned();
+    let rendered = if paint.ansi {
+        rendered.ansi().to_string()
+    } else {
+        rendered.to_string()
+    };
+    let mut text = rendered.trim_end().to_owned();
     text.push_str("\n\n");
+    let extras = super::help_extras::of(path);
+    let after = match depth {
+        Depth::Short => extras.map(|extras| examples_block(extras.examples)),
+        Depth::Long => long_after(sub.get_after_long_help().map(ToString::to_string), extras),
+    };
+    if let Some(after) = after {
+        text.push_str(&headed(&fit(&after, width), paint));
+        text.push_str("\n\n");
+    }
     let binds = super::precondition::BINDING_COMMANDS.contains(&path);
     match depth {
         Depth::Short => {
-            text.push_str(&format!(
-                "Global: {}  (--help lists them all)\n",
-                GLOBAL_SUMMARY.join("  ")
-            ));
+            let lead = Lead {
+                plain: "Global: ",
+                shown: &format!("{} ", paint.header("Global:")),
+            };
+            let mut items: Vec<&str> = GLOBAL_SUMMARY.to_vec();
+            items.push("(--help lists them all)");
+            text.push_str(&wrap_painted(width + 1, lead, &items, "  ", 8, &|item| {
+                item.to_owned()
+            }));
         }
         Depth::Long => {
-            text.push_str("Global options:\n");
-            text.push_str(&global_options(globals, binds));
-            text.push('\n');
-            text.push_str(LEARN_MORE);
-            text.push('\n');
+            text.push_str(&format!("{}\n", paint.header("Global options:")));
+            text.push_str(&global_options(globals, binds, paint));
+            text.push_str(&format!("\n{} {LEARN_MORE}\n", paint.header("Learn more:")));
         }
     }
     text
 }
 
 /// The global options a page lists, one line each with their short help, in clap's own
-/// two columns: `--robot` never, `--if-match` only on a command that binds.
-fn global_options(globals: Vec<clap::Arg>, binds: bool) -> String {
+/// two columns at clap's width: `--robot` never, `--if-match` only on a command that
+/// binds.
+fn global_options(globals: Vec<clap::Arg>, binds: bool, paint: Paint) -> String {
     let listed: Vec<clap::Arg> = globals
         .into_iter()
         .filter(|arg| {
@@ -611,17 +752,137 @@ fn global_options(globals: Vec<clap::Arg>, binds: bool) -> String {
         .collect();
     // A clap command only to render the block (`default()`, not the `new` constructor the
     // single-writer scan reads as a process spawn).
-    let block = clap::Command::default()
+    let rendered = clap::Command::default()
         .name("omaddons")
+        .styles(STYLES)
+        .max_term_width(HELP_MAX_COLUMNS)
         .disable_help_flag(true)
         .disable_version_flag(true)
         .args(listed)
         .help_template("{options}")
-        .render_help()
-        .to_string();
+        .render_help();
+    let block = if paint.ansi {
+        rendered.ansi().to_string()
+    } else {
+        rendered.to_string()
+    };
     let mut block = block.trim_end().to_owned();
     block.push('\n');
     block
+}
+
+/// The usage as clap prints it after `Usage: `, each of its lines wrapped so the page
+/// stays within `width` columns, continuing four past where the command starts: clap
+/// never wraps a usage line (`copy`'s is 71 columns).
+fn fit_usage(usage: &str, width: usize) -> String {
+    const HEADING: &str = "Usage: ";
+    let mut lines = Vec::new();
+    for (at, line) in usage.lines().enumerate() {
+        // The first line follows the heading clap prints; the others carry their indent.
+        let lead = if at == 0 {
+            Lead {
+                plain: HEADING,
+                shown: "",
+            }
+        } else {
+            Lead {
+                plain: "       ",
+                shown: "       ",
+            }
+        };
+        let wrapped = wrap_painted(
+            width + 1,
+            lead,
+            &prose_words(line),
+            " ",
+            HEADING.len() + 4,
+            &|word| word.to_owned(),
+        );
+        lines.extend(wrapped.lines().map(str::to_owned));
+    }
+    lines.join("\n")
+}
+
+/// `text` with its block headings styled: an `Examples:` line, and the `See also:` that
+/// starts a line.
+fn headed(text: &str, paint: Paint) -> String {
+    text.lines()
+        .map(|line| {
+            if line == "Examples:" {
+                paint.header(line)
+            } else if let Some(rest) = line.strip_prefix("See also:") {
+                format!("{}{rest}", paint.header("See also:"))
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `text` with every line wider than `width` columns wrapped between words. A
+/// continuation is indented to where the line's last column starts (the text after its
+/// last run of two or more spaces: an example's description, a table's meaning), or, for
+/// a line without columns, to the line's own indent; a column too deep to leave
+/// [`HANG_MIN_ROOM`] or the line's longest word falls back to four past the line's
+/// indent. A word wider than the room stands on a line of its own, as clap does. Widths
+/// are characters. No trailing newline.
+pub(crate) fn fit(text: &str, width: usize) -> String {
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        if line.chars().count() <= width {
+            lines.push(line.to_owned());
+            continue;
+        }
+        let indent = line.len() - line.trim_start().len();
+        let longest = prose_words(line)
+            .iter()
+            .map(|word| word.chars().count())
+            .max()
+            .unwrap_or(0);
+        let room = HANG_MIN_ROOM.max(longest);
+        let (lead, rest, hang) = match last_column(line) {
+            Some(at) if at + room <= width => {
+                let split = line.char_indices().nth(at).map_or(line.len(), |(i, _)| i);
+                (&line[..split], &line[split..], at)
+            }
+            Some(_) if indent + 4 + room <= width => (&line[..indent], &line[indent..], indent + 4),
+            _ => (&line[..indent], &line[indent..], indent),
+        };
+        let lead = Lead {
+            plain: lead,
+            shown: lead,
+        };
+        let wrapped = wrap_painted(width + 1, lead, &prose_words(rest), " ", hang, &|word| {
+            word.to_owned()
+        });
+        lines.extend(wrapped.lines().map(str::to_owned));
+    }
+    lines.join("\n")
+}
+
+/// Where `line`'s last column starts, in characters: after its last run of two or more
+/// spaces past the first word. `None` for a line without one.
+fn last_column(line: &str) -> Option<usize> {
+    let chars: Vec<char> = line.chars().collect();
+    let start = chars.iter().position(|c| *c != ' ')?;
+    let mut column = None;
+    let mut at = start;
+    while at < chars.len() {
+        if chars[at] == ' ' && chars.get(at + 1) == Some(&' ') {
+            let mut end = at;
+            while chars.get(end) == Some(&' ') {
+                end += 1;
+            }
+            if end < chars.len() {
+                column = Some(end);
+            }
+            at = end;
+        } else {
+            at += 1;
+        }
+    }
+    column
 }
 
 /// Whether `arg`'s own help already names every value it takes, so clap's
@@ -667,8 +928,9 @@ fn long_after(own: Option<String>, extras: Option<&super::help_extras::Extras>) 
 }
 
 /// An `Examples:` block: each command two columns in, its description aligned beside the
-/// commands that fit [`EXAMPLE_COMMAND_MAX`] (on the next line for a longer one), wrapped
-/// with a hanging indent so no line reaches [`MAX_WIDTH`]. No trailing newline.
+/// commands that fit [`EXAMPLE_COMMAND_MAX`] (on the next line, in the same column, for a
+/// longer one). Unwrapped: a page [`fit`]s it to its width, hanging each description at
+/// its column. No trailing newline.
 pub(crate) fn examples_block(examples: &[(&str, &str)]) -> String {
     let columns = |text: &str| text.chars().count();
     let width = examples
@@ -677,46 +939,28 @@ pub(crate) fn examples_block(examples: &[(&str, &str)]) -> String {
         .filter(|width| *width <= EXAMPLE_COMMAND_MAX)
         .max()
         .unwrap_or(0);
-    let mut text = String::from("Examples:\n");
+    let mut lines = vec!["Examples:".to_owned()];
     for (command, what) in examples {
-        let words = prose_words(what);
-        if words.is_empty() {
-            text.push_str(&format!("  {command}\n"));
+        if what.is_empty() {
+            lines.push(format!("  {command}"));
         } else if columns(command) <= EXAMPLE_COMMAND_MAX {
-            let lead = format!("  {command:<width$}  ");
-            text.push_str(&wrap(&lead, &words, " ", width + 4));
+            lines.push(format!("  {command:<width$}  {what}"));
         } else {
-            text.push_str(&format!("  {command}\n"));
-            let lead = " ".repeat(width + 4);
-            text.push_str(&wrap(&lead, &words, " ", width + 4));
+            lines.push(format!("  {command}"));
+            lines.push(format!("{:indent$}{what}", "", indent = width + 4));
         }
     }
-    text.truncate(text.trim_end().len());
-    text
-}
-
-/// A table of `(code, name, meaning)` rows, the meanings wrapped with a hanging indent so
-/// no line reaches [`MAX_WIDTH`]: the doctor's exit codes under `doctor --help`. No
-/// trailing newline.
-pub(crate) fn hanging_table(rows: &[(String, String, String)]) -> String {
-    let columns = |text: &str| text.chars().count();
-    let first = rows.iter().map(|row| columns(&row.0)).max().unwrap_or(0);
-    let second = rows.iter().map(|row| columns(&row.1)).max().unwrap_or(0);
-    let mut text = String::new();
-    for (code, name, meaning) in rows {
-        let lead = format!("  {code:<first$}  {name:<second$}  ");
-        text.push_str(&wrap(&lead, &prose_words(meaning), " ", first + second + 6));
-    }
-    text.truncate(text.trim_end().len());
-    text
+    lines.join("\n")
 }
 
 /// `omaddons --version`.
 pub fn version() -> HelpOutcome {
     let version = env!("CARGO_PKG_VERSION").to_owned();
+    let text = format!("omaddons {version}\n");
     HelpOutcome {
         command: "version",
-        text: format!("omaddons {version}\n"),
+        styled: text.clone(),
+        text,
         data: HelpData::Version(VersionInfo { version }),
     }
 }
@@ -917,7 +1161,7 @@ mod tests {
             ("help", Group::Setup),
         ];
         assert_eq!(
-            render_groups(&commands),
+            render_groups(&commands, Paint { ansi: false }),
             "Look      status  list\nSetup     help\n",
             "a group without commands is left out"
         );
@@ -925,7 +1169,7 @@ mod tests {
             .map(|i| (format!("command{i:02}"), Group::Change))
             .collect();
         let long: Vec<(&str, Group)> = long.iter().map(|(n, g)| (n.as_str(), *g)).collect();
-        let text = render_groups(&long);
+        let text = render_groups(&long, Paint { ansi: false });
         let lines: Vec<&str> = text.lines().collect();
         assert!(lines.len() > 1, "{text}");
         assert!(lines[0].starts_with("Change    command00  command01"));
@@ -973,7 +1217,12 @@ mod tests {
             ("help", Setup),
         ];
         assert_eq!(planned.len(), 28);
-        let text = bare_text("omaddons [OPTIONS] <COMMAND>", &planned, DISCOVERY);
+        let text = bare_text(
+            "omaddons [OPTIONS] <COMMAND>",
+            &planned,
+            DISCOVERY,
+            Paint { ansi: false },
+        );
         assert!(
             text.lines().count() < 30,
             "{} lines\n{text}",
@@ -984,7 +1233,7 @@ mod tests {
         for line in above.lines() {
             assert!(line.chars().count() < MAX_WIDTH, "{line:?} in\n{text}");
         }
-        let groups = render_groups(&planned);
+        let groups = render_groups(&planned, Paint { ansi: false });
         assert!(groups.lines().all(|l| l.len() < MAX_WIDTH), "{groups}");
         assert!(
             groups.contains(
@@ -1264,7 +1513,7 @@ mod tests {
     }
 
     #[test]
-    fn examples_align_and_wrap_under_80_columns() {
+    fn examples_align_their_descriptions() {
         let block = examples_block(&[
             ("omaddons status", "every client"),
             ("omaddons status --cached", "no scan"),
@@ -1280,41 +1529,104 @@ mod tests {
              omaddons doctor --only fm-userland_state-target-vanished\n                            one check\n  \
              omaddons config path"
         );
-        let long = examples_block(&[("omaddons status", &"word ".repeat(30))]);
-        for line in long.lines() {
-            assert!(line.chars().count() < MAX_WIDTH, "{line:?}");
-        }
-        assert!(
-            long.lines()
-                .skip(2)
-                .all(|line| line.starts_with(&" ".repeat(19))),
-            "{long}"
-        );
     }
 
+    /// `fit` wraps every line to the width it is given: a table row or an example hangs at
+    /// its last column, prose at its own indent, a column too deep four past the indent.
     #[test]
-    fn a_hanging_table_indents_its_continuations() {
-        let rows = vec![
-            ("0".to_owned(), "healthy".to_owned(), "fine".to_owned()),
-            (
-                "64".to_owned(),
-                "usage_error".to_owned(),
-                "word ".repeat(20),
-            ),
-        ];
-        let table = hanging_table(&rows);
-        let lines: Vec<&str> = table.lines().collect();
-        assert_eq!(lines[0], "  0   healthy      fine");
-        assert!(lines[1].starts_with("  64  usage_error  word"), "{table}");
-        for line in &lines[2..] {
+    fn fit_hangs_each_line_at_its_last_column() {
+        let words = "word ".repeat(20);
+        let row = format!("  64  usage_error  {}", words.trim_end());
+        let prose = format!("  {}", words.trim_end());
+        for width in [40, 60, 80, 100] {
+            for (case, line, hang) in [
+                ("a table row", row.as_str(), 19),
+                ("prose", prose.as_str(), 2),
+            ] {
+                let fitted = fit(line, width);
+                let lines: Vec<&str> = fitted.lines().collect();
+                assert!(
+                    lines.len() > 1 || line.chars().count() <= width,
+                    "{case} at {width}"
+                );
+                for (at, piece) in lines.iter().enumerate() {
+                    assert!(
+                        piece.chars().count() <= width,
+                        "{case} at {width}: {piece:?}"
+                    );
+                    if at > 0 {
+                        assert!(
+                            piece.starts_with(&" ".repeat(hang)) && !piece[hang..].starts_with(' '),
+                            "{case} at {width}: {piece:?} hangs at {hang}"
+                        );
+                    }
+                }
+                assert_eq!(
+                    prose_words(&fitted),
+                    prose_words(line),
+                    "{case}: words kept"
+                );
+            }
+        }
+        // A column too deep for the width hangs four past the indent; a short line stays.
+        let deep = format!("  {:<50}  {}", "omaddons doctor", words.trim_end());
+        let fitted = fit(&deep, 60);
+        assert!(
+            fitted
+                .lines()
+                .skip(1)
+                .all(|piece| piece.starts_with("      w")),
+            "{fitted}"
+        );
+        assert_eq!(fit("  short  line", 60), "  short  line");
+        assert_eq!(last_column("  0   healthy      fine"), Some(19));
+        assert_eq!(last_column("plain prose here"), None);
+        assert_eq!(last_column("trailing gap  "), None);
+    }
+
+    /// The page is styled only where the output policy allows color; its JSON never is,
+    /// and the plain page holds no escape at all.
+    #[test]
+    fn color_follows_the_output_policy() {
+        let render = |outcome: &HelpOutcome, color: bool| {
+            let style = Style {
+                color,
+                verbose: 0,
+                quiet: false,
+            };
+            let mut out = Vec::new();
+            outcome.render_human(&mut out, &style).unwrap();
+            String::from_utf8(out).unwrap()
+        };
+        for outcome in [
+            for_flag(Some("status"), &words("omaddons status -h")).unwrap(),
+            for_command(Some("install"), &[]).unwrap(),
+            bare(),
+        ] {
+            let colored = render(&outcome, true);
+            let plain = render(&outcome, false);
             assert!(
-                line.starts_with(&" ".repeat(19)) && !line[19..].starts_with(' '),
-                "{table}"
+                colored.contains("\u{1b}[1m"),
+                "bold when allowed:\n{colored}"
+            );
+            assert!(!plain.contains('\u{1b}'), "plain otherwise:\n{plain}");
+            let json = serde_json::to_string(&outcome.data).unwrap();
+            assert!(!json.contains("\\u001b"), "help --json never: {json}");
+        }
+        let colored = render(&for_command(Some("status"), &[]).unwrap(), true);
+        for heading in ["Usage:", "Options:", "Global options:", "--cached"] {
+            assert!(
+                colored.contains(&format!("{heading}\u{1b}[0m")),
+                "{heading} styled:\n{colored}"
             );
         }
-        assert!(
-            lines.iter().all(|line| line.chars().count() < MAX_WIDTH),
-            "{table}"
-        );
+    }
+
+    /// The width a page is wrapped at is clap's (the test's terminal or 100), capped at
+    /// [`HELP_MAX_COLUMNS`].
+    #[test]
+    fn the_width_is_clap_s_capped_at_100() {
+        let width = help_width();
+        assert!((1..=HELP_MAX_COLUMNS).contains(&width), "{width}");
     }
 }

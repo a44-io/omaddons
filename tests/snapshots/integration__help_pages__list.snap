@@ -15,8 +15,7 @@ Options:
 
 Examples:
   omaddons list                         every client's managed addons
-  omaddons list -t forever --unmanaged  also the folders omaddons did not
-                                        install
+  omaddons list -t forever --unmanaged  also the folders omaddons did not install
   omaddons list -v                      also each addon's files changed on disk
 
 Global: -t <TARGET>  --json  --dry-run  -v  --quiet  --no-color  --offline  (--help lists them all)
@@ -38,8 +37,7 @@ Options:
 
 Examples:
   omaddons list                         every client's managed addons
-  omaddons list -t forever --unmanaged  also the folders omaddons did not
-                                        install
+  omaddons list -t forever --unmanaged  also the folders omaddons did not install
   omaddons list -v                      also each addon's files changed on disk
 
 See also: info, adopt, status

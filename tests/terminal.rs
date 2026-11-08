@@ -1,11 +1,12 @@
-//! Human stderr on a real terminal: the binary with stderr on a pseudo-terminal, where
-//! progress is one line that each update overwrites. What only a terminal shows is
-//! checked here: progress cut to the terminal's width, and a panic's message starting on
-//! a cleared line, never after leftover progress text.
+//! Human output on a real terminal: the binary with stderr (and, for help, stdout) on a
+//! pseudo-terminal, where progress is one line that each update overwrites. What only a
+//! terminal shows is checked here: progress cut to the terminal's width, a panic's
+//! message starting on a cleared line, never after leftover progress text, and help
+//! styled where the output policy allows color.
 
 use crate::common;
 
-use support::{CLEAR, home_with_a_zip, on_terminal};
+use support::{CLEAR, all_on_terminal, home_with_a_zip, on_terminal};
 
 #[cfg(test)]
 mod support {
@@ -58,13 +59,39 @@ mod support {
         extra: &[(&str, &str)],
         columns: u16,
     ) -> Option<(i32, String)> {
+        run_on_terminal(home, args, extra, columns, false)
+    }
+
+    /// [`on_terminal`] with stdout on the terminal too, as an interactive shell runs a
+    /// command; returns its exit code and everything it printed.
+    pub fn all_on_terminal(
+        home: &Home,
+        args: &[&str],
+        extra: &[(&str, &str)],
+        columns: u16,
+    ) -> Option<(i32, String)> {
+        run_on_terminal(home, args, extra, columns, true)
+    }
+
+    fn run_on_terminal(
+        home: &Home,
+        args: &[&str],
+        extra: &[(&str, &str)],
+        columns: u16,
+        stdout_too: bool,
+    ) -> Option<(i32, String)> {
         let (mut master, terminal) = pty(columns)?;
         let argv: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
         let mut env = vec![("TERM", "xterm")];
         env.extend_from_slice(extra);
         let mut cmd = home.std_command(&argv, &env);
+        let stdout = if stdout_too {
+            Stdio::from(terminal.try_clone().ok()?)
+        } else {
+            Stdio::piped()
+        };
         cmd.stdin(Stdio::null())
-            .stdout(Stdio::piped())
+            .stdout(stdout)
             .stderr(Stdio::from(terminal));
         let child = cmd.spawn().unwrap();
         // The command holds the terminal's descriptor: once it is gone, the reader sees
@@ -167,4 +194,53 @@ fn progress_lines_fit_the_terminal() {
         lines.iter().any(|line| line.contains('…')),
         "a line too wide was cut: {seen:?}"
     );
+}
+
+/// Help on a terminal is styled where the output policy allows color (`Usage:` bold,
+/// `Options:` bold and underlined, flags bold), and plain under every condition that
+/// turns color off: `NO_COLOR`, `--no-color`, `TERM=dumb`, CI and `--json`.
+#[test]
+fn help_on_a_terminal_is_styled_unless_color_is_off() {
+    let home = common::home::Home::new(&["wow"]);
+    let Some((code, seen)) = all_on_terminal(&home, &["status", "--help"], &[], 100) else {
+        common::checkpoint::skip(
+            "help_on_a_terminal_is_styled_unless_color_is_off",
+            "no pseudo-terminal here (/dev/ptmx)",
+        );
+        return;
+    };
+    assert_eq!(code, 0, "{seen:?}");
+    for styled in [
+        "\u{1b}[1mUsage:\u{1b}[0m",
+        "\u{1b}[1m\u{1b}[4mOptions:\u{1b}[0m",
+        "\u{1b}[1m--cached\u{1b}[0m",
+        "\u{1b}[1m\u{1b}[4mGlobal options:\u{1b}[0m",
+    ] {
+        assert!(seen.contains(styled), "{styled:?} in {seen:?}");
+    }
+    let bare = all_on_terminal(&home, &[], &[], 100).map(|(_, seen)| seen);
+    assert!(
+        bare.as_deref()
+            .is_some_and(|seen| seen.contains("\u{1b}[1mstatus\u{1b}[0m")),
+        "bare help names its commands in bold: {bare:?}"
+    );
+    for (case, args, extra) in [
+        (
+            "NO_COLOR",
+            &["status", "--help"][..],
+            &[("NO_COLOR", "1")][..],
+        ),
+        ("--no-color", &["status", "--help", "--no-color"], &[]),
+        ("TERM=dumb", &["status", "--help"], &[("TERM", "dumb")]),
+        ("CI", &["status", "-h"], &[("CI", "1")]),
+        ("--json", &["help", "status", "--json"], &[]),
+        ("bare under NO_COLOR", &[], &[("NO_COLOR", "1")]),
+    ] {
+        let seen = all_on_terminal(&home, args, extra, 100).map(|(_, seen)| seen);
+        assert!(
+            seen.as_deref()
+                .is_some_and(|seen| !seen.is_empty() && !seen.contains('\u{1b}')),
+            "{case}: no escape: {seen:?}"
+        );
+    }
 }

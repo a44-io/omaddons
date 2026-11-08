@@ -14,8 +14,7 @@ Options:
       --limit <N>  Show at most N backups per client, newest first
 
 Examples:
-  omaddons backup list                      every client's backups, newest
-                                            first
+  omaddons backup list                      every client's backups, newest first
   omaddons backup list -t retail --limit 5  one client's newest five
 
 Global: -t <TARGET>  --json  --dry-run  -v  --quiet  --no-color  --offline  (--help lists them all)

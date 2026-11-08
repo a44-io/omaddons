@@ -31,7 +31,7 @@ Examples:
   omaddons doctor undo 2026-10-30T18-03-40Z__01M8S…   the repair that run made
   omaddons doctor undo --dry-run                      what it would revert, changing nothing
   omaddons undo <tx> --dry-run                        the bindable preview: then omaddons apply
-  <plan>
+                                                      <plan>
 
 See also: doctor fix, undo, history
 

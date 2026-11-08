@@ -31,9 +31,10 @@ Options:
           Consent for a real run (not needed with --dry-run)
 
 Examples:
-  omaddons doctor gc --before 30d --dry-run                the retention plan: what would be
-  deleted, what is kept and why, which undos are lost
-  omaddons doctor gc --before 30d --yes --if-match <token> delete exactly what that preview listed
+  omaddons doctor gc --before 30d --dry-run                 the retention plan: what would be
+                                                            deleted, what is kept and why, which
+                                                            undos are lost
+  omaddons doctor gc --before 30d --yes --if-match <token>  delete exactly what that preview listed
 
 See also: doctor undo, doctor
 

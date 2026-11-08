@@ -144,9 +144,20 @@ fn snapshot_text(pages: &[Page]) -> String {
 /// Runs `omaddons <argv>` as a 100-column terminal without color would, and returns
 /// stdout; a run that fails or writes to stderr is a problem.
 fn render(log: &TestLog, env: &TestEnv, argv: &[String], problems: &mut Vec<String>) -> String {
+    render_at(log, env, argv, PAGE_MAX_COLUMNS, problems)
+}
+
+/// [`render`] as a terminal `columns` wide.
+fn render_at(
+    log: &TestLog,
+    env: &TestEnv,
+    argv: &[String],
+    columns: usize,
+    problems: &mut Vec<String>,
+) -> String {
     let ran = log
         .cmd(env, argv)
-        .env("COLUMNS", PAGE_MAX_COLUMNS.to_string())
+        .env("COLUMNS", columns.to_string())
         .env("NO_COLOR", "1")
         .run();
     if ran.run.code != 0 || !ran.stderr().is_empty() {
@@ -502,6 +513,78 @@ fn every_command_path_s_help_pages() {
     log.step("help wrote nothing");
     log.assert_unchanged("before", env.root());
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}
+
+/// A command's pages wrap to the terminal, never wider than 100 columns: on a terminal
+/// 200 columns wide no line passes 100, and on one 60 wide every line fits, the examples'
+/// descriptions and the doctor's exit meanings continuing under their own column. Bare
+/// help keeps its fixed 80-column layout, so it is left out.
+#[test]
+fn pages_wrap_to_the_terminal_capped_at_100() {
+    let log = tlog!();
+    let env = TestEnv::new();
+    let mut problems = Vec::new();
+    let mut wide = Vec::new();
+    for path in command_paths().into_iter().filter(|path| !path.is_empty()) {
+        log.step(&command_line(&path));
+        for flag in ["-h", "--help"] {
+            let mut argv = path.clone();
+            argv.push(flag.to_owned());
+            for (columns, max) in [(200, PAGE_MAX_COLUMNS), (60, 60)] {
+                let text = render_at(&log, &env, &argv, columns, &mut problems);
+                let lines: Vec<&str> = text.lines().collect();
+                for (at, width) in wide_lines(&text, max) {
+                    // One word wider than the terminal (a long path) cannot break: it
+                    // stands on a line of its own, as clap leaves it.
+                    let line = lines.get(at - 1).copied().unwrap_or_default();
+                    if columns == 60 && line.split_whitespace().count() == 1 {
+                        continue;
+                    }
+                    wide.push(format!(
+                        "`{}` at COLUMNS={columns}: line {at} is {width} columns, over {max}",
+                        command_line(&argv)
+                    ));
+                }
+            }
+        }
+    }
+    log.json("runs that failed", &problems);
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+    log.json("lines over the width", &wide);
+    assert!(wide.is_empty(), "{}", wide.join("\n"));
+
+    log.step("hanging indents at 60 columns");
+    let mut narrow = |argv: &[&str]| {
+        let argv: Vec<String> = argv.iter().map(|word| (*word).to_owned()).collect();
+        render_at(&log, &env, &argv, 60, &mut problems)
+    };
+    let status = narrow(&["status", "-h"]);
+    let examples: Vec<&str> = status
+        .split("Examples:\n")
+        .nth(1)
+        .unwrap_or_default()
+        .lines()
+        .take_while(|line| !line.is_empty())
+        .collect();
+    assert!(
+        examples.len() > 3,
+        "status -h's examples wrap at 60:\n{status}"
+    );
+    for line in &examples {
+        assert!(line.starts_with("  "), "{line:?} hangs:\n{status}");
+    }
+    let doctor = narrow(&["doctor", "--help"]);
+    let table: Vec<&str> = doctor
+        .split("The doctor exits with its own codes:\n")
+        .nth(1)
+        .unwrap_or_default()
+        .lines()
+        .take_while(|line| !line.is_empty())
+        .collect();
+    assert!(table.len() > 11, "the exit table wraps at 60:\n{doctor}");
+    for line in &table {
+        assert!(line.starts_with("  "), "{line:?} hangs:\n{doctor}");
+    }
 }
 
 /// Each check catches a planted fault, and passes the same page without it.

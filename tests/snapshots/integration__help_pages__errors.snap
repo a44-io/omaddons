@@ -22,8 +22,7 @@ Options:
       --check          Exit 6 when a client has new errors, or could not be read completely
 
 Examples:
-  omaddons errors                       which addon throws Lua errors, on every
-                                        client
+  omaddons errors                       which addon throws Lua errors, on every client
   omaddons errors -t retail --since 1d  one client, the last day only
   omaddons errors dismiss -t retail     mark what was read as seen
 

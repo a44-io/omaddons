@@ -13,8 +13,7 @@ Commands:
   path  Show the config file's path
 
 Examples:
-  omaddons config                           every setting, and which are
-                                            defaults
+  omaddons config                           every setting, and which are defaults
   omaddons config get running_policy        one setting
   omaddons config set default_channel beta  change one, keeping comments
 
@@ -30,8 +29,7 @@ Commands:
   path  Show the config file's path
 
 Examples:
-  omaddons config                           every setting, and which are
-                                            defaults
+  omaddons config                           every setting, and which are defaults
   omaddons config get running_policy        one setting
   omaddons config set default_channel beta  change one, keeping comments
 

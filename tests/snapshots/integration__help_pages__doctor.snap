@@ -91,24 +91,20 @@ Examples:
   omaddons doctor fix --if-match <token>  that repair, exactly as previewed
 
 The doctor exits with its own codes:
-  0   healthy                 every selected check ran to completion and found
-                              nothing
-  1   findings_present        the run completed and reports findings, a check
-                              that could not finish among them
+  0   healthy                 every selected check ran to completion and found nothing
+  1   findings_present        the run completed and reports findings, a check that could not finish
+                              among them
   2   fix_partial             a fix ran and some findings remain
   3   fix_failed_rolled_back  a fix failed and was rolled back; nothing changed
-  4   refused_unsafe          refused before changing anything: a safety
-                              precondition, a missing --force, a conflict, a
-                              stale preview or an over-budget selection
-  5   concurrency_lost        another omaddons process held the lock past the
-                              acquire timeout
+  4   refused_unsafe          refused before changing anything: a safety precondition, a missing
+                              --force, a conflict, a stale preview or an over-budget selection
+  5   concurrency_lost        another omaddons process held the lock past the acquire timeout
   6   online_required         the selection needs the network: add --online
   64  usage_error             unknown command or flag, or a bad argument
-  66  no_input                a target, run, failure mode or other input was
-                              not found, or is ambiguous
+  66  no_input                a target, run, failure mode or other input was not found, or is
+                              ambiguous
   73  cannot_create           the run directory could not be created
-  74  io_error                a runtime failure: I/O, state, network or
-                              internal
+  74  io_error                a runtime failure: I/O, state, network or internal
 
 See also: doctor explain, doctor fix, status
 

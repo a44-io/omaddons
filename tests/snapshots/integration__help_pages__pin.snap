@@ -15,10 +15,8 @@ Options:
                            then pin it
 
 Examples:
-  omaddons pin dbm                              hold it at its release, on
-                                                every client
-  omaddons pin dbm --version 12.1.14 -t retail  install that release, then hold
-                                                it
+  omaddons pin dbm                              hold it at its release, on every client
+  omaddons pin dbm --version 12.1.14 -t retail  install that release, then hold it
 
 Global: -t <TARGET>  --json  --dry-run  -v  --quiet  --no-color  --offline  (--help lists them all)
 ==> omaddons pin --help <==
