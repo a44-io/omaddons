@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "header": {"contract":"1.0","frozen":false},
+  "header": {"contract":"1.0","frozen":true},
   "nodes": {
     "action adopt": {"destructive":false,"kind":"action"},
     "action adopt_folder": {"destructive":false,"kind":"action"},

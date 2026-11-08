@@ -1,5 +1,5 @@
 # contract 1.0
-# frozen: false
+# frozen: true
 action adopt destructive=false
 action adopt_folder destructive=false
 action adopt_with_ref destructive=false
