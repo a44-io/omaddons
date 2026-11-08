@@ -806,31 +806,45 @@ fn the_harness_rejects_broken_envelopes() {
     };
     let argv = |words: &[&str]| -> Vec<String> { words.iter().map(|w| (*w).to_owned()).collect() };
     // A bare help's data, so the good envelope below also passes schema validation.
-    let two = r#"{"ok":true,"schema_version":"1.0","tool_version":"x","command":"help","exit_code":0,"data":{"name":"omaddons","version":"x","usage":"omaddons <COMMAND>","commands":[],"global_flags":[],"exit_codes":[],"discovery":[]},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#;
+    let two = &current(
+        r#"{"ok":true,"schema_version":"1.0","tool_version":"x","command":"help","exit_code":0,"data":{"name":"omaddons","version":"x","usage":"omaddons <COMMAND>","commands":[],"global_flags":[],"exit_codes":[],"discovery":[]},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#,
+    );
     let doubled = format!("{two}\n{two}");
     rejects(run(&doubled, 0), 0, "exactly one envelope");
     // `info` declares 3, so these fail for their fix, not their exit.
-    let empty_fix = r#"{"ok":false,"schema_version":"1.0","tool_version":"x","command":"info","exit_code":3,"error":{"code":"not_found","message":"m","fix":"","fix_argv":null,"alternatives":[],"retryable":false,"details":{}},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#;
+    let empty_fix = &current(
+        r#"{"ok":false,"schema_version":"1.0","tool_version":"x","command":"info","exit_code":3,"error":{"code":"not_found","message":"m","fix":"","fix_argv":null,"alternatives":[],"retryable":false,"details":{}},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#,
+    );
     let mut failing = run(empty_fix, 3);
     failing.argv = argv(&["info", "x", "--json"]);
     failing.stderr = r#"{"event":"error"}"#.into();
     rejects(failing, 3, "empty fix");
-    let unparsable = r#"{"ok":false,"schema_version":"1.0","tool_version":"x","command":"info","exit_code":3,"error":{"code":"not_found","message":"m","fix":"omaddons targets pin a b","fix_argv":["omaddons","targets","pin","a","b"],"alternatives":[],"retryable":false,"details":{}},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#;
+    let unparsable = &current(
+        r#"{"ok":false,"schema_version":"1.0","tool_version":"x","command":"info","exit_code":3,"error":{"code":"not_found","message":"m","fix":"omaddons targets pin a b","fix_argv":["omaddons","targets","pin","a","b"],"alternatives":[],"retryable":false,"details":{}},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#,
+    );
     let mut failing = run(unparsable, 3);
     failing.argv = argv(&["info", "x", "--json"]);
     failing.stderr = r#"{"event":"error"}"#.into();
     rejects(failing, 3, "does not parse");
-    let reordered = r#"{"schema_version":"1.0","ok":true,"tool_version":"x","command":"help","exit_code":0,"data":{},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#;
+    let reordered = &current(
+        r#"{"schema_version":"1.0","ok":true,"tool_version":"x","command":"help","exit_code":0,"data":{},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#,
+    );
     rejects(run(reordered, 0), 0, "envelope key order");
     // An envelope that names another command than the argv it ran.
-    let misnamed = r#"{"ok":true,"schema_version":"1.0","tool_version":"x","command":"status","exit_code":0,"data":{},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#;
+    let misnamed = &current(
+        r#"{"ok":true,"schema_version":"1.0","tool_version":"x","command":"status","exit_code":0,"data":{},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#,
+    );
     let mut listed = run(misnamed, 0);
     listed.argv = argv(&["list", "--json"]);
     rejects(listed, 0, "canonical path");
     // A name that is no command, and an exit its row does not declare.
-    let unknown = r#"{"ok":true,"schema_version":"1.0","tool_version":"x","command":"auth","exit_code":0,"data":{},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#;
+    let unknown = &current(
+        r#"{"ok":true,"schema_version":"1.0","tool_version":"x","command":"auth","exit_code":0,"data":{},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#,
+    );
     rejects(run(unknown, 0), 0, "neither a COMMANDS path");
-    let undeclared = r#"{"ok":false,"schema_version":"1.0","tool_version":"x","command":"help","exit_code":4,"error":{"code":"game_running","message":"m","fix":"quit the game client, then rerun","fix_argv":null,"alternatives":[],"retryable":false,"details":{}},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#;
+    let undeclared = &current(
+        r#"{"ok":false,"schema_version":"1.0","tool_version":"x","command":"help","exit_code":4,"error":{"code":"game_running","message":"m","fix":"quit the game client, then rerun","fix_argv":null,"alternatives":[],"retryable":false,"details":{}},"warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}}"#,
+    );
     let mut failing = run(undeclared, 4);
     failing.stderr = r#"{"event":"error"}"#.into();
     rejects(failing, 4, "does not declare");
@@ -844,6 +858,15 @@ fn the_harness_rejects_broken_envelopes() {
         "the good envelope was recorded: {recorded:?}"
     );
     doctor_envelopes();
+}
+
+/// `envelope`, a literal written at contract 1.0, with this build's `schema_version`, so
+/// a hand-built envelope fails only for the fault it plants.
+fn current(envelope: &str) -> String {
+    envelope.replace(
+        r#""schema_version":"1.0""#,
+        &format!(r#""schema_version":"{}""#, omaddons::output::SCHEMA_VERSION),
+    )
 }
 
 /// The doctor mode (M4-D34, M4-D40), on literal envelopes: no `COMMANDS` row is the
@@ -869,8 +892,9 @@ fn doctor_envelopes() {
         );
     };
     let head = |ok: bool, exit: i32| {
+        let version = omaddons::output::SCHEMA_VERSION;
         format!(
-            r#""ok":{ok},"schema_version":"1.0","tool_version":"x","command":"doctor diagnose","exit_code":{exit}"#
+            r#""ok":{ok},"schema_version":"{version}","tool_version":"x","command":"doctor diagnose","exit_code":{exit}"#
         )
     };
     let tail = r#""warnings":[],"commands":[],"meta":{"elapsed_ms":0,"offline":false}"#;
@@ -1044,7 +1068,8 @@ fn the_harness_rejects_schema_violations() {
     let failure = |command: &str, argv: &[&str], code: ErrorCode, details: Value| -> Run {
         let exit = i32::from(code.exit().code());
         let envelope = json!({
-            "ok": false, "schema_version": "1.0", "tool_version": env!("CARGO_PKG_VERSION"),
+            "ok": false, "schema_version": omaddons::output::SCHEMA_VERSION,
+            "tool_version": env!("CARGO_PKG_VERSION"),
             "command": command, "exit_code": exit,
             "error": {
                 "code": code.wire(), "message": "m", "fix": "preview again", "fix_argv": null,

@@ -52,6 +52,7 @@ mod discover_custom;
 mod discover_launchers;
 mod discover_matrix;
 mod discover_scan;
+mod display_names;
 // `tests/doctor/` is also the fixtures' directory (`mod.rs`), so the suite is named by path.
 #[path = "doctor.rs"]
 mod doctor;

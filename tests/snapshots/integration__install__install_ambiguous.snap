@@ -39,7 +39,7 @@ expression: "support::stable(&envelope)"
   "exit_code": 3,
   "meta": "<meta>",
   "ok": false,
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "tool_version": "<version>",
   "warnings": []
 }

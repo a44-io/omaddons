@@ -1,4 +1,4 @@
-# contract 1.0
+# contract 1.1
 # frozen: true
 action adopt destructive=false
 action adopt_folder destructive=false
@@ -111,6 +111,7 @@ config sources.*.credential credential
 config sources.*.enabled bool
 config targets.*.family family
 config targets.*.label text
+config targets.*.name text
 desired . object
 desired family object?
 desired family.cata object
@@ -8442,6 +8443,7 @@ output status data.targets[].backups.snapshot_bytes integer?! minimum=0
 output status data.targets[].backups.stale boolean!
 output status data.targets[].client_dir string?
 output status data.targets[].default boolean!
+output status data.targets[].display_name string!
 output status data.targets[].drift array!
 output status data.targets[].drift[] object
 output status data.targets[].drift[].addon string!
@@ -8666,6 +8668,7 @@ output targets add data.targets[].details.exe_name string?!
 output targets add data.targets[].details.flavor_dir string?!
 output targets add data.targets[].details.install_root string!
 output targets add data.targets[].details.rules string!
+output targets add data.targets[].display_name string!
 output targets add data.targets[].family string!
 output targets add data.targets[].found_by string!
 output targets add data.targets[].id string!
@@ -8696,6 +8699,7 @@ output targets data.targets[].details.exe_name string?!
 output targets data.targets[].details.flavor_dir string?!
 output targets data.targets[].details.install_root string!
 output targets data.targets[].details.rules string!
+output targets data.targets[].display_name string!
 output targets data.targets[].family string!
 output targets data.targets[].found_by string!
 output targets data.targets[].id string!

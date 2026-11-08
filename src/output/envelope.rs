@@ -10,7 +10,7 @@ use crate::doctor::exit::{Exit as DoctorExit, exit_for};
 use crate::error::{CommandHint, Error, ErrorBody, Warning};
 
 /// The envelope's own version.
-pub const SCHEMA_VERSION: &str = "1.0";
+pub const SCHEMA_VERSION: &str = "1.1";
 
 /// Volatile per-run facts; golden diffs strip this object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]

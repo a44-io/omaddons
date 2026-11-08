@@ -95,6 +95,9 @@ impl TargetsAction {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct TargetInfo {
     pub id: String,
+    /// The name a player knows the client by, as `status` gives it: unique in the
+    /// envelope, `-t` still takes the id.
+    pub display_name: String,
     pub key: Option<TargetKey>,
     pub registered: bool,
     pub default: bool,
@@ -226,16 +229,17 @@ pub fn list(ctx: &Context, rescan: bool) -> Result<Done<TargetsData>> {
         .resolved
         .targets
         .iter()
-        .map(|d| info(d, &world.registry, &world.table, verbose))
+        .map(|d| info(d, &world.registry, &world.table, &world.config, verbose))
         .collect();
     targets.extend(
         world
             .resolved
             .missing
             .iter()
-            .map(|e| missing_info(e, default, &world.table, verbose)),
+            .map(|e| missing_info(e, default, &world.table, &world.config, verbose)),
     );
     targets.sort_by(|a, b| a.id.cmp(&b.id));
+    disambiguate(&mut targets);
     let default = targets.iter().find(|t| t.default).map(|t| t.id.clone());
     Ok(Done {
         command: "targets",
@@ -269,11 +273,24 @@ fn info(
     d: &DiscoveredTarget,
     registry: &Registry,
     table: &RulesTable,
+    config: &Config,
     verbose: bool,
 ) -> TargetInfo {
     let t = &d.target;
+    let modes = table.mode_names(t.product.as_deref());
     TargetInfo {
         id: t.id.clone(),
+        display_name: super::naming::display_name(&super::naming::Client {
+            id: &t.id,
+            family: t.family,
+            kind: t.kind,
+            install_kind: t.install_kind,
+            product: t.product.as_deref(),
+            modes: &modes,
+            version: t.version,
+            legacy: t.rules.legacy,
+            chosen: super::naming::chosen(config, &t.id, t.key.as_ref()),
+        }),
         key: t.key,
         registered: t.key.is_some(),
         // ubs:ignore — a target key is a public ULID identifier, not a secret
@@ -282,7 +299,7 @@ fn info(
         kind: t.kind,
         install_kind: t.install_kind,
         product: t.product.clone(),
-        modes: table.mode_names(t.product.as_deref()),
+        modes,
         version: t.version,
         interface: t.interface,
         label: t.label.clone(),
@@ -299,27 +316,54 @@ fn info(
     }
 }
 
+/// The display names of `targets`, made unique: a shared one adds the client's id.
+fn disambiguate(targets: &mut [TargetInfo]) {
+    let mut names: Vec<(String, String)> = targets
+        .iter()
+        .map(|t| (t.id.clone(), t.display_name.clone()))
+        .collect();
+    super::naming::disambiguate(&mut names);
+    for (target, (_, name)) in targets.iter_mut().zip(names) {
+        target.display_name = name;
+    }
+}
+
 fn missing_info(
     e: &RegistryEntry,
     default: Option<TargetKey>,
     table: &RulesTable,
+    config: &Config,
     verbose: bool,
 ) -> TargetInfo {
+    let install_kind = if e.flavor_dir.is_some() {
+        InstallKind::Battlenet
+    } else {
+        InstallKind::Custom
+    };
+    let modes = table.mode_names(e.product.as_deref());
     TargetInfo {
         id: e.id.clone(),
+        // A missing client's family is unknown: its product's mode names it, else its id.
+        display_name: super::naming::display_name(&super::naming::Client {
+            id: &e.id,
+            family: Family::Unknown,
+            kind: TargetKind::Live,
+            install_kind,
+            product: e.product.as_deref(),
+            modes: &modes,
+            version: ClientVersion::new(0, 0, 0),
+            legacy: false,
+            chosen: super::naming::chosen(config, &e.id, Some(&e.key)),
+        }),
         key: Some(e.key),
         registered: true,
         // ubs:ignore — a target key is a public ULID identifier, not a secret
         default: default == Some(e.key),
         family: Family::Unknown,
         kind: TargetKind::Live,
-        install_kind: if e.flavor_dir.is_some() {
-            InstallKind::Battlenet
-        } else {
-            InstallKind::Custom
-        },
+        install_kind,
         product: e.product.clone(),
-        modes: table.mode_names(e.product.as_deref()),
+        modes,
         version: ClientVersion::new(0, 0, 0),
         interface: 0,
         label: None,
@@ -426,10 +470,11 @@ pub fn add(ctx: &Context, path: &Path, name: Option<&str>) -> Result<Done<AddDat
         if let (Some(name), [one]) = (name, shown.as_mut_slice()) {
             name.clone_into(&mut one.target.id);
         }
-        let targets = shown
+        let mut targets: Vec<TargetInfo> = shown
             .iter()
-            .map(|d| info(d, &registry, table, false))
+            .map(|d| info(d, &registry, table, &world.config, false))
             .collect();
+        disambiguate(&mut targets);
         return Ok(Done {
             command: "targets add",
             data: AddData {
@@ -455,10 +500,11 @@ pub fn add(ctx: &Context, path: &Path, name: Option<&str>) -> Result<Done<AddDat
         }
         Ok((added, reg.registry().clone()))
     })?;
-    let targets = added
+    let mut targets: Vec<TargetInfo> = added
         .iter()
-        .map(|d| info(d, &after, table, false))
+        .map(|d| info(d, &after, table, &world.config, false))
         .collect();
+    disambiguate(&mut targets);
     Ok(Done {
         command: "targets add",
         data: AddData {

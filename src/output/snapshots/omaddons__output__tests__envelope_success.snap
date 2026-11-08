@@ -4,7 +4,7 @@ expression: stable(success)
 ---
 {
   "ok": true,
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "tool_version": "<version>",
   "command": "update",
   "exit_code": 0,

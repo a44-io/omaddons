@@ -647,6 +647,7 @@ mod tests {
             crate::state::config::TargetOverride {
                 label: Some("mine".into()),
                 family: Some(family),
+                name: None,
             },
         );
         apply_target_overrides(&mut resolved, &config, &RulesTable::builtin());

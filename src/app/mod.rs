@@ -29,6 +29,7 @@ pub mod install_skill;
 pub mod intent;
 pub mod issues;
 pub mod list;
+pub mod naming;
 pub mod net_log;
 pub mod omarchy;
 pub mod outcome;

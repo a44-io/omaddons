@@ -185,6 +185,9 @@ pub struct TargetOverride {
     pub label: Option<String>,
     /// Overrides a misdetected family (and so the client-rules row).
     pub family: Option<Family>,
+    /// The name `status` and `targets` show (`display_name`), overriding the rule; an
+    /// empty one restores it.
+    pub name: Option<String>,
 }
 
 // ---------------------------------------------------------------------------------------
@@ -363,6 +366,11 @@ pub const KEYS: &[KeySpec] = &[
         "Where a source's secret comes from",
     ),
     spec("targets.*.label", KeyKind::Text, "A target's label"),
+    spec(
+        "targets.*.name",
+        KeyKind::Text,
+        "A target's display name, overriding the rule (empty restores it)",
+    ),
     spec(
         "targets.*.family",
         KeyKind::Family,

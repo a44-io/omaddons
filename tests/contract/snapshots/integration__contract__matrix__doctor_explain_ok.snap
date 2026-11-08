@@ -23,7 +23,7 @@ expression: s.stable(&c.envelope)
   "incomplete": null,
   "instances": [],
   "ok": true,
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "skipped": [],
   "tool_version": "<version>",
   "warnings": []

@@ -85,6 +85,7 @@ expression: s.stable(&c.envelope)
           "stale": false
         },
         "default": false,
+        "display_name": "Mists of Pandaria Classic",
         "drift": [],
         "errors": {
           "addons": 0,
@@ -161,6 +162,7 @@ expression: s.stable(&c.envelope)
           "stale": false
         },
         "default": false,
+        "display_name": "Retail",
         "drift": [],
         "errors": {
           "addons": 0,
@@ -259,7 +261,7 @@ expression: s.stable(&c.envelope)
   "exit_code": 6,
   "ok": false,
   "partial": false,
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "tool_version": "<version>",
   "warnings": [
     {

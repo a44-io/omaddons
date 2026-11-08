@@ -620,7 +620,11 @@ fn the_human_form_is_a_summary() {
     for line in &lines {
         assert!(line.chars().count() < 80, "{line:?}\n{text}");
     }
-    let first = format!("omaddons {} · contract 1.0", env!("CARGO_PKG_VERSION"));
+    let first = format!(
+        "omaddons {} · contract {}",
+        env!("CARGO_PKG_VERSION"),
+        omaddons::output::SCHEMA_VERSION
+    );
     assert!(
         lines.first().is_some_and(|l| l.starts_with(&first)),
         "{text}"

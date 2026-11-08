@@ -1185,7 +1185,7 @@ mod tests {
         assert_eq!(rows.last(), Some(&"fallback-custom"), "{rows:?}");
         assert!(rows.contains(&"fallback-battlenet"), "{rows:?}");
         assert!(data.version.starts_with(|c: char| c.is_ascii_digit()));
-        assert_eq!(data.contract_version, "1.0");
+        assert_eq!(data.contract_version, crate::output::SCHEMA_VERSION);
         assert_eq!(data.build_id, crate::build_info::BUILD_ID);
         assert_eq!(
             data.guide_digest,
@@ -1277,8 +1277,9 @@ mod tests {
         }
         assert!(
             lines.first().is_some_and(|line| line.starts_with(&format!(
-                "omaddons {} · contract 1.0",
-                env!("CARGO_PKG_VERSION")
+                "omaddons {} · contract {}",
+                env!("CARGO_PKG_VERSION"),
+                crate::output::SCHEMA_VERSION
             ))),
             "{case}\n{text}"
         );

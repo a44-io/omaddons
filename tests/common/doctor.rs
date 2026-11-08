@@ -114,7 +114,8 @@ pub fn check_envelope(stdout: &str, stderr: &str, code: i32) -> Value {
     assert_eq!(envelope["exit_code"], code, "doctor: `exit_code`\n{ctx}");
     assert_eq!(envelope["ok"], code == 0, "doctor: `ok` is exit 0\n{ctx}");
     assert_eq!(
-        envelope["schema_version"], "1.0",
+        envelope["schema_version"],
+        omaddons::output::SCHEMA_VERSION,
         "doctor: schema_version\n{ctx}"
     );
     let error = envelope.get("error");

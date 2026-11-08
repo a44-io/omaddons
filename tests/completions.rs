@@ -114,7 +114,7 @@ fn the_json_form_carries_the_same_script() {
             ("ok", json!(true)),
             ("command", json!("completions")),
             ("exit_code", json!(0)),
-            ("schema_version", json!("1.0")),
+            ("schema_version", json!(omaddons::output::SCHEMA_VERSION)),
             ("warnings", json!([])),
             ("commands", json!([])),
         ] {

@@ -806,6 +806,7 @@ omaddons status -v --json     # adds client_dir, install_root and exe_name, and 
 
 Each client also shows:
 
+- **`display_name`.** The name a player knows it by: `targets.<id>.name` from `config.toml` when set, else its game mode's name ("Retail", "Classic Era", "Burning Crusade Anniversary", "Mists of Pandaria Classic", "WoW: Forever"), its family's with what it is for a Battle.net client without modes ("Retail PTR", "Titan"), its family's and version for a custom client, with "private server" on a legacy one ("Wrath 3.3.5a private server"), else its product code or id. Two clients that would share a name are told apart by their id ("Retail (ptr)"). `-t` still takes the id; `targets` carries the same name.
 - **`running`.** Whether its game runs now, from `/proc`; `null` when `/proc` could not be read (with `running_unknown`; the human view shows `running?`).
 - **`updates`.** Its pending update counts (`available`, `pinned`, `blocked`, `failed`, `unchecked`) and `checked_at`, the oldest check. They come from what earlier `outdated`, `update` and `install` runs remembered, never from a request, so `status` stays offline. `stale` is true when that check is older than `check_interval_hours` (default 6).
 - **`drift`.** Each managed addon whose files changed on disk since omaddons installed them (`modified`), whose folder is gone or replaced by a symlink (`missing`), or that has no file index to check against (`unindexed`), with its changed-file count (`files`; the paths with `-v`). A file whose size or time changed is re-hashed, so one merely touched is not reported; `--deep` re-hashes every file. `--cached` checks only that the folders are there. Drift is computed on every run and never stored. `modified` raises the attention `addon_modified`, `missing` raises `addon_folder_missing`.
@@ -1641,7 +1642,7 @@ omaddons targets default retail            # install's default when -t is absent
 omaddons targets rm warmane                # unregister; nothing in the client directory is touched
 ```
 
-Each client's `found_by` names the discovery route that reached it first (see [Where discovery looks](#where-discovery-looks)): `product_db`, `launcher:<name>`, `process`, `extra_root`, `scan`, `manual` (added with `targets add`), `registered`, `remembered`, or `registry` for a registered client whose directory is gone or that Battle.net uninstalled.
+Each client carries its `display_name`, as [`status`](#status) gives it. Each client's `found_by` names the discovery route that reached it first (see [Where discovery looks](#where-discovery-looks)): `product_db`, `launcher:<name>`, `process`, `extra_root`, `scan`, `manual` (added with `targets add`), `registered`, `remembered`, or `registry` for a registered client whose directory is gone or that Battle.net uninstalled.
 
 An id you choose (`--name`, `rename`) must match `^[a-z0-9][a-z0-9._-]*$`, be at most 32 characters, contain no `@`, and not be a key, family name or product code, or `all`. Built-in default ids such as `vanilla` or `mists` are exempt, which is why they can shadow a family (see [Choosing a target](#choosing-a-target-with--t)).
 
@@ -2282,7 +2283,7 @@ It reads the binary and `config.toml`, and whether a credential is there: the `O
 
 `data`, in this order:
 
-- `version`, `contract_version` (every envelope's `schema_version`, `"1.0"`), `build_id` (the build's 16 hex digits, which a stored plan records) and `guide_digest` (`sha256:` and the agent guide's 64 hex digits, as its stamp line writes them);
+- `version`, `contract_version` (every envelope's `schema_version`, `"1.1"`), `build_id` (the build's 16 hex digits, which a stored plan records) and `guide_digest` (`sha256:` and the agent guide's 64 hex digits, as its stamp line writes them);
 - `features`: one word per surface this build has (`json_envelope`, `stored_plans`, `doctor`, …);
 - `commands`: every command path in help's order, each `{path, description, group, mutates, json, dictionary, exit_codes, stores_plan, binds, network, aliases, args, flags, data_schema}`. `json` is always `true`; `dictionary` names the exit dictionary its `exit_codes` come from (`general`, or `doctor`); `binds` says whether a run binds to its preview with `--if-match`; `network` is `none`, `optional` or `required`. `args` lists its positionals as `{name, value_name, required, multiple, default, possible_values}`, and `flags` its own flags, then the global ones, as `{long, short, aliases, value_name, takes_value, required, multiple, default, possible_values, conflicts_with, requires, global, description}`. `required` marks a flag the command is refused without (`doctor gc --before`). `possible_values` is the exact list a value must come from, `null` for any text. `data_schema` is the command that prints its data's JSON Schema (`omaddons robot-docs schema backup restore`);
 - `exit_codes`: `{general, doctor}`, the two exit dictionaries, each code with its `name` and `meaning` (and, for `general`, `retryable`: `null` for `ok` and `failed`);
@@ -2305,7 +2306,7 @@ The human form names the build, counts the commands by group, prints help's exit
 
 ```text
 $ omaddons capabilities
-omaddons 0.1.0 · contract 1.0 · build e49d5dfe18e17d93
+omaddons 0.1.0 · contract 1.1 · build e49d5dfe18e17d93
 58 commands: look 18 · change 18 · setup 22 (omaddons help <command> for one)
 Exit codes:
   0  ok            Success, including partial success (partial: true)
@@ -2372,7 +2373,7 @@ With `--json`, bare help's `data` is `{name, version, usage, commands, global_fl
 ### Success
 
 ```json
-{"ok":true,"schema_version":"1.0","tool_version":"0.1.0","command":"install","exit_code":0,"partial":false,
+{"ok":true,"schema_version":"1.1","tool_version":"0.1.0","command":"install","exit_code":0,"partial":false,
  "data":{"dry_run":false,"target":{"id":"retail","key":"01M51EX04HHWM46XE9F2B9JXED"},"tx":"01M51EX645RCVFN6Z4ZV5GRWVS","kind":"install",
    "items":[{"request":"./Bar-2.1.0.zip","ref":"file:/home/me/src/Bar-2.1.0.zip","name":"Bar","status":"installed",
      "from_version":null,"to_version":"2.1.0","version_confidence":"toc","channel":"stable",
@@ -2389,7 +2390,7 @@ With `--json`, bare help's `data` is `{name, version, usage, commands, global_fl
 ### Failure
 
 ```json
-{"ok":false,"schema_version":"1.0","tool_version":"0.1.0","command":"install","exit_code":3,
+{"ok":false,"schema_version":"1.1","tool_version":"0.1.0","command":"install","exit_code":3,
  "error":{"code":"target_ambiguous","message":"./Bar-2.1.0.zip is compatible with 2 targets: era, retail",
    "fix":"omaddons install ./Bar-2.1.0.zip -t era","fix_argv":["omaddons","install","./Bar-2.1.0.zip","-t","era"],
    "alternatives":[{"display":"omaddons install ./Bar-2.1.0.zip -t retail","argv":["omaddons","install","./Bar-2.1.0.zip","-t","retail"]}],
@@ -2402,7 +2403,7 @@ With `--json`, bare help's `data` is `{name, version, usage, commands, global_fl
 | Field | Type | Meaning |
 |---|---|---|
 | `ok` | bool | `true` exactly when `exit_code` is 0 |
-| `schema_version` | string | `"1.0"` |
+| `schema_version` | string | `"1.1"` (contract 1.0 at the first tag, `v0.1.0`; see [Stability](#stability)) |
 | `tool_version` | string | the binary's version |
 | `command` | string | the command's canonical path: `install`, `targets add`, `auth github`; a bare command that runs its default action names that action (`backup` is `backup list`, `omarchy` is `omarchy status`); `help` for help, `version` for `--version`, and `omaddons` when no command could be read from the arguments |
 | `exit_code` | int | the process exit code |
@@ -2708,7 +2709,7 @@ Three kinds of vocabulary keep their own spelling, and only these:
 
 ### Stability
 
-The envelope's `schema_version` (1.0) is the contract's version; `capabilities` reports it as `contract_version`. The contract is pinned by a semantic manifest, `tests/contract/manifest.json`, generated from the code: every command path, flag and positional with its default, value grammar, arity, conflicts and requirements; every output field with its type (integer and number apart), whether it is always present, whether it may be null, its bounds, enum values and variants; every error code with its exit, retryability and typed `details`; every warning code, action, failure-mode id, event, phase, log level, exit code, doctor repair operation, release environment variable, `config.toml` key and `addons.toml` key; and every persisted file kind with its own version. `tests/contract/wire_names.txt` prints the same one name per line, for review. Both are regenerated with `OMADDONS_UPDATE_WIRE_NAMES=1 cargo test --test integration contract::wire_names`, and the gate fails when they differ from the code.
+The envelope's `schema_version` is the contract's version; `capabilities` reports it as `contract_version`. It was 1.0 at the first tag, and is 1.1 since the first additive change after it (`display_name` on `status` and `targets`, and the `targets.<id>.name` setting). The contract is pinned by a semantic manifest, `tests/contract/manifest.json`, generated from the code: every command path, flag and positional with its default, value grammar, arity, conflicts and requirements; every output field with its type (integer and number apart), whether it is always present, whether it may be null, its bounds, enum values and variants; every error code with its exit, retryability and typed `details`; every warning code, action, failure-mode id, event, phase, log level, exit code, doctor repair operation, release environment variable, `config.toml` key and `addons.toml` key; and every persisted file kind with its own version. `tests/contract/wire_names.txt` prints the same one name per line, for review. Both are regenerated with `OMADDONS_UPDATE_WIRE_NAMES=1 cargo test --test integration contract::wire_names`, and the gate fails when they differ from the code.
 
 Since the first tag (`v0.1.0`, contract 1.0), the gate also compares the contract with the released baseline, `tests/contract/released/<version>.json` (today `1.0.json`): a copy of the last released manifest with its provenance (contract version, tag, commit and date), which only the release step writes. A change that only adds (an output field, an enum value or a variant, a field now always present, a narrower bound; a flag, an alias, a value or an optional positional) needs a higher minor `schema_version`, such as 1.1. A change that removes or loosens anything (an output field removed, made optional or nullable, or moved between variants, an integer that may now be a fraction, a wider bound; a flag or value removed, a new requirement or conflict, a required positional, a narrower grammar, a changed default), or one the comparison cannot place, needs a higher major, such as 2.0. A persisted file's schema change needs that file kind's own version bump, not the contract's. Regenerating the golden never satisfies the comparison, and nothing in the golden's header switches it off: only the version bump does, and each bump is recorded in a comment on the vision bead. A bump also changes `schema_version` in every envelope snapshot, which are re-accepted with it.
 
@@ -2989,7 +2990,7 @@ label = "my 3.3.5a server"
 | `limits.backup_auto_keep_days` | `7` | Local days of automatic backups that backup retention keeps per target: for each of the newest days holding any, its first pre-change backup (and first stable one), last post-session backup, and every before-restore one (1 to 100) |
 | `sources.<id>.enabled` | `true` | `false` turns a source off (`github`, `git`, `url`, `local`, `wowi`, `tukui`, `wowace`): its refs fail with `source_disabled` and make no request, and `outdated` reports its addons `unchecked`. An id outside that list is accepted and ignored, without a warning |
 | `sources.github.credential` | none | Where the GitHub token comes from: `{ env = "…" }`, `{ file = "…" }` or `{ command = [...] }` (see **Tokens** under [Network and privacy](#network-and-privacy)) |
-| `targets.<id or key>.label`, `.family` | none | [Per-target overrides](#per-target-overrides) |
+| `targets.<id or key>.label`, `.family`, `.name` | none | [Per-target overrides](#per-target-overrides) |
 | `client_rules.<row>.<field>`, `rules.*` | built in | [Rules overrides](#rules-overrides-advanced) |
 
 ### Per-target overrides
@@ -2997,10 +2998,13 @@ label = "my 3.3.5a server"
 ```toml
 [targets.retail]
 label = "main"               # shown in status and targets
+name = "My main"             # display_name in status and targets (the widget shows it)
 
 [targets.mystery]
 family = "wrath-legacy"      # a misdetected or unreadable client: re-picks its load rules
 ```
+
+`name` replaces the client's `display_name` (plain text, cut to 200 characters; control characters are dropped). `omaddons config set targets.retail.name ""` restores the built-in name.
 
 A `family` override re-picks the client's load-rules row and its interface, as detection would have for that family. A client whose version cannot be read gets the family's current row: on Battle.net, `vanilla` loads `_Vanilla.toc` and honours `AllowLoadGameType`. Its interface then comes from the client's own `WTF/Config.wtf` (`lastAddonVersion`), when that lies in the family's range. Otherwise installs are judged by the family's interface range alone, and `out_of_date` is not reported. On a `*-legacy` row, the client's `lastAddonVersion` always wins. A family with no row for the install kind, such as a `*-legacy` family on a Battle.net folder, keeps the fallback rules. `unknown_flavor` is not reported for a client whose family an override sets.
 

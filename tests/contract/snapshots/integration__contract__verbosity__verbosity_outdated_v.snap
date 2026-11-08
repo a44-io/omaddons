@@ -122,7 +122,7 @@ expression: s.stable(&checked.envelope)
   "exit_code": 0,
   "ok": true,
   "partial": false,
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "tool_version": "<version>",
   "warnings": []
 }

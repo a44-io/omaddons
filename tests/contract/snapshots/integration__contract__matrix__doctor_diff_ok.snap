@@ -1,6 +1,5 @@
 ---
 source: tests/contract/matrix.rs
-assertion_line: 1454
 expression: s.stable(&c.envelope)
 ---
 {
@@ -12,7 +11,7 @@ expression: s.stable(&c.envelope)
   "exit_code": 0,
   "ok": true,
   "precondition": "<precondition>",
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "since": null,
   "tool_version": "<version>",
   "warnings": []

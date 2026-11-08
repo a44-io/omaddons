@@ -12,6 +12,7 @@ expression: s.stable(&c.envelope)
       {
         "client_dir": "<root>/elsewhere/wow-335",
         "default": false,
+        "display_name": "Wrath 3.3.5a private server",
         "family": "wrath-legacy",
         "found_by": "manual",
         "id": "wotlk",
@@ -31,7 +32,7 @@ expression: s.stable(&c.envelope)
   "exit_code": 0,
   "ok": true,
   "partial": false,
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "tool_version": "<version>",
   "warnings": []
 }

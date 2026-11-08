@@ -206,6 +206,10 @@ pub enum LastChangeState {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct StatusTarget {
     pub id: String,
+    /// The name a player knows the client by ("Classic Era", "Wrath 3.3.5a private
+    /// server"): `targets.<id>.name` from config.toml, else omaddons' rule; unique in the
+    /// envelope (a shared one adds the id). `-t` still takes the id.
+    pub display_name: String,
     /// `null` until the target is registered.
     pub key: Option<TargetKey>,
     pub registered: bool,
@@ -861,8 +865,20 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             auto_mode,
             errors_now,
         );
+        let modes = world.table.mode_names(t.product.as_deref());
         let target = StatusTarget {
             id: t.id.clone(),
+            display_name: super::naming::display_name(&super::naming::Client {
+                id: &t.id,
+                family: t.family,
+                kind: t.kind,
+                install_kind: t.install_kind,
+                product: t.product.as_deref(),
+                modes: &modes,
+                version: t.version,
+                legacy: t.rules.legacy,
+                chosen: super::naming::chosen(&world.config, &t.id, t.key.as_ref()),
+            }),
             key: t.key,
             registered: t.key.is_some(),
             // ubs:ignore — a target key is a public ULID identifier, not a secret
@@ -871,7 +887,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             kind: t.kind,
             install_kind: t.install_kind,
             product: t.product.clone(),
-            modes: world.table.mode_names(t.product.as_deref()),
+            modes,
             version: t.version,
             interface: t.interface,
             label: t.label.clone(),
@@ -907,21 +923,36 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
     for e in &missing {
         let record = load_record(&world.paths, &e.key)?.value;
         let attention = vec![Attention::TargetMissing];
+        let install_kind = if e.flavor_dir.is_some() {
+            InstallKind::Battlenet
+        } else {
+            InstallKind::Custom
+        };
+        let modes = world.table.mode_names(e.product.as_deref());
         let target = StatusTarget {
             id: e.id.clone(),
+            // A missing client's family is unknown: its product's mode names it, else
+            // its id does.
+            display_name: super::naming::display_name(&super::naming::Client {
+                id: &e.id,
+                family: Family::Unknown,
+                kind: TargetKind::Live,
+                install_kind,
+                product: e.product.as_deref(),
+                modes: &modes,
+                version: ClientVersion::new(0, 0, 0),
+                legacy: false,
+                chosen: super::naming::chosen(&world.config, &e.id, Some(&e.key)),
+            }),
             key: Some(e.key),
             registered: true,
             // ubs:ignore — a target key is a public ULID identifier, not a secret
             default: world.registry.default == Some(e.key),
             family: Family::Unknown,
             kind: TargetKind::Live,
-            install_kind: if e.flavor_dir.is_some() {
-                InstallKind::Battlenet
-            } else {
-                InstallKind::Custom
-            },
+            install_kind,
             product: e.product.clone(),
-            modes: world.table.mode_names(e.product.as_deref()),
+            modes,
             version: ClientVersion::new(0, 0, 0),
             interface: 0,
             label: None,
@@ -948,6 +979,15 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
         targets.push(target);
     }
     targets.sort_by(|a, b| a.id.cmp(&b.id));
+    // Display names are unique in one envelope: a shared one adds the client's id.
+    let mut names: Vec<(String, String)> = targets
+        .iter()
+        .map(|t| (t.id.clone(), t.display_name.clone()))
+        .collect();
+    super::naming::disambiguate(&mut names);
+    for (target, (_, name)) in targets.iter_mut().zip(names) {
+        target.display_name = name;
+    }
 
     // The bar widget: file reads only, no subprocess (E4).
     let widget = omarchy_status::widget(&world.paths);
@@ -1660,6 +1700,7 @@ pub(crate) fn test_target(
 ) -> StatusTarget {
     StatusTarget {
         id: id.to_owned(),
+        display_name: "Retail".to_owned(),
         key: None,
         registered: true,
         default: false,

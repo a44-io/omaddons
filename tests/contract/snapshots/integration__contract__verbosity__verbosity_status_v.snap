@@ -112,6 +112,7 @@ expression: s.stable(&checked.envelope)
         },
         "client_dir": "<root>/home/Games/battlenet/drive_c/Program Files (x86)/World of Warcraft/_classic_",
         "default": false,
+        "display_name": "Mists of Pandaria Classic",
         "drift": [],
         "errors": {
           "addons": 0,
@@ -189,6 +190,7 @@ expression: s.stable(&checked.envelope)
         },
         "client_dir": "<root>/home/Games/battlenet/drive_c/Program Files (x86)/World of Warcraft/_retail_",
         "default": false,
+        "display_name": "Retail",
         "drift": [],
         "errors": {
           "addons": 1,
@@ -255,7 +257,7 @@ expression: s.stable(&checked.envelope)
   "exit_code": 0,
   "ok": true,
   "partial": false,
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "tool_version": "<version>",
   "warnings": []
 }

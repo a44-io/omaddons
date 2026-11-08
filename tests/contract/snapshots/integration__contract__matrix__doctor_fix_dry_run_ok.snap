@@ -21,7 +21,7 @@ expression: s.stable(&c.envelope)
   "precondition": "<precondition>",
   "run_dir": "<root>/state/omaddons/doctor/runs/<run>",
   "run_id": "<run>",
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "skipped": [
     {
       "id": "fm-network-credential-rejected",

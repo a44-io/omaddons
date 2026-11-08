@@ -397,7 +397,7 @@ expression: envelope
   },
   "ok": true,
   "partial": false,
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "tool_version": "<version>",
   "warnings": []
 }

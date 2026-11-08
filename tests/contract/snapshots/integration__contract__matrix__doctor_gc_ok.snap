@@ -1,6 +1,5 @@
 ---
 source: tests/contract/matrix.rs
-assertion_line: 2690
 expression: redacted(&c.envelope)
 ---
 {
@@ -68,7 +67,7 @@ expression: redacted(&c.envelope)
   "ok": true,
   "precondition": null,
   "remaining": 0,
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "tool_version": "<version>",
   "warnings": []
 }
