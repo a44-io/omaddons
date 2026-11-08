@@ -1759,6 +1759,62 @@ var UPDATE_KINDS = { "update_available": "update", "pinned": "pinned", "blocked"
 var UPDATE_ORDER = ["update", "pinned", "blocked", "failed"]
 var UPDATE_LABELS = { "update": "", "pinned": "pinned", "blocked": "blocked", "failed": "check failed" }
 
+// ------------------------------------------------------------------ colours (§5.1)
+
+// A colour as {r, g, b} in 0..1: QML's color values, {r, g, b} objects and "#rrggbb"
+// (or "#aarrggbb", alpha ignored) strings all read; anything else is null.
+function rgbOf(c) {
+  if (c && typeof c === "object" && typeof c.r === "number" && typeof c.g === "number" && typeof c.b === "number")
+    return { "r": c.r, "g": c.g, "b": c.b }
+  var text = String(c === undefined || c === null ? "" : c)
+  var m = text.match(/^#(?:[0-9a-fA-F]{2})?([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})$/)
+  if (!m) return null
+  return { "r": parseInt(m[1], 16) / 255, "g": parseInt(m[2], 16) / 255, "b": parseInt(m[3], 16) / 255 }
+}
+
+function luminance(rgb) {
+  var lin = function(v) { return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4) }
+  return 0.2126 * lin(rgb.r) + 0.7152 * lin(rgb.g) + 0.0722 * lin(rgb.b)
+}
+
+// The WCAG contrast ratio of two colours (1 to 21), or 1 when either does not read.
+function contrastRatio(a, b) {
+  var x = rgbOf(a)
+  var y = rgbOf(b)
+  if (!x || !y) return 1
+  var lx = luminance(x)
+  var ly = luminance(y)
+  return (Math.max(lx, ly) + 0.05) / (Math.min(lx, ly) + 0.05)
+}
+
+// `fg` laid over `bg` at `alpha`, opaque, as "#rrggbb".
+function mixColor(fg, bg, alpha) {
+  var f = rgbOf(fg)
+  var b = rgbOf(bg)
+  if (!f || !b) return "#000000"
+  var hex = function(v) { return ("0" + Math.round(Math.max(0, Math.min(1, v)) * 255).toString(16)).slice(-2) }
+  return "#" + hex(f.r * alpha + b.r * (1 - alpha)) + hex(f.g * alpha + b.g * (1 - alpha)) + hex(f.b * alpha + b.b * (1 - alpha))
+}
+
+var DIM_ALPHA_FLOOR = 0.55
+var DIM_MIN_CONTRAST = 4.5
+
+// The alpha `dimColor` lays the foreground at: the smallest from 0.55 up, in steps of
+// 0.01, at which it reaches 4.5:1 on `bg`; 1 when even the foreground does not.
+function dimAlpha(fg, bg) {
+  for (var step = Math.round(DIM_ALPHA_FLOOR * 100); step <= 100; step++) {
+    if (contrastRatio(mixColor(fg, bg, step / 100), bg) >= DIM_MIN_CONTRAST) return step / 100
+  }
+  return 1
+}
+
+// Secondary text (§5.1): the foreground over the popup background, dimmed as far as
+// 4.5:1 allows. Unlike Qt.darker it dims on a light theme too, where darker would
+// stand out more than the foreground (UX-44).
+function dimColor(fg, bg) {
+  return mixColor(fg, bg, dimAlpha(fg, bg))
+}
+
 // `list` sorted by `compare`, items it calls equal kept in their input order. Qt's V4
 // engine does not sort stably (bun's does), so a comparator that ties would shuffle the
 // CLI's own order: every sort of rows goes through here.
@@ -2785,6 +2841,13 @@ if (typeof module !== "undefined") {
     progressFraction: progressFraction,
     resultUndo: resultUndo,
     sourceKind: sourceKind,
+    rgbOf: rgbOf,
+    contrastRatio: contrastRatio,
+    mixColor: mixColor,
+    dimAlpha: dimAlpha,
+    dimColor: dimColor,
+    DIM_ALPHA_FLOOR: DIM_ALPHA_FLOOR,
+    DIM_MIN_CONTRAST: DIM_MIN_CONTRAST,
     stableSort: stableSort,
     updateRows: updateRows,
     updateCount: updateCount,

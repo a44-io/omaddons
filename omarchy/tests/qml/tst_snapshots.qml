@@ -6,6 +6,7 @@ import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
 import "../.."
+import "../../ui"
 import "../../Model.js" as Model
 import "../../Build.js" as Build
 import "Fixtures.js" as Fixtures
@@ -24,7 +25,7 @@ TestCase {
   when: windowShown
   visible: true
   width: 620
-  height: 800
+  height: 1100
 
   // The panel as the bar's KeyboardPanel sizes it (BarWidget.qml): 540 wide by default,
   // at most 720 tall, inside the popup card.
@@ -63,6 +64,109 @@ TestCase {
         y: testCase.cardPadding
         width: testCase.panelWidth
         height: Math.min(contentImplicitHeight, testCase.panelMaxHeight)
+      }
+    }
+  }
+
+  // The shared components of omarchy/ui/ (§5), each in its states, in the popup card:
+  // a row default, cursored, pending, inert and with a long name; the header, chips,
+  // the empty state, the three notices, progress, a badge and a key hint.
+  Component {
+    id: galleryComponent
+    BorderSurface {
+      id: gallery
+      property int panelWidth: 540
+      readonly property var rowActions: [
+        { "name": "update", "glyph": String.fromCodePoint(0xF0CE1), "tooltip": "Update (u)" },
+        { "name": "notes", "glyph": String.fromCodePoint(0xF0DC9), "tooltip": "Notes (e)" },
+        { "name": "pin", "glyph": String.fromCodePoint(0xF0403), "tooltip": "Pin (p)" }
+      ]
+      x: 10
+      y: 10
+      width: panelWidth + testCase.cardPadding * 2
+      height: galleryColumn.implicitHeight + testCase.cardPadding * 2
+      color: Commons.Color.popups.background
+      borderSpec: Border.flat(Commons.Color.popups.border, 2)
+      radius: Style.cornerRadius
+
+      Column {
+        id: galleryColumn
+        x: testCase.cardPadding
+        y: testCase.cardPadding
+        width: gallery.panelWidth
+        spacing: Style.spacing.md
+
+        SectionHeader { width: parent.width; title: "Retail · running"; count: "3 updates"; buttonText: "Update Retail (3)" }
+        AddonRow {
+          width: parent.width; title: "DBM"; fromVersion: "12.1.14"; toVersion: "12.1.15"; band: "accent"
+          glyph: String.fromCodePoint(0xF0CE1); meta: "2 days ago · then /reload in game"; chips: [{ "text": "Retail" }]
+        }
+        AddonRow {
+          width: parent.width; title: "Plater"; fromVersion: "Plater-v661"; toVersion: "Plater-v662"; band: "accent"
+          glyph: String.fromCodePoint(0xF0CE1); meta: "5 h ago"; cursored: true; actions: gallery.rowActions
+          chips: [{ "text": "Retail" }, { "text": "beta" }]
+        }
+        AddonRow {
+          width: parent.width; title: "WeakAuras"; fromVersion: "5.19.2"; toVersion: "5.20.0"; pending: true
+          pendingText: "Updating… downloading (2 of 3)"; glyph: String.fromCodePoint(0xF0CE1)
+        }
+        AddonRow {
+          width: parent.width; title: "Details_DamageMeter_StreamerModeAndPluginsCollection_Classic"; toVersion: "v662.20251109"
+          band: "urgent"; glyph: String.fromCodePoint(0xF0DC9); meta: "WoWInterface · files changed on disk (3)"
+          chips: [{ "text": "changed on disk", "urgent": true }, { "text": "Retail" }]
+        }
+        AddonRow {
+          width: parent.width; title: "Questie"; toVersion: "12.1.1"; inert: true; glyph: String.fromCodePoint(0xF05E0)
+          meta: "inert: the panel is from another version"
+        }
+        Separator { width: parent.width }
+        Row {
+          spacing: Style.spacing.md
+          Chip { text: "Classic Era" }
+          Chip { text: "files changed"; urgent: true }
+          KeyHint { key: "u" }
+          KeyHint { key: "Ctrl+Z" }
+          Badge { count: 3 }
+          Badge { count: 2; urgent: true }
+        }
+        ProgressBar { width: parent.width; fraction: 0.4 }
+        ProgressBar { width: parent.width }
+        EmptyState {
+          width: parent.width; glyph: String.fromCodePoint(0xF05E0); sentence: "All up to date. Checked 25 min ago."
+          actionText: "Check now"; actionKey: "c"
+        }
+        NoticeCard {
+          width: parent.width; kind: "failure"; title: "Couldn't reach GitHub"; body: "Check the connection."
+          buttons: [{ "name": "retry", "text": "Try again" }]; dismissible: true
+        }
+        NoticeCard { width: parent.width; kind: "info"; title: "Some errors couldn't be read yet: the game was writing." }
+        NoticeCard { width: parent.width; kind: "success"; title: "Updated 3 addons on Retail"; buttons: [{ "name": "undo", "text": "Undo" }] }
+      }
+    }
+  }
+
+  // An open sheet over a panel-sized area: the plan sheet's shape.
+  Component {
+    id: sheetGalleryComponent
+    Rectangle {
+      property int panelWidth: 540
+      x: 10
+      y: 10
+      width: panelWidth + testCase.cardPadding * 2
+      height: 360
+      color: Commons.Color.popups.background
+
+      Sheet {
+        anchors.fill: parent
+        opened: true
+        title: "Remove DBM from Retail?"
+        confirmText: "Remove"
+        destructive: true
+        confirmGlyph: String.fromCodePoint(0xF01B4)
+        selectedIndex: 0
+
+        PlainLabel { width: parent.width; text: "DBM 12.1.15 (1 folder)" }
+        PlainLabel { width: parent.width; text: "Removes the folder DBM-Core. Undo brings it back."; color: Model.dimColor(Commons.Color.foreground, Commons.Color.popups.background) }
       }
     }
   }
@@ -889,6 +993,21 @@ TestCase {
     verify(service.lastError !== null, "an error card")
     shoot("action-error-fix")
   }
+
+  // ---------------------------------------------------------------- the components (§5)
+
+  function shootGallery(component, width, name) {
+    var item = component.createObject(testCase, { "panelWidth": width })
+    verify(item !== null)
+    var image = save(item, name)
+    compare(image.width, width + cardPadding * 2, name + ": the gallery's width")
+    item.destroy()
+  }
+
+  function test_components_at_540() { shootGallery(galleryComponent, 540, "components-540") }
+  function test_components_at_400() { shootGallery(galleryComponent, 400, "components-400") }
+  function test_sheet_at_540() { shootGallery(sheetGalleryComponent, 540, "components-sheet-540") }
+  function test_sheet_at_400() { shootGallery(sheetGalleryComponent, 400, "components-sheet-400") }
 
   // ---------------------------------------------------------------- the bar button
 

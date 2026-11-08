@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Commons
 
 // The one text component for strings that come from the CLI (addon names, messages,
 // commands): always plain text, so a name like "<b>x</b>" or "<img src=…>" shows as
@@ -27,7 +28,9 @@ Item {
     textFormat: Text.PlainText
     elide: Text.ElideRight
     wrapMode: Text.NoWrap
-    color: Color.foreground
+    // Qualified: a bare `Color` does not reach the qs.Commons singleton here, so an
+    // unset colour drew black.
+    color: Commons.Color.foreground
     font.family: Style.font.family
     font.pixelSize: Style.font.body
   }

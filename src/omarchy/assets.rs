@@ -23,6 +23,41 @@ pub const ASSETS: &[(&str, &str)] = &[
     ("Store.js", include_str!("../../omarchy/Store.js")),
     (MANIFEST, include_str!("../../omarchy/manifest.json")),
     (
+        "ui/AddonRow.qml",
+        include_str!("../../omarchy/ui/AddonRow.qml"),
+    ),
+    ("ui/Badge.qml", include_str!("../../omarchy/ui/Badge.qml")),
+    ("ui/Chip.qml", include_str!("../../omarchy/ui/Chip.qml")),
+    (
+        "ui/EmptyState.qml",
+        include_str!("../../omarchy/ui/EmptyState.qml"),
+    ),
+    (
+        "ui/KeyHint.qml",
+        include_str!("../../omarchy/ui/KeyHint.qml"),
+    ),
+    (
+        "ui/NoticeCard.qml",
+        include_str!("../../omarchy/ui/NoticeCard.qml"),
+    ),
+    (
+        "ui/ProgressBar.qml",
+        include_str!("../../omarchy/ui/ProgressBar.qml"),
+    ),
+    (
+        "ui/SectionHeader.qml",
+        include_str!("../../omarchy/ui/SectionHeader.qml"),
+    ),
+    (
+        "ui/Separator.qml",
+        include_str!("../../omarchy/ui/Separator.qml"),
+    ),
+    ("ui/Sheet.qml", include_str!("../../omarchy/ui/Sheet.qml")),
+    (
+        "ui/VirtualList.qml",
+        include_str!("../../omarchy/ui/VirtualList.qml"),
+    ),
+    (
         "views/BackupsView.qml",
         include_str!("../../omarchy/views/BackupsView.qml"),
     ),

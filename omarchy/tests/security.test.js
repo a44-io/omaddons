@@ -145,6 +145,12 @@ function checkRendering(files) {
         if (/\b(modelData|svc\.|row\.|entry\.)/.test(text)) {
           out.push(violation(name, found.line, found.match[2] + " shows CLI data (" + text.trim() + "); use PlainLabel"))
         }
+        // The shared components take their strings as properties, so the names above
+        // never appear there: a component's Text shows only a literal or a glyph, and
+        // every other string goes through PlainLabel (1n2p.12).
+        if (name.startsWith("ui/") && !/^\s*text:\s*("[^"]*"|'[^']*')\s*$/.test(text) && !/fromCodePoint|glyph/i.test(text)) {
+          out.push(violation(name, found.line, found.match[2] + " in a shared component shows a string (" + text.trim() + "); use PlainLabel"))
+        }
       }
     }
   }
@@ -672,6 +678,8 @@ describe("the scans cover the finished widget", () => {
 const PLANTED = [
   ["1. rendering", checkRendering, "a rich Text bound to svc.errors in a view",
     plant(REAL, "views/IssuesView.qml", "Item {\n", '  Text { text: svc.errors ? svc.errors.targets[0].addons[0].errors[0].message : "" }\n'), /Text without textFormat|shows CLI data/],
+  ["1. rendering", checkRendering, "a shared component showing its title through a plain Text",
+    plant(REAL, "ui/AddonRow.qml", "  id: root\n", "  Text {\n    textFormat: Text.PlainText\n    text: root.title\n  }\n"), /shared component shows a string/],
   ["1. rendering", checkRendering, "PlainLabel exposing textFormat",
     plant(REAL, "PlainLabel.qml", "  property alias text: label.text\n", "  property alias textFormat: label.textFormat\n"), /lets a user set textFormat/],
   ["2. process launching", checkLaunching, "an omaddons Process without environment",

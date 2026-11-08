@@ -1,0 +1,317 @@
+import QtQuick
+import QtTest
+import qs.Commons as Commons
+import "../../ui"
+import "../../Model.js" as Model
+
+// The shared components of omarchy/ui/ (design doc §5): each renders what it is handed,
+// fires its signals, elides as §5.3 says at 400 wide, and decides nothing. The Sheet's
+// fresh-press guard, and VirtualList's delegate reuse and cursor following.
+TestCase {
+  id: testCase
+  name: "Components"
+  when: windowShown
+  visible: true
+  width: 600
+  height: 720
+
+  property var made: []
+
+  function make(component, props) {
+    var item = component.createObject(testCase, props || {})
+    verify(item !== null)
+    made = made.concat([item])
+    return item
+  }
+
+  function cleanup() {
+    for (var i = 0; i < made.length; i++) made[i].destroy()
+    made = []
+  }
+
+  function child(item, name) {
+    var found = findChild(item, name)
+    verify(found !== null, "no " + name)
+    return found
+  }
+
+  Component { id: rowComponent; AddonRow { width: 540 } }
+  Component { id: chipComponent; Chip {} }
+  Component { id: headerComponent; SectionHeader { width: 540 } }
+  Component { id: emptyComponent; EmptyState { width: 540 } }
+  Component { id: cardComponent; NoticeCard { width: 540 } }
+  Component { id: progressComponent; ProgressBar { width: 400 } }
+  Component { id: badgeComponent; Badge {} }
+  Component { id: hintComponent; KeyHint {} }
+  Component { id: separatorComponent; Separator {} }
+
+  Component {
+    id: sheetComponent
+    Sheet {
+      width: 540
+      height: 600
+      title: "Remove DBM from Retail?"
+      confirmText: "Remove"
+      Text { textFormat: Text.PlainText; text: "DBM 12.1.15 (1 folder)" }
+    }
+  }
+
+  Component {
+    id: listComponent
+    VirtualList {
+      width: 400
+      height: 400
+      model: 500
+      delegate: Rectangle {
+        required property int index
+        width: ListView.view ? ListView.view.width : 0
+        height: 40
+        Component.onCompleted: ListView.view.built++
+      }
+    }
+  }
+
+  readonly property var actions: [
+    { "name": "update", "glyph": String.fromCodePoint(0xF0CE1), "tooltip": "Update (u)" },
+    { "name": "notes", "glyph": String.fromCodePoint(0xF0DC9), "tooltip": "Notes (e)" },
+    { "name": "pin", "glyph": String.fromCodePoint(0xF0403), "tooltip": "Pin (p)" }
+  ]
+
+  // ---- AddonRow
+
+  function test_a_row_shows_what_it_is_handed() {
+    var row = make(rowComponent, { "title": "DBM", "fromVersion": "12.1.14", "toVersion": "12.1.15", "meta": "2 days ago",
+      "chips": [{ "text": "Retail" }], "band": "accent", "glyph": String.fromCodePoint(0xF0CE1), "actions": actions })
+    compare(child(row, "title").text, "DBM")
+    compare(child(row, "meta").text, "2 days ago")
+    verify(child(row, "band").visible)
+    compare(child(row, "band").color, row.accent)
+    compare(child(row, "chips").children.length >= 1, true)
+    compare(row.shownActions.length, 0, "actions show on the cursored row only")
+    row.cursored = true
+    compare(row.shownActions.length, 3)
+    verify(row.Accessible.name.indexOf("DBM, 12.1.14 to 12.1.15") === 0, row.Accessible.name)
+  }
+
+  function test_a_row_signals_its_activation_and_actions() {
+    var row = make(rowComponent, { "title": "DBM", "cursored": true, "actions": actions, "meta": "m" })
+    var activated = 0
+    var named = []
+    row.activated.connect(function() { activated++ })
+    row.action.connect(function(name) { named.push(name) })
+    waitForRendering(row)
+    mouseClick(row, 40, row.height / 2)
+    compare(activated, 1, "a click on the row opens it")
+    var pin = child(row, "action_pin")
+    mouseClick(pin, pin.width / 2, pin.height / 2)
+    compare(named, ["pin"], "an action button names its action")
+    compare(activated, 1, "the action's click is the button's, not the row's")
+  }
+
+  function test_a_pending_row_shows_its_verb_and_no_actions() {
+    var row = make(rowComponent, { "title": "Plater", "meta": "GitHub", "cursored": true, "actions": actions,
+      "pending": true, "pendingText": "Updating… downloading (2 of 3)" })
+    compare(child(row, "meta").text, "Updating… downloading (2 of 3)")
+    compare(child(row, "glyph").text, String.fromCodePoint(0xF04E6), "the spinner replaces the glyph")
+    compare(row.shownActions.length, 0)
+  }
+
+  function test_an_inert_row_is_dimmed_without_actions() {
+    var row = make(rowComponent, { "title": "DBM", "cursored": true, "actions": actions, "inert": true })
+    compare(row.opacity, 0.45)
+    compare(row.shownActions.length, 0)
+  }
+
+  function test_at_400_the_title_elides_and_the_versions_never_do() {
+    var row = make(rowComponent, { "width": 400, "title": "Details_DamageMeter_StreamerModeAndPluginsCollection_Classic",
+      "fromVersion": "v661.20251108", "toVersion": "v662.20251109", "chips": [{ "text": "Retail" }, { "text": "beta" }],
+      "actions": actions, "cursored": true })
+    waitForRendering(row)
+    verify(row.narrow)
+    verify(row.titleTruncated, "the long title elides")
+    var versions = child(row, "versions")
+    verify(versions.x + versions.width <= row.width, "the versions stay inside the row")
+    compare(row.shownChips.length, 1, "at 400 only the first chip stays")
+    compare(row.shownActions.length, 1, "at 400 only the main action shows")
+  }
+
+  // ---- Chip, SectionHeader, KeyHint, Separator
+
+  function test_an_urgent_chip_carries_its_glyph() {
+    var calm = make(chipComponent, { "text": "Retail" })
+    verify(!child(calm, "chipGlyph").visible)
+    var urgent = make(chipComponent, { "text": "files changed", "urgent": true })
+    verify(child(urgent, "chipGlyph").visible, "never urgent by colour alone")
+    compare(child(urgent, "chipText").text, "files changed")
+  }
+
+  function test_a_section_header_shows_its_title_count_and_button() {
+    var header = make(headerComponent, { "title": "Retail", "count": "3 updates", "buttonText": "Update Retail (3)" })
+    compare(child(header, "sectionTitle").text, "Retail")
+    compare(child(header, "sectionCount").text, "3 updates")
+    var clicks = 0
+    header.buttonClicked.connect(function() { clicks++ })
+    var button = child(header, "sectionButton")
+    waitForRendering(header)
+    mouseClick(button, button.width / 2, button.height / 2)
+    compare(clicks, 1)
+    header.width = 320
+    header.title = "Wrath 3.3.5a private server on the old drive"
+    waitForRendering(header)
+    verify(header.titleTruncated, "a long title elides before the button")
+  }
+
+  function test_a_key_hint_and_a_separator_render() {
+    var hint = make(hintComponent, { "key": "Ctrl+Z" })
+    compare(child(hint, "keyText").text, "Ctrl+Z")
+    verify(hint.implicitWidth >= hint.implicitHeight)
+    var line = make(separatorComponent, { "width": 300 })
+    compare(line.height, 1)
+  }
+
+  // ---- EmptyState, NoticeCard
+
+  function test_an_empty_state_says_its_sentence_and_offers_one_action() {
+    var empty = make(emptyComponent, { "glyph": String.fromCodePoint(0xF05E0), "sentence": "All up to date. Checked 25 min ago.",
+      "actionText": "Check now", "actionKey": "c" })
+    compare(child(empty, "emptySentence").text, "All up to date. Checked 25 min ago.")
+    var fired = 0
+    empty.action.connect(function() { fired++ })
+    var button = child(empty, "emptyAction")
+    waitForRendering(empty)
+    mouseClick(button, button.width / 2, button.height / 2)
+    compare(fired, 1)
+  }
+
+  function test_a_notice_card_has_its_kind_glyph_and_at_most_three_buttons() {
+    var failure = make(cardComponent, { "kind": "failure", "title": "Couldn't reach GitHub", "body": "Check the connection.",
+      "buttons": [{ "name": "retry", "text": "Try again" }, { "name": "a", "text": "A" }, { "name": "b", "text": "B" },
+        { "name": "c", "text": "C" }], "dismissible": true })
+    compare(child(failure, "noticeGlyph").text, String.fromCodePoint(0xF0028))
+    compare(child(failure, "noticeGlyph").color, failure.urgent)
+    verify(findChild(failure, "noticeButton_2") !== null)
+    compare(findChild(failure, "noticeButton_3"), null, "a fourth button is never drawn")
+    var names = []
+    failure.clicked.connect(function(name) { names.push(name) })
+    var dismissed = 0
+    failure.dismissed.connect(function() { dismissed++ })
+    waitForRendering(failure)
+    var retry = child(failure, "noticeButton_0")
+    mouseClick(retry, retry.width / 2, retry.height / 2)
+    compare(names, ["retry"])
+    var close = child(failure, "noticeDismiss")
+    mouseClick(close, close.width / 2, close.height / 2)
+    compare(dismissed, 1)
+    var info = make(cardComponent, { "kind": "info", "title": "Some errors couldn't be read yet" })
+    compare(child(info, "noticeGlyph").text, String.fromCodePoint(0xF02FD))
+    var success = make(cardComponent, { "kind": "success", "title": "Updated 3 addons" })
+    compare(child(success, "noticeGlyph").text, String.fromCodePoint(0xF05E0))
+  }
+
+  // ---- Sheet
+
+  function test_a_sheet_opens_on_cancel_and_takes_every_key() {
+    var sheet = make(sheetComponent)
+    var confirmed = 0
+    var canceled = 0
+    sheet.confirmed.connect(function() { confirmed++ })
+    sheet.canceled.connect(function() { canceled++ })
+    sheet.opened = true
+    compare(sheet.selectedIndex, 0, "a new sheet starts on Cancel")
+    verify(sheet.handleKey(Qt.Key_J, "j", false), "a letter is the sheet's")
+    compare(confirmed + canceled, 0)
+    verify(sheet.handleKey(Qt.Key_Return, "", false))
+    compare([confirmed, canceled], [0, 1], "Enter on Cancel cancels")
+    sheet.selectedIndex = 0
+    verify(sheet.handleKey(Qt.Key_L, "l", false))
+    compare(sheet.selectedIndex, 1)
+    verify(sheet.handleKey(Qt.Key_Return, "", false))
+    compare(confirmed, 1, "Enter on the confirm button confirms")
+    verify(sheet.handleKey(Qt.Key_Escape, "", false))
+    compare(canceled, 2)
+  }
+
+  function test_a_held_key_never_confirms_a_sheet() {
+    var sheet = make(sheetComponent)
+    var confirmed = 0
+    sheet.confirmed.connect(function() { confirmed++ })
+    sheet.opened = true
+    sheet.selectedIndex = 1
+    verify(sheet.handleKey(Qt.Key_Y, "y", true))
+    verify(sheet.handleKey(Qt.Key_Return, "", true))
+    compare(confirmed, 0, "auto-repeat never confirms (M3-D46)")
+    verify(sheet.handleKey(Qt.Key_Y, "y", false))
+    compare(confirmed, 1, "a fresh press does")
+  }
+
+  function test_a_click_on_the_backdrop_cancels_and_a_destructive_confirm_has_its_border() {
+    var sheet = make(sheetComponent, { "destructive": true, "confirmGlyph": String.fromCodePoint(0xF01B4) })
+    var canceled = 0
+    sheet.canceled.connect(function() { canceled++ })
+    sheet.opened = true
+    waitForRendering(sheet)
+    verify(child(sheet, "destructiveBorder").visible)
+    verify(child(sheet, "sheetConfirm").text.indexOf("Remove") !== -1)
+    mouseClick(sheet, 5, 5)
+    compare(canceled, 1)
+    var card = child(sheet, "sheetCard")
+    mouseClick(card, 5, 5)
+    compare(canceled, 1, "a click on the card is not a cancel")
+  }
+
+  // ---- ProgressBar, Badge
+
+  function test_progress_is_determinate_or_a_fixed_fifteen_percent() {
+    var bar = make(progressComponent)
+    verify(bar.indeterminate)
+    compare(child(bar, "progressFill").width, 400 * 0.15)
+    bar.fraction = 0.5
+    compare(child(bar, "progressFill").width, 200)
+    bar.fraction = 3
+    compare(bar.shown, 1)
+  }
+
+  function test_a_badge_counts_and_hides_at_zero() {
+    var badge = make(badgeComponent, { "count": 0 })
+    verify(!badge.visible)
+    badge.count = 3
+    verify(badge.visible)
+    compare(child(badge, "badgeCount").text, "3")
+    compare(badge.color, badge.accent)
+    badge.urgent = true
+    compare(badge.color, badge.urgentColor)
+    badge.count = 140
+    compare(child(badge, "badgeCount").text, "99+")
+  }
+
+  // ---- VirtualList
+
+  function test_a_long_list_reuses_its_rows_and_follows_the_cursor() {
+    var list = make(listComponent)
+    waitForRendering(list)
+    for (var i = 0; i < 500; i += 25) {
+      list.cursor = i
+      wait(0)
+    }
+    list.cursor = 400
+    waitForRendering(list)
+    verify(list.built < 60, "rows built for 500: " + list.built)
+    var row = list.rowItem(400)
+    verify(row !== null, "the cursor's row is built")
+    verify(row.y >= list.contentY && row.y + row.height <= list.contentY + list.height, "and in view")
+    compare(list.rowItem(5), null, "a row far from the view is not built")
+    list.cursor = 0
+    waitForRendering(list)
+    compare(list.contentY, 0)
+  }
+
+  // ---- the dim colour (§5.1)
+
+  function test_the_dim_colour_reaches_four_and_a_half_to_one() {
+    var fg = Commons.Color.foreground
+    var bg = Commons.Color.popups.background
+    var dim = Model.dimColor(fg, bg)
+    verify(Model.contrastRatio(dim, bg) >= 4.5, dim)
+    verify(Model.contrastRatio(dim, bg) < Model.contrastRatio(fg, bg), "dimmer than the foreground")
+  }
+}

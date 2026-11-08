@@ -775,6 +775,39 @@ describe("the Updates and Installed views", () => {
     expect(M.updateRows(null, "", [])).toEqual([])
   })
 
+  // The foreground and background of six Omarchy themes (their colors.toml, 2026-11-08),
+  // light and dark: the dim colour must dim on both and stay at 4.5:1 (§5.1, UX-44).
+  const THEMES = {
+    "rose-pine": ["#575279", "#faf4ed"], "catppuccin-latte": ["#4c4f69", "#eff1f5"], "white": ["#000000", "#ffffff"],
+    "tokyo-night": ["#a9b1d6", "#1a1b26"], "everforest": ["#d3c6aa", "#2d353b"], "vantablack": ["#ffffff", "#000000"],
+  }
+
+  test("the dim colour reaches 4.5:1 and dims on light themes too", () => {
+    const alphas = {}
+    for (const [name, [fg, bg]] of Object.entries(THEMES)) {
+      const dim = M.dimColor(fg, bg)
+      expect(M.contrastRatio(dim, bg), name).toBeGreaterThanOrEqual(M.DIM_MIN_CONTRAST)
+      expect(M.contrastRatio(dim, bg), name + ": dimmer than the foreground").toBeLessThan(M.contrastRatio(fg, bg))
+      alphas[name] = M.dimAlpha(fg, bg)
+    }
+    // The values the design doc's §5.1 table quotes.
+    expect(alphas).toEqual({ "rose-pine": 0.84, "catppuccin-latte": 0.82, "white": 0.55, "tokyo-night": 0.69,
+      "everforest": 0.71, "vantablack": 0.55 })
+  })
+
+  test("colours read from QML values, objects and hex strings; contrast is WCAG's", () => {
+    expect(M.rgbOf("#ff0000")).toEqual({ r: 1, g: 0, b: 0 })
+    expect(M.rgbOf("#80ff0000")).toEqual({ r: 1, g: 0, b: 0 })
+    expect(M.rgbOf({ r: 0.5, g: 0.5, b: 0.5, a: 1 })).toEqual({ r: 0.5, g: 0.5, b: 0.5 })
+    expect(M.rgbOf("red")).toBeNull()
+    expect(M.contrastRatio("#000000", "#ffffff")).toBeCloseTo(21, 5)
+    expect(M.contrastRatio("#777777", "#777777")).toBeCloseTo(1, 5)
+    expect(M.contrastRatio("nope", "#ffffff")).toBe(1)
+    expect(M.mixColor("#ffffff", "#000000", 0.5)).toBe("#808080")
+    // A foreground that cannot reach 4.5:1 is used as it is.
+    expect(M.dimAlpha("#777777", "#808080")).toBe(1)
+  })
+
   test("stableSort keeps ties in their input order, whatever the engine's sort", () => {
     const items = [["b", 1], ["a", 1], ["c", 0], ["d", 1], ["e", 0]]
     const byRank = (x, y) => x[1] - y[1]
