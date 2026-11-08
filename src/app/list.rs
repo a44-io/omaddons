@@ -36,7 +36,9 @@ pub struct ListArgs {
     /// Also list protected (Blizzard_*) folders
     #[arg(long)]
     pub protected: bool,
-    /// Check each managed addon's files by content, not size and time (shows drift)
+    /// Check each managed addon's files by content, not size and time
+    ///
+    /// Shows each addon's drift: its files changed on disk.
     #[arg(long)]
     pub deep: bool,
 }

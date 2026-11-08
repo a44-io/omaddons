@@ -28,19 +28,26 @@ pub struct OmarchyArgs {
 /// What `omarchy` does.
 #[derive(Debug, Clone, Subcommand)]
 pub enum OmarchyAction {
-    /// Whether the widget is installed, current and on the bar (the default)
+    /// Show whether the bar widget is installed and current
+    ///
+    /// Installed, current and on the bar. Bare omarchy runs this.
     Status,
-    /// Put the widget on the desktop: render it for this binary, swap it in, place it on
-    /// the bar
+    /// Install the bar widget and put it on the bar
+    ///
+    /// Render it for this binary, swap it in, and place it on the bar.
     Install {
         /// Install the files and leave the bar as it is
         #[arg(long)]
         no_enable: bool,
-        /// Where on the bar a widget not there yet goes (one already there stays put)
+        /// Where on the bar a widget not there yet goes
+        ///
+        /// A widget already on the bar stays where it is.
         #[arg(long, value_enum, default_value_t = Section::Right)]
         section: Section,
     },
-    /// Take the widget off the bar and delete it (Omarchy drops its bar settings)
+    /// Take the bar widget off the bar and delete it
+    ///
+    /// Omarchy drops its bar settings with it.
     Remove,
 }
 

@@ -3,12 +3,12 @@ source: tests/help_pages.rs
 description: "a command's -h and --help pages as this build renders them at 100 columns without color; any change to an about, a flag, a value, a heading or the layout changes them: review with cargo insta review, or re-accept with INSTA_UPDATE=always cargo test --test integration help_pages:: and review git diff tests/snapshots/"
 ---
 ==> omaddons doctor explain -h <==
-One failure mode in full: what it is, why it matters, and its live instances (changes nothing)
+Explain one failure mode and its live instances
 
 Usage: omaddons doctor explain [OPTIONS] <ID>
 
 Arguments:
-  <ID>  A failure-mode id, or one instance's key (<fm-id>@<target key or machine>…)
+  <ID>  A failure-mode id, or one instance's key
 
 Examples:
   omaddons doctor explain fm-configs-config-parse-error
@@ -18,13 +18,17 @@ Examples:
 
 Global: -t <TARGET>  --json  --dry-run  -v  --quiet  --no-color  --offline  (--help lists them all)
 ==> omaddons doctor explain --help <==
-One failure mode in full: what it is, why it matters, and its live instances (changes nothing)
+Explain one failure mode and its live instances
+
+What it is, why it matters, and where it is now. Changes nothing.
 
 Usage: omaddons doctor explain [OPTIONS] <ID>
 
 Arguments:
   <ID>
-          A failure-mode id, or one instance's key (<fm-id>@<target key or machine>…)
+          A failure-mode id, or one instance's key
+          
+          An instance key reads <fm-id>@<target key or machine>[:<kind>=<value>].
 
 Examples:
   omaddons doctor explain fm-configs-config-parse-error
@@ -37,14 +41,10 @@ See also: doctor, doctor fix
 Global options:
       --json             One JSON envelope on stdout
       --format <FORMAT>  Output format [possible values: json, human]
-  -t, --target <TARGET>  The client to act on: id, key, game mode (sod and hardcore select the
-                         Classic Era client), family, product, flavor folder, path, or all (every
-                         client) [alias: --flavor]
-      --dry-run          Show the plan without changing anything (ignored by commands that change
-                         nothing)
+  -t, --target <TARGET>  The client to act on: id, game mode, family, path, or all [alias: --flavor]
+      --dry-run          Show the plan without changing anything
       --actor <ACTOR>    Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
-      --reason <TEXT>    Why, recorded verbatim in history (at most 200 characters; ignored by
-                         commands that change nothing)
+      --reason <TEXT>    Why, recorded verbatim in history
       --offline          Fail any network access [env: OMADDONS_OFFLINE=1]
       --while-running    Allow folder changes while the client runs (never SavedVariables)
       --no-color         No ANSI color

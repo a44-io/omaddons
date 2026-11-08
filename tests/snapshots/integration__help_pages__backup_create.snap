@@ -8,9 +8,8 @@ Back up WTF/: every live client's, or the clients -t names
 Usage: omaddons backup create [OPTIONS]
 
 Options:
-      --verify  Hash every file copied, so the backup records its content (integrity: verified)
-      --auto    Only when due: the automatic checkpoint after a play session, skipped (exit 0, with
-                the reason) when WTF/ is unchanged since the last checkpoint
+      --verify  Hash every file copied, so the backup records its content
+      --auto    Make the after-play checkpoint, only when one is due
 
 Examples:
   omaddons backup create                  every live client that has a WTF/
@@ -24,11 +23,14 @@ Usage: omaddons backup create [OPTIONS]
 
 Options:
       --verify
-          Hash every file copied, so the backup records its content (integrity: verified)
+          Hash every file copied, so the backup records its content
+          
+          The backup's integrity is then verified.
 
       --auto
-          Only when due: the automatic checkpoint after a play session, skipped (exit 0, with the
-          reason) when WTF/ is unchanged since the last checkpoint
+          Make the after-play checkpoint, only when one is due
+          
+          Skipped (exit 0, with the reason) when WTF/ is unchanged since the last checkpoint.
 
 Examples:
   omaddons backup create                 every live client that has a WTF/
@@ -49,14 +51,10 @@ See also: backup list, backup verify
 Global options:
       --json             One JSON envelope on stdout
       --format <FORMAT>  Output format [possible values: json, human]
-  -t, --target <TARGET>  The client to act on: id, key, game mode (sod and hardcore select the
-                         Classic Era client), family, product, flavor folder, path, or all (every
-                         client) [alias: --flavor]
-      --dry-run          Show the plan without changing anything (ignored by commands that change
-                         nothing)
+  -t, --target <TARGET>  The client to act on: id, game mode, family, path, or all [alias: --flavor]
+      --dry-run          Show the plan without changing anything
       --actor <ACTOR>    Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
-      --reason <TEXT>    Why, recorded verbatim in history (at most 200 characters; ignored by
-                         commands that change nothing)
+      --reason <TEXT>    Why, recorded verbatim in history
       --offline          Fail any network access [env: OMADDONS_OFFLINE=1]
       --while-running    Allow folder changes while the client runs (never SavedVariables)
       --no-color         No ANSI color

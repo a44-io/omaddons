@@ -64,8 +64,10 @@ pub struct GlobalArgs {
         ignore_case = true
     )]
     pub format: Option<String>,
-    /// The client to act on: id, key, game mode (sod and hardcore select the Classic Era
-    /// client), family, product, flavor folder, path, or all (every client)
+    /// The client to act on: id, game mode, family, path, or all
+    ///
+    /// Any selector: a key, an id, a product code, a flavor folder, a game mode (sod and
+    /// hardcore select the Classic Era client), a family or a path; all is every client.
     #[arg(
         short = 't',
         long = "target",
@@ -74,14 +76,17 @@ pub struct GlobalArgs {
         value_name = "TARGET"
     )]
     pub target: Option<String>,
-    /// Show the plan without changing anything (ignored by commands that change nothing)
+    /// Show the plan without changing anything
+    ///
+    /// Commands that change nothing ignore it.
     #[arg(long, global = true)]
     pub dry_run: bool,
     /// Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
     #[arg(long, global = true, value_name = "ACTOR")]
     pub actor: Option<String>,
-    /// Why, recorded verbatim in history (at most 200 characters; ignored by commands
-    /// that change nothing)
+    /// Why, recorded verbatim in history
+    ///
+    /// At most 200 characters. Commands that change nothing ignore it.
     #[arg(long, global = true, value_name = "TEXT")]
     pub reason: Option<String>,
     /// Fail any network access [env: OMADDONS_OFFLINE=1]
@@ -90,8 +95,10 @@ pub struct GlobalArgs {
     /// Allow folder changes while the client runs (never SavedVariables)
     #[arg(long, global = true)]
     pub while_running: bool,
-    /// Change nothing unless the plan is still the one the --dry-run that returned this
-    /// token (data.precondition) showed
+    /// Run only what the preview that returned this token showed
+    ///
+    /// The token is a --dry-run's data.precondition: change nothing unless the plan is
+    /// still the one it showed.
     #[arg(long, global = true, value_name = "TOKEN")]
     pub if_match: Option<String>,
     /// No ANSI color
@@ -118,7 +125,9 @@ pub struct GlobalArgs {
     /// Show help
     #[arg(short = 'h', long = "help", global = true)]
     pub help: bool,
-    /// Show the version (before any command: `install --version V` pins a release)
+    /// Show the version
+    ///
+    /// Before any command only: after one, `install --version V` pins a release.
     #[arg(short = 'V', long = "version")]
     pub version: bool,
 }
@@ -147,70 +156,110 @@ pub enum Command {
         #[arg(num_args = 0..)]
         command: Vec<String>,
     },
-    /// Triage: every client, its addons, running state and what needs attention
+    /// Triage every client: addons, updates, issues, backups
+    ///
+    /// Every client, its addons, its running state and what needs attention, its Lua
+    /// errors and its backups. Changes nothing.
     Status(crate::app::status::StatusArgs),
-    /// Install or update addons in one target, verified by its own TOC rules
+    /// Install or update addons on one client
+    ///
+    /// Each ref is verified by the client's own TOC rules before anything is written, and
+    /// one transaction installs them all, undoable.
     #[command(
         visible_alias = "add",
         after_long_help = "An addon is installed from one ref at a time. Another local archive of a local\ninstall (./Bar-2.2.0.zip over ./Bar-2.1.0.zip) updates it; an addon of the same\nname from any other ref is a takeover, refused (ownership_conflict) unless --force."
     )]
     Install(crate::app::install::InstallArgs),
-    /// Update every managed addon on every client, or the ones named (undo with one undo)
+    /// Update managed addons on every client
+    ///
+    /// Every managed addon on every client, or only the ones named, to its newest
+    /// compatible release: one transaction per client, all reverted by one undo.
     #[command(visible_alias = "upgrade", after_long_help = UPDATE_HELP)]
     Update(crate::app::update::UpdateArgs),
-    /// Hold an addon at its release through updates (undoable)
+    /// Hold an addon at its release through updates
+    ///
+    /// A records-only change while no --version is given, undoable.
     #[command(after_long_help = PIN_HELP)]
     Pin(crate::app::pin::PinArgs),
     /// Let a pinned addon update again
     #[command(after_long_help = UNPIN_HELP)]
     Unpin(crate::app::pin::UnpinArgs),
-    /// Bring addons installed by hand or by other managers under management, as they are
-    /// (records only, undoable); alone, report where they come from
+    /// Bring addons installed by hand under management
+    ///
+    /// Folders installed by hand or by another manager are recorded as they are: only
+    /// records change, never a folder, and it is undoable. Alone, adopt reports where
+    /// each unmanaged folder comes from and changes nothing.
     #[command(after_long_help = ADOPT_HELP)]
     Adopt(crate::app::adopt::AdoptArgs),
-    /// Make every client match addons.toml: install what is missing, set pins and channels
+    /// Make every client match addons.toml
+    ///
+    /// Install what is missing, set pins and channels; never move an installed addon to
+    /// a newer release (that is update's job).
     #[command(after_long_help = SYNC_HELP)]
     Sync(crate::app::sync::SyncArgs),
-    /// Install one client's addons on another, where builds exist (undoable)
+    /// Install one client's addons on another
+    ///
+    /// Where builds exist; the rest is skipped and said why. Undoable.
     #[command(after_long_help = COPY_HELP)]
     Copy(crate::app::copy::CopyArgs),
-    /// Remove managed addons from one target (undoable)
+    /// Remove managed addons from one client
+    ///
+    /// Undoable until retention prunes the transaction's snapshot.
     #[command(visible_aliases = ["uninstall", "rm", "delete"])]
     Remove(crate::app::remove::RemoveArgs),
-    /// Revert the last change (or one by id), SavedVariables included
+    /// Revert the last change, or one by its id
+    ///
+    /// SavedVariables included: the files a change touched come back as they were.
     #[command(visible_aliases = ["revert", "rollback"])]
     Undo(crate::app::undo::UndoArgs),
-    /// Run exactly what a --dry-run stored (its plan id), target by target
+    /// Run exactly the plan a --dry-run stored
+    ///
+    /// The plan named by its id, client by client, as the preview showed or not at all.
     #[command(after_long_help = APPLY_HELP)]
     Apply(crate::app::apply::ApplyArgs),
-    /// Each client's WTF/ backups: copies of its settings (bare: list them)
+    /// Back up, list and restore each client's WTF/ settings
+    ///
+    /// Bare backup lists the backups.
     Backup(crate::app::backup::BackupArgs),
     /// Show what changed, when, by whom and why
     #[command(visible_alias = "log")]
     History(crate::app::history::HistoryArgs),
-    /// Inspect a stored plan and what history records of it (changes nothing)
+    /// Inspect a stored plan and whether it was applied
+    ///
+    /// Changes nothing.
     #[command(subcommand_required = true, arg_required_else_help = false)]
     Plans(crate::app::plans::PlansArgs),
-    /// Which managed addons have updates, on every client (changes nothing)
+    /// Show which managed addons have updates
+    ///
+    /// On every client, or the ones -t names. Changes nothing.
     #[command(visible_alias = "check", after_long_help = OUTDATED_HELP)]
     Outdated(crate::app::outdated::OutdatedArgs),
-    /// What an addon is: installed records, catalog entry and newest release
+    /// Show what an addon is and where it is installed
+    ///
+    /// Its installed records on every client, its catalog entry and its newest release.
     #[command(visible_alias = "show")]
     Info(crate::app::info::InfoArgs),
-    /// Find addons by name in the catalog, WoWInterface, Tukui and GitHub
+    /// Find addons in the catalog, WoWInterface, Tukui and GitHub
+    ///
+    /// By name, folder, author or description, with a compatibility hint per client.
     #[command(visible_alias = "find", after_long_help = SEARCH_HELP)]
     Search(crate::app::search::SearchArgs),
-    /// Which addon most likely throws Lua errors, how often, and whether an update may
-    /// fix it (from BugGrabber)
+    /// Show which addons throw Lua errors, from BugGrabber
+    ///
+    /// Which addon most likely throws them, how often, which are new, and whether an
+    /// update may fix them.
     #[command(after_long_help = ERRORS_HELP, args_conflicts_with_subcommands = true)]
     Errors(crate::app::errors::ErrorsArgs),
-    /// Every client's addon set as one addons.toml for sync (stdout, or --write)
+    /// Print every client's addon set as one addons.toml
+    ///
+    /// The file sync reads: on stdout, or with --write into the config directory.
     #[command(after_long_help = EXPORT_HELP)]
     Export(crate::app::export::ExportArgs),
-    /// Every network request omaddons made
+    /// List the network requests and git runs omaddons made
     NetLog(crate::app::net_log::NetLogArgs),
-    /// Diagnose what omaddons manages (bare: diagnose; changes nothing outside its run
-    /// record)
+    /// Find what is broken in what omaddons manages
+    ///
+    /// Bare doctor is doctor diagnose, which changes nothing outside its run record.
     #[command(
         after_long_help = crate::app::doctor::doctor_help(),
         args_conflicts_with_subcommands = true
@@ -223,18 +272,27 @@ pub enum Command {
     Targets(crate::app::targets::TargetsArgs),
     /// Show or change config.toml
     Config(crate::app::config::ConfigArgs),
-    /// Store, check or clear the opt-in GitHub token (5,000 REST requests an hour)
+    /// Store, check or clear the opt-in GitHub token
+    ///
+    /// A token raises GitHub's REST budget from 60 to 5,000 requests an hour.
     #[command(subcommand_required = true, arg_required_else_help = false)]
     Auth(crate::app::auth::AuthArgs),
     /// Put the omaddons widget on Omarchy's bar
     Omarchy(crate::app::omarchy::OmarchyArgs),
-    /// Print a shell completion script: bash, zsh, fish, elvish or powershell
+    /// Print a shell completion script
+    ///
+    /// For bash, zsh, fish, elvish or powershell.
     #[command(after_long_help = COMPLETIONS_HELP)]
     Completions(crate::app::completions::CompletionsArgs),
-    /// Documentation for agents: the guide (bare), the JSON Schemas and the error catalog
+    /// Print documentation for agents
+    ///
+    /// The agent guide (bare robot-docs), the JSON Schemas and the error catalog.
     #[command(after_long_help = ROBOT_DOCS_HELP)]
     RobotDocs(crate::app::robot_docs::RobotDocsArgs),
-    /// Describe this build for agents: commands, flags, exit codes, errors, limits and sources (offline; writes nothing)
+    /// Describe everything this build can do, for agents
+    ///
+    /// Its commands, flags, exit codes, errors, limits and sources, offline; writes
+    /// nothing.
     #[command(after_long_help = CAPABILITIES_HELP)]
     Capabilities(crate::app::capabilities::CapabilitiesArgs),
 }

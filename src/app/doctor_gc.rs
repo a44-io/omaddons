@@ -21,8 +21,9 @@ use crate::state::paths::Paths;
 /// `doctor gc`'s arguments (`--dry-run` and `--if-match` are global).
 #[derive(Debug, Clone, clap::Args)]
 pub struct GcArgs {
-    /// Runs that started before this are eligible: an RFC 3339 time or an age (30m, 12h,
-    /// 30d, 2w)
+    /// Runs that started before this are eligible: an age or a time
+    ///
+    /// An age (30m, 12h, 30d, 2w) or an RFC 3339 time.
     #[arg(long, value_name = "WHEN", required = true)]
     pub before: String,
     /// Consent for a real run (not needed with --dry-run)

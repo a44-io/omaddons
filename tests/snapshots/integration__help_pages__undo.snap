@@ -3,22 +3,18 @@ source: tests/help_pages.rs
 description: "a command's -h and --help pages as this build renders them at 100 columns without color; any change to an about, a flag, a value, a heading or the layout changes them: review with cargo insta review, or re-accept with INSTA_UPDATE=always cargo test --test integration help_pages:: and review git diff tests/snapshots/"
 ---
 ==> omaddons undo -h <==
-Revert the last change (or one by id), SavedVariables included
+Revert the last change, or one by its id
 
 Usage: omaddons undo [OPTIONS] [TX]
 Aliases: revert, rollback
 
 Arguments:
-  [TX]  The transaction to revert: its id or a unique prefix of 8+ characters (default: the most
-        recent run)
+  [TX]  The transaction to revert; default: the most recent run
 
 Options:
       --last-by <ACTOR>           Revert this actor's most recent run: human, agent or widget
-      --run <RUN>                 Revert every transaction of this run: its id or a unique prefix of
-                                  8+ characters
-      --saved-variables <POLICY>  SavedVariables: auto (restore what changed, later if the game
-                                  runs), restore (refuse while the game runs) or keep (never touch
-                                  them)
+      --run <RUN>                 Revert every transaction of this run
+      --saved-variables <POLICY>  What to do with SavedVariables: auto, restore or keep
 
 Examples:
   omaddons undo                  revert the last run, on every client
@@ -28,26 +24,33 @@ Examples:
 
 Global: -t <TARGET>  --json  --dry-run  -v  --quiet  --no-color  --offline  (--help lists them all)
 ==> omaddons undo --help <==
-Revert the last change (or one by id), SavedVariables included
+Revert the last change, or one by its id
+
+SavedVariables included: the files a change touched come back as they were.
 
 Usage: omaddons undo [OPTIONS] [TX]
 Aliases: revert, rollback
 
 Arguments:
   [TX]
-          The transaction to revert: its id or a unique prefix of 8+ characters (default: the most
-          recent run)
+          The transaction to revert; default: the most recent run
+          
+          Its id, or a unique prefix of 8 or more characters.
 
 Options:
       --last-by <ACTOR>
           Revert this actor's most recent run: human, agent or widget
 
       --run <RUN>
-          Revert every transaction of this run: its id or a unique prefix of 8+ characters
+          Revert every transaction of this run
+          
+          Its id, or a unique prefix of 8 or more characters.
 
       --saved-variables <POLICY>
-          SavedVariables: auto (restore what changed, later if the game runs), restore (refuse while
-          the game runs) or keep (never touch them)
+          What to do with SavedVariables: auto, restore or keep
+          
+          auto (the default) restores what changed, later if the game runs; restore refuses while
+          the game runs; keep never touches them.
 
 Examples:
   omaddons undo                  revert the last run, on every client
@@ -60,18 +63,14 @@ See also: history, remove
 Global options:
       --json              One JSON envelope on stdout
       --format <FORMAT>   Output format [possible values: json, human]
-  -t, --target <TARGET>   The client to act on: id, key, game mode (sod and hardcore select the
-                          Classic Era client), family, product, flavor folder, path, or all (every
-                          client) [alias: --flavor]
-      --dry-run           Show the plan without changing anything (ignored by commands that change
-                          nothing)
+  -t, --target <TARGET>   The client to act on: id, game mode, family, path, or all [alias:
+                          --flavor]
+      --dry-run           Show the plan without changing anything
       --actor <ACTOR>     Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
-      --reason <TEXT>     Why, recorded verbatim in history (at most 200 characters; ignored by
-                          commands that change nothing)
+      --reason <TEXT>     Why, recorded verbatim in history
       --offline           Fail any network access [env: OMADDONS_OFFLINE=1]
       --while-running     Allow folder changes while the client runs (never SavedVariables)
-      --if-match <TOKEN>  Change nothing unless the plan is still the one the --dry-run that
-                          returned this token (data.precondition) showed
+      --if-match <TOKEN>  Run only what the preview that returned this token showed
       --no-color          No ANSI color
       --no-progress       No progress output
       --progress <MODE>   Progress events on stderr [possible values: json, human, none]

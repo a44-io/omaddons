@@ -42,14 +42,17 @@ use crate::state::records::TargetRecord;
 /// `update`'s own arguments.
 #[derive(Debug, Clone, Default, clap::Args)]
 pub struct UpdateArgs {
-    /// Only these installed addons (names, or catalog names and aliases); default: all
+    /// Only these installed addons; default: every one
+    ///
+    /// By name, or by catalog name or alias.
     #[arg(value_name = "ADDON")]
     pub addons: Vec<String>,
     /// Every managed addon on every selected client (the default)
     #[arg(long)]
     pub all: bool,
-    /// Switch the named addons to stable, beta or alpha and install that channel's newest
-    /// release
+    /// Switch the named addons to this channel and install its newest
+    ///
+    /// The newest release of that channel installs, and the channel is recorded.
     #[arg(long, value_name = "CHANNEL", value_parser = ["stable", "beta", "alpha"])]
     pub channel: Option<String>,
     /// Ask every source now, even when it was checked in the last 15 minutes

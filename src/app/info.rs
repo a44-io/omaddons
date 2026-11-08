@@ -49,10 +49,10 @@ pub struct InfoArgs {
     /// The addon: a catalog name, an installed addon's name, or a ref or link
     #[arg(value_name = "REF")]
     pub query: String,
-    /// Fetch the newest release from its source, even if it was checked recently
+    /// Fetch the newest release from its source, even if checked recently
     #[arg(long)]
     pub refresh: bool,
-    /// Add the release notes of every release newer than the oldest installed one
+    /// Add the notes of every release newer than the oldest installed
     #[arg(long)]
     pub changelog: bool,
 }

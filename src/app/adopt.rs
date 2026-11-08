@@ -58,14 +58,17 @@ use crate::state::records::TargetRecord;
 /// `adopt`'s arguments.
 #[derive(Debug, Clone, Default, clap::Args)]
 pub struct AdoptArgs {
-    /// Adopt the addons these folders belong to (a guess too, unless it has rivals)
+    /// Adopt the addons these folders belong to
+    ///
+    /// A guess is adopted too, unless it has rivals.
     #[arg(value_name = "FOLDER")]
     pub folders: Vec<String>,
     /// Adopt every exact and identified addon (never a guess)
     #[arg(long)]
     pub apply: bool,
-    /// Where the one folder named comes from (anything install accepts); re-points the
-    /// addon when it is already managed
+    /// Where the one folder named comes from: anything install accepts
+    ///
+    /// On a folder already managed, it re-points its addon to this ref instead.
     #[arg(long = "ref", value_name = "REF")]
     pub r#ref: Option<String>,
     /// Identify only: download nothing, compare nothing

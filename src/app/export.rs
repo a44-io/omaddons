@@ -42,8 +42,9 @@ use crate::state::records::load_record;
 /// `export`'s arguments.
 #[derive(Debug, Clone, Default, clap::Args)]
 pub struct ExportArgs {
-    /// Write <config>/omaddons/addons.toml instead of printing (the previous file is kept
-    /// as addons.toml.bak)
+    /// Write <config>/omaddons/addons.toml instead of printing
+    ///
+    /// The previous file is kept as addons.toml.bak.
     #[arg(long)]
     pub write: bool,
     /// With --write: replace a file changed since omaddons wrote it

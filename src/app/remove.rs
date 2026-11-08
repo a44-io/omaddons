@@ -39,7 +39,9 @@ use crate::state::records::TargetRecord;
 /// `remove`'s own arguments.
 #[derive(Debug, Clone, Default, clap::Args)]
 pub struct RemoveArgs {
-    /// What to remove: an addon's name, its ref (gh:Owner/Repo) or a folder it owns
+    /// What to remove: an addon's name, its ref or a folder it owns
+    ///
+    /// A ref as installed (gh:Owner/Repo).
     #[arg(required = true, value_name = "ADDON")]
     pub addons: Vec<String>,
 }

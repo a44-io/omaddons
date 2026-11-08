@@ -82,8 +82,9 @@ pub struct ErrorsArgs {
 /// What `errors` does besides reading.
 #[derive(Debug, Clone, clap::Subcommand)]
 pub enum ErrorsAction {
-    /// Mark the errors read as seen, every client's or -t's: they stop being new (it
-    /// cannot be undone)
+    /// Mark the Lua errors read as seen
+    ///
+    /// Every client's, or those -t selects: they stop being new. It cannot be undone.
     #[command(after_long_help = DISMISS_HELP)]
     Dismiss(ErrorsDismissArgs),
 }

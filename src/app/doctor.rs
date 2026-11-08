@@ -42,22 +42,30 @@ pub struct DoctorArgs {
 /// The doctor's verbs.
 #[derive(Debug, Clone, clap::Subcommand)]
 pub enum DoctorAction {
-    /// Find what is broken, with evidence and the exact fix (changes nothing outside
-    /// its run record)
+    /// Find what is broken, with evidence and the exact fix
+    ///
+    /// Changes nothing outside its run record.
     Diagnose(DiagnoseArgs),
-    /// One failure mode in full: what it is, why it matters, and its live instances
-    /// (changes nothing)
+    /// Explain one failure mode and its live instances
+    ///
+    /// What it is, why it matters, and where it is now. Changes nothing.
     Explain(ExplainArgs),
-    /// Repair the findings a fixer can repair, as one undoable transaction
+    /// Repair what a fixer can, as one undoable transaction
     #[command(after_long_help = FIX_HELP)]
     Fix(FixArgs),
-    /// Show what doctor fix would change, or what changed since a run (changes nothing)
+    /// Show what a fix would change or what changed since a run
+    ///
+    /// Changes nothing.
     #[command(after_long_help = DIFF_HELP)]
     Diff(DiffArgs),
-    /// Undo a doctor repair: revert a fix run (or the newest one), strictly
+    /// Undo a doctor repair, strictly
+    ///
+    /// The repair a fix run made, or the newest one still in effect.
     #[command(after_long_help = super::doctor_undo::UNDO_HELP)]
     Undo(super::doctor_undo::DoctorUndoArgs),
-    /// Delete old doctor runs and what they kept, never what an unfinished change needs
+    /// Delete old doctor runs and what they kept
+    ///
+    /// Never what an unfinished change still needs.
     #[command(after_long_help = super::doctor_gc::GC_HELP)]
     Gc(super::doctor_gc::GcArgs),
 }
@@ -83,7 +91,9 @@ impl DoctorAction {
 /// `doctor explain`'s argument (`-t` is global).
 #[derive(Debug, Clone, clap::Args)]
 pub struct ExplainArgs {
-    /// A failure-mode id, or one instance's key (<fm-id>@<target key or machine>…)
+    /// A failure-mode id, or one instance's key
+    ///
+    /// An instance key reads <fm-id>@<target key or machine>[:<kind>=<value>].
     #[arg(value_name = "ID")]
     pub id: String,
 }
@@ -166,8 +176,9 @@ pub struct FixArgs {
 /// `doctor diff`'s argument (`-t` is global).
 #[derive(Debug, Clone, Default, clap::Args)]
 pub struct DiffArgs {
-    /// A run id, or latest: the findings that changed since that run. Without it: what
-    /// doctor fix would change
+    /// A run id, or latest: show what changed since that run
+    ///
+    /// Without it, the plan of a default doctor fix: what it would change.
     #[arg(value_name = "RUN")]
     pub run: Option<String>,
 }

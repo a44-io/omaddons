@@ -3,13 +3,13 @@ source: tests/help_pages.rs
 description: "a command's -h and --help pages as this build renders them at 100 columns without color; any change to an about, a flag, a value, a heading or the layout changes them: review with cargo insta review, or re-accept with INSTA_UPDATE=always cargo test --test integration help_pages:: and review git diff tests/snapshots/"
 ---
 ==> omaddons net-log -h <==
-Every network request omaddons made
+List the network requests and git runs omaddons made
 
 Usage: omaddons net-log [OPTIONS]
 
 Options:
       --limit <N>     At most this many requests, the most recent (default 50)
-      --since <WHEN>  Only requests since a duration ago (30m, 12h, 1d, 2w) or an RFC 3339 time
+      --since <WHEN>  Only requests since this: an age (30m, 12h, 1d, 2w) or a time
 
 Examples:
   omaddons net-log                    the 50 most recent requests, by host
@@ -17,7 +17,7 @@ Examples:
 
 Global: -t <TARGET>  --json  --dry-run  -v  --quiet  --no-color  --offline  (--help lists them all)
 ==> omaddons net-log --help <==
-Every network request omaddons made
+List the network requests and git runs omaddons made
 
 Usage: omaddons net-log [OPTIONS]
 
@@ -26,7 +26,9 @@ Options:
           At most this many requests, the most recent (default 50)
 
       --since <WHEN>
-          Only requests since a duration ago (30m, 12h, 1d, 2w) or an RFC 3339 time
+          Only requests since this: an age (30m, 12h, 1d, 2w) or a time
+          
+          A time is RFC 3339.
 
 Examples:
   omaddons net-log                    the 50 most recent requests, by host
@@ -37,14 +39,10 @@ See also: capabilities
 Global options:
       --json             One JSON envelope on stdout
       --format <FORMAT>  Output format [possible values: json, human]
-  -t, --target <TARGET>  The client to act on: id, key, game mode (sod and hardcore select the
-                         Classic Era client), family, product, flavor folder, path, or all (every
-                         client) [alias: --flavor]
-      --dry-run          Show the plan without changing anything (ignored by commands that change
-                         nothing)
+  -t, --target <TARGET>  The client to act on: id, game mode, family, path, or all [alias: --flavor]
+      --dry-run          Show the plan without changing anything
       --actor <ACTOR>    Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
-      --reason <TEXT>    Why, recorded verbatim in history (at most 200 characters; ignored by
-                         commands that change nothing)
+      --reason <TEXT>    Why, recorded verbatim in history
       --offline          Fail any network access [env: OMADDONS_OFFLINE=1]
       --while-running    Allow folder changes while the client runs (never SavedVariables)
       --no-color         No ANSI color

@@ -77,26 +77,38 @@ pub struct BackupArgs {
 /// What `backup` does.
 #[derive(Debug, Clone, clap::Subcommand)]
 pub enum BackupAction {
-    /// List each client's WTF/ backups, newest first (changes nothing)
+    /// List each client's WTF/ backups, newest first
+    ///
+    /// Changes nothing.
     #[command(after_long_help = LIST_HELP)]
     List(BackupListArgs),
     /// Back up WTF/: every live client's, or the clients -t names
     #[command(after_long_help = CREATE_HELP)]
     Create(BackupCreateArgs),
-    /// Restore the whole WTF/ (keybindings, macros, every addon's settings) from a
-    /// backup, or with --addon one addon's settings (undoable)
+    /// Restore WTF/, or one addon's settings, from a backup
+    ///
+    /// The whole WTF/ (keybindings, macros, every addon's settings), or with --addon one
+    /// addon's settings only. Undoable.
     #[command(after_long_help = RESTORE_HELP)]
     Restore(BackupRestoreArgs),
-    /// Delete old backups, or the ones named (it cannot be undone)
+    /// Delete old backups, or the ones named
+    ///
+    /// It cannot be undone.
     #[command(after_long_help = PRUNE_HELP)]
     Prune(BackupPruneArgs),
-    /// Write a backup to a file off this disk, as a .tar.zst (never replaces a file)
+    /// Write a backup to a .tar.zst file off this disk
+    ///
+    /// It never replaces a file.
     #[command(after_long_help = EXPORT_HELP)]
     Export(BackupExportArgs),
-    /// Bring back a backup that backup export wrote, as a backup of the client -t names
+    /// Bring back a backup that backup export wrote
+    ///
+    /// As a backup of the client -t names.
     #[command(after_long_help = IMPORT_HELP)]
     Import(BackupImportArgs),
-    /// Check backups against their recorded hashes, or record a first baseline
+    /// Check backups against their recorded hashes
+    ///
+    /// A backup without hashes gets a first baseline recorded instead.
     #[command(after_long_help = super::backup_verify::HELP)]
     Verify(super::backup_verify::BackupVerifyArgs),
 }
@@ -188,8 +200,9 @@ pub struct BackupRestoreArgs {
     /// The backup: its id, or a prefix of 8 or more characters
     #[arg(value_name = "ID")]
     pub id: String,
-    /// Only this addon's settings (repeatable): its name, ref or a folder; folder:<F> for
-    /// one folder alone
+    /// Only this addon's settings: its name, ref or a folder (repeatable)
+    ///
+    /// folder:<F> names one folder alone.
     #[arg(long = "addon", value_name = "ADDON")]
     pub addon: Vec<String>,
 }
@@ -212,11 +225,15 @@ checkpoint, or (with daily) where the filesystem cannot clone files.";
 /// `backup create`'s flags.
 #[derive(Debug, Clone, Default, clap::Args)]
 pub struct BackupCreateArgs {
-    /// Hash every file copied, so the backup records its content (integrity: verified)
+    /// Hash every file copied, so the backup records its content
+    ///
+    /// The backup's integrity is then verified.
     #[arg(long)]
     pub verify: bool,
-    /// Only when due: the automatic checkpoint after a play session, skipped (exit 0,
-    /// with the reason) when WTF/ is unchanged since the last checkpoint
+    /// Make the after-play checkpoint, only when one is due
+    ///
+    /// Skipped (exit 0, with the reason) when WTF/ is unchanged since the last
+    /// checkpoint.
     #[arg(long, conflicts_with = "verify")]
     pub auto: bool,
 }
@@ -255,8 +272,9 @@ pub struct BackupPruneArgs {
     /// Also prune every backup beyond the newest N of its kind
     #[arg(long, value_name = "N", conflicts_with = "ids")]
     pub keep: Option<usize>,
-    /// Also prune manual, imported and recovered backups older than D (12h, 30d, 2w, or
-    /// an RFC 3339 time)
+    /// Also prune your own backups older than D: 12h, 30d, 2w or a time
+    ///
+    /// Manual, imported and recovered backups; a time is RFC 3339.
     #[arg(long, value_name = "D", conflicts_with = "ids")]
     pub older_than: Option<String>,
 }

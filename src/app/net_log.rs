@@ -27,7 +27,9 @@ pub struct NetLogArgs {
     /// At most this many requests, the most recent (default 50)
     #[arg(long, value_name = "N")]
     pub limit: Option<usize>,
-    /// Only requests since a duration ago (30m, 12h, 1d, 2w) or an RFC 3339 time
+    /// Only requests since this: an age (30m, 12h, 1d, 2w) or a time
+    ///
+    /// A time is RFC 3339.
     #[arg(long, value_name = "WHEN")]
     pub since: Option<String>,
 }

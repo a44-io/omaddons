@@ -20,16 +20,16 @@ _omaddons() {
     local context curcontext="$curcontext" state line
     _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -39,8 +39,8 @@ _omaddons() {
 '*--verbose[More detail (repeatable)]' \
 '-h[Show help]' \
 '--help[Show help]' \
-'-V[Show the version (before any command\: \`install --version V\` pins a release)]' \
-'--version[Show the version (before any command\: \`install --version V\` pins a release)]' \
+'-V[Show the version]' \
+'--version[Show the version]' \
 ":: :_omaddons_commands" \
 "*::: :->omaddons" \
 && ret=0
@@ -53,16 +53,16 @@ _omaddons() {
             (help)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -78,19 +78,19 @@ _arguments "${_arguments_options[@]}" : \
 (status)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--cached[Local state only, no scan (fast; the widget'\''s view)]' \
 '--check[Exit 6 when anything needs attention]' \
 '(--cached)--deep[Re-hash every managed file, not only those whose size or time changed]' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -104,27 +104,27 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (install)
 _arguments "${_arguments_options[@]}" : \
-'--channel=[stable, beta or alpha (default\: the addon'\''s recorded channel, then default_channel, then stable)]:CHANNEL:(stable beta alpha)' \
+'--channel=[The release channel to install from]:CHANNEL:(stable beta alpha)' \
 '--version=[Install exactly this release\: a tag for gh\: refs, a rev for git\: refs]:VERSION:_default' \
 '--file=[Install this downloaded archive as the release of the one given ref]:ZIP:_files' \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
-'--reinstall[Install the recorded release again, replacing its folders (repairs modified or missing files)]' \
+'--reinstall[Install the recorded release again, replacing its folders]' \
 '--no-deps[Install only the named addons, not the ones their TOCs require]' \
-'--force[Take over a folder another addon owns, an addon of the same name from another ref, or replace an unmanaged folder]' \
+'--force[Take over another addon'\''s folder, or replace an unmanaged one]' \
 '--strict[Exit 6 when only some of the addons install]' \
 '--refresh[Fetch every release from its source, never from remembered metadata]' \
-'(--no-any-flavor)--any-flavor[On this client, install builds the publisher did not make for it (kept by every later update and sync until --no-any-flavor)]' \
+'(--no-any-flavor)--any-flavor[Install builds the publisher did not make for this client]' \
 '--no-any-flavor[Clear --any-flavor for these addons on this client]' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -134,32 +134,32 @@ _arguments "${_arguments_options[@]}" : \
 '*--verbose[More detail (repeatable)]' \
 '-h[Show help]' \
 '--help[Show help]' \
-'*::refs -- What to install\: a catalog name (weakauras), owner/repo, a canonical ref (gh\:, git\:, url\:, file\:, wowi\:, tukui\:), a pasted GitHub or https link, or a path to a zip or folder:_default' \
+'*::refs -- What to install\: a catalog name, a ref, a link or a local path:_default' \
 && ret=0
 ;;
 (add)
 _arguments "${_arguments_options[@]}" : \
-'--channel=[stable, beta or alpha (default\: the addon'\''s recorded channel, then default_channel, then stable)]:CHANNEL:(stable beta alpha)' \
+'--channel=[The release channel to install from]:CHANNEL:(stable beta alpha)' \
 '--version=[Install exactly this release\: a tag for gh\: refs, a rev for git\: refs]:VERSION:_default' \
 '--file=[Install this downloaded archive as the release of the one given ref]:ZIP:_files' \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
-'--reinstall[Install the recorded release again, replacing its folders (repairs modified or missing files)]' \
+'--reinstall[Install the recorded release again, replacing its folders]' \
 '--no-deps[Install only the named addons, not the ones their TOCs require]' \
-'--force[Take over a folder another addon owns, an addon of the same name from another ref, or replace an unmanaged folder]' \
+'--force[Take over another addon'\''s folder, or replace an unmanaged one]' \
 '--strict[Exit 6 when only some of the addons install]' \
 '--refresh[Fetch every release from its source, never from remembered metadata]' \
-'(--no-any-flavor)--any-flavor[On this client, install builds the publisher did not make for it (kept by every later update and sync until --no-any-flavor)]' \
+'(--no-any-flavor)--any-flavor[Install builds the publisher did not make for this client]' \
 '--no-any-flavor[Clear --any-flavor for these addons on this client]' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -169,19 +169,19 @@ _arguments "${_arguments_options[@]}" : \
 '*--verbose[More detail (repeatable)]' \
 '-h[Show help]' \
 '--help[Show help]' \
-'*::refs -- What to install\: a catalog name (weakauras), owner/repo, a canonical ref (gh\:, git\:, url\:, file\:, wowi\:, tukui\:), a pasted GitHub or https link, or a path to a zip or folder:_default' \
+'*::refs -- What to install\: a catalog name, a ref, a link or a local path:_default' \
 && ret=0
 ;;
 (update)
 _arguments "${_arguments_options[@]}" : \
-'--channel=[Switch the named addons to stable, beta or alpha and install that channel'\''s newest release]:CHANNEL:(stable beta alpha)' \
+'--channel=[Switch the named addons to this channel and install its newest]:CHANNEL:(stable beta alpha)' \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--all[Every managed addon on every selected client (the default)]' \
 '--refresh[Ask every source now, even when it was checked in the last 15 minutes]' \
@@ -189,7 +189,7 @@ _arguments "${_arguments_options[@]}" : \
 '--no-deps[Update only the named addons, not the ones their TOCs require]' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -199,19 +199,19 @@ _arguments "${_arguments_options[@]}" : \
 '*--verbose[More detail (repeatable)]' \
 '-h[Show help]' \
 '--help[Show help]' \
-'*::addons -- Only these installed addons (names, or catalog names and aliases); default\: all:_default' \
+'*::addons -- Only these installed addons; default\: every one:_default' \
 && ret=0
 ;;
 (upgrade)
 _arguments "${_arguments_options[@]}" : \
-'--channel=[Switch the named addons to stable, beta or alpha and install that channel'\''s newest release]:CHANNEL:(stable beta alpha)' \
+'--channel=[Switch the named addons to this channel and install its newest]:CHANNEL:(stable beta alpha)' \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--all[Every managed addon on every selected client (the default)]' \
 '--refresh[Ask every source now, even when it was checked in the last 15 minutes]' \
@@ -219,7 +219,7 @@ _arguments "${_arguments_options[@]}" : \
 '--no-deps[Update only the named addons, not the ones their TOCs require]' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -229,23 +229,23 @@ _arguments "${_arguments_options[@]}" : \
 '*--verbose[More detail (repeatable)]' \
 '-h[Show help]' \
 '--help[Show help]' \
-'*::addons -- Only these installed addons (names, or catalog names and aliases); default\: all:_default' \
+'*::addons -- Only these installed addons; default\: every one:_default' \
 && ret=0
 ;;
 (pin)
 _arguments "${_arguments_options[@]}" : \
-'--version=[Install this release first (a tag for gh\: refs, a rev for git\: refs), then pin it]:VERSION:_default' \
+'--version=[Install this release first, then pin it]:VERSION:_default' \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -261,16 +261,16 @@ _arguments "${_arguments_options[@]}" : \
 (unpin)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -285,21 +285,21 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (adopt)
 _arguments "${_arguments_options[@]}" : \
-'--ref=[Where the one folder named comes from (anything install accepts); re-points the addon when it is already managed]:REF:_default' \
+'--ref=[Where the one folder named comes from\: anything install accepts]:REF:_default' \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--apply[Adopt every exact and identified addon (never a guess)]' \
 '--no-verify[Identify only\: download nothing, compare nothing]' \
 '--refresh[Ask every source now, even when it was checked in the last 15 minutes]' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -309,26 +309,26 @@ _arguments "${_arguments_options[@]}" : \
 '*--verbose[More detail (repeatable)]' \
 '-h[Show help]' \
 '--help[Show help]' \
-'*::folders -- Adopt the addons these folders belong to (a guess too, unless it has rivals):_default' \
+'*::folders -- Adopt the addons these folders belong to:_default' \
 && ret=0
 ;;
 (sync)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--strict[Exit 6 when only some of the addons sync]' \
 '--no-deps[Install only the listed addons, not the ones their TOCs require]' \
 '--locked[Install the versions the file records, from the blob cache when cached]' \
-'--prune[Also remove managed addons the file does not list (never one a listed addon requires or a lock names; refused while a target section names no known client)]' \
+'--prune[Also remove managed addons the file does not list]' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -338,26 +338,26 @@ _arguments "${_arguments_options[@]}" : \
 '*--verbose[More detail (repeatable)]' \
 '-h[Show help]' \
 '--help[Show help]' \
-'::file -- The desired-state file (default\: addons.toml in omaddons'\'' config directory):_files' \
+'::file -- The desired-state file; default\: addons.toml in the config directory:_files' \
 && ret=0
 ;;
 (copy)
 _arguments "${_arguments_options[@]}" : \
-'--from=[The client to copy from (one client\: id, key, game mode, family, product, flavor folder or path)]:TARGET:_default' \
+'--from=[The client to copy from]:TARGET:_default' \
 '--to=[The client to install on (one client)]:TARGET:_default' \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--strict[Exit 6 when an addon fails to copy (skips never count)]' \
 '--no-deps[Install only the addons copied, not the ones their TOCs require on --to]' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -367,22 +367,22 @@ _arguments "${_arguments_options[@]}" : \
 '*--verbose[More detail (repeatable)]' \
 '-h[Show help]' \
 '--help[Show help]' \
-'*::addons -- Only these addons of --from (names, or catalog names and aliases); default\: every addon installed explicitly there:_default' \
+'*::addons -- Only these addons of --from; default\: every one installed explicitly:_default' \
 && ret=0
 ;;
 (remove)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -392,22 +392,22 @@ _arguments "${_arguments_options[@]}" : \
 '*--verbose[More detail (repeatable)]' \
 '-h[Show help]' \
 '--help[Show help]' \
-'*::addons -- What to remove\: an addon'\''s name, its ref (gh\:Owner/Repo) or a folder it owns:_default' \
+'*::addons -- What to remove\: an addon'\''s name, its ref or a folder it owns:_default' \
 && ret=0
 ;;
 (uninstall)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -417,22 +417,22 @@ _arguments "${_arguments_options[@]}" : \
 '*--verbose[More detail (repeatable)]' \
 '-h[Show help]' \
 '--help[Show help]' \
-'*::addons -- What to remove\: an addon'\''s name, its ref (gh\:Owner/Repo) or a folder it owns:_default' \
+'*::addons -- What to remove\: an addon'\''s name, its ref or a folder it owns:_default' \
 && ret=0
 ;;
 (rm)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -442,22 +442,22 @@ _arguments "${_arguments_options[@]}" : \
 '*--verbose[More detail (repeatable)]' \
 '-h[Show help]' \
 '--help[Show help]' \
-'*::addons -- What to remove\: an addon'\''s name, its ref (gh\:Owner/Repo) or a folder it owns:_default' \
+'*::addons -- What to remove\: an addon'\''s name, its ref or a folder it owns:_default' \
 && ret=0
 ;;
 (delete)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -467,25 +467,25 @@ _arguments "${_arguments_options[@]}" : \
 '*--verbose[More detail (repeatable)]' \
 '-h[Show help]' \
 '--help[Show help]' \
-'*::addons -- What to remove\: an addon'\''s name, its ref (gh\:Owner/Repo) or a folder it owns:_default' \
+'*::addons -- What to remove\: an addon'\''s name, its ref or a folder it owns:_default' \
 && ret=0
 ;;
 (undo)
 _arguments "${_arguments_options[@]}" : \
 '()--last-by=[Revert this actor'\''s most recent run\: human, agent or widget]:ACTOR:(human agent widget)' \
-'(--last-by)--run=[Revert every transaction of this run\: its id or a unique prefix of 8+ characters]:RUN:_default' \
-'--saved-variables=[SavedVariables\: auto (restore what changed, later if the game runs), restore (refuse while the game runs) or keep (never touch them)]:POLICY:(auto restore keep)' \
+'(--last-by)--run=[Revert every transaction of this run]:RUN:_default' \
+'--saved-variables=[What to do with SavedVariables\: auto, restore or keep]:POLICY:(auto restore keep)' \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -495,25 +495,25 @@ _arguments "${_arguments_options[@]}" : \
 '*--verbose[More detail (repeatable)]' \
 '-h[Show help]' \
 '--help[Show help]' \
-'::tx -- The transaction to revert\: its id or a unique prefix of 8+ characters (default\: the most recent run):_default' \
+'::tx -- The transaction to revert; default\: the most recent run:_default' \
 && ret=0
 ;;
 (revert)
 _arguments "${_arguments_options[@]}" : \
 '()--last-by=[Revert this actor'\''s most recent run\: human, agent or widget]:ACTOR:(human agent widget)' \
-'(--last-by)--run=[Revert every transaction of this run\: its id or a unique prefix of 8+ characters]:RUN:_default' \
-'--saved-variables=[SavedVariables\: auto (restore what changed, later if the game runs), restore (refuse while the game runs) or keep (never touch them)]:POLICY:(auto restore keep)' \
+'(--last-by)--run=[Revert every transaction of this run]:RUN:_default' \
+'--saved-variables=[What to do with SavedVariables\: auto, restore or keep]:POLICY:(auto restore keep)' \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -523,25 +523,25 @@ _arguments "${_arguments_options[@]}" : \
 '*--verbose[More detail (repeatable)]' \
 '-h[Show help]' \
 '--help[Show help]' \
-'::tx -- The transaction to revert\: its id or a unique prefix of 8+ characters (default\: the most recent run):_default' \
+'::tx -- The transaction to revert; default\: the most recent run:_default' \
 && ret=0
 ;;
 (rollback)
 _arguments "${_arguments_options[@]}" : \
 '()--last-by=[Revert this actor'\''s most recent run\: human, agent or widget]:ACTOR:(human agent widget)' \
-'(--last-by)--run=[Revert every transaction of this run\: its id or a unique prefix of 8+ characters]:RUN:_default' \
-'--saved-variables=[SavedVariables\: auto (restore what changed, later if the game runs), restore (refuse while the game runs) or keep (never touch them)]:POLICY:(auto restore keep)' \
+'(--last-by)--run=[Revert every transaction of this run]:RUN:_default' \
+'--saved-variables=[What to do with SavedVariables\: auto, restore or keep]:POLICY:(auto restore keep)' \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -551,22 +551,22 @@ _arguments "${_arguments_options[@]}" : \
 '*--verbose[More detail (repeatable)]' \
 '-h[Show help]' \
 '--help[Show help]' \
-'::tx -- The transaction to revert\: its id or a unique prefix of 8+ characters (default\: the most recent run):_default' \
+'::tx -- The transaction to revert; default\: the most recent run:_default' \
 && ret=0
 ;;
 (apply)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -576,22 +576,22 @@ _arguments "${_arguments_options[@]}" : \
 '*--verbose[More detail (repeatable)]' \
 '-h[Show help]' \
 '--help[Show help]' \
-':plan_id -- The plan a --dry-run stored (data.plan_id)\: its id, or a unique prefix of 8+ characters:_default' \
+':plan_id -- The plan a --dry-run stored\: its id, or 8+ of its first characters:_default' \
 && ret=0
 ;;
 (backup)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -615,16 +615,16 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '--limit=[Show at most N backups per client, newest first]:N:_default' \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -640,18 +640,18 @@ _arguments "${_arguments_options[@]}" : \
 (create)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
-'--verify[Hash every file copied, so the backup records its content (integrity\: verified)]' \
-'(--verify)--auto[Only when due\: the automatic checkpoint after a play session, skipped (exit 0, with the reason) when WTF/ is unchanged since the last checkpoint]' \
+'--verify[Hash every file copied, so the backup records its content]' \
+'(--verify)--auto[Make the after-play checkpoint, only when one is due]' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -665,18 +665,18 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (restore)
 _arguments "${_arguments_options[@]}" : \
-'*--addon=[Only this addon'\''s settings (repeatable)\: its name, ref or a folder; folder\:<F> for one folder alone]:ADDON:_default' \
+'*--addon=[Only this addon'\''s settings\: its name, ref or a folder (repeatable)]:ADDON:_default' \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -692,18 +692,18 @@ _arguments "${_arguments_options[@]}" : \
 (prune)
 _arguments "${_arguments_options[@]}" : \
 '()--keep=[Also prune every backup beyond the newest N of its kind]:N:_default' \
-'()--older-than=[Also prune manual, imported and recovered backups older than D (12h, 30d, 2w, or an RFC 3339 time)]:D:_default' \
+'()--older-than=[Also prune your own backups older than D\: 12h, 30d, 2w or a time]:D:_default' \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -719,16 +719,16 @@ _arguments "${_arguments_options[@]}" : \
 (export)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -745,17 +745,17 @@ _arguments "${_arguments_options[@]}" : \
 (import)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--force[Import a backup from a client of another kind than this one]' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -771,16 +771,16 @@ _arguments "${_arguments_options[@]}" : \
 (verify)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -804,16 +804,16 @@ _arguments "${_arguments_options[@]}" : \
 '--run=[Only this run'\''s transactions\: its id or a unique prefix of 8+ characters]:RUN:_default' \
 '--by=[Only transactions by this actor\: human, agent or widget]:ACTOR:_default' \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -832,16 +832,16 @@ _arguments "${_arguments_options[@]}" : \
 '--run=[Only this run'\''s transactions\: its id or a unique prefix of 8+ characters]:RUN:_default' \
 '--by=[Only transactions by this actor\: human, agent or widget]:ACTOR:_default' \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -856,16 +856,16 @@ _arguments "${_arguments_options[@]}" : \
 (plans)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -888,16 +888,16 @@ _arguments "${_arguments_options[@]}" : \
             (show)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -907,7 +907,7 @@ _arguments "${_arguments_options[@]}" : \
 '*--verbose[More detail (repeatable)]' \
 '-h[Show help]' \
 '--help[Show help]' \
-':plan_id -- The plan id a --dry-run returned (data.plan_id), or its first 8 or more characters:_default' \
+':plan_id -- The plan id a --dry-run returned, or 8+ of its first characters:_default' \
 && ret=0
 ;;
         esac
@@ -917,20 +917,20 @@ esac
 (outdated)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--refresh[Ask every source now, even when it was checked in the last 15 minutes]' \
 '--check[Exit 6 (check_failed) when any update is available]' \
-'--verify[Download and verify each update not yet known to load, as installing it would]' \
+'--verify[Download and verify each update not yet known to load]' \
 '--changelog[Add each update'\''s release notes since the installed release]' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -945,20 +945,20 @@ _arguments "${_arguments_options[@]}" : \
 (check)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--refresh[Ask every source now, even when it was checked in the last 15 minutes]' \
 '--check[Exit 6 (check_failed) when any update is available]' \
-'--verify[Download and verify each update not yet known to load, as installing it would]' \
+'--verify[Download and verify each update not yet known to load]' \
 '--changelog[Add each update'\''s release notes since the installed release]' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -973,18 +973,18 @@ _arguments "${_arguments_options[@]}" : \
 (info)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
-'--refresh[Fetch the newest release from its source, even if it was checked recently]' \
-'--changelog[Add the release notes of every release newer than the oldest installed one]' \
+'--refresh[Fetch the newest release from its source, even if checked recently]' \
+'--changelog[Add the notes of every release newer than the oldest installed]' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1000,18 +1000,18 @@ _arguments "${_arguments_options[@]}" : \
 (show)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
-'--refresh[Fetch the newest release from its source, even if it was checked recently]' \
-'--changelog[Add the release notes of every release newer than the oldest installed one]' \
+'--refresh[Fetch the newest release from its source, even if checked recently]' \
+'--changelog[Add the notes of every release newer than the oldest installed]' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1029,17 +1029,17 @@ _arguments "${_arguments_options[@]}" : \
 '*--source=[Consult only this source (repeatable)\: catalog, wowi, tukui or github]:SOURCE:(catalog wowi tukui github)' \
 '--limit=[Most results to list (default 20, at most 50)]:LIMIT:_default' \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
-'--refresh[Fetch the WoWInterface index and the Tukui list now, even inside their windows]' \
+'--refresh[Fetch the WoWInterface index and the Tukui list now]' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1049,7 +1049,7 @@ _arguments "${_arguments_options[@]}" : \
 '*--verbose[More detail (repeatable)]' \
 '-h[Show help]' \
 '--help[Show help]' \
-'*::query -- What to look for\: words of the addon'\''s name, folders, author or description:_default' \
+'*::query -- What to look for\: words of the addon'\''s name or folders:_default' \
 && ret=0
 ;;
 (find)
@@ -1057,17 +1057,17 @@ _arguments "${_arguments_options[@]}" : \
 '*--source=[Consult only this source (repeatable)\: catalog, wowi, tukui or github]:SOURCE:(catalog wowi tukui github)' \
 '--limit=[Most results to list (default 20, at most 50)]:LIMIT:_default' \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
-'--refresh[Fetch the WoWInterface index and the Tukui list now, even inside their windows]' \
+'--refresh[Fetch the WoWInterface index and the Tukui list now]' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1077,7 +1077,7 @@ _arguments "${_arguments_options[@]}" : \
 '*--verbose[More detail (repeatable)]' \
 '-h[Show help]' \
 '--help[Show help]' \
-'*::query -- What to look for\: words of the addon'\''s name, folders, author or description:_default' \
+'*::query -- What to look for\: words of the addon'\''s name or folders:_default' \
 && ret=0
 ;;
 (errors)
@@ -1086,19 +1086,19 @@ _arguments "${_arguments_options[@]}" : \
 '--addon=[Only one addon'\''s errors (by addon or folder name)]:ADDON:_default' \
 '--limit=[Addons shown per client \[default\: 10\]]:N:_default' \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--received[Also list the errors other players sent through BugSack, apart]' \
 '--raw-details[Also show messages, locals and code as written (they may hold names)]' \
 '--check[Exit 6 when a client has new errors, or could not be read completely]' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1121,16 +1121,16 @@ _arguments "${_arguments_options[@]}" : \
             (dismiss)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1149,18 +1149,18 @@ esac
 (export)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
-'--write[Write <config>/omaddons/addons.toml instead of printing (the previous file is kept as addons.toml.bak)]' \
+'--write[Write <config>/omaddons/addons.toml instead of printing]' \
 '--overwrite[With --write\: replace a file changed since omaddons wrote it]' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1175,18 +1175,18 @@ _arguments "${_arguments_options[@]}" : \
 (net-log)
 _arguments "${_arguments_options[@]}" : \
 '--limit=[At most this many requests, the most recent (default 50)]:N:_default' \
-'--since=[Only requests since a duration ago (30m, 12h, 1d, 2w) or an RFC 3339 time]:WHEN:_default' \
+'--since=[Only requests since this\: an age (30m, 12h, 1d, 2w) or a time]:WHEN:_default' \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1206,19 +1206,19 @@ _arguments "${_arguments_options[@]}" : \
 '--budget=[The whole run'\''s time, shared by the checks by their cost\: 500ms or 2s]:DURATION:_default' \
 '--since=[Compare with an earlier run\: its id, or latest]:RUN:_default' \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '(--include-deep)--quick[Only the fast checks (the cached and quick tiers)]' \
 '--include-deep[Also the deep checks]' \
 '--online[Also the checks that need the network]' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1246,19 +1246,19 @@ _arguments "${_arguments_options[@]}" : \
 '--budget=[The whole run'\''s time, shared by the checks by their cost\: 500ms or 2s]:DURATION:_default' \
 '--since=[Compare with an earlier run\: its id, or latest]:RUN:_default' \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '(--include-deep)--quick[Only the fast checks (the cached and quick tiers)]' \
 '--include-deep[Also the deep checks]' \
 '--online[Also the checks that need the network]' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1273,16 +1273,16 @@ _arguments "${_arguments_options[@]}" : \
 (explain)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1292,7 +1292,7 @@ _arguments "${_arguments_options[@]}" : \
 '*--verbose[More detail (repeatable)]' \
 '-h[Show help]' \
 '--help[Show help]' \
-':id -- A failure-mode id, or one instance'\''s key (<fm-id>@<target key or machine>…):_default' \
+':id -- A failure-mode id, or one instance'\''s key:_default' \
 && ret=0
 ;;
 (fix)
@@ -1302,12 +1302,12 @@ _arguments "${_arguments_options[@]}" : \
 '--severity=[Report findings of this severity and more severe ones only]:SEVERITY:(P0 P1 P2 P3)' \
 '--budget=[The whole run'\''s time, shared by the checks by their cost\: 500ms or 2s]:DURATION:_default' \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '(--include-deep)--quick[Only the fast checks (the cached and quick tiers)]' \
 '--include-deep[Also the deep checks]' \
@@ -1316,7 +1316,7 @@ _arguments "${_arguments_options[@]}" : \
 '--yes[Consent to a forced repair]' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1331,16 +1331,16 @@ _arguments "${_arguments_options[@]}" : \
 (diff)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1350,22 +1350,22 @@ _arguments "${_arguments_options[@]}" : \
 '*--verbose[More detail (repeatable)]' \
 '-h[Show help]' \
 '--help[Show help]' \
-'::run -- A run id, or latest\: the findings that changed since that run. Without it\: what doctor fix would change:_default' \
+'::run -- A run id, or latest\: show what changed since that run:_default' \
 && ret=0
 ;;
 (undo)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1375,24 +1375,24 @@ _arguments "${_arguments_options[@]}" : \
 '*--verbose[More detail (repeatable)]' \
 '-h[Show help]' \
 '--help[Show help]' \
-'::run -- The doctor run to undo\: its run id, as doctor fix printed it (default\: the newest fix run whose repair is still in effect):_default' \
+'::run -- The doctor run to undo; default\: the newest repair still in effect:_default' \
 && ret=0
 ;;
 (gc)
 _arguments "${_arguments_options[@]}" : \
-'--before=[Runs that started before this are eligible\: an RFC 3339 time or an age (30m, 12h, 30d, 2w)]:WHEN:_default' \
+'--before=[Runs that started before this are eligible\: an age or a time]:WHEN:_default' \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--yes[Consent for a real run (not needed with --dry-run)]' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1411,19 +1411,19 @@ esac
 (list)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--unmanaged[Also list unmanaged, shared, linked and invalid folders, with their TOC]' \
 '--protected[Also list protected (Blizzard_*) folders]' \
-'--deep[Check each managed addon'\''s files by content, not size and time (shows drift)]' \
+'--deep[Check each managed addon'\''s files by content, not size and time]' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1438,19 +1438,19 @@ _arguments "${_arguments_options[@]}" : \
 (ls)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--unmanaged[Also list unmanaged, shared, linked and invalid folders, with their TOC]' \
 '--protected[Also list protected (Blizzard_*) folders]' \
-'--deep[Check each managed addon'\''s files by content, not size and time (shows drift)]' \
+'--deep[Check each managed addon'\''s files by content, not size and time]' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1465,17 +1465,17 @@ _arguments "${_arguments_options[@]}" : \
 (targets)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--rescan[Ignore the discovery cache and rescan every root]' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1499,16 +1499,16 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '--name=[The id to give it (one client only)]:NAME:_default' \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1518,22 +1518,22 @@ _arguments "${_arguments_options[@]}" : \
 '*--verbose[More detail (repeatable)]' \
 '-h[Show help]' \
 '--help[Show help]' \
-':path -- A Battle.net root, a flavor folder, a custom client root, or its Interface or AddOns directory:_files' \
+':path -- The client'\''s root, flavor folder, Interface or AddOns directory:_files' \
 && ret=0
 ;;
 (rm)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1549,16 +1549,16 @@ _arguments "${_arguments_options[@]}" : \
 (rename)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1575,16 +1575,16 @@ _arguments "${_arguments_options[@]}" : \
 (default)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1604,16 +1604,16 @@ esac
 (config)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1636,16 +1636,16 @@ _arguments "${_arguments_options[@]}" : \
             (get)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1661,16 +1661,16 @@ _arguments "${_arguments_options[@]}" : \
 (set)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1687,16 +1687,16 @@ _arguments "${_arguments_options[@]}" : \
 (path)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1715,17 +1715,17 @@ esac
 (auth)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--from-gh[Store the token \`gh auth token\` prints (the only time omaddons asks gh)]' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1748,17 +1748,17 @@ _arguments "${_arguments_options[@]}" : \
             (github)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--from-gh[Store the token \`gh auth token\` prints (the only time omaddons asks gh)]' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1778,16 +1778,16 @@ esac
 (omarchy)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1810,16 +1810,16 @@ _arguments "${_arguments_options[@]}" : \
             (status)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1833,19 +1833,19 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (install)
 _arguments "${_arguments_options[@]}" : \
-'--section=[Where on the bar a widget not there yet goes (one already there stays put)]:SECTION:(left center right)' \
+'--section=[Where on the bar a widget not there yet goes]:SECTION:(left center right)' \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--no-enable[Install the files and leave the bar as it is]' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1860,16 +1860,16 @@ _arguments "${_arguments_options[@]}" : \
 (remove)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1888,16 +1888,16 @@ esac
 (completions)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1913,16 +1913,16 @@ _arguments "${_arguments_options[@]}" : \
 (robot-docs)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1945,16 +1945,16 @@ _arguments "${_arguments_options[@]}" : \
             (guide)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1969,16 +1969,16 @@ _arguments "${_arguments_options[@]}" : \
 (schema)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -1988,22 +1988,22 @@ _arguments "${_arguments_options[@]}" : \
 '*--verbose[More detail (repeatable)]' \
 '-h[Show help]' \
 '--help[Show help]' \
-'*::command -- A command path, as omaddons help lists it\: install, or backup restore as two words or one quoted:_default' \
+'*::command -- A command path, as omaddons help lists it:_default' \
 && ret=0
 ;;
 (errors)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -2017,18 +2017,18 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (install-skill)
 _arguments "${_arguments_options[@]}" : \
-'--dir=[The skill folder to write SKILL.md into (default\: \$HOME/.claude/skills/omaddons; created if its parent exists)]:DIR:_files' \
+'--dir=[The skill folder to write SKILL.md into]:DIR:_files' \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -2047,16 +2047,16 @@ esac
 (capabilities)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Output format]:FORMAT:(json human)' \
-'-t+[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--target=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
-'--flavor=[The client to act on\: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)]:TARGET:_default' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
-'--reason=[Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)]:TEXT:_default' \
-'--if-match=[Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed]:TOKEN:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
-'--dry-run[Show the plan without changing anything (ignored by commands that change nothing)]' \
+'--dry-run[Show the plan without changing anything]' \
 '--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
 '--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
 '--no-color[No ANSI color]' \
@@ -2077,47 +2077,47 @@ esac
 _omaddons_commands() {
     local commands; commands=(
 'help:Show help for omaddons or one command' \
-'status:Triage\: every client, its addons, running state and what needs attention' \
-'install:Install or update addons in one target, verified by its own TOC rules' \
-'add:Install or update addons in one target, verified by its own TOC rules' \
-'update:Update every managed addon on every client, or the ones named (undo with one undo)' \
-'upgrade:Update every managed addon on every client, or the ones named (undo with one undo)' \
-'pin:Hold an addon at its release through updates (undoable)' \
+'status:Triage every client\: addons, updates, issues, backups' \
+'install:Install or update addons on one client' \
+'add:Install or update addons on one client' \
+'update:Update managed addons on every client' \
+'upgrade:Update managed addons on every client' \
+'pin:Hold an addon at its release through updates' \
 'unpin:Let a pinned addon update again' \
-'adopt:Bring addons installed by hand or by other managers under management, as they are (records only, undoable); alone, report where they come from' \
-'sync:Make every client match addons.toml\: install what is missing, set pins and channels' \
-'copy:Install one client'\''s addons on another, where builds exist (undoable)' \
-'remove:Remove managed addons from one target (undoable)' \
-'uninstall:Remove managed addons from one target (undoable)' \
-'rm:Remove managed addons from one target (undoable)' \
-'delete:Remove managed addons from one target (undoable)' \
-'undo:Revert the last change (or one by id), SavedVariables included' \
-'revert:Revert the last change (or one by id), SavedVariables included' \
-'rollback:Revert the last change (or one by id), SavedVariables included' \
-'apply:Run exactly what a --dry-run stored (its plan id), target by target' \
-'backup:Each client'\''s WTF/ backups\: copies of its settings (bare\: list them)' \
+'adopt:Bring addons installed by hand under management' \
+'sync:Make every client match addons.toml' \
+'copy:Install one client'\''s addons on another' \
+'remove:Remove managed addons from one client' \
+'uninstall:Remove managed addons from one client' \
+'rm:Remove managed addons from one client' \
+'delete:Remove managed addons from one client' \
+'undo:Revert the last change, or one by its id' \
+'revert:Revert the last change, or one by its id' \
+'rollback:Revert the last change, or one by its id' \
+'apply:Run exactly the plan a --dry-run stored' \
+'backup:Back up, list and restore each client'\''s WTF/ settings' \
 'history:Show what changed, when, by whom and why' \
 'log:Show what changed, when, by whom and why' \
-'plans:Inspect a stored plan and what history records of it (changes nothing)' \
-'outdated:Which managed addons have updates, on every client (changes nothing)' \
-'check:Which managed addons have updates, on every client (changes nothing)' \
-'info:What an addon is\: installed records, catalog entry and newest release' \
-'show:What an addon is\: installed records, catalog entry and newest release' \
-'search:Find addons by name in the catalog, WoWInterface, Tukui and GitHub' \
-'find:Find addons by name in the catalog, WoWInterface, Tukui and GitHub' \
-'errors:Which addon most likely throws Lua errors, how often, and whether an update may fix it (from BugGrabber)' \
-'export:Every client'\''s addon set as one addons.toml for sync (stdout, or --write)' \
-'net-log:Every network request omaddons made' \
-'doctor:Diagnose what omaddons manages (bare\: diagnose; changes nothing outside its run record)' \
+'plans:Inspect a stored plan and whether it was applied' \
+'outdated:Show which managed addons have updates' \
+'check:Show which managed addons have updates' \
+'info:Show what an addon is and where it is installed' \
+'show:Show what an addon is and where it is installed' \
+'search:Find addons in the catalog, WoWInterface, Tukui and GitHub' \
+'find:Find addons in the catalog, WoWInterface, Tukui and GitHub' \
+'errors:Show which addons throw Lua errors, from BugGrabber' \
+'export:Print every client'\''s addon set as one addons.toml' \
+'net-log:List the network requests and git runs omaddons made' \
+'doctor:Find what is broken in what omaddons manages' \
 'list:List the addons in each target'\''s AddOns folder' \
 'ls:List the addons in each target'\''s AddOns folder' \
 'targets:List the WoW clients, or add, remove, rename and choose them' \
 'config:Show or change config.toml' \
-'auth:Store, check or clear the opt-in GitHub token (5,000 REST requests an hour)' \
+'auth:Store, check or clear the opt-in GitHub token' \
 'omarchy:Put the omaddons widget on Omarchy'\''s bar' \
-'completions:Print a shell completion script\: bash, zsh, fish, elvish or powershell' \
-'robot-docs:Documentation for agents\: the guide (bare), the JSON Schemas and the error catalog' \
-'capabilities:Describe this build for agents\: commands, flags, exit codes, errors, limits and sources (offline; writes nothing)' \
+'completions:Print a shell completion script' \
+'robot-docs:Print documentation for agents' \
+'capabilities:Describe everything this build can do, for agents' \
     )
     _describe -t commands 'omaddons commands' commands "$@"
 }
@@ -2134,7 +2134,7 @@ _omaddons__subcmd__apply_commands() {
 (( $+functions[_omaddons__subcmd__auth_commands] )) ||
 _omaddons__subcmd__auth_commands() {
     local commands; commands=(
-'github:The GitHub token\: status (the default), set (from standard input) or clear' \
+'github:Show, store or clear the GitHub token' \
     )
     _describe -t commands 'omaddons auth commands' commands "$@"
 }
@@ -2146,13 +2146,13 @@ _omaddons__subcmd__auth__subcmd__github_commands() {
 (( $+functions[_omaddons__subcmd__backup_commands] )) ||
 _omaddons__subcmd__backup_commands() {
     local commands; commands=(
-'list:List each client'\''s WTF/ backups, newest first (changes nothing)' \
+'list:List each client'\''s WTF/ backups, newest first' \
 'create:Back up WTF/\: every live client'\''s, or the clients -t names' \
-'restore:Restore the whole WTF/ (keybindings, macros, every addon'\''s settings) from a backup, or with --addon one addon'\''s settings (undoable)' \
-'prune:Delete old backups, or the ones named (it cannot be undone)' \
-'export:Write a backup to a file off this disk, as a .tar.zst (never replaces a file)' \
-'import:Bring back a backup that backup export wrote, as a backup of the client -t names' \
-'verify:Check backups against their recorded hashes, or record a first baseline' \
+'restore:Restore WTF/, or one addon'\''s settings, from a backup' \
+'prune:Delete old backups, or the ones named' \
+'export:Write a backup to a .tar.zst file off this disk' \
+'import:Bring back a backup that backup export wrote' \
+'verify:Check backups against their recorded hashes' \
     )
     _describe -t commands 'omaddons backup commands' commands "$@"
 }
@@ -2233,12 +2233,12 @@ _omaddons__subcmd__copy_commands() {
 (( $+functions[_omaddons__subcmd__doctor_commands] )) ||
 _omaddons__subcmd__doctor_commands() {
     local commands; commands=(
-'diagnose:Find what is broken, with evidence and the exact fix (changes nothing outside its run record)' \
-'explain:One failure mode in full\: what it is, why it matters, and its live instances (changes nothing)' \
-'fix:Repair the findings a fixer can repair, as one undoable transaction' \
-'diff:Show what doctor fix would change, or what changed since a run (changes nothing)' \
-'undo:Undo a doctor repair\: revert a fix run (or the newest one), strictly' \
-'gc:Delete old doctor runs and what they kept, never what an unfinished change needs' \
+'diagnose:Find what is broken, with evidence and the exact fix' \
+'explain:Explain one failure mode and its live instances' \
+'fix:Repair what a fixer can, as one undoable transaction' \
+'diff:Show what a fix would change or what changed since a run' \
+'undo:Undo a doctor repair, strictly' \
+'gc:Delete old doctor runs and what they kept' \
     )
     _describe -t commands 'omaddons doctor commands' commands "$@"
 }
@@ -2275,7 +2275,7 @@ _omaddons__subcmd__doctor__subcmd__undo_commands() {
 (( $+functions[_omaddons__subcmd__errors_commands] )) ||
 _omaddons__subcmd__errors_commands() {
     local commands; commands=(
-'dismiss:Mark the errors read as seen, every client'\''s or -t'\''s\: they stop being new (it cannot be undone)' \
+'dismiss:Mark the Lua errors read as seen' \
     )
     _describe -t commands 'omaddons errors commands' commands "$@"
 }
@@ -2322,9 +2322,9 @@ _omaddons__subcmd__net-log_commands() {
 (( $+functions[_omaddons__subcmd__omarchy_commands] )) ||
 _omaddons__subcmd__omarchy_commands() {
     local commands; commands=(
-'status:Whether the widget is installed, current and on the bar (the default)' \
-'install:Put the widget on the desktop\: render it for this binary, swap it in, place it on the bar' \
-'remove:Take the widget off the bar and delete it (Omarchy drops its bar settings)' \
+'status:Show whether the bar widget is installed and current' \
+'install:Install the bar widget and put it on the bar' \
+'remove:Take the bar widget off the bar and delete it' \
     )
     _describe -t commands 'omaddons omarchy commands' commands "$@"
 }
@@ -2356,7 +2356,7 @@ _omaddons__subcmd__pin_commands() {
 (( $+functions[_omaddons__subcmd__plans_commands] )) ||
 _omaddons__subcmd__plans_commands() {
     local commands; commands=(
-'show:What a stored plan approved, and whether history records it as applied (offline; changes nothing)' \
+'show:Show what a stored plan approved and whether it ran' \
     )
     _describe -t commands 'omaddons plans commands' commands "$@"
 }
@@ -2373,10 +2373,10 @@ _omaddons__subcmd__remove_commands() {
 (( $+functions[_omaddons__subcmd__robot-docs_commands] )) ||
 _omaddons__subcmd__robot-docs_commands() {
     local commands; commands=(
-'guide:The agent guide as Markdown\: the same text as the skill' \
-'schema:The JSON Schema of every command'\''s data, the envelope, the stderr events and the files, or of one command'\''s data' \
-'errors:Every error and warning code\: exit, retryability, meaning, details schema and fix pattern' \
-'install-skill:Install the agent guide as a skill (SKILL.md) where coding agents load skills' \
+'guide:Print the agent guide as Markdown' \
+'schema:Print the JSON Schemas, or one command'\''s' \
+'errors:Print every error and warning code' \
+'install-skill:Install the agent guide as a coding agent'\''s skill' \
     )
     _describe -t commands 'omaddons robot-docs commands' commands "$@"
 }
@@ -2419,7 +2419,7 @@ _omaddons__subcmd__sync_commands() {
 _omaddons__subcmd__targets_commands() {
     local commands; commands=(
 'add:Register a client that discovery cannot find' \
-'rm:Unregister a target (nothing in its directory is touched)' \
+'rm:Forget a client' \
 'rename:Give a target a new id' \
 'default:Make a target the default for commands without -t' \
     )

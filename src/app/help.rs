@@ -1461,6 +1461,89 @@ mod tests {
         }
     }
 
+    /// The summaries the command lists show (bare help's groups, `help --json`,
+    /// `capabilities`, the guide) are one-line imperative phrases: every visible
+    /// command's about is at most 60 characters, without parentheses or a trailing
+    /// period, and opens with a verb, not a noun or a question; every visible flag's first
+    /// help paragraph is at most 72 characters. Detail goes to later paragraphs, which
+    /// only `--help` shows.
+    #[test]
+    fn summaries_are_one_imperative_line() {
+        const ABOUT_MAX: usize = 60;
+        const FLAG_MAX: usize = 72;
+        /// Openers of a noun phrase or a question, never of an imperative.
+        const NOT_A_VERB: &[&str] = &[
+            "A",
+            "An",
+            "The",
+            "Which",
+            "What",
+            "Whether",
+            "Where",
+            "Every",
+            "Each",
+            "One",
+            "Documentation",
+            "Triage:",
+        ];
+        fn walk(cmd: &clap::Command, path: &mut Vec<String>, faults: &mut Vec<String>) {
+            for sub in cmd.get_subcommands().filter(|sub| !sub.is_hide_set()) {
+                path.push(sub.get_name().to_owned());
+                let line = path.join(" ");
+                let about = sub.get_about().map(ToString::to_string).unwrap_or_default();
+                let first = about.split_whitespace().next().unwrap_or_default();
+                if about.is_empty()
+                    || about.chars().count() > ABOUT_MAX
+                    || about.contains(['(', ')'])
+                    || about.ends_with('.')
+                    || about.contains('\n')
+                    || NOT_A_VERB.contains(&first)
+                {
+                    faults.push(format!(
+                        "{line}: about {:?} ({} chars)",
+                        about,
+                        about.chars().count()
+                    ));
+                }
+                for arg in sub
+                    .get_arguments()
+                    .filter(|arg| !arg.is_hide_set() && !arg.is_global_set())
+                {
+                    let help = arg.get_help().map(ToString::to_string).unwrap_or_default();
+                    if help.chars().count() > FLAG_MAX {
+                        faults.push(format!(
+                            "{line} {}: help {help:?} ({} chars)",
+                            arg.get_id(),
+                            help.chars().count()
+                        ));
+                    }
+                }
+                walk(sub, path, faults);
+                path.pop();
+            }
+        }
+        let mut root = Cli::command();
+        root.build();
+        let mut faults = Vec::new();
+        for arg in root.get_arguments().filter(|arg| !arg.is_hide_set()) {
+            let help = arg.get_help().map(ToString::to_string).unwrap_or_default();
+            if help.chars().count() > FLAG_MAX {
+                faults.push(format!(
+                    "global {}: help {help:?} ({} chars)",
+                    arg.get_id(),
+                    help.chars().count()
+                ));
+            }
+        }
+        walk(&root, &mut Vec::new(), &mut faults);
+        assert!(
+            faults.is_empty(),
+            "{} summaries break the rules:\n{}",
+            faults.len(),
+            faults.join("\n")
+        );
+    }
+
     /// Every flag `-h`'s summary names is a global option of the tree.
     #[test]
     fn the_global_summary_names_real_options() {

@@ -59,7 +59,9 @@ pub struct OutdatedArgs {
     /// Exit 6 (check_failed) when any update is available
     #[arg(long)]
     pub check: bool,
-    /// Download and verify each update not yet known to load, as installing it would
+    /// Download and verify each update not yet known to load
+    ///
+    /// As installing it would, remembering whether it loads.
     #[arg(long)]
     pub verify: bool,
     /// Add each update's release notes since the installed release

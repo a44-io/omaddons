@@ -550,8 +550,9 @@ impl ResultData for BackupPruneData {
 /// `apply`'s own arguments.
 #[derive(Debug, Clone, Default, clap::Args)]
 pub struct ApplyArgs {
-    /// The plan a --dry-run stored (data.plan_id): its id, or a unique prefix of 8+
-    /// characters
+    /// The plan a --dry-run stored: its id, or 8+ of its first characters
+    ///
+    /// The dry run's data.plan_id; a unique prefix of 8 or more characters works.
     #[arg(value_name = "PLAN_ID")]
     pub plan_id: String,
 }

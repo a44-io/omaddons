@@ -34,8 +34,9 @@ use crate::state::paths::Paths;
 /// `doctor undo`'s argument (`--dry-run` is global).
 #[derive(Debug, Clone, Default, clap::Args)]
 pub struct DoctorUndoArgs {
-    /// The doctor run to undo: its run id, as doctor fix printed it (default: the newest
-    /// fix run whose repair is still in effect)
+    /// The doctor run to undo; default: the newest repair still in effect
+    ///
+    /// Its run id, as doctor fix printed it.
     #[arg(value_name = "RUN")]
     pub run: Option<String>,
 }

@@ -49,8 +49,9 @@ pub struct PlansArgs {
 /// What `plans` does.
 #[derive(Debug, Clone, clap::Subcommand)]
 pub enum PlansAction {
-    /// What a stored plan approved, and whether history records it as applied (offline;
-    /// changes nothing)
+    /// Show what a stored plan approved and whether it ran
+    ///
+    /// Whether history records it as applied: offline, and it changes nothing.
     #[command(after_long_help = PLANS_SHOW_HELP)]
     Show(ShowArgs),
 }
@@ -67,7 +68,9 @@ impl PlansAction {
 /// `plans show`'s arguments.
 #[derive(Debug, Clone, clap::Args)]
 pub struct ShowArgs {
-    /// The plan id a --dry-run returned (data.plan_id), or its first 8 or more characters
+    /// The plan id a --dry-run returned, or 8+ of its first characters
+    ///
+    /// The dry run's data.plan_id.
     #[arg(value_name = "PLAN_ID")]
     pub plan_id: String,
 }

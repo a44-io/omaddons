@@ -48,7 +48,9 @@ pub enum SourceFilter {
 /// `search`'s own arguments.
 #[derive(Debug, Clone, Default, clap::Args)]
 pub struct SearchArgs {
-    /// What to look for: words of the addon's name, folders, author or description
+    /// What to look for: words of the addon's name or folders
+    ///
+    /// Words of its name, folders, author or description.
     #[arg(required = true, value_name = "QUERY")]
     pub query: Vec<String>,
     /// Consult only this source (repeatable): catalog, wowi, tukui or github
@@ -57,7 +59,9 @@ pub struct SearchArgs {
     /// Most results to list (default 20, at most 50)
     #[arg(long)]
     pub limit: Option<usize>,
-    /// Fetch the WoWInterface index and the Tukui list now, even inside their windows
+    /// Fetch the WoWInterface index and the Tukui list now
+    ///
+    /// Even inside the windows in which their stored copies are reused.
     #[arg(long)]
     pub refresh: bool,
 }

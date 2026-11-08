@@ -46,13 +46,18 @@ pub struct TargetsArgs {
 pub enum TargetsAction {
     /// Register a client that discovery cannot find
     Add {
-        /// A Battle.net root, a flavor folder, a custom client root, or its Interface or AddOns directory
+        /// The client's root, flavor folder, Interface or AddOns directory
+        ///
+        /// A Battle.net root, a flavor folder, a custom client root, or its Interface or
+        /// AddOns directory.
         path: PathBuf,
         /// The id to give it (one client only)
         #[arg(long)]
         name: Option<String>,
     },
-    /// Unregister a target (nothing in its directory is touched)
+    /// Forget a client
+    ///
+    /// Unregister it; nothing in its directory is touched.
     Rm {
         /// The target's id
         id: String,

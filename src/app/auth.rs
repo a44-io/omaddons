@@ -44,7 +44,9 @@ pub struct AuthArgs {
 /// The services a token can be stored for.
 #[derive(Debug, Clone, clap::Subcommand)]
 pub enum AuthService {
-    /// The GitHub token: status (the default), set (from standard input) or clear
+    /// Show, store or clear the GitHub token
+    ///
+    /// Its actions: status (the default), set (from standard input) or clear.
     #[command(after_long_help = AUTH_HELP)]
     Github(GithubArgs),
 }

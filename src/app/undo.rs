@@ -43,8 +43,9 @@ use crate::state::plans::NotStored;
 /// `undo`'s own flags.
 #[derive(Debug, Clone, Default, clap::Args)]
 pub struct UndoArgs {
-    /// The transaction to revert: its id or a unique prefix of 8+ characters
-    /// (default: the most recent run)
+    /// The transaction to revert; default: the most recent run
+    ///
+    /// Its id, or a unique prefix of 8 or more characters.
     #[arg(value_name = "TX")]
     pub tx: Option<String>,
     /// Revert this actor's most recent run: human, agent or widget
@@ -55,11 +56,15 @@ pub struct UndoArgs {
         value_parser = clap::builder::PossibleValuesParser::new(Actor::WORDS)
     )]
     pub last_by: Option<String>,
-    /// Revert every transaction of this run: its id or a unique prefix of 8+ characters
+    /// Revert every transaction of this run
+    ///
+    /// Its id, or a unique prefix of 8 or more characters.
     #[arg(long, value_name = "RUN", conflicts_with_all = ["tx", "last_by"])]
     pub run: Option<String>,
-    /// SavedVariables: auto (restore what changed, later if the game runs), restore
-    /// (refuse while the game runs) or keep (never touch them)
+    /// What to do with SavedVariables: auto, restore or keep
+    ///
+    /// auto (the default) restores what changed, later if the game runs; restore refuses
+    /// while the game runs; keep never touches them.
     #[arg(long, value_name = "POLICY", value_parser = ["auto", "restore", "keep"])]
     pub saved_variables: Option<String>,
 }

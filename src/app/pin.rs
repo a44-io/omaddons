@@ -40,7 +40,9 @@ pub struct PinArgs {
     /// The installed addon: its name, or a catalog name or alias
     #[arg(value_name = "ADDON")]
     pub addon: String,
-    /// Install this release first (a tag for gh: refs, a rev for git: refs), then pin it
+    /// Install this release first, then pin it
+    ///
+    /// A tag for gh: refs, a rev for git: refs.
     #[arg(long, value_name = "VERSION")]
     pub version: Option<String>,
 }

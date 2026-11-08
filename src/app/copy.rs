@@ -41,15 +41,17 @@ use crate::state::records::TargetRecord;
 /// `copy`'s own arguments.
 #[derive(Debug, Clone, Default, clap::Args)]
 pub struct CopyArgs {
-    /// The client to copy from (one client: id, key, game mode, family, product, flavor
-    /// folder or path)
+    /// The client to copy from
+    ///
+    /// Exactly one client: an id, key, game mode, family, product, flavor folder or path.
     #[arg(long, value_name = "TARGET")]
     pub from: String,
     /// The client to install on (one client)
     #[arg(long, value_name = "TARGET")]
     pub to: String,
-    /// Only these addons of --from (names, or catalog names and aliases); default: every
-    /// addon installed explicitly there
+    /// Only these addons of --from; default: every one installed explicitly
+    ///
+    /// By name, or by catalog name or alias.
     #[arg(value_name = "ADDON")]
     pub addons: Vec<String>,
     /// Exit 6 when an addon fails to copy (skips never count)

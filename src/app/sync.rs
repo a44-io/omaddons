@@ -46,7 +46,7 @@ use crate::state::records::TargetRecord;
 /// `sync`'s own arguments.
 #[derive(Debug, Clone, Default, clap::Args)]
 pub struct SyncArgs {
-    /// The desired-state file (default: addons.toml in omaddons' config directory)
+    /// The desired-state file; default: addons.toml in the config directory
     #[arg(value_name = "FILE")]
     pub file: Option<PathBuf>,
     /// Exit 6 when only some of the addons sync
@@ -58,8 +58,10 @@ pub struct SyncArgs {
     /// Install the versions the file records, from the blob cache when cached
     #[arg(long)]
     pub locked: bool,
-    /// Also remove managed addons the file does not list (never one a listed addon
-    /// requires or a lock names; refused while a target section names no known client)
+    /// Also remove managed addons the file does not list
+    ///
+    /// Never one a listed addon requires or a lock names. Refused while a target section
+    /// names no known client.
     #[arg(long)]
     pub prune: bool,
 }

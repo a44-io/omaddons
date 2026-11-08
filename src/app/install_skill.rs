@@ -60,8 +60,9 @@ guide than this build's. Remove the skill by deleting the folder.";
 /// `robot-docs install-skill`'s arguments.
 #[derive(Debug, Clone, Default, clap::Args)]
 pub struct InstallSkillArgs {
-    /// The skill folder to write SKILL.md into (default: $HOME/.claude/skills/omaddons;
-    /// created if its parent exists)
+    /// The skill folder to write SKILL.md into
+    ///
+    /// Default: $HOME/.claude/skills/omaddons. It is created when its parent exists.
     #[arg(long, value_name = "DIR")]
     pub dir: Option<PathBuf>,
 }

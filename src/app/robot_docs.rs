@@ -28,16 +28,23 @@ pub struct RobotDocsArgs {
 /// What `robot-docs` documents.
 #[derive(Debug, Clone, clap::Subcommand)]
 pub enum RobotDocsAction {
-    /// The agent guide as Markdown: the same text as the skill
+    /// Print the agent guide as Markdown
+    ///
+    /// The same text as the omaddons skill.
     #[command(after_long_help = GUIDE_HELP)]
     Guide,
-    /// The JSON Schema of every command's data, the envelope, the stderr events and the
-    /// files, or of one command's data
+    /// Print the JSON Schemas, or one command's
+    ///
+    /// Every command's data, the envelope, the stderr events and the files, or one
+    /// command's data.
     Schema(SchemaArgs),
-    /// Every error and warning code: exit, retryability, meaning, details schema and fix
-    /// pattern
+    /// Print every error and warning code
+    ///
+    /// Each with its exit, retryability, meaning, details schema and fix pattern.
     Errors,
-    /// Install the agent guide as a skill (SKILL.md) where coding agents load skills
+    /// Install the agent guide as a coding agent's skill
+    ///
+    /// As SKILL.md, where coding agents load skills.
     #[command(after_long_help = super::install_skill::INSTALL_SKILL_HELP)]
     InstallSkill(super::install_skill::InstallSkillArgs),
 }
@@ -116,8 +123,9 @@ pub fn guide() -> Result<GuideOutcome> {
 /// `robot-docs schema`'s arguments.
 #[derive(Debug, Clone, Default, clap::Args)]
 pub struct SchemaArgs {
-    /// A command path, as omaddons help lists it: install, or backup restore as two words
-    /// or one quoted
+    /// A command path, as omaddons help lists it
+    ///
+    /// install, or backup restore as two words or one quoted.
     #[arg(value_name = "COMMAND", num_args = 0..)]
     pub command: Vec<String>,
 }

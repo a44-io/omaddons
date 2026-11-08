@@ -3,8 +3,7 @@ source: tests/help_pages.rs
 description: "a command's -h and --help pages as this build renders them at 100 columns without color; any change to an about, a flag, a value, a heading or the layout changes them: review with cargo insta review, or re-accept with INSTA_UPDATE=always cargo test --test integration help_pages:: and review git diff tests/snapshots/"
 ---
 ==> omaddons backup restore -h <==
-Restore the whole WTF/ (keybindings, macros, every addon's settings) from a backup, or with --addon
-one addon's settings (undoable)
+Restore WTF/, or one addon's settings, from a backup
 
 Usage: omaddons backup restore [OPTIONS] <ID>
 
@@ -12,8 +11,7 @@ Arguments:
   <ID>  The backup: its id, or a prefix of 8 or more characters
 
 Options:
-      --addon <ADDON>  Only this addon's settings (repeatable): its name, ref or a folder;
-                       folder:<F> for one folder alone
+      --addon <ADDON>  Only this addon's settings: its name, ref or a folder (repeatable)
 
 Examples:
   omaddons backup restore 01M6Q2VA --dry-run  what it would put back
@@ -22,8 +20,10 @@ Examples:
 
 Global: -t <TARGET>  --json  --dry-run  -v  --quiet  --no-color  --offline  (--help lists them all)
 ==> omaddons backup restore --help <==
-Restore the whole WTF/ (keybindings, macros, every addon's settings) from a backup, or with --addon
-one addon's settings (undoable)
+Restore WTF/, or one addon's settings, from a backup
+
+The whole WTF/ (keybindings, macros, every addon's settings), or with --addon one addon's settings
+only. Undoable.
 
 Usage: omaddons backup restore [OPTIONS] <ID>
 
@@ -33,8 +33,9 @@ Arguments:
 
 Options:
       --addon <ADDON>
-          Only this addon's settings (repeatable): its name, ref or a folder; folder:<F> for one
-          folder alone
+          Only this addon's settings: its name, ref or a folder (repeatable)
+          
+          folder:<F> names one folder alone.
 
 Examples:
   omaddons backup restore 01M6Q2VA --dry-run   what it would put back, and its token
@@ -56,18 +57,14 @@ See also: backup list, undo
 Global options:
       --json              One JSON envelope on stdout
       --format <FORMAT>   Output format [possible values: json, human]
-  -t, --target <TARGET>   The client to act on: id, key, game mode (sod and hardcore select the
-                          Classic Era client), family, product, flavor folder, path, or all (every
-                          client) [alias: --flavor]
-      --dry-run           Show the plan without changing anything (ignored by commands that change
-                          nothing)
+  -t, --target <TARGET>   The client to act on: id, game mode, family, path, or all [alias:
+                          --flavor]
+      --dry-run           Show the plan without changing anything
       --actor <ACTOR>     Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
-      --reason <TEXT>     Why, recorded verbatim in history (at most 200 characters; ignored by
-                          commands that change nothing)
+      --reason <TEXT>     Why, recorded verbatim in history
       --offline           Fail any network access [env: OMADDONS_OFFLINE=1]
       --while-running     Allow folder changes while the client runs (never SavedVariables)
-      --if-match <TOKEN>  Change nothing unless the plan is still the one the --dry-run that
-                          returned this token (data.precondition) showed
+      --if-match <TOKEN>  Run only what the preview that returned this token showed
       --no-color          No ANSI color
       --no-progress       No progress output
       --progress <MODE>   Progress events on stderr [possible values: json, human, none]

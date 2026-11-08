@@ -3,13 +3,12 @@ source: tests/help_pages.rs
 description: "a command's -h and --help pages as this build renders them at 100 columns without color; any change to an about, a flag, a value, a heading or the layout changes them: review with cargo insta review, or re-accept with INSTA_UPDATE=always cargo test --test integration help_pages:: and review git diff tests/snapshots/"
 ---
 ==> omaddons doctor undo -h <==
-Undo a doctor repair: revert a fix run (or the newest one), strictly
+Undo a doctor repair, strictly
 
 Usage: omaddons doctor undo [OPTIONS] [RUN]
 
 Arguments:
-  [RUN]  The doctor run to undo: its run id, as doctor fix printed it (default: the newest fix run
-         whose repair is still in effect)
+  [RUN]  The doctor run to undo; default: the newest repair still in effect
 
 Examples:
   omaddons doctor undo --dry-run  what undoing the newest repair would do
@@ -17,14 +16,17 @@ Examples:
 
 Global: -t <TARGET>  --json  --dry-run  -v  --quiet  --no-color  --offline  (--help lists them all)
 ==> omaddons doctor undo --help <==
-Undo a doctor repair: revert a fix run (or the newest one), strictly
+Undo a doctor repair, strictly
+
+The repair a fix run made, or the newest one still in effect.
 
 Usage: omaddons doctor undo [OPTIONS] [RUN]
 
 Arguments:
   [RUN]
-          The doctor run to undo: its run id, as doctor fix printed it (default: the newest fix run
-          whose repair is still in effect)
+          The doctor run to undo; default: the newest repair still in effect
+          
+          Its run id, as doctor fix printed it.
 
 Examples:
   omaddons doctor undo                                the newest repair still in effect
@@ -38,14 +40,10 @@ See also: doctor fix, undo, history
 Global options:
       --json             One JSON envelope on stdout
       --format <FORMAT>  Output format [possible values: json, human]
-  -t, --target <TARGET>  The client to act on: id, key, game mode (sod and hardcore select the
-                         Classic Era client), family, product, flavor folder, path, or all (every
-                         client) [alias: --flavor]
-      --dry-run          Show the plan without changing anything (ignored by commands that change
-                         nothing)
+  -t, --target <TARGET>  The client to act on: id, game mode, family, path, or all [alias: --flavor]
+      --dry-run          Show the plan without changing anything
       --actor <ACTOR>    Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
-      --reason <TEXT>    Why, recorded verbatim in history (at most 200 characters; ignored by
-                         commands that change nothing)
+      --reason <TEXT>    Why, recorded verbatim in history
       --offline          Fail any network access [env: OMADDONS_OFFLINE=1]
       --while-running    Allow folder changes while the client runs (never SavedVariables)
       --no-color         No ANSI color

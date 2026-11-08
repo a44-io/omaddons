@@ -57,13 +57,16 @@ use crate::state::records::{TargetRecord, load_record};
 /// `install`'s own flags.
 #[derive(Debug, Clone, Default, clap::Args)]
 pub struct InstallArgs {
-    /// What to install: a catalog name (weakauras), owner/repo, a canonical ref (gh:, git:,
-    /// url:, file:, wowi:, tukui:), a pasted GitHub or https link, or a path to a zip or
-    /// folder
+    /// What to install: a catalog name, a ref, a link or a local path
+    ///
+    /// A catalog name (weakauras), owner/repo, a canonical ref (gh:, git:, url:, file:,
+    /// wowi:, tukui:, wowace:), a pasted GitHub or https link, or a path to a zip or
+    /// folder.
     #[arg(required = true, value_name = "REF")]
     pub refs: Vec<String>,
-    /// stable, beta or alpha (default: the addon's recorded channel, then
-    /// default_channel, then stable)
+    /// The release channel to install from
+    ///
+    /// Default: the addon's recorded channel, then default_channel, then stable.
     #[arg(long, value_name = "CHANNEL", value_parser = ["stable", "beta", "alpha"])]
     pub channel: Option<String>,
     /// Install exactly this release: a tag for gh: refs, a rev for git: refs
@@ -72,15 +75,18 @@ pub struct InstallArgs {
     /// Install this downloaded archive as the release of the one given ref
     #[arg(long, value_name = "ZIP")]
     pub file: Option<PathBuf>,
-    /// Install the recorded release again, replacing its folders (repairs modified or
-    /// missing files)
+    /// Install the recorded release again, replacing its folders
+    ///
+    /// It repairs modified or missing files, undoably.
     #[arg(long)]
     pub reinstall: bool,
     /// Install only the named addons, not the ones their TOCs require
     #[arg(long)]
     pub no_deps: bool,
-    /// Take over a folder another addon owns, an addon of the same name from another ref,
-    /// or replace an unmanaged folder
+    /// Take over another addon's folder, or replace an unmanaged one
+    ///
+    /// Take over a folder another addon owns or an addon of the same name from another
+    /// ref, or replace an unmanaged folder; undoable until retention prunes the snapshot.
     #[arg(long)]
     pub force: bool,
     /// Exit 6 when only some of the addons install
@@ -89,8 +95,10 @@ pub struct InstallArgs {
     /// Fetch every release from its source, never from remembered metadata
     #[arg(long)]
     pub refresh: bool,
-    /// On this client, install builds the publisher did not make for it (kept by every
-    /// later update and sync until --no-any-flavor)
+    /// Install builds the publisher did not make for this client
+    ///
+    /// Recorded on the addon there: every later update and sync keeps it, until
+    /// --no-any-flavor.
     #[arg(long, conflicts_with = "no_any_flavor")]
     pub any_flavor: bool,
     /// Clear --any-flavor for these addons on this client

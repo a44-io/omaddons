@@ -3,17 +3,15 @@ source: tests/help_pages.rs
 description: "a command's -h and --help pages as this build renders them at 100 columns without color; any change to an about, a flag, a value, a heading or the layout changes them: review with cargo insta review, or re-accept with INSTA_UPDATE=always cargo test --test integration help_pages:: and review git diff tests/snapshots/"
 ---
 ==> omaddons copy -h <==
-Install one client's addons on another, where builds exist (undoable)
+Install one client's addons on another
 
 Usage: omaddons copy [OPTIONS] --from <TARGET> --to <TARGET> [ADDON]...
 
 Arguments:
-  [ADDON]...  Only these addons of --from (names, or catalog names and aliases); default: every
-              addon installed explicitly there
+  [ADDON]...  Only these addons of --from; default: every one installed explicitly
 
 Options:
-      --from <TARGET>  The client to copy from (one client: id, key, game mode, family, product,
-                       flavor folder or path)
+      --from <TARGET>  The client to copy from
       --to <TARGET>    The client to install on (one client)
       --strict         Exit 6 when an addon fails to copy (skips never count)
       --no-deps        Install only the addons copied, not the ones their TOCs require on --to
@@ -25,19 +23,23 @@ Examples:
 
 Global: -t <TARGET>  --json  --dry-run  -v  --quiet  --no-color  --offline  (--help lists them all)
 ==> omaddons copy --help <==
-Install one client's addons on another, where builds exist (undoable)
+Install one client's addons on another
+
+Where builds exist; the rest is skipped and said why. Undoable.
 
 Usage: omaddons copy [OPTIONS] --from <TARGET> --to <TARGET> [ADDON]...
 
 Arguments:
   [ADDON]...
-          Only these addons of --from (names, or catalog names and aliases); default: every addon
-          installed explicitly there
+          Only these addons of --from; default: every one installed explicitly
+          
+          By name, or by catalog name or alias.
 
 Options:
       --from <TARGET>
-          The client to copy from (one client: id, key, game mode, family, product, flavor folder or
-          path)
+          The client to copy from
+          
+          Exactly one client: an id, key, game mode, family, product, flavor folder or path.
 
       --to <TARGET>
           The client to install on (one client)
@@ -62,18 +64,14 @@ See also: install, export
 Global options:
       --json              One JSON envelope on stdout
       --format <FORMAT>   Output format [possible values: json, human]
-  -t, --target <TARGET>   The client to act on: id, key, game mode (sod and hardcore select the
-                          Classic Era client), family, product, flavor folder, path, or all (every
-                          client) [alias: --flavor]
-      --dry-run           Show the plan without changing anything (ignored by commands that change
-                          nothing)
+  -t, --target <TARGET>   The client to act on: id, game mode, family, path, or all [alias:
+                          --flavor]
+      --dry-run           Show the plan without changing anything
       --actor <ACTOR>     Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
-      --reason <TEXT>     Why, recorded verbatim in history (at most 200 characters; ignored by
-                          commands that change nothing)
+      --reason <TEXT>     Why, recorded verbatim in history
       --offline           Fail any network access [env: OMADDONS_OFFLINE=1]
       --while-running     Allow folder changes while the client runs (never SavedVariables)
-      --if-match <TOKEN>  Change nothing unless the plan is still the one the --dry-run that
-                          returned this token (data.precondition) showed
+      --if-match <TOKEN>  Run only what the preview that returned this token showed
       --no-color          No ANSI color
       --no-progress       No progress output
       --progress <MODE>   Progress events on stderr [possible values: json, human, none]

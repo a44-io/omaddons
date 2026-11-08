@@ -3,14 +3,14 @@ source: tests/help_pages.rs
 description: "a command's -h and --help pages as this build renders them at 100 columns without color; any change to an about, a flag, a value, a heading or the layout changes them: review with cargo insta review, or re-accept with INSTA_UPDATE=always cargo test --test integration help_pages:: and review git diff tests/snapshots/"
 ---
 ==> omaddons omarchy install -h <==
-Put the widget on the desktop: render it for this binary, swap it in, place it on the bar
+Install the bar widget and put it on the bar
 
 Usage: omaddons omarchy install [OPTIONS]
 
 Options:
       --no-enable          Install the files and leave the bar as it is
-      --section <SECTION>  Where on the bar a widget not there yet goes (one already there stays
-                           put) [default: right] [possible values: left, center, right]
+      --section <SECTION>  Where on the bar a widget not there yet goes [default: right] [possible
+                           values: left, center, right]
 
 Examples:
   omaddons omarchy install                 install it and put it on the bar
@@ -19,7 +19,9 @@ Examples:
 
 Global: -t <TARGET>  --json  --dry-run  -v  --quiet  --no-color  --offline  (--help lists them all)
 ==> omaddons omarchy install --help <==
-Put the widget on the desktop: render it for this binary, swap it in, place it on the bar
+Install the bar widget and put it on the bar
+
+Render it for this binary, swap it in, and place it on the bar.
 
 Usage: omaddons omarchy install [OPTIONS]
 
@@ -28,7 +30,9 @@ Options:
           Install the files and leave the bar as it is
 
       --section <SECTION>
-          Where on the bar a widget not there yet goes (one already there stays put)
+          Where on the bar a widget not there yet goes
+          
+          A widget already on the bar stays where it is.
           
           [default: right]
           [possible values: left, center, right]
@@ -43,14 +47,10 @@ See also: omarchy status, omarchy remove
 Global options:
       --json             One JSON envelope on stdout
       --format <FORMAT>  Output format [possible values: json, human]
-  -t, --target <TARGET>  The client to act on: id, key, game mode (sod and hardcore select the
-                         Classic Era client), family, product, flavor folder, path, or all (every
-                         client) [alias: --flavor]
-      --dry-run          Show the plan without changing anything (ignored by commands that change
-                         nothing)
+  -t, --target <TARGET>  The client to act on: id, game mode, family, path, or all [alias: --flavor]
+      --dry-run          Show the plan without changing anything
       --actor <ACTOR>    Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
-      --reason <TEXT>    Why, recorded verbatim in history (at most 200 characters; ignored by
-                         commands that change nothing)
+      --reason <TEXT>    Why, recorded verbatim in history
       --offline          Fail any network access [env: OMADDONS_OFFLINE=1]
       --while-running    Allow folder changes while the client runs (never SavedVariables)
       --no-color         No ANSI color

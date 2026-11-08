@@ -3,13 +3,12 @@ source: tests/help_pages.rs
 description: "a command's -h and --help pages as this build renders them at 100 columns without color; any change to an about, a flag, a value, a heading or the layout changes them: review with cargo insta review, or re-accept with INSTA_UPDATE=always cargo test --test integration help_pages:: and review git diff tests/snapshots/"
 ---
 ==> omaddons doctor gc -h <==
-Delete old doctor runs and what they kept, never what an unfinished change needs
+Delete old doctor runs and what they kept
 
 Usage: omaddons doctor gc [OPTIONS] --before <WHEN>
 
 Options:
-      --before <WHEN>  Runs that started before this are eligible: an RFC 3339 time or an age (30m,
-                       12h, 30d, 2w)
+      --before <WHEN>  Runs that started before this are eligible: an age or a time
       --yes            Consent for a real run (not needed with --dry-run)
 
 Examples:
@@ -19,13 +18,17 @@ Examples:
 
 Global: -t <TARGET>  --json  --dry-run  -v  --quiet  --no-color  --offline  (--help lists them all)
 ==> omaddons doctor gc --help <==
-Delete old doctor runs and what they kept, never what an unfinished change needs
+Delete old doctor runs and what they kept
+
+Never what an unfinished change still needs.
 
 Usage: omaddons doctor gc [OPTIONS] --before <WHEN>
 
 Options:
       --before <WHEN>
-          Runs that started before this are eligible: an RFC 3339 time or an age (30m, 12h, 30d, 2w)
+          Runs that started before this are eligible: an age or a time
+          
+          An age (30m, 12h, 30d, 2w) or an RFC 3339 time.
 
       --yes
           Consent for a real run (not needed with --dry-run)
@@ -41,18 +44,14 @@ See also: doctor undo, doctor
 Global options:
       --json              One JSON envelope on stdout
       --format <FORMAT>   Output format [possible values: json, human]
-  -t, --target <TARGET>   The client to act on: id, key, game mode (sod and hardcore select the
-                          Classic Era client), family, product, flavor folder, path, or all (every
-                          client) [alias: --flavor]
-      --dry-run           Show the plan without changing anything (ignored by commands that change
-                          nothing)
+  -t, --target <TARGET>   The client to act on: id, game mode, family, path, or all [alias:
+                          --flavor]
+      --dry-run           Show the plan without changing anything
       --actor <ACTOR>     Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
-      --reason <TEXT>     Why, recorded verbatim in history (at most 200 characters; ignored by
-                          commands that change nothing)
+      --reason <TEXT>     Why, recorded verbatim in history
       --offline           Fail any network access [env: OMADDONS_OFFLINE=1]
       --while-running     Allow folder changes while the client runs (never SavedVariables)
-      --if-match <TOKEN>  Change nothing unless the plan is still the one the --dry-run that
-                          returned this token (data.precondition) showed
+      --if-match <TOKEN>  Run only what the preview that returned this token showed
       --no-color          No ANSI color
       --no-progress       No progress output
       --progress <MODE>   Progress events on stderr [possible values: json, human, none]

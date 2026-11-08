@@ -8,7 +8,7 @@ expression: envelope
   "data": {
     "commands": [
       {
-        "about": "Triage: every client, its addons, running state and what needs attention",
+        "about": "Triage every client: addons, updates, issues, backups",
         "aliases": [],
         "group": "look",
         "name": "status"
@@ -22,7 +22,7 @@ expression: envelope
         "name": "list"
       },
       {
-        "about": "Which managed addons have updates, on every client (changes nothing)",
+        "about": "Show which managed addons have updates",
         "aliases": [
           "check"
         ],
@@ -30,7 +30,7 @@ expression: envelope
         "name": "outdated"
       },
       {
-        "about": "What an addon is: installed records, catalog entry and newest release",
+        "about": "Show what an addon is and where it is installed",
         "aliases": [
           "show"
         ],
@@ -38,7 +38,7 @@ expression: envelope
         "name": "info"
       },
       {
-        "about": "Find addons by name in the catalog, WoWInterface, Tukui and GitHub",
+        "about": "Find addons in the catalog, WoWInterface, Tukui and GitHub",
         "aliases": [
           "find"
         ],
@@ -46,13 +46,13 @@ expression: envelope
         "name": "search"
       },
       {
-        "about": "Which addon most likely throws Lua errors, how often, and whether an update may fix it (from BugGrabber)",
+        "about": "Show which addons throw Lua errors, from BugGrabber",
         "aliases": [],
         "group": "look",
         "name": "errors"
       },
       {
-        "about": "Every client's addon set as one addons.toml for sync (stdout, or --write)",
+        "about": "Print every client's addon set as one addons.toml",
         "aliases": [],
         "group": "look",
         "name": "export"
@@ -66,25 +66,25 @@ expression: envelope
         "name": "history"
       },
       {
-        "about": "Inspect a stored plan and what history records of it (changes nothing)",
+        "about": "Inspect a stored plan and whether it was applied",
         "aliases": [],
         "group": "look",
         "name": "plans"
       },
       {
-        "about": "Every network request omaddons made",
+        "about": "List the network requests and git runs omaddons made",
         "aliases": [],
         "group": "look",
         "name": "net-log"
       },
       {
-        "about": "Diagnose what omaddons manages (bare: diagnose; changes nothing outside its run record)",
+        "about": "Find what is broken in what omaddons manages",
         "aliases": [],
         "group": "look",
         "name": "doctor"
       },
       {
-        "about": "Install or update addons in one target, verified by its own TOC rules",
+        "about": "Install or update addons on one client",
         "aliases": [
           "add"
         ],
@@ -92,7 +92,7 @@ expression: envelope
         "name": "install"
       },
       {
-        "about": "Update every managed addon on every client, or the ones named (undo with one undo)",
+        "about": "Update managed addons on every client",
         "aliases": [
           "upgrade"
         ],
@@ -100,7 +100,7 @@ expression: envelope
         "name": "update"
       },
       {
-        "about": "Hold an addon at its release through updates (undoable)",
+        "about": "Hold an addon at its release through updates",
         "aliases": [],
         "group": "change",
         "name": "pin"
@@ -112,25 +112,25 @@ expression: envelope
         "name": "unpin"
       },
       {
-        "about": "Bring addons installed by hand or by other managers under management, as they are (records only, undoable); alone, report where they come from",
+        "about": "Bring addons installed by hand under management",
         "aliases": [],
         "group": "change",
         "name": "adopt"
       },
       {
-        "about": "Make every client match addons.toml: install what is missing, set pins and channels",
+        "about": "Make every client match addons.toml",
         "aliases": [],
         "group": "change",
         "name": "sync"
       },
       {
-        "about": "Install one client's addons on another, where builds exist (undoable)",
+        "about": "Install one client's addons on another",
         "aliases": [],
         "group": "change",
         "name": "copy"
       },
       {
-        "about": "Remove managed addons from one target (undoable)",
+        "about": "Remove managed addons from one client",
         "aliases": [
           "uninstall",
           "rm",
@@ -140,7 +140,7 @@ expression: envelope
         "name": "remove"
       },
       {
-        "about": "Revert the last change (or one by id), SavedVariables included",
+        "about": "Revert the last change, or one by its id",
         "aliases": [
           "revert",
           "rollback"
@@ -149,13 +149,13 @@ expression: envelope
         "name": "undo"
       },
       {
-        "about": "Run exactly what a --dry-run stored (its plan id), target by target",
+        "about": "Run exactly the plan a --dry-run stored",
         "aliases": [],
         "group": "change",
         "name": "apply"
       },
       {
-        "about": "Each client's WTF/ backups: copies of its settings (bare: list them)",
+        "about": "Back up, list and restore each client's WTF/ settings",
         "aliases": [],
         "group": "change",
         "name": "backup"
@@ -173,7 +173,7 @@ expression: envelope
         "name": "config"
       },
       {
-        "about": "Store, check or clear the opt-in GitHub token (5,000 REST requests an hour)",
+        "about": "Store, check or clear the opt-in GitHub token",
         "aliases": [],
         "group": "setup",
         "name": "auth"
@@ -185,19 +185,19 @@ expression: envelope
         "name": "omarchy"
       },
       {
-        "about": "Print a shell completion script: bash, zsh, fish, elvish or powershell",
+        "about": "Print a shell completion script",
         "aliases": [],
         "group": "setup",
         "name": "completions"
       },
       {
-        "about": "Documentation for agents: the guide (bare), the JSON Schemas and the error catalog",
+        "about": "Print documentation for agents",
         "aliases": [],
         "group": "setup",
         "name": "robot-docs"
       },
       {
-        "about": "Describe this build for agents: commands, flags, exit codes, errors, limits and sources (offline; writes nothing)",
+        "about": "Describe everything this build can do, for agents",
         "aliases": [],
         "group": "setup",
         "name": "capabilities"
@@ -302,13 +302,13 @@ expression: envelope
         "takes_value": true
       },
       {
-        "about": "The client to act on: id, key, game mode (sod and hardcore select the Classic Era client), family, product, flavor folder, path, or all (every client)",
+        "about": "The client to act on: id, game mode, family, path, or all",
         "name": "target",
         "short": "t",
         "takes_value": true
       },
       {
-        "about": "Show the plan without changing anything (ignored by commands that change nothing)",
+        "about": "Show the plan without changing anything",
         "name": "dry-run",
         "short": null,
         "takes_value": false
@@ -320,7 +320,7 @@ expression: envelope
         "takes_value": true
       },
       {
-        "about": "Why, recorded verbatim in history (at most 200 characters; ignored by commands that change nothing)",
+        "about": "Why, recorded verbatim in history",
         "name": "reason",
         "short": null,
         "takes_value": true
@@ -338,7 +338,7 @@ expression: envelope
         "takes_value": false
       },
       {
-        "about": "Change nothing unless the plan is still the one the --dry-run that returned this token (data.precondition) showed",
+        "about": "Run only what the preview that returned this token showed",
         "name": "if-match",
         "short": null,
         "takes_value": true
@@ -380,7 +380,7 @@ expression: envelope
         "takes_value": false
       },
       {
-        "about": "Show the version (before any command: `install --version V` pins a release)",
+        "about": "Show the version",
         "name": "version",
         "short": "V",
         "takes_value": false
