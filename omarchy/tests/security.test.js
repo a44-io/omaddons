@@ -159,10 +159,12 @@ function checkRendering(files) {
 }
 
 // The four literal tools besides omaddons (M3-D2), and the argv builders in Model.js
-// with the tool each returns.
+// with the tool each returns: the clipboard (`wl-copy`, 1n2p.43) only through its builder,
+// with the text as one argument.
 const LITERAL_TOOLS = ["inotifywait", "omarchy-notification-send", "xdg-open", "omarchy-launch-browser"]
 const ARGV_BUILDERS = { "toastArgv": "omarchy-notification-send", "errorToastArgv": "omarchy-notification-send",
-  "updateToastArgv": "omarchy-notification-send", "resultToastArgv": "omarchy-notification-send", "addonsDirArgv": "xdg-open" }
+  "updateToastArgv": "omarchy-notification-send", "resultToastArgv": "omarchy-notification-send", "addonsDirArgv": "xdg-open",
+  "copyArgv": "wl-copy" }
 // Two argv outside the three sources, allowed exactly as written: `show()`'s fallback
 // when the shell's summon facade is missing, and the self-reinstall (a fixed literal
 // under the stamped context, check 2).
@@ -548,6 +550,36 @@ function checkIssueIds(files) {
   return out
 }
 
+// 12. Irreversible stays out (1n2p.43): no template holds a purge, the classifier refuses
+// one, and no other file names the flag, so no Enter and no Yes ever deletes what no undo
+// brings back. (Scan 11, consent stays a person's, belongs to M4 G2.)
+function checkIrreversible(files) {
+  const out = []
+  const model = files["Model.js"] || ""
+  const start = model.indexOf("var COMMANDS = {")
+  if (start === -1) {
+    out.push(violation("Model.js", 1, "the COMMANDS table is missing"))
+  } else {
+    const table = balanced(model.slice(start), model.slice(start).indexOf("{"))
+    if (/--purge/.test(table)) out.push(violation("Model.js", lineAt(model, start), "a COMMANDS template holds --purge"))
+  }
+  const classifier = functionBody(model, "classifyCliArgv")
+  if (!classifier || !/IRREVERSIBLE_FLAGS/.test(classifier.body) || !/"irreversible"/.test(classifier.body)) {
+    out.push(violation("Model.js", classifier ? classifier.line : 1, "classifyCliArgv does not refuse an irreversible flag"))
+  }
+  if (!/var IRREVERSIBLE_FLAGS = \[[^\]]*"--purge"/.test(model)) {
+    out.push(violation("Model.js", 1, "IRREVERSIBLE_FLAGS does not hold --purge"))
+  }
+  for (const name of Object.keys(files)) {
+    for (const l of lines(files[name])) {
+      if (/--purge/.test(l.text) && !(name === "Model.js" && /^var IRREVERSIBLE_FLAGS = /.test(l.text.trim()))) {
+        out.push(violation(name, l.n, "names --purge outside IRREVERSIBLE_FLAGS"))
+      }
+    }
+  }
+  return out
+}
+
 const ERROR_FIELDS = ["message", "stack", "locals", "raw", "location", "path", "text", "folder", "file", "details"]
 
 // 7. Notifications (M3-D14, M3-D21): the error toast sees names, counts and clients.
@@ -617,6 +649,7 @@ const CHECKS = [
   ["8. the plugin id", checkPluginId],
   ["9. warnings decide nothing", checkWarnings],
   ["10. no issue id by name", checkIssueIds],
+  ["12. irreversible stays out", checkIrreversible],
 ]
 
 // ------------------------------------------------------------------ the tests
@@ -691,6 +724,14 @@ const PLANTED = [
       'function sneaky(env) { return env.warnings[0].message.indexOf("dependency") >= 0 }\n'), /sneaky reads a warning's message/],
   ["9. warnings decide nothing", checkWarnings, "a service deciding from warning text",
     plant(REAL, "Service.qml", "  function afterStatus() {\n", '    if (Model.warningMessages(env, "x")[0] === "y") refresh()\n'), /a warning's text decides something/],
+  ["12. irreversible stays out", checkIrreversible, "a template with --purge",
+    plant(REAL, "Model.js", '"remove":         { "argv": ["remove", "-t", "{target}", "--", "{addon}"]', ', "argv2": ["targets", "rm", "--purge"]'),
+    /COMMANDS template holds --purge/],
+  ["12. irreversible stays out", checkIrreversible, "a classifier that forgets the purge",
+    unplant(REAL, "Model.js", "function classifyCliArgv(", '      verdict.reason = "irreversible"\n'), /does not refuse an irreversible flag/],
+  ["12. irreversible stays out", checkIrreversible, "a view building a purge",
+    plant(REAL, "views/IssuesView.qml", "Item {\n", '  function planted() { svc.mutation({ "cli": ["omaddons", "targets", "rm", "x", "--purge"] }) }\n'),
+    /names --purge outside/],
   ["10. no issue id by name", checkIssueIds, "an id literal in the Issues view",
     plant(REAL, "views/IssuesView.qml", "Item {\n",
       '  readonly property bool planted: !!svc && svc.targets.some(function(t) { return t.issues.some(function(i) { return i.id === "fm-concurrency_primitives-journal-pending" }) })\n'),

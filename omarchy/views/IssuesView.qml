@@ -28,6 +28,8 @@ Item {
   // The addon row whose stack (Enter) or raw details (`s`) are open, by key.
   property string expanded: ""
   property string rawOpen: ""
+  // The row whose command `y` copied last, by key.
+  property string copied: ""
   // Each row's delegate, by its cursor index (for rowItem).
   property var items: ({})
 
@@ -54,6 +56,12 @@ Item {
     // `r`: the erroring addon's settings from a backup (the restore chooser, F9).
     if (name === "restore") {
       if (row && row.kind === "addon") frame.openChooser({ "target": row.target, "addon": row.addon })
+      return true
+    }
+    // `y`: the command a row shows instead of running (a purge, a forced repair), copied
+    // to run from a terminal.
+    if (name === "copy") {
+      if (row && svc && svc.copyCommand(Model.copyText(row))) copied = row.key
       return true
     }
     return false
@@ -249,6 +257,27 @@ Item {
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
                   text: entry.modelData.text || ""
+                }
+
+                // What an irreversible command (a purge) deletes, and why it is no button.
+                PlainLabel {
+                  objectName: "irreversibleNote"
+                  visible: !!entry.modelData.note
+                  width: rowColumn.width
+                  wrapMode: Text.WordWrap
+                  color: root.urgent
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  text: entry.modelData.note || ""
+                }
+
+                PlainLabel {
+                  objectName: "copyHint"
+                  visible: Model.copyText(entry.modelData) !== ""
+                  text: root.copied === entry.modelData.key ? "Copied" : "y copies the command"
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
                 }
 
                 PlainLabel {

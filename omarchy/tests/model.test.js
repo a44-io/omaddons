@@ -634,7 +634,7 @@ describe("the panel frame", () => {
     expect(M.panelKey("3")).toEqual({ name: "view", view: "issues" })
     expect(M.panelKey("5")).toEqual({ name: "view", view: "search" })
     for (const reserved of ["j", "k", "h", "l", "x", "q", "6", "0", "U", "", "uu"]) expect(M.panelKey(reserved)).toBeNull()
-    expect(Object.keys(M.PANEL_KEYS).sort()).toEqual(["/", "b", "c", "d", "i", "o", "p", "r", "s", "t", "u", "z"])
+    expect(Object.keys(M.PANEL_KEYS).sort()).toEqual(["/", "b", "c", "d", "i", "o", "p", "r", "s", "t", "u", "y", "z"])
     expect(M.VIEWS.map((v) => M.VIEW_TITLES[v])).toEqual(["Updates", "Installed", "Issues", "Backups", "Search"])
   })
 
@@ -1633,6 +1633,68 @@ describe("what the view showed", () => {
     expect(names(M.updateRequest("", rows))).toEqual(["era/Bar", "era/Foo", "retail/Bar", "retail/Foo"])
     // Without the view's rows the request is as before.
     expect(M.updateRequest("retail")).toEqual({ template: "update_target", slots: { target: "retail" }, label: "Update retail" })
+  })
+})
+
+// A purge (`targets rm --purge`) deletes omaddons' backups and undo snapshots for good:
+// the widget never runs one, not even behind a Yes (1n2p.43).
+describe("an irreversible purge is never a button", () => {
+  const purge = ["omaddons", "targets", "rm", "classic", "--purge"]
+
+  test("the classifier refuses --purge before --, in every position", () => {
+    table([
+      ["after the id", purge, "irreversible"],
+      ["after the path", ["omaddons", "targets", "rm", "--purge", "classic"], "irreversible"],
+      ["before the path", ["omaddons", "--purge", "targets", "rm", "classic"], "irreversible"],
+      ["with a value", ["omaddons", "targets", "rm", "classic", "--purge=yes"], "irreversible"],
+      ["with --dry-run", ["omaddons", "targets", "rm", "classic", "--purge", "--dry-run"], "irreversible"],
+      ["after --, an operand", ["omaddons", "remove", "-t", "retail", "--", "--purge"], ""],
+      ["plain targets rm", ["omaddons", "targets", "rm", "classic"], ""],
+    ], (argv) => M.classifyCliArgv(argv).reason)
+    for (const confirmed of [{ confirmed: true }, { preview: true }]) {
+      expect(reasonOf(() => M.cliArgv(purge, opts(confirmed)))).toBe("irreversible")
+    }
+  })
+
+  test("no template holds a purge", () => {
+    for (const [name, template] of Object.entries(M.COMMANDS)) {
+      const purges = template.argv.filter((arg) => M.IRREVERSIBLE_FLAGS.includes(arg.split("=")[0]))
+      expect([name, purges]).toEqual([name, []])
+    }
+  })
+
+  // Hand-built: the binary's status-attention envelope with its first issue's remediation
+  // replaced by a purge, until a fixture home with an uninstalled client writes the real
+  // one (the purge itself is omad-launch-week-fixes-bmcx.2).
+  test("a purge remediation is text with what it deletes, to copy", () => {
+    const env = fixture("status-attention")
+    const plain = ["omaddons", "targets", "rm", "retail"]
+    env.data.targets[0].issues = [
+      { ...env.data.targets[0].issues[0], "remediation": { "command": purge.join(" "), "argv": purge, "destructive": true } },
+      { ...env.data.targets[0].issues[0], "remediation": { "command": plain.join(" "), "argv": plain, "destructive": true } },
+    ]
+    const status = M.reduceStatus(env)
+    const [purging, forgetting] = status.targets[0].issues.map((i) => i.remediation)
+    expect([purging.runnable, purging.argv, purging.irreversible]).toEqual([false, null, true])
+    expect([forgetting.runnable, forgetting.destructive, forgetting.irreversible]).toEqual([true, true, false])
+    const rows = M.issueRows(M.issueSections(status.targets, null, [], "", []))
+    const purgeRow = rows.find((row) => row.text === purge.join(" "))
+    expect([purgeRow.action, purgeRow.note]).toEqual([null, M.IRREVERSIBLE_NOTE])
+    expect(M.copyText(purgeRow)).toBe(purge.join(" "))
+    expect(M.copyArgv(M.copyText(purgeRow))).toEqual(["wl-copy", "--", purge.join(" ")])
+    const plainRow = rows.find((row) => row.action && row.action.argv.join(" ") === plain.join(" "))
+    expect([plainRow.note, M.copyText(plainRow)]).toEqual(["", ""])
+  })
+
+  test("the clipboard gets one argument, never a shell", () => {
+    table([
+      ["a command", "omaddons targets rm classic --purge", ["wl-copy", "--", "omaddons targets rm classic --purge"]],
+      ["shell characters stay text", "a; rm -rf ~ | x", ["wl-copy", "--", "a; rm -rf ~ | x"]],
+      ["nothing", "", null],
+      ["a NUL", "a\u0000b", null],
+      ["not a string", 7, null],
+    ], (text) => M.copyArgv(text))
+    expect(M.panelKey("y")).toEqual({ "name": "copy" })
   })
 })
 

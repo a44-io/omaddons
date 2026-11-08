@@ -108,6 +108,13 @@ TestCase {
       function clearRawErrors() { rawClears++; rawErrors = null }
       function searchFor(query, target) { searches = searches.concat([[query, target]]) }
       function dismissErrors(plan) { dismissals = dismissals.concat([JSON.parse(JSON.stringify(plan))]); return "" }
+      // The real copyCommand runs Model.copyArgv(text); this records the argv instead.
+      property var copies: []
+      function copyCommand(text) {
+        if (!Model.copyArgv(text)) return false
+        copies = copies.concat([Model.copyArgv(text)])
+        return true
+      }
       function check() {}
       function refresh() {}
       function reinstallWidget() { return "ok" }
@@ -376,6 +383,40 @@ TestCase {
     compare(json(svc.cliRuns[1]), json([["omaddons", "install", "buggrabber", "-t", "era"], "Install BugGrabber"]))
     // The warning's prose fix is text.
     compare(findChild(row("issueRow", 5), "commandText").text, "quit the game, then run any change")
+  }
+
+  // A missing client's two remediations (1n2p.43): forgetting it is a button; the purge,
+  // which deletes backups and undo snapshots no undo brings back, is text with what it
+  // deletes, copied with `y`, never run by Enter.
+  function test_a_purge_is_text_to_copy_never_a_button() {
+    var purge = ["omaddons", "targets", "rm", "classic", "--purge"]
+    var forget = ["omaddons", "targets", "rm", "classic"]
+    var reduced = Model.reduceStatus({ "ok": true, "schema_version": "1.1", "tool_version": "0.1.0", "command": "status",
+      "exit_code": 0, "data": { "targets": [{ "id": "classic", "issues": [
+        { "id": "fm-a", "severity": "P2", "title": "classic is no longer installed", "addon": null,
+          "remediation": { "command": forget.join(" "), "argv": forget, "destructive": true } },
+        { "id": "fm-b", "severity": "P3", "title": "classic's backups and undo snapshots remain", "addon": null,
+          "remediation": { "command": purge.join(" "), "argv": purge, "destructive": true } }
+      ] }] } })
+    svc.targets = reduced.targets
+    keyClick("3")
+    compare(view.view, "issues")
+    // The forget row: a button (Enter runs the fix), nothing to copy.
+    verify(findChild(row("issueRow", 0), "enterHint").visible)
+    verify(!findChild(row("issueRow", 0), "copyHint").visible)
+    // The purge row: the command as text, what it deletes, and `y` to copy it.
+    var purgeRow = row("issueRow", 1)
+    compare(findChild(purgeRow, "commandText").text, purge.join(" "))
+    compare(findChild(purgeRow, "irreversibleNote").text, Model.IRREVERSIBLE_NOTE)
+    verify(!findChild(purgeRow, "enterHint").visible)
+    compare(findChild(purgeRow, "copyHint").text, "y copies the command")
+    keyClick("j")
+    keyClick(Qt.Key_Return)
+    compare(svc.cliRuns.length, 0)
+    keyClick("y")
+    compare(json(svc.copies), json([["wl-copy", "--", purge.join(" ")]]))
+    compare(findChild(row("issueRow", 1), "copyHint").text, "Copied")
+    compare(svc.cliRuns.length, 0)
   }
 
   function test_lua_errors_show_strict_text_and_received_only_as_a_count() {

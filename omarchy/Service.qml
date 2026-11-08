@@ -226,6 +226,15 @@ Item {
     rawErrors = null
   }
 
+  // Puts a command the widget shows instead of running (a purge, a forced repair) on the
+  // clipboard: wl-copy with the text as one argument (Model.copyArgv), never a shell.
+  // Whether there was anything to copy.
+  function copyCommand(text) {
+    if (!Model.copyArgv(text)) return false
+    Quickshell.execDetached(Model.copyArgv(text))
+    return true
+  }
+
   function readBackups() {
     return request({ "resource": "backups", "template": "backups", "label": "Backups" })
   }

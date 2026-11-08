@@ -200,6 +200,12 @@ var CLI_PATHS = {
 // The flags the widget owns: it sets them on every run, and a CLI-provided argv that
 // carries one could re-attribute itself or skip a preview.
 var WIDGET_FLAGS = ["--json", "--robot", "--format", "--actor", "--reason", "--progress", "--if-match"]
+// Flags whose change no undo brings back: `targets rm --purge` deletes omaddons' backups
+// and undo snapshots for a client. The widget never runs one, not even behind a Yes: the
+// row shows the command to copy, run from a terminal after its preview.
+var IRREVERSIBLE_FLAGS = ["--purge"]
+// What a row that shows an irreversible command says about it.
+var IRREVERSIBLE_NOTE = "It deletes omaddons' backups and undo snapshots for good, so it runs only from a terminal, after its preview."
 var SLOTS = { "target": true, "addon": true, "ref": true, "backup": true, "query": true }
 var TARGET_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._@-]*$/
 var TOKEN_PATTERN = /^pc1:[0-9a-f]{64}$/
@@ -429,6 +435,14 @@ function classifyCliArgv(argv, plan) {
   for (var j = 1; j < end; j++) {
     if (argv[j].charAt(0) === "-" && WIDGET_FLAGS.indexOf(flagName(argv[j])) !== -1) {
       verdict.reason = "widget_flag"
+      return verdict
+    }
+  }
+  // Never a change no undo brings back, in any position before `--` (after it, a word
+  // is an operand, never a flag).
+  for (var k = 1; k < end; k++) {
+    if (argv[k].charAt(0) === "-" && IRREVERSIBLE_FLAGS.indexOf(flagName(argv[k])) !== -1) {
+      verdict.reason = "irreversible"
       return verdict
     }
   }
@@ -732,8 +746,24 @@ function cliAction(command, argv, destructive) {
     "command": str(command),
     "argv": runnable ? argv.slice() : null,
     "destructive": destructive === true || (verdict !== null && verdict.destructive),
-    "runnable": runnable
+    "runnable": runnable,
+    // A change no undo brings back (a purge): shown with what it deletes, and copied,
+    // never run.
+    "irreversible": verdict !== null && verdict.reason === "irreversible"
   }
+}
+
+// The text a row offers to copy (`y`): the command it shows instead of running, or "".
+function copyText(row) {
+  if (!row || typeof row !== "object" || row.action) return ""
+  return typeof row.text === "string" ? row.text : ""
+}
+
+// The clipboard's argv for `text` (a command a row shows): wl-copy with the text as one
+// argument, never through a shell; null for nothing to copy or a NUL byte.
+function copyArgv(text) {
+  if (typeof text !== "string" || text === "" || text.indexOf("\u0000") !== -1) return null
+  return ["wl-copy", "--", text]
 }
 
 function issueOf(issue) {
@@ -1607,7 +1637,8 @@ var VIEW_TITLES = { "updates": "Updates", "installed": "Installed", "issues": "I
 // search itself; the rest go to the current view, or to the task that registered them.
 var PANEL_KEYS = {
   "u": "update", "c": "check", "z": "undo", "o": "open", "t": "filter", "/": "search",
-  "b": "backup", "d": "dismiss", "r": "restore", "s": "raw", "i": "notes", "p": "pin"
+  "b": "backup", "d": "dismiss", "r": "restore", "s": "raw", "i": "notes", "p": "pin",
+  "y": "copy"
 }
 
 // What the letter `text` does: `{name}`, `{name: "view", view}` for 1–5, or null.
@@ -1881,7 +1912,8 @@ function issueSections(statusTargets, errors, warnings, filter, machineIssues) {
     problems.push({
       "kind": "problem", "key": "p//" + n, "target": "", "severity": mi.severity,
       "urgent": mi.urgent, "title": mi.title,
-      "action": mr.runnable ? mr : null, "text": mr.runnable ? "" : str(mr.command)
+      "action": mr.runnable ? mr : null, "text": mr.runnable ? "" : str(mr.command),
+      "note": mr.irreversible ? IRREVERSIBLE_NOTE : ""
     })
   }
   var targets = Array.isArray(statusTargets) ? statusTargets : []
@@ -1894,7 +1926,8 @@ function issueSections(statusTargets, errors, warnings, filter, machineIssues) {
       problems.push({
         "kind": "problem", "key": "p/" + t.id + "/" + j, "target": t.id, "severity": issue.severity,
         "urgent": issue.urgent, "title": issue.title,
-        "action": r.runnable ? r : null, "text": r.runnable ? "" : str(r.command)
+        "action": r.runnable ? r : null, "text": r.runnable ? "" : str(r.command),
+        "note": r.irreversible ? IRREVERSIBLE_NOTE : ""
       })
     }
   }
@@ -2685,12 +2718,17 @@ if (typeof module !== "undefined") {
     COMMANDS: COMMANDS,
     CLI_PATHS: CLI_PATHS,
     WIDGET_FLAGS: WIDGET_FLAGS,
+    IRREVERSIBLE_FLAGS: IRREVERSIBLE_FLAGS,
+    IRREVERSIBLE_NOTE: IRREVERSIBLE_NOTE,
     CONTEXT_KEYS: CONTEXT_KEYS,
     pathOf: pathOf,
     templateShape: templateShape,
     buildArgv: buildArgv,
     classifyCliArgv: classifyCliArgv,
     cliArgv: cliArgv,
+    cliAction: cliAction,
+    copyText: copyText,
+    copyArgv: copyArgv,
     envelopeOk: envelopeOk,
     parseEnvelope: parseEnvelope,
     compatible: compatible,
