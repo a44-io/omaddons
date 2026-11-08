@@ -8,78 +8,13 @@ Print a shell completion script: bash, zsh, fish, elvish or powershell
 Usage: omaddons completions [OPTIONS] <SHELL>
 
 Arguments:
-  <SHELL>
-          The shell the script is for
-          
-          [possible values: bash, zsh, fish, elvish, powershell]
-
-Global options:
-      --json
-          One JSON envelope on stdout
-
-      --robot
-          The same as --json
-
-      --format <FORMAT>
-          Output format
-          
-          [possible values: json, human]
-
-  -t, --target <TARGET>
-          The client to act on: id, key, game mode (sod and hardcore select the Classic Era client),
-          family, product, flavor folder, path, or all (every client)
-          
-          [alias: --flavor]
-
-      --dry-run
-          Show the plan without changing anything (ignored by commands that change nothing)
-
-      --actor <ACTOR>
-          Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
-
-      --reason <TEXT>
-          Why, recorded verbatim in history (at most 200 characters; ignored by commands that change
-          nothing)
-
-      --offline
-          Fail any network access [env: OMADDONS_OFFLINE=1]
-
-      --while-running
-          Allow folder changes while the client runs (never SavedVariables)
-
-      --if-match <TOKEN>
-          Change nothing unless the plan is still the one the --dry-run that returned this token
-          (data.precondition) showed
-
-      --no-color
-          No ANSI color
-
-      --no-progress
-          No progress output
-
-      --progress <MODE>
-          Progress events on stderr
-          
-          [possible values: json, human, none]
-
-      --quiet
-          Only errors on stderr
-
-  -v, --verbose...
-          More detail (repeatable)
-
-  -h, --help
-          Show help
+  <SHELL>  The shell the script is for [possible values: bash, zsh, fish, elvish, powershell]
 
 Examples:
-  omaddons completions bash >
-  "${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions/omaddons"
-  omaddons completions zsh > "${fpath[1]}/_omaddons"
-  omaddons completions fish > "${XDG_CONFIG_HOME:-$HOME/.config}/fish/completions/omaddons.fish"
-  omaddons completions bash --json    the script as data: {shell, script}
+  omaddons completions bash > ~/.local/share/bash-completion/completions/omaddons
+  omaddons completions zsh > ~/.zfunc/_omaddons
 
-The script is static: commands, subcommands, flags and fixed values complete; client
-ids and addon names do not. Generate it again after upgrading omaddons.
+Global: -t <TARGET>  --json  --dry-run  -v  --quiet  --no-color  --offline  (--help lists them all)
 ==> omaddons completions --help <==
 Print a shell completion script: bash, zsh, fish, elvish or powershell
 
@@ -91,64 +26,6 @@ Arguments:
           
           [possible values: bash, zsh, fish, elvish, powershell]
 
-Global options:
-      --json
-          One JSON envelope on stdout
-
-      --robot
-          The same as --json
-
-      --format <FORMAT>
-          Output format
-          
-          [possible values: json, human]
-
-  -t, --target <TARGET>
-          The client to act on: id, key, game mode (sod and hardcore select the Classic Era client),
-          family, product, flavor folder, path, or all (every client)
-          
-          [alias: --flavor]
-
-      --dry-run
-          Show the plan without changing anything (ignored by commands that change nothing)
-
-      --actor <ACTOR>
-          Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
-
-      --reason <TEXT>
-          Why, recorded verbatim in history (at most 200 characters; ignored by commands that change
-          nothing)
-
-      --offline
-          Fail any network access [env: OMADDONS_OFFLINE=1]
-
-      --while-running
-          Allow folder changes while the client runs (never SavedVariables)
-
-      --if-match <TOKEN>
-          Change nothing unless the plan is still the one the --dry-run that returned this token
-          (data.precondition) showed
-
-      --no-color
-          No ANSI color
-
-      --no-progress
-          No progress output
-
-      --progress <MODE>
-          Progress events on stderr
-          
-          [possible values: json, human, none]
-
-      --quiet
-          Only errors on stderr
-
-  -v, --verbose...
-          More detail (repeatable)
-
-  -h, --help
-          Show help
-
 Examples:
   omaddons completions bash >
   "${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions/omaddons"
@@ -158,3 +35,27 @@ Examples:
 
 The script is static: commands, subcommands, flags and fixed values complete; client
 ids and addon names do not. Generate it again after upgrading omaddons.
+
+See also: help
+
+Global options:
+      --json             One JSON envelope on stdout
+      --format <FORMAT>  Output format [possible values: json, human]
+  -t, --target <TARGET>  The client to act on: id, key, game mode (sod and hardcore select the
+                         Classic Era client), family, product, flavor folder, path, or all (every
+                         client) [alias: --flavor]
+      --dry-run          Show the plan without changing anything (ignored by commands that change
+                         nothing)
+      --actor <ACTOR>    Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
+      --reason <TEXT>    Why, recorded verbatim in history (at most 200 characters; ignored by
+                         commands that change nothing)
+      --offline          Fail any network access [env: OMADDONS_OFFLINE=1]
+      --while-running    Allow folder changes while the client runs (never SavedVariables)
+      --no-color         No ANSI color
+      --no-progress      No progress output
+      --progress <MODE>  Progress events on stderr [possible values: json, human, none]
+      --quiet            Only errors on stderr
+  -v, --verbose...       More detail (repeatable)
+  -h, --help             Show help
+
+Learn more: omaddons robot-docs guide

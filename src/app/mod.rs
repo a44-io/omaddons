@@ -21,6 +21,7 @@ pub mod errors;
 pub mod errors_status;
 pub mod export;
 pub mod help;
+pub mod help_extras;
 pub mod history;
 pub mod info;
 pub mod install;
@@ -698,7 +699,7 @@ pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> ProcessE
             None => Ok(help::bare()),
             Some(_) => {
                 let path = crate::cli::command_path(&ctx.argv).join(" ");
-                help::for_command(Some(&path), &ctx.argv)
+                help::for_flag(Some(&path), &ctx.argv)
             }
         };
         return out.emit_as("help", result).into();

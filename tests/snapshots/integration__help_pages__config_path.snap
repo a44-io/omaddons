@@ -7,122 +7,38 @@ Show the config file's path
 
 Usage: omaddons config path [OPTIONS]
 
-Global options:
-      --json
-          One JSON envelope on stdout
+Examples:
+  omaddons config path  where config.toml is
 
-      --robot
-          The same as --json
-
-      --format <FORMAT>
-          Output format
-          
-          [possible values: json, human]
-
-  -t, --target <TARGET>
-          The client to act on: id, key, game mode (sod and hardcore select the Classic Era client),
-          family, product, flavor folder, path, or all (every client)
-          
-          [alias: --flavor]
-
-      --dry-run
-          Show the plan without changing anything (ignored by commands that change nothing)
-
-      --actor <ACTOR>
-          Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
-
-      --reason <TEXT>
-          Why, recorded verbatim in history (at most 200 characters; ignored by commands that change
-          nothing)
-
-      --offline
-          Fail any network access [env: OMADDONS_OFFLINE=1]
-
-      --while-running
-          Allow folder changes while the client runs (never SavedVariables)
-
-      --if-match <TOKEN>
-          Change nothing unless the plan is still the one the --dry-run that returned this token
-          (data.precondition) showed
-
-      --no-color
-          No ANSI color
-
-      --no-progress
-          No progress output
-
-      --progress <MODE>
-          Progress events on stderr
-          
-          [possible values: json, human, none]
-
-      --quiet
-          Only errors on stderr
-
-  -v, --verbose...
-          More detail (repeatable)
-
-  -h, --help
-          Show help
+Global: -t <TARGET>  --json  --dry-run  -v  --quiet  --no-color  --offline  (--help lists them all)
 ==> omaddons config path --help <==
 Show the config file's path
 
 Usage: omaddons config path [OPTIONS]
 
+Examples:
+  omaddons config path  where config.toml is
+
+See also: config
+
 Global options:
-      --json
-          One JSON envelope on stdout
+      --json             One JSON envelope on stdout
+      --format <FORMAT>  Output format [possible values: json, human]
+  -t, --target <TARGET>  The client to act on: id, key, game mode (sod and hardcore select the
+                         Classic Era client), family, product, flavor folder, path, or all (every
+                         client) [alias: --flavor]
+      --dry-run          Show the plan without changing anything (ignored by commands that change
+                         nothing)
+      --actor <ACTOR>    Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
+      --reason <TEXT>    Why, recorded verbatim in history (at most 200 characters; ignored by
+                         commands that change nothing)
+      --offline          Fail any network access [env: OMADDONS_OFFLINE=1]
+      --while-running    Allow folder changes while the client runs (never SavedVariables)
+      --no-color         No ANSI color
+      --no-progress      No progress output
+      --progress <MODE>  Progress events on stderr [possible values: json, human, none]
+      --quiet            Only errors on stderr
+  -v, --verbose...       More detail (repeatable)
+  -h, --help             Show help
 
-      --robot
-          The same as --json
-
-      --format <FORMAT>
-          Output format
-          
-          [possible values: json, human]
-
-  -t, --target <TARGET>
-          The client to act on: id, key, game mode (sod and hardcore select the Classic Era client),
-          family, product, flavor folder, path, or all (every client)
-          
-          [alias: --flavor]
-
-      --dry-run
-          Show the plan without changing anything (ignored by commands that change nothing)
-
-      --actor <ACTOR>
-          Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
-
-      --reason <TEXT>
-          Why, recorded verbatim in history (at most 200 characters; ignored by commands that change
-          nothing)
-
-      --offline
-          Fail any network access [env: OMADDONS_OFFLINE=1]
-
-      --while-running
-          Allow folder changes while the client runs (never SavedVariables)
-
-      --if-match <TOKEN>
-          Change nothing unless the plan is still the one the --dry-run that returned this token
-          (data.precondition) showed
-
-      --no-color
-          No ANSI color
-
-      --no-progress
-          No progress output
-
-      --progress <MODE>
-          Progress events on stderr
-          
-          [possible values: json, human, none]
-
-      --quiet
-          Only errors on stderr
-
-  -v, --verbose...
-          More detail (repeatable)
-
-  -h, --help
-          Show help
+Learn more: omaddons robot-docs guide

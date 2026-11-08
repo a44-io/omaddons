@@ -8,71 +8,19 @@ Register a client that discovery cannot find
 Usage: omaddons targets add [OPTIONS] <PATH>
 
 Arguments:
-  <PATH>
-          A Battle.net root, a flavor folder, a custom client root, or its Interface or AddOns
+  <PATH>  A Battle.net root, a flavor folder, a custom client root, or its Interface or AddOns
           directory
 
 Options:
-      --name <NAME>
-          The id to give it (one client only)
+      --name <NAME>  The id to give it (one client only)
 
-Global options:
-      --json
-          One JSON envelope on stdout
+Examples:
+  omaddons targets add /mnt/games/turtle --name turtle
+    a root, client or AddOns
+  omaddons targets add /mnt/games/turtle --dry-run
+    what it would register
 
-      --robot
-          The same as --json
-
-      --format <FORMAT>
-          Output format
-          
-          [possible values: json, human]
-
-  -t, --target <TARGET>
-          The client to act on: id, key, game mode (sod and hardcore select the Classic Era client),
-          family, product, flavor folder, path, or all (every client)
-          
-          [alias: --flavor]
-
-      --dry-run
-          Show the plan without changing anything (ignored by commands that change nothing)
-
-      --actor <ACTOR>
-          Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
-
-      --reason <TEXT>
-          Why, recorded verbatim in history (at most 200 characters; ignored by commands that change
-          nothing)
-
-      --offline
-          Fail any network access [env: OMADDONS_OFFLINE=1]
-
-      --while-running
-          Allow folder changes while the client runs (never SavedVariables)
-
-      --if-match <TOKEN>
-          Change nothing unless the plan is still the one the --dry-run that returned this token
-          (data.precondition) showed
-
-      --no-color
-          No ANSI color
-
-      --no-progress
-          No progress output
-
-      --progress <MODE>
-          Progress events on stderr
-          
-          [possible values: json, human, none]
-
-      --quiet
-          Only errors on stderr
-
-  -v, --verbose...
-          More detail (repeatable)
-
-  -h, --help
-          Show help
+Global: -t <TARGET>  --json  --dry-run  -v  --quiet  --no-color  --offline  (--help lists them all)
 ==> omaddons targets add --help <==
 Register a client that discovery cannot find
 
@@ -87,60 +35,32 @@ Options:
       --name <NAME>
           The id to give it (one client only)
 
+Examples:
+  omaddons targets add /mnt/games/turtle --name turtle
+    a root, client or AddOns
+  omaddons targets add /mnt/games/turtle --dry-run
+    what it would register
+
+See also: targets, config set
+
 Global options:
-      --json
-          One JSON envelope on stdout
+      --json             One JSON envelope on stdout
+      --format <FORMAT>  Output format [possible values: json, human]
+  -t, --target <TARGET>  The client to act on: id, key, game mode (sod and hardcore select the
+                         Classic Era client), family, product, flavor folder, path, or all (every
+                         client) [alias: --flavor]
+      --dry-run          Show the plan without changing anything (ignored by commands that change
+                         nothing)
+      --actor <ACTOR>    Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
+      --reason <TEXT>    Why, recorded verbatim in history (at most 200 characters; ignored by
+                         commands that change nothing)
+      --offline          Fail any network access [env: OMADDONS_OFFLINE=1]
+      --while-running    Allow folder changes while the client runs (never SavedVariables)
+      --no-color         No ANSI color
+      --no-progress      No progress output
+      --progress <MODE>  Progress events on stderr [possible values: json, human, none]
+      --quiet            Only errors on stderr
+  -v, --verbose...       More detail (repeatable)
+  -h, --help             Show help
 
-      --robot
-          The same as --json
-
-      --format <FORMAT>
-          Output format
-          
-          [possible values: json, human]
-
-  -t, --target <TARGET>
-          The client to act on: id, key, game mode (sod and hardcore select the Classic Era client),
-          family, product, flavor folder, path, or all (every client)
-          
-          [alias: --flavor]
-
-      --dry-run
-          Show the plan without changing anything (ignored by commands that change nothing)
-
-      --actor <ACTOR>
-          Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
-
-      --reason <TEXT>
-          Why, recorded verbatim in history (at most 200 characters; ignored by commands that change
-          nothing)
-
-      --offline
-          Fail any network access [env: OMADDONS_OFFLINE=1]
-
-      --while-running
-          Allow folder changes while the client runs (never SavedVariables)
-
-      --if-match <TOKEN>
-          Change nothing unless the plan is still the one the --dry-run that returned this token
-          (data.precondition) showed
-
-      --no-color
-          No ANSI color
-
-      --no-progress
-          No progress output
-
-      --progress <MODE>
-          Progress events on stderr
-          
-          [possible values: json, human, none]
-
-      --quiet
-          Only errors on stderr
-
-  -v, --verbose...
-          More detail (repeatable)
-
-  -h, --help
-          Show help
+Learn more: omaddons robot-docs guide

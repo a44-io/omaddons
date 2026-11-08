@@ -412,7 +412,7 @@ fn run_with(
         Err(_) if wants_help(&argv) => {
             let path = command_path(&argv).join(" ");
             let name = (!path.is_empty()).then_some(path.as_str());
-            let result = crate::app::help::for_command(name, &argv);
+            let result = crate::app::help::for_flag(name, &argv);
             let mut reporter = Reporter::stderr(&fallback);
             return output::emit(
                 &fallback,

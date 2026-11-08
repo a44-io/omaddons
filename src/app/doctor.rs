@@ -174,19 +174,44 @@ pub struct DiffArgs {
 
 /// The doctor's long help: its exit dictionary, which every doctor command exits by.
 pub fn doctor_help() -> String {
-    let mut out = String::from(
-        "Examples:\n  omaddons doctor                       every check but the deep ones\n  omaddons doctor --quick               the fast checks only\n  omaddons doctor --only fm-userland_state-target-vanished\n  omaddons doctor --since latest        what changed since the last run\n  omaddons doctor explain fm-userland_state-target-vanished\n  omaddons doctor fix --dry-run         what a repair would change\n  omaddons doctor fix --if-match <token>  that repair, exactly as previewed\n\nThe doctor exits with its own codes:\n",
-    );
-    for exit in Exit::ALL {
-        out.push_str(&format!(
-            "  {:<3} {:<23} {}\n",
-            exit.code(),
-            exit.name(),
-            exit.meaning()
-        ));
-    }
-    out.truncate(out.trim_end().len());
-    out
+    let examples = super::help::examples_block(&[
+        ("omaddons doctor", "every check but the deep ones"),
+        ("omaddons doctor --quick", "the fast checks only"),
+        (
+            "omaddons doctor --only fm-userland_state-target-vanished",
+            "one check",
+        ),
+        (
+            "omaddons doctor --since latest",
+            "what changed since the last run",
+        ),
+        (
+            "omaddons doctor explain fm-userland_state-target-vanished",
+            "one failure mode in full",
+        ),
+        (
+            "omaddons doctor fix --dry-run",
+            "what a repair would change",
+        ),
+        (
+            "omaddons doctor fix --if-match <token>",
+            "that repair, exactly as previewed",
+        ),
+    ]);
+    let rows: Vec<(String, String, String)> = Exit::ALL
+        .iter()
+        .map(|exit| {
+            (
+                exit.code().to_string(),
+                exit.name().to_owned(),
+                exit.meaning().to_owned(),
+            )
+        })
+        .collect();
+    format!(
+        "{examples}\n\nThe doctor exits with its own codes:\n{}",
+        super::help::hanging_table(&rows)
+    )
 }
 
 /// A diagnose's result: its report, and the doctor exit it ends with.

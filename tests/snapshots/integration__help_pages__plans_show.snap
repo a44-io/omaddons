@@ -8,75 +8,13 @@ What a stored plan approved, and whether history records it as applied (offline;
 Usage: omaddons plans show [OPTIONS] <PLAN_ID>
 
 Arguments:
-  <PLAN_ID>
-          The plan id a --dry-run returned (data.plan_id), or its first 8 or more characters
-
-Global options:
-      --json
-          One JSON envelope on stdout
-
-      --robot
-          The same as --json
-
-      --format <FORMAT>
-          Output format
-          
-          [possible values: json, human]
-
-  -t, --target <TARGET>
-          The client to act on: id, key, game mode (sod and hardcore select the Classic Era client),
-          family, product, flavor folder, path, or all (every client)
-          
-          [alias: --flavor]
-
-      --dry-run
-          Show the plan without changing anything (ignored by commands that change nothing)
-
-      --actor <ACTOR>
-          Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
-
-      --reason <TEXT>
-          Why, recorded verbatim in history (at most 200 characters; ignored by commands that change
-          nothing)
-
-      --offline
-          Fail any network access [env: OMADDONS_OFFLINE=1]
-
-      --while-running
-          Allow folder changes while the client runs (never SavedVariables)
-
-      --if-match <TOKEN>
-          Change nothing unless the plan is still the one the --dry-run that returned this token
-          (data.precondition) showed
-
-      --no-color
-          No ANSI color
-
-      --no-progress
-          No progress output
-
-      --progress <MODE>
-          Progress events on stderr
-          
-          [possible values: json, human, none]
-
-      --quiet
-          Only errors on stderr
-
-  -v, --verbose...
-          More detail (repeatable)
-
-  -h, --help
-          Show help
+  <PLAN_ID>  The plan id a --dry-run returned (data.plan_id), or its first 8 or more characters
 
 Examples:
-  omaddons plans show 01M8Q2VA          what plan 01M8Q2VA… approved, and whether it was applied
-  omaddons plans show 01M8Q2VA --json   the same as one JSON envelope, for an agent
+  omaddons plans show 01M8Q2VA         what it approved, and whether it ran
+  omaddons plans show 01M8Q2VA --json  the same, as one envelope
 
-A plan is what a --dry-run stored (data.plan_id). plans show reads it and history.jsonl
-and changes nothing: no lock, no network. Its state is pending, completed, partial,
-expired or unknown; only history lines that carry the plan id count as applied, never
-addon versions that happen to match. -t does not apply: a plan names its own clients.
+Global: -t <TARGET>  --json  --dry-run  -v  --quiet  --no-color  --offline  (--help lists them all)
 ==> omaddons plans show --help <==
 What a stored plan approved, and whether history records it as applied (offline; changes nothing)
 
@@ -86,64 +24,6 @@ Arguments:
   <PLAN_ID>
           The plan id a --dry-run returned (data.plan_id), or its first 8 or more characters
 
-Global options:
-      --json
-          One JSON envelope on stdout
-
-      --robot
-          The same as --json
-
-      --format <FORMAT>
-          Output format
-          
-          [possible values: json, human]
-
-  -t, --target <TARGET>
-          The client to act on: id, key, game mode (sod and hardcore select the Classic Era client),
-          family, product, flavor folder, path, or all (every client)
-          
-          [alias: --flavor]
-
-      --dry-run
-          Show the plan without changing anything (ignored by commands that change nothing)
-
-      --actor <ACTOR>
-          Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
-
-      --reason <TEXT>
-          Why, recorded verbatim in history (at most 200 characters; ignored by commands that change
-          nothing)
-
-      --offline
-          Fail any network access [env: OMADDONS_OFFLINE=1]
-
-      --while-running
-          Allow folder changes while the client runs (never SavedVariables)
-
-      --if-match <TOKEN>
-          Change nothing unless the plan is still the one the --dry-run that returned this token
-          (data.precondition) showed
-
-      --no-color
-          No ANSI color
-
-      --no-progress
-          No progress output
-
-      --progress <MODE>
-          Progress events on stderr
-          
-          [possible values: json, human, none]
-
-      --quiet
-          Only errors on stderr
-
-  -v, --verbose...
-          More detail (repeatable)
-
-  -h, --help
-          Show help
-
 Examples:
   omaddons plans show 01M8Q2VA          what plan 01M8Q2VA… approved, and whether it was applied
   omaddons plans show 01M8Q2VA --json   the same as one JSON envelope, for an agent
@@ -152,3 +32,27 @@ A plan is what a --dry-run stored (data.plan_id). plans show reads it and histor
 and changes nothing: no lock, no network. Its state is pending, completed, partial,
 expired or unknown; only history lines that carry the plan id count as applied, never
 addon versions that happen to match. -t does not apply: a plan names its own clients.
+
+See also: apply, history
+
+Global options:
+      --json             One JSON envelope on stdout
+      --format <FORMAT>  Output format [possible values: json, human]
+  -t, --target <TARGET>  The client to act on: id, key, game mode (sod and hardcore select the
+                         Classic Era client), family, product, flavor folder, path, or all (every
+                         client) [alias: --flavor]
+      --dry-run          Show the plan without changing anything (ignored by commands that change
+                         nothing)
+      --actor <ACTOR>    Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
+      --reason <TEXT>    Why, recorded verbatim in history (at most 200 characters; ignored by
+                         commands that change nothing)
+      --offline          Fail any network access [env: OMADDONS_OFFLINE=1]
+      --while-running    Allow folder changes while the client runs (never SavedVariables)
+      --no-color         No ANSI color
+      --no-progress      No progress output
+      --progress <MODE>  Progress events on stderr [possible values: json, human, none]
+      --quiet            Only errors on stderr
+  -v, --verbose...       More detail (repeatable)
+  -h, --help             Show help
+
+Learn more: omaddons robot-docs guide

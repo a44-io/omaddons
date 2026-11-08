@@ -19,114 +19,23 @@ Commands:
   gc        Delete old doctor runs and what they kept, never what an unfinished change needs
 
 Options:
-      --only <IDS>
-          Only these checks: failure-mode ids or subsystem names, comma-separated
-
-      --skip <IDS>
-          Not these checks (wins over --only)
-
-      --severity <SEVERITY>
-          Report findings of this severity and more severe ones only
-          
-          [possible values: P0, P1, P2, P3]
-
-      --quick
-          Only the fast checks (the cached and quick tiers)
-
-      --include-deep
-          Also the deep checks
-
-      --online
-          Also the checks that need the network
-
-      --budget <DURATION>
-          The whole run's time, shared by the checks by their cost: 500ms or 2s
-
-      --since <RUN>
-          Compare with an earlier run: its id, or latest
-
-Global options:
-      --json
-          One JSON envelope on stdout
-
-      --robot
-          The same as --json
-
-      --format <FORMAT>
-          Output format
-          
-          [possible values: json, human]
-
-  -t, --target <TARGET>
-          The client to act on: id, key, game mode (sod and hardcore select the Classic Era client),
-          family, product, flavor folder, path, or all (every client)
-          
-          [alias: --flavor]
-
-      --dry-run
-          Show the plan without changing anything (ignored by commands that change nothing)
-
-      --actor <ACTOR>
-          Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
-
-      --reason <TEXT>
-          Why, recorded verbatim in history (at most 200 characters; ignored by commands that change
-          nothing)
-
-      --offline
-          Fail any network access [env: OMADDONS_OFFLINE=1]
-
-      --while-running
-          Allow folder changes while the client runs (never SavedVariables)
-
-      --if-match <TOKEN>
-          Change nothing unless the plan is still the one the --dry-run that returned this token
-          (data.precondition) showed
-
-      --no-color
-          No ANSI color
-
-      --no-progress
-          No progress output
-
-      --progress <MODE>
-          Progress events on stderr
-          
-          [possible values: json, human, none]
-
-      --quiet
-          Only errors on stderr
-
-  -v, --verbose...
-          More detail (repeatable)
-
-  -h, --help
-          Show help
+      --only <IDS>           Only these checks: failure-mode ids or subsystem names, comma-separated
+      --skip <IDS>           Not these checks (wins over --only)
+      --severity <SEVERITY>  Report findings of this severity and more severe ones only [possible
+                             values: P0, P1, P2, P3]
+      --quick                Only the fast checks (the cached and quick tiers)
+      --include-deep         Also the deep checks
+      --online               Also the checks that need the network
+      --budget <DURATION>    The whole run's time, shared by the checks by their cost: 500ms or 2s
+      --since <RUN>          Compare with an earlier run: its id, or latest
 
 Examples:
-  omaddons doctor                       every check but the deep ones
-  omaddons doctor --quick               the fast checks only
-  omaddons doctor --only fm-userland_state-target-vanished
-  omaddons doctor --since latest        what changed since the last run
-  omaddons doctor explain fm-userland_state-target-vanished
-  omaddons doctor fix --dry-run         what a repair would change
-  omaddons doctor fix --if-match <token>  that repair, exactly as previewed
+  omaddons doctor                what is broken, with evidence and the fix
+  omaddons doctor explain fm-configs-config-parse-error
+                                 one failure mode in full
+  omaddons doctor fix --dry-run  what a repair would change
 
-The doctor exits with its own codes:
-  0   healthy                 every selected check ran to completion and found nothing
-  1   findings_present        the run completed and reports findings, a check that could not finish
-  among them
-  2   fix_partial             a fix ran and some findings remain
-  3   fix_failed_rolled_back  a fix failed and was rolled back; nothing changed
-  4   refused_unsafe          refused before changing anything: a safety precondition, a missing
-  --force, a conflict, a stale preview or an over-budget selection
-  5   concurrency_lost        another omaddons process held the lock past the acquire timeout
-  6   online_required         the selection needs the network: add --online
-  64  usage_error             unknown command or flag, or a bad argument
-  66  no_input                a target, run, failure mode or other input was not found, or is
-  ambiguous
-  73  cannot_create           the run directory could not be created
-  74  io_error                a runtime failure: I/O, state, network or internal
+Global: -t <TARGET>  --json  --dry-run  -v  --quiet  --no-color  --offline  (--help lists them all)
 ==> omaddons doctor --help <==
 Diagnose what omaddons manages (bare: diagnose; changes nothing outside its run record)
 
@@ -170,85 +79,57 @@ Options:
       --since <RUN>
           Compare with an earlier run: its id, or latest
 
-Global options:
-      --json
-          One JSON envelope on stdout
-
-      --robot
-          The same as --json
-
-      --format <FORMAT>
-          Output format
-          
-          [possible values: json, human]
-
-  -t, --target <TARGET>
-          The client to act on: id, key, game mode (sod and hardcore select the Classic Era client),
-          family, product, flavor folder, path, or all (every client)
-          
-          [alias: --flavor]
-
-      --dry-run
-          Show the plan without changing anything (ignored by commands that change nothing)
-
-      --actor <ACTOR>
-          Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
-
-      --reason <TEXT>
-          Why, recorded verbatim in history (at most 200 characters; ignored by commands that change
-          nothing)
-
-      --offline
-          Fail any network access [env: OMADDONS_OFFLINE=1]
-
-      --while-running
-          Allow folder changes while the client runs (never SavedVariables)
-
-      --if-match <TOKEN>
-          Change nothing unless the plan is still the one the --dry-run that returned this token
-          (data.precondition) showed
-
-      --no-color
-          No ANSI color
-
-      --no-progress
-          No progress output
-
-      --progress <MODE>
-          Progress events on stderr
-          
-          [possible values: json, human, none]
-
-      --quiet
-          Only errors on stderr
-
-  -v, --verbose...
-          More detail (repeatable)
-
-  -h, --help
-          Show help
-
 Examples:
-  omaddons doctor                       every check but the deep ones
-  omaddons doctor --quick               the fast checks only
+  omaddons doctor                         every check but the deep ones
+  omaddons doctor --quick                 the fast checks only
   omaddons doctor --only fm-userland_state-target-vanished
-  omaddons doctor --since latest        what changed since the last run
+                                          one check
+  omaddons doctor --since latest          what changed since the last run
   omaddons doctor explain fm-userland_state-target-vanished
-  omaddons doctor fix --dry-run         what a repair would change
+                                          one failure mode in full
+  omaddons doctor fix --dry-run           what a repair would change
   omaddons doctor fix --if-match <token>  that repair, exactly as previewed
 
 The doctor exits with its own codes:
-  0   healthy                 every selected check ran to completion and found nothing
-  1   findings_present        the run completed and reports findings, a check that could not finish
-  among them
+  0   healthy                 every selected check ran to completion and found
+                              nothing
+  1   findings_present        the run completed and reports findings, a check
+                              that could not finish among them
   2   fix_partial             a fix ran and some findings remain
   3   fix_failed_rolled_back  a fix failed and was rolled back; nothing changed
-  4   refused_unsafe          refused before changing anything: a safety precondition, a missing
-  --force, a conflict, a stale preview or an over-budget selection
-  5   concurrency_lost        another omaddons process held the lock past the acquire timeout
+  4   refused_unsafe          refused before changing anything: a safety
+                              precondition, a missing --force, a conflict, a
+                              stale preview or an over-budget selection
+  5   concurrency_lost        another omaddons process held the lock past the
+                              acquire timeout
   6   online_required         the selection needs the network: add --online
   64  usage_error             unknown command or flag, or a bad argument
-  66  no_input                a target, run, failure mode or other input was not found, or is
-  ambiguous
+  66  no_input                a target, run, failure mode or other input was
+                              not found, or is ambiguous
   73  cannot_create           the run directory could not be created
-  74  io_error                a runtime failure: I/O, state, network or internal
+  74  io_error                a runtime failure: I/O, state, network or
+                              internal
+
+See also: doctor explain, doctor fix, status
+
+Global options:
+      --json             One JSON envelope on stdout
+      --format <FORMAT>  Output format [possible values: json, human]
+  -t, --target <TARGET>  The client to act on: id, key, game mode (sod and hardcore select the
+                         Classic Era client), family, product, flavor folder, path, or all (every
+                         client) [alias: --flavor]
+      --dry-run          Show the plan without changing anything (ignored by commands that change
+                         nothing)
+      --actor <ACTOR>    Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
+      --reason <TEXT>    Why, recorded verbatim in history (at most 200 characters; ignored by
+                         commands that change nothing)
+      --offline          Fail any network access [env: OMADDONS_OFFLINE=1]
+      --while-running    Allow folder changes while the client runs (never SavedVariables)
+      --no-color         No ANSI color
+      --no-progress      No progress output
+      --progress <MODE>  Progress events on stderr [possible values: json, human, none]
+      --quiet            Only errors on stderr
+  -v, --verbose...       More detail (repeatable)
+  -h, --help             Show help
+
+Learn more: omaddons robot-docs guide

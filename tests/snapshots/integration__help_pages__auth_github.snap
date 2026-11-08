@@ -8,82 +8,14 @@ The GitHub token: status (the default), set (from standard input) or clear
 Usage: omaddons auth github [OPTIONS] [ACTION]
 
 Arguments:
-  [ACTION]
-          status (the default), set (the token from standard input) or clear
-          
-          [possible values: status, set, clear]
-
-Options:
-      --from-gh
-          Store the token `gh auth token` prints (the only time omaddons asks gh)
-
-Global options:
-      --json
-          One JSON envelope on stdout
-
-      --robot
-          The same as --json
-
-      --format <FORMAT>
-          Output format
-          
-          [possible values: json, human]
-
-  -t, --target <TARGET>
-          The client to act on: id, key, game mode (sod and hardcore select the Classic Era client),
-          family, product, flavor folder, path, or all (every client)
-          
-          [alias: --flavor]
-
-      --dry-run
-          Show the plan without changing anything (ignored by commands that change nothing)
-
-      --actor <ACTOR>
-          Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
-
-      --reason <TEXT>
-          Why, recorded verbatim in history (at most 200 characters; ignored by commands that change
-          nothing)
-
-      --offline
-          Fail any network access [env: OMADDONS_OFFLINE=1]
-
-      --while-running
-          Allow folder changes while the client runs (never SavedVariables)
-
-      --if-match <TOKEN>
-          Change nothing unless the plan is still the one the --dry-run that returned this token
-          (data.precondition) showed
-
-      --no-color
-          No ANSI color
-
-      --no-progress
-          No progress output
-
-      --progress <MODE>
-          Progress events on stderr
-          
-          [possible values: json, human, none]
-
-      --quiet
-          Only errors on stderr
-
-  -v, --verbose...
-          More detail (repeatable)
-
-  -h, --help
-          Show help
+  [ACTION]  status (the default), set (the token from standard input) or clear
 
 Examples:
-  omaddons auth github                        which token is used, and the hour's REST budget
-  echo "$TOKEN" | omaddons auth github set    store a token (standard input only, never argv)
-  omaddons auth github --from-gh              store the token gh auth token prints
-  omaddons auth github clear                  forget the stored token
+  echo "$TOKEN" | omaddons auth github set  store a token from standard input
+  omaddons auth github --from-gh            store the token gh has
+  omaddons auth github clear                forget the stored token
 
-The main GitHub path needs no token. A token goes only to api.github.com; GITHUB_TOKEN
-and gh's credentials are never read unless you ask with --from-gh. With --dry-run, set
-and clear check the token and write nothing.
+Global: -t <TARGET>  --json  --dry-run  -v  --quiet  --no-color  --offline  (--help lists them all)
 ==> omaddons auth github --help <==
 The GitHub token: status (the default), set (from standard input) or clear
 
@@ -92,70 +24,6 @@ Usage: omaddons auth github [OPTIONS] [ACTION]
 Arguments:
   [ACTION]
           status (the default), set (the token from standard input) or clear
-          
-          [possible values: status, set, clear]
-
-Options:
-      --from-gh
-          Store the token `gh auth token` prints (the only time omaddons asks gh)
-
-Global options:
-      --json
-          One JSON envelope on stdout
-
-      --robot
-          The same as --json
-
-      --format <FORMAT>
-          Output format
-          
-          [possible values: json, human]
-
-  -t, --target <TARGET>
-          The client to act on: id, key, game mode (sod and hardcore select the Classic Era client),
-          family, product, flavor folder, path, or all (every client)
-          
-          [alias: --flavor]
-
-      --dry-run
-          Show the plan without changing anything (ignored by commands that change nothing)
-
-      --actor <ACTOR>
-          Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
-
-      --reason <TEXT>
-          Why, recorded verbatim in history (at most 200 characters; ignored by commands that change
-          nothing)
-
-      --offline
-          Fail any network access [env: OMADDONS_OFFLINE=1]
-
-      --while-running
-          Allow folder changes while the client runs (never SavedVariables)
-
-      --if-match <TOKEN>
-          Change nothing unless the plan is still the one the --dry-run that returned this token
-          (data.precondition) showed
-
-      --no-color
-          No ANSI color
-
-      --no-progress
-          No progress output
-
-      --progress <MODE>
-          Progress events on stderr
-          
-          [possible values: json, human, none]
-
-      --quiet
-          Only errors on stderr
-
-  -v, --verbose...
-          More detail (repeatable)
-
-  -h, --help
-          Show help
 
 Examples:
   omaddons auth github                        which token is used, and the hour's REST budget
@@ -166,3 +34,28 @@ Examples:
 The main GitHub path needs no token. A token goes only to api.github.com; GITHUB_TOKEN
 and gh's credentials are never read unless you ask with --from-gh. With --dry-run, set
 and clear check the token and write nothing.
+
+See also: doctor
+
+Global options:
+      --from-gh          Store the token `gh auth token` prints (the only time omaddons asks gh)
+      --json             One JSON envelope on stdout
+      --format <FORMAT>  Output format [possible values: json, human]
+  -t, --target <TARGET>  The client to act on: id, key, game mode (sod and hardcore select the
+                         Classic Era client), family, product, flavor folder, path, or all (every
+                         client) [alias: --flavor]
+      --dry-run          Show the plan without changing anything (ignored by commands that change
+                         nothing)
+      --actor <ACTOR>    Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
+      --reason <TEXT>    Why, recorded verbatim in history (at most 200 characters; ignored by
+                         commands that change nothing)
+      --offline          Fail any network access [env: OMADDONS_OFFLINE=1]
+      --while-running    Allow folder changes while the client runs (never SavedVariables)
+      --no-color         No ANSI color
+      --no-progress      No progress output
+      --progress <MODE>  Progress events on stderr [possible values: json, human, none]
+      --quiet            Only errors on stderr
+  -v, --verbose...       More detail (repeatable)
+  -h, --help             Show help
+
+Learn more: omaddons robot-docs guide

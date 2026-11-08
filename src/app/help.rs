@@ -366,9 +366,44 @@ pub fn bare() -> HelpOutcome {
     }
 }
 
-/// `omaddons help [<command>]`; an unknown name is a `usage` error suggesting the
-/// closest command.
+/// How much of a command's page is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Depth {
+    /// `-h`: the about, the usage, one line per own option, a few examples, and one line
+    /// naming the global options most command lines need.
+    Short,
+    /// `--help` and `help <command>`: the long about, every own option's whole help, all
+    /// examples, related commands, every global option on one line, and where to learn
+    /// more.
+    Long,
+}
+
+impl Depth {
+    /// The depth `argv` asks for: `--help` before any `--` is the whole page, `-h` the
+    /// compact one.
+    pub fn of(argv: &[String]) -> Self {
+        let long = argv
+            .iter()
+            .skip(1)
+            .take_while(|a| *a != "--")
+            .any(|a| a == "--help");
+        if long { Self::Long } else { Self::Short }
+    }
+}
+
+/// `omaddons help [<command>]`, the whole page; an unknown name is a `usage` error
+/// suggesting the closest command.
 pub fn for_command(name: Option<&str>, argv: &[String]) -> Result<HelpOutcome, Error> {
+    at_depth(name, argv, Depth::Long)
+}
+
+/// `-h` or `--help` on a command line: its page at the depth `argv` asks for.
+pub fn for_flag(name: Option<&str>, argv: &[String]) -> Result<HelpOutcome, Error> {
+    at_depth(name, argv, Depth::of(argv))
+}
+
+/// A command's help at `depth`; bare help for no name, at either depth.
+fn at_depth(name: Option<&str>, argv: &[String], depth: Depth) -> Result<HelpOutcome, Error> {
     let Some(name) = name else { return Ok(bare()) };
     let mut root = Cli::command();
     root.build();
@@ -445,7 +480,7 @@ pub fn for_command(name: Option<&str>, argv: &[String]) -> Result<HelpOutcome, E
         error.alternatives = alternatives;
         return Err(error);
     }
-    let text = sub.render_long_help().to_string();
+    let text = page(sub, &path.join(" "), depth);
     let usage = sub
         .render_usage()
         .to_string()
@@ -472,6 +507,208 @@ pub fn for_command(name: Option<&str>, argv: &[String]) -> Result<HelpOutcome, E
         }),
         text,
     })
+}
+
+/// What `-h` names of the global options, in this order: the ones a command line most
+/// often needs. `--help` lists every one.
+pub(crate) const GLOBAL_SUMMARY: &[&str] = &[
+    "-t <TARGET>",
+    "--json",
+    "--dry-run",
+    "-v",
+    "--quiet",
+    "--no-color",
+    "--offline",
+];
+/// The line every complete page ends with.
+const LEARN_MORE: &str = "Learn more: omaddons robot-docs guide";
+/// The widest example command that keeps its description on its own line's right.
+const EXAMPLE_COMMAND_MAX: usize = 44;
+
+/// A command's page at `depth`. It is rendered from a copy of `sub`, so the tree that
+/// `help --json`, `capabilities` and the contract read never changes for presentation:
+///
+/// - the global options leave the options list for a block of their own after the
+///   command's: one summary line under `-h`, one line each under `--help`, `--if-match`
+///   only where the command binds and `--robot` (`--json` by another name) nowhere;
+/// - an enumeration the option's prose already spells out is not repeated as clap's
+///   `[possible values]`;
+/// - the command's aliases follow its usage, and its examples and related commands
+///   ([`super::help_extras`]) follow its options.
+fn page(sub: &clap::Command, path: &str, depth: Depth) -> String {
+    let usage = sub.clone().render_usage().to_string();
+    let usage = usage.trim_start_matches("Usage: ").trim_end().to_owned();
+    let globals: Vec<clap::Arg> = sub
+        .get_arguments()
+        .filter(|arg| arg.is_global_set())
+        .cloned()
+        .collect();
+    let mut copy = sub.clone();
+    for arg in &globals {
+        copy = copy.mut_arg(arg.get_id().clone(), |arg| arg.hide(true));
+    }
+    let spelled_out: Vec<clap::Id> = copy
+        .get_arguments()
+        .filter(|arg| !arg.is_global_set() && lists_its_values(arg))
+        .map(|arg| arg.get_id().clone())
+        .collect();
+    for id in spelled_out {
+        copy = copy.mut_arg(id, |arg| arg.hide_possible_values(true));
+    }
+    let aliases: Vec<&str> = sub.get_visible_aliases().collect();
+    let aliases = if aliases.is_empty() {
+        String::new()
+    } else {
+        format!("\nAliases: {}", aliases.join(", "))
+    };
+    let shows_args = copy.get_arguments().any(|arg| !arg.is_hide_set())
+        || copy.get_subcommands().any(|cmd| !cmd.is_hide_set());
+    let between = if shows_args { "\n\n{all-args}" } else { "" };
+    let extras = super::help_extras::of(path);
+    let short_after = extras.map(|extras| examples_block(extras.examples));
+    let long_after = long_after(sub.get_after_long_help().map(ToString::to_string), extras);
+    copy = copy
+        .help_template(format!(
+            "{{about-with-newline}}\n{{usage-heading}} {{usage}}{aliases}{between}{{after-help}}"
+        ))
+        .override_usage(usage)
+        .after_help(short_after.unwrap_or_default())
+        .after_long_help(long_after.unwrap_or_default());
+    let rendered = match depth {
+        Depth::Short => copy.render_help(),
+        Depth::Long => copy.render_long_help(),
+    };
+    let mut text = rendered.to_string().trim_end().to_owned();
+    text.push_str("\n\n");
+    let binds = super::precondition::BINDING_COMMANDS.contains(&path);
+    match depth {
+        Depth::Short => {
+            text.push_str(&format!(
+                "Global: {}  (--help lists them all)\n",
+                GLOBAL_SUMMARY.join("  ")
+            ));
+        }
+        Depth::Long => {
+            text.push_str("Global options:\n");
+            text.push_str(&global_options(globals, binds));
+            text.push('\n');
+            text.push_str(LEARN_MORE);
+            text.push('\n');
+        }
+    }
+    text
+}
+
+/// The global options a page lists, one line each with their short help, in clap's own
+/// two columns: `--robot` never, `--if-match` only on a command that binds.
+fn global_options(globals: Vec<clap::Arg>, binds: bool) -> String {
+    let listed: Vec<clap::Arg> = globals
+        .into_iter()
+        .filter(|arg| {
+            let id = arg.get_id().as_str();
+            id != "robot" && (binds || id != "if_match")
+        })
+        .collect();
+    // A clap command only to render the block (`default()`, not the `new` constructor the
+    // single-writer scan reads as a process spawn).
+    let block = clap::Command::default()
+        .name("omaddons")
+        .disable_help_flag(true)
+        .disable_version_flag(true)
+        .args(listed)
+        .help_template("{options}")
+        .render_help()
+        .to_string();
+    let mut block = block.trim_end().to_owned();
+    block.push('\n');
+    block
+}
+
+/// Whether `arg`'s own help already names every value it takes, so clap's
+/// `[possible values: …]` would say the list twice.
+fn lists_its_values(arg: &clap::Arg) -> bool {
+    if !arg.get_action().takes_values() {
+        return false;
+    }
+    let values: Vec<String> = arg
+        .get_possible_values()
+        .iter()
+        .filter(|value| !value.is_hide_set())
+        .map(|value| value.get_name().to_owned())
+        .collect();
+    let help: String = [arg.get_help(), arg.get_long_help()]
+        .into_iter()
+        .flatten()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let words: std::collections::BTreeSet<&str> = help
+        .split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_'))
+        .collect();
+    !values.is_empty() && values.iter().all(|value| words.contains(value.as_str()))
+}
+
+/// What `--help` shows after the options: the table's examples when the command's own
+/// long text has none, that text (its examples and notes), and the related commands.
+fn long_after(own: Option<String>, extras: Option<&super::help_extras::Extras>) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(extras) = extras
+        && !own.as_ref().is_some_and(|text| text.contains("Examples:"))
+    {
+        parts.push(examples_block(extras.examples));
+    }
+    parts.extend(own);
+    if let Some(extras) = extras
+        && !extras.see_also.is_empty()
+    {
+        parts.push(format!("See also: {}", extras.see_also.join(", ")));
+    }
+    (!parts.is_empty()).then(|| parts.join("\n\n"))
+}
+
+/// An `Examples:` block: each command two columns in, its description aligned beside the
+/// commands that fit [`EXAMPLE_COMMAND_MAX`] (on the next line for a longer one), wrapped
+/// with a hanging indent so no line reaches [`MAX_WIDTH`]. No trailing newline.
+pub(crate) fn examples_block(examples: &[(&str, &str)]) -> String {
+    let columns = |text: &str| text.chars().count();
+    let width = examples
+        .iter()
+        .map(|(command, _)| columns(command))
+        .filter(|width| *width <= EXAMPLE_COMMAND_MAX)
+        .max()
+        .unwrap_or(0);
+    let mut text = String::from("Examples:\n");
+    for (command, what) in examples {
+        let words = prose_words(what);
+        if words.is_empty() {
+            text.push_str(&format!("  {command}\n"));
+        } else if columns(command) <= EXAMPLE_COMMAND_MAX {
+            let lead = format!("  {command:<width$}  ");
+            text.push_str(&wrap(&lead, &words, " ", width + 4));
+        } else {
+            text.push_str(&format!("  {command}\n"));
+            let lead = " ".repeat(width + 4);
+            text.push_str(&wrap(&lead, &words, " ", width + 4));
+        }
+    }
+    text.truncate(text.trim_end().len());
+    text
+}
+
+/// A table of `(code, name, meaning)` rows, the meanings wrapped with a hanging indent so
+/// no line reaches [`MAX_WIDTH`]: the doctor's exit codes under `doctor --help`. No
+/// trailing newline.
+pub(crate) fn hanging_table(rows: &[(String, String, String)]) -> String {
+    let columns = |text: &str| text.chars().count();
+    let first = rows.iter().map(|row| columns(&row.0)).max().unwrap_or(0);
+    let second = rows.iter().map(|row| columns(&row.1)).max().unwrap_or(0);
+    let mut text = String::new();
+    for (code, name, meaning) in rows {
+        let lead = format!("  {code:<first$}  {name:<second$}  ");
+        text.push_str(&wrap(&lead, &prose_words(meaning), " ", first + second + 6));
+    }
+    text.truncate(text.trim_end().len());
+    text
 }
 
 /// `omaddons --version`.
@@ -844,5 +1081,240 @@ mod tests {
             "there is no command \"install gh:o/foo\": install takes no subcommands"
         );
         assert_eq!(err.fix.argv().unwrap(), ["omaddons", "help", "install"]);
+    }
+
+    fn words(line: &str) -> Vec<String> {
+        line.split(' ').map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn the_depth_follows_the_flag_typed() {
+        for (line, depth) in [
+            ("omaddons status -h", Depth::Short),
+            ("omaddons status --help", Depth::Long),
+            ("omaddons -h status --help", Depth::Long),
+            ("omaddons help status", Depth::Short),
+            ("omaddons install -- --help", Depth::Short),
+        ] {
+            assert_eq!(Depth::of(&words(line)), depth, "{line}");
+        }
+        // `help <command>` is always the whole page, as `<command> --help` is.
+        let via_help = for_command(Some("status"), &words("omaddons help status")).unwrap();
+        let flag = for_flag(Some("status"), &words("omaddons status --help")).unwrap();
+        let short = for_flag(Some("status"), &words("omaddons status -h")).unwrap();
+        assert_eq!(via_help.text, flag.text);
+        assert_ne!(short.text, flag.text, "-h is the compact page");
+    }
+
+    /// The render-only copy lists `--if-match` exactly on the commands that bind, never
+    /// `--robot`, and leaves the tree `help --json` reads as it was.
+    #[test]
+    fn the_page_lists_if_match_only_where_the_command_binds() {
+        for row in super::super::COMMANDS {
+            let long = for_command(Some(row.name), &[]).unwrap();
+            let binds = super::super::precondition::BINDING_COMMANDS.contains(&row.name);
+            assert_eq!(
+                long.text.contains("--if-match <TOKEN>"),
+                binds,
+                "{}: --if-match listed {}",
+                row.name,
+                long.text.contains("--if-match <TOKEN>")
+            );
+            assert!(
+                !long.text.contains("--robot"),
+                "{}: --robot listed",
+                row.name
+            );
+            assert!(
+                long.text.ends_with(&format!("{LEARN_MORE}\n")),
+                "{}",
+                row.name
+            );
+            let short = for_flag(Some(row.name), &words("omaddons -h")).unwrap();
+            assert!(!short.text.contains("Global options:"), "{}", row.name);
+            assert!(short.text.contains("\nGlobal: -t <TARGET>"), "{}", row.name);
+            // `help --json` still names every global flag, `--if-match` and `--robot` too.
+            let data = serde_json::to_value(&long.data).unwrap();
+            let names: Vec<&str> = data["flags"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|flag| flag["name"].as_str())
+                .collect();
+            for name in ["if-match", "robot", "json"] {
+                assert!(
+                    names.contains(&name),
+                    "{}: help --json lacks {name}",
+                    row.name
+                );
+            }
+        }
+    }
+
+    /// Every `-h` page has examples; no page says an enumeration twice; a command's page
+    /// names its aliases; the doctor's exit table keeps its columns.
+    #[test]
+    fn pages_carry_examples_aliases_and_each_list_once() {
+        let mut root = Cli::command();
+        root.build();
+        for row in super::super::COMMANDS {
+            let short = for_flag(Some(row.name), &words("omaddons -h")).unwrap();
+            assert!(
+                short.text.contains("\nExamples:\n  "),
+                "{}:\n{}",
+                row.name,
+                short.text
+            );
+            let long = for_command(Some(row.name), &[]).unwrap();
+            let mut sub = &root;
+            for word in row.name.split(' ') {
+                sub = sub.find_subcommand(word).unwrap();
+            }
+            for arg in sub.get_arguments().filter(|arg| lists_its_values(arg)) {
+                let values: Vec<String> = arg
+                    .get_possible_values()
+                    .iter()
+                    .filter(|value| !value.is_hide_set())
+                    .map(|value| value.get_name().to_owned())
+                    .collect();
+                let listed = format!("[possible values: {}]", values.join(", "));
+                for page in [&short.text, &long.text] {
+                    assert!(!page.contains(&listed), "{}: {listed} twice", row.name);
+                }
+            }
+            let aliases: Vec<&str> = sub.get_visible_aliases().collect();
+            if !aliases.is_empty() {
+                let line = format!("\nAliases: {}\n", aliases.join(", "));
+                assert!(long.text.contains(&line), "{}: {line:?}", row.name);
+            }
+        }
+        let remove = for_command(Some("remove"), &[]).unwrap();
+        assert!(
+            remove.text.contains("\nAliases: uninstall, rm, delete\n"),
+            "{}",
+            remove.text
+        );
+        let doctor = for_command(Some("doctor"), &[]).unwrap();
+        let table: Vec<&str> = doctor
+            .text
+            .split("The doctor exits with its own codes:\n")
+            .nth(1)
+            .unwrap()
+            .lines()
+            .take_while(|line| !line.is_empty())
+            .collect();
+        assert!(table.len() >= 11, "{table:?}");
+        for line in table {
+            assert!(
+                line.starts_with("  "),
+                "column 0 inside the table: {line:?}"
+            );
+        }
+    }
+
+    /// Every flag `-h`'s summary names is a global option of the tree.
+    #[test]
+    fn the_global_summary_names_real_options() {
+        let mut root = Cli::command();
+        root.build();
+        let spelled: Vec<String> = root
+            .get_arguments()
+            .filter(|arg| arg.is_global_set())
+            .flat_map(|arg| {
+                let mut names: Vec<String> = arg
+                    .get_short()
+                    .map(|s| format!("-{s}"))
+                    .into_iter()
+                    .collect();
+                names.extend(arg.get_long().map(|l| format!("--{l}")));
+                names
+            })
+            .collect();
+        for item in GLOBAL_SUMMARY {
+            let flag = item.split(' ').next().unwrap_or_default();
+            assert!(
+                spelled.iter().any(|s| s == flag),
+                "{item}: no such global option"
+            );
+        }
+    }
+
+    #[test]
+    fn an_enumeration_is_said_once() {
+        let arg = |help: &str| {
+            clap::Arg::new("channel")
+                .long("channel")
+                .value_parser(["stable", "beta", "alpha"])
+                .help(help.to_owned())
+        };
+        for (help, spelled_out) in [
+            ("stable, beta or alpha (default: stable)", true),
+            ("Release channel", false),
+            ("stable or beta", false),
+            ("a stable-ish beta, or alpha", false),
+        ] {
+            assert_eq!(lists_its_values(&arg(help)), spelled_out, "{help:?}");
+        }
+        assert!(!lists_its_values(
+            &clap::Arg::new("deep")
+                .long("deep")
+                .action(clap::ArgAction::SetTrue)
+                .help("deep")
+        ));
+    }
+
+    #[test]
+    fn examples_align_and_wrap_under_80_columns() {
+        let block = examples_block(&[
+            ("omaddons status", "every client"),
+            ("omaddons status --cached", "no scan"),
+            (
+                "omaddons doctor --only fm-userland_state-target-vanished",
+                "one check",
+            ),
+            ("omaddons config path", ""),
+        ]);
+        assert_eq!(
+            block,
+            "Examples:\n  omaddons status           every client\n  omaddons status --cached  no scan\n  \
+             omaddons doctor --only fm-userland_state-target-vanished\n                            one check\n  \
+             omaddons config path"
+        );
+        let long = examples_block(&[("omaddons status", &"word ".repeat(30))]);
+        for line in long.lines() {
+            assert!(line.chars().count() < MAX_WIDTH, "{line:?}");
+        }
+        assert!(
+            long.lines()
+                .skip(2)
+                .all(|line| line.starts_with(&" ".repeat(19))),
+            "{long}"
+        );
+    }
+
+    #[test]
+    fn a_hanging_table_indents_its_continuations() {
+        let rows = vec![
+            ("0".to_owned(), "healthy".to_owned(), "fine".to_owned()),
+            (
+                "64".to_owned(),
+                "usage_error".to_owned(),
+                "word ".repeat(20),
+            ),
+        ];
+        let table = hanging_table(&rows);
+        let lines: Vec<&str> = table.lines().collect();
+        assert_eq!(lines[0], "  0   healthy      fine");
+        assert!(lines[1].starts_with("  64  usage_error  word"), "{table}");
+        for line in &lines[2..] {
+            assert!(
+                line.starts_with(&" ".repeat(19)) && !line[19..].starts_with(' '),
+                "{table}"
+            );
+        }
+        assert!(
+            lines.iter().all(|line| line.chars().count() < MAX_WIDTH),
+            "{table}"
+        );
     }
 }

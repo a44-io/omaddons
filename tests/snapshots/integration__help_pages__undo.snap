@@ -6,88 +6,32 @@ description: "a command's -h and --help pages as this build renders them at 100 
 Revert the last change (or one by id), SavedVariables included
 
 Usage: omaddons undo [OPTIONS] [TX]
+Aliases: revert, rollback
 
 Arguments:
-  [TX]
-          The transaction to revert: its id or a unique prefix of 8+ characters (default: the most
-          recent run)
+  [TX]  The transaction to revert: its id or a unique prefix of 8+ characters (default: the most
+        recent run)
 
 Options:
-      --last-by <ACTOR>
-          Revert this actor's most recent run: human, agent or widget
-          
-          [possible values: human, agent, widget]
+      --last-by <ACTOR>           Revert this actor's most recent run: human, agent or widget
+      --run <RUN>                 Revert every transaction of this run: its id or a unique prefix of
+                                  8+ characters
+      --saved-variables <POLICY>  SavedVariables: auto (restore what changed, later if the game
+                                  runs), restore (refuse while the game runs) or keep (never touch
+                                  them)
 
-      --run <RUN>
-          Revert every transaction of this run: its id or a unique prefix of 8+ characters
+Examples:
+  omaddons undo                  revert the last run, on every client
+  omaddons undo --last-by agent  revert what an agent did last
+  omaddons undo 01M51F4QY5KB --saved-variables restore
+                                 finish after quitting
 
-      --saved-variables <POLICY>
-          SavedVariables: auto (restore what changed, later if the game runs), restore (refuse while
-          the game runs) or keep (never touch them)
-          
-          [possible values: auto, restore, keep]
-
-Global options:
-      --json
-          One JSON envelope on stdout
-
-      --robot
-          The same as --json
-
-      --format <FORMAT>
-          Output format
-          
-          [possible values: json, human]
-
-  -t, --target <TARGET>
-          The client to act on: id, key, game mode (sod and hardcore select the Classic Era client),
-          family, product, flavor folder, path, or all (every client)
-          
-          [alias: --flavor]
-
-      --dry-run
-          Show the plan without changing anything (ignored by commands that change nothing)
-
-      --actor <ACTOR>
-          Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
-
-      --reason <TEXT>
-          Why, recorded verbatim in history (at most 200 characters; ignored by commands that change
-          nothing)
-
-      --offline
-          Fail any network access [env: OMADDONS_OFFLINE=1]
-
-      --while-running
-          Allow folder changes while the client runs (never SavedVariables)
-
-      --if-match <TOKEN>
-          Change nothing unless the plan is still the one the --dry-run that returned this token
-          (data.precondition) showed
-
-      --no-color
-          No ANSI color
-
-      --no-progress
-          No progress output
-
-      --progress <MODE>
-          Progress events on stderr
-          
-          [possible values: json, human, none]
-
-      --quiet
-          Only errors on stderr
-
-  -v, --verbose...
-          More detail (repeatable)
-
-  -h, --help
-          Show help
+Global: -t <TARGET>  --json  --dry-run  -v  --quiet  --no-color  --offline  (--help lists them all)
 ==> omaddons undo --help <==
 Revert the last change (or one by id), SavedVariables included
 
 Usage: omaddons undo [OPTIONS] [TX]
+Aliases: revert, rollback
 
 Arguments:
   [TX]
@@ -97,8 +41,6 @@ Arguments:
 Options:
       --last-by <ACTOR>
           Revert this actor's most recent run: human, agent or widget
-          
-          [possible values: human, agent, widget]
 
       --run <RUN>
           Revert every transaction of this run: its id or a unique prefix of 8+ characters
@@ -106,63 +48,35 @@ Options:
       --saved-variables <POLICY>
           SavedVariables: auto (restore what changed, later if the game runs), restore (refuse while
           the game runs) or keep (never touch them)
-          
-          [possible values: auto, restore, keep]
+
+Examples:
+  omaddons undo                  revert the last run, on every client
+  omaddons undo --last-by agent  revert what an agent did last
+  omaddons undo 01M51F4QY5KB --saved-variables restore
+                                 finish after quitting
+
+See also: history, remove
 
 Global options:
-      --json
-          One JSON envelope on stdout
+      --json              One JSON envelope on stdout
+      --format <FORMAT>   Output format [possible values: json, human]
+  -t, --target <TARGET>   The client to act on: id, key, game mode (sod and hardcore select the
+                          Classic Era client), family, product, flavor folder, path, or all (every
+                          client) [alias: --flavor]
+      --dry-run           Show the plan without changing anything (ignored by commands that change
+                          nothing)
+      --actor <ACTOR>     Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
+      --reason <TEXT>     Why, recorded verbatim in history (at most 200 characters; ignored by
+                          commands that change nothing)
+      --offline           Fail any network access [env: OMADDONS_OFFLINE=1]
+      --while-running     Allow folder changes while the client runs (never SavedVariables)
+      --if-match <TOKEN>  Change nothing unless the plan is still the one the --dry-run that
+                          returned this token (data.precondition) showed
+      --no-color          No ANSI color
+      --no-progress       No progress output
+      --progress <MODE>   Progress events on stderr [possible values: json, human, none]
+      --quiet             Only errors on stderr
+  -v, --verbose...        More detail (repeatable)
+  -h, --help              Show help
 
-      --robot
-          The same as --json
-
-      --format <FORMAT>
-          Output format
-          
-          [possible values: json, human]
-
-  -t, --target <TARGET>
-          The client to act on: id, key, game mode (sod and hardcore select the Classic Era client),
-          family, product, flavor folder, path, or all (every client)
-          
-          [alias: --flavor]
-
-      --dry-run
-          Show the plan without changing anything (ignored by commands that change nothing)
-
-      --actor <ACTOR>
-          Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
-
-      --reason <TEXT>
-          Why, recorded verbatim in history (at most 200 characters; ignored by commands that change
-          nothing)
-
-      --offline
-          Fail any network access [env: OMADDONS_OFFLINE=1]
-
-      --while-running
-          Allow folder changes while the client runs (never SavedVariables)
-
-      --if-match <TOKEN>
-          Change nothing unless the plan is still the one the --dry-run that returned this token
-          (data.precondition) showed
-
-      --no-color
-          No ANSI color
-
-      --no-progress
-          No progress output
-
-      --progress <MODE>
-          Progress events on stderr
-          
-          [possible values: json, human, none]
-
-      --quiet
-          Only errors on stderr
-
-  -v, --verbose...
-          More detail (repeatable)
-
-  -h, --help
-          Show help
+Learn more: omaddons robot-docs guide

@@ -8,80 +8,14 @@ Write a backup to a file off this disk, as a .tar.zst (never replaces a file)
 Usage: omaddons backup export [OPTIONS] <ID> <FILE>
 
 Arguments:
-  <ID>
-          The backup: its id, or a prefix of 8 or more characters
-
-  <FILE>
-          The file to write (a new one, in a folder that exists)
-
-Global options:
-      --json
-          One JSON envelope on stdout
-
-      --robot
-          The same as --json
-
-      --format <FORMAT>
-          Output format
-          
-          [possible values: json, human]
-
-  -t, --target <TARGET>
-          The client to act on: id, key, game mode (sod and hardcore select the Classic Era client),
-          family, product, flavor folder, path, or all (every client)
-          
-          [alias: --flavor]
-
-      --dry-run
-          Show the plan without changing anything (ignored by commands that change nothing)
-
-      --actor <ACTOR>
-          Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
-
-      --reason <TEXT>
-          Why, recorded verbatim in history (at most 200 characters; ignored by commands that change
-          nothing)
-
-      --offline
-          Fail any network access [env: OMADDONS_OFFLINE=1]
-
-      --while-running
-          Allow folder changes while the client runs (never SavedVariables)
-
-      --if-match <TOKEN>
-          Change nothing unless the plan is still the one the --dry-run that returned this token
-          (data.precondition) showed
-
-      --no-color
-          No ANSI color
-
-      --no-progress
-          No progress output
-
-      --progress <MODE>
-          Progress events on stderr
-          
-          [possible values: json, human, none]
-
-      --quiet
-          Only errors on stderr
-
-  -v, --verbose...
-          More detail (repeatable)
-
-  -h, --help
-          Show help
+  <ID>    The backup: its id, or a prefix of 8 or more characters
+  <FILE>  The file to write (a new one, in a folder that exists)
 
 Examples:
   omaddons backup export 01M6Q2VA /run/media/me/usb/retail-wtf.tar.zst
-  omaddons backup export 01M6Q2VA wtf.tar.zst --dry-run   what it would write
+    one backup, off this disk
 
-Writes one backup as a zstd-compressed tar: its description, its WTF/ with the modes
-it recorded, and every file's SHA-256, checked against the backup's own hashes when it
-has them. The same backup always exports to the same bytes. It never replaces a file,
-writes nothing anywhere else, and refuses a destination inside a game client, a Wine
-prefix or omaddons' own folders. The archive holds account and character names, as WTF/
-does: keep it private.
+Global: -t <TARGET>  --json  --dry-run  -v  --quiet  --no-color  --offline  (--help lists them all)
 ==> omaddons backup export --help <==
 Write a backup to a file off this disk, as a .tar.zst (never replaces a file)
 
@@ -94,64 +28,6 @@ Arguments:
   <FILE>
           The file to write (a new one, in a folder that exists)
 
-Global options:
-      --json
-          One JSON envelope on stdout
-
-      --robot
-          The same as --json
-
-      --format <FORMAT>
-          Output format
-          
-          [possible values: json, human]
-
-  -t, --target <TARGET>
-          The client to act on: id, key, game mode (sod and hardcore select the Classic Era client),
-          family, product, flavor folder, path, or all (every client)
-          
-          [alias: --flavor]
-
-      --dry-run
-          Show the plan without changing anything (ignored by commands that change nothing)
-
-      --actor <ACTOR>
-          Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
-
-      --reason <TEXT>
-          Why, recorded verbatim in history (at most 200 characters; ignored by commands that change
-          nothing)
-
-      --offline
-          Fail any network access [env: OMADDONS_OFFLINE=1]
-
-      --while-running
-          Allow folder changes while the client runs (never SavedVariables)
-
-      --if-match <TOKEN>
-          Change nothing unless the plan is still the one the --dry-run that returned this token
-          (data.precondition) showed
-
-      --no-color
-          No ANSI color
-
-      --no-progress
-          No progress output
-
-      --progress <MODE>
-          Progress events on stderr
-          
-          [possible values: json, human, none]
-
-      --quiet
-          Only errors on stderr
-
-  -v, --verbose...
-          More detail (repeatable)
-
-  -h, --help
-          Show help
-
 Examples:
   omaddons backup export 01M6Q2VA /run/media/me/usb/retail-wtf.tar.zst
   omaddons backup export 01M6Q2VA wtf.tar.zst --dry-run   what it would write
@@ -162,3 +38,27 @@ has them. The same backup always exports to the same bytes. It never replaces a 
 writes nothing anywhere else, and refuses a destination inside a game client, a Wine
 prefix or omaddons' own folders. The archive holds account and character names, as WTF/
 does: keep it private.
+
+See also: backup import, backup list
+
+Global options:
+      --json             One JSON envelope on stdout
+      --format <FORMAT>  Output format [possible values: json, human]
+  -t, --target <TARGET>  The client to act on: id, key, game mode (sod and hardcore select the
+                         Classic Era client), family, product, flavor folder, path, or all (every
+                         client) [alias: --flavor]
+      --dry-run          Show the plan without changing anything (ignored by commands that change
+                         nothing)
+      --actor <ACTOR>    Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
+      --reason <TEXT>    Why, recorded verbatim in history (at most 200 characters; ignored by
+                         commands that change nothing)
+      --offline          Fail any network access [env: OMADDONS_OFFLINE=1]
+      --while-running    Allow folder changes while the client runs (never SavedVariables)
+      --no-color         No ANSI color
+      --no-progress      No progress output
+      --progress <MODE>  Progress events on stderr [possible values: json, human, none]
+      --quiet            Only errors on stderr
+  -v, --verbose...       More detail (repeatable)
+  -h, --help             Show help
+
+Learn more: omaddons robot-docs guide

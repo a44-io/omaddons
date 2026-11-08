@@ -8,97 +8,22 @@ Repair the findings a fixer can repair, as one undoable transaction
 Usage: omaddons doctor fix [OPTIONS]
 
 Options:
-      --only <IDS>
-          Only these checks: failure-mode ids or subsystem names, comma-separated
-
-      --skip <IDS>
-          Not these checks (wins over --only)
-
-      --severity <SEVERITY>
-          Report findings of this severity and more severe ones only
-          
-          [possible values: P0, P1, P2, P3]
-
-      --quick
-          Only the fast checks (the cached and quick tiers)
-
-      --include-deep
-          Also the deep checks
-
-      --online
-          Also the checks that need the network
-
-      --budget <DURATION>
-          The whole run's time, shared by the checks by their cost: 500ms or 2s
-
-      --force
-          Run the forced repairs (set-asides) the --only list names; needs --yes
-
-      --yes
-          Consent to a forced repair
-
-Global options:
-      --json
-          One JSON envelope on stdout
-
-      --robot
-          The same as --json
-
-      --format <FORMAT>
-          Output format
-          
-          [possible values: json, human]
-
-  -t, --target <TARGET>
-          The client to act on: id, key, game mode (sod and hardcore select the Classic Era client),
-          family, product, flavor folder, path, or all (every client)
-          
-          [alias: --flavor]
-
-      --dry-run
-          Show the plan without changing anything (ignored by commands that change nothing)
-
-      --actor <ACTOR>
-          Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
-
-      --reason <TEXT>
-          Why, recorded verbatim in history (at most 200 characters; ignored by commands that change
-          nothing)
-
-      --offline
-          Fail any network access [env: OMADDONS_OFFLINE=1]
-
-      --while-running
-          Allow folder changes while the client runs (never SavedVariables)
-
-      --if-match <TOKEN>
-          Change nothing unless the plan is still the one the --dry-run that returned this token
-          (data.precondition) showed
-
-      --no-color
-          No ANSI color
-
-      --no-progress
-          No progress output
-
-      --progress <MODE>
-          Progress events on stderr
-          
-          [possible values: json, human, none]
-
-      --quiet
-          Only errors on stderr
-
-  -v, --verbose...
-          More detail (repeatable)
-
-  -h, --help
-          Show help
+      --only <IDS>           Only these checks: failure-mode ids or subsystem names, comma-separated
+      --skip <IDS>           Not these checks (wins over --only)
+      --severity <SEVERITY>  Report findings of this severity and more severe ones only [possible
+                             values: P0, P1, P2, P3]
+      --quick                Only the fast checks (the cached and quick tiers)
+      --include-deep         Also the deep checks
+      --online               Also the checks that need the network
+      --budget <DURATION>    The whole run's time, shared by the checks by their cost: 500ms or 2s
+      --force                Run the forced repairs (set-asides) the --only list names; needs --yes
+      --yes                  Consent to a forced repair
 
 Examples:
-  omaddons doctor fix --dry-run                 what it would repair, and the token that binds it
-  omaddons doctor fix --if-match <token>        exactly that preview, or nothing
-  omaddons doctor fix --only <id> --force --yes a forced repair, by its failure mode
+  omaddons doctor fix --dry-run           what it would repair, and its token
+  omaddons doctor fix --if-match <token>  exactly that repair
+
+Global: -t <TARGET>  --json  --dry-run  -v  --quiet  --no-color  --offline  (--help lists them all)
 ==> omaddons doctor fix --help <==
 Repair the findings a fixer can repair, as one undoable transaction
 
@@ -134,65 +59,33 @@ Options:
       --yes
           Consent to a forced repair
 
-Global options:
-      --json
-          One JSON envelope on stdout
-
-      --robot
-          The same as --json
-
-      --format <FORMAT>
-          Output format
-          
-          [possible values: json, human]
-
-  -t, --target <TARGET>
-          The client to act on: id, key, game mode (sod and hardcore select the Classic Era client),
-          family, product, flavor folder, path, or all (every client)
-          
-          [alias: --flavor]
-
-      --dry-run
-          Show the plan without changing anything (ignored by commands that change nothing)
-
-      --actor <ACTOR>
-          Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
-
-      --reason <TEXT>
-          Why, recorded verbatim in history (at most 200 characters; ignored by commands that change
-          nothing)
-
-      --offline
-          Fail any network access [env: OMADDONS_OFFLINE=1]
-
-      --while-running
-          Allow folder changes while the client runs (never SavedVariables)
-
-      --if-match <TOKEN>
-          Change nothing unless the plan is still the one the --dry-run that returned this token
-          (data.precondition) showed
-
-      --no-color
-          No ANSI color
-
-      --no-progress
-          No progress output
-
-      --progress <MODE>
-          Progress events on stderr
-          
-          [possible values: json, human, none]
-
-      --quiet
-          Only errors on stderr
-
-  -v, --verbose...
-          More detail (repeatable)
-
-  -h, --help
-          Show help
-
 Examples:
   omaddons doctor fix --dry-run                 what it would repair, and the token that binds it
   omaddons doctor fix --if-match <token>        exactly that preview, or nothing
   omaddons doctor fix --only <id> --force --yes a forced repair, by its failure mode
+
+See also: doctor explain, doctor undo, doctor diff
+
+Global options:
+      --json              One JSON envelope on stdout
+      --format <FORMAT>   Output format [possible values: json, human]
+  -t, --target <TARGET>   The client to act on: id, key, game mode (sod and hardcore select the
+                          Classic Era client), family, product, flavor folder, path, or all (every
+                          client) [alias: --flavor]
+      --dry-run           Show the plan without changing anything (ignored by commands that change
+                          nothing)
+      --actor <ACTOR>     Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
+      --reason <TEXT>     Why, recorded verbatim in history (at most 200 characters; ignored by
+                          commands that change nothing)
+      --offline           Fail any network access [env: OMADDONS_OFFLINE=1]
+      --while-running     Allow folder changes while the client runs (never SavedVariables)
+      --if-match <TOKEN>  Change nothing unless the plan is still the one the --dry-run that
+                          returned this token (data.precondition) showed
+      --no-color          No ANSI color
+      --no-progress       No progress output
+      --progress <MODE>   Progress events on stderr [possible values: json, human, none]
+      --quiet             Only errors on stderr
+  -v, --verbose...        More detail (repeatable)
+  -h, --help              Show help
+
+Learn more: omaddons robot-docs guide
