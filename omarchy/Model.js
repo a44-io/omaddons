@@ -1759,6 +1759,15 @@ var UPDATE_KINDS = { "update_available": "update", "pinned": "pinned", "blocked"
 var UPDATE_ORDER = ["update", "pinned", "blocked", "failed"]
 var UPDATE_LABELS = { "update": "", "pinned": "pinned", "blocked": "blocked", "failed": "check failed" }
 
+// `list` sorted by `compare`, items it calls equal kept in their input order. Qt's V4
+// engine does not sort stably (bun's does), so a comparator that ties would shuffle the
+// CLI's own order: every sort of rows goes through here.
+function stableSort(list, compare) {
+  var decorated = list.map(function(item, index) { return { "item": item, "index": index } })
+  decorated.sort(function(a, b) { return compare(a.item, b.item) || a.index - b.index })
+  return decorated.map(function(d) { return d.item })
+}
+
 function listTargets(lists, filter) {
   var targets = lists && Array.isArray(lists.targets) ? lists.targets : []
   return targets.filter(function(t) { return !filter || t.id === filter })
@@ -1782,7 +1791,8 @@ function updateRows(lists, filter, statusTargets) {
         "latestReleaseId": a.latestReleaseId, "latestAsset": a.latestAsset
       })
     }
-    rows.sort(function(x, y) { return UPDATE_ORDER.indexOf(x.kind) - UPDATE_ORDER.indexOf(y.kind) })
+    // Within a kind, the order `list -v` gave.
+    rows = stableSort(rows, function(x, y) { return UPDATE_ORDER.indexOf(x.kind) - UPDATE_ORDER.indexOf(y.kind) })
     if (!filter && rows.length > 0) rows[0].group = t.id
     out = out.concat(rows)
   }
@@ -1931,7 +1941,8 @@ function issueSections(statusTargets, errors, warnings, filter, machineIssues) {
       })
     }
   }
-  problems.sort(function(a, b) { return SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity) })
+  // Within a severity, the order `status` ranked them in (the machine's first).
+  problems = stableSort(problems, function(a, b) { return SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity) })
   if (problems.length) sections.push({ "title": "Problems", "lines": [], "rows": problems })
 
   var errTargets = errors && Array.isArray(errors.targets) ? errors.targets : []
@@ -2127,7 +2138,7 @@ function backupSections(backups, filter, nowMs, statusTargets) {
     targets.push({ "id": st.id, "total": 0, "shown": 0, "bytes": null, "freeBytes": st.backups.freeBytes,
       "auto": st.backups.auto, "backups": [] })
   }
-  targets.sort(function(a, b) { return a.id < b.id ? -1 : a.id > b.id ? 1 : 0 })
+  targets = stableSort(targets, function(a, b) { return a.id < b.id ? -1 : a.id > b.id ? 1 : 0 })
   var sections = []
   var index = 0
   for (var i = 0; i < targets.length; i++) {
@@ -2774,6 +2785,7 @@ if (typeof module !== "undefined") {
     progressFraction: progressFraction,
     resultUndo: resultUndo,
     sourceKind: sourceKind,
+    stableSort: stableSort,
     updateRows: updateRows,
     updateCount: updateCount,
     updatesEmptyText: updatesEmptyText,

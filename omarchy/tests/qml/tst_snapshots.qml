@@ -503,10 +503,20 @@ TestCase {
     shoot("updates-filter-running")
   }
 
+  // The names of a view's rows of one client and kind, in the order shown.
+  function namesOf(rows, target, kind) {
+    return rows.filter(function(r) { return r.target === target && (!kind || r.kind === kind) })
+      .map(function(r) { return r.name })
+  }
+
   function test_updates_long() {
     var scene = everyday()
-    scene.list = bigList(150, "Details_DamageMeter_StreamerModeAndPluginsCollection_Classic")
+    scene.list = bigList(150, "")
     open(scene, "updates")
+    // Under Qt's own sort (omad-1tnk): each client's updates in the order list -v gave.
+    var era = namesOf(frame.current.rows, "era", "update")
+    verify(era.length > 20, "era's updates: " + era.length)
+    compare(era, era.slice().sort(), "era's updates in name order")
     shoot("updates-long")
   }
 
@@ -625,6 +635,12 @@ TestCase {
       env.data.summary.issues.p2 = many.length
     })
     open(scene, "issues")
+    // Under Qt's own sort (omad-1tnk): the problems in the order status ranked them.
+    var titles = Model.issueRows(Model.issueSections(service.targets, null, [], "", service.machineIssues))
+      .filter(function(r) { return r.kind === "problem" }).map(function(r) { return r.title })
+    compare(titles.length, 24)
+    for (var i = 0; i < titles.length; i++)
+      verify(titles[i].indexOf("Addon" + ("00" + (i + 1)).slice(-3) + "'s") === 0, "problem " + i + ": " + titles[i])
     shoot("issues-long")
   }
 

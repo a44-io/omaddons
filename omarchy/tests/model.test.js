@@ -20,6 +20,29 @@ function fixtureText(name) {
   return fs.readFileSync(path.join(FIXTURES, name), "utf8")
 }
 
+// `fn` run with an unstable Array.prototype.sort, as Qt's V4 engine has (bun's is
+// stable): an insertion sort that puts each item before the ones it ties with, so every
+// tie comes out reversed.
+function withTiesReversed(fn) {
+  const original = Array.prototype.sort
+  Array.prototype.sort = function (compare) {
+    const cmp = compare || ((a, b) => (String(a) < String(b) ? -1 : String(a) > String(b) ? 1 : 0))
+    const out = []
+    for (let i = 0; i < this.length; i++) {
+      let at = out.length
+      while (at > 0 && cmp(out[at - 1], this[i]) >= 0) at--
+      out.splice(at, 0, this[i])
+    }
+    for (let i = 0; i < out.length; i++) this[i] = out[i]
+    return this
+  }
+  try {
+    return fn()
+  } finally {
+    Array.prototype.sort = original
+  }
+}
+
 const BINARY = "/opt/omaddons-fixture/omaddons"
 const CONTEXT = {
   HOME: "/home/fixture",
@@ -752,6 +775,32 @@ describe("the Updates and Installed views", () => {
     expect(M.updateRows(null, "", [])).toEqual([])
   })
 
+  test("stableSort keeps ties in their input order, whatever the engine's sort", () => {
+    const items = [["b", 1], ["a", 1], ["c", 0], ["d", 1], ["e", 0]]
+    const byRank = (x, y) => x[1] - y[1]
+    // The adversary is real: a plain sort under it reverses ties.
+    expect(withTiesReversed(() => items.slice().sort(byRank)).map((i) => i[0])).toEqual(["e", "c", "d", "a", "b"])
+    expect(withTiesReversed(() => M.stableSort(items, byRank)).map((i) => i[0])).toEqual(["c", "e", "b", "a", "d"])
+    expect(items.map((i) => i[0])).toEqual(["b", "a", "c", "d", "e"])
+    expect(M.stableSort([], byRank)).toEqual([])
+  })
+
+  test("updates keep list -v's order within a kind, whatever the engine's sort", () => {
+    const env = JSON.parse(JSON.stringify(fixture("list")))
+    const template = env.data.targets[1].addons[0]
+    const names = []
+    env.data.targets[1].addons = []
+    for (let i = 0; i < 40; i++) {
+      const name = "Addon" + String(i + 1).padStart(3, "0")
+      names.push(name)
+      env.data.targets[1].addons.push(Object.assign(JSON.parse(JSON.stringify(template)), {
+        name, version: "v1", latest: { version: "v2", status: i % 5 === 3 ? "blocked" : "update_available" } }))
+    }
+    const rows = withTiesReversed(() => M.updateRows(M.reduceList(env), "retail", STATUS()))
+    const blocked = names.filter((n, i) => i % 5 === 3)
+    expect(rows.map((r) => r.name)).toEqual(names.filter((n) => blocked.indexOf(n) === -1).concat(blocked))
+  })
+
   test("pinned with a newer release, blocked and failed follow, labelled", () => {
     const env = JSON.parse(JSON.stringify(fixture("list-markers")))
     const addons = env.data.targets[0].addons
@@ -857,6 +906,19 @@ describe("the Issues and Search views", () => {
     expect(sections[2].lines).toEqual(["1 error received from another player (not counted)"])
     const retailOnly = M.issueSections(status.targets, ERRORS(), [], "era")
     expect(retailOnly.map((s) => s.title)).toEqual(["Lua errors (era)"])
+  })
+
+  test("problems keep status's order within a severity, whatever the engine's sort", () => {
+    const env = JSON.parse(JSON.stringify(fixture("status-attention")))
+    const issue = env.data.targets[0].issues[0]
+    const severities = ["P2", "P1", "P2", "P1", "P2", "P1"]
+    env.data.targets[0].issues = severities.map((severity, i) =>
+      Object.assign(JSON.parse(JSON.stringify(issue)), { severity, title: "issue " + i }))
+    env.data.issues = [{ id: "fm-a", severity: "P1", title: "machine", remediation: { command: "omaddons status", argv: ["omaddons", "status"], destructive: false } }]
+    const status = M.reduceStatus(env, NOW)
+    const rows = withTiesReversed(() => M.issueRows(M.issueSections(status.targets, null, [], "", status.issues)))
+    expect(rows.filter((r) => r.kind === "problem").map((r) => r.title))
+      .toEqual(["machine", "issue 1", "issue 3", "issue 5", "issue 0", "issue 2", "issue 4"])
   })
 
   test("a problem of no client is listed first among the problems, unless narrowed", () => {
