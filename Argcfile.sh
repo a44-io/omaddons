@@ -24,9 +24,10 @@ widget-test() {
 # @cmd Render every widget state offscreen into PNGs (the bar button and the panel), with Omarchy's own shell kit and theme when installed
 # @option --out=target/widget-snapshots  Where the PNGs go (replaced on every run)
 # @flag --stub-kit  Draw with the test stubs instead of Omarchy's shell kit
+# @option --theme  Draw with another installed Omarchy theme (its folder name, e.g. rose-pine) instead of the current one
 # @meta require-tools bun
 widget-snapshots() {
-    scripts/widget-test.sh --snapshots "$argc_out" ${argc_stub_kit:+--stub-kit}
+    scripts/widget-test.sh --snapshots "$argc_out" ${argc_stub_kit:+--stub-kit} ${argc_theme:+--theme "$argc_theme"}
 }
 
 # @cmd Benchmark the checkpoint's timing targets with hyperfine on a synthetic home (never part of the gate)
