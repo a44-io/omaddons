@@ -3474,6 +3474,8 @@ argc widget-test   # the widget pipeline alone, QML step included
 
 `argc gate` runs `scripts/gate.sh`, which can be run directly. It needs `cargo`, `git`, [`ubs`](https://github.com/Dicklesworthstone/ultimate_bug_scanner), `cargo-deny` and [`bun`](https://bun.sh), and Qt 6's `qmltestrunner` (from `qt6-declarative`) when the QML step runs. Commits that touch only `.beads/`, README.md or CLAUDE.md may skip it.
 
+`ubs` scans the changed files that still exist when its step runs, never insta's working files (`*.snap.new`). When none of them is in a language UBS scans (a change of snapshots, JSON fixtures or Markdown only), UBS exits 3, "nothing scanned": the gate prints `ubs: no file in a language UBS scans (exit 3: nothing scanned, nothing to fix)` and goes on to "gate passed". Any other non-zero exit (1, a critical finding; 2, a scan that did not finish) fails the gate. `UBS_ALLOW_NO_SCAN` is never set.
+
 The widget pipeline (`scripts/widget-test.sh`) runs four ordered steps over a fresh temporary directory: the real binary writes the envelopes the widget reads, `bun` tests `omarchy/Model.js` over them, the binary's own argument parser checks every command line bun built, and, when anything under `omarchy/` changed, `qmltestrunner` runs the QML tests over a copy of the plugin. The first three run on every gate, because a renamed flag or a changed envelope key breaks the widget as surely as a QML edit. Nothing generated is committed.
 
 Other tasks: `argc fmt`, `argc lint`, `argc test [filter]`, `argc e2e [filter]` (the end-to-end suites with their logs turned up, below), `argc fuzz <target>`, `argc fuzz-all` and `argc bench` (the last three are checkpoint tasks, below).
