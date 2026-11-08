@@ -696,7 +696,7 @@ pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> ProcessE
         // The command as typed, as `help <path>` reads it: `backup --help` is backup's
         // help, though its envelope name is the default action's (`backup list`).
         let result = match &cli.command {
-            None => Ok(help::bare()),
+            None => help::for_flag(None, &ctx.argv),
             Some(_) => {
                 let path = crate::cli::command_path(&ctx.argv).join(" ");
                 help::for_flag(Some(&path), &ctx.argv)

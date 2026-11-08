@@ -27,6 +27,8 @@ Exit codes:
   4  refused       Safety refusal; fix names the flag or command
   5  locked        Lock held past the acquire timeout; retryable
   6  check_failed  An opt-in assertion (--check, --strict) failed
+
+omaddons --help lists every command with what it does
 ==> omaddons -h <==
 World of Warcraft addon manager for Linux and an Omarchy widget
 
@@ -52,17 +54,90 @@ Exit codes:
   4  refused       Safety refusal; fix names the flag or command
   5  locked        Lock held past the acquire timeout; retryable
   6  check_failed  An opt-in assertion (--check, --strict) failed
+
+omaddons --help lists every command with what it does
 ==> omaddons --help <==
-World of Warcraft addon manager for Linux and an Omarchy widget
+omaddons 0.1.0 · World of Warcraft addon manager for Linux
 
 Usage: omaddons [OPTIONS] <COMMAND>
 
-Look      status  list  outdated  info  search  errors  export  history  plans
-          net-log  doctor
-Change    install  update  pin  unpin  adopt  sync  copy  remove  undo  apply
-          backup
-Setup     targets  config  auth  omarchy  completions  robot-docs  capabilities
-          help
+Look (changes no addon):
+  status                         Triage every client: addons, updates, issues, backups
+  list, ls                       List the addons in each target's AddOns folder
+  outdated, check                Show which managed addons have updates
+  info, show                     Show what an addon is and where it is installed
+  search, find                   Find addons in the catalog, WoWInterface, Tukui and GitHub
+  errors                         Show which addons throw Lua errors, from BugGrabber
+  export                         Print every client's addon set as one addons.toml
+  history, log                   Show what changed, when, by whom and why
+  plans                          Inspect a stored plan and whether it was applied
+  net-log                        List the network requests and git runs omaddons made
+  doctor                         Find what is broken in what omaddons manages
+
+Change (preview any with --dry-run):
+  install, add                   Install or update addons on one client
+  update, upgrade                Update managed addons on every client
+  pin                            Hold an addon at its release through updates
+  unpin                          Let a pinned addon update again
+  adopt                          Bring addons installed by hand under management
+  sync                           Make every client match addons.toml
+  copy                           Install one client's addons on another
+  remove, uninstall, rm, delete  Remove managed addons from one client
+  undo, revert, rollback         Revert the last change, or one by its id
+  apply                          Run exactly the plan a --dry-run stored
+  backup                         Back up, list and restore each client's WTF/ settings
+
+Setup:
+  targets                        List the WoW clients, or add, remove, rename and choose them
+  config                         Show or change config.toml
+  auth                           Store, check or clear the opt-in GitHub token
+  omarchy                        Put the omaddons widget on Omarchy's bar
+  completions                    Print a shell completion script
+  robot-docs                     Print documentation for agents
+  capabilities                   Describe everything this build can do, for agents
+  help                           Show help for omaddons or one command
+
+Global options:
+      --json              One JSON envelope on stdout
+      --robot             The same as --json
+      --format <FORMAT>   Output format [possible values: json, human]
+  -t, --target <TARGET>   The client to act on: id, game mode, family, path, or all [alias:
+                          --flavor]
+      --dry-run           Show the plan without changing anything
+      --actor <ACTOR>     Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
+      --reason <TEXT>     Why, recorded verbatim in history
+      --offline           Fail any network access [env: OMADDONS_OFFLINE=1]
+      --while-running     Allow folder changes while the client runs (never SavedVariables)
+      --if-match <TOKEN>  Run only what the preview that returned this token showed
+      --no-color          No ANSI color
+      --no-progress       No progress output
+      --progress <MODE>   Progress events on stderr [possible values: json, human, none]
+      --quiet             Only errors on stderr
+  -v, --verbose...        More detail (repeatable)
+  -h, --help              Show help
+  -V, --version           Show the version
+
+Environment:
+  OMADDONS_ACTOR         Default --actor: human, agent or widget
+  OMADDONS_OFFLINE       1 (exactly) means --offline
+  OMADDONS_FORMAT        json means --json
+  OMADDONS_GITHUB_TOKEN  Bearer token sent to api.github.com only
+  NO_COLOR               Set and non-empty: no color
+  CI                     Set and non-empty: no color, and NDJSON on stderr
+  TERM                   dumb: no color, and NDJSON on stderr
+  HOME                   Required and absolute: every path omaddons derives starts here
+  XDG_CONFIG_HOME        Moves omaddons' config when absolute; also the Lutris and Heroic config
+                         lookups
+  XDG_STATE_HOME         Moves omaddons' state when absolute
+  XDG_CACHE_HOME         Moves omaddons' cache when absolute
+  XDG_DATA_HOME          Moves the Lutris, Steam and Bottles data lookups; omaddons keeps no files
+                         there
+  OMARCHY_PATH           Where omarchy install also looks for Omarchy's shell ($OMARCHY_PATH/shell)
+  PATH                   Where gh, git and omarchy-shell are found; git keeps only PATH from the
+                         caller's environment
+  Debug builds also read OMADDONS_FAILPOINTS, OMADDONS_FAILPOINT_DIR, OMADDONS_HTTP_FIXTURES,
+  OMADDONS_RECORD, OMADDONS_PROC_ROOT, OMADDONS_NOW, OMADDONS_FS_CLONE, OMADDONS_FS_FREE_MB,
+  OMADDONS_WIDGET_ID, OMADDONS_TEST_FIXERS
 
 Start with `omaddons status`. Run `omaddons help <command>` for details; add
 --json for one JSON envelope on stdout.
@@ -77,3 +152,5 @@ Exit codes:
   4  refused       Safety refusal; fix names the flag or command
   5  locked        Lock held past the acquire timeout; retryable
   6  check_failed  An opt-in assertion (--check, --strict) failed
+
+Learn more: omaddons robot-docs guide · README.md

@@ -376,6 +376,19 @@ fn bare_text(
     text.push_str(&format!("{} {usage}\n\n", paint.usage("Usage:")));
     text.push_str(&render_groups(commands, paint));
     text.push('\n');
+    text.push_str(&guidance(commands, discovery));
+    text.push_str(&format!("\n{}\n", paint.header("Exit codes:")));
+    text.push_str(&exit_table());
+    text.push_str(&format!("\n{}\n", paint.literal(FULL_POINTER)));
+    text
+}
+
+/// What bare help ends with: the one line that points at the full page.
+const FULL_POINTER: &str = "omaddons --help lists every command with what it does";
+
+/// Where to start and the commands for agents: the "Start with" sentence and the
+/// discovery line, wrapped under 80 columns, every line ending in a newline.
+fn guidance(commands: &[(&str, Group)], discovery: &[Discovery]) -> String {
     let mut sentence = String::new();
     if commands.iter().any(|(name, _)| *name == "status") {
         sentence.push_str("Start with `omaddons status`. ");
@@ -383,7 +396,7 @@ fn bare_text(
     sentence.push_str(
         "Run `omaddons help <command>` for details; add --json for one JSON envelope on stdout.",
     );
-    text.push_str(&wrap("", &prose_words(&sentence), " ", 0));
+    let mut text = wrap("", &prose_words(&sentence), " ", 0);
     let shown: Vec<String> = discovery
         .iter()
         .map(|entry| shell_words::join(entry.argv))
@@ -394,8 +407,101 @@ fn bare_text(
         DISCOVERY_SEPARATOR,
         AGENTS.chars().count(),
     ));
+    text
+}
+
+/// A group's heading on the full page: what its commands have in common.
+fn group_heading(group: Group) -> String {
+    match group {
+        Group::Look => format!("{} (changes no addon):", group.label()),
+        Group::Change => format!("{} (preview any with --dry-run):", group.label()),
+        Group::Setup => format!("{}:", group.label()),
+    }
+}
+
+/// The full top-level page (`omaddons --help`, `omaddons help`), at most `width`
+/// columns: every top-level command under its group with its aliases and summary, every
+/// global option, the environment omaddons reads, where to start, the exit codes and
+/// where to learn more.
+fn full_text(commands: &[CommandInfo], root: &clap::Command, width: usize, paint: Paint) -> String {
+    let mut text = format!(
+        "omaddons {} · World of Warcraft addon manager for Linux\n\n{} omaddons [OPTIONS] <COMMAND>\n",
+        env!("CARGO_PKG_VERSION"),
+        paint.usage("Usage:")
+    );
+    let named = |command: &CommandInfo| {
+        std::iter::once(command.name.as_str())
+            .chain(command.aliases.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let column = commands
+        .iter()
+        .map(|command| named(command).chars().count())
+        .max()
+        .unwrap_or(0);
+    for group in Group::ALL {
+        let rows: Vec<&CommandInfo> = commands.iter().filter(|c| c.group == group).collect();
+        if rows.is_empty() {
+            continue;
+        }
+        text.push_str(&format!("\n{}\n", paint.header(&group_heading(group))));
+        for command in rows {
+            let names = named(command);
+            let line = fit(&format!("  {names:<column$}  {}", command.about), width);
+            // The name is styled after fitting, so styling never moves a break.
+            let rest = line.get(2 + command.name.len()..).unwrap_or_default();
+            text.push_str(&format!("  {}{rest}\n", paint.literal(&command.name)));
+        }
+    }
+    let options: Vec<clap::Arg> = root
+        .get_arguments()
+        .filter(|arg| !arg.is_hide_set())
+        .cloned()
+        .collect();
+    text.push_str(&format!("\n{}\n", paint.header("Global options:")));
+    text.push_str(&global_options(options, paint));
+    text.push_str(&format!("\n{}\n", paint.header("Environment:")));
+    text.push_str(&environment(width));
+    text.push('\n');
+    let listed: Vec<(&str, Group)> = commands
+        .iter()
+        .map(|c| (c.name.as_str(), c.group))
+        .collect();
+    text.push_str(&guidance(&listed, DISCOVERY));
     text.push_str(&format!("\n{}\n", paint.header("Exit codes:")));
     text.push_str(&exit_table());
+    text.push_str(&format!(
+        "\n{} {LEARN_MORE} · README.md\n",
+        paint.header("Learn more:")
+    ));
+    text
+}
+
+/// The variables omaddons reads, one line each with what it does (the release ones),
+/// then the ones only debug builds read; the test harness's own variables are never read
+/// by the binary, so they are not listed.
+fn environment(width: usize) -> String {
+    use crate::contract::env::{ENV_VARS, EnvKind};
+    let rows: Vec<Vec<String>> = ENV_VARS
+        .iter()
+        .filter(|var| var.kind == EnvKind::Release)
+        .map(|var| vec![format!("  {}", var.name), var.description.to_owned()])
+        .collect();
+    let mut text = fit(table(&rows).trim_end(), width);
+    let debug: Vec<&str> = ENV_VARS
+        .iter()
+        .filter(|var| var.kind == EnvKind::Debug)
+        .map(|var| var.name)
+        .collect();
+    if !debug.is_empty() {
+        text.push('\n');
+        text.push_str(&fit(
+            &format!("  Debug builds also read {}", debug.join(", ")),
+            width,
+        ));
+    }
+    text.push('\n');
     text
 }
 
@@ -417,6 +523,17 @@ pub(crate) fn exit_table() -> String {
 
 /// Bare `omaddons`: what it is, the verbs by group, and the exit codes.
 pub fn bare() -> HelpOutcome {
+    top_level(Depth::Short)
+}
+
+/// `omaddons --help` and `omaddons help`: the full top-level page. Its data is bare
+/// help's, so `help --json` is the same either way.
+pub fn full() -> HelpOutcome {
+    top_level(Depth::Long)
+}
+
+/// The top-level page at `depth`: concise (bare help) or full.
+fn top_level(depth: Depth) -> HelpOutcome {
     let cmd = Cli::command();
     // A subcommand missing from the registry is a bug the completeness test catches;
     // it is still listed, last.
@@ -448,8 +565,19 @@ pub fn bare() -> HelpOutcome {
         .iter()
         .map(|c| (c.name.as_str(), c.group))
         .collect();
-    let text = bare_text(&usage, &listed, DISCOVERY, Paint { ansi: false });
-    let styled = bare_text(&usage, &listed, DISCOVERY, Paint { ansi: true });
+    let (text, styled) = match depth {
+        Depth::Short => (
+            bare_text(&usage, &listed, DISCOVERY, Paint { ansi: false }),
+            bare_text(&usage, &listed, DISCOVERY, Paint { ansi: true }),
+        ),
+        Depth::Long => {
+            let width = help_width();
+            (
+                full_text(&commands, &cmd, width, Paint { ansi: false }),
+                full_text(&commands, &cmd, width, Paint { ansi: true }),
+            )
+        }
+    };
 
     HelpOutcome {
         command: "help",
@@ -503,9 +631,12 @@ pub fn for_flag(name: Option<&str>, argv: &[String]) -> Result<HelpOutcome, Erro
     at_depth(name, argv, Depth::of(argv))
 }
 
-/// A command's help at `depth`; bare help for no name, at either depth.
+/// A command's help at `depth`; for no name, the top-level page: bare help short, the
+/// full page long.
 fn at_depth(name: Option<&str>, argv: &[String], depth: Depth) -> Result<HelpOutcome, Error> {
-    let Some(name) = name else { return Ok(bare()) };
+    let Some(name) = name else {
+        return Ok(top_level(depth));
+    };
     let mut root = Cli::command();
     root.build();
     // A nested path such as `targets add` or `auth github` walks one level per word. A
@@ -731,25 +862,26 @@ fn page(sub: &clap::Command, path: &str, depth: Depth, width: usize, paint: Pain
             }));
         }
         Depth::Long => {
+            // `--robot` never (`--json` by another name), `--if-match` only where the
+            // command binds.
+            let listed: Vec<clap::Arg> = globals
+                .into_iter()
+                .filter(|arg| {
+                    let id = arg.get_id().as_str();
+                    id != "robot" && (binds || id != "if_match")
+                })
+                .collect();
             text.push_str(&format!("{}\n", paint.header("Global options:")));
-            text.push_str(&global_options(globals, binds, paint));
+            text.push_str(&global_options(listed, paint));
             text.push_str(&format!("\n{} {LEARN_MORE}\n", paint.header("Learn more:")));
         }
     }
     text
 }
 
-/// The global options a page lists, one line each with their short help, in clap's own
-/// two columns at clap's width: `--robot` never, `--if-match` only on a command that
-/// binds.
-fn global_options(globals: Vec<clap::Arg>, binds: bool, paint: Paint) -> String {
-    let listed: Vec<clap::Arg> = globals
-        .into_iter()
-        .filter(|arg| {
-            let id = arg.get_id().as_str();
-            id != "robot" && (binds || id != "if_match")
-        })
-        .collect();
+/// `listed` options one line each with their short help, in clap's own two columns at
+/// clap's width.
+fn global_options(listed: Vec<clap::Arg>, paint: Paint) -> String {
     // A clap command only to render the block (`default()`, not the `new` constructor the
     // single-writer scan reads as a process spawn).
     let rendered = clap::Command::default()
@@ -1541,6 +1673,102 @@ mod tests {
             "{} summaries break the rules:\n{}",
             faults.len(),
             faults.join("\n")
+        );
+    }
+
+    /// The full top-level page names every top-level command once, with its aliases and
+    /// summary, every global option, every variable the binary reads and every exit code,
+    /// within 100 columns; bare help stays concise and points at it; both carry the same
+    /// JSON.
+    #[test]
+    fn the_full_page_names_every_command_option_and_variable() {
+        use crate::contract::env::{ENV_VARS, EnvKind};
+        let full = full();
+        let concise = bare();
+        assert_eq!(
+            for_command(None, &[]).unwrap().text,
+            full.text,
+            "omaddons help is the full page"
+        );
+        assert_eq!(
+            for_flag(None, &words("omaddons --help")).unwrap().text,
+            full.text
+        );
+        assert_eq!(
+            for_flag(None, &words("omaddons -h")).unwrap().text,
+            concise.text
+        );
+        assert!(
+            concise.text.ends_with(&format!("\n{FULL_POINTER}\n")),
+            "{}",
+            concise.text
+        );
+        assert!(concise.text.lines().count() < 30, "{}", concise.text);
+        assert_eq!(
+            serde_json::to_string(&full.data).unwrap(),
+            serde_json::to_string(&concise.data).unwrap(),
+            "help --json is the same either way"
+        );
+        let root = Cli::command();
+        for sub in root.get_subcommands().filter(|sub| !sub.is_hide_set()) {
+            let about = sub.get_about().map(ToString::to_string).unwrap_or_default();
+            let listed: Vec<&str> = full
+                .text
+                .lines()
+                .filter(|line| {
+                    line.starts_with(&format!("  {}", sub.get_name())) && line.contains(&about)
+                })
+                .collect();
+            assert_eq!(
+                listed.len(),
+                1,
+                "{} once, with its about: {listed:?}",
+                sub.get_name()
+            );
+            for alias in sub.get_visible_aliases() {
+                assert!(
+                    listed[0].contains(alias),
+                    "{}'s alias {alias}",
+                    sub.get_name()
+                );
+            }
+        }
+        for row in super::super::COMMANDS
+            .iter()
+            .filter(|row| !row.name.contains(' '))
+        {
+            assert!(
+                full.text.contains(&format!("\n  {}", row.name)),
+                "{}",
+                row.name
+            );
+        }
+        for arg in root.get_arguments().filter(|arg| !arg.is_hide_set()) {
+            let long = arg.get_long().unwrap_or_default();
+            assert!(
+                [" ", "\n", "..."]
+                    .iter()
+                    .any(|after| full.text.contains(&format!("--{long}{after}"))),
+                "--{long} listed"
+            );
+        }
+        for var in ENV_VARS {
+            let listed = full.text.contains(var.name);
+            assert_eq!(
+                listed,
+                var.kind != EnvKind::Harness,
+                "{} ({:?}) listed: {listed}",
+                var.name,
+                var.kind
+            );
+        }
+        for exit in Exit::ALL {
+            assert!(full.text.contains(exit.name()), "{}", exit.name());
+        }
+        assert!(
+            full.text
+                .lines()
+                .all(|line| line.chars().count() <= HELP_MAX_COLUMNS)
         );
     }
 

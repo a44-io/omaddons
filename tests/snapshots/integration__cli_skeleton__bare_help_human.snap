@@ -26,3 +26,5 @@ Exit codes:
   4  refused       Safety refusal; fix names the flag or command
   5  locked        Lock held past the acquire timeout; retryable
   6  check_failed  An opt-in assertion (--check, --strict) failed
+
+omaddons --help lists every command with what it does
