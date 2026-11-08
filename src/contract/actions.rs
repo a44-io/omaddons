@@ -52,6 +52,9 @@ actions! {
     Install = "install", false, "Install an addon";
     /// Offered for a bridge dependency nothing resolves.
     Search = "search", false, "Search the sources for an addon";
+    /// Offered by search for a result no selected client has a verdict for: info judges
+    /// each client from the newest release, where search guesses nothing.
+    Info = "info", false, "Show which clients an addon's newest release likely loads on";
     /// Offered for a managed addon with drift.
     Reinstall = "reinstall", false, "Reinstall an addon whose files were changed";
     /// Offered by status for a degraded addon.
@@ -110,7 +113,7 @@ mod tests {
     fn every_action_has_a_unique_snake_case_wire_name() {
         assert_eq!(
             Action::ALL.len(),
-            26,
+            27,
             "registered actions: {:?}",
             Action::ALL
         );
@@ -208,6 +211,7 @@ mod tests {
             (Action::AdoptWithRef, false),
             (Action::Install, false),
             (Action::Search, false),
+            (Action::Info, false),
             (Action::Reinstall, false),
             (Action::Inspect, false),
             (Action::Status, false),

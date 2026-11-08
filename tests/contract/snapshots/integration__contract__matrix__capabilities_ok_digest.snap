@@ -265,7 +265,7 @@ expression: digest
   },
   "config_error": null,
   "counts": {
-    "actions": 26,
+    "actions": 27,
     "client_rules": 18,
     "commands": 58,
     "env_vars": 14,

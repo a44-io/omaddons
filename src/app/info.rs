@@ -179,7 +179,12 @@ impl LoadHint {
 /// what plans proved (`facts`); else what its best candidate's metadata says (it
 /// describes this very release); else the catalog's `families`, when it lists any (a
 /// `git:` or `url:` release carries no metadata); else likely.
-fn judge(set: &ReleaseSet, target: &Target, facts: &FactIndex, families: &[Family]) -> LoadHint {
+pub(crate) fn judge(
+    set: &ReleaseSet,
+    target: &Target,
+    facts: &FactIndex,
+    families: &[Family],
+) -> LoadHint {
     let candidates = select(set, target, Channel::Stable, None).candidates;
     let Some(best) = candidates.first() else {
         return LoadHint::Unlikely;

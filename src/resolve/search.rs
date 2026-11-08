@@ -69,9 +69,11 @@ pub enum Compat {
 }
 
 impl Compat {
-    /// Whether `search` may suggest installing it (never `no`, `unlikely` or `abandoned`).
+    /// Whether `search` may suggest installing it on a client: only on evidence (`yes`,
+    /// `likely`). An `unknown` everywhere gets `info` instead, which judges each client;
+    /// no client is guessed from no evidence (bmcx.6).
     pub fn suggestible(self) -> bool {
-        matches!(self, Self::Yes | Self::Likely | Self::Unknown)
+        matches!(self, Self::Yes | Self::Likely)
     }
 }
 
@@ -516,7 +518,8 @@ mod tests {
             Compat::Abandoned
         );
         assert_eq!(compat(&CompatBasis::Github, v, now), Compat::Unknown);
-        assert!(Compat::Unknown.suggestible() && !Compat::Abandoned.suggestible());
+        assert!(!Compat::Unknown.suggestible() && !Compat::Abandoned.suggestible());
+        assert!(Compat::Yes.suggestible() && Compat::Likely.suggestible());
         assert!(!Compat::No.suggestible() && !Compat::Unlikely.suggestible());
     }
 

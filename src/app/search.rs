@@ -181,6 +181,9 @@ impl Outcome for SearchOutcome {
             )?;
         }
         match self.commands.first() {
+            Some(hint) if hint.action() == Action::Info => {
+                writeln!(w, "Details: {}        (judges each client)", hint.command())?
+            }
             Some(hint) => writeln!(
                 w,
                 "Install: {}        (a hint: install verifies each addon's TOC)",
@@ -494,13 +497,19 @@ pub fn run(ctx: &Context, args: &SearchArgs) -> Result<SearchOutcome> {
         .take(limit)
         .map(|r| {
             let hit = r.hit;
+            // A GitHub or WoWInterface hit nothing judges: the release memo's newest
+            // stable release, as `info` would judge it, at no request.
+            let remembered = matches!(hit.source, HitSource::Github | HitSource::Wowi);
             let compat = targets
                 .iter()
                 .map(|d| {
-                    (
-                        d.target.id.clone(),
-                        compat(&hit.basis, d.target.family, now),
-                    )
+                    let judged = compat(&hit.basis, d.target.family, now);
+                    let judged = if judged == Compat::Unknown && remembered {
+                        memo_compat(&cache, &hit.r#ref, &d.target).unwrap_or(judged)
+                    } else {
+                        judged
+                    };
+                    (d.target.id.clone(), judged)
                 })
                 .collect();
             SearchResult {
@@ -532,6 +541,41 @@ pub fn run(ctx: &Context, args: &SearchArgs) -> Result<SearchOutcome> {
         partial,
         notes,
     })
+}
+
+/// What the release memo remembers of `r` for `target`, without a request: its newest
+/// stable release judged as `info` judges it ([`remembered`]). `None` when the memo holds
+/// no release set for it.
+fn memo_compat(
+    cache: &crate::resolve::cache::ReleaseCache<'_>,
+    r: &Ref,
+    target: &crate::model::Target,
+) -> Option<Compat> {
+    let set = cache
+        .entry(r, crate::model::Channel::Stable)?
+        .result()
+        .ok()?;
+    Some(remembered(super::info::judge(
+        &set,
+        target,
+        cache.facts(),
+        &[],
+    )))
+}
+
+/// `info`'s verdict on a remembered release as a search hint, from evidence only: the
+/// release's metadata or a plan's verification for the client is `likely` (never `yes`:
+/// the entry may be days old, and `install` verifies every TOC), its metadata naming
+/// other clients only, or a plan's verifying none loads, is `unlikely`. `info`'s `likely`
+/// says only that nothing says otherwise (an asset with no flavor metadata, as every
+/// WoWInterface and plain GitHub asset is, or a file-name guess), so it stays `unknown`.
+fn remembered(hint: super::info::LoadHint) -> Compat {
+    use super::info::LoadHint;
+    match hint {
+        LoadHint::Verified | LoadHint::Declared => Compat::Likely,
+        LoadHint::Likely => Compat::Unknown,
+        LoadHint::Unlikely | LoadHint::Blocked => Compat::Unlikely,
+    }
 }
 
 /// The Tukui projects as hits.
@@ -595,11 +639,18 @@ fn hint_preference(ctx: &Context, world: &World, targets: &[&DiscoveredTarget]) 
     ordered.into_iter().map(|d| d.target.id.clone()).collect()
 }
 
-/// `install <ref> -t <target>` for up to three results, best first, each on the client
-/// with its best suggestible hint (`yes`, then `likely`, then `unknown`), the first in
-/// `preference` among equals ([`hint_preference`]). A catalog name in `variants` is
-/// installed by name, which picks the build of that client's family (its hint judged
-/// that build); its `ref` is the default build's only.
+/// Up to three next steps for the results, best first:
+///
+/// - `install <ref> -t <target>` for a result some selected client has evidence for
+///   (`yes`, then `likely`), on that client, the first in `preference` among equals
+///   ([`hint_preference`]);
+/// - `info <ref>` for a result every selected client is `unknown` on: it judges each
+///   client from the newest release, where search would only guess one (bmcx.6);
+/// - nothing for a result whose evidence says it does not load (`no`, `unlikely`,
+///   `abandoned`).
+///
+/// A catalog name in `variants` is named by its name, which picks the build of that
+/// client's family (its hint judged that build); its `ref` is the default build's only.
 fn install_hints(
     results: &[SearchResult],
     preference: &[String],
@@ -614,26 +665,37 @@ fn install_hints(
     results
         .iter()
         .filter_map(|r| {
-            let (target, _) = r
+            let by_name = r.source == HitSource::Catalog && variants.contains(&r.name);
+            let named = if by_name {
+                r.name.clone()
+            } else {
+                r.r#ref.to_string()
+            };
+            let best = r
                 .compat
                 .iter()
                 .filter(|(_, c)| c.suggestible())
-                .min_by_key(|(id, c)| (**c, rank(id), (*id).clone()))?;
-            let by_name = r.source == HitSource::Catalog && variants.contains(&r.name);
-            Some(CommandHint::new(
-                Action::Install,
-                [
-                    "omaddons".to_owned(),
-                    "install".to_owned(),
-                    if by_name {
-                        r.name.clone()
-                    } else {
-                        r.r#ref.to_string()
-                    },
-                    "-t".to_owned(),
-                    target.clone(),
-                ],
-            ))
+                .min_by_key(|(id, c)| (**c, rank(id), (*id).clone()));
+            if let Some((target, _)) = best {
+                return Some(CommandHint::new(
+                    Action::Install,
+                    [
+                        "omaddons".to_owned(),
+                        "install".to_owned(),
+                        named,
+                        "-t".to_owned(),
+                        target.clone(),
+                    ],
+                ));
+            }
+            let all_unknown =
+                !r.compat.is_empty() && r.compat.values().all(|c| *c == Compat::Unknown);
+            all_unknown.then(|| {
+                CommandHint::new(
+                    Action::Info,
+                    ["omaddons".to_owned(), "info".to_owned(), named],
+                )
+            })
         })
         .take(INSTALL_HINTS)
         .collect()
@@ -721,5 +783,62 @@ mod tests {
             .map(|i| result(&format!("gh:o/r{i}"), &[("retail", Compat::Yes)]))
             .collect();
         assert_eq!(hinted(&many, &["retail"]).len(), INSTALL_HINTS);
+    }
+
+    /// A remembered release counts only as evidence: metadata or a verification for the
+    /// client is `likely`, never `yes`; nothing either way stays `unknown`.
+    #[test]
+    fn a_remembered_verdict_is_evidence_or_unknown() {
+        use super::super::info::LoadHint;
+        let cases = [
+            (LoadHint::Verified, Compat::Likely),
+            (LoadHint::Declared, Compat::Likely),
+            (LoadHint::Likely, Compat::Unknown),
+            (LoadHint::Unlikely, Compat::Unlikely),
+            (LoadHint::Blocked, Compat::Unlikely),
+        ];
+        for (hint, want) in cases {
+            assert_eq!(remembered(hint), want, "{hint:?}");
+        }
+    }
+
+    /// No client is guessed from no evidence (bmcx.6): a result `unknown` on every
+    /// client gets `info`, which judges each; `unknown` beside evidence never picks the
+    /// client; evidence against gets nothing.
+    #[test]
+    fn unknown_everywhere_gets_info_never_a_guessed_client() {
+        let unknown = result(
+            "gh:o/unknown",
+            &[("forever", Compat::Unknown), ("retail", Compat::Unknown)],
+        );
+        let mixed = result(
+            "gh:o/mixed",
+            &[("forever", Compat::Unknown), ("retail", Compat::Likely)],
+        );
+        let against = result(
+            "gh:o/against",
+            &[("forever", Compat::Unknown), ("retail", Compat::No)],
+        );
+        let hints = install_hints(
+            &[unknown, mixed, against],
+            &["forever".to_owned(), "retail".to_owned()],
+            &BTreeSet::new(),
+        );
+        let got: Vec<(Action, Vec<String>)> = hints
+            .iter()
+            .map(|h| (h.action(), h.argv().to_vec()))
+            .collect();
+        let argv = |words: &[&str]| words.iter().map(|w| (*w).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            got,
+            [
+                (Action::Info, argv(&["omaddons", "info", "gh:o/unknown"])),
+                (
+                    Action::Install,
+                    argv(&["omaddons", "install", "gh:o/mixed", "-t", "retail"])
+                ),
+            ],
+            "unknown everywhere: info; likely beats the preferred unknown; no and unknown: nothing"
+        );
     }
 }

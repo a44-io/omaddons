@@ -155,10 +155,11 @@ pub const KINDS: &[KindRow] = &[
         schema: super::history::line_schema,
     },
     // A doctor run's `report.json`: the envelope's bytes, written through fsx and not
-    // `save`; its version is the envelope's `schema_version`.
+    // `save`; its version is the envelope's `schema_version`. 1.1: the `info` action in
+    // `commands` (readers refuse only a newer major, `doctor::runs`).
     KindRow {
         kind: "doctor_report",
-        current: SchemaVersion::new(1, 0),
+        current: SchemaVersion::new(1, 1),
         schema: crate::doctor::report::record_schema,
     },
 ];

@@ -163,13 +163,8 @@ fn damage_meter_ranks_by_tier_and_popularity_and_never_suggests_the_abandoned() 
         argv,
         [
             &json!(["omaddons", "install", "wowi:7000", "-t", "retail"]),
-            &json!([
-                "omaddons",
-                "install",
-                "gh:Skada-Damage-Meter/Skada",
-                "-t",
-                "retail"
-            ])
+            // Unknown on every client: info judges each, search guesses none (bmcx.6).
+            &json!(["omaddons", "info", "gh:Skada-Damage-Meter/Skada"])
         ],
         "the abandoned Details! is never suggested"
     );
@@ -601,6 +596,115 @@ fn a_rate_limited_tukui_list_makes_the_run_partial() {
         texts.iter().any(|t| t.contains("the Tukui list: ")),
         "{texts:?}"
     );
+}
+
+/// No client is guessed from no evidence (bmcx.6). A GitHub hit nothing judges is
+/// `unknown` everywhere and gets an `info` hint, which judges each client; once the
+/// release memo remembers its newest release, that release judges each client at no
+/// request, and the install hint goes to the preferred `likely` client.
+#[test]
+fn a_github_hit_gets_info_until_the_memo_judges_it() {
+    let home = Home::new(&["wow", "wowf", "wow_classic_era"]);
+    github_search(
+        &home.http,
+        "ellesmere",
+        &[(
+            "EllesmereGaming",
+            "EllesmereUI",
+            "A user interface for World of Warcraft",
+            50,
+            "2026-10-01T00:00:00Z",
+        )],
+    );
+    let search = || home.run(&["search", "ellesmere", "--source", "github"]);
+
+    // No memo: unknown everywhere, and info rather than a guessed client.
+    let r = search();
+    let envelope = r.expect(0);
+    let first = &results(&envelope)[0];
+    assert_eq!(
+        first["compat"],
+        json!({ "era": "unknown", "forever": "unknown", "retail": "unknown" }),
+        "{}",
+        r.context()
+    );
+    assert_eq!(
+        envelope["commands"],
+        json!([{
+            "action": "info",
+            "command": "omaddons info gh:EllesmereGaming/EllesmereUI",
+            "argv": ["omaddons", "info", "gh:EllesmereGaming/EllesmereUI"],
+            "destructive": false
+        }]),
+        "{}",
+        r.context()
+    );
+    let human = home.exec(&["search", "ellesmere", "--source", "github"].map(str::to_owned));
+    assert_eq!(human.code, 0, "{}", human.context());
+    assert!(
+        human
+            .stdout
+            .contains("Details: omaddons info gh:EllesmereGaming/EllesmereUI"),
+        "{}",
+        human.context()
+    );
+
+    // A remembered newest release declaring mainline and forever judges each client.
+    home.seed_memo(&common::memo::of(vec![common::memo::entry_with_flavors(
+        "gh:EllesmereGaming/EllesmereUI",
+        "v1.0.0",
+        common::memo::ago(60 * 24 * 3),
+        &[("mainline", 120_105), ("forever", 16_001)],
+    )]));
+    let before = net_log(&home).len();
+    let r = search();
+    let envelope = r.expect(0);
+    assert_eq!(
+        results(&envelope)[0]["compat"],
+        json!({ "era": "unlikely", "forever": "likely", "retail": "likely" }),
+        "{}",
+        r.context()
+    );
+    let log = net_log(&home);
+    let purposes: Vec<&str> = log.entries[before..]
+        .iter()
+        .map(|e| e.purpose.as_str())
+        .collect();
+    assert_eq!(
+        purposes,
+        ["github-search"],
+        "only the search request:\n{}",
+        log.context()
+    );
+    assert_eq!(
+        envelope["commands"][0]["argv"],
+        json!([
+            "omaddons",
+            "install",
+            "gh:EllesmereGaming/EllesmereUI",
+            "-t",
+            "retail"
+        ]),
+        "the preferred of retail and forever: {}",
+        r.context()
+    );
+
+    // A remembered release with no flavor metadata says nothing either way.
+    home.seed_memo(&common::memo::of(vec![common::memo::entry_with_flavors(
+        "gh:EllesmereGaming/EllesmereUI",
+        "v1.0.0",
+        common::memo::ago(60 * 24 * 3),
+        &[],
+    )]));
+    let r = search();
+    let envelope = r.expect(0);
+    assert_eq!(
+        results(&envelope)[0]["compat"],
+        json!({ "era": "unknown", "forever": "unknown", "retail": "unknown" }),
+        "{}",
+        r.context()
+    );
+    assert_eq!(envelope["commands"][0]["action"], "info", "{}", r.context());
 }
 
 /// An entry the catalog says is `yes` on retail and another client: the hint goes to

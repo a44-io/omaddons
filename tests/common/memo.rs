@@ -37,6 +37,34 @@ pub fn entry_with_asset(
     with_assets(r, tag, fetched_at, vec![asset])
 }
 
+/// [`entry`] with one asset whose `release.json` declares each `(flavor, interface)`.
+pub fn entry_with_flavors(
+    r: &str,
+    tag: &str,
+    fetched_at: Timestamp,
+    flavors: &[(&str, u32)],
+) -> (String, MemoEntry) {
+    let asset = Asset {
+        filename: "Addon.zip".to_owned(),
+        location: AssetLocation::Url(format!(
+            "https://github.com/o/r/releases/download/{tag}/Addon.zip"
+        )),
+        size: None,
+        expected_hash: None,
+        flavors: flavors
+            .iter()
+            .map(|(flavor, interface)| AssetFlavor {
+                flavor: (*flavor).into(),
+                interface: Some(*interface),
+                source: omaddons::model::FlavorSource::ReleaseJson,
+            })
+            .collect(),
+        name_flavors: Vec::new(),
+        nolib: false,
+    };
+    with_assets(r, tag, fetched_at, vec![asset])
+}
+
 fn with_assets(
     r: &str,
     tag: &str,
