@@ -16,12 +16,12 @@
 ```text
 $ omaddons status
 Nothing needs doing
-anniversary  tbc                                           2.5.6.70006   live  anniversary (battlenet)  0 managed · 0 unmanaged · 0 protected
-classic      mists                                         5.5.4.70268   live  classic (battlenet)      0 managed · 0 unmanaged · 0 protected
-era          Classic Era · Hardcore · Season of Discovery  1.15.9.70003  live  era (battlenet)          0 managed · 0 unmanaged · 0 protected
-forever      forever                                       1.60.1.70245  live  forever (battlenet)      0 managed · 3 unmanaged · 0 protected · 3 adoptable
-retail       mainline                                      12.1.5.70391  live  retail (battlenet)       2 managed · 0 unmanaged · 0 protected
-wotlk        wrath-legacy                                  3.3.5.12340   live  localhost                0 managed · 0 unmanaged · 23 protected
+anniversary  tbc                                           2.5.6.70006   live  anniversary (battlenet)  0 addons · 0 unmanaged · 0 protected folders
+classic      mists                                         5.5.4.70268   live  classic (battlenet)      0 addons · 0 unmanaged · 0 protected folders
+era          Classic Era · Hardcore · Season of Discovery  1.15.9.70003  live  era (battlenet)          0 addons · 0 unmanaged · 0 protected folders
+forever      forever                                       1.60.1.70245  live  forever (battlenet)      0 addons · 3 unmanaged · 0 protected folders · 3 adoptable
+retail       mainline                                      12.1.5.70391  live  retail (battlenet)       2 addons in 2 folders · 0 unmanaged · 0 protected folders
+wotlk        wrath-legacy                                  3.3.5.12340   live  localhost                0 addons · 0 unmanaged · 23 protected folders
 Next: omaddons adopt -t forever
 ```
 
@@ -394,7 +394,7 @@ $ omaddons list -t retail
 retail (12.1.5.70391, mainline)
   Bar         2.1.0    file:~/Downloads/Bar-2.1.0.zip  stable
   HelloWorld  1.0.0    file:~/Downloads/HelloWorld     stable
-  2 managed · 1 unmanaged · 1 protected · 0 linked
+  2 addons in 2 folders · 1 unmanaged · 1 protected · 0 linked folders
 
 $ omaddons remove Bar -t retail --actor agent --reason "Bar conflicts with ElvUI"
 warning: On retail, 01M59Z5RWG5MH458YF524HJPG5's snapshot holds the only copy of Bar: `omaddons undo 01M59Z5RWG5MH458YF524HJPG5` brings them back until retention prunes it (kept at least 24 hours; then pruned once 10 newer transactions on this client exist, after 7 days, or past the 2 GiB snapshot cap)
@@ -1505,7 +1505,7 @@ omaddons list --deep                       # drift by content: every managed fil
 
 Each addon also carries `latest {version, status, source, release_id, asset}`: the newest release remembered from earlier checks, its status as `outdated` would judge it (`current`, `update_available`, `pinned`, `ahead`, `blocked`, `failed`, `unchecked` or `static`), and which release that is: its source (`github`, `wowi`, `tukui`, `git`, `wowace`, …), its release id and the file `update` would try first, all `null` when the status names no release. They are what an `update` preview's approval names for that release. `list` never asks a source. Its column shows `→ <version>` when a newer release is known (`update_available`, `pinned`; `blocked` adds `(blocked)`), `check failed` after a failed check, and is blank otherwise. With `-v` or `--deep` each addon carries `drift {state, files}` too (as in [`status`](#status); the paths with `-v`); a plain `list` checks no file. Each addon carries `reason` (`explicit` or `dependency`), `required_by` and `orphan` (a dependency nothing requires any more): the table marks a dependency `dep` (`dependency of LittleWigs` with `-v`) and an orphan `orphan`. It also carries `any_flavor`, marked `any-flavor` in the table.
 
-Each client carries `counts` per folder class and `addons_dir_missing`, and each addon its `missing_folders` (managed folders gone from disk). Under `--unmanaged`, each folder's load verdict is `compatible`, `out_of_date`, `wrong_flavor` or `no_toc`, and folders whose names differ only in case are flagged `case_duplicate`. `-v` adds each addon's folder names, `folder_tocs`, `left_out` (as [`info`](#info-ref) shows it; the human view lists them under the table as `DBM-Core left out: DBM-Brawlers (gated to other game types), …`) and the `client_dir`.
+Each client carries `counts` per folder class and `addons_dir_missing`; the human view's line under each table names both units, addons and the folders they own (`1 addon in 22 folders · 0 unmanaged · 39 protected · 0 linked folders`), as `status`'s row does (`1 addon in 22 folders · 0 unmanaged · 39 protected folders`), and each addon its `missing_folders` (managed folders gone from disk). Under `--unmanaged`, each folder's load verdict is `compatible`, `out_of_date`, `wrong_flavor` or `no_toc`, and folders whose names differ only in case are flagged `case_duplicate`. `-v` adds each addon's folder names, `folder_tocs`, `left_out` (as [`info`](#info-ref) shows it; the human view lists them under the table as `DBM-Core left out: DBM-Brawlers (gated to other game types), …`) and the `client_dir`.
 
 On a client whose AddOns directory another client shares, a folder only the other client records is class `shared` (counted in `counts.shared`, and under `--unmanaged` with `owned_on [{target, addon}]`, shown as `shared (managed on era)`): it is not this client's to adopt, install over or remove.
 
@@ -3436,7 +3436,6 @@ The README describes the intended behaviour. A place where the code at HEAD does
 - **A recovery that stops at a journal no client owns forgets what it had already recovered** (`omad-ef89`). Settings commands (`config set`, `targets` changes, `auth github set`, `export --write`, `errors dismiss`), and a change command with nothing to commit, recover interrupted journals first. When such a recovery rolls some journals back or forward and then meets one that names no client, the result holds only the `journal_pending` warning for the stuck one: the `journal_recovered` warnings of the ones it finished are lost, and the widget's doorbell does not ring, so the bar catches up only at its next refresh.
 - **`install` may say `/reload` when the client needs a restart** (`omad-launch-week-fixes-bmcx.5`). Installing an addon that is new to a running modern client reports `reload_required: "reload"` ("/reload in game"), but the client may not load a newly added addon until it restarts.
 - **`search` picks a client for its suggestion without knowing compatibility** (`omad-launch-week-fixes-bmcx.6`). When a result's hint is `unknown` on every selected client (every GitHub result is), the `-t` in its suggested `omaddons install` command comes from the tie-breaks alone (the default target, then a live client, the client with the most managed addons, retail), not from anything known about the addon. The install itself still verifies every TOC.
-- **`list` counts folders as "managed"** (`omad-launch-week-fixes-bmcx.7`). The summary under each client's table (`2 managed · 1 unmanaged · 1 protected · 0 linked`) counts folders, not addons, so an addon that ships several folders (DBM, BigWigs) counts once per folder there, while the table lists it once. `status`'s row counts the same way.
 - **`doctor -t all` leaves out a client whose directory is gone** (`omad-qh12`). [`-t all`](#choosing-a-target-with--t) should select every client, as no `-t` does, but the doctor's commands resolve it to the discovered clients only, so a registered client whose directory is gone, and its findings (`fm-userland_state-target-vanished`, its journals), are missing from `doctor -t all`, `doctor explain … -t all` and `doctor fix -t all`. Plain `doctor` and `status -t all` report them.
 
 ---

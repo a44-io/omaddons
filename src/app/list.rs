@@ -537,9 +537,13 @@ fn render_target(w: &mut dyn Write, style: &Style, t: &ListTarget) -> std::io::R
         writeln!(w, "  {} {}", style.dim("protected:"), names.join(", "))?;
     }
     let c = t.counts;
+    // Addons and folders both named: a folder count alone reads as addons.
     let mut counts = format!(
-        "  {} managed · {} unmanaged · {} protected · {} linked",
-        c.managed, c.unmanaged, c.protected, c.linked
+        "  {} · {} unmanaged · {} protected · {}",
+        crate::output::addons_in_folders(t.addons.len(), c.managed),
+        c.unmanaged,
+        c.protected,
+        crate::output::count(c.linked as usize, "linked folder")
     );
     if c.shared > 0 {
         counts.push_str(&format!(" · {} shared", c.shared));

@@ -356,7 +356,7 @@ fn verbose_lists_folders_and_paths() {
     );
     assert!(
         text.contains("WeakAuras")
-            && text.contains("3 managed · 1 unmanaged · 0 protected · 1 linked"),
+            && text.contains("2 addons in 3 folders · 1 unmanaged · 0 protected · 1 linked folder"),
         "{text}"
     );
 }

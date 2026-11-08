@@ -4,11 +4,11 @@ expression: text
 ---
 classic (5.5.4.63854, mists)
   <root>/home/Games/battlenet/drive_c/Program Files (x86)/World of Warcraft/_classic_
-  0 managed · 0 unmanaged · 0 protected · 0 linked
+  0 addons · 0 unmanaged · 0 protected · 0 linked folders
 retail (12.1.5.70391, mainline)
   <root>/home/Games/battlenet/drive_c/Program Files (x86)/World of Warcraft/_retail_
   BigWigs     v1        gh:o/bigwigs             stable  dependency of LittleWigs
   Foo         1         gh:o/foo                 stable
   LittleWigs  v1        gh:o/littlewigs          stable
   WeakAuras   5.19.2    gh:WeakAuras/WeakAuras2  stable
-  4 managed · 1 unmanaged · 0 protected · 0 linked
+  4 addons in 4 folders · 1 unmanaged · 0 protected · 0 linked folders

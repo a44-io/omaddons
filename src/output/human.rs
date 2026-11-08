@@ -53,6 +53,20 @@ pub fn count(n: usize, noun: &str) -> String {
     }
 }
 
+/// Managed addons with the folders they own, both units named, since a folder count
+/// alone reads as a count of addons (one addon can ship 22 folders): `1 addon in 22
+/// folders`, `2 addons in 31 folders`, and `0 addons` with no folder count.
+pub fn addons_in_folders(addons: usize, folders: u32) -> String {
+    if addons == 0 {
+        return count(0, "addon");
+    }
+    format!(
+        "{} in {}",
+        count(addons, "addon"),
+        count(folders as usize, "folder")
+    )
+}
+
 /// `18432` as `18,432`: digits grouped by three with commas, the house style for byte
 /// counts in human output.
 pub fn thousands(n: u64) -> String {
@@ -285,5 +299,25 @@ mod tests {
             "retail  mainline      12.1.5\nwotlk   wrath-legacy  3.3.5\n"
         );
         assert_eq!(table(&[]), "");
+    }
+
+    /// Both units named, singular and plural right for 0, 1 and 2 of each; no folder
+    /// count without an addon.
+    #[test]
+    fn addons_and_their_folders_are_both_named() {
+        for (addons, folders, expected) in [
+            (0, 0, "0 addons"),
+            (0, 3, "0 addons"),
+            (1, 1, "1 addon in 1 folder"),
+            (1, 22, "1 addon in 22 folders"),
+            (2, 2, "2 addons in 2 folders"),
+            (5, 31, "5 addons in 31 folders"),
+        ] {
+            assert_eq!(
+                addons_in_folders(addons, folders),
+                expected,
+                "{addons} addons, {folders} folders"
+            );
+        }
     }
 }

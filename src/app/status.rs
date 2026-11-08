@@ -413,9 +413,12 @@ impl Outcome for StatusOutcome {
                     (false, Some(false)) => t.label.clone().unwrap_or_else(|| "-".to_owned()),
                 };
                 let f = &t.folders;
+                // Addons and folders both named: a folder count alone reads as addons.
                 let mut counts = format!(
-                    "{} managed · {} unmanaged · {} protected",
-                    f.managed, f.unmanaged, f.protected
+                    "{} · {} unmanaged · {}",
+                    crate::output::addons_in_folders(t.addons.total, f.managed),
+                    f.unmanaged,
+                    crate::output::count(f.protected as usize, "protected folder")
                 );
                 if f.shared > 0 {
                     counts.push_str(&format!(" · {} shared", f.shared));
