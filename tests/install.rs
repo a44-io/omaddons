@@ -852,8 +852,10 @@ fn an_addon_of_the_same_name_from_another_ref_is_replaced_only_as_its_rule_says(
     assert_eq!((bar(&home), tree_hash(&addons)), (first, tree));
 }
 
+/// A new addon lands on a running modern client, then asks for a restart: no client was
+/// ever observed loading a folder added while it ran on `/reload` (bmcx.5).
 #[test]
-fn a_running_client_needs_a_reload() {
+fn a_new_addon_on_a_running_client_needs_a_restart() {
     let mut home = Home::new(&["wow"]);
     foo_release(&home.http, "v1.0.0", mainline(), "120105");
     home.retail_running();
@@ -861,7 +863,7 @@ fn a_running_client_needs_a_reload() {
     let envelope = r.expect(0);
     assert_eq!(
         envelope["data"]["reload_required"],
-        "reload",
+        "restart",
         "{}",
         r.context()
     );
@@ -874,7 +876,7 @@ fn a_running_client_needs_a_reload() {
     let warning = warning.unwrap();
     assert_eq!(
         (&warning["fix"], &warning["fix_argv"]),
-        (&Value::from("/reload in game"), &Value::Null)
+        (&Value::from("restart the game client"), &Value::Null)
     );
 }
 

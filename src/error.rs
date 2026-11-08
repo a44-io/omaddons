@@ -425,7 +425,7 @@ warning_codes! {
     AtomicSwapUnavailable       = "atomic_swap_unavailable",
         "The filesystem lacks atomic exchange, so the change used two journaled renames.";
     ReloadRequired              = "reload_required",
-        "The change takes effect in game only after a `/reload`.";
+        "The running client picks the change up only after a `/reload` (a replacement that keeps its loaded TOC) or a restart (anything else, a new addon folder included); the fix says which.";
     SavedVariablesDeferred      = "saved_variables_deferred",
         "SavedVariables could not be restored because the client was running, its state was unknown, or recovery could not finish the write.";
     /// SavedVariables in a `WTF/` reached through a symlink outside the client

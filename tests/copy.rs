@@ -510,7 +510,8 @@ fn only_the_destination_s_running_client_matters() {
     );
     let t = &envelope["data"]["targets"][0];
     assert!(t["tx"].is_string(), "{t}");
-    assert_eq!(t["reload_required"], "reload");
+    // A new folder on a running client asks for a restart (bmcx.5: never seen on /reload).
+    assert_eq!(t["reload_required"], "restart");
     assert_eq!(warned(&envelope, "reload_required"), 1, "{}", r.context());
     assert!(addons.join("Pin").is_dir());
 }
@@ -548,6 +549,7 @@ fn copy_counts_the_destination_as_running_when_the_process_table_cannot_be_read(
         "{}",
         r.context()
     );
-    assert_eq!(envelope["data"]["targets"][0]["reload_required"], "reload");
+    // A new folder on a running client asks for a restart (bmcx.5: never seen on /reload).
+    assert_eq!(envelope["data"]["targets"][0]["reload_required"], "restart");
     assert_eq!(warned(&envelope, "running_unknown"), 1, "{}", r.context());
 }

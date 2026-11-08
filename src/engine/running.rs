@@ -4,11 +4,14 @@
 //! could not be read, every client counts as running (fail closed), and a refusal says
 //! it "may be running" (`details.running: "unknown"`).
 //!
-//! A Linux rename never disturbs files the client has open, and modern clients pick up
-//! new folders and TOC changes on `/reload`; deleting or renaming a loaded TOC needs a
-//! restart. A legacy client needs one to see a new folder; 3.3.5a still re-reads a
-//! loaded addon's TOC on `/reload` (both observed 2026-10-20; other legacy builds are
-//! unobserved), which its rules row says (`reload_rereads_toc`). SavedVariables are
+//! A Linux rename never disturbs files the client has open. What a running client picks
+//! up: a loaded addon's changed TOC on `/reload` (observed on 3.3.5a on 2026-10-20;
+//! assumed on modern clients from the vision's sources), which a rules row says
+//! (`reload_rereads_toc`); deleting or renaming a loaded TOC needs a restart. A folder
+//! added while the client runs was observed only on 3.3.5a, where three `/reload`s did
+//! not show it, and never on a modern client, so a new folder reports `restart` on every
+//! client until one is observed loading on `/reload` (omad-launch-week-fixes-bmcx.5: a
+//! needless restart costs less than an install that looks broken). SavedVariables are
 //! never written while the client runs, under any policy or flag (D33): the client
 //! overwrites them on logout.
 //!
@@ -217,6 +220,8 @@ pub fn evaluate(
         .iter()
         .map(|op| match op {
             op if op.drops_loaded_toc() => ReloadRequired::Restart,
+            // Never observed loading on `/reload` (see the module comment).
+            PolicyOp::AddFolder { .. } => ReloadRequired::Restart,
             PolicyOp::ReplaceFolder { .. } if rules.reload_rereads_toc => ReloadRequired::Reload,
             PolicyOp::ReplaceFolder { .. } => ReloadRequired::Restart,
             _ if rules.legacy => ReloadRequired::Restart,
@@ -369,8 +374,9 @@ mod tests {
             (Safe, false, Modern, remove(true), false, Ok(N)),
             (Refuse, false, Legacy, add(), false, Ok(N)),
             (Allow, false, Modern, replace(false), false, Ok(N)),
-            // Safe, modern client.
-            (Safe, true, Modern, add(), false, Ok(R)),
+            // Safe, modern client. A new folder lands, then asks for a restart: no client
+            // was ever observed loading one on /reload (bmcx.5).
+            (Safe, true, Modern, add(), false, Ok(X)),
             (Safe, true, Modern, replace(true), false, Ok(R)),
             (Safe, true, Modern, replace(false), false, refused("loaded_toc")),
             (Safe, true, Modern, replace(false), true, Ok(X)),
@@ -394,8 +400,8 @@ mod tests {
             (Refuse, true, Modern, add(), false, refused("policy_refuse")),
             (Refuse, true, Modern, replace(true), true, Ok(R)),
             (Refuse, true, Wrath, replace(true), false, refused("policy_refuse")),
-            // Allow.
-            (Allow, true, Modern, add(), false, Ok(R)),
+            // Allow (a new folder: restart, as above).
+            (Allow, true, Modern, add(), false, Ok(X)),
             (Allow, true, Modern, remove(true), false, Ok(X)),
             (Allow, true, Legacy, add(), false, Ok(X)),
             (Allow, true, Legacy, replace(true), false, Ok(X)),
@@ -558,7 +564,15 @@ mod tests {
             ),
             (WarningCode::ReloadRequired, Some("restart the game client"))
         );
-        let outcome = run(RunningPolicy::Safe, true, Client::Modern, &[add()], false).unwrap();
+        // A replacement keeping its loaded TOC: /reload.
+        let outcome = run(
+            RunningPolicy::Safe,
+            true,
+            Client::Modern,
+            &[replace(true)],
+            false,
+        )
+        .unwrap();
         assert_eq!(
             outcome.warnings[0]
                 .fix
@@ -566,6 +580,18 @@ mod tests {
                 .map(|f| (f.display(), f.argv())),
             Some(("/reload in game", None))
         );
+        // A new folder, alone or beside such a replacement: a restart (bmcx.5).
+        for ops in [vec![add()], vec![add(), replace(true)]] {
+            let outcome = run(RunningPolicy::Safe, true, Client::Modern, &ops, false).unwrap();
+            assert_eq!(
+                (
+                    outcome.reload_required,
+                    outcome.warnings[0].fix.as_ref().map(Suggestion::display)
+                ),
+                (ReloadRequired::Restart, Some("restart the game client")),
+                "{ops:?}"
+            );
+        }
         assert!(
             run(RunningPolicy::Safe, true, Client::Modern, &[], false)
                 .unwrap()

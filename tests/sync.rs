@@ -1424,9 +1424,10 @@ fn sync_prune_of_a_loaded_addon_is_refused_while_the_client_runs() {
     assert_eq!(tree_hash(&addons), tree);
 }
 
-/// A new addon installs while the client runs, and the client must reload its UI.
+/// A new addon installs while the client runs, and the client must restart: no client
+/// was ever observed loading a folder added while it ran on `/reload` (bmcx.5).
 #[test]
-fn sync_install_of_a_new_addon_while_running_needs_reload() {
+fn sync_install_of_a_new_addon_while_running_needs_restart() {
     let mut home = prune_home();
     home.run(&["install", "gh:o/foo", "-t", "retail"]).expect(0);
     home.write_desired("[family.mainline]\naddons = [\"gh:o/foo\", \"gh:o/baz\"]\n");
@@ -1438,7 +1439,7 @@ fn sync_install_of_a_new_addon_while_running_needs_reload() {
     assert_eq!(item(&envelope, "retail", "gh:o/baz")["status"], "installed");
     let t = target(&envelope, "retail");
     assert!(t["tx"].is_string(), "{t}");
-    assert_eq!(t["reload_required"], "reload");
+    assert_eq!(t["reload_required"], "restart");
     assert_eq!(warned(&envelope, "reload_required"), 1, "{}", r.context());
     assert!(home.addons("_retail_").join("Baz").is_dir());
 }
@@ -1480,7 +1481,8 @@ fn sync_fails_closed_when_the_process_table_cannot_be_read() {
     );
     let t = target(&envelope, "retail");
     assert!(t["tx"].is_string(), "the add commits: {t}");
-    assert_eq!(t["reload_required"], "reload");
+    // A new folder on a running client asks for a restart (bmcx.5: never seen on /reload).
+    assert_eq!(t["reload_required"], "restart");
     assert_eq!(warned(&envelope, "running_unknown"), 1, "{}", r.context());
     assert!(home.addons("_retail_").join("Bar").is_dir());
 }

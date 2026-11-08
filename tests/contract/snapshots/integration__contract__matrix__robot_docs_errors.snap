@@ -108,7 +108,7 @@ expression: projection
       {
         "code": "reload_required",
         "fix_pattern": "prose: `/reload` in game, or restart the game client",
-        "meaning": "The change takes effect in game only after a `/reload`."
+        "meaning": "The running client picks the change up only after a `/reload` (a replacement that keeps its loaded TOC) or a restart (anything else, a new addon folder included); the fix says which."
       }
     ]
   },
