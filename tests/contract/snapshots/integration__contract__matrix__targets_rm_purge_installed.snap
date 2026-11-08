@@ -1,0 +1,30 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "targets rm",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "usage",
+    "details": {
+      "flag": "--purge",
+      "id": "retail"
+    },
+    "fix": "omaddons targets rm retail",
+    "fix_argv": [
+      "omaddons",
+      "targets",
+      "rm",
+      "retail"
+    ],
+    "message": "retail is installed: --purge deletes only what omaddons kept for a client that is no longer installed",
+    "retryable": false
+  },
+  "exit_code": 2,
+  "ok": false,
+  "schema_version": "1.1",
+  "tool_version": "<version>",
+  "warnings": []
+}

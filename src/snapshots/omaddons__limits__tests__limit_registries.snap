@@ -1048,6 +1048,15 @@ expression: "(politeness, REGISTRY)"
       "unit": "bytes",
       "config_key": null,
       "notes": "quarantine bytes past which doctor-runs-accumulated reports"
+    },
+    {
+      "name": "PURGE_MAX_ENTRIES",
+      "value": {
+        "count": 1000000
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "entries targets rm --purge visits to list and size what it deletes; past it the purge is refused"
     }
   ]
 ]

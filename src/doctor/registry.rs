@@ -1096,7 +1096,7 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         detect: Some(userland::target_vanished),
         fix: None,
         manual: Some(Manual {
-            instruction: "if the client is gone for good, forget it with omaddons targets rm <client>",
+            instruction: "if the client is gone for good, forget it with omaddons targets rm <client>; to also delete what omaddons kept for it (its WTF backups and undo snapshots), preview omaddons targets rm <client> --purge --dry-run first",
             why: "only you know whether the client is gone for good, or only moved or unmounted",
             remediation: forget_manual,
         }),

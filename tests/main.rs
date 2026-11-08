@@ -120,6 +120,7 @@ mod plans_show;
 mod plans_show_commands;
 mod preconditions;
 mod preconditions_matrix;
+mod purge;
 mod real_machine;
 mod registry;
 mod release_cache;

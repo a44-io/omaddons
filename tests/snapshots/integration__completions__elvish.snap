@@ -1392,6 +1392,8 @@ set edit:completion:arg-completer[omaddons] = {|@words|
             cand --reason 'Why, recorded verbatim in history'
             cand --if-match 'Run only what the preview that returned this token showed'
             cand --progress 'Progress events on stderr'
+            cand --purge 'Also delete what omaddons kept for it (an uninstalled client only)'
+            cand --yes 'Confirm a purge: delete what its preview lists'
             cand --json 'One JSON envelope on stdout'
             cand --robot 'The same as --json'
             cand --dry-run 'Show the plan without changing anything'

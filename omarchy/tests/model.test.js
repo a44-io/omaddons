@@ -310,11 +310,14 @@ describe("classifyCliArgv", () => {
     expect(preview.slice(6, 9)).toEqual(["--progress", "json", "--dry-run"])
     // A plan-storing path confirms through its preview's apply, never a token (M4-D28).
     expect(reasonOf(() => M.cliArgv(argv, opts({ token: TOKEN })))).toBe("runs_through_apply")
-    // targets rm binds nothing: an explicit confirmation runs it.
+    // targets rm binds and stores no plan (omad-launch-week-fixes-bmcx.2): its preview's
+    // token runs it, and a bare confirmation does not.
     const rm = ["omaddons", "targets", "rm", "retail"]
     expect(reasonOf(() => M.cliArgv(rm, opts()))).toBe("destructive_without_preview")
-    expect(reasonOf(() => M.cliArgv(rm, opts({ token: TOKEN })))).toBe("token_not_bound")
-    expect(M.cliArgv(rm, opts({ confirmed: true })).argv.slice(-3)).toEqual(["targets", "rm", "retail"])
+    expect(reasonOf(() => M.cliArgv(rm, opts({ confirmed: true })))).toBe("destructive_without_preview")
+    const rmBound = M.cliArgv(rm, opts({ token: TOKEN })).argv
+    expect(rmBound.slice(-3)).toEqual(["targets", "rm", "retail"])
+    expect(rmBound[rmBound.indexOf("--if-match") + 1]).toBe(TOKEN)
     // An argv that is a preview already gets no second --dry-run.
     const dry = M.cliArgv(["omaddons", "remove", "--dry-run", "--", "Foo"], opts()).argv
     expect(dry.filter((a) => a === "--dry-run").length).toBe(1)
@@ -325,11 +328,11 @@ describe("classifyCliArgv", () => {
     expect(reasonOf(() => M.cliArgv(alt, opts({ token: TOKEN })))).toBe("runs_through_apply")
     // Off the plan paths, a confirmed or bound run drops the alternative's --dry-run; a
     // "--dry-run" after -- is a positional and stays.
-    const rmAlt = M.cliArgv(["omaddons", "targets", "rm", "retail", "--dry-run"], opts({ confirmed: true })).argv
+    const rmAlt = M.cliArgv(["omaddons", "targets", "rm", "retail", "--dry-run"], opts({ token: TOKEN })).argv
     expect(rmAlt).not.toContain("--dry-run")
     const bound = M.cliArgv(["omaddons", "errors", "dismiss", "-t", "retail", "--dry-run"], opts({ token: TOKEN })).argv
     expect([bound.includes("--dry-run"), bound.includes("--if-match")]).toEqual([false, true])
-    const literal = M.cliArgv(["omaddons", "targets", "rm", "--", "--dry-run"], opts({ confirmed: true })).argv
+    const literal = M.cliArgv(["omaddons", "targets", "rm", "--", "--dry-run"], opts({ token: TOKEN })).argv
     expect(literal.slice(-2)).toEqual(["--", "--dry-run"])
   })
 

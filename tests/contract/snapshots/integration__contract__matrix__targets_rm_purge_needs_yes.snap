@@ -1,0 +1,31 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "targets rm",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "usage",
+    "details": {
+      "flag": "--yes"
+    },
+    "fix": "omaddons targets rm classic --purge --dry-run",
+    "fix_argv": [
+      "omaddons",
+      "targets",
+      "rm",
+      "classic",
+      "--purge",
+      "--dry-run"
+    ],
+    "message": "a purge deletes what it lists, and the undos that need it: a real run needs --yes (preview it first)",
+    "retryable": false
+  },
+  "exit_code": 2,
+  "ok": false,
+  "schema_version": "1.1",
+  "tool_version": "<version>",
+  "warnings": []
+}

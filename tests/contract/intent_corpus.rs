@@ -928,6 +928,24 @@ pub const CORPUS: &[Row] = &[
         ),
     )
     .by_leaf("E8"),
+    // `targets rm --purge` (omad-launch-week-fixes-bmcx.2): only for a client that is no
+    // longer installed; an installed one is forgotten with the plain verb.
+    row(
+        Argument,
+        &["targets", "rm", "era", "--purge", "--dry-run"],
+        &["targets rm"],
+        "era is installed: its data stays, and the fix unregisters era on its copy",
+        error(2, "usage", &["omaddons", "targets", "rm", "era"], &[0]),
+    )
+    .by_leaf("bmcx.2"),
+    row(
+        Argument,
+        &["targets", "rm", "era", "--purge"],
+        &["targets rm"],
+        "the installed client is refused before --yes is asked for",
+        error(2, "usage", &["omaddons", "targets", "rm", "era"], &[0]),
+    )
+    .by_leaf("bmcx.2"),
     row(
         DoctorVerb,
         &["doctor", "diagnoze"],

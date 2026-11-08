@@ -3051,6 +3051,63 @@ fn doctor_gc() {
     insta::assert_json_snapshot!("doctor_gc_needs_before", redacted(&c.envelope));
 }
 
+/// `targets rm --purge` (omad-launch-week-fixes-bmcx.2) on a registered classic client
+/// Battle.net uninstalled: its preview, a real run without `--yes`, an installed client
+/// refused, and the bound run. Paths, ids and the token are redacted.
+#[test]
+fn targets_rm_purge() {
+    let s = Scene::new();
+    s.json(&["install", "weakauras", "-t", "retail"], 0);
+    s.json(&["install", "weakauras", "-t", "classic"], 0);
+    s.home.uninstall("_classic_", "wow_classic");
+    // Discovery notices the uninstall once (derived data).
+    s.json(&["targets"], 0);
+    // Sizes count files that hold timestamps, whose text length varies: each is checked
+    // to be a number, then redacted.
+    let redacted = |envelope: &Value| {
+        let mut stable = s.stable(envelope);
+        let purge = &mut stable["data"]["purge"];
+        if purge.is_object() {
+            assert!(purge["bytes"].is_u64(), "{purge}");
+            purge["bytes"] = json!("<bytes>");
+            for d in purge["deletions"].as_array_mut().into_iter().flatten() {
+                assert!(d["bytes"].is_u64(), "{d}");
+                d["bytes"] = json!("<bytes>");
+            }
+        }
+        stable
+    };
+    let c = s.json(&["targets", "rm", "classic", "--purge", "--dry-run"], 0);
+    assert_eq!(c.envelope["data"]["dry_run"], true);
+    insta::assert_json_snapshot!("targets_rm_purge_dry_run", redacted(&c.envelope));
+    let token = c.envelope["data"]["precondition"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let c = s.json(&["targets", "rm", "classic", "--purge"], 2);
+    assert_eq!(c.envelope["error"]["details"]["flag"], "--yes");
+    insta::assert_json_snapshot!("targets_rm_purge_needs_yes", s.stable(&c.envelope));
+    let c = s.json(&["targets", "rm", "retail", "--purge", "--dry-run"], 2);
+    assert_eq!(c.envelope["error"]["details"]["flag"], "--purge");
+    insta::assert_json_snapshot!("targets_rm_purge_installed", s.stable(&c.envelope));
+
+    let c = s.json(
+        &[
+            "targets",
+            "rm",
+            "classic",
+            "--purge",
+            "--yes",
+            "--if-match",
+            &token,
+        ],
+        0,
+    );
+    assert!(c.envelope["data"]["precondition"].is_null());
+    insta::assert_json_snapshot!("targets_rm_purge_ok", redacted(&c.envelope));
+}
+
 /// `doctor undo` (E7 s4) on a home with one committed `fm-test-write` repair (the test
 /// fixers, a debug build): its dry run, `latest` refused, `undo --run` of a doctor run id
 /// refused, and the undo.

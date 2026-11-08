@@ -15,7 +15,7 @@ expression: s.stable(&c.envelope)
       "help",
       "apply"
     ],
-    "message": "--if-match binds a run to its preview, and only remove, undo, backup restore, backup prune, errors dismiss, install, update, pin, unpin, adopt, sync, copy, doctor fix and doctor gc take it, not apply",
+    "message": "--if-match binds a run to its preview, and only remove, undo, backup restore, backup prune, errors dismiss, install, update, pin, unpin, adopt, sync, copy, doctor fix, doctor gc and targets rm take it, not apply",
     "retryable": false
   },
   "exit_code": 2,

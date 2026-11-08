@@ -837,7 +837,9 @@ fn run_command(cli: &Cli, ctx: &Context, out: &Out<'_>) -> Exit {
             Some(TargetsAction::Add { path, name: id }) => {
                 out.emit(targets::add(ctx, path, id.as_deref()))
             }
-            Some(TargetsAction::Rm { id }) => out.emit(targets::rm(ctx, id)),
+            Some(TargetsAction::Rm { id, purge, yes }) => {
+                out.emit(targets::rm(ctx, id, *purge, *yes))
+            }
             Some(TargetsAction::Rename { id, new }) => out.emit(targets::rename(ctx, id, new)),
             Some(TargetsAction::Default { id }) => out.emit(targets::default(ctx, id)),
         },

@@ -10,15 +10,23 @@ Usage: omaddons targets rm [OPTIONS] <ID>
 Arguments:
   <ID>  The target's id
 
+Options:
+      --purge  Also delete what omaddons kept for it (an uninstalled client only)
+      --yes    Confirm a purge: delete what its preview lists
+
 Examples:
-  omaddons targets rm warmane            forget it; its files stay
-  omaddons targets rm warmane --dry-run  what it would forget
+  omaddons targets rm warmane  forget it; its files stay
+  omaddons targets rm classic --purge --dry-run
+                               an uninstalled client: what a purge deletes
+  omaddons targets rm classic --purge --yes --if-match <token>
+                               delete exactly that preview
 
 Global: -t <TARGET>  --json  --dry-run  -v  --quiet  --no-color  --offline  (--help lists them all)
 ==> omaddons targets rm --help <==
 Forget a client
 
-Unregister it; nothing in its directory is touched.
+Unregister it; nothing in its directory is touched. With --purge, a client that is no longer
+installed also loses what omaddons kept for it.
 
 Usage: omaddons targets rm [OPTIONS] <ID>
 
@@ -26,26 +34,42 @@ Arguments:
   <ID>
           The target's id
 
-Examples:
-  omaddons targets rm warmane            forget it; its files stay
-  omaddons targets rm warmane --dry-run  what it would forget
+Options:
+      --purge
+          Also delete what omaddons kept for it (an uninstalled client only)
+          
+          Its Interface/.omaddons/ (WTF backups, undo snapshots, its marker), the state halves of
+          its transactions and its record. It cannot be undone: preview it with --dry-run, then run
+          it with --yes.
 
-See also: targets
+      --yes
+          Confirm a purge: delete what its preview lists
+
+Examples:
+  omaddons targets rm warmane  forget it; its files stay
+  omaddons targets rm classic --purge --dry-run
+                               an uninstalled client: what a purge deletes
+  omaddons targets rm classic --purge --yes --if-match <token>
+                               delete exactly that preview
+
+See also: targets, backup list
 
 Global options:
-      --json             One JSON envelope on stdout
-      --format <FORMAT>  Output format [possible values: json, human]
-  -t, --target <TARGET>  The client to act on: id, game mode, family, path, or all [alias: --flavor]
-      --dry-run          Show the plan without changing anything
-      --actor <ACTOR>    Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
-      --reason <TEXT>    Why, recorded verbatim in history
-      --offline          Fail any network access [env: OMADDONS_OFFLINE=1]
-      --while-running    Allow folder changes while the client runs (never SavedVariables)
-      --no-color         No ANSI color
-      --no-progress      No progress output
-      --progress <MODE>  Progress events on stderr [possible values: json, human, none]
-      --quiet            Only errors on stderr
-  -v, --verbose...       More detail (repeatable)
-  -h, --help             Show help
+      --json              One JSON envelope on stdout
+      --format <FORMAT>   Output format [possible values: json, human]
+  -t, --target <TARGET>   The client to act on: id, game mode, family, path, or all [alias:
+                          --flavor]
+      --dry-run           Show the plan without changing anything
+      --actor <ACTOR>     Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
+      --reason <TEXT>     Why, recorded verbatim in history
+      --offline           Fail any network access [env: OMADDONS_OFFLINE=1]
+      --while-running     Allow folder changes while the client runs (never SavedVariables)
+      --if-match <TOKEN>  Run only what the preview that returned this token showed
+      --no-color          No ANSI color
+      --no-progress       No progress output
+      --progress <MODE>   Progress events on stderr [possible values: json, human, none]
+      --quiet             Only errors on stderr
+  -v, --verbose...        More detail (repeatable)
+  -h, --help              Show help
 
 Learn more: omaddons robot-docs guide

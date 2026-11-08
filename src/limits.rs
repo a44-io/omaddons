@@ -260,6 +260,11 @@ pub const DOCTOR_GC_SUGGESTED_AGE: Duration = Duration::from_secs(30 * 24 * 60 *
 pub const DOCTOR_GC_MAX_DELETIONS: usize = 1_000;
 /// Quarantine bytes past which `doctor-runs-accumulated` reports.
 pub const DOCTOR_QUARANTINE_SOFT_MAX: u64 = GIB;
+/// Most entries `targets rm --purge` visits to list and size what it deletes (the
+/// client's `.omaddons/` and the trees below it, its state halves); past it the purge is
+/// refused before anything moves, never planned or sized from part of the walk.
+/// Retention keeps a client's snapshots and backups far below it.
+pub const PURGE_MAX_ENTRIES: usize = 1_000_000;
 
 /// Snapshot retention: keep everything younger than `min_age`; beyond that, keep the
 /// last `keep_last` transactions per target that are younger than `window`.
@@ -997,6 +1002,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         None,
         "quarantine bytes past which doctor-runs-accumulated reports",
     ),
+    limit(
+        "PURGE_MAX_ENTRIES",
+        LimitValue::Count(PURGE_MAX_ENTRIES as u64),
+        LimitUnit::Count,
+        None,
+        "entries targets rm --purge visits to list and size what it deletes; past it the purge is refused",
+    ),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -1292,6 +1304,7 @@ mod tests {
         "DOCTOR_GC_SUGGESTED_AGE",
         "DOCTOR_GC_MAX_DELETIONS",
         "DOCTOR_QUARANTINE_SOFT_MAX",
+        "PURGE_MAX_ENTRIES",
     ];
 
     const CONFIG_NAMES: &[&str] = &[

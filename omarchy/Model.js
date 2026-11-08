@@ -172,7 +172,7 @@ var CLI_PATHS = {
   "backup verify":     { "mutates": true,  "destructive": false, "binds": false },
   "targets":           { "mutates": false, "destructive": false, "binds": false },
   "targets add":       { "mutates": true,  "destructive": false, "binds": false },
-  "targets rm":        { "mutates": true,  "destructive": true,  "binds": false },
+  "targets rm":        { "mutates": true,  "destructive": true,  "binds": true },
   "targets rename":    { "mutates": true,  "destructive": false, "binds": false },
   "targets default":   { "mutates": true,  "destructive": false, "binds": false },
   "config":            { "mutates": false, "destructive": false, "binds": false },

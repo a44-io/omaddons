@@ -84,7 +84,7 @@ command targets add exits=0,1,2,3,4,5 dictionary=general mutates=true binds=fals
 command targets default exits=0,1,2,3,4,5 dictionary=general mutates=true binds=false stores_plan=false network=none
 command targets exits=0,1,2,4 dictionary=general mutates=false binds=false stores_plan=false network=none
 command targets rename exits=0,1,2,3,4,5 dictionary=general mutates=true binds=false stores_plan=false network=none
-command targets rm exits=0,1,2,3,4,5 dictionary=general mutates=true binds=false stores_plan=false network=none
+command targets rm exits=0,1,2,3,4,5 dictionary=general mutates=true binds=true stores_plan=false network=none
 command undo aliases=revert,rollback exits=0,1,2,3,4,5 dictionary=general mutates=true binds=true stores_plan=true network=none
 command unpin exits=0,1,2,3,4,5 dictionary=general mutates=true binds=true stores_plan=true network=optional
 command update aliases=upgrade exits=0,1,2,3,4,5,6 dictionary=general mutates=true binds=true stores_plan=true network=optional
@@ -1132,6 +1132,8 @@ enum targets add data.targets[].kind live,test
 enum targets data.targets[].family cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum targets data.targets[].install_kind battlenet,custom
 enum targets data.targets[].kind live,test
+enum targets rm data.purge.backups[].kind auto,before_restore,imported,manual,recovered
+enum targets rm data.purge.deletions[].kind backup,marker,record,repair,snapshot,stage,state_snapshot,trash
 enum undo data.approval.reasons[] channel_changed,dependency_added,destructive,downgrade,folders_removed,force,local_changes_replaced,reinstall,source_changed,while_running
 enum undo data.approval.selection[].channel alpha,beta,stable
 enum undo data.approval.selection[].op adopt,edit,install,prune,remove,restore,undo,update
@@ -3507,6 +3509,8 @@ input targets add @1 <PATH> path default= arity=1..1 required
 input targets default @1 <ID> string default= arity=1..1 required
 input targets rename @1 <ID> string default= arity=1..1 required
 input targets rename @2 <NEW> string default= arity=1..1 required
+input targets rm --purge flag default=false arity=0..0
+input targets rm --yes flag default=false arity=0..0 requires=--purge
 input targets rm @1 <ID> string default= arity=1..1 required
 input undo --last-by enum(agent|human|widget) default= arity=1..1 conflicts=--run,@1
 input undo --run string default= arity=1..1 conflicts=--last-by,@1
@@ -8732,6 +8736,24 @@ output targets rm data.dry_run boolean!
 output targets rm data.id string!
 output targets rm data.key string!
 output targets rm data.managed_addons integer! minimum=0
+output targets rm data.precondition string?!
+output targets rm data.purge object?
+output targets rm data.purge.backups array!
+output targets rm data.purge.backups[] object
+output targets rm data.purge.backups[].captured_at string?!
+output targets rm data.purge.backups[].id string!
+output targets rm data.purge.backups[].kind string?!
+output targets rm data.purge.backups[].path string!
+output targets rm data.purge.bytes integer! minimum=0
+output targets rm data.purge.deletions array!
+output targets rm data.purge.deletions[] object
+output targets rm data.purge.deletions[].bytes integer! minimum=0
+output targets rm data.purge.deletions[].kind string!
+output targets rm data.purge.deletions[].path string!
+output targets rm data.purge.kept_entries array!
+output targets rm data.purge.kept_entries[] string
+output targets rm data.purge.lost_undos array!
+output targets rm data.purge.lost_undos[] string
 output targets rm data.was_default boolean!
 output undo data object
 output undo data.approval object?!

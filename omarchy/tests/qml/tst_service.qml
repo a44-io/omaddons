@@ -532,19 +532,22 @@ TestCase {
     compare(service.confirm, null)
   }
 
-  function test_targets_rm_keeps_its_explicit_confirmation() {
+  // `targets rm` binds (omad-launch-week-fixes-bmcx.2): Yes forgets exactly the client its
+  // preview named, by the preview's token, and stores no plan.
+  function test_targets_rm_binds_to_its_preview() {
     ready(0)
+    var token = "pc1:" + "4".repeat(64)
     compare(service.runCliArgv(["omaddons", "targets", "rm", "retail"], "Forget retail"), "")
     var preview = lastRun("targets")
     verify(preview.command.indexOf("--dry-run") !== -1)
-    answer(preview, envelope("targets rm", { "id": "retail", "managed_addons": 0, "was_default": false, "dry_run": true }))
+    answer(preview, envelope("targets rm", { "id": "retail", "managed_addons": 0, "was_default": false, "dry_run": true, "precondition": token }))
     compare(service.confirm.text, "Forget client retail; nothing in its directory is touched")
     compare(service.confirmYes(), "")
     var real = lastRun("targets")
     verify(real !== preview)
     compare(words(real.command), ["targets", "rm", "retail"])
     verify(real.command.indexOf("--dry-run") === -1)
-    verify(real.command.indexOf("--if-match") === -1)
+    compare(real.command[real.command.indexOf("--if-match") + 1], token)
     compare(runs("apply").length, 0)
   }
 

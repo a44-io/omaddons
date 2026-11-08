@@ -1,0 +1,57 @@
+---
+source: tests/contract/matrix.rs
+expression: redacted(&c.envelope)
+---
+{
+  "command": "targets rm",
+  "commands": [],
+  "data": {
+    "dry_run": true,
+    "id": "classic",
+    "key": "<ulid>",
+    "managed_addons": 1,
+    "precondition": "<precondition>",
+    "purge": {
+      "backups": [],
+      "bytes": "<bytes>",
+      "deletions": [
+        {
+          "bytes": "<bytes>",
+          "kind": "snapshot",
+          "path": "<root>/home/Games/battlenet/drive_c/Program Files (x86)/World of Warcraft/_classic_/Interface/.omaddons/snapshots/<ulid>"
+        },
+        {
+          "bytes": "<bytes>",
+          "kind": "marker",
+          "path": "<root>/home/Games/battlenet/drive_c/Program Files (x86)/World of Warcraft/_classic_/Interface/.omaddons/target.json"
+        },
+        {
+          "bytes": "<bytes>",
+          "kind": "state_snapshot",
+          "path": "<root>/state/omaddons/snapshots/<ulid>"
+        },
+        {
+          "bytes": "<bytes>",
+          "kind": "record",
+          "path": "<root>/state/omaddons/targets/<ulid>.files.json"
+        },
+        {
+          "bytes": "<bytes>",
+          "kind": "record",
+          "path": "<root>/state/omaddons/targets/<ulid>.json"
+        }
+      ],
+      "kept_entries": [],
+      "lost_undos": [
+        "<ulid>"
+      ]
+    },
+    "was_default": false
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.1",
+  "tool_version": "<version>",
+  "warnings": []
+}

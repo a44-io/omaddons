@@ -793,6 +793,16 @@ fn every_binding_path_carries_its_precondition() {
                     &now,
                 )
             }
+            // A purge needs a registered client Battle.net uninstalled; a real run needs
+            // `--yes`, which its dry run accepts.
+            "targets rm" => {
+                s.install_foo();
+                s.home.uninstall("_retail_", "wow");
+                (
+                    argv(&["targets", "rm", "retail", "--purge", "--yes", "--dry-run"]),
+                    &[],
+                )
+            }
             other => panic!("add a row for {other}"), // ubs:ignore — the test's own failure
         };
         let dry: Vec<&str> = dry.iter().map(String::as_str).collect();

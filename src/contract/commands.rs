@@ -435,6 +435,12 @@ pub const REQUIRES: &[Requirement] = &[
         long: "force",
         requires: &["yes"],
     },
+    // A purge's confirmation confirms only a purge (omad-launch-week-fixes-bmcx.2).
+    Requirement {
+        path: "targets rm",
+        long: "yes",
+        requires: &["purge"],
+    },
 ];
 
 /// Every way `table` disagrees with what `cmd` (the command at `path`) enforces: a flag

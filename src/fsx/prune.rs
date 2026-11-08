@@ -46,12 +46,18 @@ pub enum PruneReason {
     /// The Omarchy widget's hidden stages and parked old widgets (M3-D38): a published
     /// install's replaced tree, and the stage of an install whose process is gone.
     WidgetStage,
+    /// What omaddons kept for a client discovery no longer finds (`targets rm --purge`):
+    /// every entry of its `Interface/.omaddons/` a kind names (snapshots, `.repair`
+    /// halves, stages, backups, the `target.json` marker), the state halves of its own
+    /// transactions, and its record and files index. The emptied directories go through
+    /// [`remove_purged_meta`].
+    TargetPurge,
 }
 
 impl PruneReason {
     fn writer(self) -> Writer {
         match self {
-            Self::Retention | Self::PostCommitCleanup => Writer::Mutating,
+            Self::Retention | Self::PostCommitCleanup | Self::TargetPurge => Writer::Mutating,
             Self::PlanExpiry => Writer::Derived,
             Self::BackupPrune => Writer::Backup,
             Self::DoctorGc => Writer::Doctor,
@@ -298,6 +304,92 @@ fn drop_foreign_trash(scopes: &ScopeTable, dirs: &BTreeSet<PathBuf>, lock_held: 
     }
 }
 
+/// The directories of `.omaddons/` a purge empties, in removal order (each before
+/// `.omaddons` itself).
+const PURGED_META_DIRS: [&str; 4] = ["stage", "snapshots", "backups", "trash"];
+
+/// The last step of `targets rm --purge`, under the global lock the caller holds: empties
+/// `meta` (a client's `Interface/.omaddons/`, for a client dir in the scope table) of what
+/// [`PruneReason::TargetPurge`] moved into its trash, then removes its category
+/// directories, its trash and `meta` itself, each only when empty (never recursively).
+/// Returns what is still there, sorted: empty when `meta` is gone, else the entries no
+/// kind names (never deleted) and what a failed delete left in trash.
+///
+/// Deletion is not an `Op`, so this lives with `prune()`: a removed directory was
+/// already empty, and a crash at any point leaves at worst empty directories a repeated
+/// purge removes.
+pub fn remove_purged_meta(
+    scopes: &ScopeTable,
+    meta: &Path,
+    _lock: &GlobalLockGuard,
+) -> Result<Vec<PathBuf>> {
+    let refuse = |why: &str| {
+        Error::new(
+            ErrorCode::ScopeDenied,
+            format!("refusing to empty {}: {why}", meta.display()),
+            Suggestion::command(["omaddons", "status"]),
+        )
+    };
+    let (Some(parent), Some(name)) = (meta.parent(), meta.file_name()) else {
+        return Err(refuse("it names no entry"));
+    };
+    let Some(parent) = canonical_lenient(parent) else {
+        return Err(refuse("its location cannot be resolved"));
+    };
+    let meta = parent.join(name);
+    let is_meta = scopes.client_dirs().iter().any(|client| {
+        meta.strip_prefix(client).is_ok_and(|rel| {
+            let c: Vec<&str> = rel.iter().map(|s| s.to_str().unwrap_or("")).collect();
+            matches!(c.as_slice(), [interface, dot]
+                if interface.eq_ignore_ascii_case("Interface") && dot.eq_ignore_ascii_case(".omaddons"))
+        })
+    });
+    if !is_meta {
+        return Err(refuse("it is no registered client's .omaddons"));
+    }
+    match fs::symlink_metadata(&meta) {
+        // ubs:ignore — an io::ErrorKind, not a secret
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => {
+            return Err(Error::io(
+                &meta,
+                &err,
+                Suggestion::command(["omaddons", "status"]),
+            ));
+        }
+        Ok(m) if !m.is_dir() => return Err(refuse("it is not a directory")),
+        Ok(_) => {}
+    }
+    if let Err(fenced) = scopes.fences().check(FencedOp::Write(&meta)) {
+        return Err(refuse(&skip_reason(&fenced)));
+    }
+    sweep(&meta.join("trash"));
+    for dir in PURGED_META_DIRS {
+        let dir = meta.join(dir);
+        if fs::symlink_metadata(&dir).is_ok_and(|m| m.is_dir()) {
+            // Only an empty directory is removed; a full one stays and is reported.
+            let _ = fs::remove_dir(&dir);
+        }
+    }
+    let _ = fs::remove_dir(&meta);
+    let mut left = Vec::new();
+    if let Ok(entries) = fs::read_dir(&meta) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let inner = entry.file_type().is_ok_and(|t| t.is_dir())
+                && PURGED_META_DIRS
+                    .iter()
+                    .any(|d| entry.file_name().to_str() == Some(d));
+            match fs::read_dir(&path) {
+                Ok(children) if inner => left.extend(children.flatten().map(|c| c.path())),
+                _ => left.push(path),
+            }
+        }
+    }
+    left.sort();
+    Ok(left)
+}
+
 /// Whether `victim` is named for transaction `tx` (`<tx>`, `<tx>.lock`, `<tx>.jsonl`).
 fn named_for(victim: &Path, tx: &str) -> bool {
     victim
@@ -372,7 +464,7 @@ fn classify(
     if kind == Kind::DoctorLatest && meta.is_some() && !symlink {
         return refuse("prune removes only the doctor's `latest` link");
     }
-    if kind.reason() != reason {
+    if !kind.admits(reason) {
         return refuse(&format!(
             "{kind:?} entries are pruned for {:?}, not {reason:?}",
             kind.reason()
@@ -583,9 +675,15 @@ enum Kind {
     OmarchyStage,
     /// `<plugins>/.omaddons.old-<op>`
     OmarchyOld,
+    /// `<client dir>/Interface/.omaddons/target.json`, the client's marker.
+    ClientMarker,
+    /// `<state>/targets/<key>.json` and `<key>.files.json`: a target's record and files
+    /// index.
+    TargetRecord,
 }
 
 impl Kind {
+    /// The reason that owns this kind: the one that deletes it in normal operation.
     fn reason(self) -> PruneReason {
         match self {
             Self::ClientSnapshot | Self::StateSnapshot | Self::Blob => PruneReason::Retention,
@@ -600,7 +698,24 @@ impl Kind {
                 PruneReason::DoctorGc
             }
             Self::OmarchyStage | Self::OmarchyOld => PruneReason::WidgetStage,
+            Self::ClientMarker | Self::TargetRecord => PruneReason::TargetPurge,
         }
+    }
+
+    /// Whether `reason` may delete this kind: its owner, and for a purged client
+    /// ([`PruneReason::TargetPurge`]) also everything of its `.omaddons/` and the state
+    /// halves of its transactions.
+    fn admits(self, reason: PruneReason) -> bool {
+        reason == self.reason()
+            || (reason == PruneReason::TargetPurge
+                && matches!(
+                    self,
+                    Self::ClientSnapshot
+                        | Self::ClientRepair
+                        | Self::ClientStage
+                        | Self::ClientBackup
+                        | Self::StateSnapshot
+                ))
     }
 }
 
@@ -616,6 +731,13 @@ fn location(scopes: &ScopeTable, victim: &Path) -> Option<(Kind, PathBuf)> {
             continue;
         };
         let c: Vec<&str> = rel.iter().map(|s| s.to_str().unwrap_or("")).collect();
+        // The marker, exactly: `.omaddons/target.json`.
+        if let [interface, meta, "target.json"] = c.as_slice()
+            && interface.eq_ignore_ascii_case("Interface")
+            && meta.eq_ignore_ascii_case(".omaddons")
+        {
+            return Some((Kind::ClientMarker, victim.parent()?.join("trash")));
+        }
         let [interface, meta, category, name] = c.as_slice() else {
             return None;
         };
@@ -648,6 +770,7 @@ fn location(scopes: &ScopeTable, victim: &Path) -> Option<(Kind, PathBuf)> {
             ["inflight", name] if name.strip_suffix(".lock").is_some_and(is_tx) => Kind::Inflight,
             ["doctor", "runs", name] if is_plain(name) => Kind::DoctorRun,
             ["doctor", "latest"] => Kind::DoctorLatest,
+            ["targets", name] if is_record(name) => Kind::TargetRecord,
             _ => return None,
         };
         return Some((kind, scopes.state_dir().join("trash")));
@@ -737,6 +860,13 @@ pub(crate) fn canonical_lenient(dir: &Path) -> Option<PathBuf> {
 fn is_repair_half(name: &str) -> bool {
     name.strip_suffix(crate::state::paths::REPAIR_SUFFIX)
         .is_some_and(|tx| tx.parse::<TxId>().is_ok())
+}
+
+/// `<key>.json` or `<key>.files.json`: a target's record or files index, by its key.
+fn is_record(name: &str) -> bool {
+    name.strip_suffix(".files.json")
+        .or_else(|| name.strip_suffix(".json"))
+        .is_some_and(|key| key.parse::<crate::model::TargetKey>().is_ok())
 }
 
 fn is_plain(name: &str) -> bool {
@@ -1016,6 +1146,15 @@ mod tests {
                 cache.join("plans").join(format!("{TX}.lease")),
                 PruneReason::PlanExpiry,
             ),
+            (meta.join("target.json"), PruneReason::TargetPurge),
+            (
+                state.join("targets").join(format!("{TX}.json")),
+                PruneReason::TargetPurge,
+            ),
+            (
+                state.join("targets").join(format!("{TX}.files.json")),
+                PruneReason::TargetPurge,
+            ),
         ];
         let reasons = [
             PruneReason::Retention,
@@ -1023,13 +1162,18 @@ mod tests {
             PruneReason::PlanExpiry,
             PruneReason::BackupPrune,
             PruneReason::DoctorGc,
+            PruneReason::TargetPurge,
         ];
+        // A purge also takes everything of the client's `.omaddons/` and the state halves.
+        let purged = |victim: &Path| {
+            victim.starts_with(&meta) || victim.starts_with(state.join("snapshots"))
+        };
         for (victim, own) in &cases {
             let is_file = victim.extension().is_some() || victim.starts_with(cache.join("blobs"));
             make(victim, !is_file);
             for reason in reasons {
                 let result = classify(&f.scopes, reason, victim, None);
-                if reason == *own {
+                if reason == *own || (reason == PruneReason::TargetPurge && purged(victim)) {
                     assert!(
                         matches!(result.unwrap(), Classified::Planned(_)),
                         "{} for {reason:?}",
@@ -1045,6 +1189,81 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// A purge: every entry of `.omaddons/` a kind names, the state halves and the record
+    /// go through trash; then the emptied directories and `.omaddons` itself go, except
+    /// what no kind names, which stays and is reported; what a crashed purge left in
+    /// trash is swept.
+    #[test]
+    fn a_purge_deletes_what_its_kinds_name_then_removes_the_emptied_meta() {
+        let f = fixture();
+        let meta = f.client.join("Interface/.omaddons");
+        let state = f.paths.state_dir().to_path_buf();
+        let victims = [
+            make(&meta.join("target.json"), false),
+            make(&meta.join("snapshots").join(TX), true),
+            make(&meta.join(format!("snapshots/{TX}.repair")), true),
+            make(&meta.join("stage").join(TX), true),
+            make(&meta.join("backups/2026-10-14T21-00-00Z"), true),
+            make(&state.join("snapshots").join(TX), true),
+            make(&state.join(format!("targets/{TX}.json")), false),
+            make(&state.join(format!("targets/{TX}.files.json")), false),
+        ];
+        let leftover = make(&meta.join("trash/01JB8Q2VA0-0-crashed"), true);
+        let stray = make(&meta.join("notes.txt"), false);
+        let odd = make(&meta.join("snapshots/not-a-tx"), true);
+        let report = prune(
+            &f.scopes,
+            PruneReason::TargetPurge,
+            &victims,
+            LockUse::Acquire,
+        )
+        .unwrap();
+        assert_eq!(report.removed, victims.to_vec(), "{:?}", report.skipped);
+        assert!(victims.iter().all(|v| !v.exists()));
+        assert!(
+            !leftover.exists(),
+            "the trash a crashed purge left is swept"
+        );
+        // Nor does a purge reach AddOns or WTF.
+        for game in [f.client.join("Interface/AddOns/Foo"), f.client.join("WTF")] {
+            let err = prune(
+                &f.scopes,
+                PruneReason::TargetPurge,
+                std::slice::from_ref(&game),
+                LockUse::Acquire,
+            )
+            .unwrap_err();
+            assert_eq!(err.code, ErrorCode::ScopeDenied, "{game:?}");
+        }
+
+        let guard = GlobalLock::acquire(&f.paths, "test").unwrap();
+        let left = remove_purged_meta(&f.scopes, &meta, &guard).unwrap();
+        assert_eq!(
+            left,
+            vec![stray.clone(), odd.clone()],
+            "what no kind names stays"
+        );
+        assert!(meta.exists() && !meta.join("stage").exists() && !meta.join("trash").exists());
+        fs::remove_file(&stray).unwrap();
+        fs::remove_dir_all(&odd).unwrap();
+        assert_eq!(
+            remove_purged_meta(&f.scopes, &meta, &guard).unwrap(),
+            Vec::<PathBuf>::new()
+        );
+        assert!(!meta.exists());
+        assert!(f.client.join("Interface/AddOns/Foo").is_dir());
+        // Gone already: nothing to do.
+        assert_eq!(
+            remove_purged_meta(&f.scopes, &meta, &guard).unwrap(),
+            Vec::<PathBuf>::new()
+        );
+        // Only a registered client's `.omaddons`.
+        for stranger in [f.client.join("Interface/AddOns"), state.join("snapshots")] {
+            let err = remove_purged_meta(&f.scopes, &stranger, &guard).unwrap_err();
+            assert_eq!(err.code, ErrorCode::ScopeDenied, "{stranger:?}");
         }
     }
 
@@ -2081,7 +2300,8 @@ mod tests {
                         .join(format!("{TX}.json"));
                     (vec![make(&record, false)], vec![])
                 },
-                Refused("not a prunable location"),
+                // Only a purge of its client deletes a record.
+                Refused("entries are pruned for TargetPurge"),
             ),
             (
                 "a journal",

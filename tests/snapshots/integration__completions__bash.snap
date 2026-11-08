@@ -3025,7 +3025,7 @@ _omaddons() {
             return 0
             ;;
         omaddons__subcmd__targets__subcmd__rm)
-            opts="-t -v -h --json --robot --format --flavor --target --dry-run --actor --reason --offline --while-running --if-match --no-color --no-progress --progress --quiet --verbose --help"
+            opts="-t -v -h --purge --yes --json --robot --format --flavor --target --dry-run --actor --reason --offline --while-running --if-match --no-color --no-progress --progress --quiet --verbose --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0

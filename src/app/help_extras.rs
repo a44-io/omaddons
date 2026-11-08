@@ -553,11 +553,15 @@ pub const EXTRAS: &[Extras] = &[
         examples: &[
             ("omaddons targets rm warmane", "forget it; its files stay"),
             (
-                "omaddons targets rm warmane --dry-run",
-                "what it would forget",
+                "omaddons targets rm classic --purge --dry-run",
+                "an uninstalled client: what a purge deletes",
+            ),
+            (
+                "omaddons targets rm classic --purge --yes --if-match <token>",
+                "delete exactly that preview",
             ),
         ],
-        see_also: &["targets"],
+        see_also: &["targets", "backup list"],
     },
     Extras {
         path: "targets rename",

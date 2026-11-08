@@ -877,6 +877,10 @@ const PRUNE_CALLERS: &[(&str, &str)] = &[
         "src/doctor/gc.rs",
         "doctor gc: the retention plan's deletions, the only doctor file that may prune (M4-D36)",
     ),
+    (
+        "src/app/targets/purge.rs",
+        "targets rm --purge: an uninstalled client's .omaddons entries, its own transactions' state halves and its record, under the global lock it hands off",
+    ),
 ];
 
 /// The `prune(` calls in the production code of `files` (each a label and its text)

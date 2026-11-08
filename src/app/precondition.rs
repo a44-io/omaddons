@@ -46,6 +46,8 @@ pub const BINDING_COMMANDS: &[&str] = &[
     "copy",
     "doctor fix",
     "doctor gc",
+    // Its unregistering ([`of_forget`]), or a purge ([`of_purge`]).
+    "targets rm",
 ];
 
 /// The token format's version and separator.
@@ -1199,6 +1201,82 @@ pub fn of_gc(parts: &GcTokenParts<'_>) -> Precondition {
             .collect(),
         json!({"deletions": deletions, "latest": latest}),
         json!({"identities": identities, "undo_lost": undo_lost}),
+    )
+}
+
+// ---------------------------------------------------------------------------------------
+// `targets rm`.
+
+/// A plain `targets rm`'s precondition: the registry entry it forgets, by key, with the
+/// id it is named by and the client directory it was registered at, so a token from a
+/// preview stales when the id now names another client (a rename, a forget and an add
+/// in between). It deletes nothing, so nothing else is observed.
+pub fn of_forget(key: TargetKey, id: &str, client_dir: &std::path::Path) -> Precondition {
+    Precondition::new(
+        "targets rm",
+        vec![(TargetRef::Key(key), None)],
+        json!({"forget": id}),
+        json!({"client_dir": client_dir.to_string_lossy()}),
+    )
+}
+
+// ---------------------------------------------------------------------------------------
+// `targets rm --purge`.
+
+/// What `targets rm --purge`'s token binds.
+pub struct PurgeTokenParts<'a> {
+    pub key: TargetKey,
+    /// Each deletion: its kind's wire name and its path.
+    pub deletions: &'a [(&'static str, &'a std::path::Path)],
+    /// Each deletion's identity as observed (`None`: gone when it was read).
+    pub identities: &'a [(&'a std::path::Path, Option<crate::fsx::FileId>)],
+    /// The entries of `.omaddons/` it leaves alone.
+    pub kept: &'a [std::path::PathBuf],
+}
+
+/// `targets rm --purge`'s precondition (omad-launch-week-fixes-bmcx.2). A preview and its
+/// bound run are two processes, so nothing of either run, and no time, enters it:
+/// - the target: the purged client, by key and without a generation (a purge reads no
+///   addon record, it deletes it);
+/// - the selection: each deletion (`kind`, `path`) sorted by path, so a snapshot or a
+///   backup that appears or goes stales it;
+/// - what it observed: each deletion's identity (inode and birth time, as decimal
+///   strings, never the device), so one replaced under the same name stales it, and the
+///   entries it keeps.
+///
+/// Sizes derive from the set and stay out, as in `doctor gc`.
+pub fn of_purge(parts: &PurgeTokenParts<'_>) -> Precondition {
+    let text = |path: &std::path::Path| path.to_string_lossy().into_owned();
+    let mut deletions: Vec<(String, &str)> = parts
+        .deletions
+        .iter()
+        .map(|(kind, path)| (text(path), *kind))
+        .collect();
+    deletions.sort();
+    let mut identities: Vec<Value> = parts
+        .identities
+        .iter()
+        .map(|(path, id)| {
+            json!({
+                "path": text(path),
+                "ino": id.map(|id| id.ino.to_string()),
+                "born_ns": id.and_then(|id| id.born_ns).map(|ns| ns.to_string()),
+            })
+        })
+        .collect();
+    identities.sort_by_key(Value::to_string);
+    let mut kept: Vec<String> = parts.kept.iter().map(|p| text(p)).collect();
+    kept.sort();
+    Precondition::new(
+        "targets rm",
+        vec![(TargetRef::Key(parts.key), None)],
+        json!({
+            "deletions": deletions
+                .iter()
+                .map(|(path, kind)| json!({"kind": kind, "path": path}))
+                .collect::<Vec<_>>(),
+        }),
+        json!({"identities": identities, "kept": kept}),
     )
 }
 
@@ -2668,6 +2746,7 @@ mod tests {
                 "copy",
                 "doctor fix",
                 "doctor gc",
+                "targets rm",
             ]
         );
         assert_eq!(

@@ -1448,6 +1448,8 @@ Register-ArgumentCompleter -Native -CommandName 'omaddons' -ScriptBlock {
             [CompletionResult]::new('--reason', '--reason', [CompletionResultType]::ParameterName, 'Why, recorded verbatim in history')
             [CompletionResult]::new('--if-match', '--if-match', [CompletionResultType]::ParameterName, 'Run only what the preview that returned this token showed')
             [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress events on stderr')
+            [CompletionResult]::new('--purge', '--purge', [CompletionResultType]::ParameterName, 'Also delete what omaddons kept for it (an uninstalled client only)')
+            [CompletionResult]::new('--yes', '--yes', [CompletionResultType]::ParameterName, 'Confirm a purge: delete what its preview lists')
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'One JSON envelope on stdout')
             [CompletionResult]::new('--robot', '--robot', [CompletionResultType]::ParameterName, 'The same as --json')
             [CompletionResult]::new('--dry-run', '--dry-run', [CompletionResultType]::ParameterName, 'Show the plan without changing anything')

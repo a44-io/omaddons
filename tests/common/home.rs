@@ -65,6 +65,38 @@ impl Home {
         self.client(folder).join("Interface/AddOns")
     }
 
+    /// What Battle.net does to `folder` when it uninstalls `product` (`wow`,
+    /// `wow_classic`, …): its `.build.info` row goes, and every file but `Interface/`
+    /// (omaddons' own data and the AddOns), leaving fonts, a loader DLL and Proton's
+    /// shader cache, as it did on the development machine (omad-launch-week-fixes-bmcx.1).
+    pub fn uninstall(&self, folder: &str, product: &str) {
+        let build_info = self.root.join(".build.info");
+        let before = fs::read_to_string(&build_info).unwrap();
+        let row_end = format!("|{product}");
+        let kept: String = before
+            .lines()
+            .filter(|line| !line.ends_with(&row_end))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        assert_ne!(kept, before, "{product} had a .build.info row");
+        fs::write(&build_info, kept).unwrap();
+        let dir = self.client(folder);
+        for entry in fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.file_name().is_some_and(|n| n == "Interface") {
+                continue;
+            }
+            if path.is_dir() {
+                fs::remove_dir_all(&path).unwrap();
+            } else {
+                fs::remove_file(&path).unwrap();
+            }
+        }
+        fs::create_dir_all(dir.join("Fonts")).unwrap();
+        fs::write(dir.join("Wow_loader.dll"), "MZ").unwrap();
+        fs::write(dir.join("vkd3d-proton.cache"), "").unwrap();
+    }
+
     /// `<state>/omaddons`.
     pub fn state(&self) -> PathBuf {
         self.env.state().join("omaddons")

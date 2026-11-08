@@ -31,6 +31,10 @@ use crate::state::paths::Paths;
 use crate::state::records::load_record;
 use crate::state::registry::{Origin, Registry, RegistryEntry, load_registry};
 
+mod purge;
+
+pub use purge::{PurgeBackup, PurgeData, PurgeDeletion, PurgeKind};
+
 /// `targets`' flags and actions.
 #[derive(Debug, Clone, clap::Args)]
 pub struct TargetsArgs {
@@ -57,10 +61,21 @@ pub enum TargetsAction {
     },
     /// Forget a client
     ///
-    /// Unregister it; nothing in its directory is touched.
+    /// Unregister it; nothing in its directory is touched. With --purge, a client that is
+    /// no longer installed also loses what omaddons kept for it.
     Rm {
         /// The target's id
         id: String,
+        /// Also delete what omaddons kept for it (an uninstalled client only)
+        ///
+        /// Its Interface/.omaddons/ (WTF backups, undo snapshots, its marker), the state
+        /// halves of its transactions and its record. It cannot be undone: preview it
+        /// with --dry-run, then run it with --yes.
+        #[arg(long)]
+        purge: bool,
+        /// Confirm a purge: delete what its preview lists
+        #[arg(long, requires = "purge")]
+        yes: bool,
     },
     /// Give a target a new id
     Rename {
@@ -157,10 +172,16 @@ pub struct AddData {
 pub struct RmData {
     pub id: String,
     pub key: TargetKey,
-    /// Addons its record still lists (the record is kept).
+    /// Addons its record still lists (the record is kept, unless purged).
     pub managed_addons: usize,
     pub was_default: bool,
     pub dry_run: bool,
+    /// What a purge deletes (a dry run: would delete); omitted without `--purge`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub purge: Option<PurgeData>,
+    /// The token `--if-match` binds the run to, on a dry run (the entry it forgets, or
+    /// everything a purge deletes); `null` on a real run.
+    pub precondition: Option<String>,
 }
 
 /// `targets rename`.
@@ -517,8 +538,11 @@ pub fn add(ctx: &Context, path: &Path, name: Option<&str>) -> Result<Done<AddDat
     })
 }
 
-/// `targets rm <id>`.
-pub fn rm(ctx: &Context, id: &str) -> Result<Done<RmData>> {
+/// `targets rm <id> [--purge [--yes]]`.
+pub fn rm(ctx: &Context, id: &str, purge: bool, yes: bool) -> Result<Done<RmData>> {
+    if purge {
+        return purge::run(ctx, id, yes);
+    }
     let (paths, _) = base()?;
     // rm needs neither discovery nor config.toml, and a broken one must not stop it;
     // what a readable one says about itself is still said.
@@ -536,8 +560,19 @@ pub fn rm(ctx: &Context, id: &str) -> Result<Done<RmData>> {
     let managed_addons = load_record(&paths, &entry.key)?.value.addons.len();
     // ubs:ignore — a target key is a public ULID identifier, not a secret
     let was_default = registry.default == Some(entry.key);
-    if !ctx.dry_run {
+    let preview = super::precondition::preview_argv(&ctx.argv);
+    let token = super::precondition::of_forget(entry.key, &entry.id, &entry.client_dir);
+    if ctx.dry_run {
+        super::precondition::check(ctx.if_match.as_deref(), &token, &preview)?;
+    } else {
         locked(ctx, &paths, "targets rm", &[], |reg, s| {
+            // Under the lock, the entry the id names now is the one forgotten.
+            let now = reg
+                .registry()
+                .entry_by_id(id)
+                .map(|e| super::precondition::of_forget(e.key, &e.id, &e.client_dir))
+                .ok_or_else(|| unknown_id(id))?;
+            super::precondition::check(ctx.if_match.as_deref(), &now, &preview)?;
             let removed = reg.remove(s, id)?;
             super::record_setting(ctx, s, &paths, TxKind::Target, Some(removed.key));
             Ok(removed)
@@ -551,6 +586,8 @@ pub fn rm(ctx: &Context, id: &str) -> Result<Done<RmData>> {
             managed_addons,
             was_default,
             dry_run: ctx.dry_run,
+            purge: None,
+            precondition: ctx.dry_run.then(|| token.token()),
         },
         warnings: Vec::new(),
         render: render_rm,
@@ -784,12 +821,22 @@ fn render_rm(data: &RmData, w: &mut dyn Write, _: &Style) -> std::io::Result<()>
     } else {
         "unregistered"
     };
+    if let Some(purged) = &data.purge {
+        purge::render(data, purged, w)?;
+        return writeln!(w, "{verb} {}", data.id);
+    }
     writeln!(w, "{verb} {} (its files are untouched)", data.id)?;
     if data.managed_addons > 0 {
         writeln!(
             w,
             "its record still lists {} addons; `omaddons targets add` restores it",
             data.managed_addons
+        )?;
+    }
+    if let Some(token) = &data.precondition {
+        writeln!(
+            w,
+            "precondition {token} (forget exactly this one: --if-match {token})"
         )?;
     }
     Ok(())

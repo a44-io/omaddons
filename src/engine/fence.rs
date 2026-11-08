@@ -603,6 +603,22 @@ pub fn under_lock(
     Ok(())
 }
 
+/// Refuses, as the one writer would, when `fences` is closed or one of them overlaps a
+/// path of `paths` (each canonicalized through its parent, a deletion's whole tree
+/// included): the first such fence's stop. For a command that deletes trees `prune()`
+/// would otherwise skip one by one (`targets rm --purge`).
+pub fn refuse_covered(fences: &FenceSet, paths: &[PathBuf]) -> Result<()> {
+    if let Some((resource, stop)) = fences.closed() {
+        return Err(refusal(resource.to_owned(), stop.clone(), true));
+    }
+    for path in paths {
+        if let Some(fence) = fences.covering(&canonical_file(path)) {
+            return Err(refusal(fence.resource.clone(), fence.stop.clone(), false));
+        }
+    }
+    Ok(())
+}
+
 /// The error a fence refuses with, as the one writer builds it.
 fn refusal(resource: String, stop: FenceStop, closed: bool) -> Error {
     FsxError::Fenced(Box::new(Fenced {
