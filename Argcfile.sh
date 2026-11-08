@@ -21,6 +21,14 @@ widget-test() {
     scripts/widget-test.sh --qml
 }
 
+# @cmd Render every widget state offscreen into PNGs (the bar button and the panel), with Omarchy's own shell kit and theme when installed
+# @option --out=target/widget-snapshots  Where the PNGs go (replaced on every run)
+# @flag --stub-kit  Draw with the test stubs instead of Omarchy's shell kit
+# @meta require-tools bun
+widget-snapshots() {
+    scripts/widget-test.sh --snapshots "$argc_out" ${argc_stub_kit:+--stub-kit}
+}
+
 # @cmd Benchmark the checkpoint's timing targets with hyperfine on a synthetic home (never part of the gate)
 # @meta require-tools hyperfine,jq
 bench() {
