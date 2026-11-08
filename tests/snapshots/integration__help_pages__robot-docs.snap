@@ -1,0 +1,158 @@
+---
+source: tests/help_pages.rs
+description: "a command's -h and --help pages as this build renders them at 100 columns without color; any change to an about, a flag, a value, a heading or the layout changes them: review with cargo insta review, or re-accept with INSTA_UPDATE=always cargo test --test integration help_pages:: and review git diff tests/snapshots/"
+---
+==> omaddons robot-docs -h <==
+Documentation for agents: the guide (bare), the JSON Schemas and the error catalog
+
+Usage: omaddons robot-docs [OPTIONS] [COMMAND]
+
+Commands:
+  guide          The agent guide as Markdown: the same text as the skill
+  schema         The JSON Schema of every command's data, the envelope, the stderr events and the
+                 files, or of one command's data
+  errors         Every error and warning code: exit, retryability, meaning, details schema and fix
+                 pattern
+  install-skill  Install the agent guide as a skill (SKILL.md) where coding agents load skills
+
+Global options:
+      --json
+          One JSON envelope on stdout
+
+      --robot
+          The same as --json
+
+      --format <FORMAT>
+          Output format
+          
+          [possible values: json, human]
+
+  -t, --target <TARGET>
+          The client to act on: id, key, game mode (sod and hardcore select the Classic Era client),
+          family, product, flavor folder, path, or all (every client)
+          
+          [alias: --flavor]
+
+      --dry-run
+          Show the plan without changing anything (ignored by commands that change nothing)
+
+      --actor <ACTOR>
+          Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
+
+      --reason <TEXT>
+          Why, recorded verbatim in history (at most 200 characters; ignored by commands that change
+          nothing)
+
+      --offline
+          Fail any network access [env: OMADDONS_OFFLINE=1]
+
+      --while-running
+          Allow folder changes while the client runs (never SavedVariables)
+
+      --if-match <TOKEN>
+          Change nothing unless the plan is still the one the --dry-run that returned this token
+          (data.precondition) showed
+
+      --no-color
+          No ANSI color
+
+      --no-progress
+          No progress output
+
+      --progress <MODE>
+          Progress events on stderr
+          
+          [possible values: json, human, none]
+
+      --quiet
+          Only errors on stderr
+
+  -v, --verbose...
+          More detail (repeatable)
+
+  -h, --help
+          Show help
+
+Examples:
+  omaddons robot-docs                           the agent guide (the same as robot-docs guide)
+  omaddons robot-docs schema --json             every schema: envelope, events, commands, files
+  omaddons robot-docs schema install --json     the data of one command
+  omaddons robot-docs schema backup restore     a nested command, by its path
+  omaddons robot-docs errors --json             every error and warning code
+==> omaddons robot-docs --help <==
+Documentation for agents: the guide (bare), the JSON Schemas and the error catalog
+
+Usage: omaddons robot-docs [OPTIONS] [COMMAND]
+
+Commands:
+  guide          The agent guide as Markdown: the same text as the skill
+  schema         The JSON Schema of every command's data, the envelope, the stderr events and the
+                 files, or of one command's data
+  errors         Every error and warning code: exit, retryability, meaning, details schema and fix
+                 pattern
+  install-skill  Install the agent guide as a skill (SKILL.md) where coding agents load skills
+
+Global options:
+      --json
+          One JSON envelope on stdout
+
+      --robot
+          The same as --json
+
+      --format <FORMAT>
+          Output format
+          
+          [possible values: json, human]
+
+  -t, --target <TARGET>
+          The client to act on: id, key, game mode (sod and hardcore select the Classic Era client),
+          family, product, flavor folder, path, or all (every client)
+          
+          [alias: --flavor]
+
+      --dry-run
+          Show the plan without changing anything (ignored by commands that change nothing)
+
+      --actor <ACTOR>
+          Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
+
+      --reason <TEXT>
+          Why, recorded verbatim in history (at most 200 characters; ignored by commands that change
+          nothing)
+
+      --offline
+          Fail any network access [env: OMADDONS_OFFLINE=1]
+
+      --while-running
+          Allow folder changes while the client runs (never SavedVariables)
+
+      --if-match <TOKEN>
+          Change nothing unless the plan is still the one the --dry-run that returned this token
+          (data.precondition) showed
+
+      --no-color
+          No ANSI color
+
+      --no-progress
+          No progress output
+
+      --progress <MODE>
+          Progress events on stderr
+          
+          [possible values: json, human, none]
+
+      --quiet
+          Only errors on stderr
+
+  -v, --verbose...
+          More detail (repeatable)
+
+  -h, --help
+          Show help
+
+Examples:
+  omaddons robot-docs                           the agent guide (the same as robot-docs guide)
+  omaddons robot-docs schema --json             every schema: envelope, events, commands, files
+  omaddons robot-docs schema install --json     the data of one command
+  omaddons robot-docs schema backup restore     a nested command, by its path
+  omaddons robot-docs errors --json             every error and warning code

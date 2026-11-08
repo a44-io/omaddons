@@ -1,0 +1,79 @@
+---
+source: tests/help_pages.rs
+description: "a command's -h and --help pages as this build renders them at 100 columns without color; any change to an about, a flag, a value, a heading or the layout changes them: review with cargo insta review, or re-accept with INSTA_UPDATE=always cargo test --test integration help_pages:: and review git diff tests/snapshots/"
+---
+==> omaddons <==
+World of Warcraft addon manager for Linux and an Omarchy widget
+
+Usage: omaddons [OPTIONS] <COMMAND>
+
+Look      status  list  outdated  info  search  errors  export  history  plans
+          net-log  doctor
+Change    install  update  pin  unpin  adopt  sync  copy  remove  undo  apply
+          backup
+Setup     targets  config  auth  omarchy  completions  robot-docs  capabilities
+          help
+
+Start with `omaddons status`. Run `omaddons help <command>` for details; add
+--json for one JSON envelope on stdout.
+Agents: omaddons capabilities --json · omaddons robot-docs guide
+        omaddons doctor --json
+
+Exit codes:
+  0  ok            Success, including partial success (partial: true)
+  1  failed        Runtime failure; see error.retryable
+  2  usage         Unknown command or flag, bad argument, bad ref syntax
+  3  not_found     Unknown or ambiguous target, ref, addon, plan or transaction
+  4  refused       Safety refusal; fix names the flag or command
+  5  locked        Lock held past the acquire timeout; retryable
+  6  check_failed  An opt-in assertion (--check, --strict) failed
+==> omaddons -h <==
+World of Warcraft addon manager for Linux and an Omarchy widget
+
+Usage: omaddons [OPTIONS] <COMMAND>
+
+Look      status  list  outdated  info  search  errors  export  history  plans
+          net-log  doctor
+Change    install  update  pin  unpin  adopt  sync  copy  remove  undo  apply
+          backup
+Setup     targets  config  auth  omarchy  completions  robot-docs  capabilities
+          help
+
+Start with `omaddons status`. Run `omaddons help <command>` for details; add
+--json for one JSON envelope on stdout.
+Agents: omaddons capabilities --json · omaddons robot-docs guide
+        omaddons doctor --json
+
+Exit codes:
+  0  ok            Success, including partial success (partial: true)
+  1  failed        Runtime failure; see error.retryable
+  2  usage         Unknown command or flag, bad argument, bad ref syntax
+  3  not_found     Unknown or ambiguous target, ref, addon, plan or transaction
+  4  refused       Safety refusal; fix names the flag or command
+  5  locked        Lock held past the acquire timeout; retryable
+  6  check_failed  An opt-in assertion (--check, --strict) failed
+==> omaddons --help <==
+World of Warcraft addon manager for Linux and an Omarchy widget
+
+Usage: omaddons [OPTIONS] <COMMAND>
+
+Look      status  list  outdated  info  search  errors  export  history  plans
+          net-log  doctor
+Change    install  update  pin  unpin  adopt  sync  copy  remove  undo  apply
+          backup
+Setup     targets  config  auth  omarchy  completions  robot-docs  capabilities
+          help
+
+Start with `omaddons status`. Run `omaddons help <command>` for details; add
+--json for one JSON envelope on stdout.
+Agents: omaddons capabilities --json · omaddons robot-docs guide
+        omaddons doctor --json
+
+Exit codes:
+  0  ok            Success, including partial success (partial: true)
+  1  failed        Runtime failure; see error.retryable
+  2  usage         Unknown command or flag, bad argument, bad ref syntax
+  3  not_found     Unknown or ambiguous target, ref, addon, plan or transaction
+  4  refused       Safety refusal; fix names the flag or command
+  5  locked        Lock held past the acquire timeout; retryable
+  6  check_failed  An opt-in assertion (--check, --strict) failed

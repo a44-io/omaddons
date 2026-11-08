@@ -1,0 +1,6 @@
+# Help-page check violations that predate tests/help_pages.rs. This list may only shrink: a
+# page that breaks a check is fixed, never added here, and an entry that no longer violates
+# fails the test until its line is deleted. It was empty when the harness landed
+# (2026-11-08): no page had a line over its width, an ESC byte or a developer note.
+# Format: <check> | <command line>, the check one of width, ansi or hygiene, the command
+# line `omaddons` and its path (`hygiene | omaddons doctor fix`).

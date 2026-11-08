@@ -1,0 +1,196 @@
+---
+source: tests/help_pages.rs
+description: "a command's -h and --help pages as this build renders them at 100 columns without color; any change to an about, a flag, a value, a heading or the layout changes them: review with cargo insta review, or re-accept with INSTA_UPDATE=always cargo test --test integration help_pages:: and review git diff tests/snapshots/"
+---
+==> omaddons errors -h <==
+Which addon most likely throws Lua errors, how often, and whether an update may fix it (from
+BugGrabber)
+
+Usage: omaddons errors [OPTIONS]
+       omaddons errors <COMMAND>
+
+Commands:
+  dismiss  Mark the errors read as seen, every client's or -t's: they stop being new (it cannot be
+           undone)
+
+Options:
+      --since <WHEN>
+          Only errors seen since then: 30m, 12h, 1d, 2w, or an RFC 3339 time
+
+      --addon <ADDON>
+          Only one addon's errors (by addon or folder name)
+
+      --limit <N>
+          Addons shown per client [default: 10]
+
+      --received
+          Also list the errors other players sent through BugSack, apart
+
+      --raw-details
+          Also show messages, locals and code as written (they may hold names)
+
+      --check
+          Exit 6 when a client has new errors, or could not be read completely
+
+Global options:
+      --json
+          One JSON envelope on stdout
+
+      --robot
+          The same as --json
+
+      --format <FORMAT>
+          Output format
+          
+          [possible values: json, human]
+
+  -t, --target <TARGET>
+          The client to act on: id, key, game mode (sod and hardcore select the Classic Era client),
+          family, product, flavor folder, path, or all (every client)
+          
+          [alias: --flavor]
+
+      --dry-run
+          Show the plan without changing anything (ignored by commands that change nothing)
+
+      --actor <ACTOR>
+          Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
+
+      --reason <TEXT>
+          Why, recorded verbatim in history (at most 200 characters; ignored by commands that change
+          nothing)
+
+      --offline
+          Fail any network access [env: OMADDONS_OFFLINE=1]
+
+      --while-running
+          Allow folder changes while the client runs (never SavedVariables)
+
+      --if-match <TOKEN>
+          Change nothing unless the plan is still the one the --dry-run that returned this token
+          (data.precondition) showed
+
+      --no-color
+          No ANSI color
+
+      --no-progress
+          No progress output
+
+      --progress <MODE>
+          Progress events on stderr
+          
+          [possible values: json, human, none]
+
+      --quiet
+          Only errors on stderr
+
+  -v, --verbose...
+          More detail (repeatable)
+
+  -h, --help
+          Show help
+
+Examples:
+  omaddons errors                                  every client, newest first
+  omaddons errors --since 1d --json                the last day, for an agent
+  omaddons errors -t retail --addon WeakAuras -v   one addon, every frame
+  omaddons errors --check                          exit 6 on new errors
+
+Messages an addon wrote itself may hold other players' names: they show only
+with --raw-details. Errors other players sent through BugSack are counted apart.
+==> omaddons errors --help <==
+Which addon most likely throws Lua errors, how often, and whether an update may fix it (from
+BugGrabber)
+
+Usage: omaddons errors [OPTIONS]
+       omaddons errors <COMMAND>
+
+Commands:
+  dismiss  Mark the errors read as seen, every client's or -t's: they stop being new (it cannot be
+           undone)
+
+Options:
+      --since <WHEN>
+          Only errors seen since then: 30m, 12h, 1d, 2w, or an RFC 3339 time
+
+      --addon <ADDON>
+          Only one addon's errors (by addon or folder name)
+
+      --limit <N>
+          Addons shown per client [default: 10]
+
+      --received
+          Also list the errors other players sent through BugSack, apart
+
+      --raw-details
+          Also show messages, locals and code as written (they may hold names)
+
+      --check
+          Exit 6 when a client has new errors, or could not be read completely
+
+Global options:
+      --json
+          One JSON envelope on stdout
+
+      --robot
+          The same as --json
+
+      --format <FORMAT>
+          Output format
+          
+          [possible values: json, human]
+
+  -t, --target <TARGET>
+          The client to act on: id, key, game mode (sod and hardcore select the Classic Era client),
+          family, product, flavor folder, path, or all (every client)
+          
+          [alias: --flavor]
+
+      --dry-run
+          Show the plan without changing anything (ignored by commands that change nothing)
+
+      --actor <ACTOR>
+          Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
+
+      --reason <TEXT>
+          Why, recorded verbatim in history (at most 200 characters; ignored by commands that change
+          nothing)
+
+      --offline
+          Fail any network access [env: OMADDONS_OFFLINE=1]
+
+      --while-running
+          Allow folder changes while the client runs (never SavedVariables)
+
+      --if-match <TOKEN>
+          Change nothing unless the plan is still the one the --dry-run that returned this token
+          (data.precondition) showed
+
+      --no-color
+          No ANSI color
+
+      --no-progress
+          No progress output
+
+      --progress <MODE>
+          Progress events on stderr
+          
+          [possible values: json, human, none]
+
+      --quiet
+          Only errors on stderr
+
+  -v, --verbose...
+          More detail (repeatable)
+
+  -h, --help
+          Show help
+
+Examples:
+  omaddons errors                                  every client, newest first
+  omaddons errors --since 1d --json                the last day, for an agent
+  omaddons errors -t retail --addon WeakAuras -v   one addon, every frame
+  omaddons errors --check                          exit 6 on new errors
+
+Messages an addon wrote itself may hold other players' names: they show only
+with --raw-details. Errors other players sent through BugSack are counted apart.

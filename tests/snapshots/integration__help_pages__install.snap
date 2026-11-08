@@ -1,0 +1,220 @@
+---
+source: tests/help_pages.rs
+description: "a command's -h and --help pages as this build renders them at 100 columns without color; any change to an about, a flag, a value, a heading or the layout changes them: review with cargo insta review, or re-accept with INSTA_UPDATE=always cargo test --test integration help_pages:: and review git diff tests/snapshots/"
+---
+==> omaddons install -h <==
+Install or update addons in one target, verified by its own TOC rules
+
+Usage: omaddons install [OPTIONS] <REF>...
+
+Arguments:
+  <REF>...
+          What to install: a catalog name (weakauras), owner/repo, a canonical ref (gh:, git:, url:,
+          file:, wowi:, tukui:), a pasted GitHub or https link, or a path to a zip or folder
+
+Options:
+      --channel <CHANNEL>
+          stable, beta or alpha (default: the addon's recorded channel, then default_channel, then
+          stable)
+          
+          [possible values: stable, beta, alpha]
+
+      --version <VERSION>
+          Install exactly this release: a tag for gh: refs, a rev for git: refs
+
+      --file <ZIP>
+          Install this downloaded archive as the release of the one given ref
+
+      --reinstall
+          Install the recorded release again, replacing its folders (repairs modified or missing
+          files)
+
+      --no-deps
+          Install only the named addons, not the ones their TOCs require
+
+      --force
+          Take over a folder another addon owns, an addon of the same name from another ref, or
+          replace an unmanaged folder
+
+      --strict
+          Exit 6 when only some of the addons install
+
+      --refresh
+          Fetch every release from its source, never from remembered metadata
+
+      --any-flavor
+          On this client, install builds the publisher did not make for it (kept by every later
+          update and sync until --no-any-flavor)
+
+      --no-any-flavor
+          Clear --any-flavor for these addons on this client
+
+Global options:
+      --json
+          One JSON envelope on stdout
+
+      --robot
+          The same as --json
+
+      --format <FORMAT>
+          Output format
+          
+          [possible values: json, human]
+
+  -t, --target <TARGET>
+          The client to act on: id, key, game mode (sod and hardcore select the Classic Era client),
+          family, product, flavor folder, path, or all (every client)
+          
+          [alias: --flavor]
+
+      --dry-run
+          Show the plan without changing anything (ignored by commands that change nothing)
+
+      --actor <ACTOR>
+          Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
+
+      --reason <TEXT>
+          Why, recorded verbatim in history (at most 200 characters; ignored by commands that change
+          nothing)
+
+      --offline
+          Fail any network access [env: OMADDONS_OFFLINE=1]
+
+      --while-running
+          Allow folder changes while the client runs (never SavedVariables)
+
+      --if-match <TOKEN>
+          Change nothing unless the plan is still the one the --dry-run that returned this token
+          (data.precondition) showed
+
+      --no-color
+          No ANSI color
+
+      --no-progress
+          No progress output
+
+      --progress <MODE>
+          Progress events on stderr
+          
+          [possible values: json, human, none]
+
+      --quiet
+          Only errors on stderr
+
+  -v, --verbose...
+          More detail (repeatable)
+
+  -h, --help
+          Show help
+
+An addon is installed from one ref at a time. Another local archive of a local
+install (./Bar-2.2.0.zip over ./Bar-2.1.0.zip) updates it; an addon of the same
+name from any other ref is a takeover, refused (ownership_conflict) unless --force.
+==> omaddons install --help <==
+Install or update addons in one target, verified by its own TOC rules
+
+Usage: omaddons install [OPTIONS] <REF>...
+
+Arguments:
+  <REF>...
+          What to install: a catalog name (weakauras), owner/repo, a canonical ref (gh:, git:, url:,
+          file:, wowi:, tukui:), a pasted GitHub or https link, or a path to a zip or folder
+
+Options:
+      --channel <CHANNEL>
+          stable, beta or alpha (default: the addon's recorded channel, then default_channel, then
+          stable)
+          
+          [possible values: stable, beta, alpha]
+
+      --version <VERSION>
+          Install exactly this release: a tag for gh: refs, a rev for git: refs
+
+      --file <ZIP>
+          Install this downloaded archive as the release of the one given ref
+
+      --reinstall
+          Install the recorded release again, replacing its folders (repairs modified or missing
+          files)
+
+      --no-deps
+          Install only the named addons, not the ones their TOCs require
+
+      --force
+          Take over a folder another addon owns, an addon of the same name from another ref, or
+          replace an unmanaged folder
+
+      --strict
+          Exit 6 when only some of the addons install
+
+      --refresh
+          Fetch every release from its source, never from remembered metadata
+
+      --any-flavor
+          On this client, install builds the publisher did not make for it (kept by every later
+          update and sync until --no-any-flavor)
+
+      --no-any-flavor
+          Clear --any-flavor for these addons on this client
+
+Global options:
+      --json
+          One JSON envelope on stdout
+
+      --robot
+          The same as --json
+
+      --format <FORMAT>
+          Output format
+          
+          [possible values: json, human]
+
+  -t, --target <TARGET>
+          The client to act on: id, key, game mode (sod and hardcore select the Classic Era client),
+          family, product, flavor folder, path, or all (every client)
+          
+          [alias: --flavor]
+
+      --dry-run
+          Show the plan without changing anything (ignored by commands that change nothing)
+
+      --actor <ACTOR>
+          Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
+
+      --reason <TEXT>
+          Why, recorded verbatim in history (at most 200 characters; ignored by commands that change
+          nothing)
+
+      --offline
+          Fail any network access [env: OMADDONS_OFFLINE=1]
+
+      --while-running
+          Allow folder changes while the client runs (never SavedVariables)
+
+      --if-match <TOKEN>
+          Change nothing unless the plan is still the one the --dry-run that returned this token
+          (data.precondition) showed
+
+      --no-color
+          No ANSI color
+
+      --no-progress
+          No progress output
+
+      --progress <MODE>
+          Progress events on stderr
+          
+          [possible values: json, human, none]
+
+      --quiet
+          Only errors on stderr
+
+  -v, --verbose...
+          More detail (repeatable)
+
+  -h, --help
+          Show help
+
+An addon is installed from one ref at a time. Another local archive of a local
+install (./Bar-2.2.0.zip over ./Bar-2.1.0.zip) updates it; an addon of the same
+name from any other ref is a takeover, refused (ownership_conflict) unless --force.

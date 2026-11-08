@@ -92,6 +92,7 @@ mod fsx_scope;
 mod fuzz_seeds;
 mod game_modes;
 mod git_github;
+mod help_pages;
 mod history;
 mod info_netlog;
 mod inspect;

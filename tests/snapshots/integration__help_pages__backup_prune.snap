@@ -1,0 +1,182 @@
+---
+source: tests/help_pages.rs
+description: "a command's -h and --help pages as this build renders them at 100 columns without color; any change to an about, a flag, a value, a heading or the layout changes them: review with cargo insta review, or re-accept with INSTA_UPDATE=always cargo test --test integration help_pages:: and review git diff tests/snapshots/"
+---
+==> omaddons backup prune -h <==
+Delete old backups, or the ones named (it cannot be undone)
+
+Usage: omaddons backup prune [OPTIONS] [ID]...
+
+Arguments:
+  [ID]...
+          Only these backups: ids, or prefixes of 8 or more characters
+
+Options:
+      --keep <N>
+          Also prune every backup beyond the newest N of its kind
+
+      --older-than <D>
+          Also prune manual, imported and recovered backups older than D (12h, 30d, 2w, or an RFC
+          3339 time)
+
+Global options:
+      --json
+          One JSON envelope on stdout
+
+      --robot
+          The same as --json
+
+      --format <FORMAT>
+          Output format
+          
+          [possible values: json, human]
+
+  -t, --target <TARGET>
+          The client to act on: id, key, game mode (sod and hardcore select the Classic Era client),
+          family, product, flavor folder, path, or all (every client)
+          
+          [alias: --flavor]
+
+      --dry-run
+          Show the plan without changing anything (ignored by commands that change nothing)
+
+      --actor <ACTOR>
+          Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
+
+      --reason <TEXT>
+          Why, recorded verbatim in history (at most 200 characters; ignored by commands that change
+          nothing)
+
+      --offline
+          Fail any network access [env: OMADDONS_OFFLINE=1]
+
+      --while-running
+          Allow folder changes while the client runs (never SavedVariables)
+
+      --if-match <TOKEN>
+          Change nothing unless the plan is still the one the --dry-run that returned this token
+          (data.precondition) showed
+
+      --no-color
+          No ANSI color
+
+      --no-progress
+          No progress output
+
+      --progress <MODE>
+          Progress events on stderr
+          
+          [possible values: json, human, none]
+
+      --quiet
+          Only errors on stderr
+
+  -v, --verbose...
+          More detail (repeatable)
+
+  -h, --help
+          Show help
+
+Examples:
+  omaddons backup prune                      the retention pass, on every client
+  omaddons backup prune -t retail --keep 3   also the newest 3 of each kind only
+  omaddons backup prune --older-than 30d     also your own backups from before 30 days ago
+  omaddons backup prune -t retail -- 01M6Q2VA   exactly that backup
+  omaddons backup prune --dry-run            what it would delete, and its token
+
+Retention keeps every backup younger than a day, each client's newest checkpoint, its
+manual, imported and recovered backups, and for each of the newest
+limits.backup_auto_keep_days days its first pre-change and last post-session automatic
+backup and every before-restore one. --keep and --older-than reach your own backups
+too, but never one younger than a day nor the newest checkpoint; naming a backup lifts
+only the day. A backup a restore or an export is reading is skipped as busy. Pruning
+cannot be undone: --if-match <token> deletes exactly what that --dry-run showed.
+==> omaddons backup prune --help <==
+Delete old backups, or the ones named (it cannot be undone)
+
+Usage: omaddons backup prune [OPTIONS] [ID]...
+
+Arguments:
+  [ID]...
+          Only these backups: ids, or prefixes of 8 or more characters
+
+Options:
+      --keep <N>
+          Also prune every backup beyond the newest N of its kind
+
+      --older-than <D>
+          Also prune manual, imported and recovered backups older than D (12h, 30d, 2w, or an RFC
+          3339 time)
+
+Global options:
+      --json
+          One JSON envelope on stdout
+
+      --robot
+          The same as --json
+
+      --format <FORMAT>
+          Output format
+          
+          [possible values: json, human]
+
+  -t, --target <TARGET>
+          The client to act on: id, key, game mode (sod and hardcore select the Classic Era client),
+          family, product, flavor folder, path, or all (every client)
+          
+          [alias: --flavor]
+
+      --dry-run
+          Show the plan without changing anything (ignored by commands that change nothing)
+
+      --actor <ACTOR>
+          Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
+
+      --reason <TEXT>
+          Why, recorded verbatim in history (at most 200 characters; ignored by commands that change
+          nothing)
+
+      --offline
+          Fail any network access [env: OMADDONS_OFFLINE=1]
+
+      --while-running
+          Allow folder changes while the client runs (never SavedVariables)
+
+      --if-match <TOKEN>
+          Change nothing unless the plan is still the one the --dry-run that returned this token
+          (data.precondition) showed
+
+      --no-color
+          No ANSI color
+
+      --no-progress
+          No progress output
+
+      --progress <MODE>
+          Progress events on stderr
+          
+          [possible values: json, human, none]
+
+      --quiet
+          Only errors on stderr
+
+  -v, --verbose...
+          More detail (repeatable)
+
+  -h, --help
+          Show help
+
+Examples:
+  omaddons backup prune                      the retention pass, on every client
+  omaddons backup prune -t retail --keep 3   also the newest 3 of each kind only
+  omaddons backup prune --older-than 30d     also your own backups from before 30 days ago
+  omaddons backup prune -t retail -- 01M6Q2VA   exactly that backup
+  omaddons backup prune --dry-run            what it would delete, and its token
+
+Retention keeps every backup younger than a day, each client's newest checkpoint, its
+manual, imported and recovered backups, and for each of the newest
+limits.backup_auto_keep_days days its first pre-change and last post-session automatic
+backup and every before-restore one. --keep and --older-than reach your own backups
+too, but never one younger than a day nor the newest checkpoint; naming a backup lifts
+only the day. A backup a restore or an export is reading is skipped as busy. Pruning
+cannot be undone: --if-match <token> deletes exactly what that --dry-run showed.

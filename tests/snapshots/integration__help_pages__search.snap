@@ -1,0 +1,178 @@
+---
+source: tests/help_pages.rs
+description: "a command's -h and --help pages as this build renders them at 100 columns without color; any change to an about, a flag, a value, a heading or the layout changes them: review with cargo insta review, or re-accept with INSTA_UPDATE=always cargo test --test integration help_pages:: and review git diff tests/snapshots/"
+---
+==> omaddons search -h <==
+Find addons by name in the catalog, WoWInterface, Tukui and GitHub
+
+Usage: omaddons search [OPTIONS] <QUERY>...
+
+Arguments:
+  <QUERY>...
+          What to look for: words of the addon's name, folders, author or description
+
+Options:
+      --source <SOURCE>
+          Consult only this source (repeatable): catalog, wowi, tukui or github
+          
+          [possible values: catalog, wowi, tukui, github]
+
+      --limit <LIMIT>
+          Most results to list (default 20, at most 50)
+
+      --refresh
+          Fetch the WoWInterface index and the Tukui list now, even inside their windows
+
+Global options:
+      --json
+          One JSON envelope on stdout
+
+      --robot
+          The same as --json
+
+      --format <FORMAT>
+          Output format
+          
+          [possible values: json, human]
+
+  -t, --target <TARGET>
+          The client to act on: id, key, game mode (sod and hardcore select the Classic Era client),
+          family, product, flavor folder, path, or all (every client)
+          
+          [alias: --flavor]
+
+      --dry-run
+          Show the plan without changing anything (ignored by commands that change nothing)
+
+      --actor <ACTOR>
+          Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
+
+      --reason <TEXT>
+          Why, recorded verbatim in history (at most 200 characters; ignored by commands that change
+          nothing)
+
+      --offline
+          Fail any network access [env: OMADDONS_OFFLINE=1]
+
+      --while-running
+          Allow folder changes while the client runs (never SavedVariables)
+
+      --if-match <TOKEN>
+          Change nothing unless the plan is still the one the --dry-run that returned this token
+          (data.precondition) showed
+
+      --no-color
+          No ANSI color
+
+      --no-progress
+          No progress output
+
+      --progress <MODE>
+          Progress events on stderr
+          
+          [possible values: json, human, none]
+
+      --quiet
+          Only errors on stderr
+
+  -v, --verbose...
+          More detail (repeatable)
+
+  -h, --help
+          Show help
+
+Examples:
+  omaddons search details           the catalog, WoWInterface, Tukui and GitHub at once
+  omaddons find elvui --source tukui
+  omaddons search bags --offline    what this machine already knows
+
+Only GitHub's search receives the query; the catalog, the WoWInterface index and
+the Tukui list are searched on this machine. Compatibility per client is a hint:
+install verifies each addon's TOC.
+==> omaddons search --help <==
+Find addons by name in the catalog, WoWInterface, Tukui and GitHub
+
+Usage: omaddons search [OPTIONS] <QUERY>...
+
+Arguments:
+  <QUERY>...
+          What to look for: words of the addon's name, folders, author or description
+
+Options:
+      --source <SOURCE>
+          Consult only this source (repeatable): catalog, wowi, tukui or github
+          
+          [possible values: catalog, wowi, tukui, github]
+
+      --limit <LIMIT>
+          Most results to list (default 20, at most 50)
+
+      --refresh
+          Fetch the WoWInterface index and the Tukui list now, even inside their windows
+
+Global options:
+      --json
+          One JSON envelope on stdout
+
+      --robot
+          The same as --json
+
+      --format <FORMAT>
+          Output format
+          
+          [possible values: json, human]
+
+  -t, --target <TARGET>
+          The client to act on: id, key, game mode (sod and hardcore select the Classic Era client),
+          family, product, flavor folder, path, or all (every client)
+          
+          [alias: --flavor]
+
+      --dry-run
+          Show the plan without changing anything (ignored by commands that change nothing)
+
+      --actor <ACTOR>
+          Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
+
+      --reason <TEXT>
+          Why, recorded verbatim in history (at most 200 characters; ignored by commands that change
+          nothing)
+
+      --offline
+          Fail any network access [env: OMADDONS_OFFLINE=1]
+
+      --while-running
+          Allow folder changes while the client runs (never SavedVariables)
+
+      --if-match <TOKEN>
+          Change nothing unless the plan is still the one the --dry-run that returned this token
+          (data.precondition) showed
+
+      --no-color
+          No ANSI color
+
+      --no-progress
+          No progress output
+
+      --progress <MODE>
+          Progress events on stderr
+          
+          [possible values: json, human, none]
+
+      --quiet
+          Only errors on stderr
+
+  -v, --verbose...
+          More detail (repeatable)
+
+  -h, --help
+          Show help
+
+Examples:
+  omaddons search details           the catalog, WoWInterface, Tukui and GitHub at once
+  omaddons find elvui --source tukui
+  omaddons search bags --offline    what this machine already knows
+
+Only GitHub's search receives the query; the catalog, the WoWInterface index and
+the Tukui list are searched on this machine. Compatibility per client is a hint:
+install verifies each addon's TOC.
