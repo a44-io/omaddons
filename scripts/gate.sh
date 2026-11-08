@@ -54,7 +54,17 @@ for f in ${changed[@]+"${changed[@]}"}; do
 done
 if ((${#scan[@]})); then
     step "ubs on ${#scan[@]} changed file(s)"
-    ubs "${scan[@]}"
+    # Exit 3 is ubs's "nothing scanned": no changed file is in a language it scans (a
+    # snapshot-, fixture- or Markdown-only change). Not a pass and nothing to fix, so the
+    # gate says so and goes on (CLAUDE.md); every other non-zero exit fails it. The exit is
+    # read, never hidden with UBS_ALLOW_NO_SCAN.
+    ubs_exit=0
+    ubs "${scan[@]}" || ubs_exit=$?
+    case $ubs_exit in
+        0) ;;
+        3) echo "ubs: no file in a language UBS scans (exit 3: nothing scanned, nothing to fix)" >&2 ;;
+        *) echo "gate: ubs failed (exit $ubs_exit)" >&2; exit "$ubs_exit" ;;
+    esac
 else
     step "ubs: no changed files, skipped"
 fi
