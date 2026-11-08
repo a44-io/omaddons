@@ -1549,6 +1549,47 @@ fn the_approval_check_under_the_lock_costs() {
     log.json("report", &report);
 }
 
+/// The daily pass over every client (bmcx.3) on the realistic home: an update on retail
+/// with the pass due (its stamp deleted, so it walks classic's and era's snapshots)
+/// against one the same day (not due), by each run's `meta.elapsed_ms`. The pass runs
+/// after the commit window, so the lock hold is not part of it. A report, not a budget.
+#[test]
+#[ignore = "a release-build report: cargo test --release --test integration perf:: -- --ignored"]
+fn the_daily_pass_over_every_client_costs() {
+    use common::realistic::{ADDONS, realistic_home};
+    const ROUNDS: usize = 5;
+    let log = common::tlog::tlog!();
+    log.step("build the realistic home");
+    let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let realistic = realistic_home(&dir.path().join("home"));
+    log.env(&realistic.home);
+    let stamp = realistic.home.state().join("retention_sweep.stamp");
+    let (mut due, mut quiet) = (Vec::new(), Vec::new());
+    for round in 0..ROUNDS {
+        for pass_due in [true, false] {
+            log.step(&format!("round {round}, pass due: {pass_due}"));
+            if pass_due {
+                fs::remove_file(&stamp).unwrap();
+            }
+            let tag = format!("v{}", 2 * round + 2 + usize::from(!pass_due));
+            let mut args = realistic.install_args(round % ADDONS, &tag, "retail");
+            args.push("--json".into());
+            let ran = log.run(&realistic.home, &args);
+            ran.ok();
+            log.assert_eq("stamped", &stamp.is_file(), &true);
+            let ms = ran.envelope()["meta"]["elapsed_ms"].as_u64().unwrap();
+            (if pass_due { &mut due } else { &mut quiet }).push(ms);
+        }
+    }
+    let (due, quiet) = (median(&due), median(&quiet));
+    let line = format!(
+        "daily-pass: an update on retail elapsed_ms {due} with the pass over classic and era, {quiet} without (+{}), median of {ROUNDS}",
+        i128::from(due) - i128::from(quiet)
+    );
+    measured(format_args!("{line}"));
+    log.json("report", &line);
+}
+
 /// F6 (M4-D52): what re-hashing a cached archive before its use costs. A printed note,
 /// not a budget (the plan calls it "a perf note"): the median of 21 verifications of a
 /// 5 MiB blob, each on a fresh memo so every run hashes. The checkpoint quotes it beside

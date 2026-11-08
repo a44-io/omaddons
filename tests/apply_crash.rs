@@ -344,9 +344,12 @@ fn commit_failpoints() -> Vec<(String, Expect)> {
         if *name == "engine.swapped" {
             before = false;
         }
-        // A local zip downloads nothing, and retail's AddOns exists already.
+        // A local zip downloads nothing, and retail's AddOns exists already. Classic is
+        // never registered here, so the pass over the other clients reaches none.
         let expect = match *name {
-            "engine.plan.downloaded" | "engine.addons_dir.created" => Expect::NotReached,
+            "engine.plan.downloaded" | "engine.addons_dir.created" | "engine.retention.sweep" => {
+                Expect::NotReached
+            }
             _ if before => Expect::None,
             _ => Expect::Once,
         };

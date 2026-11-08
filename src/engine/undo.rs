@@ -2828,6 +2828,24 @@ mod tests {
         scene.client.snapshots(tx).is_dir() && scene.paths.state_snapshot(tx).is_dir()
     }
 
+    /// The same, by the pass over every client (bmcx.3), which reaches the scene's client
+    /// as one a commit on another client found.
+    fn swept_eight_days_on(scene: &TxScene, tx: &TxId) -> bool {
+        let mut target = scene.current_target().target;
+        target.key = Some(record(scene).key);
+        let later = Timestamp::from_second(Timestamp::now().as_second() + 8 * 86_400).unwrap();
+        let swept = crate::engine::retention::sweep(
+            &scene.paths,
+            crate::fsx::Writer::Mutating,
+            &[target],
+            None,
+            &crate::engine::retention::RetentionLimits::default(),
+            later,
+        );
+        assert!(swept.ran && swept.warnings.is_empty(), "{swept:?}");
+        scene.client.snapshots(tx).is_dir() && scene.paths.state_snapshot(tx).is_dir()
+    }
+
     #[test]
     fn retention_keeps_what_a_deferred_restore_needs_until_it_can_no_longer_run() {
         // Pending: kept past every age rule, and the follow-up then restores the files.
@@ -2836,6 +2854,7 @@ mod tests {
         unrelated(&scene, "Bar");
         unrelated(&scene, "Baz");
         assert_eq!(pending_sv_restores(&history(&scene)), BTreeSet::from([t1]));
+        assert!(swept_eight_days_on(&scene, &t1), "pinned, for the pass too");
         assert!(kept_eight_days_on(&scene, &t1), "pinned");
         scene.undo(UndoSelector::Tx(t1), SvPolicy::Restore).unwrap();
         assert_eq!(

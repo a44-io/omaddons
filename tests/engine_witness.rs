@@ -792,6 +792,8 @@ bound_crash_rows! {
     crash_bound_update_engine_unlocked => "engine.unlocked", true;
     crash_bound_update_engine_cleanup_done => "engine.cleanup.done", true;
     crash_bound_update_engine_retention => "engine.retention", true;
+    // The pass over other clients: this home has one.
+    crash_bound_update_engine_retention_sweep => "engine.retention.sweep", false;
     crash_bound_update_engine_recover_step => "engine.recover.step", false;
     crash_bound_update_engine_recover_sv => "engine.recover.sv", false;
     crash_bound_update_engine_recover_forward => "engine.recover.forward", false;

@@ -13,5 +13,6 @@ pub mod paths;
 pub mod plans;
 pub mod records;
 pub mod registry;
+pub mod retention_sweep;
 pub mod status;
 pub mod store;

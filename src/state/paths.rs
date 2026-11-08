@@ -325,6 +325,11 @@ impl Paths {
         self.state.join("status.json")
     }
 
+    /// When snapshot retention last passed over every client, not only the one changed.
+    pub fn retention_sweep_file(&self) -> PathBuf {
+        self.state.join("retention_sweep.stamp")
+    }
+
     pub fn journal_dir(&self) -> PathBuf {
         self.state.join("journal")
     }
@@ -816,6 +821,10 @@ mod tests {
             ),
             (p.history_file(), "/s/omaddons/history.jsonl".into()),
             (p.status_file(), "/s/omaddons/status.json".into()),
+            (
+                p.retention_sweep_file(),
+                "/s/omaddons/retention_sweep.stamp".into(),
+            ),
             (p.journal_dir(), "/s/omaddons/journal".into()),
             (p.journal(&tx), format!("/s/omaddons/journal/{TX}.jsonl")),
             (

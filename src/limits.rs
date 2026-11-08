@@ -66,6 +66,9 @@ pub const PLAN_EVIDENCE_LINES_MAX: usize = 20_000;
 /// Retention sweeps a stage dir or in-flight lock whose transaction is dead (lock free,
 /// no journal) only once it is this old: a margin against clocks and races.
 pub const ORPHAN_MIN_AGE: Duration = Duration::from_secs(60 * 60);
+/// How often snapshot retention also passes over every other registered client
+/// discovery found, after a commit or a backup: a client nobody changes is pruned too.
+pub const RETENTION_SWEEP_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 /// Longest `--reason`, in Unicode scalar values.
 pub const REASON_MAX_CHARS: usize = 200;
 /// `net.log` size before it rotates once, keeping one previous file.
@@ -465,6 +468,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         LimitUnit::Ms,
         None,
         "Orphan stage dirs and in-flight locks retention sweeps",
+    ),
+    limit(
+        "RETENTION_SWEEP_INTERVAL",
+        LimitValue::Millis(ms(RETENTION_SWEEP_INTERVAL)),
+        LimitUnit::Ms,
+        None,
+        "How often snapshot retention also prunes every other client discovery found",
     ),
     limit(
         "REASON_MAX_CHARS",
@@ -1216,7 +1226,8 @@ mod tests {
         "ARCHIVE_MAX_ENTRIES", "ARCHIVE_MAX_UNCOMPRESSED", "ARCHIVE_MAX_RATIO",
         "ARCHIVE_RATIO_FLOOR", "DOWNLOAD_MAX_BYTES", "LOCK_ACQUIRE_TIMEOUT", "TX_RETENTION", "SNAPSHOT_MAX_BYTES",
         "BLOB_CACHE_MAX_BYTES", "PLAN_TTL", "PLAN_LEASE_TIMEOUT", "PLAN_MAX_BYTES", "PLANS_MAX_FILES", "PLANS_MAX_BYTES",
-        "PLANS_SWEEP_MAX", "PLAN_EVIDENCE_LINES_MAX", "ORPHAN_MIN_AGE", "REASON_MAX_CHARS",
+        "PLANS_SWEEP_MAX", "PLAN_EVIDENCE_LINES_MAX", "ORPHAN_MIN_AGE", "RETENTION_SWEEP_INTERVAL",
+        "REASON_MAX_CHARS",
         "AUTH_TOKEN_MAX_BYTES", "NET_LOG_MAX_BYTES",
         "SAVEDVARIABLES_MAX_BYTES", "TOC_LINE_MAX", "QUICK_DETECTOR_BUDGET",
         "DOCTOR_DETECTOR_DEADLINE", "RUN_ID_RETRY",

@@ -125,6 +125,7 @@ mod remove;
 mod restore;
 mod restore_addon;
 mod restore_undo;
+mod retention_sweep;
 mod robot_docs;
 mod running;
 mod search;

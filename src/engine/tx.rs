@@ -103,6 +103,7 @@ pub const FAILPOINTS: &[&str] = &[
     "engine.unlocked",
     "engine.cleanup.done",
     "engine.retention",
+    "engine.retention.sweep",
     "engine.recover.step",
     "engine.recover.sv",
     "engine.recover.forward",
@@ -989,8 +990,30 @@ pub(super) fn ring_after_window<T>(ctx: &EngineCtx<'_>, result: &Result<T>) {
 }
 
 /// Retention after a commit (vision §5.5), best effort: its warnings join the outcome
-/// and a failure becomes `retention_failed`, never a failed command.
+/// and a failure becomes `retention_failed`, never a failed command. Then, at most once
+/// a day, the same for every other client the command discovered
+/// ([`super::retention::sweep`]).
 pub(super) fn retain(
+    ctx: &EngineCtx<'_>,
+    scopes: &ScopeTable,
+    key: TargetKey,
+    client_dir: &std::path::Path,
+) -> Vec<Warning> {
+    let mut warnings = retain_own(ctx, scopes, key, client_dir);
+    let swept = super::retention::sweep(
+        ctx.paths,
+        Writer::Mutating,
+        ctx.known_targets,
+        Some(key),
+        &ctx.retention,
+        super::retention::RetentionClock::current().system,
+    );
+    warnings.extend(swept.warnings);
+    warnings
+}
+
+/// The committed client's own retention.
+fn retain_own(
     ctx: &EngineCtx<'_>,
     scopes: &ScopeTable,
     key: TargetKey,
@@ -2280,6 +2303,8 @@ mod tests {
             "engine.cleanup.done",
             // Retention runs after the commit; its failure is a warning, never an error.
             "engine.retention",
+            // The pass over the other clients, the same; this scene has none.
+            "engine.retention.sweep",
         ];
         for name in FAILPOINTS {
             // Not on an update's path; the first-install crash matrix covers the

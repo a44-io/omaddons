@@ -20,6 +20,10 @@
 //!
 //! Never touched, however old (M4-D36): a doctor repair's `<tx>.repair` halves and the
 //! cache's `quarantine/`, which only `doctor gc` deletes.
+//!
+//! A commit's retention reaches only its own client, so [`sweep`] also passes over every
+//! other registered client discovery found, at most once per `RETENTION_SWEEP_INTERVAL`,
+//! after a commit or a backup: a client nobody changes any more is pruned too.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -28,18 +32,19 @@ use jiff::Timestamp;
 use serde::Serialize;
 
 use super::blobs::BlobCache;
-use crate::error::{Result, Suggestion, Warning, WarningCode};
-use crate::fsx::{self, InflightLock, LockUse, PruneReason, ScopeTable};
+use crate::error::{Error, Result, Suggestion, Warning, WarningCode};
+use crate::fsx::{self, InflightLock, LockUse, PruneReason, ScopeTable, failpoint};
 use crate::limits::{
-    BLOB_CACHE_MAX_BYTES, EffectiveLimits, ORPHAN_MIN_AGE, SNAPSHOT_MAX_BYTES, TX_RETENTION,
-    TxRetention,
+    BLOB_CACHE_MAX_BYTES, EffectiveLimits, ORPHAN_MIN_AGE, RETENTION_SWEEP_INTERVAL,
+    SNAPSHOT_MAX_BYTES, TX_RETENTION, TxRetention,
 };
-use crate::model::{TargetKey, TxId, TxKind};
+use crate::model::{Target, TargetKey, TxId, TxKind};
 use crate::state::history::{self, HistoryEntry, HistoryFilter};
 use crate::state::paths::{ClientPaths, Paths, REPAIR_SUFFIX};
 use crate::state::plans::{self, PlanPins};
 use crate::state::records::load_record;
 use crate::state::registry::load_registry;
+use crate::state::retention_sweep;
 
 /// What retention keeps (config-overridable, vision §5.5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,7 +172,8 @@ pub fn select(txs: &[SnapshotTx], now: Timestamp, limits: &RetentionLimits) -> S
 }
 
 /// Retention for the target `key` (whose client dir `client` must be in `scopes`) at
-/// `now`, sparing the blobs `pins` names (read under the lock, when eviction needs it).
+/// `now`, sparing the blobs `pins` names (read under the lock, when eviction needs it):
+/// the plan sweep, that client's part ([`prune_client`]), then the blob cache.
 pub fn run(
     paths: &Paths,
     scopes: &ScopeTable,
@@ -180,12 +186,72 @@ pub fn run(
     let clock = now.into();
     let mut report = RetentionReport::default();
     sweep_plans(paths, clock.plans, &mut report);
-    let now = clock.system;
-    // Read once: the whole history for pending restores (their conflict check spans
-    // targets), the target's entries for the policy, the raw text for orphans.
-    let text = history::text(paths)?;
-    let all = history::parse(&text, &HistoryFilter::default()).entries;
-    let pinned = super::undo::pending_sv_restores(&all);
+    let history = HistoryView::read(paths)?;
+    prune_client(
+        paths,
+        scopes,
+        key,
+        client,
+        limits,
+        clock.system,
+        &history,
+        &mut report,
+    )?;
+    let seen = std::cell::RefCell::new(None);
+    let with_plans = || -> Result<BTreeSet<String>> {
+        let mut all = pins()?;
+        let found = plans::unexpired_blob_pins(paths, clock.plans);
+        all.extend(found.blobs.iter().cloned());
+        *seen.borrow_mut() = Some(found);
+        Ok(all)
+    };
+    let evicted = BlobCache::new(paths).evict(scopes, &with_plans, limits.blob_cache_max_bytes)?;
+    report.blobs_evicted = evicted.evicted.len();
+    report.plan_pins = seen.into_inner();
+    Ok(report)
+}
+
+/// The history a pass reads once: the raw text (the orphan sweep looks for transaction
+/// ids in it, torn lines included), its entries, and the snapshots a deferred
+/// SavedVariables restore still needs, whose conflict check spans targets.
+struct HistoryView {
+    text: String,
+    entries: Vec<HistoryEntry>,
+    pinned: BTreeSet<TxId>,
+}
+
+impl HistoryView {
+    fn read(paths: &Paths) -> Result<Self> {
+        let text = history::text(paths)?;
+        let entries = history::parse(&text, &HistoryFilter::default()).entries;
+        let pinned = super::undo::pending_sv_restores(&entries);
+        Ok(Self {
+            text,
+            entries,
+            pinned,
+        })
+    }
+}
+
+/// One client's part of retention at `now`: the snapshot policy over the target `key`'s
+/// transactions, then that client's orphan sweep. Its counts and warnings go to
+/// `report`.
+#[allow(clippy::too_many_arguments)]
+fn prune_client(
+    paths: &Paths,
+    scopes: &ScopeTable,
+    key: TargetKey,
+    client: &ClientPaths,
+    limits: &RetentionLimits,
+    now: Timestamp,
+    history: &HistoryView,
+    report: &mut RetentionReport,
+) -> Result<()> {
+    let HistoryView {
+        text,
+        entries: all,
+        pinned,
+    } = history;
     let entries: Vec<&HistoryEntry> = all.iter().filter(|e| e.touches_target(key)).collect();
     // A backup line has no snapshot: the most recent transaction is the last other one.
     // Nor has a target-less line (a repair): it keeps its halves as `<tx>.repair`, which
@@ -243,7 +309,7 @@ pub fn run(
         );
     }
 
-    let orphans = orphans(paths, client, now, &text)?;
+    let orphans = orphans(paths, client, now, text)?;
     if !orphans.scratch.is_empty() {
         fsx::prune(
             scopes,
@@ -261,18 +327,117 @@ pub fn run(
         )?;
     }
     report.orphans_swept = orphans.scratch.len() + orphans.snapshots.len();
-    let seen = std::cell::RefCell::new(None);
-    let with_plans = || -> Result<BTreeSet<String>> {
-        let mut all = pins()?;
-        let found = plans::unexpired_blob_pins(paths, clock.plans);
-        all.extend(found.blobs.iter().cloned());
-        *seen.borrow_mut() = Some(found);
-        Ok(all)
+    Ok(())
+}
+
+/// What one pass over the other clients did ([`sweep`]).
+#[derive(Debug, Default)]
+pub struct SweepReport {
+    /// Whether a pass ran: there were clients to reach and the last pass was at least
+    /// [`RETENTION_SWEEP_INTERVAL`] ago.
+    pub ran: bool,
+    /// Each client the pass pruned, with what it did there.
+    pub targets: Vec<(TargetKey, RetentionReport)>,
+    /// One `retention_failed` per client that failed, naming it.
+    pub warnings: Vec<Warning>,
+}
+
+/// Snapshot retention for every registered client in `targets` (the clients discovery
+/// found) but `except`, at most once per [`RETENTION_SWEEP_INTERVAL`]: a client whose
+/// last change is long past is never reached by its own commits' retention, so without
+/// this pass it would keep every snapshot. Each client gets its own fenced scope table
+/// and its own prunes, which take the global lock briefly as a commit's retention does.
+/// Best effort: a client that fails is a `retention_failed` warning naming it, and the
+/// others are still pruned. The stamp is written only when every client was pruned, so a
+/// failed pass is tried again by the next command. Each client's snapshot cap warning
+/// stays with that client's own commits.
+pub fn sweep(
+    paths: &Paths,
+    writer: fsx::Writer,
+    targets: &[Target],
+    except: Option<TargetKey>,
+    limits: &RetentionLimits,
+    now: Timestamp,
+) -> SweepReport {
+    let mut report = SweepReport::default();
+    let mut reached: Vec<(TargetKey, &Target)> = Vec::new();
+    for target in targets {
+        if let Some(key) = target.key
+            && Some(key) != except
+            && !reached.iter().any(|(k, _)| *k == key)
+        {
+            reached.push((key, target));
+        }
+    }
+    // A home with one client never reads or writes the stamp.
+    if reached.is_empty() {
+        return report;
+    }
+    if !retention_sweep::due(paths, now, RETENTION_SWEEP_INTERVAL) {
+        return report;
+    }
+    report.ran = true;
+    let history = match HistoryView::read(paths) {
+        Ok(history) => history,
+        Err(error) => {
+            report
+                .warnings
+                .push(sweep_failed("other clients' snapshots", &error));
+            return report;
+        }
     };
-    let evicted = BlobCache::new(paths).evict(scopes, &with_plans, limits.blob_cache_max_bytes)?;
-    report.blobs_evicted = evicted.evicted.len();
-    report.plan_pins = seen.into_inner();
-    Ok(report)
+    let mut failed = false;
+    for (key, target) in reached {
+        let client = ClientPaths::new(&target.client_dir);
+        let one = || -> Result<RetentionReport> {
+            failpoint::hit("engine.retention.sweep")
+                .map_err(|e| Error::io(paths.state_dir(), &e, sweep_fix()))?;
+            let scopes =
+                super::fence::table(paths, std::slice::from_ref(&target.client_dir), None)?;
+            let mut pruned = RetentionReport::default();
+            prune_client(
+                paths,
+                &scopes,
+                key,
+                &client,
+                limits,
+                now,
+                &history,
+                &mut pruned,
+            )?;
+            Ok(pruned)
+        };
+        match one() {
+            Ok(pruned) => report.targets.push((key, pruned)),
+            Err(error) => {
+                failed = true;
+                let what = format!("{}'s snapshots", target.id);
+                report.warnings.push(sweep_failed(&what, &error));
+            }
+        }
+    }
+    if !failed {
+        // Best effort, as the doorbell: a stamp that cannot be written only makes the next
+        // command's pass due again.
+        if let Ok(scopes) = super::fence::table(paths, &[], None) {
+            let mut s = fsx::WriteSession::untracked(writer, &scopes, "retention sweep");
+            let _ = retention_sweep::write(&mut s, paths, now);
+        }
+    }
+    report
+}
+
+/// The `retention_failed` warning for `what` (a client's snapshots, or all of them).
+fn sweep_failed(what: &str, error: &crate::error::Error) -> Warning {
+    Warning::new(
+        WarningCode::RetentionFailed,
+        format!("pruning {what} failed: {}", error.message),
+    )
+    .with_fix(sweep_fix())
+}
+
+fn sweep_fix() -> Suggestion {
+    Suggestion::command(["omaddons", "status"])
 }
 
 fn sweep_plans(paths: &Paths, now: Timestamp, report: &mut RetentionReport) {
@@ -653,6 +818,11 @@ mod tests {
 
         /// The same, committed by target `key` in this client dir.
         fn commit_as(&self, key: TargetKey, age: i64, bytes: usize) -> TxId {
+            self.commit_on(&self.client, key, age, bytes)
+        }
+
+        /// The same, committed by target `key` in `client`'s dir.
+        fn commit_on(&self, client: &ClientPaths, key: TargetKey, age: i64, bytes: usize) -> TxId {
             let tx = TxId::new();
             let entry = HistoryEntry {
                 schema_version: history::CURRENT,
@@ -679,7 +849,7 @@ mod tests {
             let mut s = WriteSession::untracked(Writer::Mutating, &self.scopes, "test");
             history::append(&mut s, &self.paths, &entry).unwrap();
             for dir in [
-                self.client.snapshots(&tx).join("AddOns/Foo"),
+                client.snapshots(&tx).join("AddOns/Foo"),
                 self.paths.state_snapshot(&tx),
             ] {
                 std::fs::create_dir_all(&dir).unwrap();
@@ -706,6 +876,229 @@ mod tests {
                 self.client.snapshots(tx).exists(),
                 self.paths.state_snapshot(tx).exists(),
             )
+        }
+
+        /// Another registered client beside this one, in `flavor`, named `id`.
+        fn other(&self, flavor: &str, id: &str) -> Other {
+            let dir = self.client.client_dir().parent().unwrap().join(flavor);
+            std::fs::create_dir_all(dir.join("Interface/AddOns")).unwrap();
+            let mut target = crate::engine::testing::target(&dir);
+            target.key = Some(TargetKey::new());
+            target.id = id.into();
+            Other {
+                client: ClientPaths::new(&dir),
+                target,
+            }
+        }
+
+        /// The pass over `targets` but `except`, at `self.clock` plus `later` seconds.
+        fn sweep(&self, targets: &[Target], except: Option<TargetKey>, later: i64) -> SweepReport {
+            let at = Timestamp::from_second(self.clock.as_second() + later).unwrap();
+            sweep(
+                &self.paths,
+                Writer::Mutating,
+                targets,
+                except,
+                &RetentionLimits::default(),
+                at,
+            )
+        }
+
+        /// The fixture's own client as a target, `retail`.
+        fn own_target(&self) -> Target {
+            let mut target = crate::engine::testing::target(self.client.client_dir());
+            target.key = Some(self.key);
+            target
+        }
+    }
+
+    /// A client beside the fixture's.
+    struct Other {
+        client: ClientPaths,
+        target: Target,
+    }
+
+    impl Other {
+        fn key(&self) -> TargetKey {
+            self.target.key.unwrap()
+        }
+    }
+
+    /// Ages of a run of commits: 26 hours old, then 14 hours older each, so the newest 11
+    /// are inside the 7-day window and the twelfth is past it.
+    fn burst_ages() -> Vec<i64> {
+        (0..12).map(|i| 26 * HOUR + i * 14 * HOUR).collect()
+    }
+
+    /// Commits `ages` on `client` as `key`, oldest first, so the youngest is the most
+    /// recent: (age, tx) newest first.
+    fn burst(f: &Fixture, client: &ClientPaths, key: TargetKey, ages: &[i64]) -> Vec<(i64, TxId)> {
+        let mut made: Vec<(i64, TxId)> = ages
+            .iter()
+            .rev()
+            .map(|age| (*age, f.commit_on(client, key, *age, 10)))
+            .collect();
+        made.reverse();
+        made
+    }
+
+    /// The ages of `made` whose client and state halves are both still there.
+    fn surviving(f: &Fixture, client: &ClientPaths, made: &[(i64, TxId)]) -> Vec<i64> {
+        made.iter()
+            .filter(|(_, tx)| client.snapshots(tx).exists() && f.paths.state_snapshot(tx).exists())
+            .map(|(age, _)| *age)
+            .collect()
+    }
+
+    #[test]
+    fn the_pass_prunes_another_client_as_its_own_retention_would() {
+        // Its own retention, on a twin home.
+        let twin = fixture();
+        let own = burst(&twin, &twin.client, twin.key, &burst_ages());
+        twin.run(&RetentionLimits::default(), &BTreeSet::new());
+        let expected = surviving(&twin, &twin.client, &own);
+        assert_eq!(
+            expected,
+            burst_ages()[..10].to_vec(),
+            "the newest 10 inside the window stay"
+        );
+
+        // The pass, from a commit on the fixture's own client.
+        let f = fixture();
+        let era = f.other("_classic_era_", "era");
+        let made = burst(&f, &era.client, era.key(), &burst_ages());
+        let latest = f.commit(HOUR, 10);
+        let report = f.sweep(&[f.own_target(), era.target.clone()], Some(f.key), 0);
+        assert!(report.ran && report.warnings.is_empty(), "{report:?}");
+        assert_eq!(
+            report.targets.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
+            [era.key()],
+            "only the other client: {report:?}"
+        );
+        assert_eq!(surviving(&f, &era.client, &made), expected);
+        assert_eq!(
+            f.has_snapshot(&latest),
+            (true, true),
+            "the committed client"
+        );
+        let entries = history::read(&f.paths, &HistoryFilter::default())
+            .unwrap()
+            .entries;
+        assert_eq!(entries.len(), 13, "history is append-only");
+    }
+
+    #[test]
+    fn the_pass_runs_at_most_once_per_interval() {
+        let f = fixture();
+        let era = f.other("_classic_era_", "era");
+        let targets = [f.own_target(), era.target.clone()];
+        let first = burst(&f, &era.client, era.key(), &burst_ages());
+        let ran = f.sweep(&targets, Some(f.key), 0);
+        assert!(ran.ran, "no stamp yet: {ran:?}");
+        assert_eq!(surviving(&f, &era.client, &first).len(), 10);
+        assert!(f.paths.retention_sweep_file().is_file(), "stamped");
+
+        // More old commits on era: an hour on, the pass is not due and walks nothing.
+        let second = burst(&f, &era.client, era.key(), &burst_ages());
+        let skipped = f.sweep(&targets, Some(f.key), HOUR);
+        assert!(!skipped.ran && skipped.targets.is_empty(), "{skipped:?}");
+        assert_eq!(surviving(&f, &era.client, &second).len(), 12, "untouched");
+
+        // A day on, it is due again.
+        let again = f.sweep(&targets, Some(f.key), DAY);
+        assert!(again.ran && again.warnings.is_empty(), "{again:?}");
+        assert!(surviving(&f, &era.client, &second).len() < 12, "pruned");
+    }
+
+    #[test]
+    fn the_pass_reaches_only_other_registered_clients() {
+        let f = fixture();
+        let era = f.other("_classic_era_", "era");
+        let made = burst(&f, &era.client, era.key(), &burst_ages());
+        let own = burst(&f, &f.client, f.key, &burst_ages());
+
+        // Alone, or beside an unregistered client: nothing to reach, no stamp read or made.
+        let mut unregistered = f.other("_anniversary_", "anniversary").target;
+        unregistered.key = None;
+        for (case, targets) in [
+            ("alone", vec![f.own_target()]),
+            (
+                "beside an unregistered one",
+                vec![f.own_target(), unregistered],
+            ),
+        ] {
+            let report = f.sweep(&targets, Some(f.key), 0);
+            assert!(!report.ran, "{case}: {report:?}");
+            assert!(!f.paths.retention_sweep_file().exists(), "{case}");
+        }
+        assert_eq!(surviving(&f, &f.client, &own).len(), 12, "the excepted one");
+
+        // From a backup, nothing is excepted: both clients are pruned.
+        let report = f.sweep(&[f.own_target(), era.target.clone()], None, 0);
+        assert_eq!(report.targets.len(), 2, "{report:?}");
+        assert_eq!(surviving(&f, &f.client, &own).len(), 10);
+        assert_eq!(surviving(&f, &era.client, &made).len(), 10);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_client_that_fails_is_named_and_the_next_pass_converges() {
+        use crate::fsx::failpoint;
+
+        let cases = [
+            ("before the client", "engine.retention.sweep=error@1"),
+            ("an I/O error mid-prune", "fsx.prune.renamed=error@1"),
+        ];
+        for (case, spec) in cases {
+            let f = fixture();
+            let era = f.other("_classic_era_", "era");
+            let anniversary = f.other("_anniversary_", "anniversary");
+            let targets = [
+                f.own_target(),
+                era.target.clone(),
+                anniversary.target.clone(),
+            ];
+            let on_era = burst(&f, &era.client, era.key(), &burst_ages());
+            let on_anniversary = burst(&f, &anniversary.client, anniversary.key(), &burst_ages());
+            let failed = failpoint::with_spec(spec, || f.sweep(&targets, Some(f.key), 0));
+            let codes: Vec<(WarningCode, bool)> = failed
+                .warnings
+                .iter()
+                .map(|w| {
+                    (
+                        w.code,
+                        w.message.starts_with("pruning era's snapshots failed"),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                codes,
+                [(WarningCode::RetentionFailed, true)],
+                "{case}: {:?}",
+                failed.warnings
+            );
+            assert_eq!(
+                surviving(&f, &anniversary.client, &on_anniversary).len(),
+                10,
+                "{case}: the other client is still pruned"
+            );
+            assert!(
+                !f.paths.retention_sweep_file().exists(),
+                "{case}: a failed pass is not stamped"
+            );
+
+            // The next command's pass is due, and ends where an uninterrupted one would.
+            let retried = f.sweep(&targets, Some(f.key), 0);
+            assert!(
+                retried.ran && retried.warnings.is_empty(),
+                "{case}: {retried:?}"
+            );
+            assert_eq!(
+                surviving(&f, &era.client, &on_era),
+                burst_ages()[..10].to_vec(),
+                "{case}: converged"
+            );
+            assert!(f.paths.retention_sweep_file().is_file(), "{case}: stamped");
         }
     }
 

@@ -272,7 +272,7 @@ expression: digest
     "error_codes": 43,
     "families": 14,
     "features": 14,
-    "limits": 114,
+    "limits": 115,
     "sources": 9,
     "target_id_forms": 8,
     "warning_codes": 55

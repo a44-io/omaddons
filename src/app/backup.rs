@@ -1011,6 +1011,26 @@ pub fn create(ctx: &Context, args: &BackupCreateArgs) -> Result<BackupCreateOutc
             }
         }
     }
+    // A client that is played but never changed has no commit whose retention reaches
+    // its undo snapshots: after a backup, the pass over every client (at most once a day)
+    // does, the ones just backed up included.
+    if run.is_some() && targets.iter().any(|t| t.backup.is_some()) {
+        let known: Vec<Target> = world
+            .resolved
+            .targets
+            .iter()
+            .map(|d| d.target.clone())
+            .collect();
+        let swept = crate::engine::retention::sweep(
+            &world.paths,
+            Writer::Backup,
+            &known,
+            None,
+            &crate::engine::retention::RetentionLimits::from(&limits),
+            Timestamp::now(),
+        );
+        warnings.extend(swept.warnings);
+    }
     if !succeeded && let Some(error) = first_error {
         return Err(error);
     }

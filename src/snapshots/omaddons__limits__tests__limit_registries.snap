@@ -375,6 +375,15 @@ expression: "(politeness, REGISTRY)"
       "notes": "Orphan stage dirs and in-flight locks retention sweeps"
     },
     {
+      "name": "RETENTION_SWEEP_INTERVAL",
+      "value": {
+        "millis": 86400000
+      },
+      "unit": "ms",
+      "config_key": null,
+      "notes": "How often snapshot retention also prunes every other client discovery found"
+    },
+    {
       "name": "REASON_MAX_CHARS",
       "value": {
         "count": 200
