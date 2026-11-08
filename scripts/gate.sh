@@ -44,9 +44,13 @@ scripts/widget-test.sh "${widget[@]}"
 # ubs gets every changed file but Cargo's manifests: given Cargo.toml (ubs 5.5.26 on),
 # it builds a copy of the changed files alone, which cannot compile, and ends partial
 # (exit 2) without scanning more. The cargo steps above and cargo deny below check them.
+# The list was made before the tests ran, and a test may have deleted a file since (insta
+# removes a stale `.snap.new` once its snapshot passes): only files that still exist are
+# scanned, and never insta's working files, which are not committed.
 scan=()
 for f in ${changed[@]+"${changed[@]}"}; do
-    case $f in Cargo.toml | Cargo.lock) ;; *) scan+=("$f") ;; esac
+    [[ -f $f ]] || continue
+    case $f in Cargo.toml | Cargo.lock | *.snap.new | *.pending-snap) ;; *) scan+=("$f") ;; esac
 done
 if ((${#scan[@]})); then
     step "ubs on ${#scan[@]} changed file(s)"
