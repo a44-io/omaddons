@@ -705,10 +705,14 @@ fn the_human_output_names_the_widget_and_how_to_reinstall() {
         "{text}"
     );
     assert!(
-        text.contains("enabled it in the bar's right section"),
+        text.contains(&format!("\n  path: {}\n", desk.plugin().display())),
         "{text}"
     );
-    assert!(text.contains("omaddons omarchy install"), "{text}");
+    assert!(
+        text.contains("\n  bar: added to the right section\n"),
+        "{text}"
+    );
+    assert!(text.contains("→ omaddons omarchy install"), "{text}");
 }
 
 // ---------------------------------------------------------------------------------------
@@ -947,11 +951,17 @@ fn status_and_its_human_output_note_another_state() {
     let text = String::from_utf8(out.stdout).unwrap();
     assert_private_all(&text, &String::from_utf8(out.stderr).unwrap());
     assert!(
-        text.contains(&format!("is installed in {}", desk.plugin().display())),
+        text.contains(&format!("\n  path: {}\n", desk.plugin().display())),
         "{text}"
     );
-    assert!(text.contains("it serves another omaddons state"), "{text}");
-    assert!(text.contains("its shell is running"), "{text}");
+    assert!(
+        text.contains("\n  note: it serves another omaddons state"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Omarchy: present · shell running · "),
+        "{text}"
+    );
     assert!(
         !text.contains("omaddons omarchy install"),
         "nothing is recommended for another state's widget: {text}"
@@ -967,9 +977,10 @@ fn status_and_its_human_output_note_another_state() {
     let text = human(&desk, &["omarchy"], &[]);
     assert!(!text.contains("serves another omaddons state"), "{text}");
     assert!(
-        text.contains("(reinstall: omaddons omarchy install)"),
+        text.contains("\n  outdated: this omaddons renders another widget\n"),
         "{text}"
     );
+    assert!(text.contains("\n  → omaddons omarchy install\n"), "{text}");
 }
 
 // ---------------------------------------------------------------------------------------

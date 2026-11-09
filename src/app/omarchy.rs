@@ -105,6 +105,8 @@ impl Outcome for StatusOutcome {
         &self.commands
     }
 
+    /// A headline with the verdict, then one indented `label: value` line per fact, as
+    /// `info` and `status` print theirs, and the fix as `→ <command>`.
     fn render_human(&self, w: &mut dyn Write, _style: &Style) -> std::io::Result<()> {
         let d = &self.data;
         let p = &d.plugin;
@@ -113,53 +115,42 @@ impl Outcome for StatusOutcome {
             // nothing is recommended from here. One whose context cannot be read
             // (`Build.js` missing) serves none, and its reinstall is recommended.
             let foreign = p.context_known && !p.context_matches;
+            let state = if p.outdated { "outdated" } else { "current" };
             let place = match p.section {
                 Some(section) => format!("on the bar's {} section", section.as_str()),
-                None if foreign => "not on the bar".to_owned(),
-                None => "not on the bar (enable it: omaddons omarchy install)".to_owned(),
+                None => "not on the bar".to_owned(),
             };
-            writeln!(
-                w,
-                "{} is installed in {}, {place}",
-                widget(p),
-                p.path.display()
-            )?;
+            writeln!(w, "{}: {state}, {place}", widget(p))?;
+            writeln!(w, "  path: {}", p.path.display())?;
             if let Some(binary) = &p.binary {
-                writeln!(w, "it runs {}", binary.display())?;
+                writeln!(w, "  runs: {}", binary.display())?;
             }
-            if p.outdated && foreign {
-                writeln!(w, "it is outdated: this omaddons renders another widget")?;
-            } else if p.outdated {
-                writeln!(
-                    w,
-                    "it is outdated: this omaddons renders another widget (reinstall: omaddons omarchy install)"
-                )?;
-            } else {
-                writeln!(w, "it is current")?;
+            if p.outdated {
+                writeln!(w, "  outdated: this omaddons renders another widget")?;
             }
             if foreign {
                 writeln!(
                     w,
-                    "note: it serves another omaddons state (other HOME or XDG directories); installing from here would point it at this one"
+                    "  note: it serves another omaddons state (other HOME or XDG directories); installing from here would point it at this one"
                 )?;
             }
             if let Some(validation) = d.validation.as_ref().filter(|v| !v.ok) {
-                writeln!(w, "it is not a valid plugin:")?;
+                writeln!(w, "  not a valid plugin:")?;
                 for error in &validation.errors {
-                    writeln!(w, "  {error}")?;
+                    writeln!(w, "    {error}")?;
                 }
             }
+            if !foreign && (p.outdated || p.section.is_none()) {
+                writeln!(w, "  → omaddons omarchy install")?;
+            }
         } else {
-            writeln!(
-                w,
-                "{} is not installed (omaddons omarchy install puts it on the bar)",
-                widget(p)
-            )?;
+            writeln!(w, "{}: not installed", widget(p))?;
+            writeln!(w, "  → omaddons omarchy install")?;
         }
         let o = &d.omarchy;
         writeln!(
             w,
-            "Omarchy: {}; its shell is {}; omarchy-plugin-validate is {}",
+            "Omarchy: {} · shell {} · omarchy-plugin-validate {}",
             if o.present { "present" } else { "not found" },
             if o.shell_running {
                 "running"
@@ -225,6 +216,8 @@ impl Outcome for InstallOutcome {
         &self.warnings
     }
 
+    /// What it did as a headline, then one indented `label: value` line per fact, as
+    /// `omarchy status` prints them.
     fn render_human(&self, w: &mut dyn Write, _style: &Style) -> std::io::Result<()> {
         let d = &self.data;
         let what = format!(
@@ -235,36 +228,36 @@ impl Outcome for InstallOutcome {
                 .as_deref()
                 .unwrap_or(env!("CARGO_PKG_VERSION"))
         );
-        let where_ = d.plugin.path.display();
         match (d.dry_run, d.installed) {
             (true, Installed::Unchanged) | (false, Installed::Unchanged) => {
-                writeln!(w, "{what} is installed and current in {where_}")?;
+                writeln!(w, "{what} is installed and current")?;
             }
-            (true, _) => writeln!(w, "would install {what} in {where_}")?,
+            (true, _) => writeln!(w, "would install {what}")?,
             (false, Installed::Fresh | Installed::Replaced) => {
-                writeln!(w, "installed {what} in {where_}")?;
+                writeln!(w, "installed {what}")?;
             }
         }
+        writeln!(w, "  path: {}", d.plugin.path.display())?;
         let section = d.plugin.section.unwrap_or(d.section).as_str();
         match d.enabled {
             Enabled::Yes if d.dry_run => {
-                writeln!(w, "would enable it in the bar's {section} section")?
+                writeln!(w, "  bar: would be added to the {section} section")?
             }
-            Enabled::Yes => writeln!(w, "enabled it in the bar's {section} section")?,
-            Enabled::Already => writeln!(w, "it is on the bar already, in the {section} section")?,
-            Enabled::Skipped => writeln!(w, "left the bar as it is (--no-enable)")?,
-            Enabled::Failed => writeln!(w, "could not put it on the bar (see the warning)")?,
+            Enabled::Yes => writeln!(w, "  bar: added to the {section} section")?,
+            Enabled::Already => writeln!(w, "  bar: already in the {section} section")?,
+            Enabled::Skipped => writeln!(w, "  bar: left as it is (--no-enable)")?,
+            Enabled::Failed => writeln!(w, "  bar: could not put it there (see the warning)")?,
         }
         if let Some(binary) = &d.plugin.binary {
             writeln!(
                 w,
-                "the widget runs {} with this session's omaddons directories",
+                "  runs: {} (with this session's omaddons directories)",
                 binary.display()
             )?;
         }
         writeln!(
             w,
-            "reinstall after moving the binary or changing XDG directories: omaddons omarchy install"
+            "  note: reinstall after moving the binary or changing XDG directories → omaddons omarchy install"
         )
     }
 }
