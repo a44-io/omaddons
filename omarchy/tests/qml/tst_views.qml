@@ -396,18 +396,32 @@ TestCase {
   function test_installed_rows_carry_their_markers_and_enter_repairs_or_updates() {
     keyClick("2")
     var installed = content()
+    // Each client's problems first (Foo's files changed), then its waiting updates, then
+    // the rest by name (1n2p.22).
     compare(json(installed.rows.map(function(r) { return [r.group, r.name, r.markers, r.primary] })), json([
       ["Classic Era", "Bar", [], "update"], ["", "Plater", [], ""],
-      ["Retail", "BigWigs", ["dep"], ""], ["", "DBM", [], "update"], ["", "Foo", ["modified"], "reinstall"], ["", "WeakAuras", ["pinned"], ""]]))
-    compare(findChild(row("installedRow", 2), "markers").text, "dep")
-    // Foo: Enter reinstalls its modified files.
-    for (var i = 0; i < 4; i++) keyClick("j")
+      ["Retail", "Foo", ["modified"], "reinstall"], ["", "DBM", [], "update"], ["", "BigWigs", ["dep"], ""], ["", "WeakAuras", ["pinned"], ""]]))
+    // The state in words on an AddonRow: chips, the source and what needs it.
+    var bigwigs = findChild(row("installedRow", 4), "addonRow")
+    compare(json([bigwigs.title, bigwigs.chips.map(function(c) { return c.text }), bigwigs.meta]),
+      json(["BigWigs", ["dependency"], "GitHub · needed by LittleWigs"]))
+    var foo = findChild(row("installedRow", 2), "addonRow")
+    compare(json([foo.band, foo.chips[0].text, foo.chips[0].urgent, foo.meta]), json(["urgent", "changed on disk", true, "GitHub · 1 file changed on disk"]))
+    var dbm = findChild(row("installedRow", 3), "addonRow")
+    compare([dbm.fromVersion, dbm.toVersion, dbm.band], ["12.1.14", "12.1.15", "accent"])
+    // Foo: Enter repairs its modified files.
+    keyClick("j")
+    keyClick("j")
+    compare(view.cursor, 2)
+    verify(foo.cursored)
     keyClick(Qt.Key_Return)
     compare(json(svc.runs[0]), json(["reinstall", { "target": "retail", "addon": "Foo" }, "Reinstall Foo"]))
     compare(json(words(svc.runs[0])), json(["install", "-t", "retail", "--reinstall", "--", "Foo"]))
+    // Its first button is Repair, the same action.
+    compare(json(foo.actions.map(function(a) { return a.name })), json(["enter", "pin", "restore", "remove"]))
     // BigWigs: nothing waits, so Enter does nothing.
-    keyClick("k")
-    keyClick("k")
+    keyClick("j")
+    keyClick("j")
     keyClick(Qt.Key_Return)
     compare(svc.runs.length, 1)
     keyClick("x")
@@ -417,16 +431,117 @@ TestCase {
     // `u` updates only an addon a release waits for: nothing for BigWigs, DBM's for DBM.
     keyClick("u")
     compare(svc.runs.length, 3)
-    keyClick("j")
+    keyClick("k")
     keyClick("u")
     compare(json(svc.runs[3].slice(0, 3)), json(["update_addon", { "target": "retail", "addon": "DBM" }, "Update DBM"]))
+    // A row's button acts on its row: DBM's Update.
+    findChild(dbm, "action_update").clicked()
+    compare(json(svc.runs[4].slice(0, 3)), json(["update_addon", { "target": "retail", "addon": "DBM" }, "Update DBM"]))
+  }
+
+  // `/` (1n2p.22): the filter box takes the keys, "n of m" beside it, urgent at none;
+  // Down moves the list's cursor, Enter goes to the first match, Esc leaves the box,
+  // and Esc again clears the filter with the cursor kept on its addon.
+  function test_slash_filters_the_addons_and_esc_drops_it_keeping_the_cursor() {
+    keyClick("2")
+    var installed = content()
+    var field = findChild(installed, "filterField")
+    verify(!installed.typing)
+    keyClick("/")
+    tryVerify(function() { return field.activeFocus })
+    verify(installed.typing)
+    keyClick("w")
+    keyClick("a")
+    compare(installed.query, "wa")
+    // WeakAuras by name, and Bar ("WoWInterface"? no: GitHub) left out.
+    compare(json(installed.rows.map(function(r) { return r.name })), json(["WeakAuras"]))
+    compare(findChild(installed, "filterCount").text, "1 of 6")
+    keyClick("z")
+    compare(findChild(installed, "filterCount").text, "0 of 6")
+    verify(findChild(installed, "filterCount").font.bold, "urgent at none")
+    verify(!findChild(installed, "stateEmpty").visible, "no empty sentence: the count says it")
+    keyClick(Qt.Key_Backspace)
+    // Enter: the first match, and the box gives the keys back.
+    keyClick(Qt.Key_Return)
+    tryVerify(function() { return !installed.typing })
+    compare([view.cursor, view.cursorActive], [0, true])
+    compare(installed.rows[0].name, "WeakAuras")
+    // Esc in the view: the filter goes, the cursor stays on WeakAuras.
+    keyClick(Qt.Key_Escape)
+    compare(installed.query, "")
+    compare(installed.rows[view.cursor].name, "WeakAuras")
+    compare(view.cursor, 5)
+    verify(view.opened, "Esc cleared the filter; it did not close the panel")
+    // In the box, Down moves the list's cursor without leaving the box.
+    keyClick("/")
+    tryVerify(function() { return field.activeFocus })
+    keyClick("b")
+    keyClick(Qt.Key_Down)
+    verify(field.activeFocus)
+    compare(view.cursorActive, true)
+    // Esc leaves the box, keeping its text.
+    keyClick(Qt.Key_Escape)
+    tryVerify(function() { return !field.activeFocus })
+    compare(installed.query, "b")
+    // `/` elsewhere says why it does nothing.
+    keyClick("1")
+    keyClick("/")
+    compare(findChild(view, "keyNote").text, "Nothing to filter here")
+  }
+
+  // `S` (1n2p.22): by name, by recently updated, by source, and back; the cursor stays
+  // on the same addon each time.
+  function test_S_cycles_three_orders_and_the_cursor_stays_on_its_addon() {
+    var listed = listing()
+    var times = { "BigWigs": "2026-11-01T00:00:00Z", "DBM": "2026-11-02T00:00:00Z", "Foo": "2026-10-01T00:00:00Z", "WeakAuras": "2026-11-05T00:00:00Z" }
+    listed.data.targets[1].addons.forEach(function(a) { a.installed_at = times[a.name]; a.drift = { "state": "clean", "files": 0, "folders": [] } })
+    listed.data.targets[1].addons[2].ref = "wowi:1"
+    svc.lists = Model.reduceList(listed)
+    view.setFilter("retail")
+    keyClick("2")
+    var installed = content()
+    var names = function() { return installed.rows.map(function(r) { return r.name }) }
+    compare(json(names()), json(["DBM", "BigWigs", "Foo", "WeakAuras"]))
+    keyClick("j")
+    keyClick("j")
+    compare(installed.rows[view.cursor].name, "Foo")
+    keyClick("S")
+    compare(installed.sort, "recent")
+    compare(json(names()), json(["DBM", "WeakAuras", "BigWigs", "Foo"]))
+    compare(installed.rows[view.cursor].name, "Foo")
+    compare(findChild(installed, "sortLabel").text, "Sorted by recently updated")
+    keyClick("S")
+    compare(json(names()), json(["DBM", "BigWigs", "WeakAuras", "Foo"]), "GitHub before WoWInterface")
+    compare(installed.rows[view.cursor].name, "Foo")
+    keyClick("S")
+    compare(installed.sort, "name")
+    verify(!findChild(installed, "sortLabel").visible)
+    compare(installed.rows[view.cursor].name, "Foo")
   }
 
   function test_unmanaged_folders_are_a_hint_and_an_empty_client_says_how_to_add() {
     keyClick("2")
     var lines = findChild(content(), "unmanaged")
     compare(lines.count, 1)
-    compare(lines.itemAt(0).text, "2 unmanaged folders on retail: omaddons adopt -t retail")
+    // In words, never a command line; Take over… only once the flow exists (.32).
+    compare(findChild(lines.itemAt(0), "unmanagedText").text, "2 folders on Retail omaddons doesn't manage")
+    verify(!findChild(lines.itemAt(0), "takeOver").visible)
+    var asked = []
+    view.keyHandlers = Object.assign({}, view.keyHandlers, { "adopt": function(frame, target) { asked.push(target) } })
+    verify(findChild(lines.itemAt(0), "takeOver").visible)
+    findChild(lines.itemAt(0), "takeOver").clicked()
+    compare(json(asked), json(["retail"]))
+    // No text in the view reads as a command line.
+    var texts = []
+    var collect = function(item) {
+      for (var i = 0; i < item.children.length; i++) {
+        var c = item.children[i]
+        if (typeof c.text === "string" && c.text !== "") texts.push(c.text)
+        collect(c)
+      }
+    }
+    collect(content())
+    compare(json(texts.filter(function(t) { return t.indexOf("omaddons ") === 0 || t.indexOf(" -t ") >= 0 })), json([]))
     svc.lists = Model.reduceList(listEnvelope([{ "id": "era", "key": "k", "label": "era", "counts": { "unmanaged": 0 }, "addons": [] }]))
     var empty = findChild(content(), "stateEmpty")
     verify(empty.visible)

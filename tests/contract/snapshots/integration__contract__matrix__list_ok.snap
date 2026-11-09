@@ -32,6 +32,7 @@ expression: s.stable(&c.envelope)
             "any_flavor": false,
             "channel": "stable",
             "folders": 1,
+            "installed_at": "<time>",
             "latest": {
               "asset": null,
               "release_id": null,

@@ -95,6 +95,10 @@ pub struct ListAddon {
     pub orphan: bool,
     /// Installed under `--any-flavor` on this client.
     pub any_flavor: bool,
+    /// When the installed release was installed (or the addon adopted): the bar
+    /// widget's "recently updated" order.
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
+    pub installed_at: jiff::Timestamp,
     /// The newest release the release memo knows, as `outdated` judges it (no request).
     pub latest: Latest,
     /// A count; with `-v` the folder names.
@@ -334,6 +338,7 @@ fn list_target(
                 required_by: a.required_by.clone(),
                 orphan: a.is_orphan(),
                 any_flavor: a.any_flavor,
+                installed_at: a.installed_at,
                 latest: latest(a),
                 folders: if verbose {
                     Folders::Names(a.folders.iter().map(|f| f.as_str().to_owned()).collect())

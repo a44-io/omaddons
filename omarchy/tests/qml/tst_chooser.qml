@@ -161,6 +161,9 @@ TestCase {
 
   function test_installed_r_picks_a_backup_by_its_captured_version_then_the_scope() {
     keyClick("2")
+    // WeakAuras, after Details by name (1n2p.22).
+    keyClick("j")
+    compare(findChild(view, "content").item.rows[view.cursor].name, "WeakAuras")
     keyClick("r")
     var c = chooser()
     verify(c.opened)

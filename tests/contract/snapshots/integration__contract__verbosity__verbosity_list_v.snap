@@ -62,6 +62,7 @@ expression: s.stable(&checked.envelope)
             "folders": [
               "BigWigs"
             ],
+            "installed_at": "<time>",
             "latest": {
               "asset": "bigwigs.zip",
               "release_id": "gh:o/bigwigs@v1",
@@ -116,6 +117,7 @@ expression: s.stable(&checked.envelope)
             "folders": [
               "Foo"
             ],
+            "installed_at": "<time>",
             "latest": {
               "asset": null,
               "release_id": null,
@@ -168,6 +170,7 @@ expression: s.stable(&checked.envelope)
             "folders": [
               "LittleWigs"
             ],
+            "installed_at": "<time>",
             "latest": {
               "asset": "littlewigs.zip",
               "release_id": "gh:o/littlewigs@v1",
@@ -220,6 +223,7 @@ expression: s.stable(&checked.envelope)
             "folders": [
               "WeakAuras"
             ],
+            "installed_at": "<time>",
             "latest": {
               "asset": "WeakAuras.zip",
               "release_id": "gh:WeakAuras/WeakAuras2@5.19.2",

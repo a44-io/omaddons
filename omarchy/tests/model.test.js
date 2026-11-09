@@ -734,7 +734,9 @@ describe("the key map", () => {
       ["ctrl_0_resets_it", ["Ctrl+0", "backups"], { action: "text_zoom", step: 0 }],
       ["a_page_has_the_frames_keys", ["?", "page"], { action: "help", step: 0 }],
       ["a_page_has_no_views_keys", ["u", "page"], null],
-      ["slash_waits_for_the_filter", ["/", "installed"], null],
+      ["slash_filters_the_addons", ["/", "installed"], { action: "filter", step: 0 }],
+      ["slash_elsewhere_says_why_not", ["/", "updates"], { action: null, note: "Nothing to filter here" }],
+      ["S_sorts_the_addons", ["S", "installed"], { action: "sort", step: 0 }],
       ["a_digit_past_the_views", ["6", "updates"], null],
       ["two_letters", ["uu", "updates"], null],
       ["nothing", ["", "updates"], null],
@@ -874,14 +876,16 @@ describe("the key map", () => {
   test("the reference lists where the panel stands first, then the frame, then a dialog", () => {
     const titles = (context) => M.helpSections(context).map((s) => s.title)
     expect(titles("updates")).toEqual(["Updates", "Every view", "Anywhere", "Dialog"])
-    expect(titles("search")).toEqual(["Search", "Every view", "Anywhere", "Dialog"])
+    // A view with a text box lists the box's keys right after its own.
+    expect(titles("search")).toEqual(["Search", "Search box", "Every view", "Anywhere", "Dialog"])
+    expect(titles("installed")).toEqual(["Addons", "Filter box", "Every view", "Anywhere", "Dialog"])
     expect(titles("card")).toEqual(["Problem card", "Anywhere", "Dialog"])
     const updates = M.helpSections("updates")[0]
     expect(updates.rows.map((r) => r.hint)).toEqual(["Enter", "u", "p", "e"])
     expect(updates.rows[0]).toEqual({ hint: "Enter", label: "update this addon" })
     // Every row of those contexts, once.
     const listed = M.helpSections("installed").flatMap((s) => s.rows).length
-    expect(listed).toBe(M.KEYMAP.filter((r) => ["installed", "view", "panel", "sheet"].includes(r.context)).length)
+    expect(listed).toBe(M.KEYMAP.filter((r) => ["installed", "filter", "view", "panel", "sheet"].includes(r.context)).length)
   })
 })
 
@@ -1300,14 +1304,79 @@ describe("the Updates and Installed views", () => {
     env.data.targets[0].addons[1].reason = "dependency"
     env.data.targets[0].addons[1].orphan = true
     const rows = M.installedRows(M.reduceList(env), "")
+    // Problems first (its folder gone, its files changed), then the rest.
     expect(rows.map((r) => [r.group, r.name, r.source, r.markers, r.primary])).toEqual([
       ["retail", "Bar", "gh", ["missing"], "reinstall"],
-      ["", "Baz", "gh", ["dep", "orphan", "pinned"], ""],
-      ["", "Foo", "gh", ["modified"], "reinstall"]])
+      ["", "Foo", "gh", ["modified"], "reinstall"],
+      ["", "Baz", "gh", ["dep", "orphan", "pinned"], ""]])
+    // The state in words: chips at a glance, the most urgent first; the meta line says
+    // its source and what the chips cannot (design doc §2.3, §6.3).
+    expect(rows.map((r) => [r.chips.map((c) => (c.urgent ? "!" : "") + c.text), r.meta, r.band])).toEqual([
+      [["!folder gone", "update ready"], "GitHub · its folder is gone", "urgent"],
+      [["!changed on disk", "update ready"], "GitHub · 1 file changed on disk", "urgent"],
+      [["pinned", "not needed"], "GitHub · nothing needs it any more", ""]])
+    // A problem's first button repairs; every row pins, restores and removes.
+    expect(rows[0].actions.map((a) => a.name)).toEqual(["enter", "update", "pin", "restore", "remove"])
+    expect(rows[0].actions[0].tooltip).toBe("Repair (Enter)")
+    expect(rows[2].actions.map((a) => [a.name, a.tooltip])).toEqual([["pin", "Unpin (p)"],
+      ["restore", "Restore its settings (r)"], ["remove", "Remove (x)"]])
     const plain = M.installedRows(M.reduceList(fixture("list")), "retail")
-    expect(plain.map((r) => [r.name, r.primary])).toEqual([["Bar", "update"], ["Baz", ""], ["Foo", "update"]])
-    expect(M.unmanagedLines(M.reduceList(fixture("list")), "")).toEqual(["1 unmanaged folder on retail: omaddons adopt -t retail"])
-    expect(M.unmanagedLines(M.reduceList(fixture("list")), "era")).toEqual([])
+    // Waiting updates before the rest.
+    expect(plain.map((r) => [r.name, r.primary, r.band])).toEqual([["Bar", "update", "accent"], ["Foo", "update", "accent"], ["Baz", "", ""]])
+    // No command line: the folders omaddons does not manage, in words.
+    const loose = M.unmanagedRows(M.reduceList(fixture("list")), "", M.reduceStatus(fixture("status-updates"), NOW).targets)
+    expect(loose).toEqual([{ target: "retail", client: "Retail", count: 1, text: "1 folder on Retail omaddons doesn't manage" }])
+    expect(M.unmanagedRows(M.reduceList(fixture("list")), "retail", [])[0].text).toBe("1 folder omaddons doesn't manage")
+    expect(M.unmanagedRows(M.reduceList(fixture("list")), "era", [])).toEqual([])
+  })
+
+  // The Addons view's order, nesting, filter and sort (1n2p.22), over a list the binary
+  // wrote, edited where a scene needs it: LibA needed by WeakAuras and by Zed, LibB by
+  // nothing here, Old installed first.
+  test("installed rows nest each dependency under the first addon that needs it", () => {
+    const env = JSON.parse(JSON.stringify(fixture("list-markers")))
+    const template = env.data.targets[0].addons[1]
+    const addon = (name, extra) => Object.assign(JSON.parse(JSON.stringify(template)), { name, pinned: false,
+      reason: "explicit", orphan: false, required_by: [], latest: { version: null, status: "current", source: null, release_id: null, asset: null },
+      ref: "gh:o/" + name.toLowerCase(), installed_at: "2026-11-01T00:00:00Z" }, extra || {})
+    env.data.targets[0].addons = [
+      addon("LibA", { reason: "dependency", required_by: ["WeakAuras", "Zed"] }),
+      addon("LibB", { reason: "dependency", required_by: ["Gone"] }),
+      addon("Old", { installed_at: "2026-10-01T00:00:00Z", ref: "wowi:1" }),
+      addon("WeakAuras", { installed_at: "2026-11-05T00:00:00Z" }),
+      addon("Zed", { installed_at: "2026-11-03T00:00:00Z", ref: "tukui:zed" })]
+    const lists = M.reduceList(env)
+    const shape = (rows) => rows.map((r) => (r.depth ? "  " : "") + r.name)
+    expect(shape(M.installedRows(lists, "retail"))).toEqual(["LibB", "Old", "WeakAuras", "  LibA", "Zed"])
+    expect(M.installedRows(lists, "retail").find((r) => r.name === "LibA").meta).toBe("GitHub · needed by WeakAuras and Zed")
+    // Recently updated: the newest install first; by source: GitHub, Tukui, WoWInterface.
+    expect(shape(M.installedRows(lists, "retail", [], { sort: "recent" }))).toEqual(["WeakAuras", "  LibA", "Zed", "LibB", "Old"])
+    expect(shape(M.installedRows(lists, "retail", [], { sort: "source" }))).toEqual(["LibB", "WeakAuras", "  LibA", "Zed", "Old"])
+    expect(M.INSTALLED_SORTS.map(M.nextSort)).toEqual(["recent", "source", "name"])
+    expect(M.nextSort("nonsense")).toBe("name")
+    // A filter keeps what it matches; a dependency whose requester it drops stands alone.
+    expect(shape(M.installedRows(lists, "retail", [], { query: "lba" }))).toEqual(["LibA"])
+    // "weak" also matches what WeakAuras needs ("needed by WeakAuras and Zed"): it stays
+    // under it.
+    expect(shape(M.installedRows(lists, "retail", [], { query: "weak" }))).toEqual(["WeakAuras", "  LibA"])
+    expect(shape(M.installedRows(lists, "retail", [], { query: "needed weak" }))).toEqual(["LibA"])
+    expect(shape(M.installedRows(lists, "retail", [], { query: "tukui" }))).toEqual(["Zed"])
+    expect(shape(M.installedRows(lists, "retail", [], { query: "nothing like this" }))).toEqual([])
+    expect(M.installedCount(lists, "retail", "lib")).toEqual({ shown: 2, total: 5, text: "2 of 5", none: false })
+    expect(M.installedCount(lists, "retail", "zzz")).toEqual({ shown: 0, total: 5, text: "0 of 5", none: true })
+    expect(M.installedCount(lists, "retail", "")).toEqual({ shown: 5, total: 5, text: "5 of 5", none: false })
+  })
+
+  test("a filter word is a subsequence of one field, ignoring case", () => {
+    expect(M.filterMatches("plt", ["Plater"])).toBe(true)
+    expect(M.filterMatches("PLT", ["plater"])).toBe(true)
+    expect(M.filterMatches("chg disk", ["Foo", "changed on disk"])).toBe(true)
+    // Each word in one field: never stitched across two.
+    expect(M.filterMatches("pg", ["Plater", "GitHub"])).toBe(false)
+    expect(M.filterMatches("tlp", ["Plater"])).toBe(false)
+    expect(M.filterMatches("", ["x"])).toBe(true)
+    expect(M.filterMatches("  ", [])).toBe(true)
+    expect(M.filterMatches("x", null)).toBe(false)
   })
 
   test("row actions are templates with the row's slots, and build", () => {
@@ -2320,7 +2389,7 @@ describe("what the view showed", () => {
     const first = M.installedRows(lists(), "retail")[0]
     expect(["shownOf_uses_latestSource_not_the_display_source", first.source, M.shownOf(first).source])
       .toEqual(["shownOf_uses_latestSource_not_the_display_source", "gh", "github"])
-    const installed = M.installedRows(lists(), "retail")[1]
+    const installed = M.installedRows(lists(), "retail").find((r) => r.name === "Baz")
     expect([installed.name, installed.latest, installed.latestReleaseId, installed.targetKey]).toEqual(["Baz", "v1", "gh:o/baz@v1", retailKey()])
     expect(M.rowAction(rows[0], "update").shown).toEqual([bar])
   })

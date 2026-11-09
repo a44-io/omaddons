@@ -1170,6 +1170,11 @@ function reduceList(env) {
             "status": str(latest.status),
             "updateAvailable": latest.status === "update_available",
             "drift": str(drift.state),
+            // How many of its files changed on disk (`-v`'s drift).
+            "driftFiles": num(drift.files),
+            // When its release was installed: the Addons view's "recently updated".
+            "installedAt": str(a.installed_at),
+            "anyFlavor": a.any_flavor === true,
             "dependency": a.reason === "dependency",
             "orphan": a.orphan === true,
             "requiredBy": stringList(a.required_by),
@@ -1695,6 +1700,7 @@ var KEY_CONTEXTS = [
   { "id": "issues", "title": "Issues" },
   { "id": "backups", "title": "Backups" },
   { "id": "field", "title": "Search box" },
+  { "id": "filter", "title": "Filter box" },
   { "id": "card", "title": "Problem card" },
   { "id": "sheet", "title": "Dialog" },
   { "id": "help", "title": "Key reference" }
@@ -1716,7 +1722,7 @@ var KEYMAP = [
   { "keys": ["?"], "context": "panel", "action": "help", "label": "this key reference", "hint": "?" },
   { "keys": ["z"], "context": "panel", "action": "zoom", "label": "fill the screen, and back", "hint": "z" },
   { "keys": ["Ctrl+=", "Ctrl+-", "Ctrl+0"], "context": "panel", "action": "text_zoom", "label": "bigger or smaller text, and back to normal (or Ctrl+wheel)", "hint": "Ctrl+= Ctrl+-" },
-  { "keys": ["Esc"], "context": "panel", "action": "close", "label": "back out one layer: a page, then the panel closes", "hint": "Esc" },
+  { "keys": ["Esc"], "context": "panel", "action": "close", "label": "back out one layer: a page, then a filter, then the panel closes", "hint": "Esc" },
   { "keys": ["Tab", "Shift+Tab"], "context": "panel", "action": "tab", "label": "the bar's next or previous panel", "hint": "Tab" },
   { "keys": ["j", "k", "Down", "Up"], "context": "view", "action": "move", "label": "move the cursor", "hint": "j k" },
   { "keys": ["g", "G"], "context": "view", "action": "edge", "label": "first or last row", "hint": "g G" },
@@ -1738,6 +1744,8 @@ var KEYMAP = [
   { "keys": ["p"], "context": "installed", "action": "pin", "label": "pin or unpin it", "hint": "p", "nothing": "Nothing to pin here" },
   { "keys": ["x"], "context": "installed", "action": "remove", "label": "remove it, after a confirmation", "hint": "x", "nothing": "Nothing to remove here" },
   { "keys": ["r"], "context": "installed", "action": "restore", "label": "restore its settings from a backup", "hint": "r", "nothing": "No settings to restore here" },
+  { "keys": ["/"], "context": "installed", "action": "filter", "label": "filter the list by name, source or state", "hint": "/", "nothing": "Nothing to filter here" },
+  { "keys": ["S"], "context": "installed", "action": "sort", "label": "sort by name, by recently updated, or by source", "hint": "S", "nothing": "Nothing to sort here" },
   { "keys": ["Enter", "Space"], "context": "issues", "action": "enter", "label": "preview a repair, run the fix, or show why; on a Lua error, update its addon or show the stack", "hint": "Enter" },
   { "keys": ["u"], "context": "issues", "action": "update", "label": "update the addon a Lua error comes from", "hint": "u", "nothing": "Nothing to update here" },
   { "keys": ["r"], "context": "issues", "action": "restore", "label": "restore the erroring addon's settings from a backup", "hint": "r", "nothing": "No settings to restore here" },
@@ -1749,6 +1757,9 @@ var KEYMAP = [
   { "keys": ["i"], "context": "search", "action": "install", "label": "install the result", "hint": "i", "nothing": "Nothing to install here" },
   { "keys": ["Enter"], "context": "field", "action": "search", "label": "search", "hint": "Enter" },
   { "keys": ["Esc"], "context": "field", "action": "leave", "label": "leave the box (its text stays)", "hint": "Esc" },
+  { "keys": ["Down", "Up"], "context": "filter", "action": "move", "label": "move the cursor in the list (the box keeps the keys)", "hint": "Down Up" },
+  { "keys": ["Enter"], "context": "filter", "action": "first", "label": "go to the first match, and leave the box", "hint": "Enter" },
+  { "keys": ["Esc"], "context": "filter", "action": "leave", "label": "leave the box (the filter stays: Esc again clears it)", "hint": "Esc" },
   { "keys": ["j", "k", "Down", "Up"], "context": "card", "action": "move", "label": "move between the card's buttons", "hint": "j k" },
   { "keys": ["Enter", "Space"], "context": "card", "action": "press", "label": "press the button", "hint": "Enter" },
   { "keys": ["Esc", "n", "N"], "context": "sheet", "action": "cancel", "label": "cancel, or go back a step", "hint": "Esc n" },
@@ -1798,6 +1809,9 @@ function keyStep(name) {
 // The KEYMAP contexts a key is looked up in, from where the keyboard is: a view's name,
 // "page" (a page on the navigation stack: the frame's keys, and the page's own rows when
 // pages bring some, .23), "card", "field", "sheet" or "help".
+// The text box each view has, whose keys the key reference lists with the view's.
+var VIEW_BOXES = { "search": "field", "installed": "filter" }
+
 function keyScopes(context) {
   if (context === "card") return ["panel", "card"]
   if (VIEWS.indexOf(context) >= 0 || context === "page") return ["panel", "view", context]
@@ -1891,7 +1905,10 @@ function contextTitle(id) {
 // The key reference for `context` (a view's name, or "card"): its own rows first, then
 // the frame's, then a dialog's, each `{title, rows: [{hint, label}]}`.
 function helpSections(context) {
-  var ids = keyScopes(context).slice().reverse().concat(["sheet"])
+  var ids = keyScopes(context).slice().reverse()
+  // A view's box (Search's search box, Addons' filter box) right after its own keys.
+  if (VIEW_BOXES.hasOwnProperty(context)) ids.splice(1, 0, VIEW_BOXES[context])
+  ids = ids.concat(["sheet"])
   return ids.map(function(id) {
     return {
       "title": contextTitle(id),
@@ -2536,43 +2553,178 @@ function viewState(view, input) {
   return out
 }
 
-// The Installed view's rows, in the filter: every managed addon, its source and its
-// markers (dep, orphan, pinned, modified or missing), and what Enter does: reinstall
-// drifted files, else update when one is available, else nothing (""). Under All, each
-// client's first row carries its header (`group`, `groupCount`), named from
-// `statusTargets` (`status`'s clients; the id without them).
-function installedRows(lists, filter, statusTargets) {
+// The Addons view's orders (`S` cycles them, 1n2p.22): by name, recently updated (the
+// newest install first), by source. Problems and waiting updates come first in each.
+var INSTALLED_SORTS = ["name", "recent", "source"]
+
+// The sort after `sort`, in a ring.
+function nextSort(sort) {
+  var at = INSTALLED_SORTS.indexOf(str(sort))
+  return INSTALLED_SORTS[(at + 1) % INSTALLED_SORTS.length]
+}
+
+// A source kind as a player word (design doc §6.3).
+var SOURCE_WORDS = { "gh": "GitHub", "wowi": "WoWInterface", "tukui": "Tukui", "wowace": "WowAce", "git": "git", "file": "a file" }
+
+// Whether `query` matches: each of its words is a subsequence, ignoring case, of one of
+// `fields` ("plt" matches Plater, "chg disk" a row whose files changed on disk). An
+// empty query matches everything.
+function filterMatches(query, fields) {
+  var terms = str(query).toLowerCase().split(/\s+/).filter(function(w) { return w !== "" })
+  var texts = (Array.isArray(fields) ? fields : []).map(function(f) { return str(f).toLowerCase() })
+  var subsequence = function(term, text) {
+    var at = 0
+    for (var i = 0; i < text.length && at < term.length; i++) if (text.charAt(i) === term.charAt(at)) at++
+    return at === term.length
+  }
+  return terms.every(function(term) { return texts.some(function(text) { return subsequence(term, text) }) })
+}
+
+// One addon's row in the Addons view (design doc §2.3, §5.3): its glyph and band, its
+// version (installed → the waiting one), chips for its state at a glance, the most
+// urgent first, a meta line of its source and what the chips cannot say (how many
+// files changed, what needs it), and the actions the cursored row offers.
+function installedRow(t, a, client) {
+  var problem = a.drift === "modified" || a.drift === "missing"
+  var markers = []
+  if (a.dependency) markers.push("dep")
+  if (a.orphan) markers.push("orphan")
+  if (a.pinned) markers.push("pinned")
+  if (problem) markers.push(a.drift)
+  var chips = []
+  var meta = [SOURCE_WORDS[a.source] || copy("installed.source.unknown")]
+  if (a.drift === "modified") {
+    chips.push({ "text": copy("installed.chip.modified"), "urgent": true })
+    meta.push(a.driftFiles > 0 ? copy("installed.meta.modified_files", { "n": a.driftFiles }) : copy("installed.meta.modified"))
+  } else if (a.drift === "missing") {
+    chips.push({ "text": copy("installed.chip.missing"), "urgent": true })
+    meta.push(copy("installed.meta.missing"))
+  } else if (a.drift === "unindexed") {
+    chips.push({ "text": copy("installed.chip.unindexed"), "urgent": false })
+  }
+  if (a.updateAvailable) chips.push({ "text": copy("installed.chip.update"), "urgent": false })
+  if (a.pinned) chips.push({ "text": copy("installed.chip.pinned"), "urgent": false })
+  if (a.orphan) {
+    chips.push({ "text": copy("installed.chip.orphan"), "urgent": false })
+    meta.push(copy("installed.meta.orphan"))
+  } else if (a.dependency) {
+    chips.push({ "text": copy("installed.chip.dependency"), "urgent": false })
+    if (a.requiredBy.length) meta.push(copy("installed.meta.needed_by", { "addons": joinNames(a.requiredBy) }))
+  }
+  if (a.anyFlavor) chips.push({ "text": copy("installed.chip.any_flavor"), "urgent": false })
+  var primary = problem ? "reinstall" : (a.updateAvailable ? "update" : "")
+  // The cursored row's buttons: a problem's Repair first (design doc §2.3).
+  var actions = []
+  if (problem) actions.push({ "name": "enter", "glyph": String.fromCodePoint(0xF0DC9), "tooltip": withKey(copy("installed.action.repair"), "enter", "installed") })
+  if (a.updateAvailable) actions.push({ "name": "update", "glyph": String.fromCodePoint(0xF0CE1), "tooltip": withKey(copy("installed.action.update"), "update", "installed") })
+  actions.push({ "name": "pin", "glyph": String.fromCodePoint(a.pinned ? 0xF0404 : 0xF0403),
+    "tooltip": withKey(copy(a.pinned ? "installed.action.unpin" : "installed.action.pin"), "pin", "installed") })
+  actions.push({ "name": "restore", "glyph": String.fromCodePoint(0xF006F), "tooltip": withKey(copy("installed.action.restore"), "restore", "installed") })
+  actions.push({ "name": "remove", "glyph": String.fromCodePoint(0xF01B4), "tooltip": withKey(copy("installed.action.remove"), "remove", "installed") })
+  return {
+    "key": t.id + "/" + a.name, "target": t.id, "client": client, "name": a.name, "version": a.version, "source": a.source,
+    "sourceWord": meta[0], "markers": markers, "chips": chips, "meta": meta.join(" · "), "problem": problem,
+    "band": problem ? "urgent" : (a.updateAvailable ? "accent" : ""),
+    "glyph": a.drift === "modified" ? 0xF0DC9 : a.drift === "missing" ? 0xF0258 : a.updateAvailable ? 0xF0CE1
+      : a.pinned ? 0xF0403 : (a.dependency || a.orphan) ? 0xF0431 : 0,
+    "pinned": a.pinned, "updateAvailable": a.updateAvailable === true, "primary": primary, "actions": actions,
+    "depth": 0, "group": "", "groupCount": "", "installedAt": a.installedAt, "requiredBy": a.requiredBy,
+    "dependency": a.dependency, "targetKey": t.key, "latest": a.latest, "channel": a.channel,
+    "latestSource": a.latestSource, "latestReleaseId": a.latestReleaseId, "latestAsset": a.latestAsset
+  }
+}
+
+// The Addons view's rows, in the filter (1n2p.22, design doc §2.3): each client's
+// managed addons, problems first (files changed, folder gone), then the ones with an
+// update waiting, then the rest, each part in `view.sort`'s order (by name, the
+// newest install first, or by source); a dependency with no problem of its own sits
+// right under the first addon here that needs it (`depth` 1), once. `view.query`
+// keeps the rows it matches (filterMatches over the name, the source and the state
+// words), flat where a dependency's requester did not match. Under All, each client's
+// first row carries its header (`group`, `groupCount`), named from `statusTargets`
+// (`status`'s clients; the id without them). Enter on a row repairs a problem, else
+// updates, else does nothing (`primary`), until the addon page (.23) opens instead.
+function installedRows(lists, filter, statusTargets, view) {
+  var options = view && typeof view === "object" ? view : {}
+  var sort = INSTALLED_SORTS.indexOf(str(options.sort)) >= 0 ? str(options.sort) : "name"
+  var query = str(options.query).trim()
+  var byName = function(x, y) {
+    var a = x.name.toLowerCase(), b = y.name.toLowerCase()
+    return a < b ? -1 : a > b ? 1 : 0
+  }
+  var order = function(x, y) {
+    var rank = function(r) { return r.problem ? 0 : (r.updateAvailable ? 1 : 2) }
+    var ranked = rank(x) - rank(y)
+    if (ranked) return ranked
+    if (sort === "recent" && x.installedAt !== y.installedAt) return x.installedAt > y.installedAt ? -1 : 1
+    if (sort === "source" && x.sourceWord !== y.sourceWord) return x.sourceWord < y.sourceWord ? -1 : 1
+    return byName(x, y)
+  }
   var out = []
   var targets = listTargets(lists, filter)
   for (var i = 0; i < targets.length; i++) {
     var t = targets[i]
-    var group = !filter && t.addons.length > 0 ? clientGroup(statusTargets, t.id, plural(t.addons.length, "addon")) : null
-    for (var j = 0; j < t.addons.length; j++) {
-      var a = t.addons[j]
-      var markers = []
-      if (a.dependency) markers.push("dep")
-      if (a.orphan) markers.push("orphan")
-      if (a.pinned) markers.push("pinned")
-      if (a.drift === "modified" || a.drift === "missing") markers.push(a.drift)
-      out.push({
-        "key": t.id + "/" + a.name, "target": t.id, "name": a.name, "version": a.version, "source": a.source,
-        "markers": markers, "pinned": a.pinned, "updateAvailable": a.updateAvailable === true,
-        "primary": a.drift === "modified" || a.drift === "missing" ? "reinstall" : (a.updateAvailable ? "update" : ""),
-        "group": group && j === 0 ? group.title : "", "groupCount": group && j === 0 ? group.count : "",
-        "targetKey": t.key, "latest": a.latest, "channel": a.channel,
-        "latestSource": a.latestSource, "latestReleaseId": a.latestReleaseId, "latestAsset": a.latestAsset
-      })
+    var client = sheetClient(statusTargets, t.id, "")
+    var rows = stableSort(t.addons.map(function(a) { return installedRow(t, a, client) }), order)
+    // A dependency without a problem nests under the first addon here that needs it.
+    var names = rows.map(function(r) { return r.name })
+    var parentOf = function(r) {
+      if (!r.dependency || r.problem) return ""
+      for (var k = 0; k < r.requiredBy.length; k++) {
+        var p = r.requiredBy[k]
+        if (p !== r.name && names.indexOf(p) >= 0) return p
+      }
+      return ""
     }
+    var top = rows.filter(function(r) { return parentOf(r) === "" })
+    var nested = []
+    for (var j = 0; j < top.length; j++) {
+      nested.push(top[j])
+      for (var c = 0; c < rows.length; c++) {
+        if (parentOf(rows[c]) !== top[j].name) continue
+        rows[c].depth = 1
+        nested.push(rows[c])
+      }
+    }
+    // A child whose parent is itself nested (a chain) stays where it sorted, flat.
+    for (var m = 0; m < rows.length; m++) if (nested.indexOf(rows[m]) < 0) nested.push(rows[m])
+    var shown = query === "" ? nested : nested.filter(function(r) {
+      return filterMatches(query, [r.name, r.sourceWord, r.meta].concat(r.chips.map(function(ch) { return ch.text })))
+    })
+    for (var s = 0; s < shown.length; s++) {
+      if (shown[s].depth === 1 && shown.filter(function(r) { return r.name === parentOf(shown[s]) }).length === 0) shown[s].depth = 0
+    }
+    if (!filter && shown.length > 0) {
+      var group = clientGroup(statusTargets, t.id, plural(shown.length, "addon"))
+      shown[0].group = group.title
+      shown[0].groupCount = group.count
+    }
+    out = out.concat(shown)
   }
   return out
 }
 
-// The unmanaged folders of the clients in the filter, as text (adoption is the CLI's
-// in M3): "1 unmanaged folder on retail: omaddons adopt -t retail".
-function unmanagedLines(lists, filter) {
+// How many addons the Addons view shows of how many in the filter: the filter box's
+// "2 of 42", urgent at none.
+function installedCount(lists, filter, query) {
+  var total = 0
+  var targets = listTargets(lists, filter)
+  for (var i = 0; i < targets.length; i++) total += targets[i].addons.length
+  var shown = str(query).trim() === "" ? total : installedRows(lists, filter, [], { "query": query }).length
+  return { "shown": shown, "total": total, "text": copy("installed.count", { "shown": shown, "total": total }), "none": total > 0 && shown === 0 }
+}
+
+// The folders omaddons does not manage, one row per client in the filter (design doc
+// §2.3, UX-13): "3 folders omaddons doesn't manage", never a command line; their Take
+// over… leads to the take-over flow (first run, .32).
+function unmanagedRows(lists, filter, statusTargets) {
   return listTargets(lists, filter)
     .filter(function(t) { return t.unmanaged > 0 })
-    .map(function(t) { return plural(t.unmanaged, "unmanaged folder") + " on " + t.id + ": omaddons adopt -t " + t.id })
+    .map(function(t) {
+      return { "target": t.id, "client": sheetClient(statusTargets, t.id, ""), "count": t.unmanaged,
+        "text": filter ? copy("installed.unmanaged", { "n": t.unmanaged })
+          : copy("installed.unmanaged.client", { "n": t.unmanaged, "client": sheetClient(statusTargets, t.id, "") }) }
+    })
 }
 
 // A row's action, as a template run: Enter's, and `p`'s pin or unpin.
@@ -3409,6 +3561,36 @@ var COPY = {
   "state.missing.detail": "Its folder is gone, or the game was uninstalled.",
   "state.action.rescan": "Rescan clients",
   "state.action.forget": "Forget {client}…",
+
+  // The Addons view (1n2p.22, design doc §2.3, §6.3).
+  "installed.source.unknown": "an unknown source",
+  "installed.chip.modified": "changed on disk",
+  "installed.chip.missing": "folder gone",
+  "installed.chip.unindexed": "can't check files",
+  "installed.chip.update": "update ready",
+  "installed.chip.pinned": "pinned",
+  "installed.chip.orphan": "not needed",
+  "installed.chip.dependency": "dependency",
+  "installed.chip.any_flavor": "not made for this client",
+  "installed.meta.modified_files": { "one": "1 file changed on disk", "other": "{n} files changed on disk" },
+  "installed.meta.modified": "files changed on disk",
+  "installed.meta.missing": "its folder is gone",
+  "installed.meta.orphan": "nothing needs it any more",
+  "installed.meta.needed_by": "needed by {addons}",
+  "installed.action.repair": "Repair",
+  "installed.action.update": "Update",
+  "installed.action.pin": "Pin",
+  "installed.action.unpin": "Unpin",
+  "installed.action.restore": "Restore its settings",
+  "installed.action.remove": "Remove",
+  "installed.count": "{shown} of {total}",
+  "installed.filter": "Filter by name, source or state",
+  "installed.sort.name": "Sorted by name",
+  "installed.sort.recent": "Sorted by recently updated",
+  "installed.sort.source": "Sorted by source",
+  "installed.unmanaged": { "one": "1 folder omaddons doesn't manage", "other": "{n} folders omaddons doesn't manage" },
+  "installed.unmanaged.client": { "one": "1 folder on {client} omaddons doesn't manage", "other": "{n} folders on {client} omaddons doesn't manage" },
+  "installed.take_over": "Take over…",
 
   // The clients (design doc §2.1, §2.2): the scope's words, and a group's header.
   "client.all": "All clients",
@@ -4424,7 +4606,11 @@ if (typeof module !== "undefined") {
     VIEW_RESOURCES: VIEW_RESOURCES,
     SOURCE_TROUBLE: SOURCE_TROUBLE,
     installedRows: installedRows,
-    unmanagedLines: unmanagedLines,
+    unmanagedRows: unmanagedRows,
+    installedCount: installedCount,
+    filterMatches: filterMatches,
+    nextSort: nextSort,
+    INSTALLED_SORTS: INSTALLED_SORTS,
     rowAction: rowAction,
     notesFor: notesFor,
     errorLine: errorLine,

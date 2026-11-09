@@ -8480,6 +8480,7 @@
     "output list data.targets[].addons[].folder_tocs[].verdict": {"enum":["compatible","no_toc","out_of_date","wrong_flavor"],"kind":"output_position","nullable":true,"required":true,"types":["string"]},
     "output list data.targets[].addons[].folder_tocs[].version": {"kind":"output_position","nullable":true,"required":true,"types":["string"]},
     "output list data.targets[].addons[].folders": {"kind":"output_position","nullable":false,"required":true,"types":["array","integer"]},
+    "output list data.targets[].addons[].installed_at": {"kind":"output_position","nullable":false,"required":true,"types":["string"]},
     "output list data.targets[].addons[].latest": {"kind":"output_position","nullable":false,"required":true,"types":["object"]},
     "output list data.targets[].addons[].latest.asset": {"kind":"output_position","nullable":true,"required":true,"types":["string"]},
     "output list data.targets[].addons[].latest.release_id": {"kind":"output_position","nullable":true,"required":true,"types":["string"]},

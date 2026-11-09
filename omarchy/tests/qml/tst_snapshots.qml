@@ -767,6 +767,44 @@ TestCase {
     shoot("installed-long-name")
   }
 
+  // The rebuilt Addons view (1n2p.22) at the minimum width: a row keeps its first chip
+  // and its cursored row one action (design doc §5.3).
+  function test_installed_long_at_400() {
+    panelWidth = 400
+    var scene = everyday()
+    scene.list = bigList(150, "Details_DamageMeter_StreamerModeAndPluginsCollection_Classic")
+    open(scene, "installed")
+    frame.cursor = 0
+    frame.cursorActive = true
+    shoot("installed-long-400")
+  }
+
+  // One client: problems first, then waiting updates, a dependency under the addon that
+  // needs it, the cursored row's buttons.
+  function test_installed_one_client() {
+    var scene = everyday()
+    scene.list = bigList(150, "")
+    open(scene, "installed", "retail")
+    frame.cursor = 0
+    frame.cursorActive = true
+    shoot("installed-one-client")
+  }
+
+  // `/` with a word typed: the box, "n of m", what it matches.
+  function test_installed_filter() {
+    var scene = everyday()
+    scene.list = bigList(150, "")
+    open(scene, "installed")
+    var installed = frame.currentView
+    installed.handleKey("filter", 0)
+    findChild(installed, "filterField").text = "addon01"
+    compare(findChild(installed, "filterCount").text, installed.rows.length + " of 150")
+    shoot("installed-filter")
+    findChild(installed, "filterField").text = "nothing like it"
+    shoot("installed-filter-none")
+    installed.escapeFilter()
+  }
+
   // ---------------------------------------------------------------- Issues
 
   function test_issues_loading() {

@@ -140,8 +140,13 @@ fn left(log: &TestLog, home: &Home) -> Value {
     let listed = commands::run(log, home, &strings(&["list"]));
     let mut records: Value =
         serde_json::from_str(&listed.data().to_string().replace(&root, "<root>")).unwrap();
+    // What differs between two runs of one change: the client's key, and when each
+    // addon was installed.
     for target in records["targets"].as_array_mut().into_iter().flatten() {
         target.as_object_mut().map(|t| t.remove("key"));
+        for addon in target["addons"].as_array_mut().into_iter().flatten() {
+            addon.as_object_mut().map(|a| a.remove("installed_at"));
+        }
     }
     let backups = commands::run(log, home, &strings(&["backup", "list"]));
     let totals: BTreeMap<String, Value> = backups.data()["targets"]
