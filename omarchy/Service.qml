@@ -67,6 +67,10 @@ Item {
   // What the open panel shows, for state(): `{scope, view, stackDepth, sheet, zoomed,
   // textZoom}` (design doc §2.1), set by the panel while it is open; null otherwise.
   property var panelState: null
+  // The scope a panel showed last ("" is All), so the next one to open, on any bar,
+  // starts there unless exactly one client runs (design doc §2.2). In memory only: it
+  // survives closing the panel, not a shell restart.
+  property string scope: ""
   // A check for updates is running (the hero's Check now spins, UX-01).
   readonly property bool checking: !!networkLane.request && networkLane.request.resource === "check"
   // The resources being read or queued to be (Model.viewState's `refreshing`).
@@ -212,6 +216,12 @@ Item {
 
   function refresh() {
     return request({ "resource": "status", "template": "status", "label": "Refresh" })
+  }
+
+  // A missing client's Rescan clients (design doc §2.2): `status` with its scan, not
+  // the cached clients, so a client installed again comes back.
+  function rescan() {
+    return request({ "resource": "status", "template": "status_full", "label": "Rescan clients" })
   }
 
   function check() {

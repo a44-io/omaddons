@@ -105,7 +105,8 @@ Item {
   readonly property var selectedTarget: Model.targetById(targets, filter)
   readonly property var lastChange: svc ? svc.lastChange : null
   readonly property var undo: Model.undoAction(lastChange)
-  readonly property var openArgv: Model.addonsDirArgv(selectedTarget)
+  // `o`: the scoped client's AddOns, or under All the cursored row's (design doc §2.2).
+  readonly property var openArgv: Model.addonsDirArgv(Model.openTarget(targets, filter, cursorRowTarget()))
   readonly property var lastResult: svc ? svc.lastResult : null
   readonly property var resultUndo: Model.resultUndo(lastResult, lastChange)
   readonly property var lastError: svc ? svc.lastError : null
@@ -166,13 +167,23 @@ Item {
     helpOpen = false
     if (!opened) return
     nowMs = Date.now()
-    cursor = 0
+    // The scope it opens on (§2.2): the one running client, else the scope the panel
+    // showed last in this shell session (the service keeps it for every bar's panel;
+    // a service without it, this frame's own), else All.
+    setFilter(Model.openingScope(targets, svc && "scope" in svc ? svc.scope : filter))
     cursorActive = false
     notice = ""
     keyNote = ""
     flick.contentY = 0
     publishState()
     if (!takeRequestedView() && svc) svc.readView(view)
+  }
+
+  // A client forgotten or renamed since: the scope falls back to All (§2.2). Only on an
+  // answer: a status that failed says nothing about which clients exist.
+  onTargetsChanged: {
+    var kept = Model.keptScope(targets, filter)
+    if (summary !== null && kept !== filter) setFilter(kept)
   }
 
   onConfirmingChanged: {
@@ -234,9 +245,20 @@ Item {
     if (svc) svc.readView(name)
   }
 
+  // The scope, which the service remembers for the next panel that opens (in memory
+  // only, M3-D3: it survives closing the panel, not a shell restart).
   function setFilter(id) {
     filter = String(id || "")
     cursor = 0
+    if (svc && "scope" in svc) svc.scope = filter
+  }
+
+  // The client of the row under the cursor, "" when no row is: what a single-client
+  // action (`o`) acts on under All, so it never guesses (§2.2).
+  function cursorRowTarget() {
+    if (!cursorActive || !current || !current.rows || typeof current.rows.length !== "number") return ""
+    var row = cursor >= 0 && cursor < current.rows.length ? current.rows[cursor] : null
+    return row && typeof row.target === "string" ? row.target : ""
   }
 
   // ------------------------------------------------------------- the navigation stack
@@ -415,7 +437,7 @@ Item {
 
   function updateAll() {
     if (busy) return false
-    var request = Model.updateRequest(filter, Model.updateRows(svc.lists, filter, targets))
+    var request = Model.updateRequest(filter, Model.updateRows(svc.lists, filter, targets), targets)
     return report(svc.run(request.template, request.slots, request.label, request.shown))
   }
 
@@ -430,8 +452,12 @@ Item {
   }
 
   function openAddOns() {
-    if (!openArgv) return false
-    Quickshell.execDetached(Model.addonsDirArgv(selectedTarget))
+    if (!openArgv) {
+      // Under All with no row under the cursor: say how to choose one, never guess.
+      if (!filter) keyNote = Model.copy("client.choose")
+      return false
+    }
+    Quickshell.execDetached(Model.addonsDirArgv(Model.openTarget(targets, filter, cursorRowTarget())))
     return true
   }
 
@@ -450,7 +476,7 @@ Item {
   // `b` (and the Backups view's button): the filtered client, or every client.
   function backUp() {
     if (busy || !svc) return false
-    var request = Model.backupRequest(filter)
+    var request = Model.backupRequest(filter, targets)
     return report(svc.run(request.template, request.slots, request.label))
   }
 
@@ -485,6 +511,13 @@ Item {
       return true
     }
     if (name === "backup") return backUp()
+    // A missing client's card (§2.2): scan for the clients again, or forget this one
+    // through the plain `targets rm` its own problem offers (the forget plan sheet).
+    if (name === "rescan") return typeof svc.rescan === "function" && svc.rescan() !== false
+    if (name === "forget") {
+      var forget = Model.forgetAction(selectedTarget)
+      return !!forget && runCli(forget, "Forget " + Model.heroTitle(targets, filter))
+    }
     if (name !== "retry" && name !== "read_errors" && name !== "refresh_backups") return false
     if (view === "search") return !!currentView && typeof currentView.searchAgain === "function" && currentView.searchAgain()
     return typeof svc.readAgain === "function" && svc.readAgain(view) !== false

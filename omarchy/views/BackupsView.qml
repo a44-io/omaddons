@@ -111,13 +111,15 @@ Item {
         width: column.width
         spacing: Style.spacing.sm
 
-        PlainLabel {
+        // The client's header: its player name, whether it runs (design doc §2.2).
+        SectionHeader {
+          objectName: "clientHeader"
           width: parent.width
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          font.bold: true
-          text: section.modelData.title
+          title: section.modelData.title
+          count: section.modelData.count || ""
+          foreground: root.foreground
+          dim: root.dim
+          fontFamily: root.fontFamily
         }
 
         Repeater {

@@ -68,13 +68,18 @@ Column {
     objectName: "stateNotices"
     model: root.notices
 
+    // A notice's one action, or its several (a missing client's Rescan and Forget), and
+    // its body when it has one.
     NoticeCard {
       required property var modelData
       objectName: "stateNotice"
       width: root.width
       kind: modelData.kind === "failed" ? "failure" : "info"
       title: String(modelData.sentence || "")
-      buttons: modelData.action ? [{ "name": modelData.action.name, "text": modelData.action.text }] : []
+      body: String(modelData.body || "")
+      buttons: modelData.actions && typeof modelData.actions.length === "number"
+        ? Array.prototype.map.call(modelData.actions, function(a) { return { "name": a.name, "text": a.text } })
+        : (modelData.action ? [{ "name": modelData.action.name, "text": modelData.action.text }] : [])
       foreground: root.foreground
       fontFamily: root.fontFamily
       onClicked: function(name) { root.action(name) }

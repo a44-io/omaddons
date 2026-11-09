@@ -85,7 +85,7 @@ Item {
     Button {
       objectName: "updateAll"
       visible: root.count > 0
-      text: (root.filter ? "Update " + root.filter : "Update all") + " (" + root.count + ")"
+      text: (root.filter ? "Update " + Model.heroTitle(root.svc ? root.svc.targets : [], root.filter) : "Update all") + " (" + root.count + ")"
       tooltipText: Model.keyTip("update_all", "updates")
       enabled: root.canChange
       opacity: enabled ? 1.0 : 0.4
@@ -119,15 +119,17 @@ Item {
         readonly property bool open: root.expanded === modelData.key
         readonly property var notes: open ? Model.notesFor(root.svc ? root.svc.changelog : null, modelData) : null
 
-        // In the All filter, the client's id above its first row.
-        PlainLabel {
+        // Under All, the client's header above its first row: its player name, whether
+        // it runs, its updates (design doc §2.2). The rows under it name no client.
+        SectionHeader {
+          objectName: "clientHeader"
           visible: entry.modelData.group !== ""
           width: parent.width
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          font.bold: true
-          text: entry.modelData.group
+          title: entry.modelData.group
+          count: entry.modelData.groupCount
+          foreground: root.foreground
+          dim: root.dim
+          fontFamily: root.fontFamily
         }
 
         CursorSurface {
@@ -164,13 +166,6 @@ Item {
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               text: entry.modelData.label
-            }
-
-            PlainLabel {
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              text: entry.modelData.target
             }
 
             // A running client loads the update after a /reload.

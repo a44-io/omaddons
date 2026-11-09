@@ -1721,12 +1721,12 @@ var KEYMAP = [
   { "keys": ["j", "k", "Down", "Up"], "context": "view", "action": "move", "label": "move the cursor", "hint": "j k" },
   { "keys": ["g", "G"], "context": "view", "action": "edge", "label": "first or last row", "hint": "g G" },
   { "keys": ["PgUp", "PgDn"], "context": "view", "action": "page", "label": "a page up or down", "hint": "PgUp PgDn" },
-  { "keys": ["t", "T"], "context": "view", "action": "client", "label": "next or previous client (All, then each client)", "hint": "t T" },
+  { "keys": ["t", "T"], "context": "view", "action": "client", "label": "next or previous client (All, then each client on this computer)", "hint": "t T" },
   { "keys": ["s"], "context": "view", "action": "search", "label": "Search, its box ready to type in", "hint": "s" },
   { "keys": ["c"], "context": "view", "action": "check", "label": "check for updates now", "hint": "c" },
   { "keys": ["U"], "context": "view", "action": "update_all", "label": "update everything on the chosen client, or on every client", "hint": "U" },
   { "keys": ["Ctrl+Z"], "context": "view", "action": "undo", "label": "undo the last change, after a confirmation", "hint": "Ctrl+Z" },
-  { "keys": ["o"], "context": "view", "action": "open", "label": "open the chosen client's AddOns folder", "hint": "o" },
+  { "keys": ["o"], "context": "view", "action": "open", "label": "open the chosen client's AddOns folder (under All, the row's client)", "hint": "o" },
   { "keys": ["b"], "context": "view", "action": "backup", "label": "back up the chosen client's settings now, or every client's", "hint": "b" },
   { "keys": ["d"], "context": "view", "action": "dismiss", "label": "mark the new Lua errors shown as seen", "hint": "d" },
   { "keys": ["Enter", "Space"], "context": "updates", "action": "enter", "label": "update this addon", "hint": "Enter" },
@@ -1914,6 +1914,57 @@ function scopeTargets(targets, filter) {
   return filter ? list.filter(function(t) { return t.id === filter }) : list
 }
 
+// The clients on this computer: every client `status` lists but a missing one (its
+// directory gone, or its launcher uninstalled it). "6 clients" counts these, and `t`
+// steps through these (design doc §2.2; omad-widget-user-first-1n2p.43's observation).
+function liveTargets(targets) {
+  return (Array.isArray(targets) ? targets : []).filter(function(t) { return !!t && t.missing !== true })
+}
+
+// The scope a panel opens on (design doc §2.2): the client that runs, when exactly one
+// does; else `last`, the scope used last in this shell session, while it names a client
+// still on this computer; else All (""). A missing client is never a default scope.
+function openingScope(targets, last) {
+  var live = liveTargets(targets)
+  var running = live.filter(function(t) { return t.running === true })
+  if (running.length === 1) return running[0].id
+  var kept = targetById(live, str(last))
+  return kept ? kept.id : ""
+}
+
+// The scope after `status` answered again: `filter` while `targets` still lists its
+// client (a missing one included: it was chosen, and says what happened to it), else
+// All, for a client that was forgotten or renamed.
+function keptScope(targets, filter) {
+  return filter && targetById(targets, filter) ? filter : ""
+}
+
+// A client's group under All (design doc §2.2, §2.3): its player name, then whether it
+// runs and the group's count, as a section header draws them ("RETAIL" with "running ·
+// 3 updates").
+function clientGroup(statusTargets, id, count) {
+  var t = targetById(statusTargets, id)
+  var parts = []
+  if (t && t.running) parts.push(copy("client.running"))
+  else if (t && t.runningUnknown) parts.push(copy("client.running_unknown"))
+  if (count) parts.push(count)
+  return { "title": sheetClient(statusTargets, id, ""), "count": parts.join(" · ") }
+}
+
+// A missing client's "Forget {client}…" (design doc §2.2, §6.5.2): the plain `targets rm
+// <id>` its own problem offers as a runnable command, the forget flow's plan sheet
+// before it runs; null when no problem offers it (a purge is never runnable here, F7
+// scan 12).
+function forgetAction(target) {
+  if (!target || target.missing !== true || !Array.isArray(target.issues)) return null
+  for (var i = 0; i < target.issues.length; i++) {
+    var r = target.issues[i] ? target.issues[i].remediation : null
+    if (!r || !r.runnable || !Array.isArray(r.argv) || verdictPath(r.argv) !== "targets rm") continue
+    if (r.argv.length === 4 && r.argv[3] === target.id) return r
+  }
+  return null
+}
+
 // What needs a player in a scope, counted (design doc §2.1): new Lua errors, problems
 // (`urgent` the P0 and P1 ones), updates; the running clients, by name, and whether
 // the process table could not tell. Under All the machine's own problems count too.
@@ -1936,7 +1987,7 @@ function scopeFacts(targets, filter, machineIssues) {
 
 // The hero's title: the scope (§2.1), "All clients" or the client's player name.
 function heroTitle(targets, filter) {
-  if (!filter) return "All clients"
+  if (!filter) return copy("client.all")
   var t = targetById(targets, filter)
   return t ? (t.displayName || t.id) : filter
 }
@@ -1972,7 +2023,7 @@ function heroState(summary, targets, filter, machineIssues, busy) {
 // ("12.1.5.70391 · mainline"), else how many clients there are.
 function heroDetail(summary, targets, filter) {
   if (!summary) return ""
-  if (!filter) return plural(Array.isArray(targets) ? targets.length : 0, "client")
+  if (!filter) return plural(liveTargets(targets).length, "client")
   var t = targetById(targets, filter)
   if (!t) return ""
   if (t.missing) return "not on this computer any more"
@@ -1981,11 +2032,11 @@ function heroDetail(summary, targets, filter) {
 
 // The freshness footer (§2.1, §6.4): "6 clients · checked 25 min ago · Retail
 // running"; under one client "checked 25 min ago · running". The check is the scope's
-// oldest; "never checked" when none was.
+// oldest; "never checked" when none was. A missing client is not counted.
 function footerText(summary, targets, filter, nowMs) {
   if (!summary) return ""
   var scoped = scopeTargets(targets, filter)
-  var parts = filter ? [] : [plural(scoped.length, "client")]
+  var parts = filter ? [] : [plural(liveTargets(scoped).length, "client")]
   var oldest = null
   for (var i = 0; i < scoped.length; i++) {
     var checked = scoped[i].updates ? scoped[i].updates.checkedAt : null
@@ -1997,9 +2048,11 @@ function footerText(summary, targets, filter, nowMs) {
   return parts.join(" · ")
 }
 
-// The scope Dropdown's options (§2.1): "All clients · 3 updates · 2 new errors" first,
-// then each client by its player name with its updates and whether it runs; a client
-// that is gone says "not found", one whose running state is unknown says so.
+// The scope Dropdown's options (§2.1, §2.2): "All clients · 3 updates · 2 new errors"
+// first, then each client by its player name with its updates and whether it runs, in
+// `status`'s order; a missing client comes last, as "{name} · not found" (decided: last,
+// so the clients on this computer stay together at the top; the kit's Dropdown draws
+// every option alike, so the words say it, not a dimmed row).
 function scopeOptions(targets) {
   var list = Array.isArray(targets) ? targets : []
   var counts = function(facts) {
@@ -2008,19 +2061,21 @@ function scopeOptions(targets) {
     if (facts.errors > 0) parts.push(plural(facts.errors, "new error"))
     return parts
   }
-  var options = [{ "value": "", "label": ["All clients"].concat(counts(scopeFacts(list, "", []))).join(" · ") }]
+  var options = [{ "value": "", "label": [copy("client.all")].concat(counts(scopeFacts(list, "", []))).join(" · ") }]
+  var gone = []
   for (var i = 0; i < list.length; i++) {
     var t = list[i]
     var parts = [t.displayName || t.id]
-    if (t.missing) parts.push("not found")
-    else {
-      parts = parts.concat(counts(scopeFacts(list, t.id, [])))
-      if (t.running) parts.push("running")
-      else if (t.runningUnknown) parts.push("can't tell if running")
+    if (t.missing) {
+      gone.push({ "value": t.id, "label": parts.concat([copy("client.not_found")]).join(" · ") })
+      continue
     }
+    parts = parts.concat(counts(scopeFacts(list, t.id, [])))
+    if (t.running) parts.push(copy("client.running"))
+    else if (t.runningUnknown) parts.push(copy("client.running_unknown"))
     options.push({ "value": t.id, "label": parts.join(" · ") })
   }
-  return options
+  return options.concat(gone)
 }
 
 // Each tab's count in the scope (§2.1), `{count, urgent}` (a zero count is not shown):
@@ -2059,10 +2114,12 @@ function nextFilter(targets, current) {
   return stepFilter(targets, current, 1)
 }
 
-// `t` (`step` 1) and `T` (-1): All ("") and each target, in a ring. A filter whose
-// target is gone starts over at All.
+// `t` (`step` 1) and `T` (-1): All ("") and each client on this computer, in a ring. A
+// missing client is left out (decided: on the development machine four uninstalled
+// clients stood between the two that are there; the Dropdown still reaches them), and a
+// filter on one, or on a client that is gone, starts over at All.
 function stepFilter(targets, current, step) {
-  var ring = [""].concat(Array.isArray(targets) ? targets.map(function(t) { return t.id }) : [])
+  var ring = [""].concat(liveTargets(targets).map(function(t) { return t.id }))
   var at = ring.indexOf(current || "")
   if (at < 0) return ""
   var n = ring.length
@@ -2076,11 +2133,20 @@ function addonsDirArgv(target) {
   return ["xdg-open", target.clientDir.replace(/\/+$/, "") + "/Interface/AddOns"]
 }
 
+// `o`'s client (design doc §2.2): the scoped one, or under All the client of the row
+// under the cursor (`rowTarget`, "" when there is none); null otherwise, so `o` never
+// opens a guessed client's folder, and never a missing client's.
+function openTarget(targets, filter, rowTarget) {
+  var t = targetById(targets, filter || str(rowTarget))
+  return t && t.missing !== true ? t : null
+}
+
 // `U`: every client's updates, or the selected one's, previewed (M4-D28). Given the
 // Updates view's `rows` (updateRows'), `shown` is what the view showed of them, the
-// update rows in the filter, which the plan runner compares with the plan.
-function updateRequest(filter, rows) {
-  var request = filter ? { "template": "update_target", "slots": { "target": filter }, "label": "Update " + filter }
+// update rows in the filter, which the plan runner compares with the plan. The label
+// names the client by its player name (`targets`, `status`'s; its id without them).
+function updateRequest(filter, rows, targets) {
+  var request = filter ? { "template": "update_target", "slots": { "target": filter }, "label": "Update " + sheetClient(targets, filter, "") }
     : { "template": "update_all", "slots": {}, "label": "Update all" }
   if (Array.isArray(rows)) {
     request.shown = rows.filter(function(r) { return !!r && r.kind === "update" && (!filter || r.target === filter) }).map(shownOf)
@@ -2211,13 +2277,20 @@ function updateRows(lists, filter, statusTargets) {
       rows.push({
         "key": t.id + "/" + a.name, "target": t.id, "name": a.name, "version": a.version, "latest": a.latest,
         "kind": kind, "label": UPDATE_LABELS[kind], "pinned": a.pinned, "reload": !!status && status.running === true,
-        "group": "", "targetKey": t.key, "channel": a.channel, "latestSource": a.latestSource,
+        "group": "", "groupCount": "", "targetKey": t.key, "channel": a.channel, "latestSource": a.latestSource,
         "latestReleaseId": a.latestReleaseId, "latestAsset": a.latestAsset
       })
     }
     // Within a kind, the order `list -v` gave.
     rows = stableSort(rows, function(x, y) { return UPDATE_ORDER.indexOf(x.kind) - UPDATE_ORDER.indexOf(y.kind) })
-    if (!filter && rows.length > 0) rows[0].group = t.id
+    // Under All, the client's header above its first row: its player name, whether it
+    // runs, and its updates (design doc §2.3).
+    if (!filter && rows.length > 0) {
+      var updates = updateCount(rows)
+      var group = clientGroup(statusTargets, t.id, updates > 0 ? plural(updates, "update") : "")
+      rows[0].group = group.title
+      rows[0].groupCount = group.count
+    }
     out = out.concat(rows)
   }
   return out
@@ -2390,6 +2463,20 @@ function viewState(view, input) {
     out.sentence = sentence
     out.action = action || null
   }
+  // A missing client's scope (design doc §2.2, §6.5.2): one card in every view saying
+  // what happened, with Rescan clients and, when its own problem offers the plain
+  // `targets rm`, Forget; what a view still has of it (Issues lists that problem) stays
+  // under the card, and no view says it is empty or up to date.
+  var chosen = filter ? targetById(targets, filter) : null
+  if (chosen && chosen.missing === true) {
+    var actions = [stateAction("rescan")]
+    if (forgetAction(chosen)) actions.push({ "name": "forget", "text": copy("state.action.forget", { "client": client }) })
+    out.state = "missing"
+    out.refreshing = false
+    out.notices.push({ "kind": "missing", "sentence": copy("state.missing", { "client": client }),
+      "body": copy("state.missing.detail"), "action": null, "actions": actions })
+    return out
+  }
   if (view === "search" && query === "") {
     set("empty", copy("state.empty.search"))
     return out
@@ -2451,12 +2538,15 @@ function viewState(view, input) {
 
 // The Installed view's rows, in the filter: every managed addon, its source and its
 // markers (dep, orphan, pinned, modified or missing), and what Enter does: reinstall
-// drifted files, else update when one is available, else nothing ("").
-function installedRows(lists, filter) {
+// drifted files, else update when one is available, else nothing (""). Under All, each
+// client's first row carries its header (`group`, `groupCount`), named from
+// `statusTargets` (`status`'s clients; the id without them).
+function installedRows(lists, filter, statusTargets) {
   var out = []
   var targets = listTargets(lists, filter)
   for (var i = 0; i < targets.length; i++) {
     var t = targets[i]
+    var group = !filter && t.addons.length > 0 ? clientGroup(statusTargets, t.id, plural(t.addons.length, "addon")) : null
     for (var j = 0; j < t.addons.length; j++) {
       var a = t.addons[j]
       var markers = []
@@ -2468,7 +2558,8 @@ function installedRows(lists, filter) {
         "key": t.id + "/" + a.name, "target": t.id, "name": a.name, "version": a.version, "source": a.source,
         "markers": markers, "pinned": a.pinned, "updateAvailable": a.updateAvailable === true,
         "primary": a.drift === "modified" || a.drift === "missing" ? "reinstall" : (a.updateAvailable ? "update" : ""),
-        "group": !filter && j === 0 ? t.id : "", "targetKey": t.key, "latest": a.latest, "channel": a.channel,
+        "group": group && j === 0 ? group.title : "", "groupCount": group && j === 0 ? group.count : "",
+        "targetKey": t.key, "latest": a.latest, "channel": a.channel,
         "latestSource": a.latestSource, "latestReleaseId": a.latestReleaseId, "latestAsset": a.latestAsset
       })
     }
@@ -2550,7 +2641,7 @@ function issueSections(statusTargets, errors, warnings, filter, machineIssues) {
   for (var n = 0; n < machine.length; n++) {
     var mi = machine[n]
     problems.push(Object.assign({
-      "kind": "problem", "key": "p//" + n, "target": "", "severity": mi.severity,
+      "kind": "problem", "key": "p//" + n, "target": "", "client": "", "severity": mi.severity,
       "urgent": mi.urgent, "title": mi.title, "autoFixable": mi.autoFixable === true
     }, problemRow(mi, "")))
   }
@@ -2561,8 +2652,8 @@ function issueSections(statusTargets, errors, warnings, filter, machineIssues) {
     for (var j = 0; j < t.issues.length; j++) {
       var issue = t.issues[j]
       problems.push(Object.assign({
-        "kind": "problem", "key": "p/" + t.id + "/" + j, "target": t.id, "severity": issue.severity,
-        "urgent": issue.urgent, "title": issue.title, "autoFixable": issue.autoFixable === true
+        "kind": "problem", "key": "p/" + t.id + "/" + j, "target": t.id, "client": t.displayName || t.id,
+        "severity": issue.severity, "urgent": issue.urgent, "title": issue.title, "autoFixable": issue.autoFixable === true
       }, problemRow(issue, t.id)))
     }
   }
@@ -2576,9 +2667,10 @@ function issueSections(statusTargets, errors, warnings, filter, machineIssues) {
     if (filter && e.id !== filter) continue
     var rows = []
     var lines = []
+    var client = sheetClient(targets, e.id, "")
     if (e.capture === "none") {
       rows.push({
-        "kind": "capture", "key": "c/" + e.id, "target": e.id,
+        "kind": "capture", "key": "c/" + e.id, "target": e.id, "client": client,
         "title": e.install ? "BugGrabber is not installed" : "No BugGrabber build for this client is known",
         "action": e.install && e.install.runnable ? e.install : null,
         "text": e.install && !e.install.runnable ? e.install.command : ""
@@ -2599,7 +2691,7 @@ function issueSections(statusTargets, errors, warnings, filter, machineIssues) {
     }
     if (e.partial) lines.push("Incomplete read (the game may be writing)")
     if (e.capture !== "none" && e.addons.length === 0 && !e.partial) lines.push("No Lua errors")
-    sections.push({ "title": "Lua errors (" + e.id + ")", "lines": lines, "rows": rows })
+    sections.push({ "title": copy("issues.errors_title", { "client": client }), "target": e.id, "lines": lines, "rows": rows })
   }
 
   var runWarnings = (Array.isArray(warnings) ? warnings : []).map(function(w, n) {
@@ -2781,15 +2873,17 @@ function backupSections(backups, filter, nowMs, statusTargets) {
       return { "key": t.id + "/" + b.id, "index": index++, "target": t.id, "id": b.id, "busy": b.busy, "restorable": b.restorable,
         "line": parts.filter(function(p) { return p !== "" }).join(" · ") }
     })
-    sections.push({ "title": t.id, "lines": lines, "rows": rows })
+    // Titled with the client's player name, whether it runs (design doc §2.2).
+    var group = clientGroup(known, t.id, "")
+    sections.push({ "title": group.title, "count": group.count, "target": t.id, "lines": lines, "rows": rows })
   }
   return sections
 }
 
 // `b`: the filtered client, or every client (no confirmation: creation is undoable and
-// expected, M3-D9).
-function backupRequest(filter) {
-  if (filter) return { "template": "backup_target", "slots": { "target": filter }, "label": "Back up " + filter }
+// expected, M3-D9). The label names the client as `targets` (`status`'s) does.
+function backupRequest(filter, targets) {
+  if (filter) return { "template": "backup_target", "slots": { "target": filter }, "label": "Back up " + sheetClient(targets, filter, "") }
   return { "template": "backup_all", "slots": {}, "label": "Back up all" }
 }
 
@@ -3311,6 +3405,18 @@ var COPY = {
   "state.action.read_errors": "Read again",
   "state.action.refresh_backups": "Refresh",
   "state.refreshing": "Updating…",
+  "state.missing": "{client} isn't on this computer any more",
+  "state.missing.detail": "Its folder is gone, or the game was uninstalled.",
+  "state.action.rescan": "Rescan clients",
+  "state.action.forget": "Forget {client}…",
+
+  // The clients (design doc §2.1, §2.2): the scope's words, and a group's header.
+  "client.all": "All clients",
+  "client.running": "running",
+  "client.running_unknown": "can't tell if running",
+  "client.not_found": "not found",
+  "client.choose": "Choose a client first: t, or a row of one",
+  "issues.errors_title": "Lua errors on {client}",
 
   "source.catalog": "omaddons' catalog",
   "source.github": "GitHub",
@@ -4278,6 +4384,11 @@ if (typeof module !== "undefined") {
     stepView: stepView,
     VIEW_GLYPHS: VIEW_GLYPHS,
     scopeTargets: scopeTargets,
+    liveTargets: liveTargets,
+    openingScope: openingScope,
+    keptScope: keptScope,
+    clientGroup: clientGroup,
+    forgetAction: forgetAction,
     scopeFacts: scopeFacts,
     heroTitle: heroTitle,
     heroMeta: heroMeta,
@@ -4290,6 +4401,7 @@ if (typeof module !== "undefined") {
     nextFilter: nextFilter,
     stepFilter: stepFilter,
     addonsDirArgv: addonsDirArgv,
+    openTarget: openTarget,
     updateRequest: updateRequest,
     undoAction: undoAction,
     progressFraction: progressFraction,

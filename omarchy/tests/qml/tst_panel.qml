@@ -59,6 +59,8 @@ TestCase {
       property bool checking: false
       // What the open panel publishes for IPC's state().
       property var panelState: null
+      // The scope a panel showed last, which the next one to open starts from (§2.2).
+      property string scope: ""
 
       property var runs: []
       property var cliRuns: []
@@ -114,6 +116,31 @@ TestCase {
         Repeater {
           id: rows
           model: 3
+          Rectangle { width: 10; height: 30 }
+        }
+      }
+    }
+  }
+
+  // A view whose rows belong to clients (an era row, then a retail row), as every real
+  // view's `rows` do: what `o` acts on under All.
+  Component {
+    id: rowsView
+    Item {
+      property var frame: null
+      readonly property var rows: [{ "target": "era" }, { "target": "retail" }]
+      property int rowCount: 2
+      property bool typing: false
+      width: 500
+      implicitHeight: 60
+
+      function handleKey(name, cursor) { return false }
+      function rowItem(i) { return repeater.itemAt(i) }
+
+      Column {
+        Repeater {
+          id: repeater
+          model: 2
           Rectangle { width: 10; height: 30 }
         }
       }
@@ -203,6 +230,9 @@ TestCase {
     svc = serviceComponent.createObject(testCase)
     view = make({ "svc": svc })
     open(view)
+    // Retail runs here, so the panel opened on it (design doc §2.2); these tests start
+    // under All, and the opening rule has tests of its own.
+    view.setFilter("")
   }
 
   function cleanup() {
@@ -809,6 +839,107 @@ TestCase {
     verify(!child("switcher").visible)
   }
 
+  // Three clients here and one uninstalled (§2.2): the Dropdown lists the missing one
+  // last, `t` and `T` step through the three only, and the trigger follows.
+  function test_the_switcher_lists_every_client_and_t_steps_through_the_ones_here() {
+    svc.targets = [
+      { "id": "anniversary", "displayName": "Burning Crusade Anniversary", "missing": true, "running": false, "issues": [] },
+      { "id": "era", "displayName": "Classic Era", "running": false, "updates": { "available": 1 }, "issues": [] },
+      { "id": "forever", "displayName": "WoW: Forever", "running": false, "runningUnknown": true, "issues": [] },
+      { "id": "retail", "displayName": "Retail", "running": true, "updates": { "available": 2 }, "issues": [] }
+    ]
+    var scope = child("scope")
+    compare(json(scope.options.map(function(o) { return o.label })), json(["All clients · 3 updates", "Classic Era · 1 update",
+      "WoW: Forever · can't tell if running", "Retail · 2 updates · running", "Burning Crusade Anniversary · not found"]))
+    var seen = []
+    for (var i = 0; i < 4; i++) {
+      keyClick("t")
+      seen.push([view.filter, scope.value, child("hero").title])
+    }
+    compare(json(seen), json([["era", "era", "Classic Era"], ["forever", "forever", "WoW: Forever"],
+      ["retail", "retail", "Retail"], ["", "", "All clients"]]))
+    keyClick("T")
+    compare(scope.value, "retail")
+    // The missing client is chosen in the Dropdown; from it, t goes back to All.
+    scope.choose("anniversary")
+    compare(child("hero").title, "Burning Crusade Anniversary")
+    keyClick("t")
+    compare(view.filter, "")
+    // "N clients" counts the clients on this computer.
+    compare(child("hero").detail, "3 clients")
+  }
+
+  // §2.2: a panel opens on the one running client; else on the scope a panel showed
+  // last in this shell session, kept by the service for every bar's panel; else All.
+  function test_the_panel_opens_on_the_running_client_else_the_last_scope_else_all() {
+    var fresh = make({ "svc": svc })
+    open(fresh)
+    compare(fresh.filter, "retail", "the one client that runs")
+    compare(svc.scope, "retail")
+    fresh.opened = false
+    svc.targets = svc.targets.map(function(t) { return Object.assign({}, t, { "running": false }) })
+    fresh.setFilter("era")
+    // Closed and opened again, and another bar's panel too: both on era.
+    open(fresh)
+    compare(fresh.filter, "era")
+    var other = make({ "svc": svc })
+    open(other)
+    compare(other.filter, "era", "the service keeps the scope for every bar's panel")
+    // A missing client is never a default scope.
+    other.opened = false
+    svc.targets = svc.targets.concat([{ "id": "classic", "displayName": "Classic", "missing": true, "running": false, "issues": [] }])
+    other.setFilter("classic")
+    open(other)
+    compare(other.filter, "")
+    // Two clients running: neither is chosen for you; the last scope stands.
+    other.opened = false
+    other.setFilter("era")
+    svc.targets = svc.targets.map(function(t) { return Object.assign({}, t, { "running": !t.missing }) })
+    open(other)
+    compare(other.filter, "era")
+  }
+
+  // §2.2: a client forgotten or renamed while it is the scope: back to All. A status
+  // that failed (no summary) says nothing about which clients exist.
+  function test_a_client_that_is_gone_from_status_falls_back_to_all() {
+    view.setFilter("era")
+    var summary = svc.summary
+    svc.summary = null
+    svc.targets = [svc.targets[1]]
+    compare(view.filter, "era", "no answer: the scope stands")
+    svc.summary = summary
+    svc.targets = svc.targets.slice()
+    compare(view.filter, "")
+    compare(child("hero").title, "All clients")
+    // A client that went missing stays the scope: it says what happened to it.
+    view.setFilter("retail")
+    svc.targets = [Object.assign({}, svc.targets[0], { "missing": true })]
+    compare(view.filter, "retail")
+  }
+
+  // `o` (§2.2): under All, the client of the row under the cursor, never a guess; the
+  // scoped client's otherwise.
+  function test_o_under_all_opens_the_cursored_rows_client_and_never_guesses() {
+    view.viewComponents = { "updates": rowsView }
+    compare(view.filter, "")
+    keyClick("o")
+    compare(Quickshell.detachedCommands.length, 0)
+    compare(child("keyNote").text, "Choose a client first: t, or a row of one")
+    verify(!child("openButton").enabled)
+    keyClick("j")
+    compare([view.cursorActive, view.cursor], [true, 1])
+    verify(child("openButton").enabled)
+    keyClick("o")
+    compare(json(Quickshell.detachedCommands[0]), json(["xdg-open", "/games/retail/Interface/AddOns"]))
+    keyClick("k")
+    keyClick("o")
+    compare(json(Quickshell.detachedCommands[1]), json(["xdg-open", "/games/era/Interface/AddOns"]))
+    // Under one client, that client's, whichever row the cursor is on.
+    view.setFilter("retail")
+    keyClick("o")
+    compare(json(Quickshell.detachedCommands[2]), json(["xdg-open", "/games/retail/Interface/AddOns"]))
+  }
+
   function test_the_tabs_count_what_each_view_has_and_urgent_counts_say_so() {
     compare(child("countText", child("tab_updates")).text, "3")
     verify(child("countText", child("tab_updates")).visible)
@@ -996,7 +1127,9 @@ TestCase {
     verify(child("viewTitle", narrow).visible)
     compare(child("viewTitle", narrow).text, "Updates")
     compare(child("hero", narrow).detail, "")
-    compare(child("hero", narrow).meta, "3 UPDATES", "one part of the meta line")
+    // It opened on Retail, the one client that runs (§2.2): its 2 updates.
+    compare(narrow.filter, "retail")
+    compare(child("hero", narrow).meta, "2 UPDATES", "one part of the meta line")
     verify(!view.narrow, "540 is not narrow")
     verify(!child("viewTitle").visible)
   }

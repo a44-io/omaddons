@@ -171,15 +171,14 @@ Item {
         width: column.width
         spacing: Style.spacing.sm
 
-        // "Problems", "Lua errors (<client>)", "Run warnings".
-        PlainLabel {
-          objectName: "sectionTitle"
+        // "Problems", "Lua errors on <client>", "Run warnings".
+        SectionHeader {
+          objectName: "issuesSection"
           width: parent.width
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          font.bold: true
-          text: section.modelData.title
+          title: section.modelData.title
+          foreground: root.foreground
+          dim: root.dim
+          fontFamily: root.fontFamily
         }
 
         Repeater {
@@ -256,12 +255,15 @@ Item {
                       : ""
                   }
 
+                  // Problems of every client mix under All: each names its client by its
+                  // player name; under one client the scope already does (§2.1).
                   PlainLabel {
-                    visible: entry.modelData.kind === "problem" || entry.modelData.kind === "capture"
+                    objectName: "problemClient"
+                    visible: root.filter === "" && entry.modelData.kind === "problem"
                     color: root.dim
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
-                    text: entry.modelData.target || ""
+                    text: entry.modelData.client || ""
                   }
                 }
 

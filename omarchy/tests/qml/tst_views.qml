@@ -61,9 +61,15 @@ TestCase {
       readonly property bool canAct: phase === "ok"
       property var summary: null
       property var targets: [
-        { "id": "era", "running": false, "runningUnknown": false, "clientDir": "/games/era", "updates": { "checkedAt": "2100-01-01T00:00:00Z" }, "issues": [] },
-        { "id": "retail", "running": true, "runningUnknown": false, "clientDir": "/games/retail", "updates": { "checkedAt": "2100-01-01T00:00:00Z" }, "issues": [] }
+        { "id": "era", "displayName": "Classic Era", "running": false, "runningUnknown": false, "clientDir": "/games/era",
+          "updates": { "checkedAt": "2100-01-01T00:00:00Z" }, "issues": [] },
+        { "id": "retail", "displayName": "Retail", "running": true, "runningUnknown": false, "clientDir": "/games/retail",
+          "updates": { "checkedAt": "2100-01-01T00:00:00Z" }, "issues": [] }
       ]
+      // The scope a panel showed last (§2.2), and the missing client card's Rescan.
+      property string scope: ""
+      property int rescans: 0
+      function rescan() { rescans++; return true }
       property var lastChange: null
       property var action: null
       property string queuedAction: ""
@@ -156,6 +162,9 @@ TestCase {
     verify(v !== null)
     made = made.concat([v])
     v.opened = true
+    // Retail runs here, so the panel opened on it (design doc §2.2); these tests start
+    // under All, as tst_panel.qml's do.
+    v.setFilter("")
     v.focusItem.forceActiveFocus()
     tryVerify(function() { return v.focusItem.activeFocus })
     return v
@@ -216,8 +225,15 @@ TestCase {
 
   function test_updates_are_grouped_by_client_with_the_count_U_runs() {
     var updates = content()
-    compare(json(updates.rows.map(function(r) { return [r.group, r.name, r.kind] })),
-      json([["era", "Bar", "update"], ["", "Plater", "failed"], ["retail", "DBM", "update"], ["", "WeakAuras", "pinned"]]))
+    compare(json(updates.rows.map(function(r) { return [r.group, r.groupCount, r.name, r.kind] })),
+      json([["Classic Era", "1 update", "Bar", "update"], ["", "", "Plater", "failed"],
+        ["Retail", "running · 1 update", "DBM", "update"], ["", "", "WeakAuras", "pinned"]]))
+    // Each client's header: its name, whether it runs, its count (§2.2); its rows name
+    // no client.
+    var header = findChild(row("updateRow", 2), "clientHeader")
+    verify(header.visible)
+    compare([header.title, header.count], ["Retail", "running · 1 update"])
+    verify(!findChild(row("updateRow", 3), "clientHeader").visible)
     compare(findChild(updates, "updateAll").text, "Update all (2)")
     // A running client's update loads after a /reload.
     verify(findChild(row("updateRow", 2), "reloadChip").visible)
@@ -225,10 +241,11 @@ TestCase {
     keyClick("t")
     keyClick("t")
     compare(view.filter, "retail")
-    compare(findChild(content(), "updateAll").text, "Update retail (1)")
+    // The client by its player name, never its id (UX-38).
+    compare(findChild(content(), "updateAll").text, "Update Retail (1)")
     findChild(content(), "updateAll").clicked()
     // The update previews with what the rows showed: retail's one update.
-    compare(json(svc.runs[0]), json(["update_target", { "target": "retail" }, "Update retail",
+    compare(json(svc.runs[0]), json(["update_target", { "target": "retail" }, "Update Retail",
       [shownRow("k-retail", "retail", "DBM", "12.1.14", "12.1.15")]]))
     // `U` is the same button, and its tooltip says so (from KEYMAP).
     keyClick("U")
@@ -380,8 +397,8 @@ TestCase {
     keyClick("2")
     var installed = content()
     compare(json(installed.rows.map(function(r) { return [r.group, r.name, r.markers, r.primary] })), json([
-      ["era", "Bar", [], "update"], ["", "Plater", [], ""],
-      ["retail", "BigWigs", ["dep"], ""], ["", "DBM", [], "update"], ["", "Foo", ["modified"], "reinstall"], ["", "WeakAuras", ["pinned"], ""]]))
+      ["Classic Era", "Bar", [], "update"], ["", "Plater", [], ""],
+      ["Retail", "BigWigs", ["dep"], ""], ["", "DBM", [], "update"], ["", "Foo", ["modified"], "reinstall"], ["", "WeakAuras", ["pinned"], ""]]))
     compare(findChild(row("installedRow", 2), "markers").text, "dep")
     // Foo: Enter reinstalls its modified files.
     for (var i = 0; i < 4; i++) keyClick("j")
@@ -499,6 +516,38 @@ TestCase {
   // A missing client's two remediations (1n2p.43): forgetting it is a button; the purge,
   // which deletes backups and undo snapshots no undo brings back, is text with what it
   // deletes, copied with `y`, never run by Enter.
+  // A missing client's scope (§2.2): every view shows one card, with Rescan clients and
+  // Forget through the plain `targets rm` its own problem offers, and none says it is
+  // empty or up to date.
+  function test_a_missing_clients_scope_is_one_card_with_rescan_and_forget() {
+    var forget = Model.cliAction("omaddons targets rm classic", ["omaddons", "targets", "rm", "classic"], true)
+    svc.targets = svc.targets.concat([{ "id": "classic", "displayName": "Mists of Pandaria Classic", "missing": true,
+      "running": false, "runningUnknown": false, "updates": null, "issues": [{ "id": "fm-x", "severity": "P2", "urgent": false,
+        "title": "Mists of Pandaria Classic is no longer installed", "addon": null, "remediation": forget,
+        "autoFixable": false, "explain": null, "forced": false }] }])
+    findChild(view, "scope").choose("classic")
+    compare(view.filter, "classic")
+    for (var n = 1; n <= 5; n++) {
+      keyClick(String(n))
+      var card = findChild(content(), "stateNotice")
+      verify(card !== null && card.visible, "a card on view " + n)
+      compare(card.title, "Mists of Pandaria Classic isn't on this computer any more")
+      compare(card.body, "Its folder is gone, or the game was uninstalled.")
+      verify(!findChild(content(), "stateEmpty").visible, "no empty sentence on view " + n)
+    }
+    var notice = findChild(content(), "stateNotice")
+    compare(findChild(notice, "noticeButton_0").text, "Rescan clients")
+    findChild(notice, "noticeButton_0").clicked()
+    compare(svc.rescans, 1)
+    compare(findChild(notice, "noticeButton_1").text, "Forget Mists of Pandaria Classic…")
+    findChild(notice, "noticeButton_1").clicked()
+    compare(json(svc.cliRuns[svc.cliRuns.length - 1]), json([["omaddons", "targets", "rm", "classic"], "Forget Mists of Pandaria Classic"]))
+    // t leaves it for All, and the views read as before.
+    keyClick("t")
+    compare(view.filter, "")
+    verify(findChild(content(), "stateNotice") === null || !findChild(content(), "stateNotice").visible)
+  }
+
   function test_a_purge_is_text_to_copy_never_a_button() {
     var purge = ["omaddons", "targets", "rm", "classic", "--purge"]
     var forget = ["omaddons", "targets", "rm", "classic"]
@@ -672,7 +721,8 @@ TestCase {
     collect(content())
     verify(texts.indexOf("Foo/boss.lua:3: custom message (25 characters, hidden)") >= 0, json(texts))
     verify(texts.indexOf("1 error received from another player (not counted)") >= 0, json(texts))
-    verify(texts.indexOf("Lua errors (retail)") >= 0)
+    // The client's section, by the name `status` gives (this stub gives none: its id).
+    verify(texts.indexOf("Lua errors on retail") >= 0, json(texts))
   }
 
   function test_enter_updates_the_likely_source_or_shows_its_stack() {
@@ -868,6 +918,17 @@ TestCase {
     compare(findChild(row("backupRow", 0), "line").text, "1 hour ago · manual · 412 files · 15.2 MiB · stable")
     compare(findChild(row("backupRow", 1), "line").text, "2 hours ago · manual · 412 files · 15.2 MiB · stable · verified (capture)")
     compare(findChild(row("backupRow", 2), "line").text, "2 days ago · automatic (post session) · 412 files · 15.2 MiB · best effort · in use")
+    // Each client's section under its player name and whether it runs (§2.2).
+    var headers = []
+    var walk = function(item) {
+      for (var i = 0; i < item.children.length; i++) {
+        var c = item.children[i]
+        if (c.objectName === "clientHeader") headers.push([c.title, c.count])
+        walk(c)
+      }
+    }
+    walk(backups)
+    compare(json(headers), json([["Classic Era", ""], ["Retail", "running"]]))
   }
 
   function test_b_backs_up_the_filtered_client_or_all() {
@@ -878,7 +939,7 @@ TestCase {
     keyClick("t")
     compare(view.filter, "retail")
     keyClick("b")
-    compare(json(svc.runs[1]), json(["backup_target", { "target": "retail" }, "Back up retail"]))
+    compare(json(svc.runs[1]), json(["backup_target", { "target": "retail" }, "Back up Retail"]))
     compare(json(words(svc.runs[1])), json(["backup", "create", "-t", "retail"]))
   }
 

@@ -21,7 +21,7 @@ Item {
   property var frame: null
   readonly property var svc: frame ? frame.svc : null
   readonly property string filter: frame ? frame.filter : ""
-  readonly property var rows: Model.installedRows(svc ? svc.lists : null, filter)
+  readonly property var rows: Model.installedRows(svc ? svc.lists : null, filter, svc && Array.isArray(svc.targets) ? svc.targets : [])
   // What the view says around its rows (design doc §7): loading, a read that failed, no
   // addons yet (and where to find some).
   readonly property var viewState: Model.viewState("installed", { "service": svc, "filter": filter, "rows": rows.length,
@@ -103,14 +103,17 @@ Item {
         width: column.width
         spacing: Style.spacing.sm
 
-        PlainLabel {
+        // Under All, the client's header above its first row: its player name, whether
+        // it runs, its addons (design doc §2.2). The rows under it name no client.
+        SectionHeader {
+          objectName: "clientHeader"
           visible: entry.modelData.group !== ""
           width: parent.width
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          font.bold: true
-          text: entry.modelData.group
+          title: entry.modelData.group
+          count: entry.modelData.groupCount
+          foreground: root.foreground
+          dim: root.dim
+          fontFamily: root.fontFamily
         }
 
         CursorSurface {
@@ -156,14 +159,6 @@ Item {
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               text: entry.modelData.markers.join(" · ")
-            }
-
-            PlainLabel {
-              visible: root.filter === ""
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              text: entry.modelData.target
             }
           }
 

@@ -963,10 +963,11 @@ describe("the panel frame", () => {
     const odd = [
       { "id": "gone", "displayName": "Gone", "missing": true, "updates": { "available": 3 }, "running": false },
       { "id": "x", "displayName": "X", "runningUnknown": true, "errors": { "new": 1 } }]
+    // A missing client comes last, whatever its place in `status`'s order.
     expect(M.scopeOptions(odd)).toEqual([
       { value: "", label: "All clients · 3 updates · 1 new error" },
-      { value: "gone", label: "Gone · not found" },
-      { value: "x", label: "X · 1 new error · can't tell if running" }])
+      { value: "x", label: "X · 1 new error · can't tell if running" },
+      { value: "gone", label: "Gone · not found" }])
     expect(M.scopeOptions(null)).toEqual([{ value: "", label: "All clients" }])
   })
 
@@ -1008,6 +1009,126 @@ describe("the panel frame", () => {
     expect(M.targetById(targets, "")).toBeNull()
   })
 
+  // The development machine's six clients (status-clients, list-clients): Mists Classic
+  // runs, Retail and Classic Era each have an update, Anniversary is uninstalled.
+  describe("the client switcher over six clients (1n2p.20)", () => {
+    const CLIENTS = () => M.reduceStatus(fixture("status-clients"), NOW).targets
+    const LISTS = () => M.reduceList(fixture("list-clients"))
+
+    test("its options: All, the clients here by name with their counts and state, a missing one last", () => {
+      expect(M.scopeOptions(CLIENTS())).toEqual([
+        { value: "", label: "All clients · 2 updates" },
+        { value: "classic", label: "Mists of Pandaria Classic · running" },
+        { value: "era", label: "Classic Era · 1 update" },
+        { value: "forever", label: "WoW: Forever" },
+        { value: "retail", label: "Retail · 1 update" },
+        { value: "wotlk", label: "Wrath 3.3.5a private server" },
+        { value: "anniversary", label: "Burning Crusade Anniversary · not found" }])
+    })
+
+    test("t and T step through the clients here, never the missing one", () => {
+      const targets = CLIENTS()
+      const ring = [""]
+      for (let at = M.stepFilter(targets, "", 1); at !== ""; at = M.stepFilter(targets, at, 1)) ring.push(at)
+      expect(ring).toEqual(["", "classic", "era", "forever", "retail", "wotlk"])
+      expect(M.stepFilter(targets, "", -1)).toBe("wotlk")
+      // From the missing client (chosen in the Dropdown), t goes back to All.
+      expect(M.stepFilter(targets, "anniversary", 1)).toBe("")
+      expect(M.stepFilter(targets, "anniversary", -1)).toBe("")
+    })
+
+    test("the clients counted are the ones on this computer", () => {
+      const r = M.reduceStatus(fixture("status-clients"), NOW)
+      expect(M.liveTargets(r.targets).length).toBe(5)
+      expect(M.heroDetail(r.summary, r.targets, "")).toBe("5 clients")
+      expect(M.footerText(r.summary, r.targets, "", NOW)).toMatch(/^5 clients · /)
+      expect(M.liveTargets(null)).toEqual([])
+    })
+
+    test("the panel opens on the one running client, else the last scope still here, else All", () => {
+      const targets = CLIENTS()
+      expect(M.openingScope(targets, "")).toBe("classic")
+      expect(M.openingScope(targets, "era")).toBe("classic")
+      const idle = targets.map((t) => Object.assign({}, t, { running: false }))
+      expect(M.openingScope(idle, "era")).toBe("era")
+      expect(M.openingScope(idle, "")).toBe("")
+      // A missing client, or one no longer listed, is never a default scope.
+      expect(M.openingScope(idle, "anniversary")).toBe("")
+      expect(M.openingScope(idle, "gone")).toBe("")
+      // Two running: neither is the one the player is about to care about.
+      const two = targets.map((t) => Object.assign({}, t, { running: t.id === "classic" || t.id === "retail" }))
+      expect(M.openingScope(two, "era")).toBe("era")
+      expect(M.openingScope(null, "era")).toBe("")
+    })
+
+    test("a scope whose client is no longer listed falls back to All", () => {
+      const targets = CLIENTS()
+      expect(M.keptScope(targets, "retail")).toBe("retail")
+      expect(M.keptScope(targets, "anniversary")).toBe("anniversary")
+      expect(M.keptScope(targets, "gone")).toBe("")
+      expect(M.keptScope(targets, "")).toBe("")
+    })
+
+    test("under All, each client's rows sit under its name and counts", () => {
+      const targets = CLIENTS()
+      const headers = (rows) => rows.filter((r) => r.group).map((r) => [r.group, r.groupCount, r.target])
+      expect(headers(M.updateRows(LISTS(), "", targets)))
+        .toEqual([["Classic Era", "1 update", "era"], ["Retail", "1 update", "retail"]])
+      expect(headers(M.installedRows(LISTS(), "", targets)))
+        .toEqual([["Classic Era", "1 addon", "era"], ["Retail", "1 addon", "retail"]])
+      // Under one client, no header.
+      expect(headers(M.installedRows(LISTS(), "retail", targets))).toEqual([])
+      // A running client says so; one nobody can tell about says that.
+      expect(M.clientGroup(targets, "classic", "")).toEqual({ title: "Mists of Pandaria Classic", count: "running" })
+      const unknown = targets.map((t) => Object.assign({}, t, { running: false, runningUnknown: true }))
+      expect(M.clientGroup(unknown, "era", "1 update")).toEqual({ title: "Classic Era", count: "can't tell if running · 1 update" })
+      expect(M.clientGroup([], "era", "")).toEqual({ title: "era", count: "" })
+    })
+
+    test("a missing client's scope is one card: Rescan clients, and Forget through its own targets rm", () => {
+      const targets = CLIENTS()
+      const gone = M.targetById(targets, "anniversary")
+      expect(M.forgetAction(gone).argv).toEqual(["omaddons", "targets", "rm", "anniversary"])
+      expect(M.forgetAction(M.targetById(targets, "retail"))).toBeNull()
+      expect(M.forgetAction(null)).toBeNull()
+      // A purge is never offered here: the classifier refuses it, so no Forget.
+      const purge = JSON.parse(JSON.stringify(gone))
+      purge.issues[0].remediation = M.cliAction("omaddons targets rm anniversary --purge", ["omaddons", "targets", "rm", "anniversary", "--purge"], true)
+      expect(M.forgetAction(purge)).toBeNull()
+      for (const view of M.VIEWS) {
+        const state = M.viewState(view, { service: { targets, lists: LISTS() }, filter: "anniversary", rows: 0, allRows: 3, query: "", nowMs: NOW })
+        expect([view, state.state, state.sentence]).toEqual([view, "missing", ""])
+        expect(state.notices.map((n) => [n.sentence, n.body, n.actions.map((a) => [a.name, a.text])])).toEqual([[
+          "Burning Crusade Anniversary isn't on this computer any more", "Its folder is gone, or the game was uninstalled.",
+          [["rescan", "Rescan clients"], ["forget", "Forget Burning Crusade Anniversary…"]]]])
+      }
+      // Without its problem's command, Rescan alone.
+      const quiet = targets.map((t) => (t.id === "anniversary" ? Object.assign({}, t, { issues: [] }) : t))
+      const state = M.viewState("updates", { service: { targets: quiet }, filter: "anniversary", rows: 0, nowMs: NOW })
+      expect(state.notices[0].actions.map((a) => a.name)).toEqual(["rescan"])
+    })
+
+    test("o opens the scoped client's AddOns, under All the cursored row's, never a guess or a missing one", () => {
+      const targets = CLIENTS()
+      expect(M.openTarget(targets, "retail", "").id).toBe("retail")
+      expect(M.openTarget(targets, "retail", "era").id).toBe("retail")
+      expect(M.openTarget(targets, "", "era").id).toBe("era")
+      expect(M.openTarget(targets, "", "")).toBeNull()
+      expect(M.openTarget(targets, "anniversary", "")).toBeNull()
+      expect(M.openTarget(targets, "", "nosuch")).toBeNull()
+    })
+
+    test("the Backups and Issues sections name each client as status does", () => {
+      const targets = CLIENTS()
+      const sections = M.backupSections(null, "", NOW, targets)
+      expect(sections.map((s) => [s.target, s.title, s.count])).toEqual([
+        ["classic", "Mists of Pandaria Classic", "running"], ["era", "Classic Era", ""], ["forever", "WoW: Forever", ""],
+        ["retail", "Retail", ""], ["wotlk", "Wrath 3.3.5a private server", ""]])
+      const problems = M.issueRows(M.issueSections(targets, null, [], "", []))
+      expect(problems.map((r) => [r.kind, r.target, r.client])).toEqual([["problem", "anniversary", "Burning Crusade Anniversary"]])
+    })
+  })
+
   test("o opens the selected client's AddOns, nothing without one", () => {
     const retail = M.targetById(M.reduceStatus(fixture("status-updates"), NOW).targets, "retail")
     expect(retail.clientDir.startsWith("/")).toBe(true)
@@ -1021,6 +1142,10 @@ describe("the panel frame", () => {
   test("u updates all, or the selected client", () => {
     expect(M.updateRequest("")).toEqual({ template: "update_all", slots: {}, label: "Update all" })
     expect(M.updateRequest("retail")).toEqual({ template: "update_target", slots: { target: "retail" }, label: "Update retail" })
+    // The label names the client as `status` does.
+    const targets = M.reduceStatus(fixture("status-updates"), NOW).targets
+    expect(M.updateRequest("era", undefined, targets).label).toBe("Update Classic Era")
+    expect(M.backupRequest("era", targets).label).toBe("Back up Classic Era")
     // An update runs as its preview, then its plan's apply (M4-D28).
     for (const r of [M.updateRequest(""), M.updateRequest("retail")]) {
       expect(() => M.buildArgv(r.template, r.slots, opts({ preview: true }))).not.toThrow()
@@ -1072,10 +1197,17 @@ describe("the Updates and Installed views", () => {
   test("updates per client: updates first, grouped in All, filtered otherwise", () => {
     const lists = M.reduceList(fixture("list"))
     const all = M.updateRows(lists, "", STATUS())
-    expect(all.map((r) => [r.group, r.target, r.name, r.kind, r.version, r.latest]))
-      .toEqual([["era", "era", "Bar", "update", "v1", "v2"], ["", "era", "Foo", "update", "v1", "v2"],
-        ["retail", "retail", "Bar", "update", "v1", "v2"], ["", "retail", "Foo", "update", "v1", "v2"]])
+    // Each client's header is its player name and its updates, on its first row only.
+    expect(all.map((r) => [r.group, r.groupCount, r.target, r.name, r.kind, r.version, r.latest]))
+      .toEqual([["Classic Era", "2 updates", "era", "Bar", "update", "v1", "v2"], ["", "", "era", "Foo", "update", "v1", "v2"],
+        ["Retail", "2 updates", "retail", "Bar", "update", "v1", "v2"], ["", "", "retail", "Foo", "update", "v1", "v2"]])
     expect(M.updateCount(all)).toBe(4)
+    // A running client says so in its header.
+    const running = M.reduceStatus(fixture("status-running"), NOW).targets
+    expect(M.updateRows(lists, "", running).filter((r) => r.group).map((r) => [r.group, r.groupCount]))
+      .toEqual([["Classic Era", "2 updates"], ["Retail", "running · 2 updates"]])
+    // Without `status`'s clients, the header falls back to the id.
+    expect(M.updateRows(lists, "", [])[0].group).toBe("era")
     const retail = M.updateRows(lists, "retail", STATUS())
     expect(retail.map((r) => [r.group, r.name])).toEqual([["", "Bar"], ["", "Foo"]])
     expect(M.updateCount(retail)).toBe(2)
@@ -1240,14 +1372,17 @@ describe("the Issues and Search views", () => {
     const status = M.reduceStatus(fixture("status-attention"), NOW)
     const sections = M.issueSections(status.targets, ERRORS(), [
       { code: "journal_pending", message: "unfinished transactions", fix: { command: "omaddons status", argv: ["omaddons", "status"], runnable: true }, fixText: "" }], "")
-    expect(sections.map((s) => s.title)).toEqual(["Problems", "Lua errors (era)", "Lua errors (retail)", "Run warnings"])
+    // Each client's errors under its player name (`status` here lists retail only: era
+    // keeps its id).
+    expect(sections.map((s) => s.title)).toEqual(["Problems", "Lua errors on era", "Lua errors on Retail", "Run warnings"])
     const rows = M.issueRows(sections)
     expect(rows.map((r) => [r.index, r.kind])).toEqual([[0, "problem"], [1, "capture"], [2, "addon"], [3, "warning"]])
+    expect(rows[0].client).toBe("Retail")
     expect(rows[0].action.argv[1]).toBe("install")
     expect(rows[1].action.argv).toEqual(["omaddons", "install", "buggrabber", "-t", "era"])
     expect(sections[2].lines).toEqual(["1 error received from another player (not counted)"])
     const retailOnly = M.issueSections(status.targets, ERRORS(), [], "era")
-    expect(retailOnly.map((s) => s.title)).toEqual(["Lua errors (era)"])
+    expect(retailOnly.map((s) => s.title)).toEqual(["Lua errors on era"])
   })
 
   test("problems keep status's order within a severity, whatever the engine's sort", () => {

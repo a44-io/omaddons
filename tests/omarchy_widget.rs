@@ -2260,6 +2260,78 @@ fn states_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
     );
 }
 
+/// The client switcher's home (omad-widget-user-first-1n2p.20), laid out like the
+/// development machine: Retail, Mists Classic, Classic Era, Anniversary and WoW: Forever
+/// in one Battle.net root, and a 3.3.5a private-server client beside it. Foo is one
+/// release behind on Retail and Classic Era, Mists Classic runs, and Anniversary was
+/// uninstalled through Battle.net after it was registered, so `status` reports it
+/// missing, with its plain `targets rm` remediation.
+#[cfg(test)]
+fn clients_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
+    use common::trees::CustomRoot;
+
+    let mut home = Home::new(&[
+        "wow",
+        "wow_classic",
+        "wow_classic_era",
+        "wow_anniversary",
+        "wowf",
+    ]);
+    let pserver = home.env.root().join("pserver");
+    home.with_custom(CustomRoot::at(pserver));
+    let (old, new) = (Rel::new("Foo", "v1"), Rel::new("Foo", "v2"));
+    home.installed_behind(
+        support::FOO,
+        ("v1", &old.assets()),
+        ("v2", &new.assets()),
+        &["retail", "era"],
+    );
+    home.exec(&fill(t, "check", &[])).expect(0);
+    // Registered (a default is a registration), then the default back on Retail.
+    home.run(&["targets", "default", "anniversary"]).expect(0);
+    home.run(&["targets", "default", "retail"]).expect(0);
+    home.uninstall("_anniversary_", "wow_anniversary");
+    home.client_running("_classic_", "WoWClassic.exe");
+    // A scan, so the cached clients `status --cached` reads know Anniversary is gone.
+    home.run(&["status"]).expect(0);
+    let status = write_fixture(
+        dir,
+        "status-clients",
+        &home.exec(&fill(t, "status", &[])),
+        0,
+    );
+    let clients: Vec<(&str, &str, bool, bool)> = status["data"]["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            (
+                c["id"].as_str().unwrap(),
+                c["display_name"].as_str().unwrap(),
+                c["missing"] == true,
+                c["running"] == true,
+            )
+        })
+        .collect();
+    assert_eq!(clients.len(), 6, "{status}");
+    for (id, missing, running) in [
+        ("anniversary", true, false),
+        ("classic", false, true),
+        ("era", false, false),
+        ("forever", false, false),
+        ("retail", false, false),
+        ("wotlk", false, false),
+    ] {
+        assert!(
+            clients
+                .iter()
+                .any(|c| c.0 == id && c.2 == missing && c.3 == running),
+            "{id}: {clients:?}"
+        );
+    }
+    write_fixture(dir, "list-clients", &home.exec(&fill(t, "list", &[])), 0);
+}
+
 /// WeakAuras updated to 5.20.0 and a session played. `backup list` (plain and `-v`), an
 /// `--addon` and a whole dry run, a stale token, a running client, and an ambiguous
 /// addon after WeakAurasOptions moved to another addon.
@@ -2617,6 +2689,7 @@ fn write_widget_fixtures() {
     backups_fixtures(&dir, &t);
     plans_fixtures(&dir, &t);
     repair_fixtures(&dir, &t);
+    clients_fixtures(&dir, &t);
 
     // Idle: Baz current on retail, checked just now.
     let home = Home::new(&["wow"]);

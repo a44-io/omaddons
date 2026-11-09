@@ -2129,7 +2129,8 @@ The bar widget for [Omarchy](https://omarchy.org)'s desktop: one gamepad button 
 A left click (or the bar's keybinding) opens its keyboard panel, and a middle click opens it on Issues. Top to bottom:
 
 - **The hero** is titled with the scope ("All clients", or the client's name, "Retail"). Its glyph turns urgent for new Lua errors or a P0 or P1 problem, and takes the accent while a change runs. Its line says what needs you, urgent first ("2 NEW ERRORS · 1 PROBLEM · 3 UPDATES · RETAIL RUNNING", or "ALL GOOD"), and its detail the client's version and family, or how many clients there are. Its buttons are the key reference, zoom, Check now (it spins while a check runs), Undo last and Open AddOns.
-- **The scope**: a dropdown of "All clients" and each client by name, with its updates and new errors and whether it runs ("Retail · 3 updates · running"). `t` and `T` step through it, and every view shows what is in it.
+- **The scope**: a dropdown of "All clients" and each client by name, with its updates and new errors and whether it runs ("Retail · 3 updates · running"). `t` and `T` step through it, and every view shows what is in it. A client that is no longer installed comes last, as "Classic · not found": `t` and `T` skip it, "6 clients" does not count it, and choosing it shows one card in every view ("Classic isn't on this computer any more") with **Rescan clients** and, when `status` offers the plain `targets rm`, **Forget Classic…**. The panel opens on the client that runs, when exactly one does; otherwise on the scope a panel showed last since the shell started, while that client is still here; otherwise on All. The scope is kept in memory only, and a client forgotten or renamed while it is the scope falls back to All.
+- **Under All clients**, Updates, Addons and Backups list each client's rows under a header with its name, whether it runs and its count ("RETAIL · running · 3 updates"), and the rows under it name no client; Issues lists each client's Lua errors under its name, and each problem names its client. `o` opens the AddOns folder of the client whose row is under the cursor, and with no row under it, says to choose a client first: it never opens a guessed client's folder.
 - **The tabs**: Updates, Addons, Search, Issues and Backups (keys `1` to `5`), each with its count in the scope. Updates counts updates; Issues counts problems and new Lua errors, urgent for a P0 or P1 problem or a new error; Backups counts clients `status` asks to back up. Below 480 px a tab is its glyph and count, and the content names its view.
 - **The content**: the view, or a page pushed on it, alone in a scroll area. A view is made on its first visit and kept. A page names where back goes ("‹ Updates", or the trail "Updates › DBM"), and `h`, Esc or that button go back.
 - **Pinned below**, never scrolled away by a long list: the failure with its Fix, the progress of a running change, the last result with its Undo, and the freshness footer ("6 clients · checked 25 min ago · Retail running").
@@ -2160,12 +2161,12 @@ The keys, as the widget's own key map holds them (`omarchy/Model.js`, `KEYMAP`, 
 | `j` `k` `Down` `Up` | Every view | move the cursor |
 | `g` `G` | Every view | first or last row |
 | `PgUp` `PgDn` | Every view | a page up or down |
-| `t` `T` | Every view | next or previous client (All, then each client) |
+| `t` `T` | Every view | next or previous client (All, then each client on this computer) |
 | `s` | Every view | Search, its box ready to type in |
 | `c` | Every view | check for updates now |
 | `U` | Every view | update everything on the chosen client, or on every client |
 | `Ctrl+Z` | Every view | undo the last change, after a confirmation |
-| `o` | Every view | open the chosen client's AddOns folder |
+| `o` | Every view | open the chosen client's AddOns folder (under All, the row's client) |
 | `b` | Every view | back up the chosen client's settings now, or every client's |
 | `d` | Every view | mark the new Lua errors shown as seen |
 | `Enter` `Space` | Updates | update this addon |
