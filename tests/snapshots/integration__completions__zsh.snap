@@ -1036,6 +1036,7 @@ _arguments "${_arguments_options[@]}" : \
 '--reason=[Why, recorded verbatim in history]:TEXT:_default' \
 '--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
+'--catalog[Browse the built-in catalog alone, offline]' \
 '--refresh[Fetch the WoWInterface index and the Tukui list now]' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
@@ -1064,6 +1065,7 @@ _arguments "${_arguments_options[@]}" : \
 '--reason=[Why, recorded verbatim in history]:TEXT:_default' \
 '--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
+'--catalog[Browse the built-in catalog alone, offline]' \
 '--refresh[Fetch the WoWInterface index and the Tukui list now]' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \

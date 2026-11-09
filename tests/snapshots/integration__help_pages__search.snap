@@ -5,13 +5,14 @@ description: "a command's -h and --help pages as this build renders them at 100 
 ==> omaddons search -h <==
 Find addons in the catalog, WoWInterface, Tukui and GitHub
 
-Usage: omaddons search [OPTIONS] <QUERY>...
+Usage: omaddons search [OPTIONS] [QUERY]...
 Aliases: find
 
 Arguments:
-  <QUERY>...  What to look for: words of the addon's name or folders
+  [QUERY]...  What to look for: words of the addon's name or folders
 
 Options:
+      --catalog          Browse the built-in catalog alone, offline
       --source <SOURCE>  Consult only this source (repeatable): catalog, wowi, tukui or github
       --limit <LIMIT>    Most results to list (default 20, at most 50)
       --refresh          Fetch the WoWInterface index and the Tukui list now
@@ -26,16 +27,24 @@ Find addons in the catalog, WoWInterface, Tukui and GitHub
 
 By name, folder, author or description, with a compatibility hint per client.
 
-Usage: omaddons search [OPTIONS] <QUERY>...
+Usage: omaddons search [OPTIONS] [QUERY]...
 Aliases: find
 
 Arguments:
-  <QUERY>...
+  [QUERY]...
           What to look for: words of the addon's name or folders
           
-          Words of its name, folders, author or description.
+          Words of its name, folders, author or description. Required, except with --catalog.
 
 Options:
+      --catalog
+          Browse the built-in catalog alone, offline
+          
+          No source is asked and nothing is fetched. Without words, every catalog entry that fits at
+          least one selected client, by name, with no cap unless --limit sets one; with words, the
+          catalog's matches, best first. Each row is what a search gives for that entry. Only
+          --source catalog goes with it.
+
       --source <SOURCE>
           Consult only this source (repeatable): catalog, wowi, tukui or github
 

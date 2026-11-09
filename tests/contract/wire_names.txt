@@ -3507,10 +3507,11 @@ input plans show @1 <PLAN_ID> string default= arity=1..1 required
 input remove @1 <ADDON> string default= arity=1.. repeat required
 input robot-docs install-skill --dir path default= arity=1..1
 input robot-docs schema @1 <COMMAND> string default= arity=0.. repeat
+input search --catalog flag default=false arity=0..0
 input search --limit integer default= arity=1..1
 input search --refresh flag default=false arity=0..0
 input search --source enum(catalog|github|tukui|wowi) default= arity=1..1 repeat
-input search @1 <QUERY> string default= arity=1.. repeat required
+input search @1 <QUERY> string default= arity=1.. repeat
 input status --cached flag default=false arity=0..0 conflicts=--deep
 input status --check flag default=false arity=0..0
 input status --deep flag default=false arity=0..0 conflicts=--cached

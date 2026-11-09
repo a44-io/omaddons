@@ -2691,7 +2691,7 @@ _omaddons() {
             return 0
             ;;
         omaddons__subcmd__search)
-            opts="-t -v -h --source --limit --refresh --json --robot --format --flavor --target --dry-run --actor --reason --offline --while-running --if-match --no-color --no-progress --progress --quiet --verbose --help"
+            opts="-t -v -h --catalog --source --limit --refresh --json --robot --format --flavor --target --dry-run --actor --reason --offline --while-running --if-match --no-color --no-progress --progress --quiet --verbose --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0

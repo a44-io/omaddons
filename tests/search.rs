@@ -14,10 +14,16 @@ use common::netlog::net_log;
 use common::tukui::{LIST as TUKUI_LIST, elvui, tukui_list};
 use common::wowi::{FileEntry, details, wowi_details, wowi_file, wowi_filelist};
 use serde_json::{Value, json};
-use support::{refs, results};
+use support::{catalog_home, names, refs, results};
 
 #[cfg(test)]
 mod support {
+    use std::fs;
+
+    use super::common::addons::toc;
+    use super::common::home::Home;
+    use super::common::http::{Asset, gh_release};
+    use super::common::trees::CustomRoot;
     use serde_json::Value;
 
     /// `data.results`.
@@ -31,6 +37,37 @@ mod support {
             .iter()
             .map(|r| r["ref"].as_str().unwrap())
             .collect()
+    }
+
+    /// The results' names, in order.
+    pub fn names(envelope: &Value) -> Vec<&str> {
+        results(envelope)
+            .iter()
+            .map(|r| r["name"].as_str().unwrap())
+            .collect()
+    }
+
+    /// Retail, Classic Era and a 3.3.5a server (`wotlk`); a `catalog.d` entry Foo
+    /// (`gh:o/foo`, mainline) whose release v1 the fixtures serve (`search --catalog`,
+    /// 1n2p.6).
+    pub fn catalog_home() -> Home {
+        let mut home = Home::new(&["wow", "wow_classic_era"]);
+        home.with_custom(CustomRoot::at(home.env.root().join("wow-335")));
+        let dir = home.env.config().join("omaddons/catalog.d");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("mine.toml"),
+            "schema_version = \"1.0\"\n\n[[addon]]\nname = \"Foo\"\nref = \"gh:o/foo\"\nfamilies = [\"mainline\"]\nfolders = [\"Foo\"]\n",
+        )
+        .unwrap();
+        let toc_text = toc("120105", &["## Title: Foo"]);
+        let assets: [Asset<'_>; 1] = [(
+            "Foo.zip",
+            &[("mainline", 120_105)],
+            vec![("Foo/Foo.toc", toc_text.as_str())],
+        )];
+        gh_release(&home.http, "https://github.com/o/foo", "v1", &assets);
+        home
     }
 }
 
@@ -747,4 +784,162 @@ fn an_install_hint_prefers_the_default_then_the_played_client() {
     let addon = addon.to_string_lossy().into_owned();
     titan.run(&["install", &addon, "-t", "titan"]).expect(0);
     assert_eq!(hinted(&titan), json!("titan"), "the client with addons");
+}
+
+// ---------------------------------------------------------------- --catalog (1n2p.6)
+
+#[test]
+fn catalog_lists_every_entry_that_fits_a_client_by_name_and_asks_no_source() {
+    let home = catalog_home();
+    let r = home.run(&["search", "--catalog"]);
+    let envelope = r.expect(0);
+    let listed = names(&envelope);
+    let mut sorted = listed.clone();
+    sorted.sort_by_key(|n| n.to_lowercase());
+    assert_eq!(listed, sorted, "by name: {}", r.context());
+    // Retail's, Classic Era's and 3.3.5a's builds are listed, and no cap applies; the
+    // 1.12.1, 2.4.3, 4.3.4 and 5.4.8 servers' addons fit no client here.
+    for kept in [
+        "Foo",
+        "Questie",
+        "GroupBulletinBoard",
+        "BugGrabber",
+        "WeakAuras",
+    ] {
+        assert!(listed.contains(&kept), "{kept}: {listed:?}");
+    }
+    for gone in ["pfUI", "PlateBuffer", "MikScrollingBattleText", "InFlight"] {
+        assert!(!listed.contains(&gone), "{gone}: {listed:?}");
+    }
+    assert!(listed.len() > 50, "no default cap: {}", listed.len());
+    for row in results(&envelope) {
+        let hints = row["compat"].as_object().unwrap();
+        assert_eq!(
+            hints.keys().collect::<Vec<_>>(),
+            ["era", "retail", "wotlk"],
+            "{row}"
+        );
+        assert!(hints.values().any(|c| c != "no"), "{row}");
+        assert_eq!(row["source"], json!("catalog"), "{row}");
+    }
+    assert_eq!(
+        (
+            &envelope["data"]["query"],
+            &envelope["data"]["sources_skipped"]
+        ),
+        (&json!(""), &json!([]))
+    );
+    assert_eq!(net_log(&home).len(), 0, "no request");
+    // `--offline` answers the same.
+    let offline = home.run(&["search", "--catalog", "--offline"]).expect(0);
+    assert_eq!(offline["data"], envelope["data"]);
+    // `--limit` caps it, from the top.
+    let five = home.run(&["search", "--catalog", "--limit", "5"]).expect(0);
+    assert_eq!(names(&five), listed[..5].to_vec());
+}
+
+#[test]
+fn catalog_words_filter_the_catalog_alone_with_the_hints_plain_search_gives() {
+    let home = catalog_home();
+    let catalog = home.run(&["search", "--catalog", "dbm"]).expect(0);
+    assert_eq!(names(&catalog), ["DBM", "DBM-Vanilla"]);
+    assert_eq!(net_log(&home).len(), 0, "no request");
+    // `search dbm` is unchanged, and its catalog hits carry the same hints.
+    let plain = home.run(&["search", "dbm", "--offline"]).expect(0);
+    for row in results(&catalog) {
+        let same = results(&plain)
+            .iter()
+            .find(|p| p["ref"] == row["ref"])
+            .unwrap_or_else(|| panic!("{} in plain search: {plain}", row["ref"]));
+        assert_eq!(same["compat"], row["compat"], "{}", row["name"]);
+    }
+    // `--source catalog` goes with it; another source does not, and the fix runs.
+    home.run(&["search", "--catalog", "--source", "catalog", "dbm"])
+        .expect(0);
+    let refused = home.run(&["search", "--catalog", "--source", "github", "dbm"]);
+    let envelope = refused.expect(2);
+    assert_eq!(envelope["error"]["code"], json!("usage"));
+    let fix: Vec<String> = serde_json::from_value(envelope["error"]["fix_argv"].clone()).unwrap();
+    assert_eq!(fix, ["omaddons", "search", "--catalog", "--", "dbm"]);
+    // `--json` before the command: after `--` it would be a word of the query.
+    let mut argv = vec!["--json".to_owned()];
+    argv.extend(fix[1..].iter().cloned());
+    let fixed = home.exec(&argv).expect(0);
+    assert_eq!(names(&fixed), ["DBM", "DBM-Vanilla"]);
+    // Without `--catalog`, words are still required: a usage error before anything is
+    // read, whose fix is search's help.
+    let before = net_log(&home).len();
+    let bare = home.run(&["search"]);
+    let envelope = bare.expect(2);
+    assert_eq!(
+        (&envelope["error"]["code"], &envelope["error"]["fix_argv"]),
+        (&json!("usage"), &json!(["omaddons", "help", "search"])),
+        "{envelope}"
+    );
+    assert!(
+        envelope["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("--catalog"),
+        "{envelope}"
+    );
+    assert_eq!(net_log(&home).len(), before, "no request");
+}
+
+// Variants resolve per client as `install <name>` does (M3-D16): one client selected,
+// a name's row is that client's build.
+#[test]
+fn catalog_names_each_clients_own_build_and_lists_what_fits_it() {
+    let home = catalog_home();
+    let wotlk = home
+        .run(&["search", "--catalog", "-t", "wotlk", "buggrabber"])
+        .expect(0);
+    let row = &results(&wotlk)[0];
+    assert_eq!(
+        (&row["name"], &row["ref"], &row["compat"]),
+        (
+            &json!("BugGrabber"),
+            &json!("wowace:bug-grabber#r152"),
+            &json!({"wotlk": "yes"})
+        )
+    );
+    let era = home
+        .run(&["search", "--catalog", "-t", "era", "buggrabber"])
+        .expect(0);
+    assert_eq!(
+        (&results(&era)[0]["ref"], &results(&era)[0]["compat"]),
+        (&json!("wowace:bug-grabber"), &json!({"era": "yes"}))
+    );
+    // Plain search names the same build for one client.
+    let plain = home
+        .run(&["search", "-t", "wotlk", "buggrabber", "--offline"])
+        .expect(0);
+    assert_eq!(results(&plain)[0]["ref"], json!("wowace:bug-grabber#r152"));
+    // What fits 3.3.5a: its two builds, nothing else.
+    let listing = home.run(&["search", "--catalog", "-t", "wotlk"]).expect(0);
+    assert_eq!(names(&listing), ["BugGrabber", "GroupBulletinBoard"]);
+}
+
+// A row's ref, on a client whose hint is `yes`, installs: its preview plans it cleanly.
+#[test]
+fn a_catalog_rows_ref_previews_cleanly_where_its_hint_is_yes() {
+    let home = catalog_home();
+    let listing = home
+        .run(&["search", "--catalog", "-t", "retail", "foo"])
+        .expect(0);
+    let foo = results(&listing)
+        .iter()
+        .find(|r| r["name"] == "Foo")
+        .unwrap();
+    assert_eq!(foo["compat"], json!({"retail": "yes"}));
+    let r = foo["ref"].as_str().unwrap();
+    let preview = home.run(&["install", r, "-t", "retail", "--dry-run"]);
+    let envelope = preview.expect(0);
+    let item = &envelope["data"]["items"][0];
+    assert_eq!(
+        (&item["name"], &item["status"], &item["to_version"]),
+        (&json!("Foo"), &json!("installed"), &json!("v1")),
+        "{}",
+        preview.context()
+    );
 }

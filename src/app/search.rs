@@ -50,9 +50,18 @@ pub enum SourceFilter {
 pub struct SearchArgs {
     /// What to look for: words of the addon's name or folders
     ///
-    /// Words of its name, folders, author or description.
-    #[arg(required = true, value_name = "QUERY")]
+    /// Words of its name, folders, author or description. Required, except with
+    /// --catalog.
+    #[arg(value_name = "QUERY")]
     pub query: Vec<String>,
+    /// Browse the built-in catalog alone, offline
+    ///
+    /// No source is asked and nothing is fetched. Without words, every catalog entry that
+    /// fits at least one selected client, by name, with no cap unless --limit sets one;
+    /// with words, the catalog's matches, best first. Each row is what a search gives for
+    /// that entry. Only --source catalog goes with it.
+    #[arg(long)]
+    pub catalog: bool,
     /// Consult only this source (repeatable): catalog, wowi, tukui or github
     #[arg(long = "source", value_enum, value_name = "SOURCE")]
     pub sources: Vec<SourceFilter>,
@@ -130,7 +139,9 @@ impl Outcome for SearchOutcome {
 
     fn render_human(&self, w: &mut dyn Write, style: &Style) -> std::io::Result<()> {
         let d = &self.data;
-        if d.results.is_empty() {
+        if d.results.is_empty() && d.query.is_empty() {
+            writeln!(w, "No catalog entry fits these clients.")?;
+        } else if d.results.is_empty() {
             writeln!(w, "No addon matches \"{}\".", d.query)?;
         }
         let width = |f: fn(&SearchResult) -> String| {
@@ -267,6 +278,43 @@ fn check_limit(args: &SearchArgs) -> Result<usize> {
     ))
 }
 
+/// `usage` for no words without `--catalog` (the words are optional only there, so clap
+/// takes none; the fix is search's help), and for `--catalog` with a `--source` other
+/// than the catalog, which it never asks (the fix drops the `--source` flags). Checked
+/// before anything is read.
+fn check_catalog_sources(args: &SearchArgs) -> Result<()> {
+    if args.query.is_empty() && !args.catalog {
+        return Err(Error::new(
+            ErrorCode::Usage,
+            "search needs words to look for (or --catalog, which lists the built-in catalog)",
+            Suggestion::command(["omaddons", "help", "search"]),
+        ));
+    }
+    if !args.catalog || args.sources.iter().all(|s| *s == SourceFilter::Catalog) {
+        return Ok(());
+    }
+    let mut argv = vec![
+        "omaddons".to_owned(),
+        "search".to_owned(),
+        "--catalog".to_owned(),
+    ];
+    if !args.query.is_empty() {
+        argv.push("--".to_owned());
+        argv.extend(args.query.iter().cloned());
+    }
+    Err(Error::new(
+        ErrorCode::Usage,
+        "--catalog searches the built-in catalog alone; it takes no other --source",
+        Suggestion::command(argv),
+    ))
+}
+
+/// Whether a selected client might load `r`: any hint but `no` (and, with no client
+/// selected, every entry).
+fn fits_a_client(r: &SearchResult) -> bool {
+    r.compat.is_empty() || r.compat.values().any(|c| *c != Compat::No)
+}
+
 /// The warning for a source the run could not read, when that is a failure (the run is
 /// `partial`): anything but `offline`, which the user asked for, and `disabled`, which
 /// config says. `what` names the source in the message ("the Tukui list").
@@ -284,7 +332,13 @@ fn source_failure(what: &str, skipped: &SourceSkipped, error: &Error) -> Option<
 
 /// Runs `search`.
 pub fn run(ctx: &Context, args: &SearchArgs) -> Result<SearchOutcome> {
-    let limit = check_limit(args)?;
+    check_catalog_sources(args)?;
+    // `--catalog` lists the whole catalog unless `--limit` caps it.
+    let limit = if args.catalog && args.limit.is_none() {
+        usize::MAX
+    } else {
+        check_limit(args)?
+    };
     let query = args.query.join(" ");
     let world = World::load(ctx)?;
     let mut warnings = world.warnings.clone();
@@ -294,7 +348,13 @@ pub fn run(ctx: &Context, args: &SearchArgs) -> Result<SearchOutcome> {
     targets.sort_by(|a, b| a.target.id.cmp(&b.target.id));
     let engine = Engine::new(ctx, &world, "search")?;
     let enabled = engine.enabled_sources();
-    let wants = |s: SourceFilter| args.sources.is_empty() || args.sources.contains(&s);
+    let wants = |s: SourceFilter| {
+        if args.catalog {
+            s == SourceFilter::Catalog
+        } else {
+            args.sources.is_empty() || args.sources.contains(&s)
+        }
+    };
     let freshness = if ctx.offline {
         Freshness::OfflineOnly
     } else if args.refresh {
@@ -353,8 +413,17 @@ pub fn run(ctx: &Context, args: &SearchArgs) -> Result<SearchOutcome> {
                 .filter(|name| catalog.has_variants(name))
                 .map(|name| (*name).to_owned()),
         );
+        // One client selected: a name with variants is that client's build, as `install
+        // <name>` resolves it (M3-D16); else (or when no build is that client's) the
+        // default one.
+        let family = match targets.as_slice() {
+            [only] => Some(only.target.family),
+            _ => None,
+        };
         hits.extend(names.into_iter().filter_map(|name| {
-            let e = catalog.resolve(name, None)?;
+            let e = family
+                .and_then(|f| catalog.resolve(name, Some(f)))
+                .or_else(|| catalog.resolve(name, None))?;
             let mut families = Vec::new();
             for f in catalog.variants(name).iter().flat_map(|v| &v.families) {
                 if !families.contains(f) {
@@ -497,38 +566,59 @@ pub fn run(ctx: &Context, args: &SearchArgs) -> Result<SearchOutcome> {
     }
 
     let now = Timestamp::now();
-    let results: Vec<SearchResult> = rank(&query, hits)
-        .into_iter()
-        .take(limit)
-        .map(|r| {
-            let hit = r.hit;
-            // A GitHub or WoWInterface hit nothing judges: the release memo's newest
-            // stable release, as `info` would judge it, at no request.
-            let remembered = matches!(hit.source, HitSource::Github | HitSource::Wowi);
-            let compat = targets
-                .iter()
-                .map(|d| {
-                    let judged = compat(&hit.basis, d.target.family, now);
-                    let judged = if judged == Compat::Unknown && remembered {
-                        memo_compat(&cache, &hit.r#ref, &d.target).unwrap_or(judged)
-                    } else {
-                        judged
-                    };
-                    (d.target.id.clone(), judged)
-                })
-                .collect();
-            SearchResult {
-                name: hit.name,
-                r#ref: hit.r#ref,
-                source: hit.source,
-                author: hit.author,
-                summary: hit.summary,
-                popularity: hit.popularity,
-                updated_at: hit.updated_at,
-                compat,
-            }
-        })
-        .collect();
+    // `--catalog` without words: the whole catalog by name (stable, for a list a cursor
+    // walks); otherwise best first.
+    let ordered: Vec<Hit> = if args.catalog && query.trim().is_empty() {
+        let mut all = hits;
+        all.sort_by(|a, b| {
+            a.name
+                .to_lowercase()
+                .cmp(&b.name.to_lowercase())
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        all
+    } else {
+        rank(&query, hits).into_iter().map(|r| r.hit).collect()
+    };
+    let judge = |hit: Hit| {
+        // A GitHub or WoWInterface hit nothing judges: the release memo's newest
+        // stable release, as `info` would judge it, at no request.
+        let remembered = matches!(hit.source, HitSource::Github | HitSource::Wowi);
+        let compat = targets
+            .iter()
+            .map(|d| {
+                let judged = compat(&hit.basis, d.target.family, now);
+                let judged = if judged == Compat::Unknown && remembered {
+                    memo_compat(&cache, &hit.r#ref, &d.target).unwrap_or(judged)
+                } else {
+                    judged
+                };
+                (d.target.id.clone(), judged)
+            })
+            .collect();
+        SearchResult {
+            name: hit.name,
+            r#ref: hit.r#ref,
+            source: hit.source,
+            author: hit.author,
+            summary: hit.summary,
+            popularity: hit.popularity,
+            updated_at: hit.updated_at,
+            compat,
+        }
+    };
+    // `--catalog` lists what fits: an entry no selected client could load (every hint
+    // `no`) is left out.
+    let results: Vec<SearchResult> = if args.catalog {
+        ordered
+            .into_iter()
+            .map(judge)
+            .filter(fits_a_client)
+            .take(limit)
+            .collect()
+    } else {
+        ordered.into_iter().take(limit).map(judge).collect()
+    };
     let commands = install_hints(&results, &hint_preference(ctx, &world, &targets), &variants);
     sources_skipped.sort_by_key(|s| s.source);
     // One memo write per command: the Tukui list it fetched, for the next run.
@@ -754,6 +844,91 @@ mod tests {
                 ["omaddons", "install", "gh:o/plain", "-t", "wrath"],
             ]
         );
+    }
+
+    /// `--catalog` lists what a selected client might load: any hint but `no`, and every
+    /// entry when no client is selected.
+    /// A case: its name, a row's hints, whether it fits.
+    type FitCase<'a> = (&'a str, &'a [(&'a str, Compat)], bool);
+
+    #[test]
+    fn catalog_rows_fit_a_client_unless_every_hint_is_no() {
+        let cases: &[FitCase<'_>] = &[
+            ("no_client", &[], true),
+            ("one_yes", &[("retail", Compat::Yes)], true),
+            ("unknown", &[("retail", Compat::Unknown)], true),
+            ("abandoned", &[("retail", Compat::Abandoned)], true),
+            ("one_no", &[("retail", Compat::No)], false),
+            (
+                "no_and_likely",
+                &[("era", Compat::No), ("retail", Compat::Likely)],
+                true,
+            ),
+            (
+                "every_no",
+                &[("era", Compat::No), ("retail", Compat::No)],
+                false,
+            ),
+        ];
+        for (name, compat, fits) in cases {
+            let row = result("gh:o/x", compat);
+            assert_eq!((name, fits_a_client(&row)), (name, *fits));
+        }
+    }
+
+    /// No words is a usage error unless `--catalog`; `--catalog` takes no `--source`
+    /// but the catalog, and its fix drops the others.
+    #[test]
+    fn catalog_and_words_and_sources_are_checked_first() {
+        let args = |query: &[&str], catalog: bool, sources: &[SourceFilter]| SearchArgs {
+            query: query.iter().map(|q| (*q).to_owned()).collect(),
+            sources: sources.to_vec(),
+            limit: None,
+            refresh: false,
+            catalog,
+        };
+        let fix = |a: &SearchArgs| {
+            check_catalog_sources(a).err().map(|e| {
+                let body = crate::error::ErrorBody::from(e);
+                (body.code, body.fix_argv)
+            })
+        };
+        let cases = [
+            ("words", args(&["dbm"], false, &[]), None),
+            ("catalog_alone", args(&[], true, &[]), None),
+            (
+                "catalog_and_its_source",
+                args(&[], true, &[SourceFilter::Catalog]),
+                None,
+            ),
+            (
+                "no_words",
+                args(&[], false, &[]),
+                Some((
+                    ErrorCode::Usage,
+                    Some(vec!["omaddons".into(), "help".into(), "search".into()]),
+                )),
+            ),
+            (
+                "catalog_and_github",
+                args(
+                    &["dbm"],
+                    true,
+                    &[SourceFilter::Catalog, SourceFilter::Github],
+                ),
+                Some((
+                    ErrorCode::Usage,
+                    Some(
+                        ["omaddons", "search", "--catalog", "--", "dbm"]
+                            .map(str::to_owned)
+                            .to_vec(),
+                    ),
+                )),
+            ),
+        ];
+        for (name, a, expected) in cases {
+            assert_eq!((name, fix(&a)), (name, expected));
+        }
     }
 
     #[test]
