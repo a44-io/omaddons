@@ -26,7 +26,8 @@ const text = {}
 for (const file of fs.readdirSync(fixtures).sort()) {
   if (!file.endsWith(".json") || file.startsWith("contract-")) continue
   const envelope = JSON.parse(fs.readFileSync(path.join(fixtures, file), "utf8"))
-  envelope.tool_version = version
+  // An envelope only: `repair-context` and `repair-argv` are plain data.
+  if (typeof envelope.ok === "boolean") envelope.tool_version = version
   text[file.slice(0, -".json".length)] = JSON.stringify(envelope)
 }
 if (!Object.keys(text).some((name) => name.startsWith("plan-"))) throw new Error("no plan-*.json in " + fixtures + ": run step 1 first")

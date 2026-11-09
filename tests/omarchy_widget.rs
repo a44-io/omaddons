@@ -188,6 +188,44 @@ fn the_plan_scenarios_read_only_fixtures_the_binary_writes() {
     }
 }
 
+/// The repair scenarios (`omarchy/tests/qml/tst_repairs.qml`, over the generated
+/// Fixtures.js) read only fixtures `repair_fixtures` writes, and keep their six scenarios.
+#[test]
+fn the_repair_scenarios_read_only_fixtures_the_binary_writes() {
+    const SCENARIOS: &[&str] = &[
+        "test_a_credential_fix_from_issues_is_undone_with_undo_last_through_a_stored_plan",
+        "test_a_set_aside_row_offers_no_fix_and_shows_its_explanation_and_command",
+        "test_undo_last_reverts_a_repair_through_its_stored_plan",
+        "test_a_credential_fix_previews_then_runs_bound_to_its_token",
+        "test_a_stale_credential_fix_previews_again_and_runs_nothing_twice",
+        "test_a_credential_fix_finished_after_the_panel_closed_notifies_once",
+    ];
+    let qml = fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("omarchy/tests/qml/tst_repairs.qml"),
+    )
+    .unwrap();
+    // Every quoted name that is a repair fixture's (the file holds no escaped quote).
+    let named: BTreeSet<&str> = qml
+        .split('"')
+        .skip(1)
+        .step_by(2)
+        .filter(|s| s.starts_with("repair-") || s.starts_with("setaside-"))
+        .collect();
+    assert!(!named.is_empty(), "tst_repairs.qml names no repair fixture");
+    for name in &named {
+        assert!(
+            support::REPAIR_FIXTURES.contains(name),
+            "tst_repairs.qml reads {name}, which repair_fixtures does not write"
+        );
+    }
+    for scenario in SCENARIOS {
+        assert!(
+            qml.contains(&format!("function {scenario}()")),
+            "tst_repairs.qml has no {scenario}"
+        );
+    }
+}
+
 /// Stored previews use the same destructive policy as the widget's confirmation
 /// dialogs; the widget's other destructive path (`targets rm`) stores no plan.
 #[test]
@@ -943,14 +981,18 @@ mod support {
     use super::common::home::{Home, Run};
     use super::common::http::{Asset, gh_latest, gh_release_v, paths};
 
-    /// The paths whose runs always go through a preview (M3-D9).
     /// One planned repair primitive in a `doctor fix` report: two predicates, its
-    /// paths, its backup and its size (G2; omad-m4-agent-surface-doctor-c6cm.7.2.4
-    /// measures it from the binary's envelopes).
+    /// paths, its backup and its size (G2). `repair_fixtures` measures the binary's
+    /// rows against it: the credential chmod's is 352 bytes.
     pub const ACTION_ROW: u64 = 1024;
-    /// One finding: its instance, label, evidence, remediation and explain argv.
-    pub const FINDING_ROW: u64 = 1024;
+    /// One finding: its instance, label, evidence, remediation and explain argv. Measured
+    /// by `repair_fixtures`: a `doctor fix` preview's finding is 922 bytes and a set-aside
+    /// journal's `doctor explain` instance 1,378 (its journal path and attribution
+    /// evidence), so 1,500; the doctor_fix bound of the_output_cap_bounds_every_template
+    /// then stays below WIDGET_OUTPUT_MAX_BYTES (it allows up to about 1,520).
+    pub const FINDING_ROW: u64 = 1500;
 
+    /// The paths whose runs always go through a preview (M3-D9).
     pub const DESTRUCTIVE: &[&str] = &[
         "remove",
         "undo",
@@ -1218,6 +1260,23 @@ mod support {
         "plan-update-local-edits",
         "plan-removal-list",
         "plan-update-removal",
+    ];
+
+    /// Every fixture `repair_fixtures` writes (G2): the doctor's repairs as the real
+    /// binary answers the widget's argv, with the context their paths shorten against
+    /// and the argv that ran.
+    pub const REPAIR_FIXTURES: &[&str] = &[
+        "repair-context",
+        "repair-argv",
+        "repair-status",
+        "repair-preview",
+        "repair-run",
+        "repair-status-after",
+        "repair-undo-preview",
+        "repair-undo-apply",
+        "repair-stale",
+        "setaside-status",
+        "setaside-explain",
     ];
 
     /// `argv` (a filled template) as its preview: `--dry-run` after the standard flags.
@@ -1727,6 +1786,341 @@ fn plans_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
     );
 }
 
+/// The doctor's repairs as the widget runs them (G2), from the real binary, for the bun
+/// cases and `tst_repairs.qml`: the credential repair previewed, run bound to its token
+/// and undone through `undo`'s stored plan (scene A); the same repair gone stale (scene
+/// B); and a set-aside row with its explanation (scene C). Every argv is the one the
+/// widget builds. The failure modes are planted by the doctor's own fixtures.
+/// `REPAIR_FIXTURES` lists exactly what is written.
+#[cfg(test)]
+fn repair_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
+    use std::os::unix::fs::PermissionsExt;
+
+    use common::doctor::{check_envelope, plant};
+    use serde_json::json;
+    use support::{REPAIR_FIXTURES, apply_of, planned, preview_of, standard};
+
+    // ubs:ignore — failure-mode ids, not secrets
+    const CREDENTIAL: &str = "fm-secrets-credential-file-mode";
+    const SET_ASIDE: &str = "fm-concurrency_primitives-journal-too-new";
+
+    let log = tlog!();
+    let mode_of =
+        |path: &std::path::Path| fs::metadata(path).unwrap().permissions().mode() & 0o7777;
+    // A doctor run: its envelope checked against the doctor's contract, then written.
+    let doctor_fixture = |home: &Home, name: &str, argv: &[String], code: i32| -> Value {
+        let ran = log.run(home, argv);
+        check_envelope(ran.stdout(), ran.stderr(), ran.run.code);
+        let envelope = write_fixture(dir, name, &ran.run, code);
+        log.json(name, &envelope);
+        envelope
+    };
+    // The widget's bound run of a filled template: its token right after the flags.
+    let bound_of = |argv: &[String], token: &str| -> Vec<String> {
+        let mut argv = argv.to_vec();
+        let at = standard(true).len();
+        argv.splice(at..at, ["--if-match".to_owned(), token.to_owned()]);
+        argv
+    };
+    let token_of = |preview: &Value| -> String {
+        let token = preview["precondition"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        assert!(
+            token.len() == 68
+                && token.starts_with("pc1:")
+                && token[4..]
+                    .chars()
+                    .all(|c| matches!(c, '0'..='9' | 'a'..='f')),
+            "a preview token: {preview}"
+        );
+        token
+    };
+    let issue_in = |list: &Value, id: &str| -> Value {
+        let found = list
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|i| i["id"] == id)
+            .cloned();
+        assert!(found.is_some(), "no {id} in {list}");
+        found.unwrap_or(Value::Null)
+    };
+
+    log.step("repair: plant");
+    let home = Home::new(&["wow"]);
+    log.env(&home);
+    // The client discovered (and the discovery cache written), as a widget sees it.
+    log.run(&home, &fill(t, "status_full", &[])).ok();
+    let file = plant::credential_file_mode(&home);
+    let config = home.env.config();
+    log.tree("config", &config);
+    log.note(format!("credential mode {:04o}", mode_of(&file)));
+    assert_eq!(mode_of(&file), 0o644);
+    let context = json!({
+        "HOME": home.env.home(), "XDG_CONFIG_HOME": config, "XDG_STATE_HOME": home.env.state(),
+        "XDG_CACHE_HOME": home.env.cache(), "XDG_DATA_HOME": home.env.data(),
+    });
+    fs::write(dir.join("repair-context.json"), context.to_string()).unwrap();
+
+    log.step("repair: status");
+    let status = plan_fixture(
+        &log,
+        &home,
+        dir,
+        "repair-status",
+        &fill(t, "status", &[]),
+        0,
+    );
+    let issue = issue_in(&status["data"]["issues"], CREDENTIAL);
+    assert_eq!(issue["auto_fixable"], true, "{issue}");
+    assert_eq!(
+        issue["remediation"]["argv"],
+        json!(["omaddons", "doctor", "fix", "--only", CREDENTIAL]),
+        "{issue}"
+    );
+    assert_eq!(
+        issue["explain"]["argv"],
+        json!(["omaddons", "doctor", "explain", CREDENTIAL]),
+        "{issue}"
+    );
+
+    log.step("repair: preview");
+    let fix = fill(t, "doctor_fix", &[("fm", CREDENTIAL)]);
+    let preview_argv = preview_of(fix.clone());
+    let preview = doctor_fixture(&home, "repair-preview", &preview_argv, 1);
+    assert_eq!(
+        (&preview["dry_run"], &preview["state"], &preview["tx"]),
+        (&json!(true), &json!("DONE_FINDINGS"), &Value::Null),
+        "{preview}"
+    );
+    let actions = preview["actions_planned"].as_array().unwrap();
+    assert_eq!(actions.len(), 1, "one planned action: {preview}");
+    assert_eq!(
+        (
+            &actions[0]["op"],
+            &actions[0]["mode"],
+            &actions[0]["pre"]["mode"],
+            &actions[0]["fm"]
+        ),
+        (
+            &json!("chmod"),
+            &json!("0600"),
+            &json!("0644"),
+            &json!(CREDENTIAL)
+        ),
+        "{preview}"
+    );
+    let token = token_of(&preview);
+    log.assert_unchanged("config", &config);
+
+    log.step("repair: bound run");
+    let bound_argv = bound_of(&fix, &token);
+    let run = doctor_fixture(&home, "repair-run", &bound_argv, 0);
+    assert_eq!(run["state"], "DONE_OK", "{run}");
+    assert!(run["tx"].is_string(), "{run}");
+    assert_eq!(run["actions"][0]["ok"], true, "{run}");
+    assert!(run["undo_argv"].is_array(), "{run}");
+    log.note(format!("credential mode {:04o}", mode_of(&file)));
+    assert_eq!(mode_of(&file), 0o600);
+    // What ran, without the binary: bun builds the same from the same `fix`.
+    let ran = json!({ "preview": preview_argv, "bound": bound_argv });
+    fs::write(dir.join("repair-argv.json"), ran.to_string()).unwrap();
+
+    log.step("repair: status after");
+    let after = plan_fixture(
+        &log,
+        &home,
+        dir,
+        "repair-status-after",
+        &fill(t, "status", &[]),
+        0,
+    );
+    assert!(
+        after["data"]["issues"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .all(|i| i["id"] != CREDENTIAL), // ubs:ignore — a failure-mode id, not a secret
+        "repaired: {after}"
+    );
+    let change = &after["data"]["last_change"];
+    assert_eq!(
+        (&change["kind"], &after["data"]["last_change_state"]),
+        (&json!("repair"), &json!("ok")),
+        "{after}"
+    );
+    let undo = strings(&change["undo"]["argv"]);
+    assert_eq!(&undo[..3], ["omaddons", "undo", "--run"], "{after}");
+
+    log.step("repair: undo preview");
+    let mut undo_preview = standard(true);
+    undo_preview.push("--dry-run".to_owned());
+    undo_preview.extend(undo.into_iter().skip(1));
+    let undo_env = plan_fixture(&log, &home, dir, "repair-undo-preview", &undo_preview, 0);
+    let reverts = &undo_env["data"]["repairs"][0];
+    assert_eq!(
+        (
+            &undo_env["data"]["kind"],
+            &reverts["op"],
+            &reverts["octal_mode"]
+        ),
+        (&json!("repair"), &json!("chmod"), &json!("0644")),
+        "{undo_env}"
+    );
+    assert!(undo_env["data"]["approval"].is_object(), "{undo_env}");
+    let id = planned(&undo_env);
+
+    log.step("repair: apply");
+    let applied = plan_fixture(&log, &home, dir, "repair-undo-apply", &apply_of(&id), 0);
+    assert_eq!(applied["data"]["applied"]["command"], "undo", "{applied}");
+    log.note(format!("credential mode {:04o}", mode_of(&file)));
+    assert_eq!(mode_of(&file), 0o644);
+    log.assert_unchanged("config", &config);
+
+    // Scene B: the same home, the file 0644 again; it changes between preview and Yes.
+    log.step("stale: preview");
+    let first = log.run(&home, &preview_of(fix.clone()));
+    let first = check_envelope(first.stdout(), first.stderr(), first.run.code);
+    assert_eq!(first["exit_code"], 1, "{first}");
+    let token = token_of(&first);
+    log.note(format!("stale: previewed with {token}"));
+
+    log.step("stale: the file changes");
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o640)).unwrap();
+    log.note(format!(
+        "credential mode {:04o} (a dotfiles sync)",
+        mode_of(&file)
+    ));
+
+    log.step("stale: bound run");
+    let stale = doctor_fixture(&home, "repair-stale", &bound_of(&fix, &token), 4);
+    let error = &stale["error"];
+    assert_eq!(
+        (&error["code"], &error["retryable"]),
+        (&json!("plan_stale"), &json!(false)),
+        "{stale}"
+    );
+    assert!(
+        strings(&error["details"]["changed"]).contains(&"observed".to_owned()),
+        "{stale}"
+    );
+    assert!(
+        strings(&error["fix_argv"]).contains(&"--dry-run".to_owned()),
+        "the fix previews again: {stale}"
+    );
+    assert_eq!(mode_of(&file), 0o640, "nothing ran");
+
+    // Scene C: retail's interrupted change from a newer omaddons, last, in the same home
+    // (it refuses every later change on retail; nothing changes after it), so its paths
+    // shorten against the same `repair-context`. The token file is made private by
+    // hand first, so its status lists the set-aside alone.
+    log.step("set-aside: plant");
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+    log.note(format!(
+        "credential mode {:04o} (made private by hand)",
+        mode_of(&file)
+    ));
+    let fixtures = crate::fixture::fixtures::all();
+    let too_new = fixtures.iter().find(|f| f.id() == SET_ASIDE);
+    assert!(too_new.is_some(), "the doctor's {SET_ASIDE} fixture");
+    too_new.unwrap().corrupt(&home);
+    let client = home.client("_retail_");
+    log.tree("state", &home.state());
+    log.tree("client", &client);
+
+    log.step("set-aside: status");
+    let status = plan_fixture(
+        &log,
+        &home,
+        dir,
+        "setaside-status",
+        &fill(t, "status", &[]),
+        0,
+    );
+    let retail = status["data"]["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == "retail")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let issue = issue_in(&retail["issues"], SET_ASIDE);
+    let forced = [
+        "omaddons", "doctor", "fix", "--only", SET_ASIDE, "-t", "retail", "--force", "--yes",
+    ];
+    assert_eq!(
+        (
+            &issue["severity"],
+            &issue["auto_fixable"],
+            &issue["remediation"]["argv"]
+        ),
+        (&json!("P0"), &json!(false), &json!(forced)),
+        "{issue}"
+    );
+
+    log.step("set-aside: explain");
+    let mut explain = standard(false);
+    explain.extend(strings(&issue["explain"]["argv"]).into_iter().skip(1));
+    let explained = doctor_fixture(&home, "setaside-explain", &explain, 0);
+    assert_eq!(explained["failure_mode"]["id"], SET_ASIDE, "{explained}");
+    assert_eq!(
+        explained["instances"][0]["remediation"]["command"],
+        forced.join(" "),
+        "{explained}"
+    );
+    assert!(
+        !explained["instances"].to_string().contains("/WTF/"),
+        "no evidence below WTF/: {explained}"
+    );
+    log.assert_unchanged("state", &home.state());
+    log.assert_unchanged("client", &client);
+
+    // The rows the widget's output-cap bound assumes (the_output_cap_bounds_every_template).
+    log.step("row sizes");
+    let largest = |list: &Value| -> u64 {
+        list.as_array()
+            .into_iter()
+            .flatten()
+            .map(|row| row.to_string().len() as u64)
+            .max()
+            .unwrap_or(0)
+    };
+    let sizes = json!({
+        "action": largest(&preview["actions_planned"]),
+        "finding": largest(&preview["findings"]),
+        "instance": largest(&explained["instances"]),
+    });
+    log.json("row sizes", &sizes);
+    assert!(
+        sizes["action"].as_u64() <= Some(support::ACTION_ROW),
+        "an action row past ACTION_ROW: {sizes}"
+    );
+    for key in ["finding", "instance"] {
+        assert!(
+            sizes[key].as_u64() <= Some(support::FINDING_ROW),
+            "a {key} row past FINDING_ROW: {sizes}"
+        );
+    }
+
+    let mut written: Vec<String> = fs::read_dir(dir)
+        .unwrap()
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter(|n| {
+            (n.starts_with("repair-") || n.starts_with("setaside-")) && n.ends_with(".json")
+        })
+        .map(|n| n.trim_end_matches(".json").to_owned())
+        .collect();
+    written.sort();
+    let mut listed: Vec<String> = REPAIR_FIXTURES.iter().map(|n| (*n).to_owned()).collect();
+    listed.sort();
+    assert_eq!(
+        written, listed,
+        "repair_fixtures writes exactly REPAIR_FIXTURES"
+    );
+}
+
 /// Envelopes from the real binary for bun's reducer tests, written to
 /// Installs `r` at `version` on retail from a local zip shipping `folders`.
 #[cfg(test)]
@@ -2183,6 +2577,7 @@ fn write_widget_fixtures() {
     errors_fixtures(&dir, &t);
     backups_fixtures(&dir, &t);
     plans_fixtures(&dir, &t);
+    repair_fixtures(&dir, &t);
 
     // Idle: Baz current on retail, checked just now.
     let home = Home::new(&["wow"]);

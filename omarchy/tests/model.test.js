@@ -2086,11 +2086,11 @@ describe("an irreversible purge is never a button", () => {
     expect([purging.runnable, purging.argv, purging.irreversible]).toEqual([false, null, true])
     expect([forgetting.runnable, forgetting.destructive, forgetting.irreversible]).toEqual([true, true, false])
     const rows = M.issueRows(M.issueSections(status.targets, null, [], "", []))
-    const purgeRow = rows.find((row) => row.text === purge.join(" "))
+    const purgeRow = rows.find((row) => row.text === purge.join(" ")) // ubs:ignore — a command's text, not a secret
     expect([purgeRow.action, purgeRow.note]).toEqual([null, M.IRREVERSIBLE_NOTE])
     expect(M.copyText(purgeRow)).toBe(purge.join(" "))
     expect(M.copyArgv(M.copyText(purgeRow))).toEqual(["wl-copy", "--", purge.join(" ")])
-    const plainRow = rows.find((row) => row.action && row.action.argv.join(" ") === plain.join(" "))
+    const plainRow = rows.find((row) => row.action && row.action.argv.join(" ") === plain.join(" ")) // ubs:ignore — a command's text, not a secret
     expect([plainRow.note, M.copyText(plainRow)]).toEqual(["", ""])
   })
 
@@ -2280,6 +2280,117 @@ describe("plans from the binary", () => {
   })
 })
 
+// --------------------------------------------------- repairs from the binary (G2)
+
+// The doctor's repairs as the real binary answered the widget's own argv (step 1's
+// repair_fixtures): the credential repair previewed, bound, undone through its stored
+// plan, gone stale; a set-aside row and its explanation. A renamed key in the doctor's
+// report, the undo's data or status's issues fails here.
+describe("repairs from the binary", () => {
+  // ubs:ignore — failure-mode ids, not secrets
+  const CREDENTIAL = "fm-secrets-credential-file-mode"
+  const SET_ASIDE = "fm-concurrency_primitives-journal-too-new"
+  const context = fixture("repair-context")
+  const targets = M.reduceStatus(fixture("repair-status")).targets
+  const credentialRow = () => {
+    const status = M.reduceStatus(fixture("repair-status"))
+    const rows = M.issueRows(M.issueSections(status.targets, null, [], "", status.issues))
+    return rows.find((r) => r.kind === "problem" && r.fix && r.fix.slots.fm === CREDENTIAL) // ubs:ignore — a failure-mode id, not a secret
+  }
+  const rawIssue = () => fixture("repair-status").data.issues.find((i) => i.id === CREDENTIAL)
+  const setAsideIssue = () => fixture("setaside-status").data.targets.find((t) => t.id === "retail").issues.find((i) => i.id === SET_ASIDE)
+
+  test("the credential issue reduces to a Fix", () => {
+    const row = credentialRow()
+    expect(row && { fix: row.fix, action: row.action, hint: row.hint, forced: row.forced })
+      .toEqual({ fix: { template: "doctor_fix", slots: { fm: CREDENTIAL }, label: "Repair: " + rawIssue().title }, action: null,
+        hint: "Enter previews the repair", forced: false })
+    expect(M.classifyCliArgv(rawIssue().remediation.argv).reason).toBe("own_flow_only")
+    expect(row.explain.runnable).toBe(true)
+  })
+
+  test("the argv bun builds is the one the scene ran", () => {
+    const fix = credentialRow().fix
+    const ran = fixture("repair-argv")
+    const build = (extra) => M.buildArgv(fix.template, fix.slots, opts(Object.assign({ label: "Fixture" }, extra))).argv.slice(1)
+    expect(build({ preview: true })).toEqual(ran.preview)
+    expect(build({ token: fixture("repair-preview").precondition })).toEqual(ran.bound)
+  })
+
+  test("the preview is a dialog with the chmod line", () => {
+    const fix = credentialRow().fix
+    const decision = M.doctorPreviewDecision(fix, fixture("repair-preview"), context, targets)
+    expect([decision.kind, decision.lines[0], decision.lines[decision.lines.length - 1], decision.token])
+      .toEqual(["dialog", "chmod 0600 <config>/credentials/github (was 0644)", "Undo last reverts it", fixture("repair-preview").precondition])
+  })
+
+  test("the run is a repair the footer can undo", () => {
+    const run = fixture("repair-run")
+    const result = M.doctorResult(run)
+    expect([result.repaired, result.undoable, result.report]).toEqual([true, true, true])
+    expect(M.resultLine(run, context, targets)).toBe("Repaired: chmod 0600 <config>/credentials/github (was 0644)")
+    // Its own undo hint is the doctor's flow, never a button: the Undo is Undo last's.
+    expect(M.classifyCliArgv(run.undo_argv).reason).toBe("own_flow_only")
+    expect(run.commands.map((c) => M.classifyCliArgv(c.argv).reason)).toEqual(["own_flow_only"])
+  })
+
+  test("status after names the repair", () => {
+    const change = M.reduceStatus(fixture("repair-status-after")).lastChange
+    const argv = fixture("repair-status-after").data.last_change.undo.argv
+    expect([change.kind, change.label, change.undo.runnable, change.undo.destructive]).toEqual(["repair", "Undo repair", true, true])
+    expect(M.resultUndo({ repair: true, statusSeen: true }, change).argv).toEqual(argv)
+    expect(argv.slice(0, 3)).toEqual(["omaddons", "undo", "--run"])
+    expect(M.resultUndo({ repair: true, statusSeen: false }, change)).toBeNull()
+  })
+
+  test("the undo preview confirms through its plan", () => {
+    const env = fixture("repair-undo-preview")
+    const decision = M.previewDecision({ mode: "confirm", shown: [], again: false, path: "undo", context, targets }, env)
+    expect([decision.kind, decision.plan.planId]).toEqual(["dialog", env.data.plan_id])
+    expect(decision.lines.slice(0, 2)).toEqual(["Undo repair: 1 change", "chmod 0644 <config>/credentials/github (readable by other users again)"])
+  })
+
+  test("the undo's apply reads as an undo", () => {
+    expect(M.resultLine(M.applyResult(fixture("repair-undo-apply")))).toBe("Undid repair (1 change)")
+    expect(M.needsPreviewAgain(fixture("repair-undo-apply"))).toBe(false)
+  })
+
+  test("a stale bound run previews again", () => {
+    const stale = fixture("repair-stale")
+    expect([stale.error.code, M.doctorResult(stale).error.code]).toEqual(["plan_stale", "plan_stale"])
+    expect(M.staleText(stale)).toBe("Changed since you looked: the files this repair checks. Nothing ran; check the new preview.")
+  })
+
+  test("the set-aside row is text with its explanation", () => {
+    const status = M.reduceStatus(fixture("setaside-status"))
+    const row = M.issueRows(M.issueSections(status.targets, null, [], "", status.issues))
+      .find((r) => r.kind === "problem" && r.severity === "P0")
+    expect(row && { fix: row.fix, action: row.action, forced: row.forced, text: row.text, hint: row.hint })
+      .toEqual({ fix: null, action: null, forced: true, text: setAsideIssue().remediation.command, hint: "Enter explains it" })
+    expect(M.classifyCliArgv(setAsideIssue().remediation.argv).reason).toBe("consent_flag")
+    const explain = fixture("setaside-explain")
+    const lines = M.explainLines(explain, context, M.reduceStatus(fixture("setaside-status")).targets)
+    expect(lines[0]).toBe(explain.failure_mode.title)
+    expect(lines).toContain("Its repair needs your deliberate consent: read this, then run the command below in a terminal")
+    expect(lines).toContain("  In a terminal: " + setAsideIssue().remediation.command)
+    // No path below a WTF/ (the failure mode's prose may name the folder itself).
+    expect(lines.filter((l) => /WTF\/[^\s]/.test(l))).toEqual([])
+    // The journal's path reads below omaddons' own state folder.
+    expect(lines.some((l) => l.startsWith("  journal: <state>/journal/"))).toBe(true)
+  })
+
+  test("a doctor gc remediation is text", () => {
+    // Derived: a gc row needs over 200 fix runs to appear, and only the verdict is tested.
+    const env = fixture("repair-status")
+    const gc = ["omaddons", "doctor", "gc", "--before", "30d", "--dry-run"]
+    env.data.issues[0].remediation = { command: gc.join(" "), argv: gc, destructive: true }
+    env.data.issues[0].auto_fixable = false
+    const status = M.reduceStatus(env)
+    const row = M.issueRows(M.issueSections(status.targets, null, [], "", status.issues))[0]
+    expect([row.text, row.action, row.fix, M.classifyCliArgv(gc).reason]).toEqual([gc.join(" "), null, null, "doctor_gc"])
+  })
+})
+
 // --------------------------------------------------- built-argv.json (step 3)
 
 test("writes every built argv and the classifier's verdicts for the Rust check", () => {
@@ -2323,6 +2434,11 @@ test("writes every built argv and the classifier's verdicts for the Rust check",
     fixture("status-after-update").data.last_change.undo.argv,
     fixture("failure").error.fix_argv,
     fixture("remove-stale").error.fix_argv,
+    // The doctor's own argv, which the widget refuses (G2): a repair's remediation and its
+    // run's undo hint (`own_flow_only`), and a set-aside's forced one (`consent_flag`).
+    fixture("repair-status").data.issues[0].remediation.argv,
+    fixture("repair-run").undo_argv,
+    fixture("setaside-status").data.targets.find((t) => t.id === "retail").issues[0].remediation.argv,
   ].concat(fixture("update").commands.map((c) => c.argv))
   for (const argv of CLASSIFIER_TABLE.map((row) => row[0]).concat(real)) {
     const verdict = M.classifyCliArgv(argv)
