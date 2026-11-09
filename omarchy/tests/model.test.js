@@ -682,6 +682,117 @@ describe("reduceStatus", () => {
   })
 })
 
+// Failures and recovery (1n2p.34, design doc §6.4): the cards, their details, the
+// retries and an interrupted change, over envelopes the binary wrote.
+describe("failures and recovery", () => {
+  const FACTS = {
+    label: "Refresh", outcome: "malformed", exitCode: 101,
+    argv: ["/home/fixture/.cargo/bin/omaddons", "--json", "status", "--cached", "--reason", "two words"],
+    tail: Array.from({ length: 15 }, (_, i) => "line " + i + " at /home/fixture/.config/omaddons/config.toml"),
+  }
+  const INFO = { binary: "/home/fixture/.cargo/bin/omaddons", home: "/home/fixture", mine: "0.1.0", deadlineSec: 20, nowMs: NOW }
+
+  test("retries come at 5 s, 15 s, then every 60 s", () => {
+    expect([0, 1, 2, 3, 9, -1, null].map((s) => M.retryDelayMs(s))).toEqual([5000, 15000, 60000, 60000, 60000, 5000, 5000])
+    expect([0, 1, 2].map((s) => M.retryDelayMs(s, [30, 60]))).toEqual([30, 60, 60])
+  })
+
+  test("another build is typed: another version, an answer it cannot read, or the same version's other files", () => {
+    const build = { TOOL_VERSION: fixture("status-idle").tool_version }
+    const other = JSON.parse(JSON.stringify(fixture("status-idle")))
+    other.tool_version = "9.9.9"
+    expect(M.incompatibleOf(other, build)).toEqual({ kind: "version", theirs: "9.9.9" })
+    expect(M.incompatibleOf({ nonsense: true }, build)).toEqual({ kind: "version", theirs: "" })
+    const major = JSON.parse(JSON.stringify(fixture("status-idle")))
+    major.schema_version = "2.0"
+    expect(M.incompatibleOf(major, build).kind).toBe("version")
+    expect(M.incompatibleOf(fixture("status-idle"), build).kind).toBe("outdated")
+  })
+
+  test("the details say what ran and how it ended, with the home as ~ and the binary as omaddons", () => {
+    const text = M.failureDetails(FACTS, CONTEXT, "0.1.0")
+    const lines = text.split("\n")
+    expect(lines.slice(0, 5)).toEqual([
+      "What: Refresh",
+      'Command: omaddons --json status --cached --reason "two words"',
+      "Ended: an answer the panel can't read, exit code 101",
+      "Panel: omaddons 0.1.0",
+      "Last output:",
+    ])
+    // The last 12 lines of the child's output, and no path of the home spelled out.
+    expect(lines.slice(5)).toEqual(FACTS.tail.slice(-12).map((l) => "  " + l.replace("/home/fixture", "~")))
+    expect(text).not.toContain("/home/fixture")
+    // Nothing from the environment beyond the home: no other context value appears.
+    for (const value of Object.values(CONTEXT)) if (value !== CONTEXT.HOME) expect(text).not.toContain(value)
+    const killed = M.failureDetails({ label: "Check now", outcome: "stuck", argv: [], tail: [] }, CONTEXT, "")
+    expect(killed.split("\n")).toEqual(["What: Check now", "Ended: still running after SIGKILL, let go, no exit code", "Panel: omaddons unknown"])
+    expect(M.failureDetails(null, null, null).split("\n")[0]).toBe("What: unknown")
+  })
+
+  test("a request with no envelope says what happened in words", () => {
+    expect(["timeout", "malformed", "oversized", "cancelled", "stuck", "missing", "weird"].map((o) => M.failureWords("Update all", o))).toEqual([
+      "Update all didn't finish: omaddons took too long",
+      "Update all: omaddons answered with something the panel can't read",
+      "Update all: omaddons' answer was too large to read",
+      "Update all was stopped",
+      "omaddons stopped answering during Update all; the panel freed its worker and goes on",
+      "Can't find omaddons",
+      "Update all didn't finish (weird)",
+    ])
+  })
+
+  test("each failure has its own card: words, one action besides Retry, and details where they help", () => {
+    const card = (phase, extra) => M.phaseCard(phase, Object.assign({}, INFO, extra || {}))
+    const missing = card("missing")
+    expect([missing.kind, missing.title, missing.actions]).toEqual(["missing", "Can't find omaddons", ["retry", "copy_command"]])
+    expect(missing.sentence).toContain("It was at ~/.cargo/bin/omaddons.")
+    expect(missing.notes).toEqual(["The panel tries again by itself."])
+    expect(M.missingBinaryCommand()).toBe("omaddons omarchy install")
+    const cases = [
+      ["malformed", "omaddons didn't answer", "It stopped before it said anything the panel can read."],
+      ["oversized", "omaddons didn't answer", "Its answer was larger than the panel reads."],
+      ["timeout", "omaddons didn't answer in time", "It was still working after 20 seconds, so the panel stopped it."],
+      ["stuck", "omaddons stopped answering", "It did not end even when stopped, so the panel let it go and freed its worker."],
+      ["cancelled", "omaddons didn't answer", "It stopped before it said anything the panel can read."],
+    ]
+    for (const [outcome, title, sentence] of cases) {
+      const c = card("unreachable", { outcome, failure: Object.assign({}, FACTS, { outcome }) })
+      expect([outcome, c.title, c.sentence, c.actions]).toEqual([outcome, title, sentence, ["retry", "copy_details"]])
+      expect(c.details).toBe(M.failureDetails(Object.assign({}, FACTS, { outcome }), { HOME: "/home/fixture" }, "0.1.0"))
+    }
+    const version = card("incompatible", { incompatible: { kind: "version", theirs: "0.2.0" } })
+    expect([version.kind, version.title, version.actions, version.notes]).toEqual(["version", "The panel is from another omaddons version", ["reinstall", "retry"], []])
+    expect(version.sentence).toBe("Panel 0.1.0, omaddons 0.2.0. Update the panel to match; until then it only shows what it read last.")
+    expect(card("incompatible", { incompatible: { kind: "version", theirs: "" } }).sentence).toContain("omaddons a version this panel can't read")
+    const outdated = card("incompatible", { incompatible: { kind: "outdated", theirs: "0.1.0" }, reinstalledAtMs: NOW - 120000 })
+    expect([outdated.kind, outdated.title]).toEqual(["outdated", "The panel is out of date"])
+    expect(outdated.notes).toEqual(["Update the panel ran 2 min ago; this is still the old panel."])
+    for (const phase of ["ok", "starting", "", undefined]) expect(M.phaseCard(phase, INFO)).toBeNull()
+    // With no facts at all, a card still says something.
+    expect(M.phaseCard("unreachable", {}).kind).toBe("malformed")
+    expect(M.phaseCard("incompatible", null).kind).toBe("version")
+  })
+
+  test("an interrupted change is announced from status alone, and never while another process commits", () => {
+    const stuck = M.interruptedChange(M.reduceStatus(fixture("setaside-status")))
+    expect(stuck).toEqual({ clients: ["Retail"], target: "retail", title: "A change on Retail was interrupted",
+      sentence: "omaddons finishes or undoes it before the next change. See what it would do first." })
+    expect(M.interruptedChange(M.reduceStatus(fixture("status-updates")))).toBeNull()
+    expect(M.interruptedChange(null)).toBeNull()
+    const edit = (name, f) => {
+      const env = JSON.parse(JSON.stringify(fixture(name)))
+      f(env)
+      return M.interruptedChange(M.reduceStatus(env))
+    }
+    const two = edit("status-updates", (env) => { env.data.journal.pending = 2; env.data.targets.forEach((t) => { t.attention = ["journal_pending"] }) })
+    expect([two.title, two.target]).toEqual(["Changes on Classic Era and Retail were interrupted", ""])
+    const machine = edit("status-updates", (env) => { env.data.journal.pending = 1 })
+    expect([machine.title, machine.clients, machine.target]).toEqual(["A change was interrupted", [], ""])
+    expect(edit("setaside-status", (env) => { env.data.journal.in_progress = true })).toBeNull()
+    expect(M.reduceStatus(fixture("setaside-status")).journal).toEqual({ pending: 1, inProgress: false })
+  })
+})
+
 // The bar button (1n2p.16, design doc §2.5): Model.barState and Model.barTooltip over
 // envelopes the binary wrote.
 describe("the bar button", () => {

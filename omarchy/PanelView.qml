@@ -123,7 +123,14 @@ Item {
   // Without a compatible answer there are no views to act in: the card's buttons take
   // the cursor (j/k) and Enter.
   readonly property bool cardMode: phase === "missing" || phase === "unreachable" || phase === "incompatible"
-  readonly property var cardActions: phase === "incompatible" ? ["retry", "reinstall"] : (cardMode ? ["retry"] : [])
+  // The card in words (Model.phaseCard, design doc §6.4, 1n2p.34): the service's, else
+  // the phase's own with no facts.
+  readonly property var card: !cardMode ? null : (svc && svc.phaseCard ? svc.phaseCard : Model.phaseCard(phase, {}))
+  readonly property var cardActions: card ? card.actions : []
+  // What a card's Copy said a moment ago ("Copied"), "" otherwise.
+  property string cardNote: ""
+  // An interrupted change `status` reports (Model.interruptedChange), on a live answer.
+  readonly property var interrupted: svc && phase === "ok" && svc.interrupted ? svc.interrupted : null
   // Where a key is looked up in KEYMAP: the card's rows, a page's, or the view's.
   readonly property string keyContext: cardMode ? "card" : (topPage ? "page" : view)
   // Where the keyboard goes: the dialog's own keys while it is open, then the chooser's,
@@ -545,12 +552,42 @@ Item {
     Qt.callLater(root.focusNow)
   }
 
+  // A card's action: Retry asks again, Update the panel reinstalls the widget, and the
+  // two copies put a command or the details on the clipboard (never run).
   function runCard(action) {
     if (!svc) return false
     if (action === "retry") svc.refresh()
     else if (action === "reinstall") svc.reinstallWidget()
-    else return false
+    else if (action === "copy_command" || action === "copy_details") {
+      var text = action === "copy_command" ? Model.missingBinaryCommand() : (card ? card.details : "")
+      if (!svc.copyCommand(text)) return false
+      cardNote = Model.copy("card.copied")
+      cardNoteTimer.restart()
+    } else return false
     return true
+  }
+
+  // The failure card's Copy details.
+  function copyErrorDetails() {
+    if (!svc || !lastError || !svc.copyCommand(String(lastError.details || ""))) return false
+    cardNote = Model.copy("card.copied")
+    cardNoteTimer.restart()
+    return true
+  }
+
+  // The interrupted change's notice: its problem's page in Issues, whose repair previews
+  // first (the widget never finishes a change by itself, 1n2p.34).
+  function showInterrupted() {
+    if (!interrupted) return false
+    if (interrupted.target !== "") setFilter(interrupted.target)
+    showView("issues")
+    return true
+  }
+
+  Timer {
+    id: cardNoteTimer
+    interval: 3000
+    onTriggered: root.cardNote = ""
   }
 
   // A view state's action (Model.viewState, design doc §7): Check now checks, Search opens
@@ -844,35 +881,31 @@ Item {
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.body
                 font.bold: true
-                text: root.phase === "missing" ? "omaddons not found at " + (root.svc ? root.svc.binary : "")
-                  : root.phase === "unreachable" ? "omaddons gave no answer the widget can read"
-                  : root.phase === "incompatible" && root.svc ? root.svc.incompatibleText : ""
+                text: root.card ? root.card.title : ""
               }
 
-              // The binary's own words when it answered with something else.
+              // What happened and what to do, in words; the child's own output only
+              // goes to Copy details (design doc §6.4).
               PlainLabel {
                 objectName: "cardDetail"
-                visible: root.phase === "unreachable" && text !== ""
+                visible: text !== ""
                 width: parent.width
-                wrapMode: Text.WrapAnywhere
-                maximumLineCount: 8
+                wrapMode: Text.WordWrap
                 color: root.dim
                 font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-                text: root.svc ? String(root.svc.unreachableText || "") : ""
+                font.pixelSize: Style.font.bodySmall
+                text: root.card ? root.card.sentence : ""
               }
 
-              // A missing binary: the two ways back, as text (they need a path or a
-              // terminal only the user has).
+              // That it tries again by itself, or when Update the panel last ran.
               Repeater {
-                objectName: "missingCommands"
-                model: root.phase === "missing"
-                  ? ["omarchy bar set " + Build.PLUGIN_ID + " binary <path>", "omaddons omarchy install"]
-                  : []
+                objectName: "cardNotes"
+                model: root.card ? root.card.notes : []
 
                 PlainLabel {
                   required property string modelData
                   width: cardColumn.width
+                  wrapMode: Text.WordWrap
                   color: root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
@@ -891,7 +924,7 @@ Item {
                     required property string modelData
                     required property int index
                     objectName: "card_" + modelData
-                    text: modelData === "reinstall" ? "Reinstall widget" : "Retry"
+                    text: Model.copy("card.action." + modelData)
                     hasCursor: root.cursorActive && index === root.cursor
                     bordered: true
                     foreground: root.foreground
@@ -899,6 +932,16 @@ Item {
                     fontSize: Style.font.bodySmall
                     onClicked: root.runCard(modelData)
                   }
+                }
+
+                PlainLabel {
+                  objectName: "cardCopied"
+                  visible: text !== ""
+                  anchors.verticalCenter: parent.verticalCenter
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  text: root.cardNote
                 }
               }
             }
@@ -932,41 +975,22 @@ Item {
             }
           }
 
-          BorderSurface {
-            objectName: "widgetOutdated"
-            visible: root.phase === "ok" && !!root.summary && root.summary.widgetOutdated === true
+          // A change a crash or a reload cut off (1n2p.34), from `status` alone: what
+          // happened in words, and its problem's page, whose repair previews first. The
+          // widget never finishes it by itself. (An outdated widget is the phase card's:
+          // `status` reports it only with `widget.outdated`, which is another build.)
+          NoticeCard {
+            objectName: "interruptedCard"
+            visible: !!root.interrupted && !root.topPage
             width: parent.width
-            implicitHeight: outdatedRow.implicitHeight + Style.spacing.lg * 2
-            color: "transparent"
-            borderSpec: Border.flat(root.alpha(root.foreground, 0.25), 1)
-            radius: Style.cornerRadius
-
-            Row {
-              id: outdatedRow
-              anchors.verticalCenter: parent.verticalCenter
-              anchors.left: parent.left
-              anchors.leftMargin: Style.space(12)
-              spacing: Style.spacing.lg
-
-              Text {
-                anchors.verticalCenter: parent.verticalCenter
-                textFormat: Text.PlainText
-                text: "The widget is from another build"
-                color: root.foreground
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.body
-              }
-
-              Button {
-                objectName: "reinstallOutdated"
-                text: "Reinstall"
-                bordered: true
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                fontSize: Style.font.bodySmall
-                onClicked: root.runCard("reinstall")
-              }
-            }
+            kind: "failure"
+            title: root.interrupted ? root.interrupted.title : ""
+            body: root.interrupted ? root.interrupted.sentence : ""
+            buttons: [{ "name": "show", "text": Model.copy("interrupted.action") }]
+            foreground: root.foreground
+            urgent: root.urgent
+            fontFamily: root.fontFamily
+            onClicked: function(name) { if (name === "show") root.showInterrupted() }
           }
 
           // ---------- A page: its back button, then the page itself ----------
@@ -1110,6 +1134,28 @@ Item {
                   fontSize: Style.font.caption
                   onClicked: root.runCli(modelData, index === 0 ? "Fix" : "Fix (alternative)")
                 }
+              }
+
+              // A request that ended with no envelope: what ran and how it ended, for a
+              // bug report (Model.failureDetails, 1n2p.34).
+              Button {
+                objectName: "copyDetails"
+                visible: !!root.lastError && typeof root.lastError.details === "string" && root.lastError.details !== ""
+                text: Model.copy("card.action.copy_details")
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                onClicked: root.copyErrorDetails()
+              }
+
+              PlainLabel {
+                objectName: "errorCopied"
+                visible: text !== ""
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                text: root.cardNote
               }
             }
 

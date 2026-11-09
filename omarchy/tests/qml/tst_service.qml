@@ -265,6 +265,94 @@ TestCase {
     compare(service.phase, "unreachable")
     verify(service.unreachableText.indexOf("panicked") !== -1)
     compare(service.outcomes.status, "malformed")
+    // Its card, in words; the output only in the details, with what ran and its exit.
+    compare([service.phaseCard.kind, service.phaseCard.title, service.phaseCard.actions], ["malformed", "omaddons didn't answer", ["retry", "copy_details"]])
+    var details = service.phaseCard.details.split("\n")
+    compare(details[1].slice(0, 30), "Command: omaddons --json --act")
+    verify(details.indexOf("Ended: an answer the panel can't read, exit code 101") !== -1, service.phaseCard.details)
+    verify(details.indexOf("  thread 'main' panicked at src/main.rs:1") !== -1, service.phaseCard.details)
+    compare(JSON.parse(service.stateJson()).cards, ["malformed"])
+  }
+
+  // 1n2p.34: a missing or silent binary is asked again by itself, sooner first, panel
+  // closed; an answer stops the retries.
+  function test_a_missing_or_silent_binary_is_retried_with_backoff_until_it_answers() {
+    make({ "retryDelaysMs": [60, 120, 180] })
+    ready(0)
+    ProcessRegistry.missingBinary = true
+    service.refresh()
+    wait(20)
+    compare(service.phase, "missing")
+    compare([service.phaseCard.kind, service.phaseCard.actions], ["missing", ["retry", "copy_command"]])
+    compare(JSON.parse(service.stateJson()).cards, ["missing"])
+    var before = runs("status").length
+    tryVerify(function() { return runs("status").length === before + 1 }, 400, "the first retry after 60 ms")
+    tryVerify(function() { return runs("status").length === before + 2 }, 600, "the second after 120 ms more")
+    // The second retry found it missing too: the third is scheduled.
+    compare(service.retryStep, 3)
+    // It answers again: the next retry finds it, and the retries stop.
+    ProcessRegistry.missingBinary = false
+    tryVerify(function() { return runs("status").length === before + 3 }, 800, "the third after 180 ms more")
+    answer(lastRun("status"), statusEnvelope(0))
+    compare([service.phase, service.phaseCard, service.retryStep], ["ok", null, 0])
+    var answered = runs("status").length
+    wait(400)
+    compare(runs("status").length, answered, "no retry once it answered")
+  }
+
+  // 1n2p.34: a child that ignores SIGTERM and never reports its end after SIGKILL is let
+  // go one grace later; the lane is free again and the panel says what happened.
+  function test_a_child_that_never_ends_is_let_go_and_its_lane_freed() {
+    make({ "localDeadlineMs": 60, "killGraceMs": 300 })
+    var launch = lastRun("status")
+    var child = launch.process
+    child.ignoreTerm = true
+    child.ignoreKill = true
+    // SIGTERM at the deadline, SIGKILL a grace later; the lane still holds the child.
+    tryVerify(function() { return child.signals.length === 2 }, 2000, "SIGTERM, then SIGKILL")
+    compare(child.signals, [15, 9])
+    verify(service.outcomes.status !== "stuck", "one more grace before the child is let go")
+    tryVerify(function() { return service.outcomes.status === "stuck" }, 1000, "the watchdog lets the child go")
+    compare(service.lastError.code, "stuck")
+    verify(service.lastError.message.indexOf("omaddons stopped answering during ") === 0, service.lastError.message)
+    verify(service.lastError.details.indexOf("Ended: still running after SIGKILL, let go, no exit code") !== -1, service.lastError.details)
+    compare([service.phase, service.phaseCard.kind], ["unreachable", "stuck"])
+    compare(JSON.parse(service.stateJson()).cards, ["stuck"])
+    // The lane runs the next request, and its answer takes the card away.
+    service.refresh()
+    var next = lastRun("status")
+    verify(next !== launch, "a new status ran: " + launchLog())
+    answer(next, statusEnvelope(0))
+    compare([service.phase, service.lastError, service.phaseCard], ["ok", null, null])
+  }
+
+  // 1n2p.34: an interrupted change is announced from `status` alone, and nothing the
+  // widget runs by itself finishes it: the silent checkpoint (`backup create`, which
+  // recovers first) waits until a status reports the change settled.
+  function test_an_interrupted_change_is_announced_and_no_checkpoint_recovers_it() {
+    var env = JSON.parse(statusEnvelope(0))
+    env.data.journal = { "pending": 1, "in_progress": false }
+    env.data.targets[0].attention = ["journal_pending"]
+    answer(lastRun("status"), JSON.stringify(env))
+    compare(service.phase, "ok")
+    compare(service.interrupted.title, "A change on retail was interrupted")
+    compare(runs("backup").length, 0, "no checkpoint ran: " + launchLog())
+    compare(JSON.parse(service.stateJson()).cards, ["interrupted"])
+    compare(service.heldCheckpoints, ["retail"])
+    // Still interrupted at the next status: still held, still nothing run.
+    service.refresh()
+    answer(lastRun("status"), JSON.stringify(env))
+    compare([runs("backup").length, service.heldCheckpoints], [0, ["retail"]])
+    // Settled (the player repaired it, or another process is committing it now, which
+    // is no interrupted change): the held checkpoint runs, once.
+    env.data.journal.in_progress = true
+    service.refresh()
+    answer(lastRun("status"), JSON.stringify(env))
+    compare(service.interrupted, null)
+    var auto = lastRun("backup")
+    verify(auto !== null, "the held checkpoint runs: " + launchLog())
+    compare(words(auto.command), ["backup", "create", "--auto", "-t", "retail"])
+    compare([runs("backup").length, service.heldCheckpoints], [1, []])
   }
 
   // A failed status says why (here a broken config.toml), never "no clients found";
@@ -1406,9 +1494,9 @@ TestCase {
   function test_state_has_the_documented_shape() {
     ready(4)
     var state = JSON.parse(service.stateJson())
-    compare(Object.keys(state).sort(), ["action", "activity", "bar", "binary", "confirm", "contextGeneration", "lanes", "lastPreview",
+    compare(Object.keys(state).sort(), ["action", "activity", "bar", "binary", "cards", "confirm", "contextGeneration", "lanes", "lastPreview",
       "lastRefreshMs", "lastResult", "panel", "panelOpen", "phase", "summary", "toolVersion", "widgetVersion"])
-    compare([state.confirm, state.lastPreview, state.activity], [null, null, null])
+    compare([state.confirm, state.lastPreview, state.activity, state.cards], [null, null, null, []])
     // What the activity bar says, in words (1n2p.18).
     service.check()
     var checking = JSON.parse(service.stateJson()).activity

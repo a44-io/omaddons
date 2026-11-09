@@ -90,6 +90,12 @@ TestCase {
       function dismissError() { dismissals++; lastError = null }
       function refresh() { refreshes++ }
       function reinstallWidget() { reinstalls++; return "ok" }
+      // The card shown when omaddons cannot be used, and an interrupted change
+      // (Model.phaseCard, Model.interruptedChange, 1n2p.34); what Copy put on the clipboard.
+      property var phaseCard: null
+      property var interrupted: null
+      property var copies: []
+      function copyCommand(text) { copies = copies.concat([text]); return typeof text === "string" && text !== "" }
       function confirmYes() { yes++; confirm = null; return "" }
       function confirmNo() { no++; confirm = null }
       function applySettings(settings) {}
@@ -577,9 +583,9 @@ TestCase {
 
   // ------------------------------------------------------------- read-only (M3-D42)
 
-  function test_an_incompatible_binary_leaves_only_retry_and_reinstall() {
+  function test_an_incompatible_binary_leaves_only_update_and_retry() {
     svc.phase = "incompatible"
-    svc.incompatibleText = "The widget is from omaddons 0.0.0-fixture; the binary is omaddons 9.0.0."
+    svc.phaseCard = Model.phaseCard("incompatible", { "mine": "0.0.0-fixture", "incompatible": { "kind": "version", "theirs": "9.0.0" } })
     view.viewComponents = { "updates": fakeView }
     for (var key of ["U", "u", "c", "o", "p", "x", "b", "d"]) keyClick(key)
     keyClick(Qt.Key_Z, Qt.ControlModifier)
@@ -591,13 +597,15 @@ TestCase {
     verify(!child("undoButton").enabled)
     verify(!child("openButton").enabled)
     compare(child("hero").detail, "stale")
-    compare(child("cardTitle").text, svc.incompatibleText)
-    // The card's buttons take the cursor and Enter.
-    keyClick(Qt.Key_Return)
-    compare(svc.refreshes, 1)
-    keyClick("j")
+    compare(child("cardTitle").text, "The panel is from another omaddons version")
+    compare(child("cardDetail").text, "Panel 0.0.0-fixture, omaddons 9.0.0. Update the panel to match; until then it only shows what it read last.")
+    // The card's buttons take the cursor and Enter: Update the panel first, then Retry.
+    compare(child("card_reinstall").text, "Update the panel")
     keyClick(Qt.Key_Return)
     compare(svc.reinstalls, 1)
+    keyClick("j")
+    keyClick(Qt.Key_Return)
+    compare(svc.refreshes, 1)
     child("card_retry").clicked()
     compare(svc.refreshes, 2)
     // Navigation still works.
@@ -605,20 +613,77 @@ TestCase {
     compare(view.view, "installed")
   }
 
-  function test_the_missing_and_unreachable_cards_say_what_to_do_as_text() {
+  // Each failure has its own card, in words, with one action besides Retry (1n2p.34).
+  function test_each_failure_card_says_what_happened_and_offers_its_action() {
+    var info = { "binary": "/opt/omaddons-fixture/omaddons", "home": "/opt", "mine": "0.0.0-fixture", "deadlineSec": 20,
+      "failure": { "label": "Refresh", "outcome": "timeout", "argv": ["/opt/omaddons-fixture/omaddons", "status"], "exitCode": -1,
+        "tail": ["thread 'main' panicked"] } }
+    // A missing binary: Retry, and the command to run from the binary in use, copied.
     svc.phase = "missing"
-    compare(child("cardTitle").text, "omaddons not found at /opt/omaddons-fixture/omaddons")
-    var commands = child("missingCommands")
-    compare(commands.count, 2)
-    compare(commands.itemAt(0).text, "omarchy bar set " + Build.PLUGIN_ID + " binary <path>")
-    compare(commands.itemAt(1).text, "omaddons omarchy install")
+    svc.phaseCard = Model.phaseCard("missing", info)
+    compare(child("cardTitle").text, "Can't find omaddons")
+    verify(child("cardDetail").text.indexOf("It was at ~/omaddons-fixture/omaddons.") === 0)
+    compare(child("cardNotes").count, 1)
+    compare(child("cardNotes").itemAt(0).text, "The panel tries again by itself.")
     verify(findChild(view, "card_reinstall") === null)
     keyClick(Qt.Key_Return)
     compare(svc.refreshes, 1)
-    svc.phase = "unreachable"
-    svc.unreachableText = "thread 'main' panicked"
-    compare(child("cardDetail").text, "thread 'main' panicked")
-    verify(child("cardDetail").visible)
+    keyClick("j")
+    keyClick(Qt.Key_Return)
+    compare(svc.copies, ["omaddons omarchy install"])
+    compare(child("cardCopied").text, "Copied")
+    // No answer in time, an unreadable one, a child let go: their words, Retry and Copy
+    // details; the child's output only in the details, never on the card.
+    var kinds = [["timeout", "omaddons didn't answer in time"], ["malformed", "omaddons didn't answer"],
+      ["stuck", "omaddons stopped answering"]]
+    for (var i = 0; i < kinds.length; i++) {
+      svc.phase = "unreachable"
+      info.outcome = kinds[i][0]
+      info.failure.outcome = kinds[i][0]
+      svc.phaseCard = Model.phaseCard("unreachable", info)
+      compare(child("cardTitle").text, kinds[i][1])
+      verify(child("cardDetail").text.indexOf("panicked") === -1, "the output stays out of the card")
+      child("card_copy_details").clicked()
+      compare(svc.copies[svc.copies.length - 1], svc.phaseCard.details)
+      verify(svc.phaseCard.details.indexOf("thread 'main' panicked") !== -1)
+    }
+    // The same version's other files: Update the panel, and when it was tried.
+    svc.phase = "incompatible"
+    svc.phaseCard = Model.phaseCard("incompatible", { "mine": "0.0.0-fixture", "incompatible": { "kind": "outdated", "theirs": "0.0.0-fixture" },
+      "reinstalledAtMs": Date.now() - 30000, "nowMs": Date.now() })
+    compare(child("cardTitle").text, "The panel is out of date")
+    compare(child("cardNotes").itemAt(0).text, "Update the panel ran just now; this is still the old panel.")
+  }
+
+  // An interrupted change, from `status` alone: a notice whose one action opens its
+  // problem in Issues; the panel runs nothing by itself (1n2p.34).
+  function test_an_interrupted_change_is_announced_and_its_action_runs_nothing() {
+    verify(!child("interruptedCard").visible)
+    svc.interrupted = { "clients": ["Retail"], "target": "retail", "title": "A change on Retail was interrupted",
+      "sentence": "omaddons finishes or undoes it before the next change. See what it would do first." }
+    var card = child("interruptedCard")
+    verify(card.visible)
+    compare(findChild(card, "noticeTitle").text, "A change on Retail was interrupted")
+    findChild(card, "noticeButton_0").clicked()
+    compare([view.view, view.filter], ["issues", "retail"])
+    compare(svc.runs.length + svc.cliRuns.length + svc.checks, 0, "nothing ran")
+    // Only on a live answer: no card while omaddons cannot be used.
+    svc.phase = "missing"
+    verify(!child("interruptedCard").visible)
+  }
+
+  // A request that ended with no envelope: its words, and Copy details (1n2p.34).
+  function test_the_failure_card_copies_its_details() {
+    svc.lastError = { "message": "Update all didn't finish: omaddons took too long", "code": "timeout", "fixes": [], "fixText": "",
+      "details": "What: Update all\nEnded: timed out, no exit code" }
+    verify(child("errorCard").visible)
+    compare(child("errorMessage").text, "Update all didn't finish: omaddons took too long")
+    child("copyDetails").clicked()
+    compare(svc.copies, ["What: Update all\nEnded: timed out, no exit code"])
+    compare(child("errorCopied").text, "Copied")
+    // A failure the CLI described has no details to copy.
+    svc.lastError = { "message": "no target matches", "code": "target_not_found", "fixes": [], "fixText": "" }
+    verify(!child("copyDetails").visible)
   }
 
   function test_no_clients_shows_how_to_add_one_as_text() {

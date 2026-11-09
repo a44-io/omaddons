@@ -34,6 +34,25 @@ Item {
   // The last status run failed (an envelope with `ok: false`): the bar says omaddons
   // ran into a problem until one answers.
   property bool statusFailed: false
+  // The card shown when omaddons cannot be used (Model.phaseCard, 1n2p.34), null when
+  // the phase has none; recomputed with the bar.
+  property var phaseCard: null
+  // The last status read that gave no envelope, `{label, argv, exitCode, outcome,
+  // tail}` (Model.failureDetails); null once one answers.
+  property var statusFailure: null
+  // Why another build answered (Model.incompatibleOf), null otherwise.
+  property var incompatible: null
+  // When Update the panel last ran (ms since the epoch; 0 for never).
+  property double reinstalledAtMs: 0
+  // The retries while the binary is missing or gave no answer (Model.retryDelayMs).
+  property var retryDelaysMs: Model.RETRY_BACKOFF_MS
+  property int retryStep: 0
+  // `status`'s journal (`{pending, inProgress}`), and the interrupted change it reports
+  // (Model.interruptedChange), null for none.
+  property var journal: null
+  property var interrupted: null
+  // The silent checkpoints held back while a change waits to be finished (afterStatus).
+  property var heldCheckpoints: []
   property var targets: []
   property var summary: null
   property var lastChange: null
@@ -741,11 +760,39 @@ Item {
   // status, the phase, whether a change the player asked for runs or a check runs or
   // waits (Model.barWorking, so a right click spins at once), and how old the answer
   // is. Replaced only when it changes, so the bar copies redraw only then.
+  // The phase card (Model.phaseCard) follows the same inputs, so it is refreshed here too.
   function refreshBar() {
+    var now = Date.now()
     var status = { "failed": statusFailed, "summary": summary, "targets": targets, "issues": machineIssues }
     var next = Model.barState(status, { "phase": phase, "working": Model.barWorking(activities, queues),
-      "nowMs": Date.now(), "answeredAtMs": lastRefreshMs, "staleAfterMs": Model.barStaleAfterMs(root.settings) })
+      "nowMs": now, "answeredAtMs": lastRefreshMs, "staleAfterMs": Model.barStaleAfterMs(root.settings) })
     if (!Model.jsonEqual(bar, next)) bar = next
+    var card = Model.phaseCard(phase, { "binary": root.binary, "home": Build.CONTEXT.HOME,
+      "outcome": statusFailure ? statusFailure.outcome : "", "failure": statusFailure,
+      "deadlineSec": Math.max(1, Math.round(localDeadlineMs / 1000)), "mine": Build.TOOL_VERSION, "incompatible": incompatible,
+      "reinstalledAtMs": reinstalledAtMs, "nowMs": now })
+    if (!Model.jsonEqual(phaseCard, card)) phaseCard = card
+  }
+
+  // A request that ended with no envelope, as the failure card shows it: its words
+  // (Model.failureWords) and the details a bug report needs (Model.failureDetails).
+  function failureOf(r, outcome, tail) {
+    return { "message": Model.failureWords(r.label, outcome), "code": outcome, "fixes": [], "fixText": "", "choices": [],
+      "folder": "", "details": Model.failureDetails(failureFacts(r, outcome, tail), Build.CONTEXT, Build.TOOL_VERSION) }
+  }
+
+  function failureFacts(r, outcome, tail) {
+    return { "label": r.label, "argv": Model.listOf(r.argv), "exitCode": typeof r.exitCode === "number" ? r.exitCode : -1,
+      "outcome": outcome, "tail": Model.listOf(tail) }
+  }
+
+  // Asks `status` again after a missing or silent binary, sooner first (5 s, 15 s, then
+  // every 60 s), with the panel open or closed; an answer stops it (applyStatus).
+  function scheduleRetry() {
+    if (retryTimer.running) return
+    retryTimer.interval = Model.retryDelayMs(retryStep, retryDelaysMs)
+    retryStep++
+    retryTimer.restart()
   }
 
   function queuedLabel() {
@@ -807,8 +854,19 @@ Item {
   }
 
   // Called by a lane (directly, so the values stay JavaScript) when a request ends.
-  function laneFinished(r, outcome, stdout, tail) {
+  // `meta` is `{argv, exitCode}`, kept on the request for its failure's details.
+  function laneFinished(r, outcome, stdout, tail, meta) {
+    if (meta) {
+      r.argv = meta.argv
+      r.exitCode = meta.exitCode
+    }
     var env = outcome === "ok" || outcome === "failed" || outcome === "incompatible" ? Model.parseEnvelope(stdout) : null
+    // A child that outlived its SIGKILL: the lane let it go (the watchdog), and says so
+    // whatever it was running, a background read included.
+    if (outcome === "stuck") {
+      lastError = failureOf(r, outcome, tail)
+      lastErrorResource = r.resource
+    }
     if (activityOf(r)) setActivity(Model.laneOf(r), null)
     if (r.kind === "mutation") {
       action = null
@@ -827,8 +885,10 @@ Item {
     if (outcome === "missing") {
       pendingDismissals = []
       phase = "missing"
+      statusFailure = failureFacts(r, outcome, tail)
+      scheduleRetry()
       refreshBar()
-      if (r.kind === "mutation") lastError = { "message": "omaddons not found at " + root.binary, "code": "missing", "fixes": [] }
+      if (r.kind === "mutation") lastError = failureOf(r, outcome, tail)
     } else if (outcome === "incompatible") {
       enterIncompatible(env)
     } else if (Model.acceptResult(r, lastApplied, selectionFor(r), contextGeneration)) {
@@ -871,7 +931,7 @@ Item {
       // the read went.
       if (r.priority === "background") console.warn("omaddons:", r.label + ":", outcome)
       else {
-        lastError = errorOf(env, r.label + ": " + outcome)
+        lastError = env ? errorOf(env, r.label + ": " + outcome) : failureOf(r, outcome, tail)
         lastErrorResource = r.resource
         // A row waiting for its notes says they could not be read, never "Reading…".
         if (r.resource === "changelog") changelog = { "selection": r.selection, "data": null, "failed": lastError.message }
@@ -922,9 +982,16 @@ Item {
       commands = model.commands
       statusWarnings = model.warnings
       machineIssues = model.issues
+      journal = model.journal
+      interrupted = Model.interruptedChange(model)
       phase = "ok"
       incompatibleText = ""
       unreachableText = ""
+      // An answer: no card, no retry, another build no more.
+      statusFailure = null
+      incompatible = null
+      retryStep = 0
+      retryTimer.stop()
       lastRefreshMs = Date.now()
       // A failed status says why (a broken config.toml, a corrupt state file), never
       // "no clients found"; the next one that answers takes it away.
@@ -949,10 +1016,13 @@ Item {
       if (outcome === "ok") statusApplied()
       return
     }
-    // malformed, oversized, timeout or cancelled: no answer to show. The bar keeps the
-    // last answer until it goes stale (Model.barState).
+    // malformed, oversized, timeout, cancelled or stuck: no answer to show. The card says
+    // which (Model.phaseCard) and the status read is asked again by itself; the bar keeps
+    // the last answer until it goes stale (Model.barState).
     phase = "unreachable"
     unreachableText = outcome === "malformed" ? (tail.length ? tail.join("\n") : "omaddons gave no answer") : "omaddons status: " + outcome
+    statusFailure = failureFacts(r, outcome, tail)
+    scheduleRetry()
     refreshBar()
   }
 
@@ -1003,8 +1073,10 @@ Item {
         lastError = { "message": Model.boundStaleText(r.template, env), "code": "plan_stale", "fixes": [], "fixText": "" }
       }
     } else {
-      lastResult = { "ok": false, "line": r.label + ": " + outcome, "partial": false, "commands": [] }
-      lastError = { "message": outcome === "malformed" && tail.length ? tail.join("\n") : r.label + ": " + outcome, "code": outcome, "fixes": [] }
+      // No envelope (a timeout, an unreadable answer, a child let go): the failure in
+      // words, its output only in Copy details.
+      lastError = failureOf(r, outcome, tail)
+      lastResult = { "ok": false, "line": lastError.message, "partial": false, "commands": [] }
     }
     // A change asked in the panel that finished after every panel closed: its result
     // line as a toast; a click opens the panel.
@@ -1029,6 +1101,7 @@ Item {
   function enterIncompatible(env) {
     phase = "incompatible"
     incompatibleText = Model.incompatibleText(env, Build)
+    incompatible = Model.incompatibleOf(env, Build)
     confirm = null
     pendingConfirm = null
     pendingDismissals = []
@@ -1075,8 +1148,16 @@ Item {
     var first = !observed || observed.generation !== contextGeneration
     var stopped = first ? [] : Model.stoppedTargets(observed.targets, targets)
     var checkpoints = first ? Model.stoppedNow(targets) : stopped
-    for (var i = 0; i < checkpoints.length; i++) {
-      run("backup_auto", { "target": checkpoints[i] }, first ? "Settings checkpoint at widget start" : "Settings checkpoint after play")
+    // A change cut off (Model.interruptedChange): `backup create` recovers it before it
+    // copies anything, and the widget never finishes a change without the player
+    // (1n2p.34). The checkpoints wait until a status reports it settled.
+    var due = heldCheckpoints.slice()
+    for (var c = 0; c < checkpoints.length; c++) if (due.indexOf(checkpoints[c]) === -1) due.push(checkpoints[c])
+    heldCheckpoints = interrupted ? due : []
+    if (!interrupted) {
+      for (var i = 0; i < due.length; i++) {
+        run("backup_auto", { "target": due[i] }, first ? "Settings checkpoint at widget start" : "Settings checkpoint after play")
+      }
     }
     var reads = stopped.slice()
     var stale = Model.errorsToRefresh(targets)
@@ -1126,7 +1207,22 @@ Item {
     reinstallProc.command = [root.binary, "--actor", "widget", "--reason", "reinstall from the bar widget", "omarchy", "install"]
     reinstallProc.environment = Build.CONTEXT
     reinstallProc.startDetached()
+    // A reinstall that works reloads the widget, and this service with it; one that
+    // does not leaves the card saying when it was tried (Model.phaseCard).
+    reinstalledAtMs = Date.now()
+    refreshBar()
     return "ok"
+  }
+
+  // The cards the panel shows now, by kind, for IPC's state() (1n2p.34): the phase
+  // card's (Model.phaseCard), which stands alone; else "interrupted" for an interrupted
+  // change, and the failure card's ("stuck" for a lane let go, else "failure").
+  function cardKinds() {
+    if (phaseCard) return [phaseCard.kind]
+    var kinds = []
+    if (interrupted && phase === "ok") kinds.push("interrupted")
+    if (lastError) kinds.push(lastError.code === "stuck" ? "stuck" : "failure")
+    return kinds
   }
 
   // Opens the panel on the focused monitor at `view`; `summon` opens, never toggles.
@@ -1162,6 +1258,8 @@ Item {
       "contextGeneration": contextGeneration,
       "lanes": { "mutation": laneState(mutationLane, "mutation"), "local": laneState(localLane, "local"), "network": laneState(networkLane, "network") },
       "lastRefreshMs": lastRefreshMs,
+      // The cards shown now, by kind (cardKinds), for the checkpoint scripts.
+      "cards": cardKinds(),
       // The open confirmation and the last plan preview's decision (M4-D28): the plan
       // sheet's title, and the whole sheet as text, a line each.
       "confirm": confirm ? { "heading": confirm.heading || "", "planId": pendingConfirm && pendingConfirm.plan ? pendingConfirm.plan.planId : null,
@@ -1217,6 +1315,12 @@ Item {
       var base = root.panelOpen ? root.panelPollMs : Model.intSetting(root.settings, "refreshIntervalSec", 300, 30, 3600) * 1000
       return root.anyRunning ? Math.min(base, root.runningPollMs) : base
     }
+    onTriggered: root.refresh()
+  }
+
+  // The retry after a missing or silent binary (scheduleRetry).
+  Timer {
+    id: retryTimer
     onTriggered: root.refresh()
   }
 
@@ -1378,16 +1482,18 @@ Item {
       if (!request) return
       deadline.stop()
       killTimer.stop()
+      watchdog.stop()
       streamGrace.stop()
       var text = proc.stdout && typeof proc.stdout.text === "string" ? proc.stdout.text : ""
       var outcome = forced || Model.outcomeOf(exitCode, started, text, timedOut, cancelled, Build)
       var done = request
       var shown = tail
       var old = proc
+      var meta = { "argv": Model.listOf(old.command).slice(), "exitCode": exitedSeen ? exitCode : -1 }
       request = null
       proc = null
       old.destroy()
-      sink.laneFinished(done, outcome, text, shown)
+      sink.laneFinished(done, outcome, text, shown, meta)
     }
 
     Timer {
@@ -1402,7 +1508,19 @@ Item {
     Timer {
       id: killTimer
       interval: lane.killGraceMs
-      onTriggered: if (lane.proc) lane.proc.signal(9)
+      onTriggered: if (lane.proc) {
+        lane.proc.signal(9)
+        watchdog.restart()
+      }
+    }
+
+    // A child that never reports its end even after SIGKILL would hold the lane for
+    // good, and every request behind it (1n2p.34): one more grace, then the lane lets
+    // it go and frees itself (outcome "stuck", which the service says in words).
+    Timer {
+      id: watchdog
+      interval: lane.killGraceMs
+      onTriggered: if (lane.proc && lane.request) lane.finish("stuck")
     }
 
     Timer {

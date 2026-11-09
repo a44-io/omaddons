@@ -2,8 +2,9 @@ import QtQml
 
 // Quickshell.Io.Process as F0 observed it: `started` when running, `exited` then
 // `running` false when the child ends, no `exited` at all for a missing binary,
-// `signal(15)` ignored by a child that traps it, `signal(9)` always fatal. The tests
-// drive the child through finish(), exit() and endStream().
+// `signal(15)` ignored by a child that traps it, `signal(9)` fatal unless the test
+// stands for a child that never reports (`ignoreKill`). The tests drive the child
+// through finish(), exit() and endStream().
 QtObject {
   id: root
 
@@ -15,8 +16,10 @@ QtObject {
   property var stdout: null
   property var stderr: null
 
-  // Test controls and records.
+  // Test controls and records. `ignoreKill` stands for a child that never reports its
+  // end, even after SIGKILL (the lane's watchdog lets it go).
   property bool ignoreTerm: false
+  property bool ignoreKill: false
   property var signals: []
   property int detachedStarts: 0
 
@@ -85,7 +88,7 @@ QtObject {
 
   function signal(sig) {
     signals = signals.concat([sig])
-    if (sig === 9 || !ignoreTerm) {
+    if ((sig === 9 && !ignoreKill) || (sig !== 9 && !ignoreTerm)) {
       exit(sig, 1)
       endStream("")
     }

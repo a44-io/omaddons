@@ -1077,6 +1077,8 @@ function targetOf(target) {
     "running": target.running === true,
     // `null` when the process table could not be read (`running_unknown`).
     "runningUnknown": target.running === null,
+    // Why it needs attention, typed (`journal_pending`: an interrupted change, 1n2p.34).
+    "attention": stringList(target.attention),
     // From `status -v`: where `o` opens Interface/AddOns.
     "clientDir": str(target.client_dir),
     "missing": target.missing === true,
@@ -1157,14 +1159,15 @@ function ageText(iso, nowMs) {
 }
 
 // `status --cached -v`'s envelope as the widget's model: `{failed, targets, summary,
-// lastChange, widget, commands, warnings, issues}`. A run that failed (an envelope with
-// `ok: false`) keeps no data and is `failed`; null (no answer yet) is not. The bar
-// button's model is barState's, over this one.
+// journal, lastChange, widget, commands, warnings, issues}`. A run that failed (an
+// envelope with `ok: false`) keeps no data and is `failed`; null (no answer yet) is
+// not. `journal` is `{pending, inProgress}`: interrupted changes, and whether another
+// omaddons process is committing now. The bar button's model is barState's, over this.
 function reduceStatus(env) {
   if (!envelopeOk(env) || !env.ok || !env.data || typeof env.data !== "object") {
     return {
       "failed": !!env && typeof env === "object",
-      "targets": [], "summary": null, "lastChange": null, "widget": null, "commands": [], "warnings": [], "issues": []
+      "targets": [], "summary": null, "journal": null, "lastChange": null, "widget": null, "commands": [], "warnings": [], "issues": []
     }
   }
   var data = env.data
@@ -1179,9 +1182,11 @@ function reduceStatus(env) {
       commands.push(action)
     }
   }
+  var journal = data.journal && typeof data.journal === "object" ? data.journal : null
   return {
     "failed": false,
     "targets": targets,
+    "journal": journal ? { "pending": num(journal.pending), "inProgress": journal.in_progress === true } : null,
     "summary": summary,
     "lastChange": lastChangeOf(data.last_change, data.last_change_state),
     // Absent until the binary reports it.
@@ -1326,6 +1331,158 @@ function barState(status, ctx) {
   var bar = barFacts(status, ctx)
   bar.tooltip = barTooltip(status, ctx)
   return bar
+}
+
+// ---------------------------------------------- failures and recovery (1n2p.34)
+//
+// What a player sees when omaddons cannot be used, or stopped in the middle (design
+// doc §6.4): one card per kind with its words and its actions, the details a bug
+// report needs, the retries, and an interrupted change announced from `status` alone.
+
+// Retries while the binary is missing or gave no answer: 5 s, 15 s, then every 60 s,
+// with the panel open or closed, until it answers.
+var RETRY_BACKOFF_MS = [5000, 15000, 60000]
+
+// `value` as a JavaScript array: a list QML hands over (a `var` property's array, a
+// Process's command) is array-like, not an Array; anything else is empty.
+function listOf(value) {
+  if (Array.isArray(value)) return value
+  if (value && typeof value === "object" && typeof value.length === "number") return Array.prototype.slice.call(value)
+  return []
+}
+
+// The delay before retry number `step` (0 first), the last one repeating.
+function retryDelayMs(step, delays) {
+  var given = listOf(delays)
+  var list = given.length ? given : RETRY_BACKOFF_MS
+  return list[Math.max(0, Math.min(list.length - 1, Math.floor(num(step))))]
+}
+
+// Why another build answered (M3-D42), typed: `{kind, theirs}`. "version": another
+// omaddons version, or an answer this widget cannot read at all (`theirs` "" then);
+// "outdated": the same version, but the widget's files are not the ones this binary
+// installs.
+function incompatibleOf(env, build) {
+  var mine = build && build.TOOL_VERSION ? String(build.TOOL_VERSION) : ""
+  if (!envelopeOk(env) || schemaMajor(env.schema_version) !== 1) return { "kind": "version", "theirs": "" }
+  if (env.tool_version !== mine) return { "kind": "version", "theirs": str(env.tool_version) }
+  return { "kind": "outdated", "theirs": str(env.tool_version) }
+}
+
+// `text` with the stamped home shown as "~" (Copy details, design doc §6.5): a path of
+// the player's own home says nothing more, and no other environment value is read.
+function homeless(text, home) {
+  var s = String(text)
+  var h = typeof home === "string" && home.length > 1 ? home : ""
+  return h ? s.split(h).join("~") : s
+}
+
+// One argument as a shell would need it typed: quoted when it holds a space or a quote.
+function shellWord(arg) {
+  var s = String(arg)
+  return s !== "" && /^[A-Za-z0-9_@%+=:,.\/~-]+$/.test(s) ? s : JSON.stringify(s)
+}
+
+// A failure's details for a bug report (Copy details): what ran, how it ended and the
+// child's last lines, with the panel's version. Built from the request's own argv and
+// codes, never from the environment: the binary is "omaddons" and the stamped home "~".
+// `f` is `{label, argv, exitCode, outcome, tail}`.
+function failureDetails(f, context, widgetVersion) {
+  var x = f && typeof f === "object" ? f : {}
+  var home = context && typeof context === "object" ? context.HOME : ""
+  var argv = listOf(x.argv).map(function(a) { return String(a) })
+  if (argv.length) argv[0] = "omaddons"
+  var lines = [copy("details.what", { "what": str(x.label) || copy("details.unknown") })]
+  if (argv.length) lines.push(copy("details.command", { "command": argv.map(shellWord).map(function(a) { return homeless(a, home) }).join(" ") }))
+  var code = typeof x.exitCode === "number" && x.exitCode >= 0 ? x.exitCode : null
+  lines.push(copy("details.ended", { "how": copy("details.outcome." + (str(x.outcome) || "unknown")),
+    "code": code === null ? copy("details.no_exit") : copy("details.exit", { "code": code }) }))
+  lines.push(copy("details.panel", { "version": str(widgetVersion) || copy("details.unknown") }))
+  var tail = listOf(x.tail).slice(-12)
+  if (tail.length) {
+    lines.push(copy("details.output"))
+    for (var i = 0; i < tail.length; i++) lines.push("  " + homeless(tail[i], home))
+  }
+  return lines.join("\n")
+}
+
+// What a request that ended with no envelope says in the failure card (design doc
+// §6.4): its label and what happened, in words.
+function failureWords(label, outcome) {
+  var id = "failure." + str(outcome)
+  return copy(COPY.hasOwnProperty(id) ? id : "failure.other", { "label": str(label), "outcome": str(outcome) })
+}
+
+// The card shown in place of the views when omaddons cannot be used (design doc §6.4):
+// `{kind, title, sentence, notes[], actions[], details}`. `phase` is the service's;
+// `info` is `{binary, home, outcome, failure, deadlineSec, mine, incompatible,
+// reinstalledAtMs, nowMs}`: the binary's path, the stamped home, the last status
+// read's outcome and its failure facts (failureDetails), the local deadline, this
+// panel's version, incompatibleOf's answer, and when Update the panel last ran. The
+// kinds: missing, malformed, oversized, timeout, stuck (no answer), version, outdated
+// (another build); null when the phase has no card. Actions: retry, reinstall,
+// copy_command, copy_details.
+function phaseCard(phase, info) {
+  var i = info && typeof info === "object" ? info : {}
+  var kind = ""
+  if (phase === "missing") kind = "missing"
+  else if (phase === "unreachable") {
+    var outcome = str(i.outcome)
+    kind = ["timeout", "oversized", "stuck"].indexOf(outcome) !== -1 ? outcome : "malformed"
+  } else if (phase === "incompatible") kind = i.incompatible && i.incompatible.kind === "outdated" ? "outdated" : "version"
+  if (!kind) return null
+  var theirs = i.incompatible ? str(i.incompatible.theirs) : ""
+  var slots = { "path": homeless(str(i.binary), i.home), "seconds": num(i.deadlineSec), "mine": str(i.mine) || copy("details.unknown"),
+    "theirs": theirs || copy("card.version.unreadable") }
+  var card = { "kind": kind, "title": copy("card." + kind + ".title"), "sentence": copy("card." + kind + ".sentence", slots),
+    "notes": [], "actions": [], "details": "" }
+  if (kind === "version" || kind === "outdated") {
+    card.actions = ["reinstall", "retry"]
+    if (num(i.reinstalledAtMs) > 0) {
+      card.notes.push(copy("card.reinstalled", { "age": sinceText(new Date(i.reinstalledAtMs).toISOString(), i.nowMs) || copy("details.unknown") }))
+    }
+    return card
+  }
+  card.notes.push(copy("card.retrying"))
+  if (kind === "missing") {
+    card.actions = ["retry", "copy_command"]
+    return card
+  }
+  card.actions = ["retry", "copy_details"]
+  card.details = failureDetails(i.failure, { "HOME": i.home }, i.mine)
+  return card
+}
+
+// The command a missing binary's card copies: run from the binary the player uses now,
+// it installs the panel for it (`omarchy install`).
+function missingBinaryCommand() {
+  return "omaddons omarchy install"
+}
+
+// An interrupted change, from `status` alone (journal, each client's attention): `{clients,
+// sentence}`, or null when none waits or another omaddons process is committing now.
+// The widget never recovers it on its own: any change recovers first, so its silent
+// checkpoints wait while this holds (Service.afterStatus), and the notice's action is
+// the problem's page, whose repair previews first.
+function interruptedChange(status) {
+  var s = status && typeof status === "object" ? status : {}
+  var journal = s.journal && typeof s.journal === "object" ? s.journal : null
+  if (journal && journal.inProgress === true) return null
+  var names = []
+  var targets = Array.isArray(s.targets) ? s.targets : []
+  for (var i = 0; i < targets.length; i++) {
+    var t = targets[i]
+    if (Array.isArray(t.attention) && t.attention.indexOf("journal_pending") !== -1) names.push(t.displayName || t.id)
+  }
+  var pending = journal ? num(journal.pending) : 0
+  if (names.length === 0 && pending === 0) return null
+  var clients = names.length ? joinNames(names) : ""
+  return {
+    "clients": names,
+    "target": names.length === 1 ? targets.filter(function(t) { return (t.displayName || t.id) === names[0] })[0].id : "",
+    "title": names.length === 0 ? copy("interrupted.title.none") : copy(names.length === 1 ? "interrupted.title.one" : "interrupted.title.many", { "clients": clients }),
+    "sentence": copy("interrupted.sentence")
+  }
 }
 
 // One kind of fact per part, urgent first (design doc §2.5): new Lua errors, problems
@@ -5032,6 +5189,66 @@ var COPY = {
   "bar.hints": "Left: open · Middle: {view} · Right: check for updates",
   "bar.hints.broken": "Left: open to see what to do",
 
+  // The cards shown when omaddons cannot be used (1n2p.34, design doc §6.4).
+  "card.missing.title": "Can't find omaddons",
+  "card.missing.sentence": "It was at {path}. Reinstall the panel from the omaddons you use now, then press Retry.",
+  "card.malformed.title": "omaddons didn't answer",
+  "card.malformed.sentence": "It stopped before it said anything the panel can read.",
+  "card.oversized.title": "omaddons didn't answer",
+  "card.oversized.sentence": "Its answer was larger than the panel reads.",
+  "card.timeout.title": "omaddons didn't answer in time",
+  "card.timeout.sentence": "It was still working after {seconds} seconds, so the panel stopped it.",
+  "card.stuck.title": "omaddons stopped answering",
+  "card.stuck.sentence": "It did not end even when stopped, so the panel let it go and freed its worker.",
+  "card.version.title": "The panel is from another omaddons version",
+  "card.version.sentence": "Panel {mine}, omaddons {theirs}. Update the panel to match; until then it only shows what it read last.",
+  "card.version.unreadable": "a version this panel can't read",
+  "card.outdated.title": "The panel is out of date",
+  "card.outdated.sentence": "Its files differ from this omaddons. Update the panel; until then it only shows what it read last.",
+  "card.retrying": "The panel tries again by itself.",
+  "card.reinstalled": "Update the panel ran {age}; this is still the old panel.",
+  "card.action.retry": "Retry",
+  "card.action.reinstall": "Update the panel",
+  "card.action.copy_command": "Copy command",
+  "card.action.copy_details": "Copy details",
+  "card.copied": "Copied",
+
+  // A failure's details, for a bug report (Copy details).
+  "details.what": "What: {what}",
+  "details.unknown": "unknown",
+  "details.command": "Command: {command}",
+  "details.ended": "Ended: {how}, {code}",
+  "details.no_exit": "no exit code",
+  "details.exit": "exit code {code}",
+  "details.panel": "Panel: omaddons {version}",
+  "details.output": "Last output:",
+  "details.outcome.missing": "not found",
+  "details.outcome.malformed": "an answer the panel can't read",
+  "details.outcome.oversized": "an answer too large to read",
+  "details.outcome.timeout": "timed out",
+  "details.outcome.stuck": "still running after SIGKILL, let go",
+  "details.outcome.cancelled": "stopped",
+  "details.outcome.failed": "failed",
+  "details.outcome.ok": "answered",
+  "details.outcome.incompatible": "answered as another omaddons build",
+  "details.outcome.unknown": "unknown",
+
+  // A request that ended with no envelope, in the failure card.
+  "failure.timeout": "{label} didn't finish: omaddons took too long",
+  "failure.malformed": "{label}: omaddons answered with something the panel can't read",
+  "failure.oversized": "{label}: omaddons' answer was too large to read",
+  "failure.cancelled": "{label} was stopped",
+  "failure.stuck": "omaddons stopped answering during {label}; the panel freed its worker and goes on",
+  "failure.missing": "Can't find omaddons",
+  "failure.other": "{label} didn't finish ({outcome})",
+
+  // A change a crash or a reload cut off (1n2p.34).
+  "interrupted.title.none": "A change was interrupted",
+  "interrupted.title.one": "A change on {clients} was interrupted",
+  "interrupted.title.many": "Changes on {clients} were interrupted",
+  "interrupted.sentence": "omaddons finishes or undoes it before the next change. See what it would do first.",
+  "interrupted.action": "See what to do",
+
   // The Issues view and a problem's page (1n2p.28, design doc §2.3, §6.3, §6.5).
   "issues.severity.P0": "Broken",
   "issues.severity.P1": "Needs attention",
@@ -6200,6 +6417,15 @@ if (typeof module !== "undefined") {
     barStaleAfterMs: barStaleAfterMs,
     barState: barState,
     barTooltip: barTooltip,
+    RETRY_BACKOFF_MS: RETRY_BACKOFF_MS,
+    retryDelayMs: retryDelayMs,
+    incompatibleOf: incompatibleOf,
+    homeless: homeless,
+    failureDetails: failureDetails,
+    failureWords: failureWords,
+    phaseCard: phaseCard,
+    missingBinaryCommand: missingBinaryCommand,
+    interruptedChange: interruptedChange,
     badgeText: badgeText,
     reduceList: reduceList,
     reduceSearch: reduceSearch,

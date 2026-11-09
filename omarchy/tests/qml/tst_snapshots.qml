@@ -332,16 +332,18 @@ TestCase {
 
   // ---------------------------------------------------------------- the scenes
 
-  // A fresh Service on a fresh mock; `missing` makes the binary absent.
-  function start(missing) {
+  // A fresh Service on a fresh mock; `missing` makes the binary absent, and `extra`
+  // overrides its timings.
+  function start(missing, extra) {
     if (service) service.destroy()
     service = null
     wait(0)
     ProcessRegistry.reset()
     ProcessRegistry.missingBinary = missing === true
     Quickshell.resetDetachedCommands()
-    service = serviceComponent.createObject(testCase, { "bellDebounceMs": 10, "localDeadlineMs": 600000,
-      "networkDeadlineMs": 600000, "killGraceMs": 60, "streamGraceMs": 30 })
+    var props = { "bellDebounceMs": 10, "localDeadlineMs": 600000, "networkDeadlineMs": 600000, "killGraceMs": 60, "streamGraceMs": 30 }
+    if (extra) for (var key in extra) props[key] = extra[key]
+    service = serviceComponent.createObject(testCase, props)
     verify(service !== null)
   }
 
@@ -583,7 +585,35 @@ TestCase {
       "stderr": ["thread 'main' panicked at src/app/status.rs:120:5:", "called `Option::unwrap()` on a `None` value"] } })
     show({ }, "updates")
     compare(service.phase, "unreachable")
+    compare(service.phaseCard.kind, "malformed")
     shoot("phase-unreachable")
+  }
+
+  // A status read past its deadline (1n2p.34): stopped, said in words, retried.
+  function test_phase_timeout() {
+    start(false, { "localDeadlineMs": 40 })
+    tryVerify(function() { return service.phase === "unreachable" }, 2000, "the status read times out")
+    show({ }, "updates")
+    compare(service.phaseCard.kind, "timeout")
+    shoot("phase-timeout")
+  }
+
+  // A child that never ends, even after SIGKILL (1n2p.34): let go, the lane freed.
+  function test_phase_stuck() {
+    start(false, { "localDeadlineMs": 40, "killGraceMs": 30 })
+    var launches = pending()
+    for (var i = 0; i < launches.length; i++) {
+      launches[i].process.ignoreTerm = true
+      launches[i].process.ignoreKill = true
+    }
+    tryVerify(function() { return service.phase === "unreachable" && !!service.phaseCard && service.phaseCard.kind === "stuck" }, 2000,
+      "the watchdog lets the status read go")
+    // The read the opened panel asks for runs under the usual deadline, unanswered, so
+    // the card stays the one the watchdog left.
+    service.localDeadlineMs = 600000
+    show({ }, "updates")
+    compare(service.phaseCard.kind, "stuck")
+    shoot("phase-stuck")
   }
 
   function test_phase_incompatible() {
@@ -592,12 +622,13 @@ TestCase {
     service.refresh()
     settle({ "status": statusFrom("status-updates", function(env) { env.tool_version = "0.2.0" }) })
     compare(service.phase, "incompatible")
+    compare(service.phaseCard.kind, "version")
     shoot("phase-incompatible")
   }
 
   // The binary sets `summary.widget_outdated` only with `widget.outdated` (an outdated
   // widget serving this state), which Model.compatible reads as another build: the
-  // panel goes read-only, and the frame's own "from another build" card never shows.
+  // panel goes read-only, and its card says the panel is out of date.
   function test_phase_widget_outdated() {
     var scene = everyday()
     scene.status = statusFrom("status-updates", function(env) {
@@ -607,7 +638,29 @@ TestCase {
     })
     open(scene, "updates")
     compare(service.phase, "incompatible")
+    compare(service.phaseCard.kind, "outdated")
+    service.reinstallWidget()
     shoot("phase-widget-outdated")
+  }
+
+  // A change a crash cut off (1n2p.34): announced above the view, from `status` alone.
+  function test_interrupted_change() {
+    var scene = everyday()
+    scene.status = statusFrom("status-updates", function(env) {
+      env.data.journal = { "pending": 1, "in_progress": false }
+      env.data.targets[1].attention = ["journal_pending"]
+    })
+    open(scene, "updates")
+    verify(service.interrupted !== null, "the change is announced")
+    shoot("interrupted-change")
+  }
+
+  // A read whose child the watchdog let go (1n2p.34): the failure card, with Copy details.
+  function test_failure_stuck() {
+    open(everyday(), "updates")
+    service.lastError = { "message": Model.failureWords("Check now", "stuck"), "code": "stuck", "fixes": [], "fixText": "",
+      "details": Model.failureDetails({ "label": "Check now", "outcome": "stuck", "argv": ["omaddons", "outdated"], "tail": [] }, {}, "0.1.0") }
+    shoot("failure-stuck")
   }
 
   function test_phase_no_clients() {
