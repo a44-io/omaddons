@@ -1852,9 +1852,10 @@ describe("the Issues and Search views", () => {
     }
     const result = M.reduceSearch(fixture("search")).rows[0]
     expect(result.hints).toEqual({ retail: "likely" })
-    const targets = [{ id: "retail" }, { id: "era" }]
+    const targets = [{ id: "retail", displayName: "Retail" }, { id: "era", displayName: "Classic Era" }]
     expect(M.installTargets(result, targets)).toEqual([
-      { id: "retail", hint: "likely", eligible: true }, { id: "era", hint: "unknown", eligible: false }])
+      { id: "retail", client: "Retail", hint: "likely", installed: false, words: "Probably works on Retail", eligible: true },
+      { id: "era", client: "Classic Era", hint: "unknown", installed: false, words: "Not known yet for Classic Era", eligible: false }])
     expect(M.installTargets(Object.assign({}, result, { hints: { retail: "no" } }), targets)[0].eligible).toBe(false)
   })
 
@@ -2086,7 +2087,9 @@ describe("the other reducers", () => {
     const model = M.reduceSearch(fixture("search"))
     expect(model.query).toBe("damage meter")
     expect(model.rows.map((r) => [r.ref, r.source])).toContainEqual(["gh:Skada-Damage-Meter/Skada", "github"])
-    for (const row of model.rows) expect(typeof row.compat).toBe("string")
+    // Every client's hint by its id, never one client's verdict standing for all (bmcx.6).
+    for (const row of model.rows) expect([row.name, Object.keys(row.hints)]).toEqual([row.name, ["retail"]])
+    expect(model.rows.some((r) => "compat" in r)).toBe(false)
   })
 
   test("errors and backups read the documented shapes, never accounts", () => {
@@ -3150,6 +3153,22 @@ describe("the addon page", () => {
     expect([failed.state, failed.failed]).toEqual(["failed", "omaddons info: network"])
   })
 
+  // A page opened from a ref or link pasted into Search (1n2p.25): until its read answers
+  // it names nothing and offers no install; then its name and the ref an install takes
+  // are the read's, never the text typed (M3-D2).
+  test("a pasted link's page takes its name and ref from its read, never from the text", () => {
+    const link = "https://github.com/o/foo/releases/tag/v1"
+    const before = page({ name: "", link, info: null, reading: true })
+    expect([before.title, before.name, before.ref, before.link, before.state]).toEqual([link, "", "", link, "reading"])
+    expect(before.clients.filter((c) => c.installed || c.primary === "install")).toEqual([])
+    const after = page({ name: "", link })
+    expect([after.title, after.name, after.ref, after.link]).toEqual(["edited by hand", "Foo", "gh:o/foo", link])
+    expect(after.clients.filter((c) => c.installed).map((c) => c.client)).toEqual(["Classic Era", "Retail"])
+    // A read that failed (a link the CLI refuses) names nothing either.
+    const failed = page({ name: "", link: "url:https://example.com/x.zip", info: null, failed: "host_blocked" })
+    expect([failed.name, failed.ref, failed.state]).toEqual(["", "", "failed"])
+  })
+
   test("an addon installed nowhere: each client's likelihood, and Install here where it likely loads", () => {
     const info = M.reduceInfo(fixture("changelog"))
     info.installed = []
@@ -4027,5 +4046,159 @@ describe("activity", () => {
       network: [{ resource: "check" }], local: [] })).toBe("Next: Update Retail")
     expect(M.queuedText({ mutation: [], network: [{ resource: "search" }, { resource: "check" }], local: [] })).toBe("Next: Checking for updates")
     expect(M.queuedText(M.emptyQueues())).toBe("")
+  })
+})
+
+// The Search view (1n2p.25, design doc §2.3): live search, pasted refs and links, rows
+// that say what fits each client, the installed marker, and what `i` may install. Over
+// the envelopes the binary writes: `search` (one client), `search-all` (Questie, `yes`
+// on Classic Era and `no` on Retail, and a GitHub hit `unknown` on both) and `list`.
+describe("the Search view", () => {
+  const TARGETS = [{ id: "era", displayName: "Classic Era" }, { id: "retail", displayName: "Retail" }]
+  const SEARCH_NOW = Date.parse("2026-09-03T00:00:00Z")
+  const all = () => M.reduceSearch(fixture("search-all"))
+  const rows = (extra) => M.searchRows(Object.assign({ rows: all().rows, filter: "", statusTargets: TARGETS, lists: null, nowMs: SEARCH_NOW }, extra || {}))
+  // `[title, meta, chips, action, the cursored row's actions]`.
+  const pick = (r) => [r.title, r.meta, r.chips.map((c) => c.text), r.action, r.actions.map((a) => a.name)]
+
+  test("a result keeps its summary, author, age and popularity", () => {
+    const skada = M.reduceSearch(fixture("search")).rows.find((r) => r.ref === "gh:Skada-Damage-Meter/Skada")
+    expect([skada.summary, skada.author, skada.updatedAt, skada.stars, skada.hints])
+      .toEqual(["A modular damage meter for World of Warcraft", "Skada-Damage-Meter", "2026-09-01T00:00:00Z", 412, { retail: "unknown" }])
+    const [questie, extras] = all().rows
+    expect([questie.name, questie.source, questie.hints]).toEqual(["Questie", "catalog", { era: "yes", retail: "no" }])
+    expect([extras.name, extras.source, extras.hints]).toEqual(["QuestieExtras", "github", { era: "unknown", retail: "unknown" }])
+  })
+
+  test("each row says, in words, what fits the scope's client, or how many clients under All", () => {
+    const cases = [
+      ["era", "", [
+        ["Questie", "Works on Classic Era · GitHub", ["checked by omaddons"], "install", ["install"]],
+        ["QuestieExtras", "Not known yet for Classic Era · GitHub · 12 stars · updated 2 days ago · by someone", [], "check", ["enter"]]]],
+      ["retail", "", [
+        ["Questie", "Not made for Retail · GitHub", ["checked by omaddons"], "", []],
+        ["QuestieExtras", "Not known yet for Retail · GitHub · 12 stars · updated 2 days ago · by someone", [], "check", ["enter"]]]],
+      ["all", "", [
+        ["Questie", "Works on 1 of 2 clients · GitHub", ["checked by omaddons"], "install", ["install"]],
+        ["QuestieExtras", "Not known yet where it works · GitHub · 12 stars · updated 2 days ago · by someone", [], "check", ["enter"]]]],
+    ]
+    for (const [name, , expected] of cases) {
+      const got = rows({ filter: name === "all" ? "" : name }).map(pick)
+      expect([name, got]).toEqual([name, expected])
+    }
+    // The row's glyph is its best verdict's (§5.4): works, not known, not made for.
+    expect(rows({ filter: "era" }).map((r) => r.glyph.codePointAt(0))).toEqual([0xF05E0, 0xF0625])
+    expect(rows({ filter: "retail" })[0].glyph.codePointAt(0)).toBe(0xF02FD)
+    // The summary is its own line; a hit without one has none.
+    expect(M.searchRows({ rows: M.reduceSearch(fixture("search")).rows, filter: "retail", statusTargets: TARGETS, nowMs: SEARCH_NOW })
+      .map((r) => r.detail)).toEqual(["", "", "A modular damage meter for World of Warcraft"])
+    // One client on this computer: its own words, also under All.
+    expect(rows({ statusTargets: [TARGETS[1]] })[0].meta.split(" · ")[0]).toBe("Not made for Retail")
+    // Two clients it works on, and one it probably does.
+    const three = TARGETS.concat([{ id: "forever", displayName: "WoW: Forever" }, { id: "anniversary", displayName: "Anniversary" }])
+    const mixed = Object.assign({}, all().rows[0], { hints: { era: "yes", retail: "yes", forever: "likely", anniversary: "no" } })
+    expect(M.searchRows({ rows: [mixed], statusTargets: three, nowMs: SEARCH_NOW })[0].meta.split(" · ")[0])
+      .toBe("Works on 2 of 4 clients, probably on 1 more")
+  })
+
+  // bmcx.6: a result nobody has evidence for offers no install, only its page; one with
+  // evidence installs only where its hint allows; `i` says why it installs nothing.
+  test("install only where a hint allows, and say why everywhere else", () => {
+    const [questie, extras] = rows()
+    expect(questie.targets.map((t) => [t.id, t.words, t.eligible])).toEqual([
+      ["era", "Works on Classic Era", true], ["retail", "Not made for Retail", false]])
+    expect(extras.targets.every((t) => !t.eligible)).toBe(true)
+    expect([extras.action, extras.actions.map((a) => a.tooltip)]).toEqual(["check", ["Check where it works (Enter)"]])
+    expect(extras.note).toBe("Not known yet where it works: Enter opens its page, which checks.")
+    expect(rows({ filter: "retail" })[0].note).toBe("Not made for Retail: nothing to install there.")
+    expect(questie.actions[0].tooltip).toBe("Install (i)")
+    // A missing client is never offered.
+    const gone = TARGETS.concat([{ id: "classic", displayName: "Classic", missing: true }])
+    expect(rows({ statusTargets: gone })[0].targets.map((t) => t.id)).toEqual(["era", "retail"])
+  })
+
+  // The installed marker, from `list -v`: a record of the same ref, or of the same name
+  // ignoring case; a client that has it is never offered for an install.
+  test("installed: by ref or by name, with its version on the scope's client", () => {
+    const lists = M.reduceList(fixture("list"))
+    const byName = Object.assign({}, all().rows[0], { name: "foo", ref: "wowi:1", hints: { era: "yes", retail: "yes" } })
+    const byRef = Object.assign({}, all().rows[0], { name: "Something else", ref: "gh:o/baz", hints: { era: "yes", retail: "likely" } })
+    const nowhere = Object.assign({}, all().rows[0], { name: "Questie", ref: "gh:Questie/Questie" })
+    expect(M.installedOf(byName, lists)).toEqual([{ id: "era", version: "v1" }, { id: "retail", version: "v1" }])
+    expect(M.installedOf(byRef, lists)).toEqual([{ id: "retail", version: "v1" }])
+    expect(M.installedOf(nowhere, lists)).toEqual([])
+    const shown = (filter) => M.searchRows({ rows: [byName, byRef, nowhere], filter, statusTargets: TARGETS, lists, nowMs: SEARCH_NOW })
+    // (All three are copies of Questie, a catalog hit: the catalog's chip comes second.)
+    expect(shown("retail").map((r) => [r.chips.map((c) => c.text), r.action, r.note])).toEqual([
+      [["installed v1", "checked by omaddons"], "", "Already installed on Retail."],
+      [["installed v1", "checked by omaddons"], "", "Already installed on Retail."],
+      [["checked by omaddons"], "", "Not made for Retail: nothing to install there."]])
+    expect(shown("").map((r) => [r.meta.split(" · ")[0], r.chips.map((c) => c.text), r.action, r.note])).toEqual([
+      ["Works on 2 of 2 clients", ["installed on Classic Era and Retail", "checked by omaddons"], "", "Already installed where it works."],
+      ["Works on 1 of 2 clients, probably on 1 more", ["installed on Retail", "checked by omaddons"], "install", ""],
+      ["Works on 1 of 2 clients", ["checked by omaddons"], "install", ""]])
+    expect(shown("")[1].targets.map((t) => [t.id, t.words, t.eligible])).toEqual([
+      ["era", "Works on Classic Era", true], ["retail", "Already on Retail", false]])
+    // Three clients or more are counted.
+    const three = TARGETS.concat([{ id: "forever", displayName: "WoW: Forever" }])
+    const everywhere = { targets: lists.targets.concat([{ id: "forever", key: "k", addons: [{ name: "Foo", ref: "gh:o/foo", version: "v1" }] }]) }
+    expect(M.searchRows({ rows: [byName], statusTargets: three, lists: everywhere, nowMs: SEARCH_NOW })[0].chips[0].text).toBe("installed on 3 clients")
+  })
+
+  // A pasted ref or link is one row whose page resolves it; other text never is.
+  test("refs and links from the hosts omaddons reads become one row; other text is searched", () => {
+    const links = [
+      ["https://github.com/WeakAuras/WeakAuras2", "github"],
+      ["https://www.github.com/WeakAuras/WeakAuras2/releases/tag/5.19.2", "github"],
+      ["https://www.wowinterface.com/downloads/info7032-TomTom.html", "wowi"],
+      ["https://cdn.wowinterface.com/downloads/getfile.php?id=7032&aid=1", "wowi"],
+      ["https://tukui.org/elvui", "tukui"],
+      ["https://www.wowace.com/projects/bug-grabber", "wowace"],
+      ["https://repos.wowace.com/wow/bug-grabber/tags/v12.1.1/", "wowace"],
+      ["  gh:tullamods/OmniCC  ", "github"],
+      // A paste's trailing newline is no part of it.
+      ["https://github.com/o/r\n", "github"],
+      ["wowi:7032", "wowi"],
+      ["tukui:elvui", "tukui"],
+      ["wowace:bug-grabber#r152", "wowace"],
+      ["git:https://codeberg.org/o/r#main", "git"],
+      ["url:https://github.com/o/r/releases/download/v1/x.zip", "url"],
+    ]
+    for (const [text, source] of links) expect([text, M.searchLink(text)]).toEqual([text, { source, text: text.trim() }])
+    const words = ["weak auras", "dbm", "https://github.com/WeakAuras", "https://github.com", "http://github.com/o/r",
+      "https://evil.example/o/r", "https://user@github.com/o/r", "https://github.com:8080/o/r", "https://github.com/o/r x",
+      "https://github.com/o/r\nrm -rf ~", "https://github.com/o/r\u0007", "gh:owner", "gh:o/r/x", "GH:o/r", "wowi:abc", "url:http://github.com/x.zip", "git:codeberg.org/o/r",
+      "javascript:alert(1)", "file:///etc/passwd", "cf:12345", "https://www.curseforge.com/wow/addons/details", "",
+      "https://github.com/o/" + "r".repeat(600)]
+    for (const text of words) expect([text, M.searchLink(text)]).toEqual([text, null])
+    const [row] = M.searchRows({ link: M.searchLink("https://tukui.org/elvui"), rows: all().rows, statusTargets: TARGETS })
+    expect([row.kind, row.title, row.meta, row.link, row.ref, row.action, row.actions.map((a) => a.tooltip)])
+      .toEqual(["link", "Install from Tukui", "https://tukui.org/elvui", "https://tukui.org/elvui", "", "open", ["See where it works, then install (Enter)"]])
+    expect(M.searchRows({ link: M.searchLink("gh:o/r"), rows: all().rows, statusTargets: TARGETS }).length).toBe(1)
+  })
+
+  test("typing searches from three characters, never a link", () => {
+    expect([M.SEARCH_DEBOUNCE_MS, M.SEARCH_MIN_CHARS]).toEqual([400, 3])
+    const cases = [["", false], ["ab", false], ["  ab  ", false], ["abc", true], ["weak auras", true], ["gh:o/r", false],
+      ["https://github.com/o/r", false], ["https://github.com/o", true]]
+    for (const [text, live] of cases) expect([text, M.searchesLive(text)]).toEqual([text, live])
+  })
+
+  // The view's states (design doc §7): the last query's rows stay under "Searching…"
+  // while the next runs, with none of their notices; Try again where asking again helps.
+  test("a newer query keeps the rows it replaces, and skipped sources say whether to retry", () => {
+    const answer = { rows: [{ name: "DBM" }], selection: { query: "dbm", target: "" }, query: "dbm",
+      skipped: [{ source: "wowi", reason: "no_index" }, { source: "github", reason: "rate_limited", reset_at: "2100-01-01T18:02:00Z" },
+        { source: "tukui", reason: "disabled" }] }
+    const state = (query, reading) => M.viewState("search", { service: { targets: [], search: answer, reading, outcomes: {} }, filter: "", query, rows: 1, nowMs: NOW })
+    const kept = state("dbm bigwigs", ["search"])
+    expect([kept.state, kept.refreshing, kept.notices]).toEqual(["rows", true, []])
+    expect(M.refreshingText(kept.view)).toBe("Searching…")
+    expect(M.refreshingText("updates")).toBe("Updating…")
+    const own = state("dbm", [])
+    expect(own.notices.map((n) => [n.sentence.replace(/until \d\d:\d\d/, "until HH:MM"), n.action ? n.action.text : null])).toEqual([
+      ["WoWInterface couldn't be searched.", "Try again"],
+      ["GitHub couldn't be searched: it asked to wait until HH:MM.", null],
+      ["Tukui couldn't be searched: turned off.", null]])
   })
 })

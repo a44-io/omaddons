@@ -311,7 +311,16 @@ Item {
   // as the row names it, and its `ref` when the row knows one.
   function openAddon(name, ref) {
     if (!name) return false
-    return push({ "title": String(name), "component": addonPageComponent, "props": { "name": String(name), "ref": String(ref || "") } })
+    return push({ "title": String(name), "component": addonPageComponent,
+      "props": { "name": String(name), "ref": String(ref || ""), "link": "" } })
+  }
+
+  // The page of a ref or link pasted into Search (1n2p.25): read by that text, which
+  // names nothing else; the read's answer names the addon (Model.addonPage).
+  function openLink(text) {
+    if (!text) return false
+    return push({ "title": Model.copy("search.link.page"), "component": addonPageComponent,
+      "props": { "name": "", "ref": "", "link": String(text) } })
   }
 
   // Back one page, to where the cursor stood beneath it; false when no page is open.

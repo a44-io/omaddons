@@ -55,12 +55,13 @@ Column {
     }
 
     PlainLabel {
+      objectName: "refreshingText"
       width: implicitWidth
       elide: Text.ElideNone
       color: root.dim
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption
-      text: Model.copy("state.refreshing")
+      text: Model.refreshingText(root.viewState ? root.viewState.view : "")
     }
   }
 

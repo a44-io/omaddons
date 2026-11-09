@@ -392,15 +392,23 @@ Item {
   }
 
   // A search, view-bound to its query and target filter; All ("") searches every client
-  // in one request.
+  // in one request. A newer query replaces a queued search (Model.enqueue) and stops one
+  // still running for another query or client (1n2p.25): its answer would be dropped as
+  // late, and the newer one would wait behind it.
   function searchFor(query, target) {
     var selection = { "query": String(query || ""), "target": String(target || "") }
     searchSelection = selection
     var shape = Model.searchRequest(selection.query, selection.target)
-    return request({
+    var taken = request({
       "resource": "search", "template": shape.template, "lane": "network", "kind": "view", "target": selection.target,
       "selection": selection, "slots": shape.slots, "label": "Search"
     })
+    var running = networkLane.request
+    if (taken && running && running.resource === "search" && running.selection
+        && (running.selection.query !== selection.query || running.selection.target !== selection.target)) {
+      networkLane.cancel()
+    }
+    return taken
   }
 
   // `d`: one bound dismissal per client in `plan` (`[{target, token}]`, the tokens of the

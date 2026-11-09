@@ -1247,17 +1247,28 @@ TestCase {
       "rows": [{ "name": "Details!", "ref": "wowi:23056", "source": "wowi", "downloads": 515870, "stars": null, "hints": hints, "compat": "" }] }
   }
 
+  // The meta line of a Search row's AddonRow.
+  function searchMeta(index) {
+    return findChild(findChild(row("searchRow", index), "addonRow"), "meta").text
+  }
+
   function test_search_installs_into_the_filtered_client_when_its_hint_allows() {
     keyClick("t")
     keyClick("t")
     compare(view.filter, "retail")
     searchReady({ "retail": "likely", "era": "no" })
-    compare(findChild(row("searchRow", 0), "hints").text, "retail likely")
+    // The scope's client's verdict, in words, first (1n2p.25).
+    compare(searchMeta(0), "Probably works on Retail · WoWInterface · 515.9k downloads")
     keyClick("i")
     compare(json(svc.runs[0]), json(["install", { "target": "retail", "ref": "wowi:23056" }, "Install Details!", []]))
-    // A result for another filter is not this view's.
+    // A result for another filter is not this view's; the shown query is searched again
+    // for the new scope once the pause ends.
+    var before = svc.searches.length
     keyClick("t")
     compare(findChild(content(), "searchRow_0"), null)
+    compare(svc.searches.length, before, "not before the pause")
+    tryVerify(function() { return svc.searches.length === before + 1 })
+    compare(json(svc.searches[before]), json(["damage meter", view.filter]))
   }
 
   // The view shows no release for a search result, so the install's preview always asks.
@@ -1344,17 +1355,39 @@ TestCase {
     compare(view.pages.length, 0)
   }
 
+  // A hint of no installs nothing, and `i` says why instead of doing nothing (1n2p.25).
   function test_a_hint_of_no_offers_no_install() {
     keyClick("t")
     compare(view.filter, "era")
     searchReady({ "retail": "likely", "era": "no" })
+    compare(searchMeta(0), "Not made for Classic Era · WoWInterface · 515.9k downloads")
     keyClick("i")
     compare(svc.runs.length, 0)
+    compare(findChild(view, "keyNote").text, "Not made for Classic Era: nothing to install there.")
+  }
+
+  // bmcx.6: a result no client has evidence for offers no install button and no install
+  // key; its page (Check where it works) decides.
+  function test_a_result_nobody_knows_offers_only_its_page() {
+    keyClick("t")
+    keyClick("t")
+    searchReady({ "retail": "unknown", "era": "unknown" })
+    view.cursorActive = true
+    view.cursor = 0
+    var addonRow = findChild(row("searchRow", 0), "addonRow")
+    compare(json(addonRow.actions.map(function(a) { return a.name })), json(["enter"]))
+    compare(searchMeta(0).split(" · ")[0], "Not known yet for Retail")
+    keyClick("i")
+    compare(svc.runs.length, 0)
+    compare(findChild(view, "keyNote").text, "Not known yet where it works: Enter opens its page, which checks.")
+    keyClick(Qt.Key_Return)
+    compare(view.pages.length, 1)
+    compare(json(svc.infoReads), json(["wowi:23056"]))
   }
 
   function test_under_all_a_chooser_preselects_no_client() {
     searchReady({ "retail": "likely", "era": "no" })
-    compare(findChild(row("searchRow", 0), "hints").text, "era no · retail likely")
+    compare(searchMeta(0), "Probably works on 1 of 2 clients · WoWInterface · 515.9k downloads")
     keyClick("i")
     var search = content()
     verify(findChild(search, "chooser").visible)
@@ -1362,8 +1395,11 @@ TestCase {
     tryVerify(function() { return findChild(search, "chooserKeys").activeFocus })
     keyClick(Qt.Key_Return)
     compare(svc.runs.length, 0, "nothing chosen, nothing installed")
-    // era (hint no) is greyed and never under the cursor.
+    // era (hint no) is greyed, says why, and is never under the cursor.
     var targets = findChild(search, "chooserTargets")
+    compare(findChild(search, "chooserTitle").text, "Install Details! on: (j/k, Enter, Esc)")
+    compare([findChild(targets.itemAt(0), "choice").text, findChild(targets.itemAt(1), "choice").text],
+      ["Not made for Classic Era", "Probably works on Retail"])
     compare(targets.itemAt(0).opacity, 0.4)
     keyClick("j")
     compare(search.chooserCursor, 1)
@@ -1373,6 +1409,140 @@ TestCase {
     compare(json(svc.runs[0]), json(["install", { "target": "retail", "ref": "wowi:23056" }, "Install Details!", []]))
     verify(!findChild(search, "chooser").visible)
     tryVerify(function() { return findChild(view, "keyCatcher").activeFocus })
+  }
+
+  // The search box, focused (`s` in Search).
+  function searchBox() {
+    keyClick("3")
+    keyClick("s")
+    var field = findChild(content(), "searchField")
+    tryVerify(function() { return field.activeFocus })
+    return field
+  }
+
+  // Live search (1n2p.25): typing searches once it pauses, from three characters, once
+  // per pause whatever was typed in between.
+  function test_typing_searches_once_it_pauses() {
+    var field = searchBox()
+    compare(findChild(content(), "searchDebounce").interval, Model.SEARCH_DEBOUNCE_MS)
+    field.text = "we"
+    wait(Model.SEARCH_DEBOUNCE_MS + 150)
+    compare(svc.searches.length, 0, "two characters wait for Enter")
+    field.text = "wea"
+    field.text = "weak"
+    compare(svc.searches.length, 0, "nothing before the pause")
+    tryVerify(function() { return svc.searches.length === 1 })
+    compare(json(svc.searches[0]), json(["weak", ""]))
+    // While it runs, the same query again is no new search; Enter on a short one searches
+    // at once.
+    svc.reading = ["search"]
+    field.text = "weak "
+    wait(Model.SEARCH_DEBOUNCE_MS + 150)
+    compare(svc.searches.length, 1)
+    field.text = "wa"
+    keyClick(Qt.Key_Return)
+    compare(json(svc.searches[1]), json(["wa", ""]))
+    tryVerify(function() { return !field.activeFocus }, 1000, "Enter goes to the results")
+    // An empty box clears the search: the view says what to type.
+    svc.reading = []
+    field.text = ""
+    compare(content().asked, "")
+    compare(findChild(findChild(content(), "viewState"), "stateEmpty").sentence,
+      "Type a name, or paste a link from GitHub, WoWInterface, Tukui or WowAce.")
+  }
+
+  // The last query's rows stay under "Searching…" while the next one runs, with none of
+  // their notices; when it ends without them, they go.
+  function test_the_last_results_stay_while_the_next_search_runs() {
+    searchReady({ "retail": "likely", "era": "no" })
+    svc.search = { "selection": { "query": "damage meter", "target": "" }, "query": "damage meter",
+      "skipped": [{ "source": "wowi", "reason": "no_index" }], "rows": svc.search.rows }
+    var search = content()
+    var state = findChild(search, "viewState")
+    compare(findChild(state, "stateNotices").count, 1)
+    // A source that didn't answer: Try again searches the shown query again.
+    compare(findChild(state, "stateNotices").itemAt(0).title, "WoWInterface couldn't be searched.")
+    findChild(state, "stateNotices").itemAt(0).clicked("retry")
+    compare(json(svc.searches[svc.searches.length - 1]), json(["damage meter", ""]))
+    // A newer query runs: the rows stay, under "Searching…", without their notices.
+    svc.reading = ["search"]
+    var field = findChild(search, "searchField")
+    field.text = "damage meters"
+    keyClick("s")
+    keyClick(Qt.Key_Return)
+    compare(search.asked, "damage meters")
+    compare(search.rowCount, 1)
+    verify(findChild(state, "refreshingText").visible)
+    compare(findChild(state, "refreshingText").text, "Searching…")
+    compare(findChild(state, "stateNotices").count, 0)
+    // It ended with no answer for it: the rows go.
+    svc.reading = []
+    compare(search.rowCount, 0)
+  }
+
+  // A pasted link is one row and no search; its page reads it and names the addon, and an
+  // install from there takes the ref the read answered, never the text (M3-D2).
+  function test_a_pasted_link_is_one_row_whose_page_installs_by_the_read_ref() {
+    var field = searchBox()
+    var link = "https://github.com/tullamods/OmniCC"
+    field.text = link
+    wait(Model.SEARCH_DEBOUNCE_MS + 150)
+    compare(svc.searches.length, 0, "a link is no search")
+    var addonRow = findChild(row("searchRow", 0), "addonRow")
+    compare([addonRow.title, addonRow.meta], ["Install from GitHub", link])
+    compare(content().rowCount, 1)
+    keyClick(Qt.Key_Return)
+    compare(svc.searches.length, 0)
+    tryVerify(function() { return !field.activeFocus })
+    compare([view.cursorActive, view.cursor], [true, 0])
+    keyClick(Qt.Key_Return)
+    compare(view.pages.length, 1)
+    var page = findChild(view, "page").item
+    compare([page.name, page.ref, page.link], ["", "", link])
+    compare(json(svc.infoReads), json([link]))
+    compare(page.page.title, link)
+    verify(page.rows.every(function(l) { return l.primary !== "install" }), "nothing to install before the read")
+    svc.addonInfo = { "selection": { "ref": link }, "failed": "", "data": { "name": "OmniCC", "ref": "gh:tullamods/OmniCC",
+      "about": null, "aboutWhy": "", "latest": { "version": "11.2.8", "compat": { "retail": "likely", "era": "unlikely" } },
+      "installed": [], "changelog": null, "changelogWhy": "" } }
+    compare([page.page.title, page.page.name, page.page.ref], ["OmniCC", "OmniCC", "gh:tullamods/OmniCC"])
+    keyClick("j")
+    keyClick("j")
+    keyClick("i")
+    compare(json(svc.runs[0]), json(["install", { "target": "retail", "ref": "gh:tullamods/OmniCC" }, "Install OmniCC", []]))
+    // `i` on the link row opens its page too: it never installs the text.
+    keyClick(Qt.Key_Escape)
+    compare(view.pages.length, 0)
+    keyClick("i")
+    compare(view.pages.length, 1)
+    compare(svc.runs.length, 1)
+  }
+
+  // The box's keys (KEYMAP's field rows): Down and Up move the results' cursor while the
+  // box keeps the keys; Esc leaves it with the text kept; Esc again clears the search.
+  function test_down_and_up_move_the_results_and_esc_twice_clears() {
+    searchReady({ "retail": "likely", "era": "no" })
+    svc.search = { "selection": { "query": "damage meter", "target": "" }, "query": "damage meter", "skipped": [],
+      "rows": [svc.search.rows[0], { "name": "Recount", "ref": "wowi:7000", "source": "wowi", "downloads": 2100000, "stars": null,
+        "hints": { "retail": "yes", "era": "yes" } }] }
+    var search = content()
+    var field = findChild(search, "searchField")
+    keyClick("s")
+    tryVerify(function() { return field.activeFocus })
+    view.cursorActive = false
+    keyClick(Qt.Key_Down)
+    compare([view.cursorActive, view.cursor], [true, 0])
+    keyClick(Qt.Key_Down)
+    compare(view.cursor, 1)
+    verify(field.activeFocus, "the box keeps the keys")
+    keyClick(Qt.Key_Up)
+    compare(view.cursor, 0)
+    compare(field.text, "damage meter")
+    keyClick(Qt.Key_Escape)
+    tryVerify(function() { return !field.activeFocus })
+    compare([field.text, search.asked, search.rowCount], ["damage meter", "damage meter", 2])
+    keyClick(Qt.Key_Escape)
+    compare([field.text, search.asked, search.rowCount], ["", "", 0])
   }
 
   // ------------------------------------------------------------- Backups

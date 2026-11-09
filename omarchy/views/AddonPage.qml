@@ -23,19 +23,22 @@ Item {
   id: root
 
   property var frame: null
-  // The addon: its name as the list named it, and its ref when the list knew one.
+  // The addon: its name as the list named it, and its ref when the list knew one; or,
+  // from Search's pasted ref or link (1n2p.25), only that text, `link`: the page's read
+  // resolves it, and its answer names the addon and the ref an install takes (M3-D2).
   property string name: ""
   property string ref: ""
+  property string link: ""
 
   readonly property var svc: frame ? frame.svc : null
   readonly property var statusTargets: svc && Array.isArray(svc.targets) ? svc.targets : []
   readonly property double nowMs: frame ? frame.nowMs : Date.now()
-  // What the page reads it by: its ref, else its name.
-  readonly property string query: ref !== "" ? ref : name
+  // What the page reads it by: its ref, else its name, else the pasted text.
+  readonly property string query: ref !== "" ? ref : (name !== "" ? name : link)
   // This page's own read, once it answers for this addon.
   readonly property var info: svc && svc.addonInfo && svc.addonInfo.selection && svc.addonInfo.selection.ref === query
     ? svc.addonInfo : null
-  readonly property var page: Model.addonPage({ "name": name, "ref": ref, "lists": svc ? svc.lists : null,
+  readonly property var page: Model.addonPage({ "name": name, "ref": ref, "link": link, "lists": svc ? svc.lists : null,
     "info": info ? info.data : null, "reading": !!info && !info.data && !info.failed, "failed": info ? info.failed : "",
     "errors": svc ? svc.errors : null, "statusTargets": statusTargets, "nowMs": nowMs })
   // The client lines the cursor walks (the frame's `o` opens the one under it).
@@ -98,7 +101,7 @@ Item {
       return true
     }
     if (name === "restore") {
-      if (line && line.installed) frame.openChooser({ "target": line.target, "addon": root.name })
+      if (line && line.installed) frame.openChooser({ "target": line.target, "addon": page.name })
       return true
     }
     if (name === "web") {
@@ -117,10 +120,11 @@ Item {
     return frame.report(svc.run(action.template, action.slots, action.label, action.shown))
   }
 
-  // Install here: the client line's client, previewed as Search's install is.
+  // Install here: the client line's client, previewed as Search's install is. The ref is
+  // the list's or the read's, never a pasted link's text.
   function install(line) {
     if (!canChange || page.ref === "") return false
-    return frame.report(svc.run("install", { "target": line.target, "ref": page.ref }, "Install " + root.name, []))
+    return frame.report(svc.run("install", { "target": line.target, "ref": page.ref }, "Install " + page.name, []))
   }
 
   function openWeb(url) {
@@ -144,7 +148,7 @@ Item {
     var rows = Model.errorRows(Model.errorSections(svc ? svc.errors : null, statusTargets, "", nowMs))
     var row = rows.filter(function(r) { return r.key === entry.key })[0] || null
     if (!row) return false
-    return frame.push({ "title": root.name, "component": errorPageComponent, "props": { "rowKey": row.key, "initial": row } })
+    return frame.push({ "title": page.name, "component": errorPageComponent, "props": { "rowKey": row.key, "initial": row } })
   }
 
   Timer {

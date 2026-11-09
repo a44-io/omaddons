@@ -1169,19 +1169,47 @@ TestCase {
     compare(service.rawErrors, null)
   }
 
-  function test_a_late_search_for_another_target_is_dropped() {
+  // A newer search stops the one still running for another query or client (1n2p.25),
+  // and an answer that still comes from it is dropped: it never replaces the newer one's.
+  function test_a_newer_search_stops_the_older_and_its_late_answer_is_dropped() {
     ready(0)
     service.searchFor("dbm", "retail")
     var first = lastRun("search")
+    // This one ignores SIGTERM and answers anyway.
+    first.process.ignoreTerm = true
     service.searchFor("dbm", "era")
+    compare(first.process.signals, [15], "the older search is stopped")
     answer(first, envelope("search", { "query": "dbm", "results": [{ "name": "DBM", "ref": "wowi:1", "source": "wowi", "compat": { "retail": "likely" } }], "sources_skipped": [] }))
     compare(service.search, null)
+    compare(service.lastError, null, "a stopped search is no failure")
     var second = lastRun("search")
     verify(second !== first)
     compare(words(second.command), ["search", "--limit", "20", "-t", "era", "--", "dbm"])
     answer(second, envelope("search", { "query": "dbm", "results": [{ "name": "DBM", "ref": "wowi:1", "source": "wowi", "compat": { "era": "likely" } }], "sources_skipped": [] }))
     compare(service.search.selection.target, "era")
-    compare(service.search.rows[0].compat, "likely")
+    compare(service.search.rows[0].hints.era, "likely")
+  }
+
+  // A search for another query stops the running one too; the same query again, or a
+  // check on the lane, stops nothing.
+  function test_a_newer_query_stops_a_search_and_nothing_else() {
+    ready(0)
+    service.searchFor("weak", "")
+    var first = lastRun("search")
+    service.searchFor("weak", "")
+    compare(first.process.signals, [], "the same search")
+    service.searchFor("weak auras", "")
+    compare(first.process.signals, [15])
+    tryVerify(function() { return lastRun("search") !== first })
+    var second = lastRun("search")
+    compare(words(second.command), ["search", "--limit", "20", "--", "weak auras"])
+    answer(second, envelope("search", { "query": "weak auras", "results": [], "sources_skipped": [] }))
+    compare(service.search.selection.query, "weak auras")
+    // A check runs on the network lane: a search waits behind it, and stops nothing.
+    service.check()
+    var check = lastRun("outdated")
+    service.searchFor("dbm", "")
+    compare(check.process.signals, [])
   }
 
   function test_a_late_status_applies_when_nothing_newer_did() {

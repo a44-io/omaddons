@@ -165,6 +165,22 @@ TestCase {
     compare(words(lastRun("apply").command), ["apply", planIdOf("plan-update-dependency")], "Yes applies the plan")
   }
 
+  // An install from Search or an addon page (1n2p.25): the view shows no release, so the
+  // sheet always opens, and it names the dependency the install adds.
+  function test_an_install_opens_the_dialog_naming_the_dependency_it_adds() {
+    showList("plan-dependency-list")
+    compare(service.run("install", { "target": "retail", "ref": "gh:o/bar" }, "Install Bar", []), "")
+    var preview = lastRun("install")
+    verify(preview.command.indexOf("--dry-run") !== -1, "the install's preview: " + launchLog())
+    compare(words(preview.command), ["install", "-t", "retail", "--", "gh:o/bar"])
+    answer(preview, "plan-install-dependency")
+    compare(runs("apply").length, 0, "nothing runs before Yes: " + launchLog())
+    compare(effects(), ["Also installs LibFoo 1.0, which Bar needs."])
+    compare([sheet().title.indexOf("Install Bar on ") === 0, sheet().confirmLabel, sheet().destructive], [true, "Install Bar", false])
+    compare(service.confirmYes(), "")
+    compare(words(lastRun("apply").command), ["apply", planIdOf("plan-install-dependency")], "Yes applies the plan")
+  }
+
   function test_a_moved_release_opens_the_dialog_with_changed_since_you_looked() {
     showList("plan-moved-list")
     answer(updateFoo(), "plan-update-moved")

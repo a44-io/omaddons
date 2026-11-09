@@ -1257,6 +1257,7 @@ mod support {
         "plan-update-asset",
         "plan-dependency-list",
         "plan-update-dependency",
+        "plan-install-dependency",
         "plan-local-edits-list",
         "plan-update-local-edits",
         "plan-removal-list",
@@ -1702,6 +1703,30 @@ fn plans_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
         "{dependency}"
     );
     planned(&dependency);
+    // An install from Search or an addon page (1n2p.25): Bar is new here, and its TOC
+    // requires LibFoo, which the preview adds.
+    let bar = CustomRel::new("Bar.zip", "v1", &[("Bar", &["## Dependencies: LibFoo"])]);
+    gh_release_v(&behind, support::BAR, "v1", &bar.assets());
+    gh_latest(&behind, support::BAR, "v1");
+    let install = plan_fixture(
+        &log,
+        &home,
+        dir,
+        "plan-install-dependency",
+        &preview_of(fill(
+            t,
+            "install",
+            &[("target", "retail"), ("ref", "gh:o/bar")],
+        )),
+        0,
+    );
+    let approval = &install["data"]["approval"];
+    assert!(
+        support::strings(&approval["reasons"]).contains(&"dependency_added".to_owned())
+            && support::strings(&approval["scope"]["dependencies_added"]) == ["LibFoo"],
+        "{install}"
+    );
+    planned(&install);
 
     log.step("scene E: local edits replaced");
     let mut home = Home::new(&["wow"]);
@@ -2740,6 +2765,43 @@ fn write_widget_fixtures() {
     assert!(
         !search["data"]["results"].as_array().unwrap().is_empty(),
         "{search}"
+    );
+
+    // Search under All (1n2p.25): a retail and a Classic Era client. Questie's catalog
+    // entry declares vanilla and not mainline, so it is `yes` on era and `no` on retail;
+    // a GitHub hit nothing has evidence for is `unknown` on both.
+    let home = Home::new(&["wow", "wow_classic_era"]);
+    wowi_filelist(&home.http, &[]);
+    tukui_list(&home.http, &[]);
+    github_search(
+        &home.http,
+        "questie",
+        &[(
+            "someone",
+            "QuestieExtras",
+            "A World of Warcraft addon: more quests for Questie",
+            12,
+            "2026-09-01T00:00:00Z",
+        )],
+    );
+    let search_all = fill(&t, "search_all", &[("query", "questie")]);
+    let search_all = write_fixture(&dir, "search-all", &home.exec(&search_all), 0);
+    let results = search_all["data"]["results"].as_array().unwrap();
+    let compat = |name: &str| {
+        results
+            .iter()
+            .find(|r| r["name"] == name)
+            .map(|r| r["compat"].clone())
+    };
+    assert_eq!(
+        compat("Questie"),
+        Some(serde_json::json!({"era": "yes", "retail": "no"})),
+        "{search_all}"
+    );
+    assert_eq!(
+        compat("QuestieExtras"),
+        Some(serde_json::json!({"era": "unknown", "retail": "unknown"})),
+        "{search_all}"
     );
 
     states_fixtures(&dir, &t);

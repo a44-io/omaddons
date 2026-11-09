@@ -1344,7 +1344,8 @@ function reduceList(env) {
   }
 }
 
-// `search`: result rows; `compat` is the one target's verdict.
+// `search`: result rows, each with every client's hint by id (`hints`): the Search view
+// reads the scope's client by its id, never a first key (1n2p.25, bmcx.6).
 function reduceSearch(env) {
   if (!envelopeOk(env) || !env.ok || !env.data || !Array.isArray(env.data.results)) {
     return { "query": "", "rows": [], "skipped": [] }
@@ -1353,7 +1354,6 @@ function reduceSearch(env) {
     "query": str(env.data.query),
     "rows": env.data.results.map(function(r) {
       var compat = r.compat && typeof r.compat === "object" ? r.compat : {}
-      var keys = Object.keys(compat)
       var popularity = r.popularity && typeof r.popularity === "object" ? r.popularity : {}
       return {
         "name": str(r.name),
@@ -1364,7 +1364,6 @@ function reduceSearch(env) {
         "downloads": typeof popularity.downloads === "number" ? popularity.downloads : null,
         "stars": typeof popularity.stars === "number" ? popularity.stars : null,
         "updatedAt": strOrNull(r.updated_at),
-        "compat": keys.length ? str(compat[keys[0]]) : "",
         // Every client's hint, by id (one envelope answers for all of them under All).
         "hints": hintsOf(compat)
       }
@@ -2206,7 +2205,7 @@ var KEYMAP = [
   { "keys": ["?"], "context": "panel", "action": "help", "label": "this key reference", "hint": "?" },
   { "keys": ["z"], "context": "panel", "action": "zoom", "label": "fill the screen, and back", "hint": "z" },
   { "keys": ["Ctrl+=", "Ctrl+-", "Ctrl+0"], "context": "panel", "action": "text_zoom", "label": "bigger or smaller text, and back to normal (or Ctrl+wheel)", "hint": "Ctrl+= Ctrl+-" },
-  { "keys": ["Esc"], "context": "panel", "action": "close", "label": "back out one layer: a page, then a filter, then the panel closes", "hint": "Esc" },
+  { "keys": ["Esc"], "context": "panel", "action": "close", "label": "back out one layer: a page, then a filter or a search, then the panel closes", "hint": "Esc" },
   { "keys": ["Tab", "Shift+Tab"], "context": "panel", "action": "tab", "label": "the bar's next or previous panel", "hint": "Tab" },
   { "keys": ["j", "k", "Down", "Up"], "context": "view", "action": "move", "label": "move the cursor", "hint": "j k" },
   { "keys": ["g", "G"], "context": "view", "action": "edge", "label": "first or last row", "hint": "g G" },
@@ -2249,10 +2248,11 @@ var KEYMAP = [
   { "keys": ["r"], "context": "page", "action": "restore", "label": "restore the addon's settings from a backup", "hint": "r", "nothing": "No settings to restore here" },
   { "keys": ["w"], "context": "page", "action": "web", "label": "an addon page: open its web page", "hint": "w", "nothing": "No web page here" },
   { "keys": ["y"], "context": "page", "action": "copy", "label": "copy an error page's report, a problem page's command, or an addon page's source", "hint": "y", "nothing": "Nothing to copy here" },
-  { "keys": ["Enter", "Space"], "context": "search", "action": "enter", "label": "open the result's page", "hint": "Enter" },
-  { "keys": ["i"], "context": "search", "action": "install", "label": "install the result", "hint": "i", "nothing": "Nothing to install here" },
-  { "keys": ["Enter"], "context": "field", "action": "search", "label": "search", "hint": "Enter" },
-  { "keys": ["Esc"], "context": "field", "action": "leave", "label": "leave the box (its text stays)", "hint": "Esc" },
+  { "keys": ["Enter", "Space"], "context": "search", "action": "enter", "label": "open the result's page (a pasted link's: where it works, and Install)", "hint": "Enter" },
+  { "keys": ["i"], "context": "search", "action": "install", "label": "install the result where it works (under All, choose the client)", "hint": "i", "nothing": "Nothing to install here" },
+  { "keys": ["Enter"], "context": "field", "action": "search", "label": "search now, and go to the results", "hint": "Enter" },
+  { "keys": ["Down", "Up"], "context": "field", "action": "move", "label": "move the cursor in the results (the box keeps the keys)", "hint": "Down Up" },
+  { "keys": ["Esc"], "context": "field", "action": "leave", "label": "leave the box (its text stays: Esc again clears the search)", "hint": "Esc" },
   { "keys": ["Down", "Up"], "context": "filter", "action": "move", "label": "move the cursor in the list (the box keeps the keys)", "hint": "Down Up" },
   { "keys": ["Enter"], "context": "filter", "action": "first", "label": "go to the first match, and leave the box", "hint": "Enter" },
   { "keys": ["Esc"], "context": "filter", "action": "leave", "label": "leave the box (the filter stays: Esc again clears it)", "hint": "Esc" },
@@ -3023,6 +3023,12 @@ function stateNotice(kind, sentence, action) {
   return { "kind": kind, "sentence": sentence, "action": action || null }
 }
 
+// The quiet line over rows a read is replacing (design doc §7.2): "Searching…" while a
+// newer query runs over the last one's results (1n2p.25), else "Updating…".
+function refreshingText(view) {
+  return copy(view === "search" ? "state.refreshing.search" : "state.refreshing")
+}
+
 // "18:02", local time, from an RFC 3339 instant; "" for one that does not parse.
 function clockText(iso) {
   var at = new Date(str(iso))
@@ -3053,7 +3059,9 @@ function readAge(view, s, nowMs) {
 }
 
 // The search's skipped sources as notices, one per reason: "GitHub and Tukui couldn't be
-// searched: offline."
+// searched: offline." A source that did not answer (`no_index`) has Try again; offline,
+// a rate limit with its time and a source turned off say why asking again now would not
+// help, and offer nothing (1n2p.25).
 function skippedNotices(skipped) {
   var list = Array.isArray(skipped) ? skipped : []
   var reasons = []
@@ -3075,7 +3083,8 @@ function skippedNotices(skipped) {
     var sources = joinNames(group.sources)
     var time = clockText(group.resetAt)
     var id = reason === "rate_limited" && !time ? "state.notice.skipped.rate_limited.untimed" : "state.notice.skipped." + reason
-    return stateNotice(reason === "offline" ? "offline" : "partial", copy(id, { "sources": sources, "time": time }))
+    return stateNotice(reason === "offline" ? "offline" : "partial", copy(id, { "sources": sources, "time": time }),
+      reason === "other" ? stateAction("retry") : null)
   })
 }
 
@@ -3158,7 +3167,9 @@ function viewState(view, input) {
   if (view === "backups" && !out.refreshing && scoped.some(function(t) { return !!t.backups && t.backups.stale === true })) {
     out.notices.push(stateNotice("stale", copy("state.notice.backups_stale"), stateAction("refresh_backups")))
   }
-  if (view === "search" && s.search) out.notices = out.notices.concat(skippedNotices(s.search.skipped))
+  // Only the answer for this query and client says which sources it skipped: rows kept
+  // from the last query while the next one runs carry none of their notices.
+  if (view === "search" && s.search && viewHas(view, s, query, filter)) out.notices = out.notices.concat(skippedNotices(s.search.skipped))
   if (num(i.rows) > 0) return out
   var filtered = filter !== "" && num(i.allRows) > 0
   if (view === "updates") {
@@ -3618,8 +3629,12 @@ var COMPAT_WORDS = { "verified": "page.compat.works", "declared": "page.compat.w
 //     a sentence when the source said nothing of it.
 function addonPage(input) {
   var i = input && typeof input === "object" ? input : {}
-  var name = str(i.name)
   var info = i.info && typeof i.info === "object" ? i.info : null
+  // A page opened from a pasted ref or link (`link`, 1n2p.25) knows no name or ref until
+  // its read answers: both come from `info`, never from the text typed (M3-D2), so an
+  // install from it takes the ref the CLI resolved.
+  var link = str(i.link)
+  var name = str(i.name) || (link && info ? info.name : "")
   var statusTargets = Array.isArray(i.statusTargets) ? i.statusTargets : []
   var nowMs = typeof i.nowMs === "number" ? i.nowMs : Date.now()
   var listTargets = i.lists && Array.isArray(i.lists.targets) ? i.lists.targets : []
@@ -3733,7 +3748,8 @@ function addonPage(input) {
   return {
     "name": name,
     "ref": ref,
-    "title": firstToc && firstToc.title ? firstToc.title : name,
+    "link": link,
+    "title": firstToc && firstToc.title ? firstToc.title : (name || link),
     "summary": about && about.summary ? about.summary : (firstToc && firstToc.notes ? firstToc.notes : ""),
     "facts": facts.join(" · "),
     "source": ref ? (SOURCE_WORDS[sourceKind(ref)] || copy("installed.source.unknown")) : "",
@@ -3916,15 +3932,219 @@ function searchRequest(query, filter) {
 
 var INSTALLABLE_HINTS = ["yes", "likely"]
 
-// Where a search result may be installed: every client with its hint; only `yes` and
-// `likely` are eligible (the CLI's own rule for its `commands`).
-function installTargets(result, statusTargets) {
+// Live search (design doc §2.3): a query is searched once typing has paused this long,
+// and only from this many characters (Enter searches a shorter one at once). Each search
+// can cost a GitHub search request (10 a minute without a token): the pause and the
+// minimum keep a typed word to one or two.
+var SEARCH_DEBOUNCE_MS = 400
+var SEARCH_MIN_CHARS = 3
+
+// Whether the box's text is searched as it is typed (after the pause).
+function searchesLive(text) {
+  var t = str(text).trim()
+  return t.length >= SEARCH_MIN_CHARS && !searchLink(t)
+}
+
+// A pasted ref or link (README "Sources and refs"): the ref prefixes the CLI reads, and
+// the https hosts it resolves links from. The widget only knows the shape; `info`
+// resolves the text, and an install takes the ref `info` answered, never the text the
+// player typed (M3-D2: typed text fills read-only templates only).
+var LINK_PREFIXES = { "gh": "github", "git": "git", "wowi": "wowi", "tukui": "tukui", "wowace": "wowace", "url": "url" }
+var LINK_HOSTS = {
+  "github.com": "github", "www.github.com": "github",
+  "wowinterface.com": "wowi", "www.wowinterface.com": "wowi", "cdn.wowinterface.com": "wowi",
+  "tukui.org": "tukui", "www.tukui.org": "tukui",
+  "wowace.com": "wowace", "www.wowace.com": "wowace", "repos.wowace.com": "wowace"
+}
+var LINK_MAX_CHARS = 512
+
+// `{source, text}` when the box holds a ref or a link the CLI resolves, else null (the
+// text is searched as words). Shapes, not lookups:
+//   - `gh:owner/repo`, `wowi:<digits>`, `tukui:<slug>`, `wowace:<slug>…`, and `git:` or
+//     `url:` followed by an https address;
+//   - `https://` and a host above, with a path (GitHub's names an owner and a repository).
+// Whitespace, control characters, credentials or a port in the host, and text past
+// LINK_MAX_CHARS never are.
+function searchLink(text) {
+  var t = str(text).trim()
+  if (t === "" || t.length > LINK_MAX_CHARS || /[\s\u0000-\u001f\u007f]/.test(t)) return null
+  var prefixed = /^([a-z]+):(.+)$/.exec(t)
+  if (prefixed && LINK_PREFIXES.hasOwnProperty(prefixed[1])) {
+    var kind = prefixed[1]
+    var rest = prefixed[2]
+    var shaped = kind === "gh" ? /^[^\/]+\/[^\/]+$/.test(rest)
+      : kind === "wowi" ? /^[0-9]+$/.test(rest)
+      : kind === "git" || kind === "url" ? /^https:\/\/[^\/?#]+\//i.test(rest)
+      : /^[^\/:]/.test(rest)
+    return shaped ? { "source": LINK_PREFIXES[kind], "text": t } : null
+  }
+  var link = /^https:\/\/([^\/?#]+)([\/?#].*)?$/i.exec(t)
+  if (!link) return null
+  var host = link[1].toLowerCase()
+  if (!LINK_HOSTS.hasOwnProperty(host)) return null
+  var path = String(link[2] || "").split(/[?#]/)[0]
+  var source = LINK_HOSTS[host]
+  if (source === "github" ? !/^\/[^\/]+\/[^\/]+/.test(path) : path.replace(/\//g, "") === "") return null
+  return { "source": source, "text": t }
+}
+
+// What the search box's hint says each verdict is, for one client: the words, the glyph
+// (§5.4), and its rank (the best a result has across clients decides its row's glyph).
+var SEARCH_VERDICTS = {
+  "yes": { "word": "search.verdict.works", "glyph": 0xF05E0, "rank": 4 },
+  "likely": { "word": "search.verdict.likely", "glyph": 0xF05E0, "rank": 3 },
+  "unknown": { "word": "search.verdict.unknown", "glyph": 0xF0625, "rank": 2 },
+  "abandoned": { "word": "search.verdict.abandoned", "glyph": 0xF02FD, "rank": 1 },
+  "unlikely": { "word": "search.verdict.not", "glyph": 0xF02FD, "rank": 0 },
+  "no": { "word": "search.verdict.not", "glyph": 0xF02FD, "rank": 0 }
+}
+
+function searchVerdict(hint) {
+  return SEARCH_VERDICTS.hasOwnProperty(hint) ? SEARCH_VERDICTS[hint] : SEARCH_VERDICTS.unknown
+}
+
+// Where a result is installed already, from `list -v` (reduced): the clients whose
+// records hold its ref, or its name (ignoring case), each `{id, version}`.
+function installedOf(result, lists) {
+  var name = str(result && result.name).toLowerCase()
+  var ref = str(result && result.ref)
+  var out = []
+  var listTargets = lists && Array.isArray(lists.targets) ? lists.targets : []
+  listTargets.forEach(function(t) {
+    var addons = Array.isArray(t.addons) ? t.addons : []
+    for (var i = 0; i < addons.length; i++) {
+      var a = addons[i]
+      if ((ref !== "" && str(a.ref) === ref) || (name !== "" && str(a.name).toLowerCase() === name)) {
+        out.push({ "id": str(t.id), "version": str(a.version) })
+        return
+      }
+    }
+  })
+  return out
+}
+
+// Where a search result may be installed: every client on this computer with its hint
+// and what that means in words (`words`, as the chooser lists it); only `yes` and
+// `likely` are eligible (the CLI's own rule for its `commands`), and never a client that
+// has it already (`installed`). `lists` (`list -v`, reduced) is optional.
+function installTargets(result, statusTargets, lists) {
   var hints = result && result.hints ? result.hints : {}
-  return (Array.isArray(statusTargets) ? statusTargets : []).map(function(t) {
+  var installed = installedOf(result, lists)
+  return liveTargets(statusTargets).map(function(t) {
     var hint = hints.hasOwnProperty(t.id) ? hints[t.id] : "unknown"
-    return { "id": t.id, "hint": hint, "eligible": INSTALLABLE_HINTS.indexOf(hint) >= 0 }
+    var client = str(t.displayName) || str(t.id)
+    var has = installed.some(function(i) { return i.id === t.id })
+    return { "id": t.id, "client": client, "hint": hint, "installed": has,
+      "words": has ? copy("search.verdict.installed", { "client": client }) : copy(searchVerdict(hint).word, { "client": client }),
+      "eligible": !has && INSTALLABLE_HINTS.indexOf(hint) >= 0 }
   })
 }
+
+// One result's verdict in the scope (design doc §2.3, §6.3): `{words, glyph, action,
+// note}`. For one client, its own hint in words; under All, how many clients it works
+// on. `action` is what the row offers: "install" where a client is eligible, "check"
+// (its page, whose `info` read decides) when no client's hint is known, else "" (Enter
+// still opens its page). `note` is what `i` says when it installs nothing.
+function searchVerdictOf(targets, filter) {
+  var scoped = filter ? targets.filter(function(t) { return t.id === filter }) : targets
+  if (scoped.length === 1) {
+    var t = scoped[0]
+    var v = searchVerdict(t.hint)
+    var action = t.eligible ? "install" : (!t.installed && t.hint === "unknown" ? "check" : "")
+    var note = t.installed ? copy("search.note.installed", { "client": t.client })
+      : t.hint === "unknown" ? copy("search.note.unknown") : copy("search.note.not", { "words": copy(v.word, { "client": t.client }) })
+    return { "words": copy(v.word, { "client": t.client }), "glyph": v.glyph, "action": action, "note": action === "install" ? "" : note }
+  }
+  // The words count every client, the ones that have it too; what `i` may install
+  // leaves those out.
+  var count = function(hint) { return scoped.filter(function(t) { return t.hint === hint }).length }
+  var m = scoped.length
+  var works = count("yes")
+  var likely = count("likely")
+  var best = scoped.reduce(function(at, t) { return searchVerdict(t.hint).rank > searchVerdict(at).rank ? t.hint : at }, "no")
+  var unknown = works + likely === 0 && scoped.some(function(t) { return t.hint === "unknown" })
+  var words = works > 0 && likely > 0 ? copy("search.verdict.all.works_likely", { "n": works, "m": m, "k": likely })
+    : works > 0 ? copy("search.verdict.all.works", { "n": works, "m": m })
+    : likely > 0 ? copy("search.verdict.all.likely", { "n": likely, "m": m })
+    : unknown ? copy("search.verdict.all.unknown")
+    : best === "abandoned" ? copy("search.verdict.abandoned") : copy("search.verdict.all.not")
+  var eligible = scoped.some(function(t) { return t.eligible })
+  var check = !eligible && unknown && scoped.some(function(t) { return t.hint === "unknown" && !t.installed })
+  var note = eligible ? "" : check ? copy("search.note.unknown")
+    : works + likely > 0 ? copy("search.note.installed_where") : copy("search.note.not", { "words": words })
+  return { "words": words, "glyph": searchVerdict(best).glyph, "action": eligible ? "install" : (check ? "check" : ""), "note": note }
+}
+
+// The installed marker (a chip): "installed 5.19.2" on the scope's client, else
+// "installed on Retail" (or "on 3 clients") where other clients have it; null when no
+// client does.
+function installedChip(installed, statusTargets, filter) {
+  if (installed.length === 0) return null
+  var here = filter ? installed.filter(function(i) { return i.id === filter })[0] : null
+  if (here) return { "text": here.version ? copy("search.chip.installed.version", { "version": here.version }) : copy("search.chip.installed"), "urgent": false }
+  var names = installed.map(function(i) { return sheetClient(statusTargets, i.id, "") })
+  return { "text": names.length > 2 ? copy("search.chip.installed.clients", { "n": names.length })
+    : copy("search.chip.installed.on", { "clients": joinNames(names) }), "urgent": false }
+}
+
+// The Search view's rows (1n2p.25, design doc §2.3, §5.3), from what the panel holds:
+// `rows` (the shown search answer's results, reduced), `link` (searchLink of the box's
+// text, or null), `filter`, `statusTargets` (`status`'s clients), `lists` (`list -v`,
+// reduced, for the installed marker) and `nowMs`. A link gives one row, "Install from
+// GitHub", whose page resolves it; each result gives an AddonRow's fields: its name, its
+// summary (`detail`), its verdict first on the meta line with the source, popularity,
+// age and author after it, the verdict's glyph, the installed and catalog chips, and the
+// cursored row's actions. `action` is the row's install action ("install", "check" or
+// ""), `note` what `i` says when it installs nothing, and `targets` its clients with
+// their verdicts (installTargets, for the chooser).
+function searchRows(input) {
+  var i = input && typeof input === "object" ? input : {}
+  var filter = str(i.filter)
+  var statusTargets = Array.isArray(i.statusTargets) ? i.statusTargets : []
+  var nowMs = typeof i.nowMs === "number" ? i.nowMs : Date.now()
+  if (i.link && typeof i.link === "object") {
+    var source = copy("search.link.source." + str(i.link.source))
+    return [{
+      "key": "link", "kind": "link", "name": "", "ref": "", "link": str(i.link.text),
+      "title": copy("search.link.title", { "source": source }), "detail": "", "meta": str(i.link.text),
+      "glyph": String.fromCodePoint(0xF059F), "chips": [], "action": "open", "note": "", "targets": [],
+      "actions": [{ "name": "enter", "glyph": String.fromCodePoint(0xF0142), "tooltip": withKey(copy("search.action.open_link"), "enter", "search") }]
+    }]
+  }
+  var rows = Array.isArray(i.rows) ? i.rows : []
+  return rows.map(function(r, at) {
+    var targets = installTargets(r, statusTargets, i.lists)
+    var verdict = searchVerdictOf(targets, filter)
+    var installed = installedOf(r, i.lists).filter(function(x) { return !!targetById(liveTargets(statusTargets), x.id) })
+    var chips = []
+    var marker = installedChip(installed, statusTargets, filter)
+    if (marker) chips.push(marker)
+    if (r.source === "catalog") chips.push({ "text": copy("search.chip.catalog"), "urgent": false })
+    var meta = [verdict.words]
+    var kind = sourceKind(r.ref)
+    meta.push(r.source === "catalog" || !SEARCH_SOURCES.hasOwnProperty(r.source) ? (SOURCE_WORDS[kind] || copy("installed.source.unknown"))
+      : copy(SEARCH_SOURCES[r.source]))
+    var popularity = popularityText(r)
+    if (popularity) meta.push(popularity)
+    var age = r.updatedAt ? sinceText(r.updatedAt, nowMs) : ""
+    if (age) meta.push(copy("search.meta.updated", { "age": age }))
+    if (r.author) meta.push(copy("page.by", { "author": r.author }))
+    var actions = []
+    if (verdict.action === "install") {
+      actions.push({ "name": "install", "glyph": String.fromCodePoint(0xF0415), "tooltip": withKey(copy("search.action.install"), "install", "search") })
+    } else if (verdict.action === "check") {
+      actions.push({ "name": "enter", "glyph": String.fromCodePoint(0xF0142), "tooltip": withKey(copy("search.action.check"), "enter", "search") })
+    }
+    return {
+      "key": "r/" + at + "/" + str(r.ref), "kind": "result", "name": str(r.name), "ref": str(r.ref), "link": "",
+      "title": str(r.name), "detail": str(r.summary), "meta": meta.join(" · "), "glyph": String.fromCodePoint(verdict.glyph),
+      "chips": chips, "action": verdict.action, "note": verdict.note, "targets": targets, "actions": actions
+    }
+  })
+}
+
+// A search hit's own source, as a word (a catalog hit takes its ref's).
+var SEARCH_SOURCES = { "wowi": "source.wowi", "tukui": "source.tukui", "github": "source.github" }
 
 // `s`: the raw details of `row`'s errors, from the service's view-bound read (`{selection,
 // data}`): null until the answer for this row arrives. Each error's raw message, then
@@ -4581,6 +4801,7 @@ var COPY = {
   "state.action.read_errors": "Read again",
   "state.action.refresh_backups": "Refresh",
   "state.refreshing": "Updating…",
+  "state.refreshing.search": "Searching…",
   "state.loading.errors": "Reading the Lua errors…",
   "state.failed.errors": "Couldn't read the Lua errors.",
   "state.empty.errors": "No client records Lua errors here.",
@@ -4773,6 +4994,42 @@ var COPY = {
   "source.wowace": "WowAce",
   "source.git": "a git repository",
   "source.file": "a file",
+
+  "search.box": "Search addons, or paste a link",
+  "search.verdict.works": "Works on {client}",
+  "search.verdict.likely": "Probably works on {client}",
+  "search.verdict.unknown": "Not known yet for {client}",
+  "search.verdict.abandoned": "Not updated in two years",
+  "search.verdict.not": "Not made for {client}",
+  "search.verdict.installed": "Already on {client}",
+  "search.verdict.all.works": { "one": "Works on 1 of {m} clients", "other": "Works on {n} of {m} clients" },
+  "search.verdict.all.works_likely": "Works on {n} of {m} clients, probably on {k} more",
+  "search.verdict.all.likely": { "one": "Probably works on 1 of {m} clients", "other": "Probably works on {n} of {m} clients" },
+  "search.verdict.all.unknown": "Not known yet where it works",
+  "search.verdict.all.not": "Not made for these clients",
+  "search.note.not": "{words}: nothing to install there.",
+  "search.note.unknown": "Not known yet where it works: Enter opens its page, which checks.",
+  "search.note.installed": "Already installed on {client}.",
+  "search.note.installed_where": "Already installed where it works.",
+  "search.chip.installed": "installed",
+  "search.chip.installed.version": "installed {version}",
+  "search.chip.installed.on": "installed on {clients}",
+  "search.chip.installed.clients": "installed on {n} clients",
+  "search.chip.catalog": "checked by omaddons",
+  "search.meta.updated": "updated {age}",
+  "search.action.install": "Install",
+  "search.action.check": "Check where it works",
+  "search.action.open_link": "See where it works, then install",
+  "search.link.title": "Install from {source}",
+  "search.link.page": "A pasted link",
+  "search.link.source.github": "GitHub",
+  "search.link.source.git": "a git repository",
+  "search.link.source.wowi": "WoWInterface",
+  "search.link.source.tukui": "Tukui",
+  "search.link.source.wowace": "WowAce",
+  "search.link.source.url": "a download link",
+  "search.chooser.title": "Install {addon} on:",
+
   "channel.stable": "stable",
   "channel.beta": "beta",
   "channel.alpha": "alpha",
@@ -5910,6 +6167,13 @@ if (typeof module !== "undefined") {
     dismissPlan: dismissPlan,
     searchRequest: searchRequest,
     installTargets: installTargets,
+    installedOf: installedOf,
+    searchLink: searchLink,
+    searchesLive: searchesLive,
+    searchRows: searchRows,
+    refreshingText: refreshingText,
+    SEARCH_DEBOUNCE_MS: SEARCH_DEBOUNCE_MS,
+    SEARCH_MIN_CHARS: SEARCH_MIN_CHARS,
     boundStaleText: boundStaleText,
     rawLines: rawLines,
     popularityText: popularityText,

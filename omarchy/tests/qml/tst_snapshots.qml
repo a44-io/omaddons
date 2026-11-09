@@ -1016,13 +1016,14 @@ TestCase {
     shoot("search-empty-box")
   }
 
-  // The query typed into the view's field and Enter pressed, as a player searches.
+  // The query typed into the view's field and searched at once, as Enter does (the
+  // pause would search it too).
   function searchFor(query, scene) {
     var view = frame.current
     var field = findChild(view, "searchField")
     verify(field !== null, "the search field")
     field.text = query
-    view.search()
+    view.searchQuery(query)
     settle(scene)
   }
 
@@ -1064,9 +1065,28 @@ TestCase {
     open(scene, "search")
     scene.search = the("search")
     searchFor("weakauras", scene)
-    verify(frame.current.results.length > 0, "results to choose from")
-    frame.current.install(frame.current.results[0])
+    verify(frame.current.rows.length > 0, "results to choose from")
+    frame.current.install(frame.current.rows[0])
     shoot("search-install-chooser")
+  }
+
+  // Under All, two clients: what fits each in words, the catalog's mark, and a hit no
+  // client has evidence for (1n2p.25).
+  function test_search_all_clients() {
+    var scene = everyday()
+    open(scene, "search")
+    scene.search = the("search-all")
+    searchFor("questie", scene)
+    verify(frame.current.rows.length === 2, "Questie and QuestieExtras")
+    shoot("search-all")
+  }
+
+  // A pasted link: one row, no search (1n2p.25).
+  function test_search_link() {
+    open(everyday(), "search")
+    findChild(frame.current, "searchField").text = "https://github.com/WeakAuras/WeakAuras2"
+    verify(frame.current.rows.length === 1, "the link's row")
+    shoot("search-link")
   }
 
   function test_search_no_results() {

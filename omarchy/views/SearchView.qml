@@ -6,37 +6,61 @@ import ".."
 import "../ui"
 import "../Model.js" as Model
 
-// The Search view (F6): a query (Enter in the field searches on the network lane; the
-// All filter searches every client in one request), results view-bound to the query
-// and filter they were asked for, each with the clients' compatibility hints. Enter on
-// a result installs it into the filtered client when its hint allows; in the All
-// filter it opens a chooser of the clients, preselecting none, so a hint is never
-// promoted to a destination (review round 3, revision 20).
+// The Search view (1n2p.25, design doc §2.3): the box at the top, searched as it is typed
+// (after Model.SEARCH_DEBOUNCE_MS of quiet, from Model.SEARCH_MIN_CHARS characters; Enter
+// searches at once), on the network lane, each search view-bound to its query and the
+// client scope (All searches every client in one request). The last query's results stay,
+// under "Searching…", until the next one's land, and a newer query stops an older search
+// (Service.searchFor). A pasted ref or link is no search: it is one row, "Install from
+// GitHub", whose page resolves it (the text only ever reaches the read-only `info`, M3-D2).
+// Each result is an AddonRow (Model.searchRows): its name, its summary, its verdict in
+// words with the source, popularity, age and author, the installed marker. Enter opens a
+// result's page; `i` installs it into the scope's client where its hint allows, and under
+// All opens a chooser of the clients, preselecting none and saying why each other one is
+// not offered, so a hint is never promoted to a destination; where nothing can be
+// installed, `i` says why.
 Item {
   id: root
 
   property var frame: null
   readonly property var svc: frame ? frame.svc : null
   readonly property string filter: frame ? frame.filter : ""
-  // The query the shown results answer.
+  readonly property var statusTargets: svc && Array.isArray(svc.targets) ? svc.targets : []
+  // The query the shown results answer (or will: the search it asked for runs).
   property string asked: ""
-  readonly property var results: svc && svc.search && svc.search.selection
-    && svc.search.selection.query === asked && svc.search.selection.target === filter
-    ? svc.search.rows : []
+  // The query the pause will search when it ends (typing, or a new client scope).
+  property string pending: ""
+  // The box's text, when it is a ref or a link (Model.searchLink), else null.
+  readonly property var link: Model.searchLink(field.text)
+  readonly property var answer: svc && svc.search && svc.search.selection ? svc.search : null
+  readonly property bool searching: !!svc && Array.isArray(svc.reading) && svc.reading.indexOf("search") !== -1
+  readonly property bool answered: answers(asked, filter)
+  // The results shown: this query's; while the next query runs, the last one's on the
+  // same client; none for a pasted link (its row is the view) or an empty query.
+  readonly property var results: link || asked === "" || !answer ? []
+    : answered ? answer.rows
+    : (searching && answer.selection.target === filter ? answer.rows : [])
+  readonly property var rows: Model.searchRows({ "rows": results, "link": link, "filter": filter,
+    "statusTargets": statusTargets, "lists": svc ? svc.lists : null, "nowMs": frame ? frame.nowMs : Date.now() })
   // What the view says around its results (design doc §7): what to type, searching,
   // nothing found, the sources that could not be searched, a search that failed.
-  readonly property var viewState: Model.viewState("search", { "service": svc, "filter": filter, "query": asked,
-    "rows": results.length, "nowMs": frame ? frame.nowMs : Date.now() })
-  readonly property int rowCount: chooserOpen ? 0 : results.length
+  readonly property var viewState: Model.viewState("search", { "service": svc, "filter": filter,
+    "query": link ? link.text : asked, "rows": rows.length, "nowMs": frame ? frame.nowMs : Date.now() })
+  readonly property int rowCount: chooserOpen ? 0 : rows.length
   // The field, or the chooser, has the keyboard.
   readonly property bool typing: field.activeFocus || chooserOpen
   property bool chooserOpen: false
   property var chooserRow: null
   property int chooserCursor: -1
-  readonly property var chooserTargets: chooserRow ? Model.installTargets(chooserRow, svc && Array.isArray(svc.targets) ? svc.targets : []) : []
+  readonly property var chooserTargets: chooserRow ? chooserRow.targets : []
+  // Whether the panel shows this view: a new scope searches the shown query again only
+  // then, and on coming back.
+  readonly property bool current: !!frame && frame.view === "search"
 
   readonly property color foreground: frame ? frame.foreground : Commons.Color.foreground
   readonly property color dim: frame ? frame.dim : Qt.darker(foreground, 1.55)
+  readonly property color urgent: frame ? frame.urgent : Commons.Color.urgent
+  readonly property color accent: frame ? frame.accent : Commons.Color.accent
   readonly property string fontFamily: frame ? frame.fontFamily : Style.font.family
   readonly property bool canChange: !!frame && frame.canAct && !frame.busy
 
@@ -45,13 +69,60 @@ Item {
   function focusSearch() { field.forceActiveFocus() }
   function rowItem(i) { return rowRepeater.itemAt(i) }
 
-  // KEYMAP's search rows: Enter and `i` install the cursored result.
+  onFilterChanged: followScope()
+  onCurrentChanged: followScope()
+
+  // Whether the service's answer is for `query` on `target`. The change handlers below
+  // ask this instead of reading `answered`, a binding that may not have caught up with
+  // the change yet.
+  function answers(query, target) {
+    return !!answer && answer.selection.query === query && answer.selection.target === target
+  }
+
+  // The shown query, searched again for the scope now chosen (after the pause, so
+  // stepping through clients with `t` searches once).
+  function followScope() {
+    if (!current || asked === "" || Model.searchLink(field.text) || answers(asked, filter) || searching) return
+    pending = asked
+    debounce.restart()
+  }
+
+  // The box changed: an empty box clears the search; a query long enough is searched
+  // after the pause; a link is no search.
+  function typed() {
+    var text = field.text.trim()
+    if (text === "") {
+      debounce.stop()
+      pending = ""
+      asked = ""
+      return
+    }
+    if (Model.searchesLive(text)) {
+      pending = text
+      debounce.restart()
+    } else {
+      debounce.stop()
+    }
+  }
+
+  // `query` searched now, unless it is the one the shown answer (or the running search)
+  // is for already.
+  function searchQuery(query) {
+    debounce.stop()
+    var q = String(query || "").trim()
+    if (q === "" || Model.searchLink(q) || !svc) return false
+    if (q === asked && (answers(q, filter) || searching)) return false
+    asked = q
+    svc.searchFor(q, filter)
+    return true
+  }
+
+  // KEYMAP's search rows: Enter opens the result's page (a link's page resolves it); `i`
+  // installs it where its hint allows, else says why.
   function handleKey(name, cursor) {
-    var row = cursor >= 0 && cursor < results.length ? results[cursor] : null
-    // Enter: the result's page (1n2p.23): whether it loads on each client, Install here;
-    // `i` installs it as the hint allows.
+    var row = cursor >= 0 && cursor < rows.length ? rows[cursor] : null
     if (name === "enter") {
-      if (row) frame.openAddon(row.name, row.ref)
+      if (row) open(row)
       return true
     }
     if (name === "install") {
@@ -61,49 +132,79 @@ Item {
     return false
   }
 
-  // The search box's keys (KEYMAP's field rows): Enter searches, Esc leaves the box with
-  // its text kept; every other key is typed.
+  function open(row) {
+    if (row.kind === "link") return frame.openLink(row.link)
+    return frame.openAddon(row.name, row.ref)
+  }
+
+  function select(index) {
+    frame.cursor = index
+    frame.cursorActive = true
+  }
+
+  // The search box's keys (KEYMAP's field rows): Enter searches now and goes to the
+  // results, Down and Up move the results' cursor while the box keeps the keys, Esc
+  // leaves the box with its text kept; every other key is typed.
   function fieldKey(code, text, modifiers) {
-    var row = Model.keyRow(Model.keyName(code, text, modifiers), "field")
-    if (!row) return false
-    if (row.action === "search") search()
-    else if (row.action === "leave") frame.leaveField()
+    var name = Model.keyName(code, text, modifiers)
+    var row = Model.keyRow(name, "field")
+    if (!row || !frame) return false
+    if (row.action === "search") {
+      searchQuery(field.text)
+      if (rows.length > 0) select(0)
+      frame.leaveField()
+    } else if (row.action === "move") {
+      frame.moveCursor(frame.cursorActive ? frame.cursor + Model.keyStep(name) : 0)
+    } else if (row.action === "leave") {
+      frame.leaveField()
+    }
     return true
   }
 
-  function search() {
-    var query = field.text.trim()
-    if (query === "") return
-    asked = query
-    svc.searchFor(query, filter)
-    frame.leaveField()
+  // Esc where the view has the keys (design doc §2.4): the search goes (the box, its
+  // results); false when there is none, so Esc closes the panel.
+  function escapeFilter() {
+    if (field.text === "" && asked === "") return false
+    field.text = ""
+    debounce.stop()
+    pending = ""
+    asked = ""
+    if (frame) {
+      frame.cursor = 0
+      frame.cursorActive = false
+    }
+    return true
   }
 
-  // Try again (a search that failed): the shown query, asked again.
+  // Try again (a search that failed, or a source that did not answer): the shown query,
+  // asked again.
   function searchAgain() {
     if (asked === "" || !svc) return false
+    debounce.stop()
     svc.searchFor(asked, filter)
     return true
   }
 
-  // Enter on a result: into the filtered client when its hint allows, else nothing;
-  // under All, the chooser.
+  // `i` on a row: a link's page; a result into the scope's client where its hint allows,
+  // under All the chooser; else what stands in the way, in words.
   function install(row) {
-    if (filter) {
-      var target = Model.installTargets(row, [{ "id": filter }])[0]
-      if (target.eligible) installInto(filter, row)
-      return
+    if (row.kind === "link") return open(row)
+    if (row.action !== "install") {
+      frame.keyNote = row.note
+      return false
     }
+    if (filter) return installInto(filter, row)
     chooserRow = row
     chooserCursor = -1
     chooserOpen = true
     chooserKeys.forceActiveFocus()
+    return true
   }
 
   function installInto(target, row) {
-    if (!canChange) return
+    if (!canChange) return false
     // The view shows no release for a search result: the dialog always opens (M4-D28).
-    frame.report(svc.run("install", { "target": target, "ref": row.ref }, "Install " + row.name, []))
+    return frame.report(svc.run("install", { "target": target, "ref": row.ref }, "Install " + row.name, []))
   }
 
   // The chooser's cursor moves among the eligible clients only; it starts on none.
@@ -140,6 +241,13 @@ Item {
     return true
   }
 
+  Timer {
+    id: debounce
+    objectName: "searchDebounce"
+    interval: Model.SEARCH_DEBOUNCE_MS
+    onTriggered: root.searchQuery(root.pending)
+  }
+
   Item {
     id: chooserKeys
     objectName: "chooserKeys"
@@ -157,13 +265,14 @@ Item {
       id: field
       objectName: "searchField"
       width: parent.width
-      placeholderText: "Search addons (" + Model.keyHint("search", "view") + " types here, "
-        + Model.keyHint("search", "field") + " searches)"
+      placeholderText: Model.copy("search.box")
       foreground: root.foreground
+      onTextChanged: root.typed()
       Keys.onPressed: function(event) { event.accepted = root.fieldKey(event.key, event.text, event.modifiers) }
     }
 
-    // In the All filter: which client to install into, none chosen yet.
+    // In the All filter: which client to install into, none chosen yet; a client it is
+    // not offered on says why (its verdict in words).
     Column {
       objectName: "chooser"
       visible: root.chooserOpen
@@ -171,12 +280,13 @@ Item {
       spacing: Style.spacing.sm
 
       PlainLabel {
+        objectName: "chooserTitle"
         width: parent.width
         color: root.foreground
         font.family: root.fontFamily
         font.pixelSize: Style.font.body
         font.bold: true
-        text: root.chooserRow ? "Install " + root.chooserRow.name + " into: (j/k, Enter, Esc)" : ""
+        text: root.chooserRow ? Model.copy("search.chooser.title", { "addon": root.chooserRow.name }) + " (j/k, Enter, Esc)" : ""
       }
 
       Repeater {
@@ -194,13 +304,16 @@ Item {
 
           PlainLabel {
             id: choice
+            objectName: "choice"
             anchors.left: parent.left
             anchors.leftMargin: Style.spacing.lg
+            anchors.right: parent.right
+            anchors.rightMargin: Style.spacing.lg
             anchors.verticalCenter: parent.verticalCenter
             color: root.foreground
             font.family: root.fontFamily
             font.pixelSize: Style.font.body
-            text: modelData.id + " · " + modelData.hint
+            text: modelData.words
           }
 
           MouseArea {
@@ -227,59 +340,40 @@ Item {
 
     Repeater {
       id: rowRepeater
-      model: root.chooserOpen ? [] : root.results
+      model: root.chooserOpen ? [] : root.rows
 
-      CursorSurface {
+      Item {
         id: entry
         required property var modelData
         required property int index
         objectName: "searchRow_" + index
         width: column.width
-        implicitHeight: line.implicitHeight + Style.spacing.md * 2
-        hasCursor: !!root.frame && root.frame.cursorActive && root.frame.cursor === index
-        foreground: root.foreground
+        implicitHeight: addonRow.implicitHeight
 
-        Row {
-          id: line
-          anchors.left: parent.left
-          anchors.leftMargin: Style.spacing.lg
-          anchors.verticalCenter: parent.verticalCenter
-          spacing: Style.spacing.lg
-
-          PlainLabel {
-            color: root.foreground
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.body
-            font.bold: true
-            text: entry.modelData.name
+        AddonRow {
+          id: addonRow
+          objectName: "addonRow"
+          width: parent.width
+          title: entry.modelData.title
+          detail: entry.modelData.detail
+          meta: entry.modelData.meta
+          chips: entry.modelData.chips
+          glyph: entry.modelData.glyph
+          actions: entry.modelData.actions
+          cursored: !!root.frame && root.frame.cursorActive && root.frame.cursor === entry.index
+          // Another build: visible, inert (as the Updates view's rows).
+          inert: !!root.frame && root.frame.readOnly === true
+          foreground: root.foreground
+          dim: root.dim
+          urgent: root.urgent
+          accent: root.accent
+          fontFamily: root.fontFamily
+          // A click puts the cursor on it; its buttons act (design doc §4).
+          onActivated: root.select(entry.index)
+          onAction: function(name) {
+            root.select(entry.index)
+            root.handleKey(name, entry.index)
           }
-
-          PlainLabel {
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            text: entry.modelData.source + (Model.popularityText(entry.modelData) ? " · " + Model.popularityText(entry.modelData) : "")
-          }
-
-          // The filtered client's hint, or every client's under All.
-          PlainLabel {
-            objectName: "hints"
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            text: Model.installTargets(entry.modelData, root.svc && Array.isArray(root.svc.targets) ? root.svc.targets : [])
-              .filter(function(t) { return !root.filter || t.id === root.filter })
-              .map(function(t) { return t.id + " " + t.hint }).join(" · ")
-          }
-        }
-
-        MouseArea {
-          anchors.fill: parent
-          onClicked: {
-            root.frame.cursor = entry.index
-            root.frame.cursorActive = true
-          }
-          onDoubleClicked: root.install(entry.modelData)
         }
       }
     }

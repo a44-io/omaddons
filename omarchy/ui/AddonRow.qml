@@ -18,6 +18,9 @@ Item {
   property string fromVersion: ""
   property string toVersion: ""
   property string meta: ""
+  // A line between the title and the meta line (a search result's summary, 1n2p.25):
+  // one line, elided; it drops at 400 wide (design doc §2.3), and "" draws none.
+  property string detail: ""
   // Chips: [{text, urgent}] (client, source, channel, state words).
   property var chips: []
   // "urgent", "accent" or "" (no band).
@@ -174,6 +177,16 @@ Item {
           }
         }
       }
+    }
+
+    PlainLabel {
+      objectName: "detail"
+      width: parent.width
+      visible: root.detail !== "" && !root.narrow
+      color: root.dim
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.bodySmall
+      text: root.detail
     }
 
     // The second line: the meta line (or the running verb), the actions at its end.
