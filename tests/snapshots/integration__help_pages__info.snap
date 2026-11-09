@@ -16,7 +16,7 @@ Options:
       --changelog  Add the notes of every release newer than the oldest installed
 
 Examples:
-  omaddons info weakauras        where it is installed, and its newest release
+  omaddons info bigwigs          where it is installed, and its newest release
   omaddons info dbm --changelog  also the notes of every newer release
 
 Global: -t <TARGET>  --json  --dry-run  -v  --quiet  --no-color  --offline  (--help lists them all)
@@ -40,7 +40,7 @@ Options:
           Add the notes of every release newer than the oldest installed
 
 Examples:
-  omaddons info weakauras        where it is installed, and its newest release
+  omaddons info bigwigs          where it is installed, and its newest release
   omaddons info dbm --changelog  also the notes of every newer release
 
 See also: search, list

@@ -70,7 +70,7 @@ pub const EXTRAS: &[Extras] = &[
         path: "info",
         examples: &[
             (
-                "omaddons info weakauras",
+                "omaddons info bigwigs",
                 "where it is installed, and its newest release",
             ),
             (
