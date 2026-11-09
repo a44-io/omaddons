@@ -132,6 +132,11 @@ TestCase {
       function readExplanation(key, argv) { explains = explains.concat([[key, argv]]); return true }
       function clearExplanation() { explainClears++; explanation = null }
       function searchFor(query, target) { searches = searches.concat([[query, target]]) }
+      // The catalog an empty Search box shows (1n2p.26): every readCatalog call, and the
+      // answers by scope.
+      property var catalogs: ({})
+      property var catalogReads: []
+      function readCatalog(target) { catalogReads = catalogReads.concat([target]); return true }
       function dismissErrors(plan) { dismissals = dismissals.concat([JSON.parse(JSON.stringify(plan))]); return "" }
       // The real copyCommand runs Model.copyArgv(text); this records the argv instead.
       property var copies: []
@@ -472,12 +477,13 @@ TestCase {
     var search = content()
     var state = findChild(search, "viewState")
     compare(findChild(state, "stateEmpty").sentence, "Type a name, or paste a link from GitHub, WoWInterface, Tukui or WowAce.")
-    search.asked = "dbm"
+    findChild(search, "searchField").text = "dbm"
     compare(findChild(state, "stateEmpty").sentence, "Searching…")
+    tryVerify(function() { return svc.searches.length === 1 })
     svc.outcomes = { "search": "failed" }
     compare(findChild(state, "stateEmpty").sentence, "The search didn't finish.")
     findChild(state, "stateEmpty").action()
-    compare(json(svc.searches), json([["dbm", ""]]), "Try again searches again")
+    compare(json(svc.searches), json([["dbm", ""], ["dbm", ""]]), "Try again searches again")
     svc.outcomes = { "search": "ok" }
     svc.search = { "query": "dbm", "rows": [{ "name": "DBM", "ref": "dbm", "source": "catalog", "compat": "", "hints": {} }],
       "skipped": [{ "source": "github", "reason": "offline" }, { "source": "wowi", "reason": "offline" }],
@@ -1543,6 +1549,94 @@ TestCase {
     compare([field.text, search.asked, search.rowCount], ["damage meter", "damage meter", 2])
     keyClick(Qt.Key_Escape)
     compare([field.text, search.asked, search.rowCount], ["", "", 0])
+  }
+
+  // The catalog `search --catalog` answers for a scope, reduced: Bartender4 fits both clients,
+  // Questie only Classic Era, and WeakAuras (installed on Retail in listing()) only Retail.
+  function catalogAnswer(scope) {
+    var row = function(name, ref, hints) {
+      return { "name": name, "ref": ref, "source": "catalog", "author": null, "summary": null, "downloads": null,
+        "stars": null, "updatedAt": null, "hints": hints }
+    }
+    var all = [row("Bartender4", "gh:Nevcairiel/Bartender4", { "era": "yes", "retail": "yes" }),
+      row("Questie", "gh:Questie/Questie", { "era": "yes", "retail": "no" }),
+      row("WeakAuras", "gh:o/weakauras", { "era": "no", "retail": "yes" })]
+    var rows = all.filter(function(r) { return !scope || r.hints[scope] !== "no" })
+      .map(function(r) {
+        var only = {}
+        if (scope) only[scope] = r.hints[scope]
+        return scope ? Object.assign({}, r, { "hints": only }) : r
+      })
+    return { "query": "", "rows": rows, "skipped": [] }
+  }
+
+  // An empty Search box browses the built-in catalog for the scope (1n2p.26): one read
+  // per scope, the rows in their words, what the list is, the installed ones last.
+  function test_an_empty_search_box_browses_the_catalog_for_the_scope() {
+    keyClick("3")
+    var search = content()
+    tryVerify(function() { return svc.catalogReads.indexOf("") !== -1 })
+    var state = findChild(search, "viewState")
+    compare(findChild(state, "stateEmpty").sentence, "Type a name, or paste a link from GitHub, WoWInterface, Tukui or WowAce.",
+      "what to type until the catalog answers")
+    verify(!findChild(search, "browseHeader").visible)
+    svc.catalogs = { "": catalogAnswer("") }
+    compare(json(search.rows.map(function(r) { return [r.name, r.meta.split(" · ")[0]] })), json([
+      ["Bartender4", "Works on 2 of 2 clients"], ["Questie", "Works on 1 of 2 clients"], ["WeakAuras", "Works on 1 of 2 clients"]]))
+    verify(!findChild(state, "stateEmpty").visible)
+    compare(findChild(search, "browseHeader").text, "Addons omaddons has checked for your clients. Type to search everywhere.")
+    // Retail: its own read; WeakAuras, installed there, comes last.
+    keyClick("t")
+    keyClick("t")
+    compare(view.filter, "retail")
+    tryVerify(function() { return svc.catalogReads.indexOf("retail") !== -1 })
+    svc.catalogs = { "": catalogAnswer(""), "retail": catalogAnswer("retail") }
+    compare(json(search.rows.map(function(r) { return [r.name, r.chips.map(function(c) { return c.text })] })), json([
+      ["Bartender4", []], ["WeakAuras", ["installed 5.19.2"]]]))
+    compare(findChild(search, "browseHeader").text, "Addons omaddons has checked for Retail. Type to search everywhere.")
+    compare(svc.searches.length, 0, "browsing asks no search")
+  }
+
+  // Typing replaces the catalog with live results; clearing the box brings it back, the
+  // cursor at its top.
+  function test_typing_leaves_the_catalog_and_clearing_returns_to_it() {
+    svc.catalogs = { "": catalogAnswer("") }
+    var field = searchBox()
+    var search = content()
+    compare(search.rowCount, 3)
+    keyClick(Qt.Key_Down)
+    keyClick(Qt.Key_Down)
+    compare(view.cursor, 1)
+    field.text = "damage meter"
+    verify(!findChild(search, "browseHeader").visible)
+    compare(search.rowCount, 0)
+    tryVerify(function() { return svc.searches.length === 1 })
+    svc.search = { "selection": { "query": "damage meter", "target": "" }, "query": "damage meter", "skipped": [],
+      "rows": [{ "name": "Details!", "ref": "wowi:23056", "source": "wowi", "downloads": 515870, "stars": null, "hints": { "retail": "likely" } }] }
+    compare(search.rows[0].name, "Details!")
+    field.text = ""
+    compare(search.rowCount, 3)
+    compare(view.cursor, 0)
+    verify(findChild(search, "browseHeader").visible)
+  }
+
+  // A catalog row installs and opens its page exactly as a result does.
+  function test_a_catalog_row_installs_and_opens_its_page_as_a_result_does() {
+    svc.catalogs = { "": catalogAnswer(""), "era": catalogAnswer("era") }
+    keyClick("t")
+    compare(view.filter, "era")
+    keyClick("3")
+    var search = content()
+    compare(json(search.rows.map(function(r) { return r.name })), json(["Bartender4", "Questie"]))
+    keyClick("j")
+    keyClick("j")
+    compare(view.cursor, 1)
+    keyClick("i")
+    compare(json(svc.runs[0]), json(["install", { "target": "era", "ref": "gh:Questie/Questie" }, "Install Questie", []]))
+    keyClick(Qt.Key_Return)
+    compare(view.pages.length, 1)
+    var page = findChild(view, "page").item
+    compare([page.name, page.ref], ["Questie", "gh:Questie/Questie"])
   }
 
   // ------------------------------------------------------------- Backups

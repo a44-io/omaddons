@@ -4202,3 +4202,60 @@ describe("the Search view", () => {
       ["Tukui couldn't be searched: turned off.", null]])
   })
 })
+
+// Search with an empty box (1n2p.26): the built-in catalog for the scope, over the
+// envelopes `search --catalog` (All) and `search --catalog -t era` write on a retail and
+// Classic Era home.
+describe("the Search view's catalog", () => {
+  const TARGETS = [{ id: "era", displayName: "Classic Era" }, { id: "retail", displayName: "Retail" }]
+  const catalog = (name) => M.reduceSearch(fixture(name)).rows
+  const rows = (name, filter, lists) => M.catalogRows({ rows: catalog(name), filter, statusTargets: TARGETS, lists: lists || null, nowMs: NOW })
+
+  test("one local read per scope, asking no source", () => {
+    expect(M.catalogRequest("")).toEqual({ template: "catalog", slots: {} })
+    expect(M.catalogRequest("era")).toEqual({ template: "catalog_target", slots: { target: "era" } })
+    for (const [template, slots] of [["catalog", {}], ["catalog_target", { target: "era" }]]) {
+      expect(M.COMMANDS[template].lane).toBe("local")
+      const built = M.buildArgv(template, slots, opts()).argv
+      expect([template, built.indexOf("--catalog") > 0, built.includes("--progress")]).toEqual([template, true, false])
+    }
+  })
+
+  test("every entry that fits, by name, each with its verdict; the scope's own builds", () => {
+    const all = rows("search-catalog", "")
+    const names = all.map((r) => r.name)
+    expect(names.length).toBeGreaterThan(40)
+    expect([...names].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()))).toEqual(names)
+    const questie = all.find((r) => r.name === "Questie")
+    // No catalog chip: the view's header says every row is the catalog's.
+    expect([questie.meta.split(" · ")[0], questie.action, questie.chips.map((c) => c.text)])
+      .toEqual(["Works on 1 of 2 clients", "install", []])
+    // One client: only what may load there, each in its words; BugGrabber is its build.
+    const era = rows("search-catalog-era", "era")
+    expect(era.map((r) => r.targets.find((t) => t.id === "era").hint)).not.toContain("no")
+    expect(era.find((r) => r.name === "Questie").meta.split(" · ")[0]).toBe("Works on Classic Era")
+    expect(era.find((r) => r.name === "BugGrabber").ref).toBe("wowace:bug-grabber")
+  })
+
+  test("what is installed here comes last, each part kept in name order", () => {
+    const lists = { targets: [{ id: "era", key: "k", addons: [{ name: "Questie", ref: "gh:Questie/Questie", version: "11.0" }] }] }
+    const era = rows("search-catalog-era", "era", lists)
+    const last = era[era.length - 1]
+    expect([last.name, last.installed, last.chips[0].text, last.action]).toEqual(["Questie", true, "installed 11.0", ""])
+    const rest = era.slice(0, -1).map((r) => r.name)
+    expect(rest.every((n) => n !== "Questie")).toBe(true)
+    expect([...rest].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()))).toEqual(rest)
+    // Under All it is installed only where nothing is left to install: Questie works on
+    // Classic Era alone, which has it.
+    expect(rows("search-catalog", "", lists).slice(-1)[0].name).toBe("Questie")
+  })
+
+  test("an empty box shows the catalog's rows, or what to type, never a search's state", () => {
+    const service = { targets: [], reading: ["search"], outcomes: { search: "failed" },
+      search: { rows: [], skipped: [{ source: "wowi", reason: "no_index" }], selection: { query: "dbm", target: "" } } }
+    const shown = M.viewState("search", { service, filter: "", query: "", rows: 12, nowMs: NOW })
+    expect([shown.state, shown.refreshing, shown.notices, shown.sentence]).toEqual(["rows", false, [], ""])
+    const none = M.viewState("search", { service, filter: "", query: "", rows: 0, nowMs: NOW })
+    expect([none.state, none.sentence]).toEqual(["empty", "Type a name, or paste a link from GitHub, WoWInterface, Tukui or WowAce."])
+  })
+})

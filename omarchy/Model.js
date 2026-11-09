@@ -124,6 +124,8 @@ var COMMANDS = {
   "errors_raw":     { "argv": ["errors", "--raw-details", "-t", "{target}", "--addon={addon}"], "mutates": false, "lane": "local" },
   "dismiss_errors": { "argv": ["errors", "dismiss", "-t", "{target}"],              "mutates": true, "bind": true },
   "search_all":     { "argv": ["search", "--limit", "20", "--", "{query}"],         "mutates": false, "lane": "network" },
+  "catalog":        { "argv": ["search", "--catalog"],                              "mutates": false, "lane": "local" },
+  "catalog_target": { "argv": ["search", "--catalog", "-t", "{target}"],            "mutates": false, "lane": "local" },
   "backups":        { "argv": ["backup", "list", "--limit", "50"],                  "mutates": false, "lane": "local" },
   "backups_detail": { "argv": ["backup", "list", "-v", "-t", "{target}", "--limit", "50"], "mutates": false, "lane": "local" },
   "backup_target":  { "argv": ["backup", "create", "-t", "{target}"],               "mutates": true },
@@ -3130,8 +3132,11 @@ function viewState(view, input) {
       "body": copy("state.missing.detail"), "action": null, "actions": actions })
     return out
   }
+  // An empty box: the catalog's rows when there are some (1n2p.26), with nothing about
+  // a search; else what to type.
   if (view === "search" && query === "") {
-    set("empty", copy("state.empty.search"))
+    out.refreshing = false
+    if (num(i.rows) === 0) set("empty", copy("state.empty.search"))
     return out
   }
   if (!have) {
@@ -4135,12 +4140,36 @@ function searchRows(input) {
     } else if (verdict.action === "check") {
       actions.push({ "name": "enter", "glyph": String.fromCodePoint(0xF0142), "tooltip": withKey(copy("search.action.check"), "enter", "search") })
     }
+    // Installed here: on the scope's client, or under All wherever it works (nothing
+    // left to install).
+    var here = filter ? installed.some(function(x) { return x.id === filter })
+      : installed.length > 0 && verdict.action !== "install"
     return {
       "key": "r/" + at + "/" + str(r.ref), "kind": "result", "name": str(r.name), "ref": str(r.ref), "link": "",
       "title": str(r.name), "detail": str(r.summary), "meta": meta.join(" · "), "glyph": String.fromCodePoint(verdict.glyph),
-      "chips": chips, "action": verdict.action, "note": verdict.note, "targets": targets, "actions": actions
+      "chips": chips, "action": verdict.action, "note": verdict.note, "targets": targets, "actions": actions,
+      "installed": here
     }
   })
+}
+
+// The Search view with an empty box (1n2p.26): the built-in catalog (`search --catalog`,
+// read for the scope: with `-t` for one client, so a name with variants is that client's
+// build), as searchRows' rows, those not installed here first, each part in the CLI's
+// order (by name). The CLI already leaves out what fits no client in scope. Every row is
+// the catalog's, which the view's header line says, so no row carries its chip.
+function catalogRows(input) {
+  var mark = copy("search.chip.catalog")
+  var rows = searchRows(input).map(function(r) {
+    return Object.assign({}, r, { "chips": r.chips.filter(function(c) { return c.text !== mark }) })
+  })
+  return rows.filter(function(r) { return !r.installed }).concat(rows.filter(function(r) { return r.installed }))
+}
+
+// The catalog read for a scope: the template and its slots (All reads every client).
+function catalogRequest(filter) {
+  if (filter) return { "template": "catalog_target", "slots": { "target": filter } }
+  return { "template": "catalog", "slots": {} }
 }
 
 // A search hit's own source, as a word (a catalog hit takes its ref's).
@@ -5029,6 +5058,8 @@ var COPY = {
   "search.link.source.wowace": "WowAce",
   "search.link.source.url": "a download link",
   "search.chooser.title": "Install {addon} on:",
+  "search.browse.client": "Addons omaddons has checked for {client}. Type to search everywhere.",
+  "search.browse.all": "Addons omaddons has checked for your clients. Type to search everywhere.",
 
   "channel.stable": "stable",
   "channel.beta": "beta",
@@ -6171,6 +6202,8 @@ if (typeof module !== "undefined") {
     searchLink: searchLink,
     searchesLive: searchesLive,
     searchRows: searchRows,
+    catalogRows: catalogRows,
+    catalogRequest: catalogRequest,
     refreshingText: refreshingText,
     SEARCH_DEBOUNCE_MS: SEARCH_DEBOUNCE_MS,
     SEARCH_MIN_CHARS: SEARCH_MIN_CHARS,

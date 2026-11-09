@@ -40,12 +40,23 @@ Item {
   readonly property var results: link || asked === "" || !answer ? []
     : answered ? answer.rows
     : (searching && answer.selection.target === filter ? answer.rows : [])
-  readonly property var rows: Model.searchRows({ "rows": results, "link": link, "filter": filter,
-    "statusTargets": statusTargets, "lists": svc ? svc.lists : null, "nowMs": frame ? frame.nowMs : Date.now() })
+  // An empty box browses the built-in catalog for the scope (1n2p.26): one local read per
+  // scope, kept by the service; until it answers (or when it fails) the view says what
+  // to type.
+  readonly property bool browsing: field.text.trim() === ""
+  readonly property var catalog: svc && svc.catalogs && svc.catalogs.hasOwnProperty(filter) ? svc.catalogs[filter] : null
+  readonly property var rows: browsing
+    ? Model.catalogRows({ "rows": catalog ? catalog.rows : [], "filter": filter, "statusTargets": statusTargets,
+        "lists": svc ? svc.lists : null, "nowMs": frame ? frame.nowMs : Date.now() })
+    : Model.searchRows({ "rows": results, "link": link, "filter": filter, "statusTargets": statusTargets,
+        "lists": svc ? svc.lists : null, "nowMs": frame ? frame.nowMs : Date.now() })
   // What the view says around its results (design doc §7): what to type, searching,
   // nothing found, the sources that could not be searched, a search that failed.
+  // A query the pause is about to search says "Searching…" already.
+  readonly property string shownQuery: link ? link.text : browsing ? ""
+    : (asked !== "" ? asked : (Model.searchesLive(field.text) ? field.text.trim() : ""))
   readonly property var viewState: Model.viewState("search", { "service": svc, "filter": filter,
-    "query": link ? link.text : asked, "rows": rows.length, "nowMs": frame ? frame.nowMs : Date.now() })
+    "query": shownQuery, "rows": rows.length, "nowMs": frame ? frame.nowMs : Date.now() })
   readonly property int rowCount: chooserOpen ? 0 : rows.length
   // The field, or the chooser, has the keyboard.
   readonly property bool typing: field.activeFocus || chooserOpen
@@ -71,6 +82,12 @@ Item {
 
   onFilterChanged: followScope()
   onCurrentChanged: followScope()
+  Component.onCompleted: Qt.callLater(root.followScope)
+
+  // The catalog for the scope, read once (the service keeps it).
+  function askCatalog() {
+    if (svc && typeof svc.readCatalog === "function") svc.readCatalog(filter)
+  }
 
   // Whether the service's answer is for `query` on `target`. The change handlers below
   // ask this instead of reading `answered`, a binding that may not have caught up with
@@ -82,19 +99,27 @@ Item {
   // The shown query, searched again for the scope now chosen (after the pause, so
   // stepping through clients with `t` searches once).
   function followScope() {
-    if (!current || asked === "" || Model.searchLink(field.text) || answers(asked, filter) || searching) return
+    if (!current) return
+    if (field.text.trim() === "") {
+      askCatalog()
+      return
+    }
+    if (asked === "" || Model.searchLink(field.text) || answers(asked, filter) || searching) return
     pending = asked
     debounce.restart()
   }
 
-  // The box changed: an empty box clears the search; a query long enough is searched
-  // after the pause; a link is no search.
+  // The box changed: an empty box clears the search and goes back to the catalog, the
+  // cursor at its top; a query long enough is searched after the pause; a link is no
+  // search.
   function typed() {
     var text = field.text.trim()
     if (text === "") {
       debounce.stop()
       pending = ""
       asked = ""
+      if (frame) frame.cursor = 0
+      if (current) askCatalog()
       return
     }
     if (Model.searchesLive(text)) {
@@ -326,6 +351,18 @@ Item {
           }
         }
       }
+    }
+
+    // An empty box: what the list is (1n2p.26).
+    PlainLabel {
+      objectName: "browseHeader"
+      visible: root.browsing && root.rows.length > 0 && !root.chooserOpen
+      width: parent.width
+      color: root.dim
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      text: root.filter ? Model.copy("search.browse.client", { "client": Model.heroTitle(root.statusTargets, root.filter) })
+        : Model.copy("search.browse.all")
     }
 
     ViewState {

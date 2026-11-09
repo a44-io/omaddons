@@ -679,6 +679,16 @@ fn the_output_cap_bounds_every_template() {
             Some(base + ADDONS * slope)
         } else if argv.contains("{query}") {
             Some(SEARCH_MAX_RESULTS as u64 * (SEARCH_SUMMARY_MAX_CHARS as u64 * 6 + ROW) + ANSWER)
+        } else if argv.contains("--catalog") {
+            // `search --catalog` has no cap: the built-in catalog's 66 entries beside up
+            // to ~900 of a player's own (`catalog.d`), each row a hint per client. A
+            // catalog past that fails the read as oversized, and Search's empty box then
+            // says what to type (1n2p.26).
+            const CATALOG_ENTRIES: u64 = 1_000;
+            Some(
+                CATALOG_ENTRIES * (SEARCH_SUMMARY_MAX_CHARS as u64 * 6 + ROW + CLIENTS * 32)
+                    + ANSWER,
+            )
         } else if argv.contains("--changelog") {
             Some(CHANGELOG_MAX_ENTRIES as u64 * (CHANGELOG_MAX_CHARS as u64 * 6 + ROW) + ANSWER)
         } else if name == "errors" {
@@ -2803,6 +2813,43 @@ fn write_widget_fixtures() {
         Some(serde_json::json!({"era": "unknown", "retail": "unknown"})),
         "{search_all}"
     );
+    // The catalog an empty Search box shows (1n2p.26): local and offline, for All and
+    // for one client; neither read reaches the network.
+    let requests = common::netlog::net_log(&home).len();
+    let catalog = write_fixture(
+        &dir,
+        "search-catalog",
+        &home.exec(&fill(&t, "catalog", &[])),
+        0,
+    );
+    let era = write_fixture(
+        &dir,
+        "search-catalog-era",
+        &home.exec(&fill(&t, "catalog_target", &[("target", "era")])),
+        0,
+    );
+    assert_eq!(
+        common::netlog::net_log(&home).len(),
+        requests,
+        "the catalog asks no source"
+    );
+    for (envelope, client) in [(&catalog, "retail"), (&era, "era")] {
+        let questie = envelope["data"]["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["name"] == "Questie")
+            .map(|r| r["compat"][client].clone());
+        assert_eq!(
+            questie,
+            Some(if client == "era" {
+                "yes".into()
+            } else {
+                "no".into()
+            }),
+            "{envelope}"
+        );
+    }
 
     states_fixtures(&dir, &t);
 

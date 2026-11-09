@@ -1190,6 +1190,30 @@ TestCase {
     compare(service.search.rows[0].hints.era, "likely")
   }
 
+  // The catalog an empty Search box shows (1n2p.26): one local, offline read per scope,
+  // kept; a failure stays out of the panel and is asked again the next time.
+  function test_the_catalog_is_read_once_per_scope_and_a_failure_is_quiet() {
+    ready(0)
+    verify(service.readCatalog(""))
+    var all = lastRun("search")
+    compare(words(all.command), ["search", "--catalog"])
+    verify(!service.readCatalog(""), "asked already")
+    answer(all, envelope("search", { "query": "", "results": [{ "name": "DBM", "ref": "gh:DeadlyBossMods/DeadlyBossMods",
+      "source": "catalog", "compat": { "retail": "yes" } }], "sources_skipped": [] }))
+    compare(service.catalogs[""].rows[0].name, "DBM")
+    verify(!service.readCatalog(""), "kept")
+    verify(service.readCatalog("retail"))
+    var retail = lastRun("search")
+    compare(words(retail.command), ["search", "--catalog", "-t", "retail"])
+    retail.process.finish(1, JSON.stringify({ "ok": false, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION,
+      "command": "search", "exit_code": 1, "error": { "code": "io", "message": "the catalog could not be read", "fix": "",
+        "fix_argv": null, "alternatives": [], "retryable": false, "details": {} }, "warnings": [], "commands": [],
+      "meta": { "elapsed_ms": 1, "offline": false } }))
+    compare(service.lastError, null, "a background read's failure stays out of the panel")
+    verify(!service.catalogs.hasOwnProperty("retail"))
+    verify(service.readCatalog("retail"), "asked again after a failure")
+  }
+
   // A search for another query stops the running one too; the same query again, or a
   // check on the lane, stops nothing.
   function test_a_newer_query_stops_a_search_and_nothing_else() {

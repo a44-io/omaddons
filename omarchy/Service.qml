@@ -40,6 +40,11 @@ Item {
   property var errors: null
   property var backups: null
   property var search: null
+  // The built-in catalog per client scope ("" for All), reduced as a search's answer
+  // (`search --catalog`, local and offline: Search's empty box, 1n2p.26), kept for the
+  // service's life; `catalogAsked` the scopes asked for and not failed.
+  property var catalogs: ({})
+  property var catalogAsked: ({})
   property var changelog: null
   // The open addon page's own `info --changelog` read (1n2p.23), view-bound to the ref it
   // was asked for: `{selection, data, failed}`, `data` Model.reduceInfo's.
@@ -409,6 +414,21 @@ Item {
       networkLane.cancel()
     }
     return taken
+  }
+
+  // The catalog for `target` ("" for All), once: a background read on the local lane,
+  // whose failure stays out of the panel (the view says what to type instead) and is
+  // asked again the next time. Whether a read was asked for now.
+  function readCatalog(target) {
+    var t = String(target || "")
+    if (catalogs.hasOwnProperty(t) || catalogAsked.hasOwnProperty(t)) return false
+    var asked = {}
+    for (var key in catalogAsked) asked[key] = catalogAsked[key]
+    asked[t] = true
+    catalogAsked = asked
+    var shape = Model.catalogRequest(t)
+    return request({ "resource": "catalog", "template": shape.template, "lane": "local", "target": t,
+      "priority": "background", "slots": shape.slots, "label": "Catalog" })
   }
 
   // `d`: one bound dismissal per client in `plan` (`[{target, token}]`, the tokens of the
@@ -795,6 +815,12 @@ Item {
     refreshSpin()
     noteOutcome(r, outcome)
     requestFinished(r.resource, outcome)
+    // A catalog read with no answer is asked again the next time the view needs it.
+    if (r.resource === "catalog" && outcome !== "ok") {
+      var asked = {}
+      for (var scope in catalogAsked) if (scope !== String(r.target || "")) asked[scope] = catalogAsked[scope]
+      catalogAsked = asked
+    }
     if (outcome === "missing") {
       pendingDismissals = []
       phase = "missing"
@@ -866,6 +892,11 @@ Item {
       var found = Model.reduceSearch(env)
       found.selection = r.selection
       search = found
+    } else if (r.resource === "catalog") {
+      var kept = {}
+      for (var scope in catalogs) kept[scope] = catalogs[scope]
+      kept[String(r.target || "")] = Model.reduceSearch(env)
+      catalogs = kept
     } else if (r.resource === "changelog") {
       changelog = { "selection": r.selection, "data": env.data }
     } else if (r.resource === "addon_info") {

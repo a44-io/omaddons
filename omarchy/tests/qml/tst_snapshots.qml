@@ -303,6 +303,7 @@ TestCase {
     if (w[0] === "backup" && w[1] === "list") return scene.backups
     if (w[0] === "backup" && w[1] === "create" && w.indexOf("--auto") !== -1)
       return { "text": ok("backup create", { "dry_run": false, "run": null, "targets": [] }) }
+    if (w[0] === "search" && w.indexOf("--catalog") !== -1) return scene.catalog
     if (w[0] === "search") return scene.search
     if (w[0] === "info") return scene.changelog
     if (w[0] === "outdated") return scene.check
@@ -1079,6 +1080,16 @@ TestCase {
     searchFor("questie", scene)
     verify(frame.current.rows.length === 2, "Questie and QuestieExtras")
     shoot("search-all")
+  }
+
+  // An empty box: the built-in catalog for the scope, what fits first (1n2p.26).
+  function test_search_browse() {
+    var scene = everyday()
+    scene.catalog = the("search-catalog")
+    open(scene, "search")
+    settle(scene)
+    verify(frame.current.rows.length > 10, "the catalog's rows")
+    shoot("search-browse")
   }
 
   // A pasted link: one row, no search (1n2p.25).
