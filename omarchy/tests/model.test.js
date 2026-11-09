@@ -2492,11 +2492,13 @@ describe("the service's desktop triggers", () => {
   test("the error toast names addons, counts and clients, nothing an error says", () => {
     const status = M.reduceStatus(fixture("status-errors"), NOW)
     const facts = M.errorFacts(status.targets)
-    expect(facts).toEqual({ names: ["Foo"], counts: [2], targets: ["retail"] })
+    const retail = status.targets.find((t) => t.id === "retail").displayName
+    expect(facts).toEqual({ names: ["Foo"], counts: [2], targets: [retail] })
     const argv = M.errorToastArgv(facts, "a44.omaddons-fixture")
     expect(argv.slice(0, 7)).toEqual(["omarchy-notification-send", "--app-name", "omaddons", "-g", "\u{F0297}", "-u", "normal"])
-    expect(argv.slice(7, 9)).toEqual(["Lua errors in your last session on retail", "Foo 2"])
-    expect(argv.slice(-6)).toEqual(["--exec", "omarchy-shell", "shell", "summon", "a44.omaddons-fixture", "{}"])
+    expect(argv.slice(7, 9)).toEqual(["Lua errors in your last session on " + retail, "Foo 2"])
+    // A click opens the panel at Errors, through the widget's own IPC (1n2p.33).
+    expect(argv.slice(-5)).toEqual(["--exec", "omarchy-shell", "a44.omaddons-fixture", "show", "errors"])
     // Whatever the errors held, none of it reaches the toast.
     const texts = []
     for (const t of fixture("errors-raw").data.targets) for (const a of t.addons) for (const e of a.errors) {
@@ -2511,9 +2513,117 @@ describe("the service's desktop triggers", () => {
     expect(hostile.join(" ")).not.toContain("secret")
   })
 
-  test("update and result toasts", () => {
-    expect(M.updateToastArgv(3, ["era", "retail"], "id").slice(7, 9)).toEqual(["Addon updates", "3 updates on era and retail"])
-    expect(M.resultToastArgv("Updated 3 addons", "id").slice(5, 9)).toEqual(["-u", "low", "omaddons", "Updated 3 addons"])
+  test("update and result toasts: clients by name, each click to its view", () => {
+    const targets = [{ id: "era", displayName: "Classic Era" }, { id: "retail", displayName: "Retail" }]
+    const facts = M.updateFacts(targets, { updates: { available: 3, targets: ["era", "retail"] } })
+    expect(facts).toEqual({ count: 3, targets: ["Classic Era", "Retail"] })
+    const update = M.updateToastArgv(facts, "id")
+    expect(update.slice(5, 9)).toEqual(["-u", "low", "Addon updates", "3 updates on Classic Era and Retail"])
+    expect(update.slice(-4)).toEqual(["omarchy-shell", "id", "show", "updates"])
+    expect(M.updateToastArgv({ count: 1, targets: ["Retail"] }, "id")[8]).toBe("1 update on Retail")
+    const done = M.resultToastArgv("Updated 3 addons", true, "id")
+    expect(done.slice(5, 9)).toEqual(["-u", "low", "omaddons", "Updated 3 addons"])
+    expect(done.slice(-4)).toEqual(["omarchy-shell", "id", "show", ""])
+    // A change the player asked for that failed is worth more than a low toast.
+    expect(M.resultToastArgv("Couldn't update DBM", false, "id")[6]).toBe("normal")
+    // Nothing is ever critical: a game is never more urgent than Do Not Disturb.
+    for (const argv of [update, done, M.errorToastArgv({ names: ["A"], counts: [1], targets: [] }, "id")]) {
+      expect(argv[6]).not.toBe("critical")
+      expect(argv.slice(1, 3)).toEqual(["--app-name", "omaddons"])
+    }
+  })
+
+  test("the session digest: names and counts only, Errors first", () => {
+    const facts = { names: ["DBM", "WeakAuras"], counts: [2, 1], targets: ["Retail"], message: "secret" }
+    const both = M.digestToastArgv(facts, { count: 2, targets: ["Retail"] }, { errors: true, updates: true }, "id")
+    expect(both.slice(5, 9)).toEqual(["-u", "normal", "After your session", "3 new Lua errors in DBM and WeakAuras · 2 updates"])
+    expect(both.slice(-2)).toEqual(["show", "errors"])
+    expect(both.join(" ")).not.toContain("secret")
+    const updates = M.digestToastArgv(facts, { count: 1, targets: ["Retail"] }, { errors: false, updates: true, session: true }, "id")
+    expect(updates.slice(5, 9)).toEqual(["-u", "low", "After your session", "1 update"])
+    expect(updates.slice(-2)).toEqual(["show", "updates"])
+    // Both kinds at once with no session behind them: one toast, not titled for a session.
+    const now = M.digestToastArgv(facts, { count: 2 }, { errors: true, updates: true, session: false }, "id")
+    expect(now[7]).toBe("Lua errors and addon updates")
+  })
+
+  describe("toastPlan (1n2p.33)", () => {
+    const GAP = M.TOAST_MIN_GAP_MS
+    const on = { notifyErrors: true, notifyUpdates: true, whilePlaying: false }
+    // One status after another from `state`, each `{errorsNew, updates, playing, nowMs}`.
+    function run(steps, switches) {
+      let state = M.emptyToastState()
+      let before = { errorsNew: 0, updates: 0 }
+      const out = []
+      steps.forEach((step, i) => {
+        const plan = M.toastPlan(state, { first: i === 0, before, ...on, ...switches, ...step })
+        state = plan.state
+        before = { errorsNew: step.errorsNew, updates: step.updates }
+        out.push(plan.toast === "digest" ? "digest:" + Object.keys(plan.kinds).filter((k) => plan.kinds[k]).join("+") : plan.toast)
+      })
+      return out
+    }
+
+    test("never on the first status; a rise speaks once; the same counts say nothing", () => {
+      expect(run([
+        { errorsNew: 3, updates: 2, playing: false, nowMs: 0 },
+        { errorsNew: 4, updates: 2, playing: false, nowMs: GAP },
+        { errorsNew: 4, updates: 2, playing: false, nowMs: 2 * GAP },
+      ])).toEqual([null, "errors", null])
+    })
+
+    test("nothing while a game runs, then one digest when the last client stops", () => {
+      expect(run([
+        { errorsNew: 0, updates: 0, playing: false, nowMs: 0 },
+        { errorsNew: 2, updates: 0, playing: true, nowMs: GAP },
+        { errorsNew: 3, updates: 1, playing: true, nowMs: GAP + 60000 },
+        { errorsNew: 3, updates: 1, playing: false, nowMs: GAP + 120000 },
+        { errorsNew: 3, updates: 1, playing: false, nowMs: 3 * GAP },
+      ])).toEqual([null, null, null, "digest:errors+updates+session", null])
+      // One kind held through a session is still the session's digest.
+      expect(run([
+        { errorsNew: 0, updates: 0, playing: false, nowMs: 0 },
+        { errorsNew: 1, updates: 0, playing: true, nowMs: GAP },
+        { errorsNew: 1, updates: 0, playing: false, nowMs: GAP + 1 },
+      ])).toEqual([null, null, "digest:errors+session"])
+    })
+
+    test("a client whose state is unknown counts as playing", () => {
+      const status = { targets: [{ id: "retail", running: false, runningUnknown: true }] }
+      expect(M.playing(status.targets)).toBe(true)
+      expect(M.playing([{ id: "retail", running: false, runningUnknown: false }])).toBe(false)
+      expect(M.playing([{ id: "retail", running: true }])).toBe(true)
+    })
+
+    test("notifyWhilePlaying On speaks at once", () => {
+      expect(run([
+        { errorsNew: 0, updates: 0, playing: true, nowMs: 0 },
+        { errorsNew: 1, updates: 0, playing: true, nowMs: GAP },
+      ], { whilePlaying: true })).toEqual([null, "errors"])
+    })
+
+    test("one toast per kind per gap: a rise inside it waits, a rise of two kinds is one digest", () => {
+      expect(run([
+        { errorsNew: 0, updates: 0, playing: false, nowMs: 0 },
+        { errorsNew: 1, updates: 0, playing: false, nowMs: GAP },
+        { errorsNew: 2, updates: 0, playing: false, nowMs: GAP + 60000 },
+        { errorsNew: 2, updates: 0, playing: false, nowMs: 2 * GAP },
+        { errorsNew: 3, updates: 4, playing: false, nowMs: 4 * GAP },
+      ])).toEqual([null, "errors", null, "errors", "digest:errors+updates"])
+    })
+
+    test("a held kind lets go when answered or turned off", () => {
+      expect(run([
+        { errorsNew: 0, updates: 0, playing: false, nowMs: 0 },
+        { errorsNew: 2, updates: 0, playing: true, nowMs: GAP },
+        { errorsNew: 0, updates: 0, playing: false, nowMs: GAP + 1 },
+      ])).toEqual([null, null, null])
+      let state = M.emptyToastState()
+      state = M.toastPlan(state, { first: false, before: { errorsNew: 0, updates: 0 }, errorsNew: 1, updates: 0, playing: true, ...on, nowMs: GAP }).state
+      const off = M.toastPlan(state, { first: false, before: { errorsNew: 1, updates: 0 }, errorsNew: 1, updates: 0, playing: false, ...on, notifyErrors: false, nowMs: GAP + 1 })
+      expect(off.toast).toBe(null)
+      expect(off.state.held.errors).toBe(false)
+    })
   })
 })
 

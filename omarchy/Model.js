@@ -20,6 +20,8 @@ var DEFAULT_SETTINGS = {
   "autoCheck": "On",
   "notifyUpdates": "Off",
   "notifyErrors": "On",
+  // Toasts while a game runs (1n2p.33): Off holds them for one digest after the session.
+  "notifyWhilePlaying": "Off",
   "refreshIntervalSec": 300,
   // The first run's keybinding tip (1n2p.32): On until the player has seen it.
   "keyHint": "On"
@@ -32,6 +34,7 @@ var SETTING_RULES = {
   "autoCheck": { "type": "switch" },
   "notifyUpdates": { "type": "switch" },
   "notifyErrors": { "type": "switch" },
+  "notifyWhilePlaying": { "type": "switch" },
   "refreshIntervalSec": { "type": "integer", "min": 30, "max": 3600 },
   "keyHint": { "type": "switch" }
 }
@@ -4788,7 +4791,8 @@ function rose(before, after, first) {
 }
 
 // What an error toast may say (M3-D21): the addons and their new counts, and the
-// clients, from `status`'s per-client top list. Nothing else of the errors reaches it.
+// clients by the name a player knows them by, from `status`'s per-client top list.
+// Nothing else of the errors reaches it.
 function errorFacts(targets) {
   var names = []
   var counts = []
@@ -4797,7 +4801,7 @@ function errorFacts(targets) {
   for (var i = 0; i < list.length; i++) {
     var errors = list[i].errors
     if (!errors || errors["new"] <= 0) continue
-    where.push(list[i].id)
+    where.push(str(list[i].displayName) || str(list[i].id))
     for (var j = 0; j < errors.top.length; j++) {
       if (errors.top[j]["new"] <= 0) continue
       names.push(errors.top[j].addon)
@@ -4807,37 +4811,141 @@ function errorFacts(targets) {
   return { "names": names, "counts": counts, "targets": where }
 }
 
+// What an update toast may say: how many updates wait, and on which clients, by name.
+function updateFacts(targets, summary) {
+  var ids = summary && summary.updates && Array.isArray(summary.updates.targets) ? summary.updates.targets : []
+  var list = Array.isArray(targets) ? targets : []
+  var where = ids.map(function(id) {
+    var t = list.filter(function(x) { return x.id === id })[0]
+    return t ? (str(t.displayName) || str(t.id)) : String(id)
+  })
+  return { "count": summary && summary.updates ? num(summary.updates.available) : 0, "targets": where }
+}
+
 // U+F0297 nf-md-gamepad_variant: the widget's own glyph.
 var TOAST_GLYPH = String.fromCodePoint(0xF0297)
 
-// A toast as an argv for `omarchy-notification-send`; a click summons (opens, never
-// toggles) the panel of `pluginId`.
-function toastArgv(title, body, urgency, pluginId) {
+// One toast of a kind at most this often (1n2p.33): what rises meanwhile waits for it.
+var TOAST_MIN_GAP_MS = 10 * 60 * 1000
+
+// A toast as an argv for `omarchy-notification-send`, under the widget's own app name
+// (never one that passes Do Not Disturb). A click opens the panel of `pluginId` at
+// `view` through its IPC (`show`, which opens, never toggles; "" opens it where it
+// would open anyway): a fixed argv, never a shell.
+function toastArgv(title, body, urgency, pluginId, view) {
   return ["omarchy-notification-send", "--app-name", "omaddons", "-g", TOAST_GLYPH, "-u", urgency, title, body,
-    "--exec", "omarchy-shell", "shell", "summon", String(pluginId), "{}"]
+    "--exec", "omarchy-shell", String(pluginId), "show", String(view || "")]
 }
 
-// "Lua errors in your last session · DBM 3 · WeakAuras 1": only `{names, counts,
-// targets}`, so no message, path or other error text can reach a toast (F7 scan 7).
+// The errors part of a toast: "DBM 3 · WeakAuras 1".
+function errorParts(names, counts) {
+  var parts = []
+  for (var i = 0; i < names.length; i++) parts.push(String(names[i]) + " " + num(counts[i]))
+  return parts
+}
+
+// "Lua errors in your last session on Retail" · "DBM 3 · WeakAuras 1": only `{names,
+// counts, targets}`, so no message, path or other error text can reach a toast (F7
+// scan 7). A click opens Errors.
 function errorToastArgv(facts, pluginId) {
   var names = Array.isArray(facts && facts.names) ? facts.names : []
   var counts = Array.isArray(facts && facts.counts) ? facts.counts : []
   var where = Array.isArray(facts && facts.targets) ? facts.targets : []
+  var title = where.length ? copy("toast.errors.title.on", { "clients": joinNames(where.map(String)) }) : copy("toast.errors.title")
+  return toastArgv(title, errorParts(names, counts).join(" · "), "normal", pluginId, "errors")
+}
+
+// "Addon updates" · "3 updates on Retail and Classic Era"; a click opens Updates.
+function updateToastArgv(facts, pluginId) {
+  var count = num(facts && facts.count)
+  var where = Array.isArray(facts && facts.targets) ? facts.targets.map(String) : []
+  var body = where.length ? copy("toast.updates.on", { "n": count, "clients": joinNames(where) }) : copy("toast.updates", { "n": count })
+  return toastArgv(copy("toast.updates.title"), body, "low", pluginId, "updates")
+}
+
+// One toast for what a session held back (1n2p.33): "After your session" · "3 new Lua
+// errors in DBM and WeakAuras · 2 updates", or, for both kinds rising at once outside a
+// session, "Lua errors and addon updates". `kinds` `{errors, updates, session}` says
+// which parts it carries; the errors part reads `{names, counts}` only, as
+// errorToastArgv does. A click opens Errors when it names errors, else Updates.
+function digestToastArgv(facts, updates, kinds, pluginId) {
   var parts = []
-  for (var i = 0; i < names.length; i++) parts.push(String(names[i]) + " " + num(counts[i]))
-  var title = "Lua errors in your last session" + (where.length ? " on " + joinNames(where.map(String)) : "")
-  return toastArgv(title, parts.join(" · "), "normal", pluginId)
+  var withErrors = !!(kinds && kinds.errors)
+  if (withErrors) {
+    var names = Array.isArray(facts && facts.names) ? facts.names : []
+    var counts = Array.isArray(facts && facts.counts) ? facts.counts : []
+    var total = 0
+    for (var i = 0; i < counts.length; i++) total += num(counts[i])
+    parts.push(copy("toast.digest.errors", { "n": total, "addons": joinNames(names.map(String)) }))
+  }
+  if (kinds && kinds.updates) parts.push(copy("toast.updates", { "n": num(updates && updates.count) }))
+  var title = kinds && kinds.session === false ? copy("toast.digest.title.now") : copy("toast.digest.title")
+  return toastArgv(title, parts.join(" · "), withErrors ? "normal" : "low", pluginId, withErrors ? "errors" : "updates")
 }
 
-// "3 updates on retail and era".
-function updateToastArgv(count, targets, pluginId) {
-  var where = Array.isArray(targets) ? targets.map(String) : []
-  return toastArgv("Addon updates", plural(num(count), "update") + (where.length ? " on " + joinNames(where) : ""), "low", pluginId)
+// A panel action that finished while no panel was open: its result line, `normal` when
+// it failed (the player asked for it), else `low`. A click opens the panel, where the
+// result stays shown.
+function resultToastArgv(line, ok, pluginId) {
+  return toastArgv(copy("toast.result.title"), String(line), ok === false ? "normal" : "low", pluginId, "")
 }
 
-// A panel action that finished while no panel was open: its result line.
-function resultToastArgv(line, pluginId) {
-  return toastArgv("omaddons", String(line), "low", pluginId)
+// Whether a game may be running: a client running, or one whose state could not be read
+// (the safe side while the player may be streaming).
+function playing(targets) {
+  return (Array.isArray(targets) ? targets : []).some(function(t) {
+    return !!t && (t.running === true || t.runningUnknown === true)
+  })
+}
+
+// What the toasts hold back and when each kind last spoke.
+function emptyToastState() {
+  return { "held": { "errors": false, "updates": false }, "session": false, "lastMs": { "errors": 0, "updates": 0 } }
+}
+
+// What a compatible status announces (1n2p.33), pure: `state` from the status before,
+// `input` `{first, before: {errorsNew, updates}, errorsNew, updates, playing,
+// notifyErrors, notifyUpdates, whilePlaying, nowMs}`. Answers `{state, toast, kinds}`:
+// `toast` is null, "errors", "updates" or "digest", and `kinds` what a digest carries.
+// - Never on the first status: a fresh start floods no one.
+// - A rise of a kind that is on is held. A held kind lets go when it is answered (its
+//   count back to 0) or turned off.
+// - While a game may run, nothing speaks unless `whilePlaying`: what rose waits for the
+//   session's end, and then one digest says it all.
+// - Otherwise each held kind speaks once its last toast is TOAST_MIN_GAP_MS old; two
+//   kinds at once, or anything held through a session, are one digest.
+function toastPlan(state, input) {
+  var s = state && state.held && state.lastMs ? state : emptyToastState()
+  var i = input || {}
+  var held = { "errors": s.held.errors, "updates": s.held.updates }
+  var lastMs = { "errors": num(s.lastMs.errors), "updates": num(s.lastMs.updates) }
+  if (i.first === true) return { "state": { "held": { "errors": false, "updates": false }, "session": false, "lastMs": lastMs }, "toast": null, "kinds": null }
+  var before = i.before || {}
+  if (rose(before.errorsNew, i.errorsNew, false) && i.notifyErrors === true) held.errors = true
+  if (rose(before.updates, i.updates, false) && i.notifyUpdates === true) held.updates = true
+  held.errors = held.errors && i.notifyErrors === true && num(i.errorsNew) > 0
+  held.updates = held.updates && i.notifyUpdates === true && num(i.updates) > 0
+  var session = s.session === true && (held.errors || held.updates)
+  if (i.playing === true && i.whilePlaying !== true) {
+    return { "state": { "held": held, "session": held.errors || held.updates, "lastMs": lastMs }, "toast": null, "kinds": null }
+  }
+  var now = num(i.nowMs)
+  var due = {
+    "errors": held.errors && now - lastMs.errors >= TOAST_MIN_GAP_MS,
+    "updates": held.updates && now - lastMs.updates >= TOAST_MIN_GAP_MS
+  }
+  var toast = null
+  if (due.errors && due.updates) toast = "digest"
+  else if ((due.errors || due.updates) && session) toast = "digest"
+  else if (due.errors) toast = "errors"
+  else if (due.updates) toast = "updates"
+  for (var kind in due) {
+    if (!due[kind]) continue
+    held[kind] = false
+    lastMs[kind] = now
+  }
+  return { "state": { "held": held, "session": session && (held.errors || held.updates), "lastMs": lastMs },
+    "toast": toast, "kinds": toast === "digest" ? { "errors": due.errors, "updates": due.updates, "session": session } : null }
 }
 
 // The bound action's refusal after its observation changed (`plan_stale`).
@@ -5666,7 +5774,18 @@ var COPY = {
   "updates.notes.none": "No newer release notes",
   "updates.notes.behind": { "one": "1 release behind", "other": "{n} releases behind" },
   "updates.notes.behind_more": "{n}+ releases behind",
-  "updates.notes.more": "More on {host}"
+  "updates.notes.more": "More on {host}",
+
+  // Notifications (1n2p.33): names and counts only, never an error's text (M3-D21).
+  "toast.errors.title": "Lua errors in your last session",
+  "toast.errors.title.on": "Lua errors in your last session on {clients}",
+  "toast.updates.title": "Addon updates",
+  "toast.updates": { "one": "1 update", "other": "{n} updates" },
+  "toast.updates.on": { "one": "1 update on {clients}", "other": "{n} updates on {clients}" },
+  "toast.digest.title": "After your session",
+  "toast.digest.title.now": "Lua errors and addon updates",
+  "toast.digest.errors": { "one": "1 new Lua error in {addons}", "other": "{n} new Lua errors in {addons}" },
+  "toast.result.title": "omaddons"
 }
 
 // COPY[id] with its {slots} filled; a pair by `slots.n` (1 is "one"). A missing slot is
@@ -6758,9 +6877,15 @@ if (typeof module !== "undefined") {
     autoCheckDue: autoCheckDue,
     rose: rose,
     errorFacts: errorFacts,
+    updateFacts: updateFacts,
     errorToastArgv: errorToastArgv,
     updateToastArgv: updateToastArgv,
+    digestToastArgv: digestToastArgv,
     resultToastArgv: resultToastArgv,
+    TOAST_MIN_GAP_MS: TOAST_MIN_GAP_MS,
+    playing: playing,
+    emptyToastState: emptyToastState,
+    toastPlan: toastPlan,
     PLAN_PATHS: PLAN_PATHS,
     PLAN_ID_PATTERN: PLAN_ID_PATTERN,
     MATCH_FIELDS: MATCH_FIELDS,

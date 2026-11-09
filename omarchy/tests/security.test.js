@@ -181,7 +181,8 @@ function checkRendering(files) {
 // with the text as one argument.
 const LITERAL_TOOLS = ["inotifywait", "omarchy-notification-send", "xdg-open", "omarchy-launch-browser"]
 const ARGV_BUILDERS = { "toastArgv": "omarchy-notification-send", "errorToastArgv": "omarchy-notification-send",
-  "updateToastArgv": "omarchy-notification-send", "resultToastArgv": "omarchy-notification-send", "addonsDirArgv": "xdg-open",
+  "updateToastArgv": "omarchy-notification-send", "digestToastArgv": "omarchy-notification-send",
+  "resultToastArgv": "omarchy-notification-send", "addonsDirArgv": "xdg-open",
   "copyArgv": "wl-copy" }
 // Two argv outside the three sources, allowed exactly as written: `show()`'s fallback
 // when the shell's summon facade is missing, and the self-reinstall (a fixed literal
@@ -744,13 +745,16 @@ function checkIrreversible(files) {
 
 const ERROR_FIELDS = ["message", "stack", "locals", "raw", "location", "path", "text", "folder", "file", "details"]
 
-// 7. Notifications (M3-D14, M3-D21): the error toast sees names, counts and clients.
+// 7. Notifications (M3-D14, M3-D21): the error toast and the session digest (1n2p.33)
+// see names, counts and clients.
 function checkNotifications(files) {
   const out = []
   const model = files["Model.js"] || ""
-  const toast = functionBody(model, "errorToastArgv")
-  const facts = functionBody(model, "errorFacts")
-  for (const [name, fn] of [["errorToastArgv", toast], ["errorFacts", facts]]) {
+  const builders = ["errorToastArgv", "digestToastArgv"]
+  const fns = {}
+  for (const name of [...builders, "errorFacts", "errorParts"]) {
+    const fn = functionBody(model, name)
+    fns[name] = fn
     if (!fn) {
       out.push(violation("Model.js", 1, name + " is missing"))
       continue
@@ -759,16 +763,21 @@ function checkNotifications(files) {
       if (new RegExp("\\b" + field + "\\b").test(fn.body)) out.push(violation("Model.js", fn.line, name + " reads " + field))
     }
   }
-  if (toast) {
-    const read = new Set([...toast.body.matchAll(/facts\.(\w+)/g)].map((m) => m[1]))
-    for (const field of read) if (!["names", "counts", "targets"].includes(field)) out.push(violation("Model.js", toast.line, "errorToastArgv reads facts." + field))
+  for (const name of builders) {
+    const fn = fns[name]
+    if (!fn) continue
+    const read = new Set([...fn.body.matchAll(/facts\.(\w+)/g)].map((m) => m[1]))
+    for (const field of read) if (!["names", "counts", "targets"].includes(field)) out.push(violation("Model.js", fn.line, name + " reads facts." + field))
   }
-  for (const c of calls(files, /\bModel\.(errorToastArgv|updateToastArgv|resultToastArgv)\(/, qmlNames(files))) {
+  for (const c of calls(files, /\bModel\.(errorToastArgv|digestToastArgv|updateToastArgv|resultToastArgv)\(/, qmlNames(files))) {
     for (const field of ERROR_FIELDS) {
       if (new RegExp("\\b" + field + "\\b").test(c.args)) out.push(violation(c.file, c.line, c.match[1] + " is passed " + field))
     }
     if (c.match[1] === "errorToastArgv" && !/^\(Model\.errorFacts\(\w+\), Build\.PLUGIN_ID\)$/.test(c.args)) {
       out.push(violation(c.file, c.line, "errorToastArgv takes Model.errorFacts(…) only"))
+    }
+    if (c.match[1] === "digestToastArgv" && !/^\(Model\.errorFacts\(\w+\), /.test(c.args)) {
+      out.push(violation(c.file, c.line, "digestToastArgv takes Model.errorFacts(…) for its errors"))
     }
   }
   return out
@@ -793,7 +802,7 @@ function checkPluginId(files) {
     const target = (c.args.match(/^\s*target:\s*(.*)$/m) || [])[1]
     if (!target || target.trim() !== "Build.PLUGIN_ID") out.push(violation(c.file, c.line, "the IPC target is Build.PLUGIN_ID"))
   }
-  for (const c of calls(files, /\bModel\.(errorToastArgv|updateToastArgv|resultToastArgv)\(/, qmlNames(files))) {
+  for (const c of calls(files, /\bModel\.(errorToastArgv|digestToastArgv|updateToastArgv|resultToastArgv)\(/, qmlNames(files))) {
     if (!/, Build\.PLUGIN_ID\)$/.test(c.args)) out.push(violation(c.file, c.line, c.match[1] + " summons Build.PLUGIN_ID"))
   }
   return out
@@ -864,6 +873,11 @@ const PLANTED = [
       '    Quickshell.execDetached(Model.errorToastArgv({ "names": [entry.message], "counts": [1], "targets": [] }, Build.PLUGIN_ID))\n'), /is passed message|Model\.errorFacts/],
   ["7. notifications", checkNotifications, "the builder reading a message",
     plant(REAL, "Model.js", "function errorToastArgv(facts, pluginId) {\n", "  var leak = facts.message\n"), /errorToastArgv reads message/],
+  ["7. notifications", checkNotifications, "the digest reading a stack",
+    plant(REAL, "Model.js", "function digestToastArgv(facts, updates, kinds, pluginId) {\n", "  var leak = facts.stack\n"), /digestToastArgv reads stack/],
+  ["7. notifications", checkNotifications, "the digest given hand-made facts",
+    plant(REAL, "Service.qml", "  function afterStatus() {\n",
+      '    Quickshell.execDetached(Model.digestToastArgv({ "names": [entry.addon], "counts": [1] }, null, null, Build.PLUGIN_ID))\n'), /digestToastArgv takes Model\.errorFacts/],
   ["8. the plugin id", checkPluginId, "a literal id in serviceFor",
     plant(REAL, "BarWidget.qml", "  ipcTarget: Build.PLUGIN_ID\n", '  readonly property var planted: shell.serviceFor("' + ID + '")\n'), /literal plugin id|serviceFor takes Build\.PLUGIN_ID/],
   ["3b. apply from its plan", checkApplyProvenance, "a hand-built apply argv",

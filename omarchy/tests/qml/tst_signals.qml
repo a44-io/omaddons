@@ -336,20 +336,64 @@ TestCase {
     start({ "retail": { "updates": 2, "errors": { "new": 3, "top": [{ "addon": "DBM", "folder": "DBM-Core", "new": 3, "count": 9 }] } } })
     settle()
     compare(toasts().length, 0, "nothing on the first status")
-    refreshWith({ "retail": { "updates": 3, "errors": { "new": 4, "top": [
+    refreshWith({ "retail": { "updates": 2, "errors": { "new": 4, "top": [
       { "addon": "DBM", "folder": "DBM-Core", "new": 3, "count": 9 }, { "addon": "WeakAuras", "folder": "WeakAuras", "new": 1, "count": 1 }] } } })
     var t = toasts()
-    compare(t.length, 2)
+    compare(t.length, 1)
     compare(t[0].slice(0, 7), ["omarchy-notification-send", "--app-name", "omaddons", "-g", t[0][4], "-u", "normal"])
     compare(t[0].slice(7, 9), ["Lua errors in your last session on retail", "DBM 3 · WeakAuras 1"])
-    compare(t[0].slice(-6), ["--exec", "omarchy-shell", "shell", "summon", Build.PLUGIN_ID, "{}"])
+    // A click opens the panel at Errors, through the widget's own IPC (1n2p.33).
+    compare(t[0].slice(-5), ["--exec", "omarchy-shell", Build.PLUGIN_ID, "show", "errors"])
+    settle()
+    refreshWith({ "retail": { "updates": 3, "errors": { "new": 4, "top": [
+      { "addon": "DBM", "folder": "DBM-Core", "new": 3, "count": 9 }, { "addon": "WeakAuras", "folder": "WeakAuras", "new": 1, "count": 1 }] } } })
+    t = toasts()
+    compare(t.length, 2)
     compare(t[1].slice(6, 9), ["low", "Addon updates", "3 updates on retail"])
+    compare(t[1].slice(-2), ["show", "updates"])
     settle()
     refreshWith(world)
     compare(toasts().length, 2, "the same counts again: nothing")
+    refreshWith({ "retail": { "updates": 3, "errors": { "new": 5, "top": [{ "addon": "DBM", "folder": "DBM-Core", "new": 5, "count": 11 }] } } })
+    compare(toasts().length, 2, "one toast of a kind per ten minutes: the next rise waits")
     service.applySettings({ "notifyUpdates": "Off", "notifyErrors": "Off" })
     refreshWith({ "retail": { "updates": 5, "errors": { "new": 6, "top": [{ "addon": "DBM", "folder": "DBM-Core", "new": 6, "count": 12 }] } } })
     compare(toasts().length, 2, "both off: nothing")
+  }
+
+  // Quiet while playing (1n2p.33): what rises while a client runs waits, and one digest
+  // says it all when the last one stops.
+  function test_nothing_speaks_while_a_game_runs_then_one_digest_after_the_session() {
+    service.applySettings({ "notifyUpdates": "On" })
+    start({ "retail": { "running": true }, "era": {} })
+    settle()
+    var risen = { "running": true, "updates": 2, "errors": { "new": 3, "top": [{ "addon": "DBM", "folder": "DBM-Core", "new": 3, "count": 3 }] } }
+    refreshWith({ "retail": risen, "era": {} })
+    settle()
+    refreshWith({ "retail": risen, "era": { "running": true } })
+    settle()
+    compare(toasts().length, 0, "nothing while a client runs")
+    refreshWith({ "retail": { "updates": 2, "errors": risen.errors }, "era": { "running": true } })
+    settle()
+    compare(toasts().length, 0, "era still runs")
+    refreshWith({ "retail": { "updates": 2, "errors": risen.errors }, "era": {} })
+    var t = toasts()
+    compare(t.length, 1, "one digest when the last client stops")
+    compare(t[0].slice(6, 9), ["normal", "After your session", "3 new Lua errors in DBM · 2 updates"])
+    compare(t[0].slice(-5), ["--exec", "omarchy-shell", Build.PLUGIN_ID, "show", "errors"])
+    settle()
+    refreshWith(world)
+    compare(toasts().length, 1, "said once")
+  }
+
+  function test_notify_while_playing_speaks_at_once() {
+    service.applySettings({ "notifyWhilePlaying": "On" })
+    start({ "retail": { "running": true } })
+    settle()
+    refreshWith({ "retail": { "running": true, "errors": { "new": 1, "top": [{ "addon": "DBM", "folder": "DBM-Core", "new": 1, "count": 1 }] } } })
+    var t = toasts()
+    compare(t.length, 1)
+    compare(t[0].slice(7, 9), ["Lua errors in your last session on retail", "DBM 1"])
   }
 
   function test_no_toast_while_incompatible_or_missing() {

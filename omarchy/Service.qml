@@ -159,6 +159,9 @@ Item {
   // What the desktop triggers saw at the last compatible status (F8):
   // `{generation, targets, updates, errorsNew}`, null before the first.
   property var observed: null
+  // What the toasts hold back while a game runs, and when each kind last spoke
+  // (Model.toastPlan, 1n2p.33).
+  property var toastState: Model.emptyToastState()
   property double lastAutoCheckMs: 0
   property int followUpStep: 0
   readonly property bool anyRunning: targets.some(function(t) { return t.running === true })
@@ -1092,7 +1095,7 @@ Item {
     // A change asked in the panel that finished after every panel closed: its result
     // line as a toast; a click opens the panel.
     if (r.kind === "mutation" && r.priority !== "background" && !panelOpen && canAct) {
-      Quickshell.execDetached(Model.resultToastArgv(lastResult.line, Build.PLUGIN_ID))
+      Quickshell.execDetached(Model.resultToastArgv(lastResult.line, lastResult.ok, Build.PLUGIN_ID))
     }
     changed()
     // `d` across clients: the next dismissal, after this one succeeded.
@@ -1182,13 +1185,21 @@ Item {
     var updatesNow = summary ? summary.updates.available : 0
     var errorsNow = summary && summary.errors ? summary.errors["new"] : 0
     var before = first ? { "updates": 0, "errorsNew": 0 } : observed
-    // Toasts are argv (M3-D14), and the error one sees only names, counts and clients
-    // (M3-D21).
-    if (Model.rose(before.errorsNew, errorsNow, first) && switchOn("notifyErrors") && canAct) {
+    // Toasts are argv (M3-D14), and the errors in them are only names, counts and clients
+    // (M3-D21). Nothing speaks while a game may run: what rose waits for one digest after
+    // the session, unless notifyWhilePlaying (1n2p.33).
+    var plan = Model.toastPlan(toastState, { "first": first, "before": before, "errorsNew": errorsNow, "updates": updatesNow,
+      "playing": Model.playing(targets), "notifyErrors": switchOn("notifyErrors"), "notifyUpdates": switchOn("notifyUpdates"),
+      "whilePlaying": switchOn("notifyWhilePlaying"), "nowMs": Date.now() })
+    toastState = plan.state
+    if (canAct && plan.toast === "errors") {
       Quickshell.execDetached(Model.errorToastArgv(Model.errorFacts(targets), Build.PLUGIN_ID))
     }
-    if (Model.rose(before.updates, updatesNow, first) && switchOn("notifyUpdates") && canAct) {
-      Quickshell.execDetached(Model.updateToastArgv(updatesNow, summary.updates.targets, Build.PLUGIN_ID))
+    if (canAct && plan.toast === "updates") {
+      Quickshell.execDetached(Model.updateToastArgv(Model.updateFacts(targets, summary), Build.PLUGIN_ID))
+    }
+    if (canAct && plan.toast === "digest") {
+      Quickshell.execDetached(Model.digestToastArgv(Model.errorFacts(targets), Model.updateFacts(targets, summary), plan.kinds, Build.PLUGIN_ID))
     }
     observed = { "generation": contextGeneration, "targets": targets, "updates": updatesNow, "errorsNew": errorsNow }
     autoCheck()
