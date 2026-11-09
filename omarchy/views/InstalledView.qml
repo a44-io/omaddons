@@ -59,8 +59,14 @@ Item {
 
   function handleKey(name, cursor) {
     var row = cursor >= 0 && cursor < rows.length ? rows[cursor] : null
+    // Enter: the addon's page (1n2p.23), with every action on each client.
     if (name === "enter") {
-      if (row && row.primary !== "") run(Model.rowAction(row, row.primary))
+      if (row) frame.openAddon(row.name, row.ref)
+      return true
+    }
+    // The cursored row's Repair (a problem's): its files put back, previewed first.
+    if (name === "repair") {
+      if (row && row.problem) run(Model.rowAction(row, "reinstall"))
       return true
     }
     // `u`: its update, also when its files changed (Enter puts those back first).

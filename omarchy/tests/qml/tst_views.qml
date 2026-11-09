@@ -87,6 +87,16 @@ TestCase {
       property var machineIssues: []
       // `status`'s recommendations, reduced (the Issues view's suggestions, 1n2p.28).
       property var commands: []
+      // An addon page's own read (1n2p.23): every readAddonInfo call, and its answer.
+      property var addonInfo: null
+      property var infoReads: []
+      property int infoClears: 0
+      function readAddonInfo(ref) {
+        infoReads = infoReads.concat([ref])
+        addonInfo = { "selection": { "ref": ref }, "data": null, "failed": "" }
+        return true
+      }
+      function clearAddonInfo() { infoClears++; addonInfo = null }
       property var rawErrors: null
       // The doctor's explanation a problem row asked for, and every readExplanation call.
       property var explanation: null
@@ -281,14 +291,14 @@ TestCase {
     compare(findChild(view, "keyNote").text, "")
   }
 
-  function test_enter_updates_one_addon_and_p_pins_by_its_state() {
-    keyClick(Qt.Key_Return)
+  function test_u_updates_one_addon_and_p_pins_by_its_state() {
+    keyClick("u")
     compare(json(svc.runs[0]), json(["update_addon", { "target": "era", "addon": "Bar" }, "Update Bar",
       [shownRow("k-era", "era", "Bar", "v1", "v2")]]))
     compare(json(words(svc.runs[0])), json(["update", "-t", "era", "--", "Bar"]))
     // A failed check has nothing to update.
     keyClick("j")
-    keyClick(Qt.Key_Return)
+    keyClick("u")
     compare(svc.runs.length, 1)
     keyClick("j")
     keyClick("j")
@@ -299,8 +309,26 @@ TestCase {
     compare(json(svc.runs[2]), json(["pin", { "target": "retail", "addon": "DBM" }, "Pin DBM"]))
     // While a change runs, the rows run nothing.
     svc.action = { "label": "Update Bar", "current": 0, "total": 0, "message": "" }
-    keyClick(Qt.Key_Return)
+    keyClick("u")
     compare(svc.runs.length, 3)
+  }
+
+  // Enter on an Updates row opens the addon's page (1n2p.23); back returns to the row.
+  function test_enter_on_an_update_opens_its_page_and_back_returns_to_the_row() {
+    keyClick("j")
+    keyClick("j")
+    keyClick(Qt.Key_Return)
+    compare(svc.runs.length, 0, "Enter updates nothing")
+    compare(view.pages.length, 1)
+    compare(view.backText(), "Updates")
+    var page = findChild(view, "page").item
+    compare([page.name, page.ref], ["DBM", "gh:o/dbm"])
+    compare(json(svc.infoReads), json(["gh:o/dbm"]))
+    compare(findChild(page, "pageTitle").text, "DBM")
+    keyClick(Qt.Key_Escape)
+    compare(view.pages.length, 0)
+    compare([view.cursor, view.cursorActive], [2, true])
+    compare(svc.infoClears, 1)
   }
 
   function test_e_shows_every_pending_note_of_its_own_row_and_safe_links_only() {
@@ -462,7 +490,7 @@ TestCase {
 
   // ------------------------------------------------------------- Installed
 
-  function test_installed_rows_carry_their_markers_and_enter_repairs_or_updates() {
+  function test_installed_rows_carry_their_markers_repair_and_open_their_page() {
     keyClick("2")
     var installed = content()
     // Each client's problems first (Foo's files changed), then its waiting updates, then
@@ -478,34 +506,43 @@ TestCase {
     compare(json([foo.band, foo.chips[0].text, foo.chips[0].urgent, foo.meta]), json(["urgent", "changed on disk", true, "GitHub · 1 file changed on disk"]))
     var dbm = findChild(row("installedRow", 3), "addonRow")
     compare([dbm.fromVersion, dbm.toVersion, dbm.band], ["12.1.14", "12.1.15", "accent"])
-    // Foo: Enter repairs its modified files.
+    // Foo: its first button, Repair, puts back its modified files.
     keyClick("j")
     keyClick("j")
     compare(view.cursor, 2)
     verify(foo.cursored)
-    keyClick(Qt.Key_Return)
+    compare(json(foo.actions.map(function(a) { return a.name })), json(["repair", "pin", "restore", "remove"]))
+    findChild(foo, "action_repair").clicked()
     compare(json(svc.runs[0]), json(["reinstall", { "target": "retail", "addon": "Foo" }, "Reinstall Foo"]))
     compare(json(words(svc.runs[0])), json(["install", "-t", "retail", "--reinstall", "--", "Foo"]))
-    // Its first button is Repair, the same action.
-    compare(json(foo.actions.map(function(a) { return a.name })), json(["enter", "pin", "restore", "remove"]))
-    // BigWigs: nothing waits, so Enter does nothing.
-    keyClick("j")
-    keyClick("j")
+    // Enter opens its page (1n2p.23), where Enter on its line repairs it too.
     keyClick(Qt.Key_Return)
-    compare(svc.runs.length, 1)
+    compare(view.pages.length, 1)
+    compare(view.backText(), "Addons")
+    var page = findChild(view, "page").item
+    compare(json(page.rows.map(function(l) { return [l.client, l.primary] })), json([["Retail", "reinstall"], ["Classic Era", ""]]))
+    keyClick(Qt.Key_Return)
+    compare(json(svc.runs[1]), json(svc.runs[0]))
+    keyClick(Qt.Key_Escape)
+    compare(view.cursor, 2, "back to Foo's row")
+    // BigWigs: nothing waits, so `u` does nothing.
+    keyClick("j")
+    keyClick("j")
+    keyClick("u")
+    compare(svc.runs.length, 2)
     keyClick("x")
-    compare(json(svc.runs[1]), json(["remove", { "target": "retail", "addon": "BigWigs" }, "Remove BigWigs"]))
+    compare(json(svc.runs[2]), json(["remove", { "target": "retail", "addon": "BigWigs" }, "Remove BigWigs"]))
     keyClick("p")
-    compare(json(svc.runs[2]), json(["pin", { "target": "retail", "addon": "BigWigs" }, "Pin BigWigs"]))
+    compare(json(svc.runs[3]), json(["pin", { "target": "retail", "addon": "BigWigs" }, "Pin BigWigs"]))
     // `u` updates only an addon a release waits for: nothing for BigWigs, DBM's for DBM.
     keyClick("u")
-    compare(svc.runs.length, 3)
+    compare(svc.runs.length, 4)
     keyClick("k")
     keyClick("u")
-    compare(json(svc.runs[3].slice(0, 3)), json(["update_addon", { "target": "retail", "addon": "DBM" }, "Update DBM"]))
+    compare(json(svc.runs[4].slice(0, 3)), json(["update_addon", { "target": "retail", "addon": "DBM" }, "Update DBM"]))
     // A row's button acts on its row: DBM's Update.
     findChild(dbm, "action_update").clicked()
-    compare(json(svc.runs[4].slice(0, 3)), json(["update_addon", { "target": "retail", "addon": "DBM" }, "Update DBM"]))
+    compare(json(svc.runs[5].slice(0, 3)), json(["update_addon", { "target": "retail", "addon": "DBM" }, "Update DBM"]))
   }
 
   // `/` (1n2p.22): the filter box takes the keys, "n of m" beside it, urgent at none;
@@ -1216,7 +1253,7 @@ TestCase {
     compare(view.filter, "retail")
     searchReady({ "retail": "likely", "era": "no" })
     compare(findChild(row("searchRow", 0), "hints").text, "retail likely")
-    keyClick(Qt.Key_Return)
+    keyClick("i")
     compare(json(svc.runs[0]), json(["install", { "target": "retail", "ref": "wowi:23056" }, "Install Details!", []]))
     // A result for another filter is not this view's.
     keyClick("t")
@@ -1228,23 +1265,97 @@ TestCase {
     keyClick("t")
     keyClick("t")
     searchReady({ "retail": "yes", "era": "no" })
-    keyClick(Qt.Key_Return)
+    keyClick("i")
     compare(svc.runs.length, 1)
     compare(json(svc.runs[0][3]), json([]), "nothing shown")
+  }
+
+  // Enter on a result opens its page (1n2p.23), read by its ref: whether it loads on
+  // each client, and Install here where it likely does.
+  function test_enter_on_a_result_opens_its_page() {
+    searchReady({ "retail": "likely", "era": "no" })
+    keyClick(Qt.Key_Return)
+    compare(svc.runs.length, 0, "Enter installs nothing")
+    compare(view.pages.length, 1)
+    var page = findChild(view, "page").item
+    compare([page.name, page.ref], ["Details!", "wowi:23056"])
+    compare(json(svc.infoReads), json(["wowi:23056"]))
+    compare(findChild(page, "pageState").text, "Reading about it…")
+    // The read answers: retail likely, era not.
+    svc.addonInfo = { "selection": { "ref": "wowi:23056" }, "failed": "", "data": { "name": "Details!", "ref": "wowi:23056",
+      "about": { "summary": "A damage meter", "author": "Tercio", "updatedAt": "", "homepage": "https://www.wowinterface.com/downloads/info23056",
+        "stars": null, "downloads": 515870 }, "aboutWhy": "", "latest": { "version": "1.0", "compat": { "retail": "likely", "era": "unlikely" } },
+      "installed": [], "changelog": null, "changelogWhy": "not_supported" } }
+    compare(findChild(page, "pageSummary").text, "A damage meter")
+    compare(findChild(page, "pageFacts").text, "WoWInterface · by Tercio · 515.9k downloads")
+    compare(json(page.rows.map(function(l) { return [l.client, l.meta, l.primary] })), json([
+      ["Classic Era", "not installed · not made for this client", ""], ["Retail", "not installed · probably works here", "install"]]))
+    // `i` on Retail's line: Install here, as Search's install runs.
+    keyClick("j")
+    keyClick("j")
+    keyClick("i")
+    compare(json(svc.runs[0]), json(["install", { "target": "retail", "ref": "wowi:23056" }, "Install Details!", []]))
+    // `w` opens its web page; `y` copies its source.
+    keyClick("w")
+    compare(json(Quickshell.detachedCommands[Quickshell.detachedCommands.length - 1]), json(["omarchy-launch-browser", "https://www.wowinterface.com/downloads/info23056"]))
+    keyClick("y")
+    compare(json(svc.copies), json([["wl-copy", "--", "wowi:23056"]]))
+    compare(findChild(page, "pageCopy").text, "Copied wowi:23056")
+  }
+
+  // A late answer for another addon never lands on this page; a dependency's page goes
+  // on top, and back walks the trail (1n2p.23).
+  function test_a_page_shows_only_its_own_read_and_walks_dependencies() {
+    keyClick("2")
+    keyClick(Qt.Key_Return)
+    var page = findChild(view, "page").item
+    compare(page.name, "Bar")
+    svc.addonInfo = { "selection": { "ref": "gh:o/other" }, "failed": "", "data": { "name": "Other", "ref": "gh:o/other",
+      "about": { "summary": "Not Bar", "author": "", "updatedAt": "", "homepage": "", "stars": null, "downloads": null }, "aboutWhy": "",
+      "latest": null, "installed": [], "changelog": null, "changelogWhy": "" } }
+    verify(!findChild(page, "pageSummary").visible, "another addon's answer")
+    // Bar's own answer: its TOC needs BigWigs, whose own needs DBM. A page opened from a
+    // link is read by the name it was asked by.
+    var dep = function(name, asked, needs) {
+      return { "selection": { "ref": asked }, "failed": "", "data": { "name": name, "ref": "gh:o/" + name.toLowerCase(), "about": null,
+        "aboutWhy": "", "latest": null, "installed": [{ "target": "retail", "version": "v1", "folders": [name], "leftOut": [],
+          "toc": { "title": name, "notes": "", "author": "", "dependencies": needs } }], "changelog": null, "changelogWhy": "" } }
+    }
+    svc.addonInfo = dep("Bar", "gh:o/bar", ["BigWigs"])
+    var link = findChild(page, "link_BigWigs")
+    verify(link !== null && link.visible)
+    link.clicked()
+    compare(view.pages.length, 2)
+    page = findChild(view, "page").item
+    compare(page.name, "BigWigs")
+    compare(view.backText(), "Addons › Bar")
+    tryVerify(function() { return svc.infoReads[svc.infoReads.length - 1] === "BigWigs" })
+    svc.addonInfo = dep("BigWigs", "BigWigs", ["DBM"])
+    compare(json(page.rows.filter(function(l) { return l.installed }).map(function(l) { return l.client })), json(["Retail"]))
+    findChild(page, "link_DBM").clicked()
+    compare(view.pages.length, 3)
+    tryCompare(findChild(view, "page").item, "name", "DBM")
+    keyClick(Qt.Key_Escape)
+    keyClick(Qt.Key_Escape)
+    compare(view.pages.length, 1)
+    tryCompare(findChild(view, "page").item, "name", "Bar")
+    tryVerify(function() { return svc.infoReads[svc.infoReads.length - 1] === "gh:o/bar" })
+    keyClick(Qt.Key_Escape)
+    compare(view.pages.length, 0)
   }
 
   function test_a_hint_of_no_offers_no_install() {
     keyClick("t")
     compare(view.filter, "era")
     searchReady({ "retail": "likely", "era": "no" })
-    keyClick(Qt.Key_Return)
+    keyClick("i")
     compare(svc.runs.length, 0)
   }
 
   function test_under_all_a_chooser_preselects_no_client() {
     searchReady({ "retail": "likely", "era": "no" })
     compare(findChild(row("searchRow", 0), "hints").text, "era no · retail likely")
-    keyClick(Qt.Key_Return)
+    keyClick("i")
     var search = content()
     verify(findChild(search, "chooser").visible)
     compare(search.chooserCursor, -1)
@@ -1470,12 +1581,13 @@ TestCase {
     real.service.destroy()
   }
 
-  // Enter on a drifted Installed addon: the reinstall previews and asks first, always
+  // Repair on a drifted Installed addon: the reinstall previews and asks first, always
   // (`preview: confirm`); Yes applies its plan.
-  function test_enter_on_an_installed_drifted_addon_confirms_the_reinstall() {
+  function test_repair_of_an_installed_drifted_addon_confirms_the_reinstall() {
     var real = realFrame([addon("Foo", "v1", "v1", "current", { "drift": { "state": "modified", "files": 1, "folders": [] } })])
     var frame = real.frame
-    keyClick(Qt.Key_Return)
+    frame.cursorActive = true
+    frame.currentView.handleKey("repair", 0)
     var preview = launches("--reinstall")
     compare(preview.length, 1)
     verify(preview[0].command.indexOf("--dry-run") >= 0)

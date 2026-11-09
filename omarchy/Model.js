@@ -109,6 +109,7 @@ var COMMANDS = {
   "status_full":    { "argv": ["status", "-v"],                                     "mutates": false, "lane": "local" },
   "list":           { "argv": ["list", "-v"],                                       "mutates": false, "lane": "local" },
   "changelog":      { "argv": ["info", "-t", "{target}", "--changelog", "--", "{addon}"], "mutates": false, "lane": "network" },
+  "addon_info":     { "argv": ["info", "--changelog", "--", "{ref}"],               "mutates": false, "lane": "network" },
   "search":         { "argv": ["search", "--limit", "20", "-t", "{target}", "--", "{query}"], "mutates": false, "lane": "network" },
   "check":          { "argv": ["outdated"],                                         "mutates": false, "lane": "network" },
   "update_all":     { "argv": ["update"],                                           "mutates": true, "preview": "match" },
@@ -1706,7 +1707,8 @@ function activityClients(a) {
 function activityHeadline(a, targets) {
   if (a.kind === "check") return copy("activity.check")
   if (a.kind === "read") {
-    var read = a.resource === "search" ? "activity.search" : (a.resource === "changelog" ? "activity.changelog" : "")
+    var read = a.resource === "search" ? "activity.search" : (a.resource === "changelog" ? "activity.changelog"
+      : (a.resource === "addon_info" ? "activity.addon_info" : ""))
     return read ? copy(read) : a.label
   }
   var keys = activityRowKeys(a)
@@ -2217,12 +2219,12 @@ var KEYMAP = [
   { "keys": ["o"], "context": "view", "action": "open", "label": "open the chosen client's AddOns folder (under All, the row's client)", "hint": "o" },
   { "keys": ["b"], "context": "view", "action": "backup", "label": "back up the chosen client's settings now, or every client's", "hint": "b" },
   { "keys": ["d"], "context": "view", "action": "dismiss", "label": "mark the new Lua errors shown as seen", "hint": "d" },
-  { "keys": ["Enter", "Space"], "context": "updates", "action": "enter", "label": "update this addon", "hint": "Enter" },
+  { "keys": ["Enter", "Space"], "context": "updates", "action": "enter", "label": "open the addon's page", "hint": "Enter" },
   { "keys": ["u"], "context": "updates", "action": "update", "label": "update this addon", "hint": "u", "nothing": "Nothing to update here" },
   { "keys": ["p"], "context": "updates", "action": "pin", "label": "pin or unpin it", "hint": "p", "nothing": "Nothing to pin here" },
   { "keys": ["e"], "context": "updates", "action": "notes", "label": "show or hide the release notes since its version", "hint": "e", "nothing": "No release notes here" },
   { "keys": ["/"], "context": "updates", "action": "filter", "label": "filter the updates by name, source or state", "hint": "/", "nothing": "Nothing to filter here" },
-  { "keys": ["Enter", "Space"], "context": "installed", "action": "enter", "label": "update it, or put back its changed files", "hint": "Enter" },
+  { "keys": ["Enter", "Space"], "context": "installed", "action": "enter", "label": "open the addon's page", "hint": "Enter" },
   { "keys": ["u"], "context": "installed", "action": "update", "label": "update this addon", "hint": "u", "nothing": "Nothing to update here" },
   { "keys": ["p"], "context": "installed", "action": "pin", "label": "pin or unpin it", "hint": "p", "nothing": "Nothing to pin here" },
   { "keys": ["x"], "context": "installed", "action": "remove", "label": "remove it, after a confirmation", "hint": "x", "nothing": "Nothing to remove here" },
@@ -2239,11 +2241,15 @@ var KEYMAP = [
   { "keys": ["Enter", "Space"], "context": "backups", "action": "enter", "label": "restore from this backup: choose what", "hint": "Enter" },
   { "keys": ["r"], "context": "backups", "action": "restore", "label": "restore from this backup: choose what", "hint": "r", "nothing": "No settings to restore here" },
   { "keys": ["x"], "context": "backups", "action": "remove", "label": "delete this backup, after a confirmation", "hint": "x", "nothing": "Nothing to remove here" },
-  { "keys": ["Enter", "Space"], "context": "page", "action": "enter", "label": "a problem's page: run its fix (a repair previews first)", "hint": "Enter" },
-  { "keys": ["u"], "context": "page", "action": "update", "label": "an error page: update the addon, when one is waiting", "hint": "u", "nothing": "Nothing to update here" },
-  { "keys": ["r"], "context": "page", "action": "restore", "label": "an error page: restore the addon's settings from a backup", "hint": "r", "nothing": "No settings to restore here" },
-  { "keys": ["y"], "context": "page", "action": "copy", "label": "copy an error page's report, or a problem page's command", "hint": "y", "nothing": "Nothing to copy here" },
-  { "keys": ["Enter", "Space"], "context": "search", "action": "enter", "label": "install the result", "hint": "Enter" },
+  { "keys": ["Enter", "Space"], "context": "page", "action": "enter", "label": "run the page's main action: a problem's fix, or on an addon page the client line's repair, update or install", "hint": "Enter" },
+  { "keys": ["u"], "context": "page", "action": "update", "label": "update the addon, when one is waiting (on an addon page, on the client line)", "hint": "u", "nothing": "Nothing to update here" },
+  { "keys": ["i"], "context": "page", "action": "install", "label": "an addon page: install it on the client line's client", "hint": "i", "nothing": "Nothing to install here" },
+  { "keys": ["x"], "context": "page", "action": "remove", "label": "an addon page: remove it from the client line's client, after a confirmation", "hint": "x", "nothing": "Nothing to remove here" },
+  { "keys": ["p"], "context": "page", "action": "pin", "label": "an addon page: pin or unpin it on the client line's client", "hint": "p", "nothing": "Nothing to pin here" },
+  { "keys": ["r"], "context": "page", "action": "restore", "label": "restore the addon's settings from a backup", "hint": "r", "nothing": "No settings to restore here" },
+  { "keys": ["w"], "context": "page", "action": "web", "label": "an addon page: open its web page", "hint": "w", "nothing": "No web page here" },
+  { "keys": ["y"], "context": "page", "action": "copy", "label": "copy an error page's report, a problem page's command, or an addon page's source", "hint": "y", "nothing": "Nothing to copy here" },
+  { "keys": ["Enter", "Space"], "context": "search", "action": "enter", "label": "open the result's page", "hint": "Enter" },
   { "keys": ["i"], "context": "search", "action": "install", "label": "install the result", "hint": "i", "nothing": "Nothing to install here" },
   { "keys": ["Enter"], "context": "field", "action": "search", "label": "search", "hint": "Enter" },
   { "keys": ["Esc"], "context": "field", "action": "leave", "label": "leave the box (its text stays)", "hint": "Esc" },
@@ -2817,7 +2823,7 @@ function updateRow(t, a, kind, status, client, nowMs, doneWord) {
     actions.push(act("pin", a.pinned ? 0xF0404 : 0xF0403, a.pinned ? "installed.action.unpin" : "installed.action.pin"))
   }
   return {
-    "key": t.id + "/" + a.name, "target": t.id, "client": client, "name": a.name, "version": a.version, "latest": a.latest,
+    "key": t.id + "/" + a.name, "target": t.id, "client": client, "name": a.name, "ref": a.ref, "version": a.version, "latest": a.latest,
     "kind": kind, "pinned": a.pinned, "reload": running, "group": "", "groupCount": "", "groupTarget": "", "groupUpdates": 0,
     "targetKey": t.key, "channel": a.channel, "latestSource": a.latestSource, "latestReleaseId": a.latestReleaseId,
     "latestAsset": a.latestAsset, "sourceWord": SOURCE_WORDS[a.source] || copy("installed.source.unknown"),
@@ -3238,14 +3244,14 @@ function installedRow(t, a, client) {
   var primary = problem ? "reinstall" : (a.updateAvailable ? "update" : "")
   // The cursored row's buttons: a problem's Repair first (design doc §2.3).
   var actions = []
-  if (problem) actions.push({ "name": "enter", "glyph": String.fromCodePoint(0xF0DC9), "tooltip": withKey(copy("installed.action.repair"), "enter", "installed") })
+  if (problem) actions.push({ "name": "repair", "glyph": String.fromCodePoint(0xF0DC9), "tooltip": copy("installed.action.repair") })
   if (a.updateAvailable) actions.push({ "name": "update", "glyph": String.fromCodePoint(0xF0CE1), "tooltip": withKey(copy("installed.action.update"), "update", "installed") })
   actions.push({ "name": "pin", "glyph": String.fromCodePoint(a.pinned ? 0xF0404 : 0xF0403),
     "tooltip": withKey(copy(a.pinned ? "installed.action.unpin" : "installed.action.pin"), "pin", "installed") })
   actions.push({ "name": "restore", "glyph": String.fromCodePoint(0xF006F), "tooltip": withKey(copy("installed.action.restore"), "restore", "installed") })
   actions.push({ "name": "remove", "glyph": String.fromCodePoint(0xF01B4), "tooltip": withKey(copy("installed.action.remove"), "remove", "installed") })
   return {
-    "key": t.id + "/" + a.name, "target": t.id, "client": client, "name": a.name, "version": a.version, "source": a.source,
+    "key": t.id + "/" + a.name, "target": t.id, "client": client, "name": a.name, "ref": a.ref, "version": a.version, "source": a.source,
     "sourceWord": meta[0], "markers": markers, "chips": chips, "meta": meta.join(" · "), "problem": problem,
     "band": problem ? "urgent" : (a.updateAvailable ? "accent" : ""),
     "glyph": a.drift === "modified" ? 0xF0DC9 : a.drift === "missing" ? 0xF0258 : a.updateAvailable ? 0xF0CE1
@@ -3266,7 +3272,8 @@ function installedRow(t, a, client) {
 // words), flat where a dependency's requester did not match. Under All, each client's
 // first row carries its header (`group`, `groupCount`), named from `statusTargets`
 // (`status`'s clients; the id without them). Enter on a row repairs a problem, else
-// updates, else does nothing (`primary`), until the addon page (.23) opens instead.
+// updates, else nothing (`primary`): what the addon page's Enter does on its client line;
+// Enter on the row opens that page (1n2p.23).
 function installedRows(lists, filter, statusTargets, view) {
   var options = view && typeof view === "object" ? view : {}
   var sort = INSTALLED_SORTS.indexOf(str(options.sort)) >= 0 ? str(options.sort) : "name"
@@ -3534,6 +3541,214 @@ function suggestionText(action, parts, targets) {
 // suggestions or notes but no problem still says nothing needs fixing).
 function problemCount(sections) {
   return issueRows(sections).filter(function(r) { return r.kind === "problem" }).length
+}
+
+// -------------------------------------------------------------- the addon page (1n2p.23)
+
+// `info --changelog`'s answer as the addon page reads it: what the source says of the
+// addon (`about`, its page only when isSafeUrl allows it), why it says nothing
+// (`aboutWhy`, `about_unavailable.reason`), the newest release and how likely it loads
+// on each client (`compat`), each installed record's folders, the folders it leaves out
+// and its TOC, and the release notes (null when there are none, `changelogWhy` why).
+function reduceInfo(env) {
+  if (!envelopeOk(env) || !env.ok || !env.data || typeof env.data !== "object") return null
+  var d = env.data
+  var about = d.about && typeof d.about === "object" ? d.about : null
+  var popularity = about && about.popularity && typeof about.popularity === "object" ? about.popularity : {}
+  var latest = d.latest && typeof d.latest === "object" ? d.latest : null
+  var compat = latest && latest.compat && typeof latest.compat === "object" ? latest.compat : {}
+  var changelog = d.changelog && typeof d.changelog === "object" ? d.changelog : null
+  return {
+    "name": str(d.name),
+    "ref": str(d.ref),
+    "about": about ? {
+      "summary": str(about.summary), "author": str(about.author), "updatedAt": str(about.updated_at),
+      "homepage": isSafeUrl(about.homepage) ? about.homepage : "",
+      "stars": typeof popularity.stars === "number" ? popularity.stars : null,
+      "downloads": typeof popularity.downloads === "number" ? popularity.downloads : null
+    } : null,
+    "aboutWhy": d.about_unavailable && typeof d.about_unavailable === "object" ? str(d.about_unavailable.reason) : "",
+    "latest": latest ? { "version": str(latest.version), "compat": compat } : null,
+    "installed": (Array.isArray(d.installed) ? d.installed : []).map(function(rec) {
+      var toc = rec.toc && typeof rec.toc === "object" ? rec.toc : null
+      return {
+        "target": rec.target && typeof rec.target === "object" ? str(rec.target.id) : "",
+        "version": strOrNull(rec.version),
+        "folders": stringList(rec.folders),
+        "leftOut": (Array.isArray(rec.left_out) ? rec.left_out : []).map(function(l) { return l && typeof l === "object" ? str(l.name) : "" })
+          .filter(function(n) { return n !== "" }),
+        "toc": toc ? {
+          "title": str(toc.title_plain), "notes": str(toc.notes), "author": str(toc.author),
+          "dependencies": stringList(toc.dependencies)
+        } : null
+      }
+    }),
+    "changelog": changelog ? {
+      "entries": (Array.isArray(changelog.entries) ? changelog.entries : []).map(function(e) {
+        return { "version": str(e.version), "publishedAt": str(e.published_at), "text": str(e.text) }
+      }),
+      "truncated": changelog.truncated === true,
+      "moreUrl": isSafeUrl(changelog.more_url) ? changelog.more_url : ""
+    } : null,
+    "changelogWhy": d.changelog_unavailable && typeof d.changelog_unavailable === "object" ? str(d.changelog_unavailable.reason) : ""
+  }
+}
+
+// How likely a release loads on a client, in words (design doc §6.3): `info`'s compat.
+var COMPAT_WORDS = { "verified": "page.compat.works", "declared": "page.compat.works", "likely": "page.compat.likely",
+  "unlikely": "page.compat.not", "blocked": "page.compat.not" }
+
+// The addon page (1n2p.23, design doc §2.4), from what the panel holds: `name` and `ref`
+// (the row it opened from; `ref` may be null), `lists` (`list -v`, reduced: the local
+// facts, there at once), `info` (the page's own `info` read, reduced, null until it
+// answers), `reading` and `failed` (that read's state), `errors` (`errors`, reduced),
+// `statusTargets` (`status`'s clients, for their names), `nowMs`. The answer:
+//   - the header: `title` (its TOC's title, else its name), `name`, `summary`, `facts`
+//     ("by …", popularity, when it last changed), `source` (a word), `homepage` (a safe
+//     URL or "");
+//   - `clients`: one line per client, where it is installed first (each an Addons-view
+//     row, `row`, so every action runs as it does there), then where it is not, with how
+//     likely the newest release loads there; each line's `actions` (named, with their
+//     key: the cursored line's) and `primary` (Enter);
+//   - `notes`: the release notes newer than the oldest installed version, newest first;
+//   - `folders`: what it owns on each client, and what that client leaves out;
+//   - `needs` (its TOCs' dependencies, each `{name, installed}`) and `neededBy`;
+//   - `errors`: its Lua errors on each client (`{target, client, key, text}`);
+//   - `state`: "reading", "failed" (with `failed`) or "" as the read stands, and `why`,
+//     a sentence when the source said nothing of it.
+function addonPage(input) {
+  var i = input && typeof input === "object" ? input : {}
+  var name = str(i.name)
+  var info = i.info && typeof i.info === "object" ? i.info : null
+  var statusTargets = Array.isArray(i.statusTargets) ? i.statusTargets : []
+  var nowMs = typeof i.nowMs === "number" ? i.nowMs : Date.now()
+  var listTargets = i.lists && Array.isArray(i.lists.targets) ? i.lists.targets : []
+  var ref = str(i.ref) || (info ? info.ref : "")
+  // Its installed records: the same name, and the same ref when the page knows one.
+  var records = []
+  listTargets.forEach(function(t) {
+    t.addons.forEach(function(a) {
+      if (a.name === name && (!ref || !a.ref || a.ref === ref)) records.push({ "t": t, "a": a })
+    })
+  })
+  if (!ref && records.length) ref = str(records[0].a.ref)
+  var installedOn = function(id) { return (info ? info.installed : []).filter(function(r) { return r.target === id })[0] || null }
+  var firstToc = (info ? info.installed : []).map(function(r) { return r.toc }).filter(function(t) { return !!t })[0] || null
+  var about = info && info.about ? info.about : null
+
+  var facts = []
+  if (about && about.author) facts.push(copy("page.by", { "author": about.author }))
+  else if (firstToc && firstToc.author) facts.push(copy("page.by", { "author": firstToc.author }))
+  var popularity = about ? popularityText({ "downloads": about.downloads, "stars": about.stars }) : ""
+  if (popularity) facts.push(popularity)
+  if (about && about.updatedAt) facts.push(copy("page.updated", { "age": sinceText(about.updatedAt, nowMs) || dateText(about.updatedAt) }))
+
+  var clients = []
+  var seen = {}
+  records.forEach(function(rec) {
+    var client = sheetClient(statusTargets, rec.t.id, rec.t.key)
+    var row = installedRow(rec.t, rec.a, client)
+    seen[rec.t.id] = true
+    var actions = []
+    var act = function(action, label, glyph) {
+      actions.push({ "name": action, "text": copy(label), "glyph": String.fromCodePoint(glyph), "tooltip": withKey(copy(label), action, "page") })
+    }
+    if (row.problem) act("enter", "installed.action.repair", 0xF0DC9)
+    if (row.updateAvailable) act("update", "installed.action.update", 0xF0CE1)
+    act("pin", row.pinned ? "installed.action.unpin" : "installed.action.pin", row.pinned ? 0xF0404 : 0xF0403)
+    act("restore", "installed.action.restore", 0xF006F)
+    act("remove", "installed.action.remove", 0xF01B4)
+    var meta = [rec.a.version ? copy("page.installed", { "version": rec.a.version }) : copy("page.installed.unknown")]
+    if (row.updateAvailable && rec.a.latest) meta.push(copy("page.update", { "version": rec.a.latest }))
+    if (rec.a.channel && rec.a.channel !== "stable") meta.push(copy("page.channel", { "channel": rec.a.channel }))
+    clients.push({
+      "key": "c/" + rec.t.id, "target": rec.t.id, "client": client, "installed": true, "row": row,
+      "meta": meta.join(" · "), "chips": row.chips, "band": row.band, "glyph": row.glyph,
+      "primary": row.problem ? "reinstall" : (row.updateAvailable ? "update" : ""), "actions": actions
+    })
+  })
+  // Where it is not installed: how likely the newest release loads there, when `info`
+  // said, and Install here where it likely does.
+  var compat = info && info.latest ? info.latest.compat : {}
+  statusTargets.forEach(function(t) {
+    if (seen[t.id] || t.missing === true) return
+    var verdict = compat.hasOwnProperty(t.id) ? str(compat[t.id]) : ""
+    var installable = !!ref && (verdict === "verified" || verdict === "declared" || verdict === "likely")
+    clients.push({
+      "key": "c/" + t.id, "target": t.id, "client": t.displayName || t.id, "installed": false, "row": null,
+      "meta": copy("page.not_installed") + (COMPAT_WORDS.hasOwnProperty(verdict) ? " · " + copy(COMPAT_WORDS[verdict]) : ""),
+      "chips": [], "band": "", "glyph": 0, "primary": installable ? "install" : "",
+      "actions": installable ? [{ "name": "install", "text": copy("page.install_here"), "glyph": String.fromCodePoint(0xF0415),
+        "tooltip": withKey(copy("page.install_here"), "install", "page") }] : []
+    })
+  })
+
+  // The release notes the page's read brought: each version, its age, its text cut.
+  var notes = info && info.changelog ? info.changelog.entries.map(function(e) {
+    var age = e.publishedAt ? (sinceText(e.publishedAt, nowMs) || dateText(e.publishedAt)) : ""
+    var text = e.text.length > NOTES_MAX_CHARS ? e.text.slice(0, NOTES_MAX_CHARS - 1) + "…" : e.text
+    return { "version": e.version, "when": age, "text": text }
+  }) : []
+  var moreUrl = info && info.changelog ? info.changelog.moreUrl : ""
+
+  var folders = records.map(function(rec) {
+    var record = installedOn(rec.t.id)
+    return { "target": rec.t.id, "client": sheetClient(statusTargets, rec.t.id, rec.t.key), "folders": rec.a.folders,
+      "leftOut": record ? record.leftOut : [] }
+  })
+
+  // What its TOCs need, and what needs it (`required_by`), each a page of its own.
+  var installedNames = {}
+  listTargets.forEach(function(t) { t.addons.forEach(function(a) { installedNames[a.name.toLowerCase()] = a.name }) })
+  var needNames = []
+  var tocs = info ? info.installed.map(function(r) { return r.toc }).filter(function(t) { return !!t }) : []
+  tocs.forEach(function(toc) {
+    toc.dependencies.forEach(function(d) { if (needNames.indexOf(d) === -1) needNames.push(d) })
+  })
+  var needs = needNames.map(function(d) {
+    var known = installedNames[d.toLowerCase()]
+    return { "name": known || d, "installed": !!known }
+  })
+  var neededBy = []
+  records.forEach(function(rec) { rec.a.requiredBy.forEach(function(n) { if (neededBy.indexOf(n) === -1) neededBy.push(n) }) })
+
+  // Its Lua errors, per client, with the key of the Errors view's row (its error page).
+  var errors = []
+  var errorTargets = i.errors && Array.isArray(i.errors.targets) ? i.errors.targets : []
+  errorTargets.forEach(function(e) {
+    (Array.isArray(e.addons) ? e.addons : []).forEach(function(a) {
+      if (a.addon !== name) return
+      var client = sheetClient(statusTargets, e.id, "")
+      var parts = [copy("page.errors.count", { "n": a.count, "client": client })]
+      if (a["new"] > 0) parts.push(copy("errors.new", { "n": a["new"] }))
+      errors.push({ "target": e.id, "client": client, "key": "a/" + e.id + "/" + a.addon, "text": parts.join(" · ") })
+    })
+  })
+
+  var state = i.reading === true ? "reading" : (str(i.failed) !== "" ? "failed" : "")
+  var why = ""
+  if (state === "" && info && info.aboutWhy) {
+    why = COPY.hasOwnProperty("page.why." + info.aboutWhy) ? copy("page.why." + info.aboutWhy) : copy("page.why.other")
+  }
+  return {
+    "name": name,
+    "ref": ref,
+    "title": firstToc && firstToc.title ? firstToc.title : name,
+    "summary": about && about.summary ? about.summary : (firstToc && firstToc.notes ? firstToc.notes : ""),
+    "facts": facts.join(" · "),
+    "source": ref ? (SOURCE_WORDS[sourceKind(ref)] || copy("installed.source.unknown")) : "",
+    "homepage": about ? about.homepage : "",
+    "clients": clients,
+    "notes": notes,
+    "moreUrl": moreUrl,
+    "folders": folders,
+    "needs": needs,
+    "neededBy": neededBy,
+    "errors": errors,
+    "state": state,
+    "failed": str(i.failed),
+    "why": why
+  }
 }
 
 // -------------------------------------------------------------- the Errors view (1n2p.27)
@@ -4514,6 +4729,43 @@ var COPY = {
   "issues.page.gone": "omaddons no longer reports this problem.",
   "issues.errors_title": "Lua errors on {client}",
 
+  // The addon page (1n2p.23, design doc §2.4, §6.3).
+  "page.by": "by {author}",
+  "page.updated": "updated {age}",
+  "page.installed": "{version} installed",
+  "page.installed.unknown": "installed",
+  "page.update": "{version} available",
+  "page.channel": "{channel} releases",
+  "page.not_installed": "not installed",
+  "page.compat.works": "works here",
+  "page.compat.likely": "probably works here",
+  "page.compat.not": "not made for this client",
+  "page.install_here": "Install here",
+  "page.web": "Web page",
+  "page.copy_ref": "Copy its source",
+  "page.copied": "Copied {ref}",
+  "page.section.clients": "On each client",
+  "page.section.notes": "What's new",
+  "page.section.folders": "Folders",
+  "page.section.needs": "Needs",
+  "page.section.needed_by": "Needed by",
+  "page.section.errors": "Lua errors",
+  "page.notes.none": "No newer release notes.",
+  "page.notes.more": "More on {host}",
+  "page.needs.missing": "{name} (not installed)",
+  "page.folders.left_out": "{client} leaves out {folders}",
+  "page.errors.count": { "one": "1 error on {client}", "other": "{n} errors on {client}" },
+  "page.reading": "Reading about it…",
+  "page.failed": "Couldn't read more about it: {why}",
+  "page.why.offline": "Not checked: omaddons is offline.",
+  "page.why.not_found": "Its source knows no such project.",
+  "page.why.rate_limited": "GitHub asked to wait; try again later.",
+  "page.why.fetch_failed": "Its source didn't answer.",
+  "page.why.source_disabled": "Its source is turned off.",
+  "page.why.not_supported": "Its source says nothing more about it.",
+  "page.why.source_has_no_metadata": "Its source says nothing more about it.",
+  "page.why.other": "Nothing more is known about it.",
+
   "source.catalog": "omaddons' catalog",
   "source.github": "GitHub",
   "source.wowi": "WoWInterface",
@@ -4548,6 +4800,7 @@ var COPY = {
   "activity.check": "Checking for updates",
   "activity.search": "Searching",
   "activity.changelog": "Reading the release notes",
+  "activity.addon_info": "Reading about the addon",
   "activity.preview.match": "preparing",
   "activity.preview.confirm": "checking what it would do",
   "activity.preview.bind": "checking what it would repair",
@@ -5548,6 +5801,7 @@ if (typeof module !== "undefined") {
     activityStart: activityStart,
     activityProgress: activityProgress,
     activityView: activityView,
+    activityHeadline: activityHeadline,
     shownActivity: shownActivity,
     activityRow: activityRow,
     changedRows: changedRows,
@@ -5641,6 +5895,9 @@ if (typeof module !== "undefined") {
     sameArgv: sameArgv,
     suggestionText: suggestionText,
     problemCount: problemCount,
+    reduceInfo: reduceInfo,
+    addonPage: addonPage,
+    COMPAT_WORDS: COMPAT_WORDS,
     SEVERITY_GLYPHS: SEVERITY_GLYPHS,
     NOTE_ELSEWHERE: NOTE_ELSEWHERE,
     errorSections: errorSections,

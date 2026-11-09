@@ -65,7 +65,12 @@ Item {
 
   function handleKey(name, cursor) {
     var row = cursor >= 0 && cursor < rows.length ? rows[cursor] : null
-    if (name === "enter" || name === "update") {
+    // Enter: the addon's page (1n2p.23); `u` updates.
+    if (name === "enter") {
+      if (row) frame.openAddon(row.name, row.ref)
+      return true
+    }
+    if (name === "update") {
       if (row && row.kind === "update") run(Model.rowAction(row, "update"))
       return true
     }

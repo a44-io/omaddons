@@ -41,6 +41,9 @@ Item {
   property var backups: null
   property var search: null
   property var changelog: null
+  // The open addon page's own `info --changelog` read (1n2p.23), view-bound to the ref it
+  // was asked for: `{selection, data, failed}`, `data` Model.reduceInfo's.
+  property var addonInfo: null
   // The running mutation: {name, label, current, total, message}.
   property var action: null
   // The label of the queued user mutation ("next: …").
@@ -167,6 +170,7 @@ Item {
   property var openPanels: ({})
   property var searchSelection: null
   property var changelogSelection: null
+  property var addonInfoSelection: null
   // What the open confirmation runs on Yes, and the generation it was previewed in.
   property var pendingConfirm: null
   property bool bellStarted: false
@@ -411,6 +415,26 @@ Item {
 
   function dismissOne(entry) {
     return runBound("dismiss_errors", { "target": entry.target }, "Dismiss errors on " + entry.target, entry.token)
+  }
+
+  // An addon page opened on `ref` (its ref, else its name): what its source says of it,
+  // its records and release notes, on the network lane, view-bound to that ref, so a
+  // late answer for another page never lands. Read once per page open.
+  function readAddonInfo(ref) {
+    var selection = { "ref": String(ref || "") }
+    if (selection.ref === "") return false
+    addonInfoSelection = selection
+    addonInfo = { "selection": selection, "data": null, "failed": "" }
+    return request({
+      "resource": "addon_info", "template": "addon_info", "lane": "network", "kind": "view",
+      "selection": selection, "slots": { "ref": selection.ref }, "label": "About " + selection.ref
+    })
+  }
+
+  // The page closed: a late answer is dropped.
+  function clearAddonInfo() {
+    addonInfoSelection = null
+    addonInfo = null
   }
 
   function readChangelog(target, addon) {
@@ -719,6 +743,7 @@ Item {
   function selectionFor(r) {
     if (r.resource === "search") return searchSelection
     if (r.resource === "changelog") return changelogSelection
+    if (r.resource === "addon_info") return addonInfoSelection
     if (r.resource === "errors_raw") return rawSelection
     if (r.resource === "backups_detail") return detailSelection
     if (r.resource === "explain") return explainSelection
@@ -786,6 +811,9 @@ Item {
       if (r.resource === "changelog") {
         changelog = { "selection": r.selection, "data": null, "failed": Model.copy("activity.cancelled", { "label": r.label }) }
       }
+      if (r.resource === "addon_info") {
+        addonInfo = { "selection": r.selection, "data": null, "failed": Model.copy("activity.cancelled", { "label": r.label }) }
+      }
       return
     }
     // Every check, answered or not: whether a source did not answer.
@@ -810,6 +838,7 @@ Item {
         lastErrorResource = r.resource
         // A row waiting for its notes says they could not be read, never "Reading…".
         if (r.resource === "changelog") changelog = { "selection": r.selection, "data": null, "failed": lastError.message }
+        if (r.resource === "addon_info") addonInfo = { "selection": r.selection, "data": null, "failed": lastError.message }
         if (r.resource === "explain") explanation = { "selection": r.selection, "lines": null, "failed": lastError.message }
       }
     } else if (r.resource === "list") {
@@ -831,6 +860,8 @@ Item {
       search = found
     } else if (r.resource === "changelog") {
       changelog = { "selection": r.selection, "data": env.data }
+    } else if (r.resource === "addon_info") {
+      addonInfo = { "selection": r.selection, "data": Model.reduceInfo(env), "failed": "" }
     } else if (r.resource === "explain") {
       explanation = { "selection": r.selection, "lines": Model.explainLines(env, Build.CONTEXT, targets), "failed": "" }
     } else if (r.resource === "check") {

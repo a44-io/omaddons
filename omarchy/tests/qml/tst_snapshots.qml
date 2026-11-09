@@ -953,6 +953,34 @@ TestCase {
     shoot("issues-repair")
   }
 
+  // ---------------------------------------------------------------- the addon page (1n2p.23)
+
+  // Foo's page from Addons: its two clients, what its read brought (its notes, why its
+  // source said nothing more), its folders and its Lua errors on Retail.
+  function test_addon_page() {
+    var scene = everyday()
+    open(scene, "installed")
+    frame.openAddon("Foo", "gh:o/foo")
+    settle(scene)
+    var page = findChild(frame, "page").item
+    compare(page.page.state, "")
+    verify(page.page.notes.length > 0, "its release notes")
+    frame.cursor = 1
+    frame.cursorActive = true
+    shoot("addon-page")
+  }
+
+  // Its read still running: the local facts, and "Reading about it…".
+  function test_addon_page_reading() {
+    var scene = everyday()
+    delete scene.changelog
+    open(scene, "installed")
+    frame.openAddon("Foo", "gh:o/foo")
+    settle(scene)
+    compare(findChild(frame, "page").item.page.state, "reading")
+    shoot("addon-page-reading")
+  }
+
   // ---------------------------------------------------------------- Backups
 
   function test_backups_loading() {
@@ -1093,7 +1121,7 @@ TestCase {
   function test_confirm_update_on_two_clients() { updateOnTwoClients(540, "confirm-update-two-clients") }
   function test_confirm_update_on_two_clients_at_400() { updateOnTwoClients(400, "confirm-update-two-clients-400") }
 
-  // Enter on Foo's update whose release moved since the list was read: the dialog says
+  // `u` on Foo's update whose release moved since the list was read: the dialog says
   // what changed instead of applying.
   function test_confirm_changed_since_you_looked() {
     var scene = everyday()
@@ -1106,7 +1134,7 @@ TestCase {
     frame.cursor = at
     frame.cursorActive = true
     scene.update = the("plan-update-moved")
-    frame.activate()
+    frame.act("u")
     settle(scene)
     verify(service.confirm !== null, "the changed-since dialog")
     shoot("confirm-changed")

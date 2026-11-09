@@ -749,7 +749,11 @@ describe("the key map", () => {
       ["a_page_has_the_frames_keys", ["?", "page"], { action: "help", step: 0 }],
       // The error page (.27) has its own u, r and y; no other view's key.
       ["a_page_has_its_own_keys", ["u", "page"], { action: "update", step: 0 }],
-      ["a_page_has_no_views_keys", ["p", "page"], null],
+      // An addon page (.23) pins, removes and installs on its client line, and opens its
+      // web page; a key no page has does nothing there.
+      ["a_page_pins", ["p", "page"], { action: "pin", step: 0 }],
+      ["a_page_opens_its_web_page", ["w", "page"], { action: "web", step: 0 }],
+      ["a_page_has_no_views_keys", ["S", "page"], null],
       ["slash_filters_the_addons", ["/", "installed"], { action: "filter", step: 0 }],
       ["slash_filters_the_updates", ["/", "updates"], { action: "filter", step: 0 }],
       ["slash_elsewhere_says_why_not", ["/", "backups"], { action: null, note: "Nothing to filter here" }],
@@ -899,7 +903,7 @@ describe("the key map", () => {
     expect(titles("card")).toEqual(["Problem card", "Anywhere", "Dialog"])
     const updates = M.helpSections("updates")[0]
     expect(updates.rows.map((r) => r.hint)).toEqual(["Enter", "u", "p", "e", "/"])
-    expect(updates.rows[0]).toEqual({ hint: "Enter", label: "update this addon" })
+    expect(updates.rows[0]).toEqual({ hint: "Enter", label: "open the addon's page" })
     // Every row of those contexts, once.
     const listed = M.helpSections("installed").flatMap((s) => s.rows).length
     expect(listed).toBe(M.KEYMAP.filter((r) => ["installed", "filter", "view", "panel", "sheet"].includes(r.context)).length)
@@ -1415,8 +1419,9 @@ describe("the Updates and Installed views", () => {
       [["!changed on disk", "update ready"], "GitHub · 1 file changed on disk", "urgent"],
       [["pinned", "not needed"], "GitHub · nothing needs it any more", ""]])
     // A problem's first button repairs; every row pins, restores and removes.
-    expect(rows[0].actions.map((a) => a.name)).toEqual(["enter", "update", "pin", "restore", "remove"])
-    expect(rows[0].actions[0].tooltip).toBe("Repair (Enter)")
+    expect(rows[0].actions.map((a) => a.name)).toEqual(["repair", "update", "pin", "restore", "remove"])
+    // Enter opens the addon's page (.23), so Repair is a button of its own.
+    expect(rows[0].actions[0].tooltip).toBe("Repair")
     expect(rows[2].actions.map((a) => [a.name, a.tooltip])).toEqual([["pin", "Unpin (p)"],
       ["restore", "Restore its settings (r)"], ["remove", "Remove (x)"]])
     const plain = M.installedRows(M.reduceList(fixture("list")), "retail")
@@ -3094,6 +3099,83 @@ describe("repairs from the binary", () => {
     const status = M.reduceStatus(env)
     const row = M.issueRows(M.issueSections(status.targets, [], "", status.issues))[0]
     expect([row.text, row.action, row.fix, M.classifyCliArgv(gc).reason]).toEqual([gc.join(" "), null, null, "doctor_gc"])
+  })
+})
+
+// --------------------------------------------------- the addon page (1n2p.23)
+
+// The page over what the binary wrote: `list -v` (Foo on era and retail, one release
+// behind), `info --changelog` of Foo on retail (its about, TOC and notes), `errors`
+// (Foo's errors on retail) and `status`'s clients.
+describe("the addon page", () => {
+  const status = () => M.reduceStatus(fixture("status-updates"), NOW)
+  const page = (extra) => M.addonPage(Object.assign({ name: "Foo", ref: "", lists: M.reduceList(fixture("list")),
+    info: M.reduceInfo(fixture("changelog")), errors: M.reduceErrors(fixture("errors")), statusTargets: status().targets, nowMs: NOW }, extra || {}))
+
+  test("info reduces to what the page reads, every link checked", () => {
+    const info = M.reduceInfo(fixture("changelog"))
+    expect([info.name, info.ref, info.about.homepage, info.aboutWhy, info.latest.version]).toEqual(["Foo", "gh:o/foo", "https://github.com/o/foo", "fetch_failed", "v2"])
+    expect(info.installed.map((r) => [r.target, r.version, r.folders, r.toc.title])).toEqual([["retail", "v1", ["Foo"], "edited by hand"]])
+    expect([info.changelog.entries.map((e) => e.version), info.changelog.moreUrl]).toEqual([["v2"], "https://github.com/o/foo/releases"])
+    // A page link that is not https on a known host is no link.
+    const env = fixture("changelog")
+    env.data.about.homepage = "http://example.com/foo"
+    env.data.changelog.more_url = "https://example.com/releases"
+    const unsafe = M.reduceInfo(env)
+    expect([unsafe.about.homepage, unsafe.changelog.moreUrl]).toEqual(["", ""])
+    expect(M.reduceInfo(fixture("failure"))).toBeNull()
+  })
+
+  test("the page: what it is, each client, its notes, folders and errors", () => {
+    const p = page()
+    expect([p.title, p.name, p.ref, p.source, p.homepage, p.state, p.why])
+      .toEqual(["edited by hand", "Foo", "gh:o/foo", "GitHub", "https://github.com/o/foo", "", "Its source didn't answer."])
+    // Where it is installed first, each as an Addons row, so its actions run as there.
+    expect(p.clients.filter((c) => c.installed).map((c) => [c.client, c.meta, c.primary, c.actions.map((a) => a.name)])).toEqual([
+      ["Classic Era", "v1 installed · v2 available", "update", ["update", "pin", "restore", "remove"]],
+      ["Retail", "v1 installed · v2 available", "update", ["update", "pin", "restore", "remove"]],
+    ])
+    expect(M.rowAction(p.clients[1].row, "update")).toMatchObject({ template: "update_addon", slots: { target: "retail", addon: "Foo" } })
+    expect(p.clients[0].actions[0].tooltip).toBe("Update (u)")
+    expect(p.notes.map((n) => [n.version, n.text])).toEqual([["v2", "Fixes the pull timer."]])
+    expect(p.folders.map((f) => [f.client, f.folders])).toEqual([["Classic Era", ["Foo"]], ["Retail", ["Foo"]]])
+    expect(p.errors.map((e) => [e.key, e.text])).toEqual([["a/retail/Foo", "5 errors on Retail · 2 new"]])
+  })
+
+  test("before its read answers, the local facts; a failed read says so", () => {
+    const reading = page({ info: null, reading: true })
+    expect([reading.title, reading.ref, reading.state, reading.notes, reading.clients.filter((c) => c.installed).length])
+      .toEqual(["Foo", "gh:o/foo", "reading", [], 2])
+    const failed = page({ info: null, failed: "omaddons info: network" })
+    expect([failed.state, failed.failed]).toEqual(["failed", "omaddons info: network"])
+  })
+
+  test("an addon installed nowhere: each client's likelihood, and Install here where it likely loads", () => {
+    const info = M.reduceInfo(fixture("changelog"))
+    info.installed = []
+    info.latest.compat = { "retail": "likely", "era": "unlikely" }
+    const p = page({ name: "Skada", ref: "gh:skada/skada", info: info, errors: null })
+    expect(p.clients.map((c) => [c.client, c.meta, c.primary])).toEqual([
+      ["Classic Era", "not installed · not made for this client", ""],
+      ["Retail", "not installed · probably works here", "install"],
+    ])
+    expect(p.clients[1].actions.map((a) => [a.name, a.tooltip])).toEqual([["install", "Install here (i)"]])
+  })
+
+  test("what it needs and what needs it, each a page of its own", () => {
+    const lists = M.reduceList(fixture("list"))
+    lists.targets[1].addons.find((a) => a.name === "Foo").requiredBy = ["Bar"]
+    const info = M.reduceInfo(fixture("changelog"))
+    info.installed[0].toc.dependencies = ["baz", "LibNowhere"]
+    const p = page({ lists: lists, info: info })
+    expect([p.needs, p.neededBy]).toEqual([[{ name: "Baz", installed: true }, { name: "LibNowhere", installed: false }], ["Bar"]])
+  })
+
+  test("the page's read is info of its ref, on the network lane", () => {
+    const built = M.buildArgv("addon_info", { ref: "gh:o/foo" }, opts({ label: "About gh:o/foo" })).argv
+    expect(built.slice(built.indexOf("info"))).toEqual(["info", "--changelog", "--", "gh:o/foo"])
+    expect(built).toContain("--progress")
+    expect(M.activityHeadline({ kind: "read", resource: "addon_info", label: "x" }, [])).toBe("Reading about the addon")
   })
 })
 

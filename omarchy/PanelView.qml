@@ -284,22 +284,44 @@ Item {
   // ------------------------------------------------------------- the navigation stack
 
   // A page on top of the view (or of the page before it): `{title, component, props}`.
+  // The page remembers where the cursor and the scroll stood beneath it, so back returns
+  // to the same row (design doc §2.4).
   function push(page) {
     if (!page || !page.component) return false
-    pages = pages.concat([page])
+    var entry = Object.assign({}, page, { "under": { "cursor": cursor, "active": cursorActive, "y": flick.contentY } })
+    pages = pages.concat([entry])
     cursor = 0
     cursorActive = false
     flick.contentY = 0
     return true
   }
 
-  // Back one page; false when no page is open.
+  // A page over a page of the same kind (an addon page over another, through a
+  // dependency, and back again) keeps the loader's item, which gets the new top page's
+  // props; a page of another kind is made again by the loader, which hands it its own.
+  onTopPageChanged: applyPageProps()
+  function applyPageProps() {
+    var item = pageLoader.item
+    if (!item || !topPage || topPage.component !== pageLoader.loadedFor) return
+    var props = topPage.props || {}
+    for (var key in props) if (key in item) item[key] = props[key]
+  }
+
+  // An addon's page (1n2p.23, design doc §2.4), from any list or another page: `name`
+  // as the row names it, and its `ref` when the row knows one.
+  function openAddon(name, ref) {
+    if (!name) return false
+    return push({ "title": String(name), "component": addonPageComponent, "props": { "name": String(name), "ref": String(ref || "") } })
+  }
+
+  // Back one page, to where the cursor stood beneath it; false when no page is open.
   function pop() {
     if (pages.length === 0) return false
+    var under = pages[pages.length - 1].under || { "cursor": 0, "active": false, "y": 0 }
     pages = pages.slice(0, -1)
-    cursor = 0
-    cursorActive = false
-    flick.contentY = 0
+    cursor = under.cursor
+    cursorActive = under.active
+    flick.contentY = under.y
     return true
   }
 
@@ -959,8 +981,12 @@ Item {
             width: parent.width
             active: !!root.topPage
             sourceComponent: root.topPage ? root.topPage.component : null
+            // The component the item was made from: a page over a page of the same kind
+            // keeps the item (applyPageProps).
+            property var loadedFor: null
             onLoaded: {
               if (!item) return
+              loadedFor = root.topPage ? root.topPage.component : null
               if ("frame" in item) item.frame = root
               var props = root.topPage && root.topPage.props ? root.topPage.props : {}
               for (var key in props) if (key in item) item[key] = props[key]
@@ -1381,6 +1407,13 @@ Item {
   Component {
     id: backupsView
     BackupsView {}
+  }
+
+  // The addon page (1n2p.23): the frame owns its component, so a page can open another
+  // addon's page (a dependency) on top of itself.
+  Component {
+    id: addonPageComponent
+    AddonPage {}
   }
 
   // The keys that are no single character (design doc §3: Ctrl+Z, PgUp, PgDn, the

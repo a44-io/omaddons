@@ -47,8 +47,14 @@ Item {
 
   // KEYMAP's search rows: Enter and `i` install the cursored result.
   function handleKey(name, cursor) {
-    if (name === "enter" || name === "install") {
-      var row = cursor >= 0 && cursor < results.length ? results[cursor] : null
+    var row = cursor >= 0 && cursor < results.length ? results[cursor] : null
+    // Enter: the result's page (1n2p.23): whether it loads on each client, Install here;
+    // `i` installs it as the hint allows.
+    if (name === "enter") {
+      if (row) frame.openAddon(row.name, row.ref)
+      return true
+    }
+    if (name === "install") {
       if (row) install(row)
       return true
     }

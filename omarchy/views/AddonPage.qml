@@ -1,0 +1,463 @@
+import QtQuick
+import Quickshell
+import qs.Commons
+import qs.Commons as Commons
+import qs.Ui
+import ".."
+import "../ui"
+import "../Model.js" as Model
+
+// An addon's page (1n2p.23, design doc §2.4), pushed on the navigation stack by
+// frame.openAddon from a list (Updates, Addons, Search) or from another page (a
+// dependency): what it is (its TOC's title, what its source says of it, its web page),
+// one line per client (the version installed there and what is waiting, else whether
+// the newest release loads there), its release notes, the folders it owns, what it
+// needs and what needs it (each a page of its own), and its Lua errors (each client's
+// error page). The local facts (`list -v`) show at once; the page's own `info
+// --changelog` read, on the network lane and view-bound to this addon, adds the rest
+// (Model.addonPage). The cursor walks the client lines; the keys act on the line under
+// it, as the Addons view's do on a row: Enter repairs, updates or installs, `u`, `i`,
+// `x`, `p`, `r`, `o`; `w` opens its web page, `y` copies its source. The keys are
+// Model.KEYMAP's page rows.
+Item {
+  id: root
+
+  property var frame: null
+  // The addon: its name as the list named it, and its ref when the list knew one.
+  property string name: ""
+  property string ref: ""
+
+  readonly property var svc: frame ? frame.svc : null
+  readonly property var statusTargets: svc && Array.isArray(svc.targets) ? svc.targets : []
+  readonly property double nowMs: frame ? frame.nowMs : Date.now()
+  // What the page reads it by: its ref, else its name.
+  readonly property string query: ref !== "" ? ref : name
+  // This page's own read, once it answers for this addon.
+  readonly property var info: svc && svc.addonInfo && svc.addonInfo.selection && svc.addonInfo.selection.ref === query
+    ? svc.addonInfo : null
+  readonly property var page: Model.addonPage({ "name": name, "ref": ref, "lists": svc ? svc.lists : null,
+    "info": info ? info.data : null, "reading": !!info && !info.data && !info.failed, "failed": info ? info.failed : "",
+    "errors": svc ? svc.errors : null, "statusTargets": statusTargets, "nowMs": nowMs })
+  // The client lines the cursor walks (the frame's `o` opens the one under it).
+  readonly property var rows: page.clients
+  readonly property int rowCount: rows.length
+  readonly property bool typing: false
+  // What `y` copied, said for a moment.
+  property string copied: ""
+  property string askedFor: ""
+
+  readonly property color foreground: frame ? frame.foreground : Commons.Color.foreground
+  readonly property color dim: frame ? frame.dim : Qt.darker(foreground, 1.55)
+  readonly property color urgent: frame ? frame.urgent : Commons.Color.urgent
+  readonly property color accent: frame ? frame.accent : Commons.Color.accent
+  readonly property string fontFamily: frame ? frame.fontFamily : Style.font.family
+  readonly property bool canChange: !!frame && frame.canAct && !frame.busy
+
+  implicitHeight: column.implicitHeight
+
+  function rowItem(i) { return lineRepeater.itemAt(i) }
+
+  // The read, once the frame has handed the page its addon (its props come after the
+  // page is made, one by one: callLater asks once for the last of them).
+  onQueryChanged: Qt.callLater(root.ask)
+  onSvcChanged: Qt.callLater(root.ask)
+  Component.onCompleted: Qt.callLater(root.ask)
+  Component.onDestruction: if (svc) svc.clearAddonInfo()
+  function ask() {
+    if (!svc || query === "" || askedFor === query) return
+    askedFor = query
+    copied = ""
+    svc.readAddonInfo(query)
+  }
+
+  function lineAt(cursor) {
+    return cursor >= 0 && cursor < rows.length ? rows[cursor] : null
+  }
+
+  function handleKey(name, cursor) {
+    var line = lineAt(cursor)
+    if (name === "enter") {
+      if (line && line.primary === "install") install(line)
+      else if (line && line.primary !== "") run(Model.rowAction(line.row, line.primary))
+      return true
+    }
+    if (name === "update") {
+      if (line && line.row && line.row.updateAvailable) run(Model.rowAction(line.row, "update"))
+      return true
+    }
+    if (name === "install") {
+      if (line && line.primary === "install") install(line)
+      return true
+    }
+    if (name === "remove") {
+      if (line && line.row) run(Model.rowAction(line.row, "remove"))
+      return true
+    }
+    if (name === "pin") {
+      if (line && line.row) run(Model.rowAction(line.row, "pin"))
+      return true
+    }
+    if (name === "restore") {
+      if (line && line.installed) frame.openChooser({ "target": line.target, "addon": root.name })
+      return true
+    }
+    if (name === "web") {
+      openWeb(page.homepage)
+      return true
+    }
+    if (name === "copy") {
+      copyRef()
+      return true
+    }
+    return false
+  }
+
+  function run(action) {
+    if (!canChange || !action) return false
+    return frame.report(svc.run(action.template, action.slots, action.label, action.shown))
+  }
+
+  // Install here: the client line's client, previewed as Search's install is.
+  function install(line) {
+    if (!canChange || page.ref === "") return false
+    return frame.report(svc.run("install", { "target": line.target, "ref": page.ref }, "Install " + root.name, []))
+  }
+
+  function openWeb(url) {
+    if (Model.isSafeUrl(url)) Quickshell.execDetached(["omarchy-launch-browser", url])
+  }
+
+  function copyRef() {
+    if (!svc || page.ref === "" || !svc.copyCommand(page.ref)) return false
+    copied = Model.copy("page.copied", { "ref": page.ref })
+    copiedTimer.restart()
+    return true
+  }
+
+  function select(index) {
+    frame.cursor = index
+    frame.cursorActive = true
+  }
+
+  // A Lua error line: that client's error page, as the Errors view opens it.
+  function openErrors(entry) {
+    var rows = Model.errorRows(Model.errorSections(svc ? svc.errors : null, statusTargets, "", nowMs))
+    var row = rows.filter(function(r) { return r.key === entry.key })[0] || null
+    if (!row) return false
+    return frame.push({ "title": root.name, "component": errorPageComponent, "props": { "rowKey": row.key, "initial": row } })
+  }
+
+  Timer {
+    id: copiedTimer
+    interval: 1500
+    onTriggered: root.copied = ""
+  }
+
+  Component {
+    id: errorPageComponent
+    ErrorPage {}
+  }
+
+  Column {
+    id: column
+    width: root.width
+    spacing: Style.spacing.md
+
+    // ---- what it is
+    Column {
+      width: parent.width
+      spacing: Style.spacing.xs
+
+      PlainLabel {
+        objectName: "pageTitle"
+        width: parent.width
+        wrapMode: Text.WordWrap
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.body
+        font.bold: true
+        text: root.page.title
+      }
+
+      // Its name, when its TOC's title is another.
+      PlainLabel {
+        objectName: "pageName"
+        visible: root.page.title !== root.page.name
+        width: parent.width
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        text: root.page.name
+      }
+
+      PlainLabel {
+        objectName: "pageSummary"
+        visible: root.page.summary !== ""
+        width: parent.width
+        wrapMode: Text.WordWrap
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        text: root.page.summary
+      }
+
+      PlainLabel {
+        objectName: "pageFacts"
+        visible: text !== ""
+        width: parent.width
+        wrapMode: Text.WordWrap
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        text: [root.page.source, root.page.facts].filter(function(p) { return p !== "" }).join(" · ")
+      }
+
+      // Reading about it, why that failed, or why its source says nothing more.
+      PlainLabel {
+        objectName: "pageState"
+        visible: text !== ""
+        width: parent.width
+        wrapMode: Text.WordWrap
+        color: root.page.state === "failed" ? root.urgent : root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        text: root.page.state === "reading" ? Model.copy("page.reading")
+          : (root.page.state === "failed" ? Model.copy("page.failed", { "why": root.page.failed }) : root.page.why)
+      }
+    }
+
+    Flow {
+      objectName: "pageButtons"
+      width: parent.width
+      spacing: Style.spacing.sm
+
+      Button {
+        objectName: "pageWeb"
+        visible: root.page.homepage !== ""
+        text: Model.withKey(Model.copy("page.web"), "web", "page")
+        bordered: true
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        fontSize: Style.font.bodySmall
+        onClicked: root.openWeb(root.page.homepage)
+      }
+
+      Button {
+        objectName: "pageCopy"
+        visible: root.page.ref !== ""
+        text: root.copied !== "" ? root.copied : Model.withKey(Model.copy("page.copy_ref"), "copy", "page")
+        bordered: true
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        fontSize: Style.font.bodySmall
+        onClicked: root.copyRef()
+      }
+    }
+
+    // ---- one line per client: the cursor's rows
+    SectionHeader {
+      objectName: "clientsHeader"
+      width: parent.width
+      title: Model.copy("page.section.clients")
+      foreground: root.foreground
+      dim: root.dim
+      fontFamily: root.fontFamily
+    }
+
+    Repeater {
+      id: lineRepeater
+      objectName: "clientLines"
+      model: root.rows
+
+      AddonRow {
+        required property var modelData
+        required property int index
+        objectName: "clientLine_" + modelData.target
+        width: column.width
+        title: modelData.client
+        meta: modelData.meta
+        chips: modelData.chips
+        band: modelData.band
+        glyph: modelData.glyph ? String.fromCodePoint(modelData.glyph) : ""
+        actions: modelData.actions
+        cursored: !!root.frame && root.frame.cursorActive && root.frame.cursor === index
+        inert: !root.canChange
+        foreground: root.foreground
+        dim: root.dim
+        urgent: root.urgent
+        accent: root.accent
+        fontFamily: root.fontFamily
+        onActivated: root.select(index)
+        onAction: function(name) {
+          root.select(index)
+          root.handleKey(name, index)
+        }
+      }
+    }
+
+    // ---- its release notes, newest first
+    SectionHeader {
+      objectName: "notesHeader"
+      visible: root.page.notes.length > 0 || root.page.state === ""
+      width: parent.width
+      title: Model.copy("page.section.notes")
+      foreground: root.foreground
+      dim: root.dim
+      fontFamily: root.fontFamily
+    }
+
+    PlainLabel {
+      objectName: "notesNone"
+      visible: root.page.notes.length === 0 && root.page.state === "" && !!root.info
+      width: parent.width
+      color: root.dim
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      text: Model.copy("page.notes.none")
+    }
+
+    Repeater {
+      objectName: "notes"
+      model: root.page.notes
+
+      Column {
+        required property var modelData
+        width: column.width
+        spacing: Style.spacing.xs
+
+        PlainLabel {
+          width: parent.width
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+          text: [modelData.version, modelData.when].filter(function(p) { return p !== "" }).join(" · ")
+        }
+
+        PlainLabel {
+          width: parent.width
+          wrapMode: Text.WordWrap
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          text: modelData.text
+        }
+      }
+    }
+
+    // ---- what it owns, needs and throws
+    SectionHeader {
+      objectName: "foldersHeader"
+      visible: root.page.folders.length > 0
+      width: parent.width
+      title: Model.copy("page.section.folders")
+      foreground: root.foreground
+      dim: root.dim
+      fontFamily: root.fontFamily
+    }
+
+    Repeater {
+      objectName: "folders"
+      model: root.page.folders
+
+      Column {
+        required property var modelData
+        width: column.width
+        spacing: Style.spacing.xs
+
+        PlainLabel {
+          width: parent.width
+          wrapMode: Text.WordWrap
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          text: modelData.client + ": " + modelData.folders.join(", ")
+        }
+
+        PlainLabel {
+          visible: modelData.leftOut.length > 0
+          width: parent.width
+          wrapMode: Text.WordWrap
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          text: Model.copy("page.folders.left_out", { "client": modelData.client, "folders": modelData.leftOut.join(", ") })
+        }
+      }
+    }
+
+    // A dependency, and what needs it: each a page of its own.
+    Repeater {
+      objectName: "links"
+      model: [{ "id": "needs", "names": root.page.needs }, { "id": "needed_by", "names": root.page.neededBy.map(function(n) { return { "name": n, "installed": true } }) }]
+
+      Column {
+        required property var modelData
+        visible: modelData.names.length > 0
+        width: column.width
+        spacing: Style.spacing.xs
+
+        SectionHeader {
+          width: parent.width
+          title: Model.copy("page.section." + modelData.id)
+          foreground: root.foreground
+          dim: root.dim
+          fontFamily: root.fontFamily
+        }
+
+        Flow {
+          objectName: "links_" + modelData.id
+          width: parent.width
+          spacing: Style.spacing.sm
+
+          Repeater {
+            model: modelData.names
+
+            Button {
+              required property var modelData
+              objectName: "link_" + modelData.name
+              text: modelData.installed ? modelData.name : Model.copy("page.needs.missing", { "name": modelData.name })
+              foreground: modelData.installed ? root.foreground : root.urgent
+              bordered: true
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              onClicked: root.frame.openAddon(modelData.name, "")
+            }
+          }
+        }
+      }
+    }
+
+    SectionHeader {
+      objectName: "errorsHeader"
+      visible: root.page.errors.length > 0
+      width: parent.width
+      title: Model.copy("page.section.errors")
+      foreground: root.foreground
+      dim: root.dim
+      fontFamily: root.fontFamily
+    }
+
+    Flow {
+      objectName: "errors"
+      visible: root.page.errors.length > 0
+      width: parent.width
+      spacing: Style.spacing.sm
+
+      Repeater {
+        model: root.page.errors
+
+        Button {
+          required property var modelData
+          objectName: "errorsOn_" + modelData.target
+          text: modelData.text
+          foreground: root.urgent
+          bordered: true
+          fontFamily: root.fontFamily
+          fontSize: Style.font.bodySmall
+          onClicked: root.openErrors(modelData)
+        }
+      }
+    }
+  }
+}
