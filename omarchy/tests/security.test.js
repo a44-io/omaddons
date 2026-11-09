@@ -969,7 +969,7 @@ describe("the mechanisms behind the scans", () => {
   test("every previewed template and destructive path refuses to run without its preview", () => {
     const bound = Object.keys(M.COMMANDS).filter((name) => M.COMMANDS[name].preview === "bind")
     const needing = Object.keys(M.COMMANDS).filter((name) => needsPreview(name) && bound.indexOf(name) === -1)
-    expect(needing.sort()).toEqual(["install", "prune_backup", "reinstall", "remove", "restore", "restore_addon",
+    expect(needing.sort()).toEqual(["adopt_target", "install", "prune_backup", "reinstall", "remove", "restore", "restore_addon",
       "update_addon", "update_all", "update_target"])
     // A repair's Yes is its own argv bound to its preview's token (G2): never without it.
     expect(bound.sort()).toEqual(["doctor_fix", "doctor_fix_target"])

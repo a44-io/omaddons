@@ -137,7 +137,8 @@ var COMMANDS = {
   "backup_auto":    { "argv": ["backup", "create", "--auto", "-t", "{target}"],     "mutates": true, "silent": true },
   "doctor_fix":        { "argv": ["doctor", "fix", "--only={fm}"],                   "mutates": true, "preview": "bind" },
   "doctor_fix_target": { "argv": ["doctor", "fix", "-t", "{target}", "--only={fm}"], "mutates": true, "preview": "bind" },
-  "targets_add":       { "argv": ["targets", "add", "--", "{path}"],               "mutates": true }
+  "targets_add":       { "argv": ["targets", "add", "--", "{path}"],               "mutates": true },
+  "adopt_target":      { "argv": ["adopt", "--apply", "-t", "{target}"],           "mutates": true, "preview": "confirm" }
 }
 // END COMMANDS
 
@@ -1005,9 +1006,10 @@ function issueFix(action, targets) {
     return way("go", { "kind": "view", "view": "installed", "target": p.target },
       copy(p.target ? "issues.fix.addons" : "issues.fix.addons.all", { "owner": owner }))
   }
-  // `adopt -t <id>` alone is a report; the take-over flow is the frame's (first run).
+  // `adopt -t <id>` alone is a report; the take-over flow is the frame's (first run,
+  // 1n2p.32): its preview, then the plan sheet.
   if (p.path === "adopt" && plain && p.target) {
-    return way("go", { "kind": "adopt", "view": "installed", "target": p.target }, copy("issues.fix.addons", { "owner": owner }))
+    return way("go", { "kind": "adopt", "view": "installed", "target": p.target }, copy("issues.fix.take_over", { "owner": owner }))
   }
   if (p.path === "targets rm" && p.flags.length === 0 && p.operands.length === 1) {
     return way("action", action, copy("state.action.forget", { "client": buttonName(sheetClient(targets, p.operands[0], "")) }))
@@ -5075,6 +5077,8 @@ var COPY = {
   "sheet.effect.downgrade.unnamed": "Goes back to an older version.",
   "sheet.effect.unknown": "Also: {words}.",
   "sheet.effect.still_required": "Other addons still need {addon} and won't load without it.",
+  "sheet.effect.adopt_in_place": "Nothing is reinstalled or moved: omaddons starts keeping track of these folders as they are, and can undo that.",
+  "sheet.effect.adopt_unknown": "Folders nothing identifies stay as they are, unmanaged.",
   "sheet.effect.still_required.unnamed": "Other addons still need what this removes and won't load without it.",
   "sheet.effect.reload": "Then /reload in game.",
   "sheet.effect.restart": "Then restart the game.",
@@ -5184,6 +5188,7 @@ var COPY = {
   "installed.unmanaged": { "one": "1 folder omaddons doesn't manage", "other": "{n} folders omaddons doesn't manage" },
   "installed.unmanaged.client": { "one": "1 folder on {client} omaddons doesn't manage", "other": "{n} folders on {client} omaddons doesn't manage" },
   "installed.take_over": "Take over…",
+  "installed.take_over.label": "Take over the addons on {client}",
 
   // The Errors view and its page (1n2p.27, design doc §6.6).
   "errors.source.high": "probably caused by it",
@@ -5343,6 +5348,7 @@ var COPY = {
   "issues.fix.errors": "Read Lua errors",
   "issues.fix.backups": "Refresh backups",
   "issues.fix.addons": "Show {owner} addons",
+  "issues.fix.take_over": "Take over {owner} addons…",
   "issues.fix.addons.all": "Show the addons",
   "issues.fix.remove": "Remove {addons}",
   "issues.fix.other": "Run the fix",
@@ -5833,6 +5839,12 @@ function selectionSheet(path, env, approval, targets) {
   var kinds = { "update": "update", "install": "install", "remove": "remove", "adopt": "adopt", "pin": "pin", "unpin": "unpin" }
   var kind = reinstall ? "reinstall" : (kinds.hasOwnProperty(path) ? kinds[path] : "change")
   var effects = reasonEffects(approval, items, targets, data)
+  // A take-over (1n2p.32): the player's main worry first. Nothing moves; what nothing
+  // identifies stays as it is.
+  if (kind === "adopt") {
+    effects = [sheetEffect("note", copy("sheet.effect.adopt_in_place")), sheetEffect("note", copy("sheet.effect.adopt_unknown"))]
+      .concat(effects)
+  }
   return { "title": countedTitle(kind, items), "items": items, "effects": effects.concat(commonEffects(env, items, effects)),
     "confirmLabel": countedConfirm(kind, items), "glyph": kind === "remove" ? SHEET_VERB_GLYPHS.remove : 0 }
 }

@@ -160,7 +160,7 @@ function runOpts(name) {
 }
 
 // The templates whose real run is refused: they run as their preview, then apply.
-const PREVIEWED = ["install", "prune_backup", "reinstall", "remove", "restore", "restore_addon", "update_addon", "update_all", "update_target"]
+const PREVIEWED = ["adopt_target", "install", "prune_backup", "reinstall", "remove", "restore", "restore_addon", "update_addon", "update_all", "update_target"]
 // The templates bound to their preview's token (G2): their real run needs it.
 const BOUND_PREVIEWS = ["doctor_fix", "doctor_fix_target"]
 
@@ -2079,7 +2079,7 @@ describe("the Issues and Search views", () => {
     const due = M.reduceStatus(fixture("status-check-due"), NOW)
     const rows = M.issueRows(M.issueSections(due.targets, due.warnings, "", due.issues, due.commands))
     expect(rows.map((r) => [r.kind, r.title, r.buttons.map((b) => b.text), r.target])).toEqual([
-      ["suggestion", "1 addon on Retail was installed by hand or by another addon manager.", ["Show Retail's addons"], "retail"],
+      ["suggestion", "1 addon on Retail was installed by hand or by another addon manager.", ["Take over Retail's addons…"], "retail"],
       ["suggestion", "Not checked for updates lately.", ["Check for updates"], ""],
       ["suggestion", "Retail has no recent backup of its settings.", ["Back up Retail"], "retail"],
     ])
@@ -2141,7 +2141,7 @@ describe("the Issues and Search views", () => {
       ["the_backups", ["omaddons", "backup", "list", "-t", "retail"], ["view:backups:retail", "Refresh backups"]],
       ["a_look", ["omaddons", "list", "-t", "retail", "-v"], ["view:installed:retail", "Show Retail's addons"]],
       ["unmanaged_folders", ["omaddons", "list", "-t", "retail", "--unmanaged"], ["view:installed:retail", "Show Retail's addons"]],
-      ["the_adopt_report", ["omaddons", "adopt", "-t", "retail"], ["adopt:installed:retail", "Show Retail's addons"]],
+      ["the_adopt_report", ["omaddons", "adopt", "-t", "retail"], ["adopt:installed:retail", "Take over Retail's addons…"]],
       ["a_forget", ["omaddons", "targets", "rm", "retail"], ["omaddons targets rm retail", "Forget Retail…"]],
       ["a_removal", ["omaddons", "remove", "LibA", "-t", "retail"], ["omaddons remove LibA -t retail", "Remove LibA"]],
       // Any other shape runs as itself, through the classifier.
@@ -3000,6 +3000,25 @@ describe("previewDecision", () => {
     expect(sheet.effects.map((e) => [e.severity, e.text])).toEqual([
       ["urgent", "Replaces 2 files you changed in Foo. Undo brings them back."],
       ["normal", "Puts back Foo's files exactly as released."]])
+  })
+
+  test("a take-over lists what it adopts and says nothing moves, over the binary's preview (1n2p.32)", () => {
+    const env = fixture("adopt-preview")
+    const targets = M.reduceStatus(fixture("status-adoptable")).targets
+    const decision = M.previewDecision({ mode: "confirm", path: "adopt", shown: [], targets }, env)
+    expect(decision.kind).toBe("dialog")
+    const sheet = decision.sheet
+    expect([sheet.title, sheet.confirmLabel, sheet.destructive]).toEqual(["Take over 2 addons on Retail?", "Take over 2", false])
+    expect(sheet.items.map((i) => [i.op, i.addon])).toEqual([["adopt", "Bar"], ["adopt", "Foo"]])
+    expect(sheet.effects.slice(0, 2).map((e) => e.text)).toEqual([
+      "Nothing is reinstalled or moved: omaddons starts keeping track of these folders as they are, and can undo that.",
+      "Folders nothing identifies stay as they are, unmanaged."])
+    // Its Yes is the stored plan's apply.
+    expect(decision.plan.argv).toEqual(["omaddons", "apply", env.data.plan_id])
+    // The take-over is a confirmed preview, never run without its sheet.
+    expect(reasonOf(() => M.buildArgv("adopt_target", { target: "retail" }, opts()))).toBe("preview_required")
+    expect(M.buildArgv("adopt_target", { target: "retail" }, opts({ preview: true })).argv.slice(-5))
+      .toEqual(["--dry-run", "adopt", "--apply", "-t", "retail"])
   })
 
   test("a removal another addon needs says so, by the warning's code alone", () => {

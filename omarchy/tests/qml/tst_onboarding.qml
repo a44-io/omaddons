@@ -112,13 +112,17 @@ TestCase {
       return { "text": JSON.stringify({ "ok": true, "schema_version": "1.1", "tool_version": Build.TOOL_VERSION, "command": command,
         "exit_code": 0, "partial": false, "data": { "targets": [] }, "warnings": [], "commands": [] }) }
     }
-    return { "list": empty("list"), "errors": empty("errors"), "backup": empty("backup list") }
+    var catalog = { "text": JSON.stringify({ "ok": true, "schema_version": "1.1", "tool_version": Build.TOOL_VERSION, "command": "search",
+      "exit_code": 0, "partial": false, "data": { "results": [], "sources_skipped": [] }, "warnings": [], "commands": [] }) }
+    return { "list": empty("list"), "errors": empty("errors"), "backup": empty("backup list"), "search": catalog }
   }
 
+  // `status` with or without its scan (the panel opening asks for the scan) answer
+  // `statusName`, unless `fullName` names the scan's own answer.
   function scene(statusName, fullName) {
     var answers = quiet()
     answers.status = the(statusName)
-    if (fullName) answers.status_full = the(fullName)
+    answers.status_full = the(fullName || statusName)
     return answers
   }
 
@@ -160,7 +164,8 @@ TestCase {
       verify(welcome() !== null, Model.VIEWS[v] + " shows the welcome card")
     }
     frame.showView("updates")
-    wait(10)
+    // The reads each view asked for, answered, so the lane is free for the scan.
+    settle(scene("status-none"))
     press(welcome(), "Scan again")
     var scan = runningOf("status")
     verify(scan !== null && words(scan.command).indexOf("--cached") === -1, "Scan again runs status with its scan")
@@ -213,6 +218,40 @@ TestCase {
     verify(scanned, "the add is followed by a scan")
     tryVerify(function() { return frame.topPage === null }, 1000, "the page goes back once a client is here")
     compare(welcome(), null)
+  }
+
+  // Take over the folders already on a client (1n2p.32), over the binary's envelopes:
+  // Installed's Take over… previews `adopt --apply`, the plan sheet lists what it would
+  // adopt and says nothing moves, and Yes applies exactly that plan.
+  function test_take_over_previews_lists_and_applies_through_the_plan_sheet() {
+    var answers = scene("status-adoptable")
+    answers.list = the("list-adoptable")
+    settle(answers)
+    frame.showView("installed")
+    settle(answers)
+    var button = child("takeOver", frame.currentView)
+    verify(button.visible, "Installed offers the take-over")
+    button.clicked()
+    var preview = runningOf("adopt")
+    verify(preview !== null, "the take-over runs as its preview")
+    compare(words(preview.command), ["adopt", "--apply", "-t", "retail"])
+    verify(preview.command.indexOf("--dry-run") !== -1)
+    preview.process.finish(0, Fixtures.text("adopt-preview"), "streamFirst")
+    tryVerify(function() { return !!service.confirm && !!service.confirm.sheet }, 1000, "the plan sheet opens")
+    var sheet = service.confirm.sheet
+    compare(sheet.title, "Take over 2 addons on Retail?")
+    compare(sheet.items.map(function(i) { return i.addon }), ["Bar", "Foo"])
+    compare(sheet.effects[0].text, Model.copy("sheet.effect.adopt_in_place"))
+    // Yes: exactly the stored plan.
+    service.confirmYes()
+    var apply = runningOf("apply")
+    verify(apply !== null, "Yes applies the plan")
+    compare(words(apply.command), ["apply", JSON.parse(Fixtures.text("adopt-preview")).data.plan_id])
+    apply.process.finish(0, Fixtures.text("adopt-apply"), "streamFirst")
+    var after = scene("status-adopted")
+    after.list = the("list-adoptable")
+    settle(after)
+    compare(service.targets[0].addons, 2, "Foo and Bar are managed now")
   }
 
   function test_esc_leaves_the_path_box_then_goes_back() {

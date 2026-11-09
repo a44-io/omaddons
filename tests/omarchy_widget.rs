@@ -683,7 +683,9 @@ fn the_output_cap_bounds_every_template() {
         let argv = template["argv"].to_string();
         let bound = if measured.contains(&name.as_str()) {
             continue;
-        } else if name == "update_target" {
+        } else if name == "update_target" || name == "adopt_target" {
+            // One client's preview: an item and an approval row per addon (a take-over
+            // adopts at most every folder there, 1n2p.32).
             Some(base + ADDONS * slope)
         } else if argv.contains("{query}") {
             Some(SEARCH_MAX_RESULTS as u64 * (SEARCH_SUMMARY_MAX_CHARS as u64 * 6 + ROW) + ANSWER)
@@ -1407,6 +1409,24 @@ mod support {
                 core_path: format!("{name}/core.lua"),
                 core: format!("-- {name} {tag}"),
             }
+        }
+
+        /// [`Rel::new`] whose TOC also holds `line` (an `## X-Website:` naming its
+        /// repository, for `adopt`'s evidence).
+        pub fn with_line(name: &str, tag: &str, line: &str) -> Self {
+            let mut rel = Self::new(name, tag);
+            let (title, version) = (format!("## Title: {name}"), format!("## Version: {tag}"));
+            rel.toc = toc(INTERFACES, &[&title, &version, line]);
+            rel
+        }
+
+        /// Puts the release's folder into `addons` by hand, as another manager or an
+        /// unzip would (`core` replaces its `core.lua` when given: edited files).
+        pub fn place(&self, addons: &std::path::Path, core: Option<&str>) {
+            let toc_path = addons.join(&self.toc_path);
+            fs::create_dir_all(toc_path.parent().unwrap()).unwrap();
+            fs::write(&toc_path, &self.toc).unwrap();
+            fs::write(addons.join(&self.core_path), core.unwrap_or(&self.core)).unwrap();
         }
 
         pub fn assets(&self) -> [Asset<'_>; 1] {
@@ -2308,6 +2328,84 @@ fn states_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
     );
 }
 
+/// The take-over flow (1n2p.32): folders put into Retail's AddOns by hand, as another
+/// manager leaves them. Foo is exactly what its newest GitHub release installs (its TOC
+/// names the repository), Bar is named by its TOC but has a file changed, and Loose has
+/// nothing that identifies it. Then `status` (they are adoptable), the widget's take-over
+/// preview (`adopt --apply --dry-run`, a stored plan), its `apply`, and `status` after.
+#[cfg(test)]
+fn adopt_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
+    use support::{apply_of, planned, preview_of};
+
+    let log = tlog!();
+    let home = Home::new(&["wow"]);
+    let addons = home.addons("_retail_");
+    let foo = Rel::with_line("Foo", "v1", "## X-Website: https://github.com/o/foo");
+    let bar = Rel::with_line("Bar", "v1", "## X-Website: https://github.com/o/bar");
+    for (base, rel) in [(support::FOO, &foo), (support::BAR, &bar)] {
+        gh_release(&home.http, base, "v1", &rel.assets());
+        gh_latest(&home.http, base, "v1");
+    }
+    foo.place(&addons, None);
+    bar.place(&addons, Some("-- Bar v1, edited by hand"));
+    let loose = addons.join("Loose");
+    fs::create_dir_all(&loose).unwrap();
+    fs::write(
+        loose.join("Loose.toc"),
+        "## Interface: 120105\n## Title: Loose\n",
+    )
+    .unwrap();
+    home.run(&["status"]).expect(0);
+    let status = write_fixture(
+        dir,
+        "status-adoptable",
+        &home.exec(&fill(t, "status", &[])),
+        0,
+    );
+    let retail = &status["data"]["targets"][0];
+    assert_eq!(
+        (&retail["adoptable"], &retail["addons"]["total"]),
+        (&serde_json::json!(0), &serde_json::json!(0)),
+        "no catalog entry names these folders, and nothing is managed yet: {status}"
+    );
+    // The Installed view's take-over row reads them here.
+    let list = write_fixture(dir, "list-adoptable", &home.exec(&fill(t, "list", &[])), 0);
+    assert_eq!(
+        list["data"]["targets"][0]["counts"]["unmanaged"],
+        serde_json::json!(3),
+        "{list}"
+    );
+    let preview = plan_fixture(
+        &log,
+        &home,
+        dir,
+        "adopt-preview",
+        &preview_of(fill(t, "adopt_target", &[("target", "retail")])),
+        0,
+    );
+    let selection: Vec<(&str, &str)> = preview["data"]["approval"]["selection"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| (s["addon"].as_str().unwrap(), s["op"].as_str().unwrap()))
+        .collect();
+    assert_eq!(selection, [("Bar", "adopt"), ("Foo", "adopt")], "{preview}");
+    let id = planned(&preview);
+    plan_fixture(&log, &home, dir, "adopt-apply", &apply_of(&id), 0);
+    let after = write_fixture(
+        dir,
+        "status-adopted",
+        &home.exec(&fill(t, "status", &[])),
+        0,
+    );
+    assert_eq!(
+        after["data"]["targets"][0]["addons"]["total"],
+        serde_json::json!(2),
+        "Foo and Bar are managed, Loose is not: {after}"
+    );
+    assert!(loose.join("Loose.toc").is_file(), "Loose stays as it was");
+}
+
 /// The first run (1n2p.32): a home where discovery finds no client, `targets add` refused
 /// for a folder that holds none, then accepted for a 3.3.5a private server discovery does
 /// not reach, and `status` with its scan once it is added.
@@ -2791,6 +2889,7 @@ fn write_widget_fixtures() {
     repair_fixtures(&dir, &t);
     clients_fixtures(&dir, &t);
     first_run_fixtures(&dir, &t);
+    adopt_fixtures(&dir, &t);
 
     // Idle: Baz current on retail, checked just now.
     let home = Home::new(&["wow"]);

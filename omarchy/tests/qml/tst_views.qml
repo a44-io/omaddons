@@ -635,9 +635,11 @@ TestCase {
     keyClick("2")
     var lines = findChild(content(), "unmanaged")
     compare(lines.count, 1)
-    // In words, never a command line; Take over… only once the flow exists (.32).
+    // In words, never a command line; Take over… runs the frame's take-over flow (.32).
     compare(findChild(lines.itemAt(0), "unmanagedText").text, "2 folders on Retail omaddons doesn't manage")
-    verify(!findChild(lines.itemAt(0), "takeOver").visible)
+    verify(findChild(lines.itemAt(0), "takeOver").visible)
+    findChild(lines.itemAt(0), "takeOver").clicked()
+    compare(json(svc.runs[svc.runs.length - 1]), json(["adopt_target", { "target": "retail" }, "Take over the addons on Retail"]))
     var asked = []
     view.keyHandlers = Object.assign({}, view.keyHandlers, { "adopt": function(frame, target) { asked.push(target) } })
     verify(findChild(lines.itemAt(0), "takeOver").visible)
@@ -827,10 +829,12 @@ TestCase {
     keyClick(Qt.Key_Return)
     compare(view.view, "errors")
     compare(json(svc.readAgains), json(["errors"]))
-    // Show Retail's addons: the Addons view, on Retail (no take-over flow registered yet).
+    // Take over Retail's addons…: the take-over flow (1n2p.32), previewed through its template.
     keyClick("5")
+    compare(findChild(row("issueRow", 0), "issueButton_fix").text, "Take over Retail's addons…")
     keyClick(Qt.Key_Return)
-    compare([view.view, view.filter], ["installed", "retail"])
+    compare(json(svc.runs[svc.runs.length - 1]), json(["adopt_target", { "target": "retail" }, "Take over the addons on Retail"]))
+    compare(view.view, "issues")
     compare(svc.cliRuns.length, 0, "every one ran through the panel's own way")
     // Narrowed to Classic Era: none of these is for it, and the machine-wide ones go.
     view.setFilter("era")

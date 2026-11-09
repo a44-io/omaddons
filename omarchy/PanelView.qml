@@ -77,7 +77,10 @@ Item {
   // function(frame).
   property var keyHandlers: ({
     "dismiss": function(frame) { return frame.dismissErrors() },
-    "backup": function(frame) { return frame.backUp() }
+    "backup": function(frame) { return frame.backUp() },
+    // Take over the folders already on a client (1n2p.32): `adopt --apply`, previewed
+    // first, confirmed through the plan sheet.
+    "adopt": function(frame, target) { return frame.takeOver(target) }
   })
 
   // Bumped when a view's loader loads, so `currentView` follows it.
@@ -565,6 +568,15 @@ Item {
       cardNoteTimer.restart()
     } else return false
     return true
+  }
+
+  // A client's take-over (1n2p.32): the folders already there brought under management
+  // as they are. `adopt --apply -t <client>` runs as its preview, and the plan sheet
+  // lists what it would adopt before anything is recorded.
+  function takeOver(target) {
+    if (!svc || !canAct || busy || typeof target !== "string" || target === "") return false
+    var client = Model.sheetClient(targets, target, "")
+    return report(svc.run("adopt_target", { "target": target }, Model.copy("installed.take_over.label", { "client": client })))
   }
 
   // The failure card's Copy details.
