@@ -2415,6 +2415,8 @@ fn first_run_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
     use common::trees::CustomRoot;
 
     let home = Home::new(&[]);
+    // A scan first, as the panel's opening makes: the discovery cache then exists.
+    home.run(&["status"]).expect(0);
     let status = write_fixture(dir, "status-none", &home.exec(&fill(t, "status", &[])), 0);
     assert_eq!(status["data"]["targets"], serde_json::json!([]), "{status}");
     let empty = home.env.root().join("empty");
@@ -2442,14 +2444,9 @@ fn first_run_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
         0,
     );
     assert_eq!(added["command"], "targets add", "{added}");
-    // The widget reads the clients with their scan after an add: the cached ones know
-    // only what the last scan found (omad-jp9k).
-    let status = write_fixture(
-        dir,
-        "status-added",
-        &home.exec(&fill(t, "status_full", &[])),
-        0,
-    );
+    // The widget's cached read lists the client added since the last scan, live
+    // (omad-jp9k): the discovery cache written before the add does not hold it.
+    let status = write_fixture(dir, "status-added", &home.exec(&fill(t, "status", &[])), 0);
     let listed: Vec<(&str, bool)> = status["data"]["targets"]
         .as_array()
         .unwrap()

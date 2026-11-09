@@ -207,25 +207,22 @@ pub fn discover_cached(
     };
     let mut diagnostics = Vec::new();
     let (requests, mut warnings) = match (mode.scans(), &cache) {
-        (false, Some(cache)) => (
-            cache.roots.iter().map(CachedRoot::request).collect(),
-            Vec::new(),
-        ),
-        (false, None) => (
-            input
-                .registered_roots
-                .iter()
-                .map(|(path, qualifier, source)| RootRequest {
-                    path: path.clone(),
-                    canonical: std::fs::canonicalize(path).unwrap_or_else(|_| path.clone()),
-                    kind: None,
-                    route: Route::new(qualifier, source.clone()),
-                    hints: BattlenetHints::default(),
-                    hint_files: Vec::new(),
-                })
-                .collect(),
-            Vec::new(),
-        ),
+        // The cached roots, and every registered root the last scan did not cache (a
+        // client added since with `targets add`), parsed directly: still no walk, and
+        // a registered client is never called missing while its folder is there
+        // (omad-jp9k).
+        (false, Some(cache)) => {
+            let mut requests: Vec<RootRequest> =
+                cache.roots.iter().map(CachedRoot::request).collect();
+            let cached: Vec<&PathBuf> = cache.roots.iter().map(|r| &r.canonical).collect();
+            requests.extend(
+                registered_requests(input)
+                    .into_iter()
+                    .filter(|req| !cached.contains(&&req.canonical)),
+            );
+            (requests, Vec::new())
+        }
+        (false, None) => (registered_requests(input), Vec::new()),
         (true, _) => {
             stats.scanned = true;
             let collected = collect(input, limits);
@@ -315,6 +312,22 @@ pub fn discover_cached(
         }
     }
     (finish(targets, warnings, diagnostics), stats)
+}
+
+/// The registered roots as roots to parse, each by its recorded route.
+fn registered_requests(input: &DiscoveryInput) -> Vec<RootRequest> {
+    input
+        .registered_roots
+        .iter()
+        .map(|(path, qualifier, source)| RootRequest {
+            path: path.clone(),
+            canonical: std::fs::canonicalize(path).unwrap_or_else(|_| path.clone()),
+            kind: None,
+            route: Route::new(qualifier, source.clone()),
+            hints: BattlenetHints::default(),
+            hint_files: Vec::new(),
+        })
+        .collect()
 }
 
 /// The cache on disk, when it is readable and not newer than this binary.

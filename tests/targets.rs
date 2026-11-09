@@ -85,6 +85,51 @@ fn listing_before_any_mutation() {
     );
 }
 
+/// omad-jp9k: a client added after the last scan is listed live by `status --cached`,
+/// with its name and no `target-vanished` issue, while the cache still holds only the
+/// scan's roots; one whose folder is gone stays missing.
+#[test]
+fn status_cached_lists_a_client_added_after_the_last_scan() {
+    let env = TestEnv::new();
+    let pserver = machine(&env);
+    // A scan writes the discovery cache with the Battle.net root only.
+    let (code, scanned) = run(&env, &["status"]);
+    assert_eq!(code, 0, "{scanned}");
+    let (code, added) = run(
+        &env,
+        &[
+            "targets",
+            "add",
+            &pserver.display().to_string(),
+            "--name",
+            "pserver",
+        ],
+    );
+    assert_eq!(code, 0, "{added}");
+    let (code, cached) = run(&env, &["status", "--cached"]);
+    assert_eq!(code, 0, "{cached}");
+    let client = target(&cached, "pserver");
+    assert_eq!(
+        (&client["missing"], &client["display_name"]),
+        (&json!(false), &json!("Wrath 3.3.5a private server")),
+        "{cached}"
+    );
+    let vanished = |envelope: &Value| {
+        envelope
+            .to_string()
+            .contains("fm-userland_state-target-vanished")
+    };
+    assert!(!vanished(&cached), "{cached}");
+    // The cache was not written by the cached read: it is the scan's still.
+    assert_eq!(ids(&cached), ["era", "pserver", "retail"]);
+    // Gone from disk: still missing under --cached.
+    fs::remove_dir_all(&pserver).unwrap();
+    let (code, gone) = run(&env, &["status", "--cached"]);
+    assert_eq!(code, 0, "{gone}");
+    assert_eq!(target(&gone, "pserver")["missing"], json!(true), "{gone}");
+    assert!(vanished(&gone), "{gone}");
+}
+
 #[test]
 fn adding_a_custom_root_by_name() {
     let env = TestEnv::new();

@@ -1070,8 +1070,8 @@ Item {
         lastResult = { "ok": outcome === "ok", "line": Model.resultLine(view, Build.CONTEXT, targets), "partial": !!env && env.partial === true,
           "commands": commandsOf, "fixes": Model.itemFixes(view) }
         lastError = outcome === "ok" ? null : errorOf(env, r.label + " failed")
-        // A client added by its folder (1n2p.32): the clients read with their scan, since
-        // the cached ones know only what the last scan found (omad-jp9k).
+        // A client added by its folder (1n2p.32): the clients read with their scan, which
+        // also puts the new client into the discovery cache the cached reads start from.
         if (r.template === "targets_add" && outcome === "ok") rescan()
         // A plan gone stale or gone, or a client's part gone stale: the action is previewed
         // again (first in line), never applied again (M4-D28).
