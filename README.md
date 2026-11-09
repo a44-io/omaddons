@@ -170,7 +170,7 @@ Milestones 1 (the working slice), 2 (updates, dependencies, adoption and desired
 | WowAce: `wowace:` refs and links, keyless, every tree fetched at one pinned revision; projects that need nothing from the packager but `package-as` and `@project-version@` (BugGrabber). `omaddons install buggrabber` installs each client's own build (catalog variants), and `errors` offers exactly that command where BugGrabber is missing | ✅ Done (milestone 3) |
 | `status` as triage for the widget and agents: a summary of every client, issues with a failure-mode id, a severity, the doctor's remediation, whether the doctor repairs it unforced and the command that explains it, each client's Lua errors and backups, the last change and its undo, and the bar widget; `--cached` answers in a few milliseconds, without a scan | ✅ Done (milestone 3) |
 | Previews that bind: a `--dry-run` of `install`, `update`, `sync`, `copy`, `remove`, `undo`, `backup restore`, `backup prune` or `errors dismiss` returns a token, and the real run with `--if-match` does exactly what it showed, client by client, or nothing (`plan_stale`). Stored plans: the dry run keeps its preview, and `apply <plan_id>` runs exactly it | ✅ Done (milestone 3; `install`, `update`, `sync` and `copy`, stored plans and `apply` in milestone 4) |
-| The Omarchy bar widget: `omarchy install` renders it for this binary, validates it, swaps it in atomically and puts it on the bar; `omarchy status` says whether it is current and on the bar, and `status` reports it on every call (an outdated one is warned about and turns read-only); `omarchy remove` takes it away. The button shows a badge for updates (urgent for problems and new Lua errors) and a summary on hover, and right-click checks for updates; its keyboard panel has its frame (the scope's summary, Check now, Undo last, the client scope, the tabs with their counts, the pinned progress, results and freshness footer, the plan sheet every confirmation goes through, the key reference, zoom) and its six views (Updates, Addons, Search, Errors, Issues, Backups, with the restore chooser); on its own it follows a game starting and exiting, takes the after-play checkpoint and reads the session's Lua errors, checks for updates when due, and notifies about new errors (and, when asked, new updates); its safety rules are scanned on every gate | ✅ Done (milestone 3) |
+| The Omarchy bar widget: `omarchy install` renders it for this binary, validates it, swaps it in atomically and puts it on the bar; `omarchy status` says whether it is current and on the bar, and `status` reports it on every call (an outdated one is warned about and turns read-only); `omarchy remove` takes it away. The button says at a glance what needs you (a badge counting new Lua errors and urgent problems, or else updates; a mark for a running game, an answer gone stale or omaddons it cannot use; the sync glyph turning while a check or change runs), its tooltip says it in words, client by client, and right-click checks for updates; its keyboard panel has its frame (the scope's summary, Check now, Undo last, the client scope, the tabs with their counts, the pinned progress, results and freshness footer, the plan sheet every confirmation goes through, the key reference, zoom) and its six views (Updates, Addons, Search, Errors, Issues, Backups, with the restore chooser); on its own it follows a game starting and exiting, takes the after-play checkpoint and reads the session's Lua errors, checks for updates when due, and notifies about new errors (and, when asked, new updates); its safety rules are scanned on every gate | ✅ Done (milestone 3) |
 | `completions`: a static completion script for bash, zsh, fish, elvish and PowerShell (commands, subcommands, aliases, flags and fixed values), generated from the command tree; `--json` gives `{shell, script}` | ✅ Done (milestone 4) |
 | `robot-docs guide`, `robot-docs schema` and `robot-docs errors`: the agent guide, every output's JSON Schema and the error and warning catalog, from the binary | ✅ Done (milestone 4) |
 | `robot-docs install-skill`: the agent guide written byte for byte as `SKILL.md` where coding agents load skills (`$HOME/.claude/skills/omaddons`, or `--dir`), never through a symlink or into a client, a Wine prefix or omaddons' own folders, keeping a hand-edited copy as `SKILL.md.bak`, recorded in history | ✅ Done (milestone 4) |
@@ -2158,7 +2158,22 @@ omaddons net-log --since 1d --json
 
 ### `omarchy`
 
-The bar widget for [Omarchy](https://omarchy.org)'s desktop: one gamepad button on every monitor's bar, with a badge for pending updates that turns urgent for problems and new Lua errors, a summary on hover, and a check for updates on right-click. The widget reads the same envelopes the CLI prints and runs omaddons command lines for everything it does, so each change it makes is recorded with `--actor widget` and can be undone.
+The bar widget for [Omarchy](https://omarchy.org)'s desktop: one gamepad button on every monitor's bar that says at a glance what needs you, a tooltip that says it in words, and a check for updates on right-click. The widget reads the same envelopes the CLI prints and runs omaddons command lines for everything it does, so each change it makes is recorded with `--actor widget` and can be undone.
+
+**The button** keeps its width in every state, and no state is told by colour alone:
+
+| The button shows | When |
+|---|---|
+| the gamepad, plain | nothing needs doing |
+| a count beside it, in the accent colour | updates wait: the count is theirs |
+| the gamepad and a count in the urgent colour, with a warning mark under the count | new Lua errors or a P0 or P1 problem: the count is those, never the updates that also wait |
+| the sync glyph turning in place of the gamepad (still, with Omarchy's animations off) | a check or a change you are waiting on runs; right-click starts a check and it turns at once |
+| a play mark under the count | a game client runs |
+| the gamepad dimmed, its last count kept, with a clock mark | omaddons has not answered for longer than the refresh interval (`refreshIntervalSec`, below) and a status read's 20 seconds |
+| the gamepad dimmed with an urgent `!` mark | the widget cannot use omaddons: the binary is missing, from another build, or its status failed or never answered |
+| the gamepad dimmed, nothing else | no answer yet, or no World of Warcraft client on this computer |
+
+The tooltip starts with what the count counts ("2 new Lua errors · 1 update", "All good"), then one line per client with something to say, by its name ("Retail · 3 updates · running", "Classic · not found") and the computer's own problems ("This computer · 1 problem needs attention"), when updates were last checked, and the clicks: "Left: open · Middle: Errors · Right: check for updates". The wheel does nothing, so a scroll near the bar mid-game changes nothing.
 
 A left click (or the bar's keybinding) opens its keyboard panel, and a middle click opens it on the most urgent view: Errors when there are new Lua errors, else Issues when a P0 or P1 problem exists, else Updates. Top to bottom:
 
@@ -2288,7 +2303,7 @@ The widget keeps a few rules, and every gate checks them:
 
 `omarchy/tests/security.test.js` scans the widget's source for code that goes around any of these, and each scan must also catch a violation planted in a copy of the source.
 
-The widget also answers on the shell's IPC, under its id: `omarchy-shell a44.omaddons state` prints its state as one JSON object (`phase`, the bar's badge and urgency, `summary`, the running `action`, what the activity bar says (`activity`: its `kind`, `text`, `fraction`, `elapsed`, `stalled` and whether it can be cancelled, `null` when nothing runs), the last result, whether a panel is open and what it shows (`panel`: its `scope`, `view`, `stackDepth`, open `sheet` and zoom, `null` when none is open), the binary and both versions, what each of its lanes is running, whether a plan sheet is open (`confirm`: what changed since the view as its `heading`, its plan id, its `title`, and the whole sheet as `text`, a line each) and what the last preview decided (`lastPreview`: `direct`, `dialog`, `refresh`, `refuse` or `failed`, with its plan id)), and `refresh`, `check` and `show <view>` ask for a refresh, an update check, or the panel opened at a view.
+The widget also answers on the shell's IPC, under its id: `omarchy-shell a44.omaddons state` prints its state as one JSON object (`phase`, the button as `bar`: its `state` (`broken`, `starting`, `stale`, `empty`, `attention`, `updates` or `idle`), `badge` and whether it is urgent, `mark`, whether it spins, and its tooltip lines, `summary`, the running `action`, what the activity bar says (`activity`: its `kind`, `text`, `fraction`, `elapsed`, `stalled` and whether it can be cancelled, `null` when nothing runs), the last result, whether a panel is open and what it shows (`panel`: its `scope`, `view`, `stackDepth`, open `sheet` and zoom, `null` when none is open), the binary and both versions, what each of its lanes is running, whether a plan sheet is open (`confirm`: what changed since the view as its `heading`, its plan id, its `title`, and the whole sheet as `text`, a line each) and what the last preview decided (`lastPreview`: `direct`, `dialog`, `refresh`, `refuse` or `failed`, with its plan id)), and `refresh`, `check` and `show <view>` ask for a refresh, an update check, or the panel opened at a view.
 
 ```bash
 omaddons omarchy                          # status: installed, current, on the bar? (bare omarchy)
@@ -2315,7 +2330,7 @@ Run again with nothing changed, it writes nothing (`installed: unchanged`). Rein
 
 `data` is `{dry_run, installed, enabled, section, plugin}`. `installed` is `fresh`, `replaced` or `unchanged`, and `enabled` is `yes` (placed now), `already`, `skipped` (`--no-enable`) or `failed`. `plugin` is `{installed, path, id, version, binary, outdated, enabled, section, context_matches}`, where `context_matches` says whether the widget was installed under this run's `HOME` and XDG directories. Without Omarchy (no `~/.config/omarchy`, or no shell: `omarchy-shell` on `PATH` or `$OMARCHY_PATH/shell`) it fails `not_found` with `details.reason: "omarchy_missing"`. When the shell cannot be told (over SSH, or with the shell stopped), the files stay installed and the warning `omarchy_shell_unreachable` says to run it again from the desktop session. A plugin that fails validation is a bug in the build: `internal`, with `details.reason: "plugin_invalid"` and the validators' messages, and nothing is swapped.
 
-The widget's settings live in Omarchy's `shell.json` and are set with Omarchy's own tool. `omarchy bar set a44.omaddons binary /path/to/omaddons` runs another build (empty, the default, runs the one that installed it), and `refreshIntervalSec` is the refresh behind the doorbell (30 to 3600 seconds, 300 by default). `panelWidth` is the panel's width (400 to 800 pixels, 540 by default), `autoCheck` turns the background update check on or off (`On` by default), and `notifyErrors` and `notifyUpdates` turn the two notifications on or off (`On` and `Off` by default).
+The widget's settings live in Omarchy's `shell.json` and are set with Omarchy's own tool. `omarchy bar set a44.omaddons binary /path/to/omaddons` runs another build (empty, the default, runs the one that installed it), and `refreshIntervalSec` is the refresh behind the doorbell (30 to 3600 seconds, 300 by default); an answer older than it and 20 seconds more shows on the button as stale. `panelWidth` is the panel's width (400 to 800 pixels, 540 by default), `autoCheck` turns the background update check on or off (`On` by default), and `notifyErrors` and `notifyUpdates` turn the two notifications on or off (`On` and `Off` by default).
 
 #### `omarchy remove`
 
@@ -3474,12 +3489,14 @@ A source turned off in `config.toml` (`[sources.wowi] enabled = false`) refuses 
 
 ### The bar icon is dimmed
 
-The widget has nothing it can show. Open its panel to see which of these it is:
+The widget has nothing current to show. Its mark and its tooltip say why; open its panel to see what to do:
 
-- **"omaddons not found at …":** the binary the widget was installed for moved or was removed. The panel shows the two commands that fix it: `omaddons omarchy install` from the binary you use now, or `omarchy bar set a44.omaddons binary <path>`.
-- **"omaddons gave no answer the widget can read":** the binary ran but printed no envelope; the panel shows its last lines of output, or why it stopped (a timeout, say).
-- **"No World of Warcraft clients found":** see [A client is missing from `status`](#a-client-is-missing-from-status).
-- **The widget is from another build** (below).
+- **A clock mark, "Last heard from omaddons … ago":** no answer came for longer than the refresh interval and a status read's deadline. The count is the last one omaddons gave. It clears with the next answer; if it stays, open the panel, whose card says what went wrong.
+- **An urgent `!` mark, "Can't find omaddons":** the binary the widget was installed for moved or was removed. The panel shows the two commands that fix it: `omaddons omarchy install` from the binary you use now, or `omarchy bar set a44.omaddons binary <path>`.
+- **An urgent `!` mark, "omaddons didn't answer":** the binary ran but printed no envelope; the panel shows its last lines of output, or why it stopped (a timeout, say).
+- **An urgent `!` mark, "omaddons ran into a problem":** `status` failed, for example on a `config.toml` that does not parse; the panel shows its error and fix.
+- **An urgent `!` mark, "The panel is from another omaddons version":** see below.
+- **No mark, "No World of Warcraft here yet":** see [A client is missing from `status`](#a-client-is-missing-from-status). "Asking omaddons…" is the moment before the first answer.
 
 ### The widget says it is from another build
 

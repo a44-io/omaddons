@@ -514,7 +514,6 @@ function checkPreviews(files) {
 const MESSAGE_READERS = {
   "warningsOf": "a warning's message, to show it beside its fix",
   "warningMessages": "the messages of the warnings of one code, to show them",
-  "reduceStatus": "a failed status's error.message, for the bar's tooltip",
   "issueSections": "each warning warningsOf reduced, as its row's title"
 }
 // The plan runner's decisions (M4-D28): typed fields only.

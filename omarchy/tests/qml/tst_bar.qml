@@ -1,13 +1,16 @@
 import QtQuick
 import QtTest
 import Quickshell.Io
+import qs.Commons
 import "../.."
 import "../../Build.js" as Build
+import "../../Model.js" as Model
 import "../../Store.js" as Store
 
 // BarWidget.qml against a stub service (pipeline step 4): it binds (serviceFor, the
 // store, the retry), pushes settings and its open state, draws the service's bar model
-// and turns clicks into service calls. Two copies stand for two monitors.
+// (Model.barState: the glyph, the spinner, the badge beside the glyph, the mark) and
+// turns clicks into service calls. Two copies stand for two monitors.
 TestCase {
   id: testCase
   name: "Bar"
@@ -21,6 +24,17 @@ TestCase {
   property var svc: null
   property var widgets: []
 
+  readonly property string gamepad: String.fromCodePoint(0xF0297)
+  readonly property string sync: String.fromCodePoint(0xF04E6)
+
+  // A bar model as Model.barState makes it: an idle one, with `extra` over it.
+  function barModel(extra) {
+    var b = { "state": "idle", "badge": 0, "badgeUrgent": false, "urgent": false, "dimmed": false, "spinning": false,
+      "playing": false, "mark": "", "markUrgent": false, "tooltip": ["All good"] }
+    for (var key in extra) b[key] = extra[key]
+    return b
+  }
+
   Component {
     id: barComponent
     BarWidget {}
@@ -30,7 +44,7 @@ TestCase {
   Component {
     id: serviceComponent
     QtObject {
-      property var bar: ({ "badge": 0, "urgent": false, "dimmed": false, "spinning": false, "tooltip": ["Everything is up to date"] })
+      property var bar: testCase.barModel({})
       property var pushed: []
       property var panels: ({})
       property int checks: 0
@@ -98,39 +112,103 @@ TestCase {
     return found
   }
 
+  // What the bar shows for `model`: [glyph, turning, active, dimmed, badge shown, its
+  // count, urgent badge, mark glyph ("" for none), urgent mark].
+  function look(widget) {
+    var badge = part(widget, "badge")
+    var mark = part(widget, "mark")
+    var button = part(widget, "button")
+    return [button.text === sync ? "sync" : button.text === gamepad ? "gamepad" : button.text, widget.turning, button.active,
+      button.dimmed, badge.visible, badge.visible ? part(widget, "badgeCount").text : "", badge.urgent,
+      mark.visible ? part(widget, "markGlyph").text.codePointAt(0) : 0, mark.visible && Qt.colorEqual(mark.color, button.activeColor)]
+  }
+
   function test_the_bar_draws_the_service_model() {
     var widget = make()
     compare(widget.svc, svc)
     compare(widget.moduleName, Build.PLUGIN_ID)
     compare(widget.ipcTarget, Build.PLUGIN_ID)
     compare(widget.manageIpc, false)
-    // Idle: no badge, plain, still.
-    verify(!part(widget, "badge").visible)
-    verify(!part(widget, "button").active)
-    verify(!part(widget, "button").dimmed)
-    verify(!part(widget, "spinner").visible)
-    verify(part(widget, "button").labelVisible)
-    compare(part(widget, "button").text, String.fromCodePoint(0xF0297))
-    compare(part(widget, "button").tooltipText, "Everything is up to date")
-    // Updates.
-    svc.bar = { "badge": 1, "urgent": false, "dimmed": false, "spinning": false, "tooltip": ["1 update on 1 client (retail 1)", "checked 3 min ago"] }
-    verify(part(widget, "badge").visible)
-    compare(part(widget, "badgeLabel").text, "1")
-    compare(part(widget, "button").tooltipText, "1 update on 1 client (retail 1)\nchecked 3 min ago")
-    svc.bar = { "badge": 120, "urgent": false, "dimmed": false, "spinning": false, "tooltip": [] }
-    compare(part(widget, "badgeLabel").text, "99+")
-    // Attention or Lua errors: the urgent color.
-    svc.bar = { "badge": 0, "urgent": true, "dimmed": false, "spinning": false, "tooltip": ["retail: Baz's folder is gone"] }
-    verify(part(widget, "button").active)
-    verify(!part(widget, "badge").visible)
-    // Missing, unreachable or incompatible: dimmed.
-    svc.bar = { "badge": 3, "urgent": false, "dimmed": true, "spinning": false, "tooltip": [], "stale": true }
-    verify(part(widget, "button").dimmed)
-    // A change running: the sync glyph turns in place of the gamepad.
-    svc.bar = { "badge": 3, "urgent": false, "dimmed": false, "spinning": true, "tooltip": [] }
-    verify(part(widget, "spinner").visible)
-    verify(!part(widget, "button").labelVisible)
-    compare(part(widget, "spinner").text, String.fromCodePoint(0xF04E6))
+    // Idle: the gamepad, plain and still, no badge, no mark.
+    compare(look(widget), ["gamepad", false, false, false, false, "", false, 0, false])
+    compare(part(widget, "button").tooltipText, "All good")
+    // Updates: the accent badge counts them.
+    svc.bar = barModel({ "state": "updates", "badge": 4, "tooltip": ["4 updates", "Checked 3 min ago"] })
+    compare(look(widget), ["gamepad", false, false, false, true, "4", false, 0, false])
+    compare(part(widget, "button").tooltipText, "4 updates\nChecked 3 min ago")
+    svc.bar = barModel({ "state": "updates", "badge": 120 })
+    compare(part(widget, "badgeCount").text, "99+")
+    // Attention, with or without updates: the urgent glyph, the urgent badge counting
+    // what needs attention, and the attention mark.
+    svc.bar = barModel({ "state": "attention", "badge": 2, "badgeUrgent": true, "urgent": true, "mark": "attention", "markUrgent": true })
+    compare(look(widget), ["gamepad", false, true, false, true, "2", true, 0xF0026, true])
+    // Playing: the running mark, in the bar's colour.
+    svc.bar = barModel({ "state": "updates", "badge": 4, "playing": true, "mark": "running" })
+    compare(look(widget), ["gamepad", false, false, false, true, "4", false, 0xF040A, false])
+    // Working: the sync glyph turns in place of the gamepad; the badge stays.
+    svc.bar = barModel({ "state": "updates", "badge": 4, "spinning": true })
+    compare(look(widget), ["sync", true, false, false, true, "4", false, 0, false])
+    // Stale: dimmed, the last numbers kept, the clock mark at full strength.
+    svc.bar = barModel({ "state": "stale", "badge": 4, "dimmed": true, "mark": "stale" })
+    compare(look(widget), ["gamepad", false, false, true, true, "4", false, 0xF0150, false])
+    // Broken: dimmed, the urgent warning mark, no badge.
+    svc.bar = barModel({ "state": "broken", "dimmed": true, "mark": "broken", "markUrgent": true })
+    compare(look(widget), ["gamepad", false, false, true, false, "", false, 0xF0028, true])
+    // Starting and empty: dimmed, nothing else.
+    svc.bar = barModel({ "state": "empty", "dimmed": true })
+    compare(look(widget), ["gamepad", false, false, true, false, "", false, 0, false])
+  }
+
+  function test_the_badge_and_the_mark_sit_beside_the_glyph_and_the_bar_keeps_its_width() {
+    var widget = make()
+    var width = widget.implicitWidth
+    var badge = part(widget, "badge")
+    var mark = part(widget, "mark")
+    var states = [
+      barModel({ "state": "updates", "badge": 4 }),
+      barModel({ "state": "updates", "badge": 120, "playing": true, "mark": "running" }),
+      barModel({ "state": "attention", "badge": 12, "badgeUrgent": true, "urgent": true, "mark": "attention", "markUrgent": true }),
+      barModel({ "state": "stale", "badge": 3, "dimmed": true, "mark": "stale" }),
+      barModel({ "state": "broken", "dimmed": true, "mark": "broken", "markUrgent": true }),
+      barModel({ "state": "updates", "badge": 4, "spinning": true })
+    ]
+    for (var i = 0; i < states.length; i++) {
+      svc.bar = states[i]
+      compare(widget.implicitWidth, width, states[i].state + ": the bar keeps its width")
+      var glyphRight = widget.glyphLeft + widget.glyphSize
+      if (badge.visible) {
+        // Beside the glyph: it overlaps the glyph by a quarter of its own width, no more.
+        compare(glyphRight - badge.x, badge.width / 4, states[i].state + ": the badge's overlap")
+        verify(!mark.visible || badge.y + badge.height <= mark.y, states[i].state + ": the badge sits above the mark")
+      }
+      if (mark.visible) {
+        compare(glyphRight - mark.x, mark.width / 4, states[i].state + ": the mark's overlap")
+        verify(mark.y + mark.height <= widget.height, "the mark stays inside the bar")
+      }
+    }
+  }
+
+  function test_the_spinner_turns_and_stands_still_with_reduced_motion() {
+    var widget = make()
+    var button = part(widget, "button")
+    svc.bar = barModel({ "state": "idle", "spinning": true })
+    compare(button.text, sync)
+    verify(widget.turning)
+    tryVerify(function() { return button.textRotation > 0 }, 1000, "the sync glyph turns")
+    svc.bar = barModel({})
+    compare(button.text, gamepad)
+    compare(button.textRotation, 0)
+    // Hyprland's animations off: the sync glyph, standing still (design doc §5.7).
+    Style.reduceMotion = true
+    try {
+      svc.bar = barModel({ "state": "idle", "spinning": true })
+      compare(button.text, sync)
+      verify(!widget.turning)
+      wait(100)
+      compare(button.textRotation, 0)
+    } finally {
+      Style.reduceMotion = false
+    }
   }
 
   function test_with_no_service_yet_the_bar_is_dimmed() {
@@ -138,6 +216,8 @@ TestCase {
     var widget = make()
     compare(widget.svc, null)
     verify(part(widget, "button").dimmed)
+    compare(widget.model.state, "starting")
+    compare(part(widget, "button").tooltipText, Model.barState(null, { "phase": "starting" }).tooltip.join("\n"))
   }
 
   function test_serviceFor_binds_once_the_bar_arrives() {
@@ -212,5 +292,23 @@ TestCase {
     svc.summary = { "errors": { "new": 2 }, "issuesUrgent": 1 }
     button.pressed(Qt.MiddleButton)
     compare(part(widget, "view").view, "errors")
+    // Nothing urgent: Updates.
+    button.pressed(Qt.LeftButton)
+    verify(!widget.opened)
+    svc.summary = { "errors": { "new": 0 }, "issuesUrgent": 0 }
+    button.pressed(Qt.MiddleButton)
+    verify(widget.opened)
+    compare(part(widget, "view").view, "updates")
+  }
+
+  function test_the_wheel_does_nothing() {
+    var widget = make()
+    var button = part(widget, "button")
+    button.wheelMoved(120)
+    button.wheelMoved(-120)
+    verify(!widget.opened)
+    compare(svc.checks, 0)
+    compare(svc.requestedView, "")
+    compare(Object.keys(svc.panels).length, 0)
   }
 }

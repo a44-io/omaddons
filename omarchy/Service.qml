@@ -29,7 +29,11 @@ Item {
   // "starting", "ok", "missing" (no binary), "unreachable" (no envelope from status),
   // "incompatible" (another omaddons build: read-only).
   property string phase: "starting"
-  property var bar: Model.reduceStatus(null).bar
+  // The bar button's model (Model.barState, 1n2p.16), recomputed by refreshBar.
+  property var bar: Model.barState(null, { "phase": "starting" })
+  // The last status run failed (an envelope with `ok: false`): the bar says omaddons
+  // ran into a problem until one answers.
+  property bool statusFailed: false
   property var targets: []
   property var summary: null
   property var lastChange: null
@@ -205,6 +209,8 @@ Item {
       contextGeneration++
       refresh()
     }
+    // `refreshIntervalSec` sets when an answer goes stale.
+    refreshBar()
   }
 
   // One bar copy's panel opened or closed; `key` is its module and screen.
@@ -714,7 +720,7 @@ Item {
     }
     queuedAction = queuedLabel()
     queuedText = Model.queuedText(queues)
-    refreshSpin()
+    refreshBar()
     if (again) Qt.callLater(pump)
   }
 
@@ -731,24 +737,21 @@ Item {
     return a && a.id === r.id ? a : null
   }
 
-  // The bar spins while a change the player asked for runs, or a check runs or waits
-  // (Model.barWorking); its model is replaced only when that changes.
-  function refreshSpin() {
-    var working = Model.barWorking(activities, queues)
-    if (bar.spinning !== working) bar = withSpinning(bar, working)
+  // The bar button's model (Model.barState) from what the service knows now: the last
+  // status, the phase, whether a change the player asked for runs or a check runs or
+  // waits (Model.barWorking, so a right click spins at once), and how old the answer
+  // is. Replaced only when it changes, so the bar copies redraw only then.
+  function refreshBar() {
+    var status = { "failed": statusFailed, "summary": summary, "targets": targets, "issues": machineIssues }
+    var next = Model.barState(status, { "phase": phase, "working": Model.barWorking(activities, queues),
+      "nowMs": Date.now(), "answeredAtMs": lastRefreshMs, "staleAfterMs": Model.barStaleAfterMs(root.settings) })
+    if (!Model.jsonEqual(bar, next)) bar = next
   }
 
   function queuedLabel() {
     var list = queues.mutation
     for (var i = 0; i < list.length; i++) if (list[i].priority === "user") return list[i].label
     return ""
-  }
-
-  function withSpinning(model, spinning) {
-    var out = {}
-    for (var key in model) if (model.hasOwnProperty(key)) out[key] = model[key]
-    out.spinning = spinning
-    return out
   }
 
   function startAction(r) {
@@ -812,7 +815,7 @@ Item {
       // The rows it changed say so a moment (Model.changedRows), then read as usual.
       if (env && r.priority !== "background" && r.purpose !== "preview") markDone(Model.changedRows(env))
     }
-    refreshSpin()
+    refreshBar()
     noteOutcome(r, outcome)
     requestFinished(r.resource, outcome)
     // A catalog read with no answer is asked again the next time the view needs it.
@@ -824,7 +827,7 @@ Item {
     if (outcome === "missing") {
       pendingDismissals = []
       phase = "missing"
-      bar = Model.reduceStatus(null).bar
+      refreshBar()
       if (r.kind === "mutation") lastError = { "message": "omaddons not found at " + root.binary, "code": "missing", "fixes": [] }
     } else if (outcome === "incompatible") {
       enterIncompatible(env)
@@ -910,8 +913,8 @@ Item {
 
   function applyStatus(r, outcome, env, tail) {
     if (outcome === "ok" || outcome === "failed") {
-      var model = Model.reduceStatus(env, Date.now())
-      bar = withSpinning(model.bar, Model.barWorking(activities, queues))
+      var model = Model.reduceStatus(env)
+      statusFailed = model.failed
       targets = model.targets
       summary = model.summary
       lastChange = model.lastChange
@@ -942,12 +945,15 @@ Item {
         seen.statusSeen = true
         lastResult = seen
       }
+      refreshBar()
       if (outcome === "ok") statusApplied()
       return
     }
-    // malformed, oversized, timeout or cancelled: no answer to show.
+    // malformed, oversized, timeout or cancelled: no answer to show. The bar keeps the
+    // last answer until it goes stale (Model.barState).
     phase = "unreachable"
     unreachableText = outcome === "malformed" ? (tail.length ? tail.join("\n") : "omaddons gave no answer") : "omaddons status: " + outcome
+    refreshBar()
   }
 
   function applyAction(r, outcome, env, tail) {
@@ -1017,19 +1023,19 @@ Item {
     }
   }
 
-  // Another omaddons build answered (M3-D42): keep the last numbers, stale; clear the
-  // confirmation; drop every queued mutation; refuse new ones until a compatible
-  // status. Retry and Reinstall widget stay available.
+  // Another omaddons build answered (M3-D42): the views keep the last numbers, the bar
+  // turns broken; clear the confirmation; drop every queued mutation; refuse new ones
+  // until a compatible status. Retry and Reinstall widget stay available.
   function enterIncompatible(env) {
     phase = "incompatible"
     incompatibleText = Model.incompatibleText(env, Build)
-    bar = Model.staleBar(bar)
     confirm = null
     pendingConfirm = null
     pendingDismissals = []
     queues = { "mutation": [], "local": queues.local.slice(), "network": queues.network.slice() }
     queuedAction = ""
     queuedText = Model.queuedText(queues)
+    refreshBar()
   }
 
   // ------------------------------------------------------------- desktop triggers (F8)
@@ -1212,6 +1218,16 @@ Item {
       return root.anyRunning ? Math.min(base, root.runningPollMs) : base
     }
     onTriggered: root.refresh()
+  }
+
+  // The bar's clock: an answer goes stale, and the tooltip's ages move, with nothing
+  // else changing (Model.barState).
+  Timer {
+    id: barTimer
+    repeat: true
+    running: true
+    interval: Model.BAR_TICK_MS
+    onTriggered: root.refreshBar()
   }
 
   // Window events, with no class filter: a Proton game window's class names its

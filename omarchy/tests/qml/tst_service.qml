@@ -342,7 +342,8 @@ TestCase {
     compare(service.confirm, null)
     compare(service.queues.mutation.length, 0)
     compare(service.queuedAction, "")
-    verify(service.bar.stale)
+    // The bar turns broken: dimmed, the warning mark, no badge (1n2p.16).
+    compare([service.bar.state, service.bar.dimmed, service.bar.mark, service.bar.badge], ["broken", true, "broken", 0])
     verify(service.run("update_all", {}, "Update all") !== "")
     verify(service.confirmYes() !== "")
     // Retry and Reinstall stay.
@@ -963,6 +964,50 @@ TestCase {
       "targets": [], "summary": {} }))
     compare(service.activity, null)
     verify(!service.bar.spinning)
+  }
+
+  Component {
+    id: barWidgetComponent
+    BarWidget {}
+  }
+
+  // The bar button on the real service (1n2p.16): a right click starts a check, and the
+  // sync glyph takes the gamepad's place before the next frame, with no answer yet;
+  // the gamepad comes back when the check's answer is applied.
+  function test_a_right_click_spins_the_bar_at_once_until_the_check_answers() {
+    ready(2)
+    var widget = barWidgetComponent.createObject(testCase, { "svc": service })
+    verify(widget !== null)
+    try {
+      var button = findChild(widget, "button")
+      compare(button.text, String.fromCodePoint(0xF0297))
+      compare(widget.model.state, "updates")
+      button.pressed(Qt.RightButton)
+      compare(button.text, String.fromCodePoint(0xF04E6), "the spinner shows within the same frame")
+      verify(widget.turning)
+      verify(!widget.opened, "a right click opens nothing")
+      compare(findChild(widget, "badgeCount").text, "2", "the badge stays while it spins")
+      var launch = lastRun("outdated")
+      verify(launch !== null, "the check runs: " + launchLog())
+      answer(launch, envelope("outdated", { "checked_at": "2100-01-01T00:00:00Z", "targets": [], "summary": {} }))
+      compare(button.text, String.fromCodePoint(0xF0297), "the gamepad is back once the check answered")
+      verify(!widget.turning)
+    } finally {
+      widget.destroy()
+    }
+  }
+
+  // An answer older than the safety net turns the bar stale, keeping its numbers; the
+  // next answer makes it fresh again (1n2p.16).
+  function test_an_old_answer_turns_the_bar_stale_until_the_next_one() {
+    ready(3)
+    compare(service.bar.state, "updates")
+    service.lastRefreshMs = Date.now() - Model.barStaleAfterMs(service.settings) - 1000
+    service.refreshBar()
+    compare([service.bar.state, service.bar.badge, service.bar.dimmed, service.bar.mark], ["stale", 3, true, "stale"])
+    service.refresh()
+    answer(lastRun("status"), statusEnvelope(3))
+    compare([service.bar.state, service.bar.dimmed, service.bar.mark], ["updates", false, ""])
   }
 
   function test_an_automatic_check_shows_too_but_a_background_read_does_not() {

@@ -1383,38 +1383,78 @@ TestCase {
     compare(image.width, stripHolder.width, name + ": the bar strip's width")
   }
 
-  function test_bar_idle() {
+  // The bar button's states (1n2p.16, design doc §2.5), each on the real service over
+  // envelopes the binary wrote: the glyph, the badge beside it, the spinner, the mark.
+  // `status` names the status envelope (`everyday()`'s updates when empty).
+  function barScene(status) {
     var scene = everyday()
-    scene.status = the("status-idle")
+    if (status) scene.status = status
     start(false)
     settle(scene)
     widgetOn(service)
+  }
+
+  function test_bar_idle() {
+    barScene(the("status-idle"))
+    compare([service.bar.state, service.bar.badge, service.bar.mark], ["idle", 0, ""])
     saveBar("bar-idle")
   }
 
-  function test_bar_badge() {
-    start(false)
-    settle(everyday())
-    widgetOn(service)
+  function test_bar_updates() {
+    barScene(null)
+    compare([service.bar.state, service.bar.badgeUrgent, service.bar.mark], ["updates", false, ""])
     verify(service.bar.badge > 0, "updates make a badge")
-    saveBar("bar-badge")
+    saveBar("bar-updates")
   }
 
-  function test_bar_urgent() {
-    var scene = everyday()
-    scene.status = the("status-errors")
-    start(false)
-    settle(scene)
-    widgetOn(service)
-    verify(service.bar.urgent === true, "new Lua errors are urgent")
-    saveBar("bar-urgent")
+  function test_bar_attention() {
+    barScene(the("status-attention"))
+    compare([service.bar.state, service.bar.badge, service.bar.badgeUrgent, service.bar.mark], ["attention", 1, true, "attention"])
+    saveBar("bar-attention")
   }
 
-  function test_bar_dimmed() {
+  function test_bar_attention_with_updates() {
+    barScene(the("status-errors"))
+    // The badge counts the 2 new Lua errors, never the update (UX-30).
+    compare([service.bar.state, service.bar.badge, service.bar.badgeUrgent], ["attention", 2, true])
+    saveBar("bar-attention-updates")
+  }
+
+  function test_bar_playing() {
+    barScene(the("status-running"))
+    compare([service.bar.state, service.bar.playing, service.bar.mark], ["updates", true, "running"])
+    saveBar("bar-playing")
+  }
+
+  function test_bar_working() {
+    barScene(null)
+    verify(service.check())
+    verify(service.bar.spinning, "a check spins the bar")
+    saveBar("bar-working")
+  }
+
+  function test_bar_stale() {
+    barScene(null)
+    service.lastRefreshMs = Date.now() - Model.barStaleAfterMs(service.settings) - 60000
+    service.refreshBar()
+    compare([service.bar.state, service.bar.dimmed, service.bar.mark], ["stale", true, "stale"])
+    saveBar("bar-stale")
+  }
+
+  function test_bar_broken() {
     start(true)
     wait(30)
     widgetOn(service)
-    verify(service.bar.dimmed === true, "no binary dims the bar")
-    saveBar("bar-dimmed")
+    compare([service.bar.state, service.bar.dimmed, service.bar.mark], ["broken", true, "broken"])
+    saveBar("bar-broken")
+  }
+
+  function test_bar_empty() {
+    var env = JSON.parse(Fixtures.text("status-idle"))
+    env.data.targets = []
+    env.data.summary.targets = 0
+    barScene({ "text": text(env), "code": 0 })
+    compare([service.bar.state, service.bar.dimmed, service.bar.mark], ["empty", true, ""])
+    saveBar("bar-empty")
   }
 }

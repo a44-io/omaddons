@@ -29,8 +29,11 @@ TestCase {
       "data": { "summary": { "state": "updates", "updates": { "available": 2, "targets": ["retail"] } },
         "targets": [{ "id": "retail", "updates": { "available": 2 }, "issues": [] }] } }
     var model = Model.reduceStatus(env)
-    compare(model.bar.badge, 2)
-    compare(model.bar.tooltip[0], "2 updates on 1 client (retail 2)")
+    compare(model.summary.updates.available, 2)
+    var bar = Model.barState(model, { "phase": "ok" })
+    compare(bar.badge, 2)
+    compare(bar.tooltip[0], "2 updates")
+    compare(bar.tooltip[1], "retail · 2 updates")
     verify(Model.compatible(env, Build))
   }
 }

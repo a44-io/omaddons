@@ -2,11 +2,12 @@ import QtQuick
 import qs.Commons
 import qs.Commons as Commons
 import ".."
+import "../Model.js" as Model
 
 // The bar button's count pill (design doc §2.5, §5.5): the reason for the button's
 // colour (urgent: new Lua errors and P0/P1 problems; else pending updates). The
 // urgent fill or the accent fill, the count in the background colour. Nothing to count,
-// no badge. The bar-button bead places it beside the glyph.
+// no badge. BarWidget.qml places it beside the glyph.
 Rectangle {
   id: root
 
@@ -18,7 +19,8 @@ Rectangle {
   property color accent: Commons.Color.accent
   property string fontFamily: Style.font.family
 
-  readonly property string label: count > 99 ? "99+" : String(count)
+  // Up to 99, then "99+" (past that the number only says "a lot").
+  readonly property string label: Model.badgeText(count)
 
   visible: count > 0
   implicitWidth: Math.max(implicitHeight, countLabel.implicitWidth + Style.space(6))

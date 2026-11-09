@@ -1156,62 +1156,14 @@ function ageText(iso, nowMs) {
   return since ? "checked " + since : ""
 }
 
-function tooltipOf(summary, targets, nowMs) {
-  if (!summary) return ["omaddons has not answered yet"]
-  if (targets.length === 0 && num(summary.targets) === 0) return ["No World of Warcraft clients found"]
-  var lines = []
-  if (summary.updates.available > 0) {
-    var per = []
-    for (var i = 0; i < targets.length; i++) {
-      if (targets[i].updates && targets[i].updates.available > 0) per.push(targets[i].id + " " + targets[i].updates.available)
-    }
-    lines.push(plural(summary.updates.available, "update") + " on " + plural(summary.updates.targets.length, "client")
-      + (per.length ? " (" + per.join(", ") + ")" : ""))
-  }
-  if (summary.issuesUrgent > 0) {
-    var first = null
-    for (var t = 0; t < targets.length && !first; t++) {
-      for (var j = 0; j < targets[t].issues.length; j++) {
-        if (targets[t].issues[j].urgent) {
-          first = targets[t].id + ": " + targets[t].issues[j].title
-          break
-        }
-      }
-    }
-    lines.push(first ? first + (summary.issuesUrgent > 1 ? " (and " + (summary.issuesUrgent - 1) + " more)" : "")
-      : plural(summary.issuesUrgent, "urgent issue"))
-  } else if (summary.issuesTotal > 0) {
-    lines.push(plural(summary.issuesTotal, "issue"))
-  }
-  if (summary.errors && summary.errors["new"] > 0) {
-    lines.push(plural(summary.errors["new"], "new Lua error") + " on " + joinNames(summary.errors.targets))
-  }
-  if (summary.running.length > 0) {
-    lines.push(joinNames(summary.running) + (summary.running.length === 1 ? " is" : " are")
-      + " running: updates land, then /reload")
-  }
-  if (summary.checkDue) lines.push("An update check is due")
-  if (summary.widgetOutdated) lines.push("The widget is out of date; reinstall it")
-  var oldest = null
-  for (var k = 0; k < targets.length; k++) {
-    var checked = targets[k].updates ? targets[k].updates.checkedAt : null
-    if (checked && (!oldest || Date.parse(checked) < Date.parse(oldest))) oldest = checked
-  }
-  var age = oldest ? ageText(oldest, nowMs) : ""
-  if (age) lines.push(age)
-  if (lines.length === 0 || (lines.length === 1 && age)) lines.unshift("Everything is up to date")
-  return lines
-}
-
-// `status --cached -v`'s envelope as the bar's model: `{bar, targets, summary,
-// lastChange, widget, commands}`. `bar` is `{badge, urgent, dimmed, spinning,
-// tooltip[]}`; `spinning` is the service's to set. `nowMs` adds the check age to the
-// tooltip. A failed run keeps no data and says why.
-function reduceStatus(env, nowMs) {
+// `status --cached -v`'s envelope as the widget's model: `{failed, targets, summary,
+// lastChange, widget, commands, warnings, issues}`. A run that failed (an envelope with
+// `ok: false`) keeps no data and is `failed`; null (no answer yet) is not. The bar
+// button's model is barState's, over this one.
+function reduceStatus(env) {
   if (!envelopeOk(env) || !env.ok || !env.data || typeof env.data !== "object") {
-    var message = env && env.error && typeof env.error.message === "string" ? env.error.message : "omaddons did not answer"
     return {
-      "bar": { "badge": 0, "urgent": false, "dimmed": true, "spinning": false, "tooltip": [message] },
+      "failed": !!env && typeof env === "object",
       "targets": [], "summary": null, "lastChange": null, "widget": null, "commands": [], "warnings": [], "issues": []
     }
   }
@@ -1228,13 +1180,7 @@ function reduceStatus(env, nowMs) {
     }
   }
   return {
-    "bar": {
-      "badge": summary ? summary.updates.available : 0,
-      "urgent": !!summary && (summary.state === "attention" || summary.state === "errors"),
-      "dimmed": !summary || targets.length === 0,
-      "spinning": false,
-      "tooltip": tooltipOf(summary, targets, nowMs)
-    },
+    "failed": false,
     "targets": targets,
     "summary": summary,
     "lastChange": lastChangeOf(data.last_change, data.last_change_state),
@@ -1283,16 +1229,172 @@ function badgeText(count) {
   return n > 99 ? "99+" : String(Math.floor(n))
 }
 
-// The bar of a model the service can no longer vouch for (an incompatible binary):
-// the last numbers, dimmed and marked stale.
-function staleBar(bar) {
-  var out = { "badge": 0, "urgent": false, "dimmed": true, "spinning": false, "tooltip": [], "stale": true }
-  if (bar && typeof bar === "object") {
-    out.badge = num(bar.badge)
-    out.urgent = bar.urgent === true
-    out.tooltip = Array.isArray(bar.tooltip) ? bar.tooltip.slice() : []
+// ------------------------------------------------------------ the bar button (1n2p.16)
+//
+// What the bar button shows (design doc §2.5), pure, from `status`'s reduced model and
+// the service's context. `state` is the headline, the most pressing first:
+//   broken     no binary, another build, a status that failed, or no answer ever read;
+//   starting   no answer yet;
+//   stale      no answer for longer than the safety net behind the doorbell;
+//   empty      no client on this computer;
+//   attention  new Lua errors or a P0 or P1 problem;
+//   updates    updates wait;
+//   idle       nothing to do.
+// A check or a change the player waits on spins the glyph in any state but broken, and
+// a client that runs is `playing` on a fresh answer. Each state shows a glyph or a mark
+// besides its colour: the spinner, the badge, dimming, and one mark under the badge,
+// the most pressing of broken, stale, attention and running. decided: the running mark
+// replaces nothing but yields to the attention mark (the tooltip still says which
+// client runs); starting and empty share a look, dimmed with no mark, because neither
+// has anything to show yet and the tooltip says which.
+
+var BAR_STATES = ["broken", "starting", "stale", "empty", "attention", "updates", "idle"]
+// How often the service recomputes the bar with nothing else changing: the stale mark
+// and the tooltip's ages follow the clock.
+var BAR_TICK_MS = 30000
+// The marks' glyphs (design doc §5.4): md-alert_circle, md-clock_outline, md-alert,
+// md-play.
+var BAR_MARK_GLYPHS = { "broken": 0xF0028, "stale": 0xF0150, "attention": 0xF0026, "running": 0xF040A }
+// The marks drawn in the urgent colour; the others take the bar's foreground.
+var BAR_URGENT_MARKS = ["broken", "attention"]
+
+// How long an answer counts as fresh: the safety net's interval (`refreshIntervalSec`)
+// plus a status read's own deadline. Past it, the doorbell and the poll both missed.
+function barStaleAfterMs(settings) {
+  return (intSetting(settings, "refreshIntervalSec", 300, 30, 3600) + WIDGET_LOCAL_DEADLINE_SEC) * 1000
+}
+
+// What needs the player, counted over `status`'s summary: new local Lua errors, the P0
+// and P1 problems (`urgent` is the two together: the badge's reason for the urgent
+// colour, UX-30), every problem, and updates.
+function barCounts(summary) {
+  var errors = summary && summary.errors ? num(summary.errors["new"]) : 0
+  var urgentIssues = summary ? num(summary.issuesUrgent) : 0
+  return {
+    "errors": errors,
+    "urgentIssues": urgentIssues,
+    "issues": summary ? num(summary.issuesTotal) : 0,
+    "urgent": errors + urgentIssues,
+    "updates": summary && summary.updates ? num(summary.updates.available) : 0
   }
-  return out
+}
+
+// The clients a fresh answer says run.
+function barRunning(targets) {
+  return liveTargets(targets).filter(function(t) { return t.running === true })
+}
+
+// barState without its tooltip. `status` is reduceStatus's model (null before an
+// answer); `ctx` is `{phase, working, nowMs, answeredAtMs, staleAfterMs}`: the service's
+// phase ("starting", "ok", "missing", "unreachable", "incompatible"), whether
+// Model.barWorking holds, the clock, when the last status was applied, and
+// barStaleAfterMs. The stale bar keeps what the last answer said, dimmed.
+function barFacts(status, ctx) {
+  var c = ctx && typeof ctx === "object" ? ctx : {}
+  var phase = str(c.phase) || "starting"
+  var failed = !!status && status.failed === true
+  var summary = status && !failed && status.summary ? status.summary : null
+  var targets = summary && Array.isArray(status.targets) ? status.targets : []
+  var counts = barCounts(summary)
+  var level = liveTargets(targets).length === 0 ? "empty"
+    : counts.urgent > 0 ? "attention" : counts.updates > 0 ? "updates" : "idle"
+  var age = typeof c.nowMs === "number" && num(c.answeredAtMs) > 0 ? c.nowMs - c.answeredAtMs : 0
+  var state = level
+  if (phase === "missing" || phase === "incompatible" || failed || (phase === "unreachable" && !summary)) state = "broken"
+  else if (!summary) state = "starting"
+  else if (num(c.staleAfterMs) > 0 && age > c.staleAfterMs) state = "stale"
+  var shown = state === "stale" ? level : state
+  var playing = ["attention", "updates", "idle"].indexOf(state) !== -1 && barRunning(targets).length > 0
+  var spinning = c.working === true && state !== "broken"
+  var mark = ["broken", "stale", "attention"].indexOf(state) !== -1 ? state : playing ? "running" : ""
+  return {
+    "state": state,
+    "badge": shown === "attention" ? counts.urgent : shown === "updates" ? counts.updates : 0,
+    "badgeUrgent": shown === "attention",
+    "urgent": shown === "attention",
+    "dimmed": ["broken", "starting", "stale", "empty"].indexOf(state) !== -1,
+    "spinning": spinning,
+    "playing": playing,
+    "mark": mark,
+    "markUrgent": BAR_URGENT_MARKS.indexOf(mark) !== -1
+  }
+}
+
+// What the bar shows: barFacts with its tooltip, `{state, badge, badgeUrgent, urgent,
+// dimmed, spinning, playing, mark, markUrgent, tooltip[]}`.
+function barState(status, ctx) {
+  var bar = barFacts(status, ctx)
+  bar.tooltip = barTooltip(status, ctx)
+  return bar
+}
+
+// One kind of fact per part, urgent first (design doc §2.5): new Lua errors, problems
+// that need attention, updates, then the other problems when none needs attention.
+function barParts(errors, urgentIssues, issues, updates) {
+  var parts = []
+  if (errors > 0) parts.push(copy("bar.errors", { "n": errors }))
+  if (urgentIssues > 0) parts.push(copy("bar.urgent", { "n": urgentIssues }))
+  if (updates > 0) parts.push(copy("bar.updates", { "n": updates }))
+  if (urgentIssues === 0 && issues > 0) parts.push(copy("bar.problems", { "n": issues }))
+  return parts
+}
+
+// The click hints, the middle click's view named for what it opens now (urgentView).
+function barHints(summary) {
+  return copy("bar.hints", { "view": VIEW_TITLES[urgentView(summary)] })
+}
+
+// The tooltip, a line each (design doc §2.5, §6.3): the headline ("2 new Lua errors · 3
+// updates", or what keeps the bar from saying), one line per client with something to
+// say ("Retail · 3 updates · running") and the computer's own problems, the last
+// check's age, then the click hints. Clients by their player name, never an id.
+function barTooltip(status, ctx) {
+  var c = ctx && typeof ctx === "object" ? ctx : {}
+  var facts = barFacts(status, c)
+  if (facts.state === "broken") {
+    var phase = str(c.phase)
+    var head = phase === "missing" ? "bar.missing" : phase === "incompatible" ? "bar.incompatible"
+      : status && status.failed === true ? "bar.failed" : "bar.unreachable"
+    return [copy(head), copy("bar.hints.broken")]
+  }
+  if (facts.state === "starting") return [copy("bar.starting"), barHints(null)]
+  var summary = status.summary
+  var targets = Array.isArray(status.targets) ? status.targets : []
+  var live = liveTargets(targets)
+  var lines = []
+  if (facts.state === "stale") {
+    lines.push(copy("bar.stale", { "age": sinceText(new Date(num(c.answeredAtMs)).toISOString(), c.nowMs) }))
+  }
+  if (live.length === 0) {
+    lines.push(copy("bar.empty"))
+    lines.push(barHints(summary))
+    return lines
+  }
+  var counts = barCounts(summary)
+  var head = barParts(counts.errors, counts.urgentIssues, counts.issues, counts.updates)
+  lines.push(head.length ? head.join(" · ") : copy("bar.all_good"))
+  for (var i = 0; i < targets.length; i++) {
+    var t = targets[i]
+    var issues = Array.isArray(t.issues) ? t.issues : []
+    var urgent = issues.filter(function(issue) { return issue && issue.urgent === true }).length
+    var parts = t.missing === true ? [copy("client.not_found")]
+      : barParts(t.errors ? num(t.errors["new"]) : 0, urgent, issues.length, t.updates ? num(t.updates.available) : 0)
+    if (t.missing !== true && t.running === true) parts.push(copy("client.running"))
+    if (parts.length) lines.push(copy("bar.client", { "client": t.displayName || t.id, "facts": parts.join(" · ") }))
+  }
+  var machine = Array.isArray(status.issues) ? status.issues : []
+  if (machine.length) {
+    var machineUrgent = machine.filter(function(issue) { return issue && issue.urgent === true }).length
+    lines.push(copy("bar.client", { "client": copy("issues.section.machine"),
+      "facts": barParts(0, machineUrgent, machine.length, 0).join(" · ") }))
+  }
+  if (live.some(function(t) { return t.runningUnknown === true })) lines.push(copy("bar.running_unknown"))
+  var oldest = oldestCheck(live, "")
+  var since = oldest ? sinceText(oldest, c.nowMs) : ""
+  if (since) lines.push(copy("bar.checked", { "age": since }))
+  else if (!oldest) lines.push(copy("bar.unchecked"))
+  lines.push(barHints(summary))
+  return lines
 }
 
 // `list -v`: one row per managed addon, per target.
@@ -4910,6 +5012,26 @@ var COPY = {
   "client.not_found": "not found",
   "client.choose": "Choose a client first: t, or a row of one",
 
+  // The bar button's tooltip (1n2p.16, design doc §2.5, §6.4).
+  "bar.starting": "Asking omaddons…",
+  "bar.missing": "Can't find omaddons",
+  "bar.incompatible": "The panel is from another omaddons version",
+  "bar.failed": "omaddons ran into a problem",
+  "bar.unreachable": "omaddons didn't answer",
+  "bar.stale": "Last heard from omaddons {age}",
+  "bar.empty": "No World of Warcraft here yet",
+  "bar.all_good": "All good",
+  "bar.errors": { "one": "1 new Lua error", "other": "{n} new Lua errors" },
+  "bar.urgent": { "one": "1 problem needs attention", "other": "{n} problems need attention" },
+  "bar.updates": { "one": "1 update", "other": "{n} updates" },
+  "bar.problems": { "one": "1 problem", "other": "{n} problems" },
+  "bar.client": "{client} · {facts}",
+  "bar.running_unknown": "Can't tell if the game is running",
+  "bar.checked": "Checked {age}",
+  "bar.unchecked": "Not checked for updates yet",
+  "bar.hints": "Left: open · Middle: {view} · Right: check for updates",
+  "bar.hints.broken": "Left: open to see what to do",
+
   // The Issues view and a problem's page (1n2p.28, design doc §2.3, §6.3, §6.5).
   "issues.severity.P0": "Broken",
   "issues.severity.P1": "Needs attention",
@@ -6072,7 +6194,12 @@ if (typeof module !== "undefined") {
     markApplied: markApplied,
     outcomeOf: outcomeOf,
     reduceStatus: reduceStatus,
-    staleBar: staleBar,
+    BAR_STATES: BAR_STATES,
+    BAR_TICK_MS: BAR_TICK_MS,
+    BAR_MARK_GLYPHS: BAR_MARK_GLYPHS,
+    barStaleAfterMs: barStaleAfterMs,
+    barState: barState,
+    barTooltip: barTooltip,
     badgeText: badgeText,
     reduceList: reduceList,
     reduceSearch: reduceSearch,

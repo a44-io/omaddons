@@ -1,6 +1,7 @@
 import QtQuick
 
-// Omarchy's qs.Ui WidgetButton: the properties the bar widget binds and `pressed`.
+// Omarchy's qs.Ui WidgetButton: the properties the bar widget binds, `pressed` and
+// `wheelMoved`.
 Item {
   property var bar: null
   property string text: ""
@@ -13,8 +14,10 @@ Item {
   property bool labelVisible: true
   property bool hasVisualContent: text !== ""
   property string tooltipText: ""
+  property real textRotation: 0
 
   signal pressed(int button)
+  signal wheelMoved(int delta)
 
   implicitWidth: 27
   implicitHeight: 26

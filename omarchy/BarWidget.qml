@@ -5,12 +5,14 @@ import qs.Ui
 import "Model.js" as Model
 import "Store.js" as Store
 import "Build.js" as Build
+import "ui"
 
 // The bar button: one per monitor, owning nothing. It binds to the shared service
 // (M3-D5), pushes its settings into it (services get none), tells it whether this
-// copy's panel is open, and draws the service's `bar` model: the badge, the urgent
-// color, dimmed, the spinner and the tooltip. Its keyboard panel holds the frame
-// (PanelView.qml). Every action is a service call.
+// copy's panel is open, and draws the service's `bar` model (Model.barState, design doc
+// §2.5): the glyph in the urgent colour or dimmed, the spinner, the badge beside the
+// glyph, the broken, stale or running mark under it, and the tooltip. Its keyboard
+// panel holds the frame (PanelView.qml). Every action is a service call.
 Panel {
   id: root
   moduleName: Build.PLUGIN_ID
@@ -19,9 +21,13 @@ Panel {
   manageIpc: false
 
   property var svc: null
-  // Until a service answers, the bar shows the model of no answer (dimmed).
-  readonly property var model: svc && svc.bar ? svc.bar : Model.reduceStatus(null).bar
+  // Until a service answers, the bar shows the model of no answer yet (dimmed).
+  readonly property var model: svc && svc.bar ? svc.bar : Model.barState(null, { "phase": "starting" })
   readonly property bool spinning: model.spinning === true
+  // The sync glyph turns while work runs; with Hyprland's animations off
+  // (`Style.reduceMotion`) it stands still (design doc §5.7).
+  readonly property bool turning: spinning && Style.reduceMotion !== true
+  property real spinAngle: 0
   // This copy's key in the service's set of open panels.
   readonly property string panelKey: Build.PLUGIN_ID + "@" + String(root)
 
@@ -30,6 +36,14 @@ Panel {
   // characters.
   readonly property string glyph: String.fromCodePoint(0xF0297)
   readonly property string syncGlyph: String.fromCodePoint(0xF04E6)
+  // The mark's glyph ("" for none): broken, stale, attention or a client running.
+  readonly property string markGlyph: Model.BAR_MARK_GLYPHS.hasOwnProperty(model.mark)
+    ? String.fromCodePoint(Model.BAR_MARK_GLYPHS[model.mark]) : ""
+
+  // Where the kit draws the glyph: its canvas, centred in the button (BarIconButton).
+  readonly property real glyphSize: button.canvasSize
+  readonly property real glyphLeft: button.x + (button.width - glyphSize) / 2
+  readonly property real glyphTop: button.y + (button.height - glyphSize) / 2
 
   // The service: `serviceFor` once the shell has handed this copy its `bar`, else the
   // store the service set when it completed (a copy completes before `bar` is set, F0).
@@ -53,7 +67,8 @@ Panel {
 
   // Left toggles the panel, right checks for updates now (vision §5.11), middle opens
   // the most urgent view: Errors with new Lua errors, else Issues with a P0 or P1
-  // problem, else Updates (design doc §2.5).
+  // problem, else Updates (design doc §2.5). The wheel does nothing: a scroll over the
+  // bar while the game has focus nearby must never change anything.
   function press(button) {
     if (button === Qt.RightButton) {
       if (svc) svc.check()
@@ -85,69 +100,70 @@ Panel {
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
-  WidgetButton {
+  // The glyph, optically centred in the kit's icon slot like the shell's own icons;
+  // while work runs, the sync glyph in its place, turning (one turn per 1.2 s).
+  BarIconButton {
     id: button
     objectName: "button"
     anchors.fill: parent
     bar: root.bar
-    text: root.glyph
-    // While a change runs, the spinner below takes the glyph's place.
-    labelVisible: !root.spinning
-    hasVisualContent: true
+    text: root.spinning ? root.syncGlyph : root.glyph
+    textRotation: root.turning ? root.spinAngle : 0
     active: root.model.urgent === true
     dimmed: root.model.dimmed === true
     tooltipText: Array.isArray(root.model.tooltip) ? root.model.tooltip.join("\n") : ""
     onPressed: function(which) { root.press(which) }
   }
 
-  // WidgetButton has no spinner (Button's iconSpinning is not its), so the turning
-  // sync glyph is drawn here, in the button's own color and size.
-  Text {
-    id: spinner
-    objectName: "spinner"
-    visible: root.spinning
-    anchors.centerIn: button
-    textFormat: Text.PlainText
-    text: root.syncGlyph
-    color: button.active ? button.activeColor : button.foreground
-    font.family: button.fontFamily
-    font.pixelSize: button.fontSize
-    opacity: button.opacity
-
-    RotationAnimation on rotation {
-      running: spinner.visible
-      from: 0
-      to: 360
-      duration: 1200
-      loops: Animation.Infinite
-    }
+  NumberAnimation on spinAngle {
+    running: root.turning
+    from: 0
+    to: 360
+    duration: 1200
+    loops: Animation.Infinite
   }
 
-  // The count, drawn over the icon so the bar does not change width (the
-  // notification-center pattern).
-  Rectangle {
+  // The count (design doc §2.5, §5.5): beside the glyph, overlapping it by a quarter of
+  // its own width, in the urgent colour for what needs attention, else the accent for
+  // updates. It is drawn past the button's edge, never laid out, so the bar keeps its
+  // width in every state.
+  Badge {
     id: badge
     objectName: "badge"
-    visible: badgeLabel.text !== ""
-    anchors.right: button.right
-    anchors.rightMargin: Style.space(1)
-    anchors.top: button.top
-    anchors.topMargin: Style.space(3)
-    width: Math.max(badgeLabel.implicitWidth + Style.space(6), Style.space(12))
-    height: Style.space(12)
-    radius: height / 2
-    color: Commons.Color.accent
+    count: Math.max(0, Math.floor(Number(root.model.badge) || 0))
+    urgent: root.model.badgeUrgent === true
+    urgentColor: button.activeColor
+    fontFamily: button.fontFamily
+    x: root.glyphLeft + root.glyphSize - width / 4
+    y: Math.max(0, root.glyphTop - height / 4)
+    opacity: button.opacity
+  }
+
+  // The mark (design doc §2.5): broken (no omaddons the panel can use), stale (no
+  // answer for a while), attention (new Lua errors or a problem) or a client running, a
+  // small disc under the badge. It stays at full strength over a dimmed glyph, so the
+  // reason for the dimming shows.
+  Rectangle {
+    id: mark
+    objectName: "mark"
+    visible: root.markGlyph !== "" && button.opacity > 0
+    width: Style.space(10)
+    height: width
+    radius: width / 2
+    x: root.glyphLeft + root.glyphSize - width / 4
+    // At the glyph's foot, below the badge when one shows, inside the bar.
+    y: Math.max(0, Math.min(root.height - height,
+      Math.max(badge.visible ? badge.y + badge.height : 0, root.glyphTop + root.glyphSize - height * 3 / 4)))
+    color: root.model.markUrgent === true ? button.activeColor : button.foreground
 
     Text {
-      id: badgeLabel
-      objectName: "badgeLabel"
+      objectName: "markGlyph"
       anchors.centerIn: parent
       textFormat: Text.PlainText
-      text: Model.badgeText(root.model.badge)
-      font.family: button.fontFamily
-      font.pixelSize: Style.font.caption - Style.space(2)
-      font.bold: true
+      text: root.markGlyph
       color: Commons.Color.background
+      font.family: button.fontFamily
+      font.pixelSize: Style.space(8)
     }
   }
 

@@ -620,11 +620,10 @@ describe("scheduler", () => {
 
 describe("reduceStatus", () => {
   test("updates", () => {
-    const model = M.reduceStatus(fixture("status-updates"), NOW)
-    expect(model.bar.badge).toBe(4)
-    expect([model.bar.urgent, model.bar.dimmed, model.bar.spinning]).toEqual([false, false, false])
-    expect(model.bar.tooltip[0]).toBe("4 updates on 2 clients (era 2, retail 2)")
+    const model = M.reduceStatus(fixture("status-updates"))
+    expect(model.failed).toBe(false)
     expect(model.summary.state).toBe("updates")
+    expect(model.summary.updates.available).toBe(4)
     expect(model.targets.map((t) => t.id)).toEqual(["era", "retail"])
     expect(model.commands.map((c) => [c.action, c.runnable])).toEqual([["update", true], ["list_unmanaged", true]])
     expect(model.lastChange.unknown).toBe(false)
@@ -632,30 +631,15 @@ describe("reduceStatus", () => {
 
   test("idle", () => {
     const model = M.reduceStatus(fixture("status-idle"))
-    expect([model.bar.badge, model.bar.urgent]).toEqual([0, false])
-    expect(model.bar.tooltip).toEqual(["Everything is up to date"])
     expect(model.summary.state).toBe("idle")
-  })
-
-  test("no clients: the tooltip says so, never \"up to date\"", () => {
-    const none = JSON.parse(JSON.stringify(fixture("status-idle")))
-    none.data.targets = []
-    none.data.summary.targets = 0
-    expect(M.reduceStatus(none, NOW).bar.tooltip).toEqual(["No World of Warcraft clients found"])
+    expect(model.summary.issuesUrgent).toBe(0)
   })
 
   test("attention", () => {
     const model = M.reduceStatus(fixture("status-attention"))
-    expect(model.bar.urgent).toBe(true)
-    expect(model.bar.tooltip[0]).toBe("retail: Baz's folder is gone")
+    expect([model.summary.state, model.summary.issuesUrgent]).toEqual(["attention", 1])
     const issue = model.targets[0].issues[0]
     expect([issue.severity, issue.urgent, issue.addon]).toEqual(["P1", true, "Baz"])
-  })
-
-  test("a running client and the check's age", () => {
-    const model = M.reduceStatus(fixture("status-running"), Date.parse(fixture("status-running").data.targets[0].updates.checked_at) + 25 * 60000)
-    expect(model.bar.tooltip).toContain("retail is running: updates land, then /reload")
-    expect(model.bar.tooltip).toContain("checked 25 min ago")
   })
 
   test("the last change and its undo", () => {
@@ -690,19 +674,228 @@ describe("reduceStatus", () => {
     expect([0, -1, null, undefined, 1, 4, 99, 100, 120].map(M.badgeText)).toEqual(["", "", "", "", "1", "4", "99", "99+", "99+"])
   })
 
-  test("a stale bar keeps its numbers, dimmed", () => {
-    const bar = M.reduceStatus(fixture("status-attention")).bar
-    const stale = M.staleBar(bar)
-    expect([stale.badge, stale.urgent, stale.dimmed, stale.stale, stale.spinning]).toEqual([bar.badge, true, true, true, false])
-    expect(stale.tooltip).toEqual(bar.tooltip)
-    expect(stale.tooltip).not.toBe(bar.tooltip)
-    expect(M.staleBar(null).dimmed).toBe(true)
+  test("a failed status keeps nothing and is failed; no answer yet is not", () => {
+    const model = M.reduceStatus(fixture("failure"))
+    expect([model.failed, model.summary, model.targets.length]).toEqual([true, null, 0])
+    expect(M.reduceStatus(null).failed).toBe(false)
+    expect(M.reduceStatus(undefined).failed).toBe(false)
+  })
+})
+
+// The bar button (1n2p.16, design doc §2.5): Model.barState and Model.barTooltip over
+// envelopes the binary wrote.
+describe("the bar button", () => {
+  const status = (name) => M.reduceStatus(fixture(name))
+  // An answer applied a moment ago, its oldest check 25 minutes before `now`.
+  const STALE_AFTER = M.barStaleAfterMs({})
+  const ctxFor = (model, extra) => {
+    const oldest = M.oldestCheck(model.targets, "")
+    const now = oldest ? Date.parse(oldest) + 25 * 60000 : NOW
+    return Object.assign({ phase: "ok", working: false, nowMs: now, answeredAtMs: now - 1000, staleAfterMs: STALE_AFTER }, extra || {})
+  }
+  const bar = (model, extra) => M.barState(model, ctxFor(model, extra))
+  const view = (b) => [b.state, b.badge, b.badgeUrgent, b.urgent, b.dimmed, b.spinning, b.mark]
+  const withEdit = (name, edit) => {
+    const env = JSON.parse(JSON.stringify(fixture(name)))
+    edit(env)
+    return M.reduceStatus(env)
+  }
+  // The CLI words the copy guide's glossary (design doc §6.3) keeps out of the widget,
+  // and anything shaped like a command line.
+  const CLI_WORDS = [
+    /\b(targets?|refs?|plans?|preview|token|precondition|transactions?|tx|run|SavedVariables|WTF|flavou?r|family|interface|issues?|P[0-3])\b/,
+    /\bfm-[a-z_-]+/, /(^|\s)--[a-z]/, /-t\s/,
+    /\bomaddons (install|update|remove|undo|status|targets|adopt|errors|backup|doctor|search|list|outdated|apply|config|omarchy)\b/,
+  ]
+  const cliWord = (line) => CLI_WORDS.some((re) => re.test(line))
+
+  test("idle: nothing to do, no badge, no mark", () => {
+    const b = bar(status("status-idle"))
+    expect(view(b)).toEqual(["idle", 0, false, false, false, false, ""])
+    expect(b.tooltip).toEqual(["All good", "Checked 25 min ago", "Left: open · Middle: Updates · Right: check for updates"])
   })
 
-  test("a failed status keeps nothing and says why", () => {
-    const model = M.reduceStatus(fixture("failure"))
-    expect([model.bar.dimmed, model.summary, model.targets.length]).toEqual([true, null, 0])
-    expect(model.bar.tooltip).toEqual(['no target matches "nosuch"'])
+  test("updates: the accent badge counts them, one line per client", () => {
+    const b = bar(status("status-updates"))
+    expect(view(b)).toEqual(["updates", 4, false, false, false, false, ""])
+    expect(b.tooltip).toEqual(["4 updates", "Classic Era · 2 updates", "Retail · 2 updates", "Checked 25 min ago",
+      "Left: open · Middle: Updates · Right: check for updates"])
+  })
+
+  test("attention without updates: the urgent badge counts the P1 problem, the attention mark says so", () => {
+    const b = bar(status("status-attention"))
+    expect(view(b)).toEqual(["attention", 1, true, true, false, false, "attention"])
+    expect(b.markUrgent).toBe(true)
+    expect(b.tooltip[0]).toBe("1 problem needs attention")
+    expect(b.tooltip[1]).toBe("Retail · 1 problem needs attention")
+    expect(b.tooltip[b.tooltip.length - 1]).toBe("Left: open · Middle: Issues · Right: check for updates")
+  })
+
+  test("attention with updates: the badge counts the reason for its colour, never the updates (UX-30)", () => {
+    const b = bar(status("status-errors"))
+    expect(view(b)).toEqual(["attention", 2, true, true, false, false, "attention"])
+    expect(b.tooltip[0]).toBe("2 new Lua errors · 1 update")
+    expect(b.tooltip).toContain("Retail · 2 new Lua errors · 1 update")
+    expect(b.tooltip[b.tooltip.length - 1]).toBe("Left: open · Middle: Errors · Right: check for updates")
+    // P0 and P1 problems and new errors add up; a P2 never makes it urgent.
+    const both = withEdit("status-errors", (env) => { env.data.summary.issues.p0 = 1; env.data.summary.issues.p1 = 2 })
+    expect(bar(both).badge).toBe(5)
+    const minor = withEdit("status-updates", (env) => { env.data.summary.issues.p2 = 3 })
+    expect(view(bar(minor)).slice(0, 3)).toEqual(["updates", 4, false])
+    expect(bar(minor).tooltip[0]).toBe("4 updates · 3 problems")
+  })
+
+  test("playing: a running client adds the running mark and says so on its line", () => {
+    const b = bar(status("status-running"))
+    expect(view(b)).toEqual(["updates", 4, false, false, false, false, "running"])
+    expect([b.playing, b.markUrgent]).toEqual([true, false])
+    expect(b.tooltip).toContain("Retail · 2 updates · running")
+    // The running mark yields to the attention mark; the line still says it runs.
+    const both = withEdit("status-errors", (env) => { env.data.targets[1].running = true })
+    expect([bar(both).playing, bar(both).mark]).toEqual([true, "attention"])
+    expect(bar(both).tooltip).toContain("Retail · 2 new Lua errors · 1 update · running")
+    const clients = bar(status("status-clients"))
+    expect(clients.mark).toBe("running")
+    expect(clients.tooltip).toContain("Mists of Pandaria Classic · running")
+    // A client no longer installed says so, not its problem.
+    expect(clients.tooltip).toContain("Burning Crusade Anniversary · not found")
+  })
+
+  test("working: the glyph spins in every state but broken, the badge stays", () => {
+    const b = bar(status("status-updates"), { working: true })
+    expect(view(b)).toEqual(["updates", 4, false, false, false, true, ""])
+    expect(M.barState(null, { phase: "starting", working: true }).spinning).toBe(true)
+    expect(M.barState(status("status-updates"), { phase: "missing", working: true }).spinning).toBe(false)
+  })
+
+  test("stale: past the safety net the bar keeps the last answer, dimmed and marked", () => {
+    const model = status("status-errors")
+    const fresh = bar(model)
+    const ctx = ctxFor(model)
+    const at = ctx.nowMs - STALE_AFTER - 1
+    const b = M.barState(model, Object.assign({}, ctx, { answeredAtMs: at }))
+    expect(view(b)).toEqual(["stale", 2, true, true, true, false, "stale"])
+    expect(b.tooltip[0]).toMatch(/^Last heard from omaddons (\d+ min|\d+ hours?) ago$/)
+    expect(b.tooltip.slice(1)).toEqual(fresh.tooltip)
+    // Exactly the safety net is still fresh; an unreachable answer is too, until then.
+    expect(M.barState(model, Object.assign({}, ctx, { answeredAtMs: ctx.nowMs - STALE_AFTER })).state).toBe("attention")
+    expect(M.barState(model, Object.assign({}, ctx, { phase: "unreachable" })).state).toBe("attention")
+    expect(M.barState(model, Object.assign({}, ctx, { phase: "unreachable", answeredAtMs: at })).state).toBe("stale")
+    // A stale bar shows no running client: that answer is old.
+    const running = status("status-running")
+    expect(M.barState(running, Object.assign({}, ctxFor(running), { answeredAtMs: 1 })).mark).toBe("stale")
+  })
+
+  test("stale after the safety net: refreshIntervalSec plus a status read's deadline", () => {
+    expect(M.barStaleAfterMs({})).toBe((300 + M.WIDGET_LOCAL_DEADLINE_SEC) * 1000)
+    expect(M.barStaleAfterMs({ refreshIntervalSec: 60 })).toBe((60 + M.WIDGET_LOCAL_DEADLINE_SEC) * 1000)
+    expect(M.barStaleAfterMs({ refreshIntervalSec: 5 })).toBe(M.barStaleAfterMs({}))
+  })
+
+  test("broken: no binary, another build, a failed status or no answer ever; dimmed with a warning mark", () => {
+    const model = status("status-errors")
+    const cases = [
+      ["missing", model, "Can't find omaddons"],
+      ["incompatible", model, "The panel is from another omaddons version"],
+      ["unreachable", M.reduceStatus(null), "omaddons didn't answer"],
+      ["ok", status("failure"), "omaddons ran into a problem"],
+    ]
+    for (const [phase, m, head] of cases) {
+      const b = M.barState(m, { phase, nowMs: NOW, answeredAtMs: NOW, staleAfterMs: STALE_AFTER })
+      expect([phase, ...view(b)]).toEqual([phase, "broken", 0, false, false, true, false, "broken"])
+      expect(b.tooltip).toEqual([head, "Left: open to see what to do"])
+    }
+  })
+
+  test("starting and empty: dimmed with no mark, and the tooltip says which", () => {
+    const starting = M.barState(null, { phase: "starting" })
+    expect(view(starting)).toEqual(["starting", 0, false, false, true, false, ""])
+    expect(starting.tooltip).toEqual(["Asking omaddons…", "Left: open · Middle: Updates · Right: check for updates"])
+    const none = withEdit("status-idle", (env) => { env.data.targets = []; env.data.summary.targets = 0 })
+    const empty = bar(none)
+    expect(view(empty)).toEqual(["empty", 0, false, false, true, false, ""])
+    expect(empty.tooltip).toEqual(["No World of Warcraft here yet", "Left: open · Middle: Updates · Right: check for updates"])
+    // A client no longer installed counts as none, and says it is gone.
+    const gone = withEdit("status-idle", (env) => { env.data.targets[0].missing = true })
+    expect(bar(gone).state).toBe("empty")
+  })
+
+  test("the tooltip names clients by display name, the problems of no client, and checks never made", () => {
+    const machine = withEdit("status-check-due", (env) => {
+      env.data.issues = [JSON.parse(JSON.stringify(fixture("status-attention").data.targets[0].issues[0]))]
+      env.data.summary.issues.p1 = 1
+      env.data.targets[1].running = null
+    })
+    const b = M.barState(machine, { phase: "ok", nowMs: NOW, answeredAtMs: NOW, staleAfterMs: STALE_AFTER })
+    expect(b.tooltip).toEqual(["1 problem needs attention", "This computer · 1 problem needs attention",
+      "Can't tell if the game is running", "Not checked for updates yet", "Left: open · Middle: Issues · Right: check for updates"])
+  })
+
+  test("no tooltip line holds a CLI word or a client id, and every one ends with the click hints", () => {
+    const names = ["status-idle", "status-updates", "status-attention", "status-errors", "status-running", "status-clients",
+      "status-check-due", "status-errors-unchecked", "status-errors-stale", "status-errors-partial", "status-after-update", "failure"]
+    const phases = ["starting", "ok", "missing", "unreachable", "incompatible"]
+    for (const name of names) {
+      const model = status(name)
+      const ids = model.targets.map((t) => t.id)
+      for (const phase of phases) {
+        for (const answeredAtMs of [ctxFor(model).nowMs, 1]) {
+          const lines = M.barState(model, Object.assign(ctxFor(model), { phase, answeredAtMs })).tooltip
+          expect(lines.length).toBeGreaterThan(1)
+          expect(lines[lines.length - 1]).toMatch(/^Left: open/)
+          for (const line of lines) {
+            expect([name, phase, line, cliWord(line)]).toEqual([name, phase, line, false])
+            for (const id of ids) expect([name, line, new RegExp("\\b" + id + "\\b").test(line)]).toEqual([name, line, false])
+          }
+        }
+      }
+    }
+  })
+
+  test("every combination: one state, its look follows from it, and the states look distinct besides colour", () => {
+    const base = fixture("status-updates")
+    // What tells a bar apart without its colours (the badge's fill and the glyph's are
+    // colour): whether a badge shows, the mark, and dimming; the spinner is the glyph.
+    const looks = {}
+    for (const errors of [0, 2]) for (const urgent of [0, 1]) for (const updates of [0, 3]) for (const running of [false, true])
+      for (const working of [false, true]) for (const phase of ["starting", "ok", "missing", "unreachable", "incompatible"])
+        for (const age of [0, STALE_AFTER + 1]) for (const clients of [true, false]) {
+          const env = JSON.parse(JSON.stringify(base))
+          env.data.summary.errors.new = errors
+          env.data.summary.issues.p1 = urgent
+          env.data.summary.updates.available = updates
+          env.data.targets[1].running = running
+          if (!clients) env.data.targets = []
+          const model = phase === "starting" ? null : M.reduceStatus(env)
+          const ctx = { phase, working, nowMs: NOW, answeredAtMs: NOW - age, staleAfterMs: STALE_AFTER }
+          const b = M.barState(model, ctx)
+          const label = JSON.stringify({ errors, urgent, updates, running, working, phase, age, clients })
+          expect([label, M.BAR_STATES.includes(b.state)]).toEqual([label, true])
+          // Pure: the same answer twice, and its inputs untouched.
+          expect(M.barState(model, ctx)).toEqual(b)
+          expect(ctx.answeredAtMs).toBe(NOW - age)
+          const dimmed = ["broken", "starting", "stale", "empty"].includes(b.state)
+          const level = !clients ? "empty" : errors + urgent > 0 ? "attention" : updates > 0 ? "updates" : "idle"
+          expect([label, b.dimmed]).toEqual([label, dimmed])
+          expect([label, b.spinning]).toEqual([label, working && b.state !== "broken"])
+          expect([label, b.badge]).toEqual([label, ["attention", "updates", "stale"].includes(b.state)
+            ? (level === "attention" ? errors + urgent : level === "updates" ? updates : 0) : 0])
+          expect([label, b.badgeUrgent, b.urgent]).toEqual([label, b.badge > 0 && level === "attention", b.badge > 0 && level === "attention"])
+          const playing = running && ["attention", "updates", "idle"].includes(b.state)
+          expect([label, b.playing]).toEqual([label, playing])
+          expect([label, b.mark]).toEqual([label, ["broken", "stale", "attention"].includes(b.state) ? b.state : playing ? "running" : ""])
+          expect([label, b.markUrgent]).toEqual([label, ["broken", "attention"].includes(b.mark)])
+          // The state as the snapshots name it: playing is its own look.
+          const shown = b.mark === "running" ? b.state + "+playing" : b.state
+          const look = [b.badge > 0, b.mark, b.dimmed].join("|")
+          if (!working) (looks[look] = looks[look] || new Set()).add(shown)
+        }
+    // decided: starting and empty share a look (nothing to show yet; the tooltip says
+    // which). Every other look is one state's.
+    const shared = Object.entries(looks).filter(([, states]) => states.size > 1)
+    expect(shared.map(([look, states]) => [look, [...states].sort()])).toEqual([["false||true", ["empty", "starting"]]])
+    const all = new Set(Object.values(looks).flatMap((states) => [...states]))
+    expect([...all].sort()).toEqual([...M.BAR_STATES, "idle+playing", "updates+playing"].sort())
   })
 })
 
