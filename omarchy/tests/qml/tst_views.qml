@@ -128,6 +128,9 @@ TestCase {
         copies = copies.concat([Model.copyArgv(text)])
         return true
       }
+      // What a change runs on and just changed (1n2p.18): the rows' own phase.
+      property var activity: null
+      property var doneRows: ({})
       // What Model.viewState reads (1n2p.19), and the views' Try again and Check now.
       property var reading: []
       property var outcomes: ({})
@@ -235,9 +238,16 @@ TestCase {
     compare([header.title, header.count], ["Retail", "running · 1 update"])
     verify(!findChild(row("updateRow", 3), "clientHeader").visible)
     compare(findChild(updates, "updateAll").text, "Update all (2)")
-    // A running client's update loads after a /reload.
-    verify(findChild(row("updateRow", 2), "reloadChip").visible)
-    verify(!findChild(row("updateRow", 0), "reloadChip").visible)
+    // A running client's rows say so in words (the reload words come from the CLI's
+    // own preview, bmcx.5); each row is an AddonRow with its versions.
+    compare(findChild(findChild(row("updateRow", 2), "addonRow"), "meta").text, "Retail is running")
+    verify(findChild(findChild(row("updateRow", 0), "addonRow"), "meta").text.indexOf("running") === -1)
+    compare(findChild(row("updateRow", 2), "addonRow").toVersion, "12.1.15")
+    // Each client's header updates that client.
+    var clientUpdate = findChild(row("updateRow", 2), "updateClient")
+    verify(clientUpdate.visible)
+    compare(clientUpdate.text, "Update Retail")
+    verify(!findChild(row("updateRow", 3), "updateClient").visible)
     keyClick("t")
     keyClick("t")
     compare(view.filter, "retail")
@@ -291,28 +301,85 @@ TestCase {
     compare(svc.runs.length, 3)
   }
 
-  function test_e_shows_the_notes_of_its_own_row_and_safe_links_only() {
+  function test_e_shows_every_pending_note_of_its_own_row_and_safe_links_only() {
     keyClick("j")
     keyClick("j")
     keyClick("e")
     compare(json(svc.notes), json([["retail", "DBM"]]))
     var entry = row("updateRow", 2)
     verify(findChild(entry, "notes").visible)
-    compare(findChild(entry, "notesText").text, "Reading the release notes…")
+    compare(findChild(entry, "notesStatus").text, "Reading the release notes…")
     // A late answer for another row is never shown here.
     svc.changelog = { "selection": { "target": "era", "addon": "Bar" }, "data": { "changelog": { "entries": [{ "version": "v2", "text": "Bar notes" }], "more_url": "https://github.com/o/bar/releases" } } }
-    compare(findChild(entry, "notesText").text, "Reading the release notes…")
-    svc.changelog = { "selection": { "target": "retail", "addon": "DBM" }, "data": { "changelog": { "entries": [{ "version": "12.1.15", "text": "Fixes the pull timer." }], "more_url": "https://github.com/o/dbm/releases" } } }
-    compare(findChild(entry, "notesText").text, "Fixes the pull timer.")
+    compare(findChild(entry, "notesStatus").text, "Reading the release notes…")
+    // Every release since the installed one, newest first, and how far behind it is.
+    svc.changelog = { "selection": { "target": "retail", "addon": "DBM" }, "data": { "changelog": { "truncated": false,
+      "entries": [{ "version": "12.1.16", "text": "Adds the new raid." }, { "version": "12.1.15", "text": "Fixes the pull timer." }],
+      "more_url": "https://github.com/o/dbm/releases" } } }
+    compare(findChild(entry, "notesStatus").text, "2 releases behind")
+    compare(findChild(findChild(entry, "noteEntry_0"), "noteVersion").text, "12.1.16")
+    compare(findChild(findChild(entry, "noteEntry_1"), "noteText").text, "Fixes the pull timer.")
     var link = findChild(entry, "notesLink")
     verify(link.visible)
-    compare(link.text, "more on GitHub")
+    compare(link.text, "More on GitHub")
     link.clicked()
     compare(json(Quickshell.detachedCommands[0]), json(["omarchy-launch-browser", "https://github.com/o/dbm/releases"]))
     svc.changelog = { "selection": { "target": "retail", "addon": "DBM" }, "data": { "changelog": { "entries": [], "more_url": "http://evil.example/x" } } }
     verify(!findChild(entry, "notesLink").visible)
     keyClick("e")
     verify(!findChild(entry, "notes").visible)
+  }
+
+  // The header (1n2p.21): how fresh the check is, and Check now beside it.
+  function test_the_header_says_when_it_was_checked_and_check_now_checks() {
+    var updates = content()
+    verify(findChild(updates, "checkedLabel").text.indexOf("Checked ") === 0, findChild(updates, "checkedLabel").text)
+    verify(findChild(updates, "checkNow").tooltipText.endsWith("(c)"))
+    findChild(updates, "checkNow").clicked()
+    compare(svc.checks, 1)
+    // A failed check's row offers Check again, never an update.
+    var failed = findChild(row("updateRow", 1), "addonRow")
+    compare(failed.meta, "Couldn't check GitHub for a new release")
+    keyClick("j")
+    keyClick("u")
+    compare(svc.runs.length, 0)
+  }
+
+  // `/` filters the updates as the Addons view does, the count beside it.
+  function test_slash_filters_the_updates() {
+    var updates = content()
+    var field = findChild(updates, "filterField")
+    keyClick("/")
+    tryVerify(function() { return field.activeFocus })
+    verify(updates.typing)
+    keyClick("d")
+    keyClick("b")
+    compare(json(updates.rows.map(function(r) { return r.name })), json(["DBM"]))
+    compare(findChild(updates, "filterCount").text, "1 of 4")
+    // Update all still updates the whole scope, not only the matches.
+    compare(findChild(updates, "updateAll").text, "Update all (2)")
+    keyClick(Qt.Key_Escape)
+    tryVerify(function() { return !field.activeFocus })
+    compare(updates.query, "db")
+    keyClick(Qt.Key_Escape)
+    compare(updates.query, "")
+    compare(updates.rows.length, 4)
+  }
+
+  // While a change runs on a row, the row says its own phase; just after, "Updated".
+  function test_a_row_shows_its_own_phase_while_its_update_runs() {
+    var started = Model.activityStart({ "id": 1, "kind": "mutation", "lane": "mutation", "priority": "user", "template": "update_addon",
+      "slots": { "target": "retail", "addon": "DBM" }, "label": "Update DBM" }, Date.now(), svc.lists)
+    svc.activity = Model.activityProgress(started, { "event": "progress", "phase": "download", "message": "", "current": 1,
+      "total": 1, "target": "retail", "ref": "gh:o/dbm" }, Date.now())
+    var dbm = findChild(row("updateRow", 2), "addonRow")
+    verify(dbm.pending)
+    compare(dbm.pendingText, "Updating… downloading (1 of 1)")
+    verify(!findChild(row("updateRow", 0), "addonRow").pending, "another row is not moved")
+    svc.activity = null
+    svc.doneRows = { "retail/DBM": "Updated" }
+    verify(!dbm.pending)
+    compare(dbm.meta, "Updated")
   }
 
   function test_nothing_to_update_says_when_it_was_checked() {
@@ -483,8 +550,8 @@ TestCase {
     keyClick(Qt.Key_Escape)
     tryVerify(function() { return !field.activeFocus })
     compare(installed.query, "b")
-    // `/` elsewhere says why it does nothing.
-    keyClick("1")
+    // `/` where nothing filters (Backups) says why it does nothing.
+    keyClick("6")
     keyClick("/")
     compare(findChild(view, "keyNote").text, "Nothing to filter here")
   }

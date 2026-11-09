@@ -7340,6 +7340,7 @@ output errors data.targets[].addons[].last_seen.meaning string!
 output errors data.targets[].addons[].last_seen.tz string!
 output errors data.targets[].addons[].latest object?!
 output errors data.targets[].addons[].latest.asset string?!
+output errors data.targets[].addons[].latest.published_at string?!
 output errors data.targets[].addons[].latest.release_id string?!
 output errors data.targets[].addons[].latest.source string?!
 output errors data.targets[].addons[].latest.status string!
@@ -7829,6 +7830,7 @@ output list data.targets[].addons[].folders array|integer!
 output list data.targets[].addons[].installed_at string!
 output list data.targets[].addons[].latest object!
 output list data.targets[].addons[].latest.asset string?!
+output list data.targets[].addons[].latest.published_at string?!
 output list data.targets[].addons[].latest.release_id string?!
 output list data.targets[].addons[].latest.source string?!
 output list data.targets[].addons[].latest.status string!

@@ -1188,7 +1188,9 @@ function reduceList(env) {
             "channel": str(a.channel),
             "latestSource": strOrNull(latest.source),
             "latestReleaseId": strOrNull(latest.release_id),
-            "latestAsset": strOrNull(latest.asset)
+            "latestAsset": strOrNull(latest.asset),
+            // When that release was published, when its source says (1n2p.21).
+            "publishedAt": strOrNull(latest.published_at)
           }
         })
       }
@@ -2073,7 +2075,8 @@ var KEYMAP = [
   { "keys": ["Enter", "Space"], "context": "updates", "action": "enter", "label": "update this addon", "hint": "Enter" },
   { "keys": ["u"], "context": "updates", "action": "update", "label": "update this addon", "hint": "u", "nothing": "Nothing to update here" },
   { "keys": ["p"], "context": "updates", "action": "pin", "label": "pin or unpin it", "hint": "p", "nothing": "Nothing to pin here" },
-  { "keys": ["e"], "context": "updates", "action": "notes", "label": "show or hide its newest release notes", "hint": "e", "nothing": "No release notes here" },
+  { "keys": ["e"], "context": "updates", "action": "notes", "label": "show or hide the release notes since its version", "hint": "e", "nothing": "No release notes here" },
+  { "keys": ["/"], "context": "updates", "action": "filter", "label": "filter the updates by name, source or state", "hint": "/", "nothing": "Nothing to filter here" },
   { "keys": ["Enter", "Space"], "context": "installed", "action": "enter", "label": "update it, or put back its changed files", "hint": "Enter" },
   { "keys": ["u"], "context": "installed", "action": "update", "label": "update this addon", "hint": "u", "nothing": "Nothing to update here" },
   { "keys": ["p"], "context": "installed", "action": "pin", "label": "pin or unpin it", "hint": "p", "nothing": "Nothing to pin here" },
@@ -2544,13 +2547,9 @@ function sourceKind(ref) {
   return SOURCE_KINDS.indexOf(prefix) >= 0 ? prefix : "file"
 }
 
-// The Updates view's rows, in the filter: per client, updates first, then pinned
-// addons with a newer release, blocked ones, and those whose check failed. In the All
-// filter the first row of each client carries `group`, its id. `reload` marks a running
-// client's rows ("then /reload").
+// The kind of Updates row each `list -v` status gives (updateRows); other statuses give
+// none.
 var UPDATE_KINDS = { "update_available": "update", "pinned": "pinned", "blocked": "blocked", "failed": "failed" }
-var UPDATE_ORDER = ["update", "pinned", "blocked", "failed"]
-var UPDATE_LABELS = { "update": "", "pinned": "pinned", "blocked": "blocked", "failed": "check failed" }
 
 // ------------------------------------------------------------------ colours (§5.1)
 
@@ -2622,26 +2621,105 @@ function listTargets(lists, filter) {
   return targets.filter(function(t) { return !filter || t.id === filter })
 }
 
-function updateRows(lists, filter, statusTargets) {
+// How old a release is, in words ("out today", "2 days old", "3 months old"), from its
+// `published_at`; "" when its source gave no date (GitHub's keyless path gives none).
+function releaseAge(iso, nowMs) {
+  var at = Date.parse(str(iso))
+  if (!isFinite(at)) return ""
+  var days = Math.floor(Math.max(0, num(nowMs) - at) / 86400000)
+  if (days < 1) return copy("updates.age.today")
+  if (days < 60) return copy("updates.age.days", { "n": days })
+  if (days < 730) return copy("updates.age.months", { "n": Math.floor(days / 30) })
+  return copy("updates.age.years", { "n": Math.floor(days / 365) })
+}
+
+// The glyph, band and order of each kind of Updates row (design doc §5.3, §5.4): an
+// update (arrow up), one a change just updated (a check, in the update's place), a
+// pinned addon (pin), a blocked release (cancel), a failed check (sync alert).
+var UPDATE_GLYPHS = { "update": 0xF0CE1, "done": 0xF012C, "pinned": 0xF0403, "blocked": 0xF073A, "failed": 0xF04E7 }
+var UPDATE_BANDS = { "update": "accent", "done": "accent", "pinned": "", "blocked": "", "failed": "urgent" }
+var UPDATE_RANK = { "update": 0, "done": 0, "pinned": 1, "blocked": 2, "failed": 3 }
+
+// One Updates row (1n2p.21, design doc §5.3): an AddonRow's fields, and what the plan
+// runner compares (shownOf's).
+function updateRow(t, a, kind, status, client, nowMs, doneWord) {
+  var meta = []
+  var running = !!status && status.running === true
+  if (kind === "update") {
+    var age = releaseAge(a.publishedAt, nowMs)
+    if (age) meta.push(age)
+    if (running) meta.push(copy("updates.meta.running", { "client": client }))
+  } else if (kind === "done") {
+    meta.push(str(doneWord))
+  } else if (kind === "pinned") {
+    meta.push(copy("updates.meta.pinned", { "version": a.version || "?", "latest": a.latest || "" }))
+  } else if (kind === "blocked") {
+    meta.push(copy("updates.meta.blocked", { "latest": a.latest || "", "client": client }))
+  } else {
+    meta.push(copy("updates.meta.failed", { "source": SOURCE_WORDS[a.source] || copy("installed.source.unknown") }))
+  }
+  var chips = a.channel && a.channel !== "stable" ? [{ "text": a.channel, "urgent": false }] : []
+  var act = function(name, glyph, label) {
+    return { "name": name, "glyph": String.fromCodePoint(glyph), "tooltip": withKey(copy(label), name, "updates") }
+  }
+  var actions = []
+  if (kind === "update") actions.push(act("update", 0xF0CE1, "updates.action.update"))
+  if (kind === "failed") actions.push(act("check", 0xF04E6, "updates.action.check"))
+  if (kind !== "failed" && kind !== "done") actions.push(act("notes", 0xF0219, "updates.action.notes"))
+  if (kind !== "failed" && kind !== "done") {
+    actions.push(act("pin", a.pinned ? 0xF0404 : 0xF0403, a.pinned ? "installed.action.unpin" : "installed.action.pin"))
+  }
+  return {
+    "key": t.id + "/" + a.name, "target": t.id, "client": client, "name": a.name, "version": a.version, "latest": a.latest,
+    "kind": kind, "pinned": a.pinned, "reload": running, "group": "", "groupCount": "", "groupTarget": "", "groupUpdates": 0,
+    "targetKey": t.key, "channel": a.channel, "latestSource": a.latestSource, "latestReleaseId": a.latestReleaseId,
+    "latestAsset": a.latestAsset, "sourceWord": SOURCE_WORDS[a.source] || copy("installed.source.unknown"),
+    "fromVersion": kind === "done" ? "" : (a.version || "?"),
+    "toVersion": kind === "update" ? str(a.latest) : (kind === "done" ? str(a.version) : ""),
+    "meta": meta.join(" · "), "chips": chips, "glyph": UPDATE_GLYPHS[kind], "band": UPDATE_BANDS[kind], "actions": actions
+  }
+}
+
+// The Updates view's rows, in the filter (1n2p.21, design doc §2.3): per client, its
+// updates, then pinned addons with a newer release, blocked releases and failed checks,
+// by name within each; under All, each client's header (its player name, whether it
+// runs, its updates) above its first row, with what "Update {client}" updates there.
+// `view`: `nowMs` (release ages), `done` (the service's `{<key>: word}` of rows a change
+// just changed: such a row stays, in its update's place, until it expires) and `query`
+// (`/`, as the Addons view filters: each word a subsequence of the name, the source or
+// the row's words).
+function updateRows(lists, filter, statusTargets, view) {
+  var v = view && typeof view === "object" ? view : {}
+  var nowMs = typeof v.nowMs === "number" ? v.nowMs : Date.now()
+  var done = v.done && typeof v.done === "object" ? v.done : {}
+  var query = str(v.query)
   var out = []
   var targets = listTargets(lists, filter)
   for (var i = 0; i < targets.length; i++) {
     var t = targets[i]
     var status = targetById(statusTargets, t.id)
+    var client = sheetClient(statusTargets, t.id, "")
     var rows = []
     for (var j = 0; j < t.addons.length; j++) {
       var a = t.addons[j]
+      var key = t.id + "/" + a.name
       var kind = UPDATE_KINDS[a.status]
-      if (!kind || (kind === "pinned" && (!a.latest || a.latest === a.version))) continue
-      rows.push({
-        "key": t.id + "/" + a.name, "target": t.id, "name": a.name, "version": a.version, "latest": a.latest,
-        "kind": kind, "label": UPDATE_LABELS[kind], "pinned": a.pinned, "reload": !!status && status.running === true,
-        "group": "", "groupCount": "", "targetKey": t.key, "channel": a.channel, "latestSource": a.latestSource,
-        "latestReleaseId": a.latestReleaseId, "latestAsset": a.latestAsset
-      })
+      if (kind === "pinned" && (!a.latest || a.latest === a.version)) kind = undefined
+      if (!kind && done.hasOwnProperty(key)) kind = "done"
+      if (!kind) continue
+      var row = updateRow(t, a, kind, status, client, nowMs, done[key])
+      // Short words, as the Addons view's chips: a sentence would match nearly anything.
+      var words = [row.name, row.sourceWord, copy("updates.kind." + kind)].concat(row.chips.map(function(c) { return c.text }))
+      if (query && !filterMatches(query, words)) continue
+      rows.push(row)
     }
-    // Within a kind, the order `list -v` gave.
-    rows = stableSort(rows, function(x, y) { return UPDATE_ORDER.indexOf(x.kind) - UPDATE_ORDER.indexOf(y.kind) })
+    rows = stableSort(rows, function(x, y) {
+      var byKind = UPDATE_RANK[x.kind] - UPDATE_RANK[y.kind]
+      if (byKind) return byKind
+      var nx = asciiLower(x.name)
+      var ny = asciiLower(y.name)
+      return nx < ny ? -1 : (nx > ny ? 1 : 0)
+    })
     // Under All, the client's header above its first row: its player name, whether it
     // runs, and its updates (design doc §2.3).
     if (!filter && rows.length > 0) {
@@ -2649,10 +2727,61 @@ function updateRows(lists, filter, statusTargets) {
       var group = clientGroup(statusTargets, t.id, updates > 0 ? plural(updates, "update") : "")
       rows[0].group = group.title
       rows[0].groupCount = group.count
+      rows[0].groupTarget = t.id
+      rows[0].groupUpdates = updates
     }
     out = out.concat(rows)
   }
   return out
+}
+
+// "Update Retail (3)": a client header's button, the client's updates previewed as one
+// (updateRequest's, for that client only).
+function groupUpdateRequest(target, rows, targets) {
+  var request = updateRequest(target, (Array.isArray(rows) ? rows : []).filter(function(r) { return !!r && r.target === target }), targets)
+  request.label = copy("updates.update_client", { "client": sheetClient(targets, target, "") })
+  return request
+}
+
+// The pending release notes of `row` (`e`, 1n2p.21): every release newer than the one
+// installed, from the service's view-bound changelog (`info -t <client> --changelog`):
+// `{state, entries: [{version, date, text}], behind, url, link, failed}`. `state` is
+// `reading` until the answer for this row arrives (a late one for another row never
+// matches), `failed` when it could not be read, else `ready`. `behind` is how many
+// releases the row is behind ("3 releases behind"; "10+" when the feed cut the list);
+// the link shows only when isSafeUrl accepts it.
+function releaseNotes(changelog, row, nowMs) {
+  var out = { "state": "reading", "entries": [], "behind": "", "url": "", "link": "", "failed": "" }
+  if (!changelog || !changelog.selection || !row) return out
+  if (changelog.selection.target !== row.target || changelog.selection.addon !== row.name) return out
+  if (changelog.failed) {
+    out.state = "failed"
+    out.failed = copy("updates.notes.failed", { "why": str(changelog.failed) })
+    return out
+  }
+  out.state = "ready"
+  var log = changelog.data && changelog.data.changelog && typeof changelog.data.changelog === "object" ? changelog.data.changelog : {}
+  var entries = Array.isArray(log.entries) ? log.entries.filter(function(e) { return !!e && typeof e === "object" }) : []
+  out.entries = entries.map(function(e) {
+    var age = releaseAge(e.published_at, nowMs)
+    return { "version": str(e.version), "date": age, "text": str(e.text) || copy("updates.notes.empty") }
+  })
+  if (entries.length > 0) {
+    out.behind = copy(log.truncated === true ? "updates.notes.behind_more" : "updates.notes.behind", { "n": entries.length })
+  }
+  var more = str(log.more_url)
+  if (more && isSafeUrl(more)) {
+    out.url = more
+    out.link = copy("updates.notes.more", { "host": MORE_HOSTS[more.split("/")[2].toLowerCase()] || "the web" })
+  }
+  return out
+}
+
+// The Updates header's freshness (1n2p.21): "Checked 25 min ago", the oldest check of
+// the clients in the filter; "Not checked yet" before any.
+function updatesChecked(statusTargets, filter, nowMs) {
+  var oldest = oldestCheck(Array.isArray(statusTargets) ? statusTargets : [], filter)
+  return oldest ? copy("updates.checked", { "age": sinceText(oldest, nowMs) }) : copy("updates.unchecked")
 }
 
 // What `u` would update in the filter: the "Update all (N)" header's N.
@@ -4151,7 +4280,39 @@ var COPY = {
   "activity.done.unpinned": "Unpinned",
   "activity.done.edited": "Changed",
   "activity.done.adopted": "Taken over",
-  "activity.done.generic": "Done"
+  "activity.done.generic": "Done",
+
+  // The Updates view (design doc §2.3, §6.3; 1n2p.21).
+  "updates.age.today": "out today",
+  "updates.age.days": { "one": "1 day old", "other": "{n} days old" },
+  "updates.age.months": { "one": "1 month old", "other": "{n} months old" },
+  "updates.age.years": { "one": "1 year old", "other": "{n} years old" },
+  "updates.kind.update": "update",
+  "updates.kind.done": "updated",
+  "updates.kind.pinned": "pinned",
+  "updates.kind.blocked": "blocked",
+  "updates.kind.failed": "check failed",
+  "updates.meta.running": "{client} is running",
+  "updates.meta.pinned": "pinned at {version} · {latest} available",
+  "updates.meta.blocked": "{latest} is out, but it doesn't load on {client}",
+  "updates.meta.failed": "Couldn't check {source} for a new release",
+  "updates.action.update": "Update",
+  "updates.action.notes": "Release notes",
+  "updates.action.check": "Check again",
+  "updates.update_scope": { "one": "Update 1", "other": "Update {n}" },
+  "updates.update_client": "Update {client}",
+  "updates.checked": "Checked {age}",
+  "updates.unchecked": "Not checked yet",
+  "updates.check_now": "Check now",
+  "updates.filter": "Filter updates",
+  "updates.count": "{shown} of {total}",
+  "updates.notes.reading": "Reading the release notes…",
+  "updates.notes.failed": "The release notes could not be read: {why}",
+  "updates.notes.empty": "No release notes",
+  "updates.notes.none": "No newer release notes",
+  "updates.notes.behind": { "one": "1 release behind", "other": "{n} releases behind" },
+  "updates.notes.behind_more": "{n}+ releases behind",
+  "updates.notes.more": "More on {host}"
 }
 
 // COPY[id] with its {slots} filled; a pair by `slots.n` (1 is "one"). A missing slot is
@@ -5138,6 +5299,10 @@ if (typeof module !== "undefined") {
     stableSort: stableSort,
     updateRows: updateRows,
     updateCount: updateCount,
+    releaseAge: releaseAge,
+    groupUpdateRequest: groupUpdateRequest,
+    releaseNotes: releaseNotes,
+    updatesChecked: updatesChecked,
     oldestCheck: oldestCheck,
     reduceCheck: reduceCheck,
     readingResources: readingResources,

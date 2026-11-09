@@ -72,6 +72,7 @@ expression: s.stable(&checked.envelope)
             },
             "latest": {
               "asset": null,
+              "published_at": null,
               "release_id": null,
               "source": null,
               "status": "static",

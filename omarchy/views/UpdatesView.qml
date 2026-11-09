@@ -7,33 +7,54 @@ import ".."
 import "../ui"
 import "../Model.js" as Model
 
-// The Updates view (F5): what is behind on each client, from `list -v` (Model.updateRows:
-// updates first, then pinned with a newer release, blocked, and failed checks; grouped
-// by client in the All filter). Enter and `u` update the row's addon, `p` pins or
-// unpins it, `e` shows its newest release notes (a network read, on demand, kept only
-// for the row that asked); `U` (frame-wide) updates everything in the filter. Updates
-// preview first and apply a routine plan that matches the row (M4-D28); pins run
-// directly. The keys are Model.KEYMAP's updates rows.
+// The Updates view (1n2p.21, design doc §2.3): what is behind on each client, from
+// `list -v` (Model.updateRows). Each row is an AddonRow: its name, the installed and the
+// new version, a chip for a channel other than stable, and a meta line in words (how old
+// the release is, the game running, why it is pinned, blocked or not checked). Updates
+// come first, then pinned addons with a newer release, blocked releases and failed
+// checks, by name within each; under All each client's header names it and updates it.
+// The header updates everything in the filter (`U`) and says when it was checked, with
+// Check now (`c`). `e` shows every release note since the installed version (a network
+// read, on demand, kept only for the row that asked); `/` filters the rows. Enter and
+// `u` update the row's addon, `p` pins or unpins it. A row a change runs on shows its
+// phase, and says "Updated" a moment after (the activity bar, 1n2p.18). Updates preview
+// first and apply a routine plan that matches the rows (M4-D28); pins run directly. The
+// keys are Model.KEYMAP's updates rows.
 Item {
   id: root
 
   property var frame: null
   readonly property var svc: frame ? frame.svc : null
   readonly property string filter: frame ? frame.filter : ""
-  readonly property var rows: Model.updateRows(svc ? svc.lists : null, filter, svc && Array.isArray(svc.targets) ? svc.targets : [])
+  readonly property var statusTargets: svc && Array.isArray(svc.targets) ? svc.targets : []
+  readonly property double nowMs: frame ? frame.nowMs : Date.now()
+  // The filter's text, in memory only (M3-D3).
+  property string query: ""
+  readonly property var done: svc && svc.doneRows ? svc.doneRows : null
+  readonly property var rows: Model.updateRows(svc ? svc.lists : null, filter, statusTargets,
+    { "nowMs": nowMs, "done": done, "query": query })
+  // Every row of the scope, whatever the filter says: what Update all updates, and the
+  // filter's "2 of 5".
+  readonly property var scopeRows: query === "" ? rows
+    : Model.updateRows(svc ? svc.lists : null, filter, statusTargets, { "nowMs": nowMs, "done": done })
   // What the view says around its rows (design doc §7): loading, empty, a check whose
-  // sources did not answer, a stale check.
-  readonly property var viewState: Model.viewState("updates", { "service": svc, "filter": filter, "rows": rows.length,
-    "allRows": filter ? Model.updateRows(svc ? svc.lists : null, "", svc && Array.isArray(svc.targets) ? svc.targets : []).length : rows.length,
-    "nowMs": frame ? frame.nowMs : Date.now() })
-  readonly property int count: Model.updateCount(rows)
+  // sources did not answer, a stale check. A filter that matches nothing is no empty
+  // view: its count says "0 of 5".
+  readonly property var viewState: Model.viewState("updates", { "service": svc, "filter": filter, "rows": scopeRows.length,
+    "allRows": filter ? Model.updateRows(svc ? svc.lists : null, "", statusTargets, { "nowMs": nowMs, "done": done }).length
+      : scopeRows.length,
+    "nowMs": nowMs })
+  readonly property int count: Model.updateCount(scopeRows)
   readonly property int rowCount: rows.length
-  readonly property bool typing: false
+  // The filter box has the keyboard: the frame's key catcher lets it type.
+  readonly property bool typing: filterField.activeFocus
+  readonly property bool filterShown: query !== "" || filterField.activeFocus
   // The row whose release notes are open (`e`), by its key.
   property string expanded: ""
 
   readonly property color foreground: frame ? frame.foreground : Commons.Color.foreground
   readonly property color dim: frame ? frame.dim : Qt.darker(foreground, 1.55)
+  readonly property color urgent: frame ? frame.urgent : Commons.Color.urgent
   readonly property color accent: frame ? frame.accent : Commons.Color.accent
   readonly property string fontFamily: frame ? frame.fontFamily : Style.font.family
   readonly property bool canChange: !!frame && frame.canAct && !frame.busy
@@ -49,11 +70,20 @@ Item {
       return true
     }
     if (name === "pin") {
-      if (row) run(Model.rowAction(row, "pin"))
+      if (row && row.kind !== "failed" && row.kind !== "done") run(Model.rowAction(row, "pin"))
       return true
     }
     if (name === "notes") {
-      if (row) toggleNotes(row)
+      if (row && row.kind !== "failed" && row.kind !== "done") toggleNotes(row)
+      return true
+    }
+    // A failed check's Check again.
+    if (name === "check") {
+      if (frame) frame.checkNow()
+      return true
+    }
+    if (name === "filter") {
+      focusFilter()
       return true
     }
     return false
@@ -62,6 +92,11 @@ Item {
   function run(action) {
     if (!canChange || !action) return false
     return frame.report(svc.run(action.template, action.slots, action.label, action.shown))
+  }
+
+  // A client header's Update: that client's updates, as one preview.
+  function updateClient(target) {
+    return run(Model.groupUpdateRequest(target, scopeRows, statusTargets))
   }
 
   function toggleNotes(row) {
@@ -78,23 +113,139 @@ Item {
     frame.cursorActive = true
   }
 
+  // A change of the filter, the cursor kept on the same addon (by its key); on the first
+  // row when it is no longer shown.
+  function keepCursor(change) {
+    var before = frame && frame.cursorActive && frame.cursor >= 0 && frame.cursor < rows.length ? rows[frame.cursor].key : ""
+    change()
+    if (!frame) return
+    var at = -1
+    for (var i = 0; before !== "" && i < rows.length; i++) if (rows[i].key === before) at = i
+    frame.cursor = Math.max(0, at)
+    if (at < 0) frame.cursorActive = false
+  }
+
+  function focusFilter() {
+    filterField.forceActiveFocus()
+  }
+
+  // Esc where the view has the keys (design doc §2.4): a filter's text goes; false when
+  // there is none, so Esc closes the panel.
+  function escapeFilter() {
+    if (query === "") return false
+    keepCursor(function() {
+      filterField.text = ""
+      root.query = ""
+    })
+    return true
+  }
+
+  // The filter box's keys (KEYMAP's filter rows), as the Addons view's.
+  function filterKey(code, text, modifiers) {
+    var name = Model.keyName(code, text, modifiers)
+    var row = Model.keyRow(name, "filter")
+    if (!row || !frame) return false
+    if (row.action === "move") frame.moveCursor(frame.cursorActive ? frame.cursor + Model.keyStep(name) : 0)
+    else if (row.action === "first") {
+      if (rows.length > 0) select(0)
+      frame.leaveField()
+    } else if (row.action === "leave") frame.leaveField()
+    return true
+  }
+
   Column {
     id: column
     width: root.width
     spacing: Style.spacing.sm
 
-    Button {
-      objectName: "updateAll"
-      visible: root.count > 0
-      text: (root.filter ? "Update " + Model.heroTitle(root.svc ? root.svc.targets : [], root.filter) : "Update all") + " (" + root.count + ")"
-      tooltipText: Model.keyTip("update_all", "updates")
-      enabled: root.canChange
-      opacity: enabled ? 1.0 : 0.4
-      bordered: true
-      foreground: root.foreground
-      fontFamily: root.fontFamily
-      fontSize: Style.font.bodySmall
-      onClicked: root.frame.updateAll()
+    // The header: update everything in the filter (U), and how fresh the check is, with
+    // Check now (c).
+    Item {
+      objectName: "updatesHeader"
+      width: parent.width
+      height: Math.max(updateAllButton.visible ? updateAllButton.implicitHeight : 0, checkNowButton.implicitHeight)
+
+      Button {
+        id: updateAllButton
+        objectName: "updateAll"
+        visible: root.count > 0
+        anchors.left: parent.left
+        anchors.verticalCenter: parent.verticalCenter
+        text: (root.filter ? "Update " + Model.heroTitle(root.statusTargets, root.filter) : "Update all") + " (" + root.count + ")"
+        tooltipText: Model.keyTip("update_all", "updates")
+        enabled: root.canChange
+        opacity: enabled ? 1.0 : 0.4
+        bordered: true
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        fontSize: Style.font.bodySmall
+        onClicked: root.frame.updateAll()
+      }
+
+      PlainLabel {
+        objectName: "checkedLabel"
+        anchors.right: checkNowButton.left
+        anchors.rightMargin: Style.spacing.md
+        anchors.verticalCenter: parent.verticalCenter
+        width: Math.min(implicitWidth, parent.width - checkNowButton.width - Style.spacing.md
+          - (updateAllButton.visible ? updateAllButton.width + Style.spacing.md : 0))
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        text: Model.updatesChecked(root.statusTargets, root.filter, root.nowMs)
+      }
+
+      Button {
+        id: checkNowButton
+        objectName: "checkNow"
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        text: Model.copy("updates.check_now")
+        tooltipText: Model.keyTip("check", "updates")
+        enabled: !!root.frame && root.frame.canAct && !(root.svc && root.svc.checking === true)
+        opacity: enabled ? 1.0 : 0.4
+        bordered: true
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        fontSize: Style.font.caption
+        onClicked: root.frame.checkNow()
+      }
+    }
+
+    // `/`: the filter, "2 of 5" beside it (urgent at none).
+    Item {
+      objectName: "filterRow"
+      visible: root.filterShown
+      width: parent.width
+      height: visible ? filterField.implicitHeight : 0
+
+      TextField {
+        id: filterField
+        objectName: "filterField"
+        // Hidden until `/` (an Item that is not visible cannot take focus: it is kept in
+        // the tree at no width instead).
+        width: root.filterShown ? parent.width - countLabel.width - Style.spacing.lg : 0
+        opacity: root.filterShown ? 1.0 : 0.0
+        placeholderText: Model.copy("updates.filter")
+        foreground: root.foreground
+        onTextChanged: if (text !== root.query) root.keepCursor(function() { root.query = filterField.text })
+        Keys.onPressed: function(event) { event.accepted = root.filterKey(event.key, event.text, event.modifiers) }
+      }
+
+      PlainLabel {
+        id: countLabel
+        objectName: "filterCount"
+        visible: root.filterShown
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        width: visible ? implicitWidth : 0
+        elide: Text.ElideNone
+        color: root.rows.length === 0 && root.scopeRows.length > 0 ? root.urgent : root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        font.bold: root.rows.length === 0 && root.scopeRows.length > 0
+        text: Model.copy("updates.count", { "shown": root.rows.length, "total": root.scopeRows.length })
+      }
     }
 
     ViewState {
@@ -118,127 +269,131 @@ Item {
         width: column.width
         spacing: Style.spacing.sm
         readonly property bool open: root.expanded === modelData.key
-        readonly property var notes: open ? Model.notesFor(root.svc ? root.svc.changelog : null, modelData) : null
+        readonly property var notes: open ? Model.releaseNotes(root.svc ? root.svc.changelog : null, modelData, root.nowMs) : null
         // While a change runs on it, its phase; just after, what happened (1n2p.18).
-        readonly property var rowState: Model.activityRow(root.svc ? root.svc.activity : null, modelData.key,
-          root.svc ? root.svc.doneRows : null)
+        readonly property var rowState: Model.activityRow(root.svc ? root.svc.activity : null, modelData.key, root.done)
 
-        // Under All, the client's header above its first row: its player name, whether
-        // it runs, its updates (design doc §2.2). The rows under it name no client.
-        SectionHeader {
-          objectName: "clientHeader"
+        // Under All, the client's header above its first row: its player name, whether it
+        // runs, its updates (design doc §2.2), and Update {client}. The rows under it name
+        // no client.
+        Item {
           visible: entry.modelData.group !== ""
           width: parent.width
-          title: entry.modelData.group
-          count: entry.modelData.groupCount
+          height: visible ? Math.max(clientHeader.implicitHeight, clientUpdate.visible ? clientUpdate.implicitHeight : 0) : 0
+
+          SectionHeader {
+            id: clientHeader
+            objectName: "clientHeader"
+            anchors.left: parent.left
+            anchors.right: clientUpdate.visible ? clientUpdate.left : parent.right
+            anchors.rightMargin: clientUpdate.visible ? Style.spacing.md : 0
+            anchors.verticalCenter: parent.verticalCenter
+            title: entry.modelData.group
+            count: entry.modelData.groupCount
+            foreground: root.foreground
+            dim: root.dim
+            fontFamily: root.fontFamily
+          }
+
+          Button {
+            id: clientUpdate
+            objectName: "updateClient"
+            visible: entry.modelData.groupUpdates > 0
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            text: Model.copy("updates.update_client", { "client": entry.modelData.group })
+            enabled: root.canChange
+            opacity: enabled ? 1.0 : 0.4
+            bordered: true
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            fontSize: Style.font.caption
+            onClicked: root.updateClient(entry.modelData.groupTarget)
+          }
+        }
+
+        AddonRow {
+          objectName: "addonRow"
+          width: parent.width
+          title: entry.modelData.name
+          fromVersion: entry.modelData.fromVersion
+          toVersion: entry.modelData.toVersion
+          chips: entry.modelData.chips
+          meta: entry.rowState && !entry.rowState.pending ? entry.rowState.text : entry.modelData.meta
+          pending: !!entry.rowState && entry.rowState.pending
+          pendingText: entry.rowState ? entry.rowState.text : ""
+          band: entry.modelData.band
+          glyph: entry.modelData.glyph ? String.fromCodePoint(entry.modelData.glyph) : ""
+          actions: entry.modelData.actions
+          cursored: !!root.frame && root.frame.cursorActive && root.frame.cursor === entry.index
+          // Another build: visible, inert. A change running keeps the rows readable (their
+          // own phase shows); canChange keeps them from acting.
+          inert: !!root.frame && root.frame.readOnly === true
           foreground: root.foreground
           dim: root.dim
+          urgent: root.urgent
+          accent: root.accent
           fontFamily: root.fontFamily
-        }
-
-        CursorSurface {
-          width: parent.width
-          implicitHeight: line.implicitHeight + Style.spacing.md * 2
-          hasCursor: !!root.frame && root.frame.cursorActive && root.frame.cursor === entry.index
-          foreground: root.foreground
-
-          Row {
-            id: line
-            anchors.left: parent.left
-            anchors.leftMargin: Style.spacing.lg
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: Style.spacing.lg
-
-            PlainLabel {
-              color: root.foreground
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.body
-              font.bold: true
-              text: entry.modelData.name
-            }
-
-            PlainLabel {
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.body
-              text: (entry.modelData.version || "?") + (entry.modelData.latest ? " → " + entry.modelData.latest : "")
-            }
-
-            PlainLabel {
-              visible: entry.modelData.label !== "" && !entry.rowState
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              text: entry.modelData.label
-            }
-
-            // While its change runs: the spinner and the phase ("Updating… downloading
-            // (2 of 3)"); just after, "Updated".
-            Text {
-              id: rowSpinner
-              objectName: "rowSpinner"
-              visible: !!entry.rowState && entry.rowState.pending
-              textFormat: Text.PlainText
-              // U+F04E6 nf-md-sync.
-              text: String.fromCodePoint(0xF04E6)
-              color: root.accent
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-
-              RotationAnimation on rotation {
-                running: rowSpinner.visible && Style.duration(1200) > 0
-                from: 0
-                to: 360
-                duration: 1200
-                loops: Animation.Infinite
-                onRunningChanged: if (!running) rowSpinner.rotation = 0
-              }
-            }
-
-            PlainLabel {
-              objectName: "rowState"
-              visible: !!entry.rowState
-              color: root.foreground
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              text: entry.rowState ? entry.rowState.text : ""
-            }
-
-            // A running client loads the update after a /reload.
-            Text {
-              objectName: "reloadChip"
-              visible: entry.modelData.reload && entry.modelData.kind === "update" && !entry.rowState
-              textFormat: Text.PlainText
-              text: "then /reload"
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-            }
-          }
-
-          MouseArea {
-            anchors.fill: parent
-            onClicked: root.select(entry.index)
-            onDoubleClicked: root.handleKey("enter", entry.index)
+          onActivated: root.select(entry.index)
+          onAction: function(name) {
+            root.select(entry.index)
+            root.handleKey(name, entry.index)
           }
         }
 
-        // `e`: the newest release notes, plain text, with a link only to a safe host.
+        // `e`: every release note since the installed version, newest first, plain text,
+        // with a link only to a safe host.
         Column {
           objectName: "notes"
           visible: entry.open
           width: parent.width
-          leftPadding: Style.spacing.lg
+          leftPadding: Style.spacing.xl
           spacing: Style.spacing.sm
 
           PlainLabel {
-            objectName: "notesText"
-            width: parent.width - Style.spacing.lg
+            objectName: "notesStatus"
+            width: parent.width - Style.spacing.xl
             wrapMode: Text.WordWrap
-            color: root.foreground
+            color: entry.notes && entry.notes.state === "failed" ? root.urgent : root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
-            text: entry.notes ? entry.notes.text : "Reading the release notes…"
+            text: !entry.notes || entry.notes.state === "reading" ? Model.copy("updates.notes.reading")
+              : (entry.notes.state === "failed" ? entry.notes.failed
+                : (entry.notes.entries.length === 0 ? Model.copy("updates.notes.none") : entry.notes.behind))
+          }
+
+          Repeater {
+            objectName: "noteEntries"
+            model: entry.notes ? entry.notes.entries : []
+
+            Column {
+              required property var modelData
+              required property int index
+              objectName: "noteEntry_" + index
+              width: parent.width - Style.spacing.xl
+              spacing: Style.spacing.xs
+
+              PlainLabel {
+                objectName: "noteVersion"
+                width: parent.width
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+                text: modelData.version + (modelData.date ? " · " + modelData.date : "")
+              }
+
+              PlainLabel {
+                objectName: "noteText"
+                width: parent.width
+                wrapMode: Text.WordWrap
+                elide: Text.ElideNone
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                text: modelData.text
+              }
+            }
           }
 
           Button {

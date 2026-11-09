@@ -751,7 +751,8 @@ describe("the key map", () => {
       ["a_page_has_its_own_keys", ["u", "page"], { action: "update", step: 0 }],
       ["a_page_has_no_views_keys", ["p", "page"], null],
       ["slash_filters_the_addons", ["/", "installed"], { action: "filter", step: 0 }],
-      ["slash_elsewhere_says_why_not", ["/", "updates"], { action: null, note: "Nothing to filter here" }],
+      ["slash_filters_the_updates", ["/", "updates"], { action: "filter", step: 0 }],
+      ["slash_elsewhere_says_why_not", ["/", "backups"], { action: null, note: "Nothing to filter here" }],
       ["S_sorts_the_addons", ["S", "installed"], { action: "sort", step: 0 }],
       ["a_digit_past_the_views", ["7", "updates"], null],
       ["two_letters", ["uu", "updates"], null],
@@ -897,7 +898,7 @@ describe("the key map", () => {
     expect(titles("installed")).toEqual(["Addons", "Filter box", "Every view", "Anywhere", "Dialog"])
     expect(titles("card")).toEqual(["Problem card", "Anywhere", "Dialog"])
     const updates = M.helpSections("updates")[0]
-    expect(updates.rows.map((r) => r.hint)).toEqual(["Enter", "u", "p", "e"])
+    expect(updates.rows.map((r) => r.hint)).toEqual(["Enter", "u", "p", "e", "/"])
     expect(updates.rows[0]).toEqual({ hint: "Enter", label: "update this addon" })
     // Every row of those contexts, once.
     const listed = M.helpSections("installed").flatMap((s) => s.rows).length
@@ -1294,7 +1295,7 @@ describe("the Updates and Installed views", () => {
     expect(rows.map((r) => r.name)).toEqual(names.filter((n) => blocked.indexOf(n) === -1).concat(blocked))
   })
 
-  test("pinned with a newer release, blocked and failed follow, labelled", () => {
+  test("pinned with a newer release, blocked and failed follow, each said in words", () => {
     const env = JSON.parse(JSON.stringify(fixture("list-markers")))
     const addons = env.data.targets[0].addons
     addons.push(Object.assign({}, addons[0], { name: "Zed", latest: { version: "v9", status: "blocked" } }))
@@ -1302,9 +1303,90 @@ describe("the Updates and Installed views", () => {
     addons.push(Object.assign({}, addons[0], { name: "Old", pinned: true, latest: { version: "v1", status: "pinned" } }))
     const running = JSON.parse(JSON.stringify(fixture("status-running")))
     const rows = M.updateRows(M.reduceList(env), "retail", M.reduceStatus(running, NOW).targets)
-    expect(rows.map((r) => [r.name, r.kind, r.label])).toEqual([
-      ["Bar", "update", ""], ["Foo", "update", ""], ["Baz", "pinned", "pinned"], ["Zed", "blocked", "blocked"], ["Aaa", "failed", "check failed"]])
+    expect(rows.map((r) => [r.name, r.kind, r.meta])).toEqual([
+      ["Bar", "update", "Retail is running"], ["Foo", "update", "Retail is running"],
+      ["Baz", "pinned", "pinned at " + rows[2].version + " · " + rows[2].latest + " available"],
+      ["Zed", "blocked", "v9 is out, but it doesn't load on Retail"],
+      ["Aaa", "failed", "Couldn't check GitHub for a new release"]])
     expect(rows.every((r) => r.reload)).toBe(true)
+    // A glyph and a band per kind; a failed check offers Check again, never Update.
+    expect(rows.map((r) => [r.kind, r.band, r.glyph > 0])).toEqual([["update", "accent", true], ["update", "accent", true],
+      ["pinned", "", true], ["blocked", "", true], ["failed", "urgent", true]])
+    expect(rows[0].actions.map((a) => a.name)).toEqual(["update", "notes", "pin"])
+    expect(rows[4].actions.map((a) => a.name)).toEqual(["check"])
+    expect(rows[4].actions[0].tooltip).toBe("Check again (c)")
+    expect([rows[0].fromVersion, rows[0].toVersion, rows[2].toVersion]).toEqual([rows[0].version, rows[0].latest, ""])
+  })
+
+  test("updates are ordered by kind, then by name; a filter keeps its matches", () => {
+    const env = JSON.parse(JSON.stringify(fixture("list-markers")))
+    const addons = env.data.targets[0].addons
+    addons.push(Object.assign({}, addons[0], { name: "aardvark", latest: { version: "v9", status: "update_available" } }))
+    addons.push(Object.assign({}, addons[0], { name: "Zulu", latest: { version: "v9", status: "update_available" } }))
+    const rows = M.updateRows(M.reduceList(env), "retail", [])
+    const updates = rows.filter((r) => r.kind === "update").map((r) => r.name)
+    expect(updates).toEqual([...updates].sort((a, b) => a.toLowerCase() < b.toLowerCase() ? -1 : 1))
+    expect(updates[0]).toBe("aardvark")
+    const matched = M.updateRows(M.reduceList(env), "retail", [], { query: "zlu" })
+    expect(matched.map((r) => r.name)).toEqual(["Zulu"])
+    expect(M.updateRows(M.reduceList(env), "retail", [], { query: "nothing like it" })).toEqual([])
+  })
+
+  // The first addon of a `list` envelope's first client with an update waiting.
+  const firstWaiting = (env) => env.data.targets[0].addons.find((a) => !!a.latest && ["update_available"].includes(a.latest.status))
+
+  test("a release's age, from its date; none without one", () => {
+    const at = Date.parse("2026-11-08T12:00:00Z")
+    const age = (iso) => M.releaseAge(iso, at)
+    expect([age("2026-11-08T09:00:00Z"), age("2026-11-07T11:00:00Z"), age("2026-11-01T12:00:00Z"), age("2026-07-01T00:00:00Z"),
+      age("2023-01-01T00:00:00Z"), age(null), age("nonsense")])
+      .toEqual(["out today", "1 day old", "7 days old", "4 months old", "3 years old", "", ""])
+    const env = JSON.parse(JSON.stringify(fixture("list-markers")))
+    const bar = firstWaiting(env)
+    bar.latest.published_at = "2026-11-06T12:00:00Z"
+    const rows = M.updateRows(M.reduceList(env), "retail", [], { nowMs: at })
+    expect(rows.find((r) => r.name === bar.name).meta).toBe("2 days old")
+  })
+
+  test("a row a change just updated stays a moment, said so, in its update's place", () => {
+    const env = JSON.parse(JSON.stringify(fixture("list-markers")))
+    const bar = firstWaiting(env)
+    bar.latest = { version: bar.version, status: "current" }
+    const key = "retail/" + bar.name
+    expect(M.updateRows(M.reduceList(env), "retail", []).some((r) => r.key === key)).toBe(false)
+    const done = M.updateRows(M.reduceList(env), "retail", [], { done: { [key]: "Updated" } })
+    const row = done.find((r) => r.key === key)
+    expect([row.kind, row.meta, row.fromVersion, row.toVersion, row.actions]).toEqual(["done", "Updated", "", bar.version, []])
+    expect(M.updateCount(done)).toBe(M.updateCount(M.updateRows(M.reduceList(env), "retail", [])))
+  })
+
+  test("a client header updates that client only, by its player name", () => {
+    const lists = M.reduceList(fixture("list"))
+    const targets = M.reduceStatus(fixture("status-updates"), NOW).targets
+    const rows = M.updateRows(lists, "", targets)
+    const header = rows.find((r) => r.groupTarget === "retail")
+    expect([header.group, header.groupUpdates > 0]).toEqual(["Retail", true])
+    const request = M.groupUpdateRequest("retail", rows, targets)
+    expect([request.template, request.slots, request.label]).toEqual(["update_target", { target: "retail" }, "Update Retail"])
+    expect(request.shown.every((s) => s.target_id === "retail")).toBe(true)
+    expect(request.shown.length).toBe(header.groupUpdates)
+  })
+
+  test("every pending release note, how far behind, and a safe link only", () => {
+    const row = { target: "retail", name: "Foo" }
+    const at = Date.parse("2026-11-08T12:00:00Z")
+    const data = { changelog: { source: "github", truncated: false, more_url: "https://github.com/o/foo/releases",
+      entries: [{ version: "v3", published_at: "2026-11-07T12:00:00Z", text: "Third" }, { version: "v2", published_at: null, text: "" }] } }
+    const notes = M.releaseNotes({ selection: { target: "retail", addon: "Foo" }, data }, row, at)
+    expect([notes.state, notes.behind, notes.link]).toEqual(["ready", "2 releases behind", "More on GitHub"])
+    expect(notes.entries).toEqual([{ version: "v3", date: "1 day old", text: "Third" }, { version: "v2", date: "", text: "No release notes" }])
+    expect(M.releaseNotes({ selection: { target: "retail", addon: "Bar" }, data }, row, at).state).toBe("reading")
+    expect(M.releaseNotes(null, row, at).state).toBe("reading")
+    const failed = M.releaseNotes({ selection: { target: "retail", addon: "Foo" }, data: null, failed: "timeout" }, row, at)
+    expect([failed.state, failed.failed]).toEqual(["failed", "The release notes could not be read: timeout"])
+    const cut = M.releaseNotes({ selection: { target: "retail", addon: "Foo" },
+      data: { changelog: { truncated: true, more_url: "http://evil.example/x", entries: data.changelog.entries } } }, row, at)
+    expect([cut.behind, cut.url, cut.link]).toEqual(["2+ releases behind", "", ""])
   })
 
   test("nothing to update says when it was checked", () => {

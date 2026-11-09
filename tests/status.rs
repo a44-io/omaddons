@@ -915,6 +915,7 @@ mod updates {
                 "source": "github",
                 "release_id": "gh:o/foo@v2",
                 "asset": "Foo.zip",
+                "published_at": null,
             })
         );
         home.run(&["pin", "foo", "-t", "retail"]).expect(0);

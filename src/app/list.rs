@@ -131,6 +131,11 @@ pub struct Latest {
     /// The file of that release the status was judged on (the one `update` tries
     /// first), when it names one.
     pub asset: Option<String>,
+    /// When that release was published, when its source says (GitHub's keyless path
+    /// does not: its `release.json` carries no date); `null` otherwise. What the bar
+    /// widget's "2 days old" is read from (1n2p.21).
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
+    pub published_at: Option<jiff::Timestamp>,
 }
 
 /// `list`'s update entry for an addon of `r#ref` whose status is `status` (`None`: no
@@ -144,6 +149,7 @@ pub(super) fn latest_of(status: Option<&UpdateStatus>, r#ref: &Ref) -> Latest {
         source: release.map(|_| SourceId::of(r#ref)),
         release_id: release.map(|l| l.release_id.clone()),
         asset: release.and_then(|l| l.asset.clone()),
+        published_at: release.and_then(|l| l.published_at),
     }
 }
 
@@ -599,6 +605,7 @@ mod tests {
                 source: Some(SourceId::Github),
                 release_id: Some("gh:o/foo@1.2".to_owned()),
                 asset: Some("Foo.zip".to_owned()),
+                published_at: None,
             };
             assert_eq!(latest_cell(&latest), cell, "{status:?}");
         }
@@ -625,6 +632,7 @@ mod tests {
             source: Some(source),
             release_id: Some(format!("{r}@v2")),
             asset: Some("Foo.zip".into()),
+            published_at: None,
         };
         let unnamed = |status| Latest {
             version: None,
@@ -632,6 +640,7 @@ mod tests {
             source: None,
             release_id: None,
             asset: None,
+            published_at: None,
         };
         let failed = Error::new(ErrorCode::NotFound, "gone", Suggestion::text("x"));
         let cases: Vec<(&str, Option<UpdateStatus>, &str, Latest)> = vec![
@@ -717,5 +726,18 @@ mod tests {
             let got = latest_of(status.as_ref(), &parsed);
             assert_eq!(got, want, "{case}: {status:?} on {r}");
         }
+        // The release's date, when its source gave one (the widget's release age).
+        let at: jiff::Timestamp = "2026-11-07T12:00:00Z".parse().unwrap();
+        let dated = UpdateStatus::UpdateAvailable {
+            latest: ReleaseBrief {
+                published_at: Some(at),
+                ..brief(gh)
+            },
+            confidence: Confidence::Declared,
+        };
+        assert_eq!(
+            latest_of(Some(&dated), &gh.parse().unwrap()).published_at,
+            Some(at)
+        );
     }
 }
