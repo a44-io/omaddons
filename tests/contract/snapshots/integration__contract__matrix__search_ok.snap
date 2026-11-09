@@ -33,7 +33,7 @@ expression: s.stable(&c.envelope)
         },
         "ref": "gh:WeakAuras/WeakAuras2",
         "source": "catalog",
-        "summary": "5.22.1's release.json lists no mainline build and the zip ships no Mainline TOC",
+        "summary": "A framework to display customizable graphics and information based on buffs, debuffs and other triggers.",
         "updated_at": "<time>"
       }
     ],

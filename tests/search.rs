@@ -838,6 +838,56 @@ fn catalog_lists_every_entry_that_fits_a_client_by_name_and_asks_no_source() {
     assert_eq!(names(&five), listed[..5].to_vec());
 }
 
+/// A catalog hit says what the addon is: its entry's summary, never the maintainer's
+/// notes (omad-5c7j: Questie's hit once read "release.json entries carry no name or
+/// version; the tag is the version"). An entry without a summary has none.
+#[test]
+fn catalog_hits_say_what_the_addon_is_never_the_maintainer_notes() {
+    let home = catalog_home();
+    let builtin: toml::Table = toml::from_str(include_str!("../catalog/catalog.toml")).unwrap();
+    let entries = builtin["addon"].as_array().unwrap();
+    let field = |name: &str, key: &str| -> Vec<Option<String>> {
+        entries
+            .iter()
+            .filter(|e| e["name"].as_str() == Some(name))
+            .map(|e| e.get(key).and_then(|v| v.as_str()).map(str::to_owned))
+            .collect()
+    };
+    let envelope = home.run(&["search", "--catalog", "--offline"]).expect(0);
+    let mut noted = 0;
+    for row in results(&envelope) {
+        let name = row["name"].as_str().unwrap();
+        let summary = row["summary"].as_str();
+        if name == "Foo" {
+            assert_eq!(
+                row["summary"],
+                Value::Null,
+                "a catalog.d entry without one: {row}"
+            );
+            continue;
+        }
+        let summaries = field(name, "summary");
+        assert!(
+            summaries
+                .iter()
+                .any(|s| s.as_deref() == summary && summary.is_some()),
+            "{name}: {summary:?} is not its entry's summary {summaries:?}"
+        );
+        for notes in field(name, "notes").into_iter().flatten() {
+            noted += 1;
+            assert_ne!(summary, Some(notes.as_str()), "{name}: its notes");
+        }
+    }
+    assert!(noted > 10, "entries with notes were listed: {noted}");
+    // Plain search's catalog hit is the same row: Questie's says what Questie is.
+    let questie = home.run(&["search", "questie", "--offline"]).expect(0);
+    assert_eq!(
+        results(&questie)[0]["summary"],
+        json!("The WoW Classic quest helper."),
+        "{questie}"
+    );
+}
+
 #[test]
 fn catalog_words_filter_the_catalog_alone_with_the_hints_plain_search_gives() {
     let home = catalog_home();

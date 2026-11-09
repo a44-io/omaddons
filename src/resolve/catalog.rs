@@ -5,7 +5,10 @@
 //! override file is skipped whole with `catalog_override_invalid`: a user's typo must
 //! never break install or status. Loading reads files only.
 //!
-//! Entries are `{name, variant, aliases[], ref, families[], folders[], notes}`. `families`
+//! Entries are `{name, variant, aliases[], summary, ref, families[], folders[], notes}`.
+//! `summary` is what a player reads in `search` (one sentence: what the addon does, from
+//! its publisher's own description); `notes` are the maintainer's, never shown as a
+//! description. `families`
 //! says where the publisher declares an entry works: `info` shows it, `search` reports
 //! compatibility from it, and it orders the folder lookups of dependencies and adoption
 //! (entries declaring the client's family first, other entries of its generation only
@@ -24,9 +27,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Suggestion, Warning, WarningCode};
+use crate::limits::SEARCH_SUMMARY_MAX_CHARS;
 use crate::model::{FolderName, Ref};
 use crate::rules::Family;
 use crate::state::paths::Paths;
+use crate::text::{Entities, source_line};
 
 /// The embedded catalog.
 pub const BUILTIN: &str = include_str!("../../catalog/catalog.toml");
@@ -40,10 +45,14 @@ pub struct Entry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub variant: Option<String>,
     pub aliases: Vec<String>,
+    /// What the addon does, in one sentence a player reads (`search`'s summary), made
+    /// safe to show; `None` when the entry has none.
+    pub summary: Option<String>,
     #[serde(rename = "ref")]
     pub r#ref: Ref,
     pub families: Vec<Family>,
     pub folders: Vec<FolderName>,
+    /// The maintainer's notes on how the entry was verified: never a description.
     pub notes: Option<String>,
 }
 
@@ -104,6 +113,7 @@ struct RawEntry {
     variant: Option<String>,
     #[serde(default)]
     aliases: Vec<String>,
+    summary: Option<String>,
     #[serde(rename = "ref")]
     r#ref: Option<String>,
     #[serde(default)]
@@ -412,6 +422,12 @@ fn parse(text: &str, overrides: bool) -> Result<Vec<Change>, String> {
                     .map(|a| a.trim().to_owned())
                     .filter(|a| !a.is_empty())
                     .collect(),
+                // A catalog.d file is the user's own text, but it is shown on a
+                // terminal and in the bar widget: one line, nothing that hides text.
+                summary: raw
+                    .summary
+                    .map(|s| source_line(&s, SEARCH_SUMMARY_MAX_CHARS, Entities::Keep))
+                    .filter(|s| !s.is_empty()),
                 r#ref,
                 families,
                 folders,
@@ -462,6 +478,56 @@ mod tests {
             assert!(!entry.folders.is_empty(), "{}: folders", entry.name);
             assert!(!entry.families.is_empty(), "{}: families", entry.name);
         }
+    }
+
+    /// What `search` shows a player as a catalog hit's description (omad-5c7j): every
+    /// built-in entry has one sentence of its own, never its maintainer notes.
+    #[test]
+    fn every_builtin_entry_has_a_one_sentence_summary_that_is_not_its_notes() {
+        let catalog = Catalog::builtin().unwrap();
+        for entry in catalog.entries() {
+            let id = entry.identity();
+            let summary = entry
+                .summary
+                .as_deref()
+                .unwrap_or_else(|| panic!("{id}: no summary"));
+            assert!(
+                (10..=120).contains(&summary.chars().count()),
+                "{id}: {summary:?} is not one short sentence"
+            );
+            assert!(
+                summary.ends_with('.'),
+                "{id}: {summary:?} ends without a full stop"
+            );
+            assert!(
+                !summary.trim_end_matches('.').contains(". "),
+                "{id}: {summary:?} is more than one sentence"
+            );
+            assert_ne!(Some(summary), entry.notes.as_deref(), "{id}: its notes");
+        }
+    }
+
+    #[test]
+    fn an_override_summary_is_made_safe_and_replaces_with_its_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let builtin = Catalog::builtin().unwrap();
+        let first = builtin.entries()[0].name.clone();
+        write(
+            &paths,
+            "10-mine.toml",
+            &format!(
+                "{HEADER}[[addon]]\nname = \"{first}\"\nsummary = \"  Mine,\\u001b[31m\\nnow\\u202e red  \"\nref = \"gh:me/fork\"\nfolders = [\"Fork\"]\n\n[[addon]]\nname = \"Bare\"\nref = \"gh:me/bare\"\nfolders = [\"Bare\"]\n"
+            ),
+        );
+        let (catalog, warnings) = Catalog::load(&paths);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(
+            catalog.resolve(&first, None).unwrap().summary.as_deref(),
+            Some("Mine,[31m now red"),
+            "control and text-hiding characters dropped, whitespace folded, one line"
+        );
+        assert_eq!(catalog.resolve("Bare", None).unwrap().summary, None);
     }
 
     fn paths(dir: &std::path::Path) -> Paths {

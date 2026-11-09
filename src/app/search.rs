@@ -93,7 +93,9 @@ pub struct SearchResult {
     pub r#ref: Ref,
     pub source: HitSource,
     pub author: Option<String>,
-    /// The catalog's notes or GitHub's description; `null` for WoWInterface and Tukui.
+    /// What the addon does: a catalog entry's summary (one sentence from its publisher's
+    /// own description, never the catalog's maintainer notes) or GitHub's description;
+    /// `null` for WoWInterface and Tukui, and for a catalog entry without a summary.
     pub summary: Option<String>,
     /// `{downloads}` (WoWInterface) or `{stars}` (GitHub); `null` otherwise.
     pub popularity: Option<Popularity>,
@@ -435,7 +437,8 @@ pub fn run(ctx: &Context, args: &SearchArgs) -> Result<SearchOutcome> {
                 r#ref: e.r#ref.clone(),
                 source: HitSource::Catalog,
                 author: None,
-                summary: e.notes.as_deref().map(cap_summary),
+                // The entry's player-facing summary; its notes are the maintainer's.
+                summary: e.summary.as_deref().map(cap_summary),
                 aliases: e.aliases.clone(),
                 folders: e.folders.iter().map(|f| f.as_str().to_owned()).collect(),
                 popularity: None,

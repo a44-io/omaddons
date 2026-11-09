@@ -522,6 +522,7 @@ mod tests {
             name: name.into(),
             variant: None,
             aliases: Vec::new(),
+            summary: None,
             r#ref: r.parse().unwrap(),
             families: families.to_vec(),
             folders: folders.iter().map(|n| f(n)).collect(),

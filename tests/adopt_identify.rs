@@ -145,6 +145,7 @@ mod support {
             name: name.into(),
             variant: None,
             aliases: aliases.iter().map(|a| (*a).to_owned()).collect(),
+            summary: None,
             r#ref: r#ref.parse().unwrap(),
             families: families.to_vec(),
             folders: folders

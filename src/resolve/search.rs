@@ -97,7 +97,7 @@ pub struct Hit {
     pub r#ref: Ref,
     pub source: HitSource,
     pub author: Option<String>,
-    /// The catalog's notes or GitHub's description.
+    /// A catalog entry's summary or GitHub's description.
     pub summary: Option<String>,
     /// Other names it answers to (a catalog entry's aliases).
     pub aliases: Vec<String>,

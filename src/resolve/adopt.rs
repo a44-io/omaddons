@@ -1056,6 +1056,7 @@ mod tests {
             name: name.into(),
             variant: None,
             aliases: aliases.iter().map(|a| (*a).to_owned()).collect(),
+            summary: None,
             r#ref: r(r#ref),
             families: families.to_vec(),
             folders: folders.iter().map(|x| f(x)).collect(),

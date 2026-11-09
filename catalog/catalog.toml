@@ -21,6 +21,12 @@
 #   revision needs the packager (@localization keywords filled in from CurseForge's
 #   localization service), so those two families have no variant: no keyless build
 #   exists, unless a CurseForge source (M5) offers packaged files for those eras.
+# `summary` is the one sentence a player reads in `search` and the bar widget: what the
+# addon does, from its publisher's own words (2026-11-09: the GitHub repository's
+# description, else its main TOC's "## Notes", its README or its localized notes; the
+# WoWInterface API's description; the Tukui API's small_desc; BugGrabber's TOC Notes).
+# `notes` are the maintainer's record of how an entry was verified, never shown as what
+# the addon is.
 # `families` lists where an entry is known to work (from release.json flavors, or the
 # TOCs' Interface); TOC verification still decides every install. A name with several
 # entries gives each a `variant` and pairwise disjoint `families`: a client gets the one
@@ -37,6 +43,7 @@ schema_version = "1.0"
 [[addon]]
 name = "WeakAuras"
 aliases = ["wa", "weakauras2"]
+summary = "A framework to display customizable graphics and information based on buffs, debuffs and other triggers."
 ref = "gh:WeakAuras/WeakAuras2"
 families = ["vanilla", "tbc", "cata", "mists", "titan"]
 folders = ["WeakAuras", "WeakAurasArchive", "WeakAurasModelPaths", "WeakAurasOptions", "WeakAurasTemplates"]
@@ -45,6 +52,7 @@ notes = "5.22.1's release.json lists no mainline build and the zip ships no Main
 [[addon]]
 name = "DBM"
 aliases = ["deadlybossmods", "dbm-core"]
+summary = "Boss encounter warnings and timers, focused on what is happening to you and what you need to do about it."
 ref = "gh:DeadlyBossMods/DeadlyBossMods"
 families = ["mainline", "vanilla", "tbc", "wrath", "titan", "cata", "mists", "forever"]
 folders = ["DBM-Core", "DBM-GUI", "DBM-StatusBarTimers", "DBM-Brawlers", "DBM-Lairs-Midnight", "DBM-Midnight", "DBM-Raids-Midnight", "DBM-VPVEM"]
@@ -52,12 +60,14 @@ folders = ["DBM-Core", "DBM-GUI", "DBM-StatusBarTimers", "DBM-Brawlers", "DBM-La
 [[addon]]
 name = "BigWigs"
 aliases = ["bw"]
+summary = "Modular, lightweight boss encounter warnings."
 ref = "gh:BigWigsMods/BigWigs"
 families = ["mainline", "vanilla", "tbc", "wrath", "titan", "cata", "mists", "forever"]
 folders = ["BigWigs", "BigWigs_Core", "BigWigs_Options", "BigWigs_Plugins", "BigWigs_MarchOnQuelDanas", "BigWigs_MidnightLairs", "BigWigs_MidnightWorld", "BigWigs_Sporefall", "BigWigs_TheDreamrift", "BigWigs_TheUnbindingOfKithix", "BigWigs_TheVenomousAbyss", "BigWigs_TheVoidspire"]
 
 [[addon]]
 name = "LittleWigs"
+summary = "Boss warnings for 5-man dungeons and scenarios."
 ref = "gh:BigWigsMods/LittleWigs"
 families = ["mainline", "vanilla", "tbc", "wrath", "titan", "cata", "mists"]
 folders = ["LittleWigs", "LittleWigs_Classic", "LittleWigs_BurningCrusade", "LittleWigs_WrathOfTheLichKing", "LittleWigs_Cataclysm", "LittleWigs_MistsOfPandaria", "LittleWigs_WarlordsOfDraenor", "LittleWigs_Legion", "LittleWigs_BattleForAzeroth", "LittleWigs_Shadowlands", "LittleWigs_Dragonflight", "LittleWigs_TheWarWithin"]
@@ -65,6 +75,7 @@ folders = ["LittleWigs", "LittleWigs_Classic", "LittleWigs_BurningCrusade", "Lit
 [[addon]]
 name = "Plater"
 aliases = ["plater-nameplates"]
+summary = "A nameplate addon designed for advanced users."
 ref = "gh:Tercioo/Plater-Nameplates"
 families = ["mainline", "vanilla", "tbc", "titan", "mists", "forever"]
 folders = ["Plater"]
@@ -72,12 +83,14 @@ folders = ["Plater"]
 [[addon]]
 name = "Bartender4"
 aliases = ["bartender", "bt4"]
+summary = "An action bar addon, simple and advanced combined."
 ref = "gh:Nevcairiel/Bartender4"
 families = ["mainline", "vanilla", "tbc", "mists", "forever"]
 folders = ["Bartender4"]
 
 [[addon]]
 name = "Questie"
+summary = "The WoW Classic quest helper."
 ref = "gh:Questie/Questie"
 families = ["vanilla", "tbc", "wrath", "mists", "forever"]
 folders = ["Questie", "QuestieDB"]
@@ -85,6 +98,7 @@ notes = "release.json entries carry no name or version; the tag is the version"
 
 [[addon]]
 name = "OmniCC"
+summary = "Cooldown count for everything."
 ref = "gh:tullamods/OmniCC"
 families = ["vanilla", "tbc", "titan", "mists"]
 folders = ["OmniCC", "OmniCC_Config"]
@@ -92,12 +106,14 @@ notes = "11.2.8: OmniCC.toc carries Interface 110207, 50503, 38000, 20505, 11508
 
 [[addon]]
 name = "Dominos"
+summary = "A main action bar replacement."
 ref = "gh:tullamods/Dominos"
 families = ["mainline", "vanilla", "tbc", "mists", "forever"]
 folders = ["Dominos", "Dominos_Cast", "Dominos_Config", "Dominos_Progress", "Dominos_Roll", "Masque_Dominos"]
 
 [[addon]]
 name = "Masque"
+summary = "A skinning engine for button-based addons."
 ref = "gh:SFX-WoW/Masque"
 families = ["mainline", "vanilla", "tbc", "wrath", "titan", "cata", "mists"]
 folders = ["Masque"]
@@ -105,6 +121,7 @@ folders = ["Masque"]
 [[addon]]
 name = "RaiderIO"
 aliases = ["raider.io", "rio"]
+summary = "Shows Raider.IO Mythic+ scores, raid progress and recruitment status in game."
 ref = "gh:RaiderIO/raiderio-addon"
 families = ["mainline"]
 folders = ["RaiderIO", "RaiderIO_DB_US_M", "RaiderIO_DB_US_R", "RaiderIO_DB_US_F", "RaiderIO_DB_EU_M", "RaiderIO_DB_EU_R", "RaiderIO_DB_EU_F", "RaiderIO_DB_KR_M", "RaiderIO_DB_KR_R", "RaiderIO_DB_KR_F", "RaiderIO_DB_TW_M", "RaiderIO_DB_TW_R", "RaiderIO_DB_TW_F", "RaiderIO_DB_CN_M", "RaiderIO_DB_CN_R", "RaiderIO_DB_CN_F"]
@@ -112,6 +129,7 @@ folders = ["RaiderIO", "RaiderIO_DB_US_M", "RaiderIO_DB_US_R", "RaiderIO_DB_US_F
 [[addon]]
 name = "MythicDungeonTools"
 aliases = ["mdt"]
+summary = "Plans and optimizes Mythic+ dungeon runs."
 ref = "gh:Nnoggie/MythicDungeonTools"
 families = ["mainline"]
 folders = ["MythicDungeonTools", "MythicDungeonTools_UI"]
@@ -119,12 +137,14 @@ folders = ["MythicDungeonTools", "MythicDungeonTools_UI"]
 [[addon]]
 name = "AllTheThings"
 aliases = ["att"]
+summary = "Tracks collections and account completion."
 ref = "gh:ATTWoWAddon/AllTheThings"
 families = ["mainline", "vanilla", "tbc", "wrath", "titan", "cata", "mists", "forever"]
 folders = ["AllTheThings"]
 
 [[addon]]
 name = "BugSack"
+summary = "A simple display for collected Lua errors."
 ref = "gh:funkydude/BugSack"
 families = ["mainline", "vanilla", "tbc", "wrath", "titan", "cata", "mists", "forever"]
 folders = ["BugSack"]
@@ -133,12 +153,14 @@ notes = "its !BugGrabber is in the catalog (BugGrabber); install bugsack does no
 [[addon]]
 name = "TellMeWhen"
 aliases = ["tmw"]
+summary = "Visual, sound and text notifications about cooldowns, buffs and nearly everything else in combat."
 ref = "gh:ascott18/TellMeWhen"
 families = ["mainline", "vanilla", "tbc", "mists", "forever"]
 folders = ["TellMeWhen", "TellMeWhen_Options"]
 
 [[addon]]
 name = "ThreatPlates"
+summary = "Threat-reactive nameplates."
 ref = "gh:Backupiseasy/ThreatPlates"
 families = ["mainline", "vanilla", "tbc", "mists", "forever"]
 folders = ["TidyPlates_ThreatPlates"]
@@ -146,24 +168,28 @@ notes = "the release zip's TOC carries the WoWInterface (15749), CurseForge (212
 
 [[addon]]
 name = "SilverDragon"
+summary = "Finds rare mobs."
 ref = "gh:kemayo/wow-silverdragon"
 families = ["mainline", "vanilla", "tbc", "wrath", "mists", "forever"]
 folders = ["SilverDragon", "SilverDragon_History", "SilverDragon_Overlay", "SilverDragon_RangeExtender"]
 
 [[addon]]
 name = "Capping"
+summary = "Battleground timers and other PvP features."
 ref = "gh:BigWigsMods/Capping"
 families = ["mainline", "vanilla", "tbc", "wrath", "titan", "cata", "mists", "forever"]
 folders = ["Capping", "Capping_Options"]
 
 [[addon]]
 name = "IceHUD"
+summary = "A configurable heads-up display of player, target and pet health, mana and cast bars around your character."
 ref = "gh:parnic/ice-hud"
 families = ["mainline", "vanilla", "tbc", "titan", "mists"]
 folders = ["IceHUD", "IceHUD_Options"]
 
 [[addon]]
 name = "Quartz"
+summary = "A modular casting bar."
 ref = "gh:Nevcairiel/Quartz"
 families = ["vanilla", "tbc", "mists"]
 folders = ["Quartz"]
@@ -171,30 +197,35 @@ notes = "3.7.17: Quartz.toc carries Interface 11508, 20505, 50503, 110207; its r
 
 [[addon]]
 name = "Mapster"
+summary = "A simple world map enhancement."
 ref = "gh:Nevcairiel/Mapster"
 families = ["mainline", "forever"]
 folders = ["Mapster"]
 
 [[addon]]
 name = "BadBoy"
+summary = "A simple spam blocker and reporter."
 ref = "gh:funkydude/BadBoy"
 families = ["mainline", "vanilla", "tbc", "wrath", "titan", "cata", "mists"]
 folders = ["BadBoy"]
 
 [[addon]]
 name = "NPCScan"
+summary = "Finds rare or chosen NPCs by scanning nameplates, minimap vignettes and mouseover targets."
 ref = "gh:Torhal/NPCScan"
 families = ["mainline"]
 folders = ["NPCScan"]
 
 [[addon]]
 name = "ClassicCastbars"
+summary = "Adds customizable castbars to various unit frames."
 ref = "gh:wardz/ClassicCastbars"
 families = ["vanilla", "tbc", "wrath", "cata", "mists"]
 folders = ["ClassicCastbars", "ClassicCastbars_Options"]
 
 [[addon]]
 name = "AtlasQuest"
+summary = "Shows the quests for dungeons and battlegrounds."
 ref = "gh:nanderson11/AtlasQuest"
 families = ["mainline", "vanilla", "tbc", "forever"]
 folders = ["AtlasQuest"]
@@ -202,12 +233,14 @@ notes = "its TOCs link github.com/thandrenn/AtlasQuest, which GitHub redirects h
 
 [[addon]]
 name = "VendorPrice"
+summary = "Shows an item's vendor price when you are not at a vendor."
 ref = "gh:ketho-wow/VendorPrice"
 families = ["vanilla", "tbc", "mists"]
 folders = ["VendorPrice"]
 
 [[addon]]
 name = "DBM-Vanilla"
+summary = "DBM's boss mods for Vanilla and Season of Discovery."
 ref = "gh:DeadlyBossMods/DBM-Vanilla"
 families = ["mainline", "vanilla", "tbc", "wrath", "titan", "cata", "mists", "forever"]
 folders = ["DBM-Azeroth", "DBM-Raids-Vanilla"]
@@ -215,6 +248,7 @@ notes = "DBM's Vanilla and Season of Discovery mods (DBM-Vanilla_SoD-r833.zip); 
 
 [[addon]]
 name = "Decursive"
+summary = "Shows afflictions and cleanses them, solo, in groups and in raids, with filtering and priorities."
 ref = "gh:2072/Decursive"
 families = ["mainline", "titan", "forever"]
 folders = ["Decursive"]
@@ -223,12 +257,14 @@ notes = "2.9.0-RC3, GitHub's latest stable release, ships retail, Titan and Fore
 [[addon]]
 name = "PremadeGroupsFilter"
 aliases = ["pgf"]
+summary = "Filters premade group listings with a UI or advanced filter expressions."
 ref = "gh:0xbs/premade-groups-filter"
 families = ["mainline", "mists"]
 folders = ["PremadeGroupsFilter"]
 
 [[addon]]
 name = "Rarity"
+summary = "Tracks collectibles and statistics."
 ref = "gh:WowRarity/Rarity"
 families = ["vanilla", "mists"]
 folders = ["Rarity", "Rarity_Options"]
@@ -236,6 +272,7 @@ notes = "r751: Rarity.toc carries Interface 110207, 50503, 11508; its release.js
 
 [[addon]]
 name = "SavedInstances"
+summary = "Tracks lockouts, daily and weekly quests, currencies and trade cooldowns for all your characters."
 ref = "gh:SavedInstances/SavedInstances"
 families = ["mainline"]
 folders = ["SavedInstances"]
@@ -243,12 +280,14 @@ folders = ["SavedInstances"]
 [[addon]]
 name = "Simulationcraft"
 aliases = ["simc"]
+summary = "Builds SimulationCraft export strings."
 ref = "gh:simulationcraft/simc-addon"
 families = ["mainline", "forever"]
 folders = ["Simulationcraft"]
 
 [[addon]]
 name = "WarpDeplete"
+summary = "A Mythic+ timer."
 ref = "gh:happenslol/WarpDeplete"
 families = ["mainline"]
 folders = ["WarpDeplete"]
@@ -256,12 +295,14 @@ folders = ["WarpDeplete"]
 [[addon]]
 name = "RCLootCouncil"
 aliases = ["rclc"]
+summary = "An interface for running a loot council."
 ref = "gh:evil-morfar/RCLootCouncil2"
 families = ["mainline"]
 folders = ["RCLootCouncil"]
 
 [[addon]]
 name = "BigDebuffs"
+summary = "Enlarges crowd-control debuffs on the Blizzard raid frames."
 ref = "gh:jordonwow/bigdebuffs"
 families = ["mainline", "vanilla", "tbc", "titan", "mists"]
 folders = ["BigDebuffs"]
@@ -269,6 +310,7 @@ notes = "v68: its newest mainline interface is 120001, so 12.1 clients load it o
 
 [[addon]]
 name = "OmniBar"
+summary = "Tracks enemy cooldowns."
 ref = "gh:jordonwow/omnibar"
 families = ["vanilla", "tbc", "wrath", "cata", "mists"]
 folders = ["OmniBar"]
@@ -276,6 +318,7 @@ notes = "v34: OmniBar.toc carries Interface 110200; its release.json declares ma
 
 [[addon]]
 name = "Cell"
+summary = "A raid frame addon."
 ref = "gh:enderneko/Cell"
 families = ["vanilla", "tbc", "titan", "cata", "mists"]
 folders = ["Cell"]
@@ -283,30 +326,35 @@ notes = "r274-release: Cell.toc carries Interface 110207; its release.json decla
 
 [[addon]]
 name = "LiteMount"
+summary = "Customizable random mount summoning."
 ref = "gh:xod-wow/LiteMount"
 families = ["mainline", "mists", "forever"]
 folders = ["LiteMount"]
 
 [[addon]]
 name = "Immersion"
+summary = "Replaces the quest and gossip frames with a cinematic dialogue box."
 ref = "gh:seblindfors/Immersion"
 families = ["mainline", "vanilla", "tbc", "titan", "mists", "forever"]
 folders = ["Immersion"]
 
 [[addon]]
 name = "SexyMap"
+summary = "Spices up your minimap with extra options."
 ref = "gh:funkydude/SexyMap"
 families = ["mainline", "vanilla", "tbc", "wrath", "titan", "cata", "mists"]
 folders = ["SexyMap"]
 
 [[addon]]
 name = "GatherMate2"
+summary = "Collects herb, mine, gas cloud, archaeology, treasure and fishing locations onto the world map and minimap."
 ref = "gh:Nevcairiel/GatherMate2"
 families = ["mainline"]
 folders = ["GatherMate2", "GatherMate2Storage_Dragonflight", "GatherMate2Storage_Midnight", "GatherMate2Storage_TheWarWithin"]
 
 [[addon]]
 name = "ThreatClassic2"
+summary = "A simple threat meter."
 ref = "gh:dfherr/ThreatClassic2"
 families = ["mainline", "vanilla", "tbc", "mists", "forever"]
 folders = ["ThreatClassic2"]
@@ -314,6 +362,7 @@ notes = "one zip per client (-retail, -classic, -bcc, -mists, -forever), each na
 
 [[addon]]
 name = "ClassicSpellActivations"
+summary = "Spell activation overlays for some reactive Classic abilities."
 ref = "gh:rgd87/ClassicSpellActivations"
 families = ["vanilla", "tbc", "wrath"]
 folders = ["ClassicSpellActivations"]
@@ -321,12 +370,14 @@ folders = ["ClassicSpellActivations"]
 [[addon]]
 name = "AdvancedInterfaceOptions"
 aliases = ["aio"]
+summary = "Restores access to interface options removed in Legion."
 ref = "gh:Stanzilla/AdvancedInterfaceOptions"
 families = ["mainline", "vanilla", "tbc", "wrath", "cata", "mists", "forever"]
 folders = ["AdvancedInterfaceOptions"]
 
 [[addon]]
 name = "MountJournalEnhanced"
+summary = "Extends the Mount Journal."
 ref = "gh:exochron/MountJournalEnhanced"
 families = ["mainline", "mists"]
 folders = ["MountJournalEnhanced"]
@@ -334,6 +385,7 @@ folders = ["MountJournalEnhanced"]
 [[addon]]
 name = "BattlePetBreedID"
 aliases = ["bpbid"]
+summary = "Shows the breed ID of battle pets in your journal, in battle, in chat links and in auction house tooltips."
 ref = "gh:MMOSimca/BattlePetBreedID"
 families = ["mainline", "mists"]
 folders = ["BattlePetBreedID"]
@@ -342,18 +394,21 @@ folders = ["BattlePetBreedID"]
 
 [[addon]]
 name = "TomTom"
+summary = "A personal navigation assistant, with waypoints and an arrow pointing to them."
 ref = "wowi:7032"
 families = ["mainline", "vanilla", "tbc", "titan", "mists", "forever"]
 folders = ["TomTom"]
 
 [[addon]]
 name = "Atlas"
+summary = "Detailed maps of every instance in the game."
 ref = "wowi:3896"
 families = ["mainline", "vanilla", "tbc", "mists", "forever"]
 folders = ["Atlas"]
 
 [[addon]]
 name = "HealBot"
+summary = "A healing addon: customizable unit frames with click-cast options."
 ref = "wowi:6096"
 families = ["mainline", "vanilla", "tbc", "mists", "forever"]
 folders = ["HealBot", "HealBot_ExtraSkins", "HealBot_Tips"]
@@ -361,6 +416,7 @@ notes = "HealBot Continued"
 
 [[addon]]
 name = "TitanPanel"
+summary = "Information bars at the top or bottom of the screen, with plugins."
 ref = "wowi:8092"
 families = ["mainline", "vanilla", "tbc", "mists", "forever"]
 folders = ["Titan", "TitanAlts", "TitanAmmo", "TitanBag", "TitanClassic", "TitanClock", "TitanGold", "TitanLocation", "TitanLootType", "TitanPerformance", "TitanPost", "TitanRegen", "TitanRepair", "TitanUI", "TitanVolume", "TitanXP"]
@@ -368,6 +424,7 @@ notes = "9.3.5: TitanAmmo's TOC lists 205056 (a typo for a 2.5.x interface) unde
 
 [[addon]]
 name = "Clique"
+summary = "Click-casting and hover-casting on your unit frames and in the 3D world."
 ref = "wowi:5108"
 families = ["mainline", "vanilla", "tbc", "titan", "cata", "mists", "forever"]
 folders = ["Clique"]
@@ -375,24 +432,28 @@ folders = ["Clique"]
 [[addon]]
 name = "Prat"
 aliases = ["prat-3.0"]
+summary = "A collection of 30+ modules that add to the chat interface."
 ref = "wowi:10783"
 families = ["mainline", "vanilla", "tbc", "mists", "forever"]
 folders = ["Prat-3.0"]
 
 [[addon]]
 name = "WIM"
+summary = "Turns your whispers into instant-messenger windows."
 ref = "wowi:5342"
 families = ["mainline", "vanilla", "tbc", "titan", "mists", "forever"]
 folders = ["WIM"]
 
 [[addon]]
 name = "GTFO"
+summary = "An audible alert when you are standing in something you should not be standing in."
 ref = "wowi:17996"
 families = ["mainline", "vanilla", "tbc", "titan", "mists", "forever"]
 folders = ["GTFO"]
 
 [[addon]]
 name = "HandyNotes"
+summary = "Adds notes to your maps, your own or from plugins."
 ref = "wowi:15716"
 families = ["mainline", "vanilla", "tbc", "mists", "forever"]
 folders = ["HandyNotes"]
@@ -402,6 +463,7 @@ folders = ["HandyNotes"]
 [[addon]]
 name = "ElvUI"
 aliases = ["elv"]
+summary = "A user interface replacement designed around user-friendliness, with features the standard UI lacks."
 ref = "tukui:elvui"
 families = ["mainline", "vanilla", "tbc", "titan", "mists", "forever"]
 folders = ["ElvUI", "ElvUI_Libraries", "ElvUI_Options"]
@@ -409,6 +471,7 @@ notes = "16.00: one zip for every client; each TOC carries Interface 11509, 1600
 
 [[addon]]
 name = "Tukui"
+summary = "A minimalistic, lightweight user interface."
 ref = "tukui:tukui"
 families = ["vanilla", "mists"]
 folders = ["Tukui"]
@@ -420,6 +483,7 @@ notes = "20.463: Tukui-Mainline.toc carries Interface 110207 (retail 12.0 and la
 name = "BugGrabber"
 variant = "modern"
 aliases = ["!buggrabber", "bug-grabber"]
+summary = "Captures Lua errors, for BugSack to show and omaddons errors to read."
 ref = "wowace:bug-grabber"
 families = ["mainline", "vanilla", "tbc", "wrath", "titan", "cata", "mists", "forever"]
 folders = ["!BugGrabber"]
@@ -429,6 +493,7 @@ notes = "Lua error capture for omaddons errors and BugSack (WowAce SVN, keyless)
 name = "BugGrabber"
 variant = "r152"
 aliases = ["!buggrabber", "bug-grabber"]
+summary = "Captures Lua errors, for BugSack to show and omaddons errors to read."
 ref = "wowace:bug-grabber#r152"
 families = ["wrath-legacy"]
 folders = ["!BugGrabber"]
@@ -438,6 +503,7 @@ notes = "3.3.5a: trunk at r152 (GPL v2 or later), whose TOC carries Interface 30
 name = "BugGrabber"
 variant = "r130"
 aliases = ["!buggrabber", "bug-grabber"]
+summary = "Captures Lua errors, for BugSack to show and omaddons errors to read."
 ref = "wowace:bug-grabber#r130"
 families = ["tbc-legacy"]
 folders = ["!BugGrabber"]
@@ -447,6 +513,7 @@ notes = "2.4.3: trunk at r130, the last revision whose TOC carries Interface 204
 name = "BugGrabber"
 variant = "r43"
 aliases = ["!buggrabber", "bug-grabber"]
+summary = "Captures Lua errors, for BugSack to show and omaddons errors to read."
 ref = "wowace:bug-grabber#r43:tmp/trunk/!BugGrabber"
 families = ["vanilla-legacy"]
 folders = ["!BugGrabber"]
@@ -456,6 +523,7 @@ notes = "1.12.1: the 1.12-era tree, outside trunk (tmp/trunk/!BugGrabber), at r4
 
 [[addon]]
 name = "pfUI"
+summary = "A complete user interface replacement for Vanilla and TBC."
 ref = "git:https://github.com/shagu/pfUI#master"
 families = ["vanilla-legacy"]
 folders = ["pfUI"]
@@ -463,6 +531,7 @@ notes = "1.12.1: pfUI.toc carries Interface 11200; the repository is archived up
 
 [[addon]]
 name = "PlateBuffer"
+summary = "Shows auras on nameplates, for TBC 2.4.3."
 ref = "git:https://github.com/nullfoxh/PlateBuffer#master"
 families = ["tbc-legacy"]
 folders = ["PlateBuffer"]
@@ -471,6 +540,7 @@ notes = "2.4.3: PlateBuffer.toc carries Interface 20400"
 [[addon]]
 name = "GroupBulletinBoard"
 aliases = ["gbb"]
+summary = "A bulletin board of LFG and LFM messages."
 ref = "git:https://github.com/fondlez/GroupBulletinBoard#main"
 families = ["wrath-legacy"]
 folders = ["GroupBulletinBoard"]
@@ -479,6 +549,7 @@ notes = "3.3.5a: GroupBulletinBoard.toc carries Interface 30300"
 [[addon]]
 name = "MikScrollingBattleText"
 aliases = ["msbt"]
+summary = "Scrolls battle information around your character."
 ref = "git:https://github.com/fondlez/MikScrollingBattleText-Cata#main"
 families = ["cata-legacy"]
 folders = ["MikScrollingBattleText", "MSBTOptions"]
@@ -486,6 +557,7 @@ notes = "4.3.4: both TOCs carry Interface 40300"
 
 [[addon]]
 name = "InFlight"
+summary = "A timer for your flight paths."
 ref = "git:https://github.com/fondlez/InFlight-Taxi-Timer#main"
 families = ["mists-legacy"]
 folders = ["InFlight", "InFlight_Load"]
