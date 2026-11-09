@@ -9,14 +9,22 @@ import "ui"
 import "Model.js" as Model
 import "Build.js" as Build
 
-// The panel frame (F4): the hero with Check now, Undo last and Open AddOns, the target
-// filter, the view switcher, the content slot the views load into (F5, F6, F9), the
-// footer (progress, the last result with its Undo and Fix, the error cards), the
-// confirm dialog every destructive action goes through, and the key reference (`?`).
+// The panel frame (design doc §2.1, F4), top to bottom: the hero (the scope as title,
+// its glyph in the state colour, the meta line urgent first, and help, zoom, Check now,
+// Undo last and Open AddOns), the scope Dropdown, the tab strip with each view's
+// count, the content (the view, or the page on top of the navigation stack, alone in a
+// Flickable), and the pinned bottom area outside it (progress, the last result with
+// its Undo and Fix, the failure card, the freshness footer), which a long list never
+// scrolls away (UX-02). Over it: the confirm dialog every destructive action goes
+// through, the restore chooser and the key reference (`?`). `z` zooms the panel to the
+// screen and back; Ctrl+±/0 and Ctrl+wheel scale the text (§5.6); both are kept in
+// memory only.
+//
 // Keyboard first: one dispatcher looks every key up in Model.KEYMAP (design doc §3)
-// and maps its action to a service call or the current view. It decides nothing:
-// labels come from Model.js over the CLI's own output, every action is a service call,
-// and every CLI string renders as plain text (PlainLabel, or qs.Ui's own labels).
+// and maps its action to a service call, the frame, or the current view or page. It
+// decides nothing: labels come from Model.js over the CLI's own output, every action is
+// a service call, and every CLI string renders as plain text (PlainLabel, or qs.Ui's
+// own plain-text labels).
 Item {
   id: root
 
@@ -24,6 +32,7 @@ Item {
   property var svc: null
   property color foreground: Commons.Color.foreground
   property color urgent: Commons.Color.urgent
+  property color accent: Commons.Color.accent
   property string fontFamily: Style.font.family
   property bool opened: false
 
@@ -31,12 +40,8 @@ Item {
   // Tab and Shift-Tab: the neighbouring bar panel (Omarchy's, never intercepted).
   signal tabRequested(int direction)
 
-  readonly property color dim: Qt.darker(foreground, 1.55)
-  // What the panel needs to show everything: the column, or the dialog, chooser or key
-  // reference over it.
-  readonly property real contentImplicitHeight: confirming || chooser.opened || helpOpen
-    ? Math.max(column.implicitHeight, Style.space(confirming ? 220 : helpOpen ? 560 : 360))
-    : column.implicitHeight
+  // Secondary text that reads on every theme, light ones included (§5.1, UX-44).
+  readonly property color dim: Model.dimColor(foreground, Commons.Color.popups.background)
 
   // ---- view state, in memory only (M3-D3)
   property string view: "updates"
@@ -52,11 +57,20 @@ Item {
   property string keyNote: ""
   // The key reference (`?`) is open over everything but a dialog.
   property bool helpOpen: false
+  // The views opened once: each is created on its first visit and kept.
+  property var visitedViews: []
+  // The navigation stack (§2.4): pages pushed on the view, each `{title, component,
+  // props}`. The top one is the content; Esc, `h` and the back button pop it.
+  property var pages: []
+  // `z`: the panel fills the screen (BarWidget reads it); `uiScale`: the text zoom.
+  property bool zoomed: false
+  property real uiScale: 1.0
 
   // The views by name: F5 adds updates and installed, F6 issues and search, F9 backups.
   // A view without one leaves its slot empty; the switcher and the key map are final.
-  // A view may offer `frame` (set on load), `rowCount`, `rowItem(i)`, `typing`,
-  // `focusSearch()` and `handleKey(action, cursor)`, which gets KEYMAP's action names.
+  // A view (and a page) may offer `frame` (set on load), `rowCount`, `rowItem(i)`,
+  // `typing`, `focusSearch()`, `escapeFilter()` (true when it took Esc: a filter it cleared)
+  // and `handleKey(action, cursor)`, which gets KEYMAP's action names.
   property var viewComponents: ({ "updates": updatesView, "installed": installedView, "issues": issuesView,
     "backups": backupsView, "search": searchView })
   // Frame-wide view actions a later task registers (backup, dismiss, …): action →
@@ -66,7 +80,16 @@ Item {
     "backup": function(frame) { return frame.backUp() }
   })
 
-  readonly property var current: contentLoader.item
+  // Bumped when a view's loader loads, so `currentView` follows it.
+  property int loadTick: 0
+  readonly property var currentView: {
+    var tick = loadTick
+    var loader = viewLoaders.count > 0 ? viewLoaders.itemAt(Model.VIEWS.indexOf(view)) : null
+    return loader ? loader.item : null
+  }
+  readonly property var topPage: pages.length > 0 ? pages[pages.length - 1] : null
+  // What the keys act on: the page on top of the stack, else the view.
+  readonly property var current: topPage ? pageLoader.item : currentView
   readonly property int rowCount: current && typeof current.rowCount === "number" ? current.rowCount : 0
   // A text field of the view has the keyboard: the key catcher lets it type.
   readonly property bool typing: !!current && current.typing === true
@@ -78,6 +101,7 @@ Item {
   readonly property bool busy: !!svc && !!svc.action
   readonly property var summary: svc ? svc.summary : null
   readonly property var targets: svc && Array.isArray(svc.targets) ? svc.targets : []
+  readonly property var machineIssues: svc && Array.isArray(svc.machineIssues) ? svc.machineIssues : []
   readonly property var selectedTarget: Model.targetById(targets, filter)
   readonly property var lastChange: svc ? svc.lastChange : null
   readonly property var undo: Model.undoAction(lastChange)
@@ -91,15 +115,46 @@ Item {
   // the cursor (j/k) and Enter.
   readonly property bool cardMode: phase === "missing" || phase === "unreachable" || phase === "incompatible"
   readonly property var cardActions: phase === "incompatible" ? ["retry", "reinstall"] : (cardMode ? ["retry"] : [])
-  // Where a key is looked up in KEYMAP: the card's rows, or the current view's.
-  readonly property string keyContext: cardMode ? "card" : view
+  // Where a key is looked up in KEYMAP: the card's rows, a page's, or the view's.
+  readonly property string keyContext: cardMode ? "card" : (topPage ? "page" : view)
   // Where the keyboard goes: the dialog's own keys while it is open, then the chooser's,
   // then the key reference's.
   readonly property Item focusItem: confirming ? confirmKeys
     : (chooser.opened ? chooser.keyItem : (helpOpen ? help.keyItem : keyCatcher))
   // The frame's own shortcuts (Ctrl+Z, PgUp, PgDn) fire only where the catcher would
-  // take keys: never under a dialog, the reference, or a field that is typing.
+  // take keys: never under a dialog, the reference, or a field that is typing. The text
+  // zoom works everywhere while the panel is open (design doc §3.2).
   readonly property bool shortcutsOn: opened && !typing && !confirming && !chooser.opened && !helpOpen
+
+  // Below 480 px the tabs are glyphs, the meta line one part, and the detail goes
+  // (design doc §2.1).
+  readonly property bool narrow: canvas.width < Style.space(480)
+  readonly property string heroState: Model.heroState(summary, targets, filter, machineIssues, busy)
+  readonly property var tabCounts: Model.viewCounts(targets, filter, svc && Array.isArray(svc.commands) ? svc.commands : [],
+    machineIssues)
+  readonly property var tabViews: Model.VIEWS.map(function(v, i) {
+    var counted = tabCounts[v] || { "count": 0, "urgent": false }
+    return { "id": v, "title": Model.VIEW_TITLES[v], "key": String(i + 1), "glyph": Model.VIEW_GLYPHS[v],
+      "count": counted.count, "urgent": counted.urgent }
+  })
+
+  // What the panel needs to show everything, in screen pixels (the text zoom scales
+  // it): the top, the content and the pinned bottom area, or the dialog, chooser or key
+  // reference over them.
+  readonly property real frameImplicitHeight: top.implicitHeight + contentArea.implicitHeight + bottom.implicitHeight
+    + gap * 2
+  readonly property real contentImplicitHeight: (confirming || chooser.opened || helpOpen
+    ? Math.max(frameImplicitHeight, Style.space(confirming ? 220 : helpOpen ? 560 : 360))
+    : frameImplicitHeight) * uiScale
+  readonly property real gap: Style.space(12)
+
+  // For IPC's state() (design doc §2.1): the scope, view, page depth, open sheet and
+  // zoom, set on the service while this panel is open.
+  readonly property var panelState: ({
+    "scope": filter, "view": view, "stackDepth": pages.length,
+    "sheet": confirming ? "confirm" : (chooser.opened ? "restore" : (helpOpen ? "help" : null)),
+    "zoomed": zoomed, "textZoom": uiScale
+  })
 
   function alpha(c, a) { return Qt.rgba(c.r, c.g, c.b, a) }
 
@@ -114,6 +169,7 @@ Item {
     notice = ""
     keyNote = ""
     flick.contentY = 0
+    publishState()
     if (!takeRequestedView() && svc) svc.readView(view)
   }
 
@@ -127,9 +183,16 @@ Item {
   onConfirmChanged: dialog.selectedIndex = 0
   onTypingChanged: if (!typing) Qt.callLater(root.focusNow)
   onHelpOpenChanged: Qt.callLater(root.focusNow)
+  onPanelStateChanged: publishState()
 
   function focusNow() {
     if (root.opened && !root.typing) root.focusItem.forceActiveFocus()
+  }
+
+  // The open panel tells the service what it shows (IPC's state()); a service without
+  // the property (a test's stub) is left alone.
+  function publishState() {
+    if (opened && svc && "panelState" in svc) svc.panelState = panelState
   }
 
   // The view the service was asked to show (middle click, `show <view>` over IPC).
@@ -155,12 +218,65 @@ Item {
     onTriggered: root.nowMs = Date.now()
   }
 
+  // A view (a tab): the stack is cleared, and the view is created on its first visit
+  // and kept (the one it leaves too, which may be the one the panel opened on).
   function showView(name) {
+    var visited = visitedViews.slice()
+    for (var v of [view, name]) if (visited.indexOf(v) < 0) visited.push(v)
+    visitedViews = visited
     view = name
+    pages = []
     keyNote = ""
     cursor = 0
     flick.contentY = 0
     if (svc) svc.readView(name)
+  }
+
+  function setFilter(id) {
+    filter = String(id || "")
+    cursor = 0
+  }
+
+  // ------------------------------------------------------------- the navigation stack
+
+  // A page on top of the view (or of the page before it): `{title, component, props}`.
+  function push(page) {
+    if (!page || !page.component) return false
+    pages = pages.concat([page])
+    cursor = 0
+    cursorActive = false
+    flick.contentY = 0
+    return true
+  }
+
+  // Back one page; false when no page is open.
+  function pop() {
+    if (pages.length === 0) return false
+    pages = pages.slice(0, -1)
+    cursor = 0
+    cursorActive = false
+    flick.contentY = 0
+    return true
+  }
+
+  // Where back goes (§2.4): the view's title under one page, else the trail of the
+  // pages beneath ("Updates › DBM").
+  function backText() {
+    if (pages.length === 0) return ""
+    var trail = [String(Model.VIEW_TITLES[view] || "")]
+    for (var i = 0; i < pages.length - 1; i++) trail.push(String(pages[i].title || ""))
+    return pages.length === 1 ? trail[0] : trail.join(" › ")
+  }
+
+  // Esc where the catcher has the keys (a dialog, a chooser and the reference take
+  // their own): back one layer (§2.4), a page, then a filter the view clears, then the
+  // panel closes.
+  function backOut() {
+    keyNote = ""
+    if (pop()) return true
+    if (current && typeof current.escapeFilter === "function" && current.escapeFilter() === true) return true
+    closeRequested()
+    return true
   }
 
   // ------------------------------------------------------------- the key map
@@ -171,6 +287,11 @@ Item {
   function move(dx, dy) {
     keyNote = ""
     if (dx !== 0) {
+      // On a page, h goes back and l does nothing (§3.2).
+      if (topPage) {
+        if (dx < 0) pop()
+        return
+      }
       showView(Model.stepView(view, dx))
       return
     }
@@ -205,6 +326,12 @@ Item {
     return act(text)
   }
 
+  // The text zoom: one step bigger (1) or smaller (-1), or back to normal (0), between
+  // 0.6 and 2 (§5.6).
+  function bumpUiScale(step) {
+    uiScale = step === 0 ? 1.0 : Math.max(0.6, Math.min(2.0, Math.round((uiScale + step * 0.1) * 10) / 10))
+  }
+
   // The key `name` (Model.keyName's) where the panel stands: its KEYMAP action run, its
   // note shown when it acts only in other views, or nothing.
   function act(name) {
@@ -224,10 +351,17 @@ Item {
       helpOpen = true
       return true
     }
+    if (action === "zoom") {
+      zoomed = !zoomed
+      return true
+    }
+    if (action === "text_zoom") {
+      bumpUiScale(key.step)
+      return true
+    }
     if (action === "press") return runCard(cardActions[Math.min(cursor, cardActions.length - 1)])
     if (action === "client") {
-      filter = Model.stepFilter(targets, filter, key.step)
-      cursor = 0
+      setFilter(Model.stepFilter(targets, filter, key.step))
       return true
     }
     if (action === "search") {
@@ -252,8 +386,8 @@ Item {
     return routeKey(action)
   }
 
-  // An action the current view or a later task implements; an unregistered one does
-  // nothing (no key exists before its action does).
+  // An action the current view (or page) or a later task implements; an unregistered
+  // one does nothing (no key exists before its action does).
   function routeKey(name) {
     if (current && typeof current.handleKey === "function" && current.handleKey(name, cursor) === true) return true
     var handler = keyHandlers[name]
@@ -362,7 +496,7 @@ Item {
     if (cardMode) item = cardButtons.itemAt(cursor)
     else if (current && typeof current.rowItem === "function") item = current.rowItem(cursor)
     if (!item) return
-    var y = item.mapToItem(column, 0, 0).y
+    var y = item.mapToItem(flick.contentItem, 0, 0).y
     var margin = Style.space(8)
     if (y < flick.contentY + margin)
       flick.contentY = Math.max(0, y - margin)
@@ -377,55 +511,60 @@ Item {
 
   // ------------------------------------------------------------- the panel
 
-  PanelKeyCatcher {
-    id: keyCatcher
-    objectName: "keyCatcher"
-    anchors.fill: parent
-    blocked: root.typing || root.confirming || chooser.opened
+  // The text zoom (§5.6): the frame draws on a logical canvas shrunk by `uiScale`, and
+  // the transform grows it back, so every child lays out as at 1.0 and pointer input is
+  // mapped through it (omabeads' zoom).
+  Item {
+    id: canvas
+    objectName: "canvas"
+    width: root.width / root.uiScale
+    height: root.height / root.uiScale
+    transform: Scale { xScale: root.uiScale; yScale: root.uiScale }
 
-    onMoveRequested: function(dx, dy) { root.move(dx, dy) }
-    // Enter emits returnRequested then activateRequested (F0): only the latter acts.
-    onActivateRequested: root.activate()
-    onDeleteRequested: root.deleteKey()
-    onCloseRequested: root.closeRequested()
-    onTabRequested: function(direction) { root.tabRequested(direction) }
-    onTextKey: function(text) { root.textKey(text) }
-
-    Flickable {
-      id: flick
+    PanelKeyCatcher {
+      id: keyCatcher
+      objectName: "keyCatcher"
       anchors.fill: parent
-      contentWidth: width
-      contentHeight: column.implicitHeight
-      clip: true
-      boundsBehavior: Flickable.StopAtBounds
-      flickableDirection: Flickable.VerticalFlick
-      interactive: contentHeight > height
-      ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+      blocked: root.typing || root.confirming || chooser.opened || root.helpOpen
 
+      onMoveRequested: function(dx, dy) { root.move(dx, dy) }
+      // Enter emits returnRequested then activateRequested (F0): only the latter acts.
+      onActivateRequested: root.activate()
+      onDeleteRequested: root.deleteKey()
+      onCloseRequested: root.backOut()
+      onTabRequested: function(direction) { root.tabRequested(direction) }
+      onTextKey: function(text) { root.textKey(text) }
+
+      // ---------- Top: the hero, the scope, the tabs ----------
       Column {
-        id: column
-        width: flick.width
-        spacing: Style.space(12)
+        id: top
+        objectName: "top"
+        width: parent.width
+        spacing: root.gap
 
-        // ---------- Hero: the summary, Check now, Undo last, Open AddOns ----------
         PanelHero {
           id: hero
           objectName: "hero"
           width: parent.width
-          title: "omaddons"
-          meta: Model.heroMeta(root.summary)
+          title: Model.heroTitle(root.targets, root.filter)
+          // Narrow: the meta line keeps its first part (§2.1).
+          meta: {
+            var full = Model.heroMeta(root.summary, root.targets, root.filter, root.machineIssues)
+            return root.narrow ? full.split(" · ")[0] : full
+          }
           // Read-only keeps the last numbers, marked stale.
-          detail: root.readOnly ? "stale" : Model.heroDetail(root.summary, root.targets, root.nowMs)
+          detail: root.readOnly ? "stale" : (root.narrow ? "" : Model.heroDetail(root.summary, root.targets, root.filter))
           metaOpacity: root.readOnly ? 0.5 : 1.0
           foreground: root.foreground
           fontFamily: root.fontFamily
 
           iconComponent: Component {
             Text {
+              objectName: "heroGlyph"
               textFormat: Text.PlainText
-              // U+F0297 nf-md-gamepad_variant, as on the bar.
+              // U+F0297 nf-md-gamepad_variant, as on the bar, in the state's colour.
               text: String.fromCodePoint(0xF0297)
-              color: root.foreground
+              color: root.heroState === "urgent" ? root.urgent : (root.heroState === "busy" ? root.accent : root.dim)
               font.family: root.fontFamily
               font.pixelSize: Style.font.display
             }
@@ -436,15 +575,46 @@ Item {
               spacing: Style.spacing.sm
 
               PanelActionButton {
+                objectName: "helpButton"
+                // U+F0625 nf-md-help_circle_outline.
+                iconText: String.fromCodePoint(0xF0625)
+                tooltipText: Model.withKey("Keys", "help")
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: root.helpOpen = true
+              }
+
+              PanelActionButton {
+                objectName: "zoomButton"
+                // U+F0293 / U+F0294 nf-md-fullscreen / fullscreen_exit.
+                iconText: String.fromCodePoint(root.zoomed ? 0xF0294 : 0xF0293)
+                tooltipText: Model.withKey(root.zoomed ? "Back to panel size" : "Fill the screen", "zoom")
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: root.zoomed = !root.zoomed
+              }
+
+              PanelActionButton {
+                id: checkButton
                 objectName: "checkButton"
-                // U+F04E6 nf-md-sync.
+                // U+F04E6 nf-md-sync: it spins while a check runs (UX-01).
                 iconText: String.fromCodePoint(0xF04E6)
-                tooltipText: Model.withKey("Check now", "check")
+                tooltipText: Model.withKey(spinning ? "Checking…" : "Check now", "check")
+                readonly property bool spinning: !!root.svc && root.svc.checking === true
                 enabled: root.canAct
                 opacity: enabled ? 1.0 : 0.4
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 onClicked: root.checkNow()
+
+                RotationAnimation on rotation {
+                  running: checkButton.spinning
+                  from: 0
+                  to: 360
+                  duration: 1000
+                  loops: Animation.Infinite
+                  onRunningChanged: if (!running) checkButton.rotation = 0
+                }
               }
 
               PanelActionButton {
@@ -459,6 +629,7 @@ Item {
                 onClicked: root.undoLast()
               }
 
+              // Kept here until the rows carry their own actions (.15); `o` opens it.
               PanelActionButton {
                 objectName: "openButton"
                 // U+F0770 nf-md-folder_open.
@@ -474,526 +645,680 @@ Item {
           }
         }
 
-        // ---------- Cards: no answer to work with ----------
-        Text {
-          visible: root.phase === "starting"
+        // ---------- The scope: All clients, or one (t/T) ----------
+        Dropdown {
+          id: scope
+          objectName: "scope"
+          // With no compatible answer, neither the scope nor the tabs show (§2.1).
+          visible: !root.cardMode && root.targets.length > 0
           width: parent.width
-          textFormat: Text.PlainText
-          text: "Asking omaddons…"
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.body
+          showLabel: false
+          label: "Client"
+          value: root.filter
+          options: Model.scopeOptions(root.targets)
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          onChanged: function(value) { root.setFilter(value) }
         }
 
-        BorderSurface {
-          id: phaseCard
-          objectName: "phaseCard"
-          visible: root.cardMode
+        // ---------- The tabs (h/l, the digits) ----------
+        TabStrip {
+          id: switcher
+          objectName: "switcher"
+          visible: !root.cardMode
           width: parent.width
-          implicitHeight: cardColumn.implicitHeight + Style.spacing.xl * 2
-          color: root.alpha(root.urgent, 0.10)
-          borderSpec: Border.flat(root.alpha(root.urgent, 0.35), 1)
-          radius: Style.cornerRadius
-
-          Column {
-            id: cardColumn
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            anchors.leftMargin: Style.space(12)
-            anchors.rightMargin: Style.space(12)
-            spacing: Style.spacing.md
-
-            PlainLabel {
-              objectName: "cardTitle"
-              width: parent.width
-              wrapMode: Text.WordWrap
-              color: root.foreground
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.body
-              font.bold: true
-              text: root.phase === "missing" ? "omaddons not found at " + (root.svc ? root.svc.binary : "")
-                : root.phase === "unreachable" ? "omaddons gave no answer the widget can read"
-                : root.phase === "incompatible" && root.svc ? root.svc.incompatibleText : ""
-            }
-
-            // The binary's own words when it answered with something else.
-            PlainLabel {
-              objectName: "cardDetail"
-              visible: root.phase === "unreachable" && text !== ""
-              width: parent.width
-              wrapMode: Text.WrapAnywhere
-              maximumLineCount: 8
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              text: root.svc ? String(root.svc.unreachableText || "") : ""
-            }
-
-            // A missing binary: the two ways back, as text (they need a path or a
-            // terminal only the user has).
-            Repeater {
-              objectName: "missingCommands"
-              model: root.phase === "missing"
-                ? ["omarchy bar set " + Build.PLUGIN_ID + " binary <path>", "omaddons omarchy install"]
-                : []
-
-              PlainLabel {
-                required property string modelData
-                width: cardColumn.width
-                color: root.dim
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-                text: modelData
-              }
-            }
-
-            Row {
-              spacing: Style.spacing.md
-
-              Repeater {
-                id: cardButtons
-                model: root.cardActions
-
-                Button {
-                  required property string modelData
-                  required property int index
-                  objectName: "card_" + modelData
-                  text: modelData === "reinstall" ? "Reinstall widget" : "Retry"
-                  hasCursor: root.cursorActive && index === root.cursor
-                  bordered: true
-                  foreground: root.foreground
-                  fontFamily: root.fontFamily
-                  fontSize: Style.font.bodySmall
-                  onClicked: root.runCard(modelData)
-                }
-              }
-            }
-          }
+          narrow: root.narrow
+          value: root.view
+          views: root.tabViews
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          onChanged: function(value) { root.showView(value) }
         }
+      }
 
-        // ---------- First run and the widget's own issues ----------
+      // ---------- The content: the view or the page on top, alone in a Flickable ----------
+      Flickable {
+        id: flick
+        objectName: "contentFlick"
+        anchors.top: top.bottom
+        anchors.topMargin: root.gap
+        anchors.bottom: bottom.top
+        anchors.bottomMargin: root.gap
+        width: parent.width
+        contentWidth: width
+        contentHeight: contentArea.implicitHeight
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        flickableDirection: Flickable.VerticalFlick
+        interactive: contentHeight > height
+        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
         Column {
-          objectName: "noTargets"
-          // Only an answer that lists no client; a failed status shows its error instead.
-          visible: root.phase === "ok" && root.targets.length === 0 && root.summary !== null
-          width: parent.width
-          spacing: Style.spacing.sm
+          id: contentArea
+          objectName: "contentArea"
+          width: flick.width
+          spacing: root.gap
 
+          // Narrow: the tabs are glyphs, so the content names its view (§2.1).
+          PlainLabel {
+            objectName: "viewTitle"
+            visible: root.narrow && !root.cardMode && !root.topPage
+            width: parent.width
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+            font.bold: true
+            text: String(Model.VIEW_TITLES[root.view] || "")
+          }
+
+          // ---------- Cards: no answer to work with ----------
           Text {
+            visible: root.phase === "starting"
             width: parent.width
             textFormat: Text.PlainText
-            text: "No World of Warcraft clients found"
-            color: root.foreground
+            text: "Asking omaddons…"
+            color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.body
           }
 
-          // It needs a path only the user has: text, no button (M3-D2).
-          Text {
-            width: parent.width
-            textFormat: Text.PlainText
-            text: "Add one from a terminal: omaddons targets add <path>"
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-          }
-        }
-
-        BorderSurface {
-          objectName: "widgetOutdated"
-          visible: root.phase === "ok" && !!root.summary && root.summary.widgetOutdated === true
-          width: parent.width
-          implicitHeight: outdatedRow.implicitHeight + Style.spacing.lg * 2
-          color: "transparent"
-          borderSpec: Border.flat(root.alpha(root.foreground, 0.25), 1)
-          radius: Style.cornerRadius
-
-          Row {
-            id: outdatedRow
-            anchors.verticalCenter: parent.verticalCenter
-            anchors.left: parent.left
-            anchors.leftMargin: Style.space(12)
-            spacing: Style.spacing.lg
-
-            Text {
-              anchors.verticalCenter: parent.verticalCenter
-              textFormat: Text.PlainText
-              text: "The widget is from another build"
-              color: root.foreground
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.body
-            }
-
-            Button {
-              objectName: "reinstallOutdated"
-              text: "Reinstall"
-              bordered: true
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
-              onClicked: root.runCard("reinstall")
-            }
-          }
-        }
-
-        // ---------- Target filter: All, then each client (t) ----------
-        Flow {
-          id: filterRow
-          objectName: "filterRow"
-          visible: root.targets.length > 0
-          width: parent.width
-          spacing: Style.spacing.md
-
-          Button {
-            objectName: "filter_all"
-            text: "All"
-            selected: root.filter === ""
-            bordered: true
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            fontSize: Style.font.bodySmall
-            onClicked: root.filter = ""
-          }
-
-          Repeater {
-            model: root.targets
-
-            Button {
-              required property var modelData
-              objectName: "filter_" + modelData.id
-              // A running client carries a dot (U+25CF).
-              text: modelData.id + (modelData.running ? " " + String.fromCodePoint(0x25CF) : "")
-              selected: root.filter === modelData.id
-              bordered: true
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
-              onClicked: root.filter = modelData.id
-            }
-          }
-
-          Text {
-            objectName: "runningUnknown"
-            visible: root.targets.some(function(t) { return t.runningUnknown === true })
-            textFormat: Text.PlainText
-            text: "running: unknown"
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-          }
-        }
-
-        // ---------- View switcher (h/l, 1–5) ----------
-        Row {
-          id: switcher
-          objectName: "switcher"
-          width: parent.width
-          spacing: Style.spacing.sm
-          readonly property real cellWidth: (width - spacing * (Model.VIEWS.length - 1)) / Model.VIEWS.length
-
-          Repeater {
-            model: Model.VIEWS
-
-            Button {
-              required property string modelData
-              required property int index
-              objectName: "view_" + modelData
-              width: switcher.cellWidth
-              text: (index + 1) + " " + Model.VIEW_TITLES[modelData]
-              selected: root.view === modelData
-              bordered: true
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
-              onClicked: root.showView(modelData)
-            }
-          }
-        }
-
-        // ---------- The current view ----------
-        Loader {
-          id: contentLoader
-          objectName: "content"
-          width: parent.width
-          sourceComponent: root.viewComponents[root.view] || null
-          // Read-only: the rows stay visible, inert.
-          enabled: !root.readOnly
-          onLoaded: if (item && "frame" in item) item.frame = root
-        }
-
-        // ---------- Footer: progress, the last result, the last failure ----------
-        Column {
-          id: footer
-          objectName: "footer"
-          width: parent.width
-          spacing: Style.spacing.sm
-
-          Rectangle {
-            objectName: "progressTrack"
-            visible: root.busy
-            width: parent.width
-            height: Style.space(4)
-            radius: height / 2
-            color: root.alpha(root.foreground, 0.15)
-
-            Rectangle {
-              readonly property real fraction: Model.progressFraction(root.svc ? root.svc.action : null)
-              width: parent.width * (fraction < 0 ? 0.15 : fraction)
-              height: parent.height
-              radius: parent.radius
-              color: Commons.Color.accent
-            }
-          }
-
-          PlainLabel {
-            objectName: "progressLine"
-            visible: root.busy
-            width: parent.width
-            color: root.foreground
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            text: root.busy ? String(root.svc.action.label || "") + (root.svc.action.message ? ": " + root.svc.action.message : "") : ""
-          }
-
-          // Why the change buttons are off.
-          Text {
-            objectName: "busyNote"
-            visible: root.busy
-            width: parent.width
-            textFormat: Text.PlainText
-            text: "other changes wait until this one finishes"
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-          }
-
-          PlainLabel {
-            objectName: "queued"
-            visible: text !== ""
-            width: parent.width
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            text: root.svc && root.svc.queuedAction ? "next: " + root.svc.queuedAction : ""
-          }
-
-          Row {
-            objectName: "result"
-            visible: !!root.lastResult && !root.busy
-            width: parent.width
-            spacing: Style.spacing.md
-
-            PlainLabel {
-              objectName: "resultLine"
-              anchors.verticalCenter: parent.verticalCenter
-              width: Math.min(implicitWidth, parent.width - (resultUndoButton.visible ? resultUndoButton.width + parent.spacing : 0))
-              color: root.lastResult && !root.lastResult.ok ? root.urgent : root.foreground
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              text: root.lastResult ? String(root.lastResult.line || "") : ""
-            }
-
-            Button {
-              id: resultUndoButton
-              objectName: "resultUndo"
-              visible: root.resultUndo !== null
-              enabled: root.canAct && !root.busy
-              opacity: enabled ? 1.0 : 0.4
-              text: "Undo"
-              bordered: true
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              fontSize: Style.font.caption
-              onClicked: root.runCli(root.resultUndo, "Undo")
-            }
-          }
-
-          // A partial result: each failed item's fix the classifier accepts.
-          Flow {
-            visible: !!root.lastResult && !root.busy
-            width: parent.width
-            spacing: Style.spacing.sm
-
-            Repeater {
-              model: root.lastResult && Array.isArray(root.lastResult.fixes) ? root.lastResult.fixes : []
-
-              Button {
-                required property var modelData
-                required property int index
-                objectName: "itemFix_" + index
-                enabled: root.canAct && !root.busy
-                opacity: enabled ? 1.0 : 0.4
-                text: "Fix: " + modelData.command
-                bordered: true
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                fontSize: Style.font.caption
-                onClicked: root.runCli(modelData, "Fix")
-              }
-            }
-          }
-
           BorderSurface {
-            objectName: "errorCard"
-            // Like the result row: an earlier failure is not shown while another runs.
-            visible: !!root.lastError && !root.cardMode && !root.busy
+            id: phaseCard
+            objectName: "phaseCard"
+            visible: root.cardMode
             width: parent.width
-            implicitHeight: errorColumn.implicitHeight + Style.spacing.lg * 2
+            implicitHeight: cardColumn.implicitHeight + Style.spacing.xl * 2
             color: root.alpha(root.urgent, 0.10)
             borderSpec: Border.flat(root.alpha(root.urgent, 0.35), 1)
             radius: Style.cornerRadius
 
             Column {
-              id: errorColumn
+              id: cardColumn
               anchors.left: parent.left
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
               anchors.leftMargin: Style.space(12)
               anchors.rightMargin: Style.space(12)
-              spacing: Style.spacing.sm
+              spacing: Style.spacing.md
 
               PlainLabel {
-                objectName: "errorMessage"
+                objectName: "cardTitle"
                 width: parent.width
                 wrapMode: Text.WordWrap
                 color: root.foreground
                 font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-                text: root.lastError ? String(root.lastError.message || "") : ""
+                font.pixelSize: Style.font.body
+                font.bold: true
+                text: root.phase === "missing" ? "omaddons not found at " + (root.svc ? root.svc.binary : "")
+                  : root.phase === "unreachable" ? "omaddons gave no answer the widget can read"
+                  : root.phase === "incompatible" && root.svc ? root.svc.incompatibleText : ""
               }
 
-              // A fix the classifier accepts is a button; the first is the Fix, the
-              // rest its alternatives.
-              Flow {
-                width: parent.width
-                spacing: Style.spacing.sm
-
-                Repeater {
-                  model: root.lastError && Array.isArray(root.lastError.fixes) ? root.lastError.fixes : []
-
-                  Button {
-                    required property var modelData
-                    required property int index
-                    objectName: "fix_" + index
-                    enabled: root.canAct && !root.busy
-                    opacity: enabled ? 1.0 : 0.4
-                    text: index === 0 ? "Fix: " + modelData.command : modelData.command
-                    bordered: index === 0
-                    foreground: root.foreground
-                    fontFamily: root.fontFamily
-                    fontSize: Style.font.caption
-                    onClicked: root.runCli(modelData, index === 0 ? "Fix" : "Fix (alternative)")
-                  }
-                }
-              }
-
-              // A prose fix, or one the classifier refused: text.
+              // The binary's own words when it answered with something else.
               PlainLabel {
-                objectName: "fixText"
-                visible: text !== ""
+                objectName: "cardDetail"
+                visible: root.phase === "unreachable" && text !== ""
                 width: parent.width
-                wrapMode: Text.WordWrap
+                wrapMode: Text.WrapAnywhere
+                maximumLineCount: 8
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
-                text: root.lastError && root.lastError.fixText ? String(root.lastError.fixText) : ""
+                text: root.svc ? String(root.svc.unreachableText || "") : ""
               }
 
-              // A restore whose folders changed owner since the backup: one button per
-              // folder, each the same restore's preview for that folder.
-              Flow {
-                width: parent.width
-                spacing: Style.spacing.sm
+              // A missing binary: the two ways back, as text (they need a path or a
+              // terminal only the user has).
+              Repeater {
+                objectName: "missingCommands"
+                model: root.phase === "missing"
+                  ? ["omarchy bar set " + Build.PLUGIN_ID + " binary <path>", "omaddons omarchy install"]
+                  : []
+
+                PlainLabel {
+                  required property string modelData
+                  width: cardColumn.width
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  text: modelData
+                }
+              }
+
+              Row {
+                spacing: Style.spacing.md
 
                 Repeater {
-                  model: root.lastError && Array.isArray(root.lastError.choices) ? root.lastError.choices : []
+                  id: cardButtons
+                  model: root.cardActions
 
                   Button {
-                    required property var modelData
+                    required property string modelData
                     required property int index
-                    objectName: "choice_" + index
-                    enabled: root.canAct && !root.busy
-                    opacity: enabled ? 1.0 : 0.4
-                    text: "Restore " + modelData.label
+                    objectName: "card_" + modelData
+                    text: modelData === "reinstall" ? "Reinstall widget" : "Retry"
+                    hasCursor: root.cursorActive && index === root.cursor
                     bordered: true
                     foreground: root.foreground
                     fontFamily: root.fontFamily
-                    fontSize: Style.font.caption
-                    onClicked: root.report(root.svc.restoreFolder(modelData.addon))
+                    fontSize: Style.font.bodySmall
+                    onClicked: root.runCard(modelData)
                   }
                 }
-              }
-
-              // A restore that cannot exchange here: the backup's own plain folder.
-              PlainLabel {
-                objectName: "backupFolder"
-                visible: text !== ""
-                width: parent.width
-                wrapMode: Text.WrapAnywhere
-                color: root.dim
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-                text: root.lastError && root.lastError.folder ? "The backup's own folder: " + root.lastError.folder : ""
               }
             }
           }
 
-          PlainLabel {
-            objectName: "notice"
-            visible: text !== ""
+          // ---------- First run and the widget's own issues ----------
+          Column {
+            objectName: "noTargets"
+            // Only an answer that lists no client; a failed status shows its error instead.
+            visible: root.phase === "ok" && root.targets.length === 0 && root.summary !== null
             width: parent.width
-            wrapMode: Text.WordWrap
-            color: root.urgent
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            text: root.notice
+            spacing: Style.spacing.sm
+
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: "No World of Warcraft clients found"
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+            }
+
+            // It needs a path only the user has: text, no button (M3-D2).
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: "Add one from a terminal: omaddons targets add <path>"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
           }
 
-          // A key that does nothing here says so (design doc §3.3), until the next key.
-          PlainLabel {
-            objectName: "keyNote"
-            visible: text !== ""
+          BorderSurface {
+            objectName: "widgetOutdated"
+            visible: root.phase === "ok" && !!root.summary && root.summary.widgetOutdated === true
             width: parent.width
-            wrapMode: Text.WordWrap
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            text: root.keyNote
+            implicitHeight: outdatedRow.implicitHeight + Style.spacing.lg * 2
+            color: "transparent"
+            borderSpec: Border.flat(root.alpha(root.foreground, 0.25), 1)
+            radius: Style.cornerRadius
+
+            Row {
+              id: outdatedRow
+              anchors.verticalCenter: parent.verticalCenter
+              anchors.left: parent.left
+              anchors.leftMargin: Style.space(12)
+              spacing: Style.spacing.lg
+
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                textFormat: Text.PlainText
+                text: "The widget is from another build"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+              }
+
+              Button {
+                objectName: "reinstallOutdated"
+                text: "Reinstall"
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: root.runCard("reinstall")
+              }
+            }
           }
 
-          // Never a guessed run (M3-D37).
-          Text {
-            objectName: "lastChangeUnknown"
-            visible: !!root.lastChange && root.lastChange.unknown === true
+          // ---------- A page: its back button, then the page itself ----------
+          Button {
+            objectName: "backButton"
+            visible: !!root.topPage
+            // U+F0141 nf-md-chevron_left: back names where it goes (§2.4).
+            iconText: String.fromCodePoint(0xF0141)
+            text: root.backText()
+            tooltipText: Model.withKey("Back", "close")
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            fontSize: Style.font.bodySmall
+            onClicked: root.pop()
+          }
+
+          Loader {
+            id: pageLoader
+            objectName: "page"
+            visible: !!root.topPage
             width: parent.width
-            textFormat: Text.PlainText
-            text: "last change: unknown"
-            color: root.dim
+            active: !!root.topPage
+            sourceComponent: root.topPage ? root.topPage.component : null
+            onLoaded: {
+              if (!item) return
+              if ("frame" in item) item.frame = root
+              var props = root.topPage && root.topPage.props ? root.topPage.props : {}
+              for (var key in props) if (key in item) item[key] = props[key]
+            }
+          }
+
+          // ---------- The views: each made on its first visit and kept ----------
+          Column {
+            id: content
+            objectName: "content"
+            // The view shown (tests and pages read it as `content.item`).
+            readonly property var item: root.currentView
+            visible: !root.topPage
+            width: parent.width
+            // Read-only: the rows stay visible, inert.
+            enabled: !root.readOnly
+
+            Repeater {
+              id: viewLoaders
+              model: Model.VIEWS
+
+              Loader {
+                required property string modelData
+                objectName: "viewLoader_" + modelData
+                width: content.width
+                visible: root.view === modelData
+                active: root.view === modelData || root.visitedViews.indexOf(modelData) >= 0
+                sourceComponent: root.viewComponents[modelData] || null
+                onLoaded: if (item && "frame" in item) item.frame = root
+                onItemChanged: root.loadTick++
+              }
+            }
+          }
+        }
+      }
+
+      // ---------- The pinned bottom area: progress, the result, the failure, the footer ----------
+      // Outside the Flickable, so it never scrolls away (UX-02).
+      Column {
+        id: bottom
+        objectName: "footer"
+        anchors.bottom: parent.bottom
+        width: parent.width
+        spacing: Style.spacing.sm
+
+        BorderSurface {
+          objectName: "errorCard"
+          // Like the result row: an earlier failure is not shown while another runs.
+          visible: !!root.lastError && !root.cardMode && !root.busy
+          width: parent.width
+          implicitHeight: errorColumn.implicitHeight + Style.spacing.lg * 2
+          color: root.alpha(root.urgent, 0.10)
+          borderSpec: Border.flat(root.alpha(root.urgent, 0.35), 1)
+          radius: Style.cornerRadius
+
+          Column {
+            id: errorColumn
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.leftMargin: Style.space(12)
+            anchors.rightMargin: Style.space(12)
+            spacing: Style.spacing.sm
+
+            PlainLabel {
+              objectName: "errorMessage"
+              width: parent.width
+              wrapMode: Text.WordWrap
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              text: root.lastError ? String(root.lastError.message || "") : ""
+            }
+
+            // A fix the classifier accepts is a button; the first is the Fix, the
+            // rest its alternatives.
+            Flow {
+              width: parent.width
+              spacing: Style.spacing.sm
+
+              Repeater {
+                model: root.lastError && Array.isArray(root.lastError.fixes) ? root.lastError.fixes : []
+
+                Button {
+                  required property var modelData
+                  required property int index
+                  objectName: "fix_" + index
+                  enabled: root.canAct && !root.busy
+                  opacity: enabled ? 1.0 : 0.4
+                  text: index === 0 ? "Fix: " + modelData.command : modelData.command
+                  bordered: index === 0
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  onClicked: root.runCli(modelData, index === 0 ? "Fix" : "Fix (alternative)")
+                }
+              }
+            }
+
+            // A prose fix, or one the classifier refused: text.
+            PlainLabel {
+              objectName: "fixText"
+              visible: text !== ""
+              width: parent.width
+              wrapMode: Text.WordWrap
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              text: root.lastError && root.lastError.fixText ? String(root.lastError.fixText) : ""
+            }
+
+            // A restore whose folders changed owner since the backup: one button per
+            // folder, each the same restore's preview for that folder.
+            Flow {
+              width: parent.width
+              spacing: Style.spacing.sm
+
+              Repeater {
+                model: root.lastError && Array.isArray(root.lastError.choices) ? root.lastError.choices : []
+
+                Button {
+                  required property var modelData
+                  required property int index
+                  objectName: "choice_" + index
+                  enabled: root.canAct && !root.busy
+                  opacity: enabled ? 1.0 : 0.4
+                  text: "Restore " + modelData.label
+                  bordered: true
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  onClicked: root.report(root.svc.restoreFolder(modelData.addon))
+                }
+              }
+            }
+
+            // A restore that cannot exchange here: the backup's own plain folder.
+            PlainLabel {
+              objectName: "backupFolder"
+              visible: text !== ""
+              width: parent.width
+              wrapMode: Text.WrapAnywhere
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              text: root.lastError && root.lastError.folder ? "The backup's own folder: " + root.lastError.folder : ""
+            }
+          }
+        }
+
+        // The activity slot (the progress bead, .18, builds the activity bar here):
+        // the running change, then the last result with its Undo.
+        Rectangle {
+          objectName: "progressTrack"
+          visible: root.busy
+          width: parent.width
+          height: Style.space(4)
+          radius: height / 2
+          color: root.alpha(root.foreground, 0.15)
+
+          Rectangle {
+            readonly property real fraction: Model.progressFraction(root.svc ? root.svc.action : null)
+            width: parent.width * (fraction < 0 ? 0.15 : fraction)
+            height: parent.height
+            radius: parent.radius
+            color: root.accent
+          }
+        }
+
+        PlainLabel {
+          objectName: "progressLine"
+          visible: root.busy
+          width: parent.width
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          text: root.busy ? String(root.svc.action.label || "") + (root.svc.action.message ? ": " + root.svc.action.message : "") : ""
+        }
+
+        // Why the change buttons are off.
+        Text {
+          objectName: "busyNote"
+          visible: root.busy
+          width: parent.width
+          textFormat: Text.PlainText
+          text: "other changes wait until this one finishes"
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+
+        PlainLabel {
+          objectName: "queued"
+          visible: text !== ""
+          width: parent.width
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          text: root.svc && root.svc.queuedAction ? "next: " + root.svc.queuedAction : ""
+        }
+
+        Row {
+          objectName: "result"
+          visible: !!root.lastResult && !root.busy
+          width: parent.width
+          spacing: Style.spacing.md
+
+          PlainLabel {
+            objectName: "resultLine"
+            anchors.verticalCenter: parent.verticalCenter
+            width: Math.min(implicitWidth, parent.width - (resultUndoButton.visible ? resultUndoButton.width + parent.spacing : 0))
+            color: root.lastResult && !root.lastResult.ok ? root.urgent : root.foreground
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
+            text: root.lastResult ? String(root.lastResult.line || "") : ""
+          }
+
+          Button {
+            id: resultUndoButton
+            objectName: "resultUndo"
+            visible: root.resultUndo !== null
+            enabled: root.canAct && !root.busy
+            opacity: enabled ? 1.0 : 0.4
+            text: "Undo"
+            bordered: true
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            fontSize: Style.font.caption
+            onClicked: root.runCli(root.resultUndo, "Undo")
+          }
+        }
+
+        // A partial result: each failed item's fix the classifier accepts.
+        Flow {
+          visible: !!root.lastResult && !root.busy
+          width: parent.width
+          spacing: Style.spacing.sm
+
+          Repeater {
+            model: root.lastResult && Array.isArray(root.lastResult.fixes) ? root.lastResult.fixes : []
+
+            Button {
+              required property var modelData
+              required property int index
+              objectName: "itemFix_" + index
+              enabled: root.canAct && !root.busy
+              opacity: enabled ? 1.0 : 0.4
+              text: "Fix: " + modelData.command
+              bordered: true
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              fontSize: Style.font.caption
+              onClicked: root.runCli(modelData, "Fix")
+            }
+          }
+        }
+
+        PlainLabel {
+          objectName: "notice"
+          visible: text !== ""
+          width: parent.width
+          wrapMode: Text.WordWrap
+          color: root.urgent
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          text: root.notice
+        }
+
+        // A key that does nothing here says so (design doc §3.3), until the next key.
+        PlainLabel {
+          objectName: "keyNote"
+          visible: text !== ""
+          width: parent.width
+          wrapMode: Text.WordWrap
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          text: root.keyNote
+        }
+
+        // Never a guessed run (M3-D37).
+        Text {
+          objectName: "lastChangeUnknown"
+          visible: !!root.lastChange && root.lastChange.unknown === true
+          width: parent.width
+          textFormat: Text.PlainText
+          text: "last change: unknown"
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+
+        // The freshness footer (§2.1, UX-23): the clients, the scope's oldest check,
+        // who is running; it ticks while the panel is open.
+        PlainLabel {
+          objectName: "freshness"
+          visible: text !== ""
+          width: parent.width
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          text: Model.footerText(root.summary, root.targets, root.filter, root.nowMs)
+        }
+      }
+    }
+
+    // ---------- The confirm dialog: the CLI's own dry run (M3-D9, M3-D46) ----------
+    ConfirmDialog {
+      id: dialog
+      objectName: "confirmDialog"
+      anchors.fill: parent
+      z: 10
+      opened: root.confirming
+      message: root.confirm
+        ? (root.confirm.stale ? String(root.confirm.stale) + "\n\n" : "") + String(root.confirm.text || "")
+        : ""
+      cancelText: "No"
+      confirmText: "Yes"
+      foreground: root.foreground
+      fontFamily: root.fontFamily
+      onConfirmed: root.confirmYes()
+      onCanceled: root.confirmNo()
+    }
+
+    RestoreChooser {
+      id: chooser
+      objectName: "chooser"
+      anchors.fill: parent
+      z: 8
+      frame: root
+    }
+
+    // ---------- The key reference (`?`): KEYMAP's rows where the panel stands ----------
+    // Over the views, pages and problem cards, under a dialog. While it is open every key
+    // is its own: `?` and Esc close it, j/k scroll it, and nothing beneath it acts.
+    Sheet {
+      id: help
+      objectName: "help"
+      anchors.fill: parent
+      z: 9
+      reference: true
+      opened: root.helpOpen
+      title: "Keys · " + (root.cardMode ? "Problem card"
+        : (root.topPage ? String(root.topPage.title || "") : String(Model.VIEW_TITLES[root.view] || "")))
+      foreground: root.foreground
+      fontFamily: root.fontFamily
+      onCanceled: root.helpOpen = false
+
+      Repeater {
+        objectName: "helpSections"
+        model: root.helpOpen ? Model.helpSections(root.keyContext) : []
+
+        Column {
+          required property var modelData
+          width: help.bodyWidth
+          spacing: Style.spacing.xs
+          bottomPadding: Style.spacing.md
+
+          SectionHeader {
+            width: parent.width
+            title: modelData.title
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+          }
+
+          Repeater {
+            model: modelData.rows
+
+            Row {
+              required property var modelData
+              width: help.bodyWidth
+              spacing: Style.spacing.md
+
+              PlainLabel {
+                id: hintLabel
+                objectName: "helpKey"
+                width: Style.space(84)
+                elide: Text.ElideNone
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+                text: modelData.hint
+              }
+
+              PlainLabel {
+                objectName: "helpLabel"
+                width: parent.width - hintLabel.width - parent.spacing
+                wrapMode: Text.WordWrap
+                color: help.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                text: modelData.label
+              }
+            }
           }
         }
       }
     }
-  }
 
-  // ---------- The confirm dialog: the CLI's own dry run (M3-D9, M3-D46) ----------
-  ConfirmDialog {
-    id: dialog
-    objectName: "confirmDialog"
-    anchors.fill: parent
-    z: 10
-    opened: root.confirming
-    message: root.confirm
-      ? (root.confirm.stale ? String(root.confirm.stale) + "\n\n" : "") + String(root.confirm.text || "")
-      : ""
-    cancelText: "No"
-    confirmText: "Yes"
-    foreground: root.foreground
-    fontFamily: root.fontFamily
-    onConfirmed: root.confirmYes()
-    onCanceled: root.confirmNo()
+    // Takes the keyboard while the dialog is open: it sees auto-repeat, which the key
+    // catcher's signals do not carry.
+    Item {
+      id: confirmKeys
+      objectName: "confirmKeys"
+      Keys.onPressed: function(event) {
+        event.accepted = root.confirmKey(event.key, event.text, event.isAutoRepeat, event.modifiers)
+      }
+    }
+
+    // The text zoom by the wheel (§5.6): Ctrl+wheel, on an item above everything so the
+    // Flickable never takes the tick first; without Ctrl the handler declines and the
+    // wheel falls through to the list. The item takes no click.
+    Item {
+      anchors.fill: parent
+      z: 20
+
+      WheelHandler {
+        acceptedModifiers: Qt.ControlModifier
+        onWheel: function(event) { root.bumpUiScale(event.angleDelta.y > 0 ? 1 : -1) }
+      }
+    }
   }
 
   Component {
@@ -1021,94 +1346,9 @@ Item {
     BackupsView {}
   }
 
-  RestoreChooser {
-    id: chooser
-    objectName: "chooser"
-    anchors.fill: parent
-    z: 8
-    frame: root
-  }
-
-  // ---------- The key reference (`?`): KEYMAP's rows where the panel stands ----------
-  // Over the views and the problem cards, under a dialog. While it is open every key is
-  // its own: `?` and Esc close it, j/k scroll it, and nothing beneath it acts.
-  Sheet {
-    id: help
-    objectName: "help"
-    anchors.fill: parent
-    z: 9
-    reference: true
-    opened: root.helpOpen
-    title: "Keys · " + (root.cardMode ? "Problem card" : String(Model.VIEW_TITLES[root.view] || ""))
-    foreground: root.foreground
-    fontFamily: root.fontFamily
-    onCanceled: root.helpOpen = false
-
-    Repeater {
-      objectName: "helpSections"
-      model: root.helpOpen ? Model.helpSections(root.keyContext) : []
-
-      Column {
-        required property var modelData
-        width: help.bodyWidth
-        spacing: Style.spacing.xs
-        bottomPadding: Style.spacing.md
-
-        SectionHeader {
-          width: parent.width
-          title: modelData.title
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-        }
-
-        Repeater {
-          model: modelData.rows
-
-          Row {
-            required property var modelData
-            width: help.bodyWidth
-            spacing: Style.spacing.md
-
-            PlainLabel {
-              id: hintLabel
-              objectName: "helpKey"
-              width: Style.space(84)
-              elide: Text.ElideNone
-              color: root.foreground
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              font.bold: true
-              text: modelData.hint
-            }
-
-            PlainLabel {
-              objectName: "helpLabel"
-              width: parent.width - hintLabel.width - parent.spacing
-              wrapMode: Text.WordWrap
-              color: help.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              text: modelData.label
-            }
-          }
-        }
-      }
-    }
-  }
-
-  // Takes the keyboard while the dialog is open: it sees auto-repeat, which the key
-  // catcher's signals do not carry.
-  Item {
-    id: confirmKeys
-    objectName: "confirmKeys"
-    Keys.onPressed: function(event) {
-      event.accepted = root.confirmKey(event.key, event.text, event.isAutoRepeat, event.modifiers)
-    }
-  }
-
-  // The keys that are no single character (design doc §3: Ctrl+Z, PgUp, PgDn) are
-  // window shortcuts: they fire on the ShortcutOverride pass, before the key catcher
-  // sees the key, and go through the same KEYMAP lookup as every other key.
+  // The keys that are no single character (design doc §3: Ctrl+Z, PgUp, PgDn, the
+  // text zoom) are window shortcuts: they fire on the ShortcutOverride pass, before the
+  // key catcher sees the key, and go through the same KEYMAP lookup as every other key.
   Item {
     Shortcut {
       sequence: "Ctrl+Z"
@@ -1124,6 +1364,21 @@ Item {
       sequence: "PgDown"
       enabled: root.shortcutsOn
       onActivated: root.act("PgDn")
+    }
+    Shortcut {
+      sequences: ["Ctrl+=", "Ctrl++"]
+      enabled: root.opened
+      onActivated: root.act("Ctrl+=")
+    }
+    Shortcut {
+      sequences: ["Ctrl+-", "Ctrl+_"]
+      enabled: root.opened
+      onActivated: root.act("Ctrl+-")
+    }
+    Shortcut {
+      sequence: "Ctrl+0"
+      enabled: root.opened
+      onActivated: root.act("Ctrl+0")
     }
   }
 }

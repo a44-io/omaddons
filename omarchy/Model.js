@@ -810,6 +810,11 @@ function targetOf(target) {
     "id": str(target.id),
     "key": str(target.key),
     "label": str(target.label) || str(target.id),
+    // The name a player knows the client by (design doc §6.3): never the id when the
+    // binary gives one.
+    "displayName": str(target.display_name) || str(target.id),
+    "version": strOrNull(target.version),
+    "family": str(target.family),
     "running": target.running === true,
     // `null` when the process table could not be read (`running_unknown`).
     "runningUnknown": target.running === null,
@@ -1628,9 +1633,13 @@ function fixText(env) {
 
 // -------------------------------------------------------------- the panel frame (F4)
 
-// The panel's views, in switcher order: h/l step through them, 1–5 jump.
-var VIEWS = ["updates", "installed", "issues", "backups", "search"]
-var VIEW_TITLES = { "updates": "Updates", "installed": "Installed", "issues": "Issues", "backups": "Backups", "search": "Search" }
+// The panel's views, in tab order (design doc §2.1: Errors and History join with
+// their views, .27 and .30): h/l step through them, the digits jump. The ids stay
+// what IPC's `show <view>` takes; "installed" is titled Addons (§2.1, decided).
+var VIEWS = ["updates", "installed", "search", "issues", "backups"]
+var VIEW_TITLES = { "updates": "Updates", "installed": "Addons", "search": "Search", "issues": "Issues", "backups": "Backups" }
+// Each view's glyph (§5.4), which the tabs show alone below 480 px (§2.1).
+var VIEW_GLYPHS = { "updates": 0xF0CE1, "installed": 0xF0431, "search": 0xF0349, "issues": 0xF0026, "backups": 0xF003C }
 
 // ------------------------------------------------------------------ the key map (design doc §3)
 
@@ -1645,10 +1654,10 @@ var KEY_CONTEXTS = [
   { "id": "panel", "title": "Anywhere" },
   { "id": "view", "title": "Every view" },
   { "id": "updates", "title": "Updates" },
-  { "id": "installed", "title": "Installed" },
+  { "id": "installed", "title": "Addons" },
+  { "id": "search", "title": "Search" },
   { "id": "issues", "title": "Issues" },
   { "id": "backups", "title": "Backups" },
-  { "id": "search", "title": "Search" },
   { "id": "field", "title": "Search box" },
   { "id": "card", "title": "Problem card" },
   { "id": "sheet", "title": "Dialog" },
@@ -1666,10 +1675,12 @@ var KEY_CONTEXTS = [
 // runs: no key is listed before it does something.
 // BEGIN KEYMAP: checked by tests/omarchy_widget.rs against README's key table
 var KEYMAP = [
-  { "keys": ["h", "l", "Left", "Right"], "context": "panel", "action": "view_step", "label": "previous or next view", "hint": "h l" },
-  { "keys": ["1", "2", "3", "4", "5"], "context": "panel", "action": "view", "label": "view 1 to 5: Updates, Installed, Issues, Backups, Search", "hint": "1–5" },
+  { "keys": ["h", "l", "Left", "Right"], "context": "panel", "action": "view_step", "label": "previous or next view (on a page, h goes back)", "hint": "h l" },
+  { "keys": ["1", "2", "3", "4", "5"], "context": "panel", "action": "view", "label": "view 1 to 5: Updates, Addons, Search, Issues, Backups", "hint": "1–5" },
   { "keys": ["?"], "context": "panel", "action": "help", "label": "this key reference", "hint": "?" },
-  { "keys": ["Esc"], "context": "panel", "action": "close", "label": "close the panel", "hint": "Esc" },
+  { "keys": ["z"], "context": "panel", "action": "zoom", "label": "fill the screen, and back", "hint": "z" },
+  { "keys": ["Ctrl+=", "Ctrl+-", "Ctrl+0"], "context": "panel", "action": "text_zoom", "label": "bigger or smaller text, and back to normal (or Ctrl+wheel)", "hint": "Ctrl+= Ctrl+-" },
+  { "keys": ["Esc"], "context": "panel", "action": "close", "label": "back out one layer: a page, then the panel closes", "hint": "Esc" },
   { "keys": ["Tab", "Shift+Tab"], "context": "panel", "action": "tab", "label": "the bar's next or previous panel", "hint": "Tab" },
   { "keys": ["j", "k", "Down", "Up"], "context": "view", "action": "move", "label": "move the cursor", "hint": "j k" },
   { "keys": ["g", "G"], "context": "view", "action": "edge", "label": "first or last row", "hint": "g G" },
@@ -1731,7 +1742,8 @@ function keyName(code, text, modifiers) {
   var named = QT_KEY_NAMES[String(code)]
   if (named === "Tab" && (mods & QT_SHIFT)) return "Shift+Tab"
   if (named) return named
-  if ((mods & QT_CONTROL) && code >= 0x41 && code <= 0x5a) return "Ctrl+" + String.fromCharCode(code)
+  if ((mods & QT_CONTROL) && ((code >= 0x41 && code <= 0x5a) || (code >= 0x30 && code <= 0x39) || code === 0x3d || code === 0x2d))
+    return "Ctrl+" + String.fromCharCode(code)
   if (typeof text === "string" && text.length === 1 && text >= " " && text !== "\u007f") return text
   return ""
 }
@@ -1739,8 +1751,8 @@ function keyName(code, text, modifiers) {
 // The direction a key steps in, for the rows that hold both directions (j and k, h and
 // l, g and G, t and T, PgUp and PgDn): 1 forward or down, -1 back or up, else 0.
 var KEY_STEPS = {
-  "j": 1, "Down": 1, "l": 1, "Right": 1, "G": 1, "PgDn": 1, "t": 1, "Tab": 1,
-  "k": -1, "Up": -1, "h": -1, "Left": -1, "g": -1, "PgUp": -1, "T": -1, "Shift+Tab": -1
+  "j": 1, "Down": 1, "l": 1, "Right": 1, "G": 1, "PgDn": 1, "t": 1, "Tab": 1, "Ctrl+=": 1,
+  "k": -1, "Up": -1, "h": -1, "Left": -1, "g": -1, "PgUp": -1, "T": -1, "Shift+Tab": -1, "Ctrl+-": -1
 }
 
 function keyStep(name) {
@@ -1748,10 +1760,11 @@ function keyStep(name) {
 }
 
 // The KEYMAP contexts a key is looked up in, from where the keyboard is: a view's name,
-// "card", "field", "sheet" or "help".
+// "page" (a page on the navigation stack: the frame's keys, and the page's own rows when
+// pages bring some, .23), "card", "field", "sheet" or "help".
 function keyScopes(context) {
   if (context === "card") return ["panel", "card"]
-  if (VIEWS.indexOf(context) >= 0) return ["panel", "view", context]
+  if (VIEWS.indexOf(context) >= 0 || context === "page") return ["panel", "view", context]
   return [context]
 }
 
@@ -1859,32 +1872,143 @@ function stepView(view, step) {
   return VIEWS[(((at + step) % n) + n) % n]
 }
 
-// The hero's meta line: "6 clients · 3 updates · 1 issue".
-function heroMeta(summary) {
+// The clients a scope covers: the one `filter` names, or every client under All.
+function scopeTargets(targets, filter) {
+  var list = Array.isArray(targets) ? targets : []
+  return filter ? list.filter(function(t) { return t.id === filter }) : list
+}
+
+// What needs a player in a scope, counted (design doc §2.1): new Lua errors, problems
+// (`urgent` the P0 and P1 ones), updates; the running clients, by name, and whether
+// the process table could not tell. Under All the machine's own problems count too.
+function scopeFacts(targets, filter, machineIssues) {
+  var scoped = scopeTargets(targets, filter)
+  var facts = { "errors": 0, "problems": 0, "urgent": 0, "updates": 0, "running": [], "unknown": false }
+  var issues = filter || !Array.isArray(machineIssues) ? [] : machineIssues.slice()
+  for (var i = 0; i < scoped.length; i++) {
+    var t = scoped[i]
+    if (t.errors) facts.errors += t.errors["new"]
+    if (t.updates) facts.updates += t.updates.available
+    if (Array.isArray(t.issues)) issues = issues.concat(t.issues)
+    if (t.running) facts.running.push(t.displayName || t.id)
+    if (t.runningUnknown) facts.unknown = true
+  }
+  facts.problems = issues.length
+  facts.urgent = issues.filter(function(issue) { return issue.urgent === true }).length
+  return facts
+}
+
+// The hero's title: the scope (§2.1), "All clients" or the client's player name.
+function heroTitle(targets, filter) {
+  if (!filter) return "All clients"
+  var t = targetById(targets, filter)
+  return t ? (t.displayName || t.id) : filter
+}
+
+// The hero's meta line, urgent first, quiet parts left out, in capitals (§2.1, §5.2):
+// "2 NEW ERRORS · 1 PROBLEM · 3 UPDATES · RETAIL RUNNING", "ALL GOOD"; "" before the
+// first answer.
+function heroMeta(summary, targets, filter, machineIssues) {
   if (!summary) return ""
-  var parts = [plural(summary.targets, "client"), plural(summary.updates.available, "update")]
-  if (summary.issuesTotal > 0) parts.push(plural(summary.issuesTotal, "issue"))
-  if (summary.errors && summary.errors["new"] > 0) parts.push(plural(summary.errors["new"], "new error"))
+  var facts = scopeFacts(targets, filter, machineIssues)
+  var parts = []
+  if (facts.errors > 0) parts.push(plural(facts.errors, "new error"))
+  if (facts.urgent > 0) parts.push(plural(facts.problems, "problem"))
+  if (facts.updates > 0) parts.push(plural(facts.updates, "update"))
+  if (facts.urgent === 0 && facts.problems > 0) parts.push(plural(facts.problems, "problem"))
+  if (parts.length === 0) parts.push("all good")
+  if (facts.running.length > 0) parts.push(filter ? "running" : joinNames(facts.running) + " running")
+  else if (facts.unknown) parts.push("can't tell if the game is running")
+  return parts.join(" · ").toUpperCase()
+}
+
+// The hero glyph's state (§2.1): "urgent" for new Lua errors or a P0 or P1 problem,
+// "busy" while a change runs, else "quiet".
+function heroState(summary, targets, filter, machineIssues, busy) {
+  if (summary) {
+    var facts = scopeFacts(targets, filter, machineIssues)
+    if (facts.errors > 0 || facts.urgent > 0) return "urgent"
+  }
+  return busy ? "busy" : "quiet"
+}
+
+// The hero's detail (§2.1): the client's version and family under one client
+// ("12.1.5.70391 · mainline"), else how many clients there are.
+function heroDetail(summary, targets, filter) {
+  if (!summary) return ""
+  if (!filter) return plural(Array.isArray(targets) ? targets.length : 0, "client")
+  var t = targetById(targets, filter)
+  if (!t) return ""
+  if (t.missing) return "not on this computer any more"
+  return [t.version || "", t.family].filter(function(p) { return !!p }).join(" · ")
+}
+
+// The freshness footer (§2.1, §6.4): "6 clients · checked 25 min ago · Retail
+// running"; under one client "checked 25 min ago · running". The check is the scope's
+// oldest; "never checked" when none was.
+function footerText(summary, targets, filter, nowMs) {
+  if (!summary) return ""
+  var scoped = scopeTargets(targets, filter)
+  var parts = filter ? [] : [plural(scoped.length, "client")]
+  var oldest = null
+  for (var i = 0; i < scoped.length; i++) {
+    var checked = scoped[i].updates ? scoped[i].updates.checkedAt : null
+    if (checked && (!oldest || Date.parse(checked) < Date.parse(oldest))) oldest = checked
+  }
+  if (scoped.length > 0) parts.push(oldest ? ageText(oldest, nowMs) : "never checked")
+  var facts = scopeFacts(targets, filter, [])
+  if (facts.running.length > 0) parts.push(filter ? "running" : joinNames(facts.running) + " running")
   return parts.join(" · ")
 }
 
-// The hero's detail: "checked 25 min ago · retail running" (the oldest check, as the
-// tooltip says it), or "running: unknown" when the process table could not be read.
-function heroDetail(summary, targets, nowMs) {
-  if (!summary) return ""
-  var parts = []
-  var oldest = null
-  var unknown = false
-  for (var i = 0; i < targets.length; i++) {
-    var checked = targets[i].updates ? targets[i].updates.checkedAt : null
-    if (checked && (!oldest || Date.parse(checked) < Date.parse(oldest))) oldest = checked
-    if (targets[i].runningUnknown) unknown = true
+// The scope Dropdown's options (§2.1): "All clients · 3 updates · 2 new errors" first,
+// then each client by its player name with its updates and whether it runs; a client
+// that is gone says "not found", one whose running state is unknown says so.
+function scopeOptions(targets) {
+  var list = Array.isArray(targets) ? targets : []
+  var counts = function(facts) {
+    var parts = []
+    if (facts.updates > 0) parts.push(plural(facts.updates, "update"))
+    if (facts.errors > 0) parts.push(plural(facts.errors, "new error"))
+    return parts
   }
-  var age = oldest ? ageText(oldest, nowMs) : ""
-  if (age) parts.push(age)
-  if (summary.running.length > 0) parts.push(joinNames(summary.running) + " running")
-  else if (unknown) parts.push("running: unknown")
-  return parts.join(" · ")
+  var options = [{ "value": "", "label": ["All clients"].concat(counts(scopeFacts(list, "", []))).join(" · ") }]
+  for (var i = 0; i < list.length; i++) {
+    var t = list[i]
+    var parts = [t.displayName || t.id]
+    if (t.missing) parts.push("not found")
+    else {
+      parts = parts.concat(counts(scopeFacts(list, t.id, [])))
+      if (t.running) parts.push("running")
+      else if (t.runningUnknown) parts.push("can't tell if running")
+    }
+    options.push({ "value": t.id, "label": parts.join(" · ") })
+  }
+  return options
+}
+
+// Each tab's count in the scope (§2.1), `{count, urgent}` (a zero count is not shown):
+// Updates its updates; Issues its problems and, until the Errors view (.27) takes
+// them, its new Lua errors, urgent for a P0 or P1 problem or a new error; Backups the
+// clients `status` asks to back up (`backup_create`, no checkpoint in 7 days).
+function viewCounts(targets, filter, commands, machineIssues) {
+  var facts = scopeFacts(targets, filter, machineIssues)
+  var scoped = scopeTargets(targets, filter).map(function(t) { return t.id })
+  var backups = 0
+  var list = Array.isArray(commands) ? commands : []
+  for (var i = 0; i < list.length; i++) {
+    var argv = Array.isArray(list[i].argv) ? list[i].argv : []
+    var at = argv.indexOf("-t")
+    if (list[i].action === "backup_create" && at >= 0 && scoped.indexOf(argv[at + 1]) >= 0) backups++
+  }
+  var none = { "count": 0, "urgent": false }
+  return {
+    "updates": { "count": facts.updates, "urgent": false },
+    "installed": none,
+    "search": none,
+    "issues": { "count": facts.problems + facts.errors, "urgent": facts.urgent > 0 || facts.errors > 0 },
+    "backups": { "count": backups, "urgent": false }
+  }
 }
 
 function targetById(targets, id) {
@@ -3050,8 +3174,16 @@ if (typeof module !== "undefined") {
     keyTip: keyTip,
     helpSections: helpSections,
     stepView: stepView,
+    VIEW_GLYPHS: VIEW_GLYPHS,
+    scopeTargets: scopeTargets,
+    scopeFacts: scopeFacts,
+    heroTitle: heroTitle,
     heroMeta: heroMeta,
+    heroState: heroState,
     heroDetail: heroDetail,
+    footerText: footerText,
+    scopeOptions: scopeOptions,
+    viewCounts: viewCounts,
     targetById: targetById,
     nextFilter: nextFilter,
     stepFilter: stepFilter,

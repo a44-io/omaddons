@@ -27,9 +27,10 @@ TestCase {
   width: 620
   height: 1100
 
-  // The panel as the bar's KeyboardPanel sizes it (BarWidget.qml): 540 wide by default,
-  // at most 720 tall, inside the popup card.
-  readonly property int panelWidth: 540
+  // The panel as the bar's KeyboardPanel sizes it (BarWidget.qml): 540 wide by default
+  // (a scene may set the minimum, 400, before it opens), at most 720 tall, inside the
+  // popup card.
+  property int panelWidth: 540
   readonly property int panelMaxHeight: 720
   readonly property int cardPadding: 12
 
@@ -339,6 +340,7 @@ TestCase {
 
   function cleanup() {
     closePanel()
+    panelWidth = 540
     if (service) service.destroy()
     service = null
     ProcessRegistry.reset()
@@ -598,6 +600,38 @@ TestCase {
   function test_updates_short() {
     open(everyday(), "updates")
     shoot("updates-short")
+  }
+
+  // The frame (design doc §2.1) at the minimum width: glyph tabs, the view named in the
+  // content, one part of the meta line, no detail.
+  function test_frame_at_400() {
+    panelWidth = 400
+    open(everyday(), "updates")
+    verify(frame.narrow)
+    shoot("frame-400-updates")
+  }
+
+  function test_frame_issues_at_400() {
+    panelWidth = 400
+    var scene = everyday()
+    scene.status = the("status-attention")
+    open(scene, "issues")
+    shoot("frame-400-issues")
+  }
+
+  // One client in scope: its name as the title, its version and family, its counts.
+  function test_frame_one_client() {
+    open(everyday(), "updates", "retail")
+    compare(findChild(frame, "hero").title, "Retail")
+    shoot("frame-540-one-client")
+  }
+
+  // The text zoom (Ctrl+=, three steps): every glyph and gap 1.3 times, in the same panel.
+  function test_frame_text_zoom() {
+    open(everyday(), "updates")
+    frame.uiScale = 1.3
+    settle(everyday())
+    shoot("frame-540-text-zoom")
   }
 
   function test_updates_one_client_running() {

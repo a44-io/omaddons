@@ -54,6 +54,14 @@ pub const ASSETS: &[(&str, &str)] = &[
     ),
     ("ui/Sheet.qml", include_str!("../../omarchy/ui/Sheet.qml")),
     (
+        "ui/TabCount.qml",
+        include_str!("../../omarchy/ui/TabCount.qml"),
+    ),
+    (
+        "ui/TabStrip.qml",
+        include_str!("../../omarchy/ui/TabStrip.qml"),
+    ),
+    (
         "ui/VirtualList.qml",
         include_str!("../../omarchy/ui/VirtualList.qml"),
     ),

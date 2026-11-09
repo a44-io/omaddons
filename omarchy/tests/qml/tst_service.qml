@@ -870,8 +870,17 @@ TestCase {
     ready(4)
     var state = JSON.parse(service.stateJson())
     compare(Object.keys(state).sort(), ["action", "bar", "binary", "confirm", "contextGeneration", "lanes", "lastPreview",
-      "lastRefreshMs", "lastResult", "panelOpen", "phase", "summary", "toolVersion", "widgetVersion"])
+      "lastRefreshMs", "lastResult", "panel", "panelOpen", "phase", "summary", "toolVersion", "widgetVersion"])
     compare([state.confirm, state.lastPreview], [null, null])
+    // The open panel's scope, view, page depth, sheet and zoom; null while none is open.
+    compare(state.panel, null)
+    service.panelState = { "scope": "retail", "view": "updates", "stackDepth": 0, "sheet": null, "zoomed": false, "textZoom": 1 }
+    service.setPanelOpen("p", true)
+    compare(JSON.parse(service.stateJson()).panel.scope, "retail")
+    service.setPanelOpen("p", false)
+    compare(JSON.parse(service.stateJson()).panel, null)
+    // A check runs on the network lane: `checking` says so (the hero's spinner).
+    verify(!service.checking)
     compare(state.phase, "ok")
     compare(state.bar.badge, 4)
     compare(state.binary, Build.BINARY)

@@ -151,7 +151,9 @@ Panel {
   }
 
   // The keyboard panel (the house pattern): `panelWidth` wide, at most 720 tall, the
-  // frame inside.
+  // frame inside. Zoomed (`z`, design doc §5.6), the fitted helpers get a size no
+  // screen reaches and land on the screen less the bar and margins; it is the frame's
+  // state, in memory only.
   KeyboardPanel {
     id: panel
     objectName: "panel"
@@ -160,8 +162,10 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: view.focusItem
-    contentWidth: panel.fittedContentWidth(Style.space(Model.intSetting(root.settings, "panelWidth", 540, 400, 800)))
-    contentHeight: panel.fittedContentHeight(view.contentImplicitHeight, Style.space(720))
+    contentWidth: view.zoomed ? panel.fittedContentWidth(999999)
+      : panel.fittedContentWidth(Style.space(Model.intSetting(root.settings, "panelWidth", 540, 400, 800)))
+    contentHeight: view.zoomed ? panel.fittedContentHeight(999999)
+      : panel.fittedContentHeight(view.contentImplicitHeight, Style.space(720))
 
     PanelView {
       id: view

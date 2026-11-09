@@ -668,8 +668,8 @@ describe("the key map", () => {
       ["e_shows_notes", ["e", "updates"], { action: "notes", step: 0 }],
       ["s_is_search_everywhere", ["s", "backups"], { action: "search", step: 0 }],
       ["i_installs_a_result", ["i", "search"], { action: "install", step: 0 }],
-      ["a_digit_names_its_view", ["3", "updates"], { action: "view", step: 0, view: "issues" }],
-      ["the_last_digit", ["5", "issues"], { action: "view", step: 0, view: "search" }],
+      ["a_digit_names_its_view", ["3", "updates"], { action: "view", step: 0, view: "search" }],
+      ["the_last_digit", ["5", "issues"], { action: "view", step: 0, view: "backups" }],
       ["t_steps_forward", ["t", "installed"], { action: "client", step: 1 }],
       ["T_steps_back", ["T", "installed"], { action: "client", step: -1 }],
       ["g_goes_to_the_top", ["g", "updates"], { action: "edge", step: -1 }],
@@ -687,7 +687,13 @@ describe("the key map", () => {
       ["install_outside_search", ["i", "updates"], { action: null, note: "Nothing to install here" }],
       ["x_where_nothing_goes", ["x", "updates"], { action: null, note: "Nothing to remove here" }],
       ["no_such_key", ["q", "updates"], null],
-      ["z_waits_for_zoom", ["z", "updates"], null],
+      ["z_zooms", ["z", "updates"], { action: "zoom", step: 0 }],
+      ["z_zooms_on_a_card_too", ["z", "card"], { action: "zoom", step: 0 }],
+      ["ctrl_equals_grows_the_text", ["Ctrl+=", "search"], { action: "text_zoom", step: 1 }],
+      ["ctrl_minus_shrinks_it", ["Ctrl+-", "search"], { action: "text_zoom", step: -1 }],
+      ["ctrl_0_resets_it", ["Ctrl+0", "backups"], { action: "text_zoom", step: 0 }],
+      ["a_page_has_the_frames_keys", ["?", "page"], { action: "help", step: 0 }],
+      ["a_page_has_no_views_keys", ["u", "page"], null],
       ["slash_waits_for_the_filter", ["/", "installed"], null],
       ["a_digit_past_the_views", ["6", "updates"], null],
       ["two_letters", ["uu", "updates"], null],
@@ -715,12 +721,13 @@ describe("the key map", () => {
       expect(row.keys.length).toBeGreaterThan(0)
       for (const field of ["action", "label", "hint"]) expect([row.action, field, typeof row[field]]).toEqual([row.action, field, "string"])
       // A key name is one character, or a name keyName gives.
-      for (const key of row.keys) expect([key, key.length === 1 || /^(Esc|Tab|Shift\+Tab|Enter|Space|Left|Right|Up|Down|PgUp|PgDn|Ctrl\+[A-Z])$/.test(key)]).toEqual([key, true])
+      for (const key of row.keys) expect([key, key.length === 1 || /^(Esc|Tab|Shift\+Tab|Enter|Space|Left|Right|Up|Down|PgUp|PgDn|Ctrl\+[A-Z0-9=-])$/.test(key)]).toEqual([key, true])
     }
     for (const id of ids) expect([id, M.KEYMAP.some((r) => r.context === id)]).toEqual([id, true])
     // Every view has a context of its own, titled as the switcher titles it.
     for (const v of M.VIEWS) expect(M.KEY_CONTEXTS.find((c) => c.id === v).title).toBe(M.VIEW_TITLES[v])
-    expect(M.VIEWS.map((v) => M.VIEW_TITLES[v])).toEqual(["Updates", "Installed", "Issues", "Backups", "Search"])
+    expect(M.VIEWS.map((v) => M.VIEW_TITLES[v])).toEqual(["Updates", "Addons", "Search", "Issues", "Backups"])
+    for (const v of M.VIEWS) expect([v, typeof M.VIEW_GLYPHS[v]]).toEqual([v, "number"])
   })
 
   test("the digits are the views, one each", () => {
@@ -796,6 +803,9 @@ describe("the key map", () => {
       ["page_down", [0x01000017, "", 0], "PgDn"],
       ["ctrl_z_as_qt_types_it", [0x5a, "\u001a", CTRL], "Ctrl+Z"],
       ["ctrl_z_as_qtest_types_it", [0x5a, "z", CTRL], "Ctrl+Z"],
+      ["ctrl_equals", [0x3d, "=", CTRL], "Ctrl+="],
+      ["ctrl_minus", [0x2d, "-", CTRL], "Ctrl+-"],
+      ["ctrl_0", [0x30, "0", CTRL], "Ctrl+0"],
       ["a_letter", [0x55, "u", 0], "u"],
       ["a_capital", [0x55, "U", SHIFT], "U"],
       ["question_mark", [0x3f, "?", SHIFT], "?"],
@@ -811,7 +821,8 @@ describe("the key map", () => {
     expect(M.keyHint("enter", "issues")).toBe("Enter")
     expect(M.keyHint("search", "field")).toBe("Enter")
     expect(M.keyHint("search", "view")).toBe("s")
-    expect(M.keyHint("zoom")).toBe("")
+    expect(M.keyHint("zoom")).toBe("z")
+    expect(M.keyHint("settings")).toBe("", "no key before its action exists (.31)")
     expect(M.withKey("Check now", "check")).toBe("Check now (c)")
     expect(M.withKey("Undo update on era", "undo")).toBe("Undo update on era (Ctrl+Z)")
     expect(M.withKey("Nothing", "no_such_action")).toBe("Nothing")
@@ -838,28 +849,107 @@ describe("the panel frame", () => {
 
   test("views step and wrap", () => {
     expect(M.stepView("updates", 1)).toBe("installed")
-    expect(M.stepView("updates", -1)).toBe("search")
-    expect(M.stepView("search", 1)).toBe("updates")
+    expect(M.stepView("updates", -1)).toBe("backups")
+    expect(M.stepView("backups", 1)).toBe("updates")
+    expect(M.stepView("installed", 1)).toBe("search")
     expect(M.stepView("nonsense", 1)).toBe("installed")
   })
 
-  test("the hero speaks the summary", () => {
-    const env = fixture("status-updates")
-    const model = M.reduceStatus(env, NOW)
-    expect(M.heroMeta(model.summary)).toBe("2 clients · 4 updates")
-    expect(M.heroMeta(null)).toBe("")
+  test("the hero speaks the scope, urgent first", () => {
+    const model = M.reduceStatus(fixture("status-updates"), NOW)
+    expect(model.targets.map((t) => [t.id, t.displayName, t.version, t.family])).toEqual([
+      ["era", "Classic Era", "1.15.9.64520", "vanilla"], ["retail", "Retail", "12.1.5.70391", "mainline"]])
+    expect(M.heroTitle(model.targets, "")).toBe("All clients")
+    expect(M.heroTitle(model.targets, "era")).toBe("Classic Era")
+    expect(M.heroTitle(model.targets, "gone")).toBe("gone")
+    expect(M.heroMeta(model.summary, model.targets, "", [])).toBe("4 UPDATES")
+    expect(M.heroMeta(model.summary, model.targets, "era", [])).toBe("2 UPDATES")
+    expect(M.heroMeta(null, model.targets, "", [])).toBe("")
+    expect(M.heroDetail(model.summary, model.targets, "")).toBe("2 clients")
+    expect(M.heroDetail(model.summary, model.targets, "retail")).toBe("12.1.5.70391 · mainline")
+    expect(M.heroDetail(null, model.targets, "")).toBe("")
+    expect(M.heroState(model.summary, model.targets, "", [], false)).toBe("quiet")
+    expect(M.heroState(model.summary, model.targets, "", [], true)).toBe("busy")
+    // Running: by name under All, a word under the client.
     const running = fixture("status-running")
     const at = Date.parse(running.data.targets[0].updates.checked_at) + 25 * 60000
     const r = M.reduceStatus(running, at)
-    expect(M.heroDetail(r.summary, r.targets, at)).toBe("checked 25 min ago · retail running")
+    expect(M.heroMeta(r.summary, r.targets, "", [])).toBe("4 UPDATES · RETAIL RUNNING")
+    expect(M.heroMeta(r.summary, r.targets, "retail", [])).toBe("2 UPDATES · RUNNING")
+    expect(M.heroMeta(r.summary, r.targets, "era", [])).toBe("2 UPDATES")
     const unknown = JSON.parse(JSON.stringify(running))
     unknown.data.summary.running = []
     for (const t of unknown.data.targets) t.running = null
     const u = M.reduceStatus(unknown, at)
-    expect(u.targets[0].runningUnknown).toBe(true)
-    expect(M.heroDetail(u.summary, u.targets, at)).toBe("checked 25 min ago · running: unknown")
-    const issues = M.reduceStatus(fixture("status-attention"), NOW)
-    expect(M.heroMeta(issues.summary)).toContain("1 issue")
+    expect(M.heroMeta(u.summary, u.targets, "", [])).toBe("4 UPDATES · CAN'T TELL IF THE GAME IS RUNNING")
+    // A P0 or P1 problem goes first, and makes the glyph urgent; new errors before it.
+    const a = M.reduceStatus(fixture("status-attention"), NOW)
+    expect(M.heroMeta(a.summary, a.targets, "", [])).toBe("1 PROBLEM")
+    expect(M.heroState(a.summary, a.targets, "", [], true)).toBe("urgent")
+    const erroring = JSON.parse(JSON.stringify(model.targets))
+    erroring[1].errors = { "new": 2 }
+    erroring[1].issues = [{ "urgent": false }]
+    expect(M.heroMeta(model.summary, erroring, "", [])).toBe("2 NEW ERRORS · 4 UPDATES · 1 PROBLEM")
+    expect(M.heroMeta(model.summary, erroring, "", [{ "urgent": true }])).toBe("2 NEW ERRORS · 2 PROBLEMS · 4 UPDATES")
+    expect(M.heroMeta(model.summary, erroring, "era", [{ "urgent": true }])).toBe("2 UPDATES",
+      "the machine's problems are All's")
+    expect(M.heroState(model.summary, erroring, "retail", [], false)).toBe("urgent")
+    expect(M.heroState(model.summary, erroring, "era", [], false)).toBe("quiet")
+    // Nothing to say: all good.
+    const quiet = model.targets.map((t) => Object.assign({}, t, { "updates": null }))
+    expect(M.heroMeta(model.summary, quiet, "", [])).toBe("ALL GOOD")
+    // A client that is gone.
+    expect(M.heroDetail(model.summary, [{ "id": "x", "missing": true }], "x")).toBe("not on this computer any more")
+  })
+
+  test("the freshness footer says how many clients, when checked, and who runs", () => {
+    const running = fixture("status-running")
+    const at = Date.parse(running.data.targets[0].updates.checked_at) + 25 * 60000
+    const r = M.reduceStatus(running, at)
+    expect(M.footerText(r.summary, r.targets, "", at)).toBe("2 clients · checked 25 min ago · Retail running")
+    expect(M.footerText(r.summary, r.targets, "retail", at)).toMatch(/^checked (just now|\d+ min ago) · running$/)
+    expect(M.footerText(r.summary, r.targets, "era", at)).toBe("checked 25 min ago")
+    const never = r.targets.map((t) => Object.assign({}, t, { "updates": null, "running": false }))
+    expect(M.footerText(r.summary, never, "", at)).toBe("2 clients · never checked")
+    expect(M.footerText(null, r.targets, "", at)).toBe("")
+  })
+
+  test("the scope's options name each client, its counts and its state", () => {
+    const r = M.reduceStatus(fixture("status-running"), NOW)
+    expect(M.scopeOptions(r.targets)).toEqual([
+      { value: "", label: "All clients · 4 updates" },
+      { value: "era", label: "Classic Era · 2 updates" },
+      { value: "retail", label: "Retail · 2 updates · running" }])
+    const odd = [
+      { "id": "gone", "displayName": "Gone", "missing": true, "updates": { "available": 3 }, "running": false },
+      { "id": "x", "displayName": "X", "runningUnknown": true, "errors": { "new": 1 } }]
+    expect(M.scopeOptions(odd)).toEqual([
+      { value: "", label: "All clients · 3 updates · 1 new error" },
+      { value: "gone", label: "Gone · not found" },
+      { value: "x", label: "X · 1 new error · can't tell if running" }])
+    expect(M.scopeOptions(null)).toEqual([{ value: "", label: "All clients" }])
+  })
+
+  test("the tabs count what each view has in the scope", () => {
+    const model = M.reduceStatus(fixture("status-updates"), NOW)
+    const commands = [{ "action": "backup_create", "argv": ["omaddons", "backup", "create", "-t", "era"] },
+      { "action": "update", "argv": ["omaddons", "update"] }]
+    const all = M.viewCounts(model.targets, "", commands, [])
+    expect(all.updates).toEqual({ count: 4, urgent: false })
+    expect(all.backups).toEqual({ count: 1, urgent: false })
+    expect(all.issues).toEqual({ count: 0, urgent: false })
+    expect(all.installed.count + all.search.count).toBe(0)
+    expect(M.viewCounts(model.targets, "retail", commands, []).backups.count).toBe(0)
+    expect(M.viewCounts(model.targets, "era", commands, []).updates.count).toBe(2)
+    const a = M.reduceStatus(fixture("status-attention"), NOW)
+    expect(M.viewCounts(a.targets, "", a.commands, []).issues).toEqual({ count: 1, urgent: true })
+    // New Lua errors count in Issues (until the Errors view, .27), urgent.
+    const erroring = JSON.parse(JSON.stringify(model.targets))
+    erroring[0].errors = { "new": 3 }
+    expect(M.viewCounts(erroring, "", [], []).issues).toEqual({ count: 3, urgent: true })
+    expect(M.viewCounts(erroring, "", [], [{ "urgent": false }]).issues).toEqual({ count: 4, urgent: true })
+    // Every view has an entry.
+    for (const v of M.VIEWS) expect([v, typeof all[v].count]).toEqual([v, "number"])
   })
 
   test("the filter cycles All, each target, All, both ways", () => {

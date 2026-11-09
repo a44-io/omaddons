@@ -228,7 +228,7 @@ TestCase {
     compare(json(svc.runs[0]), json(["update_addon", { "target": "era", "addon": "Bar" }, "Update Bar",
       [shownRow("k-era", "era", "Bar", "v1", "v2")]]))
     // Backups binds no `u`: the key says why, and runs nothing.
-    keyClick("4")
+    keyClick("5")
     keyClick("u")
     compare(svc.runs.length, 1)
     compare(findChild(view, "keyNote").text, "Nothing to update here")
@@ -384,7 +384,7 @@ TestCase {
       { "id": "retail", "running": false, "runningUnknown": false, "clientDir": "/games/retail", "updates": null, "issues": [] }
     ]
     svc.errors = Model.reduceErrors(errorsEnvelope(partial))
-    keyClick("3")
+    keyClick("4")
     compare(view.view, "issues")
   }
 
@@ -425,7 +425,7 @@ TestCase {
           "remediation": { "command": purge.join(" "), "argv": purge, "destructive": true } }
       ] }] } })
     svc.targets = reduced.targets
-    keyClick("3")
+    keyClick("4")
     compare(view.view, "issues")
     // The forget row: a button (Enter runs the fix), nothing to copy.
     verify(findChild(row("issueRow", 0), "enterHint").visible)
@@ -547,7 +547,7 @@ TestCase {
   // ------------------------------------------------------------- Search
 
   function searchReady(hints) {
-    keyClick("5")
+    keyClick("3")
     compare(view.view, "search")
     var field = findChild(content(), "searchField")
     keyClick("s")
@@ -645,7 +645,7 @@ TestCase {
   function backupsReady() {
     svc.backups = Model.reduceBackups(backupsEnvelope())
     view.nowMs = Date.parse("2100-01-01T00:00:00Z")
-    keyClick("4")
+    keyClick("5")
     compare(view.view, "backups")
   }
 

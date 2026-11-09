@@ -54,6 +54,11 @@ TestCase {
       property string unreachableText: ""
       property string binary: "/opt/omaddons-fixture/omaddons"
       property string requestedView: ""
+      property var commands: []
+      property var machineIssues: []
+      property bool checking: false
+      // What the open panel publishes for IPC's state().
+      property var panelState: null
 
       property var runs: []
       property var cliRuns: []
@@ -115,6 +120,66 @@ TestCase {
     }
   }
 
+  // A 150-row view, to scroll the content past the panel's height.
+  Component {
+    id: longView
+    Item {
+      property var frame: null
+      property int rowCount: 150
+      property bool typing: false
+      width: 500
+      implicitHeight: rows.implicitHeight
+
+      function handleKey(name, cursor) { return true }
+      function rowItem(i) { return repeater.itemAt(i) }
+
+      Column {
+        id: rows
+        Repeater {
+          id: repeater
+          model: 150
+          Rectangle { width: 10; height: 30 }
+        }
+      }
+    }
+  }
+
+  // A view with a filter that Esc clears before the panel closes (the .22 seam).
+  Component {
+    id: filterView
+    Item {
+      property var frame: null
+      property int rowCount: 1
+      property bool typing: false
+      property string filterText: ""
+      width: 500
+      implicitHeight: 30
+
+      function handleKey(name, cursor) { return true }
+      function escapeFilter() {
+        if (filterText === "") return false
+        filterText = ""
+        return true
+      }
+    }
+  }
+
+  // Counts how many times a view is made.
+  property int viewsMade: 0
+  Component {
+    id: countedView
+    Item {
+      property var frame: null
+      property int rowCount: 0
+      property bool typing: false
+      property string mark: ""
+      width: 500
+      implicitHeight: 30
+      Component.onCompleted: testCase.viewsMade++
+      function handleKey(name, cursor) { return false }
+    }
+  }
+
   Component {
     id: barComponent
     BarWidget {}
@@ -168,13 +233,16 @@ TestCase {
     compare(svc.reads[svc.reads.length - 1], "installed")
     keyClick("h")
     keyClick("h")
-    compare(view.view, "search", "h wraps around")
+    compare(view.view, "backups", "h wraps around")
     keyClick("3")
-    compare(view.view, "issues")
+    compare(view.view, "search")
     keyClick(Qt.Key_Right)
-    compare(view.view, "backups")
-    child("view_installed").clicked()
+    compare(view.view, "issues")
+    child("tab_installed").clicked()
     compare(view.view, "installed")
+    // The tabs are in design doc §2.1's order, Installed titled Addons.
+    compare(child("tab_installed").text, "2 Addons")
+    verify(child("tab_installed").selected)
     verify(child("content").item !== null)
     // Every view of the switcher has its component; one without would leave the slot empty.
     for (var n = 1; n <= 5; n++) {
@@ -226,9 +294,12 @@ TestCase {
   function test_c_ctrl_z_o_and_their_buttons() {
     keyClick("c")
     compare(svc.checks, 1)
-    // `z` alone is no undo any more (design doc §3.3: it is zoom's, .13).
+    // `z` alone is no undo any more (design doc §3.3): it zooms.
     keyClick("z")
     compare(svc.cliRuns.length, 0)
+    verify(view.zoomed)
+    keyClick("z")
+    verify(!view.zoomed)
     keyClick(Qt.Key_Z, Qt.ControlModifier)
     compare(json(svc.cliRuns[0]), json([["omaddons", "undo", "--run", "01J"], "Undo update on era"]))
     compare(svc.cliRuns.length, 1, "Ctrl+Z runs once, never as a typed z too")
@@ -489,7 +560,7 @@ TestCase {
   function test_no_clients_shows_how_to_add_one_as_text() {
     svc.targets = []
     verify(child("noTargets").visible)
-    verify(!child("filterRow").visible)
+    verify(!child("scope").visible, "no client to choose")
     // A status that failed lists no client either: it is no "no clients found".
     var kept = svc.summary
     svc.summary = null
@@ -605,9 +676,242 @@ TestCase {
     compare(json(svc.cliRuns[0]), json([["omaddons", "update", "-t", "era", "--", "Plater"], "Fix"]))
   }
 
-  function test_the_hero_reads_the_summary() {
-    compare(child("hero").meta, "2 clients · 3 updates · 1 issue")
-    verify(child("hero").detail.indexOf("retail running") >= 0)
+  // ------------------------------------------------------------- the frame (design doc §2.1)
+
+  function test_the_hero_names_the_scope_and_says_what_needs_you_urgent_first() {
+    var hero = child("hero")
+    compare(hero.title, "All clients")
+    compare(hero.meta, "3 UPDATES · RETAIL RUNNING")
+    compare(hero.detail, "2 clients")
+    keyClick("t")
+    compare(hero.title, "era")
+    compare(hero.meta, "1 UPDATE")
+    // A new Lua error goes first, and the glyph turns urgent.
+    var targets = JSON.parse(JSON.stringify(svc.targets))
+    targets[0].errors = { "new": 2 }
+    svc.targets = targets
+    compare(hero.meta, "2 NEW ERRORS · 1 UPDATE")
+    compare(view.heroState, "urgent")
+    var glyph = findChild(hero, "heroGlyph")
+    verify(glyph !== null)
+    compare(String(glyph.color), String(view.urgent))
+    keyClick("t")
+    compare(view.heroState, "quiet", "retail has none")
+    // While a change runs, the glyph is the accent's.
+    svc.action = { "label": "Update all", "current": 0, "total": 1, "message": "" }
+    compare(view.heroState, "busy")
+    compare(String(glyph.color), String(view.accent))
+  }
+
+  function test_the_scope_dropdown_follows_t_and_sets_the_scope() {
+    var scope = child("scope")
+    verify(scope.visible)
+    compare(json(scope.options.map(function(o) { return o.value })), json(["", "era", "retail"]))
+    compare(scope.options[2].label, "retail · 2 updates · running")
+    compare(scope.value, "")
+    keyClick("t")
+    compare(scope.value, "era", "the trigger follows t")
+    keyClick("T")
+    compare(scope.value, "")
+    scope.choose("retail")
+    compare(view.filter, "retail")
+    compare(child("hero").title, "retail")
+    // No compatible answer: no scope, no tabs (§2.1).
+    svc.phase = "missing"
+    verify(!scope.visible)
+    verify(!child("switcher").visible)
+  }
+
+  function test_the_tabs_count_what_each_view_has_and_urgent_counts_say_so() {
+    compare(child("countText", child("tab_updates")).text, "3")
+    verify(child("countText", child("tab_updates")).visible)
+    verify(!findChild(child("tab_issues"), "countText").visible, "a zero count is not shown")
+    var targets = JSON.parse(JSON.stringify(svc.targets))
+    targets[1].issues = [{ "id": "fm-1", "urgent": true, "title": "a journal waits" }]
+    svc.targets = targets
+    svc.commands = [{ "action": "backup_create", "argv": ["omaddons", "backup", "create", "-t", "era"] }]
+    compare(child("countText", child("tab_issues")).text, "1")
+    verify(child("countText", child("tab_issues")).font.bold, "urgent: bold, on an urgent border")
+    compare(child("countText", child("tab_backups")).text, "1")
+    verify(!child("countText", child("tab_backups")).font.bold)
+    // Each tab says its key.
+    compare(child("tab_search").tooltipText, "Search (3)")
+    // Under one client, its counts.
+    keyClick("t")
+    compare(child("countText", child("tab_updates")).text, "1")
+    verify(!findChild(child("tab_issues"), "countText").visible)
+  }
+
+  function test_progress_results_cards_and_the_footer_stay_visible_below_a_long_list() {
+    view.viewComponents = { "updates": longView }
+    svc.action = { "label": "Update all", "current": 1, "total": 4, "message": "retail: download 1/4" }
+    svc.lastError = { "message": "DBM failed to update", "code": "network", "fixes": [], "fixText": "" }
+    view.height = 400
+    waitForRendering(view)
+    keyClick("G")
+    compare(view.cursor, 149)
+    var flick = child("contentFlick")
+    verify(flick.contentY > 0, "the list scrolled")
+    compare(flick.contentY, flick.contentHeight - flick.height, "to its end")
+    for (var name of ["progressLine", "freshness"]) {
+      var item = child(name)
+      verify(item.visible, name)
+      var y = item.mapToItem(view, 0, 0).y
+      verify(y >= 0 && y + item.height <= view.height, name + " is inside the panel at " + y)
+    }
+    // The failure card is pinned too (shown once the change is over).
+    svc.action = null
+    var card = child("errorCard")
+    verify(card.visible)
+    var cardY = card.mapToItem(view, 0, 0).y
+    verify(cardY >= 0 && cardY + card.height <= view.height, "the failure card is inside the panel at " + cardY)
+    compare(child("freshness").text, "2 clients · checked just now · retail running")
+  }
+
+  function test_esc_backs_out_one_layer_at_a_time_dialog_page_filter_panel() {
+    view.viewComponents = { "updates": filterView }
+    var closed = 0
+    view.closeRequested.connect(function() { closed++ })
+    verify(view.push({ "title": "DBM", "component": fakeView, "props": { "rowCount": 2 } }))
+    compare(child("page").item.rowCount, 2, "the page gets its props")
+    compare(child("backButton").text, "Updates")
+    verify(!child("content").visible, "the page replaces the view")
+    // A dialog is the top layer.
+    svc.confirm = { "text": "Remove Foo?", "stale": "" }
+    tryVerify(function() { return child("confirmKeys").activeFocus })
+    keyClick(Qt.Key_Escape)
+    compare([svc.no, view.pages.length, closed], [1, 1, 0], "Esc cancels the dialog only")
+    tryVerify(function() { return view.focusItem.activeFocus })
+    // Then the page.
+    keyClick(Qt.Key_Escape)
+    compare([view.pages.length, closed], [0, 0], "then the page")
+    verify(child("content").visible)
+    // Then the view's filter, then the panel.
+    var loaded = child("content").item
+    loaded.filterText = "plat"
+    keyClick(Qt.Key_Escape)
+    compare([loaded.filterText, closed], ["", 0], "then the filter")
+    keyClick(Qt.Key_Escape)
+    compare(closed, 1, "then the panel closes")
+  }
+
+  function test_a_deeper_stack_shows_its_trail_and_h_or_the_back_button_pops_it() {
+    view.push({ "title": "DBM", "component": fakeView })
+    view.push({ "title": "LibDBIcon", "component": fakeView })
+    compare(child("backButton").text, "Updates › DBM")
+    keyClick("?")
+    compare(child("sheetTitle", child("help")).text, "Keys · LibDBIcon")
+    keyClick("?")
+    tryVerify(function() { return view.focusItem.activeFocus })
+    keyClick("l")
+    compare(view.pages.length, 2, "l does nothing on a page")
+    keyClick("h")
+    compare(view.pages.length, 1)
+    compare(child("backButton").text, "Updates")
+    child("backButton").clicked()
+    compare(view.pages.length, 0)
+    // A tab clears the stack.
+    view.push({ "title": "DBM", "component": fakeView })
+    keyClick("4")
+    compare([view.view, view.pages.length], ["issues", 0])
+  }
+
+  function test_z_fills_the_screen_and_the_text_zoom_scales_within_bounds() {
+    keyClick("z")
+    verify(view.zoomed)
+    compare(child("zoomButton").tooltipText, "Back to panel size (z)")
+    child("zoomButton").clicked()
+    verify(!view.zoomed)
+    var base = view.frameImplicitHeight
+    keyClick(Qt.Key_Equal, Qt.ControlModifier)
+    compare(view.uiScale, 1.1)
+    compare(view.contentImplicitHeight, view.frameImplicitHeight * 1.1)
+    compare(child("canvas").width, view.width / 1.1)
+    keyClick(Qt.Key_Minus, Qt.ControlModifier)
+    keyClick(Qt.Key_Minus, Qt.ControlModifier)
+    compare(view.uiScale, 0.9)
+    keyClick(Qt.Key_0, Qt.ControlModifier)
+    compare(view.uiScale, 1.0)
+    for (var i = 0; i < 20; i++) keyClick(Qt.Key_Equal, Qt.ControlModifier)
+    compare(view.uiScale, 2.0, "at most 2×")
+    for (var j = 0; j < 30; j++) view.bumpUiScale(-1)
+    compare(view.uiScale, 0.6, "at least 0.6×")
+    view.bumpUiScale(0)
+    // Ctrl+wheel too; a plain wheel scrolls instead.
+    mouseWheel(view, 50, 50, 0, 120, Qt.NoButton, Qt.ControlModifier)
+    compare(view.uiScale, 1.1)
+    mouseWheel(view, 50, 50, 0, 120)
+    compare(view.uiScale, 1.1)
+    // Kept in memory for the session: closing the panel keeps them, nothing writes them.
+    keyClick("z")
+    view.opened = false
+    view.opened = true
+    verify(view.zoomed)
+    compare(view.uiScale, 1.1)
+    compare(base > 0, true)
+  }
+
+  function test_the_open_panel_publishes_its_scope_view_stack_sheet_and_zoom() {
+    compare(json(svc.panelState), json({ "scope": "", "view": "updates", "stackDepth": 0, "sheet": null, "zoomed": false, "textZoom": 1 }))
+    keyClick("t")
+    keyClick("2")
+    view.push({ "title": "DBM", "component": fakeView })
+    keyClick("z")
+    compare(json(svc.panelState), json({ "scope": "era", "view": "installed", "stackDepth": 1, "sheet": null, "zoomed": true, "textZoom": 1 }))
+    keyClick("?")
+    compare(svc.panelState.sheet, "help")
+    keyClick("?")
+    svc.confirm = { "text": "Remove Foo?", "stale": "" }
+    compare(svc.panelState.sheet, "confirm")
+    svc.confirm = null
+    compare(svc.panelState.sheet, null)
+    // A closed panel stops publishing.
+    view.opened = false
+    keyClick("t")
+    view.filter = "retail"
+    compare(svc.panelState.scope, "era")
+  }
+
+  function test_a_view_is_made_on_its_first_visit_and_kept() {
+    viewsMade = 0
+    view.viewComponents = { "updates": countedView, "installed": countedView }
+    compare(viewsMade, 1, "only the view shown")
+    keyClick("2")
+    compare(viewsMade, 2)
+    var installed = child("content").item
+    installed.mark = "kept"
+    keyClick("1")
+    keyClick("2")
+    compare(viewsMade, 2, "each made once")
+    compare(child("content").item.mark, "kept", "and kept as it was")
+  }
+
+  function test_check_now_spins_while_a_check_runs() {
+    var button = child("checkButton")
+    verify(!button.spinning)
+    compare(button.tooltipText, "Check now (c)")
+    svc.checking = true
+    verify(button.spinning)
+    compare(button.tooltipText, "Checking… (c)")
+    tryVerify(function() { return button.rotation !== 0 })
+    svc.checking = false
+    tryCompare(button, "rotation", 0)
+  }
+
+  function test_a_narrow_panel_shows_glyph_tabs_and_names_its_view() {
+    var narrow = make({ "svc": svc, "width": 420 })
+    view.opened = false
+    open(narrow)
+    verify(narrow.narrow)
+    var tab = child("tab_updates", narrow)
+    compare(tab.text, "")
+    verify(tab.iconText !== "")
+    verify(child("viewTitle", narrow).visible)
+    compare(child("viewTitle", narrow).text, "Updates")
+    compare(child("hero", narrow).detail, "")
+    compare(child("hero", narrow).meta, "3 UPDATES", "one part of the meta line")
+    verify(!view.narrow, "540 is not narrow")
+    verify(!child("viewTitle").visible)
   }
 
   // ------------------------------------------------------------- inside BarWidget

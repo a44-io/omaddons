@@ -62,6 +62,11 @@ Item {
   // The last outcome per resource, for the views and state().
   property var outcomes: ({})
   property string requestedView: ""
+  // What the open panel shows, for state(): `{scope, view, stackDepth, sheet, zoomed,
+  // textZoom}` (design doc §2.1), set by the panel while it is open; null otherwise.
+  property var panelState: null
+  // A check for updates is running (the hero's Check now spins, UX-01).
+  readonly property bool checking: !!networkLane.request && networkLane.request.resource === "check"
   // The view the open panel shows, and when its data was read; a doorbell makes every
   // view's data stale (by resource: list, errors).
   property string currentView: ""
@@ -878,6 +883,8 @@ Item {
       "action": action,
       "lastResult": lastResult ? { "ok": lastResult.ok, "line": lastResult.line } : null,
       "panelOpen": panelOpen,
+      // The open panel's scope, view, page depth, open sheet and zoom (design doc §2.1).
+      "panel": panelOpen ? panelState : null,
       "binary": root.binary,
       "toolVersion": Build.TOOL_VERSION,
       "widgetVersion": manifest && manifest.version ? String(manifest.version) : "",

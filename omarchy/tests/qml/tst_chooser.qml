@@ -126,7 +126,7 @@ TestCase {
   }
 
   function test_from_a_backup_the_addon_scope_comes_first_and_whole_says_what_else_it_changes() {
-    keyClick("4")
+    keyClick("5")
     keyClick(Qt.Key_Return)
     var c = chooser()
     verify(c.opened)
@@ -145,7 +145,7 @@ TestCase {
   }
 
   function test_one_addons_settings_asks_which_addon() {
-    keyClick("4")
+    keyClick("5")
     keyClick(Qt.Key_Return)
     var c = chooser()
     keyClick(Qt.Key_Return)
@@ -186,7 +186,7 @@ TestCase {
         "coverage": "complete", "files": { "partial": 0 }, "databases": [], "summary": { "new": 1, "received": 0 }, "dismiss": null,
         "addons": [{ "addon": "WeakAuras", "managed": true, "kind": "addon", "version": "5.20.0", "latest": null, "count": 1, "new": 1,
           "errors": [] }] }] } })
-    keyClick("3")
+    keyClick("4")
     keyClick("r")
     var c = chooser()
     verify(c.opened)
@@ -195,7 +195,7 @@ TestCase {
 
   function test_restores_are_off_while_the_client_runs() {
     svc.targets = [{ "id": "retail", "running": true, "runningUnknown": false, "clientDir": "/games/retail", "updates": null, "issues": [] }]
-    keyClick("4")
+    keyClick("5")
     keyClick(Qt.Key_Return)
     var c = chooser()
     verify(findChild(c, "chooserBlocked").visible)

@@ -11,3 +11,4 @@ BorderSurface 1.0 BorderSurface.qml
 CursorSurface 1.0 CursorSurface.qml
 TextField 1.0 TextField.qml
 PanelSeparator 1.0 PanelSeparator.qml
+Dropdown 1.0 Dropdown.qml
