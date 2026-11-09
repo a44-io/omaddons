@@ -6,7 +6,11 @@
 // so each one also runs over an in-memory copy with one planted violation, which it
 // must report. Checks 3b, 9 and 10 (M4-D28, M4-D48) hold the plan runner: an apply argv
 // only from the preview the widget just ran, no decision from a warning's text, and no
-// issue matched by its id. The plugin-id literal (check 8) is scanned again, over the
+// issue matched by its id. Check 11 (M4-D38, M4-D44) keeps consent a person's: no
+// template or literal gives `--force` or `--yes`, the widget never runs `doctor gc` or
+// `doctor undo`, a repair runs only through its bound template from the row's own
+// `fix`, and its Yes always carries its preview's token. Check 12 keeps a purge out.
+// The plugin-id literal (check 8) is scanned again, over the
 // embedded assets, in tests/omarchy_widget.rs.
 
 const { describe, expect, test } = require("bun:test")
@@ -47,6 +51,14 @@ function plant(files, name, anchor, insertion) {
   const at = text.indexOf(anchor)
   if (at < 0) throw new Error(name + " has no " + JSON.stringify(anchor) + " to plant after")
   return Object.assign({}, files, { [name]: text.slice(0, at + anchor.length) + insertion + text.slice(at + anchor.length) })
+}
+
+// `files` with `from`, which must occur exactly once in `name`, replaced by `to`.
+function replaced(files, name, from, to) {
+  const text = files[name]
+  const at = text.indexOf(from)
+  if (at < 0 || text.indexOf(from, at + 1) >= 0) throw new Error(name + " holds " + JSON.stringify(from) + (at < 0 ? " nowhere" : " more than once"))
+  return Object.assign({}, files, { [name]: text.slice(0, at) + to + text.slice(at + from.length) })
 }
 
 // `files` with the first `removal` after the first `anchor` in `name` taken out.
@@ -556,9 +568,144 @@ function checkIssueIds(files) {
   return out
 }
 
+// The flags that give consent: only a person in a terminal gives them (M4-D38).
+const CONSENT = ["--force", "--yes"]
+
+// The words a template's argv starts with, up to its first flag or slot (at most two).
+function templateWords(argv) {
+  const words = []
+  for (const part of argv) {
+    if (words.length === 2 || typeof part !== "string" || part.startsWith("-") || part.includes("{")) break
+    words.push(part)
+  }
+  return words.join(" ")
+}
+
+// The text of the first argument of a call whose bracketed arguments are `args`.
+function firstArgument(args) {
+  let depth = 0
+  let quote = ""
+  for (let i = 1; i < args.length; i++) {
+    const c = args[i]
+    if (quote) {
+      if (c === "\\") i++
+      else if (c === quote) quote = ""
+    } else if (c === '"' || c === "'" || c === "`") {
+      quote = c
+    } else if ("([{".includes(c)) {
+      depth++
+    } else if (")]}".includes(c)) {
+      if (depth === 0) return args.slice(1, i).trim()
+      depth--
+    } else if (c === "," && depth === 0) {
+      return args.slice(1, i).trim()
+    }
+  }
+  return args.slice(1).trim()
+}
+
+// 11. Consent stays a person's (M4-D38, M4-D36, M4-D22, M4-D44): no template carries
+// `--force` or `--yes`, runs `doctor gc` or `doctor undo`, or runs `doctor fix` but as a
+// bound `--only={fm}` preview; the consent literals live only in CONSENT_FLAGS, which
+// the classifier refuses with `doctor gc` and the doctor's own flows; no QML file names
+// a doctor command or template, so the Issues view reaches a repair only through
+// `row.fix.template` (Model.repairRequest), never through the classifier's path; and a
+// bound repair's Yes always carries its preview's token.
+function checkConsent(files) {
+  const out = []
+  const model = files["Model.js"] || ""
+  const table = tableOf(model)
+  if (!table) return [violation("Model.js", 1, "no COMMANDS table")]
+  const start = model.search(/^var COMMANDS = \{/m)
+  for (const [name, t] of Object.entries(table)) {
+    const line = lineAt(model, model.indexOf('"' + name + '":', start))
+    const argv = Array.isArray(t.argv) ? t.argv : []
+    const words = templateWords(argv)
+    for (const part of argv) {
+      const flag = String(part).split("=")[0]
+      if (CONSENT.includes(flag)) out.push(violation("Model.js", line, name + ": a template carries " + flag))
+      if (words === "doctor fix" && flag.startsWith("-") && String(part).includes("{") && part !== "--only={fm}") {
+        out.push(violation("Model.js", line, name + ": a doctor fix template with an option slot other than --only={fm} (" + part + ")"))
+      }
+      if (String(part).includes("{fm}") && (words !== "doctor fix" || part !== "--only={fm}")) {
+        out.push(violation("Model.js", line, name + ": {fm} outside doctor fix's --only={fm}"))
+      }
+    }
+    if (words === "doctor gc" || words === "doctor undo") out.push(violation("Model.js", line, name + ": a template runs " + words + ", never the widget's"))
+    if (words === "doctor fix" && t.preview !== "bind") out.push(violation("Model.js", line, name + ": a doctor fix template without preview: bind"))
+  }
+  // The consent literals, in any quote and their `=` forms, only on CONSENT_FLAGS's line.
+  const literal = /(["'`])--(force|yes)(=[^"'`\n]*)?\1/
+  for (const name of Object.keys(files)) {
+    for (const l of lines(files[name])) {
+      if (literal.test(l.text) && !(name === "Model.js" && /^var CONSENT_FLAGS = /.test(l.text.trim()))) {
+        out.push(violation(name, l.n, "a consent flag literal outside CONSENT_FLAGS"))
+      }
+    }
+  }
+  const classifier = functionBody(model, "classifyCliArgv")
+  if (!classifier || !/\bCONSENT_FLAGS\b/.test(classifier.body)) {
+    out.push(violation("Model.js", classifier ? classifier.line : 1, "the classifier lost its consent rule (CONSENT_FLAGS)"))
+  }
+  for (const reason of ["consent_flag", "doctor_gc", "own_flow_only"]) {
+    if (!classifier || !classifier.body.includes('"' + reason + '"')) {
+      out.push(violation("Model.js", classifier ? classifier.line : 1, "the classifier lost its consent rule (" + reason + ")"))
+    }
+  }
+  // cliArgv's first read of the argv is the classifier, whose refusal throws.
+  const cli = functionBody(model, "cliArgv")
+  const call = cli ? cli.body.indexOf("classifyCliArgv(argv") : -1
+  if (!cli || call < 0 || cli.body.search(/\bargv\b/) !== call + "classifyCliArgv(".length || !/if \(!verdict\.ok\) throw refuse\(/.test(cli.body)) {
+    out.push(violation("Model.js", cli ? cli.line : 1, "cliArgv builds before the classifier refuses"))
+  }
+  for (const name of qmlNames(files)) {
+    for (const l of lines(files[name])) {
+      if (/["'`]doctor/.test(l.text)) out.push(violation(name, l.n, "a QML file names a doctor command or template"))
+    }
+  }
+  const issues = "views/IssuesView.qml"
+  if (files[issues]) {
+    for (const c of calls({ [issues]: files[issues] }, /\bsvc\.run\(/)) {
+      const first = firstArgument(c.args)
+      const named = first.match(/^"(\w+)"$/)
+      const plain = !!named && !!table[named[1]] && !templateWords(table[named[1]].argv).startsWith("doctor")
+      if (first !== "row.fix.template" && !plain) out.push(violation(issues, c.line, "the Issues view runs a repair other than row.fix.template (" + first + ")"))
+    }
+    for (const c of calls({ [issues]: files[issues] }, /\b(frame\.runCli|svc\.runCliArgv)\(/)) {
+      if (/\.fix\b/.test(firstArgument(c.args))) out.push(violation(issues, c.line, "the Issues view runs a repair through the classifier's path"))
+    }
+  }
+  // The bind preview's Yes carries its token: the branch keeps the decision's token and
+  // binds, confirmYes passes it, and buildArgv requires it of a `bind` template.
+  const service = codeOf(files["Service.qml"] || "")
+  const tokenless = "a bind preview's Yes runs without its token"
+  const at = service.indexOf('r.spec.mode === "bind"')
+  if (at < 0) {
+    out.push(violation("Service.qml", 1, tokenless + " (no bind preview branch)"))
+  } else {
+    const block = balanced(service, service.indexOf("{", at))
+    const decided = block.match(/var (\w+) = Model\.doctorPreviewDecision\(/)
+    const pending = block.match(/pendingConfirm = (\{[^\n]*\})/)
+    const keeps = !!decided && !!pending && /"binds":\s*true\b/.test(pending[1])
+      && new RegExp('"token":\\s*' + decided[1] + "\\.token\\b").test(pending[1])
+    if (!keeps) out.push(violation("Service.qml", lineAt(service, at), tokenless))
+  }
+  const yesAt = service.indexOf("function confirmYes(")
+  const yes = yesAt < 0 ? "" : balanced(service, service.indexOf("{", yesAt))
+  if (!/"token":\s*pending\.binds\s*\?\s*pending\.token\s*:\s*""/.test(yes)) {
+    out.push(violation("Service.qml", yesAt < 0 ? 1 : lineAt(service, yesAt), tokenless + " (confirmYes)"))
+  }
+  const build = functionBody(model, "buildArgv")
+  const ifMatch = build ? calls({ "Model.js": build.body }, /\bifMatchFor\(/)[0] : null
+  if (!ifMatch || !/template\.preview === "bind"/.test(ifMatch.args)) {
+    out.push(violation("Model.js", build ? build.line : 1, tokenless + " (buildArgv binds no bind template)"))
+  }
+  return out
+}
+
 // 12. Irreversible stays out (1n2p.43): no template holds a purge, the classifier refuses
 // one, and no other file names the flag, so no Enter and no Yes ever deletes what no undo
-// brings back. (Scan 11, consent stays a person's, belongs to M4 G2.)
+// brings back.
 function checkIrreversible(files) {
   const out = []
   const model = files["Model.js"] || ""
@@ -655,6 +802,7 @@ const CHECKS = [
   ["8. the plugin id", checkPluginId],
   ["9. warnings decide nothing", checkWarnings],
   ["10. no issue id by name", checkIssueIds],
+  ["11. consent", checkConsent],
   ["12. irreversible stays out", checkIrreversible],
 ]
 
@@ -744,6 +892,49 @@ const PLANTED = [
     plant(REAL, "views/IssuesView.qml", "Item {\n",
       '  readonly property bool planted: !!svc && svc.targets.some(function(t) { return t.issues.some(function(i) { return i.id === "fm-concurrency_primitives-journal-pending" }) })\n'),
     /literal failure-mode id|issue matched by its id/],
+  ["11. consent", checkConsent, "a forced template",
+    plant(REAL, "Model.js", "var COMMANDS = {\n",
+      '  "doctor_fix_forced": { "argv": ["doctor", "fix", "--only={fm}", "--force", "--yes"], "mutates": true, "preview": "bind" },\n'),
+    /a template carries --force/],
+  ["11. consent", checkConsent, "a doctor fix template without bind",
+    unplant(REAL, "Model.js", '"doctor_fix":', ', "preview": "bind"'), /doctor fix template without preview: bind/],
+  ["11. consent", checkConsent, "a doctor gc template",
+    plant(REAL, "Model.js", "var COMMANDS = {\n", '  "tidy": { "argv": ["doctor", "gc", "--before", "30d"], "mutates": true },\n'),
+    /a template runs doctor gc/],
+  ["11. consent", checkConsent, "a doctor undo template",
+    plant(REAL, "Model.js", "var COMMANDS = {\n", '  "repair_undo": { "argv": ["doctor", "undo"], "mutates": true },\n'),
+    /a template runs doctor undo/],
+  ["11. consent", checkConsent, "a forced argv in a view",
+    plant(REAL, "views/IssuesView.qml", "  function activate(row) {\n", '    frame.runCli({ "argv": row.fix.argv.concat(["--force"]) }, "Fix")\n'),
+    /consent flag literal outside CONSENT_FLAGS/],
+  ["11. consent", checkConsent, "a forced argv in a view, through the classifier's path",
+    plant(REAL, "views/IssuesView.qml", "  function activate(row) {\n", '    frame.runCli({ "argv": row.fix.argv.concat(["--force"]) }, "Fix")\n'),
+    /runs a repair through the classifier's path/],
+  ["11. consent", checkConsent, "the classifier without its consent flags",
+    replaced(REAL, "Model.js", "if (CONSENT_FLAGS.indexOf(flagName(argv[c])) !== -1) {", "if ([].indexOf(flagName(argv[c])) !== -1) {"),
+    /lost its consent rule \(CONSENT_FLAGS\)/],
+  ["11. consent", checkConsent, "a doctor template named in a view",
+    plant(REAL, "views/IssuesView.qml", "  function activate(row) {\n", '    svc.run("doctor_fix", { "fm": row.id }, "Repair")\n'),
+    /a QML file names a doctor command or template/],
+  ["11. consent", checkConsent, "a doctor template named in a view, around row.fix",
+    plant(REAL, "views/IssuesView.qml", "  function activate(row) {\n", '    svc.run("doctor_fix", { "fm": row.id }, "Repair")\n'),
+    /runs a repair other than row\.fix\.template/],
+  ["11. consent", checkConsent, "a bind preview that does not bind",
+    replaced(REAL, "Service.qml", '"token": repair.token, "binds": true', '"token": repair.token, "binds": false'),
+    /a bind preview's Yes runs without its token$/],
+  ["11. consent", checkConsent, "a confirmation that drops the token",
+    replaced(REAL, "Service.qml", '"token": pending.binds ? pending.token : ""', '"token": ""'),
+    /without its token \(confirmYes\)/],
+  ["11. consent", checkConsent, "buildArgv that no longer binds a bind template",
+    replaced(REAL, "Model.js", 'template.bind === true || template.preview === "bind"', "template.bind === true"),
+    /buildArgv binds no bind template/],
+  ["11. consent", checkConsent, "cliArgv that builds before it classifies",
+    plant(REAL, "Model.js", "function cliArgv(argv, opts) {\n", "  var early = argv.slice(1)\n"),
+    /cliArgv builds before the classifier refuses/],
+  ["11. consent", checkConsent, "a doctor fix template with another slot",
+    plant(REAL, "Model.js", "var COMMANDS = {\n",
+      '  "doctor_fix_more": { "argv": ["doctor", "fix", "--only={fm}", "--skip={fm}"], "mutates": true, "preview": "bind" },\n'),
+    /option slot other than --only=\{fm\}/],
 ]
 
 describe("each scan catches its planted violation", () => {
@@ -828,6 +1019,32 @@ describe("the mechanisms behind the scans", () => {
       const bound = M.COMMANDS[name].bind ? { token: "pc1:" + "0".repeat(64) } : {}
       const built = M.buildArgv(name, slotsOf(name), Object.assign({ preview: needsPreview(name) }, bound, opts))
       expect(built.env).toEqual(CONTEXT)
+    }
+  })
+
+  test("a doctor template never runs forced, and only bound or as its preview", () => {
+    const token = "pc1:" + "0".repeat(64)
+    const doctor = Object.keys(M.COMMANDS).filter((name) => M.COMMANDS[name].argv[0] === "doctor")
+    expect(doctor.sort()).toEqual(["doctor_fix", "doctor_fix_target"])
+    for (const name of doctor) {
+      const preview = M.buildArgv(name, slotsOf(name), Object.assign({ preview: true }, opts)).argv
+      expect([name, preview.includes("--dry-run"), preview.includes("--if-match")]).toEqual([name, true, false])
+      expect(() => M.buildArgv(name, slotsOf(name), opts)).toThrow(/token_required/)
+      expect(() => M.buildArgv(name, slotsOf(name), Object.assign({ confirmed: true }, opts))).toThrow(/token_required/)
+      const bound = M.buildArgv(name, slotsOf(name), Object.assign({ token: token }, opts)).argv
+      expect([name, bound.includes("--dry-run"), bound[bound.indexOf("--if-match") + 1]]).toEqual([name, false, token])
+    }
+    // No template, in any form it builds, gives consent.
+    for (const name of Object.keys(M.COMMANDS)) {
+      for (const form of [{ preview: true }, {}, { token: token }, { confirmed: true }]) {
+        let argv = null
+        try {
+          argv = M.buildArgv(name, slotsOf(name), Object.assign({}, form, opts)).argv
+        } catch (e) {
+          continue
+        }
+        expect([name, form, argv.filter((a) => CONSENT.includes(a.split("=")[0]))]).toEqual([name, form, []])
+      }
     }
   })
 

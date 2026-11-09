@@ -785,14 +785,12 @@ function stringList(value) {
   return out
 }
 
-// A CLI-provided argv as a button, or as text when the classifier refuses it.
+// A CLI-provided argv as a button, or as text when the classifier refuses it. A forced
+// repair is never one key away (M4-D38): the classifier refuses a consent flag anywhere
+// (`consent_flag`), so a person reads its explanation and runs it in a terminal.
 function cliAction(command, argv, destructive) {
   var verdict = Array.isArray(argv) ? classifyCliArgv(argv) : null
-  // A forced repair is never one key away (M4-D38): a person reads its explanation
-  // first, so an argv holding `--force` before any `--` shows as text.
-  var end = Array.isArray(argv) ? argv.indexOf("--") : -1
-  var forced = Array.isArray(argv) && argv.slice(0, end === -1 ? argv.length : end).indexOf("--force") !== -1
-  var runnable = verdict !== null && verdict.ok && !forced
+  var runnable = verdict !== null && verdict.ok
   return {
     "command": str(command),
     "argv": runnable ? argv.slice() : null,
@@ -886,6 +884,13 @@ function problemRow(issue, targetId) {
 function verdictPath(argv) {
   var verdict = Array.isArray(argv) ? classifyCliArgv(argv) : null
   return verdict && verdict.ok ? verdict.path : ""
+}
+
+// A row's explanation to read: a copy of `argv` when the classifier accepts it as the
+// read path `doctor explain`, else null. The service reads nothing else for a row, and
+// names no doctor command itself (F7 scan 11).
+function explainArgv(argv) {
+  return verdictPath(argv) === "doctor explain" ? argv.slice() : null
 }
 
 function summaryOf(summary) {
@@ -3645,6 +3650,7 @@ if (typeof module !== "undefined") {
     doctorResultLine: doctorResultLine,
     explainLines: explainLines,
     explainFor: explainFor,
+    explainArgv: explainArgv,
     lastChangeOf: lastChangeOf
   }
 }

@@ -236,17 +236,16 @@ Item {
     rawErrors = null
   }
 
-  // An Issues row's explanation: the row's own `doctor explain` argv (from `status`,
-  // accepted by the classifier as that read path), view-bound to the row's key. A read:
-  // it runs while a change runs, on the local lane. Whether it was asked.
+  // An Issues row's explanation: the row's own explain argv from `status`, read only when
+  // Model.explainArgv accepts it, view-bound to the row's key. A read: it runs while a
+  // change runs, on the local lane. Whether it was asked.
   function readExplanation(key, argv) {
-    if (!Array.isArray(argv)) return false
-    var verdict = Model.classifyCliArgv(argv)
-    if (!verdict.ok || verdict.path !== "doctor explain") return false
+    var cli = Model.explainArgv(argv)
+    if (!cli) return false
     var selection = { "key": String(key || "") }
     explainSelection = selection
     return request({
-      "resource": "explain", "cli": argv.slice(), "kind": "view", "lane": "local", "selection": selection, "label": "Explain"
+      "resource": "explain", "cli": cli, "kind": "view", "lane": "local", "selection": selection, "label": "Explain"
     })
   }
 

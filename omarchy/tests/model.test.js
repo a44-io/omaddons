@@ -2512,6 +2512,23 @@ describe("issue rows", () => {
   })
 })
 
+describe("explainArgv", () => {
+  test("the table", () => {
+    const explain = ["omaddons", "doctor", "explain", CREDENTIAL_FM, "-t", "retail"]
+    table([
+      ["an_explain_read", explain, explain],
+      ["a_repair", ["omaddons", "doctor", "fix", "--only", CREDENTIAL_FM], null],
+      ["another_read", ["omaddons", "status"], null],
+      ["a_widget_flag", ["omaddons", "doctor", "explain", CREDENTIAL_FM, "--actor", "agent"], null],
+      ["not_omaddons", ["sh", "doctor", "explain", CREDENTIAL_FM], null],
+      ["no_array", "omaddons doctor explain " + CREDENTIAL_FM, null],
+      ["null", null, null],
+    ], (argv) => M.explainArgv(argv))
+    // A copy: the service never holds the row's own array.
+    expect(M.explainArgv(explain)).not.toBe(explain)
+  })
+})
+
 describe("doctorResult", () => {
   test("the table", () => {
     const pick = (r) => r === null ? null
