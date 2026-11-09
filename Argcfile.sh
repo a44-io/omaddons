@@ -36,6 +36,18 @@ bench() {
     scripts/bench.sh
 }
 
+# @cmd Measure the bar widget's costs (CLI reads, panel open, big lists, leaks) on a synthetic home, read-only (never part of the gate)
+# @option --out=target/widget-bench  Where the results and report.md go (each part replaces only its own folder)
+# @flag --real  Also time the CLI reads on this machine's home (its cache copied into --out, so nothing is written outside it)
+# @flag --quick  Few runs and one size: a smoke test of the script, not a baseline
+# @option --only[cli|open|lists]  One part only
+# @option --window-events  Only listen to Hyprland's window events for this many minutes (names only)
+# @meta require-tools bun,hyperfine,jq
+widget-bench() {
+    scripts/widget-bench.sh --out "$argc_out" ${argc_real:+--real} ${argc_quick:+--quick} \
+        ${argc_only:+--only "$argc_only"} ${argc_window_events:+--window-events "$argc_window_events"}
+}
+
 # @cmd Format the code in place
 fmt() {
     cargo fmt
