@@ -907,11 +907,17 @@ TestCase {
     }
     preview[0].process.finish(0, removal("v1"))
     tryVerify(function() { return frame.confirming })
-    var dialog = findChild(frame, "confirmDialog")
-    compare(dialog.message, "Remove Baz v1 from retail (1 folder)\nLittleWigs still requires Baz\nRemoves the folder Baz (kept for undo)\n"
-      + "Removes, reverts or replaces something you have now")
+    var sheet = findChild(frame, "planSheet")
+    // The removal by name, its folder, and who else needs it: urgent, first, by the
+    // warning's code (its text never shows).
+    var text = Model.dialogText(sheet.plan)
+    compare(text.split("\n").slice(1), ["Baz v1 (1 folder)", "Removes the folder Baz. Undo brings it back.",
+      "Other addons still need Baz and won't load without it."])
+    verify(text.indexOf("Remove Baz from ") === 0, text)
+    verify(sheet.destructive)
+    compare(findChild(sheet, "sheetConfirm").text, String.fromCodePoint(0xF01B4) + " Remove Baz")
     compare(launches("apply").length, 0, "nothing runs before Yes")
-    tryVerify(function() { return findChild(frame, "confirmKeys").activeFocus })
+    tryVerify(function() { return sheet.keyItem.activeFocus })
     keyClick("y")
     var apply = launches("apply")
     compare(apply.length, 1, "Yes applies the preview's plan")
@@ -929,9 +935,12 @@ TestCase {
     verify(again.command.indexOf("--dry-run") >= 0)
     again.process.finish(0, removal("v2"))
     tryVerify(function() { return frame.confirming })
-    verify(dialog.message.indexOf("Changed since you looked: Baz.") === 0, dialog.message)
-    verify(dialog.message.indexOf("Remove Baz v2 from retail") > 0, dialog.message)
-    compare(dialog.selectedIndex, 0)
+    // The banner says it changed (a part this build does not know is no word to show),
+    // over the new preview's items.
+    verify(findChild(sheet, "planStale").visible)
+    compare(sheet.plan.stale, "Changed since you looked: something it depends on. Nothing ran; here is what would happen now.")
+    compare(sheet.plan.items.map(function(i) { return i.text }), ["Baz v2 (1 folder)"])
+    compare(sheet.selectedIndex, 0)
     compare(launches("apply").length, 1, "apply never runs twice for one preview")
     real.service.destroy()
   }
@@ -951,10 +960,13 @@ TestCase {
       "items": [{ "name": "Foo", "status": "updated", "from_version": "v1", "to_version": "v1" }] },
       approvalOf("update", "Foo", "v1", "v1", ["reinstall"], {}), false))
     tryVerify(function() { return frame.confirming })
-    var dialog = findChild(frame, "confirmDialog")
-    verify(dialog.message.indexOf("Reinstalls over the installed files") >= 0, dialog.message)
+    var sheet = findChild(frame, "planSheet")
+    // A reinstall is a repair of the addon's files, in the player's words.
+    verify(sheet.plan.title.indexOf("Repair Foo on ") === 0, sheet.plan.title)
+    compare(sheet.plan.confirmLabel, "Repair Foo")
+    compare(sheet.plan.effects.map(function(e) { return e.text }), ["Puts back Foo's files exactly as released."])
     compare(launches("apply").length, 0, "a reinstall asks first")
-    tryVerify(function() { return findChild(frame, "confirmKeys").activeFocus })
+    tryVerify(function() { return sheet.keyItem.activeFocus })
     keyClick("y")
     compare(launches("apply").length, 1, "Yes applies the plan")
     real.service.destroy()

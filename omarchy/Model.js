@@ -1568,78 +1568,10 @@ function warningMessages(env, code) {
   return out
 }
 
-// The confirmation dialog's text from a dry run (M3-D9): what would change, what
-// stays required, and a running client.
 // The ids of a reverted repair's clients (`reverted.targets`, `{id, key}` each).
 function revertedIds(reverted) {
   var list = reverted && Array.isArray(reverted.targets) ? reverted.targets : []
   return list.map(function(t) { return t && typeof t === "object" ? str(t.id) : str(t) }).filter(function(id) { return !!id })
-}
-
-function confirmText(name, env, context, targets) {
-  if (!envelopeOk(env)) return "omaddons did not answer"
-  if (!env.ok) {
-    var error = env.error || {}
-    return (error.code === "game_running" ? "The game is running: " : "") + str(error.message)
-  }
-  var data = env.data && typeof env.data === "object" ? env.data : {}
-  var lines = []
-  if (env.command === "remove") {
-    var items = Array.isArray(data.items) ? data.items : []
-    var names = []
-    var folders = 0
-    for (var i = 0; i < items.length; i++) {
-      if (items[i].error) continue
-      names.push(str(items[i].name || items[i].request) + (items[i].version ? " " + items[i].version : ""))
-      folders += Array.isArray(items[i].folders) ? items[i].folders.length : 0
-    }
-    var target = data.target && data.target.id ? data.target.id : ""
-    lines.push("Remove " + joinNames(names) + (target ? " from " + target : "") + " (" + plural(folders, "folder") + ")")
-  } else if (env.command === "undo" && data.kind === "repair") {
-    // The undo of a repair (E7): its inverse operations, as the repair's were shown.
-    var undone = data.reverted && typeof data.reverted === "object" ? data.reverted : {}
-    var ops = Array.isArray(data.repairs) ? data.repairs : []
-    var ids = revertedIds(undone)
-    lines.push((undone.kind === "undo" ? "Redo " : "Undo ") + "repair" + (ids.length ? " on " + joinNames(ids) : "")
-      + ": " + plural(ops.length, "change"))
-    for (var o = 0; o < ops.length && o < WIDGET_DIALOG_ITEMS_MAX; o++) lines.push(repairActionLine(ops[o], context, targets))
-    if (ops.length > WIDGET_DIALOG_ITEMS_MAX) lines.push("(and " + (ops.length - WIDGET_DIALOG_ITEMS_MAX) + " more)")
-  } else if (env.command === "undo") {
-    var reverted = data.reverted && typeof data.reverted === "object" ? data.reverted : {}
-    var txs = Array.isArray(data.transactions) ? data.transactions : []
-    var where = []
-    for (var t = 0; t < txs.length; t++) if (txs[t].target && txs[t].target.id) where.push(txs[t].target.id)
-    var folders2 = data.folders || {}
-    var restored = stringList(folders2.restored).length
-    var removed = stringList(folders2.removed).length
-    lines.push((reverted.kind === "undo" ? "Redo " : "Undo ") + (KIND_WORDS[reverted.kind] || str(reverted.kind))
-      + (where.length ? " on " + joinNames(where) : "")
-      + ": " + plural(restored, "folder") + " restored, " + removed + " removed")
-    // The undo of a whole restore reverts every play since it too: `changed_since`
-    // counts the files the game changed (kept in the undo's snapshot), `null` when they
-    // cannot be counted.
-    if (typeof data.changed_since === "number" && data.changed_since > 0) {
-      lines.push("Also reverts every play since the restore: " + plural(data.changed_since, "file")
-        + " the game changed (kept in the undo's snapshot)")
-    } else if (data.changed_since === null) {
-      lines.push("Also reverts every play since the restore (the files it changed cannot be counted)")
-    }
-  } else if (env.command === "targets rm") {
-    var managed = num(data.managed_addons)
-    lines.push("Forget client " + str(data.id) + "; nothing in its directory is touched"
-      + (managed ? " (its record of " + plural(managed, "managed addon") + " is kept)" : ""))
-  } else if (env.command === "backup restore") {
-    lines = lines.concat(restoreLines(data, env))
-  } else if (env.command === "backup prune") {
-    lines = lines.concat(pruneLines(data))
-  } else {
-    lines.push(resultLine(env))
-  }
-  var still = warningMessages(env, "still_required")
-  for (var w = 0; w < still.length; w++) lines.push(still[w])
-  if (data.reload_required === "reload") lines.push("Then /reload in game")
-  if (data.reload_required === "restart") lines.push("Then restart the game")
-  return lines.join("\n")
 }
 
 // "2026-10-22 22:46" (UTC, as the CLI writes it).
@@ -1652,58 +1584,6 @@ function dateText(iso) {
   var two = function(n) { return n < 10 ? "0" + n : String(n) }
   return at.getFullYear() + "-" + two(at.getMonth() + 1) + "-" + two(at.getDate())
     + " " + two(at.getHours()) + ":" + two(at.getMinutes())
-}
-
-// A restore's dry run (D7, D8): what it would put back, the versions that wrote the
-// settings and what is not in the backup; whole adds what else it changes, and the
-// current WTF/ kept as a backup (or why not).
-function restoreLines(data, env) {
-  var out = []
-  var backup = data.backup && typeof data.backup === "object" ? data.backup : {}
-  var from = "the backup of " + dateText(backup.captured_at)
-  if (data.mode === "addons") {
-    var addons = Array.isArray(data.addons) ? data.addons : []
-    for (var i = 0; i < addons.length; i++) {
-      var a = addons[i]
-      var f = a.files && typeof a.files === "object" ? a.files : {}
-      out.push("Restore " + str(a.addon) + "'s settings from " + from + ": " + num(f.replaced) + " replaced, "
-        + num(f.restored) + " restored (absent now), " + num(f.created_since) + " created since (moved aside)")
-      var captured = str(a.captured_version)
-      var installed = str(a.installed_version)
-      if (captured && installed && captured !== installed) {
-        out.push("Settings written by " + str(a.addon) + " " + captured + "; installed now: " + installed)
-      }
-      var absent = stringList(a.new_folders)
-      for (var j = 0; j < absent.length; j++) out.push(absent[j] + ": not in this backup; left as it is")
-    }
-    return out
-  }
-  var files = data.files && typeof data.files === "object" ? data.files : {}
-  out.push("Restore the whole WTF/ from " + from + ": " + plural(num(files.restored), "file") + " restored, "
-    + num(files.differed) + " differ now, " + num(files.created_since) + " created since (moved aside)")
-  out.push("Also restores keybindings, macros, chat settings and every other addon's settings")
-  var skipped = warningMessages(env, "before_restore_skipped")
-  if (skipped.length) return out.concat(skipped)
-  out.push("The current WTF/ is kept as a backup (before restore)")
-  return out
-}
-
-// A prune's dry run: the backups it would delete, and those in use it keeps.
-function pruneLines(data) {
-  var out = []
-  var targets = Array.isArray(data.targets) ? data.targets : []
-  for (var i = 0; i < targets.length; i++) {
-    var t = targets[i]
-    var where = t.target && t.target.id ? " from " + t.target.id : ""
-    var pruned = Array.isArray(t.pruned) ? t.pruned : []
-    for (var j = 0; j < pruned.length; j++) {
-      out.push("Delete backup " + str(pruned[j].id) + " (" + kindText({ "kind": str(pruned[j].kind), "trigger": null }) + ", "
-        + bytesText(num(pruned[j].bytes)) + ")" + where)
-    }
-    var busy = Array.isArray(t.busy_backups) ? t.busy_backups : []
-    for (var k = 0; k < busy.length; k++) out.push(str(busy[k].id || busy[k]) + " is in use and is kept")
-  }
-  return out
 }
 
 // A refused restore's alternatives (`ref_ambiguous`: ownership changed since the
@@ -1732,40 +1612,50 @@ function backupFolderOf(env) {
   return error && error.details && typeof error.details.backup_dir === "string" ? error.details.backup_dir : ""
 }
 
-// Why a stored plan cannot run any more, by `plan_stale`'s `details.reason` (M4-D24).
+// Why a stored plan cannot run any more, by `plan_stale`'s `details.reason` (M4-D24):
+// the COPY id of its words.
 var PLAN_STALE_REASONS = {
-  "expired": "The plan expired.",
-  "binary_changed": "omaddons changed since the preview.",
-  "input_missing": "A file the plan needs is gone.",
-  "already_applied": "The plan was applied already."
+  "expired": "stale.expired",
+  "binary_changed": "stale.binary_changed",
+  "input_missing": "stale.input_missing",
+  "already_applied": "stale.already_applied"
 }
 
-// A `plan_stale` refusal: what changed since the preview (M3-D46); for a stored plan,
-// why it cannot run (M4-D24), that it is gone, or the clients where it went stale.
-function staleText(env) {
+// The words for `plan_stale`'s `details.changed` parts (design doc §6.5.2), and a bound
+// repair's (G2).
+var STALE_PARTS = ["targets", "selection", "observed", "command"]
+
+// A `plan_stale` refusal as the plan sheet's banner over the new preview (M3-D46, design
+// doc §6.5.2): "Changed since you looked", then what changed. For a stored plan, why it
+// cannot run (M4-D24), that it is gone, or the clients where it went stale, by their
+// player names from `targets`. Chosen from the codes and `details`, never the message.
+function staleText(env, targets) {
   var error = env && env.error && typeof env.error === "object" ? env.error : {}
   var details = error.details && typeof error.details === "object" ? error.details : {}
-  var after = " Nothing ran; check the new preview."
-  // A bound repair (G2): what changed, in a person's words.
-  if (env && env.command === "doctor fix") {
-    var words = { "observed": "the files this repair checks", "selection": "what it would do",
-      "targets": "the clients it touches", "command": "the command" }
-    var parts = stringList(details.changed).filter(function(p) { return words.hasOwnProperty(p) }).map(function(p) { return words[p] })
-    return "Changed since you looked: " + (parts.length ? joinNames(parts) : "the repair") + "." + after
+  // The parts it names, each in a person's words; "; " between them, since a part's own
+  // words may hold a comma.
+  var known = function(prefix) {
+    return stringList(details.changed).filter(function(p) { return STALE_PARTS.indexOf(p) !== -1 })
+      .map(function(p) { return copy(prefix + p) }).join("; ")
   }
-  if (error.code === "plan_not_found") return "The plan is gone (expired or cleared)." + after
+  // A bound repair (G2): what changed.
+  if (env && env.command === "doctor fix") {
+    return copy("stale.banner", { "what": known("stale.repair.") || copy("stale.repair.unknown") })
+  }
+  if (error.code === "plan_not_found") return copy("stale.banner", { "what": copy("stale.gone") })
   if (typeof details.reason === "string" && PLAN_STALE_REASONS.hasOwnProperty(details.reason)) {
-    return PLAN_STALE_REASONS[details.reason] + after
+    return copy("stale.banner", { "what": copy(PLAN_STALE_REASONS[details.reason]) })
   }
   var data = env && env.data && typeof env.data === "object" ? env.data : {}
   var outcomes = Array.isArray(data.outcomes) ? data.outcomes : []
   var stale = []
   for (var i = 0; i < outcomes.length; i++) {
-    if (outcomes[i] && outcomes[i].status === "stale" && typeof outcomes[i].target === "string") stale.push(outcomes[i].target)
+    if (outcomes[i] && outcomes[i].status === "stale" && typeof outcomes[i].target === "string") {
+      stale.push(sheetClient(targets, outcomes[i].target, ""))
+    }
   }
-  if (stale.length) return "Changed since you looked on " + joinNames(stale) + ". Nothing ran there; check the new preview."
-  var changed = stringList(details.changed)
-  return "Changed since you looked: " + (changed.length ? joinNames(changed) : "the plan") + "." + after
+  if (stale.length) return copy("stale.banner.there", { "what": copy("stale.landed", { "clients": joinNames(stale) }) })
+  return copy("stale.banner", { "what": known("stale.changed.") || copy("stale.changed.unknown") })
 }
 
 // A failure's fix as text, when it is no button: prose, or an argv the classifier
@@ -1862,10 +1752,10 @@ var KEYMAP = [
   { "keys": ["j", "k", "Down", "Up"], "context": "card", "action": "move", "label": "move between the card's buttons", "hint": "j k" },
   { "keys": ["Enter", "Space"], "context": "card", "action": "press", "label": "press the button", "hint": "Enter" },
   { "keys": ["Esc", "n", "N"], "context": "sheet", "action": "cancel", "label": "cancel, or go back a step", "hint": "Esc n" },
-  { "keys": ["j", "k", "Down", "Up"], "context": "sheet", "action": "line", "label": "move between the choices", "hint": "j k" },
-  { "keys": ["h", "l", "Left", "Right", "Tab", "Shift+Tab"], "context": "sheet", "action": "switch", "label": "move between No and Yes", "hint": "h l" },
-  { "keys": ["y", "Y"], "context": "sheet", "action": "confirm", "label": "yes, on a confirmation", "hint": "y", "confirms": true },
-  { "keys": ["Enter", "Space"], "context": "sheet", "action": "press", "label": "the button or choice under the cursor (a confirmation starts on No)", "hint": "Enter", "confirms": true },
+  { "keys": ["j", "k", "Down", "Up"], "context": "sheet", "action": "line", "label": "scroll a plan sheet, or move between a chooser's choices", "hint": "j k" },
+  { "keys": ["h", "l", "Left", "Right", "Tab", "Shift+Tab"], "context": "sheet", "action": "switch", "label": "move between Cancel and the confirm button", "hint": "h l" },
+  { "keys": ["y", "Y"], "context": "sheet", "action": "confirm", "label": "confirm a plan sheet", "hint": "y", "confirms": true },
+  { "keys": ["Enter", "Space"], "context": "sheet", "action": "press", "label": "the button or choice under the cursor (a plan sheet starts on Cancel)", "hint": "Enter", "confirms": true },
   { "keys": ["?", "Esc"], "context": "help", "action": "close", "label": "close the reference", "hint": "? Esc" },
   { "keys": ["j", "k", "Down", "Up"], "context": "help", "action": "scroll", "label": "scroll", "hint": "j k" }
 ]
@@ -2881,8 +2771,6 @@ function resultUndo(result, lastChange) {
 var PLAN_PATHS = ["install", "update", "pin", "unpin", "adopt", "sync", "copy", "remove", "undo", "backup restore", "backup prune"]
 // END PLAN_PATHS
 var PLAN_ID_PATTERN = /^[0-9A-HJKMNP-TV-Z]{26}$/
-// The plan items a dialog lists before "(and N more)"; a plain UI choice.
-var WIDGET_DIALOG_ITEMS_MAX = 12
 // The fields of an approval's selection item, as the widget keeps them.
 var APPROVAL_FIELDS = ["target_key", "target_id", "addon", "source", "channel", "release_id", "asset", "from_version", "to_version", "op"]
 // The fields a shown item and a plan item must both carry, and agree on, to match.
@@ -3013,58 +2901,637 @@ function selectionMatches(shown, selection) {
   return true
 }
 
-// One approval reason in plain words, as dialog lines: never none.
-function reasonText(reason, scope) {
-  var s = scope && typeof scope === "object" ? scope : {}
-  var out = []
-  var list = function(key) { return Array.isArray(s[key]) ? s[key] : [] }
-  if (reason === "dependency_added") {
-    list("dependencies_added").forEach(function(d) {
-      var name = entryName(d)
-      var version = d && typeof d === "object" ? str(d.version) || str(d.to_version) : ""
-      if (name) out.push("Also installs " + name + (version ? " " + version : "") + " (a new dependency)")
-    })
-    return out.length ? out : ["Also installs a new dependency"]
-  }
-  if (reason === "folders_removed") {
-    list("folders_removed").forEach(function(f) {
-      var folder = typeof f === "string" ? f : f && typeof f === "object" ? str(f.folder) : ""
-      if (folder) out.push("Removes the folder " + folder + " (kept for undo)")
-    })
-    return out.length ? out : ["Removes folders (kept for undo)"]
-  }
-  if (reason === "local_changes_replaced") {
-    var local = s.local_changes_replaced && typeof s.local_changes_replaced === "object" ? s.local_changes_replaced : {}
-    var count = num(local.count)
-    var folders = stringList(local.folders)
-    if (count <= 0) return ["Replaces files you changed (kept for undo)"]
-    return ["Replaces " + plural(count, "file") + " you changed" + (folders.length ? " in " + joinNames(folders) : "") + " (kept for undo)"]
-  }
-  if (reason === "source_changed") {
-    list("source_changed").forEach(function(c) {
-      var name = entryName(c)
-      var to = c && typeof c === "object" ? str(c.to) || str(c.source) : ""
-      if (name) out.push(name + " comes from another source now" + (to ? " (" + to + ")" : ""))
-    })
-    return out.length ? out : ["An addon comes from another source now"]
-  }
-  var fixed = {
-    "channel_changed": "Follows another release channel than the one installed",
-    "while_running": "Changes files while the game is running (/reload in game afterwards)",
-    "reinstall": "Reinstalls over the installed files",
-    "force": "Takes over folders another addon owns (--force)",
-    "downgrade": "Installs an older version than the one installed",
-    "destructive": "Removes, reverts or replaces something you have now"
-  }
-  if (fixed.hasOwnProperty(reason)) return [fixed[reason]]
-  return ["Also: " + str(reason).replace(/_/g, " ")]
+// -------------------------------------------------------------- the plan sheet (1n2p.17)
+//
+// Every confirmation is a plan sheet (design doc §6.7): a title that names the change,
+// the "Changed since you looked" banner, every item (no cap: the sheet scrolls), one line
+// per effect, and Cancel beside the verb. These functions build it from the preview's
+// envelope; PlanSheet.qml draws it, and dialogText writes it as text for IPC's state().
+// A sheet is `{title, stale, items: [{op, addon, client, clientKey, from, to, name,
+// detail, text, header}], effects: [{kind, severity, glyph, text}], confirmLabel,
+// cancelLabel, destructive, glyph}`.
+
+// The widget's words (design doc §6.2): ids to templates with named {slots}, and a
+// {one, other} pair chosen by the `n` slot. copy() is the one formatter. The plan
+// sheet's words start the table; the other views move theirs here as they are rebuilt.
+var COPY = {
+  "sheet.cancel": "Cancel",
+  "sheet.date.unknown": "an earlier time",
+  "sheet.title.generic": "Go ahead with this change?",
+  "sheet.confirm.generic": "Continue",
+  "sheet.title.failed": "omaddons couldn't say what this would do",
+
+  "sheet.title.update.one": "Update {addon} on {client}?",
+  "sheet.title.update.client": "Update {n} addons on {client}?",
+  "sheet.title.update.clients": "Update {n} addons on {m} clients?",
+  "sheet.confirm.update.one": "Update {addon}",
+  "sheet.confirm.update.many": "Update {n}",
+  "sheet.title.install.one": "Install {addon} on {client}?",
+  "sheet.title.install.client": "Install {n} addons on {client}?",
+  "sheet.title.install.clients": "Install {n} addons on {m} clients?",
+  "sheet.confirm.install.one": "Install {addon}",
+  "sheet.confirm.install.many": "Install {n}",
+  "sheet.title.reinstall.one": "Repair {addon} on {client}?",
+  "sheet.title.reinstall.client": "Repair {n} addons on {client}?",
+  "sheet.title.reinstall.clients": "Repair {n} addons on {m} clients?",
+  "sheet.confirm.reinstall.one": "Repair {addon}",
+  "sheet.confirm.reinstall.many": "Repair {n}",
+  "sheet.title.remove.one": "Remove {addon} from {client}?",
+  "sheet.title.remove.client": "Remove {n} addons from {client}?",
+  "sheet.title.remove.clients": "Remove {n} addons from {m} clients?",
+  "sheet.confirm.remove.one": "Remove {addon}",
+  "sheet.confirm.remove.many": "Remove {n}",
+  "sheet.title.adopt.one": "Take over {addon} on {client}?",
+  "sheet.title.adopt.client": "Take over {n} addons on {client}?",
+  "sheet.title.adopt.clients": "Take over {n} addons on {m} clients?",
+  "sheet.confirm.adopt.one": "Take over {addon}",
+  "sheet.confirm.adopt.many": "Take over {n}",
+  "sheet.title.pin.one": "Pin {addon} on {client}?",
+  "sheet.title.pin.client": "Pin {n} addons on {client}?",
+  "sheet.title.pin.clients": "Pin {n} addons on {m} clients?",
+  "sheet.confirm.pin.one": "Pin {addon}",
+  "sheet.confirm.pin.many": "Pin {n}",
+  "sheet.title.unpin.one": "Unpin {addon} on {client}?",
+  "sheet.title.unpin.client": "Unpin {n} addons on {client}?",
+  "sheet.title.unpin.clients": "Unpin {n} addons on {m} clients?",
+  "sheet.confirm.unpin.one": "Unpin {addon}",
+  "sheet.confirm.unpin.many": "Unpin {n}",
+  "sheet.title.change.one": "Change {addon} on {client}?",
+  "sheet.title.change.client": "Make {n} changes on {client}?",
+  "sheet.title.change.clients": "Make {n} changes on {m} clients?",
+  "sheet.confirm.change.one": "Change {addon}",
+  "sheet.confirm.change.many": "Change {n}",
+
+  "sheet.item.install": "{version} (new)",
+  "sheet.item.remove": { "one": "{version} (1 folder)", "other": "{version} ({n} folders)" },
+  "sheet.item.edit": "changes its {fields}",
+
+  "sheet.title.undo": "Undo the {change} on {clients} from {date}?",
+  "sheet.title.undo.nowhere": "Undo the {change} from {date}?",
+  "sheet.confirm.undo": "Undo",
+  "sheet.confirm.redo": "Redo",
+  "sheet.change.install": "install",
+  "sheet.change.update": "update",
+  "sheet.change.remove": "removal",
+  "sheet.change.undo": "undo",
+  "sheet.change.restore": "restore",
+  "sheet.change.repair": "repair",
+  "sheet.change.other": "change",
+  "sheet.item.undo.restored": "{folder} back as it was",
+  "sheet.item.undo.removed": "{folder} removed",
+
+  "sheet.title.restore": "Restore all of {owner} settings from {date}?",
+  "sheet.confirm.restore": "Restore all settings",
+  "sheet.title.restore_addon": "Restore {owner} settings on {client} from {date}?",
+  "sheet.confirm.restore_addon": "Restore {owner} settings",
+  "sheet.item.restore": "{files} back, {differed} differ now, {created} added since (moved aside)",
+  "sheet.item.restore_addon": "{replaced} replaced, {restored} back, {created} added since (moved aside)",
+
+  "sheet.title.prune.one": "Delete a backup on {client}?",
+  "sheet.title.prune.client": "Delete {n} backups on {client}?",
+  "sheet.title.prune.clients": "Delete {n} backups on {m} clients?",
+  "sheet.confirm.prune.one": "Delete",
+  "sheet.confirm.prune.many": "Delete {n}",
+  "sheet.item.prune": "{kind}, {size}",
+  "backup.kind.manual": "made by you",
+  "backup.kind.auto": "automatic",
+  "backup.kind.before_restore": "before a restore",
+  "backup.kind.imported": "imported",
+  "backup.kind.recovered": "rescued from an interrupted restore",
+
+  "sheet.title.forget": "Forget {client}?",
+  "sheet.confirm.forget": "Forget {client}",
+
+  "sheet.title.repair": "Repair: {problem}?",
+  "sheet.title.repair.unnamed": "Repair this problem?",
+  "sheet.confirm.repair": "Repair",
+
+  "sheet.effect.dependency_added": "Also installs {name}, which {addon} needs.",
+  "sheet.effect.dependency_added.any": "Also installs {name}, a new dependency.",
+  "sheet.effect.dependency_added.unnamed": "Also installs a new dependency.",
+  "sheet.effect.folders_removed": "Removes the folder {folder}. Undo brings it back.",
+  "sheet.effect.folders_removed.unnamed": "Removes folders. Undo brings them back.",
+  "sheet.effect.local_changes_replaced": {
+    "one": "Replaces 1 file you changed in {folders}. Undo brings it back.",
+    "other": "Replaces {n} files you changed in {folders}. Undo brings them back."
+  },
+  "sheet.effect.local_changes_replaced.nowhere": {
+    "one": "Replaces 1 file you changed. Undo brings it back.",
+    "other": "Replaces {n} files you changed. Undo brings them back."
+  },
+  "sheet.effect.local_changes_replaced.unnamed": "Replaces files you changed. Undo brings them back.",
+  "sheet.effect.source_changed": "{addon} will come from {source} now.",
+  "sheet.effect.source_changed.unknown": "{addon} will come from another source now.",
+  "sheet.effect.source_changed.unnamed": "An addon here will come from another source now.",
+  "sheet.effect.channel_changed": "{addon} switches to {channel} releases.",
+  "sheet.effect.channel_changed.unnamed": "An addon here switches to another release channel.",
+  "sheet.effect.while_running.reload": { "one": "{clients} is running: then /reload in game.", "other": "{clients} are running: then /reload in game." },
+  "sheet.effect.while_running.restart": { "one": "{clients} is running: then restart the game.", "other": "{clients} are running: then restart the game." },
+  "sheet.effect.while_running.unnamed": "The game is running: then /reload in game.",
+  "sheet.effect.reinstall": "Puts back {owner} files exactly as released.",
+  "sheet.effect.reinstall.unnamed": "Puts back the files exactly as released.",
+  "sheet.effect.force": "Takes over folders another addon owns.",
+  "sheet.effect.downgrade": "Goes back to an older version ({from} → {to}).",
+  "sheet.effect.downgrade.unnamed": "Goes back to an older version.",
+  "sheet.effect.unknown": "Also: {words}.",
+  "sheet.effect.still_required": "Other addons still need {addon} and won't load without it.",
+  "sheet.effect.still_required.unnamed": "Other addons still need what this removes and won't load without it.",
+  "sheet.effect.reload": "Then /reload in game.",
+  "sheet.effect.restart": "Then restart the game.",
+  "sheet.effect.changed_since": {
+    "one": "Also undoes every play session since the restore: 1 file the game changed (undo data keeps it).",
+    "other": "Also undoes every play session since the restore: {n} files the game changed (undo data keeps them)."
+  },
+  "sheet.effect.changed_since.uncounted": "Also undoes every play session since the restore (the files it changed can't be counted).",
+  "sheet.effect.restore_scope": "Also restores keybindings, macros, chat and every other addon's settings.",
+  "sheet.effect.kept_backup": "Your current settings are kept as a backup first.",
+  "sheet.effect.before_restore_skipped": "Today's settings won't be backed up first (this drive can't share files); undo still brings them back.",
+  "sheet.effect.verified": "Checked against the backup's checksums.",
+  "sheet.effect.settings_version": "Settings written by {addon} {captured}; installed now: {installed}.",
+  "sheet.effect.not_in_backup": "{folder} isn't in this backup and stays as it is.",
+  "sheet.effect.busy": "{id} is in use and is kept.",
+  "sheet.effect.forget_untouched": "Nothing in its folder is touched.",
+  "sheet.effect.forget_record": "omaddons keeps its record of {addons}.",
+  "sheet.effect.delegated": "Also finishes the interrupted change {tx} ({direction}).",
+  "sheet.effect.keeps_copy": "Keeps a copy of {size} first, for undo.",
+  "sheet.effect.undo_last": "Undo last reverts it.",
+
+  "source.github": "GitHub",
+  "source.wowi": "WoWInterface",
+  "source.tukui": "Tukui",
+  "source.wowace": "WowAce",
+  "source.git": "a git repository",
+  "source.file": "a file",
+  "channel.stable": "stable",
+  "channel.beta": "beta",
+  "channel.alpha": "alpha",
+
+  "stale.banner": "Changed since you looked: {what}. Nothing ran; here is what would happen now.",
+  "stale.banner.there": "Changed since you looked: {what}. Nothing ran there; here is what would happen now.",
+  "stale.expired": "that was more than a day ago",
+  "stale.gone": "what you saw was cleared",
+  "stale.binary_changed": "omaddons was updated since",
+  "stale.input_missing": "the file it installs from is gone",
+  "stale.already_applied": "it already ran",
+  "stale.landed": "another change landed on {clients}",
+  "stale.changed.targets": "another change landed on a client",
+  "stale.changed.selection": "a newer version came out, or the change is different now",
+  "stale.changed.observed": "files it would change were changed",
+  "stale.changed.command": "the command is different",
+  "stale.changed.unknown": "something it depends on",
+  "stale.repair.targets": "the clients it touches",
+  "stale.repair.selection": "what it would do",
+  "stale.repair.observed": "the files this repair checks",
+  "stale.repair.command": "the command",
+  "stale.repair.unknown": "the repair"
 }
 
-// Every reason of an approval, in order, as dialog lines.
-function reasonLines(approval) {
+// COPY[id] with its {slots} filled; a pair by `slots.n` (1 is "one"). A missing slot is
+// empty, and an unknown id shows as itself, so a typo is seen, never thrown.
+function copy(id, slots) {
+  if (!COPY.hasOwnProperty(id)) return String(id)
+  var s = slots && typeof slots === "object" ? slots : {}
+  var entry = COPY[id]
+  var template = typeof entry === "string" ? entry : (s.n === 1 ? entry.one : entry.other)
+  return String(template).replace(/\{([a-z_]+)\}/g, function(whole, name) {
+    var value = s.hasOwnProperty(name) ? s[name] : null
+    return value === null || value === undefined ? "" : String(value)
+  })
+}
+
+// "WeakAuras'" and "Retail's" (design doc §2.4's "WeakAuras' settings").
+function possessive(name) {
+  var s = str(name)
+  if (s === "") return ""
+  return /s$/i.test(s) ? s + "'" : s + "'s"
+}
+
+// The glyph of each effect kind (design doc §5.4), and the kinds that cost the player
+// something they have now: those show first, in the urgent colour.
+var SHEET_GLYPHS = {
+  "dependency_added": 0xF0431, "folders_removed": 0xF0258, "local_changes_replaced": 0xF0DC9,
+  "source_changed": 0xF059F, "channel_changed": 0xF0093, "while_running": 0xF040A, "reinstall": 0xF006F,
+  "force": 0xF0026, "downgrade": 0xF02DA, "still_required": 0xF0026, "changed_since": 0xF02DA,
+  "restore_scope": 0xF006F, "kept_backup": 0xF003C, "verified": 0xF05E0, "undo_last": 0xF054C,
+  "delegated": 0xF04E6, "note": 0xF02FD
+}
+var SHEET_URGENT = ["folders_removed", "local_changes_replaced", "force", "still_required", "changed_since", "restore_scope"]
+// The destructive verb's glyph, by what the sheet changes (design doc §5.4).
+var SHEET_VERB_GLYPHS = { "remove": 0xF01B4, "prune": 0xF01B4, "forget": 0xF01B4, "undo": 0xF054C, "restore": 0xF006F }
+
+function sheetEffect(kind, text) {
+  return { "kind": kind, "severity": SHEET_URGENT.indexOf(kind) !== -1 ? "urgent" : "normal",
+    "glyph": SHEET_GLYPHS.hasOwnProperty(kind) ? SHEET_GLYPHS[kind] : SHEET_GLYPHS.note, "text": text }
+}
+
+// A client by the name a player knows it by (design doc §6.3): the `targets` entry with
+// this key, else this id; else the id itself.
+function sheetClient(targets, id, key) {
+  var list = Array.isArray(targets) ? targets : []
+  var name = function(t) { return str(t.displayName) || str(t.id) }
+  for (var i = 0; key && i < list.length; i++) if (list[i] && list[i].key === key) return name(list[i])
+  for (var j = 0; id && j < list.length; j++) if (list[j] && list[j].id === id) return name(list[j])
+  return str(id)
+}
+
+// A sheet item: its name (which elides) and its detail (versions, which never do).
+function sheetItem(fields) {
+  var f = fields && typeof fields === "object" ? fields : {}
+  var item = {
+    "op": str(f.op), "addon": str(f.addon), "client": str(f.client), "clientKey": str(f.clientKey) || str(f.client),
+    "from": str(f.from), "to": str(f.to), "name": str(f.name), "detail": str(f.detail), "header": ""
+  }
+  item.text = item.detail ? item.name + " " + item.detail : item.name
+  return item
+}
+
+// A source as a player reads it.
+function sourceWords(source) {
+  var s = str(source)
+  if (s === "github" || s === "gh") return copy("source.github")
+  if (s === "wowi" || s === "tukui" || s === "wowace" || s === "git") return copy("source." + s)
+  return copy("source.file")
+}
+
+// One approval selection item as a sheet item (design doc §6.7's item lines).
+// `folders` counts each removed addon's folders (by lower-cased name), from a remove's
+// own items.
+function selectionItem(item, targets, folders) {
+  var it = item && typeof item === "object" ? item : {}
+  var op = str(it.op)
+  var from = str(it.from_version)
+  var to = str(it.to_version)
+  var detail = to || from
+  if (op === "update") detail = from && to && from !== to ? from + " → " + to : (to || from)
+  else if (op === "install") detail = copy("sheet.item.install", { "version": to }).replace(/^ /, "")
+  else if (op === "remove") {
+    var count = folders && folders.hasOwnProperty(asciiLower(str(it.addon))) ? folders[asciiLower(str(it.addon))] : null
+    detail = count === null ? from : copy("sheet.item.remove", { "n": count, "version": from }).replace(/^ /, "")
+  } else if (op === "edit" && Array.isArray(it.fields) && it.fields.length) {
+    detail = copy("sheet.item.edit", { "fields": joinNames(it.fields.map(function(f) { return str(f).replace(/_/g, " ") })) })
+  }
+  return sheetItem({ "op": op, "addon": it.addon, "client": sheetClient(targets, str(it.target_id), str(it.target_key)),
+    "clientKey": str(it.target_key) || str(it.target_id), "from": from, "to": to, "name": it.addon, "detail": detail })
+}
+
+// The distinct clients a sheet's items name, in order.
+function sheetClients(items) {
+  var keys = []
+  var names = []
+  for (var i = 0; i < items.length; i++) {
+    if (keys.indexOf(items[i].clientKey) === -1) {
+      keys.push(items[i].clientKey)
+      names.push(items[i].client)
+    }
+  }
+  return names
+}
+
+// "Update Foo on Retail?", "Update 3 addons on Retail?", "Update 3 addons on 2 clients?",
+// and the verb "Update Foo" or "Update 3", for one of the counted kinds.
+function countedTitle(kind, items) {
+  var clients = sheetClients(items)
+  if (items.length === 0) return copy("sheet.title.generic")
+  if (items.length === 1 && items[0].addon) return copy("sheet.title." + kind + ".one", { "addon": items[0].addon, "client": items[0].client })
+  if (clients.length <= 1) return copy("sheet.title." + kind + ".client", { "n": items.length, "client": clients[0] || "" })
+  return copy("sheet.title." + kind + ".clients", { "n": items.length, "m": clients.length })
+}
+
+function countedConfirm(kind, items) {
+  if (items.length === 1 && items[0].addon) return copy("sheet.confirm." + kind + ".one", { "addon": items[0].addon })
+  return copy("sheet.confirm." + kind + ".many", { "n": items.length })
+}
+
+// A dependency's version, from its scope entry or the selection's install of it.
+function dependencyVersion(entry, selection) {
+  if (entry && typeof entry === "object" && (str(entry.version) || str(entry.to_version))) return str(entry.version) || str(entry.to_version)
+  var wanted = asciiLower(entryName(entry))
+  for (var i = 0; i < selection.length; i++) {
+    var item = selection[i]
+    if (item && item.op === "install" && asciiLower(str(item.addon)) === wanted) return str(item.to_version)
+  }
+  return ""
+}
+
+// The clients a change lands on that run now (the `targets` entries' `running`).
+function runningClients(items, targets) {
+  var list = Array.isArray(targets) ? targets : []
   var out = []
-  for (var i = 0; i < approval.reasons.length; i++) out = out.concat(reasonText(approval.reasons[i], approval.scope))
+  for (var i = 0; i < items.length; i++) {
+    for (var j = 0; j < list.length; j++) {
+      var t = list[j]
+      var same = t && (t.key === items[i].clientKey || t.id === items[i].clientKey)
+      if (same && t.running === true && out.indexOf(items[i].client) === -1) out.push(items[i].client)
+    }
+  }
   return out
+}
+
+// The `reload_required` of a preview's data, over every client it reports.
+function reloadOfData(data) {
+  return reloadOf(Array.isArray(data.targets) ? data.targets : [data])
+}
+
+// One effect per approval reason (design doc §6.7's effect lines), from the typed
+// approval and the sheet's items; `destructive` has none (the verb says it).
+function reasonEffects(approval, items, targets, data) {
+  var out = []
+  var a = approval && typeof approval === "object" ? approval : { "reasons": [], "selection": [], "scope": {} }
+  var scope = a.scope && typeof a.scope === "object" ? a.scope : {}
+  var selection = Array.isArray(a.selection) ? a.selection : []
+  var list = function(key) { return Array.isArray(scope[key]) ? scope[key] : [] }
+  var single = items.length === 1 && items[0].addon ? items[0] : null
+  var itemNamed = function(name) {
+    for (var i = 0; i < selection.length; i++) if (selection[i] && asciiLower(str(selection[i].addon)) === asciiLower(name)) return selection[i]
+    return null
+  }
+  var reasons = Array.isArray(a.reasons) ? a.reasons : []
+  for (var r = 0; r < reasons.length; r++) {
+    var reason = reasons[r]
+    if (reason === "destructive") continue
+    if (reason === "dependency_added") {
+      var deps = list("dependencies_added").filter(function(d) { return !!entryName(d) })
+      deps.forEach(function(d) {
+        var version = dependencyVersion(d, selection)
+        var name = entryName(d) + (version ? " " + version : "")
+        out.push(sheetEffect(reason, single ? copy("sheet.effect.dependency_added", { "name": name, "addon": single.addon })
+          : copy("sheet.effect.dependency_added.any", { "name": name })))
+      })
+      if (!deps.length) out.push(sheetEffect(reason, copy("sheet.effect.dependency_added.unnamed")))
+    } else if (reason === "folders_removed") {
+      var removed = list("folders_removed").map(function(f) { return typeof f === "string" ? f : f && typeof f === "object" ? str(f.folder) : "" })
+        .filter(function(f) { return f !== "" })
+      removed.forEach(function(f) { out.push(sheetEffect(reason, copy("sheet.effect.folders_removed", { "folder": f }))) })
+      if (!removed.length) out.push(sheetEffect(reason, copy("sheet.effect.folders_removed.unnamed")))
+    } else if (reason === "local_changes_replaced") {
+      var local = scope.local_changes_replaced && typeof scope.local_changes_replaced === "object" ? scope.local_changes_replaced : {}
+      var count = num(local.count)
+      var where = stringList(local.folders)
+      out.push(sheetEffect(reason, count <= 0 ? copy("sheet.effect.local_changes_replaced.unnamed")
+        : where.length ? copy("sheet.effect.local_changes_replaced", { "n": count, "folders": joinNames(where) })
+        : copy("sheet.effect.local_changes_replaced.nowhere", { "n": count })))
+    } else if (reason === "source_changed") {
+      var moved = list("source_changed").map(entryName).filter(function(n) { return n !== "" })
+      moved.forEach(function(name) {
+        var it = itemNamed(name)
+        out.push(sheetEffect(reason, it && nonEmpty(it.source) ? copy("sheet.effect.source_changed", { "addon": name, "source": sourceWords(it.source) })
+          : copy("sheet.effect.source_changed.unknown", { "addon": name })))
+      })
+      if (!moved.length) out.push(sheetEffect(reason, copy("sheet.effect.source_changed.unnamed")))
+    } else if (reason === "channel_changed") {
+      var channel = single ? itemNamed(single.addon) : null
+      out.push(sheetEffect(reason, channel && nonEmpty(channel.channel)
+        ? copy("sheet.effect.channel_changed", { "addon": single.addon, "channel": copy("channel." + channel.channel) })
+        : copy("sheet.effect.channel_changed.unnamed")))
+    } else if (reason === "while_running") {
+      var running = runningClients(items, targets)
+      var restart = reloadOfData(data) === "restart"
+      out.push(sheetEffect(reason, running.length
+        ? copy(restart ? "sheet.effect.while_running.restart" : "sheet.effect.while_running.reload", { "n": running.length, "clients": joinNames(running) })
+        : (restart ? copy("sheet.effect.restart") : copy("sheet.effect.while_running.unnamed"))))
+    } else if (reason === "reinstall") {
+      out.push(sheetEffect(reason, single ? copy("sheet.effect.reinstall", { "owner": possessive(single.addon) }) : copy("sheet.effect.reinstall.unnamed")))
+    } else if (reason === "force") {
+      out.push(sheetEffect(reason, copy("sheet.effect.force")))
+    } else if (reason === "downgrade") {
+      out.push(sheetEffect(reason, single && single.from && single.to ? copy("sheet.effect.downgrade", { "from": single.from, "to": single.to })
+        : copy("sheet.effect.downgrade.unnamed")))
+    } else {
+      out.push(sheetEffect("note", copy("sheet.effect.unknown", { "words": str(reason).replace(/_/g, " ") })))
+    }
+  }
+  return out
+}
+
+// What every preview may add, whatever its command: others that still need what it
+// removes (by the warning's code, never its text), and the game to reload or restart
+// (unless a `while_running` line says it already).
+function commonEffects(env, items, effects) {
+  var out = []
+  var data = env.data && typeof env.data === "object" ? env.data : {}
+  var codes = Array.isArray(env.warnings) ? env.warnings.map(function(w) { return w && w.code }) : []
+  if (codes.indexOf("still_required") !== -1) {
+    var removed = items.filter(function(i) { return i.op === "remove" && i.addon })
+    out.push(sheetEffect("still_required", removed.length === 1 ? copy("sheet.effect.still_required", { "addon": removed[0].addon })
+      : copy("sheet.effect.still_required.unnamed")))
+  }
+  var said = effects.some(function(e) { return e.kind === "while_running" })
+  var reload = reloadOfData(data)
+  if (!said && reload === "reload") out.push(sheetEffect("note", copy("sheet.effect.reload")))
+  if (!said && reload === "restart") out.push(sheetEffect("note", copy("sheet.effect.restart")))
+  return out
+}
+
+// The items, titled and labelled by kind, for a preview whose approval lists the
+// change: install, update, remove, adopt, pin, unpin, sync and copy. The dependencies it
+// adds are effects, never items (M4-D28).
+function selectionSheet(path, env, approval, targets) {
+  var data = env.data && typeof env.data === "object" ? env.data : {}
+  var folders = {}
+  var removedItems = Array.isArray(data.items) ? data.items : []
+  for (var i = 0; i < removedItems.length; i++) {
+    var r = removedItems[i]
+    if (r && !r.error && Array.isArray(r.folders)) folders[asciiLower(str(r.name || r.request))] = r.folders.length
+  }
+  var items = requestedItems(approval).map(function(it) { return selectionItem(it, targets, folders) })
+  var reinstall = approval.reasons.indexOf("reinstall") !== -1
+  var kinds = { "update": "update", "install": "install", "remove": "remove", "adopt": "adopt", "pin": "pin", "unpin": "unpin" }
+  var kind = reinstall ? "reinstall" : (kinds.hasOwnProperty(path) ? kinds[path] : "change")
+  var effects = reasonEffects(approval, items, targets, data)
+  return { "title": countedTitle(kind, items), "items": items, "effects": effects.concat(commonEffects(env, items, effects)),
+    "confirmLabel": countedConfirm(kind, items), "glyph": kind === "remove" ? SHEET_VERB_GLYPHS.remove : 0 }
+}
+
+// An undo's sheet (or a repair's undo, E7): what it reverts, where and from when, and
+// each folder or operation it puts back.
+function undoSheet(env, context, targets) {
+  var data = env.data && typeof env.data === "object" ? env.data : {}
+  var reverted = data.reverted && typeof data.reverted === "object" ? data.reverted : {}
+  var repair = data.kind === "repair"
+  var ids = []
+  var txs = Array.isArray(data.transactions) ? data.transactions : []
+  for (var t = 0; !repair && t < txs.length; t++) if (txs[t] && txs[t].target && txs[t].target.id) ids.push(txs[t].target.id)
+  if (!ids.length) ids = revertedIds(reverted)
+  var names = []
+  ids.forEach(function(id) { var n = sheetClient(targets, id, ""); if (names.indexOf(n) === -1) names.push(n) })
+  var kind = str(reverted.kind)
+  var change = COPY.hasOwnProperty("sheet.change." + kind) ? copy("sheet.change." + kind) : copy("sheet.change.other")
+  var date = dateText(reverted.at) || copy("sheet.date.unknown")
+  var items = []
+  if (repair) {
+    var ops = Array.isArray(data.repairs) ? data.repairs : []
+    for (var o = 0; o < ops.length; o++) items.push(sheetItem({ "op": "undo", "name": repairActionLine(ops[o], context, targets) }))
+  } else {
+    var folders = data.folders && typeof data.folders === "object" ? data.folders : {}
+    stringList(folders.restored).forEach(function(f) { items.push(sheetItem({ "op": "undo", "name": copy("sheet.item.undo.restored", { "folder": f }) })) })
+    stringList(folders.removed).forEach(function(f) { items.push(sheetItem({ "op": "undo", "name": copy("sheet.item.undo.removed", { "folder": f }) })) })
+  }
+  var effects = []
+  // The undo of a whole restore reverts every play since it too: `changed_since` counts
+  // the files the game changed (kept in the undo's snapshot), `null` when it cannot.
+  if (typeof data.changed_since === "number" && data.changed_since > 0) {
+    effects.push(sheetEffect("changed_since", copy("sheet.effect.changed_since", { "n": data.changed_since })))
+  } else if (data.changed_since === null && kind === "restore") {
+    effects.push(sheetEffect("changed_since", copy("sheet.effect.changed_since.uncounted")))
+  }
+  return {
+    "title": names.length ? copy("sheet.title.undo", { "change": change, "clients": joinNames(names), "date": date })
+      : copy("sheet.title.undo.nowhere", { "change": change, "date": date }),
+    "items": items, "effects": effects,
+    "confirmLabel": copy(kind === "undo" ? "sheet.confirm.redo" : "sheet.confirm.undo"), "glyph": SHEET_VERB_GLYPHS.undo
+  }
+}
+
+// A restore's sheet (D7, D8): what it puts back, from when; a whole one says what else
+// it changes and whether today's settings are kept first, one addon's which version
+// wrote the settings and what the backup does not hold.
+function restoreSheet(env, targets) {
+  var data = env.data && typeof env.data === "object" ? env.data : {}
+  var backup = data.backup && typeof data.backup === "object" ? data.backup : {}
+  var target = data.target && typeof data.target === "object" ? data.target : {}
+  var client = sheetClient(targets, str(target.id), str(target.key))
+  var date = dateText(backup.captured_at) || copy("sheet.date.unknown")
+  var codes = Array.isArray(env.warnings) ? env.warnings.map(function(w) { return w && w.code }) : []
+  var items = []
+  var effects = []
+  var sheet = {}
+  if (data.mode === "addons") {
+    var addons = Array.isArray(data.addons) ? data.addons : []
+    var owner = possessive(joinNames(addons.map(function(a) { return str(a.addon) }).filter(function(n) { return n !== "" })))
+    sheet.title = copy("sheet.title.restore_addon", { "owner": owner, "client": client, "date": date })
+    sheet.confirmLabel = copy("sheet.confirm.restore_addon", { "owner": owner })
+    addons.forEach(function(a) {
+      var f = a.files && typeof a.files === "object" ? a.files : {}
+      items.push(sheetItem({ "op": "restore", "addon": a.addon, "client": client, "name": a.addon,
+        "detail": copy("sheet.item.restore_addon", { "replaced": plural(num(f.replaced), "file"), "restored": num(f.restored),
+          "created": num(f.created_since) }) }))
+      var captured = str(a.captured_version)
+      var installed = str(a.installed_version)
+      if (captured && installed && captured !== installed) {
+        effects.push(sheetEffect("note", copy("sheet.effect.settings_version", { "addon": str(a.addon), "captured": captured, "installed": installed })))
+      }
+      stringList(a.new_folders).forEach(function(folder) { effects.push(sheetEffect("note", copy("sheet.effect.not_in_backup", { "folder": folder }))) })
+    })
+  } else {
+    var files = data.files && typeof data.files === "object" ? data.files : {}
+    sheet.title = copy("sheet.title.restore", { "owner": possessive(client), "date": date })
+    sheet.confirmLabel = copy("sheet.confirm.restore")
+    items.push(sheetItem({ "op": "restore", "client": client, "name": copy("sheet.item.restore",
+      { "files": plural(num(files.restored), "file"), "differed": num(files.differed), "created": num(files.created_since) }) }))
+    effects.push(sheetEffect("restore_scope", copy("sheet.effect.restore_scope")))
+    effects.push(codes.indexOf("before_restore_skipped") !== -1 ? sheetEffect("note", copy("sheet.effect.before_restore_skipped"))
+      : sheetEffect("kept_backup", copy("sheet.effect.kept_backup")))
+  }
+  if (backup.integrity === "verified") effects.push(sheetEffect("verified", copy("sheet.effect.verified")))
+  sheet.items = items
+  sheet.effects = effects
+  sheet.glyph = SHEET_VERB_GLYPHS.restore
+  return sheet
+}
+
+// A prune's sheet: the backups it deletes, each by its kind and size, and those in use
+// it keeps.
+function pruneSheet(env, targets) {
+  var data = env.data && typeof env.data === "object" ? env.data : {}
+  var list = Array.isArray(data.targets) ? data.targets : []
+  var items = []
+  var effects = []
+  for (var i = 0; i < list.length; i++) {
+    var t = list[i] && typeof list[i] === "object" ? list[i] : {}
+    var target = t.target && typeof t.target === "object" ? t.target : {}
+    var client = sheetClient(targets, str(target.id), str(target.key))
+    var pruned = Array.isArray(t.pruned) ? t.pruned : []
+    for (var j = 0; j < pruned.length; j++) {
+      var kind = str(pruned[j].kind)
+      items.push(sheetItem({ "op": "prune", "client": client, "clientKey": str(target.key) || str(target.id),
+        "name": copy("sheet.item.prune", { "kind": COPY.hasOwnProperty("backup.kind." + kind) ? copy("backup.kind." + kind) : kind,
+          "size": bytesText(num(pruned[j].bytes)) }) }))
+    }
+    var busy = Array.isArray(t.busy_backups) ? t.busy_backups : []
+    for (var k = 0; k < busy.length; k++) effects.push(sheetEffect("note", copy("sheet.effect.busy", { "id": str(busy[k].id || busy[k]) })))
+  }
+  var clients = sheetClients(items)
+  return {
+    "title": items.length === 1 ? copy("sheet.title.prune.one", { "client": clients[0] })
+      : clients.length <= 1 ? copy("sheet.title.prune.client", { "n": items.length, "client": clients[0] || "" })
+      : copy("sheet.title.prune.clients", { "n": items.length, "m": clients.length }),
+    "items": items, "effects": effects,
+    "confirmLabel": items.length === 1 ? copy("sheet.confirm.prune.one") : copy("sheet.confirm.prune.many", { "n": items.length }),
+    "glyph": SHEET_VERB_GLYPHS.prune
+  }
+}
+
+// Forgetting a client (`targets rm`, M3's binding confirmation): it touches nothing in
+// the client's folder, and says so.
+function forgetSheet(env, targets) {
+  var data = env.data && typeof env.data === "object" ? env.data : {}
+  var client = sheetClient(targets, str(data.id), "")
+  var effects = [sheetEffect("note", copy("sheet.effect.forget_untouched"))]
+  var managed = num(data.managed_addons)
+  if (managed > 0) effects.push(sheetEffect("note", copy("sheet.effect.forget_record", { "addons": plural(managed, "managed addon") })))
+  return { "title": copy("sheet.title.forget", { "client": client }), "items": [], "effects": effects,
+    "confirmLabel": copy("sheet.confirm.forget", { "client": client }), "destructive": true, "glyph": SHEET_VERB_GLYPHS.forget }
+}
+
+// The sheet as PlanSheet.qml reads it: every key present, the items grouped by client
+// when they span several (`header` on each group's first item), and the effects that
+// cost something first, in their order otherwise.
+function finishSheet(sheet) {
+  var s = sheet && typeof sheet === "object" ? sheet : {}
+  var items = Array.isArray(s.items) ? s.items : []
+  var grouped = sheetClients(items).length > 1
+  var last = null
+  for (var i = 0; i < items.length; i++) {
+    items[i].header = grouped && items[i].clientKey !== last ? items[i].client : ""
+    last = items[i].clientKey
+  }
+  var effects = Array.isArray(s.effects) ? s.effects : []
+  var urgent = effects.filter(function(e) { return e.severity === "urgent" })
+  return {
+    "title": str(s.title) || copy("sheet.title.generic"), "stale": str(s.stale), "items": items,
+    "effects": urgent.concat(effects.filter(function(e) { return e.severity !== "urgent" })),
+    "confirmLabel": str(s.confirmLabel) || copy("sheet.confirm.generic"), "cancelLabel": copy("sheet.cancel"),
+    "destructive": s.destructive === true, "glyph": typeof s.glyph === "number" ? s.glyph : 0
+  }
+}
+
+// The sheet of a preview that is no stored plan's (`targets rm`), or of a command's own
+// data (undo, restore, prune). `context` and `targets` shorten a repair undo's paths and
+// name the clients.
+function confirmSheet(name, env, context, targets) {
+  if (!envelopeOk(env) || !env.ok) return finishSheet({ "title": copy("sheet.title.failed") })
+  var sheet = null
+  if (env.command === "undo") sheet = undoSheet(env, context, targets)
+  else if (env.command === "backup restore") sheet = restoreSheet(env, targets)
+  else if (env.command === "backup prune") sheet = pruneSheet(env, targets)
+  else if (env.command === "targets rm") sheet = forgetSheet(env, targets)
+  else sheet = { "items": [sheetItem({ "name": resultLine(env, context, targets) })], "effects": [] }
+  sheet.effects = sheet.effects.concat(commonEffects(env, sheet.items, sheet.effects))
+  return finishSheet(sheet)
+}
+
+// A stored plan's sheet: the command's own items, the effects its approval names, and
+// the urgent verb when the offer says the plan is destructive (never the path table).
+function previewSheet(path, env, approval, plan, context, targets) {
+  var sheet = null
+  if (path === "undo" || path === "backup restore" || path === "backup prune") {
+    sheet = path === "undo" ? undoSheet(env, context, targets)
+      : path === "backup restore" ? restoreSheet(env, targets) : pruneSheet(env, targets)
+    var data = env.data && typeof env.data === "object" ? env.data : {}
+    var effects = reasonEffects(approval, sheet.items, targets, data).concat(sheet.effects)
+    sheet.effects = effects.concat(commonEffects(env, sheet.items, effects))
+  } else {
+    sheet = selectionSheet(path, env, approval, targets)
+  }
+  sheet.destructive = (!!plan && plan.destructive === true) || approval.reasons.indexOf("destructive") !== -1
+  return finishSheet(sheet)
+}
+
+// A sheet with the banner of a preview run again after its plan was refused (M4-D24),
+// unless the sheet already says what changed.
+function withStale(sheet, stale) {
+  if (sheet && typeof sheet === "object" && !sheet.stale && typeof stale === "string" && stale !== "") sheet.stale = stale
+  return sheet
 }
 
 // One plan item as a line: "Update Foo v1 → v2 on retail"; a missing part is left out.
@@ -3082,15 +3549,6 @@ function planItemLine(item) {
   else if (op === "reinstall") words = ["Reinstall", addon, to || from, where ? "on " + where : ""]
   else words = [op ? op.charAt(0).toUpperCase() + op.slice(1) : "Change", addon, where ? "on " + where : ""]
   return words.filter(function(w) { return w !== "" }).join(" ")
-}
-
-// The plan's items as dialog lines, at most WIDGET_DIALOG_ITEMS_MAX, then "(and N more)".
-function planItemLines(selection) {
-  var items = Array.isArray(selection) ? selection : []
-  var out = []
-  for (var i = 0; i < items.length && i < WIDGET_DIALOG_ITEMS_MAX; i++) out.push(planItemLine(items[i]))
-  if (items.length > WIDGET_DIALOG_ITEMS_MAX) out.push("(and " + (items.length - WIDGET_DIALOG_ITEMS_MAX) + " more)")
-  return out
 }
 
 // Whether a plan item is the shown item's partner: the same addon (ignoring ASCII case)
@@ -3165,15 +3623,16 @@ function warningFix(env, code) {
 }
 
 // What to do with a preview's envelope (M4-D28). `spec` is `{mode: "match" | "confirm",
-// shown, again, path}`: `match` compares the plan with what the view `shown`, `again`
-// marks a preview run after a refused plan, and `path` is the previewed command's. The
-// decision is `{kind, plan, heading, lines, line, fixText}`, its kind one of "failed",
-// "refuse" (nothing ran, `line` says why), "refresh" (nothing to do), "dialog" (ask,
-// with `lines`) and "direct" (apply `plan` with no dialog: a routine plan that is
-// exactly what the view showed).
+// shown, again, path, context, targets}`: `match` compares the plan with what the view
+// `shown`, `again` marks a preview run after a refused plan, `path` is the previewed
+// command's, and `context` and `targets` name clients and shorten paths. The decision
+// is `{kind, plan, heading, sheet, line, fixText}`, its kind one of "failed", "refuse"
+// (nothing ran, `line` says why), "refresh" (nothing to do), "dialog" (ask, with the
+// plan `sheet`) and "direct" (apply `plan` with no sheet: a routine plan that is exactly
+// what the view showed).
 function previewDecision(spec, env) {
   var s = spec && typeof spec === "object" ? spec : {}
-  var decision = { "kind": "failed", "plan": null, "heading": "", "lines": [], "line": "", "fixText": "" }
+  var decision = { "kind": "failed", "plan": null, "heading": "", "sheet": null, "line": "", "fixText": "" }
   if (!envelopeOk(env) || !env.ok) return decision
   var data = env.data && typeof env.data === "object" ? env.data : {}
   var approval = approvalOf(data.approval)
@@ -3199,10 +3658,9 @@ function previewDecision(spec, env) {
   }
   decision.kind = "dialog"
   decision.plan = plan
-  var reasons = reasonLines(approval)
-  // Anything but a match is confirmed in the dialog: never applied directly.
+  // Anything but a match is confirmed in the sheet: never applied directly.
   if (s.mode !== "match") {
-    decision.lines = confirmText(s.path, env, s.context, s.targets).split("\n").concat(reasons)
+    decision.sheet = previewSheet(s.path, env, approval, plan, s.context, s.targets)
     return decision
   }
   var shown = Array.isArray(s.shown) ? s.shown : []
@@ -3212,18 +3670,30 @@ function previewDecision(spec, env) {
     decision.kind = "direct"
     return decision
   }
-  if (equal || shown.length === 0) {
-    decision.lines = planItemLines(approval.selection).concat(reasons)
-    return decision
+  decision.sheet = previewSheet(s.path, env, approval, plan, s.context, s.targets)
+  if (!equal && shown.length > 0) {
+    decision.heading = changeHeading(changeLines(shown, compared))
+    decision.sheet.stale = decision.heading
   }
-  decision.heading = changeHeading(changeLines(shown, compared))
-  decision.lines = [decision.heading].concat(planItemLines(approval.selection), reasons)
   return decision
 }
 
-// A decision's dialog text, one line each.
-function dialogText(decision) {
-  return decision && Array.isArray(decision.lines) ? decision.lines.join("\n") : ""
+// A plan sheet (or a decision's) as text, one line each: the title, the banner, every
+// item (each client's name before its group) and every effect. IPC's state() carries it,
+// for the checkpoint scripts and anyone reading the widget from a terminal.
+function dialogText(value) {
+  var sheet = value && typeof value === "object" && value.sheet && typeof value.sheet === "object" ? value.sheet : value
+  if (!sheet || typeof sheet !== "object" || typeof sheet.title !== "string") return ""
+  var lines = [sheet.title]
+  if (sheet.stale) lines.push(sheet.stale)
+  var items = Array.isArray(sheet.items) ? sheet.items : []
+  for (var i = 0; i < items.length; i++) {
+    if (items[i].header) lines.push(items[i].header)
+    lines.push(str(items[i].text))
+  }
+  var effects = Array.isArray(sheet.effects) ? sheet.effects : []
+  for (var j = 0; j < effects.length; j++) lines.push(str(effects[j].text))
+  return lines.join("\n")
 }
 
 // An `apply` result read as the envelope of the command it ran, so resultLine,
@@ -3361,13 +3831,14 @@ function repairActionLine(action, context, targets) {
   return op.replace(/_/g, " ") + " " + path
 }
 
-// What a repair's preview decides (G1's decision shape, so dialogText renders it):
-// "dialog" with the token to bind and a line per change, "refresh" when nothing is
-// left to repair, "refuse" when the preview is not exactly this repair or gives no
-// token, "failed" for an error or another envelope.
+// What a repair's preview decides (G1's decision shape, with its plan sheet): "dialog"
+// with the token to bind and an item per change, "refresh" when nothing is left to
+// repair, "refuse" when the preview is not exactly this repair or gives no token,
+// "failed" for an error or another envelope. The sheet's title is the problem's, from
+// the request's label ("Repair: <title>", repairRequest's).
 function doctorPreviewDecision(spec, env, context, targets) {
   var slots = spec && spec.slots && typeof spec.slots === "object" ? spec.slots : {}
-  var decision = { "kind": "failed", "token": "", "heading": "", "lines": [], "line": "", "fixText": "" }
+  var decision = { "kind": "failed", "token": "", "heading": "", "sheet": null, "line": "", "fixText": "" }
   var result = doctorResult(env)
   if (!result || result.error) return decision
   if (result.actions.length === 0 && result.delegated.length === 0) {
@@ -3388,18 +3859,18 @@ function doctorPreviewDecision(spec, env, context, targets) {
   }
   decision.kind = "dialog"
   decision.token = result.precondition
-  var lines = []
-  for (var j = 0; j < result.actions.length && j < WIDGET_DIALOG_ITEMS_MAX; j++) {
-    lines.push(repairActionLine(result.actions[j], context, targets))
-  }
-  if (result.actions.length > WIDGET_DIALOG_ITEMS_MAX) lines.push("(and " + (result.actions.length - WIDGET_DIALOG_ITEMS_MAX) + " more)")
-  for (var k = 0; k < result.delegated.length; k++) {
-    var d = result.delegated[k]
-    lines.push("Also finishes the interrupted change " + str(d.tx) + " (" + str(d.direction).replace(/_/g, " ") + ")")
-  }
-  if (result.summary.bytesToBackUp > 0) lines.push("Keeps a copy of " + bytesText(result.summary.bytesToBackUp) + " first, for undo")
-  lines.push("Undo last reverts it")
-  decision.lines = lines
+  var items = result.actions.map(function(a) { return sheetItem({ "op": "repair", "name": repairActionLine(a, context, targets) }) })
+  var effects = result.delegated.map(function(d) {
+    return sheetEffect("delegated", copy("sheet.effect.delegated", { "tx": str(d.tx), "direction": str(d.direction).replace(/_/g, " ") }))
+  })
+  if (result.summary.bytesToBackUp > 0) effects.push(sheetEffect("kept_backup", copy("sheet.effect.keeps_copy", { "size": bytesText(result.summary.bytesToBackUp) })))
+  effects.push(sheetEffect("undo_last", copy("sheet.effect.undo_last")))
+  var label = str(spec && spec.label)
+  decision.sheet = finishSheet({
+    "title": label.indexOf("Repair: ") === 0 && label.length > 8 ? copy("sheet.title.repair", { "problem": label.slice(8) })
+      : copy("sheet.title.repair.unnamed"),
+    "items": items, "effects": effects, "confirmLabel": copy("sheet.confirm.repair")
+  })
   return decision
 }
 
@@ -3530,7 +4001,6 @@ if (typeof module !== "undefined") {
     itemFixes: itemFixes,
     isSafeUrl: isSafeUrl,
     fixButtons: fixButtons,
-    confirmText: confirmText,
     staleText: staleText,
     fixText: fixText,
     VIEWS: VIEWS,
@@ -3619,7 +4089,6 @@ if (typeof module !== "undefined") {
     resultToastArgv: resultToastArgv,
     PLAN_PATHS: PLAN_PATHS,
     PLAN_ID_PATTERN: PLAN_ID_PATTERN,
-    WIDGET_DIALOG_ITEMS_MAX: WIDGET_DIALOG_ITEMS_MAX,
     MATCH_FIELDS: MATCH_FIELDS,
     storesPlan: storesPlan,
     approvalOf: approvalOf,
@@ -3628,8 +4097,18 @@ if (typeof module !== "undefined") {
     shownForAddon: shownForAddon,
     requestedItems: requestedItems,
     selectionMatches: selectionMatches,
-    reasonText: reasonText,
-    planItemLines: planItemLines,
+    COPY: COPY,
+    copy: copy,
+    possessive: possessive,
+    SHEET_GLYPHS: SHEET_GLYPHS,
+    SHEET_URGENT: SHEET_URGENT,
+    sheetClient: sheetClient,
+    selectionItem: selectionItem,
+    reasonEffects: reasonEffects,
+    confirmSheet: confirmSheet,
+    previewSheet: previewSheet,
+    withStale: withStale,
+    planItemLine: planItemLine,
     changeLines: changeLines,
     changeHeading: changeHeading,
     previewDecision: previewDecision,

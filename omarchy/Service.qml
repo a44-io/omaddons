@@ -52,7 +52,9 @@ Item {
   // The read whose failure `lastError` is ("" for an action's): a later success of that
   // same read takes the card away.
   property string lastErrorResource: ""
-  // The open confirmation: {text, heading, stale}.
+  // The open confirmation: {sheet, heading, stale}, `sheet` the plan sheet Model built
+  // (PlanSheet.qml draws it), `heading` what changed since the view, `stale` why the
+  // preview ran again.
   property var confirm: null
   // What the last plan preview decided (M4-D28), for state(): `{resource, decision,
   // planId}`, null before the first.
@@ -404,7 +406,7 @@ Item {
       var repair = Model.doctorPreviewDecision(r.spec, env, Build.CONTEXT, targets)
       lastPreview = { "resource": r.resource, "decision": repair.kind, "planId": null }
       if (repair.kind === "dialog") {
-        confirm = { "text": Model.dialogText(repair), "heading": "", "stale": r.stale }
+        confirm = { "sheet": Model.withStale(repair.sheet, r.stale), "heading": "", "stale": r.stale }
         pendingConfirm = { "spec": r.spec, "token": repair.token, "binds": true, "plan": null, "contextGeneration": r.contextGeneration }
       } else if (repair.kind === "refresh") {
         lastResult = { "ok": true, "line": repair.line, "partial": false, "commands": [], "fixes": [] }
@@ -426,7 +428,8 @@ Item {
     var path = r.cli ? Model.classifyCliArgv(r.cli).path : Model.templateShape(r.template, templates).path
     if (!Model.storesPlan(path)) {
       var token = env.data && typeof env.data.precondition === "string" ? env.data.precondition : ""
-      confirm = { "text": Model.confirmText(r.template || path, env, Build.CONTEXT, targets), "heading": "", "stale": r.stale }
+      confirm = { "sheet": Model.withStale(Model.confirmSheet(r.template || path, env, Build.CONTEXT, targets), r.stale),
+        "heading": "", "stale": r.stale }
       pendingConfirm = { "spec": r.spec, "token": token, "binds": Model.CLI_PATHS[path].binds, "plan": null, "contextGeneration": r.contextGeneration }
       return
     }
@@ -437,7 +440,7 @@ Item {
     if (decision.kind === "direct") {
       runPlan(decision.plan, r.spec, r.contextGeneration)
     } else if (decision.kind === "dialog") {
-      confirm = { "text": Model.dialogText(decision), "heading": decision.heading, "stale": r.stale }
+      confirm = { "sheet": Model.withStale(decision.sheet, r.stale), "heading": decision.heading, "stale": r.stale }
       pendingConfirm = { "spec": r.spec, "plan": decision.plan, "contextGeneration": r.contextGeneration }
     } else if (decision.kind === "refresh") {
       lastResult = { "ok": true, "line": decision.line, "partial": false, "commands": [], "fixes": [] }
@@ -801,11 +804,11 @@ Item {
         lastError = outcome === "ok" ? null : errorOf(env, r.label + " failed")
         // A plan gone stale or gone, or a client's part gone stale: the action is previewed
         // again (first in line), never applied again (M4-D28).
-        if (r.purpose === "planned" && r.spec && Model.needsPreviewAgain(env)) previewOf(r.spec, Model.staleText(env), true)
+        if (r.purpose === "planned" && r.spec && Model.needsPreviewAgain(env)) previewOf(r.spec, Model.staleText(env, targets), true)
       }
       var stale = outcome === "failed" && env.error && env.error.code === "plan_stale"
       // A preview gone stale is previewed again, never rerun with the same token.
-      if (stale && r.purpose === "confirmed" && r.spec) previewOf(r.spec, Model.staleText(env), false)
+      if (stale && r.purpose === "confirmed" && r.spec) previewOf(r.spec, Model.staleText(env, targets), false)
       if (stale && r.purpose === "bind") {
         lastError = { "message": Model.boundStaleText(r.template, env), "code": "plan_stale", "fixes": [], "fixText": "" }
       }
@@ -965,8 +968,10 @@ Item {
       "contextGeneration": contextGeneration,
       "lanes": { "mutation": laneState(mutationLane, "mutation"), "local": laneState(localLane, "local"), "network": laneState(networkLane, "network") },
       "lastRefreshMs": lastRefreshMs,
-      // The open confirmation and the last plan preview's decision (M4-D28).
-      "confirm": confirm ? { "heading": confirm.heading || "", "planId": pendingConfirm && pendingConfirm.plan ? pendingConfirm.plan.planId : null } : null,
+      // The open confirmation and the last plan preview's decision (M4-D28): the plan
+      // sheet's title, and the whole sheet as text, a line each.
+      "confirm": confirm ? { "heading": confirm.heading || "", "planId": pendingConfirm && pendingConfirm.plan ? pendingConfirm.plan.planId : null,
+        "title": confirm.sheet ? String(confirm.sheet.title || "") : "", "text": Model.dialogText(confirm.sheet) } : null,
       "lastPreview": lastPreview
     })
   }

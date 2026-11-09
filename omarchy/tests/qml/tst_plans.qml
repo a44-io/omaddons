@@ -110,6 +110,16 @@ TestCase {
     return JSON.parse(Fixtures.text(name)).data.plan_id
   }
 
+  // The open plan sheet, and its effects' lines.
+  function sheet() {
+    verify(service.confirm !== null && !!service.confirm.sheet, "a plan sheet is open: " + launchLog())
+    return service.confirm.sheet
+  }
+
+  function effects() {
+    return sheet().effects.map(function(e) { return e.text })
+  }
+
   // The list the views read, from the binary's `list` fixture `name`.
   function showList(name) {
     service.lists = Model.reduceList(JSON.parse(Fixtures.text(name)))
@@ -146,7 +156,10 @@ TestCase {
     showList("plan-dependency-list")
     answer(updateFoo(), "plan-update-dependency")
     compare(runs("apply").length, 0, "a plan that adds a dependency asks first: " + launchLog())
-    verify(service.confirm.text.indexOf("Also installs LibFoo") !== -1, service.confirm.text)
+    // The update is the item; the dependency it adds is an effect, named with its version.
+    compare(sheet().items.map(function(i) { return i.text }), ["Foo v1 → v2"])
+    compare(effects(), ["Also installs LibFoo 1.0, which Foo needs."])
+    compare([sheet().title.indexOf("Update Foo on ") === 0, sheet().confirmLabel, sheet().destructive], [true, "Update Foo", false])
     compare(service.confirm.heading, "")
     compare(service.confirmYes(), "")
     compare(words(lastRun("apply").command), ["apply", planIdOf("plan-update-dependency")], "Yes applies the plan")
@@ -155,7 +168,8 @@ TestCase {
   function test_a_moved_release_opens_the_dialog_with_changed_since_you_looked() {
     showList("plan-moved-list")
     answer(updateFoo(), "plan-update-moved")
-    verify(service.confirm.text.indexOf("Changed since you looked: Foo v3 is now the newest") === 0, service.confirm.text)
+    compare(sheet().stale, "Changed since you looked: Foo v3 is now the newest", "the banner over the new item")
+    compare(sheet().items.map(function(i) { return i.text }), ["Foo v1 → v3"])
     compare(runs("apply").length, 0, "nothing runs before Yes")
     compare(service.confirmYes(), "")
     compare(words(lastRun("apply").command), ["apply", planIdOf("plan-update-moved")])
@@ -165,14 +179,15 @@ TestCase {
     showList("plan-local-edits-list")
     answer(updateFoo(), "plan-update-local-edits")
     compare(runs("apply").length, 0, launchLog())
-    verify(service.confirm.text.indexOf("Replaces 1 file you changed in Foo (kept for undo)") !== -1, service.confirm.text)
+    compare(effects(), ["Replaces 1 file you changed in Foo. Undo brings it back."])
+    compare(sheet().effects[0].severity, "urgent")
   }
 
   function test_a_matching_update_with_extra_removals_opens_the_dialog() {
     showList("plan-removal-list")
     answer(updateFoo(), "plan-update-removal")
     compare(runs("apply").length, 0, launchLog())
-    verify(service.confirm.text.indexOf("Removes the folder Foo_Options (kept for undo)") !== -1, service.confirm.text)
+    compare(effects(), ["Removes the folder Foo_Options. Undo brings it back."])
   }
 
   function test_equal_versions_from_another_asset_open_the_dialog() {
@@ -201,14 +216,18 @@ TestCase {
     verify(again.command.indexOf("--dry-run") !== -1)
     answer(again, "plan-update-v4")
     verify(service.confirm.stale.indexOf("Changed since you looked") === 0, service.confirm.stale)
+    // The sheet's banner says what moved; Yes applies only the new plan.
+    verify(sheet().stale.indexOf("Changed since you looked: ") === 0, sheet().stale)
     compare(runs("apply").length, 1, "exactly one apply so far: " + launchLog())
+    compare(service.confirmYes(), "")
+    compare(words(lastRun("apply").command), ["apply", planIdOf("plan-update-v4")], "Yes applies the new plan: " + launchLog())
   }
 
   function test_an_expired_plan_previews_again() {
     answer(confirmedMove(), "plan-apply-expired", 1)
     compare(runs("update").length, 2, "the update is previewed again: " + launchLog())
     answer(lastRun("update"), "plan-update-v4")
-    verify(service.confirm.stale.indexOf("The plan expired.") === 0, service.confirm.stale)
+    compare(service.confirm.stale, "Changed since you looked: that was more than a day ago. Nothing ran; here is what would happen now.")
     compare(runs("apply").length, 1, launchLog())
   }
 
@@ -216,7 +235,7 @@ TestCase {
     answer(confirmedMove(), "plan-apply-not-found", 3)
     compare(runs("update").length, 2, "the update is previewed again: " + launchLog())
     answer(lastRun("update"), "plan-update-v4")
-    verify(service.confirm.stale.indexOf("The plan is gone") === 0, service.confirm.stale)
+    compare(service.confirm.stale, "Changed since you looked: what you saw was cleared. Nothing ran; here is what would happen now.")
     compare(runs("apply").length, 1, launchLog())
   }
 
@@ -250,7 +269,9 @@ TestCase {
     compare(service.run("remove", { "target": "retail", "addon": "Bar" }, "Remove Bar"), "")
     answer(lastRun("remove"), "plan-remove")
     verify(service.confirm !== null, "the dialog opens")
-    verify(service.confirm.text.indexOf("Remove Bar v1 from retail (1 folder)") === 0, service.confirm.text)
+    // The removal by name, its version and folders, and the verb urgent.
+    compare([sheet().title, sheet().items.map(function(i) { return i.text }), sheet().confirmLabel, sheet().destructive],
+      ["Remove Bar from retail?", ["Bar v1 (1 folder)"], "Remove Bar", true])
     compare(runs("apply").length, 0, "nothing runs before Yes")
     compare(service.confirmYes(), "")
     var apply = lastRun("apply")
@@ -265,7 +286,9 @@ TestCase {
     var preview = lastRun("undo")
     verify(preview.command.indexOf("--dry-run") !== -1, "Undo last previews: " + launchLog())
     answer(preview, "plan-undo")
-    verify(service.confirm.text.indexOf("Undo update on") === 0, service.confirm.text)
+    verify(sheet().title.indexOf("Undo the update on ") === 0, sheet().title)
+    compare([sheet().items.map(function(i) { return i.text }), sheet().confirmLabel, sheet().destructive],
+      [["Bar back as it was", "Foo back as it was"], "Undo", true])
     compare(service.confirmYes(), "")
     var apply = lastRun("apply")
     compare(words(apply.command), ["apply", planIdOf("plan-undo")], launchLog())

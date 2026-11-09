@@ -1433,23 +1433,35 @@ describe("the Backups view and the restore chooser", () => {
     expect(M.restoreScopes("")[1].note).toContain("keybindings, macros, chat settings")
   })
 
-  test("the dry runs read as what would change, the version note included", () => {
-    const addon = M.confirmText("restore_addon", fixture("restore-addon-preview")).split("\n")
-    expect(addon[0]).toMatch(/^Restore WeakAuras's settings from the backup of \d{4}-\d\d-\d\d \d\d:\d\d: 2 replaced, 0 restored \(absent now\), 0 created since \(moved aside\)$/)
-    expect(addon[1]).toBe("Settings written by WeakAuras 5.19.2; installed now: 5.20.0")
+  test("the dry runs read as plan sheets, the version note included", () => {
+    const targets = [{ id: "retail", key: "", displayName: "Retail" }]
+    const addon = M.confirmSheet("restore_addon", fixture("restore-addon-preview"), CONTEXT, targets)
+    expect(addon.title).toMatch(/^Restore WeakAuras' settings on Retail from \d{4}-\d\d-\d\d \d\d:\d\d\?$/)
+    expect(addon.confirmLabel).toBe("Restore WeakAuras' settings")
+    expect(addon.items.map((i) => [i.name, i.detail])).toEqual([["WeakAuras", "2 files replaced, 0 back, 0 added since (moved aside)"]])
+    expect(addon.effects.map((e) => e.text)).toEqual(["Settings written by WeakAuras 5.19.2; installed now: 5.20.0."])
     const notIn = JSON.parse(JSON.stringify(fixture("restore-addon-preview")))
     notIn.data.addons[0].new_folders = ["WeakAurasOptions"]
-    expect(M.confirmText("restore_addon", notIn)).toContain("WeakAurasOptions: not in this backup; left as it is")
-    const whole = M.confirmText("restore", fixture("restore-preview")).split("\n")
-    expect(whole[0]).toContain("Restore the whole WTF/ from the backup of")
-    expect(whole[0]).toContain("5 files restored, 2 differ now, 0 created since (moved aside)")
-    expect(whole).toContain("Also restores keybindings, macros, chat settings and every other addon's settings")
-    expect(whole).toContain("The current WTF/ is kept as a backup (before restore)")
-    expect(whole).toContain("Then restart the game")
+    expect(M.dialogText(M.confirmSheet("restore_addon", notIn))).toContain("WeakAurasOptions isn't in this backup and stays as it is.")
+    const whole = M.confirmSheet("restore", fixture("restore-preview"), CONTEXT, targets)
+    expect(whole.title).toMatch(/^Restore all of Retail's settings from \d{4}-\d\d-\d\d \d\d:\d\d\?$/)
+    expect(whole.items.map((i) => i.text)).toEqual(["5 files back, 2 differ now, 0 added since (moved aside)"])
+    // What else a whole restore changes is urgent, so it comes first.
+    expect(whole.effects.map((e) => [e.kind, e.severity, e.text])).toEqual([
+      ["restore_scope", "urgent", "Also restores keybindings, macros, chat and every other addon's settings."],
+      ["kept_backup", "normal", "Your current settings are kept as a backup first."],
+      ["note", "normal", "Then restart the game."]])
     const skipped = JSON.parse(JSON.stringify(fixture("restore-preview")))
     skipped.warnings = [{ code: "before_restore_skipped", message: "this filesystem cannot clone, so the current WTF/ is kept only in the undo snapshot", fix: null }]
-    expect(M.confirmText("restore", skipped)).toContain("kept only in the undo snapshot")
-    expect(M.confirmText("prune_backup", fixture("prune-preview"))).toMatch(/^Delete backup 01M\w+ \(manual, 1\.2 KiB\) from retail$/)
+    const skippedText = M.dialogText(M.confirmSheet("restore", skipped))
+    expect(skippedText).toContain("Today's settings won't be backed up first (this drive can't share files); undo still brings them back.")
+    // The warning's code decides the line, never its text.
+    expect(skippedText).not.toContain("undo snapshot")
+    const verified = JSON.parse(JSON.stringify(fixture("restore-preview")))
+    verified.data.backup.integrity = "verified"
+    expect(M.dialogText(M.confirmSheet("restore", verified))).toContain("Checked against the backup's checksums.")
+    const prune = M.confirmSheet("prune_backup", fixture("prune-preview"), CONTEXT, targets)
+    expect([prune.title, prune.confirmLabel, prune.items.map((i) => i.text)]).toEqual(["Delete a backup on Retail?", "Delete", ["made by you, 1.2 KiB"]])
     expect(M.resultLine(Object.assign({}, fixture("restore-addon-preview")))).toBe("Restored WeakAuras's settings on retail")
   })
 
@@ -1626,23 +1638,42 @@ describe("the other reducers", () => {
     expect(M.itemFixes(fixture("update"))).toEqual([])
   })
 
-  test("confirmation and stale texts", () => {
-    expect(M.confirmText("remove", fixture("remove-preview"))).toBe("Remove Baz v1 from retail (1 folder)")
-    expect(M.confirmText("undo", fixture("undo-preview"))).toBe("Undo update on era and retail: 2 folders restored, 0 removed")
-    expect(M.staleText(fixture("remove-stale"))).toBe("Changed since you looked: command, targets, selection and observed. Nothing ran; check the new preview.")
-    // The undo of a whole restore says it reverts the play since.
+  test("plan sheets and stale banners", () => {
+    const targets = [{ id: "era", key: "", displayName: "Classic Era" }, { id: "retail", key: "", displayName: "Retail" }]
+    // A plan path previews through its approval (previewDecision); confirmSheet reads
+    // the command's own data.
+    expect(M.dialogText(M.confirmSheet("undo", fixture("undo-preview"), CONTEXT, targets)))
+      .toMatch(/^Undo the update on Classic Era and Retail from \d{4}-\d\d-\d\d \d\d:\d\d\?\nBar back as it was\nFoo back as it was$/)
+    // An id no client has is shown as it is.
+    expect(M.confirmSheet("undo", fixture("undo-preview")).title).toMatch(/^Undo the update on era and retail from /)
+    expect(M.staleText(fixture("remove-stale"))).toBe("Changed since you looked: the command is different; another change landed on a client; "
+      + "a newer version came out, or the change is different now; files it would change were changed. Nothing ran; here is what would happen now.")
+    // The undo of a whole restore says it reverts the play since, and that comes first.
     const shape = { schema_version: "1.0", tool_version: "0.1.0", ok: true }
-    const undoRestore = { ...shape, command: "undo", data: { reverted: { kind: "restore" }, transactions: [{ target: { id: "retail" } }],
-      folders: { restored: [], removed: [] }, changed_since: 3 } }
-    expect(M.confirmText("undo", undoRestore).split("\n")[1])
-      .toBe("Also reverts every play since the restore: 3 files the game changed (kept in the undo's snapshot)")
+    const undoRestore = { ...shape, command: "undo", data: { reverted: { kind: "restore", at: "2026-10-22T20:46:00Z" },
+      transactions: [{ target: { id: "retail" } }], folders: { restored: [], removed: [] }, changed_since: 3 } }
+    const reverts = M.confirmSheet("undo", undoRestore, CONTEXT, targets)
+    expect(reverts.title).toMatch(/^Undo the restore on Retail from /)
+    expect(reverts.effects.map((e) => [e.severity, e.text])).toEqual([
+      ["urgent", "Also undoes every play session since the restore: 3 files the game changed (undo data keeps them)."]])
     const uncounted = { ...undoRestore, data: { ...undoRestore.data, changed_since: null } }
-    expect(M.confirmText("undo", uncounted).split("\n")[1])
-      .toBe("Also reverts every play since the restore (the files it changed cannot be counted)")
-    // Forgetting a client says what it does, never "0 addons".
+    expect(M.confirmSheet("undo", uncounted).effects.map((e) => e.text))
+      .toEqual(["Also undoes every play session since the restore (the files it changed can't be counted)."])
+    // An undo of an undo is a redo.
+    const redo = { ...undoRestore, data: { ...undoRestore.data, reverted: { kind: "undo", at: "" }, changed_since: 0 } }
+    expect([M.confirmSheet("undo", redo).title, M.confirmSheet("undo", redo).confirmLabel])
+      .toEqual(["Undo the undo on retail from an earlier time?", "Redo"])
+    // Forgetting a client says what it does, never "0 addons", and is destructive.
     const rm = { ...shape, command: "targets rm", data: { id: "wotlk", managed_addons: 2, was_default: false, dry_run: true } }
-    expect(M.confirmText("targets_rm", rm))
-      .toBe("Forget client wotlk; nothing in its directory is touched (its record of 2 managed addons is kept)")
+    const forget = M.confirmSheet("targets_rm", rm, CONTEXT, [{ id: "wotlk", key: "", displayName: "Wrath 3.3.5a private server" }])
+    expect([forget.title, forget.confirmLabel, forget.destructive, forget.glyph, M.dialogText(forget)]).toEqual([
+      "Forget Wrath 3.3.5a private server?", "Forget Wrath 3.3.5a private server", true, 0xF01B4,
+      "Forget Wrath 3.3.5a private server?\nNothing in its folder is touched.\nomaddons keeps its record of 2 managed addons."])
+    expect(M.dialogText(M.confirmSheet("targets_rm", { ...rm, data: { ...rm.data, managed_addons: 0 } })))
+      .toBe("Forget wotlk?\nNothing in its folder is touched.")
+    // A preview that failed says so, and lists nothing.
+    expect(M.confirmSheet("remove", { ...shape, ok: false, command: "remove", exit_code: 4, error: { code: "game_running", message: "x" } }).title)
+      .toBe("omaddons couldn't say what this would do")
   })
 
   test("only https links to known hosts open", () => {
@@ -1843,58 +1874,129 @@ describe("changeLines", () => {
   })
 })
 
-describe("reasonText", () => {
+// The clients the plan sheet tests name: Retail by its key, Classic Era running.
+const SHEET_TARGETS = [{ id: "retail", key: KEY_RETAIL, displayName: "Retail", running: false },
+  { id: "era", key: KEY_ERA, displayName: "Classic Era", running: true }]
+
+describe("copy", () => {
   test("the table", () => {
-    const cases = [
-      ["dependency_added", "dependency_added", scopeOf({ dependencies_added: ["LibFoo"] }), ["Also installs LibFoo (a new dependency)"]],
-      ["dependency_added_with_version", "dependency_added", scopeOf({ dependencies_added: [{ addon: "LibFoo", version: "1.2" }] }),
-        ["Also installs LibFoo 1.2 (a new dependency)"]],
-      ["folders_removed", "folders_removed", scopeOf({ folders_removed: ["Foo_Options", { folder: "Foo_Extra" }] }),
-        ["Removes the folder Foo_Options (kept for undo)", "Removes the folder Foo_Extra (kept for undo)"]],
-      ["local_changes_replaced_two_folders", "local_changes_replaced", scopeOf({ local_changes_replaced: { count: 3, folders: ["DBM-Core", "DBM-GUI"] } }),
-        ["Replaces 3 files you changed in DBM-Core and DBM-GUI (kept for undo)"]],
-      ["local_changes_replaced_one", "local_changes_replaced", scopeOf({ local_changes_replaced: { count: 1, folders: ["Foo"] } }),
-        ["Replaces 1 file you changed in Foo (kept for undo)"]],
-      ["source_changed", "source_changed", scopeOf({ source_changed: ["Foo", { addon: "Bar", to: "wowi" }] }),
-        ["Foo comes from another source now", "Bar comes from another source now (wowi)"]],
-      ["channel_changed", "channel_changed", scopeOf(), ["Follows another release channel than the one installed"]],
-      ["while_running", "while_running", scopeOf({ while_running: true }), ["Changes files while the game is running (/reload in game afterwards)"]],
-      ["reinstall", "reinstall", scopeOf(), ["Reinstalls over the installed files"]],
-      ["force", "force", scopeOf(), ["Takes over folders another addon owns (--force)"]],
-      ["downgrade", "downgrade", scopeOf(), ["Installs an older version than the one installed"]],
-      ["destructive", "destructive", scopeOf(), ["Removes, reverts or replaces something you have now"]],
-      ["dependency_added_empty", "dependency_added", scopeOf(), ["Also installs a new dependency"]],
-      ["folders_removed_empty", "folders_removed", scopeOf(), ["Removes folders (kept for undo)"]],
-      ["local_changes_replaced_empty", "local_changes_replaced", scopeOf(), ["Replaces files you changed (kept for undo)"]],
-      ["source_changed_empty", "source_changed", scopeOf(), ["An addon comes from another source now"]],
-      ["no_scope", "dependency_added", undefined, ["Also installs a new dependency"]],
-      ["unknown_reason", "some_new_thing", scopeOf(), ["Also: some new thing"]],
-    ]
-    for (const [name, reason, scope, expected] of cases) expect([name, M.reasonText(reason, scope)]).toEqual([name, expected])
+    table([
+      ["slots", ["sheet.title.update.one", { addon: "DBM", client: "Retail" }], "Update DBM on Retail?"],
+      ["pair_one", ["sheet.item.remove", { n: 1, version: "v1" }], "v1 (1 folder)"],
+      ["pair_other", ["sheet.item.remove", { n: 3, version: "v1" }], "v1 (3 folders)"],
+      ["pair_zero_is_other", ["sheet.item.remove", { n: 0, version: "" }], " (0 folders)"],
+      ["missing_slot_is_empty", ["sheet.title.forget", {}], "Forget ?"],
+      ["null_slot_is_empty", ["sheet.title.forget", { client: null }], "Forget ?"],
+      ["no_slots", ["sheet.cancel", undefined], "Cancel"],
+      ["unknown_id_shows_itself", ["sheet.no.such.id", {}], "sheet.no.such.id"],
+    ], (args) => M.copy(args[0], args[1]))
+    table([["s", "WeakAuras", "WeakAuras'"], ["no_s", "Retail", "Retail's"], ["capital_s", "DBMS", "DBMS'"], ["empty", "", ""]],
+      M.possessive)
+  })
+
+  test("every template's slots are named in snake case, and every pair has both forms", () => {
+    for (const [id, entry] of Object.entries(M.COPY)) {
+      const forms = typeof entry === "string" ? [entry] : [entry.one, entry.other]
+      expect([id, forms.every((f) => typeof f === "string" && f !== "")]).toEqual([id, true])
+      for (const form of forms) expect([id, (form.match(/\{[^}]*\}/g) || []).every((s) => /^\{[a-z_]+\}$/.test(s))]).toEqual([id, true])
+    }
   })
 })
 
-describe("planItemLines", () => {
+describe("selectionItem", () => {
   test("the table", () => {
-    const many = Array.from({ length: 14 }, (_, i) => kept({ addon: "Addon" + i }))
-    const lines = Array.from({ length: 12 }, (_, i) => "Update Addon" + i + " v1 → v2 on retail").concat(["(and 2 more)"])
+    const pick = (i) => [i.client, i.name, i.detail, i.text]
     table([
-      ["update", [kept()], ["Update Foo v1 → v2 on retail"]],
-      ["install", [kept({ op: "install", addon: "WeakAuras", target_id: "era", from_version: null, to_version: "5.22.1" })], ["Install WeakAuras 5.22.1 on era"]],
-      ["remove", [kept({ op: "remove", addon: "Baz", to_version: null })], ["Remove Baz v1 from retail"]],
-      ["reinstall", [kept({ op: "reinstall", to_version: "v1" })], ["Reinstall Foo v1 on retail"]],
-      ["unknown_op", [kept({ op: "adopt" })], ["Adopt Foo on retail"]],
-      ["a_missing_version_is_left_out", [kept({ from_version: null })], ["Update Foo → v2 on retail"]],
-      ["caps_at_twelve", many, lines],
-      ["not_an_array", null, []],
-    ], M.planItemLines)
-    expect(M.WIDGET_DIALOG_ITEMS_MAX).toBe(12)
+      ["update", [kept(), {}], ["Retail", "Foo", "v1 → v2", "Foo v1 → v2"]],
+      ["update_same_version", [kept({ to_version: "v1" }), {}], ["Retail", "Foo", "v1", "Foo v1"]],
+      ["install", [kept({ op: "install", addon: "WeakAuras", target_key: KEY_ERA, target_id: "era", from_version: null, to_version: "5.22.1" }), {}],
+        ["Classic Era", "WeakAuras", "5.22.1 (new)", "WeakAuras 5.22.1 (new)"]],
+      ["install_no_version", [kept({ op: "install", from_version: null, to_version: null }), {}], ["Retail", "Foo", "(new)", "Foo (new)"]],
+      ["remove_with_folders", [kept({ op: "remove", addon: "Baz", to_version: null }), { baz: 2 }], ["Retail", "Baz", "v1 (2 folders)", "Baz v1 (2 folders)"]],
+      ["remove_one_folder", [kept({ op: "remove", addon: "Baz", to_version: null }), { baz: 1 }], ["Retail", "Baz", "v1 (1 folder)", "Baz v1 (1 folder)"]],
+      ["remove_unknown_folders", [kept({ op: "remove", addon: "Baz", to_version: null }), {}], ["Retail", "Baz", "v1", "Baz v1"]],
+      ["edit", [Object.assign(kept({ op: "edit" }), { fields: ["any_flavor", "channel"] }), {}], ["Retail", "Foo", "changes its any flavor and channel", "Foo changes its any flavor and channel"]],
+      ["adopt", [kept({ op: "adopt", from_version: null }), {}], ["Retail", "Foo", "v2", "Foo v2"]],
+      // A client the view does not know shows by its id; one that names neither, as nothing.
+      ["unknown_client", [kept({ target_key: "01M8Q2XXXXXXXXXXXXXXXXXXXX", target_id: "ptr" }), {}], ["ptr", "Foo", "v1 → v2", "Foo v1 → v2"]],
+      ["no_versions", [kept({ from_version: null, to_version: null }), {}], ["Retail", "Foo", "", "Foo"]],
+    ], (args) => pick(M.selectionItem(args[0], SHEET_TARGETS, args[1])))
+  })
+})
+
+describe("reasonEffects", () => {
+  // `reasons` for the one item `items` (or none), each effect as `[kind, severity, text]`.
+  const effects = (reasons, scope, items, data) => {
+    const approval = { routine: false, reasons: reasons, selection: items || [kept()], scope: scope || scopeOf() }
+    const sheetItems = (items || [kept()]).map((i) => M.selectionItem(i, SHEET_TARGETS, {}))
+    return M.reasonEffects(approval, sheetItems, SHEET_TARGETS, data || {}).map((e) => [e.kind, e.severity, e.text])
+  }
+  const lib = kept({ op: "install", addon: "LibFoo", from_version: null, to_version: "1.0" })
+  const two = [kept(), kept({ addon: "Bar" })]
+
+  test("the table", () => {
+    const cases = [
+      // Several addons asked for: which one needs it is not said, so none is named.
+      ["dependency_added_for_several_addons", effects(["dependency_added"], scopeOf({ dependencies_added: ["LibFoo"] }), two.concat([lib])),
+        [["dependency_added", "normal", "Also installs LibFoo 1.0, a new dependency."]]],
+      ["dependency_added_names_its_addon", (() => {
+        const approval = { routine: false, reasons: ["dependency_added"], selection: [kept(), lib], scope: scopeOf({ dependencies_added: ["LibFoo"] }) }
+        return M.reasonEffects(approval, [M.selectionItem(kept(), SHEET_TARGETS, {})], SHEET_TARGETS, {}).map((e) => e.text)
+      })(), ["Also installs LibFoo 1.0, which Foo needs."]],
+      ["dependency_added_version_from_scope", effects(["dependency_added"], scopeOf({ dependencies_added: [{ addon: "LibFoo", version: "1.2" }] }), two),
+        [["dependency_added", "normal", "Also installs LibFoo 1.2, a new dependency."]]],
+      ["dependency_added_unnamed", effects(["dependency_added"]), [["dependency_added", "normal", "Also installs a new dependency."]]],
+      ["folders_removed", effects(["folders_removed"], scopeOf({ folders_removed: ["Foo_Options", { folder: "Foo_Extra" }] })),
+        [["folders_removed", "urgent", "Removes the folder Foo_Options. Undo brings it back."],
+          ["folders_removed", "urgent", "Removes the folder Foo_Extra. Undo brings it back."]]],
+      ["folders_removed_unnamed", effects(["folders_removed"]), [["folders_removed", "urgent", "Removes folders. Undo brings them back."]]],
+      ["local_changes_replaced_two_folders", effects(["local_changes_replaced"], scopeOf({ local_changes_replaced: { count: 3, folders: ["DBM-Core", "DBM-GUI"] } })),
+        [["local_changes_replaced", "urgent", "Replaces 3 files you changed in DBM-Core and DBM-GUI. Undo brings them back."]]],
+      ["local_changes_replaced_one", effects(["local_changes_replaced"], scopeOf({ local_changes_replaced: { count: 1, folders: ["Foo"] } })),
+        [["local_changes_replaced", "urgent", "Replaces 1 file you changed in Foo. Undo brings it back."]]],
+      ["local_changes_replaced_no_folders", effects(["local_changes_replaced"], scopeOf({ local_changes_replaced: { count: 2, folders: [] } })),
+        [["local_changes_replaced", "urgent", "Replaces 2 files you changed. Undo brings them back."]]],
+      ["local_changes_replaced_uncounted", effects(["local_changes_replaced"]),
+        [["local_changes_replaced", "urgent", "Replaces files you changed. Undo brings them back."]]],
+      ["source_changed", effects(["source_changed"], scopeOf({ source_changed: ["Foo", { addon: "Baz" }] }), [kept({ source: "wowi" })]),
+        [["source_changed", "normal", "Foo will come from WoWInterface now."], ["source_changed", "normal", "Baz will come from another source now."]]],
+      ["source_changed_unnamed", effects(["source_changed"]), [["source_changed", "normal", "An addon here will come from another source now."]]],
+      ["channel_changed", effects(["channel_changed"], scopeOf(), [kept({ channel: "beta" })]), [["channel_changed", "normal", "Foo switches to beta releases."]]],
+      ["channel_changed_two_addons", effects(["channel_changed"], scopeOf(), two), [["channel_changed", "normal", "An addon here switches to another release channel."]]],
+      ["while_running_names_the_running_client", effects(["while_running"], scopeOf({ while_running: true }), [kept({ target_key: KEY_ERA, target_id: "era" })]),
+        [["while_running", "normal", "Classic Era is running: then /reload in game."]]],
+      ["while_running_restart", effects(["while_running"], scopeOf({ while_running: true }), [kept({ target_key: KEY_ERA, target_id: "era" })], { reload_required: "restart" }),
+        [["while_running", "normal", "Classic Era is running: then restart the game."]]],
+      ["while_running_unknown_client", effects(["while_running"], scopeOf({ while_running: true })),
+        [["while_running", "normal", "The game is running: then /reload in game."]]],
+      ["reinstall", effects(["reinstall"]), [["reinstall", "normal", "Puts back Foo's files exactly as released."]]],
+      ["reinstall_two", effects(["reinstall"], scopeOf(), two), [["reinstall", "normal", "Puts back the files exactly as released."]]],
+      ["force", effects(["force"]), [["force", "urgent", "Takes over folders another addon owns."]]],
+      ["downgrade", effects(["downgrade"], scopeOf(), [kept({ from_version: "v2", to_version: "v1" })]),
+        [["downgrade", "normal", "Goes back to an older version (v2 → v1)."]]],
+      ["downgrade_two", effects(["downgrade"], scopeOf(), two), [["downgrade", "normal", "Goes back to an older version."]]],
+      // The title's verb and the urgent button say it: no line.
+      ["destructive", effects(["destructive"]), []],
+      ["unknown_reason", effects(["some_new_thing"]), [["note", "normal", "Also: some new thing."]]],
+      ["no_approval", M.reasonEffects(null, [], [], {}), []],
+    ]
+    for (const [name, got, expected] of cases) expect([name, got]).toEqual([name, expected])
+  })
+
+  test("every effect kind has a glyph, and the urgent ones are the costly ones", () => {
+    for (const kind of M.SHEET_URGENT) expect([kind, typeof M.SHEET_GLYPHS[kind]]).toEqual([kind, "number"])
+    expect(M.SHEET_URGENT.slice().sort()).toEqual(["changed_since", "folders_removed", "force", "local_changes_replaced", "restore_scope", "still_required"])
   })
 })
 
 describe("previewDecision", () => {
-  const pick = (d) => ({ kind: d.kind, heading: d.heading, lines: d.lines, line: d.line, fixText: d.fixText, planId: d.plan ? d.plan.planId : null })
-  const decision = (fields) => Object.assign({ kind: "dialog", heading: "", lines: [], line: "", fixText: "", planId: PLAN_ID }, fields)
+  // A decision as the table compares it: its plan sheet as text, with its verb and
+  // whether it is destructive.
+  const pick = (d) => ({ kind: d.kind, heading: d.heading, text: M.dialogText(d.sheet), confirm: d.sheet ? d.sheet.confirmLabel : "",
+    destructive: d.sheet ? d.sheet.destructive : false, line: d.line, fixText: d.fixText, planId: d.plan ? d.plan.planId : null })
+  const decision = (fields) => Object.assign({ kind: "dialog", heading: "", text: "", confirm: "", destructive: false, line: "", fixText: "",
+    planId: PLAN_ID }, fields)
+  const update = (text, extra) => decision(Object.assign({ text: text, confirm: "Update Foo" }, extra || {}))
   const refused = (line, fixText) => decision({ kind: "refuse", line: line, fixText: fixText || "", planId: null })
   const match = (shown, extra) => Object.assign({ mode: "match", shown: shown, again: false, path: "update" }, extra || {})
   const nothing = previewOf([], {}, [], { plan_id: null, plan_expires_at: null })
@@ -1918,28 +2020,83 @@ describe("previewDecision", () => {
       ["not_stored", match([shownItem()]), notStored, refused("The preview could not be kept as a plan; nothing ran", "previews are kept again as plans expire")],
       ["offer_mismatch", match([shownItem()]), previewOf([item()], {}, [offer("01M8Q2YYYYYYYYYYYYYYYYYYYY")]), refused("The preview offered no plan to apply; nothing ran")],
       ["confirm", { mode: "confirm", path: "remove" }, removal, decision({
-        lines: ["Remove Baz v1 from retail (1 folder)", "Removes the folder Baz (kept for undo)", "Removes, reverts or replaces something you have now"] })],
+        text: "Remove Baz from retail?\nBaz v1 (1 folder)\nRemoves the folder Baz. Undo brings it back.", confirm: "Remove Baz", destructive: true })],
       ["match_equal_routine", match([shownItem()]), previewOf([item()]), decision({ kind: "direct" })],
-      ["match_equal_not_routine", match([shownItem()]), withDependency, decision({
-        lines: ["Update Foo v1 → v2 on retail", "Install LibFoo 1.0 on retail", "Also installs LibFoo (a new dependency)"] })],
-      ["match_different", match([shownItem()]), previewOf([item({ to_version: "v3", release_id: "gh:o/foo@v3", asset: "Foo-v3.zip" })]), decision({
-        heading: "Changed since you looked: Foo v3 is now the newest",
-        lines: ["Changed since you looked: Foo v3 is now the newest", "Update Foo v1 → v3 on retail"] })],
-      ["match_empty_shown", match([]), previewOf([item()]), decision({ lines: ["Update Foo v1 → v2 on retail"] })],
-      ["match_no_shown", { mode: "match", path: "update" }, previewOf([item()]), decision({ lines: ["Update Foo v1 → v2 on retail"] })],
-      ["match_equal_routine_again", match([shownItem()], { again: true }), previewOf([item()]), decision({ lines: ["Update Foo v1 → v2 on retail"] })],
+      // The dependency it adds is an effect, never an item.
+      ["match_equal_not_routine", match([shownItem()]), withDependency, update("Update Foo on retail?\nFoo v1 → v2\nAlso installs LibFoo 1.0, which Foo needs.")],
+      ["match_different", match([shownItem()]), previewOf([item({ to_version: "v3", release_id: "gh:o/foo@v3", asset: "Foo-v3.zip" })]), update(
+        "Update Foo on retail?\nChanged since you looked: Foo v3 is now the newest\nFoo v1 → v3", { heading: "Changed since you looked: Foo v3 is now the newest" })],
+      ["match_empty_shown", match([]), previewOf([item()]), update("Update Foo on retail?\nFoo v1 → v2")],
+      ["match_no_shown", { mode: "match", path: "update" }, previewOf([item()]), update("Update Foo on retail?\nFoo v1 → v2")],
+      ["match_equal_routine_again", match([shownItem()], { again: true }), previewOf([item()]), update("Update Foo on retail?\nFoo v1 → v2")],
+      // The offer's own `destructive` makes the verb urgent; the path table never does.
       ["match_equal_routine_destructive_offer", match([shownItem()]), previewOf([item()], {}, [offer(PLAN_ID, { destructive: true })]),
-        decision({ lines: ["Update Foo v1 → v2 on retail"] })],
-      ["unknown_mode_is_never_direct", { mode: "auto", shown: [shownItem()], path: "update" }, previewOf([item()]),
-        decision({ lines: [M.confirmText("update", previewOf([item()]))] })],
+        update("Update Foo on retail?\nFoo v1 → v2", { destructive: true })],
+      ["unknown_mode_is_never_direct", { mode: "auto", shown: [shownItem()], path: "update" }, previewOf([item()]), update("Update Foo on retail?\nFoo v1 → v2")],
     ]
     for (const [name, spec, env, expected] of cases) expect([name, pick(M.previewDecision(spec, env))]).toEqual([name, expected])
   })
 
-  test("dialogText joins the lines", () => {
+  test("the sheet names clients by their player names and groups items by client", () => {
+    const era = (fields) => item(Object.assign({ target_key: KEY_ERA, target_id: "era" }, fields))
+    const two = previewOf([era(), era({ addon: "Bar", release_id: "gh:o/bar@v2", asset: "Bar-v2.zip" }), item({ addon: "Bar", release_id: "gh:o/bar@v2", asset: "Bar-v2.zip" })],
+      { routine: false, reasons: ["while_running"], scope: scopeOf({ while_running: true }) })
+    const sheet = M.previewDecision(Object.assign(match([]), { targets: SHEET_TARGETS }), two).sheet
+    expect([sheet.title, sheet.confirmLabel]).toEqual(["Update 3 addons on 2 clients?", "Update 3"])
+    expect(sheet.items.map((i) => [i.header, i.text])).toEqual([["Classic Era", "Foo v1 → v2"], ["", "Bar v1 → v2"], ["Retail", "Bar v1 → v2"]])
+    expect(sheet.effects.map((e) => e.text)).toEqual(["Classic Era is running: then /reload in game."])
+    // One client: no header, its name in the title.
+    const one = M.previewDecision(Object.assign(match([]), { targets: SHEET_TARGETS }), previewOf([item(), item({ addon: "Bar" })])).sheet
+    expect([one.title, one.items.map((i) => i.header)]).toEqual(["Update 2 addons on Retail?", ["", ""]])
+  })
+
+  test("the item list has no cap", () => {
+    const forty = Array.from({ length: 40 }, (_, i) => item({ addon: "Addon" + String(i).padStart(2, "0"), release_id: "gh:o/a" + i + "@v2" }))
+    const sheet = M.previewDecision(match([]), previewOf(forty)).sheet
+    expect([sheet.items.length, sheet.items[39].text, sheet.title]).toEqual([40, "Addon39 v1 → v2", "Update 40 addons on retail?"])
+    expect(M.dialogText(sheet).split("\n").length).toBe(41)
+  })
+
+  test("a reinstall is a repair of files, and the costly effects come first", () => {
+    const reinstall = previewOf([item({ to_version: "v1" })], { routine: false, reasons: ["reinstall", "local_changes_replaced"],
+      scope: scopeOf({ local_changes_replaced: { count: 2, folders: ["Foo"] } }) }, null, {})
+    reinstall.command = "install"
+    const sheet = M.previewDecision({ mode: "confirm", path: "install", shown: [] }, reinstall).sheet
+    expect([sheet.title, sheet.confirmLabel, sheet.destructive]).toEqual(["Repair Foo on retail?", "Repair Foo", false])
+    expect(sheet.effects.map((e) => [e.severity, e.text])).toEqual([
+      ["urgent", "Replaces 2 files you changed in Foo. Undo brings them back."],
+      ["normal", "Puts back Foo's files exactly as released."]])
+  })
+
+  test("a removal another addon needs says so, by the warning's code alone", () => {
+    const needed = JSON.parse(JSON.stringify(removal))
+    needed.warnings = [{ code: "still_required", message: "LittleWigs still requires Baz", fix: null, fix_argv: null }]
+    const sheet = M.previewDecision({ mode: "confirm", path: "remove", shown: [] }, needed).sheet
+    expect(sheet.effects.map((e) => [e.kind, e.severity, e.text])).toEqual([
+      ["folders_removed", "urgent", "Removes the folder Baz. Undo brings it back."],
+      ["still_required", "urgent", "Other addons still need Baz and won't load without it."]])
+    expect(M.dialogText(sheet)).not.toContain("LittleWigs")
+  })
+
+  test("dialogText writes the sheet a line each", () => {
     expect(M.dialogText(M.previewDecision(match([shownItem()]), withDependency)))
-      .toBe("Update Foo v1 → v2 on retail\nInstall LibFoo 1.0 on retail\nAlso installs LibFoo (a new dependency)")
+      .toBe("Update Foo on retail?\nFoo v1 → v2\nAlso installs LibFoo 1.0, which Foo needs.")
     expect(M.dialogText(null)).toBe("")
+    expect(M.dialogText({ kind: "refuse", sheet: null })).toBe("")
+    // The banner of a preview made again, under the title, unless the sheet says what changed.
+    const sheet = M.previewDecision(match([]), previewOf([item()])).sheet
+    expect(M.dialogText(M.withStale(sheet, "Changed since you looked: it already ran. Nothing ran; here is what would happen now.")).split("\n")[1])
+      .toBe("Changed since you looked: it already ran. Nothing ran; here is what would happen now.")
+    const changed = M.previewDecision(match([shownItem()]), previewOf([item({ to_version: "v3", release_id: "gh:o/foo@v3", asset: "Foo-v3.zip" })])).sheet
+    expect(M.withStale(changed, "another banner").stale).toBe("Changed since you looked: Foo v3 is now the newest")
+  })
+
+  test("no runtime file uses qs.Ui's ConfirmDialog: every confirmation is the plan sheet", () => {
+    const root = path.join(__dirname, "..")
+    const runtime = ["PanelView.qml", "Service.qml", "BarWidget.qml", "RestoreChooser.qml"]
+      .concat(fs.readdirSync(path.join(root, "views")).map((f) => "views/" + f), fs.readdirSync(path.join(root, "ui")).map((f) => "ui/" + f))
+    for (const name of runtime) expect([name, /\bConfirmDialog\b/.test(fs.readFileSync(path.join(root, name), "utf8"))]).toEqual([name, false])
+    expect(fs.readFileSync(path.join(root, "PanelView.qml"), "utf8")).toContain("PlanSheet {")
   })
 })
 
@@ -1983,17 +2140,31 @@ describe("applyResult and needsPreviewAgain", () => {
   })
 
   test("staleText", () => {
-    const after = " Nothing ran; check the new preview."
-    table([
-      ["reason_expired", refusal("plan_stale", { reason: "expired" }), "The plan expired." + after],
-      ["reason_binary_changed", refusal("plan_stale", { reason: "binary_changed" }), "omaddons changed since the preview." + after],
-      ["reason_input_missing", refusal("plan_stale", { reason: "input_missing", path: "/x" }), "A file the plan needs is gone." + after],
-      ["reason_already_applied", refusal("plan_stale", { reason: "already_applied", txs: [] }), "The plan was applied already." + after],
-      ["changed", refusal("plan_stale", { changed: ["selection", "observed"] }), "Changed since you looked: selection and observed." + after],
-      ["plan_not_found", refusal("plan_not_found", { prefix: PLAN_ID }), "The plan is gone (expired or cleared)." + after],
-      ["outcome_stale", applied(fixture("update"), someStale, { partial: true }), "Changed since you looked on retail. Nothing ran there; check the new preview."],
-      ["bound_unchanged", fixture("remove-stale"), "Changed since you looked: command, targets, selection and observed." + after],
-    ], M.staleText)
+    // The banner over the new preview: what changed, in the player's words (design doc
+    // §6.5.2); never "plan" or "preview" (§6.3).
+    const banner = (what) => "Changed since you looked: " + what + ". Nothing ran; here is what would happen now."
+    const cases = [
+      ["reason_expired", refusal("plan_stale", { reason: "expired" }), banner("that was more than a day ago")],
+      ["reason_binary_changed", refusal("plan_stale", { reason: "binary_changed" }), banner("omaddons was updated since")],
+      ["reason_input_missing", refusal("plan_stale", { reason: "input_missing", path: "/x" }), banner("the file it installs from is gone")],
+      ["reason_already_applied", refusal("plan_stale", { reason: "already_applied", txs: [] }), banner("it already ran")],
+      ["changed", refusal("plan_stale", { changed: ["selection", "observed"] }),
+        banner("a newer version came out, or the change is different now; files it would change were changed")],
+      // A part this build does not know is no word to show.
+      ["changed_unknown_part", refusal("plan_stale", { changed: ["Baz"] }), banner("something it depends on")],
+      ["plan_not_found", refusal("plan_not_found", { prefix: PLAN_ID }), banner("what you saw was cleared")],
+      ["outcome_stale", applied(fixture("update"), someStale, { partial: true }),
+        "Changed since you looked: another change landed on retail. Nothing ran there; here is what would happen now."],
+      ["bound_unchanged", fixture("remove-stale"), banner("the command is different; another change landed on a client; "
+        + "a newer version came out, or the change is different now; files it would change were changed")],
+    ]
+    for (const [name, env, expected] of cases) {
+      expect([name, M.staleText(env)]).toEqual([name, expected])
+      expect([name, /\b(plan|preview|token)\b/i.test(M.staleText(env))]).toEqual([name, false])
+    }
+    // The clients by their player names.
+    expect(M.staleText(applied(fixture("update"), someStale, { partial: true }), [{ id: "retail", key: KEY_RETAIL, displayName: "Retail" }]))
+      .toBe("Changed since you looked: another change landed on Retail. Nothing ran there; here is what would happen now.")
   })
 })
 
@@ -2170,7 +2341,8 @@ describe("plans from the binary", () => {
   const decide = (spec, preview) => M.previewDecision(Object.assign({ again: false, path: "update" }, spec), envOf(preview))
   const match = (list, preview) => decide({ mode: "match", shown: fooRow(list) }, preview)
   const copy = (name) => JSON.parse(JSON.stringify(fixture(name)))
-  const after = " Nothing ran; check the new preview."
+  const texts = (d) => d.sheet.effects.map((e) => e.text)
+  const after = ". Nothing ran; here is what would happen now."
 
   test("a routine matching update applies its plan directly", () => {
     const d = match("plan-list", "plan-update-routine")
@@ -2199,14 +2371,17 @@ describe("plans from the binary", () => {
     const d = decide({ mode: "match", shown: shown }, "plan-update-all")
     expect(["plan-update-all", d.kind]).toEqual(["plan-update-all", "direct"])
     const fewer = decide({ mode: "match", shown: shown.slice(1) }, "plan-update-all")
-    expect(["one row fewer", fewer.kind, fewer.heading, fewer.lines[0]]).toEqual(["one row fewer", "dialog",
+    expect(["one row fewer", fewer.kind, fewer.heading, fewer.sheet.stale, fewer.sheet.title]).toEqual(["one row fewer", "dialog",
       "Changed since you looked: Also: Update Bar v1 → v2 on era (not in the view)",
-      "Changed since you looked: Also: Update Bar v1 → v2 on era (not in the view)"])
+      "Changed since you looked: Also: Update Bar v1 → v2 on era (not in the view)", "Update 3 addons on 2 clients?"])
+    // Every item, each client's under its name.
+    expect(fewer.sheet.items.map((i) => [i.header, i.text])).toEqual([["era", "Bar v1 → v2"], ["", "Foo v1 → v2"], ["retail", "Bar v1 → v2"]])
   })
 
   test("a moved release opens the dialog as changed", () => {
     const d = match("plan-moved-list", "plan-update-moved")
-    expect(["plan-update-moved", d.kind, d.lines[0]]).toEqual(["plan-update-moved", "dialog", "Changed since you looked: Foo v3 is now the newest"])
+    expect(["plan-update-moved", d.kind, d.sheet.stale, d.sheet.items.map((i) => i.text)])
+      .toEqual(["plan-update-moved", "dialog", "Changed since you looked: Foo v3 is now the newest", ["Foo v1 → v3"]])
   })
 
   test("another asset opens the dialog as changed", () => {
@@ -2225,20 +2400,20 @@ describe("plans from the binary", () => {
 
   test("a dependency added opens the dialog naming it", () => {
     const d = match("plan-dependency-list", "plan-update-dependency")
-    expect(["plan-update-dependency", d.kind, d.heading, d.lines.some((l) => l.startsWith("Also installs LibFoo") && l.endsWith("(a new dependency)"))])
-      .toEqual(["plan-update-dependency", "dialog", "", true])
+    expect(["plan-update-dependency", d.kind, d.heading, d.sheet.items.map((i) => i.text), texts(d)])
+      .toEqual(["plan-update-dependency", "dialog", "", ["Foo v1 → v2"], ["Also installs LibFoo 1.0, which Foo needs."]])
   })
 
   test("local edits replaced open the dialog", () => {
     const d = match("plan-local-edits-list", "plan-update-local-edits")
-    expect(["plan-update-local-edits", d.kind, d.heading, d.lines.includes("Replaces 1 file you changed in Foo (kept for undo)")])
-      .toEqual(["plan-update-local-edits", "dialog", "", true])
+    expect(["plan-update-local-edits", d.kind, d.heading, texts(d)])
+      .toEqual(["plan-update-local-edits", "dialog", "", ["Replaces 1 file you changed in Foo. Undo brings it back."]])
   })
 
   test("extra removals open the dialog", () => {
     const d = match("plan-removal-list", "plan-update-removal")
-    expect(["plan-update-removal", d.kind, d.heading, d.lines.includes("Removes the folder Foo_Options (kept for undo)")])
-      .toEqual(["plan-update-removal", "dialog", "", true])
+    expect(["plan-update-removal", d.kind, d.heading, texts(d)])
+      .toEqual(["plan-update-removal", "dialog", "", ["Removes the folder Foo_Options. Undo brings it back."]])
   })
 
   test("a full store runs nothing (derived)", () => {
@@ -2254,19 +2429,21 @@ describe("plans from the binary", () => {
 
   test("a stale, an expired and a missing plan preview again", () => {
     table([
-      ["plan-apply-stale", "plan-apply-stale", [true, "Changed since you looked: selection." + after]],
-      ["plan-apply-expired", "plan-apply-expired", [true, "The plan expired." + after]],
-      ["plan-apply-not-found", "plan-apply-not-found", [true, "The plan is gone (expired or cleared)." + after]],
+      ["plan-apply-stale", "plan-apply-stale", [true, "Changed since you looked: a newer version came out, or the change is different now" + after]],
+      ["plan-apply-expired", "plan-apply-expired", [true, "Changed since you looked: that was more than a day ago" + after]],
+      ["plan-apply-not-found", "plan-apply-not-found", [true, "Changed since you looked: what you saw was cleared" + after]],
     ], (name) => [M.needsPreviewAgain(fixture(name)), M.staleText(fixture(name))])
   })
 
   test("a removal and an undo confirm through apply", () => {
     const removal = decide({ mode: "confirm", shown: [], path: "remove" }, "plan-remove")
-    expect(["plan-remove", removal.kind, removal.lines[0], removal.plan.destructive])
-      .toEqual(["plan-remove", "dialog", "Remove Bar v1 from retail (1 folder)", true])
+    expect(["plan-remove", removal.kind, M.dialogText(removal), removal.sheet.confirmLabel, removal.sheet.destructive, removal.plan.destructive])
+      .toEqual(["plan-remove", "dialog", "Remove Bar from retail?\nBar v1 (1 folder)\nRemoves the folder Bar. Undo brings it back.",
+        "Remove Bar", true, true])
     const undo = decide({ mode: "confirm", shown: [], path: "undo" }, "plan-undo")
-    expect(["plan-undo", undo.kind, undo.lines[0].indexOf("Undo update on") === 0, undo.plan.destructive])
-      .toEqual(["plan-undo", "dialog", true, true])
+    expect(["plan-undo", undo.kind, undo.sheet.title.indexOf("Undo the update on era and retail from ") === 0, undo.sheet.confirmLabel,
+      undo.sheet.items.map((i) => i.text), undo.sheet.destructive, undo.plan.destructive])
+      .toEqual(["plan-undo", "dialog", true, "Undo", ["Bar back as it was", "Foo back as it was"], true, true])
     expect(["plan-remove-apply", M.resultLine(M.applyResult(fixture("plan-remove-apply")))]).toEqual(["plan-remove-apply", "Removed 1 addon"])
     expect(["plan-undo-apply", M.resultLine(M.applyResult(fixture("plan-undo-apply"))).indexOf("Undid update on") === 0])
       .toEqual(["plan-undo-apply", true])
@@ -2320,8 +2497,10 @@ describe("repairs from the binary", () => {
   test("the preview is a dialog with the chmod line", () => {
     const fix = credentialRow().fix
     const decision = M.doctorPreviewDecision(fix, fixture("repair-preview"), context, targets)
-    expect([decision.kind, decision.lines[0], decision.lines[decision.lines.length - 1], decision.token])
-      .toEqual(["dialog", "chmod 0600 <config>/credentials/github (was 0644)", "Undo last reverts it", fixture("repair-preview").precondition])
+    const sheet = decision.sheet
+    expect([decision.kind, sheet.title, sheet.items.map((i) => i.text), sheet.effects.map((e) => e.text), sheet.confirmLabel, sheet.destructive,
+      decision.token]).toEqual(["dialog", fix.label + "?", ["chmod 0600 <config>/credentials/github (was 0644)"],
+      ["Undo last reverts it."], "Repair", false, fixture("repair-preview").precondition])
   })
 
   test("the run is a repair the footer can undo", () => {
@@ -2347,7 +2526,8 @@ describe("repairs from the binary", () => {
     const env = fixture("repair-undo-preview")
     const decision = M.previewDecision({ mode: "confirm", shown: [], again: false, path: "undo", context, targets }, env)
     expect([decision.kind, decision.plan.planId]).toEqual(["dialog", env.data.plan_id])
-    expect(decision.lines.slice(0, 2)).toEqual(["Undo repair: 1 change", "chmod 0644 <config>/credentials/github (readable by other users again)"])
+    expect([decision.sheet.title.indexOf("Undo the repair from ") === 0, decision.sheet.items.map((i) => i.text), decision.sheet.confirmLabel,
+      decision.sheet.destructive]).toEqual([true, ["chmod 0644 <config>/credentials/github (readable by other users again)"], "Undo", true])
   })
 
   test("the undo's apply reads as an undo", () => {
@@ -2358,7 +2538,7 @@ describe("repairs from the binary", () => {
   test("a stale bound run previews again", () => {
     const stale = fixture("repair-stale")
     expect([stale.error.code, M.doctorResult(stale).error.code]).toEqual(["plan_stale", "plan_stale"])
-    expect(M.staleText(stale)).toBe("Changed since you looked: the files this repair checks. Nothing ran; check the new preview.")
+    expect(M.staleText(stale)).toBe("Changed since you looked: the files this repair checks. Nothing ran; here is what would happen now.")
   })
 
   test("the set-aside row is text with its explanation", () => {
@@ -2713,14 +2893,15 @@ describe("doctorPreviewDecision", () => {
   const spec = { template: "doctor_fix", slots: { fm: CREDENTIAL_FM } }
   test("the table", () => {
     const thirteen = Array.from({ length: 13 }, (_, i) => chmodAction({ seq: i, path: CONTEXT.XDG_CONFIG_HOME + "/omaddons/credentials/k" + i }))
-    const pick = (d) => ({ kind: d.kind, token: d.token, line: d.line, lines: d.lines })
+    // The decision with its sheet as text, after the title its spec's label gives.
+    const pick = (d) => ({ kind: d.kind, token: d.token, line: d.line, lines: d.sheet ? M.dialogText(d.sheet).split("\n").slice(1) : [] })
     table([
       ["one_chmod", fixEnvelope({ dryRun: true }), { kind: "dialog", token: TOKEN, line: "",
-        lines: ["chmod 0600 <config>/credentials/github (was 0644)", "Undo last reverts it"] }],
+        lines: ["chmod 0600 <config>/credentials/github (was 0644)", "Undo last reverts it."] }],
       ["bytes_to_back_up", fixEnvelope({ dryRun: true, bytes: 7 }), { kind: "dialog", token: TOKEN, line: "",
-        lines: ["chmod 0600 <config>/credentials/github (was 0644)", "Keeps a copy of 7 B first, for undo", "Undo last reverts it"] }],
+        lines: ["chmod 0600 <config>/credentials/github (was 0644)", "Keeps a copy of 7 B first, for undo.", "Undo last reverts it."] }],
       ["a_delegated_recovery_only", fixEnvelope({ dryRun: true, actions: [], delegated: [{ tx: "01TX", family: "folder", phase: "prepared", direction: "roll_back" }] }),
-        { kind: "dialog", token: TOKEN, line: "", lines: ["Also finishes the interrupted change 01TX (roll back)", "Undo last reverts it"] }],
+        { kind: "dialog", token: TOKEN, line: "", lines: ["Also finishes the interrupted change 01TX (roll back).", "Undo last reverts it."] }],
       ["nothing_planned", fixEnvelope({ dryRun: true, actions: [] }), { kind: "refresh", token: "", line: "Nothing to repair now; the view is refreshed", lines: [] }],
       ["another_failure_mode", fixEnvelope({ dryRun: true, actions: [chmodAction(), chmodAction({ fm: "fm-other" })] }),
         { kind: "refuse", token: "", line: "The preview planned more than this repair; nothing ran", lines: [] }],
@@ -2729,9 +2910,13 @@ describe("doctorPreviewDecision", () => {
         { kind: "failed", token: "", line: "", lines: [] }],
       ["not_a_doctor_envelope", statusWithIssues([]), { kind: "failed", token: "", line: "", lines: [] }],
     ], (env) => pick(M.doctorPreviewDecision(spec, env, CONTEXT, [])))
+    // Every operation is listed: no cap.
     const many = M.doctorPreviewDecision(spec, fixEnvelope({ dryRun: true, actions: thirteen }), CONTEXT, [])
-    expect([many.lines.length, many.lines[12], many.lines[13]]).toEqual([14, "(and 1 more)", "Undo last reverts it"])
-    expect(M.dialogText(many).split("\n").length).toBe(14)
+    expect([many.sheet.items.length, many.sheet.items[12].text]).toEqual([13, "chmod 0600 <config>/credentials/k12 (was 0644)"])
+    expect(M.dialogText(many).split("\n").length).toBe(15)
+    // The title is the problem's, from the request's label.
+    expect([many.sheet.title, M.doctorPreviewDecision(Object.assign({ label: "Repair: The token file is readable" }, spec), fixEnvelope({ dryRun: true }),
+      CONTEXT, []).sheet.title]).toEqual(["Repair this problem?", "Repair: The token file is readable?"])
   })
 })
 
@@ -2808,13 +2993,13 @@ describe("staleText for doctor fix", () => {
   const staleFix = (changed) => fixEnvelope({ state: "REFUSING", exit: 4,
     error: { code: "plan_stale", message: "m", details: changed === undefined ? {} : { changed: changed } } })
   test("the table", () => {
-    const after = " Nothing ran; check the new preview."
+    const after = ". Nothing ran; here is what would happen now."
     table([
-      ["observed", staleFix(["observed"]), "Changed since you looked: the files this repair checks." + after],
-      ["selection_and_observed", staleFix(["selection", "observed"]), "Changed since you looked: what it would do and the files this repair checks." + after],
-      ["no_parts", staleFix(undefined), "Changed since you looked: the repair." + after],
+      ["observed", staleFix(["observed"]), "Changed since you looked: the files this repair checks" + after],
+      ["selection_and_observed", staleFix(["selection", "observed"]), "Changed since you looked: what it would do; the files this repair checks" + after],
+      ["no_parts", staleFix(undefined), "Changed since you looked: the repair" + after],
       ["a_remove", { ok: false, schema_version: "1.1", tool_version: "0.1.0", command: "remove", exit_code: 4,
-        error: { code: "plan_stale", message: "m", details: { changed: ["observed"] } } }, "Changed since you looked: observed." + after],
+        error: { code: "plan_stale", message: "m", details: { changed: ["observed"] } } }, "Changed since you looked: files it would change were changed" + after],
     ], (env) => M.staleText(env))
   })
 })
@@ -2828,13 +3013,16 @@ describe("repair undo texts", () => {
     table([
       ["label_home_side", M.lastChangeOf({ kind: "repair", targets: [], undo: null }).label, "Undo repair"],
       ["label_on_a_client", M.lastChangeOf({ kind: "repair", targets: ["retail"], undo: null }).label, "Undo repair on retail"],
-      ["undo_dialog", M.confirmText("undo", undoEnv("repair", []), CONTEXT, []),
-        "Undo repair: 1 change\nchmod 0644 <config>/credentials/github (readable by other users again)"],
-      ["redo_dialog", M.confirmText("undo", undoEnv("undo", [{ id: "retail", key: "k" }]), CONTEXT, []).split("\n")[0], "Redo repair on retail: 1 change"],
+      ["undo_sheet", M.dialogText(M.confirmSheet("undo", undoEnv("repair", []), CONTEXT, [])),
+        "Undo the repair from an earlier time?\nchmod 0644 <config>/credentials/github (readable by other users again)"],
+      ["redo_sheet", (() => {
+        const sheet = M.confirmSheet("undo", undoEnv("undo", [{ id: "retail", key: "k" }]), CONTEXT, [{ id: "retail", key: "k", displayName: "Retail" }])
+        return [sheet.title, sheet.confirmLabel]
+      })(), ["Undo the undo on Retail from an earlier time?", "Redo"]],
       ["result", M.resultLine(Object.assign(undoEnv("repair", []), { data: Object.assign(undoEnv("repair", []).data, { dry_run: false }) })), "Undid repair (1 change)"],
-      ["a_folder_undo", M.confirmText("undo", { ok: true, schema_version: "1.1", tool_version: "0.1.0", command: "undo", exit_code: 0,
-        data: { kind: "folders", reverted: { kind: "update" }, transactions: [{ target: { id: "retail" } }], folders: { restored: ["A"], removed: [] } } }),
-        "Undo update on retail: 1 folder restored, 0 removed"],
+      ["a_folder_undo", M.dialogText(M.confirmSheet("undo", { ok: true, schema_version: "1.1", tool_version: "0.1.0", command: "undo", exit_code: 0,
+        data: { kind: "folders", reverted: { kind: "update" }, transactions: [{ target: { id: "retail" } }], folders: { restored: ["A"], removed: ["B"] } } })),
+        "Undo the update on retail from an earlier time?\nA back as it was\nB removed"],
     ], (value) => value)
   })
 })

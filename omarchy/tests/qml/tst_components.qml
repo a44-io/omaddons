@@ -56,6 +56,36 @@ TestCase {
     }
   }
 
+  Component { id: planComponent; PlanSheet { width: 540; height: 600 } }
+
+  // A PlanSheet handed `sheet` as the service hands it, by a JS assignment (createObject's
+  // initial properties would turn its arrays into lists).
+  function makePlan(sheet, props) {
+    var item = make(planComponent, props)
+    item.plan = sheet
+    return item
+  }
+
+  // A plan sheet as Model builds one: `count` updates over Retail and Classic Era, an
+  // urgent effect after a normal one in the list it was handed, and `extra` laid over.
+  function plan(count, extra) {
+    var items = []
+    for (var i = 0; i < count; i++) {
+      var client = i < count / 2 ? "Retail" : "Classic Era"
+      var first = i === 0 || i === Math.ceil(count / 2)
+      var name = "Addon" + (i < 10 ? "0" : "") + i
+      items.push({ "op": "update", "addon": name, "client": client, "clientKey": client, "from": "1.0", "to": "1.1",
+        "name": name, "detail": "1.0 → 1.1", "text": name + " 1.0 → 1.1", "header": first ? client : "" })
+    }
+    var out = { "title": "Update " + count + " addons on 2 clients?", "stale": "", "items": items,
+      "effects": [
+        { "kind": "folders_removed", "severity": "urgent", "glyph": 0xF0258, "text": "Removes the folder Addon00_Options. Undo brings it back." },
+        { "kind": "dependency_added", "severity": "normal", "glyph": 0xF0431, "text": "Also installs LibStub 1.0, a new dependency." }],
+      "confirmLabel": "Update " + count, "cancelLabel": "Cancel", "destructive": false, "glyph": 0 }
+    for (var key in (extra || {})) out[key] = extra[key]
+    return out
+  }
+
   Component {
     id: listComponent
     VirtualList {
@@ -280,6 +310,110 @@ TestCase {
     var card = child(sheet, "sheetCard")
     mouseClick(card, 5, 5)
     compare(canceled, 1, "a click on the card is not a cancel")
+  }
+
+  // ---- PlanSheet (1n2p.17)
+
+  function test_a_plan_sheet_shows_its_title_items_by_client_effects_and_verb() {
+    var sheet = makePlan(plan(4))
+    sheet.opened = true
+    waitForRendering(sheet)
+    compare(child(sheet, "sheetTitle").text, "Update 4 addons on 2 clients?")
+    compare(child(sheet, "planItems").count, 4)
+    // Each client's items under its name.
+    var headers = []
+    for (var i = 0; i < 4; i++) {
+      var group = findChild(child(sheet, "planItems").itemAt(i), "planGroup")
+      if (group.visible) headers.push(group.title)
+    }
+    compare(headers, ["Retail", "Classic Era"])
+    compare(findChild(child(sheet, "planItems").itemAt(0), "planItemName").text, "Addon00")
+    compare(findChild(child(sheet, "planItems").itemAt(0), "planItemDetail").text, "1.0 → 1.1")
+    // The effects as handed, each with its glyph, the urgent one's in the urgent colour.
+    var effects = child(sheet, "planEffects")
+    compare(effects.count, 2)
+    compare(findChild(effects.itemAt(0), "planEffectText").text, "Removes the folder Addon00_Options. Undo brings it back.")
+    compare(findChild(effects.itemAt(0), "planEffectGlyph").text, String.fromCodePoint(0xF0258))
+    verify(Qt.colorEqual(findChild(effects.itemAt(0), "planEffectGlyph").color, sheet.urgent), "an urgent effect's glyph is urgent")
+    verify(findChild(effects.itemAt(0), "planEffectText").font.bold)
+    verify(!Qt.colorEqual(findChild(effects.itemAt(1), "planEffectGlyph").color, sheet.urgent))
+    // Cancel beside the verb; no urgent border on a plan that is not destructive.
+    compare([child(sheet, "sheetCancel").text, child(sheet, "sheetConfirm").text], ["Cancel", "Update 4"])
+    verify(!child(sheet, "destructiveBorder").visible)
+    verify(!child(sheet, "planStale").visible, "no banner on a first preview")
+  }
+
+  function test_a_destructive_plan_sheet_has_its_urgent_verb_and_the_banner_when_stale() {
+    var banner = "Changed since you looked: Foo v3 is now the newest"
+    var sheet = makePlan(plan(1, { "title": "Remove Addon00 from Retail?", "confirmLabel": "Remove Addon00",
+      "destructive": true, "glyph": 0xF01B4, "stale": banner }))
+    sheet.opened = true
+    waitForRendering(sheet)
+    verify(child(sheet, "destructiveBorder").visible)
+    compare(child(sheet, "sheetConfirm").text, String.fromCodePoint(0xF01B4) + " Remove Addon00")
+    verify(child(sheet, "planStale").visible)
+    compare(child(sheet, "planStale").title, banner)
+  }
+
+  function test_a_plan_sheet_opens_on_cancel_and_its_verb_takes_only_a_fresh_press() {
+    var sheet = makePlan(plan(2))
+    var confirmed = 0
+    var canceled = 0
+    sheet.confirmed.connect(function() { confirmed++ })
+    sheet.canceled.connect(function() { canceled++ })
+    sheet.opened = true
+    compare(sheet.selectedIndex, 0, "it opens on Cancel")
+    verify(sheet.handleKey(Qt.Key_Y, "y", true))
+    verify(sheet.handleKey(Qt.Key_L, "l", false))
+    compare(sheet.selectedIndex, 1, "l moves to the verb")
+    verify(sheet.handleKey(Qt.Key_Return, "", true))
+    verify(sheet.handleKey(Qt.Key_Space, " ", true))
+    compare(confirmed, 0, "a held key never confirms (M3-D46)")
+    verify(sheet.handleKey(Qt.Key_Return, "", false))
+    compare(confirmed, 1, "a fresh Enter on the verb does")
+    sheet.reset()
+    compare(sheet.selectedIndex, 0, "a new plan starts on Cancel again")
+    verify(sheet.handleKey(Qt.Key_Return, "", false))
+    compare([confirmed, canceled], [1, 1], "Enter on Cancel cancels")
+    verify(sheet.handleKey(Qt.Key_N, "n", false))
+    compare(canceled, 2)
+  }
+
+  function test_forty_items_are_all_there_and_scroll_inside_the_plan_sheet() {
+    var sheet = makePlan(plan(40), { "height": 500 })
+    sheet.opened = true
+    waitForRendering(sheet)
+    compare(child(sheet, "planItems").count, 40, "no cap")
+    var body = child(sheet, "sheetBody")
+    verify(body.contentHeight > body.height, "the body overflows: " + body.contentHeight + " in " + body.height)
+    verify(body.interactive)
+    verify(child(sheet, "sheetCard").height <= sheet.height, "the card stays inside the panel")
+    verify(sheet.wantedHeight > sheet.height, "it asks for the room the whole plan needs")
+    verify(sheet.handleKey(Qt.Key_J, "j", false))
+    verify(sheet.handleKey(Qt.Key_Down, "", false))
+    verify(body.contentY > 0, "j and Down scroll")
+    verify(sheet.handleKey(Qt.Key_K, "k", false))
+    verify(sheet.handleKey(Qt.Key_Up, "", false))
+    compare(body.contentY, 0, "k and Up scroll back")
+    for (var i = 0; i < 200; i++) sheet.handleKey(Qt.Key_J, "j", false)
+    compare(body.contentY, body.contentHeight - body.height, "never past the end")
+    sheet.reset()
+    compare(body.contentY, 0, "a new plan starts at the top")
+  }
+
+  function test_at_400_a_long_addon_name_elides_and_its_versions_never_do() {
+    var long = "AnAddonWithAVeryLongNameThatCannotFitBesideItsVersionsAtFourHundred"
+    var item = { "op": "update", "addon": long, "client": "Retail", "clientKey": "Retail", "from": "12.1.14-alpha", "to": "12.1.15-beta",
+      "name": long, "detail": "12.1.14-alpha → 12.1.15-beta", "text": long + " 12.1.14-alpha → 12.1.15-beta", "header": "" }
+    var sheet = makePlan(plan(1, { "items": [item] }), { "width": 400 })
+    sheet.opened = true
+    waitForRendering(sheet)
+    var row = child(sheet, "planItems").itemAt(0)
+    verify(findChild(row, "planItemName").truncated, "the name elides")
+    var detail = findChild(row, "planItemDetail")
+    verify(!detail.truncated, "the versions never do")
+    compare(detail.text, "12.1.14-alpha → 12.1.15-beta")
+    verify(detail.x + detail.width <= row.width + 1, "the versions fit in the row")
   }
 
   // ---- ProgressBar, Badge

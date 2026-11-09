@@ -8,8 +8,8 @@ import "../../Store.js" as Store
 
 // PanelView.qml (the frame) against a stub service (pipeline step 4): view switching,
 // the key map's dispatch to service calls, the key catcher blocked while a view types,
-// the read-only state of an incompatible binary, the confirm dialog's fresh-press rule
-// after a stale preview, the cards and the footer. Then the keyboard panel inside
+// the read-only state of an incompatible binary, the plan sheet's fresh-press rule after
+// a stale preview and its scrolling, the cards and the footer. Then the keyboard panel inside
 // BarWidget.qml.
 TestCase {
   id: testCase
@@ -222,6 +222,25 @@ TestCase {
 
   function json(value) {
     return JSON.stringify(value)
+  }
+
+  // A plan sheet as Model builds one: `count` removals on Retail (one by default), the
+  // banner `stale`.
+  function planSheet(title, stale, count) {
+    var items = []
+    for (var i = 0; i < (count || 1); i++) {
+      var name = "Foo" + (i ? i : "")
+      items.push({ "op": "remove", "addon": name, "client": "Retail", "clientKey": "k", "from": "1.0", "to": "", "name": name,
+        "detail": "1.0 (1 folder)", "text": name + " 1.0 (1 folder)", "header": "" })
+    }
+    return { "title": title, "stale": stale || "", "items": items,
+      "effects": [{ "kind": "folders_removed", "severity": "urgent", "glyph": 0xF0258, "text": "Removes the folder Foo. Undo brings it back." }],
+      "confirmLabel": count > 1 ? "Remove " + count : "Remove Foo", "cancelLabel": "Cancel", "destructive": true, "glyph": 0xF01B4 }
+  }
+
+  // The open plan sheet has the keyboard.
+  function sheetHasKeys() {
+    tryVerify(function() { return child("planSheet").keyItem.activeFocus })
   }
 
   // ------------------------------------------------------------- views
@@ -446,10 +465,10 @@ TestCase {
     compare(svc.runs.length + svc.cliRuns.length + svc.checks, 0)
     compare(json(loaded.keys), json([]))
     compare([view.view, view.filter, view.cursor], ["updates", "", 0])
-    // A dialog over it takes its place: the reference closes.
-    svc.confirm = { "text": "Remove Foo?", "stale": "" }
+    // A plan sheet over it takes its place: the reference closes.
+    svc.confirm = { "sheet": planSheet("Remove Foo from Retail?"), "stale": "" }
     verify(!view.helpOpen)
-    tryVerify(function() { return child("confirmKeys").activeFocus })
+    sheetHasKeys()
   }
 
   function test_j_k_scroll_the_reference_and_it_opens_at_the_top() {
@@ -568,33 +587,41 @@ TestCase {
     svc.summary = kept
   }
 
-  // ------------------------------------------------------------- the confirm dialog
+  // ------------------------------------------------------------- the plan sheet
 
   function test_yes_needs_a_fresh_press_after_a_stale_preview() {
-    svc.confirm = { "text": "Remove Foo 1.0 from retail (1 folder)", "stale": "" }
-    tryVerify(function() { return child("confirmKeys").activeFocus })
-    compare(child("confirmDialog").selectedIndex, 0, "a new preview starts on No")
-    // Behind the dialog nothing acts.
+    svc.confirm = { "sheet": planSheet("Remove Foo from Retail?"), "stale": "" }
+    sheetHasKeys()
+    var sheet = child("planSheet")
+    compare(sheet.selectedIndex, 0, "a new preview starts on Cancel")
+    // Its title names the change, its verb is the change's, destructive in urgent.
+    compare([child("sheetTitle", sheet).text, child("sheetConfirm", sheet).text, child("sheetCancel", sheet).text],
+      ["Remove Foo from Retail?", String.fromCodePoint(0xF01B4) + " Remove Foo", "Cancel"])
+    verify(child("destructiveBorder", sheet).visible)
+    verify(!child("planStale", sheet).visible, "no banner on a first preview")
+    // Behind the sheet nothing acts.
     keyClick("u")
     compare(svc.runs.length, 0)
     keyClick("y")
     compare(svc.yes, 1)
-    // The run found the plan stale: the service previews again.
-    svc.confirm = { "text": "Remove Foo 2.0 from retail (1 folder)", "stale": "Changed since you looked: Foo. Nothing ran; check the new preview." }
-    tryVerify(function() { return child("confirmKeys").activeFocus })
-    verify(child("confirmDialog").message.indexOf("Changed since you looked: Foo.") === 0)
-    verify(child("confirmDialog").message.indexOf("Remove Foo 2.0") > 0)
+    // The run found the plan stale: the service previews again, with the banner.
+    var banner = "Changed since you looked: a newer version came out, or the change is different now. Nothing ran; here is what would happen now."
+    svc.confirm = { "sheet": planSheet("Remove Foo from Retail?", banner), "stale": banner }
+    sheetHasKeys()
+    verify(child("planStale", sheet).visible)
+    compare(child("planStale", sheet).title, banner)
+    compare(sheet.selectedIndex, 0, "the new preview starts on Cancel too")
     // The key still held from the first Yes arrives only as auto-repeat: never a Yes.
     verify(view.confirmKey(Qt.Key_Y, "y", true))
     verify(view.confirmKey(Qt.Key_Return, "", true))
     compare(svc.yes, 1)
-    // Enter on the default No cancels; a fresh y confirms.
+    // Enter on Cancel cancels; a fresh y confirms.
     keyClick(Qt.Key_Return)
     compare(svc.no, 1)
-    svc.confirm = { "text": "Remove Foo 2.0 from retail (1 folder)", "stale": "" }
-    tryVerify(function() { return child("confirmKeys").activeFocus })
+    svc.confirm = { "sheet": planSheet("Remove Foo from Retail?"), "stale": "" }
+    sheetHasKeys()
     keyClick("l")
-    compare(child("confirmDialog").selectedIndex, 1)
+    compare(sheet.selectedIndex, 1)
     keyClick(Qt.Key_Return)
     compare(svc.yes, 2)
     // Back to the frame's keys.
@@ -603,16 +630,40 @@ TestCase {
     compare(svc.checks, 1)
   }
 
-  function test_esc_and_n_cancel_the_dialog() {
-    svc.confirm = { "text": "Undo update on era", "stale": "" }
-    tryVerify(function() { return child("confirmKeys").activeFocus })
+  function test_esc_and_n_cancel_the_plan_sheet() {
+    svc.confirm = { "sheet": planSheet("Undo the update on Classic Era from 2026-10-22 22:46?"), "stale": "" }
+    sheetHasKeys()
     keyClick(Qt.Key_Escape)
     compare(svc.no, 1)
-    svc.confirm = { "text": "Undo update on era", "stale": "" }
-    tryVerify(function() { return child("confirmKeys").activeFocus })
+    svc.confirm = { "sheet": planSheet("Undo the update on Classic Era from 2026-10-22 22:46?"), "stale": "" }
+    sheetHasKeys()
     keyClick("n")
     compare(svc.no, 2)
     compare(svc.yes, 0)
+  }
+
+  // Forty items: none is cut, the panel asks for the room, and past its cap the body
+  // scrolls inside the sheet, by j and k too.
+  function test_forty_items_scroll_inside_the_plan_sheet() {
+    var small = make({ "svc": svc, "height": 420 })
+    view.opened = false
+    open(small)
+    var frameOnly = small.contentImplicitHeight
+    svc.confirm = { "sheet": planSheet("Remove 40 addons from Retail?", "", 40), "stale": "" }
+    tryVerify(function() { return child("planSheet", small).keyItem.activeFocus })
+    var sheet = child("planSheet", small)
+    compare(child("planItems", sheet).count, 40, "every item, no cap")
+    verify(small.contentImplicitHeight > frameOnly, "the panel asks for the sheet's room")
+    compare(child("sheetConfirm", sheet).text, String.fromCodePoint(0xF01B4) + " Remove 40")
+    var body = child("sheetBody", sheet)
+    tryVerify(function() { return body.contentHeight > body.height + 1 }, 2000, "the body overflows: " + body.contentHeight + " in " + body.height)
+    verify(body.interactive)
+    compare(body.contentY, 0)
+    keyClick("j")
+    verify(body.contentY > 0, "j scrolls the sheet")
+    keyClick("k")
+    compare(body.contentY, 0, "k scrolls back")
+    compare([svc.yes, svc.no], [0, 0], "scrolling decides nothing")
   }
 
   // ------------------------------------------------------------- the last change
@@ -812,11 +863,11 @@ TestCase {
     compare(child("page").item.rowCount, 2, "the page gets its props")
     compare(child("backButton").text, "Updates")
     verify(!child("content").visible, "the page replaces the view")
-    // A dialog is the top layer.
-    svc.confirm = { "text": "Remove Foo?", "stale": "" }
-    tryVerify(function() { return child("confirmKeys").activeFocus })
+    // A plan sheet is the top layer.
+    svc.confirm = { "sheet": planSheet("Remove Foo from Retail?"), "stale": "" }
+    sheetHasKeys()
     keyClick(Qt.Key_Escape)
-    compare([svc.no, view.pages.length, closed], [1, 1, 0], "Esc cancels the dialog only")
+    compare([svc.no, view.pages.length, closed], [1, 1, 0], "Esc cancels the sheet only")
     tryVerify(function() { return view.focusItem.activeFocus })
     // Then the page.
     keyClick(Qt.Key_Escape)
@@ -897,7 +948,7 @@ TestCase {
     keyClick("?")
     compare(svc.panelState.sheet, "help")
     keyClick("?")
-    svc.confirm = { "text": "Remove Foo?", "stale": "" }
+    svc.confirm = { "sheet": planSheet("Remove Foo from Retail?"), "stale": "" }
     compare(svc.panelState.sheet, "confirm")
     svc.confirm = null
     compare(svc.panelState.sheet, null)

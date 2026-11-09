@@ -518,7 +518,7 @@ const MESSAGE_READERS = {
   "issueSections": "each warning warningsOf reduced, as its row's title"
 }
 // The plan runner's decisions (M4-D28): typed fields only.
-const DECISIONS = ["planFrom", "approvalOf", "requestedItems", "selectionMatches", "previewDecision", "reasonText", "changeLines"]
+const DECISIONS = ["planFrom", "approvalOf", "requestedItems", "selectionMatches", "previewDecision", "reasonEffects", "changeLines"]
 const COMPARISON = /===|!==|==|indexOf\(|\.test\(|\.match\(|includes\(|some\(|find\(|filter\(|startsWith\(/
 
 // 9. Warnings decide nothing (M4-D28): a warning's text is shown, never tested; the

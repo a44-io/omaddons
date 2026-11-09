@@ -912,6 +912,36 @@ TestCase {
     shoot("confirm-remove")
   }
 
+  // The same plan sheet at the panel's narrowest.
+  function test_confirm_remove_at_400() {
+    panelWidth = 400
+    var scene = everyday()
+    scene.list = the("plan-list")
+    open(scene, "installed")
+    scene.remove = the("plan-remove")
+    compare(service.run("remove", { "target": "retail", "addon": "Bar" }, "Remove Bar"), "")
+    settle(scene)
+    verify(service.confirm !== null, "the removal's plan sheet")
+    shoot("confirm-remove-400")
+  }
+
+  // Update all whose rows the view did not show: the plan sheet lists every update,
+  // each client's under its name, at 540 and at 400.
+  function updateOnTwoClients(width, name) {
+    panelWidth = width
+    var scene = everyday()
+    scene.list = the("plan-list-after")
+    open(scene, "updates")
+    scene.update = the("plan-update-all")
+    compare(service.run("update_all", {}, "Update all", []), "")
+    settle(scene)
+    verify(service.confirm !== null, "the update's plan sheet")
+    shoot(name)
+  }
+
+  function test_confirm_update_on_two_clients() { updateOnTwoClients(540, "confirm-update-two-clients") }
+  function test_confirm_update_on_two_clients_at_400() { updateOnTwoClients(400, "confirm-update-two-clients-400") }
+
   // Enter on Foo's update whose release moved since the list was read: the dialog says
   // what changed instead of applying.
   function test_confirm_changed_since_you_looked() {

@@ -41,6 +41,10 @@ pub const ASSETS: &[(&str, &str)] = &[
         include_str!("../../omarchy/ui/NoticeCard.qml"),
     ),
     (
+        "ui/PlanSheet.qml",
+        include_str!("../../omarchy/ui/PlanSheet.qml"),
+    ),
+    (
         "ui/ProgressBar.qml",
         include_str!("../../omarchy/ui/ProgressBar.qml"),
     ),

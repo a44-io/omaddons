@@ -179,6 +179,12 @@ TestCase {
     return JSON.stringify(runs().map(function(l) { return words(l.command) }))
   }
 
+  // The open plan sheet, a line each (Model.dialogText, as IPC's state() carries it).
+  function sheetLines() {
+    verify(service.confirm !== null && !!service.confirm.sheet, "a plan sheet is open")
+    return Model.dialogText(service.confirm.sheet).split("\n")
+  }
+
   // Previews `update_addon` (Foo on retail) with what the row showed; returns the launch.
   function previewFoo(shown) {
     compare(service.run("update_addon", { "target": "retail", "addon": "Foo" }, "Update Foo", shown === undefined ? [shownItem()] : shown), "")
@@ -374,8 +380,8 @@ TestCase {
     verify(preview.command.indexOf("--if-match") === -1)
     compare(service.action.message, "Checking what it would do…")
     answer(preview, removePreview("v1"))
-    compare(service.confirm.text.split("\n"), ["Remove Baz v1 from retail (1 folder)", "Removes the folder Baz (kept for undo)",
-      "Removes, reverts or replaces something you have now"])
+    compare(sheetLines(), ["Remove Baz from retail?", "Baz v1 (1 folder)", "Removes the folder Baz. Undo brings it back."])
+    compare([service.confirm.sheet.confirmLabel, service.confirm.sheet.destructive], ["Remove Baz", true])
     compare(runs("apply").length, 0, "a removal asks first: " + launchLog())
     compare(service.confirmYes(), "")
     var real = lastRun("apply")
@@ -389,8 +395,9 @@ TestCase {
     verify(again !== preview, "the stale plan previews again: " + launchLog())
     verify(again.command.indexOf("--dry-run") !== -1)
     answer(again, removePreview("v2"))
-    verify(service.confirm.stale.indexOf("Changed since you looked: selection") === 0, service.confirm.stale)
-    verify(service.confirm.text.indexOf("Remove Baz v2 from retail") === 0, service.confirm.text)
+    var banner = "Changed since you looked: a newer version came out, or the change is different now. Nothing ran; here is what would happen now."
+    compare(service.confirm.stale, banner)
+    compare(sheetLines().slice(0, 3), ["Remove Baz from retail?", banner, "Baz v2 (1 folder)"])
     compare(runs("remove").length, 2, launchLog())
     compare(runs("apply").length, 1, "apply never runs twice for one preview: " + launchLog())
   }
@@ -486,7 +493,8 @@ TestCase {
       { "routine": false, "reasons": ["dependency_added"], "scope": scope({ "dependencies_added": ["LibFoo"] }) }))
     compare(runs("apply").length, 0, "a plan that does more asks first: " + launchLog())
     compare(service.confirm.heading, "")
-    compare(service.confirm.text.split("\n"), ["Update Foo v1 → v2 on retail", "Install LibFoo 1.0 on retail", "Also installs LibFoo (a new dependency)"])
+    compare(sheetLines(), ["Update Foo on retail?", "Foo v1 → v2", "Also installs LibFoo 1.0, which Foo needs."])
+    compare(service.confirm.sheet.confirmLabel, "Update Foo")
     compare(service.confirmYes(), "")
     compare(words(lastRun("apply").command), ["apply", planId], "Yes applies the plan")
   }
@@ -496,7 +504,7 @@ TestCase {
     answer(previewFoo(), planPreview("update", [planItem({ "to_version": "v3", "release_id": "gh:o/foo@v3", "asset": "Foo-v3.zip" })]))
     compare(runs("apply").length, 0, launchLog())
     compare(service.confirm.heading, "Changed since you looked: Foo v3 is now the newest")
-    compare(service.confirm.text.split("\n")[0], "Changed since you looked: Foo v3 is now the newest")
+    compare(sheetLines(), ["Update Foo on retail?", "Changed since you looked: Foo v3 is now the newest", "Foo v1 → v3"])
   }
 
   function test_a_stale_apply_previews_again_and_never_applies_again() {
@@ -509,8 +517,9 @@ TestCase {
     // Previewed again after a refused plan: even a routine match asks first.
     answer(again, planPreview("update", [planItem()]))
     compare(runs("apply").length, 1, launchLog())
-    verify(service.confirm.stale.indexOf("The plan expired.") === 0, service.confirm.stale)
-    compare(service.confirm.text, "Update Foo v1 → v2 on retail")
+    var banner = "Changed since you looked: that was more than a day ago. Nothing ran; here is what would happen now."
+    compare(service.confirm.stale, banner)
+    compare(sheetLines(), ["Update Foo on retail?", banner, "Foo v1 → v2"])
   }
 
   function test_a_stale_client_in_an_applied_plan_previews_again() {
@@ -541,7 +550,8 @@ TestCase {
     var preview = lastRun("targets")
     verify(preview.command.indexOf("--dry-run") !== -1)
     answer(preview, envelope("targets rm", { "id": "retail", "managed_addons": 0, "was_default": false, "dry_run": true, "precondition": token }))
-    compare(service.confirm.text, "Forget client retail; nothing in its directory is touched")
+    compare(sheetLines(), ["Forget retail?", "Nothing in its folder is touched."])
+    compare([service.confirm.sheet.confirmLabel, service.confirm.sheet.destructive], ["Forget retail", true])
     compare(service.confirmYes(), "")
     var real = lastRun("targets")
     verify(real !== preview)
@@ -572,7 +582,9 @@ TestCase {
     answer(previewFoo(), planPreview("update", [planItem({ "to_version": "v3" })]))
     state = JSON.parse(service.stateJson())
     compare(state.lastPreview.decision, "dialog")
-    compare(state.confirm, { "heading": "Changed since you looked: Foo v3 is now the newest", "planId": planId })
+    // The open plan sheet: its heading and plan as before, its title, and itself as text.
+    compare(state.confirm, { "heading": "Changed since you looked: Foo v3 is now the newest", "planId": planId,
+      "title": "Update Foo on retail?", "text": "Update Foo on retail?\nChanged since you looked: Foo v3 is now the newest\nFoo v1 → v3" })
   }
 
   function test_a_destructive_cli_argv_previews_first() {
@@ -586,7 +598,8 @@ TestCase {
       "from_version": null, "to_version": null })], { "routine": false, "reasons": ["destructive"] },
       { "reverted": { "kind": "update" }, "transactions": [{ "target": { "id": "retail" } }], "folders": { "restored": ["Foo"], "removed": [] } },
       { "destructive": true }))
-    compare(service.confirm.text.split("\n")[0], "Undo update on retail: 1 folder restored, 0 removed")
+    compare(sheetLines(), ["Undo the update on retail from an earlier time?", "Foo back as it was"])
+    compare([service.confirm.sheet.confirmLabel, service.confirm.sheet.destructive], ["Undo", true])
     compare(runs("apply").length, 0)
     compare(service.confirmYes(), "")
     compare(words(lastRun("apply").command), ["apply", planId], "Yes applies the undo's plan: " + launchLog())
@@ -689,7 +702,8 @@ TestCase {
     answer(preview, fixReport({ "dryRun": true }))
     compare(service.lastError, null, "a planning dry run is no failure")
     verify(service.confirm !== null, "the repair asks first")
-    compare(service.confirm.text.split("\n"), ["chmod 0600 <config>/credentials/github (was 0644)", "Undo last reverts it"])
+    compare(sheetLines(), ["Repair: the token file?", "chmod 0600 <config>/credentials/github (was 0644)", "Undo last reverts it."])
+    compare([service.confirm.sheet.confirmLabel, service.confirm.sheet.destructive], ["Repair", false])
     compare(boundRepairs().length, 0, "nothing ran before Yes: " + launchLog())
     compare(service.confirmYes(), "")
     var bound = lastRun("doctor")
@@ -738,6 +752,7 @@ TestCase {
     verify(again.command.indexOf("--if-match") === -1)
     answer(again, fixReport({ "dryRun": true }))
     verify(service.confirm.stale.indexOf("Changed since you looked: the files this repair checks") === 0, service.confirm.stale)
+    compare(service.confirm.sheet.stale, service.confirm.stale, "the sheet's banner")
     compare(boundRepairs().length, 1, "the bound run is never launched twice: " + launchLog())
   }
 
@@ -831,7 +846,8 @@ TestCase {
     answer(previewRepair(), fixReport({ "dryRun": true }))
     var state = JSON.parse(service.stateJson())
     compare(state.lastPreview, { "resource": "doctor_fix", "decision": "dialog", "planId": null })
-    compare(state.confirm, { "heading": "", "planId": null })
+    compare(state.confirm, { "heading": "", "planId": null, "title": "Repair: the token file?",
+      "text": "Repair: the token file?\nchmod 0600 <config>/credentials/github (was 0644)\nUndo last reverts it." })
   }
 
   function test_undo_last_reverts_a_repair_through_its_stored_plan() {
@@ -843,9 +859,10 @@ TestCase {
       "repairs": [{ "seq": 0, "fix": 0, "fm": credentialFm, "op": "chmod", "path": credentialPath, "to_rel": null, "octal_mode": "0644", "activation": false }] }
     answer(preview, planPreview("undo", [planItem({ "op": "undo", "addon": null, "source": null, "release_id": null, "asset": null,
       "from_version": null, "to_version": null })], { "routine": false, "reasons": ["destructive"] }, undone, { "destructive": true }))
-    var lines = service.confirm.text.split("\n")
-    compare(lines[0], "Undo repair: 1 change")
+    var lines = sheetLines()
+    compare(lines[0], "Undo the repair from an earlier time?")
     compare(lines[1], "chmod 0644 <config>/credentials/github (readable by other users again)", "the paths are shortened")
+    compare([service.confirm.sheet.confirmLabel, service.confirm.sheet.destructive], ["Undo", true])
     compare(runs("apply").length, 0)
     compare(service.confirmYes(), "")
     var apply = lastRun("apply")

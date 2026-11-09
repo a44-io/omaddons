@@ -10,10 +10,10 @@ import "../Model.js" as Model
 // (a click on it cancels), a centred card at most 480 px wide, a title, a body that
 // scrolls past 80 % of the panel's height, and Cancel then the confirm button. It opens
 // on Cancel and owns the keyboard while open, as Model.KEYMAP's dialog rows say: Esc and
-// n cancel; h, l, ←, →, Tab and Shift+Tab move between the buttons; y confirms, and
-// Enter or Space press the focused button. A key held from before the sheet opened
-// reaches it only as auto-repeat, which never confirms (M3-D46). Every other key is the
-// sheet's: nothing beneath it acts.
+// n cancel; j, k, ↓ and ↑ scroll the body; h, l, ←, →, Tab and Shift+Tab move between
+// the buttons; y confirms, and Enter or Space press the focused button. A key held from
+// before the sheet opened reaches it only as auto-repeat, which never confirms (M3-D46).
+// Every other key is the sheet's: nothing beneath it acts.
 //
 // With `reference`, it is the key reference (`?`, design doc §2.4's help overlay): no
 // buttons, a line saying how it closes, and KEYMAP's help rows (`?` and Esc close it,
@@ -52,12 +52,23 @@ Item {
   readonly property real bodyWidth: body.width
   readonly property real maxBodyHeight: Math.max(Style.space(60), height * 0.8 - header.implicitHeight
     - (reference ? referenceNote.implicitHeight : footer.implicitHeight) - Style.spacing.xl * 4)
+  // The height the sheet would need to show its whole body without scrolling: what a
+  // frame asks for while it is open (it gets at most the panel's own cap, past which the
+  // body scrolls).
+  readonly property real wantedHeight: (body.implicitHeight + header.implicitHeight
+    + (reference ? referenceNote.implicitHeight : footer.implicitHeight) + Style.spacing.xl * 4) / 0.8
 
   visible: opened
   onOpenedChanged: {
+    reset()
+    if (opened) Qt.callLater(function() { if (root.opened) keys.forceActiveFocus() })
+  }
+
+  // Back to Cancel and the top of the body: a sheet that opens, or whose content is
+  // replaced while it is open (a new preview), starts there.
+  function reset() {
     selectedIndex = 0
     scroller.contentY = 0
-    if (opened) Qt.callLater(function() { if (root.opened) keys.forceActiveFocus() })
   }
 
   // The dialog's keys; true when the sheet took the key (it takes every key).
@@ -72,6 +83,7 @@ Item {
     }
     var action = Model.dialogKey(name, autoRepeat)
     if (action === "cancel") cancel()
+    else if (action === "line") scroll(Model.keyStep(name))
     else if (action === "switch") selectedIndex = selectedIndex === 0 ? 1 : 0
     else if (action === "confirm") confirm()
     else if (action === "press") {

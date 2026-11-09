@@ -15,8 +15,8 @@ import "Build.js" as Build
 // count, the content (the view, or the page on top of the navigation stack, alone in a
 // Flickable), and the pinned bottom area outside it (progress, the last result with
 // its Undo and Fix, the failure card, the freshness footer), which a long list never
-// scrolls away (UX-02). Over it: the confirm dialog every destructive action goes
-// through, the restore chooser and the key reference (`?`). `z` zooms the panel to the
+// scrolls away (UX-02). Over it: the plan sheet every previewed action goes through
+// (ui/PlanSheet.qml), the restore chooser and the key reference (`?`). `z` zooms the panel to the
 // screen and back; Ctrl+±/0 and Ctrl+wheel scale the text (§5.6); both are kept in
 // memory only.
 //
@@ -119,7 +119,7 @@ Item {
   readonly property string keyContext: cardMode ? "card" : (topPage ? "page" : view)
   // Where the keyboard goes: the dialog's own keys while it is open, then the chooser's,
   // then the key reference's.
-  readonly property Item focusItem: confirming ? confirmKeys
+  readonly property Item focusItem: confirming ? planSheet.keyItem
     : (chooser.opened ? chooser.keyItem : (helpOpen ? help.keyItem : keyCatcher))
   // The frame's own shortcuts (Ctrl+Z, PgUp, PgDn) fire only where the catcher would
   // take keys: never under a dialog, the reference, or a field that is typing. The text
@@ -143,8 +143,10 @@ Item {
   // reference over them.
   readonly property real frameImplicitHeight: top.implicitHeight + contentArea.implicitHeight + bottom.implicitHeight
     + gap * 2
+  // The plan sheet asks for its whole plan (the bar caps the panel; past that it scrolls).
   readonly property real contentImplicitHeight: (confirming || chooser.opened || helpOpen
-    ? Math.max(frameImplicitHeight, Style.space(confirming ? 220 : helpOpen ? 560 : 360))
+    ? Math.max(frameImplicitHeight, confirming ? Math.max(Style.space(220), planSheet.wantedHeight)
+      : Style.space(helpOpen ? 560 : 360))
     : frameImplicitHeight) * uiScale
   readonly property real gap: Style.space(12)
 
@@ -174,13 +176,13 @@ Item {
   }
 
   onConfirmingChanged: {
-    // A new preview starts on No: Enter alone never confirms a destructive change.
-    dialog.selectedIndex = 0
-    // A dialog is the top layer: the reference gives way to it.
+    // A new preview starts on Cancel: Enter alone never confirms a destructive change.
+    planSheet.reset()
+    // A sheet is the top layer: the reference gives way to it.
     if (confirming) helpOpen = false
     Qt.callLater(root.focusNow)
   }
-  onConfirmChanged: dialog.selectedIndex = 0
+  onConfirmChanged: planSheet.reset()
   onTypingChanged: if (!typing) Qt.callLater(root.focusNow)
   onHelpOpenChanged: Qt.callLater(root.focusNow)
   onPanelStateChanged: publishState()
@@ -396,21 +398,12 @@ Item {
     return true
   }
 
-  // The dialog's keys (it has the keyboard while open), as KEYMAP's sheet rows say. A
-  // held key that started before the preview appeared reaches it only as auto-repeat,
-  // which never confirms: Yes needs a fresh press (M3-D46).
+  // The plan sheet's keys (it has the keyboard while open), as KEYMAP's sheet rows say:
+  // the sheet's own. A held key that started before the preview appeared reaches it only
+  // as auto-repeat, which never confirms: the verb needs a fresh press (M3-D46). Every
+  // other key is the sheet's too: nothing behind it acts.
   function confirmKey(key, text, autoRepeat, modifiers) {
-    if (!confirming) return false
-    var action = Model.dialogKey(Model.keyName(key, text, modifiers), autoRepeat)
-    if (action === "cancel") confirmNo()
-    else if (action === "switch") dialog.selectedIndex = dialog.selectedIndex === 0 ? 1 : 0
-    else if (action === "confirm") confirmYes()
-    else if (action === "press") {
-      if (dialog.selectedIndex === 1) confirmYes()
-      else confirmNo()
-    }
-    // Every other key is the dialog's too: nothing behind it acts.
-    return true
+    return confirming ? planSheet.handleKey(key, text, autoRepeat, modifiers) : false
   }
 
   // ------------------------------------------------------------- actions
@@ -1203,18 +1196,14 @@ Item {
       }
     }
 
-    // ---------- The confirm dialog: the CLI's own dry run (M3-D9, M3-D46) ----------
-    ConfirmDialog {
-      id: dialog
-      objectName: "confirmDialog"
+    // ---------- The plan sheet: the CLI's own dry run, readable (M3-D9, M3-D46, 1n2p.17) ----------
+    PlanSheet {
+      id: planSheet
+      objectName: "planSheet"
       anchors.fill: parent
       z: 10
       opened: root.confirming
-      message: root.confirm
-        ? (root.confirm.stale ? String(root.confirm.stale) + "\n\n" : "") + String(root.confirm.text || "")
-        : ""
-      cancelText: "No"
-      confirmText: "Yes"
+      plan: root.confirm && root.confirm.sheet ? root.confirm.sheet : null
       foreground: root.foreground
       fontFamily: root.fontFamily
       onConfirmed: root.confirmYes()
@@ -1294,16 +1283,6 @@ Item {
             }
           }
         }
-      }
-    }
-
-    // Takes the keyboard while the dialog is open: it sees auto-repeat, which the key
-    // catcher's signals do not carry.
-    Item {
-      id: confirmKeys
-      objectName: "confirmKeys"
-      Keys.onPressed: function(event) {
-        event.accepted = root.confirmKey(event.key, event.text, event.isAutoRepeat, event.modifiers)
       }
     }
 

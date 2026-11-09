@@ -164,10 +164,16 @@ TestCase {
     return -1
   }
 
-  function confirmDialog() {
-    tryVerify(function() { return frame.confirming }, 3000, "the dialog opens: " + launchLog())
-    tryVerify(function() { return findChild(frame, "confirmKeys").activeFocus })
-    return findChild(frame, "confirmDialog")
+  // The plan sheet, once it is open with the keyboard; its plan as text, a line each.
+  function planSheet() {
+    tryVerify(function() { return frame.confirming }, 3000, "the plan sheet opens: " + launchLog())
+    var sheet = findChild(frame, "planSheet")
+    tryVerify(function() { return sheet.keyItem.activeFocus })
+    return sheet
+  }
+
+  function sheetLines(sheet) {
+    return Model.dialogText(sheet.plan).split("\n")
   }
 
   // The credential repair asked for as the Issues row asks: its preview's launch.
@@ -208,10 +214,15 @@ TestCase {
     compare(words(preview.command), ["doctor", "fix", "--only=" + credentialFm], "Enter previews the repair")
     verify(preview.command.indexOf("--dry-run") !== -1)
     answer(preview, "repair-preview")
-    var dialog = confirmDialog()
-    verify(dialog.message.indexOf("chmod 0600 ") === 0, dialog.message)
-    verify(dialog.message.indexOf("credentials/github (was 0644)") !== -1, dialog.message)
-    compare(dialog.selectedIndex, 0, "the dialog starts on No")
+    var sheet = planSheet()
+    var lines = sheetLines(sheet)
+    // Titled by the problem, an item per change, and the verb Repair, never urgent.
+    verify(lines[0].indexOf("Repair: ") === 0 && lines[0].slice(-1) === "?", lines[0])
+    verify(lines[1].indexOf("chmod 0600 ") === 0, lines[1])
+    verify(lines[1].indexOf("credentials/github (was 0644)") !== -1, lines[1])
+    compare(findChild(sheet, "sheetConfirm").text, "Repair")
+    verify(!sheet.destructive)
+    compare(sheet.selectedIndex, 0, "the sheet starts on Cancel")
     compare(repairs("--if-match").length, 0, "nothing ran before Yes")
     keyClick("y")
     var bound = lastRun("doctor")
@@ -230,9 +241,11 @@ TestCase {
     compare(words(undo.command), fixture("repair-status-after").data.last_change.undo.argv.slice(1))
     verify(undo.command.indexOf("--dry-run") !== -1, "the undo previews first")
     answer(undo, "repair-undo-preview")
-    dialog = confirmDialog()
-    compare(dialog.message.split("\n")[0], "Undo repair: 1 change")
-    verify(dialog.message.indexOf("(readable by other users again)") !== -1, dialog.message)
+    sheet = planSheet()
+    lines = sheetLines(sheet)
+    verify(lines[0].indexOf("Undo the repair from ") === 0, lines[0])
+    verify(lines[1].indexOf("(readable by other users again)") !== -1, lines[1])
+    verify(sheet.destructive)
     keyClick("y")
     var apply = lastRun("apply")
     compare(words(apply.command), ["apply", fixture("repair-undo-preview").data.plan_id], "Yes applies the undo's plan")
@@ -278,8 +291,9 @@ TestCase {
     verify(undo !== null && undo.command.indexOf("--dry-run") !== -1, "Undo last previews first: " + launchLog())
     compare(words(undo.command), ["undo", "--run", fixture("repair-status-after").data.last_change.run])
     answer(undo, "repair-undo-preview")
-    var dialog = confirmDialog()
-    compare(dialog.message.split("\n")[0], "Undo repair: 1 change")
+    var sheet = planSheet()
+    verify(sheetLines(sheet)[0].indexOf("Undo the repair from ") === 0, sheetLines(sheet)[0])
+    compare(findChild(sheet, "sheetConfirm").text, String.fromCodePoint(0xF054C) + " Undo")
     keyClick("y")
     var apply = lastRun("apply")
     compare(words(apply.command), ["apply", fixture("repair-undo-preview").data.plan_id])
