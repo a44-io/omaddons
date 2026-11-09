@@ -53,6 +53,11 @@ Item {
   property var interrupted: null
   // The silent checkpoints held back while a change waits to be finished (afterStatus).
   property var heldCheckpoints: []
+  // The first run (1n2p.32): whether a bar copy's panel was opened by mouse (the
+  // keybinding tip follows it), and the cards put off with Not now, `{kind: [client
+  // ids]}`, both for the shell's lifetime (Model.onboardingCard).
+  property bool openedByMouse: false
+  property var onboardingDismissed: ({})
   property var targets: []
   property var summary: null
   property var lastChange: null
@@ -638,7 +643,10 @@ Item {
     var verdict = Model.classifyCliArgv(argv)
     if (!verdict.ok) return "not a command the widget runs (" + verdict.reason + ")"
     var spec = { "cli": argv.slice(), "label": String(label || verdict.path), "priority": "user" }
-    if (verdict.destructive) {
+    // A destructive command, an install or an update the CLI offered (Install BugGrabber,
+    // a failure's fix, 1n2p.32): its dry run first, then the plan sheet, as README
+    // promises for every install and update; the view never showed what it would bring.
+    if (verdict.destructive || verdict.path === "install" || verdict.path === "update") {
       spec.mode = "confirm"
       spec.shown = []
       previewOf(spec, "", false)
@@ -1162,6 +1170,11 @@ Item {
         run("backup_auto", { "target": due[i] }, first ? "Settings checkpoint at widget start" : "Settings checkpoint after play")
       }
     }
+    // A client that records no Lua errors: one `errors` read (local) says whether a
+    // BugGrabber build is known for it, for the first run's card (1n2p.32).
+    if (Model.needsCaptureRead(targets, errors)) {
+      request({ "resource": "errors", "template": "errors", "priority": "background", "label": "Read Lua errors" })
+    }
     var reads = stopped.slice()
     var stale = Model.errorsToRefresh(targets)
     for (var j = 0; j < stale.length; j++) if (reads.indexOf(stale[j]) === -1) reads.push(stale[j])
@@ -1215,6 +1228,16 @@ Item {
     reinstalledAtMs = Date.now()
     refreshBar()
     return "ok"
+  }
+
+  // A first-run card put off (Not now, 1n2p.32): for the shell's lifetime, per client.
+  function dismissOnboarding(kind, target) {
+    var next = {}
+    for (var k in onboardingDismissed) next[k] = onboardingDismissed[k].slice()
+    var list = next[kind] || []
+    if (list.indexOf(String(target || "")) === -1) list.push(String(target || ""))
+    next[kind] = list
+    onboardingDismissed = next
   }
 
   // The cards the panel shows now, by kind, for IPC's state() (1n2p.34): the phase

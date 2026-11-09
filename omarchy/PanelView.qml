@@ -134,6 +134,18 @@ Item {
   property string cardNote: ""
   // An interrupted change `status` reports (Model.interruptedChange), on a live answer.
   readonly property var interrupted: svc && phase === "ok" && svc.interrupted ? svc.interrupted : null
+  // The first run's card above the views (Model.onboardingCard, 1n2p.32): one at a time,
+  // never beside an interrupted change or over a page.
+  readonly property var onboarding: !svc || phase !== "ok" || !!interrupted || !!topPage ? null : Model.onboardingCard({
+    "summary": svc.summary, "targets": targets, "errors": svc.errors || null,
+    "dismissed": svc.onboardingDismissed || {}, "keyHint": Model.boolSetting(svc.settings, "keyHint", true),
+    "openedByMouse": svc.openedByMouse === true, "pluginId": Build.PLUGIN_ID })
+  // What the onboarding card's Copy said a moment ago.
+  property string onboardingNote: ""
+
+  // A widget setting the panel changes (the keybinding tip seen): the bar copy saves it
+  // through Omarchy's shell, so the widget writes no file.
+  signal settingRequested(string key, var value)
   // Where a key is looked up in KEYMAP: the card's rows, a page's, or the view's.
   readonly property string keyContext: cardMode ? "card" : (topPage ? "page" : view)
   // Where the keyboard goes: the dialog's own keys while it is open, then the chooser's,
@@ -579,6 +591,26 @@ Item {
     return report(svc.run("adopt_target", { "target": target }, Model.copy("installed.take_over.label", { "client": client })))
   }
 
+  // The first run's card (1n2p.32): its one action, or Not now (for the shell's
+  // lifetime; the keybinding tip, once seen, turns its setting Off for good).
+  function runOnboarding(name) {
+    var card = onboarding
+    if (!svc || !card) return false
+    if (name === "take_over") return takeOver(card.target)
+    if (name === "install") return !!card.action && runCli(card.action, Model.copy("errors.capture.install"))
+    if (name === "copy") {
+      if (!svc.copyCommand(card.line)) return false
+      onboardingNote = Model.copy("card.copied")
+      cardNoteTimer.restart()
+      settingRequested("keyHint", "Off")
+      return true
+    }
+    if (name !== "not_now") return false
+    if (card.kind === "keyhint") settingRequested("keyHint", "Off")
+    svc.dismissOnboarding(card.kind, card.target)
+    return true
+  }
+
   // The failure card's Copy details.
   function copyErrorDetails() {
     if (!svc || !lastError || !svc.copyCommand(String(lastError.details || ""))) return false
@@ -605,7 +637,10 @@ Item {
   Timer {
     id: cardNoteTimer
     interval: 3000
-    onTriggered: root.cardNote = ""
+    onTriggered: {
+      root.cardNote = ""
+      root.onboardingNote = ""
+    }
   }
 
   // A view state's action (Model.viewState, design doc §7): Check now checks, Search opens
@@ -986,6 +1021,31 @@ Item {
             urgent: root.urgent
             fontFamily: root.fontFamily
             onClicked: function(name) { if (name === "show") root.showInterrupted() }
+          }
+
+          // The first run's card (1n2p.32): take over, record Lua errors, or the key tip.
+          NoticeCard {
+            objectName: "onboardingCard"
+            visible: !!root.onboarding
+            width: parent.width
+            kind: "info"
+            title: root.onboarding ? root.onboarding.title : ""
+            body: !root.onboarding ? "" : root.onboarding.line !== "" ? root.onboarding.sentence + "\n" + root.onboarding.line
+              : root.onboarding.sentence
+            buttons: root.onboarding ? root.onboarding.buttons : []
+            foreground: root.foreground
+            urgent: root.urgent
+            fontFamily: root.fontFamily
+            onClicked: function(name) { root.runOnboarding(name) }
+          }
+
+          PlainLabel {
+            objectName: "onboardingCopied"
+            visible: !!root.onboarding && text !== ""
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            text: root.onboardingNote
           }
 
           // ---------- A page: its back button, then the page itself ----------

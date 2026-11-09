@@ -20,7 +20,9 @@ var DEFAULT_SETTINGS = {
   "autoCheck": "On",
   "notifyUpdates": "Off",
   "notifyErrors": "On",
-  "refreshIntervalSec": 300
+  "refreshIntervalSec": 300,
+  // The first run's keybinding tip (1n2p.32): On until the player has seen it.
+  "keyHint": "On"
 }
 
 // What each setting accepts; anything else falls back to its default.
@@ -30,7 +32,8 @@ var SETTING_RULES = {
   "autoCheck": { "type": "switch" },
   "notifyUpdates": { "type": "switch" },
   "notifyErrors": { "type": "switch" },
-  "refreshIntervalSec": { "type": "integer", "min": 30, "max": 3600 }
+  "refreshIntervalSec": { "type": "integer", "min": 30, "max": 3600 },
+  "keyHint": { "type": "switch" }
 }
 
 function isInteger(value) {
@@ -1089,6 +1092,8 @@ function targetOf(target) {
     "runningUnknown": target.running === null,
     // Why it needs attention, typed (`journal_pending`: an interrupted change, 1n2p.34).
     "attention": stringList(target.attention),
+    // Folders omaddons does not manage there (the first run's take-over, 1n2p.32).
+    "unmanaged": target.folders && typeof target.folders === "object" ? num(target.folders.unmanaged) : 0,
     // From `status -v`: where `o` opens Interface/AddOns.
     "clientDir": str(target.client_dir),
     "missing": target.missing === true,
@@ -1104,6 +1109,8 @@ function targetOf(target) {
     } : null,
     "issues": issues,
     "errors": errors ? {
+      // "buggrabber", or "none" with no recorder installed (the first run's card, 1n2p.32).
+      "capture": str(errors.capture),
       "state": str(errors.state), "coverage": str(errors.coverage), "new": num(errors["new"]),
       "total": num(errors.total), "addons": num(errors.addons),
       "top": Array.isArray(errors.top_addons) ? errors.top_addons.map(function(t) {
@@ -1505,6 +1512,70 @@ function welcomeCard(summary, targets) {
   if (!summary || liveTargets(targets).length > 0) return null
   return { "kind": "welcome", "title": copy("welcome.title"), "sentence": copy("welcome.sentence"),
     "buttons": [{ "name": "rescan", "text": copy("welcome.rescan") }, { "name": "add", "text": copy("welcome.add") }] }
+}
+
+// The keybinding the tip offers (Omarchy's own `o.bind` form in ~/.config/hypr/
+// bindings.lua): a key free in Omarchy's defaults, opening this widget's panel.
+var KEY_HINT_KEY = "SUPER + ALT + W"
+
+function keyHintLine(pluginId) {
+  return "o.bind(" + JSON.stringify(KEY_HINT_KEY) + ", " + JSON.stringify(copy("onboard.keyhint.name")) + ", { panel = "
+    + JSON.stringify(str(pluginId)) + " })"
+}
+
+// A client that has a status line for its Lua errors and records none (no BugGrabber).
+function capturesNothing(t) {
+  return !!t && !!t.errors && t.errors.capture === "none"
+}
+
+// The first run's cards above the views (1n2p.32, design doc §6.4), one at a time, in
+// order: take over the addons already on a client that manages none; record Lua errors
+// on a client without BugGrabber, when a build is known for it (the `errors` read's own
+// install command); then the keybinding tip, after the panel was first opened by mouse,
+// while the `keyHint` setting is On. With no client here, the views' welcome card comes
+// first and none of these shows. `input` is `{summary, targets, errors (reduceErrors),
+// dismissed ({kind: [client ids]}, "Not now" for the shell's lifetime), keyHint,
+// openedByMouse, pluginId}`. A card is `{kind, target, title, sentence, line, action,
+// buttons}`; null when none is due.
+function onboardingCard(input) {
+  var i = input && typeof input === "object" ? input : {}
+  if (!i.summary) return null
+  var live = liveTargets(i.targets)
+  if (live.length === 0) return null
+  var dismissed = i.dismissed && typeof i.dismissed === "object" ? i.dismissed : {}
+  var skipped = function(kind, id) { return Array.isArray(dismissed[kind]) && dismissed[kind].indexOf(id) !== -1 }
+  var notNow = { "name": "not_now", "text": copy("onboard.not_now") }
+  var name = function(t) { return t.displayName || t.id }
+  for (var a = 0; a < live.length; a++) {
+    var t = live[a]
+    if (num(t.addons) === 0 && num(t.unmanaged) > 0 && !skipped("adopt", t.id)) {
+      return { "kind": "adopt", "target": t.id, "title": copy("onboard.adopt.title", { "client": name(t) }),
+        "sentence": copy("onboard.adopt.sentence", { "n": num(t.unmanaged) }), "line": "", "action": null,
+        "buttons": [{ "name": "take_over", "text": copy("installed.take_over") }, notNow] }
+    }
+  }
+  var read = i.errors && Array.isArray(i.errors.targets) ? i.errors.targets : []
+  for (var b = 0; b < live.length; b++) {
+    var c = live[b]
+    if (!capturesNothing(c) || skipped("buggrabber", c.id)) continue
+    var e = read.filter(function(x) { return x && x.id === c.id })[0]
+    if (!e || !e.install || !e.install.runnable) continue
+    return { "kind": "buggrabber", "target": c.id, "title": copy("onboard.buggrabber.title", { "client": name(c) }),
+      "sentence": copy("onboard.buggrabber.sentence"), "line": "", "action": e.install,
+      "buttons": [{ "name": "install", "text": copy("errors.capture.install") }, notNow] }
+  }
+  if (i.keyHint === true && i.openedByMouse === true && !skipped("keyhint", "")) {
+    return { "kind": "keyhint", "target": "", "title": copy("onboard.keyhint.title"), "sentence": copy("onboard.keyhint.sentence"),
+      "line": keyHintLine(i.pluginId), "action": null,
+      "buttons": [{ "name": "copy", "text": copy("onboard.keyhint.copy") }, { "name": "not_now", "text": copy("onboard.keyhint.done") }] }
+  }
+  return null
+}
+
+// Whether the first run's BugGrabber card needs the `errors` read to know if a build
+// exists: a client here records nothing and no read is at hand.
+function needsCaptureRead(targets, errors) {
+  return !errors && liveTargets(targets).some(capturesNothing)
 }
 
 // The path a player typed into the path box, made usable: surrounding blanks gone, a
@@ -5308,6 +5379,17 @@ var COPY = {
   "welcome.sentence": "omaddons looked where Battle.net, Steam, Lutris, Heroic and Bottles keep their games, in ~/Games and in ~/.wine. Install the game with one of them and scan again, or add the folder where it is.",
   "welcome.rescan": "Scan again",
   "welcome.add": "Add a client folder…",
+  "onboard.not_now": "Not now",
+  "onboard.adopt.title": "Take over the addons already on {client}?",
+  "onboard.adopt.sentence": { "one": "1 folder there came by hand or from another addon manager. omaddons can keep track of it as it is: nothing is reinstalled or moved.",
+    "other": "{n} folders there came by hand or from another addon manager. omaddons can keep track of them as they are: nothing is reinstalled or moved." },
+  "onboard.buggrabber.title": "Record Lua errors on {client}?",
+  "onboard.buggrabber.sentence": "BugGrabber, one small addon, saves them as they happen, so omaddons can tell which addon throws them and whether an update may fix it.",
+  "onboard.keyhint.title": "Open this panel with a key",
+  "onboard.keyhint.sentence": "Add this line to ~/.config/hypr/bindings.lua (any free key will do), and the key opens and closes the panel:",
+  "onboard.keyhint.name": "WoW addons",
+  "onboard.keyhint.copy": "Copy the line",
+  "onboard.keyhint.done": "Got it",
   "addclient.title": "Add a client",
   "addclient.sentence": "The folder that holds the game: the one with Wow.exe (or WowClassic.exe) and its Interface folder, or the one above _retail_ and _classic_. Type it from / or ~/.",
   "addclient.placeholder": "~/Games/World of Warcraft",
@@ -6513,6 +6595,10 @@ if (typeof module !== "undefined") {
     listOf: listOf,
     welcomeCard: welcomeCard,
     clientPath: clientPath,
+    KEY_HINT_KEY: KEY_HINT_KEY,
+    keyHintLine: keyHintLine,
+    onboardingCard: onboardingCard,
+    needsCaptureRead: needsCaptureRead,
     PATH_MAX_BYTES: PATH_MAX_BYTES,
     badgeText: badgeText,
     reduceList: reduceList,

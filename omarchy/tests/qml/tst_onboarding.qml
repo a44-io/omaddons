@@ -254,6 +254,73 @@ TestCase {
     compare(service.targets[0].addons, 2, "Foo and Bar are managed now")
   }
 
+  // ---- the cards above the views (1n2p.32): one at a time, each with Not now
+
+  function onboardingCard() { return child("onboardingCard") }
+
+  function pressCard(index) {
+    findChild(onboardingCard(), "noticeButton_" + index).clicked()
+  }
+
+  function test_take_over_comes_first_and_not_now_puts_it_off() {
+    var answers = scene("status-adoptable")
+    answers.list = the("list-adoptable")
+    settle(answers)
+    verify(onboardingCard().visible)
+    compare(onboardingCard().title, "Take over the addons already on Retail?")
+    // Its action is the take-over's preview.
+    pressCard(0)
+    var preview = runningOf("adopt")
+    verify(preview !== null, "Take over… previews")
+    compare(words(preview.command), ["adopt", "--apply", "-t", "retail"])
+    preview.process.finish(0, Fixtures.text("adopt-preview"), "streamFirst")
+    tryVerify(function() { return !!service.confirm }, 1000)
+    service.confirmNo()
+    // Not now: gone for the shell's lifetime, and nothing ran.
+    pressCard(1)
+    compare(JSON.stringify(service.onboardingDismissed), JSON.stringify({ "adopt": ["retail"] }))
+    verify(!onboardingCard().visible, "no other card is due")
+    compare(runningOf("apply"), null)
+  }
+
+  function test_a_client_without_buggrabber_is_offered_its_own_build_as_a_preview() {
+    var answers = scene("status-errors")
+    answers.errors = the("errors")
+    settle(answers)
+    // The `errors` read the card needed ran by itself, and said Classic Era has a build.
+    verify(service.errors !== null)
+    compare(onboardingCard().title, "Record Lua errors on Classic Era?")
+    pressCard(0)
+    var install = runningOf("install")
+    verify(install !== null, "Install BugGrabber previews")
+    compare(words(install.command), ["install", "buggrabber", "-t", "era"])
+    verify(install.command.indexOf("--dry-run") !== -1, "a preview first, never the install itself")
+    pressCard(1)
+    verify(!onboardingCard().visible)
+  }
+
+  function test_the_keybinding_tip_shows_once_after_a_mouse_open() {
+    settle(scene("status-idle"))
+    verify(!onboardingCard().visible, "not before the panel was opened by mouse")
+    service.openedByMouse = true
+    verify(onboardingCard().visible)
+    compare(onboardingCard().title, "Open this panel with a key")
+    var line = 'o.bind("SUPER + ALT + W", "WoW addons", { panel = "' + Build.PLUGIN_ID + '" })'
+    verify(onboardingCard().body.indexOf(line) !== -1, onboardingCard().body)
+    var spy = Qt.createQmlObject('import QtTest; SignalSpy { signalName: "settingRequested" }', testCase)
+    spy.target = frame
+    Quickshell.resetDetachedCommands()
+    pressCard(0)
+    compare(JSON.stringify(Quickshell.detachedCommands), JSON.stringify([["wl-copy", "--", line]]))
+    compare(child("onboardingCopied").text, "Copied")
+    compare(spy.count, 1)
+    compare([spy.signalArguments[0][0], spy.signalArguments[0][1]], ["keyHint", "Off"])
+    // The bar copy saves it and pushes it back: the tip is gone for good.
+    service.applySettings({ "keyHint": "Off" })
+    verify(!onboardingCard().visible)
+    spy.destroy()
+  }
+
   function test_esc_leaves_the_path_box_then_goes_back() {
     settle(scene("status-none"))
     frame.showView("updates")

@@ -49,6 +49,8 @@ TestCase {
       property var panels: ({})
       property int checks: 0
       property string requestedView: ""
+      // A panel opened by mouse (the first run's keybinding tip follows it, 1n2p.32).
+      property bool openedByMouse: false
       // What the middle click reads to pick the most urgent view (design doc §2.5).
       property var summary: ({ "errors": { "new": 0 }, "issuesUrgent": 1 })
 
@@ -273,8 +275,10 @@ TestCase {
   function test_clicks_toggle_check_and_open_issues() {
     var widget = make()
     var button = part(widget, "button")
+    verify(!svc.openedByMouse)
     button.pressed(Qt.LeftButton)
     verify(widget.opened)
+    verify(svc.openedByMouse, "a mouse open is recorded for the keybinding tip")
     compare(svc.panels[widget.panelKey], true)
     button.pressed(Qt.LeftButton)
     verify(!widget.opened)
@@ -299,6 +303,24 @@ TestCase {
     button.pressed(Qt.MiddleButton)
     verify(widget.opened)
     compare(part(widget, "view").view, "updates")
+  }
+
+  // The keybinding tip seen (1n2p.32): the setting is applied, pushed to the service and
+  // saved through the shell's own facade, never written by the widget.
+  function test_a_setting_the_panel_changes_is_saved_through_the_shell() {
+    var api = barApiComponent.createObject(testCase)
+    var saved = []
+    api.shell = { "serviceFor": function(id) { return svc }, "updateEntryInline": function(id, entry) { saved.push([id, entry]) } }
+    var widget = make({ "settings": { "panelWidth": 600 } })
+    widget.bar = api
+    part(widget, "view").settingRequested("keyHint", "Off")
+    compare(widget.settings.keyHint, "Off")
+    compare(widget.settings.panelWidth, 600, "the other settings stay")
+    compare(svc.pushed[svc.pushed.length - 1].keyHint, "Off")
+    compare(saved.length, 1)
+    compare(saved[0][0], Build.PLUGIN_ID)
+    compare([saved[0][1].id, saved[0][1].keyHint, saved[0][1].panelWidth], [Build.PLUGIN_ID, "Off", 600])
+    api.destroy()
   }
 
   function test_the_wheel_does_nothing() {

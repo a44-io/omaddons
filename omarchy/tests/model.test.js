@@ -768,6 +768,48 @@ describe("first run", () => {
     expect(M.welcomeCard(added.summary, added.targets)).toBeNull()
   })
 
+  test("the first run's cards come one at a time: take over, then BugGrabber, then the key tip", () => {
+    const adoptable = M.reduceStatus(fixture("status-adoptable"))
+    const input = (status, extra) => Object.assign({ summary: status.summary, targets: status.targets, errors: null,
+      dismissed: {}, keyHint: true, openedByMouse: true, pluginId: "a44.fixture" }, extra || {})
+    // Take over: a client that manages nothing, with folders there.
+    const adopt = M.onboardingCard(input(adoptable))
+    expect([adopt.kind, adopt.target, adopt.title, adopt.buttons.map((b) => b.name)])
+      .toEqual(["adopt", "retail", "Take over the addons already on Retail?", ["take_over", "not_now"]])
+    expect(adopt.sentence).toBe("3 folders there came by hand or from another addon manager. omaddons can keep track of them as they are: nothing is reinstalled or moved.")
+    // Not now: the next card (here the key tip; no client records nothing).
+    const keyhint = M.onboardingCard(input(adoptable, { dismissed: { adopt: ["retail"] } }))
+    expect([keyhint.kind, keyhint.buttons.map((b) => b.text)]).toEqual(["keyhint", ["Copy the line", "Got it"]])
+    expect(keyhint.line).toBe('o.bind("SUPER + ALT + W", "WoW addons", { panel = "a44.fixture" })')
+    // The key tip only after a mouse open, only while its setting is On, once dismissed gone.
+    const quiet = { dismissed: { adopt: ["retail"] } }
+    expect(M.onboardingCard(input(adoptable, Object.assign({ openedByMouse: false }, quiet)))).toBeNull()
+    expect(M.onboardingCard(input(adoptable, Object.assign({ keyHint: false }, quiet)))).toBeNull()
+    expect(M.onboardingCard(input(adoptable, { dismissed: { adopt: ["retail"], keyhint: [""] } }))).toBeNull()
+    // BugGrabber: Classic Era records nothing, and the errors read knows its build.
+    const errs = M.reduceStatus(fixture("status-errors"))
+    expect(M.needsCaptureRead(errs.targets, null)).toBe(true)
+    expect(M.needsCaptureRead(errs.targets, M.reduceErrors(fixture("errors")))).toBe(false)
+    expect(M.onboardingCard(input(errs, { keyHint: false })), "no read yet: no card").toBeNull()
+    const bg = M.onboardingCard(input(errs, { errors: M.reduceErrors(fixture("errors")) }))
+    expect([bg.kind, bg.target, bg.title, bg.buttons.map((b) => b.text)])
+      .toEqual(["buggrabber", "era", "Record Lua errors on Classic Era?", ["Install BugGrabber", "Not now"]])
+    expect(bg.action.argv).toEqual(["omaddons", "install", "buggrabber", "-t", "era"])
+    // A client no build is known for gets no card.
+    const unknown = JSON.parse(JSON.stringify(fixture("errors")))
+    unknown.commands = []
+    expect(M.onboardingCard(input(errs, { errors: M.reduceErrors(unknown), keyHint: false }))).toBeNull()
+    // With no client here, the views' welcome card comes first: none of these.
+    const none = M.reduceStatus(fixture("status-none"))
+    expect(M.onboardingCard(input(none))).toBeNull()
+    expect(M.onboardingCard(input(adoptable, { summary: null }))).toBeNull()
+    // No onboarding sentence names an omaddons command line.
+    for (const id of Object.keys(M.COPY).filter((k) => /^onboard\./.test(k))) {
+      const words = typeof M.COPY[id] === "string" ? [M.COPY[id]] : Object.values(M.COPY[id])
+      for (const w of words) expect([id, /\bomaddons (install|adopt|targets|errors|status)\b/.test(w)]).toEqual([id, false])
+    }
+  })
+
   test("targets add takes only an absolute path, after --", () => {
     const built = M.buildArgv("targets_add", { path: "/home/fixture/Games/World of Warcraft" }, opts())
     expect(built.argv.slice(-4)).toEqual(["targets", "add", "--", "/home/fixture/Games/World of Warcraft"])

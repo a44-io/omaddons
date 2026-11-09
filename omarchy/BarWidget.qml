@@ -76,10 +76,25 @@ Panel {
     }
     if (button === Qt.MiddleButton) {
       if (svc) svc.requestedView = Model.urgentView(svc.summary)
+      if (svc) svc.openedByMouse = true
       root.open()
       return
     }
+    // Opened by mouse: the first run's keybinding tip may follow (1n2p.32).
+    if (!root.opened && svc) svc.openedByMouse = true
     root.toggle()
+  }
+
+  // A setting the panel changes (the keybinding tip seen, 1n2p.32): applied here first,
+  // then saved through Omarchy's shell (`updateEntryInline`, as the shell's own widgets
+  // save theirs), which writes shell.json; the widget writes no file.
+  function saveSetting(key, value) {
+    var entry = { "id": root.moduleName }
+    for (var name in root.settings) if (name !== "id") entry[name] = root.settings[name]
+    entry[key] = value
+    root.settings = entry
+    if (root.bar && root.bar.shell && typeof root.bar.shell.updateEntryInline === "function")
+      root.bar.shell.updateEntryInline(root.moduleName, entry)
   }
 
   Component.onCompleted: bindService()
@@ -195,6 +210,7 @@ Panel {
       fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
+      onSettingRequested: function(key, value) { root.saveSetting(key, value) }
     }
   }
 }

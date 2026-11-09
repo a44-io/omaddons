@@ -491,7 +491,8 @@ function checkPreviews(files) {
   const service = codeOf(files["Service.qml"] || "")
   const routes = [
     ["function run(", /if \(template\.preview \|\| Model\.CLI_PATHS\[path\]\.destructive\) \{[^}]*previewOf\(spec, "", false\)/],
-    ["function runCliArgv(", /if \(verdict\.destructive\) \{[^}]*previewOf\(spec, "", false\)/],
+    // A CLI-offered install or update previews too, as README promises (1n2p.32).
+    ["function runCliArgv(", /if \(verdict\.destructive \|\| verdict\.path === "install" \|\| verdict\.path === "update"\) \{[^}]*previewOf\(spec, "", false\)/],
     ["function runBound(", /if \(!template \|\| template\.bind !== true\) return/],
   ]
   for (const [head, route] of routes) {
