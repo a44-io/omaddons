@@ -333,6 +333,70 @@ fn a_legacy_addon_installs_into_a_335_client_from_its_repository() {
     assert_eq!(r.expect(2)["error"]["code"], "usage", "{}", r.context());
 }
 
+/// omad-t8m3: codeload serves `git archive`'s zip of one commit, the same bytes every
+/// time, so an exported lock's `sha256` holds on a machine whose cache never saw it; the
+/// same entry locked to other bytes installs nothing.
+#[test]
+fn a_locked_sync_verifies_a_commits_archive_on_an_empty_cache() {
+    let wotlk = |home: &Home| {
+        let root = CustomRoot::at(home.env.home().join("Games/wow-335"))
+            .version(3, 3, 5, 12_340)
+            .build();
+        let root = root.display().to_string();
+        home.run(&["targets", "add", &root, "--name", "wotlk"])
+            .expect(0);
+    };
+    let mut old = Home::new(&[]);
+    old.http = scenario("git-github");
+    wotlk(&old);
+    old.run(&["install", "gbb", "-t", "wotlk"]).expect(0);
+    let toml = old.run(&["export"]).expect(0)["data"]["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let lock = toml
+        .lines()
+        .find_map(|l| l.strip_prefix("sha256 = \""))
+        .map(|l| l.trim_end_matches('"').to_owned())
+        .unwrap_or_else(|| panic!("the export locks the archive: {toml}"));
+
+    for (name, text, installs) in [
+        ("the exported lock", toml.clone(), true),
+        (
+            "a lock on other bytes",
+            toml.replace(&lock, &"0".repeat(64)),
+            false,
+        ),
+    ] {
+        let mut new = Home::new(&[]);
+        new.http = scenario("git-github");
+        wotlk(&new);
+        let file = new.write_desired(&text);
+        let r = new.run(&["sync", &file.display().to_string(), "--locked"]);
+        let addons = new.env.home().join("Games/wow-335/Interface/AddOns");
+        if installs {
+            r.expect(0);
+            assert!(
+                addons.join("GroupBulletinBoard").is_dir(),
+                "{name}: {}",
+                r.context()
+            );
+        } else {
+            let envelope = r.expect(1);
+            assert_eq!(
+                (
+                    &envelope["error"]["code"],
+                    &envelope["error"]["details"]["reason"]
+                ),
+                (&Value::from("hash_mismatch"), &Value::from("lock_mismatch")),
+                "{name}: {}",
+                r.context()
+            );
+            assert!(!addons.join("GroupBulletinBoard").exists(), "{name}");
+        }
+    }
+}
+
 /// A rev that names nothing (its feed is a 404, then so is the archive by tag name) says
 /// so, while a plain URL to the same archive keeps the bare download error.
 #[test]

@@ -20,7 +20,24 @@ pub const ROWS: &[Row] = &[
     BACKUP_PATH_OVER_ITS_BOUND,
     DAMAGED_CACHED_ARCHIVE,
     TUKUI_ETAG_DISAGREES,
+    LOCKED_ARCHIVE_DIFFERS,
 ];
+
+/// gh:o/foo locked by `sync --locked` to an archive other than the one its release
+/// serves (omad-t8m3).
+const LOCKED_ARCHIVE_DIFFERS: Row = Row {
+    id: "a_locked_sync_says_the_archive_is_not_the_locked_one",
+    keys: &[(ErrorCode::HashMismatch, "reason")],
+    run: || {
+        let s = Scene::new();
+        let file = s.home.write_desired(&format!(
+            "schema_version = \"1.0\"\n\n[[family.mainline.addon]]\nname = \"Foo\"\nref = \"gh:o/foo\"\nversion = \"v1\"\nsha256 = \"{}\"\n",
+            "0".repeat(64)
+        ));
+        let file = file.display().to_string();
+        vec![s.json(&["sync", &file, "--locked", "-t", "retail"], 1)]
+    },
+};
 
 /// A traversal, a name listed twice and a ratio bomb, each refused with what it measured.
 const HOSTILE_ZIPS: Row = Row {

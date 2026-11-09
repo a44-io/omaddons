@@ -13,8 +13,10 @@ use common::home::Home;
 use common::http::{record as record_http, replay, scenario};
 use common::netlog::net_log;
 use common::state::record;
-use common::wowace::{TAGS, index, moved, retagged_tree, serve, serve_recorded};
-use serde_json::Value;
+use common::wowace::{
+    TAGS, index, moved, retagged_tree, retagged_tree_with, serve, serve_recorded,
+};
+use serde_json::{Value, json};
 use support::{V1211, age_memo, check_recorded, tried, with_wotlk};
 
 #[cfg(test)]
@@ -732,8 +734,11 @@ fn a_locked_sync_installs_the_recorded_revision() {
     let r = home.exec(&["export".to_owned()]);
     assert_eq!(r.code, 0, "{}", r.context());
     let toml = r.stdout;
+    // The archive is locked too (omad-t8m3): the tree packs to the same bytes elsewhere.
     assert!(
-        toml.contains("version = \"v12.1.1\"") && toml.contains("revision = 403"),
+        toml.contains("version = \"v12.1.1\"")
+            && toml.contains("revision = 403")
+            && toml.contains("\nsha256 = "),
         "{toml}"
     );
 
@@ -784,6 +789,39 @@ fn a_locked_sync_installs_the_recorded_revision() {
     assert_eq!(
         (addon.release_id.as_deref(), addon.revision),
         (Some("wowace:bug-grabber@v12.1.1"), Some(403))
+    );
+}
+
+/// omad-t8m3: the tree at the locked revision packs to the locked bytes, so a server that
+/// answers that revision with other files fails the lock, and nothing installs.
+#[test]
+fn a_locked_sync_refuses_a_tree_that_packs_to_other_bytes() {
+    let home = Home::new(&["wow"]);
+    serve_recorded(&home);
+    home.run(&["install", "wowace:bug-grabber", "-t", "retail"])
+        .expect(0);
+    let toml = home.exec(&["export".to_owned()]).stdout;
+
+    let mut other = Home::new(&["wow"]);
+    other.write_desired(&toml);
+    let tampered = other.scenario("tampered");
+    serve_recorded(&other);
+    retagged_tree_with(&tampered, 403, "-- not what revision 403 holds\n");
+    let r = other.run(&["sync", "--locked", "-t", "retail"]);
+    let envelope = r.expect(1);
+    assert_eq!(
+        (
+            &envelope["error"]["code"],
+            &envelope["error"]["details"]["reason"]
+        ),
+        (&json!("hash_mismatch"), &json!("lock_mismatch")),
+        "{}",
+        r.context()
+    );
+    assert!(
+        !other.addons("_retail_").join("!BugGrabber").exists(),
+        "{}",
+        r.context()
     );
 }
 

@@ -333,6 +333,63 @@ fn a_tampered_body_fails_hash_mismatch_and_changes_nothing() {
     assert_eq!(state_files(&home.state()), state, "no state changed");
 }
 
+/// omad-t8m3: a WoWInterface file is checked against its published MD5 and, under
+/// `sync --locked`, against the lock as well. On a fresh machine the exported lock holds;
+/// a file re-uploaded under the same version, whose new MD5 the API publishes, still
+/// fails the lock and installs nothing.
+#[test]
+fn a_locked_sync_checks_the_lock_besides_the_published_md5() {
+    let old = Home::new(&["wow"]);
+    bugsack(&old.http, "v12.1.7");
+    old.run(&["install", "wowi:5995", "-t", "retail"]).expect(0);
+    let toml = old.run(&["export"]).expect(0)["data"]["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        toml.contains("sha256 = ") && toml.contains("version = \"v12.1.7\""),
+        "{toml}"
+    );
+
+    let same = Home::new(&["wow"]);
+    bugsack(&same.http, "v12.1.7");
+    let file = same.write_desired(&toml).display().to_string();
+    let r = same.run(&["sync", &file, "--locked"]);
+    r.expect(0);
+    assert!(
+        same.addons("_retail_").join("BugSack").is_dir(),
+        "the published MD5 and the lock both hold: {}",
+        r.context()
+    );
+
+    let reuploaded = Home::new(&["wow"]);
+    let zip = zip_text(&[
+        (
+            "BugSack/BugSack.toc",
+            &toc("120105", &["## Title: BugSack", "## Version: v12.1.7"]),
+        ),
+        ("BugSack/core.lua", "-- BugSack v12.1.7, packaged again"),
+    ]);
+    let md5 = wowi_file(&reuploaded.http, UID, &zip);
+    wowi_details(
+        &reuploaded.http,
+        &[UID],
+        &[details(UID, "BugSack", "v12.1.7", &md5)],
+    );
+    let file = reuploaded.write_desired(&toml).display().to_string();
+    let r = reuploaded.run(&["sync", &file, "--locked"]);
+    let envelope = r.expect(1);
+    let error = &envelope["error"];
+    assert_eq!(
+        (&error["code"], &error["details"]["reason"]),
+        (&json!("hash_mismatch"), &json!("lock_mismatch")),
+        "the published MD5 holds, the lock does not: {}",
+        r.context()
+    );
+    assert_eq!(error["fix_argv"], json!(["omaddons", "sync", file]));
+    assert!(!reuploaded.addons("_retail_").join("BugSack").exists());
+}
+
 #[test]
 fn an_unknown_id_is_not_found_with_an_argv_fix() {
     let home = Home::new(&["wow"]);

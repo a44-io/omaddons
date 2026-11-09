@@ -926,8 +926,10 @@ fn not_locked(target: &str, entries: &[String], path: &Path) -> Warning {
     ))
 }
 
-/// A locked version the source no longer serves (`not_found`): the fix syncs to the
-/// newest instead, which is this invocation without `--locked`.
+/// A locked version the source no longer serves (`not_found`), or no longer serves as the
+/// archive the lock records (`hash_mismatch`, `details.reason: "lock_mismatch"`): the fix
+/// syncs without the lock, which is this invocation without `--locked` (and `export` then
+/// records what it installed).
 fn unlock_fixes(data: &mut TargetsData, locked: &BTreeMap<String, Vec<String>>, argv: &[String]) {
     let fix: Vec<String> = crate::cli::fix_argv(argv)
         .into_iter()
@@ -940,7 +942,12 @@ fn unlock_fixes(data: &mut TargetsData, locked: &BTreeMap<String, Vec<String>>, 
         };
         for i in &mut t.items {
             if let Some(error) = &mut i.error
-                && error.code == ErrorCode::NotFound
+                && (error.code == ErrorCode::NotFound
+                    || (error.code == ErrorCode::HashMismatch
+                        && error
+                            .details
+                            .as_ref()
+                            .is_some_and(|d| d["reason"] == "lock_mismatch")))
                 && requests.contains(&i.request)
             {
                 error.set_fix(fix.clone());

@@ -1507,6 +1507,11 @@ expression: schemas
       "journal_pending": {
         "type": "string"
       },
+      "reason": {
+        "enum": [
+          "lock_mismatch"
+        ]
+      },
       "recovery_error": {
         "properties": {
           "code": {

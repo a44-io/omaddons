@@ -1,0 +1,62 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "sync",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "hash_mismatch",
+    "details": {
+      "actual": "7d368d9716a47c82e9f352818e9171bd38e5bbe8a93f51cfe92f8e410f0f886f",
+      "expected": "0000000000000000000000000000000000000000000000000000000000000000",
+      "items": [
+        {
+          "error": {
+            "code": "hash_mismatch",
+            "details": {
+              "actual": "7d368d9716a47c82e9f352818e9171bd38e5bbe8a93f51cfe92f8e410f0f886f",
+              "expected": "0000000000000000000000000000000000000000000000000000000000000000",
+              "reason": "lock_mismatch"
+            },
+            "fix": "omaddons sync <root>/config/omaddons/addons.toml -t retail",
+            "fix_argv": [
+              "omaddons",
+              "sync",
+              "<root>/config/omaddons/addons.toml",
+              "-t",
+              "retail"
+            ],
+            "message": "gh:o/foo: Foo.zip is the archive 7d368d9716a4…, not the archive 000000000000… the lock records"
+          },
+          "request": "Foo",
+          "target": "retail"
+        }
+      ],
+      "reason": "lock_mismatch",
+      "tried": [
+        {
+          "asset": "Foo.zip",
+          "code": "hash_mismatch",
+          "message": "gh:o/foo: Foo.zip is the archive 7d368d9716a4…, not the archive 000000000000… the lock records"
+        }
+      ]
+    },
+    "fix": "omaddons sync <root>/config/omaddons/addons.toml -t retail",
+    "fix_argv": [
+      "omaddons",
+      "sync",
+      "<root>/config/omaddons/addons.toml",
+      "-t",
+      "retail"
+    ],
+    "message": "gh:o/foo: Foo.zip is the archive 7d368d9716a4…, not the archive 000000000000… the lock records",
+    "retryable": false
+  },
+  "exit_code": 1,
+  "ok": false,
+  "schema_version": "1.1",
+  "tool_version": "<version>",
+  "warnings": []
+}

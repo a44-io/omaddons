@@ -115,7 +115,7 @@ Pending updates with their release notes:
 omaddons outdated --changelog --json
 ```
 
-A fresh machine, from the old one's `omaddons export`, at its versions:
+A fresh machine, from the old one's `omaddons export`, at its versions and the very archives it recorded (another archive fails `hash_mismatch` with `details.reason: "lock_mismatch"`):
 
 ```sh
 omaddons sync addons.toml --locked --json

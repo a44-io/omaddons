@@ -845,6 +845,7 @@
     "error hash_mismatch details.items[].request": {"kind":"output_position","nullable":false,"required":true,"types":["string"]},
     "error hash_mismatch details.items[].target": {"kind":"output_position","nullable":true,"required":true,"types":["string"]},
     "error hash_mismatch details.journal_pending": {"kind":"output_position","nullable":false,"required":false,"types":["string"]},
+    "error hash_mismatch details.reason": {"enum":["lock_mismatch"],"kind":"output_position","nullable":false,"required":false,"types":["string"]},
     "error hash_mismatch details.recovery_error": {"kind":"output_position","nullable":false,"required":false,"types":["object"]},
     "error hash_mismatch details.recovery_error.code": {"kind":"output_position","nullable":false,"required":true,"types":["string"]},
     "error hash_mismatch details.recovery_error.message": {"kind":"output_position","nullable":false,"required":true,"types":["string"]},

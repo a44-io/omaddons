@@ -210,6 +210,32 @@ fn one_sync_lists_resolves_and_downloads_elvui_once_for_three_clients() {
     assert_eq!(purposes(&home, 0), (1, 1, 1));
 }
 
+/// omad-t8m3: a Tukui download is the file the list's version serves, so the lock an
+/// export writes holds on a machine whose cache never saw it.
+#[test]
+fn a_locked_sync_verifies_the_archive_on_an_empty_cache() {
+    let old = Home::new(&["wow"]);
+    serve_elvui(&old);
+    old.run(&["install", "tukui:elvui", "-t", "retail"])
+        .expect(0);
+    let toml = old.run(&["export"]).expect(0)["data"]["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        toml.contains("sha256 = ") && toml.contains("version = \"16.00\""),
+        "{toml}"
+    );
+
+    let new = Home::new(&["wow"]);
+    serve_elvui(&new);
+    let file = new.write_desired(&toml).display().to_string();
+    let r = new.run(&["sync", &file, "--locked"]);
+    r.expect(0);
+    assert_eq!(folders(&new, "_retail_"), ELVUI, "{}", r.context());
+    assert_eq!(purposes(&new, 0).2, 1, "downloaded once, and it held");
+}
+
 #[test]
 fn a_bad_etag_fails_hash_mismatch_after_one_resolve_and_retry() {
     let home = Home::new(&["wow"]);

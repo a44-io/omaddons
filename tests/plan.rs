@@ -1004,6 +1004,196 @@ fn a_published_hash_of_either_algorithm_is_checked_and_shown_in_the_plan() {
     );
 }
 
+/// `sync --locked`'s install of `r` at `version`, locked to the archive `lock`.
+fn locked_install(r: &str, at: &str, lock: &str) -> RequestedChange {
+    let mut change = user_install(r);
+    if let RequestedChange::Install {
+        version,
+        blob_sha256,
+        ..
+    } = &mut change
+    {
+        *version = Some(at.to_owned());
+        *blob_sha256 = Some(lock.to_owned());
+    }
+    change
+}
+
+/// omad-t8m3: a locked install (`sync --locked`'s `sha256`, carried as
+/// `RequestedChange::Install.blob_sha256`) installs only the archive its lock names,
+/// whatever else the source serves and whatever hash the source publishes. Each case:
+/// the source's published hash, whether `Foo-classic.zip` (which does not load on
+/// retail) ranks first, the lock, then the outcome and the downloads it took.
+#[test]
+fn a_lock_installs_only_the_archive_it_names() {
+    use md5::{Digest, Md5};
+    use omaddons::error::ErrorCode;
+    use omaddons::model::ExpectedHash;
+
+    let log = tlog!();
+    let body = zip_text(&[("Foo/Foo.toc", &toc("120105"))]);
+    let hex = |bytes: &[u8]| -> String { bytes.iter().map(|b| format!("{b:02x}")).collect() };
+    let md5 = hex(&Md5::digest(&body));
+    let sha = hex(&sha2::Sha256::digest(&body));
+    let other = hex(&sha2::Sha256::digest(b"another archive"));
+    let classic_zip = zip_text(&[("Foo/Foo.toc", &toc("11509"))]);
+    let classic_sha = hex(&sha2::Sha256::digest(&classic_zip));
+    let locked = |lock: &str| locked_install("wowi:5995", "1", lock);
+    let plan_of = |hash: Option<ExpectedHash>, classic: bool, lock: &str| {
+        let env = Env::new();
+        common::http::fixture_bytes(&env.scenario, "wowi-foo", WOWI_ZIP, 200, &[], Some(&body));
+        common::http::fixture_bytes(
+            &env.scenario,
+            "wowi-foo-classic",
+            WOWI_OLD_ZIP,
+            200,
+            &[],
+            Some(&classic_zip),
+        );
+        let mut registry = SourceRegistry::new();
+        registry.register(Box::new(HashSource { hash, classic }));
+        let plan = env.plan_with(
+            vec![request(&env.retail, vec![locked(lock)], TxKind::Install)],
+            false,
+            &registry,
+        );
+        let downloads = read_net_log(&env.paths).len();
+        (plan, downloads)
+    };
+    struct Case<'a> {
+        name: &'a str,
+        hash: Option<ExpectedHash>,
+        classic: bool,
+        lock: &'a str,
+        installs: bool,
+        downloads: usize,
+    }
+    let cases = [
+        Case {
+            name: "the published MD5 and the lock both hold",
+            hash: ExpectedHash::md5(&md5),
+            classic: false,
+            lock: &sha,
+            installs: true,
+            downloads: 1,
+        },
+        Case {
+            name: "the locked archive ranks second: the first is passed over, never judged",
+            hash: ExpectedHash::md5(&md5),
+            classic: true,
+            lock: &sha,
+            installs: true,
+            downloads: 2,
+        },
+        Case {
+            name: "the published MD5 holds, the lock does not: each archive downloaded once",
+            hash: ExpectedHash::md5(&md5),
+            classic: true,
+            lock: &other,
+            installs: false,
+            downloads: 2,
+        },
+        Case {
+            name: "a declared SHA-256 that is the lock",
+            hash: ExpectedHash::sha256(&sha),
+            classic: false,
+            lock: &sha,
+            installs: true,
+            downloads: 1,
+        },
+        Case {
+            name: "a declared SHA-256 other than the lock: not downloaded at all",
+            hash: ExpectedHash::sha256(&sha),
+            classic: false,
+            lock: &other,
+            installs: false,
+            downloads: 0,
+        },
+    ];
+    for case in cases {
+        let log = log.case(case.name);
+        let (plan, downloads) = plan_of(case.hash, case.classic, case.lock);
+        log.json("failures", &format!("{:?}", plan.failures));
+        log.assert_eq("downloads", &downloads, &case.downloads);
+        if case.installs {
+            assert!(
+                plan.failures.is_empty(),
+                "{}: {:?}",
+                case.name,
+                plan.failures
+            );
+            let release = &plan.targets[0].releases[0];
+            log.assert_eq(
+                "the locked archive",
+                &release.blob_sha256.as_deref(),
+                &Some(case.lock),
+            );
+            continue;
+        }
+        assert_eq!(plan.failures.len(), 1, "{}: {plan:?}", case.name);
+        assert!(plan.targets[0].changes.is_empty(), "{}", case.name);
+        let error = &plan.failures[0].error;
+        log.assert_eq(
+            "hash_mismatch, never retried",
+            &(error.code, error.retryable),
+            &(ErrorCode::HashMismatch, false),
+        );
+        let details = &error.details;
+        log.assert_eq(
+            "reason",
+            &details["reason"],
+            &serde_json::json!("lock_mismatch"),
+        );
+        log.assert_eq(
+            "the lock",
+            &details["expected"],
+            &serde_json::json!(case.lock),
+        );
+        // The best-ranked archive's: the first one tried.
+        log.assert_eq(
+            "the archive's own digest",
+            &details["actual"],
+            &serde_json::json!(if case.classic { &classic_sha } else { &sha }),
+        );
+        let tried = details["tried"].as_array().cloned().unwrap_or_default();
+        log.assert_eq(
+            "each candidate tried, as a lock mismatch",
+            &tried.iter().map(|t| t["code"].clone()).collect::<Vec<_>>(),
+            &vec![serde_json::json!("hash_mismatch"); usize::from(case.classic) + 1],
+        );
+    }
+}
+
+/// omad-t8m3: a lock's `sha256` on an install that is no archive (a folder, a git
+/// checkout) cannot be checked, so it never installs.
+#[test]
+fn a_lock_on_a_folder_install_fails_closed() {
+    use omaddons::error::ErrorCode;
+
+    let env = Env::new();
+    let dir = env.env.root().join("src/Foo");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("Foo.toc"), toc("120105")).unwrap();
+    let lock = "ab".repeat(32);
+    // A local source has no release versions (its TOC gives one), so the lock alone.
+    let mut change = user_install(&format!("file:{}", dir.display()));
+    if let RequestedChange::Install { blob_sha256, .. } = &mut change {
+        *blob_sha256 = Some(lock.clone());
+    }
+    let plan = env.plan(
+        vec![request(&env.retail, vec![change], TxKind::Install)],
+        false,
+    );
+    assert_eq!(plan.failures.len(), 1, "{plan:?}");
+    assert!(plan.targets[0].changes.is_empty());
+    let error = &plan.failures[0].error;
+    assert_eq!(error.code, ErrorCode::HashMismatch, "{error:?}");
+    assert_eq!(error.details["reason"], "lock_mismatch", "{error:?}");
+    assert_eq!(error.details["expected"], lock.as_str(), "{error:?}");
+    assert!(error.details.get("actual").is_none(), "{error:?}");
+    assert!(error.message.contains("is no archive"), "{}", error.message);
+}
+
 // ---------------------------------------------------------------------------------------
 // Equal preview tokens (D1, checkpoint criterion 6).
 

@@ -1521,6 +1521,7 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
                             local: local.as_deref(),
                             set,
                             cached: cached.as_deref(),
+                            lock: cached.as_deref(),
                         },
                         &intent,
                     ) {
@@ -2278,6 +2279,7 @@ impl TargetPlanner<'_> {
             local: None,
             set,
             cached: None,
+            lock: None,
         };
         let build = match self.prepare_install(dep.name.as_deref(), wanted, source, &intent) {
             Ok(Prepared::Build(build)) => build,
@@ -2824,7 +2826,8 @@ pub fn check_release(
             let mut clean = None;
             let mut left_out = None;
             for candidate in &selection.candidates {
-                match planner.try_candidate(&wanted.r#ref, candidate, name_hint, None, false) {
+                match planner.try_candidate(&wanted.r#ref, candidate, name_hint, None, false, None)
+                {
                     Ok(Ok(winner)) if winner.grade == Grade::Clean => {
                         clean = Some(winner);
                         break;
@@ -3604,6 +3607,58 @@ fn tried_error(asset: &str, error: &Error) -> Value {
     json!({ "asset": asset, "code": error.code.wire(), "message": error.message })
 }
 
+/// `details.reason` of a [`lock_mismatch`].
+const LOCK_MISMATCH: &str = "lock_mismatch";
+
+/// `sync --locked`'s archive check failed for `asset` of `r#ref`: its SHA-256 is
+/// `actual`, not the `lock` the entry records (`declared`: the source's own digest says
+/// so, before any download), or it installs no archive at all (`actual` `None`: a folder,
+/// a git checkout), so no byte can be checked. Never retryable: the source serves the
+/// same bytes again. `sync` gives it its fix (the run without `--locked`).
+fn lock_mismatch(
+    r#ref: &Ref,
+    asset: &str,
+    lock: &str,
+    actual: Option<&str>,
+    declared: bool,
+) -> Error {
+    let short = |sha: &str| format!("{}…", sha.get(..12).unwrap_or(sha));
+    let message = match actual {
+        Some(actual) if declared => format!(
+            "{ref}: the source declares {asset} as {}, not the archive {} the lock records",
+            short(actual),
+            short(lock)
+        ),
+        // Downloaded now, or found in the download cache: the bytes are the same either way.
+        Some(actual) => format!(
+            "{ref}: {asset} is the archive {}, not the archive {} the lock records",
+            short(actual),
+            short(lock)
+        ),
+        None => format!(
+            "{ref}: {asset} is no archive, so the lock's sha256 {} cannot be checked; remove `sha256` from its entry",
+            short(lock)
+        ),
+    };
+    let mut details = json!({ "reason": LOCK_MISMATCH, "expected": lock });
+    if let (Some(actual), Some(map)) = (actual, details.as_object_mut()) {
+        map.insert("actual".into(), json!(actual));
+    }
+    Error::hash_mismatch(
+        2,
+        message,
+        Suggestion::text(
+            "sync without --locked to accept what the source serves now, then export the file again to lock it",
+        ),
+    )
+    .details(details)
+}
+
+/// Whether `error` is a [`lock_mismatch`].
+fn is_lock_mismatch(error: &Error) -> bool {
+    error.code == ErrorCode::HashMismatch && error.details["reason"] == LOCK_MISMATCH
+}
+
 impl WrongFlavorReason {
     /// A folder `--any-flavor` installs anyway, as out of date: one whose TOC the client
     /// reads but whose interfaces are off its range or missing.
@@ -3628,6 +3683,10 @@ struct CandidateSource<'a> {
     /// A locked install's recorded archive hash: the set's release is tried from the
     /// blob cache first, when the cache still holds that archive.
     cached: Option<&'a str>,
+    /// A locked install's recorded archive hash (`sync --locked`'s `sha256`): only an
+    /// archive with this SHA-256 installs ([`lock_mismatch`]). Kept when a re-plan drops
+    /// `cached`, so no path around the cache installs other bytes.
+    lock: Option<&'a str>,
 }
 
 /// An install after its first pass: settled, or a verified winner still to judge
@@ -3685,6 +3744,7 @@ impl TargetPlanner<'_> {
             local,
             set,
             cached,
+            lock,
         } = source;
         let existing = self
             .record
@@ -3862,6 +3922,7 @@ impl TargetPlanner<'_> {
                 hint,
                 intent.floor_interface,
                 any_flavor,
+                lock,
             );
             match tried_here {
                 Ok(Ok(won)) if won.grade == Grade::Clean => {
@@ -3886,7 +3947,16 @@ impl TargetPlanner<'_> {
                 Err(error) if error.fenced.is_some() => return Err(error),
                 Err(error) => {
                     tried.push(tried_error(&candidate.asset.filename, &error));
-                    unreadable.get_or_insert(error);
+                    // An archive that could not be read may be the locked one, so what
+                    // stopped it outranks another archive's lock mismatch.
+                    match &unreadable {
+                        Some(first) if is_lock_mismatch(first) && !is_lock_mismatch(&error) => {
+                            unreadable = Some(error);
+                        }
+                        _ => {
+                            unreadable.get_or_insert(error);
+                        }
+                    }
                 }
             }
         }
@@ -3902,6 +3972,9 @@ impl TargetPlanner<'_> {
                     local: None,
                     set: fetched.get(wanted).map(|f| f.set.clone()),
                     cached: None,
+                    // A locked sync's archive, asked of the source this time: the bytes
+                    // the source serves install only when they are the locked ones.
+                    lock,
                 };
                 return self.prepare_install(name, wanted, source, intent);
             }
@@ -3954,8 +4027,9 @@ impl TargetPlanner<'_> {
                     Err(error) => tried.push(tried_error("look_back", &error)),
                 }
             }
-            // Every candidate failed its published hash and none was judged: the
-            // download is the problem, not the client (retryable as the download left it).
+            // Every candidate failed its published hash, or a locked sync's (no archive
+            // was the locked one), and none was judged: the download is the problem, not
+            // the client (retryable as the download left it; a lock's never is).
             if !refused
                 && let Some(error) = unreadable
                     .as_ref()
@@ -4670,8 +4744,26 @@ impl TargetPlanner<'_> {
         name_hint: Option<&str>,
         floor: Option<u32>,
         any_flavor: bool,
+        lock: Option<&str>,
     ) -> Result<std::result::Result<Winner, Refusal>> {
         let ctx = self.ctx;
+        let asset = &candidate.asset.filename;
+        // A locked sync installs exactly the archive its lock names: a candidate whose
+        // source declares another SHA-256 is not it (and is not downloaded), and a folder
+        // or a git checkout is no archive at all.
+        if let Some(lock) = lock {
+            match &candidate.asset.location {
+                AssetLocation::LocalDir(_) | AssetLocation::GitCheckout { .. } => {
+                    return Err(lock_mismatch(r#ref, asset, lock, None, false));
+                }
+                _ => {}
+            }
+            if let Some(ExpectedHash::Sha256(declared)) = &candidate.asset.expected_hash
+                && !declared.eq_ignore_ascii_case(lock)
+            {
+                return Err(lock_mismatch(r#ref, asset, lock, Some(declared), true));
+            }
+        }
         let mut downloaded = None;
         let mut canonical_url = None;
         let mut unverified = None;
@@ -4693,6 +4785,19 @@ impl TargetPlanner<'_> {
                         });
                     }
                 };
+                // The bytes the source served (or the cache held for it) against the
+                // lock, before anything is read from them.
+                if let Some(lock) = lock
+                    && !done.blob.sha256.eq_ignore_ascii_case(lock)
+                {
+                    return Err(lock_mismatch(
+                        r#ref,
+                        asset,
+                        lock,
+                        Some(&done.blob.sha256),
+                        false,
+                    ));
+                }
                 let inspected = inspect(&done.blob.path, &ctx.limits, ctx.table)?;
                 let path = done.blob.path.clone();
                 canonical_url = done.canonical_url;
@@ -4705,7 +4810,15 @@ impl TargetPlanner<'_> {
                 if let Some(ExpectedHash::Sha256(sha)) = &candidate.asset.expected_hash {
                     unverified = self.reused_unverified(&candidate.release_id, sha);
                 }
-                (inspect(path, &ctx.limits, ctx.table)?, Some(path.clone()))
+                let inspected = inspect(path, &ctx.limits, ctx.table)?;
+                // The archive as inspection hashed it, against the lock.
+                if let Some(lock) = lock {
+                    let actual = inspected.blob_sha256.as_deref();
+                    if actual.is_none_or(|a| !a.eq_ignore_ascii_case(lock)) {
+                        return Err(lock_mismatch(r#ref, asset, lock, actual, false));
+                    }
+                }
+                (inspected, Some(path.clone()))
             }
             AssetLocation::LocalDir(path) => (inspect_dir(path, &ctx.limits, ctx.table)?, None),
             AssetLocation::GitCheckout { url, rev, sha } => {
@@ -5290,6 +5403,8 @@ impl TargetPlanner<'_> {
             local: None,
             set: Some(Ok(found)),
             cached: None,
+            // A look-back answers only an install that names no version, which no lock is.
+            lock: None,
         };
         self.prepare_install(name, wanted, source, &intent)
     }

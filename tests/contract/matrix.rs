@@ -1690,6 +1690,22 @@ fn damaged_cached_blob() {
     insta::assert_json_snapshot!("reinstall_damaged_blob_offline", s.stable(&c.envelope));
 }
 
+/// `sync --locked` of an entry whose lock names an archive other than the one its release
+/// serves (omad-t8m3): `hash_mismatch`, `details.reason: "lock_mismatch"` with the lock as
+/// `expected` and the archive's own `actual`, never retryable, and the run without
+/// `--locked` as its fix.
+#[test]
+fn locked_archive_differs() {
+    let s = Scene::new();
+    let file = s.home.write_desired(&format!(
+        "schema_version = \"1.0\"\n\n[[family.mainline.addon]]\nname = \"Foo\"\nref = \"gh:o/foo\"\nversion = \"v1\"\nsha256 = \"{}\"\n",
+        "0".repeat(64)
+    ));
+    let file = file.display().to_string();
+    let c = s.json(&["sync", &file, "--locked", "-t", "retail"], 1);
+    insta::assert_json_snapshot!("sync_locked_archive_differs", s.stable(&c.envelope));
+}
+
 /// `doctor fix` and `doctor diff` (E6) on the Scene's clean home: nothing to repair, the
 /// force gate, a stale token, and diff's two modes.
 #[test]

@@ -544,12 +544,15 @@ pub(crate) const DOWNLOAD_FAILED: DetailSpec = DetailSpec::EMPTY;
 pub(crate) const HTTP_STATUS: DetailSpec = DetailSpec::Object(&[Field::opt("status", &INT)]);
 
 /// `engine/blobs.rs` expected/actual, a damaged cached archive's `blob` (with its
-/// `actual`), backup verification's id, and candidate attempts.
+/// `actual`), backup verification's id, candidate attempts, and `sync --locked`'s archive
+/// check (`engine/plan.rs::lock_mismatch`: `reason`, the lock as `expected`, and the
+/// archive's own SHA-256 as `actual` when there is one).
 pub(crate) const HASH_MISMATCH: DetailSpec = DetailSpec::Object(&[
     Field::opt("actual", &STR),
     Field::opt("backup", &STR),
     Field::opt("blob", &STR),
     Field::opt("expected", &STR),
+    Field::opt("reason", &DetailSpec::Enum(&["lock_mismatch"])),
     Field::opt("tried", &TRIED),
 ]);
 
