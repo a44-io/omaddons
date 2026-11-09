@@ -9,9 +9,11 @@ import "../Model.js" as Model
 // Problems from `status` by severity, Enter running their remediation through the
 // classifier (destructive ones through the confirm dialog); each client's Lua errors
 // from `errors` (strict text only: a custom message shows its length, received reports
-// only their count), Enter updating the likely source or showing its stack, `s` its raw
-// details under a label that says what they may hold; the run warnings with their
-// fixes. `d` (frame-wide) dismisses what the panel showed, bound to it (M3-D46).
+// only their count), Enter updating the likely source or showing its stack, `u`
+// updating it, a button on the cursored row showing its raw details under a label that
+// says what they may hold; the run warnings with their fixes. `d` (frame-wide)
+// dismisses what the panel showed, bound to it (M3-D46). The keys are Model.KEYMAP's
+// issues rows.
 Item {
   id: root
 
@@ -25,7 +27,7 @@ Item {
   readonly property int rowCount: rows.length
   readonly property bool typing: false
   readonly property var plan: Model.dismissPlan(svc ? svc.errors : null, filter)
-  // The addon row whose stack (Enter) or raw details (`s`) are open, by key.
+  // The addon row whose stack (Enter) or raw details (its button) are open, by key.
   property string expanded: ""
   property string rawOpen: ""
   // The row whose command `y` copied last, by key.
@@ -49,8 +51,9 @@ Item {
       if (row) activate(row)
       return true
     }
-    if (name === "raw") {
-      if (row && row.kind === "addon") toggleRaw(row)
+    // `u`: the update of the addon a Lua error comes from, when one is waiting.
+    if (name === "update") {
+      if (row && row.kind === "addon" && row.updateAvailable) activate(row)
       return true
     }
     // `r`: the erroring addon's settings from a backup (the restore chooser, F9).
@@ -125,7 +128,8 @@ Item {
     Button {
       objectName: "dismiss"
       visible: root.plan.length > 0
-      text: "Dismiss (d)"
+      text: Model.withKey("Dismiss", "dismiss", "issues")
+      tooltipText: Model.keyTip("dismiss", "issues")
       enabled: root.canChange
       opacity: enabled ? 1.0 : 0.4
       bordered: true
@@ -274,7 +278,8 @@ Item {
                 PlainLabel {
                   objectName: "copyHint"
                   visible: Model.copyText(entry.modelData) !== ""
-                  text: root.copied === entry.modelData.key ? "Copied" : "y copies the command"
+                  text: root.copied === entry.modelData.key ? "Copied"
+                    : Model.keyHint("copy", "issues") + " copies the command"
                   color: root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
@@ -283,7 +288,8 @@ Item {
                 PlainLabel {
                   objectName: "enterHint"
                   visible: !!entry.modelData.action
-                  text: entry.modelData.kind === "capture" ? "Enter installs it" : "Enter runs the fix"
+                  text: Model.keyHint("enter", "issues")
+                    + (entry.modelData.kind === "capture" ? " installs it" : " runs the fix")
                   color: root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
@@ -314,7 +320,23 @@ Item {
               }
             }
 
-            // `s`: raw details, under the label that says what they may hold.
+            // An addon's raw details, from the row under the cursor (or the one showing
+            // them): a button, no key (design doc §3.3 moved `s` to Search).
+            Button {
+              objectName: "rawButton"
+              x: Style.spacing.lg
+              visible: entry.modelData.kind === "addon" && (entry.rawShown || (!!root.frame
+                && root.frame.cursorActive && root.frame.cursor === entry.modelData.index))
+              text: entry.rawShown ? "Hide raw details" : "Raw details…"
+              tooltipText: "Raw details may contain other players' names and your own code"
+              bordered: true
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              fontSize: Style.font.caption
+              onClicked: root.toggleRaw(entry.modelData)
+            }
+
+            // Raw details, under the label that says what they may hold.
             Column {
               objectName: "raw"
               visible: entry.rawShown

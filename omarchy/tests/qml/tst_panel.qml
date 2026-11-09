@@ -2,6 +2,7 @@ import QtQuick
 import QtTest
 import Quickshell
 import "../.."
+import "../../Model.js" as Model
 import "../../Build.js" as Build
 import "../../Store.js" as Store
 
@@ -197,29 +198,40 @@ TestCase {
 
   // ------------------------------------------------------------- the key map
 
-  function test_u_updates_all_or_the_selected_client() {
+  function test_U_updates_all_or_the_selected_client() {
     // Each previews with what the Updates view shows (nothing read here: no rows).
-    keyClick("u")
+    keyClick("U")
     compare(json(svc.runs[0]), json(["update_all", {}, "Update all", []]))
     keyClick("t")
     compare(view.filter, "era")
-    keyClick("u")
+    keyClick("U")
     compare(json(svc.runs[1]), json(["update_target", { "target": "era" }, "Update era", []]))
     keyClick("t")
     compare(view.filter, "retail")
     keyClick("t")
     compare(view.filter, "", "t comes back to All")
+    // T steps back: the last client, then the one before it.
+    keyClick("T")
+    compare(view.filter, "retail")
+    keyClick("T")
+    compare(view.filter, "era")
+    keyClick("T")
+    compare(view.filter, "")
     // While a change runs, no other starts.
     svc.action = { "label": "Update all", "current": 1, "total": 4, "message": "retail: download 1/4" }
-    keyClick("u")
+    keyClick("U")
     compare(svc.runs.length, 2)
   }
 
-  function test_c_z_o_and_their_buttons() {
+  function test_c_ctrl_z_o_and_their_buttons() {
     keyClick("c")
     compare(svc.checks, 1)
+    // `z` alone is no undo any more (design doc §3.3: it is zoom's, .13).
     keyClick("z")
+    compare(svc.cliRuns.length, 0)
+    keyClick(Qt.Key_Z, Qt.ControlModifier)
     compare(json(svc.cliRuns[0]), json([["omaddons", "undo", "--run", "01J"], "Undo update on era"]))
+    compare(svc.cliRuns.length, 1, "Ctrl+Z runs once, never as a typed z too")
     // o needs a client: nothing with All.
     keyClick("o")
     compare(Quickshell.detachedCommands.length, 0)
@@ -232,11 +244,14 @@ TestCase {
     compare(svc.checks, 2)
   }
 
-  function test_slash_goes_to_search_and_focuses_its_field() {
+  function test_s_goes_to_search_and_focuses_its_field() {
     var search = fakeView.createObject(testCase)
     made = made.concat([search])
     view.viewComponents = { "search": fakeView }
+    // `/` is the filter's (.22): nothing yet.
     keyClick("/")
+    compare(view.view, "updates")
+    keyClick("s")
     compare(view.view, "search")
     var loaded = child("content").item
     verify(loaded !== null)
@@ -254,9 +269,13 @@ TestCase {
     keyClick("k")
     keyClick("p")
     keyClick("x")
+    // Updates binds no `x`: it says why and reaches no view, until the next key.
+    compare(child("keyNote").text, "Nothing to remove here")
+    verify(child("keyNote").visible)
     keyClick(Qt.Key_Return)
+    compare(child("keyNote").text, "")
     keyClick(Qt.Key_Space)
-    compare(json(loaded.keys), json([["pin", 1], ["x", 1], ["enter", 1], ["enter", 1]]),
+    compare(json(loaded.keys), json([["pin", 1], ["enter", 1], ["enter", 1]]),
       "Enter acts once (activateRequested only)")
     // A view without a component, and a key no one registered: nothing.
     view.keyHandlers = ({})
@@ -276,9 +295,11 @@ TestCase {
     var loaded = child("content").item
     loaded.typing = true
     verify(child("keyCatcher").blocked)
-    keyClick("u")
+    keyClick("U")
     keyClick("c")
-    compare(svc.runs.length, 0)
+    // A field that types keeps its own Ctrl+Z (the frame's shortcut is off).
+    keyClick(Qt.Key_Z, Qt.ControlModifier)
+    compare(svc.runs.length + svc.cliRuns.length, 0)
     compare(svc.checks, 0)
     loaded.typing = false
     tryVerify(function() { return view.focusItem.activeFocus })
@@ -298,14 +319,137 @@ TestCase {
     compare(json(tabs), json([1, -1]))
   }
 
+  // ------------------------------------------------------------- the key reference
+
+  // The reference's section titles and its rows' keys, as drawn.
+  function helpShown() {
+    var sections = child("helpSections")
+    var out = []
+    for (var i = 0; i < sections.count; i++) {
+      var section = sections.itemAt(i)
+      out.push(section.modelData.title)
+    }
+    return out
+  }
+
+  function test_question_mark_opens_the_reference_in_every_view_and_on_a_card() {
+    for (var n = 0; n < Model.VIEWS.length; n++) {
+      keyClick(String(n + 1))
+      keyClick("?")
+      verify(view.helpOpen, Model.VIEWS[n])
+      verify(child("help").visible)
+      tryVerify(function() { return child("sheetKeys", child("help")).activeFocus })
+      compare(child("sheetTitle", child("help")).text, "Keys · " + Model.VIEW_TITLES[Model.VIEWS[n]])
+      // This view's own keys first, then the frame's, then a dialog's.
+      compare(json(helpShown()), json(Model.helpSections(Model.VIEWS[n]).map(function(s) { return s.title })))
+      compare(helpShown()[0], Model.VIEW_TITLES[Model.VIEWS[n]])
+      keyClick("?")
+      verify(!view.helpOpen, "? closes it again")
+      tryVerify(function() { return view.focusItem.activeFocus })
+    }
+    // A problem card: its own keys.
+    svc.phase = "missing"
+    keyClick("?")
+    verify(view.helpOpen)
+    compare(child("sheetTitle", child("help")).text, "Keys · Problem card")
+    compare(helpShown()[0], "Problem card")
+    // Esc closes the reference, one layer: the panel stays open.
+    var closed = 0
+    view.closeRequested.connect(function() { closed++ })
+    keyClick(Qt.Key_Escape)
+    verify(!view.helpOpen)
+    compare(closed, 0)
+  }
+
+  function test_every_key_beneath_the_reference_is_inert() {
+    view.viewComponents = { "updates": fakeView }
+    var loaded = child("content").item
+    keyClick("?")
+    verify(view.helpOpen)
+    for (var key of ["U", "u", "c", "o", "p", "x", "b", "d", "t", "T", "s", "y", "n", "e", "g", "G", "1", "3", "h", "l", "j", "k"]) keyClick(key)
+    keyClick(Qt.Key_Return)
+    keyClick(Qt.Key_Space)
+    keyClick(Qt.Key_PageDown)
+    keyClick(Qt.Key_Z, Qt.ControlModifier)
+    verify(view.helpOpen, "still open")
+    compare(svc.runs.length + svc.cliRuns.length + svc.checks, 0)
+    compare(json(loaded.keys), json([]))
+    compare([view.view, view.filter, view.cursor], ["updates", "", 0])
+    // A dialog over it takes its place: the reference closes.
+    svc.confirm = { "text": "Remove Foo?", "stale": "" }
+    verify(!view.helpOpen)
+    tryVerify(function() { return child("confirmKeys").activeFocus })
+  }
+
+  function test_j_k_scroll_the_reference_and_it_opens_at_the_top() {
+    // A short panel, so the reference scrolls.
+    var small = make({ "svc": svc, "height": 260 })
+    view.opened = false
+    open(small)
+    small.textKey("?")
+    var help = child("help", small)
+    var body = child("sheetBody", help)
+    tryVerify(function() { return child("sheetKeys", help).activeFocus })
+    verify(body.contentHeight > body.height, "the reference is longer than the panel")
+    keyClick("j")
+    keyClick(Qt.Key_Down)
+    var down = body.contentY
+    verify(down > 0)
+    keyClick("k")
+    verify(body.contentY < down)
+    for (var i = 0; i < 200; i++) keyClick("j")
+    compare(body.contentY, body.contentHeight - body.height, "it stops at the bottom")
+    keyClick("?")
+    small.textKey("?")
+    compare(body.contentY, 0, "it opens at the top every time")
+  }
+
+  function test_g_G_and_the_page_keys_move_the_cursor() {
+    view.viewComponents = { "updates": fakeView }
+    keyClick("G")
+    compare(view.cursor, 2)
+    keyClick("g")
+    compare(view.cursor, 0)
+    keyClick(Qt.Key_PageDown)
+    compare(view.cursor, 2, "a page down stops at the last row")
+    keyClick(Qt.Key_PageUp)
+    compare(view.cursor, 0)
+    verify(view.cursorActive)
+  }
+
+  function test_every_button_with_a_key_says_it_from_the_key_map() {
+    compare(child("checkButton").tooltipText, "Check now (" + Model.keyHint("check") + ")")
+    compare(child("undoButton").tooltipText, "Undo update on era (" + Model.keyHint("undo") + ")")
+    compare(child("openButton").tooltipText, "Open AddOns (" + Model.keyHint("open") + ")")
+    verify(child("undoButton").tooltipText.endsWith("(Ctrl+Z)"))
+    // The reference says how it closes, from its own rows.
+    keyClick("?")
+    compare(child("referenceNote", child("help")).text.indexOf(Model.keyHint("close", "help")), 0)
+  }
+
+  function test_every_view_handles_every_action_its_rows_name() {
+    for (var n = 0; n < Model.VIEWS.length; n++) {
+      var name = Model.VIEWS[n]
+      view.showView(name)
+      var loaded = child("content").item
+      verify(loaded !== null, name)
+      var rows = Model.KEYMAP.filter(function(r) { return r.context === name })
+      verify(rows.length > 0, name)
+      for (var i = 0; i < rows.length; i++)
+        verify(loaded.handleKey(rows[i].action, 0) === true, name + " handles " + rows[i].action)
+    }
+  }
+
   // ------------------------------------------------------------- read-only (M3-D42)
 
   function test_an_incompatible_binary_leaves_only_retry_and_reinstall() {
     svc.phase = "incompatible"
     svc.incompatibleText = "The widget is from omaddons 0.0.0-fixture; the binary is omaddons 9.0.0."
     view.viewComponents = { "updates": fakeView }
-    for (var key of ["u", "c", "z", "o", "p", "x"]) keyClick(key)
+    for (var key of ["U", "u", "c", "o", "p", "x", "b", "d"]) keyClick(key)
+    keyClick(Qt.Key_Z, Qt.ControlModifier)
     compare(svc.runs.length + svc.cliRuns.length + svc.checks, 0)
+    compare(child("keyNote").text, "", "a problem card explains no key")
     compare(child("content").item.keys.length, 0)
     verify(!child("content").enabled)
     verify(!child("checkButton").enabled)
@@ -413,8 +557,8 @@ TestCase {
   function test_an_undo_is_offered_as_redo() {
     svc.lastChange = { "unknown": false, "kind": "undo", "label": "Redo update on era",
       "undo": { "command": "omaddons undo --run 01K", "argv": ["omaddons", "undo", "--run", "01K"], "destructive": true, "runnable": true } }
-    compare(child("undoButton").tooltipText, "Redo update on era (z)")
-    keyClick("z")
+    compare(child("undoButton").tooltipText, "Redo update on era (Ctrl+Z)")
+    keyClick(Qt.Key_Z, Qt.ControlModifier)
     compare(json(svc.cliRuns[0]), json([["omaddons", "undo", "--run", "01K"], "Redo update on era"]))
   }
 

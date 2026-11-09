@@ -2126,37 +2126,66 @@ omaddons net-log --since 1d --json
 
 The bar widget for [Omarchy](https://omarchy.org)'s desktop: one gamepad button on every monitor's bar, with a badge for pending updates that turns urgent for problems and new Lua errors, a summary on hover, and a check for updates on right-click. The widget reads the same envelopes the CLI prints and runs omaddons command lines for everything it does, so each change it makes is recorded with `--actor widget` and can be undone.
 
-A left click (or the bar's keybinding) opens its keyboard panel, and a middle click opens it on Issues. The panel has a summary ("2 clients · 3 updates · 1 issue", when the last check ran, which client is running) with Check now, Undo last and Open AddOns, a filter by client, the switcher between its five views (Updates, Installed, Issues, Backups, Search, keys `1` to `5`), the progress of a running change, the last result with its Undo, and a failure with its Fix. Opening it and switching views make no network request.
+A left click (or the bar's keybinding) opens its keyboard panel, and a middle click opens it on Issues. The panel has a summary ("2 clients · 3 updates · 1 issue", when the last check ran, which client is running) with Check now, Undo last and Open AddOns, a filter by client, the switcher between its five views (Updates, Installed, Issues, Backups, Search, keys `1` to `5`), the progress of a running change, the last result with its Undo, and a failure with its Fix. Opening it and switching views make no network request. `?` opens the key reference over whatever is open: this view's keys first, then the ones every view shares, then a dialog's. While it is open no other key does anything, `j`/`k` scroll it, and `?` or Esc close it. A key that works only in other views says so instead of doing nothing ("Nothing to pin here").
 
-- **Updates** lists what is behind, per client: updates first (`DBM  12.1.14 → 12.1.15`, "then /reload" while that client runs), then pinned addons with a newer release, blocked ones and failed checks. Its header updates everything in the filter (**Update all (3)**); with nothing to do it says "Everything is current · checked 25 min ago". Update (Enter), Update all and `u` preview first: the widget runs the update's dry run, and when the plan is exactly what the rows showed (the same client, addon, source, release, file and versions) and needs nothing more, it applies that plan (`omaddons apply <plan_id>`) with no dialog. Otherwise the confirmation opens, starting on No: "Changed since you looked" with what moved, or one line per effect the plan adds (a new dependency, a folder it removes, files you changed that it replaces, kept for undo, another source or channel, a change while the game runs). A preview with nothing to do refreshes the view. Pins run directly.
+- **Updates** lists what is behind, per client: updates first (`DBM  12.1.14 → 12.1.15`, "then /reload" while that client runs), then pinned addons with a newer release, blocked ones and failed checks. Its header updates everything in the filter (**Update all (3)**); with nothing to do it says "Everything is current · checked 25 min ago". `e` shows a row's newest release notes, fetched only then, with a link to GitHub, WoWInterface, Tukui or WowAce. Update (Enter or `u`) and Update all (`U`) preview first: the widget runs the update's dry run, and when the plan is exactly what the rows showed (the same client, addon, source, release, file and versions) and needs nothing more, it applies that plan (`omaddons apply <plan_id>`) with no dialog. Otherwise the confirmation opens, starting on No: "Changed since you looked" with what moved, or one line per effect the plan adds (a new dependency, a folder it removes, files you changed that it replaces, kept for undo, another source or channel, a change while the game runs). A preview with nothing to do refreshes the view. Pins run directly.
 - **Installed** lists every managed addon per client with its version, source (`gh`, `wowi`, `tukui`, `git`, `wowace`, `file`) and markers: `dep`, `orphan`, `pinned`, and `modified` or `missing` when its files changed on disk. Unmanaged folders show as a hint (`omaddons adopt -t <id>`).
-- **Issues** puts every problem in one place with its fix one key away: `status`'s problems by severity (Enter runs the remediation; a destructive one asks first; one the widget cannot run shows as text, and so does a forced repair, any argv holding `--force`, which is read with `doctor explain` and run from a terminal, and a purge, any argv holding `--purge`, with what it deletes; `y` copies such a command), each client's Lua errors from `omaddons errors` (the likely source with how sure it is, "update available (may fix it)", the error lines in strict text: an addon's own free-text message shows only its length; errors received from other players only as a count), a BugGrabber install where it is missing, and the last status's warnings.
-- **Search** finds addons (`/`, type, Enter) on every client at once, or on the filtered one, with each client's compatibility hint. Enter installs into the filtered client when its hint is `yes` or `likely`; under All it asks which client, choosing none for you.
+- **Issues** puts every problem in one place with its fix one key away: `status`'s problems by severity (Enter runs the remediation; a destructive one asks first; one the widget cannot run shows as text, and so does a forced repair, any argv holding `--force`, which is read with `doctor explain` and run from a terminal, and a purge, any argv holding `--purge`, with what it deletes; `y` copies such a command), each client's Lua errors from `omaddons errors` (the likely source with how sure it is, "update available (may fix it)", the error lines in strict text: an addon's own free-text message shows only its length; errors received from other players only as a count; a **Raw details…** button on the row under the cursor shows its raw details, labelled "raw details: may contain other players' names and your own code"), a BugGrabber install where it is missing, and the last status's warnings. `d` dismisses the new Lua errors the panel shows (the filtered client's, or each client's); if a session ended since, nothing is dismissed and the panel says "New errors arrived; review them".
+- **Search** finds addons (`s`, type, Enter) on every client at once, or on the filtered one, with each client's compatibility hint. Enter installs into the filtered client when its hint is `yes` or `likely`; under All it asks which client, choosing none for you.
 - **Backups** lists each client's backups, newest first: when, what kind, how big, `stable` or `best effort`, and "verified" only for a backup whose hashes were checked; one another process is reading says "in use". Each client's header says how its automatic backups are doing ("daily, working", "daily, but this filesystem cannot clone", "skipped: low disk space", "off") and how much space is free.
 - **Restoring settings** goes through a chooser that puts the narrow fix first. Press `r` on an addon (Installed, or an erroring addon in Issues) to choose a backup, each showing which version of that addon wrote its settings. Or press Enter on a backup. Then choose **"<addon>'s settings"** or, second, **"Whole WTF/"**, labelled with what else it changes: keybindings, macros, chat settings and every other addon's settings. Either way the confirmation shows the CLI's own dry run: how many files change, "settings written by WeakAuras 5.19.2; installed now: 5.20.0", what is not in the backup, and that a whole restore keeps the current `WTF/` as a backup. When a folder changed owner since the backup, a button per folder restores just that one. While the client runs (or nobody can tell), restores are off: "quit the game first".
 
-| Key | Does |
-|---|---|
-| `h`/`l`, ←/→, `1`–`5` | Previous or next view, or view N |
-| `j`/`k`, ↓/↑ | Move the cursor |
-| Enter | Updates: preview the update, then apply it. Installed: reinstall it after a confirmation when its files changed, else update it when a release waits |
-| `p` | Pin or unpin the addon |
-| `i` | Updates: the newest release notes (fetched only then), with a link to GitHub, WoWInterface, Tukui or WowAce |
-| `x` | Installed: remove the addon, after a confirmation |
-| `s` | Issues: an addon's raw error details, labelled "raw details: may contain other players' names and your own code" |
-| `r` | Restore settings: on an addon (Installed, Issues) that addon's from a backup, on a backup (Backups) from that backup |
-| `b` | Back up the filtered client now, or every client |
-| `x` on a backup | Delete that backup, after a confirmation (never one in use) |
-| `d` | Dismiss the new Lua errors the panel shows (the filtered client's, or each client's); if a session ended since, nothing is dismissed and the panel says "New errors arrived; review them" |
-| `y` | Issues: copy the command a row shows instead of running (a forced repair, a purge), to run from a terminal |
-| `t` | Filter by client: All, then each client in turn |
-| `u` | Update everything, or the filtered client, previewed |
-| `c` | Check for updates now |
-| `z` | Undo (or redo) the last change, after a confirmation |
-| `o` | Open the filtered client's `Interface/AddOns` folder |
-| `/` | Search |
-| Esc | Close the panel (or the confirmation) |
-| Tab | The next panel on the bar (Omarchy's) |
+The keys, as the widget's own key map holds them (`omarchy/Model.js`, `KEYMAP`, which also draws the key reference and every button's key hint; a test keeps this table equal to it). A deleted backup is never one in use, and Undo last (`Ctrl+Z`) offers a redo when the last change was an undo.
+
+<!-- BEGIN KEYMAP: omarchy/Model.js KEYMAP, row for row (tests/omarchy_widget.rs readme_key_table_is_the_keymap) -->
+| Keys | Where | Does |
+|---|---|---|
+| `h` `l` `Left` `Right` | Anywhere | previous or next view |
+| `1` `2` `3` `4` `5` | Anywhere | view 1 to 5: Updates, Installed, Issues, Backups, Search |
+| `?` | Anywhere | this key reference |
+| `Esc` | Anywhere | close the panel |
+| `Tab` `Shift+Tab` | Anywhere | the bar's next or previous panel |
+| `j` `k` `Down` `Up` | Every view | move the cursor |
+| `g` `G` | Every view | first or last row |
+| `PgUp` `PgDn` | Every view | a page up or down |
+| `t` `T` | Every view | next or previous client (All, then each client) |
+| `s` | Every view | Search, its box ready to type in |
+| `c` | Every view | check for updates now |
+| `U` | Every view | update everything on the chosen client, or on every client |
+| `Ctrl+Z` | Every view | undo the last change, after a confirmation |
+| `o` | Every view | open the chosen client's AddOns folder |
+| `b` | Every view | back up the chosen client's settings now, or every client's |
+| `d` | Every view | mark the new Lua errors shown as seen |
+| `Enter` `Space` | Updates | update this addon |
+| `u` | Updates | update this addon |
+| `p` | Updates | pin or unpin it |
+| `e` | Updates | show or hide its newest release notes |
+| `Enter` `Space` | Installed | update it, or put back its changed files |
+| `u` | Installed | update this addon |
+| `p` | Installed | pin or unpin it |
+| `x` | Installed | remove it, after a confirmation |
+| `r` | Installed | restore its settings from a backup |
+| `Enter` `Space` | Issues | run the fix; on a Lua error, update its addon or show the stack |
+| `u` | Issues | update the addon a Lua error comes from |
+| `r` | Issues | restore the erroring addon's settings from a backup |
+| `y` | Issues | copy the command a row shows, to run in a terminal |
+| `Enter` `Space` | Backups | restore from this backup: choose what |
+| `r` | Backups | restore from this backup: choose what |
+| `x` | Backups | delete this backup, after a confirmation |
+| `Enter` `Space` | Search | install the result |
+| `i` | Search | install the result |
+| `Enter` | Search box | search |
+| `Esc` | Search box | leave the box (its text stays) |
+| `j` `k` `Down` `Up` | Problem card | move between the card's buttons |
+| `Enter` `Space` | Problem card | press the button |
+| `Esc` `n` `N` | Dialog | cancel, or go back a step |
+| `j` `k` `Down` `Up` | Dialog | move between the choices |
+| `h` `l` `Left` `Right` `Tab` `Shift+Tab` | Dialog | move between No and Yes |
+| `y` `Y` | Dialog | yes, on a confirmation |
+| `Enter` `Space` | Dialog | the button or choice under the cursor (a confirmation starts on No) |
+| `?` `Esc` | Key reference | close the reference |
+| `j` `k` `Down` `Up` | Key reference | scroll |
+<!-- END KEYMAP -->
 
 Every update, install, reinstall and destructive action (an undo, a removal, a restore, a backup deletion) first runs the command's own dry run, which stores a plan. A reinstall and every destructive action always ask, showing what omaddons would do. The dialog starts on No: `y`, or moving to Yes with `h`/`l` and pressing Enter, confirms, and `n` or Esc cancels. Yes, or a routine matching update, runs `omaddons apply <plan_id>` of exactly that plan. When the plan went stale, expired or is gone, nothing runs: the widget previews again and the dialog comes back with "Changed since you looked" and the new preview. Dismissing Lua errors still binds to the read the panel showed, and forgetting a client (`targets rm`) runs bound to its preview's token. Only a fresh key press confirms it, never a key still held from before. When the widget finds a binary from another build, the panel turns read-only and keeps only Retry and Reinstall widget. When the binary is missing, it shows the two commands that bring it back.
 

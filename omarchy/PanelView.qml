@@ -5,16 +5,18 @@ import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
 import "views"
+import "ui"
 import "Model.js" as Model
 import "Build.js" as Build
 
 // The panel frame (F4): the hero with Check now, Undo last and Open AddOns, the target
 // filter, the view switcher, the content slot the views load into (F5, F6, F9), the
-// footer (progress, the last result with its Undo and Fix, the error cards) and the
-// confirm dialog every destructive action goes through. Keyboard first: one dispatcher
-// maps the panel key map to service calls. It decides nothing: labels come from
-// Model.js over the CLI's own output, every action is a service call, and every
-// CLI string renders as plain text (PlainLabel, or qs.Ui's own plain-text labels).
+// footer (progress, the last result with its Undo and Fix, the error cards), the
+// confirm dialog every destructive action goes through, and the key reference (`?`).
+// Keyboard first: one dispatcher looks every key up in Model.KEYMAP (design doc §3)
+// and maps its action to a service call or the current view. It decides nothing:
+// labels come from Model.js over the CLI's own output, every action is a service call,
+// and every CLI string renders as plain text (PlainLabel, or qs.Ui's own labels).
 Item {
   id: root
 
@@ -30,9 +32,11 @@ Item {
   signal tabRequested(int direction)
 
   readonly property color dim: Qt.darker(foreground, 1.55)
-  // What the panel needs to show everything: the column, or the dialog or chooser over it.
-  readonly property real contentImplicitHeight: confirming || chooser.opened
-    ? Math.max(column.implicitHeight, Style.space(confirming ? 220 : 360)) : column.implicitHeight
+  // What the panel needs to show everything: the column, or the dialog, chooser or key
+  // reference over it.
+  readonly property real contentImplicitHeight: confirming || chooser.opened || helpOpen
+    ? Math.max(column.implicitHeight, Style.space(confirming ? 220 : helpOpen ? 560 : 360))
+    : column.implicitHeight
 
   // ---- view state, in memory only (M3-D3)
   property string view: "updates"
@@ -44,14 +48,19 @@ Item {
   // A refusal from the service ("omaddons is not ready", a template it would not
   // build), until the next action.
   property string notice: ""
+  // Why the last key did nothing here ("Nothing to pin here"), until the next key.
+  property string keyNote: ""
+  // The key reference (`?`) is open over everything but a dialog.
+  property bool helpOpen: false
 
   // The views by name: F5 adds updates and installed, F6 issues and search, F9 backups.
   // A view without one leaves its slot empty; the switcher and the key map are final.
   // A view may offer `frame` (set on load), `rowCount`, `rowItem(i)`, `typing`,
-  // `focusSearch()` and `handleKey(name, cursor)`.
+  // `focusSearch()` and `handleKey(action, cursor)`, which gets KEYMAP's action names.
   property var viewComponents: ({ "updates": updatesView, "installed": installedView, "issues": issuesView,
     "backups": backupsView, "search": searchView })
-  // Frame-wide keys a later task registers (b, d, …): name → function(frame).
+  // Frame-wide view actions a later task registers (backup, dismiss, …): action →
+  // function(frame).
   property var keyHandlers: ({
     "dismiss": function(frame) { return frame.dismissErrors() },
     "backup": function(frame) { return frame.backUp() }
@@ -82,18 +91,28 @@ Item {
   // the cursor (j/k) and Enter.
   readonly property bool cardMode: phase === "missing" || phase === "unreachable" || phase === "incompatible"
   readonly property var cardActions: phase === "incompatible" ? ["retry", "reinstall"] : (cardMode ? ["retry"] : [])
-  // Where the keyboard goes: the dialog's own keys while it is open, then the chooser's.
-  readonly property Item focusItem: confirming ? confirmKeys : (chooser.opened ? chooser.keyItem : keyCatcher)
+  // Where a key is looked up in KEYMAP: the card's rows, or the current view's.
+  readonly property string keyContext: cardMode ? "card" : view
+  // Where the keyboard goes: the dialog's own keys while it is open, then the chooser's,
+  // then the key reference's.
+  readonly property Item focusItem: confirming ? confirmKeys
+    : (chooser.opened ? chooser.keyItem : (helpOpen ? help.keyItem : keyCatcher))
+  // The frame's own shortcuts (Ctrl+Z, PgUp, PgDn) fire only where the catcher would
+  // take keys: never under a dialog, the reference, or a field that is typing.
+  readonly property bool shortcutsOn: opened && !typing && !confirming && !chooser.opened && !helpOpen
 
   function alpha(c, a) { return Qt.rgba(c.r, c.g, c.b, a) }
 
   // ------------------------------------------------------------- state changes
 
-  onOpenedChanged: if (opened) {
+  onOpenedChanged: {
+    helpOpen = false
+    if (!opened) return
     nowMs = Date.now()
     cursor = 0
     cursorActive = false
     notice = ""
+    keyNote = ""
     flick.contentY = 0
     if (!takeRequestedView() && svc) svc.readView(view)
   }
@@ -101,10 +120,13 @@ Item {
   onConfirmingChanged: {
     // A new preview starts on No: Enter alone never confirms a destructive change.
     dialog.selectedIndex = 0
+    // A dialog is the top layer: the reference gives way to it.
+    if (confirming) helpOpen = false
     Qt.callLater(root.focusNow)
   }
   onConfirmChanged: dialog.selectedIndex = 0
   onTypingChanged: if (!typing) Qt.callLater(root.focusNow)
+  onHelpOpenChanged: Qt.callLater(root.focusNow)
 
   function focusNow() {
     if (root.opened && !root.typing) root.focusItem.forceActiveFocus()
@@ -135,6 +157,7 @@ Item {
 
   function showView(name) {
     view = name
+    keyNote = ""
     cursor = 0
     flick.contentY = 0
     if (svc) svc.readView(name)
@@ -142,57 +165,94 @@ Item {
 
   // ------------------------------------------------------------- the key map
 
-  // One function per PanelKeyCatcher signal; the letters go through Model.panelKey.
+  // One function per PanelKeyCatcher signal. The catcher moves the cursor (j/k) and
+  // steps views (h/l) itself; Enter, Space, x and every typed key go through act, which
+  // looks them up in Model.KEYMAP.
   function move(dx, dy) {
+    keyNote = ""
     if (dx !== 0) {
       showView(Model.stepView(view, dx))
       return
     }
+    moveCursor(cursor + dy)
+  }
+
+  // The cursor to row `to` (the card's button in a problem card), kept in range.
+  function moveCursor(to) {
     var count = cardMode ? cardActions.length : rowCount
     cursorActive = true
-    cursor = count > 0 ? Math.max(0, Math.min(count - 1, cursor + dy)) : 0
+    cursor = count > 0 ? Math.max(0, Math.min(count - 1, to)) : 0
     ensureCursorVisible()
+  }
+
+  // How many rows a page key moves: as many of the cursor's row as the content shows.
+  function pageRows() {
+    var item = current && typeof current.rowItem === "function" ? current.rowItem(cursor) : null
+    var rowHeight = item && item.height > 0 ? item.height : Style.space(32)
+    return Math.max(1, Math.floor(flick.height / rowHeight) - 1)
   }
 
   // Enter and Space: the card's button, or the row's primary action (the view's).
   function activate() {
-    if (cardMode) return runCard(cardActions[Math.min(cursor, cardActions.length - 1)])
-    if (!canAct) return false
-    return routeKey("enter")
+    return act("Enter")
   }
 
   function deleteKey() {
-    if (cardMode || !canAct) return false
-    return routeKey("x")
+    return act("x")
   }
 
   function textKey(text) {
-    var key = Model.panelKey(text)
+    return act(text)
+  }
+
+  // The key `name` (Model.keyName's) where the panel stands: its KEYMAP action run, its
+  // note shown when it acts only in other views, or nothing.
+  function act(name) {
+    var key = Model.panelKey(name, keyContext)
+    keyNote = ""
     if (!key) return false
-    if (key.name === "view") {
+    if (key.action === null) {
+      keyNote = String(key.note || "")
+      return true
+    }
+    var action = key.action
+    if (action === "view") {
       showView(key.view)
       return true
     }
-    if (key.name === "filter") {
-      filter = Model.nextFilter(targets, filter)
+    if (action === "help") {
+      helpOpen = true
+      return true
+    }
+    if (action === "press") return runCard(cardActions[Math.min(cursor, cardActions.length - 1)])
+    if (action === "client") {
+      filter = Model.stepFilter(targets, filter, key.step)
       cursor = 0
       return true
     }
-    if (key.name === "search") {
+    if (action === "search") {
       showView("search")
       if (current && typeof current.focusSearch === "function") current.focusSearch()
       return true
     }
-    // Every action waits for a compatible answer (M3-D42).
+    if (action === "edge") {
+      moveCursor(key.step < 0 ? 0 : rowCount - 1)
+      return true
+    }
+    if (action === "page") {
+      moveCursor(cursor + key.step * pageRows())
+      return true
+    }
+    // Every other action waits for a compatible answer (M3-D42).
     if (cardMode || !canAct) return false
-    if (key.name === "update") return updateAll()
-    if (key.name === "check") return checkNow()
-    if (key.name === "undo") return undoLast()
-    if (key.name === "open") return openAddOns()
-    return routeKey(key.name)
+    if (action === "update_all") return updateAll()
+    if (action === "check") return checkNow()
+    if (action === "undo") return undoLast()
+    if (action === "open") return openAddOns()
+    return routeKey(action)
   }
 
-  // A key the current view or a later task implements; an unregistered one does
+  // An action the current view or a later task implements; an unregistered one does
   // nothing (no key exists before its action does).
   function routeKey(name) {
     if (current && typeof current.handleKey === "function" && current.handleKey(name, cursor) === true) return true
@@ -202,24 +262,17 @@ Item {
     return true
   }
 
-  // The dialog's keys (it has the keyboard while open). A held key that started before
-  // the preview appeared reaches it only as auto-repeat, which never confirms: Yes
-  // needs a fresh press (M3-D46).
-  function confirmKey(key, text, autoRepeat) {
+  // The dialog's keys (it has the keyboard while open), as KEYMAP's sheet rows say. A
+  // held key that started before the preview appeared reaches it only as auto-repeat,
+  // which never confirms: Yes needs a fresh press (M3-D46).
+  function confirmKey(key, text, autoRepeat, modifiers) {
     if (!confirming) return false
-    if (key === Qt.Key_Escape || text === "n" || text === "N") {
-      confirmNo()
-      return true
-    }
-    if (key === Qt.Key_Left || key === Qt.Key_Right || key === Qt.Key_Tab || key === Qt.Key_Backtab
-        || text === "h" || text === "l") {
-      dialog.selectedIndex = dialog.selectedIndex === 0 ? 1 : 0
-      return true
-    }
-    var yes = text === "y" || text === "Y"
-    var enter = key === Qt.Key_Return || key === Qt.Key_Enter || key === Qt.Key_Space
-    if ((yes || enter) && !autoRepeat) {
-      if (yes || dialog.selectedIndex === 1) confirmYes()
+    var action = Model.dialogKey(Model.keyName(key, text, modifiers), autoRepeat)
+    if (action === "cancel") confirmNo()
+    else if (action === "switch") dialog.selectedIndex = dialog.selectedIndex === 0 ? 1 : 0
+    else if (action === "confirm") confirmYes()
+    else if (action === "press") {
+      if (dialog.selectedIndex === 1) confirmYes()
       else confirmNo()
     }
     // Every other key is the dialog's too: nothing behind it acts.
@@ -386,7 +439,7 @@ Item {
                 objectName: "checkButton"
                 // U+F04E6 nf-md-sync.
                 iconText: String.fromCodePoint(0xF04E6)
-                tooltipText: "Check now (c)"
+                tooltipText: Model.withKey("Check now", "check")
                 enabled: root.canAct
                 opacity: enabled ? 1.0 : 0.4
                 foreground: root.foreground
@@ -398,7 +451,7 @@ Item {
                 objectName: "undoButton"
                 // U+F054C nf-md-undo.
                 iconText: String.fromCodePoint(0xF054C)
-                tooltipText: root.undo.label + " (z)"
+                tooltipText: Model.withKey(root.undo.label, "undo")
                 enabled: root.canAct && !root.busy && root.undo.argv !== null
                 opacity: enabled ? 1.0 : 0.4
                 foreground: root.foreground
@@ -410,7 +463,7 @@ Item {
                 objectName: "openButton"
                 // U+F0770 nf-md-folder_open.
                 iconText: String.fromCodePoint(0xF0770)
-                tooltipText: "Open AddOns (o)"
+                tooltipText: Model.withKey("Open AddOns", "open")
                 enabled: root.canAct && root.openArgv !== null
                 opacity: enabled ? 1.0 : 0.4
                 foreground: root.foreground
@@ -897,6 +950,18 @@ Item {
             text: root.notice
           }
 
+          // A key that does nothing here says so (design doc §3.3), until the next key.
+          PlainLabel {
+            objectName: "keyNote"
+            visible: text !== ""
+            width: parent.width
+            wrapMode: Text.WordWrap
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            text: root.keyNote
+          }
+
           // Never a guessed run (M3-D37).
           Text {
             objectName: "lastChangeUnknown"
@@ -964,11 +1029,101 @@ Item {
     frame: root
   }
 
+  // ---------- The key reference (`?`): KEYMAP's rows where the panel stands ----------
+  // Over the views and the problem cards, under a dialog. While it is open every key is
+  // its own: `?` and Esc close it, j/k scroll it, and nothing beneath it acts.
+  Sheet {
+    id: help
+    objectName: "help"
+    anchors.fill: parent
+    z: 9
+    reference: true
+    opened: root.helpOpen
+    title: "Keys · " + (root.cardMode ? "Problem card" : String(Model.VIEW_TITLES[root.view] || ""))
+    foreground: root.foreground
+    fontFamily: root.fontFamily
+    onCanceled: root.helpOpen = false
+
+    Repeater {
+      objectName: "helpSections"
+      model: root.helpOpen ? Model.helpSections(root.keyContext) : []
+
+      Column {
+        required property var modelData
+        width: help.bodyWidth
+        spacing: Style.spacing.xs
+        bottomPadding: Style.spacing.md
+
+        SectionHeader {
+          width: parent.width
+          title: modelData.title
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+        }
+
+        Repeater {
+          model: modelData.rows
+
+          Row {
+            required property var modelData
+            width: help.bodyWidth
+            spacing: Style.spacing.md
+
+            PlainLabel {
+              id: hintLabel
+              objectName: "helpKey"
+              width: Style.space(84)
+              elide: Text.ElideNone
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              text: modelData.hint
+            }
+
+            PlainLabel {
+              objectName: "helpLabel"
+              width: parent.width - hintLabel.width - parent.spacing
+              wrapMode: Text.WordWrap
+              color: help.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              text: modelData.label
+            }
+          }
+        }
+      }
+    }
+  }
+
   // Takes the keyboard while the dialog is open: it sees auto-repeat, which the key
   // catcher's signals do not carry.
   Item {
     id: confirmKeys
     objectName: "confirmKeys"
-    Keys.onPressed: function(event) { event.accepted = root.confirmKey(event.key, event.text, event.isAutoRepeat) }
+    Keys.onPressed: function(event) {
+      event.accepted = root.confirmKey(event.key, event.text, event.isAutoRepeat, event.modifiers)
+    }
+  }
+
+  // The keys that are no single character (design doc §3: Ctrl+Z, PgUp, PgDn) are
+  // window shortcuts: they fire on the ShortcutOverride pass, before the key catcher
+  // sees the key, and go through the same KEYMAP lookup as every other key.
+  Item {
+    Shortcut {
+      sequence: "Ctrl+Z"
+      enabled: root.shortcutsOn
+      onActivated: root.act("Ctrl+Z")
+    }
+    Shortcut {
+      sequence: "PgUp"
+      enabled: root.shortcutsOn
+      onActivated: root.act("PgUp")
+    }
+    Shortcut {
+      sequence: "PgDown"
+      enabled: root.shortcutsOn
+      onActivated: root.act("PgDn")
+    }
   }
 }

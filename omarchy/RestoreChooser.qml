@@ -115,11 +115,15 @@ Item {
     close()
   }
 
-  function key(code, text) {
-    if (code === Qt.Key_Escape) back()
-    else if (code === Qt.Key_Down || text === "j") cursor = Math.min(choices.length - 1, cursor + 1)
-    else if (code === Qt.Key_Up || text === "k") cursor = Math.max(0, cursor - 1)
-    else if (code === Qt.Key_Return || code === Qt.Key_Enter || code === Qt.Key_Space) choose()
+  // A dialog's keys, as Model.KEYMAP's sheet rows say: Esc and n back out a step, j/k
+  // move between the choices, Enter and Space choose (never from auto-repeat, M3-D46).
+  // Every other key is the chooser's: nothing behind it acts.
+  function key(code, text, autoRepeat, modifiers) {
+    var name = Model.keyName(code, text, modifiers)
+    var action = Model.dialogKey(name, autoRepeat === true)
+    if (action === "cancel") back()
+    else if (action === "line") cursor = Math.max(0, Math.min(choices.length - 1, cursor + Model.keyStep(name)))
+    else if (action === "press") choose()
     return true
   }
 
@@ -128,7 +132,9 @@ Item {
   Item {
     id: keys
     objectName: "chooserKeys"
-    Keys.onPressed: function(event) { event.accepted = root.key(event.key, event.text) }
+    Keys.onPressed: function(event) {
+      event.accepted = root.key(event.key, event.text, event.isAutoRepeat, event.modifiers)
+    }
   }
 
   // The panel behind stays visible, dimmed; a click outside the card closes.

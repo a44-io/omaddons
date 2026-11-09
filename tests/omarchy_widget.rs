@@ -80,6 +80,68 @@ fn plan_paths_mirror_the_registry() {
     }
 }
 
+/// README's key table, between `<!-- BEGIN KEYMAP` and `<!-- END KEYMAP -->` in the
+/// `omarchy` section, is `KEYMAP`'s rows in order (design doc §3): each row's keys, the
+/// title of its context (`KEY_CONTEXTS`) and its label. One table drives the widget's
+/// dispatcher, its key reference and its tooltips, and this keeps README in step.
+#[test]
+fn readme_key_table_is_the_keymap() {
+    let source = model_js();
+    let rows = support::block(&source, "KEYMAP");
+    let contexts = support::block(&source, "KEY_CONTEXTS");
+    let titles: BTreeMap<&str, &str> = contexts
+        .as_array()
+        .expect("KEY_CONTEXTS is a list")
+        .iter()
+        .map(|c| (c["id"].as_str().unwrap(), c["title"].as_str().unwrap()))
+        .collect();
+    let mut expected = vec![
+        "| Keys | Where | Does |".to_owned(),
+        "|---|---|---|".to_owned(),
+    ];
+    for row in rows.as_array().expect("KEYMAP is a list") {
+        let keys: Vec<String> = row["keys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|k| format!("`{}`", k.as_str().unwrap()))
+            .collect();
+        let context = row["context"].as_str().unwrap();
+        let title = titles.get(context);
+        assert!(
+            title.is_some(),
+            "KEYMAP context {context} has no KEY_CONTEXTS title"
+        );
+        expected.push(format!(
+            "| {} | {} | {} |",
+            keys.join(" "),
+            title.copied().unwrap_or_default(),
+            row["label"].as_str().unwrap()
+        ));
+    }
+    let readme =
+        fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md"))
+            .expect("README.md reads");
+    let begin = readme.find("<!-- BEGIN KEYMAP");
+    let end = readme.find("<!-- END KEYMAP -->");
+    assert!(
+        begin.is_some() && end > begin,
+        "README.md has no <!-- BEGIN KEYMAP --> … <!-- END KEYMAP --> table"
+    );
+    let (begin, end) = (begin.unwrap_or_default(), end.unwrap_or_default());
+    let table: Vec<&str> = readme[begin..end]
+        .lines()
+        .skip(1)
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    assert_eq!(
+        table,
+        expected,
+        "README's key table differs from KEYMAP in omarchy/Model.js; it should read:\n{}",
+        expected.join("\n")
+    );
+}
+
 /// The plan scenarios (`omarchy/tests/qml/tst_plans.qml`, over the Fixtures.js the
 /// pipeline generates) read only fixtures step 1 writes, and keep their thirteen
 /// scenarios; the slice-2 demo asserts the first three by name.

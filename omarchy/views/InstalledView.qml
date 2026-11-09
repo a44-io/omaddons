@@ -9,9 +9,10 @@ import "../Model.js" as Model
 // The Installed view (F5): every managed addon per client, from `list -v`
 // (Model.installedRows): version, source, and the markers dep, orphan, pinned, and
 // modified or missing (its files checked on disk). Enter reinstalls drifted files, or
-// updates when a release is waiting; `p` pins or unpins; `x` removes, through the
-// confirm dialog: the CLI's dry run first, then the run bound to it (M3-D9, M3-D46);
-// `r` restores its settings from a backup (the restore chooser, F9).
+// updates when a release is waiting; `u` updates; `p` pins or unpins; `x` removes,
+// through the confirm dialog: the CLI's dry run first, then the run bound to it (M3-D9,
+// M3-D46); `r` restores its settings from a backup (the restore chooser, F9). The keys
+// are Model.KEYMAP's installed rows.
 // Unmanaged folders are a line of text: adoption is the CLI's in M3.
 Item {
   id: root
@@ -40,7 +41,12 @@ Item {
       if (row && row.primary !== "") run(Model.rowAction(row, row.primary))
       return true
     }
-    if (name === "x") {
+    // `u`: its update, also when its files changed (Enter puts those back first).
+    if (name === "update") {
+      if (row && row.updateAvailable) run(Model.rowAction(row, "update"))
+      return true
+    }
+    if (name === "remove") {
       if (row) run(Model.rowAction(row, "remove"))
       return true
     }

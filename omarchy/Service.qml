@@ -72,7 +72,7 @@ Item {
   property var statusWarnings: []
   // `status`'s problems of no client (`data.issues`), with the clients' in Problems.
   property var machineIssues: []
-  // The raw details `s` asked for, view-bound: `{selection, data}`.
+  // The raw details an Issues row asked for, view-bound: `{selection, data}`.
   property var rawErrors: null
   property var rawSelection: null
   // The dismissals `d` still has to send, one client at a time.
@@ -210,7 +210,8 @@ Item {
     return request({ "resource": "errors", "template": "errors", "label": "Issues" })
   }
 
-  // `s`: one addon's raw details (`--raw-details`), view-bound to that row.
+  // An Issues row's Raw details button: one addon's raw details (`--raw-details`),
+  // view-bound to that row.
   function readRawErrors(target, addon) {
     var selection = { "target": String(target || ""), "addon": String(addon || "") }
     rawSelection = selection

@@ -9,8 +9,9 @@ import "../Model.js" as Model
 // (Model.backupSections): when, kind, size, stable or best effort, and what it proves
 // ("verified" only for a verified one, M3-D47); one in use says so. Enter (or `r`)
 // opens the restore chooser for that backup; `x` prunes it, confirmed and bound to its
-// preview; `b` (frame-wide) backs up. Every action names the row's exact backup id,
-// never "newest" (M3-D9); restores wait for the game to close (M3-D29).
+// preview; `b` (frame-wide) backs up (Model.KEYMAP's backups rows). Every action names
+// the row's exact backup id, never "newest" (M3-D9); restores wait for the game to
+// close (M3-D29).
 Item {
   id: root
 
@@ -43,7 +44,7 @@ Item {
       if (row) frame.openChooser({ "target": row.target, "backup": row.id })
       return true
     }
-    if (name === "x") {
+    if (name === "remove") {
       if (row) prune(row)
       return true
     }
@@ -84,7 +85,8 @@ Item {
     Button {
       objectName: "backUp"
       visible: !!root.svc && !!root.svc.backups
-      text: root.filter ? "Back up " + root.filter + " (b)" : "Back up all (b)"
+      text: Model.withKey(root.filter ? "Back up " + root.filter : "Back up all", "backup", "backups")
+      tooltipText: Model.keyTip("backup", "backups")
       enabled: root.canChange
       opacity: enabled ? 1.0 : 0.4
       bordered: true

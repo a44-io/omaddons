@@ -1632,21 +1632,223 @@ function fixText(env) {
 var VIEWS = ["updates", "installed", "issues", "backups", "search"]
 var VIEW_TITLES = { "updates": "Updates", "installed": "Installed", "issues": "Issues", "backups": "Backups", "search": "Search" }
 
-// The letter keys of the panel key map (PanelKeyCatcher keeps j/k/h/l and the arrows,
-// Enter, Space, x, Esc and Tab). The frame runs update, check, undo, open, filter and
-// search itself; the rest go to the current view, or to the task that registered them.
-var PANEL_KEYS = {
-  "u": "update", "c": "check", "z": "undo", "o": "open", "t": "filter", "/": "search",
-  "b": "backup", "d": "dismiss", "r": "restore", "s": "raw", "i": "notes", "p": "pin",
-  "y": "copy"
+// ------------------------------------------------------------------ the key map (design doc §3)
+
+// Where a key means something, in the order the key reference and README list them.
+// `panel` is anywhere outside a dialog (a problem card included), `view` every view's
+// list, a view's name that view alone; `field` the search box while it has the
+// keyboard, `card` the card shown instead of the views when omaddons gave no answer to
+// work with, `sheet` every dialog (the confirmation and both choosers), `help` the key
+// reference.
+// BEGIN KEY_CONTEXTS: checked by tests/omarchy_widget.rs against README's key table
+var KEY_CONTEXTS = [
+  { "id": "panel", "title": "Anywhere" },
+  { "id": "view", "title": "Every view" },
+  { "id": "updates", "title": "Updates" },
+  { "id": "installed", "title": "Installed" },
+  { "id": "issues", "title": "Issues" },
+  { "id": "backups", "title": "Backups" },
+  { "id": "search", "title": "Search" },
+  { "id": "field", "title": "Search box" },
+  { "id": "card", "title": "Problem card" },
+  { "id": "sheet", "title": "Dialog" },
+  { "id": "help", "title": "Key reference" }
+]
+// END KEY_CONTEXTS
+
+// Every key the panel answers to, one row per action and context: the dispatcher looks
+// keys up here (panelKey, dialogKey, helpKey), the key reference lists these rows, every
+// button's key hint comes from them (keyHint, withKey, keyTip), and README's key table
+// is checked against them. `keys` are key names as keyName gives them; `hint` is how a
+// tooltip or the reference writes them; `nothing` is what a view-only key says in a
+// view where it does nothing; `confirms` marks a key that confirms a dialog, which an
+// auto-repeated press never does (M3-D46). A row joins this table with the action it
+// runs: no key is listed before it does something.
+// BEGIN KEYMAP: checked by tests/omarchy_widget.rs against README's key table
+var KEYMAP = [
+  { "keys": ["h", "l", "Left", "Right"], "context": "panel", "action": "view_step", "label": "previous or next view", "hint": "h l" },
+  { "keys": ["1", "2", "3", "4", "5"], "context": "panel", "action": "view", "label": "view 1 to 5: Updates, Installed, Issues, Backups, Search", "hint": "1–5" },
+  { "keys": ["?"], "context": "panel", "action": "help", "label": "this key reference", "hint": "?" },
+  { "keys": ["Esc"], "context": "panel", "action": "close", "label": "close the panel", "hint": "Esc" },
+  { "keys": ["Tab", "Shift+Tab"], "context": "panel", "action": "tab", "label": "the bar's next or previous panel", "hint": "Tab" },
+  { "keys": ["j", "k", "Down", "Up"], "context": "view", "action": "move", "label": "move the cursor", "hint": "j k" },
+  { "keys": ["g", "G"], "context": "view", "action": "edge", "label": "first or last row", "hint": "g G" },
+  { "keys": ["PgUp", "PgDn"], "context": "view", "action": "page", "label": "a page up or down", "hint": "PgUp PgDn" },
+  { "keys": ["t", "T"], "context": "view", "action": "client", "label": "next or previous client (All, then each client)", "hint": "t T" },
+  { "keys": ["s"], "context": "view", "action": "search", "label": "Search, its box ready to type in", "hint": "s" },
+  { "keys": ["c"], "context": "view", "action": "check", "label": "check for updates now", "hint": "c" },
+  { "keys": ["U"], "context": "view", "action": "update_all", "label": "update everything on the chosen client, or on every client", "hint": "U" },
+  { "keys": ["Ctrl+Z"], "context": "view", "action": "undo", "label": "undo the last change, after a confirmation", "hint": "Ctrl+Z" },
+  { "keys": ["o"], "context": "view", "action": "open", "label": "open the chosen client's AddOns folder", "hint": "o" },
+  { "keys": ["b"], "context": "view", "action": "backup", "label": "back up the chosen client's settings now, or every client's", "hint": "b" },
+  { "keys": ["d"], "context": "view", "action": "dismiss", "label": "mark the new Lua errors shown as seen", "hint": "d" },
+  { "keys": ["Enter", "Space"], "context": "updates", "action": "enter", "label": "update this addon", "hint": "Enter" },
+  { "keys": ["u"], "context": "updates", "action": "update", "label": "update this addon", "hint": "u", "nothing": "Nothing to update here" },
+  { "keys": ["p"], "context": "updates", "action": "pin", "label": "pin or unpin it", "hint": "p", "nothing": "Nothing to pin here" },
+  { "keys": ["e"], "context": "updates", "action": "notes", "label": "show or hide its newest release notes", "hint": "e", "nothing": "No release notes here" },
+  { "keys": ["Enter", "Space"], "context": "installed", "action": "enter", "label": "update it, or put back its changed files", "hint": "Enter" },
+  { "keys": ["u"], "context": "installed", "action": "update", "label": "update this addon", "hint": "u", "nothing": "Nothing to update here" },
+  { "keys": ["p"], "context": "installed", "action": "pin", "label": "pin or unpin it", "hint": "p", "nothing": "Nothing to pin here" },
+  { "keys": ["x"], "context": "installed", "action": "remove", "label": "remove it, after a confirmation", "hint": "x", "nothing": "Nothing to remove here" },
+  { "keys": ["r"], "context": "installed", "action": "restore", "label": "restore its settings from a backup", "hint": "r", "nothing": "No settings to restore here" },
+  { "keys": ["Enter", "Space"], "context": "issues", "action": "enter", "label": "run the fix; on a Lua error, update its addon or show the stack", "hint": "Enter" },
+  { "keys": ["u"], "context": "issues", "action": "update", "label": "update the addon a Lua error comes from", "hint": "u", "nothing": "Nothing to update here" },
+  { "keys": ["r"], "context": "issues", "action": "restore", "label": "restore the erroring addon's settings from a backup", "hint": "r", "nothing": "No settings to restore here" },
+  { "keys": ["y"], "context": "issues", "action": "copy", "label": "copy the command a row shows, to run in a terminal", "hint": "y", "nothing": "Nothing to copy here" },
+  { "keys": ["Enter", "Space"], "context": "backups", "action": "enter", "label": "restore from this backup: choose what", "hint": "Enter" },
+  { "keys": ["r"], "context": "backups", "action": "restore", "label": "restore from this backup: choose what", "hint": "r", "nothing": "No settings to restore here" },
+  { "keys": ["x"], "context": "backups", "action": "remove", "label": "delete this backup, after a confirmation", "hint": "x", "nothing": "Nothing to remove here" },
+  { "keys": ["Enter", "Space"], "context": "search", "action": "enter", "label": "install the result", "hint": "Enter" },
+  { "keys": ["i"], "context": "search", "action": "install", "label": "install the result", "hint": "i", "nothing": "Nothing to install here" },
+  { "keys": ["Enter"], "context": "field", "action": "search", "label": "search", "hint": "Enter" },
+  { "keys": ["Esc"], "context": "field", "action": "leave", "label": "leave the box (its text stays)", "hint": "Esc" },
+  { "keys": ["j", "k", "Down", "Up"], "context": "card", "action": "move", "label": "move between the card's buttons", "hint": "j k" },
+  { "keys": ["Enter", "Space"], "context": "card", "action": "press", "label": "press the button", "hint": "Enter" },
+  { "keys": ["Esc", "n", "N"], "context": "sheet", "action": "cancel", "label": "cancel, or go back a step", "hint": "Esc n" },
+  { "keys": ["j", "k", "Down", "Up"], "context": "sheet", "action": "line", "label": "move between the choices", "hint": "j k" },
+  { "keys": ["h", "l", "Left", "Right", "Tab", "Shift+Tab"], "context": "sheet", "action": "switch", "label": "move between No and Yes", "hint": "h l" },
+  { "keys": ["y", "Y"], "context": "sheet", "action": "confirm", "label": "yes, on a confirmation", "hint": "y", "confirms": true },
+  { "keys": ["Enter", "Space"], "context": "sheet", "action": "press", "label": "the button or choice under the cursor (a confirmation starts on No)", "hint": "Enter", "confirms": true },
+  { "keys": ["?", "Esc"], "context": "help", "action": "close", "label": "close the reference", "hint": "? Esc" },
+  { "keys": ["j", "k", "Down", "Up"], "context": "help", "action": "scroll", "label": "scroll", "hint": "j k" }
+]
+// END KEYMAP
+
+// Qt's key codes for the keys KEYMAP names (stable across Qt 6; this file reads no QML
+// global), and the modifier bits keyName reads.
+var QT_KEY_NAMES = {
+  "16777216": "Esc", "16777217": "Tab", "16777218": "Shift+Tab", "16777220": "Enter", "16777221": "Enter",
+  "16777234": "Left", "16777235": "Up", "16777236": "Right", "16777237": "Down",
+  "16777238": "PgUp", "16777239": "PgDn", "32": "Space"
+}
+var QT_SHIFT = 0x02000000
+var QT_CONTROL = 0x04000000
+
+// A key event's name in KEYMAP's terms: "Enter", "Shift+Tab", "Ctrl+Z", or the one
+// character it types; "" for anything else.
+function keyName(code, text, modifiers) {
+  var mods = typeof modifiers === "number" ? modifiers : 0
+  var named = QT_KEY_NAMES[String(code)]
+  if (named === "Tab" && (mods & QT_SHIFT)) return "Shift+Tab"
+  if (named) return named
+  if ((mods & QT_CONTROL) && code >= 0x41 && code <= 0x5a) return "Ctrl+" + String.fromCharCode(code)
+  if (typeof text === "string" && text.length === 1 && text >= " " && text !== "\u007f") return text
+  return ""
 }
 
-// What the letter `text` does: `{name}`, `{name: "view", view}` for 1–5, or null.
-function panelKey(text) {
-  if (typeof text !== "string" || text.length !== 1) return null
-  var digit = "12345".indexOf(text)
-  if (digit >= 0) return { "name": "view", "view": VIEWS[digit] }
-  return PANEL_KEYS.hasOwnProperty(text) ? { "name": PANEL_KEYS[text] } : null
+// The direction a key steps in, for the rows that hold both directions (j and k, h and
+// l, g and G, t and T, PgUp and PgDn): 1 forward or down, -1 back or up, else 0.
+var KEY_STEPS = {
+  "j": 1, "Down": 1, "l": 1, "Right": 1, "G": 1, "PgDn": 1, "t": 1, "Tab": 1,
+  "k": -1, "Up": -1, "h": -1, "Left": -1, "g": -1, "PgUp": -1, "T": -1, "Shift+Tab": -1
+}
+
+function keyStep(name) {
+  return KEY_STEPS.hasOwnProperty(name) ? KEY_STEPS[name] : 0
+}
+
+// The KEYMAP contexts a key is looked up in, from where the keyboard is: a view's name,
+// "card", "field", "sheet" or "help".
+function keyScopes(context) {
+  if (context === "card") return ["panel", "card"]
+  if (VIEWS.indexOf(context) >= 0) return ["panel", "view", context]
+  return [context]
+}
+
+function keyRows(context) {
+  return KEYMAP.filter(function(r) { return r.context === context })
+}
+
+// The row the key `name` runs in `context`, or null.
+function keyRow(name, context) {
+  var scopes = keyScopes(context)
+  for (var s = 0; s < scopes.length; s++) {
+    var rows = keyRows(scopes[s])
+    for (var i = 0; i < rows.length; i++) if (rows[i].keys.indexOf(name) >= 0) return rows[i]
+  }
+  return null
+}
+
+// What the key `name` does in `context` (a view's name, or "card"): `{action, step}`,
+// with `view` for a digit; `{action: null, note}` for a key that acts only in other
+// views (design doc §3.3: a key that does nothing here says why); or null.
+function panelKey(name, context) {
+  if (typeof name !== "string" || name === "") return null
+  var where = typeof context === "string" && context !== "" ? context : VIEWS[0]
+  var row = keyRow(name, where)
+  if (row) {
+    var found = { "action": row.action, "step": keyStep(name) }
+    if (row.action === "view") found.view = VIEWS[row.keys.indexOf(name)]
+    return found
+  }
+  if (VIEWS.indexOf(where) < 0) return null
+  for (var i = 0; i < KEYMAP.length; i++) {
+    var other = KEYMAP[i]
+    if (VIEWS.indexOf(other.context) >= 0 && other.keys.indexOf(name) >= 0 && other.nothing)
+      return { "action": null, "note": other.nothing }
+  }
+  return null
+}
+
+// What a dialog does with the key `name` (KEYMAP's sheet rows): "cancel", "line",
+// "switch", "confirm", "press", or "inert" (every other key is the dialog's too, and
+// does nothing). A confirming key that is auto-repeat is inert: Yes needs a fresh press,
+// so a key held from before the dialog opened never confirms it (M3-D46).
+function dialogKey(name, autoRepeat) {
+  var row = keyRow(name, "sheet")
+  if (!row) return "inert"
+  if (row.confirms && autoRepeat) return "inert"
+  return row.action
+}
+
+// What the key reference does with the key `name`: "close", "scroll" or "inert".
+function helpKey(name) {
+  var row = keyRow(name, "help")
+  return row ? row.action : "inert"
+}
+
+// The first row running `action`, in `context`'s scopes when given.
+function actionRow(action, context) {
+  var rows = typeof context === "string" && context !== ""
+    ? [].concat.apply([], keyScopes(context).map(keyRows)) : KEYMAP
+  for (var i = 0; i < rows.length; i++) if (rows[i].action === action) return rows[i]
+  return null
+}
+
+// How a tooltip writes the key of `action`: "c", "Ctrl+Z"; "" when no key runs it.
+function keyHint(action, context) {
+  var row = actionRow(action, context)
+  return row ? row.hint : ""
+}
+
+// `text` with the key of `action` after it: "Check now (c)".
+function withKey(text, action, context) {
+  var hint = keyHint(action, context)
+  return hint ? text + " (" + hint + ")" : text
+}
+
+// A button's tooltip: what its key does, and the key ("Check for updates now (c)").
+function keyTip(action, context) {
+  var row = actionRow(action, context)
+  if (!row) return ""
+  return row.label.charAt(0).toUpperCase() + row.label.slice(1) + " (" + row.hint + ")"
+}
+
+function contextTitle(id) {
+  for (var i = 0; i < KEY_CONTEXTS.length; i++) if (KEY_CONTEXTS[i].id === id) return KEY_CONTEXTS[i].title
+  return ""
+}
+
+// The key reference for `context` (a view's name, or "card"): its own rows first, then
+// the frame's, then a dialog's, each `{title, rows: [{hint, label}]}`.
+function helpSections(context) {
+  var ids = keyScopes(context).slice().reverse().concat(["sheet"])
+  return ids.map(function(id) {
+    return {
+      "title": contextTitle(id),
+      "rows": keyRows(id).map(function(r) { return { "hint": r.hint, "label": r.label } })
+    }
+  }).filter(function(s) { return s.rows.length > 0 })
 }
 
 // The view `step` places from `view`, wrapping around.
@@ -1694,11 +1896,17 @@ function targetById(targets, id) {
 // `t`: All (""), then each target in order, then All again. A filter whose target is
 // gone starts over at All.
 function nextFilter(targets, current) {
-  var ids = Array.isArray(targets) ? targets.map(function(t) { return t.id }) : []
-  if (ids.length === 0) return ""
-  if (!current) return ids[0]
-  var at = ids.indexOf(current)
-  return at < 0 || at === ids.length - 1 ? "" : ids[at + 1]
+  return stepFilter(targets, current, 1)
+}
+
+// `t` (`step` 1) and `T` (-1): All ("") and each target, in a ring. A filter whose
+// target is gone starts over at All.
+function stepFilter(targets, current, step) {
+  var ring = [""].concat(Array.isArray(targets) ? targets.map(function(t) { return t.id }) : [])
+  var at = ring.indexOf(current || "")
+  if (at < 0) return ""
+  var n = ring.length
+  return ring[(((at + (step < 0 ? -1 : 1)) % n) + n) % n]
 }
 
 // `o`: the selected target's AddOns folder for the desktop's opener (M3-D2: a literal
@@ -1708,7 +1916,7 @@ function addonsDirArgv(target) {
   return ["xdg-open", target.clientDir.replace(/\/+$/, "") + "/Interface/AddOns"]
 }
 
-// `u`: every client's updates, or the selected one's, previewed (M4-D28). Given the
+// `U`: every client's updates, or the selected one's, previewed (M4-D28). Given the
 // Updates view's `rows` (updateRows'), `shown` is what the view showed of them, the
 // update rows in the filter, which the plan runner compares with the plan.
 function updateRequest(filter, rows) {
@@ -1891,7 +2099,7 @@ function installedRows(lists, filter) {
       if (a.drift === "modified" || a.drift === "missing") markers.push(a.drift)
       out.push({
         "key": t.id + "/" + a.name, "target": t.id, "name": a.name, "version": a.version, "source": a.source,
-        "markers": markers, "pinned": a.pinned,
+        "markers": markers, "pinned": a.pinned, "updateAvailable": a.updateAvailable === true,
         "primary": a.drift === "modified" || a.drift === "missing" ? "reinstall" : (a.updateAvailable ? "update" : ""),
         "group": !filter && j === 0 ? t.id : "", "targetKey": t.key, "latest": a.latest, "channel": a.channel,
         "latestSource": a.latestSource, "latestReleaseId": a.latestReleaseId, "latestAsset": a.latestAsset
@@ -2828,13 +3036,25 @@ if (typeof module !== "undefined") {
     fixText: fixText,
     VIEWS: VIEWS,
     VIEW_TITLES: VIEW_TITLES,
-    PANEL_KEYS: PANEL_KEYS,
+    KEY_CONTEXTS: KEY_CONTEXTS,
+    KEYMAP: KEYMAP,
+    keyName: keyName,
+    keyStep: keyStep,
+    keyScopes: keyScopes,
+    keyRow: keyRow,
     panelKey: panelKey,
+    dialogKey: dialogKey,
+    helpKey: helpKey,
+    keyHint: keyHint,
+    withKey: withKey,
+    keyTip: keyTip,
+    helpSections: helpSections,
     stepView: stepView,
     heroMeta: heroMeta,
     heroDetail: heroDetail,
     targetById: targetById,
     nextFilter: nextFilter,
+    stepFilter: stepFilter,
     addonsDirArgv: addonsDirArgv,
     updateRequest: updateRequest,
     undoAction: undoAction,

@@ -242,6 +242,29 @@ TestCase {
     compare(confirmed, 0, "auto-repeat never confirms (M3-D46)")
     verify(sheet.handleKey(Qt.Key_Y, "y", false))
     compare(confirmed, 1, "a fresh press does")
+    // Its buttons name their keys, from KEYMAP's dialog rows.
+    compare(child(sheet, "sheetCancel").tooltipText, sheet.cancelText + " (" + Model.keyHint("cancel", "sheet") + ")")
+    compare(child(sheet, "sheetConfirm").tooltipText, sheet.confirmText + " (" + Model.keyHint("confirm", "sheet") + ")")
+  }
+
+  function test_a_reference_sheet_has_no_buttons_closes_on_its_keys_and_takes_the_rest() {
+    var sheet = make(sheetComponent, { "reference": true })
+    var confirmed = 0
+    var canceled = 0
+    sheet.confirmed.connect(function() { confirmed++ })
+    sheet.canceled.connect(function() { canceled++ })
+    sheet.opened = true
+    verify(!child(sheet, "sheetConfirm").visible)
+    verify(!child(sheet, "sheetCancel").visible)
+    verify(child(sheet, "referenceNote").visible)
+    for (var key of [[Qt.Key_Y, "y"], [Qt.Key_Return, ""], [Qt.Key_N, "n"], [Qt.Key_L, "l"], [Qt.Key_U, "u"]])
+      verify(sheet.handleKey(key[0], key[1], false), "the reference takes " + key[1])
+    compare([confirmed, canceled], [0, 0], "no key confirms or cancels a reference but its own")
+    verify(sheet.handleKey(Qt.Key_Question, "?", false))
+    compare(canceled, 1)
+    verify(sheet.handleKey(Qt.Key_Escape, "", false))
+    compare(canceled, 2)
+    compare(confirmed, 0)
   }
 
   function test_a_click_on_the_backdrop_cancels_and_a_destructive_confirm_has_its_border() {

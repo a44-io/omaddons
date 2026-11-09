@@ -635,7 +635,7 @@ TestCase {
     open(everyday(), "updates")
     frame.cursor = 0
     frame.cursorActive = true
-    frame.textKey("i")
+    frame.textKey("e")
     settle(everyday())
     shoot("updates-release-notes")
   }
@@ -645,6 +645,14 @@ TestCase {
     frame.textKey("c")
     settle({ })
     shoot("updates-checking")
+  }
+
+  // The key reference (`?`) over Updates.
+  function test_help_reference() {
+    open(everyday(), "updates")
+    frame.textKey("?")
+    settle(everyday())
+    shoot("help-updates")
   }
 
   // ---------------------------------------------------------------- Installed
@@ -924,7 +932,7 @@ TestCase {
   // running.
   function runningUpdate(scene) {
     scene.update = the("plan-update-all")
-    frame.textKey("u")
+    frame.textKey("U")
     settle(scene)
     var apply = null
     var running = pending()
@@ -953,7 +961,7 @@ TestCase {
     scene.list = bigList(150, "")
     open(scene, "updates")
     scene.update = { "text": text(fixture("plan-update-all")) }
-    frame.textKey("u")
+    frame.textKey("U")
     settle(scene)
     if (service.confirm) service.confirmYes()
     settle(scene)

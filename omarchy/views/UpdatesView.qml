@@ -8,10 +8,11 @@ import "../Model.js" as Model
 
 // The Updates view (F5): what is behind on each client, from `list -v` (Model.updateRows:
 // updates first, then pinned with a newer release, blocked, and failed checks; grouped
-// by client in the All filter). Enter updates the row's addon, `p` pins or unpins it,
-// `i` shows its newest release notes (a network read, on demand, kept only for the row
-// that asked); `u` (frame-wide) updates everything in the filter. Updates preview first
-// and apply a routine plan that matches the row (M4-D28); pins run directly.
+// by client in the All filter). Enter and `u` update the row's addon, `p` pins or
+// unpins it, `e` shows its newest release notes (a network read, on demand, kept only
+// for the row that asked); `U` (frame-wide) updates everything in the filter. Updates
+// preview first and apply a routine plan that matches the row (M4-D28); pins run
+// directly. The keys are Model.KEYMAP's updates rows.
 Item {
   id: root
 
@@ -22,7 +23,7 @@ Item {
   readonly property int count: Model.updateCount(rows)
   readonly property int rowCount: rows.length
   readonly property bool typing: false
-  // The row whose release notes are open (`i`), by its key.
+  // The row whose release notes are open (`e`), by its key.
   property string expanded: ""
 
   readonly property color foreground: frame ? frame.foreground : Commons.Color.foreground
@@ -36,7 +37,7 @@ Item {
 
   function handleKey(name, cursor) {
     var row = cursor >= 0 && cursor < rows.length ? rows[cursor] : null
-    if (name === "enter") {
+    if (name === "enter" || name === "update") {
       if (row && row.kind === "update") run(Model.rowAction(row, "update"))
       return true
     }
@@ -79,6 +80,7 @@ Item {
       objectName: "updateAll"
       visible: root.count > 0
       text: (root.filter ? "Update " + root.filter : "Update all") + " (" + root.count + ")"
+      tooltipText: Model.keyTip("update_all", "updates")
       enabled: root.canChange
       opacity: enabled ? 1.0 : 0.4
       bordered: true
@@ -196,7 +198,7 @@ Item {
           }
         }
 
-        // `i`: the newest release notes, plain text, with a link only to a safe host.
+        // `e`: the newest release notes, plain text, with a link only to a safe host.
         Column {
           objectName: "notes"
           visible: entry.open

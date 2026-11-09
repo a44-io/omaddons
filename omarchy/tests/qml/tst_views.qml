@@ -8,7 +8,7 @@ import "../../Build.js" as Build
 import "../../Store.js" as Store
 
 // The Updates and Installed views inside the frame (pipeline step 4). Against a stub
-// service: rows, groups and markers, what Enter, `p`, `i` and `x` run (template and
+// service: rows, groups and markers, what Enter, `u`, `U`, `p`, `e` and `x` run (template and
 // slots, and the argv Model.buildArgv makes of them), view-bound release notes and their
 // links. Against the real Service on the mock Process: `x` previews the removal, Yes
 // runs it bound to that preview, and a stale preview comes back instead of running.
@@ -199,7 +199,7 @@ TestCase {
 
   // ------------------------------------------------------------- Updates
 
-  function test_updates_are_grouped_by_client_with_the_count_u_runs() {
+  function test_updates_are_grouped_by_client_with_the_count_U_runs() {
     var updates = content()
     compare(json(updates.rows.map(function(r) { return [r.group, r.name, r.kind] })),
       json([["era", "Bar", "update"], ["", "Plater", "failed"], ["retail", "DBM", "update"], ["", "WeakAuras", "pinned"]]))
@@ -215,6 +215,26 @@ TestCase {
     // The update previews with what the rows showed: retail's one update.
     compare(json(svc.runs[0]), json(["update_target", { "target": "retail" }, "Update retail",
       [shownRow("k-retail", "retail", "DBM", "12.1.14", "12.1.15")]]))
+    // `U` is the same button, and its tooltip says so (from KEYMAP).
+    keyClick("U")
+    compare(json(svc.runs[1]), json(svc.runs[0]))
+    compare(findChild(content(), "updateAll").tooltipText, Model.keyTip("update_all", "updates"))
+    verify(findChild(content(), "updateAll").tooltipText.endsWith("(U)"))
+  }
+
+  function test_u_updates_the_cursored_addon_and_says_so_where_nothing_waits() {
+    // Updates: era's Bar, under the cursor.
+    keyClick("u")
+    compare(json(svc.runs[0]), json(["update_addon", { "target": "era", "addon": "Bar" }, "Update Bar",
+      [shownRow("k-era", "era", "Bar", "v1", "v2")]]))
+    // Backups binds no `u`: the key says why, and runs nothing.
+    keyClick("4")
+    keyClick("u")
+    compare(svc.runs.length, 1)
+    compare(findChild(view, "keyNote").text, "Nothing to update here")
+    // The next key clears it.
+    keyClick("j")
+    compare(findChild(view, "keyNote").text, "")
   }
 
   function test_enter_updates_one_addon_and_p_pins_by_its_state() {
@@ -239,10 +259,10 @@ TestCase {
     compare(svc.runs.length, 3)
   }
 
-  function test_i_shows_the_notes_of_its_own_row_and_safe_links_only() {
+  function test_e_shows_the_notes_of_its_own_row_and_safe_links_only() {
     keyClick("j")
     keyClick("j")
-    keyClick("i")
+    keyClick("e")
     compare(json(svc.notes), json([["retail", "DBM"]]))
     var entry = row("updateRow", 2)
     verify(findChild(entry, "notes").visible)
@@ -259,7 +279,7 @@ TestCase {
     compare(json(Quickshell.detachedCommands[0]), json(["omarchy-launch-browser", "https://github.com/o/dbm/releases"]))
     svc.changelog = { "selection": { "target": "retail", "addon": "DBM" }, "data": { "changelog": { "entries": [], "more_url": "http://evil.example/x" } } }
     verify(!findChild(entry, "notesLink").visible)
-    keyClick("i")
+    keyClick("e")
     verify(!findChild(entry, "notes").visible)
   }
 
@@ -296,6 +316,12 @@ TestCase {
     compare(json(svc.runs[1]), json(["remove", { "target": "retail", "addon": "BigWigs" }, "Remove BigWigs"]))
     keyClick("p")
     compare(json(svc.runs[2]), json(["pin", { "target": "retail", "addon": "BigWigs" }, "Pin BigWigs"]))
+    // `u` updates only an addon a release waits for: nothing for BigWigs, DBM's for DBM.
+    keyClick("u")
+    compare(svc.runs.length, 3)
+    keyClick("j")
+    keyClick("u")
+    compare(json(svc.runs[3].slice(0, 3)), json(["update_addon", { "target": "retail", "addon": "DBM" }, "Update DBM"]))
   }
 
   function test_unmanaged_folders_are_a_hint_and_an_empty_client_says_how_to_add() {
@@ -451,12 +477,15 @@ TestCase {
     compare(findChild(row("issueRow", 4), "stack").count, 1)
   }
 
-  function test_s_shows_raw_details_under_their_label_for_that_row_only() {
+  function test_raw_details_are_a_button_on_the_cursored_row_and_show_for_that_row_only() {
     issuesReady(false)
-    for (var i = 0; i < 3; i++) keyClick("j")
-    keyClick("s")
-    compare(json(svc.rawReads), json([["retail", "Foo"]]))
     var foo = row("issueRow", 3)
+    verify(!findChild(foo, "rawButton").visible, "no button before the cursor reaches the row")
+    for (var i = 0; i < 3; i++) keyClick("j")
+    verify(findChild(foo, "rawButton").visible)
+    compare(findChild(foo, "rawButton").text, "Raw details…")
+    findChild(foo, "rawButton").clicked()
+    compare(json(svc.rawReads), json([["retail", "Foo"]]))
     verify(findChild(foo, "raw").visible)
     compare(findChild(foo, "rawLabel").text, "raw details: may contain other players' names and your own code")
     var raw = function(addon) {
@@ -470,9 +499,19 @@ TestCase {
     svc.rawErrors = raw("Foo")
     compare(findChild(foo, "rawLines").count, 1)
     compare(findChild(foo, "rawLines").itemAt(0).text, "[Foo/boss.lua]:3: FakeChar pulled")
-    keyClick("s")
+    // The row showing them keeps its button, away from the cursor too.
+    keyClick("k")
+    verify(findChild(foo, "rawButton").visible)
+    compare(findChild(foo, "rawButton").text, "Hide raw details")
+    findChild(foo, "rawButton").clicked()
     compare(svc.rawClears, 1)
     verify(!findChild(foo, "raw").visible)
+    verify(!findChild(foo, "rawButton").visible)
+    // `s` is Search now (design doc §3.3), never raw details.
+    keyClick("j")
+    keyClick("s")
+    compare(json(svc.rawReads), json([["retail", "Foo"]]))
+    compare(view.view, "search")
   }
 
   function test_d_dismisses_what_the_panel_showed_and_a_stale_one_says_so() {
@@ -511,7 +550,7 @@ TestCase {
     keyClick("5")
     compare(view.view, "search")
     var field = findChild(content(), "searchField")
-    keyClick("/")
+    keyClick("s")
     tryVerify(function() { return field.activeFocus })
     verify(findChild(view, "keyCatcher").blocked)
     keyClick("u")

@@ -9,14 +9,20 @@ import "../Model.js" as Model
 // A sheet (design doc §2.4, §5.5): every decision the panel asks for. A dimmed backdrop
 // (a click on it cancels), a centred card at most 480 px wide, a title, a body that
 // scrolls past 80 % of the panel's height, and Cancel then the confirm button. It opens
-// on Cancel and owns the keyboard while open: Esc and n cancel; h, l, ←, →, Tab and
-// Shift+Tab move between the buttons; y confirms, and Enter or Space press the focused
-// button. A key held from before the sheet opened reaches it only as auto-repeat, which
-// never confirms (M3-D46). Every other key is the sheet's: nothing beneath it acts.
+// on Cancel and owns the keyboard while open, as Model.KEYMAP's dialog rows say: Esc and
+// n cancel; h, l, ←, →, Tab and Shift+Tab move between the buttons; y confirms, and
+// Enter or Space press the focused button. A key held from before the sheet opened
+// reaches it only as auto-repeat, which never confirms (M3-D46). Every other key is the
+// sheet's: nothing beneath it acts.
+//
+// With `reference`, it is the key reference (`?`, design doc §2.4's help overlay): no
+// buttons, a line saying how it closes, and KEYMAP's help rows (`?` and Esc close it,
+// j/k scroll it, every other key is inert). It opens at the top every time.
 Item {
   id: root
 
   property bool opened: false
+  property bool reference: false
   property string title: ""
   property string cancelText: "Cancel"
   property string confirmText: "Confirm"
@@ -42,34 +48,44 @@ Item {
 
   // The item the frame gives the keyboard to while the sheet is open.
   readonly property Item keyItem: keys
-  readonly property real maxBodyHeight: Math.max(Style.space(60), height * 0.8 - header.implicitHeight - footer.implicitHeight
-    - Style.spacing.xl * 4)
+  // The width the body's content lays out in.
+  readonly property real bodyWidth: body.width
+  readonly property real maxBodyHeight: Math.max(Style.space(60), height * 0.8 - header.implicitHeight
+    - (reference ? referenceNote.implicitHeight : footer.implicitHeight) - Style.spacing.xl * 4)
 
   visible: opened
   onOpenedChanged: {
     selectedIndex = 0
+    scroller.contentY = 0
     if (opened) Qt.callLater(function() { if (root.opened) keys.forceActiveFocus() })
   }
 
   // The dialog's keys; true when the sheet took the key (it takes every key).
-  function handleKey(key, text, autoRepeat) {
+  function handleKey(key, text, autoRepeat, modifiers) {
     if (!opened) return false
-    if (key === Qt.Key_Escape || text === "n" || text === "N") {
-      cancel()
+    var name = Model.keyName(key, text, modifiers)
+    if (reference) {
+      var what = Model.helpKey(name)
+      if (what === "close") cancel()
+      else if (what === "scroll") scroll(Model.keyStep(name))
       return true
     }
-    if (key === Qt.Key_Left || key === Qt.Key_Right || key === Qt.Key_Tab || key === Qt.Key_Backtab
-        || text === "h" || text === "l") {
-      selectedIndex = selectedIndex === 0 ? 1 : 0
-      return true
-    }
-    var yes = text === "y" || text === "Y"
-    var press = key === Qt.Key_Return || key === Qt.Key_Enter || key === Qt.Key_Space
-    if ((yes || press) && !autoRepeat) {
-      if (yes || selectedIndex === 1) confirm()
+    var action = Model.dialogKey(name, autoRepeat)
+    if (action === "cancel") cancel()
+    else if (action === "switch") selectedIndex = selectedIndex === 0 ? 1 : 0
+    else if (action === "confirm") confirm()
+    else if (action === "press") {
+      if (selectedIndex === 1) confirm()
       else cancel()
     }
     return true
+  }
+
+  // The body a line of caption text further down (`step` 1) or up (-1), within bounds.
+  function scroll(step) {
+    var line = Style.font.caption * 2
+    var bottom = Math.max(0, scroller.contentHeight - scroller.height)
+    scroller.contentY = Math.max(0, Math.min(bottom, scroller.contentY + step * line))
   }
 
   function confirm() {
@@ -88,7 +104,9 @@ Item {
   Item {
     id: keys
     objectName: "sheetKeys"
-    Keys.onPressed: function(event) { event.accepted = root.handleKey(event.key, event.text, event.isAutoRepeat) }
+    Keys.onPressed: function(event) {
+      event.accepted = root.handleKey(event.key, event.text, event.isAutoRepeat, event.modifiers)
+    }
   }
 
   Rectangle {
@@ -154,14 +172,29 @@ Item {
         }
       }
 
+      // The key reference closes by its keys alone; letters beneath it do nothing.
+      PlainLabel {
+        id: referenceNote
+        objectName: "referenceNote"
+        visible: root.reference
+        width: parent.width
+        wrapMode: Text.WordWrap
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        text: Model.keyHint("close", "help") + " closes this · keys beneath it do nothing while it is open"
+      }
+
       Row {
         id: footer
+        visible: !root.reference
         anchors.right: parent.right
         spacing: Style.spacing.md
 
         Button {
           objectName: "sheetCancel"
           text: root.cancelText
+          tooltipText: Model.withKey(root.cancelText, "cancel", "sheet")
           bordered: true
           hasCursor: root.selectedIndex === 0
           foreground: root.foreground
@@ -176,6 +209,7 @@ Item {
           id: confirmButton
           objectName: "sheetConfirm"
           text: (root.destructive && root.confirmGlyph !== "" ? root.confirmGlyph + " " : "") + root.confirmText
+          tooltipText: Model.withKey(root.confirmText, "confirm", "sheet")
           bordered: true
           hasCursor: root.selectedIndex === 1
           foreground: root.foreground

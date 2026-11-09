@@ -40,13 +40,24 @@ Item {
   function focusSearch() { field.forceActiveFocus() }
   function rowItem(i) { return rowRepeater.itemAt(i) }
 
+  // KEYMAP's search rows: Enter and `i` install the cursored result.
   function handleKey(name, cursor) {
-    if (name === "enter") {
+    if (name === "enter" || name === "install") {
       var row = cursor >= 0 && cursor < results.length ? results[cursor] : null
       if (row) install(row)
       return true
     }
     return false
+  }
+
+  // The search box's keys (KEYMAP's field rows): Enter searches, Esc leaves the box with
+  // its text kept; every other key is typed.
+  function fieldKey(code, text, modifiers) {
+    var row = Model.keyRow(Model.keyName(code, text, modifiers), "field")
+    if (!row) return false
+    if (row.action === "search") search()
+    else if (row.action === "leave") frame.leaveField()
+    return true
   }
 
   function search() {
@@ -93,11 +104,15 @@ Item {
     chooserCursor = -1
   }
 
-  function chooserKey(key, text) {
-    if (key === Qt.Key_Escape) closeChooser()
-    else if (key === Qt.Key_Down || text === "j") moveChooser(1)
-    else if (key === Qt.Key_Up || text === "k") moveChooser(-1)
-    else if (key === Qt.Key_Return || key === Qt.Key_Enter || key === Qt.Key_Space) {
+  // A dialog's keys, as KEYMAP's sheet rows say: Esc and n close the chooser, j/k move
+  // among the eligible clients, Enter and Space install into the cursored one (never
+  // from auto-repeat, M3-D46). Every other key is the chooser's.
+  function chooserKey(key, text, autoRepeat, modifiers) {
+    var name = Model.keyName(key, text, modifiers)
+    var action = Model.dialogKey(name, autoRepeat === true)
+    if (action === "cancel") closeChooser()
+    else if (action === "line") moveChooser(Model.keyStep(name))
+    else if (action === "press") {
       var chosen = chooserCursor >= 0 ? chooserTargets[chooserCursor] : null
       if (chosen && chosen.eligible) {
         installInto(chosen.id, chooserRow)
@@ -110,7 +125,9 @@ Item {
   Item {
     id: chooserKeys
     objectName: "chooserKeys"
-    Keys.onPressed: function(event) { event.accepted = root.chooserKey(event.key, event.text) }
+    Keys.onPressed: function(event) {
+      event.accepted = root.chooserKey(event.key, event.text, event.isAutoRepeat, event.modifiers)
+    }
   }
 
   Column {
@@ -122,11 +139,10 @@ Item {
       id: field
       objectName: "searchField"
       width: parent.width
-      placeholderText: "Search addons (/ to focus, Enter to search)"
+      placeholderText: "Search addons (" + Model.keyHint("search", "view") + " types here, "
+        + Model.keyHint("search", "field") + " searches)"
       foreground: root.foreground
-      Keys.onReturnPressed: root.search()
-      Keys.onEnterPressed: root.search()
-      Keys.onEscapePressed: root.frame.leaveField()
+      Keys.onPressed: function(event) { event.accepted = root.fieldKey(event.key, event.text, event.modifiers) }
     }
 
     // In the All filter: which client to install into, none chosen yet.

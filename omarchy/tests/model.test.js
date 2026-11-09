@@ -653,16 +653,188 @@ describe("reduceStatus", () => {
   })
 })
 
-describe("the panel frame", () => {
-  test("every letter of the key map, and nothing else", () => {
-    expect(M.panelKey("u")).toEqual({ name: "update" })
-    expect(M.panelKey("/")).toEqual({ name: "search" })
-    expect(M.panelKey("3")).toEqual({ name: "view", view: "issues" })
-    expect(M.panelKey("5")).toEqual({ name: "view", view: "search" })
-    for (const reserved of ["j", "k", "h", "l", "x", "q", "6", "0", "U", "", "uu"]) expect(M.panelKey(reserved)).toBeNull()
-    expect(Object.keys(M.PANEL_KEYS).sort()).toEqual(["/", "b", "c", "d", "i", "o", "p", "r", "s", "t", "u", "y", "z"])
+describe("the key map", () => {
+  // The contexts whose rows one lookup reads together: no key may appear twice in one.
+  const LOOKUPS = M.VIEWS.map((v) => M.keyScopes(v)).concat([M.keyScopes("card"), ["field"], ["sheet"], ["help"]])
+  // The keys PanelKeyCatcher turns into its own signals (moves and the delete key):
+  // never a text key the frame looks up.
+  const CATCHER = ["j", "k", "h", "l", "x", "X", "Down", "Up", "Left", "Right", "Esc", "Tab", "Shift+Tab"]
+
+  test("each key does what its context's row says", () => {
+    table([
+      ["U_updates_all", ["U", "updates"], { action: "update_all", step: 0 }],
+      ["u_is_this_addon_in_updates", ["u", "updates"], { action: "update", step: 0 }],
+      ["u_in_installed", ["u", "installed"], { action: "update", step: 0 }],
+      ["e_shows_notes", ["e", "updates"], { action: "notes", step: 0 }],
+      ["s_is_search_everywhere", ["s", "backups"], { action: "search", step: 0 }],
+      ["i_installs_a_result", ["i", "search"], { action: "install", step: 0 }],
+      ["a_digit_names_its_view", ["3", "updates"], { action: "view", step: 0, view: "issues" }],
+      ["the_last_digit", ["5", "issues"], { action: "view", step: 0, view: "search" }],
+      ["t_steps_forward", ["t", "installed"], { action: "client", step: 1 }],
+      ["T_steps_back", ["T", "installed"], { action: "client", step: -1 }],
+      ["g_goes_to_the_top", ["g", "updates"], { action: "edge", step: -1 }],
+      ["G_to_the_bottom", ["G", "updates"], { action: "edge", step: 1 }],
+      ["PgDn", ["PgDn", "installed"], { action: "page", step: 1 }],
+      ["Ctrl_Z_undoes", ["Ctrl+Z", "backups"], { action: "undo", step: 0 }],
+      ["question_mark_opens_the_reference", ["?", "search"], { action: "help", step: 0 }],
+      ["x_removes_an_addon", ["x", "installed"], { action: "remove", step: 0 }],
+      ["x_deletes_a_backup", ["x", "backups"], { action: "remove", step: 0 }],
+      ["enter_on_a_card_presses", ["Enter", "card"], { action: "press", step: 0 }],
+      ["the_reference_opens_on_a_card", ["?", "card"], { action: "help", step: 0 }],
+      ["views_step_on_a_card", ["h", "card"], { action: "view_step", step: -1 }],
+      ["no_actions_on_a_card", ["c", "card"], null],
+      ["a_key_another_view_has", ["p", "issues"], { action: null, note: "Nothing to pin here" }],
+      ["install_outside_search", ["i", "updates"], { action: null, note: "Nothing to install here" }],
+      ["x_where_nothing_goes", ["x", "updates"], { action: null, note: "Nothing to remove here" }],
+      ["no_such_key", ["q", "updates"], null],
+      ["z_waits_for_zoom", ["z", "updates"], null],
+      ["slash_waits_for_the_filter", ["/", "installed"], null],
+      ["a_digit_past_the_views", ["6", "updates"], null],
+      ["two_letters", ["uu", "updates"], null],
+      ["nothing", ["", "updates"], null],
+      ["no_context_is_the_first_view", ["u", undefined], { action: "update", step: 0 }],
+    ], ([name, context]) => M.panelKey(name, context))
+  })
+
+  test("no key is bound twice where one lookup reads", () => {
+    for (const scopes of LOOKUPS) {
+      const seen = {}
+      for (const row of M.KEYMAP.filter((r) => scopes.includes(r.context))) {
+        for (const key of row.keys) {
+          expect([scopes.join("+"), key, seen[key] || null]).toEqual([scopes.join("+"), key, null])
+          seen[key] = row.action
+        }
+      }
+    }
+  })
+
+  test("every row is whole, in a known context, and every context has rows", () => {
+    const ids = M.KEY_CONTEXTS.map((c) => c.id)
+    for (const row of M.KEYMAP) {
+      expect([row.action, ids.includes(row.context)]).toEqual([row.action, true])
+      expect(row.keys.length).toBeGreaterThan(0)
+      for (const field of ["action", "label", "hint"]) expect([row.action, field, typeof row[field]]).toEqual([row.action, field, "string"])
+      // A key name is one character, or a name keyName gives.
+      for (const key of row.keys) expect([key, key.length === 1 || /^(Esc|Tab|Shift\+Tab|Enter|Space|Left|Right|Up|Down|PgUp|PgDn|Ctrl\+[A-Z])$/.test(key)]).toEqual([key, true])
+    }
+    for (const id of ids) expect([id, M.KEYMAP.some((r) => r.context === id)]).toEqual([id, true])
+    // Every view has a context of its own, titled as the switcher titles it.
+    for (const v of M.VIEWS) expect(M.KEY_CONTEXTS.find((c) => c.id === v).title).toBe(M.VIEW_TITLES[v])
     expect(M.VIEWS.map((v) => M.VIEW_TITLES[v])).toEqual(["Updates", "Installed", "Issues", "Backups", "Search"])
   })
+
+  test("the digits are the views, one each", () => {
+    const digits = M.KEYMAP.find((r) => r.action === "view")
+    expect(digits.keys).toEqual(M.VIEWS.map((_, i) => String(i + 1)))
+    expect(digits.hint).toBe("1–" + M.VIEWS.length)
+    for (const [i, v] of M.VIEWS.entries()) expect(digits.label).toContain(M.VIEW_TITLES[v])
+    expect(digits.keys.length).toBe(M.VIEWS.length)
+  })
+
+  test("every typed key of a view resolves to its row, and a view-only key says why elsewhere", () => {
+    for (const v of M.VIEWS) {
+      for (const row of M.KEYMAP.filter((r) => M.keyScopes(v).includes(r.context))) {
+        for (const key of row.keys.filter((k) => !CATCHER.includes(k))) {
+          expect([v, key, M.panelKey(key, v).action]).toEqual([v, key, row.action])
+        }
+      }
+    }
+    // A key only some views bind has words for the others, unless every view binds it.
+    for (const row of M.KEYMAP.filter((r) => M.VIEWS.includes(r.context))) {
+      const everywhere = M.VIEWS.every((v) => M.KEYMAP.some((r) => r.context === v && r.keys.includes(row.keys[0])))
+      if (!everywhere) expect([row.context, row.action, typeof row.nothing]).toEqual([row.context, row.action, "string"])
+    }
+  })
+
+  test("only a dialog's keys confirm, and never from auto-repeat", () => {
+    for (const row of M.KEYMAP.filter((r) => r.confirms)) expect(row.context).toBe("sheet")
+    const every = [...new Set(M.KEYMAP.flatMap((r) => r.keys))]
+    for (const key of every) {
+      expect([key, ["confirm", "press"].includes(M.dialogKey(key, true))]).toEqual([key, false])
+    }
+    table([
+      ["y_confirms", ["y", false], "confirm"],
+      ["Y_too", ["Y", false], "confirm"],
+      ["held_y_is_inert", ["y", true], "inert"],
+      ["enter_presses", ["Enter", false], "press"],
+      ["held_enter_is_inert", ["Enter", true], "inert"],
+      ["space_presses", ["Space", false], "press"],
+      ["esc_cancels_held_or_not", ["Esc", true], "cancel"],
+      ["n_cancels", ["n", false], "cancel"],
+      ["tab_switches", ["Tab", false], "switch"],
+      ["h_switches", ["h", false], "switch"],
+      ["j_moves_a_line", ["j", false], "line"],
+      ["a_letter_is_inert", ["u", false], "inert"],
+      ["nothing_is_inert", ["", false], "inert"],
+    ], ([key, held]) => M.dialogKey(key, held))
+  })
+
+  test("the reference closes on ? and Esc, scrolls on j and k, and takes every other key", () => {
+    table([
+      ["question_mark", "?", "close"],
+      ["esc", "Esc", "close"],
+      ["j", "j", "scroll"],
+      ["up", "Up", "scroll"],
+      ["a_letter", "u", "inert"],
+      ["enter", "Enter", "inert"],
+      ["y_never_confirms_here", "y", "inert"],
+    ], (key) => M.helpKey(key))
+  })
+
+  test("key events get KEYMAP's names", () => {
+    const SHIFT = 0x02000000
+    const CTRL = 0x04000000
+    table([
+      ["escape", [0x01000000, "\u001b", 0], "Esc"],
+      ["tab", [0x01000001, "\t", 0], "Tab"],
+      ["shift_tab", [0x01000001, "", SHIFT], "Shift+Tab"],
+      ["backtab", [0x01000002, "", SHIFT], "Shift+Tab"],
+      ["return", [0x01000004, "\r", 0], "Enter"],
+      ["keypad_enter", [0x01000005, "\r", 0], "Enter"],
+      ["space", [0x20, " ", 0], "Space"],
+      ["down", [0x01000015, "", 0], "Down"],
+      ["page_down", [0x01000017, "", 0], "PgDn"],
+      ["ctrl_z_as_qt_types_it", [0x5a, "\u001a", CTRL], "Ctrl+Z"],
+      ["ctrl_z_as_qtest_types_it", [0x5a, "z", CTRL], "Ctrl+Z"],
+      ["a_letter", [0x55, "u", 0], "u"],
+      ["a_capital", [0x55, "U", SHIFT], "U"],
+      ["question_mark", [0x3f, "?", SHIFT], "?"],
+      ["a_control_character", [0, "\u0007", 0], ""],
+      ["no_modifiers_given", [0x55, "u", undefined], "u"],
+      ["nothing", [0x01000020, "", 0], ""],
+    ], ([code, text, mods]) => M.keyName(code, text, mods))
+  })
+
+  test("buttons say their key, from the table", () => {
+    expect(M.keyHint("check")).toBe("c")
+    expect(M.keyHint("undo")).toBe("Ctrl+Z")
+    expect(M.keyHint("enter", "issues")).toBe("Enter")
+    expect(M.keyHint("search", "field")).toBe("Enter")
+    expect(M.keyHint("search", "view")).toBe("s")
+    expect(M.keyHint("zoom")).toBe("")
+    expect(M.withKey("Check now", "check")).toBe("Check now (c)")
+    expect(M.withKey("Undo update on era", "undo")).toBe("Undo update on era (Ctrl+Z)")
+    expect(M.withKey("Nothing", "no_such_action")).toBe("Nothing")
+    expect(M.keyTip("dismiss", "issues")).toBe("Mark the new Lua errors shown as seen (d)")
+    expect(M.keyTip("update_all", "updates")).toBe("Update everything on the chosen client, or on every client (U)")
+    expect(M.keyTip("no_such_action")).toBe("")
+  })
+
+  test("the reference lists where the panel stands first, then the frame, then a dialog", () => {
+    const titles = (context) => M.helpSections(context).map((s) => s.title)
+    expect(titles("updates")).toEqual(["Updates", "Every view", "Anywhere", "Dialog"])
+    expect(titles("search")).toEqual(["Search", "Every view", "Anywhere", "Dialog"])
+    expect(titles("card")).toEqual(["Problem card", "Anywhere", "Dialog"])
+    const updates = M.helpSections("updates")[0]
+    expect(updates.rows.map((r) => r.hint)).toEqual(["Enter", "u", "p", "e"])
+    expect(updates.rows[0]).toEqual({ hint: "Enter", label: "update this addon" })
+    // Every row of those contexts, once.
+    const listed = M.helpSections("installed").flatMap((s) => s.rows).length
+    expect(listed).toBe(M.KEYMAP.filter((r) => ["installed", "view", "panel", "sheet"].includes(r.context)).length)
+  })
+})
+
+describe("the panel frame", () => {
 
   test("views step and wrap", () => {
     expect(M.stepView("updates", 1)).toBe("installed")
@@ -690,13 +862,18 @@ describe("the panel frame", () => {
     expect(M.heroMeta(issues.summary)).toContain("1 issue")
   })
 
-  test("the filter cycles All, each target, All", () => {
+  test("the filter cycles All, each target, All, both ways", () => {
     const targets = M.reduceStatus(fixture("status-updates"), NOW).targets
     expect(M.nextFilter(targets, "")).toBe("era")
     expect(M.nextFilter(targets, "era")).toBe("retail")
     expect(M.nextFilter(targets, "retail")).toBe("")
     expect(M.nextFilter(targets, "gone")).toBe("")
     expect(M.nextFilter([], "")).toBe("")
+    expect(M.stepFilter(targets, "", -1)).toBe("retail")
+    expect(M.stepFilter(targets, "retail", -1)).toBe("era")
+    expect(M.stepFilter(targets, "era", -1)).toBe("")
+    expect(M.stepFilter(targets, "gone", -1)).toBe("")
+    expect(M.stepFilter(null, "", -1)).toBe("")
     expect(M.targetById(targets, "retail").id).toBe("retail")
     expect(M.targetById(targets, "")).toBeNull()
   })
@@ -1792,7 +1969,7 @@ describe("an irreversible purge is never a button", () => {
       ["a NUL", "a\u0000b", null],
       ["not a string", 7, null],
     ], (text) => M.copyArgv(text))
-    expect(M.panelKey("y")).toEqual({ "name": "copy" })
+    expect(M.panelKey("y", "issues")).toEqual({ "action": "copy", "step": 0 })
   })
 })
 
