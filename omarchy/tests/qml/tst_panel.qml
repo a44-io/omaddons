@@ -286,6 +286,9 @@ TestCase {
     keyClick("3")
     compare(view.view, "search")
     keyClick(Qt.Key_Right)
+    compare(view.view, "errors")
+    compare(svc.reads[svc.reads.length - 1], "errors")
+    keyClick("5")
     compare(view.view, "issues")
     child("tab_installed").clicked()
     compare(view.view, "installed")
@@ -294,7 +297,7 @@ TestCase {
     verify(child("tab_installed").selected)
     verify(child("content").item !== null)
     // Every view of the switcher has its component; one without would leave the slot empty.
-    for (var n = 1; n <= 5; n++) {
+    for (var n = 1; n <= 6; n++) {
       keyClick(String(n))
       verify(child("content").item !== null, "view " + n)
     }
@@ -1030,7 +1033,7 @@ TestCase {
     compare(view.pages.length, 0)
     // A tab clears the stack.
     view.push({ "title": "DBM", "component": fakeView })
-    keyClick("4")
+    keyClick("5")
     compare([view.view, view.pages.length], ["issues", 0])
   }
 

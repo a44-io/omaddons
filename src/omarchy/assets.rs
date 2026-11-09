@@ -78,6 +78,14 @@ pub const ASSETS: &[(&str, &str)] = &[
         include_str!("../../omarchy/views/BackupsView.qml"),
     ),
     (
+        "views/ErrorPage.qml",
+        include_str!("../../omarchy/views/ErrorPage.qml"),
+    ),
+    (
+        "views/ErrorsView.qml",
+        include_str!("../../omarchy/views/ErrorsView.qml"),
+    ),
+    (
         "views/InstalledView.qml",
         include_str!("../../omarchy/views/InstalledView.qml"),
     ),

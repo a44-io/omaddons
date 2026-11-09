@@ -260,7 +260,7 @@ TestCase {
     compare(json(svc.runs[0]), json(["update_addon", { "target": "era", "addon": "Bar" }, "Update Bar",
       [shownRow("k-era", "era", "Bar", "v1", "v2")]]))
     // Backups binds no `u`: the key says why, and runs nothing.
-    keyClick("5")
+    keyClick("6")
     keyClick("u")
     compare(svc.runs.length, 1)
     compare(findChild(view, "keyNote").text, "Nothing to update here")
@@ -601,16 +601,23 @@ TestCase {
       { "id": "retail", "running": false, "runningUnknown": false, "clientDir": "/games/retail", "updates": null, "issues": [] }
     ]
     svc.errors = Model.reduceErrors(errorsEnvelope(partial))
-    keyClick("4")
+    keyClick("5")
     compare(view.view, "issues")
   }
 
-  function test_issues_lists_problems_by_severity_then_errors_then_warnings() {
+  // The Errors view (4, 1n2p.27) over the same clients and errors.
+  function errorsReady(partial) {
+    issuesReady(partial)
+    keyClick("4")
+    compare(view.view, "errors")
+  }
+
+  function test_issues_lists_problems_by_severity_then_warnings_never_lua_errors() {
     svc.statusWarnings = [{ "code": "journal_pending", "message": "unfinished transactions wait", "fix": null, "fixText": "quit the game, then run any change" }]
     issuesReady(false)
     var issues = content()
     compare(json(issues.rows.map(function(r) { return [r.index, r.kind] })),
-      json([[0, "problem"], [1, "problem"], [2, "capture"], [3, "addon"], [4, "addon"], [5, "warning"]]))
+      json([[0, "problem"], [1, "problem"], [2, "warning"]]))
     // P0 first; its prose remediation is text, never a button.
     compare(findChild(row("issueRow", 0), "commandText").text, "see README: Troubleshooting")
     verify(!findChild(row("issueRow", 0), "enterHint").visible)
@@ -620,12 +627,40 @@ TestCase {
     keyClick("j")
     keyClick(Qt.Key_Return)
     compare(json(svc.cliRuns[0]), json([["omaddons", "install", "Plater", "-t", "era", "--reinstall"], "Fix"]))
-    // era: BugGrabber missing, Enter installs it.
-    keyClick("j")
-    keyClick(Qt.Key_Return)
-    compare(json(svc.cliRuns[1]), json([["omaddons", "install", "buggrabber", "-t", "era"], "Install BugGrabber"]))
     // The warning's prose fix is text.
-    compare(findChild(row("issueRow", 5), "commandText").text, "quit the game, then run any change")
+    compare(findChild(row("issueRow", 2), "commandText").text, "quit the game, then run any change")
+  }
+
+  // Errors (1n2p.27): per client, a card where nothing records (its install previewed
+  // as any change), each addon's errors in words, the first error's message strict.
+  function test_errors_lists_each_clients_addons_in_words_and_a_card_where_nothing_records() {
+    errorsReady(false)
+    var errors = content()
+    compare(json(errors.rows.map(function(r) { return [r.index, r.addon, r.band] })), json([[0, "Foo", "urgent"], [1, "Bar", "urgent"]]))
+    // era: no BugGrabber, a card whose button installs it.
+    var card = findChild(findChild(errors, "errorSection_era"), "captureCard")
+    verify(card.visible)
+    // (These clients carry no player name: their ids.)
+    compare(card.title, "Lua errors aren't recorded on era: install BugGrabber to record them.")
+    findChild(card, "noticeButton_0").clicked()
+    compare(json(svc.cliRuns[0]), json([["omaddons", "install", "buggrabber", "-t", "era"], "Install BugGrabber"]))
+    // Retail's rows: who, how often, how many new; the message strict; received a count.
+    var foo = findChild(row("errorRow", 0), "addonRow")
+    compare(foo.meta, "probably caused by it · 4 times · 2 new")
+    compare(json(foo.chips.map(function(c) { return c.text })), json(["update available (may fix it)"]))
+    compare(findChild(row("errorRow", 0), "message").text, "attempt to index a nil value (field 'x')")
+    var texts = []
+    var collect = function(item) {
+      for (var i = 0; i < item.children.length; i++) {
+        var c = item.children[i]
+        if (typeof c.text === "string" && c.text !== "") texts.push(c.text)
+        collect(c)
+      }
+    }
+    collect(errors)
+    verify(texts.indexOf("1 error sent by other players (not counted)") >= 0, json(texts))
+    // No raw detail, and no account name, anywhere in the view.
+    for (var t = 0; t < texts.length; t++) verify(texts[t].indexOf("FakeChar") < 0 && texts[t].indexOf("account") < 0, texts[t])
   }
 
   // A missing client's two remediations (1n2p.43): forgetting it is a button; the purge,
@@ -642,7 +677,7 @@ TestCase {
         "autoFixable": false, "explain": null, "forced": false }] }])
     findChild(view, "scope").choose("classic")
     compare(view.filter, "classic")
-    for (var n = 1; n <= 5; n++) {
+    for (var n = 1; n <= 6; n++) {
       keyClick(String(n))
       var card = findChild(content(), "stateNotice")
       verify(card !== null && card.visible, "a card on view " + n)
@@ -674,7 +709,7 @@ TestCase {
           "remediation": { "command": purge.join(" "), "argv": purge, "destructive": true } }
       ] }] } })
     svc.targets = reduced.targets
-    keyClick("4")
+    keyClick("5")
     compare(view.view, "issues")
     // The forget row: a button (Enter runs the fix), nothing to copy.
     verify(findChild(row("issueRow", 0), "enterHint").visible)
@@ -718,7 +753,7 @@ TestCase {
     var reduced = statusIssues([credentialIssue()], [credentialIssue()])
     svc.targets = reduced.targets
     svc.machineIssues = reduced.issues
-    keyClick("4")
+    keyClick("5")
     compare(view.view, "issues")
     // The machine's row first, then retail's: each previews its repair.
     for (var i = 0; i < 2; i++) {
@@ -751,7 +786,7 @@ TestCase {
     svc.targets = statusIssues([{ "id": fm, "severity": "P0", "title": "An interrupted change was started by a newer omaddons", "addon": null,
       "remediation": { "command": forced.join(" "), "argv": forced, "destructive": true }, "auto_fixable": false,
       "explain": { "command": explain.join(" "), "argv": explain } }]).targets
-    keyClick("4")
+    keyClick("5")
     var r = row("issueRow", 0)
     verify(findChild(r, "consentNote").visible)
     compare(findChild(r, "consentNote").text, "A deliberate repair: read why (Enter), then run this in a terminal:")
@@ -801,7 +836,7 @@ TestCase {
       { "id": "fm-b", "severity": "P3", "title": "Foo's folder belongs to another addon", "addon": "Foo",
         "remediation": { "command": forced.join(" "), "argv": forced, "destructive": false } }
     ]).targets
-    keyClick("4")
+    keyClick("5")
     var commands = [gc, forced]
     for (var i = 0; i < 2; i++) {
       var r = row("issueRow", i)
@@ -820,50 +855,67 @@ TestCase {
     compare(svc.explains.length, 0)
   }
 
-  function test_lua_errors_show_strict_text_and_received_only_as_a_count() {
-    issuesReady(false)
-    var foo = row("issueRow", 3)
-    compare(findChild(foo, "headline").text, "Foo")
-    verify(findChild(foo, "counts").text.indexOf("v2 available (may fix it)") > 0)
-    var texts = []
-    var collect = function(item) {
-      for (var i = 0; i < item.children.length; i++) {
-        var c = item.children[i]
-        if (c.text !== undefined && typeof c.text === "string") texts.push(c.text)
-        collect(c)
-      }
-    }
-    collect(content())
-    verify(texts.indexOf("Foo/boss.lua:3: custom message (25 characters, hidden)") >= 0, json(texts))
-    verify(texts.indexOf("1 error received from another player (not counted)") >= 0, json(texts))
-    // The client's section, by the name `status` gives (this stub gives none: its id).
-    verify(texts.indexOf("Lua errors on retail") >= 0, json(texts))
-  }
-
-  function test_enter_updates_the_likely_source_or_shows_its_stack() {
-    issuesReady(false)
-    for (var i = 0; i < 3; i++) keyClick("j")
-    keyClick(Qt.Key_Return)
-    // What the Installed rows show of Foo on retail, for the update's preview.
+  // Enter opens the addon's error page; `u` updates it from the view or the page; `y`
+  // copies a report that holds no raw detail (1n2p.27).
+  function test_enter_opens_the_error_page_and_u_and_y_act_from_view_and_page() {
+    errorsReady(false)
+    // `u` on Foo (an update waits): the update, with what Addons shows of Foo.
+    keyClick("j")
+    keyClick("k")
+    compare(view.cursor, 0)
+    keyClick("u")
     compare(json(svc.runs[0]), json(["update_addon", { "target": "retail", "addon": "Foo" }, "Update Foo",
       [shownRow("k-retail", "retail", "Foo", "v1", "v1")]]))
+    // `y`: the report, strict text only, and the flash says what was copied.
+    keyClick("y")
+    compare(svc.copies.length, 1)
+    var report = svc.copies[0][2]
+    verify(report.indexOf("Foo v1 on retail") === 0, report)
+    verify(report.indexOf("attempt to index a nil value (field 'x')") > 0, report)
+    verify(report.indexOf("a message from the addon (25 characters)") > 0, report)
+    compare(findChild(content(), "copyFlash").text, "Copied the report on Foo")
+    // Bar (no update waits): `u` does nothing.
     keyClick("j")
-    keyClick(Qt.Key_Return)
+    keyClick("u")
     compare(svc.runs.length, 1)
-    compare(findChild(row("issueRow", 4), "stack").count, 1)
+    // Enter on Foo: its page, every error with its stack, the addon's own frames bold.
+    keyClick("k")
+    keyClick(Qt.Key_Return)
+    compare(view.pages.length, 1)
+    compare(findChild(view, "backButton").text, "Errors")
+    var page = findChild(view, "page").item
+    compare(findChild(page, "pageTitle").text, "Foo")
+    compare(findChild(page, "errors").count, 2)
+    var first = findChild(page, "errors").itemAt(0)
+    compare(findChild(first, "errorMessage").text, "attempt to index a nil value (field 'x')")
+    compare(findChild(first, "errorMeta").text, "Foo/core.lua:12 · 2 times · new")
+    var frame = findChild(first, "stack").itemAt(0)
+    compare([frame.text, frame.font.bold], ["Foo/core.lua:12: in function 'Refresh'", true])
+    compare(findChild(findChild(page, "errors").itemAt(1), "errorMessage").text, "a message from the addon (25 characters)")
+    // The page's keys: `u` updates, `y` copies, `r` the restore chooser.
+    keyClick("u")
+    compare(json(svc.runs[1].slice(0, 3)), json(["update_addon", { "target": "retail", "addon": "Foo" }, "Update Foo"]))
+    keyClick("y")
+    compare(svc.copies.length, 2)
+    // Esc goes back to the view.
+    keyClick(Qt.Key_Escape)
+    compare(view.pages.length, 0)
   }
 
-  function test_raw_details_are_a_button_on_the_cursored_row_and_show_for_that_row_only() {
-    issuesReady(false)
-    var foo = row("issueRow", 3)
-    verify(!findChild(foo, "rawButton").visible, "no button before the cursor reaches the row")
-    for (var i = 0; i < 3; i++) keyClick("j")
-    verify(findChild(foo, "rawButton").visible)
-    compare(findChild(foo, "rawButton").text, "Raw details…")
-    findChild(foo, "rawButton").clicked()
+  // Raw details only behind their labelled button on the page, read for that addon only.
+  function test_raw_details_are_on_the_page_behind_their_label_and_for_that_addon_only() {
+    errorsReady(false)
+    keyClick("j")
+    keyClick("k")
+    keyClick(Qt.Key_Return)
+    var page = findChild(view, "page").item
+    var button = findChild(page, "rawButton")
+    compare(button.text, "Show raw details…")
+    verify(!findChild(page, "raw").visible)
+    button.clicked()
     compare(json(svc.rawReads), json([["retail", "Foo"]]))
-    verify(findChild(foo, "raw").visible)
-    compare(findChild(foo, "rawLabel").text, "raw details: may contain other players' names and your own code")
+    verify(findChild(page, "raw").visible)
+    compare(findChild(page, "rawLabel").text, "Raw details may contain other players' names and your own code.")
     var raw = function(addon) {
       var env = errorsEnvelope(false)
       env.data.raw_details = true
@@ -871,27 +923,21 @@ TestCase {
       return { "selection": { "target": "retail", "addon": addon }, "data": Model.reduceErrors(env) }
     }
     svc.rawErrors = raw("Bar")
-    compare(findChild(foo, "rawLines").count, 0, "a late read for another row is not shown")
+    compare(findChild(page, "rawLines").count, 0, "a late read for another addon is not shown")
     svc.rawErrors = raw("Foo")
-    compare(findChild(foo, "rawLines").count, 1)
-    compare(findChild(foo, "rawLines").itemAt(0).text, "[Foo/boss.lua]:3: FakeChar pulled")
-    // The row showing them keeps its button, away from the cursor too.
-    keyClick("k")
-    verify(findChild(foo, "rawButton").visible)
-    compare(findChild(foo, "rawButton").text, "Hide raw details")
-    findChild(foo, "rawButton").clicked()
+    compare(findChild(page, "rawLines").count, 1)
+    compare(findChild(page, "rawLines").itemAt(0).text, "[Foo/boss.lua]:3: FakeChar pulled")
+    // The report never holds them, raw view open or not.
+    keyClick("y")
+    verify(svc.copies[0][2].indexOf("FakeChar") < 0, svc.copies[0][2])
+    compare(button.text, "Hide raw details")
+    button.clicked()
     compare(svc.rawClears, 1)
-    verify(!findChild(foo, "raw").visible)
-    verify(!findChild(foo, "rawButton").visible)
-    // `s` is Search now (design doc §3.3), never raw details.
-    keyClick("j")
-    keyClick("s")
-    compare(json(svc.rawReads), json([["retail", "Foo"]]))
-    compare(view.view, "search")
+    verify(!findChild(page, "raw").visible)
   }
 
   function test_d_dismisses_what_the_panel_showed_and_a_stale_one_says_so() {
-    issuesReady(false)
+    errorsReady(false)
     verify(findChild(content(), "dismiss").visible)
     keyClick("d")
     compare(json(svc.dismissals[0]), json([{ "target": "retail", "token": "pc1:" + "2".repeat(64) }]))
@@ -906,7 +952,7 @@ TestCase {
   }
 
   function test_an_incomplete_read_says_so() {
-    issuesReady(true)
+    errorsReady(true)
     var texts = []
     var lines = findChild(content(), "sections")
     verify(lines !== null)
@@ -917,7 +963,7 @@ TestCase {
       }
     }
     all(content())
-    verify(texts.indexOf("Incomplete read (the game may be writing)") >= 0, json(texts))
+    verify(texts.indexOf("Some errors couldn't be read: the game was writing.") >= 0, json(texts))
   }
 
   // ------------------------------------------------------------- Search
@@ -1021,7 +1067,7 @@ TestCase {
   function backupsReady() {
     svc.backups = Model.reduceBackups(backupsEnvelope())
     view.nowMs = Date.parse("2100-01-01T00:00:00Z")
-    keyClick("5")
+    keyClick("6")
     compare(view.view, "backups")
   }
 

@@ -11,13 +11,8 @@ import "../Model.js" as Model
 // confirmed run bound to that preview, M4-D44), runs another fix through the classifier
 // (destructive ones through the confirm dialog), or shows the doctor's explanation; a
 // repair that needs deliberate consent (`--force --yes`) shows its terminal command
-// instead, never a button. Each client's Lua errors
-// from `errors` (strict text only: a custom message shows its length, received reports
-// only their count), Enter updating the likely source or showing its stack, `u`
-// updating it, a button on the cursored row showing its raw details under a label that
-// says what they may hold; the run warnings with their fixes. `d` (frame-wide)
-// dismisses what the panel showed, bound to it (M3-D46). The keys are Model.KEYMAP's
-// issues rows.
+// instead, never a button; the run warnings with their fixes. Lua errors have their own
+// view (ErrorsView.qml, 1n2p.27). The keys are Model.KEYMAP's issues rows.
 Item {
   id: root
 
@@ -25,21 +20,16 @@ Item {
   readonly property var svc: frame ? frame.svc : null
   readonly property string filter: frame ? frame.filter : ""
   readonly property var sections: Model.issueSections(svc && Array.isArray(svc.targets) ? svc.targets : [],
-    svc ? svc.errors : null, svc && Array.isArray(svc.statusWarnings) ? svc.statusWarnings : [], filter,
+    svc && Array.isArray(svc.statusWarnings) ? svc.statusWarnings : [], filter,
     svc && Array.isArray(svc.machineIssues) ? svc.machineIssues : [])
   readonly property var rows: Model.issueRows(sections)
-  // What the view says around its rows (design doc §7): checking, nothing to fix, errors
-  // read only in part, a read that failed.
+  // What the view says around its rows (design doc §7): checking, nothing to fix.
   readonly property var viewState: Model.viewState("issues", { "service": svc, "filter": filter, "rows": rows.length,
-    "allRows": filter ? Model.issueRows(Model.issueSections(svc && Array.isArray(svc.targets) ? svc.targets : [], svc ? svc.errors : null,
+    "allRows": filter ? Model.issueRows(Model.issueSections(svc && Array.isArray(svc.targets) ? svc.targets : [],
       svc && Array.isArray(svc.statusWarnings) ? svc.statusWarnings : [], "", svc && Array.isArray(svc.machineIssues) ? svc.machineIssues : [])).length
       : rows.length, "nowMs": frame ? frame.nowMs : Date.now() })
   readonly property int rowCount: rows.length
   readonly property bool typing: false
-  readonly property var plan: Model.dismissPlan(svc ? svc.errors : null, filter)
-  // The addon row whose stack (Enter) or raw details (its button) are open, by key.
-  property string expanded: ""
-  property string rawOpen: ""
   // The problem row whose explanation (`doctor explain`) is open, by key.
   property string explainOpen: ""
   // The row whose command `y` copied last, by key.
@@ -63,16 +53,6 @@ Item {
       if (row) activate(row)
       return true
     }
-    // `u`: the update of the addon a Lua error comes from, when one is waiting.
-    if (name === "update") {
-      if (row && row.kind === "addon" && row.updateAvailable) activate(row)
-      return true
-    }
-    // `r`: the erroring addon's settings from a backup (the restore chooser, F9).
-    if (name === "restore") {
-      if (row && row.kind === "addon") frame.openChooser({ "target": row.target, "addon": row.addon })
-      return true
-    }
     // `y`: the command a row shows instead of running (a purge, a forced repair), copied
     // to run from a terminal.
     if (name === "copy") {
@@ -83,15 +63,6 @@ Item {
   }
 
   function activate(row) {
-    if (row.kind === "addon") {
-      if (row.updateAvailable) {
-        if (canChange) frame.report(svc.run("update_addon", { "target": row.target, "addon": row.addon }, "Update " + row.addon,
-          Model.shownForAddon(svc.lists, row.target, row.addon)))
-      } else {
-        expanded = expanded === row.key ? "" : row.key
-      }
-      return
-    }
     // A repair the doctor makes: its preview, through the bound template (never the
     // remediation argv the CLI printed).
     if (row.kind === "problem" && row.fix) {
@@ -99,7 +70,7 @@ Item {
       return
     }
     if (row.action) {
-      frame.runCli(row.action, row.kind === "capture" ? "Install BugGrabber" : "Fix")
+      frame.runCli(row.action, "Fix")
       return
     }
     // No fix to run here (a forced repair, a command for a terminal): why, from the doctor.
@@ -116,16 +87,6 @@ Item {
     }
     explainOpen = row.key
     svc.readExplanation(row.key, row.explain.argv)
-  }
-
-  function toggleRaw(row) {
-    if (rawOpen === row.key) {
-      rawOpen = ""
-      svc.clearRawErrors()
-      return
-    }
-    rawOpen = row.key
-    svc.readRawErrors(row.target, row.addon)
   }
 
   function select(index) {
@@ -147,20 +108,6 @@ Item {
       onAction: function(name) { if (root.frame) root.frame.stateAction(name) }
     }
 
-    Button {
-      objectName: "dismiss"
-      visible: root.plan.length > 0
-      text: Model.withKey("Dismiss", "dismiss", "issues")
-      tooltipText: Model.keyTip("dismiss", "issues")
-      enabled: root.canChange
-      opacity: enabled ? 1.0 : 0.4
-      bordered: true
-      foreground: root.foreground
-      fontFamily: root.fontFamily
-      fontSize: Style.font.bodySmall
-      onClicked: root.frame.dismissErrors()
-    }
-
     Repeater {
       objectName: "sections"
       model: root.sections
@@ -171,7 +118,7 @@ Item {
         width: column.width
         spacing: Style.spacing.sm
 
-        // "Problems", "Lua errors on <client>", "Run warnings".
+        // "Problems", "Run warnings".
         SectionHeader {
           objectName: "issuesSection"
           width: parent.width
@@ -190,9 +137,6 @@ Item {
             objectName: "issueRow_" + modelData.index
             width: section.width
             spacing: Style.spacing.sm
-            readonly property bool open: root.expanded === modelData.key
-            readonly property bool rawShown: root.rawOpen === modelData.key
-            readonly property var raw: rawShown ? Model.rawLines(root.svc ? root.svc.rawErrors : null, modelData) : null
             // The doctor's explanation of this row only: its lines, or why it could not
             // be read (view-bound, as raw details).
             readonly property bool explainShown: root.explainOpen === modelData.key
@@ -219,8 +163,7 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: Style.spacing.sm
 
-                // The row's headline: a problem's severity and title, an addon's counts
-                // and likely-source confidence, a missing BugGrabber, a warning.
+                // The row's headline: a problem's severity and title, or a warning.
                 Row {
                   spacing: Style.spacing.lg
 
@@ -238,21 +181,7 @@ Item {
                     color: root.foreground
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.body
-                    font.bold: entry.modelData.kind === "addon"
-                    text: entry.modelData.kind === "addon" ? entry.modelData.addon : entry.modelData.title
-                  }
-
-                  PlainLabel {
-                    objectName: "counts"
-                    visible: entry.modelData.kind === "addon"
-                    color: root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
-                    text: entry.modelData.kind === "addon"
-                      ? entry.modelData.count + "×" + (entry.modelData["new"] > 0 ? "  " + entry.modelData["new"] + " new" : "")
-                        + "  likely source " + Model.confidenceDots(entry.modelData.confidence)
-                        + (entry.modelData.updateAvailable ? "  · " + (entry.modelData.latest || "") + " available (may fix it)" : "")
-                      : ""
+                    text: entry.modelData.title
                   }
 
                   // Problems of every client mix under All: each names its client by its
@@ -264,22 +193,6 @@ Item {
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
                     text: entry.modelData.client || ""
-                  }
-                }
-
-                // Each error's strict line (an addon), or the command shown as text
-                // when it is no button.
-                Repeater {
-                  model: entry.modelData.kind === "addon" ? entry.modelData.lines : []
-
-                  PlainLabel {
-                    required property string modelData
-                    width: rowColumn.width
-                    elide: Text.ElideRight
-                    color: root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
-                    text: modelData
                   }
                 }
 
@@ -334,12 +247,12 @@ Item {
                 }
 
                 // A problem's hint is its row's (Model.problemRow: previews the repair,
-                // runs the fix, explains it); a capture or warning row's says what Enter runs.
+                // runs the fix, explains it); a warning row's says what Enter runs.
                 PlainLabel {
                   objectName: "enterHint"
                   visible: entry.modelData.kind === "problem" ? !!entry.modelData.hint : !!entry.modelData.action
                   text: entry.modelData.kind === "problem" ? (entry.modelData.hint || "")
-                    : Model.keyHint("enter", "issues") + (entry.modelData.kind === "capture" ? " installs it" : " runs the fix")
+                    : Model.keyHint("enter", "issues") + " runs the fix"
                   color: root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
@@ -399,85 +312,10 @@ Item {
               }
             }
 
-            // Enter on an addon without an update: its strict stack.
-            Repeater {
-              objectName: "stack"
-              model: entry.open ? entry.modelData.stack : []
-
-              PlainLabel {
-                required property string modelData
-                width: entry.width - Style.spacing.lg
-                x: Style.spacing.lg
-                elide: Text.ElideRight
-                color: root.dim
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-                text: modelData
-              }
-            }
-
-            // An addon's raw details, from the row under the cursor (or the one showing
-            // them): a button, no key (design doc §3.3 moved `s` to Search).
-            Button {
-              objectName: "rawButton"
-              x: Style.spacing.lg
-              visible: entry.modelData.kind === "addon" && (entry.rawShown || (!!root.frame
-                && root.frame.cursorActive && root.frame.cursor === entry.modelData.index))
-              text: entry.rawShown ? "Hide raw details" : "Raw details…"
-              tooltipText: "Raw details may contain other players' names and your own code"
-              bordered: true
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              fontSize: Style.font.caption
-              onClicked: root.toggleRaw(entry.modelData)
-            }
-
-            // Raw details, under the label that says what they may hold.
-            Column {
-              objectName: "raw"
-              visible: entry.rawShown
-              width: entry.width
-              leftPadding: Style.spacing.lg
-              spacing: Style.spacing.sm
-
-              Text {
-                objectName: "rawLabel"
-                textFormat: Text.PlainText
-                text: "raw details: may contain other players' names and your own code"
-                color: root.urgent
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-                font.bold: true
-              }
-
-              Repeater {
-                objectName: "rawLines"
-                model: entry.raw || []
-
-                PlainLabel {
-                  required property string modelData
-                  width: entry.width - Style.spacing.lg * 2
-                  wrapMode: Text.WrapAnywhere
-                  color: root.foreground
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  text: modelData
-                }
-              }
-
-              Text {
-                visible: entry.rawShown && entry.raw === null
-                textFormat: Text.PlainText
-                text: "Reading…"
-                color: root.dim
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-              }
-            }
           }
         }
 
-        // Received reports (a count, never a name), an incomplete read.
+        // A section's lines, when it has some.
         Repeater {
           model: section.modelData.lines
 

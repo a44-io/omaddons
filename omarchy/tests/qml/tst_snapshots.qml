@@ -829,19 +829,34 @@ TestCase {
     shoot("issues-problem")
   }
 
-  function test_issues_lua_errors() {
+  // ---------------------------------------------------------------- Errors (1n2p.27)
+
+  function test_errors_lua_errors() {
     var scene = everyday()
     scene.status = the("status-errors")
-    open(scene, "issues")
-    shoot("issues-lua-errors")
+    open(scene, "errors")
+    frame.cursor = 0
+    frame.cursorActive = true
+    shoot("errors-lua-errors")
   }
 
-  function test_issues_partial_read() {
+  function test_errors_partial_read() {
     var scene = everyday()
     scene.status = the("status-errors-partial")
     scene.errors = the("errors-partial")
-    open(scene, "issues")
-    shoot("issues-partial-read")
+    open(scene, "errors")
+    shoot("errors-partial-read")
+  }
+
+  // Enter on Foo: its page, every error and its stack (§2.4).
+  function test_errors_page() {
+    var scene = everyday()
+    scene.status = the("status-errors")
+    open(scene, "errors")
+    var errors = frame.currentView
+    verify(errors.rows.length > 0)
+    errors.openPage(errors.rows[0])
+    shoot("errors-page")
   }
 
   function test_issues_long() {
@@ -861,7 +876,7 @@ TestCase {
     })
     open(scene, "issues")
     // Under Qt's own sort (omad-1tnk): the problems in the order status ranked them.
-    var titles = Model.issueRows(Model.issueSections(service.targets, null, [], "", service.machineIssues))
+    var titles = Model.issueRows(Model.issueSections(service.targets, [], "", service.machineIssues))
       .filter(function(r) { return r.kind === "problem" }).map(function(r) { return r.title })
     compare(titles.length, 24)
     for (var i = 0; i < titles.length; i++)
@@ -1175,7 +1190,9 @@ TestCase {
       return s
     }
     var withData = {}
-    withData[view === "updates" || view === "installed" ? "lists" : view] = data[view === "updates" || view === "installed" ? "lists" : view]
+    // Issues' data is `status`'s answer (1n2p.27); every other view's its own read.
+    if (view === "issues") withData.summary = {}
+    else withData[view === "updates" || view === "installed" ? "lists" : view] = data[view === "updates" || view === "installed" ? "lists" : view]
     var cell = function(name, fields, input) {
       var i = { "service": service(fields), "filter": "", "query": view === "search" ? "dbm" : "", "rows": 0, "allRows": 0, "nowMs": nowMs }
       for (var key in input || {}) i[key] = input[key]
@@ -1199,7 +1216,7 @@ TestCase {
       cells.push(cell("offline, items failed", Object.assign({ "lastCheck": { "trouble": true, "failed": 2 } }, withData), { "rows": 3, "allRows": 3 }))
       cells.push(cell("stale", withData, { "rows": 3, "allRows": 3, "filter": "retail" }))
     }
-    if (view === "issues") cells.push(cell("partial", withData, { "rows": 3, "allRows": 3 }))
+    if (view === "errors") cells.push(cell("partial", withData, { "rows": 3, "allRows": 3 }))
     if (view === "backups") cells.push(cell("stale", withData, { "rows": 2, "allRows": 2, "filter": "retail" }))
     if (view === "search") cells.push(cell("skipped sources", withData, { "rows": 2, "allRows": 2 }))
     return cells
@@ -1218,6 +1235,7 @@ TestCase {
   function test_states_updates() { shootStates("updates") }
   function test_states_installed() { shootStates("installed") }
   function test_states_search() { shootStates("search") }
+  function test_states_errors() { shootStates("errors") }
   function test_states_issues() { shootStates("issues") }
   function test_states_backups() { shootStates("backups") }
 

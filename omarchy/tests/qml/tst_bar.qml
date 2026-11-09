@@ -35,6 +35,8 @@ TestCase {
       property var panels: ({})
       property int checks: 0
       property string requestedView: ""
+      // What the middle click reads to pick the most urgent view (design doc §2.5).
+      property var summary: ({ "errors": { "new": 0 }, "issuesUrgent": 1 })
 
       function applySettings(settings) { pushed = pushed.concat([settings]) }
       function setPanelOpen(key, open) {
@@ -201,8 +203,14 @@ TestCase {
     verify(!widget.opened)
     button.pressed(Qt.MiddleButton)
     verify(widget.opened)
-    // The panel's frame took the requested view.
+    // The panel's frame took the most urgent view: a P1 problem, no new error.
     compare(part(widget, "view").view, "issues")
     compare(svc.requestedView, "")
+    // New Lua errors come first.
+    button.pressed(Qt.LeftButton)
+    verify(!widget.opened)
+    svc.summary = { "errors": { "new": 2 }, "issuesUrgent": 1 }
+    button.pressed(Qt.MiddleButton)
+    compare(part(widget, "view").view, "errors")
   }
 }

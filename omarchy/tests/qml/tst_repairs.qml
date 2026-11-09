@@ -152,7 +152,7 @@ TestCase {
 
   // The Issues view, its reads answered.
   function showIssues(statusName) {
-    keyClick("4")
+    keyClick("5")
     compare(frame.view, "issues")
     settle(statusName)
   }
@@ -178,7 +178,7 @@ TestCase {
 
   // The credential repair asked for as the Issues row asks: its preview's launch.
   function previewCredential() {
-    var rows = Model.issueRows(Model.issueSections(service.targets, null, [], "", service.machineIssues))
+    var rows = Model.issueRows(Model.issueSections(service.targets, [], "", service.machineIssues))
     var row = rows.filter(function(r) { return r.fix && r.fix.slots.fm === credentialFm })[0]
     verify(!!row, "the credential row: " + JSON.stringify(rows))
     compare(service.run(row.fix.template, row.fix.slots, row.fix.label), "")

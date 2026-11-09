@@ -71,7 +71,7 @@ Item {
   // A view (and a page) may offer `frame` (set on load), `rowCount`, `rowItem(i)`,
   // `typing`, `focusSearch()`, `escapeFilter()` (true when it took Esc: a filter it cleared)
   // and `handleKey(action, cursor)`, which gets KEYMAP's action names.
-  property var viewComponents: ({ "updates": updatesView, "installed": installedView, "issues": issuesView,
+  property var viewComponents: ({ "updates": updatesView, "installed": installedView, "errors": errorsView, "issues": issuesView,
     "backups": backupsView, "search": searchView })
   // Frame-wide view actions a later task registers (backup, dismiss, …): action →
   // function(frame).
@@ -1362,6 +1362,11 @@ Item {
   Component {
     id: issuesView
     IssuesView {}
+  }
+
+  Component {
+    id: errorsView
+    ErrorsView {}
   }
 
   Component {

@@ -1271,8 +1271,13 @@ function reduceErrors(env) {
             var c = str(attribution.confidence)
             if ((CONFIDENCE_RANK[c] || 0) > (CONFIDENCE_RANK[confidence] || 0)) confidence = c
             var raw = e.raw && typeof e.raw === "object" ? e.raw : null
+            var seen = e.last_seen && typeof e.last_seen === "object" ? e.last_seen : {}
             return {
               "fingerprint": str(e.fingerprint),
+              // How the likely source was found (`protected_call` is a blocked call).
+              "method": str(attribution.method),
+              "lastSeen": str(seen.at),
+              "sessions": num(e.sessions),
               "messageKind": str(e.message_kind),
               "message": strOrNull(e.message),
               "messageChars": typeof e.message_chars === "number" ? e.message_chars : null,
@@ -1285,10 +1290,12 @@ function reduceErrors(env) {
               "raw": raw ? { "message": strOrNull(raw.message), "stack": stringList(raw.stack), "locals": strOrNull(raw.locals) } : null
             }
           })
+          var lastSeen = a.last_seen && typeof a.last_seen === "object" ? str(a.last_seen.at) : ""
           return {
             "addon": str(a.addon),
             "managed": a.managed === true,
             "kind": str(a.kind),
+            "lastSeen": lastSeen,
             "version": strOrNull(a.version),
             "latest": strOrNull(latest.version),
             "updateAvailable": latest.status === "update_available",
@@ -1677,10 +1684,10 @@ function fixText(env) {
 // The panel's views, in tab order (design doc §2.1: Errors and History join with
 // their views, .27 and .30): h/l step through them, the digits jump. The ids stay
 // what IPC's `show <view>` takes; "installed" is titled Addons (§2.1, decided).
-var VIEWS = ["updates", "installed", "search", "issues", "backups"]
-var VIEW_TITLES = { "updates": "Updates", "installed": "Addons", "search": "Search", "issues": "Issues", "backups": "Backups" }
+var VIEWS = ["updates", "installed", "search", "errors", "issues", "backups"]
+var VIEW_TITLES = { "updates": "Updates", "installed": "Addons", "search": "Search", "errors": "Errors", "issues": "Issues", "backups": "Backups" }
 // Each view's glyph (§5.4), which the tabs show alone below 480 px (§2.1).
-var VIEW_GLYPHS = { "updates": 0xF0CE1, "installed": 0xF0431, "search": 0xF0349, "issues": 0xF0026, "backups": 0xF003C }
+var VIEW_GLYPHS = { "updates": 0xF0CE1, "installed": 0xF0431, "search": 0xF0349, "errors": 0xF00E4, "issues": 0xF0026, "backups": 0xF003C }
 
 // ------------------------------------------------------------------ the key map (design doc §3)
 
@@ -1697,8 +1704,10 @@ var KEY_CONTEXTS = [
   { "id": "updates", "title": "Updates" },
   { "id": "installed", "title": "Addons" },
   { "id": "search", "title": "Search" },
+  { "id": "errors", "title": "Errors" },
   { "id": "issues", "title": "Issues" },
   { "id": "backups", "title": "Backups" },
+  { "id": "page", "title": "Error page" },
   { "id": "field", "title": "Search box" },
   { "id": "filter", "title": "Filter box" },
   { "id": "card", "title": "Problem card" },
@@ -1718,7 +1727,7 @@ var KEY_CONTEXTS = [
 // BEGIN KEYMAP: checked by tests/omarchy_widget.rs against README's key table
 var KEYMAP = [
   { "keys": ["h", "l", "Left", "Right"], "context": "panel", "action": "view_step", "label": "previous or next view (on a page, h goes back)", "hint": "h l" },
-  { "keys": ["1", "2", "3", "4", "5"], "context": "panel", "action": "view", "label": "view 1 to 5: Updates, Addons, Search, Issues, Backups", "hint": "1–5" },
+  { "keys": ["1", "2", "3", "4", "5", "6"], "context": "panel", "action": "view", "label": "view 1 to 6: Updates, Addons, Search, Errors, Issues, Backups", "hint": "1–6" },
   { "keys": ["?"], "context": "panel", "action": "help", "label": "this key reference", "hint": "?" },
   { "keys": ["z"], "context": "panel", "action": "zoom", "label": "fill the screen, and back", "hint": "z" },
   { "keys": ["Ctrl+=", "Ctrl+-", "Ctrl+0"], "context": "panel", "action": "text_zoom", "label": "bigger or smaller text, and back to normal (or Ctrl+wheel)", "hint": "Ctrl+= Ctrl+-" },
@@ -1746,13 +1755,18 @@ var KEYMAP = [
   { "keys": ["r"], "context": "installed", "action": "restore", "label": "restore its settings from a backup", "hint": "r", "nothing": "No settings to restore here" },
   { "keys": ["/"], "context": "installed", "action": "filter", "label": "filter the list by name, source or state", "hint": "/", "nothing": "Nothing to filter here" },
   { "keys": ["S"], "context": "installed", "action": "sort", "label": "sort by name, by recently updated, or by source", "hint": "S", "nothing": "Nothing to sort here" },
-  { "keys": ["Enter", "Space"], "context": "issues", "action": "enter", "label": "preview a repair, run the fix, or show why; on a Lua error, update its addon or show the stack", "hint": "Enter" },
-  { "keys": ["u"], "context": "issues", "action": "update", "label": "update the addon a Lua error comes from", "hint": "u", "nothing": "Nothing to update here" },
-  { "keys": ["r"], "context": "issues", "action": "restore", "label": "restore the erroring addon's settings from a backup", "hint": "r", "nothing": "No settings to restore here" },
+  { "keys": ["Enter", "Space"], "context": "errors", "action": "enter", "label": "show the addon's errors and their stacks", "hint": "Enter" },
+  { "keys": ["u"], "context": "errors", "action": "update", "label": "update the addon the errors come from, when one is waiting", "hint": "u", "nothing": "Nothing to update here" },
+  { "keys": ["r"], "context": "errors", "action": "restore", "label": "restore the addon's settings from a backup", "hint": "r", "nothing": "No settings to restore here" },
+  { "keys": ["y"], "context": "errors", "action": "copy", "label": "copy a report of its errors, to send its author", "hint": "y", "nothing": "Nothing to copy here" },
+  { "keys": ["Enter", "Space"], "context": "issues", "action": "enter", "label": "preview a repair, run the fix, or show why", "hint": "Enter" },
   { "keys": ["y"], "context": "issues", "action": "copy", "label": "copy the command a row shows, to run in a terminal", "hint": "y", "nothing": "Nothing to copy here" },
   { "keys": ["Enter", "Space"], "context": "backups", "action": "enter", "label": "restore from this backup: choose what", "hint": "Enter" },
   { "keys": ["r"], "context": "backups", "action": "restore", "label": "restore from this backup: choose what", "hint": "r", "nothing": "No settings to restore here" },
   { "keys": ["x"], "context": "backups", "action": "remove", "label": "delete this backup, after a confirmation", "hint": "x", "nothing": "Nothing to remove here" },
+  { "keys": ["u"], "context": "page", "action": "update", "label": "update the addon, when one is waiting", "hint": "u", "nothing": "Nothing to update here" },
+  { "keys": ["r"], "context": "page", "action": "restore", "label": "restore the addon's settings from a backup", "hint": "r", "nothing": "No settings to restore here" },
+  { "keys": ["y"], "context": "page", "action": "copy", "label": "copy a report of its errors", "hint": "y", "nothing": "Nothing to copy here" },
   { "keys": ["Enter", "Space"], "context": "search", "action": "enter", "label": "install the result", "hint": "Enter" },
   { "keys": ["i"], "context": "search", "action": "install", "label": "install the result", "hint": "i", "nothing": "Nothing to install here" },
   { "keys": ["Enter"], "context": "field", "action": "search", "label": "search", "hint": "Enter" },
@@ -2096,9 +2110,9 @@ function scopeOptions(targets) {
 }
 
 // Each tab's count in the scope (§2.1), `{count, urgent}` (a zero count is not shown):
-// Updates its updates; Issues its problems and, until the Errors view (.27) takes
-// them, its new Lua errors, urgent for a P0 or P1 problem or a new error; Backups the
-// clients `status` asks to back up (`backup_create`, no checkpoint in 7 days).
+// Updates its updates; Errors its new Lua errors, urgent; Issues its problems, urgent
+// for a P0 or P1; Backups the clients `status` asks to back up (`backup_create`, no
+// checkpoint in 7 days).
 function viewCounts(targets, filter, commands, machineIssues) {
   var facts = scopeFacts(targets, filter, machineIssues)
   var scoped = scopeTargets(targets, filter).map(function(t) { return t.id })
@@ -2114,7 +2128,9 @@ function viewCounts(targets, filter, commands, machineIssues) {
     "updates": { "count": facts.updates, "urgent": false },
     "installed": none,
     "search": none,
-    "issues": { "count": facts.problems + facts.errors, "urgent": facts.urgent > 0 || facts.errors > 0 },
+    // New Lua errors, always urgent (§2.1); the problems in Issues, urgent for a P0 or P1.
+    "errors": { "count": facts.errors, "urgent": facts.errors > 0 },
+    "issues": { "count": facts.problems, "urgent": facts.urgent > 0 },
     "backups": { "count": backups, "urgent": false }
   }
 }
@@ -2345,14 +2361,15 @@ function oldestCheck(statusTargets, filter) {
 // check, the status's targets; never a message's text.
 
 // The resource each view reads.
-var VIEW_RESOURCES = { "updates": "list", "installed": "list", "search": "search", "issues": "errors", "backups": "backups" }
+// Issues lists `status`'s problems and its warnings: the frame's own read.
+var VIEW_RESOURCES = { "updates": "list", "installed": "list", "search": "search", "errors": "errors", "issues": "status", "backups": "backups" }
 // The codes that mean a source did not answer: on the last check's warnings (the check
 // then showed what it remembered) or its failed items.
 var SOURCE_TROUBLE = ["network", "http_status", "rate_limited", "offline", "stale_check"]
 // A state's glyph (design doc §5.4): loading spins, a failure alerts, an empty view shows
 // its own (all good is a check).
 var STATE_GLYPHS = { "firstLoad": 0xF04E6, "failed": 0xF0028, "filteredEmpty": 0xF0236 }
-var EMPTY_GLYPHS = { "updates": 0xF05E0, "installed": 0xF0431, "search": 0xF0349, "issues": 0xF05E0, "backups": 0xF003C }
+var EMPTY_GLYPHS = { "updates": 0xF05E0, "installed": 0xF0431, "search": 0xF0349, "errors": 0xF05E0, "issues": 0xF05E0, "backups": 0xF003C }
 
 // The last `outdated` run (Check now, or the background check), as the Updates view
 // qualifies its rows: when it ran, and whether a source did not answer, from the codes
@@ -2410,7 +2427,9 @@ function clockText(iso) {
 // it was asked with.
 function viewHas(view, s, query, filter) {
   if (view === "updates" || view === "installed") return !!s.lists
-  if (view === "issues") return !!s.errors
+  if (view === "errors") return !!s.errors
+  // Issues reads nothing of its own: `status`'s answer is its data.
+  if (view === "issues") return !!s.summary
   if (view === "backups") return !!s.backups
   if (view === "search") {
     var selection = s.search && s.search.selection && typeof s.search.selection === "object" ? s.search.selection : null
@@ -2421,7 +2440,7 @@ function viewHas(view, s, query, filter) {
 
 // When the view's data was read, as an age ("25 min ago"), or "earlier".
 function readAge(view, s, nowMs) {
-  var at = view === "issues" ? num(s.errorsAt) : view === "backups" ? num(s.backupsAt) : view === "search" ? 0 : num(s.listsAt)
+  var at = view === "errors" ? num(s.errorsAt) : view === "backups" ? num(s.backupsAt) : view === "search" || view === "issues" ? 0 : num(s.listsAt)
   return at > 0 ? sinceText(new Date(at).toISOString(), nowMs) : copy("state.age.unknown")
 }
 
@@ -2522,7 +2541,7 @@ function viewState(view, input) {
       out.notices.push(stateNotice("stale", copy("state.notice.check_stale", { "age": sinceText(oldest, nowMs) }), stateAction("check")))
     }
   }
-  if (view === "issues" && !out.refreshing) {
+  if (view === "errors" && !out.refreshing) {
     var errorTargets = s.errors && Array.isArray(s.errors.targets) ? s.errors.targets : []
     if (errorTargets.some(function(t) { return t && t.partial === true && (!filter || t.id === filter) })) {
       out.notices.push(stateNotice("partial", copy("state.notice.errors_partial"), stateAction("read_errors")))
@@ -2544,6 +2563,8 @@ function viewState(view, input) {
       stateAction("search"))
   } else if (view === "search") {
     set("empty", copy("state.empty.search.query", { "query": query }))
+  } else if (view === "errors") {
+    set(filtered ? "filteredEmpty" : "empty", copy(filter ? "state.empty.errors.client" : "state.empty.errors", { "client": client }))
   } else if (view === "issues") {
     set(filtered ? "filteredEmpty" : "empty", copy(filter ? "state.empty.issues.client" : "state.empty.issues", { "client": client }))
   } else if (view === "backups") {
@@ -2768,24 +2789,13 @@ function notesFor(changelog, row) {
 
 var SEVERITY_ORDER = ["P0", "P1", "P2", "P3"]
 
-// One error's line: where, and for Lua's and Blizzard's own message templates (their
-// variable parts are identifiers from code) the message; a custom message an addon
-// wrote shows only its length (M3-D21).
-function errorLine(e) {
-  var where = e.location || "unknown location"
-  if (e.messageKind === "custom") {
-    return where + ": custom message (" + (e.messageChars === null ? "?" : e.messageChars) + " characters, hidden)"
-  }
-  return where + (e.message ? ": " + e.message : "")
-}
 
 // The Issues view, in the filter, as sections (a title, lines of text, rows) whose rows
-// the cursor walks in order (`index`): problems from `status` by severity; each client's
-// Lua errors (an Install row where BugGrabber is missing, then its addons; received
-// reports and an incomplete read as lines); the run warnings. A row's `action` is the
-// CLI argv Enter runs (the classifier accepted it), its `text` the command it shows
-// instead.
-function issueSections(statusTargets, errors, warnings, filter, machineIssues) {
+// the cursor walks in order (`index`): problems from `status` by severity, then the
+// run warnings. Lua errors have their own view since 1n2p.27 (errorSections). A row's
+// `action` is the CLI argv Enter runs (the classifier accepted it), its `text` the
+// command it shows instead.
+function issueSections(statusTargets, warnings, filter, machineIssues) {
   var sections = []
   var problems = []
   // The problems of no client, unless the view is narrowed to one.
@@ -2813,39 +2823,6 @@ function issueSections(statusTargets, errors, warnings, filter, machineIssues) {
   problems = stableSort(problems, function(a, b) { return SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity) })
   if (problems.length) sections.push({ "title": "Problems", "lines": [], "rows": problems })
 
-  var errTargets = errors && Array.isArray(errors.targets) ? errors.targets : []
-  for (var k = 0; k < errTargets.length; k++) {
-    var e = errTargets[k]
-    if (filter && e.id !== filter) continue
-    var rows = []
-    var lines = []
-    var client = sheetClient(targets, e.id, "")
-    if (e.capture === "none") {
-      rows.push({
-        "kind": "capture", "key": "c/" + e.id, "target": e.id, "client": client,
-        "title": e.install ? "BugGrabber is not installed" : "No BugGrabber build for this client is known",
-        "action": e.install && e.install.runnable ? e.install : null,
-        "text": e.install && !e.install.runnable ? e.install.command : ""
-      })
-    }
-    for (var m = 0; m < e.addons.length; m++) {
-      var a = e.addons[m]
-      rows.push({
-        "kind": "addon", "key": "a/" + e.id + "/" + a.addon, "target": e.id, "addon": a.addon, "count": a.count,
-        "new": a["new"], "confidence": a.confidence, "updateAvailable": a.updateAvailable, "version": a.version,
-        "latest": a.latest, "lines": a.errors.map(errorLine),
-        "stack": a.errors.length ? a.errors[0].stack : []
-      })
-    }
-    if (e.received > 0) {
-      lines.push(e.received === 1 ? "1 error received from another player (not counted)"
-        : e.received + " errors received from other players (not counted)")
-    }
-    if (e.partial) lines.push("Incomplete read (the game may be writing)")
-    if (e.capture !== "none" && e.addons.length === 0 && !e.partial) lines.push("No Lua errors")
-    sections.push({ "title": copy("issues.errors_title", { "client": client }), "target": e.id, "lines": lines, "rows": rows })
-  }
-
   var runWarnings = (Array.isArray(warnings) ? warnings : []).map(function(w, n) {
     return { "kind": "warning", "key": "w/" + n, "title": w.message, "action": w.fix, "text": w.fixText }
   })
@@ -2856,6 +2833,145 @@ function issueSections(statusTargets, errors, warnings, filter, machineIssues) {
     for (var n = 0; n < sections[s].rows.length; n++) sections[s].rows[n].index = index++
   }
   return sections
+}
+
+// -------------------------------------------------------------- the Errors view (1n2p.27)
+
+// Who most likely threw an addon's errors, in words (design doc §6.6), from its kind,
+// its strongest error's confidence and whether a blocked call named it.
+function errorSourceText(a) {
+  var blocked = (Array.isArray(a.errors) ? a.errors : []).some(function(e) { return e.method === "protected_call" })
+  if (blocked) return copy("errors.source.blocked", { "addon": a.addon })
+  if (a.kind === "library") return copy("errors.source.library", { "addon": a.addon })
+  if (a.kind === "blizzard") return copy("errors.source.blizzard")
+  if (a.kind === "unknown") return copy("errors.source.unknown")
+  return copy(a.confidence === "high" ? "errors.source.high" : a.confidence === "medium" ? "errors.source.medium" : "errors.source.low")
+}
+
+// One error's message as the widget may show it (M3-D21, design doc §6.6): Lua's and the
+// client's own messages as written, an addon's own message only as its length.
+function errorMessageText(e) {
+  if (e.messageKind === "custom" || e.message === null) {
+    return copy("errors.message.custom", { "n": e.messageChars === null ? 0 : e.messageChars, "chars": e.messageChars === null ? "?" : e.messageChars })
+  }
+  return e.message
+}
+
+// A stack frame is the addon's own when its path starts in the addon's folder.
+function ownFrame(frame, addon) {
+  var f = str(frame)
+  return addon !== "" && f.indexOf(addon + "/") === 0
+}
+
+// The Errors view, in the filter (1n2p.27, design doc §2.3, §6.6): per client of `errors`,
+// its header (its player name, its last play session's age, its new errors), then a
+// card when it records no errors (Install BugGrabber where a build is known), each addon
+// with errors, the ones with new errors first, then the most recent; a read cut short
+// and the errors other players sent are lines. Each addon row has `index`, its cursor
+// position across sections.
+function errorSections(errors, statusTargets, filter, nowMs) {
+  var targets = errors && Array.isArray(errors.targets) ? errors.targets : []
+  var sections = []
+  var index = 0
+  for (var i = 0; i < targets.length; i++) {
+    var e = targets[i]
+    if (filter && e.id !== filter) continue
+    var status = targetById(statusTargets, e.id)
+    var client = sheetClient(statusTargets, e.id, "")
+    var count = []
+    var lastSession = status && status.errors ? str(status.errors.lastSessionAt) : ""
+    if (lastSession) count.push(copy("errors.last_session", { "age": sinceText(lastSession, nowMs) || dateText(lastSession) }))
+    if (e["new"] > 0) count.push(copy("errors.new", { "n": e["new"] }))
+    var addons = stableSort(e.addons.slice(), function(x, y) {
+      if ((x["new"] > 0) !== (y["new"] > 0)) return x["new"] > 0 ? -1 : 1
+      if (x.lastSeen !== y.lastSeen) return x.lastSeen > y.lastSeen ? -1 : 1
+      return y.count - x.count
+    })
+    var rows = addons.map(function(a) {
+      var meta = [plural(a.count, "time")]
+      if (a["new"] > 0) meta.push(copy("errors.new", { "n": a["new"] }))
+      if (a.lastSeen) meta.push(copy("errors.last_seen", { "age": sinceText(a.lastSeen, nowMs) || dateText(a.lastSeen) }))
+      var first = a.errors.length ? a.errors[0] : null
+      var chips = a.updateAvailable ? [{ "text": copy("errors.update_chip"), "urgent": false }] : []
+      var actions = []
+      if (a.updateAvailable) actions.push({ "name": "update", "glyph": String.fromCodePoint(0xF0CE1), "tooltip": withKey(copy("errors.action.update", { "addon": a.addon }), "update", "errors") })
+      actions.push({ "name": "copy", "glyph": String.fromCodePoint(0xF018F), "tooltip": withKey(copy("errors.action.copy"), "copy", "errors") })
+      actions.push({ "name": "restore", "glyph": String.fromCodePoint(0xF006F), "tooltip": withKey(copy("installed.action.restore"), "restore", "errors") })
+      return {
+        "kind": "addon", "key": "a/" + e.id + "/" + a.addon, "index": index++, "target": e.id, "client": client,
+        "addon": a.addon, "version": a.version, "latest": a.latest, "updateAvailable": a.updateAvailable,
+        "count": a.count, "new": a["new"], "source": errorSourceText(a), "meta": [errorSourceText(a)].concat(meta).join(" · "),
+        "message": first ? errorMessageText(first) : "", "band": a["new"] > 0 ? "urgent" : "", "chips": chips,
+        "actions": actions, "entry": a
+      }
+    })
+    var lines = []
+    if (e.partial) lines.push(copy("errors.partial"))
+    if (e.received > 0) lines.push(copy("errors.received", { "n": e.received }))
+    sections.push({
+      "target": e.id, "title": client, "count": count.join(" · "), "lines": lines, "rows": rows,
+      // No BugGrabber here: a card, never a row among errors (§2.3).
+      "capture": e.capture === "none" ? {
+        "text": copy(e.install ? "errors.capture.none" : "errors.capture.unknown", { "client": client }),
+        "action": e.install && e.install.runnable ? e.install : null
+      } : null,
+      "empty": e.capture !== "none" && rows.length === 0 && !e.partial
+    })
+  }
+  return sections
+}
+
+// The rows of errorSections, in cursor order.
+function errorRows(sections) {
+  var out = []
+  for (var i = 0; i < sections.length; i++) out = out.concat(sections[i].rows)
+  return out
+}
+
+// The error page of one addon row (§2.4): each distinct error, its message as the
+// widget may show it, where, how often, whether it is new and when it was last seen,
+// and its stack, the addon's own frames marked.
+function errorPage(row, nowMs) {
+  var entry = row && row.entry ? row.entry : { "errors": [] }
+  return {
+    "title": str(row ? row.addon : ""),
+    "subtitle": row ? [str(row.source), plural(num(row.count), "time"), str(row.client)].filter(function(p) { return p !== "" }).join(" · ") : "",
+    "errors": entry.errors.map(function(e) {
+      var meta = [plural(e.count, "time")]
+      if (e["new"]) meta.push(copy("errors.new_one"))
+      if (e.lastSeen) meta.push(copy("errors.last_seen", { "age": sinceText(e.lastSeen, nowMs) || dateText(e.lastSeen) }))
+      return {
+        "fingerprint": e.fingerprint, "message": errorMessageText(e), "location": str(e.location), "meta": meta.join(" · "),
+        "stack": e.stack.map(function(f) { return { "text": f, "own": ownFrame(f, entry.addon) } })
+      }
+    })
+  }
+}
+
+// `y`'s report (design doc §6.6): the addon, its version, the client and its version,
+// and each error's strict text (an addon's own message as its length) with its stack,
+// as plain text to paste in a bug report. Never raw details, so never another player's
+// name.
+function errorReport(row, statusTargets) {
+  if (!row || !row.entry) return ""
+  var status = targetById(statusTargets, row.target)
+  var lines = [copy("errors.report.head", { "addon": row.addon, "version": row.version || "?", "client": row.client,
+    "client_version": status && status.version ? " " + status.version : "" })]
+  row.entry.errors.forEach(function(e) {
+    lines.push("")
+    lines.push(errorMessageText(e))
+    lines.push("  " + copy("errors.report.where", { "location": str(e.location) || "?", "times": plural(e.count, "time") }))
+    e.stack.forEach(function(f) { lines.push("  " + f) })
+  })
+  return lines.join("\n")
+}
+
+// The view the bar's middle click opens (design doc §2.5): Errors with new Lua errors,
+// else Issues with a P0 or P1 problem, else Updates.
+function urgentView(summary) {
+  if (summary && summary.errors && summary.errors["new"] > 0) return "errors"
+  if (summary && summary.issuesUrgent > 0) return "issues"
+  return "updates"
 }
 
 // The rows of issueSections, in cursor order.
@@ -2916,14 +3032,6 @@ function rawLines(rawErrors, row) {
     }
   }
   return lines
-}
-
-// How sure the attribution is, as a dot scale.
-function confidenceDots(confidence) {
-  var full = CONFIDENCE_RANK[confidence] || 0
-  var dots = ""
-  for (var i = 0; i < 3; i++) dots += String.fromCodePoint(i < full ? 0x25CF : 0x25CB)
-  return dots
 }
 
 // A search result's popularity: "2.1M downloads", "412 stars", or "".
@@ -3517,7 +3625,7 @@ var COPY = {
   "state.failed.updates": "Couldn't read your addons.",
   "state.failed.installed": "Couldn't read your addons.",
   "state.failed.search": "The search didn't finish.",
-  "state.failed.issues": "Couldn't read the problems and Lua errors.",
+  "state.failed.issues": "Couldn't read the problems.",
   "state.failed.backups": "Couldn't read your backups.",
   "state.empty.updates": "All up to date. Checked {age}.",
   "state.empty.updates.client": "{client} is up to date. Checked {age}.",
@@ -3557,6 +3665,11 @@ var COPY = {
   "state.action.read_errors": "Read again",
   "state.action.refresh_backups": "Refresh",
   "state.refreshing": "Updating…",
+  "state.loading.errors": "Reading the Lua errors…",
+  "state.failed.errors": "Couldn't read the Lua errors.",
+  "state.empty.errors": "No client records Lua errors here.",
+  "state.empty.errors.client": "{client} records no Lua errors.",
+  "state.what.errors": "the Lua errors",
   "state.missing": "{client} isn't on this computer any more",
   "state.missing.detail": "Its folder is gone, or the game was uninstalled.",
   "state.action.rescan": "Rescan clients",
@@ -3591,6 +3704,38 @@ var COPY = {
   "installed.unmanaged": { "one": "1 folder omaddons doesn't manage", "other": "{n} folders omaddons doesn't manage" },
   "installed.unmanaged.client": { "one": "1 folder on {client} omaddons doesn't manage", "other": "{n} folders on {client} omaddons doesn't manage" },
   "installed.take_over": "Take over…",
+
+  // The Errors view and its page (1n2p.27, design doc §6.6).
+  "errors.source.high": "probably caused by it",
+  "errors.source.medium": "maybe caused by it",
+  "errors.source.low": "possibly caused by it",
+  "errors.source.library": "in a library {addon} bundles",
+  "errors.source.blizzard": "in the game's own code",
+  "errors.source.unknown": "source unknown",
+  "errors.source.blocked": "blocked call from {addon}",
+  "errors.message.custom": { "one": "a message from the addon (1 character)", "other": "a message from the addon ({chars} characters)" },
+  "errors.new": "{n} new",
+  "errors.new_one": "new",
+  "errors.last_seen": "last {age}",
+  "errors.last_session": "last session {age}",
+  "errors.update_chip": "update available (may fix it)",
+  "errors.action.update": "Update {addon}",
+  "errors.action.copy": "Copy report",
+  "errors.action.open": "Show its errors",
+  "errors.partial": "Some errors couldn't be read: the game was writing.",
+  "errors.received": { "one": "1 error sent by other players (not counted)", "other": "{n} errors sent by other players (not counted)" },
+  "errors.capture.none": "Lua errors aren't recorded on {client}: install BugGrabber to record them.",
+  "errors.capture.unknown": "Lua errors aren't recorded on {client}, and no BugGrabber build for it is known.",
+  "errors.capture.install": "Install BugGrabber",
+  "errors.none": "No Lua errors",
+  "errors.copied": "Copied the report on {addon}",
+  "errors.copy_failed": "Couldn't copy (wl-copy is missing)",
+  "errors.raw.show": "Show raw details…",
+  "errors.raw.hide": "Hide raw details",
+  "errors.raw.warning": "Raw details may contain other players' names and your own code.",
+  "errors.raw.reading": "Reading the raw details…",
+  "errors.report.head": "{addon} {version} on {client}{client_version}",
+  "errors.report.where": "at {location} · {times}",
 
   // The clients (design doc §2.1, §2.2): the scope's words, and a group's header.
   "client.all": "All clients",
@@ -4613,15 +4758,20 @@ if (typeof module !== "undefined") {
     INSTALLED_SORTS: INSTALLED_SORTS,
     rowAction: rowAction,
     notesFor: notesFor,
-    errorLine: errorLine,
     issueSections: issueSections,
     issueRows: issueRows,
+    errorSections: errorSections,
+    errorRows: errorRows,
+    errorPage: errorPage,
+    errorReport: errorReport,
+    errorSourceText: errorSourceText,
+    errorMessageText: errorMessageText,
+    urgentView: urgentView,
     dismissPlan: dismissPlan,
     searchRequest: searchRequest,
     installTargets: installTargets,
     boundStaleText: boundStaleText,
     rawLines: rawLines,
-    confidenceDots: confidenceDots,
     popularityText: popularityText,
     sinceText: sinceText,
     dateText: dateText,

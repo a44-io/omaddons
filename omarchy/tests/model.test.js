@@ -709,7 +709,8 @@ describe("the key map", () => {
       ["s_is_search_everywhere", ["s", "backups"], { action: "search", step: 0 }],
       ["i_installs_a_result", ["i", "search"], { action: "install", step: 0 }],
       ["a_digit_names_its_view", ["3", "updates"], { action: "view", step: 0, view: "search" }],
-      ["the_last_digit", ["5", "issues"], { action: "view", step: 0, view: "backups" }],
+      ["the_errors_digit", ["4", "issues"], { action: "view", step: 0, view: "errors" }],
+      ["the_last_digit", ["6", "issues"], { action: "view", step: 0, view: "backups" }],
       ["t_steps_forward", ["t", "installed"], { action: "client", step: 1 }],
       ["T_steps_back", ["T", "installed"], { action: "client", step: -1 }],
       ["g_goes_to_the_top", ["g", "updates"], { action: "edge", step: -1 }],
@@ -733,11 +734,13 @@ describe("the key map", () => {
       ["ctrl_minus_shrinks_it", ["Ctrl+-", "search"], { action: "text_zoom", step: -1 }],
       ["ctrl_0_resets_it", ["Ctrl+0", "backups"], { action: "text_zoom", step: 0 }],
       ["a_page_has_the_frames_keys", ["?", "page"], { action: "help", step: 0 }],
-      ["a_page_has_no_views_keys", ["u", "page"], null],
+      // The error page (.27) has its own u, r and y; no other view's key.
+      ["a_page_has_its_own_keys", ["u", "page"], { action: "update", step: 0 }],
+      ["a_page_has_no_views_keys", ["p", "page"], null],
       ["slash_filters_the_addons", ["/", "installed"], { action: "filter", step: 0 }],
       ["slash_elsewhere_says_why_not", ["/", "updates"], { action: null, note: "Nothing to filter here" }],
       ["S_sorts_the_addons", ["S", "installed"], { action: "sort", step: 0 }],
-      ["a_digit_past_the_views", ["6", "updates"], null],
+      ["a_digit_past_the_views", ["7", "updates"], null],
       ["two_letters", ["uu", "updates"], null],
       ["nothing", ["", "updates"], null],
       ["no_context_is_the_first_view", ["u", undefined], { action: "update", step: 0 }],
@@ -768,7 +771,7 @@ describe("the key map", () => {
     for (const id of ids) expect([id, M.KEYMAP.some((r) => r.context === id)]).toEqual([id, true])
     // Every view has a context of its own, titled as the switcher titles it.
     for (const v of M.VIEWS) expect(M.KEY_CONTEXTS.find((c) => c.id === v).title).toBe(M.VIEW_TITLES[v])
-    expect(M.VIEWS.map((v) => M.VIEW_TITLES[v])).toEqual(["Updates", "Addons", "Search", "Issues", "Backups"])
+    expect(M.VIEWS.map((v) => M.VIEW_TITLES[v])).toEqual(["Updates", "Addons", "Search", "Errors", "Issues", "Backups"])
     for (const v of M.VIEWS) expect([v, typeof M.VIEW_GLYPHS[v]]).toEqual([v, "number"])
   })
 
@@ -988,11 +991,12 @@ describe("the panel frame", () => {
     expect(M.viewCounts(model.targets, "era", commands, []).updates.count).toBe(2)
     const a = M.reduceStatus(fixture("status-attention"), NOW)
     expect(M.viewCounts(a.targets, "", a.commands, []).issues).toEqual({ count: 1, urgent: true })
-    // New Lua errors count in Issues (until the Errors view, .27), urgent.
+    // New Lua errors count in Errors, always urgent; Issues counts problems only (.27).
     const erroring = JSON.parse(JSON.stringify(model.targets))
     erroring[0].errors = { "new": 3 }
-    expect(M.viewCounts(erroring, "", [], []).issues).toEqual({ count: 3, urgent: true })
-    expect(M.viewCounts(erroring, "", [], [{ "urgent": false }]).issues).toEqual({ count: 4, urgent: true })
+    expect(M.viewCounts(erroring, "", [], []).errors).toEqual({ count: 3, urgent: true })
+    expect(M.viewCounts(erroring, "", [], []).issues).toEqual({ count: 0, urgent: false })
+    expect(M.viewCounts(erroring, "", [], [{ "urgent": false }]).issues).toEqual({ count: 1, urgent: false })
     // Every view has an entry.
     for (const v of M.VIEWS) expect([v, typeof all[v].count]).toEqual([v, "number"])
   })
@@ -1128,7 +1132,7 @@ describe("the panel frame", () => {
       expect(sections.map((s) => [s.target, s.title, s.count])).toEqual([
         ["classic", "Mists of Pandaria Classic", "running"], ["era", "Classic Era", ""], ["forever", "WoW: Forever", ""],
         ["retail", "Retail", ""], ["wotlk", "Wrath 3.3.5a private server", ""]])
-      const problems = M.issueRows(M.issueSections(targets, null, [], "", []))
+      const problems = M.issueRows(M.issueSections(targets, [], "", []))
       expect(problems.map((r) => [r.kind, r.target, r.client])).toEqual([["problem", "anniversary", "Burning Crusade Anniversary"]])
     })
   })
@@ -1421,11 +1425,90 @@ describe("the Issues and Search views", () => {
     expect([era.id, era.capture, era.install.argv]).toEqual(["era", "none", ["omaddons", "install", "buggrabber", "-t", "era"]])
     expect([retail.new, retail.received, retail.partial, retail.install]).toEqual([2, 1, false, null])
     const foo = retail.addons[0]
-    expect([foo.addon, foo.updateAvailable, foo.latest, foo.confidence]).toEqual(["Foo", true, "v2", "high"])
-    expect(foo.errors.map(M.errorLine)).toEqual([
-      "Foo/core.lua:12: attempt to index a nil value (field 'x')",
-      "Foo/boss.lua:3: custom message (25 characters, hidden)"])
+    expect([foo.addon, foo.updateAvailable, foo.latest, foo.confidence, foo.lastSeen]).toEqual(["Foo", true, "v2", "high", "2026-10-15T18:29:00Z"])
+    expect(foo.errors.map(M.errorMessageText)).toEqual([
+      "attempt to index a nil value (field 'x')",
+      "a message from the addon (25 characters)"])
+    expect(foo.errors.map((e) => [e.method, e.lastSeen, e.sessions])).toEqual([
+      ["first_addon_frame", "2026-10-15T18:29:00Z", 1], ["first_addon_frame", "2026-10-15T18:28:00Z", 1]])
     expect(foo.errors.map((e) => e.raw)).toEqual([null, null])
+  })
+
+  // The Errors view (1n2p.27, design doc §2.3, §6.6), over `errors` as the binary wrote it:
+  // era without BugGrabber, retail with Foo's two errors (one an addon's own message),
+  // one report sent by another player.
+  test("the Errors view: a card where nothing records, each addon's errors in words", () => {
+    const status = M.reduceStatus(fixture("status-errors"), NOW)
+    const at = Date.parse("2026-10-15T18:29:00Z") + 3 * 3600000
+    const sections = M.errorSections(ERRORS(), status.targets, "", at)
+    expect(sections.map((s) => [s.target, s.title, s.rows.length, !!s.capture, s.empty])).toEqual([
+      ["era", "Classic Era", 0, true, false], ["retail", "Retail", 1, false, false]])
+    // Era: a card with the CLI's own install, never a row among errors.
+    expect(sections[0].capture.text).toBe("Lua errors aren't recorded on Classic Era: install BugGrabber to record them.")
+    expect(sections[0].capture.action.argv).toEqual(["omaddons", "install", "buggrabber", "-t", "era"])
+    // Retail's header: its last session and new errors; a report from another player is
+    // a count.
+    expect(sections[1].count).toMatch(/^last session .* · 2 new$/)
+    expect(sections[1].lines).toEqual(["1 error sent by other players (not counted)"])
+    const foo = M.errorRows(sections)[0]
+    expect([foo.index, foo.addon, foo.band, foo.meta, foo.message]).toEqual([0, "Foo", "urgent",
+      "probably caused by it · 5 times · 2 new · last 3 hours ago", "attempt to index a nil value (field 'x')"])
+    expect(foo.chips).toEqual([{ text: "update available (may fix it)", urgent: false }])
+    expect(foo.actions.map((a) => [a.name, a.tooltip])).toEqual([["update", "Update Foo (u)"], ["copy", "Copy report (y)"],
+      ["restore", "Restore its settings (r)"]])
+    // One client: its section only.
+    expect(M.errorSections(ERRORS(), status.targets, "retail", at).map((s) => s.target)).toEqual(["retail"])
+    expect(M.errorSections(null, [], "", at)).toEqual([])
+  })
+
+  test("who most likely threw them, in words, from typed fields only", () => {
+    const words = (a) => M.errorSourceText(Object.assign({ addon: "DBM", kind: "addon", confidence: "high", errors: [] }, a))
+    expect(words({})).toBe("probably caused by it")
+    expect(words({ confidence: "medium" })).toBe("maybe caused by it")
+    expect(words({ confidence: "low" })).toBe("possibly caused by it")
+    expect(words({ kind: "library" })).toBe("in a library DBM bundles")
+    expect(words({ kind: "blizzard" })).toBe("in the game's own code")
+    expect(words({ kind: "unknown" })).toBe("source unknown")
+    expect(words({ errors: [{ method: "protected_call" }] })).toBe("blocked call from DBM")
+    expect(M.errorMessageText({ messageKind: "custom", message: null, messageChars: 1 })).toBe("a message from the addon (1 character)")
+    expect(M.errorMessageText({ messageKind: "lua_runtime", message: null, messageChars: null })).toBe("a message from the addon (? characters)")
+  })
+
+  test("the error page: every error, its stack with the addon's own frames marked", () => {
+    const status = M.reduceStatus(fixture("status-errors"), NOW)
+    const at = Date.parse("2026-10-15T18:29:00Z") + 3 * 3600000
+    const foo = M.errorRows(M.errorSections(ERRORS(), status.targets, "", at))[0]
+    const page = M.errorPage(foo, at)
+    expect([page.title, page.subtitle]).toEqual(["Foo", "probably caused by it · 5 times · Retail"])
+    expect(page.errors.map((e) => [e.message, e.location, e.meta])).toEqual([
+      ["attempt to index a nil value (field 'x')", "Foo/core.lua:12", "4 times · new · last 3 hours ago"],
+      ["a message from the addon (25 characters)", "Foo/boss.lua:3", "1 time · new · last 3 hours ago"]])
+    expect(page.errors[0].stack).toEqual([{ text: "Foo/core.lua:12: in function 'Refresh'", own: true }, { text: "… (1 C frame)", own: false }])
+    expect(M.errorPage(null, at)).toEqual({ title: "", subtitle: "", errors: [] })
+  })
+
+  // `y`: the report pasted for an author: strict text, never raw details, never a name.
+  test("the report holds the addon, the client and each error's strict text, nothing raw", () => {
+    const status = M.reduceStatus(fixture("status-errors"), NOW)
+    const raw = M.reduceErrors(fixture("errors-raw"))
+    const foo = M.errorRows(M.errorSections(raw, status.targets, "retail", NOW))[0]
+    const report = M.errorReport(foo, status.targets)
+    const version = M.targetById(status.targets, "retail").version
+    expect(report.split("\n")).toEqual([
+      "Foo v1 on Retail " + version, "",
+      "attempt to index a nil value (field 'x')", "  at Foo/core.lua:12 · 4 times", "  Foo/core.lua:12: in function 'Refresh'", "  … (1 C frame)", "",
+      "a message from the addon (25 characters)", "  at Foo/boss.lua:3 · 1 time"])
+    // The raw read holds a character's name and a sender's; the report holds neither.
+    expect(JSON.stringify(raw)).toContain("FakeChar")
+    for (const planted of ["FakeChar", "FakeSender", "FAKEACCT"]) expect(report).not.toContain(planted)
+    expect(M.errorReport(null, [])).toBe("")
+  })
+
+  test("the bar's middle click opens the most urgent view", () => {
+    expect(M.urgentView({ errors: { new: 2 }, issuesUrgent: 1 })).toBe("errors")
+    expect(M.urgentView({ errors: { new: 0 }, issuesUrgent: 1 })).toBe("issues")
+    expect(M.urgentView({ errors: null, issuesUrgent: 0 })).toBe("updates")
+    expect(M.urgentView(null)).toBe("updates")
   })
 
   test("raw details only from their own read, and a partial read says so", () => {
@@ -1437,21 +1520,16 @@ describe("the Issues and Search views", () => {
     expect(partial.partial).toBe(true)
   })
 
-  test("the Issues sections: problems by severity, each client's errors, the run warnings", () => {
+  test("the Issues sections: problems by severity, then the run warnings, no Lua errors", () => {
     const status = M.reduceStatus(fixture("status-attention"), NOW)
-    const sections = M.issueSections(status.targets, ERRORS(), [
+    const sections = M.issueSections(status.targets, [
       { code: "journal_pending", message: "unfinished transactions", fix: { command: "omaddons status", argv: ["omaddons", "status"], runnable: true }, fixText: "" }], "")
-    // Each client's errors under its player name (`status` here lists retail only: era
-    // keeps its id).
-    expect(sections.map((s) => s.title)).toEqual(["Problems", "Lua errors on era", "Lua errors on Retail", "Run warnings"])
+    expect(sections.map((s) => s.title)).toEqual(["Problems", "Run warnings"])
     const rows = M.issueRows(sections)
-    expect(rows.map((r) => [r.index, r.kind])).toEqual([[0, "problem"], [1, "capture"], [2, "addon"], [3, "warning"]])
+    expect(rows.map((r) => [r.index, r.kind])).toEqual([[0, "problem"], [1, "warning"]])
     expect(rows[0].client).toBe("Retail")
     expect(rows[0].action.argv[1]).toBe("install")
-    expect(rows[1].action.argv).toEqual(["omaddons", "install", "buggrabber", "-t", "era"])
-    expect(sections[2].lines).toEqual(["1 error received from another player (not counted)"])
-    const retailOnly = M.issueSections(status.targets, ERRORS(), [], "era")
-    expect(retailOnly.map((s) => s.title)).toEqual(["Lua errors on era"])
+    expect(M.issueSections(status.targets, [], "era", [])).toEqual([])
   })
 
   test("problems keep status's order within a severity, whatever the engine's sort", () => {
@@ -1462,7 +1540,7 @@ describe("the Issues and Search views", () => {
       Object.assign(JSON.parse(JSON.stringify(issue)), { severity, title: "issue " + i }))
     env.data.issues = [{ id: "fm-a", severity: "P1", title: "machine", remediation: { command: "omaddons status", argv: ["omaddons", "status"], destructive: false } }]
     const status = M.reduceStatus(env, NOW)
-    const rows = withTiesReversed(() => M.issueRows(M.issueSections(status.targets, null, [], "", status.issues)))
+    const rows = withTiesReversed(() => M.issueRows(M.issueSections(status.targets, [], "", status.issues)))
     expect(rows.filter((r) => r.kind === "problem").map((r) => r.title))
       .toEqual(["machine", "issue 1", "issue 3", "issue 5", "issue 0", "issue 2", "issue 4"])
   })
@@ -1473,9 +1551,9 @@ describe("the Issues and Search views", () => {
       remediation: { command: "omaddons status", argv: ["omaddons", "status"], destructive: false } }]
     const status = M.reduceStatus(env, NOW)
     expect(status.issues.map((i) => [i.severity, i.urgent])).toEqual([["P0", true]])
-    const rows = M.issueRows(M.issueSections(status.targets, null, [], "", status.issues))
+    const rows = M.issueRows(M.issueSections(status.targets, [], "", status.issues))
     expect([rows[0].target, rows[0].title]).toEqual(["", "An interrupted change needs manual repair"])
-    const narrowed = M.issueRows(M.issueSections(status.targets, null, [], "retail", status.issues))
+    const narrowed = M.issueRows(M.issueSections(status.targets, [], "retail", status.issues))
     expect(narrowed.every((r) => r.target !== "")).toBe(true)
   })
 
@@ -1510,7 +1588,7 @@ describe("the Issues and Search views", () => {
     const status = M.reduceStatus(fixture("status-attention"), NOW)
     const t = JSON.parse(JSON.stringify(status.targets))
     t[0].issues[0].remediation = { command: "rm -rf ~", argv: null, runnable: false, destructive: true }
-    const rows = M.issueRows(M.issueSections(t, null, [], ""))
+    const rows = M.issueRows(M.issueSections(t, [], ""))
     expect([rows[0].action, rows[0].text]).toEqual([null, "rm -rf ~"])
   })
 
@@ -1536,7 +1614,7 @@ describe("the Issues and Search views", () => {
     expect(M.installTargets(Object.assign({}, result, { hints: { retail: "no" } }), targets)[0].eligible).toBe(false)
   })
 
-  test("raw lines only for the row that asked; dots and popularity", () => {
+  test("raw lines only for the row that asked; popularity", () => {
     const raw = { selection: { target: "retail", addon: "Foo" }, data: M.reduceErrors(fixture("errors-raw")) }
     const row = { target: "retail", addon: "Foo" }
     const lines = M.rawLines(raw, row)
@@ -1544,8 +1622,6 @@ describe("the Issues and Search views", () => {
     expect(lines.join("\n")).toContain("FakeChar")
     expect(M.rawLines(raw, { target: "retail", addon: "Bar" })).toBeNull()
     expect(M.rawLines(null, row)).toBeNull()
-    expect([M.confidenceDots("high"), M.confidenceDots("low"), M.confidenceDots("")])
-      .toEqual(["●●●", "●○○", "○○○"])
     expect([M.popularityText({ downloads: 2100000 }), M.popularityText({ downloads: null, stars: 412 }), M.popularityText({})])
       .toEqual(["2.1M downloads", "412 stars", ""])
   })
@@ -2462,7 +2538,7 @@ describe("an irreversible purge is never a button", () => {
     const [purging, forgetting] = status.targets[0].issues.map((i) => i.remediation)
     expect([purging.runnable, purging.argv, purging.irreversible]).toEqual([false, null, true])
     expect([forgetting.runnable, forgetting.destructive, forgetting.irreversible]).toEqual([true, true, false])
-    const rows = M.issueRows(M.issueSections(status.targets, null, [], "", []))
+    const rows = M.issueRows(M.issueSections(status.targets, [], "", []))
     const purgeRow = rows.find((row) => row.text === purge.join(" ")) // ubs:ignore — a command's text, not a secret
     expect([purgeRow.action, purgeRow.note]).toEqual([null, M.IRREVERSIBLE_NOTE])
     expect(M.copyText(purgeRow)).toBe(purge.join(" "))
@@ -2677,7 +2753,7 @@ describe("repairs from the binary", () => {
   const targets = M.reduceStatus(fixture("repair-status")).targets
   const credentialRow = () => {
     const status = M.reduceStatus(fixture("repair-status"))
-    const rows = M.issueRows(M.issueSections(status.targets, null, [], "", status.issues))
+    const rows = M.issueRows(M.issueSections(status.targets, [], "", status.issues))
     return rows.find((r) => r.kind === "problem" && r.fix && r.fix.slots.fm === CREDENTIAL) // ubs:ignore — a failure-mode id, not a secret
   }
   const rawIssue = () => fixture("repair-status").data.issues.find((i) => i.id === CREDENTIAL)
@@ -2749,7 +2825,7 @@ describe("repairs from the binary", () => {
 
   test("the set-aside row is text with its explanation", () => {
     const status = M.reduceStatus(fixture("setaside-status"))
-    const row = M.issueRows(M.issueSections(status.targets, null, [], "", status.issues))
+    const row = M.issueRows(M.issueSections(status.targets, [], "", status.issues))
       .find((r) => r.kind === "problem" && r.severity === "P0")
     expect(row && { fix: row.fix, action: row.action, forced: row.forced, text: row.text, hint: row.hint })
       .toEqual({ fix: null, action: null, forced: true, text: setAsideIssue().remediation.command, hint: "Enter explains it" })
@@ -2772,7 +2848,7 @@ describe("repairs from the binary", () => {
     env.data.issues[0].remediation = { command: gc.join(" "), argv: gc, destructive: true }
     env.data.issues[0].auto_fixable = false
     const status = M.reduceStatus(env)
-    const row = M.issueRows(M.issueSections(status.targets, null, [], "", status.issues))[0]
+    const row = M.issueRows(M.issueSections(status.targets, [], "", status.issues))[0]
     expect([row.text, row.action, row.fix, M.classifyCliArgv(gc).reason]).toEqual([gc.join(" "), null, null, "doctor_gc"])
   })
 })
@@ -2973,7 +3049,7 @@ describe("repairRequest", () => {
 describe("issue rows", () => {
   const rowsOf = (issues, machine) => {
     const status = M.reduceStatus(statusWithIssues(issues, machine))
-    return M.issueRows(M.issueSections(status.targets, null, [], "", status.issues))
+    return M.issueRows(M.issueSections(status.targets, [], "", status.issues))
   }
   test("issueOf keeps auto_fixable and explain, and an M3 issue gets none", () => {
     const reduced = M.reduceStatus(statusWithIssues([issueJson(), { id: "drift", severity: "P2", title: "t", remediation: { command: "x", argv: null } }]))
@@ -3008,7 +3084,7 @@ describe("issue rows", () => {
     ], (issues) => pick(rowsOf(issues)[0]))
     // A machine issue's repair takes no -t.
     const machine = M.reduceStatus(statusWithIssues([], [issueJson()])).issues
-    expect(M.issueRows(M.issueSections([], null, [], "", machine))[0].fix.template).toBe("doctor_fix")
+    expect(M.issueRows(M.issueSections([], [], "", machine))[0].fix.template).toBe("doctor_fix")
     // A forced remediation is never runnable.
     expect(M.reduceStatus(statusWithIssues([setAside])).targets[0].issues[0].remediation.runnable).toBe(false)
   })
@@ -3297,12 +3373,16 @@ describe("viewState", () => {
     const cases = [
       ["updates_first_load", state("updates", service()), ["firstLoad", "Reading your addons…", null, false, []]],
       ["installed_first_load", state("installed", service()), ["firstLoad", "Reading your addons…", null, false, []]],
+      ["errors_first_load", state("errors", service()), ["firstLoad", "Reading the Lua errors…", null, false, []]],
       ["issues_first_load", state("issues", service()), ["firstLoad", "Checking…", null, false, []]],
       ["backups_first_load", state("backups", service()), ["firstLoad", "Reading backups…", null, false, []]],
       ["search_first_load", state("search", service(), { query: "dbm" }), ["firstLoad", "Searching…", null, false, []]],
       ["updates_failed", state("updates", service({ outcomes: { list: "failed" } })), ["failed", "Couldn't read your addons.", "retry", false, []]],
       ["installed_failed", state("installed", service({ outcomes: { list: "timeout" } })), ["failed", "Couldn't read your addons.", "retry", false, []]],
-      ["issues_failed", state("issues", service({ outcomes: { errors: "failed" } })), ["failed", "Couldn't read the problems and Lua errors.", "retry", false, []]],
+      ["errors_failed", state("errors", service({ outcomes: { errors: "failed" } })), ["failed", "Couldn't read the Lua errors.", "retry", false, []]],
+      // Issues is `status`'s problems: a failed `errors` read is the Errors view's.
+      ["issues_failed", state("issues", service({ outcomes: { status: "failed" } })), ["failed", "Couldn't read the problems.", "retry", false, []]],
+      ["issues_not_errors", state("issues", service({ outcomes: { errors: "failed" } })), ["firstLoad", "Checking…", null, false, []]],
       ["backups_failed", state("backups", service({ outcomes: { backups: "failed" } })), ["failed", "Couldn't read your backups.", "retry", false, []]],
       ["search_failed", state("search", service({ outcomes: { search: "failed" } }), { query: "dbm" }), ["failed", "The search didn't finish.", "retry", false, []]],
       // Asked again: loading, not the last failure.
@@ -3321,8 +3401,10 @@ describe("viewState", () => {
         ["rows", "", null, false, [["failed", "Couldn't read your addons again; showing what was read 10 min ago.", "retry"]]]],
       ["failed_with_data_never_read_at", state("backups", service({ backups: { targets: [] }, outcomes: { backups: "failed" } }), { rows: 1, allRows: 1 }),
         ["rows", "", null, false, [["failed", "Couldn't read your backups again; showing what was read earlier.", "retry"]]]],
-      // Issues lists status's problems before Lua errors are read: rows, refreshing.
-      ["issues_rows_before_errors", state("issues", service({ reading: ["errors"] }), { rows: 2, allRows: 2 }), ["rows", "", null, true, []]],
+      // Issues lists status's problems: a status read refreshes them, an errors read not.
+      ["issues_rows_refreshing", state("issues", service({ summary: {}, reading: ["status"] }), { rows: 2, allRows: 2 }), ["rows", "", null, true, []]],
+      ["issues_rows_while_errors_read", state("issues", service({ summary: {}, reading: ["errors"] }), { rows: 2, allRows: 2 }), ["rows", "", null, false, []]],
+      ["errors_rows_refreshing", state("errors", service({ errors: { targets: [] }, reading: ["errors"] }), { rows: 2, allRows: 2 }), ["rows", "", null, true, []]],
     ]
     for (const [name, got, expected] of cases) expect([name, got]).toEqual([name, expected])
   })
@@ -3341,8 +3423,11 @@ describe("viewState", () => {
       ["installed_empty", state("installed", service({ lists: lists() })), ["empty", "No addons yet. Find some in Search.", "search", false, []]],
       ["installed_filtered_empty", state("installed", service({ lists: lists() }), { filter: "era", allRows: 3 }),
         ["filteredEmpty", "No addons on Classic Era yet. Find some in Search.", "search", false, []]],
-      ["issues_empty", state("issues", service({ errors: { targets: [] } })), ["empty", "Nothing needs fixing.", null, false, []]],
-      ["issues_filtered_empty", state("issues", service({ errors: { targets: [] } }), { filter: "retail", allRows: 1 }),
+      ["errors_empty", state("errors", service({ errors: { targets: [] } })), ["empty", "No client records Lua errors here.", null, false, []]],
+      ["errors_filtered_empty", state("errors", service({ errors: { targets: [] } }), { filter: "retail", allRows: 1 }),
+        ["filteredEmpty", "Retail records no Lua errors.", null, false, []]],
+      ["issues_empty", state("issues", service({ summary: {} })), ["empty", "Nothing needs fixing.", null, false, []]],
+      ["issues_filtered_empty", state("issues", service({ summary: {} }), { filter: "retail", allRows: 1 }),
         ["filteredEmpty", "Nothing needs fixing on Retail.", null, false, []]],
       ["backups_empty", state("backups", service({ backups: { targets: [] } })), ["empty", "No backups yet.", "backup", false, []]],
       ["backups_filtered_empty", state("backups", service({ backups: { targets: [] } }), { filter: "era", allRows: 1 }),
@@ -3386,10 +3471,10 @@ describe("viewState", () => {
       ["check_running", state("updates", service({ lists: lists(), targets: stale, checking: true, lastCheck: { trouble: true, failed: 0 } }), { rows: 4, allRows: 4 }),
         ["rows", "", null, true, []]],
       ["a_good_check", state("updates", service({ lists: lists(), lastCheck: M.reduceCheck(fixture("check"), "ok") }), { rows: 4, allRows: 4 }), ["rows", "", null, false, []]],
-      ["errors_partial", state("issues", service({ errors: M.reduceErrors(fixture("errors-partial")) }), { rows: 3, allRows: 3 }),
+      ["errors_partial", state("errors", service({ errors: M.reduceErrors(fixture("errors-partial")) }), { rows: 3, allRows: 3 }),
         ["rows", "", null, false, [["partial", "Some errors couldn't be read yet: the game was writing. Read again after you quit.", "read_errors"]]]],
       // Another client's partial read is not this client's.
-      ["errors_partial_elsewhere", state("issues", service({ errors: M.reduceErrors(fixture("errors-partial")) }), { filter: "era", rows: 1, allRows: 3 }),
+      ["errors_partial_elsewhere", state("errors", service({ errors: M.reduceErrors(fixture("errors-partial")) }), { filter: "era", rows: 1, allRows: 3 }),
         ["rows", "", null, false, []]],
       ["backups_stale", state("backups", service({ backups: { targets: [] }, targets: backupsStale }), { rows: 2, allRows: 2 }),
         ["rows", "", null, false, [["stale", "Backup details are out of date.", "refresh_backups"]]]],
@@ -3412,7 +3497,7 @@ describe("viewState", () => {
 
   test("every word is the copy guide's: no CLI term, and every view has every cell", () => {
     const words = []
-    for (const view of ["updates", "installed", "search", "issues", "backups"]) {
+    for (const view of M.VIEWS) {
       for (const outcome of [{}, { [M.VIEW_RESOURCES[view]]: "failed" }]) {
         const v = M.viewState(view, { service: service({ outcomes: outcome }), query: "q" })
         words.push(v.sentence)

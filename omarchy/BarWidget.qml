@@ -52,14 +52,15 @@ Panel {
   }
 
   // Left toggles the panel, right checks for updates now (vision §5.11), middle opens
-  // the Issues view.
+  // the most urgent view: Errors with new Lua errors, else Issues with a P0 or P1
+  // problem, else Updates (design doc §2.5).
   function press(button) {
     if (button === Qt.RightButton) {
       if (svc) svc.check()
       return
     }
     if (button === Qt.MiddleButton) {
-      if (svc) svc.requestedView = "issues"
+      if (svc) svc.requestedView = Model.urgentView(svc.summary)
       root.open()
       return
     }

@@ -126,7 +126,7 @@ TestCase {
   }
 
   function test_from_a_backup_the_addon_scope_comes_first_and_whole_says_what_else_it_changes() {
-    keyClick("5")
+    keyClick("6")
     keyClick(Qt.Key_Return)
     var c = chooser()
     verify(c.opened)
@@ -145,7 +145,7 @@ TestCase {
   }
 
   function test_one_addons_settings_asks_which_addon() {
-    keyClick("5")
+    keyClick("6")
     keyClick(Qt.Key_Return)
     var c = chooser()
     keyClick(Qt.Key_Return)
@@ -183,7 +183,8 @@ TestCase {
     compare(json(svc.runs[0]), json(["restore_addon", { "target": "retail", "addon": "WeakAuras", "backup": older }, "Restore WeakAuras's settings"]))
   }
 
-  function test_issues_r_opens_on_the_erroring_addon() {
+  // `r` in the Errors view (4, 1n2p.27) on the erroring addon.
+  function test_errors_r_opens_on_the_erroring_addon() {
     svc.errors = Model.reduceErrors({ "ok": true, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION, "command": "errors", "exit_code": 0,
       "partial": false, "warnings": [], "commands": [], "data": { "targets": [{ "target": { "id": "retail" }, "capture": "buggrabber",
         "coverage": "complete", "files": { "partial": 0 }, "databases": [], "summary": { "new": 1, "received": 0 }, "dismiss": null,
@@ -198,7 +199,7 @@ TestCase {
 
   function test_restores_are_off_while_the_client_runs() {
     svc.targets = [{ "id": "retail", "running": true, "runningUnknown": false, "clientDir": "/games/retail", "updates": null, "issues": [] }]
-    keyClick("5")
+    keyClick("6")
     keyClick(Qt.Key_Return)
     var c = chooser()
     verify(findChild(c, "chooserBlocked").visible)

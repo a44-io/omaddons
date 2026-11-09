@@ -315,8 +315,9 @@ Item {
   // network.
   function readView(view) {
     currentView = String(view || "")
+    // Issues reads nothing of its own: `status`, which the frame keeps current, is its data.
     var resource = currentView === "updates" || currentView === "installed" ? "list"
-      : (currentView === "issues" ? "errors" : (currentView === "backups" ? "backups" : ""))
+      : (currentView === "errors" ? "errors" : (currentView === "backups" ? "backups" : ""))
     if (resource === "") return false
     var have = resource === "list" ? lists : (resource === "errors" ? errors : backups)
     var at = resource === "list" ? listsAt : (resource === "errors" ? errorsAt : backupsAt)
