@@ -34,6 +34,7 @@ Item {
 
   readonly property color foreground: frame ? frame.foreground : Commons.Color.foreground
   readonly property color dim: frame ? frame.dim : Qt.darker(foreground, 1.55)
+  readonly property color accent: frame ? frame.accent : Commons.Color.accent
   readonly property string fontFamily: frame ? frame.fontFamily : Style.font.family
   readonly property bool canChange: !!frame && frame.canAct && !frame.busy
 
@@ -118,6 +119,9 @@ Item {
         spacing: Style.spacing.sm
         readonly property bool open: root.expanded === modelData.key
         readonly property var notes: open ? Model.notesFor(root.svc ? root.svc.changelog : null, modelData) : null
+        // While a change runs on it, its phase; just after, what happened (1n2p.18).
+        readonly property var rowState: Model.activityRow(root.svc ? root.svc.activity : null, modelData.key,
+          root.svc ? root.svc.doneRows : null)
 
         // Under All, the client's header above its first row: its player name, whether
         // it runs, its updates (design doc §2.2). The rows under it name no client.
@@ -161,17 +165,49 @@ Item {
             }
 
             PlainLabel {
-              visible: entry.modelData.label !== ""
+              visible: entry.modelData.label !== "" && !entry.rowState
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               text: entry.modelData.label
             }
 
+            // While its change runs: the spinner and the phase ("Updating… downloading
+            // (2 of 3)"); just after, "Updated".
+            Text {
+              id: rowSpinner
+              objectName: "rowSpinner"
+              visible: !!entry.rowState && entry.rowState.pending
+              textFormat: Text.PlainText
+              // U+F04E6 nf-md-sync.
+              text: String.fromCodePoint(0xF04E6)
+              color: root.accent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+
+              RotationAnimation on rotation {
+                running: rowSpinner.visible && Style.duration(1200) > 0
+                from: 0
+                to: 360
+                duration: 1200
+                loops: Animation.Infinite
+                onRunningChanged: if (!running) rowSpinner.rotation = 0
+              }
+            }
+
+            PlainLabel {
+              objectName: "rowState"
+              visible: !!entry.rowState
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              text: entry.rowState ? entry.rowState.text : ""
+            }
+
             // A running client loads the update after a /reload.
             Text {
               objectName: "reloadChip"
-              visible: entry.modelData.reload && entry.modelData.kind === "update"
+              visible: entry.modelData.reload && entry.modelData.kind === "update" && !entry.rowState
               textFormat: Text.PlainText
               text: "then /reload"
               color: root.dim

@@ -715,11 +715,21 @@ TestCase {
     shoot("updates-release-notes")
   }
 
+  // Check now (UX-01, 1n2p.18): the activity bar says so at once, then counts what the
+  // CLI reports, with Cancel.
   function test_updates_checking() {
     open(everyday(), "updates")
     frame.textKey("c")
     settle({ })
     shoot("updates-checking")
+    var check = null
+    var running = pending()
+    for (var i = 0; i < running.length; i++) if (words(running[i].command)[0] === "outdated") check = running[i]
+    verify(check !== null, "the check runs")
+    check.process.emitStderr(JSON.stringify({ "event": "progress", "phase": "fetch", "message": "gh:o/foo", "current": 12,
+      "total": 42, "target": null, "ref": "gh:o/foo" }))
+    wait(20)
+    shoot("updates-checking-counted")
   }
 
   // The key reference (`?`) over Updates.
@@ -1104,8 +1114,10 @@ TestCase {
     open(scene, "updates")
     var apply = runningUpdate(scene)
     verify(apply !== null, "the update's apply runs")
-    apply.process.emitStderr(JSON.stringify({ "event": "progress", "phase": "download", "message": "gh:o/foo@v2 on retail",
-      "current": 1, "total": 2 }))
+    // As the binary writes it: what the event is about, typed (1n2p.18), so Bar on
+    // Classic Era shows its own phase.
+    apply.process.emitStderr(JSON.stringify({ "event": "progress", "phase": "download", "message": "gh:o/bar@v2 on era",
+      "current": 1, "total": 2, "target": "era", "ref": "gh:o/bar" }))
     wait(20)
     shoot("action-progress")
     widgetOn(service)

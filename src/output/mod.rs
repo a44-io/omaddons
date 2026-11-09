@@ -23,7 +23,9 @@ use serde::Serialize;
 pub use envelope::{DoctorEnvelope, DoctorFailure, Envelope, Meta, RunKind, SCHEMA_VERSION};
 pub use human::{addons_in_folders, count, table, thousands};
 pub use notes::RunNotes;
-pub use stderr::{LogLevel, Phase, ProgressSink, Reporter, SharedReporter, lock, shared_stderr};
+pub use stderr::{
+    LogLevel, Phase, ProgressSink, Reporter, SharedReporter, Subject, lock, shared_stderr,
+};
 pub use term::{
     OutputConfig, OutputFlags, OutputMode, ProgressMode, StderrMode, Style, TermEnv,
     flags_from_argv, offline_from_argv, resolve, resolve_output_mode_from_argv,

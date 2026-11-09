@@ -1256,7 +1256,7 @@ error usage exit=2 doctor_exit=64 retryable=false details=details:object!,detail
 error wrong_flavor exit=4 doctor_exit=4 retryable=false details=details:object!,details.family:string,details.items:array,details.items[]:object,details.items[].error:object?!,details.items[].error.code:string!,details.items[].error.details:object,details.items[].error.fix:string!,details.items[].error.fix_argv:array?!,details.items[].error.fix_argv[]:string,details.items[].error.message:string!,details.items[].request:string!,details.items[].target:string?!,details.journal_pending:string,details.recovery_error:object,details.recovery_error.code:string!,details.recovery_error.message:string!,details.ref:string,details.required_by:array,details.required_by[]:string,details.target:string,details.target_family:string,details.tried:array,details.tried[]:object,details.tried[].asset:string!,details.tried[].code:string!,details.tried[].message:string!,details.unloaded_folders:array,details.unloaded_folders[]:string
 event error .:object,code:string!,event:string!,exit_code:integer!,fix:string!,fix_argv:array?!,fix_argv[]:string,message:string!,retryable:boolean!
 event log .:object,event:string!,level:string!,message:string!
-event progress .:object,current:integer?,event:string!,message:string!,phase:string!,total:integer?
+event progress .:object,current:integer?,event:string!,message:string!,phase:string!,ref:string?!,target:string?!,total:integer?
 event warning .:object,code:string!,event:string!,fix:string?!,fix_argv:array?!,fix_argv[]:string,message:string!
 exit doctor 0 healthy
 exit doctor 1 findings_present

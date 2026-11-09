@@ -20,7 +20,7 @@ use crate::error::{Result, Suggestion, Warning, WarningCode};
 use crate::limits::RELEASE_MEMO_MAX_ENTRIES;
 use crate::model::{Actor, Channel, Ref, ReleaseSet};
 use crate::net::{Http, run_bounded};
-use crate::output::{Phase, ProgressSink, count, trace};
+use crate::output::{Phase, ProgressSink, Subject, count, trace};
 use crate::politeness::{MAX_CONCURRENT_REQUESTS, SOURCE_RECHECK_MIN_INTERVAL};
 use crate::sources::{SourceId, SourceRegistry, Wanted, fetch_once_reporting};
 use crate::state::memo::{self, CandidateFact, FactIndex, MemoEntry, ReleaseMemo, TukuiList};
@@ -423,8 +423,9 @@ impl<'a> ReleaseCache<'a> {
                 .count() as u64;
             self.progress.grow(Phase::Fetch, asked);
             let report = |w: &Wanted| {
+                let r#ref = w.r#ref.to_string();
                 self.progress
-                    .event(Phase::Fetch, asked, &w.r#ref.to_string());
+                    .event(Phase::Fetch, asked, &r#ref, Subject::of_ref(&r#ref));
             };
             let refs = to_fetch.len();
             let sources = to_fetch

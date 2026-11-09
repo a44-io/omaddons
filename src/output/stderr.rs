@@ -12,7 +12,7 @@ use serde::Serialize;
 
 use super::term::{OutputConfig, ProgressMode, StderrMode};
 use crate::contract::events::{ErrorEvent, EventName, LogEvent, ProgressEvent, WarningEvent};
-pub use crate::contract::events::{LogLevel, Phase};
+pub use crate::contract::events::{LogLevel, Phase, Subject};
 use crate::error::{Error, Warning};
 
 /// The one stderr reporter of a run, shared by the command's progress and `dispatch`'s
@@ -110,8 +110,9 @@ impl ProgressSink {
     }
 
     /// Reports that `item` (a ref, an archive or a target id) is through `phase`, one of
-    /// `total` items expected in it.
-    pub fn event(&self, phase: Phase, total: u64, item: &str) {
+    /// `total` items expected in it. `subject` says, typed, which client and ref the item
+    /// is about; `item` stays the message and the key an item is counted once by.
+    pub fn event(&self, phase: Phase, total: u64, item: &str, subject: Subject<'_>) {
         let Some(inner) = &self.inner else {
             return;
         };
@@ -123,7 +124,7 @@ impl ProgressSink {
         }
         count.current += 1;
         let current = count.current;
-        lock(&inner.reporter).progress(phase, item, Some(current), Some(total));
+        lock(&inner.reporter).progress(phase, item, Some(current), Some(total), subject);
     }
 
     /// Reports that `current` of `total` units of `phase` are done, under `message`, a
@@ -145,7 +146,7 @@ impl ProgressSink {
             return;
         }
         count.current = current;
-        lock(&inner.reporter).progress(phase, message, Some(current), Some(total));
+        lock(&inner.reporter).progress(phase, message, Some(current), Some(total), Subject::NONE);
     }
 
     /// Announces `phase` before any of its `total` items: one event at `current: 0`
@@ -160,7 +161,7 @@ impl ProgressSink {
             return;
         }
         let total = *count.total.get_or_insert(total);
-        lock(&inner.reporter).progress(phase, message, Some(0), Some(total));
+        lock(&inner.reporter).progress(phase, message, Some(0), Some(total), Subject::NONE);
     }
 
     /// `more` items join `phase` after its total was given (a dependency round): the
@@ -307,13 +308,15 @@ impl<W: Write> Reporter<W> {
         }
     }
 
-    /// Reports progress of a long operation, as the progress mode allows.
+    /// Reports progress of a long operation, as the progress mode allows. `subject` goes
+    /// to the NDJSON event only; a human line reads the message.
     pub fn progress(
         &mut self,
         phase: Phase,
         message: &str,
         current: Option<u64>,
         total: Option<u64>,
+        subject: Subject<'_>,
     ) {
         if self.quiet {
             return;
@@ -321,7 +324,7 @@ impl<W: Write> Reporter<W> {
         match self.progress {
             ProgressMode::None => {}
             ProgressMode::Json => {
-                self.json(&ProgressEvent::new(phase, message, current, total));
+                self.json(&ProgressEvent::new(phase, message, current, total, subject));
             }
             ProgressMode::Human => {
                 let phase = phase.wire();
@@ -529,11 +532,16 @@ mod tests {
         let config = cfg(StderrMode::Ndjson, ProgressMode::Json, false);
         let (reporter, captured) = shared(&config);
         let sink = ProgressSink::new(&reporter, &config);
-        sink.event(Phase::Fetch, 2, "gh:o/foo");
-        sink.event(Phase::Fetch, 2, "gh:o/foo");
-        sink.event(Phase::Download, 1, "gh:o/foo@1 on retail");
-        sink.event(Phase::Fetch, 9, "gh:o/bar");
-        sink.event(Phase::Fetch, 9, "gh:o/baz");
+        sink.event(Phase::Fetch, 2, "gh:o/foo", Subject::of_ref("gh:o/foo"));
+        sink.event(Phase::Fetch, 2, "gh:o/foo", Subject::of_ref("gh:o/foo"));
+        sink.event(
+            Phase::Download,
+            1,
+            "gh:o/foo@1 on retail",
+            Subject::on("gh:o/foo", "retail"),
+        );
+        sink.event(Phase::Fetch, 9, "gh:o/bar", Subject::of_ref("gh:o/bar"));
+        sink.event(Phase::Fetch, 9, "gh:o/baz", Subject::of_ref("gh:o/baz"));
         let events: Vec<serde_json::Value> = captured
             .text()
             .lines()
@@ -542,11 +550,14 @@ mod tests {
         assert_eq!(
             events,
             [
-                serde_json::json!({"event": "progress", "phase": "fetch", "message": "gh:o/foo", "current": 1, "total": 2}),
-                serde_json::json!({"event": "progress", "phase": "download", "message": "gh:o/foo@1 on retail", "current": 1, "total": 1}),
-                serde_json::json!({"event": "progress", "phase": "fetch", "message": "gh:o/bar", "current": 2, "total": 2}),
+                serde_json::json!({"event": "progress", "phase": "fetch", "message": "gh:o/foo", "current": 1, "total": 2,
+                    "target": null, "ref": "gh:o/foo"}),
+                serde_json::json!({"event": "progress", "phase": "download", "message": "gh:o/foo@1 on retail", "current": 1,
+                    "total": 1, "target": "retail", "ref": "gh:o/foo"}),
+                serde_json::json!({"event": "progress", "phase": "fetch", "message": "gh:o/bar", "current": 2, "total": 2,
+                    "target": null, "ref": "gh:o/bar"}),
             ],
-            "an item once, the first total kept, never past it"
+            "an item once, the first total kept, never past it, with what it is about"
         );
         let wires: Vec<&str> = [
             Phase::Fetch,
@@ -580,10 +591,10 @@ mod tests {
         ] {
             let (reporter, captured) = shared(&config);
             let sink = ProgressSink::new(&reporter, &config);
-            sink.event(Phase::Fetch, 1, "gh:o/foo");
+            sink.event(Phase::Fetch, 1, "gh:o/foo", Subject::of_ref("gh:o/foo"));
             assert!(sink.inner.is_none() && captured.text().is_empty());
         }
-        ProgressSink::none().event(Phase::Commit, 1, "retail");
+        ProgressSink::none().event(Phase::Commit, 1, "retail", Subject::target("retail"));
     }
 
     #[test]
@@ -591,7 +602,7 @@ mod tests {
         let config = cfg(StderrMode::Human, ProgressMode::Human, false);
         let (reporter, captured) = shared(&config);
         let sink = ProgressSink::new(&reporter, &config);
-        sink.event(Phase::Download, 3, "WeakAuras");
+        sink.event(Phase::Download, 3, "WeakAuras", Subject::NONE);
         lock(&reporter).warning(&warning());
         let text = captured.text();
         assert!(
@@ -605,7 +616,13 @@ mod tests {
         r.warning(&warning());
         r.log(LogLevel::Info, "checking 3 addons");
         r.log(LogLevel::Debug, "hidden without -v");
-        r.progress(Phase::Download, "WeakAuras", Some(1), Some(3));
+        r.progress(
+            Phase::Download,
+            "WeakAuras",
+            Some(1),
+            Some(3),
+            Subject::on("gh:o/wa", "retail"),
+        );
         r.error(&error());
         String::from_utf8(r.into_sink()).unwrap()
     }
@@ -628,7 +645,7 @@ mod tests {
         );
         assert_eq!(
             text.lines().nth(2).unwrap(),
-            r#"{"event":"progress","phase":"download","message":"WeakAuras","current":1,"total":3}"#
+            r#"{"event":"progress","phase":"download","message":"WeakAuras","current":1,"total":3,"target":"retail","ref":"gh:o/wa"}"#
         );
         assert_eq!(events[3]["exit_code"], 3);
         assert_eq!(events[3]["fix_argv"][4], "retail");
@@ -721,7 +738,7 @@ mod tests {
         };
         let (reporter, captured) = shared(&config);
         let sink = ProgressSink::new(&reporter, &config);
-        sink.event(Phase::Download, 3, "WeakAuras");
+        sink.event(Phase::Download, 3, "WeakAuras", Subject::NONE);
         lock(&reporter).log(
             LogLevel::Trace,
             "release memo gh:o/foo|stable: not remembered",

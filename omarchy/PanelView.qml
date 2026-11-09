@@ -109,6 +109,14 @@ Item {
   readonly property var openArgv: Model.addonsDirArgv(Model.openTarget(targets, filter, cursorRowTarget()))
   readonly property var lastResult: svc ? svc.lastResult : null
   readonly property var resultUndo: Model.resultUndo(lastResult, lastChange)
+  // What runs that the player waits on, in words (the activity bar, 1n2p.18): the
+  // service's activity at activityNowMs, which ticks every second while one shows.
+  property double activityNowMs: Date.now()
+  readonly property var serviceActivity: svc ? svc.activity : null
+  readonly property var activityView: serviceActivity ? Model.activityView(serviceActivity, targets, activityNowMs) : null
+  readonly property bool activityShown: activityView !== null
+  // The last result shows until the next activity, for the service's hold (§2.1).
+  readonly property bool resultFresh: !!lastResult && !activityShown && !!svc && svc.resultShown !== false
   readonly property var lastError: svc ? svc.lastError : null
   readonly property var confirm: svc ? svc.confirm : null
   readonly property bool confirming: !!confirm
@@ -194,6 +202,8 @@ Item {
     Qt.callLater(root.focusNow)
   }
   onConfirmChanged: planSheet.reset()
+  // A new activity, or news of one, reads the clock at once, not at the next tick.
+  onServiceActivityChanged: activityNowMs = Date.now()
   onTypingChanged: if (!typing) Qt.callLater(root.focusNow)
   onHelpOpenChanged: Qt.callLater(root.focusNow)
   onPanelStateChanged: publishState()
@@ -229,6 +239,16 @@ Item {
     repeat: true
     running: root.opened
     onTriggered: root.nowMs = Date.now()
+  }
+
+  // The activity bar's elapsed time and its "still working" line follow the clock.
+  Timer {
+    objectName: "activityClock"
+    interval: 1000
+    repeat: true
+    triggeredOnStart: true
+    running: root.opened && !!root.svc && !!root.svc.activity
+    onTriggered: root.activityNowMs = Date.now()
   }
 
   // A view (a tab): the stack is cleared, and the view is created on its first visit
@@ -441,8 +461,10 @@ Item {
     return report(svc.run(request.template, request.slots, request.label, request.shown))
   }
 
+  // A check the full network lane could not take says so, never only on the console
+  // (UX-42).
   function checkNow() {
-    svc.check()
+    if (svc.check() === false) notice = Model.copy("activity.lane_full")
     return true
   }
 
@@ -994,13 +1016,31 @@ Item {
           borderSpec: Border.flat(root.alpha(root.urgent, 0.35), 1)
           radius: Style.cornerRadius
 
+          // A failure stays until it is dismissed, or until what failed succeeds (1n2p.18).
+          PanelActionButton {
+            id: errorDismiss
+            objectName: "errorDismiss"
+            visible: !!root.svc && typeof root.svc.dismissError === "function"
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.margins: Style.spacing.sm
+            // U+F0156 nf-md-close.
+            iconText: String.fromCodePoint(0xF0156)
+            tooltipText: Model.copy("activity.dismiss")
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            Accessible.role: Accessible.Button
+            Accessible.name: Model.copy("activity.dismiss")
+            onClicked: root.svc.dismissError()
+          }
+
           Column {
             id: errorColumn
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             anchors.leftMargin: Style.space(12)
-            anchors.rightMargin: Style.space(12)
+            anchors.rightMargin: Style.space(12) + (errorDismiss.visible ? errorDismiss.width + Style.spacing.sm : 0)
             spacing: Style.spacing.sm
 
             PlainLabel {
@@ -1089,60 +1129,24 @@ Item {
           }
         }
 
-        // The activity slot (the progress bead, .18, builds the activity bar here):
-        // the running change, then the last result with its Undo.
-        Rectangle {
-          objectName: "progressTrack"
-          visible: root.busy
+        // The activity bar (§2.1, 1n2p.18): a running change with its progress and the
+        // queue, else a check or a read the player waits on; else the last result with
+        // its Undo, for the service's hold.
+        ActivityBar {
+          objectName: "activityBar"
           width: parent.width
-          height: Style.space(4)
-          radius: height / 2
-          color: root.alpha(root.foreground, 0.15)
-
-          Rectangle {
-            readonly property real fraction: Model.progressFraction(root.svc ? root.svc.action : null)
-            width: parent.width * (fraction < 0 ? 0.15 : fraction)
-            height: parent.height
-            radius: parent.radius
-            color: root.accent
-          }
-        }
-
-        PlainLabel {
-          objectName: "progressLine"
-          visible: root.busy
-          width: parent.width
-          color: root.foreground
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          text: root.busy ? String(root.svc.action.label || "") + (root.svc.action.message ? ": " + root.svc.action.message : "") : ""
-        }
-
-        // Why the change buttons are off.
-        Text {
-          objectName: "busyNote"
-          visible: root.busy
-          width: parent.width
-          textFormat: Text.PlainText
-          text: "other changes wait until this one finishes"
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-        }
-
-        PlainLabel {
-          objectName: "queued"
-          visible: text !== ""
-          width: parent.width
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          text: root.svc && root.svc.queuedAction ? "next: " + root.svc.queuedAction : ""
+          view: root.activityView
+          queued: root.svc && typeof root.svc.queuedText === "string" ? root.svc.queuedText : ""
+          foreground: root.foreground
+          dim: root.dim
+          accent: root.accent
+          fontFamily: root.fontFamily
+          onCancelRequested: if (root.svc && typeof root.svc.cancelActivity === "function") root.svc.cancelActivity()
         }
 
         Row {
           objectName: "result"
-          visible: !!root.lastResult && !root.busy
+          visible: root.resultFresh
           width: parent.width
           spacing: Style.spacing.md
 
@@ -1173,7 +1177,7 @@ Item {
 
         // A partial result: each failed item's fix the classifier accepts.
         Flow {
-          visible: !!root.lastResult && !root.busy
+          visible: root.resultFresh
           width: parent.width
           spacing: Style.spacing.sm
 

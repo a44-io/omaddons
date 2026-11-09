@@ -1204,7 +1204,8 @@ mod support {
         slots: &[(&str, &str)],
     ) -> Vec<String> {
         let template = &templates[name];
-        let mut argv = standard(template["mutates"] == true || name == "check");
+        // As Model.buildArgv: every change, and every read on the network lane.
+        let mut argv = standard(template["mutates"] == true || template["lane"] == "network");
         for part in template["argv"].as_array().unwrap() {
             let mut part = part.as_str().unwrap().to_owned();
             for (slot, value) in slots {

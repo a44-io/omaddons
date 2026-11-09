@@ -1987,6 +1987,8 @@
     "event progress event": {"enum":["progress"],"kind":"output_position","nullable":false,"required":true,"types":["string"]},
     "event progress message": {"kind":"output_position","nullable":false,"required":true,"types":["string"]},
     "event progress phase": {"enum":["commit","copy","download","fetch","stage","verify"],"kind":"output_position","nullable":false,"required":true,"types":["string"]},
+    "event progress ref": {"kind":"output_position","nullable":true,"required":true,"types":["string"]},
+    "event progress target": {"kind":"output_position","nullable":true,"required":true,"types":["string"]},
     "event progress total": {"kind":"output_position","minimum":0,"nullable":true,"required":false,"types":["integer"]},
     "event warning": {"kind":"event"},
     "event warning .": {"kind":"output_position","types":["object"]},

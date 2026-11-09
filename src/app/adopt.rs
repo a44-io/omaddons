@@ -41,7 +41,7 @@ use crate::engine::tx::CheckJob;
 use crate::error::{CommandHint, Error, ErrorCode, Result, Warning};
 use crate::inventory::{Depth, FolderEntry, inventory_shared};
 use crate::model::{FolderName, Ref, TxId, VersionConfidence};
-use crate::output::{Outcome, Phase, Style};
+use crate::output::{Outcome, Phase, Style, Subject};
 use crate::politeness::SOURCE_RECHECK_MIN_INTERVAL;
 use crate::resolve::adopt::{
     AdoptLookups, AdoptTukui, AdoptWowi, CandidateFolder, Evidence, Group, Strength, Tier,
@@ -1040,10 +1040,12 @@ impl Checks<'_> {
             let Some(gw) = works.get_mut(t).and_then(|work| work.groups.get_mut(g)) else {
                 continue;
             };
+            let named = job.wanted.r#ref.to_string();
             ctx.progress.event(
                 Phase::Verify,
                 total,
-                &format!("{} on {}", job.wanted.r#ref, job.target.id),
+                &format!("{named} on {}", job.target.id),
+                Subject::on(&named, &job.target.id),
             );
             match result {
                 Ok(Checked::Loads(check)) => compare(gw, &check),
@@ -1194,8 +1196,13 @@ fn report_fetches(ctx: &Context, answers: &BTreeMap<Wanted, Fetched>) {
         .map(|(w, _)| w)
         .collect();
     for w in &fetched {
-        ctx.progress
-            .event(Phase::Fetch, fetched.len() as u64, &w.r#ref.to_string());
+        let r#ref = w.r#ref.to_string();
+        ctx.progress.event(
+            Phase::Fetch,
+            fetched.len() as u64,
+            &r#ref,
+            Subject::of_ref(&r#ref),
+        );
     }
 }
 

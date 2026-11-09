@@ -49,7 +49,7 @@ use crate::model::{
     TargetKey, TxId, TxKind, VersionConfidence,
 };
 use crate::net::Http;
-use crate::output::{Phase, ProgressSink};
+use crate::output::{Phase, ProgressSink, Subject};
 use crate::resolve::cache::ReleaseCache;
 use crate::resolve::catalog::Catalog;
 use crate::resolve::deps::{
@@ -4679,7 +4679,7 @@ impl TargetPlanner<'_> {
             AssetLocation::Url(_)
             | AssetLocation::Deferred { .. }
             | AssetLocation::WowAceTree { .. } => {
-                let done = match self.download(&candidate.release_id, &candidate.asset) {
+                let done = match self.download(r#ref, &candidate.release_id, &candidate.asset) {
                     Ok(done) => done,
                     // A WowAce project that needs the packager is refused by name, as
                     // one that does not load here is.
@@ -4714,9 +4714,14 @@ impl TargetPlanner<'_> {
             }
         };
         let verdicts = verify(&inspected, self.target, ctx.table)?;
-        let item = format!("{} on {}", r#ref, self.target.id);
-        ctx.progress
-            .event(Phase::Verify, self.candidate_items, &item);
+        let named = r#ref.to_string();
+        let item = format!("{named} on {}", self.target.id);
+        ctx.progress.event(
+            Phase::Verify,
+            self.candidate_items,
+            &item,
+            Subject::on(&named, &self.target.id),
+        );
         let split = partition(&verdicts);
         let all: Vec<FolderName> = inspected.folders.iter().map(|f| f.name.clone()).collect();
         let primary = primary_folder(r#ref, &all, name_hint);
@@ -5006,11 +5011,16 @@ impl TargetPlanner<'_> {
         merge_fact(&mut self.facts.borrow_mut(), fact);
     }
 
-    /// The blob of `asset` of `release_id`: what this command already downloaded (or
-    /// failed to: the same error again), else [`TargetPlanner::fetch_blob`], remembered
-    /// for the command's later plans and targets. A remembered blob evicted since is
-    /// fetched again.
-    fn download(&self, release_id: &str, asset: &crate::model::Asset) -> Result<Downloaded> {
+    /// The blob of `asset` of `release_id` (a release of `r#ref`): what this command
+    /// already downloaded (or failed to: the same error again), else
+    /// [`TargetPlanner::fetch_blob`], remembered for the command's later plans and
+    /// targets. A remembered blob evicted since is fetched again.
+    fn download(
+        &self,
+        r#ref: &Ref,
+        release_id: &str,
+        asset: &crate::model::Asset,
+    ) -> Result<Downloaded> {
         let ctx = self.ctx;
         let key = (release_id.to_owned(), asset.filename.clone());
         match ctx.downloads.get(&key) {
@@ -5022,7 +5032,7 @@ impl TargetPlanner<'_> {
             Some(Err(error)) => return Err(error),
             None => {}
         }
-        let result = self.fetch_blob(release_id, asset);
+        let result = self.fetch_blob(r#ref, release_id, asset);
         ctx.downloads.put(key, result.clone());
         result
     }
@@ -5032,8 +5042,14 @@ impl TargetPlanner<'_> {
     /// the source now declares another hash or size (a fact never stands in for the
     /// blob: eviction makes facts stale); else a download, retried once on a hash
     /// mismatch. A `Deferred` location is resolved by its source right before each
-    /// attempt, and a 403 or 404 is retried once after resolving again.
-    fn fetch_blob(&self, release_id: &str, asset: &crate::model::Asset) -> Result<Downloaded> {
+    /// attempt, and a 403 or 404 is retried once after resolving again. Its `download`
+    /// progress event names `r#ref` and this client.
+    fn fetch_blob(
+        &self,
+        r#ref: &Ref,
+        release_id: &str,
+        asset: &crate::model::Asset,
+    ) -> Result<Downloaded> {
         let ctx = self.ctx;
         let expected = asset.expected_hash.as_ref();
         // A WoWInterface file published without its MD5 is not checked.
@@ -5140,8 +5156,13 @@ impl TargetPlanner<'_> {
             ));
         }
         let item = format!("{release_id} on {}", self.target.id);
-        ctx.progress
-            .event(Phase::Download, self.candidate_items, &item);
+        let named = r#ref.to_string();
+        ctx.progress.event(
+            Phase::Download,
+            self.candidate_items,
+            &item,
+            Subject::on(&named, &self.target.id),
+        );
         Ok(Downloaded {
             blob: fetched.blob,
             canonical_url,

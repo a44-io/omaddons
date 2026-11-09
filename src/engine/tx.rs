@@ -61,7 +61,7 @@ use crate::model::{
     Target, TargetKey, TargetRef, TxId, TxKind,
 };
 use crate::net::Http;
-use crate::output::{Phase, ProgressSink};
+use crate::output::{Phase, ProgressSink, Subject};
 use crate::resolve::cache::ReleaseCache;
 use crate::resolve::catalog::Catalog;
 use crate::rules::RulesTable;
@@ -513,8 +513,12 @@ pub fn run(req: &TxRequest, ctx: &EngineCtx<'_>) -> Result<TxOutcomes> {
             ) {
                 Ok((outcome, recovered)) => {
                     if outcome.tx.is_some() {
-                        ctx.progress
-                            .event(Phase::Commit, with_work, &outcome.target);
+                        ctx.progress.event(
+                            Phase::Commit,
+                            with_work,
+                            &outcome.target,
+                            Subject::target(&outcome.target),
+                        );
                     }
                     outcomes.push(outcome);
                     warnings.extend(recovered);
@@ -920,7 +924,12 @@ fn commit_target(
         pre_change(ctx, scopes, discovered, moves, req.reason.as_ref(), req.run);
     let staged = match stage_all(&inflight, scopes, target, &tp.work) {
         Ok(staged) => {
-            ctx.progress.event(Phase::Stage, with_work, &target.id);
+            ctx.progress.event(
+                Phase::Stage,
+                with_work,
+                &target.id,
+                Subject::target(&target.id),
+            );
             staged
         }
         Err(error) => {

@@ -420,7 +420,9 @@ function buildArgv(name, slots, opts) {
   var planned = template.preview === "match" || template.preview === "confirm"
   if (planned && !preview) throw refuse("preview_required", name + " runs only as its preview; its Yes runs the plan's apply")
   var ifMatch = ifMatchFor(name, row, template.preview === "confirm", template.bind === true || template.preview === "bind", o, preview)
-  var progress = template.mutates === true || name === "check"
+  // Every change, and every read that asks the sources: the activity bar counts them, and
+  // their progress keeps a network read's inactivity deadline alive (1n2p.18).
+  var progress = template.mutates === true || template.lane === "network"
   return { argv: standardFlags(o, progress, preview, ifMatch).concat(filled), env: contextOf(o.context) }
 }
 
@@ -540,7 +542,9 @@ function cliArgv(argv, opts) {
   var dryRun = hasDryRun(rest)
   var preview = o.preview === true || dryRun
   var ifMatch = ifMatchFor(verdict.path, CLI_PATHS[verdict.path], false, false, o, preview)
-  var progress = verdict.mutates || verdict.path === "outdated"
+  // As buildArgv: every change, and the reads that ask the sources (the network lane's).
+  var progress = verdict.mutates || verdict.path === "outdated" || verdict.path === "search"
+    || (verdict.path === "info" && rest.indexOf("--changelog") !== -1)
   return { argv: standardFlags(o, progress, preview && !dryRun, ifMatch).concat(rest), env: contextOf(o.context) }
 }
 
@@ -1365,6 +1369,328 @@ function progressLine(event) {
     ? " " + event.current + "/" + event.total : ""
   var message = str(event.message)
   return str(event.phase) + count + (message ? " · " + message : "")
+}
+
+// ---------------------------------------------------------------- activity (1n2p.18)
+
+// What the pinned activity bar says while something the player waits on runs (design
+// doc §2.1, §6.4). Each lane's running request may have one activity:
+// `{kind, lane, id, resource, template, label, op, preview, mode, phase, current, total,
+// target, ref, startedAt, lastEventAt, events, cancellable, rows}`.
+// - `kind`: `change` (a change the player asked for), `check` (an update check, asked or
+//   automatic), `read` (a read the player asked for that asks the sources: a search,
+//   release notes). Background work the player did not ask for (settings checkpoints,
+//   Lua error reads, `status`) has none (M3-D11).
+// - `phase`, `current`, `total`, `target`, `ref`: the last progress event. What an event
+//   is about is its typed `target` and `ref`, never its free-text `message` (UX-32).
+// - `rows`: the rows a change moves, by key (`<target id>/<addon>`): `{target, addon,
+//   ref, phase, current, total}`, `phase` "" until an event reaches the row.
+
+// A run quiet this long says it is still working; one this long says how long it has
+// run; a row that changed says so this long; the last result stays this long, or until
+// the next change (design doc §2.1).
+var ACTIVITY_STALL_MS = 30000
+var ACTIVITY_ELAPSED_MS = 5000
+var ACTIVITY_ROW_DONE_MS = 4000
+var RESULT_HOLD_MS = 600000
+
+var PROGRESS_PHASES = ["fetch", "download", "verify", "stage", "commit", "copy"]
+
+// What a change does, by its template (a change without a plan to name it).
+var TEMPLATE_OPS = {
+  "update_all": "update", "update_target": "update", "update_addon": "update", "install": "install",
+  "reinstall": "reinstall", "remove": "remove", "pin": "pin", "unpin": "unpin", "dismiss_errors": "dismiss",
+  "backup_target": "backup", "backup_all": "backup", "restore": "restore", "restore_addon": "restore",
+  "prune_backup": "prune", "doctor_fix": "repair", "doctor_fix_target": "repair"
+}
+
+// The changes whose own work is copying settings: their `copy` phase is the job, never
+// the day's checkpoint taken before a change.
+var SETTINGS_OPS = ["backup", "restore"]
+
+// The kind of activity request `r` shows, or "" for one the player does not wait on.
+function activityKind(r) {
+  if (!r || typeof r !== "object") return ""
+  if (r.kind === "mutation") return r.priority === "background" ? "" : "change"
+  if (r.resource === "check" || r.resource === "cli:outdated") return "check"
+  if (laneOf(r) === "network" && r.priority !== "background") return "read"
+  return ""
+}
+
+// The operation of change `r`: its plan's, when every item of the plan names the same
+// one, else its template's, else its command path's (an argv from the CLI: an undo).
+function activityOp(r) {
+  var selection = r.plan && r.plan.approval && Array.isArray(r.plan.approval.selection) ? r.plan.approval.selection : []
+  var ops = []
+  for (var i = 0; i < selection.length; i++) {
+    var op = selection[i] ? str(selection[i].op) : ""
+    if (op && ops.indexOf(op) === -1) ops.push(op)
+  }
+  if (ops.length === 1) return ops[0]
+  if (TEMPLATE_OPS.hasOwnProperty(str(r.template))) return TEMPLATE_OPS[r.template]
+  var spec = r.spec && typeof r.spec === "object" ? r.spec : {}
+  if (TEMPLATE_OPS.hasOwnProperty(str(spec.template))) return TEMPLATE_OPS[spec.template]
+  var argv = Array.isArray(r.cli) ? r.cli : (Array.isArray(spec.cli) ? spec.cli : null)
+  return argv ? verdictPath(argv).split(" ")[0] : ""
+}
+
+// The ref `list` records for `addon` on `target` (ignoring ASCII case), or "".
+function listedRef(lists, target, addon) {
+  var ts = lists && Array.isArray(lists.targets) ? lists.targets : []
+  var wanted = asciiLower(str(addon))
+  for (var i = 0; i < ts.length; i++) {
+    if (!ts[i] || ts[i].id !== target || !Array.isArray(ts[i].addons)) continue
+    for (var j = 0; j < ts[i].addons.length; j++) {
+      var a = ts[i].addons[j]
+      if (a && asciiLower(str(a.name)) === wanted) return str(a.ref)
+    }
+  }
+  return ""
+}
+
+// The rows change `r` moves: its plan's items, else the one addon its slots name. A
+// preview moves none: it only asks what it would do.
+function activityRows(r, lists) {
+  var rows = {}
+  if (r.preview === true) return rows
+  var add = function(target, addon) {
+    if (!target || !addon) return
+    rows[target + "/" + addon] = { "target": target, "addon": addon, "ref": listedRef(lists, target, addon),
+      "phase": "", "current": 0, "total": 0 }
+  }
+  var selection = r.plan && r.plan.approval && Array.isArray(r.plan.approval.selection) ? r.plan.approval.selection : []
+  for (var i = 0; i < selection.length; i++) {
+    if (selection[i]) add(str(selection[i].target_id), str(selection[i].addon))
+  }
+  var slots = r.slots && typeof r.slots === "object" ? r.slots : {}
+  if (selection.length === 0 && TEMPLATE_OPS.hasOwnProperty(str(r.template))) add(str(slots.target), str(slots.addon))
+  return rows
+}
+
+// The activity of request `r` as it starts on its lane at `nowMs`, or null when the
+// player does not wait on it. `lists` (the service's `list -v`) gives each row its ref.
+function activityStart(r, nowMs, lists) {
+  var kind = activityKind(r)
+  if (!kind) return null
+  return {
+    "kind": kind, "lane": laneOf(r), "id": num(r.id), "resource": str(r.resource), "template": str(r.template),
+    "label": str(r.label), "op": kind === "change" ? activityOp(r) : "", "preview": r.preview === true,
+    "mode": str(r.mode), "phase": "", "current": 0, "total": 0, "target": "", "ref": "",
+    "startedAt": num(nowMs), "lastEventAt": num(nowMs), "events": 0,
+    // A read can be stopped; a change in flight never is (it ends as a transaction).
+    "cancellable": kind !== "change",
+    "rows": kind === "change" ? activityRows(r, lists) : {}
+  }
+}
+
+// Whether a row's ref is the event's: GitHub refs compare without case, as the CLI's
+// do; every other ref is compared the same way, a near miss being harmless here.
+function sameRef(a, b) {
+  return a !== "" && b !== "" && asciiLower(a) === asciiLower(b)
+}
+
+// Activity `a` after one NDJSON line's `event` at `nowMs`: its phase and counts, what it
+// is about, and the rows the event names (a client's rows for a stage or commit, a
+// ref's rows for a fetch, the one row of a ref on a client for a download or verify).
+// Anything but a progress event leaves it as it was.
+function activityProgress(a, event, nowMs) {
+  if (!a || !event || typeof event !== "object" || event.event !== "progress") return a
+  var phase = PROGRESS_PHASES.indexOf(event.phase) !== -1 ? event.phase : ""
+  var next = {}
+  for (var key in a) if (a.hasOwnProperty(key)) next[key] = a[key]
+  next.phase = phase
+  next.current = num(event.current)
+  next.total = num(event.total)
+  next.target = str(event.target)
+  next.ref = str(event.ref)
+  next.lastEventAt = num(nowMs)
+  next.events = num(a.events) + 1
+  var rows = {}
+  for (var k in a.rows) {
+    if (!a.rows.hasOwnProperty(k)) continue
+    var row = a.rows[k]
+    var named = (next.target !== "" || next.ref !== "") && (next.target === "" || row.target === next.target)
+      && (next.ref === "" || sameRef(row.ref, next.ref))
+    rows[k] = !named ? row : { "target": row.target, "addon": row.addon, "ref": row.ref, "phase": phase,
+      "current": next.current, "total": next.total }
+  }
+  next.rows = rows
+  return next
+}
+
+// The changes whose commit puts addons in place: theirs is "installing", every other
+// change's "finishing" (a remove installs nothing).
+var INSTALLING_OPS = ["update", "install", "reinstall"]
+
+// A phase in words (design doc §6.4). `copy` during a change is the day's settings
+// checkpoint taken before it; in a backup or restore it is the job.
+function phaseWord(phase, op) {
+  if (PROGRESS_PHASES.indexOf(phase) === -1) return ""
+  if (phase === "copy" && SETTINGS_OPS.indexOf(op) === -1) return copy("activity.phase.checkpoint")
+  if (phase === "commit" && INSTALLING_OPS.indexOf(op) === -1) return copy("activity.phase.commit.other")
+  return copy("activity.phase." + phase)
+}
+
+// " (2 of 5)", or "" without a count (an announcement counts nothing yet).
+function countText(current, total) {
+  return num(total) > 0 && num(current) > 0 ? " " + copy("activity.count", { "current": current, "total": total }) : ""
+}
+
+// "12 s", "1 min 5 s".
+function durationText(ms) {
+  var s = Math.max(0, Math.floor(num(ms) / 1000))
+  return s < 60 ? copy("activity.seconds", { "s": s }) : copy("activity.minutes", { "m": Math.floor(s / 60), "s": s % 60 })
+}
+
+// The keys of a change's rows, in order.
+function activityRowKeys(a) {
+  return a && a.rows ? Object.keys(a.rows).sort() : []
+}
+
+// The clients a change's rows are on, by id, in order.
+function activityClients(a) {
+  var out = []
+  var keys = activityRowKeys(a)
+  for (var i = 0; i < keys.length; i++) if (out.indexOf(a.rows[keys[i]].target) === -1) out.push(a.rows[keys[i]].target)
+  return out
+}
+
+// The activity bar's first words: what runs, by name.
+function activityHeadline(a, targets) {
+  if (a.kind === "check") return copy("activity.check")
+  if (a.kind === "read") {
+    var read = a.resource === "search" ? "activity.search" : (a.resource === "changelog" ? "activity.changelog" : "")
+    return read ? copy(read) : a.label
+  }
+  var keys = activityRowKeys(a)
+  var verb = a.op && COPY.hasOwnProperty("activity.verb." + a.op) ? copy("activity.verb." + a.op) : ""
+  if (a.preview || !verb || keys.length === 0) return a.label
+  var clients = activityClients(a)
+  var client = clients.length === 1 ? sheetClient(targets, clients[0], "") : ""
+  if (keys.length === 1) return copy("activity.change.one", { "verb": verb, "addon": a.rows[keys[0]].addon, "client": client })
+  if (clients.length === 1) return copy("activity.change.client", { "verb": verb, "n": keys.length, "client": client })
+  return copy("activity.change.clients", { "verb": verb, "n": keys.length, "m": clients.length })
+}
+
+// The activity bar's detail: the last event in words ("DBM, downloading (2 of 3)"), or
+// what a preview is doing before any; "" when there is nothing to add.
+function activityDetail(a, targets) {
+  if (a.events === 0) {
+    if (!a.preview) return ""
+    return copy(a.mode === "match" ? "activity.preview.match" : (a.mode === "bind" ? "activity.preview.bind" : "activity.preview.confirm"))
+  }
+  var word = phaseWord(a.phase, a.op)
+  if (!word) return ""
+  var count = countText(a.current, a.total)
+  if (a.kind !== "change") return word + count
+  // The one row the event names, else the client it names when the change has several.
+  var named = []
+  var keys = activityRowKeys(a)
+  if (a.ref !== "") {
+    for (var i = 0; i < keys.length; i++) {
+      var row = a.rows[keys[i]]
+      if (sameRef(row.ref, a.ref) && (a.target === "" || row.target === a.target)) named.push(row)
+    }
+  }
+  var subject = named.length === 1 ? named[0].addon
+    : (a.target !== "" && activityClients(a).length > 1 ? sheetClient(targets, a.target, "") : "")
+  return (subject ? subject + ", " : "") + word + count
+}
+
+// What the activity bar shows for activity `a` at `nowMs`, or null when nothing runs:
+// `{kind, text, fraction, elapsed, stalled, cancellable}`. A check and a read say only
+// their count ("Checking for updates (12 of 42)"); a change says what it changes and
+// the last step ("Updating 3 addons on Retail: DBM, downloading (2 of 3)"). `fraction`
+// is -1 without a count (indeterminate). `elapsed` is how long it has run, after 5 s;
+// `stalled` says it is still working after 30 s without news. A count reaching its
+// total is not the end: the answer is (cached downloads report nothing).
+function activityView(a, targets, nowMs) {
+  if (!a || typeof a !== "object") return null
+  var headline = activityHeadline(a, targets)
+  var detail = activityDetail(a, targets)
+  var text = a.kind !== "change"
+    ? headline + (a.events > 0 && num(a.total) > 0 && num(a.current) > 0 ? countText(a.current, a.total) : "…")
+    : headline + (detail ? ": " + detail : "…")
+  var now = num(nowMs)
+  var ran = now - num(a.startedAt)
+  var quiet = now - num(a.lastEventAt)
+  return {
+    "kind": a.kind,
+    "text": text,
+    "fraction": num(a.total) > 0 ? Math.max(0, Math.min(1, num(a.current) / num(a.total))) : -1,
+    "elapsed": ran >= ACTIVITY_ELAPSED_MS ? durationText(ran) : "",
+    "stalled": quiet >= ACTIVITY_STALL_MS ? copy("activity.stalled", { "time": durationText(quiet) }) : "",
+    "cancellable": a.cancellable === true
+  }
+}
+
+// The activity the bar shows of the lanes' `{mutation, network, local}`: a change
+// first, then a check or read; null when the player waits on nothing.
+function shownActivity(lanes) {
+  var l = lanes && typeof lanes === "object" ? lanes : {}
+  return l.mutation || l.network || l.local || null
+}
+
+// What a row says while a change runs on it, or just after: `{pending, text}`, or null
+// when it is neither. `done` is the service's `{<key>: word}` of rows that changed.
+function activityRow(a, key, done) {
+  var k = str(key)
+  if (a && a.kind === "change" && a.rows && a.rows.hasOwnProperty(k)) {
+    var row = a.rows[k]
+    var verb = a.op && COPY.hasOwnProperty("activity.verb." + a.op) ? copy("activity.verb." + a.op) : copy("activity.verb.generic")
+    var word = phaseWord(row.phase, a.op)
+    return { "pending": true, "text": verb + "…" + (word ? " " + word + countText(row.current, row.total) : "") }
+  }
+  if (done && typeof done === "object" && done.hasOwnProperty(k)) return { "pending": false, "text": str(done[k]) }
+  return null
+}
+
+// The rows a finished change changed, `{<key>: word}` ("Updated"), from its envelope
+// (an `apply` reads as the command it ran): every item that changed, by its client.
+function changedRows(env) {
+  var view = applyResult(env) || env
+  var out = {}
+  if (!envelopeOk(view) || !view.data || typeof view.data !== "object") return out
+  var entries = Array.isArray(view.data.targets) ? view.data.targets : [view.data]
+  for (var i = 0; i < entries.length; i++) {
+    var entry = entries[i]
+    if (!entry || typeof entry !== "object" || !Array.isArray(entry.items)) continue
+    var t = entry.target
+    var id = t && typeof t === "object" ? str(t.id) : str(t)
+    for (var j = 0; j < entry.items.length; j++) {
+      var item = entry.items[j]
+      if (!id || !isChange(item) || !str(item.name)) continue
+      var word = "activity.done." + str(item.status)
+      out[id + "/" + item.name] = COPY.hasOwnProperty(word) ? copy(word) : copy("activity.done.generic")
+    }
+  }
+  return out
+}
+
+// "Next: Update Retail": the change that waits for this one, else a check that waits
+// for the network lane; "" when nothing waits.
+function queuedText(queues) {
+  var q = queues && typeof queues === "object" ? queues : {}
+  var mutation = Array.isArray(q.mutation) ? q.mutation : []
+  for (var i = 0; i < mutation.length; i++) {
+    if (mutation[i] && mutation[i].priority === "user") return copy("activity.next", { "label": str(mutation[i].label) })
+  }
+  var network = Array.isArray(q.network) ? q.network : []
+  for (var j = 0; j < network.length; j++) {
+    if (network[j] && network[j].resource === "check") return copy("activity.next", { "label": copy("activity.check") })
+  }
+  return ""
+}
+
+// Whether the bar spins (design doc §2.5, 1n2p.16's `working`): a change the player
+// asked for runs, or a check runs or waits to.
+function barWorking(lanes, queues) {
+  var l = lanes && typeof lanes === "object" ? lanes : {}
+  if (l.mutation && l.mutation.kind === "change") return true
+  if (l.network && l.network.kind === "check") return true
+  var network = queues && Array.isArray(queues.network) ? queues.network : []
+  for (var i = 0; i < network.length; i++) if (network[i] && network[i].resource === "check") return true
+  return false
 }
 
 var RESULT_VERBS = { "update": "Updated", "install": "Installed", "remove": "Removed", "pin": "Pinned", "unpin": "Unpinned" }
@@ -3773,7 +4099,59 @@ var COPY = {
   "stale.repair.selection": "what it would do",
   "stale.repair.observed": "the files this repair checks",
   "stale.repair.command": "the command",
-  "stale.repair.unknown": "the repair"
+  "stale.repair.unknown": "the repair",
+
+  // The activity bar and the rows a change moves (design doc §2.1, §6.4; 1n2p.18).
+  "activity.check": "Checking for updates",
+  "activity.search": "Searching",
+  "activity.changelog": "Reading the release notes",
+  "activity.preview.match": "preparing",
+  "activity.preview.confirm": "checking what it would do",
+  "activity.preview.bind": "checking what it would repair",
+  "activity.change.one": "{verb} {addon} on {client}",
+  "activity.change.client": "{verb} {n} addons on {client}",
+  "activity.change.clients": "{verb} {n} addons on {m} clients",
+  "activity.verb.update": "Updating",
+  "activity.verb.install": "Installing",
+  "activity.verb.reinstall": "Repairing",
+  "activity.verb.remove": "Removing",
+  "activity.verb.pin": "Pinning",
+  "activity.verb.unpin": "Unpinning",
+  "activity.verb.adopt": "Taking over",
+  "activity.verb.edit": "Changing",
+  "activity.verb.undo": "Undoing",
+  "activity.verb.restore": "Restoring",
+  "activity.verb.prune": "Deleting",
+  "activity.verb.backup": "Backing up",
+  "activity.verb.dismiss": "Marking as seen",
+  "activity.verb.repair": "Repairing",
+  "activity.verb.generic": "Working",
+  "activity.phase.fetch": "checking",
+  "activity.phase.download": "downloading",
+  "activity.phase.verify": "checking files",
+  "activity.phase.stage": "preparing",
+  "activity.phase.commit": "installing",
+  "activity.phase.commit.other": "finishing",
+  "activity.phase.copy": "copying settings",
+  "activity.phase.checkpoint": "backing up settings first",
+  "activity.count": "({current} of {total})",
+  "activity.seconds": "{s} s",
+  "activity.minutes": "{m} min {s} s",
+  "activity.stalled": "Still working (no news for {time})",
+  "activity.next": "Next: {label}",
+  "activity.busy": "Other changes wait until this one finishes.",
+  "activity.cancel": "Cancel",
+  "activity.cancelled": "Stopped: {label}",
+  "activity.lane_full": "Too many checks and searches are waiting; try again in a moment.",
+  "activity.dismiss": "Dismiss",
+  "activity.done.updated": "Updated",
+  "activity.done.installed": "Installed",
+  "activity.done.removed": "Removed",
+  "activity.done.pinned": "Pinned",
+  "activity.done.unpinned": "Unpinned",
+  "activity.done.edited": "Changed",
+  "activity.done.adopted": "Taken over",
+  "activity.done.generic": "Done"
 }
 
 // COPY[id] with its {slots} filled; a pair by `slots.n` (1 is "one"). A missing slot is
@@ -4686,6 +5064,22 @@ if (typeof module !== "undefined") {
     reduceBackups: reduceBackups,
     ageText: ageText,
     progressLine: progressLine,
+    ACTIVITY_STALL_MS: ACTIVITY_STALL_MS,
+    ACTIVITY_ELAPSED_MS: ACTIVITY_ELAPSED_MS,
+    ACTIVITY_ROW_DONE_MS: ACTIVITY_ROW_DONE_MS,
+    RESULT_HOLD_MS: RESULT_HOLD_MS,
+    PROGRESS_PHASES: PROGRESS_PHASES,
+    activityKind: activityKind,
+    activityStart: activityStart,
+    activityProgress: activityProgress,
+    activityView: activityView,
+    shownActivity: shownActivity,
+    activityRow: activityRow,
+    changedRows: changedRows,
+    queuedText: queuedText,
+    barWorking: barWorking,
+    phaseWord: phaseWord,
+    durationText: durationText,
     resultLine: resultLine,
     failedItems: failedItems,
     itemFixes: itemFixes,

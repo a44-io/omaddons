@@ -45,6 +45,18 @@ Item {
   property var action: null
   // The label of the queued user mutation ("next: …").
   property string queuedAction: ""
+  // What each lane runs that the player waits on (Model.activityStart, fed by every
+  // progress event, 1n2p.18): `{mutation, network, local}`, each null when none.
+  property var activities: ({ "mutation": null, "network": null, "local": null })
+  // The one the activity bar shows: a change first, then a check or a read.
+  readonly property var activity: Model.shownActivity(activities)
+  // What waits behind it, in words ("Next: Update Retail"), "" when nothing does.
+  property string queuedText: ""
+  // The rows a finished change changed, `{<key>: word}`, for rowDoneMs.
+  property var doneRows: ({})
+  // Whether the last result still shows in the pinned area: resultHoldMs after it, or
+  // until the next one (design doc §2.1).
+  property bool resultShown: false
   // The last finished action: {ok, line, partial, commands}.
   property var lastResult: null
   // The last failure: {message, code, fixes}.
@@ -142,6 +154,8 @@ Item {
   property int networkDeadlineMs: Model.WIDGET_NETWORK_DEADLINE_SEC * 1000
   property int killGraceMs: Model.WIDGET_KILL_GRACE_SEC * 1000
   property int streamGraceMs: Model.WIDGET_STREAM_GRACE_SEC * 1000
+  property int resultHoldMs: Model.RESULT_HOLD_MS
+  property int rowDoneMs: Model.ACTIVITY_ROW_DONE_MS
 
   // The template table: Model.COMMANDS; the tests add fixture templates.
   property var templates: Model.COMMANDS
@@ -164,6 +178,12 @@ Item {
   }
   Component.onDestruction: Store.clear(root)
   onStatusApplied: afterStatus()
+  // A new result shows for resultHoldMs, then the pinned area keeps the footer only.
+  onLastResultChanged: {
+    resultShown = lastResult !== null
+    if (resultShown) resultTimer.restart()
+    else resultTimer.stop()
+  }
 
   // ------------------------------------------------------------- settings
 
@@ -224,8 +244,27 @@ Item {
     return request({ "resource": "status", "template": "status_full", "label": "Rescan clients" })
   }
 
+  // Whether the check was taken: false when the network lane's queue is full (UX-42).
   function check() {
     return request({ "resource": "check", "template": "check", "lane": "network", "label": "Check now" })
+  }
+
+  // The activity bar's Cancel: the read it shows stops (SIGTERM, then SIGKILL after the
+  // grace); a change is never stopped, since it ends as a transaction (1n2p.18).
+  // Whether a read was stopped.
+  function cancelActivity() {
+    var a = activity
+    if (!a || a.cancellable !== true || a.lane === "mutation") return false
+    var lane = laneNamed(a.lane)
+    if (!lane.request || lane.request.id !== a.id) return false
+    lane.cancel()
+    return true
+  }
+
+  // A failure card's Dismiss: it stays until then, or until what failed succeeds.
+  function dismissError() {
+    lastError = null
+    lastErrorResource = ""
   }
 
   function readList() {
@@ -618,10 +657,33 @@ Item {
       // A silent change (M3-D11) shows no progress and leaves the panel's changes on: one
       // asked meanwhile queues behind it ("next: …").
       if (r.kind === "mutation" && r.priority !== "background") startAction(r)
+      setActivity(name, Model.activityStart(r, Date.now(), lists))
       laneNamed(name).run(r, built.argv, built.env)
     }
     queuedAction = queuedLabel()
+    queuedText = Model.queuedText(queues)
+    refreshSpin()
     if (again) Qt.callLater(pump)
+  }
+
+  // Lane `name`'s activity (null for none), as a fresh object so the change signal fires.
+  function setActivity(name, value) {
+    var next = { "mutation": activities.mutation, "network": activities.network, "local": activities.local }
+    next[name] = value
+    activities = next
+  }
+
+  // The activity of request `r` on its lane, or null when the lane shows another's.
+  function activityOf(r) {
+    var a = activities[Model.laneOf(r)]
+    return a && a.id === r.id ? a : null
+  }
+
+  // The bar spins while a change the player asked for runs, or a check runs or waits
+  // (Model.barWorking); its model is replaced only when that changes.
+  function refreshSpin() {
+    var working = Model.barWorking(activities, queues)
+    if (bar.spinning !== working) bar = withSpinning(bar, working)
   }
 
   function queuedLabel() {
@@ -641,10 +703,13 @@ Item {
     action = { "name": r.template || r.resource, "label": r.label, "current": 0, "total": 0,
       "message": !r.preview ? "" : r.mode === "match" ? "Preparing…"
         : r.mode === "bind" ? "Checking what it would repair…" : "Checking what it would do…" }
-    bar = withSpinning(bar, true)
   }
 
+  // A progress event of any lane's request: its activity follows it (reads too, UX-34);
+  // a change's `action` keeps its counts for state().
   function laneProgress(r, event) {
+    var a = activityOf(r)
+    if (a) setActivity(Model.laneOf(r), Model.activityProgress(a, event, Date.now()))
     if (r.kind !== "mutation" || !action) return
     action = { "name": action.name, "label": action.label,
       "current": typeof event.current === "number" ? event.current : 0,
@@ -658,6 +723,14 @@ Item {
     if (r.resource === "backups_detail") return detailSelection
     if (r.resource === "explain") return explainSelection
     return null
+  }
+
+  // `rows` (`{<key>: word}`) say what happened to them for rowDoneMs; none leaves the
+  // last ones as they are.
+  function markDone(rows) {
+    if (!rows || Object.keys(rows).length === 0) return
+    doneRows = rows
+    doneTimer.restart()
   }
 
   function noteOutcome(r, outcome) {
@@ -680,10 +753,13 @@ Item {
   // Called by a lane (directly, so the values stay JavaScript) when a request ends.
   function laneFinished(r, outcome, stdout, tail) {
     var env = outcome === "ok" || outcome === "failed" || outcome === "incompatible" ? Model.parseEnvelope(stdout) : null
+    if (activityOf(r)) setActivity(Model.laneOf(r), null)
     if (r.kind === "mutation") {
       action = null
-      bar = withSpinning(bar, false)
+      // The rows it changed say so a moment (Model.changedRows), then read as usual.
+      if (env && r.priority !== "background" && r.purpose !== "preview") markDone(Model.changedRows(env))
     }
+    refreshSpin()
     noteOutcome(r, outcome)
     requestFinished(r.resource, outcome)
     if (outcome === "missing") {
@@ -704,6 +780,14 @@ Item {
 
   function apply(r, outcome, env, tail) {
     var read = r.resource !== "status" && r.kind !== "mutation" && r.purpose !== "action"
+    // A read the player stopped (the activity bar's Cancel, the only one that cancels):
+    // no failure card, and the last check stands. Notes waiting for it say they stopped.
+    if (outcome === "cancelled" && r.kind !== "mutation") {
+      if (r.resource === "changelog") {
+        changelog = { "selection": r.selection, "data": null, "failed": Model.copy("activity.cancelled", { "label": r.label }) }
+      }
+      return
+    }
     // Every check, answered or not: whether a source did not answer.
     if (r.resource === "check") lastCheck = Model.reduceCheck(env, outcome)
     // A read that failed before and answers now: its failure card goes.
@@ -757,7 +841,7 @@ Item {
   function applyStatus(r, outcome, env, tail) {
     if (outcome === "ok" || outcome === "failed") {
       var model = Model.reduceStatus(env, Date.now())
-      bar = withSpinning(model.bar, action !== null)
+      bar = withSpinning(model.bar, Model.barWorking(activities, queues))
       targets = model.targets
       summary = model.summary
       lastChange = model.lastChange
@@ -875,6 +959,7 @@ Item {
     pendingDismissals = []
     queues = { "mutation": [], "local": queues.local.slice(), "network": queues.network.slice() }
     queuedAction = ""
+    queuedText = Model.queuedText(queues)
   }
 
   // ------------------------------------------------------------- desktop triggers (F8)
@@ -988,6 +1073,9 @@ Item {
       "bar": bar,
       "summary": summary,
       "action": action,
+      // What the activity bar says now (1n2p.18): `{kind, text, fraction, elapsed,
+      // stalled, cancellable}`, null when nothing the player waits on runs.
+      "activity": Model.activityView(activity, targets, Date.now()),
       "lastResult": lastResult ? { "ok": lastResult.ok, "line": lastResult.line } : null,
       "panelOpen": panelOpen,
       // The open panel's scope, view, page depth, open sheet and zoom (design doc §2.1).
@@ -1080,6 +1168,20 @@ Item {
     running: true
     interval: root.autoCheckIntervalMs
     onTriggered: root.autoCheck()
+  }
+
+  // The last result leaves the pinned area after resultHoldMs (design doc §2.1).
+  Timer {
+    id: resultTimer
+    interval: root.resultHoldMs
+    onTriggered: root.resultShown = false
+  }
+
+  // The rows a change changed read as usual again after rowDoneMs.
+  Timer {
+    id: doneTimer
+    interval: root.rowDoneMs
+    onTriggered: root.doneRows = ({})
   }
 
   Process {

@@ -47,6 +47,16 @@ TestCase {
       })
       property var action: null
       property string queuedAction: ""
+      // The activity bar's model (1n2p.18): what the player waits on, what waits, the
+      // rows a change changed, and whether the last result still shows.
+      property var activity: null
+      property string queuedText: ""
+      property var doneRows: ({})
+      property bool resultShown: true
+      // Whether check() is taken (false: the network lane is full).
+      property bool checkAccepted: true
+      property int cancels: 0
+      property int dismissals: 0
       property var lastResult: null
       property var lastError: null
       property var confirm: null
@@ -75,7 +85,9 @@ TestCase {
       function run(name, slots, label, shown) { runs = runs.concat([shown === undefined ? [name, slots, label] : [name, slots, label, shown]]); return "" }
       function runCliArgv(argv, label) { cliRuns = cliRuns.concat([[argv, label]]); return "" }
       function readView(view) { reads = reads.concat([view]) }
-      function check() { checks++ }
+      function check() { checks++; return checkAccepted }
+      function cancelActivity() { cancels++; return true }
+      function dismissError() { dismissals++; lastError = null }
       function refresh() { refreshes++ }
       function reinstallWidget() { reinstalls++; return "ok" }
       function confirmYes() { yes++; confirm = null; return "" }
@@ -719,16 +731,34 @@ TestCase {
 
   // ------------------------------------------------------------- the footer
 
+  // A change running as the service starts it, after `event` (a progress line) when given.
+  function changeActivity(label, event) {
+    var a = Model.activityStart({ "id": 1, "kind": "mutation", "lane": "mutation", "priority": "user",
+      "template": "update_target", "slots": { "target": "retail" }, "label": label }, Date.now(), null)
+    return event ? Model.activityProgress(a, event, Date.now()) : a
+  }
+
+  function checkActivity() {
+    return Model.activityStart({ "id": 2, "resource": "check", "kind": "data", "lane": "network", "label": "Check now" }, Date.now(), null)
+  }
+
   function test_the_footer_shows_progress_the_result_and_the_fix() {
-    svc.action = { "label": "Update all", "current": 1, "total": 4, "message": "retail: download 1/4 · DBM" }
-    svc.queuedAction = "Update era"
+    svc.action = { "label": "Update all", "current": 1, "total": 4, "message": "download 1/4 · gh:o/dbm@2 on retail" }
+    svc.activity = changeActivity("Update all", { "event": "progress", "phase": "download", "message": "gh:o/dbm@2 on retail",
+      "current": 1, "total": 4, "target": "retail", "ref": "gh:o/dbm" })
+    svc.queuedText = "Next: Update era"
     verify(child("progressTrack").visible)
-    compare(child("progressLine").text, "Update all: retail: download 1/4 · DBM")
-    compare(child("queued").text, "next: Update era")
+    compare(child("progressFill").width, child("progressTrack").width * 0.25)
+    // The phase in words, never the CLI's own message (UX-32).
+    compare(child("progressLine").text, "Update all: downloading (1 of 4)")
+    compare(child("queued").text, "Next: Update era")
     verify(child("busyNote").visible)
+    verify(!child("activityCancel").visible, "a change in flight is never cancelled")
     verify(!child("undoButton").enabled, "no undo while a change runs")
     svc.action = null
-    svc.queuedAction = ""
+    svc.activity = null
+    svc.queuedText = ""
+    verify(!child("activityBar").visible)
     svc.lastResult = { "ok": true, "line": "Updated 3 addons on 2 clients · /reload in game", "partial": false,
       "commands": [{ "action": "undo", "command": "omaddons undo", "argv": ["omaddons", "undo"], "runnable": true }] }
     compare(child("resultLine").text, "Updated 3 addons on 2 clients · /reload in game")
@@ -749,6 +779,57 @@ TestCase {
     verify(!child("errorCard").visible, "no earlier error while a change runs")
     svc.action = null
     verify(child("errorCard").visible)
+    // A failure stays until it is dismissed.
+    child("errorDismiss").clicked()
+    compare(svc.dismissals, 1)
+    verify(!child("errorCard").visible)
+  }
+
+  function test_a_check_shows_in_the_activity_bar_and_can_be_cancelled() {
+    svc.lastResult = { "ok": true, "line": "Updated 1 addon", "partial": false, "commands": [] }
+    verify(child("result").visible)
+    svc.activity = checkActivity()
+    verify(child("activityBar").visible)
+    compare(child("progressLine").text, "Checking for updates…")
+    // No count yet: the fixed 15 % fill.
+    compare(child("progressFill").width, child("progressTrack").width * 0.15)
+    verify(!child("busyNote").visible, "a check holds no change back")
+    verify(!child("result").visible, "the activity bar shows the check, not the last result")
+    verify(child("activityCancel").visible)
+    child("activityCancel").clicked()
+    compare(svc.cancels, 1)
+    svc.activity = Model.activityProgress(checkActivity(), { "event": "progress", "phase": "fetch", "message": "gh:o/foo",
+      "current": 12, "total": 42, "target": null, "ref": "gh:o/foo" }, Date.now())
+    compare(child("progressLine").text, "Checking for updates (12 of 42)")
+    svc.activity = null
+    verify(child("result").visible, "the last result comes back while it is held")
+  }
+
+  function test_the_last_result_leaves_when_its_hold_ends() {
+    svc.lastResult = { "ok": true, "line": "Updated 1 addon", "partial": false, "commands": [] }
+    verify(child("result").visible)
+    svc.resultShown = false
+    verify(!child("result").visible)
+    verify(child("freshness").visible, "the footer stays")
+  }
+
+  function test_a_check_the_full_network_lane_drops_says_so() {
+    svc.checkAccepted = false
+    keyClick("c")
+    compare(svc.checks, 1)
+    compare(child("notice").text, Model.copy("activity.lane_full"))
+  }
+
+  function test_the_activity_bar_says_how_long_and_when_it_has_gone_quiet() {
+    var a = checkActivity()
+    a.startedAt = Date.now() - 45000
+    a.lastEventAt = Date.now() - 35000
+    svc.activity = a
+    // Read at once (a new activity reads the clock), then each second.
+    verify(child("activityElapsed").visible)
+    verify(/^4[56] s$/.test(child("activityElapsed").text), child("activityElapsed").text)
+    verify(/^Still working \(no news for 3[56] s\)$/.test(child("activityStalled").text), child("activityStalled").text)
+    tryVerify(function() { return /^4[78] s$/.test(child("activityElapsed").text) }, 3000, "it ticks")
   }
 
   // A repair's Undo (G2) is the bound Undo last: shown only once a status read after the
@@ -966,6 +1047,7 @@ TestCase {
   function test_progress_results_cards_and_the_footer_stay_visible_below_a_long_list() {
     view.viewComponents = { "updates": longView }
     svc.action = { "label": "Update all", "current": 1, "total": 4, "message": "retail: download 1/4" }
+    svc.activity = changeActivity("Update all", null)
     svc.lastError = { "message": "DBM failed to update", "code": "network", "fixes": [], "fixText": "" }
     view.height = 400
     waitForRendering(view)

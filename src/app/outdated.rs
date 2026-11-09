@@ -35,7 +35,7 @@ use crate::error::{
     CommandHint, Error, ErrorBody, ErrorCode, Result, Suggestion, Warning, WarningCode,
 };
 use crate::model::{Channel, Ref, ReleaseSet, RunId, Target, TxKind};
-use crate::output::{Outcome, Phase, Style};
+use crate::output::{Outcome, Phase, Style, Subject};
 use crate::politeness::SOURCE_RECHECK_MIN_INTERVAL;
 use crate::resolve::cache::{Fetched, Freshness, Origin, ReleaseCache};
 use crate::resolve::updates::{
@@ -708,7 +708,8 @@ fn attach_changelogs(
 fn report_fetches(ctx: &Context, refs: &BTreeSet<String>) {
     ctx.progress.grow(Phase::Fetch, refs.len() as u64);
     for r in refs {
-        ctx.progress.event(Phase::Fetch, refs.len() as u64, r);
+        ctx.progress
+            .event(Phase::Fetch, refs.len() as u64, r, Subject::of_ref(r));
     }
 }
 

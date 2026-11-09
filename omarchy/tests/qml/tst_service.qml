@@ -938,6 +938,134 @@ TestCase {
     compare(words(lastRun("status").command)[0], "status")
   }
 
+  // ---- the activity bar (1n2p.18)
+
+  function shownText() {
+    var view = Model.activityView(service.activity, service.targets, Date.now())
+    return view ? view.text : null
+  }
+
+  function test_check_now_shows_at_once_counts_its_progress_and_spins_the_bar() {
+    ready(0)
+    verify(!service.bar.spinning)
+    verify(service.check())
+    var launch = lastRun("outdated")
+    verify(launch !== null, "the check runs: " + launchLog())
+    compare(launch.command.slice(6, 8), ["--progress", "json"])
+    compare(service.activity.kind, "check")
+    compare(shownText(), "Checking for updates…")
+    verify(service.bar.spinning, "a check spins the bar (UX-01)")
+    launch.process.emitStderr(JSON.stringify({ "event": "progress", "phase": "fetch", "message": "gh:o/foo", "current": 12,
+      "total": 42, "target": null, "ref": "gh:o/foo" }))
+    compare(shownText(), "Checking for updates (12 of 42)")
+    compare(service.action, null, "a check is no change")
+    answer(launch, envelope("outdated", { "checked_at": "2100-01-01T00:00:00Z", "requests": { "fetched": 1, "probed": 0, "reused": 0 },
+      "targets": [], "summary": {} }))
+    compare(service.activity, null)
+    verify(!service.bar.spinning)
+  }
+
+  function test_an_automatic_check_shows_too_but_a_background_read_does_not() {
+    ready(0)
+    service.request({ "resource": "check", "template": "check", "lane": "network", "priority": "background", "label": "Automatic update check" })
+    compare(service.activity.kind, "check")
+    verify(service.bar.spinning)
+    answer(lastRun("outdated"), envelope("outdated", { "checked_at": "2100-01-01T00:00:00Z", "targets": [], "summary": {} }))
+    // The refresh the check asks for, then a background read of Lua errors.
+    answer(lastRun("status"), statusEnvelope(0))
+    service.readErrorsOf("retail")
+    verify(lastRun("errors") !== null, "the errors read runs: " + launchLog())
+    compare(service.activity, null, "a background read is silent (M3-D11)")
+    verify(!service.bar.spinning)
+  }
+
+  function test_a_check_waiting_behind_a_search_spins_the_bar_and_is_named() {
+    ready(0)
+    service.searchFor("dbm", "")
+    compare(service.activity.kind, "read")
+    compare(shownText(), "Searching…")
+    verify(!service.bar.spinning, "a search does not spin the bar")
+    verify(service.check())
+    compare(runs("outdated").length, 0, "the check waits for the network lane")
+    verify(service.bar.spinning, "the check the player asked for spins at once")
+    compare(service.queuedText, "Next: Checking for updates")
+  }
+
+  function test_a_read_can_be_cancelled_and_its_lane_frees() {
+    ready(0)
+    service.lastError = null
+    service.check()
+    var launch = lastRun("outdated")
+    verify(service.activity.cancellable)
+    verify(service.cancelActivity())
+    compare(launch.process.signals, [15])
+    compare(service.activity, null)
+    compare(service.lastError, null, "a read the player stopped is no failure")
+    compare(service.lastCheck, null, "nor a check that did not answer")
+    // The lane is free: the next check runs at once.
+    service.check()
+    verify(lastRun("outdated") !== launch, "a second check runs")
+  }
+
+  function test_a_change_in_flight_is_never_cancelled() {
+    ready(2)
+    compare(service.run("update_all", {}, "Update all", [shownItem()]), "")
+    var preview = lastRun("update")
+    compare(service.activity.kind, "change")
+    verify(!service.activity.cancellable)
+    verify(!service.cancelActivity())
+    compare(preview.process.signals, [])
+  }
+
+  function test_rows_show_their_own_phase_and_say_when_they_changed() {
+    make({ "rowDoneMs": 60 })
+    ready(2)
+    // The rows' refs, as `list -v` gives them.
+    service.lists = Model.reduceList(JSON.parse(envelope("list", { "targets": [{ "id": "retail", "key": "01M8Q2RRRRRRRRRRRRRRRRRRRR",
+      "addons": [{ "name": "Foo", "ref": "gh:o/foo" }, { "name": "Bar", "ref": "gh:o/bar" }] }] })))
+    var bar = { "addon": "Bar", "release_id": "gh:o/bar@v2", "asset": "Bar.zip" }
+    compare(service.run("update_all", {}, "Update all", [shownItem(), shownItem(bar)]), "")
+    // The preview moves no row: it only asks what it would do.
+    compare(Model.activityRow(service.activity, "retail/Foo", null), null)
+    answer(lastRun("update"), planPreview("update", [planItem(), planItem(bar)]))
+    var launch = lastRun("apply")
+    compare(Model.activityRow(service.activity, "retail/Foo", null).text, "Updating…")
+    compare(shownText(), "Updating 2 addons on retail…")
+    launch.process.emitStderr(JSON.stringify({ "event": "progress", "phase": "download", "message": "gh:o/bar@v2 on retail",
+      "current": 1, "total": 2, "target": "retail", "ref": "gh:o/bar" }))
+    compare(Model.activityRow(service.activity, "retail/Bar", null).text, "Updating… downloading (1 of 2)")
+    compare(Model.activityRow(service.activity, "retail/Foo", null).text, "Updating…")
+    compare(shownText(), "Updating 2 addons on retail: Bar, downloading (1 of 2)")
+    // A change asked meanwhile is named as the next one.
+    compare(service.run("update_target", { "target": "retail" }, "Update Retail"), "")
+    compare(service.queuedText, "Next: Update Retail")
+    launch.process.finish(0, applyEnvelope("update",
+      { "targets": [{ "target": { "id": "retail" }, "items": [{ "name": "Foo", "status": "updated" }, { "name": "Bar", "status": "updated" }],
+        "reload_required": "none" }], "summary": { "changed": 2 } },
+      [{ "target": "retail", "key": "01M8Q2RRRRRRRRRRRRRRRRRRRR", "status": "committed", "tx": "01M8Q2TTTTTTTTTTTTTTTTTTTT", "error_code": null }]))
+    compare(Model.activityRow(null, "retail/Bar", service.doneRows), { "pending": false, "text": "Updated" })
+    tryCompare(service, "doneRows", ({}), 1000)
+  }
+
+  function test_the_last_result_shows_for_its_hold() {
+    make({ "resultHoldMs": 80 })
+    ready(0)
+    compare(service.resultShown, false)
+    compare(service.run("pin", { "target": "retail", "addon": "Foo" }, "Pin Foo"), "")
+    answer(lastRun("pin"), envelope("pin", { "targets": [{ "target": { "id": "retail" }, "items": [{ "name": "Foo", "status": "pinned" }] }] }))
+    verify(service.lastResult !== null)
+    verify(service.resultShown)
+    tryCompare(service, "resultShown", false, 1000)
+    verify(service.lastResult !== null, "the result itself stays, for state()")
+  }
+
+  function test_a_failure_stays_until_it_is_dismissed() {
+    ready(0)
+    service.lastError = { "message": "no", "code": "network", "fixes": [] }
+    service.dismissError()
+    compare(service.lastError, null)
+  }
+
   function test_user_mutations_go_before_background_ones() {
     service.templates = Object.assign({}, Model.COMMANDS, fixtureTemplates)
     ready(0)
@@ -1181,9 +1309,14 @@ TestCase {
   function test_state_has_the_documented_shape() {
     ready(4)
     var state = JSON.parse(service.stateJson())
-    compare(Object.keys(state).sort(), ["action", "bar", "binary", "confirm", "contextGeneration", "lanes", "lastPreview",
+    compare(Object.keys(state).sort(), ["action", "activity", "bar", "binary", "confirm", "contextGeneration", "lanes", "lastPreview",
       "lastRefreshMs", "lastResult", "panel", "panelOpen", "phase", "summary", "toolVersion", "widgetVersion"])
-    compare([state.confirm, state.lastPreview], [null, null])
+    compare([state.confirm, state.lastPreview, state.activity], [null, null, null])
+    // What the activity bar says, in words (1n2p.18).
+    service.check()
+    var checking = JSON.parse(service.stateJson()).activity
+    compare([checking.kind, checking.text, checking.cancellable], ["check", "Checking for updates…", true])
+    service.cancelActivity()
     // The open panel's scope, view, page depth, sheet and zoom; null while none is open.
     compare(state.panel, null)
     service.panelState = { "scope": "retail", "view": "updates", "stackDepth": 0, "sheet": null, "zoomed": false, "textZoom": 1 }

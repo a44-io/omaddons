@@ -19,7 +19,7 @@ use crate::contract::actions::Action;
 use crate::discover::DiscoveredTarget;
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning};
 use crate::model::Ref;
-use crate::output::{Outcome, Phase, Style};
+use crate::output::{Outcome, Phase, Style, Subject};
 use crate::politeness::SOURCE_RECHECK_MIN_INTERVAL;
 use crate::resolve::cache::Freshness;
 use crate::resolve::search::{
@@ -325,7 +325,11 @@ pub fn run(ctx: &Context, args: &SearchArgs) -> Result<SearchOutcome> {
         .iter()
         .filter(|(_, id)| enabled.contains(id))
         .count() as u64;
-    let progress = |what: &str| ctx.progress.event(Phase::Fetch, fetched, what);
+    // A source's index, about no one client or ref.
+    let progress = |what: &str| {
+        ctx.progress
+            .event(Phase::Fetch, fetched, what, Subject::NONE);
+    };
     let mut hits: Vec<Hit> = Vec::new();
     // Catalog names with a build per family: an install hint names them, not one ref.
     let mut variants: BTreeSet<String> = BTreeSet::new();

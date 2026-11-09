@@ -228,6 +228,9 @@ Item {
         objectName: "installedRow_" + index
         width: column.width
         spacing: Style.spacing.sm
+        // While a change runs on it, its phase; just after, what happened (1n2p.18).
+        readonly property var rowState: Model.activityRow(root.svc ? root.svc.activity : null, modelData.key,
+          root.svc ? root.svc.doneRows : null)
 
         // Under All, the client's header above its first row: its player name, whether
         // it runs, its addons (design doc §2.2). The rows under it name no client.
@@ -252,7 +255,9 @@ Item {
           fromVersion: entry.modelData.version || "?"
           toVersion: entry.modelData.updateAvailable && entry.modelData.latest ? entry.modelData.latest : ""
           chips: entry.modelData.chips
-          meta: entry.modelData.meta
+          meta: entry.rowState && !entry.rowState.pending ? entry.rowState.text : entry.modelData.meta
+          pending: !!entry.rowState && entry.rowState.pending
+          pendingText: entry.rowState ? entry.rowState.text : ""
           band: entry.modelData.band
           glyph: entry.modelData.glyph ? String.fromCodePoint(entry.modelData.glyph) : ""
           actions: entry.modelData.actions

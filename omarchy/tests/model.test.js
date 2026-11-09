@@ -178,10 +178,23 @@ describe("buildArgv", () => {
     expect(built.env).not.toBe(CONTEXT)
   })
 
-  test("--progress json goes on mutations and check only", () => {
-    expect(M.buildArgv("check", {}, opts()).argv).toContain("--progress")
-    expect(M.buildArgv("status", {}, opts()).argv).not.toContain("--progress")
-    expect(M.buildArgv("search", { target: "retail", query: "x" }, opts()).argv).not.toContain("--progress")
+  test("--progress json goes on mutations and every read that asks the sources", () => {
+    const cases = [
+      ["check", {}, true],
+      ["search", { target: "retail", query: "x" }, true],
+      ["search_all", { query: "x" }, true],
+      ["changelog", { target: "retail", addon: "DBM" }, true],
+      ["status", {}, false],
+      ["list", {}, false],
+      ["errors", {}, false],
+      ["backups", {}, false],
+    ]
+    for (const [name, slots, progress] of cases) {
+      expect([name, M.buildArgv(name, slots, opts()).argv.includes("--progress")]).toEqual([name, progress])
+    }
+    const cli = (argv) => M.cliArgv(argv, opts()).argv.includes("--progress")
+    expect([cli(["omaddons", "outdated"]), cli(["omaddons", "search", "dbm"]), cli(["omaddons", "info", "--changelog", "dbm"]),
+      cli(["omaddons", "info", "dbm"]), cli(["omaddons", "list", "-v"])]).toEqual([true, true, true, false, false])
   })
 
   test("a preview adds --dry-run, a bound run its token", () => {
@@ -3506,5 +3519,197 @@ describe("viewState", () => {
     }
     for (const w of words) expect([w, /\b(plan|preview|token|precondition|target|ref)\b/i.test(w)]).toEqual([w, false])
     expect(M.viewState("nosuchview", {}).state).toBe("firstLoad")
+  })
+})
+
+// ---------------------------------------------------------------- activity (1n2p.18)
+
+describe("activity", () => {
+  // The lines a fixture's run wrote to stderr, parsed.
+  const events = (name) => fixtureText(name + ".stderr.ndjson").trim().split("\n").map((l) => JSON.parse(l))
+  // The status fixture's clients, for their player names.
+  const clients = () => M.reduceStatus(fixture("status-updates"), NOW).targets
+  // The planned apply of "Update all" (the plan the routine preview stored), as the
+  // service starts it.
+  const planned = () => {
+    const plan = M.planFrom(fixture("plan-update-all"))
+    expect(plan).not.toBeNull()
+    return { id: 9, kind: "mutation", lane: "mutation", priority: "user", resource: "update_all", template: "",
+      cli: plan.argv.slice(), plan, label: "Update all", purpose: "planned", spec: { template: "update_all", slots: {} } }
+  }
+  const fold = (a, list, at) => list.reduce((acc, e) => M.activityProgress(acc, e, at), a)
+
+  test("every phase the CLI publishes has words", () => {
+    const schema = fixture("contract-schemas").data.events.progress
+    const phase = schema.$defs.Phase
+    const published = phase.enum || phase.oneOf.map((v) => v.const)
+    expect([...published].sort()).toEqual([...M.PROGRESS_PHASES].sort())
+    for (const p of published) {
+      const word = M.phaseWord(p, "update")
+      expect([p, word !== "" && word !== p && !/[{}]/.test(word)]).toEqual([p, true])
+    }
+    expect([M.phaseWord("copy", "update"), M.phaseWord("copy", "backup"), M.phaseWord("copy", "restore")])
+      .toEqual(["backing up settings first", "copying settings", "copying settings"])
+    expect([M.phaseWord("commit", "update"), M.phaseWord("commit", "install"), M.phaseWord("commit", "remove"), M.phaseWord("commit", "pin")])
+      .toEqual(["installing", "installing", "finishing", "finishing"])
+    expect(M.phaseWord("nosuch", "update")).toBe("")
+    expect(schema.required).toEqual(expect.arrayContaining(["target", "ref"]))
+  })
+
+  test("what the player waits on has an activity; background work does not", () => {
+    const kind = (r) => M.activityKind(r)
+    expect([
+      kind({ resource: "check", kind: "data", lane: "network", priority: "user" }),
+      kind({ resource: "check", kind: "data", lane: "network", priority: "background" }),
+      kind({ resource: "cli:outdated", kind: "data", lane: "network", priority: "user" }),
+      kind({ resource: "search", kind: "view", lane: "network", priority: "user" }),
+      kind({ resource: "changelog", kind: "view", lane: "network", priority: "user" }),
+      kind({ resource: "update_all", kind: "mutation", lane: "mutation", priority: "user" }),
+      kind({ resource: "backup_auto", kind: "mutation", lane: "mutation", priority: "background" }),
+      kind({ resource: "errors_target", kind: "data", lane: "local", priority: "background" }),
+      kind({ resource: "status", kind: "data", lane: "local", priority: "user" }),
+      kind({ resource: "list", kind: "data", lane: "local", priority: "user" }),
+    ]).toEqual(["check", "check", "check", "read", "read", "change", "", "", "", ""])
+    expect(M.activityStart({ resource: "status", kind: "data" }, NOW, null)).toBeNull()
+  })
+
+  test("a check shows at once, then the count the CLI reports", () => {
+    const a = M.activityStart({ id: 3, resource: "check", kind: "data", lane: "network", label: "Check now" }, NOW, null)
+    expect([a.kind, a.lane, a.cancellable]).toEqual(["check", "network", true])
+    const before = M.activityView(a, [], NOW)
+    expect([before.text, before.fraction, before.cancellable, before.elapsed, before.stalled])
+      .toEqual(["Checking for updates…", -1, true, "", ""])
+    const list = events("check")
+    expect(list.map((e) => e.phase)).toEqual(["fetch", "fetch"])
+    const first = M.activityView(fold(a, list.slice(0, 1), NOW), [], NOW)
+    expect([first.text, first.fraction]).toEqual(["Checking for updates (1 of 2)", 0.5])
+    // A count that reaches its total is not the end: the answer is.
+    expect(M.activityView(fold(a, list, NOW), [], NOW).text).toBe("Checking for updates (2 of 2)")
+    // Anything but a progress event leaves it as it was.
+    expect(M.activityProgress(a, { event: "log", message: "x" }, NOW)).toBe(a)
+  })
+
+  test("a search counts its sources, never their names", () => {
+    const a = M.activityStart({ id: 4, resource: "search", kind: "view", lane: "network", label: "Search" }, NOW, null)
+    const list = events("search")
+    expect(M.activityView(a, [], NOW).text).toBe("Searching…")
+    const view = M.activityView(fold(a, list, NOW), [], NOW)
+    expect(view.text).toBe("Searching (" + list.length + " of " + list.length + ")")
+    expect(view.text).not.toContain("WoWInterface")
+  })
+
+  test("an update's rows follow their own events, by target and ref", () => {
+    const lists = M.reduceList(fixture("plan-list"))
+    const a = M.activityStart(planned(), NOW, lists)
+    expect([a.kind, a.op, a.cancellable, Object.keys(a.rows).sort()])
+      .toEqual(["change", "update", false, ["era/Bar", "era/Foo", "retail/Bar"]])
+    expect(a.rows["era/Bar"].ref).toBe("gh:o/bar")
+    const targets = clients()
+    const row = (act, key) => M.activityRow(act, key, null)
+    expect(M.activityView(a, targets, NOW).text).toBe("Updating 3 addons on 2 clients…")
+    expect(row(a, "era/Bar")).toEqual({ pending: true, text: "Updating…" })
+    expect(row(a, "retail/Foo")).toBeNull()
+
+    const list = events("plan-update-all-apply")
+    const one = fold(a, list.slice(0, 1), NOW)
+    expect([row(one, "era/Bar").text, row(one, "era/Foo").text, row(one, "retail/Bar").text])
+      .toEqual(["Updating… checking files (1 of 3)", "Updating…", "Updating…"])
+    expect(M.activityView(one, targets, NOW).text).toBe("Updating 3 addons on 2 clients: Bar, checking files (1 of 3)")
+    expect(M.activityView(one, targets, NOW).fraction).toBeCloseTo(1 / 3)
+
+    // A client's stage names its rows and, with several clients, the client.
+    const staged = fold(a, list.slice(0, 4), NOW)
+    expect(list[3]).toMatchObject({ phase: "stage", target: "retail", ref: null })
+    expect([row(staged, "retail/Bar").text, row(staged, "era/Foo").text])
+      .toEqual(["Updating… preparing (1 of 2)", "Updating… checking files (2 of 3)"])
+    expect(M.activityView(staged, targets, NOW).text).toBe("Updating 3 addons on 2 clients: Retail, preparing (1 of 2)")
+    const done = fold(a, list, NOW)
+    expect([row(done, "era/Bar").text, row(done, "era/Foo").text, row(done, "retail/Bar").text])
+      .toEqual(["Updating… installing (2 of 2)", "Updating… installing (2 of 2)", "Updating… installing (1 of 2)"])
+  })
+
+  test("an event moves rows by its typed fields, never by its message", () => {
+    const a = M.activityStart(planned(), NOW, M.reduceList(fixture("plan-list")))
+    const untyped = M.activityProgress(a, { event: "progress", phase: "download", message: "gh:o/bar@v2 on era",
+      current: 1, total: 3, target: null, ref: null }, NOW)
+    expect(M.activityRow(untyped, "era/Bar", null).text).toBe("Updating…")
+    // GitHub refs compare without case, as the CLI's do.
+    const cased = M.activityProgress(a, { event: "progress", phase: "download", message: "", current: 1, total: 3,
+      target: "era", ref: "gh:O/Bar" }, NOW)
+    expect(M.activityRow(cased, "era/Bar", null).text).toBe("Updating… downloading (1 of 3)")
+    expect(M.activityRow(cased, "retail/Bar", null).text).toBe("Updating…")
+  })
+
+  test("the rows a change changed say so", () => {
+    const done = M.changedRows(fixture("plan-update-all-apply"))
+    expect(done).toEqual({ "era/Bar": "Updated", "era/Foo": "Updated", "retail/Bar": "Updated" })
+    expect(M.activityRow(null, "era/Bar", done)).toEqual({ pending: false, text: "Updated" })
+    expect(M.activityRow(null, "retail/Foo", done)).toBeNull()
+    expect(M.changedRows(fixture("failure"))).toEqual({})
+    expect(M.changedRows(null)).toEqual({})
+  })
+
+  test("one addon is named, with its client; a change without a plan names its slots' row", () => {
+    const targets = clients()
+    const plan = M.planFrom(fixture("plan-update-all"))
+    plan.approval.selection = plan.approval.selection.filter((i) => i.target_id === "retail")
+    const one = M.activityStart({ id: 1, kind: "mutation", lane: "mutation", priority: "user", plan, label: "Update Bar",
+      purpose: "planned", spec: { template: "update_addon" } }, NOW, null)
+    expect(M.activityView(one, targets, NOW).text).toBe("Updating Bar on Retail…")
+    const pin = M.activityStart({ id: 2, kind: "mutation", lane: "mutation", priority: "user", template: "pin",
+      slots: { target: "retail", addon: "Bar" }, label: "Pin Bar" }, NOW, M.reduceList(fixture("plan-list")))
+    expect([pin.op, Object.keys(pin.rows)]).toEqual(["pin", ["retail/Bar"]])
+    const pinning = M.activityProgress(pin, { event: "progress", phase: "commit", message: "retail", current: 1, total: 1,
+      target: "retail", ref: null }, NOW)
+    expect(M.activityView(pinning, targets, NOW).text).toBe("Pinning Bar on Retail: finishing (1 of 1)")
+    expect(M.activityRow(pinning, "retail/Bar", null).text).toBe("Pinning… finishing (1 of 1)")
+    // A settings checkpoint before a change is said as such.
+    const update = M.activityStart({ id: 5, kind: "mutation", lane: "mutation", priority: "user", template: "update_target",
+      slots: { target: "retail" }, label: "Update Retail" }, NOW, null)
+    const copying = M.activityProgress(update, { event: "progress", phase: "copy", message: "WTF/ files", current: 120,
+      total: 400, target: null, ref: null }, NOW)
+    expect(M.activityView(copying, targets, NOW).text).toBe("Update Retail: backing up settings first (120 of 400)")
+  })
+
+  test("a preview moves no rows and says what it is checking", () => {
+    const view = (mode, label) => M.activityView(M.activityStart({ id: 6, kind: "mutation", lane: "mutation", priority: "user",
+      template: "remove", slots: { target: "retail", addon: "Bar" }, preview: true, mode, label }, NOW, null), [], NOW)
+    expect([view("match", "Update all").text, view("confirm", "Remove Bar").text, view("bind", "Repair: the token").text])
+      .toEqual(["Update all: preparing", "Remove Bar: checking what it would do", "Repair: the token: checking what it would repair"])
+    expect(M.activityStart({ id: 6, kind: "mutation", template: "remove", slots: { target: "retail", addon: "Bar" }, preview: true },
+      NOW, null).rows).toEqual({})
+  })
+
+  test("how long it has run after 5 s; still working after 30 s without news", () => {
+    const a = M.activityStart({ id: 7, resource: "check", kind: "data", lane: "network", label: "Check now" }, NOW, null)
+    const at = (ms) => M.activityView(a, [], NOW + ms)
+    expect([at(4999).elapsed, at(5000).elapsed, at(65000).elapsed]).toEqual(["", "5 s", "1 min 5 s"])
+    expect([at(29999).stalled, at(30000).stalled]).toEqual(["", "Still working (no news for 30 s)"])
+    const heard = M.activityProgress(a, events("check")[0], NOW + 40000)
+    expect([M.activityView(heard, [], NOW + 65000).stalled, M.activityView(heard, [], NOW + 70000).stalled])
+      .toEqual(["", "Still working (no news for 30 s)"])
+    expect(M.durationText(125000)).toBe("2 min 5 s")
+  })
+
+  test("the bar shows a change first, then a check or read; it spins for changes and checks only", () => {
+    const change = { kind: "change" }
+    const check = { kind: "check" }
+    const read = { kind: "read" }
+    expect(M.shownActivity({ mutation: change, network: check, local: null })).toBe(change)
+    expect(M.shownActivity({ mutation: null, network: read, local: null })).toBe(read)
+    expect(M.shownActivity({ mutation: null, network: null, local: null })).toBeNull()
+    const empty = M.emptyQueues()
+    const waiting = { mutation: [], local: [], network: [{ resource: "check", priority: "background" }] }
+    expect([
+      M.barWorking({ mutation: change }, empty), M.barWorking({ network: check }, empty), M.barWorking({ network: read }, empty),
+      M.barWorking({}, waiting), M.barWorking({}, empty), M.barWorking(null, null),
+    ]).toEqual([true, true, false, true, false, false])
+  })
+
+  test("what waits is named: a change first, else a check", () => {
+    expect(M.queuedText({ mutation: [{ priority: "background", label: "Settings checkpoint" }, { priority: "user", label: "Update Retail" }],
+      network: [{ resource: "check" }], local: [] })).toBe("Next: Update Retail")
+    expect(M.queuedText({ mutation: [], network: [{ resource: "search" }, { resource: "check" }], local: [] })).toBe("Next: Checking for updates")
+    expect(M.queuedText(M.emptyQueues())).toBe("")
   })
 })
