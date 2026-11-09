@@ -3,6 +3,7 @@ import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
 import ".."
+import "../ui"
 import "../Model.js" as Model
 
 // The Search view (F6): a query (Enter in the field searches on the network lane; the
@@ -22,6 +23,10 @@ Item {
   readonly property var results: svc && svc.search && svc.search.selection
     && svc.search.selection.query === asked && svc.search.selection.target === filter
     ? svc.search.rows : []
+  // What the view says around its results (design doc §7): what to type, searching,
+  // nothing found, the sources that could not be searched, a search that failed.
+  readonly property var viewState: Model.viewState("search", { "service": svc, "filter": filter, "query": asked,
+    "rows": results.length, "nowMs": frame ? frame.nowMs : Date.now() })
   readonly property int rowCount: chooserOpen ? 0 : results.length
   // The field, or the chooser, has the keyboard.
   readonly property bool typing: field.activeFocus || chooserOpen
@@ -66,6 +71,13 @@ Item {
     asked = query
     svc.searchFor(query, filter)
     frame.leaveField()
+  }
+
+  // Try again (a search that failed): the shown query, asked again.
+  function searchAgain() {
+    if (asked === "" || !svc) return false
+    svc.searchFor(asked, filter)
+    return true
   }
 
   // Enter on a result: into the filtered client when its hint allows, else nothing;
@@ -197,15 +209,14 @@ Item {
       }
     }
 
-    Text {
-      objectName: "noResults"
-      visible: !root.chooserOpen && root.asked !== "" && !!root.svc && !!root.svc.search && root.results.length === 0
+    ViewState {
+      objectName: "viewState"
+      visible: !root.chooserOpen
       width: parent.width
-      textFormat: Text.PlainText
-      text: "No results"
-      color: root.dim
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
+      viewState: root.viewState
+      foreground: root.foreground
+      fontFamily: root.fontFamily
+      onAction: function(name) { if (root.frame) root.frame.stateAction(name) }
     }
 
     Repeater {

@@ -4,6 +4,7 @@ import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
 import ".."
+import "../ui"
 import "../Model.js" as Model
 
 // The Updates view (F5): what is behind on each client, from `list -v` (Model.updateRows:
@@ -20,6 +21,11 @@ Item {
   readonly property var svc: frame ? frame.svc : null
   readonly property string filter: frame ? frame.filter : ""
   readonly property var rows: Model.updateRows(svc ? svc.lists : null, filter, svc && Array.isArray(svc.targets) ? svc.targets : [])
+  // What the view says around its rows (design doc §7): loading, empty, a check whose
+  // sources did not answer, a stale check.
+  readonly property var viewState: Model.viewState("updates", { "service": svc, "filter": filter, "rows": rows.length,
+    "allRows": filter ? Model.updateRows(svc ? svc.lists : null, "", svc && Array.isArray(svc.targets) ? svc.targets : []).length : rows.length,
+    "nowMs": frame ? frame.nowMs : Date.now() })
   readonly property int count: Model.updateCount(rows)
   readonly property int rowCount: rows.length
   readonly property bool typing: false
@@ -90,25 +96,13 @@ Item {
       onClicked: root.frame.updateAll()
     }
 
-    Text {
-      objectName: "reading"
-      visible: !!root.svc && !root.svc.lists
+    ViewState {
+      objectName: "viewState"
       width: parent.width
-      textFormat: Text.PlainText
-      text: "Reading the clients…"
-      color: root.dim
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
-    }
-
-    PlainLabel {
-      objectName: "updatesEmpty"
-      visible: !!root.svc && !!root.svc.lists && root.rows.length === 0
-      width: parent.width
-      color: root.dim
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.body
-      text: Model.updatesEmptyText(root.svc && Array.isArray(root.svc.targets) ? root.svc.targets : [], root.filter, root.frame ? root.frame.nowMs : Date.now())
+      viewState: root.viewState
+      foreground: root.foreground
+      fontFamily: root.fontFamily
+      onAction: function(name) { if (root.frame) root.frame.stateAction(name) }
     }
 
     Repeater {

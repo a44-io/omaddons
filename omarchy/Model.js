@@ -2230,7 +2230,9 @@ function updateCount(rows) {
 
 // The Updates view with nothing to update: "Everything is current · checked 25 min
 // ago", the oldest check of the clients in the filter.
-function updatesEmptyText(statusTargets, filter, nowMs) {
+// The oldest update check of the clients in `filter` (every client under All), or null
+// when none was checked.
+function oldestCheck(statusTargets, filter) {
   var oldest = null
   var targets = Array.isArray(statusTargets) ? statusTargets : []
   for (var i = 0; i < targets.length; i++) {
@@ -2238,8 +2240,213 @@ function updatesEmptyText(statusTargets, filter, nowMs) {
     var checked = targets[i].updates ? targets[i].updates.checkedAt : null
     if (checked && (!oldest || Date.parse(checked) < Date.parse(oldest))) oldest = checked
   }
-  var age = oldest ? ageText(oldest, nowMs) : ""
-  return "Everything is current" + (age ? " · " + age : "")
+  return oldest
+}
+
+// -------------------------------------------------------------- the views' states (1n2p.19)
+//
+// What a view says around its rows (design doc §7's matrix): `firstLoad` before its data
+// first arrives, `failed` when that read failed, `empty` and `filteredEmpty` with a
+// sentence and the next action, else `rows`; and over rows that stay on screen, a quiet
+// `refreshing` while a read runs and notices: `failed` (a re-read failed, the last good
+// data shown), `offline` (a source did not answer), `partial` (a read cut short) and
+// `stale` (a check older than its interval). Decided from the service's fields alone:
+// its data, the reads running (`reading`), the last outcome per resource, the last
+// check, the status's targets; never a message's text.
+
+// The resource each view reads.
+var VIEW_RESOURCES = { "updates": "list", "installed": "list", "search": "search", "issues": "errors", "backups": "backups" }
+// The codes that mean a source did not answer: on the last check's warnings (the check
+// then showed what it remembered) or its failed items.
+var SOURCE_TROUBLE = ["network", "http_status", "rate_limited", "offline", "stale_check"]
+// A state's glyph (design doc §5.4): loading spins, a failure alerts, an empty view shows
+// its own (all good is a check).
+var STATE_GLYPHS = { "firstLoad": 0xF04E6, "failed": 0xF0028, "filteredEmpty": 0xF0236 }
+var EMPTY_GLYPHS = { "updates": 0xF05E0, "installed": 0xF0431, "search": 0xF0349, "issues": 0xF05E0, "backups": 0xF003C }
+
+// The last `outdated` run (Check now, or the background check), as the Updates view
+// qualifies its rows: when it ran, and whether a source did not answer, from the codes
+// of its warnings, its failed items and its error.
+function reduceCheck(env, outcome) {
+  var out = { "at": "", "trouble": false, "failed": 0, "outcome": str(outcome) }
+  if (!envelopeOk(env)) {
+    out.trouble = outcome !== "ok"
+    return out
+  }
+  var codes = Array.isArray(env.warnings) ? env.warnings.map(function(w) { return w && typeof w === "object" ? str(w.code) : "" }) : []
+  if (env.ok && env.data && typeof env.data === "object") {
+    out.at = str(env.data.checked_at)
+    var targets = Array.isArray(env.data.targets) ? env.data.targets : []
+    for (var i = 0; i < targets.length; i++) {
+      var items = targets[i] && Array.isArray(targets[i].items) ? targets[i].items : []
+      for (var j = 0; j < items.length; j++) if (items[j] && items[j].status === "failed") out.failed++
+    }
+  } else if (env.error && typeof env.error === "object") {
+    codes.push(str(env.error.code))
+  }
+  out.trouble = out.failed > 0 || codes.some(function(c) { return SOURCE_TROUBLE.indexOf(c) !== -1 })
+  return out
+}
+
+// The resources the lanes read now or will next (`running`, the local and network lanes'
+// requests; `queues`, theirs), for viewState's `refreshing`.
+function readingResources(running, queues) {
+  var out = []
+  var add = function(r) { if (r && typeof r.resource === "string" && out.indexOf(r.resource) === -1) out.push(r.resource) }
+  var q = queues && typeof queues === "object" ? queues : {}
+  var requests = (Array.isArray(running) ? running : [])
+    .concat(Array.isArray(q.local) ? q.local : [], Array.isArray(q.network) ? q.network : [])
+  requests.forEach(add)
+  return out
+}
+
+function stateAction(name) {
+  return { "name": name, "text": copy("state.action." + name) }
+}
+
+function stateNotice(kind, sentence, action) {
+  return { "kind": kind, "sentence": sentence, "action": action || null }
+}
+
+// "18:02", local time, from an RFC 3339 instant; "" for one that does not parse.
+function clockText(iso) {
+  var at = new Date(str(iso))
+  if (isNaN(at.getTime())) return ""
+  var two = function(n) { return n < 10 ? "0" + n : String(n) }
+  return two(at.getHours()) + ":" + two(at.getMinutes())
+}
+
+// Whether the service holds the view's data: the search's only for the query and client
+// it was asked with.
+function viewHas(view, s, query, filter) {
+  if (view === "updates" || view === "installed") return !!s.lists
+  if (view === "issues") return !!s.errors
+  if (view === "backups") return !!s.backups
+  if (view === "search") {
+    var selection = s.search && s.search.selection && typeof s.search.selection === "object" ? s.search.selection : null
+    return !!selection && selection.query === query && selection.target === filter
+  }
+  return false
+}
+
+// When the view's data was read, as an age ("25 min ago"), or "earlier".
+function readAge(view, s, nowMs) {
+  var at = view === "issues" ? num(s.errorsAt) : view === "backups" ? num(s.backupsAt) : view === "search" ? 0 : num(s.listsAt)
+  return at > 0 ? sinceText(new Date(at).toISOString(), nowMs) : copy("state.age.unknown")
+}
+
+// The search's skipped sources as notices, one per reason: "GitHub and Tukui couldn't be
+// searched: offline."
+function skippedNotices(skipped) {
+  var list = Array.isArray(skipped) ? skipped : []
+  var reasons = []
+  var byReason = {}
+  for (var i = 0; i < list.length; i++) {
+    var entry = list[i] && typeof list[i] === "object" ? list[i] : {}
+    var reason = ["offline", "rate_limited", "disabled"].indexOf(entry.reason) !== -1 ? entry.reason : "other"
+    if (!byReason.hasOwnProperty(reason)) {
+      byReason[reason] = { "sources": [], "resetAt": "" }
+      reasons.push(reason)
+    }
+    var source = str(entry.source)
+    var name = COPY.hasOwnProperty("source." + source) ? copy("source." + source) : source
+    if (name && byReason[reason].sources.indexOf(name) === -1) byReason[reason].sources.push(name)
+    if (!byReason[reason].resetAt && entry.reset_at) byReason[reason].resetAt = str(entry.reset_at)
+  }
+  return reasons.map(function(reason) {
+    var group = byReason[reason]
+    var sources = joinNames(group.sources)
+    var time = clockText(group.resetAt)
+    var id = reason === "rate_limited" && !time ? "state.notice.skipped.rate_limited.untimed" : "state.notice.skipped." + reason
+    return stateNotice(reason === "offline" ? "offline" : "partial", copy(id, { "sources": sources, "time": time }))
+  })
+}
+
+// What `view` shows around its rows (design doc §7). `input` is `{service, filter, rows,
+// allRows, query, nowMs}`: the service (or any object with its fields), the client
+// filter, how many rows the view shows and how many it would under All, the search's
+// query. The answer is `{view, state, glyph, sentence, detail, action, refreshing,
+// notices}`, `action` and each notice's `{name, text}` or null.
+function viewState(view, input) {
+  var i = input && typeof input === "object" ? input : {}
+  var s = i.service && typeof i.service === "object" ? i.service : {}
+  var filter = str(i.filter)
+  var query = str(i.query)
+  var nowMs = typeof i.nowMs === "number" ? i.nowMs : Date.now()
+  var targets = Array.isArray(s.targets) ? s.targets : []
+  var resource = VIEW_RESOURCES.hasOwnProperty(view) ? VIEW_RESOURCES[view] : ""
+  var reading = Array.isArray(s.reading) && s.reading.indexOf(resource) !== -1
+  var outcome = s.outcomes && typeof s.outcomes === "object" ? s.outcomes[resource] : undefined
+  var failed = typeof outcome === "string" && outcome !== "ok" && !reading
+  var client = filter ? sheetClient(targets, filter, "") : ""
+  // Rows on screen: the view's data, or rows from elsewhere (Issues lists `status`'s
+  // problems before Lua errors are read).
+  var have = viewHas(view, s, query, filter) || num(i.rows) > 0
+  var out = { "view": view, "state": "rows", "glyph": 0, "sentence": "", "detail": "", "action": null,
+    "refreshing": have && (reading || (view === "updates" && s.checking === true)), "notices": [] }
+  var set = function(state, sentence, action) {
+    out.state = state
+    out.glyph = STATE_GLYPHS.hasOwnProperty(state) ? STATE_GLYPHS[state] : (EMPTY_GLYPHS[view] || 0)
+    out.sentence = sentence
+    out.action = action || null
+  }
+  if (view === "search" && query === "") {
+    set("empty", copy("state.empty.search"))
+    return out
+  }
+  if (!have) {
+    if (failed) set("failed", copy("state.failed." + view), stateAction("retry"))
+    else set("firstLoad", copy("state.loading." + view))
+    return out
+  }
+  if (failed) {
+    out.notices.push(stateNotice("failed", copy("state.notice.failed", { "what": copy("state.what." + view), "age": readAge(view, s, nowMs) }),
+      stateAction("retry")))
+  }
+  var scoped = scopeTargets(targets, filter)
+  // A stale check over rows is a notice; an empty view says its age already, and takes
+  // Check now as its action instead.
+  var checkStale = false
+  if (view === "updates" && !out.refreshing) {
+    var check = s.lastCheck && typeof s.lastCheck === "object" ? s.lastCheck : null
+    var oldest = oldestCheck(targets, filter)
+    checkStale = !!oldest && scoped.some(function(t) { return !!t.updates && t.updates.stale === true })
+    if (check && check.trouble) {
+      out.notices.push(stateNotice("offline", num(check.failed) > 0 ? copy("state.notice.check_failed", { "n": num(check.failed) })
+        : copy("state.notice.check_unreachable"), stateAction("check")))
+    } else if (checkStale && num(i.rows) > 0) {
+      out.notices.push(stateNotice("stale", copy("state.notice.check_stale", { "age": sinceText(oldest, nowMs) }), stateAction("check")))
+    }
+  }
+  if (view === "issues" && !out.refreshing) {
+    var errorTargets = s.errors && Array.isArray(s.errors.targets) ? s.errors.targets : []
+    if (errorTargets.some(function(t) { return t && t.partial === true && (!filter || t.id === filter) })) {
+      out.notices.push(stateNotice("partial", copy("state.notice.errors_partial"), stateAction("read_errors")))
+    }
+  }
+  if (view === "backups" && !out.refreshing && scoped.some(function(t) { return !!t.backups && t.backups.stale === true })) {
+    out.notices.push(stateNotice("stale", copy("state.notice.backups_stale"), stateAction("refresh_backups")))
+  }
+  if (view === "search" && s.search) out.notices = out.notices.concat(skippedNotices(s.search.skipped))
+  if (num(i.rows) > 0) return out
+  var filtered = filter !== "" && num(i.allRows) > 0
+  if (view === "updates") {
+    if (!filter && targets.length === 0) set("empty", "")
+    else if (!oldestCheck(targets, filter)) set("empty", copy("state.empty.updates.unchecked"), stateAction("check"))
+    else set(filtered ? "filteredEmpty" : "empty", copy(filter ? "state.empty.updates.client" : "state.empty.updates",
+      { "client": client, "age": sinceText(oldestCheck(targets, filter), nowMs) }), checkStale ? stateAction("check") : null)
+  } else if (view === "installed") {
+    set(filtered ? "filteredEmpty" : "empty", copy(filter ? "state.empty.installed.client" : "state.empty.installed", { "client": client }),
+      stateAction("search"))
+  } else if (view === "search") {
+    set("empty", copy("state.empty.search.query", { "query": query }))
+  } else if (view === "issues") {
+    set(filtered ? "filteredEmpty" : "empty", copy(filter ? "state.empty.issues.client" : "state.empty.issues", { "client": client }))
+  } else if (view === "backups") {
+    set(filtered ? "filteredEmpty" : "empty", copy(filter ? "state.empty.backups.client" : "state.empty.backups", { "client": client }),
+      stateAction("backup"))
+  }
+  return out
 }
 
 // The Installed view's rows, in the filter: every managed addon, its source and its
@@ -3056,6 +3263,56 @@ var COPY = {
   "sheet.effect.keeps_copy": "Keeps a copy of {size} first, for undo.",
   "sheet.effect.undo_last": "Undo last reverts it.",
 
+  "state.loading.updates": "Reading your addons…",
+  "state.loading.installed": "Reading your addons…",
+  "state.loading.search": "Searching…",
+  "state.loading.issues": "Checking…",
+  "state.loading.backups": "Reading backups…",
+  "state.failed.updates": "Couldn't read your addons.",
+  "state.failed.installed": "Couldn't read your addons.",
+  "state.failed.search": "The search didn't finish.",
+  "state.failed.issues": "Couldn't read the problems and Lua errors.",
+  "state.failed.backups": "Couldn't read your backups.",
+  "state.empty.updates": "All up to date. Checked {age}.",
+  "state.empty.updates.client": "{client} is up to date. Checked {age}.",
+  "state.empty.updates.unchecked": "Not checked for updates yet.",
+  "state.empty.installed": "No addons yet. Find some in Search.",
+  "state.empty.installed.client": "No addons on {client} yet. Find some in Search.",
+  "state.empty.search": "Type a name, or paste a link from GitHub, WoWInterface, Tukui or WowAce.",
+  "state.empty.search.query": "Nothing found for “{query}”.",
+  "state.empty.issues": "Nothing needs fixing.",
+  "state.empty.issues.client": "Nothing needs fixing on {client}.",
+  "state.empty.backups": "No backups yet.",
+  "state.empty.backups.client": "No backups of {client} yet.",
+  "state.notice.failed": "Couldn't read {what} again; showing what was read {age}.",
+  "state.notice.check_unreachable": "Some sources didn't answer the last check; what they said before is shown.",
+  "state.notice.check_failed": {
+    "one": "1 addon couldn't be checked: its source didn't answer.",
+    "other": "{n} addons couldn't be checked: their sources didn't answer."
+  },
+  "state.notice.check_stale": "Last checked {age}.",
+  "state.notice.errors_partial": "Some errors couldn't be read yet: the game was writing. Read again after you quit.",
+  "state.notice.backups_stale": "Backup details are out of date.",
+  "state.notice.skipped.offline": "{sources} couldn't be searched: offline.",
+  "state.notice.skipped.rate_limited": "{sources} couldn't be searched: it asked to wait until {time}.",
+  "state.notice.skipped.rate_limited.untimed": "{sources} couldn't be searched: it asked to wait.",
+  "state.notice.skipped.disabled": "{sources} couldn't be searched: turned off.",
+  "state.notice.skipped.other": "{sources} couldn't be searched.",
+  "state.what.updates": "your addons",
+  "state.what.installed": "your addons",
+  "state.what.search": "the search",
+  "state.what.issues": "the problems",
+  "state.what.backups": "your backups",
+  "state.age.unknown": "earlier",
+  "state.action.retry": "Try again",
+  "state.action.check": "Check now",
+  "state.action.search": "Search",
+  "state.action.backup": "Back up now",
+  "state.action.read_errors": "Read again",
+  "state.action.refresh_backups": "Refresh",
+  "state.refreshing": "Updating…",
+
+  "source.catalog": "omaddons' catalog",
   "source.github": "GitHub",
   "source.wowi": "WoWInterface",
   "source.tukui": "Tukui",
@@ -4048,7 +4305,12 @@ if (typeof module !== "undefined") {
     stableSort: stableSort,
     updateRows: updateRows,
     updateCount: updateCount,
-    updatesEmptyText: updatesEmptyText,
+    oldestCheck: oldestCheck,
+    reduceCheck: reduceCheck,
+    readingResources: readingResources,
+    viewState: viewState,
+    VIEW_RESOURCES: VIEW_RESOURCES,
+    SOURCE_TROUBLE: SOURCE_TROUBLE,
     installedRows: installedRows,
     unmanagedLines: unmanagedLines,
     rowAction: rowAction,

@@ -3,6 +3,7 @@ import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
 import ".."
+import "../ui"
 import "../Model.js" as Model
 
 // The Backups view (F9): per client, its automatic backups and space, then each backup
@@ -26,6 +27,12 @@ Item {
     return out
   }
   readonly property int rowCount: rows.length
+  // What the view says around its client cards (design doc §7): reading, no backups at
+  // all, details out of date, a read that failed. A client's own card says when it has
+  // none, so the cards are what the view counts.
+  readonly property var viewState: Model.viewState("backups", { "service": svc, "filter": filter, "rows": sections.length,
+    "allRows": filter ? Model.backupSections(svc ? svc.backups : null, "", frame ? frame.nowMs : Date.now(),
+      svc && Array.isArray(svc.targets) ? svc.targets : []).length : sections.length, "nowMs": frame ? frame.nowMs : Date.now() })
   readonly property bool typing: false
   property var items: ({})
 
@@ -71,15 +78,13 @@ Item {
     width: root.width
     spacing: Style.spacing.md
 
-    Text {
-      objectName: "reading"
-      visible: !!root.svc && !root.svc.backups
+    ViewState {
+      objectName: "viewState"
       width: parent.width
-      textFormat: Text.PlainText
-      text: "Reading the backups…"
-      color: root.dim
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
+      viewState: root.viewState
+      foreground: root.foreground
+      fontFamily: root.fontFamily
+      onAction: function(name) { if (root.frame) root.frame.stateAction(name) }
     }
 
     Button {

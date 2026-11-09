@@ -156,21 +156,7 @@ pub fn gh_release(scenario: &Path, base: &str, tag: &str, assets: &[Asset<'_>]) 
 /// tags of one repository coexist in a scenario.
 pub fn gh_latest(scenario: &Path, base: &str, tag: &str) {
     let url = format!("{base}/releases/latest");
-    let dir = scenario.join(host_of(base));
-    if let Ok(listing) = fs::read_dir(&dir) {
-        for item in listing {
-            let path = item.unwrap().path();
-            if path.extension().is_none_or(|e| e != "json") {
-                continue;
-            }
-            let doc: serde_json::Value =
-                serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-            // ubs:ignore — comparing fixture URLs, not secrets
-            if doc["request"]["url"] == url.as_str() {
-                fs::remove_file(&path).unwrap();
-            }
-        }
-    }
+    remove_fixtures_of(scenario, &url);
     fixture(
         scenario,
         &format!("latest-{}-{tag}", slug(base)),
@@ -179,6 +165,39 @@ pub fn gh_latest(scenario: &Path, base: &str, tag: &str) {
         &[("location", &format!("{base}/releases/tag/{tag}"))],
         None,
     );
+}
+
+/// The repository at `base` answering `releases/latest` with `status` from now on (a
+/// 503: GitHub unreachable for it), replacing its 302 as [`gh_latest`] does.
+pub fn gh_latest_status(scenario: &Path, base: &str, status: u16) {
+    let url = format!("{base}/releases/latest");
+    remove_fixtures_of(scenario, &url);
+    fixture_seq(
+        scenario,
+        &format!("latest-{}-status-{status}", slug(base)),
+        &url,
+        &[Resp::status(status)],
+    );
+}
+
+/// Removes every fixture of the scenario whose request is for `url`, whatever its name.
+fn remove_fixtures_of(scenario: &Path, url: &str) {
+    let dir = scenario.join(host_of(url));
+    let Ok(listing) = fs::read_dir(&dir) else {
+        return;
+    };
+    for item in listing {
+        let path = item.unwrap().path();
+        if path.extension().is_none_or(|e| e != "json") {
+            continue;
+        }
+        let doc: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        // ubs:ignore — comparing fixture URLs, not secrets
+        if doc["request"]["url"] == url {
+            fs::remove_file(&path).unwrap();
+        }
+    }
 }
 
 /// Release `tag` of the repository at `base`: its release.json listing `assets` (empty

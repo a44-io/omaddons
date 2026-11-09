@@ -172,6 +172,47 @@ TestCase {
     }
   }
 
+  // Every cell of one view's state matrix (design doc §7, 1n2p.19), each as ViewState
+  // draws Model.viewState's answer, under the cell's name.
+  Component {
+    id: statesGalleryComponent
+    Rectangle {
+      // Not `states`: that is every Item's own list of States.
+      id: matrix
+      property int panelWidth: 540
+      property string view: "updates"
+      readonly property var cells: testCase.stateCells(view)
+      x: 10
+      y: 10
+      width: panelWidth + testCase.cardPadding * 2
+      height: statesColumn.implicitHeight + testCase.cardPadding * 2
+      color: Commons.Color.popups.background
+
+      Column {
+        id: statesColumn
+        x: testCase.cardPadding
+        y: testCase.cardPadding
+        width: matrix.panelWidth
+        spacing: Style.spacing.md
+
+        // By index: each cell's state stays the JavaScript object Model.viewState made.
+        Repeater {
+          model: matrix.cells.length
+
+          Column {
+            required property int index
+            readonly property var cell: matrix.cells[index]
+            width: statesColumn.width
+            spacing: Style.spacing.xs
+
+            SectionHeader { width: parent.width; title: cell.title }
+            ViewState { width: parent.width; viewState: cell.state }
+          }
+        }
+      }
+    }
+  }
+
   // The bar's PluginBarApi facade, as much of it as the bar button reads.
   Component {
     id: barApiComponent
@@ -1075,6 +1116,72 @@ TestCase {
     compare(image.width, width + cardPadding * 2, name + ": the gallery's width")
     item.destroy()
   }
+
+  // One view's cells of the state matrix (design doc §7): first load, failed, empty,
+  // filtered empty, refreshing, and each notice the view can show, from synthetic service
+  // fields as the service sets them.
+  function stateCells(view) {
+    var resource = Model.VIEW_RESOURCES[view]
+    var targets = [
+      { "id": "retail", "key": "k-retail", "displayName": "Retail", "updates": { "checkedAt": "2100-01-01T00:00:00Z", "stale": true },
+        "backups": { "stale": true } },
+      { "id": "era", "key": "k-era", "displayName": "Classic Era", "updates": { "checkedAt": "2100-01-01T00:00:00Z", "stale": false },
+        "backups": { "stale": false } }]
+    var data = { "lists": { "targets": [] }, "errors": { "targets": [{ "id": "retail", "partial": true }] }, "backups": { "targets": [] },
+      "search": { "rows": [], "selection": { "query": "dbm", "target": "" },
+        "skipped": [{ "source": "github", "reason": "offline" }, { "source": "tukui", "reason": "disabled" }] } }
+    var nowMs = Date.parse("2100-01-01T00:25:00Z")
+    var service = function(fields) {
+      var s = { "targets": targets, "reading": [], "outcomes": {}, "listsAt": nowMs - 600000, "errorsAt": nowMs - 600000, "backupsAt": nowMs - 600000 }
+      for (var key in fields) s[key] = fields[key]
+      return s
+    }
+    var withData = {}
+    withData[view === "updates" || view === "installed" ? "lists" : view] = data[view === "updates" || view === "installed" ? "lists" : view]
+    var cell = function(name, fields, input) {
+      var i = { "service": service(fields), "filter": "", "query": view === "search" ? "dbm" : "", "rows": 0, "allRows": 0, "nowMs": nowMs }
+      for (var key in input || {}) i[key] = input[key]
+      return { "title": view + " · " + name, "state": Model.viewState(view, i) }
+    }
+    var failed = {}
+    failed[resource] = "failed"
+    var reading = [resource]
+    var cells = [
+      cell("first load", {}),
+      cell("failed", { "outcomes": failed }),
+      cell("empty", withData),
+      cell("refreshing", Object.assign({ "reading": reading }, withData), { "rows": 3, "allRows": 3 }),
+      cell("failed with data", Object.assign({ "outcomes": failed }, withData), { "rows": 3, "allRows": 3 })
+    ]
+    // A search answers for its own client: it has no filtered empty.
+    if (view !== "search") cells.splice(3, 0, cell("filtered empty", withData, { "filter": "era", "allRows": 2 }))
+    if (view === "search") cells.unshift(cell("no query", {}, { "query": "" }))
+    if (view === "updates") {
+      cells.push(cell("offline", Object.assign({ "lastCheck": { "trouble": true, "failed": 0 } }, withData), { "rows": 3, "allRows": 3 }))
+      cells.push(cell("offline, items failed", Object.assign({ "lastCheck": { "trouble": true, "failed": 2 } }, withData), { "rows": 3, "allRows": 3 }))
+      cells.push(cell("stale", withData, { "rows": 3, "allRows": 3, "filter": "retail" }))
+    }
+    if (view === "issues") cells.push(cell("partial", withData, { "rows": 3, "allRows": 3 }))
+    if (view === "backups") cells.push(cell("stale", withData, { "rows": 2, "allRows": 2, "filter": "retail" }))
+    if (view === "search") cells.push(cell("skipped sources", withData, { "rows": 2, "allRows": 2 }))
+    return cells
+  }
+
+  function shootStates(view) {
+    var item = statesGalleryComponent.createObject(testCase, { "panelWidth": 540, "view": view })
+    verify(item !== null)
+    verify(item.cells.length >= 6, view + ": every cell")
+    // Its failed-with-data cell draws its notice (the states reach ViewState intact).
+    verify(findChild(item, "stateNotice") !== null, view + ": a notice is drawn")
+    save(item, "states-" + view)
+    item.destroy()
+  }
+
+  function test_states_updates() { shootStates("updates") }
+  function test_states_installed() { shootStates("installed") }
+  function test_states_search() { shootStates("search") }
+  function test_states_issues() { shootStates("issues") }
+  function test_states_backups() { shootStates("backups") }
 
   function test_components_at_540() { shootGallery(galleryComponent, 540, "components-540") }
   function test_components_at_400() { shootGallery(galleryComponent, 400, "components-400") }

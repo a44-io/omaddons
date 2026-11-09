@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 
 use common::home::Home;
-use common::http::{gh_feed, gh_latest, gh_release, github_search};
+use common::http::{gh_feed, gh_latest, gh_latest_status, gh_release, github_search};
 use common::tlog::{TestLog, tlog};
 use common::tukui::{elvui, tukui_list};
 use common::wowi::{FileEntry, wowi_filelist};
@@ -2221,6 +2221,45 @@ fn the_choosers_addon_restore_leaves_every_other_setting_alone() {
 
 /// The Backups view's and the restore chooser's envelopes: retail's `WTF/` (WeakAuras's
 /// and Foo's settings, `Config.wtf`) backed up with WeakAuras 5.19.2 installed, then
+/// The views' states (`omad-widget-user-first-1n2p.19`): a check that could not reach
+/// GitHub for Foo, after one that could (Bar answers both times), and a search whose
+/// online sources were skipped (`--offline`, the shape a rate-limited or turned-off
+/// source gives too).
+#[cfg(test)]
+fn states_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
+    let mut home = Home::new(&["wow"]);
+    for (base, name) in [(support::FOO, "Foo"), (support::BAR, "Bar")] {
+        let (old, new) = (Rel::new(name, "v1"), Rel::new(name, "v2"));
+        home.installed_behind(
+            base,
+            ("v1", &old.assets()),
+            ("v2", &new.assets()),
+            &["retail"],
+        );
+    }
+    home.exec(&fill(t, "check", &[])).expect(0);
+    gh_latest_status(&home.http, support::FOO, 503);
+    let mut check = fill(t, "check", &[]);
+    check.push("--refresh".to_owned());
+    let unreachable = write_fixture(dir, "check-unreachable", &home.exec(&check), 0);
+    assert_eq!(unreachable["partial"], true, "{unreachable}");
+
+    let mut search = fill(
+        t,
+        "search",
+        &[("target", "retail"), ("query", "damage meter")],
+    );
+    search.insert(search.len() - 2, "--offline".to_owned());
+    let skipped = write_fixture(dir, "search-skipped", &home.exec(&search), 0);
+    assert!(
+        !skipped["data"]["sources_skipped"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "{skipped}"
+    );
+}
+
 /// WeakAuras updated to 5.20.0 and a session played. `backup list` (plain and `-v`), an
 /// `--addon` and a whole dry run, a stale token, a running client, and an ambiguous
 /// addon after WeakAurasOptions moved to another addon.
@@ -2628,6 +2667,8 @@ fn write_widget_fixtures() {
         !search["data"]["results"].as_array().unwrap().is_empty(),
         "{search}"
     );
+
+    states_fixtures(&dir, &t);
 
     // The published contract: the inputs of omarchy/tests/contract-reads.test.js, which
     // holds every key the widget reads to a key these schemas declare (H1's guard). Not

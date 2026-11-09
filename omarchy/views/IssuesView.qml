@@ -3,6 +3,7 @@ import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
 import ".."
+import "../ui"
 import "../Model.js" as Model
 
 // The Issues view (F6): what is wrong and its fix one key away (Model.issueSections).
@@ -27,6 +28,12 @@ Item {
     svc ? svc.errors : null, svc && Array.isArray(svc.statusWarnings) ? svc.statusWarnings : [], filter,
     svc && Array.isArray(svc.machineIssues) ? svc.machineIssues : [])
   readonly property var rows: Model.issueRows(sections)
+  // What the view says around its rows (design doc §7): checking, nothing to fix, errors
+  // read only in part, a read that failed.
+  readonly property var viewState: Model.viewState("issues", { "service": svc, "filter": filter, "rows": rows.length,
+    "allRows": filter ? Model.issueRows(Model.issueSections(svc && Array.isArray(svc.targets) ? svc.targets : [], svc ? svc.errors : null,
+      svc && Array.isArray(svc.statusWarnings) ? svc.statusWarnings : [], "", svc && Array.isArray(svc.machineIssues) ? svc.machineIssues : [])).length
+      : rows.length, "nowMs": frame ? frame.nowMs : Date.now() })
   readonly property int rowCount: rows.length
   readonly property bool typing: false
   readonly property var plan: Model.dismissPlan(svc ? svc.errors : null, filter)
@@ -131,26 +138,13 @@ Item {
     width: root.width
     spacing: Style.spacing.md
 
-    Text {
-      objectName: "reading"
-      visible: !!root.svc && !root.svc.errors && root.sections.length === 0
+    ViewState {
+      objectName: "viewState"
       width: parent.width
-      textFormat: Text.PlainText
-      text: "Reading the clients…"
-      color: root.dim
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
-    }
-
-    Text {
-      objectName: "nothing"
-      visible: !!root.svc && !!root.svc.errors && root.sections.length === 0
-      width: parent.width
-      textFormat: Text.PlainText
-      text: "Nothing needs attention"
-      color: root.dim
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.body
+      viewState: root.viewState
+      foreground: root.foreground
+      fontFamily: root.fontFamily
+      onAction: function(name) { if (root.frame) root.frame.stateAction(name) }
     }
 
     Button {

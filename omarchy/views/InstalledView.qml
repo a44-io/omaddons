@@ -4,6 +4,7 @@ import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
 import ".."
+import "../ui"
 import "../Model.js" as Model
 
 // The Installed view (F5): every managed addon per client, from `list -v`
@@ -21,6 +22,10 @@ Item {
   readonly property var svc: frame ? frame.svc : null
   readonly property string filter: frame ? frame.filter : ""
   readonly property var rows: Model.installedRows(svc ? svc.lists : null, filter)
+  // What the view says around its rows (design doc §7): loading, a read that failed, no
+  // addons yet (and where to find some).
+  readonly property var viewState: Model.viewState("installed", { "service": svc, "filter": filter, "rows": rows.length,
+    "allRows": filter ? Model.installedRows(svc ? svc.lists : null, "").length : rows.length, "nowMs": frame ? frame.nowMs : Date.now() })
   readonly property var unmanaged: Model.unmanagedLines(svc ? svc.lists : null, filter)
   readonly property int rowCount: rows.length
   readonly property bool typing: false
@@ -77,26 +82,13 @@ Item {
     width: root.width
     spacing: Style.spacing.sm
 
-    Text {
-      objectName: "reading"
-      visible: !!root.svc && !root.svc.lists
+    ViewState {
+      objectName: "viewState"
       width: parent.width
-      textFormat: Text.PlainText
-      text: "Reading the clients…"
-      color: root.dim
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
-    }
-
-    Text {
-      objectName: "installedEmpty"
-      visible: !!root.svc && !!root.svc.lists && root.rows.length === 0
-      width: parent.width
-      textFormat: Text.PlainText
-      text: "No managed addons here yet: omaddons install <ref> adds one"
-      color: root.dim
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.body
+      viewState: root.viewState
+      foreground: root.foreground
+      fontFamily: root.fontFamily
+      onAction: function(name) { if (root.frame) root.frame.stateAction(name) }
     }
 
     Repeater {

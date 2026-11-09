@@ -69,6 +69,11 @@ Item {
   property var panelState: null
   // A check for updates is running (the hero's Check now spins, UX-01).
   readonly property bool checking: !!networkLane.request && networkLane.request.resource === "check"
+  // The resources being read or queued to be (Model.viewState's `refreshing`).
+  readonly property var reading: Model.readingResources([localLane.request, networkLane.request], queues)
+  // The last update check, as the Updates view qualifies its rows: `{at, trouble, failed,
+  // outcome}` (Model.reduceCheck), null before the first this service ran.
+  property var lastCheck: null
   // The view the open panel shows, and when its data was read; a doorbell makes every
   // view's data stale (by resource: list, errors).
   property string currentView: ""
@@ -310,6 +315,18 @@ Item {
     for (var key in staleReads) if (key !== resource) next[key] = staleReads[key]
     staleReads = next
     return resource === "list" ? readList() : (resource === "errors" ? readErrors() : readBackups())
+  }
+
+  // A view's Try again (Model.viewState's actions): its data read again now, whatever
+  // its age.
+  function readAgain(view) {
+    var resource = Model.VIEW_RESOURCES[String(view || "")]
+    if (!resource || resource === "search") return false
+    var next = {}
+    for (var key in staleReads) next[key] = staleReads[key]
+    next[resource] = true
+    staleReads = next
+    return readView(view)
   }
 
   // Something changed (the doorbell, or the widget's own action): the bar first, then
@@ -676,6 +693,8 @@ Item {
 
   function apply(r, outcome, env, tail) {
     var read = r.resource !== "status" && r.kind !== "mutation" && r.purpose !== "action"
+    // Every check, answered or not: whether a source did not answer.
+    if (r.resource === "check") lastCheck = Model.reduceCheck(env, outcome)
     // A read that failed before and answers now: its failure card goes.
     if (read && outcome === "ok" && lastError !== null && lastErrorResource === r.resource) {
       lastError = null

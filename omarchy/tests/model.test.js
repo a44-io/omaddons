@@ -1156,9 +1156,11 @@ describe("the Updates and Installed views", () => {
 
   test("nothing to update says when it was checked", () => {
     const targets = M.reduceStatus(fixture("status-running"), NOW).targets
-    const at = Date.parse(targets[0].updates.checkedAt) + 25 * 60000
-    expect(M.updatesEmptyText(targets, "", at)).toBe("Everything is current · checked 25 min ago")
-    expect(M.updatesEmptyText(targets, "nosuch", at)).toBe("Everything is current")
+    const oldest = M.oldestCheck(targets, "")
+    const at = Date.parse(oldest) + 25 * 60000
+    const state = M.viewState("updates", { service: { lists: M.reduceList(fixture("list")), targets: targets }, rows: 0, allRows: 0, nowMs: at })
+    expect([state.state, state.sentence]).toEqual(["empty", "All up to date. Checked 25 min ago."])
+    expect(M.oldestCheck(targets, "nosuch")).toBeNull()
   })
 
   test("installed rows carry their markers and Enter's action", () => {
@@ -3043,5 +3045,177 @@ describe("resultUndo", () => {
       ["a_repair_result_with_only_a_doctor_undo_hint", [{ repair: true, statusSeen: false,
         commands: [{ action: "undo", command: "omaddons doctor undo r", argv: ["omaddons", "doctor", "undo", "r"], runnable: true }] }, null], null],
     ], ([result, change]) => M.resultUndo(result, change))
+  })
+})
+
+// ------------------------------------------------------------- the views' states (1n2p.19)
+
+describe("reduceCheck and readingResources", () => {
+  test("the table", () => {
+    const pick = (c) => [c.trouble, c.failed, c.at !== ""]
+    const failedItem = JSON.parse(JSON.stringify(fixture("check")))
+    failedItem.data.targets[0].items[0].status = "failed"
+    failedItem.data.targets[0].items[1].status = "failed"
+    failedItem.partial = true
+    const refused = { ok: false, schema_version: "1.1", tool_version: "0.1.0", command: "outdated", exit_code: 1,
+      error: { code: "network", message: "x" }, warnings: [], commands: [] }
+    table([
+      ["every_source_answered", [fixture("check"), "ok"], [false, 0, true]],
+      // GitHub answered 503 for Foo: the check showed what it remembered, and says so by code.
+      ["a_source_did_not_answer", [fixture("check-unreachable"), "ok"], [true, 0, true]],
+      ["items_that_failed", [failedItem, "ok"], [true, 2, true]],
+      ["the_check_failed_on_the_network", [refused, "failed"], [true, 0, false]],
+      ["no_answer", [null, "timeout"], [true, 0, false]],
+    ], ([env, outcome]) => pick(M.reduceCheck(env, outcome)))
+    // Another code never counts as a source not answering.
+    const other = JSON.parse(JSON.stringify(fixture("check")))
+    other.warnings = [{ code: "reload_required", message: "x", fix: null }]
+    expect(M.reduceCheck(other, "ok").trouble).toBe(false)
+    expect(M.SOURCE_TROUBLE.slice().sort()).toEqual(["http_status", "network", "offline", "rate_limited", "stale_check"])
+    expect(M.readingResources([{ resource: "list" }, null], { local: [{ resource: "errors" }, { resource: "list" }], network: [{ resource: "search" }],
+      mutation: [{ resource: "update_all" }] })).toEqual(["list", "errors", "search"])
+    expect(M.readingResources(null, null)).toEqual([])
+  })
+})
+
+describe("viewState", () => {
+  const targets = () => M.reduceStatus(fixture("status-updates"), NOW).targets
+  // A service as viewState reads one: the status's clients, nothing read, nothing running.
+  const service = (fields) => Object.assign({ targets: targets(), reading: [], outcomes: {} }, fields || {})
+  const lists = () => M.reduceList(fixture("list"))
+  const age = (minutes) => Date.parse(M.oldestCheck(targets(), "")) + minutes * 60000
+  // `[state, sentence, action, refreshing, notices as [kind, sentence, action]]`.
+  const pick = (v) => [v.state, v.sentence, v.action ? v.action.name : null, v.refreshing,
+    v.notices.map((n) => [n.kind, n.sentence, n.action ? n.action.name : null])]
+  const state = (view, s, input) => pick(M.viewState(view, Object.assign({ service: s, filter: "", rows: 0, allRows: 0, nowMs: age(25) }, input || {})))
+
+  test("first load, a failed read, and a read that runs again", () => {
+    const cases = [
+      ["updates_first_load", state("updates", service()), ["firstLoad", "Reading your addons…", null, false, []]],
+      ["installed_first_load", state("installed", service()), ["firstLoad", "Reading your addons…", null, false, []]],
+      ["issues_first_load", state("issues", service()), ["firstLoad", "Checking…", null, false, []]],
+      ["backups_first_load", state("backups", service()), ["firstLoad", "Reading backups…", null, false, []]],
+      ["search_first_load", state("search", service(), { query: "dbm" }), ["firstLoad", "Searching…", null, false, []]],
+      ["updates_failed", state("updates", service({ outcomes: { list: "failed" } })), ["failed", "Couldn't read your addons.", "retry", false, []]],
+      ["installed_failed", state("installed", service({ outcomes: { list: "timeout" } })), ["failed", "Couldn't read your addons.", "retry", false, []]],
+      ["issues_failed", state("issues", service({ outcomes: { errors: "failed" } })), ["failed", "Couldn't read the problems and Lua errors.", "retry", false, []]],
+      ["backups_failed", state("backups", service({ outcomes: { backups: "failed" } })), ["failed", "Couldn't read your backups.", "retry", false, []]],
+      ["search_failed", state("search", service({ outcomes: { search: "failed" } }), { query: "dbm" }), ["failed", "The search didn't finish.", "retry", false, []]],
+      // Asked again: loading, not the last failure.
+      ["failed_then_reading", state("updates", service({ outcomes: { list: "failed" }, reading: ["list"] })), ["firstLoad", "Reading your addons…", null, false, []]],
+    ]
+    for (const [name, got, expected] of cases) expect([name, got]).toEqual([name, expected])
+  })
+
+  test("a refresh keeps the rows, and a re-read that failed keeps the last good data", () => {
+    const listsAt = age(25) - 10 * 60000
+    const cases = [
+      ["refreshing_keeps_rows", state("updates", service({ lists: lists(), reading: ["list"] }), { rows: 4, allRows: 4 }), ["rows", "", null, true, []]],
+      ["a_check_refreshes_updates", state("updates", service({ lists: lists(), checking: true }), { rows: 4, allRows: 4 }), ["rows", "", null, true, []]],
+      ["another_resource_reading", state("updates", service({ lists: lists(), reading: ["errors"] }), { rows: 4, allRows: 4 }), ["rows", "", null, false, []]],
+      ["failed_with_data", state("installed", service({ lists: lists(), listsAt: listsAt, outcomes: { list: "failed" } }), { rows: 5, allRows: 5 }),
+        ["rows", "", null, false, [["failed", "Couldn't read your addons again; showing what was read 10 min ago.", "retry"]]]],
+      ["failed_with_data_never_read_at", state("backups", service({ backups: { targets: [] }, outcomes: { backups: "failed" } }), { rows: 1, allRows: 1 }),
+        ["rows", "", null, false, [["failed", "Couldn't read your backups again; showing what was read earlier.", "retry"]]]],
+      // Issues lists status's problems before Lua errors are read: rows, refreshing.
+      ["issues_rows_before_errors", state("issues", service({ reading: ["errors"] }), { rows: 2, allRows: 2 }), ["rows", "", null, true, []]],
+    ]
+    for (const [name, got, expected] of cases) expect([name, got]).toEqual([name, expected])
+  })
+
+  test("empty and filtered empty, each with its sentence and next action", () => {
+    const unchecked = targets().map((t) => Object.assign({}, t, { updates: Object.assign({}, t.updates, { checkedAt: null }) }))
+    const cases = [
+      ["updates_empty", state("updates", service({ lists: lists() })), ["empty", "All up to date. Checked 25 min ago.", null, false, []]],
+      ["updates_filtered_empty", state("updates", service({ lists: lists() }), { filter: "retail", allRows: 2 }),
+        ["filteredEmpty", "Retail is up to date. Checked 25 min ago.", null, false, []]],
+      ["updates_client_empty_everywhere", state("updates", service({ lists: lists() }), { filter: "retail" }),
+        ["empty", "Retail is up to date. Checked 25 min ago.", null, false, []]],
+      ["updates_never_checked", state("updates", service({ lists: lists(), targets: unchecked })), ["empty", "Not checked for updates yet.", "check", false, []]],
+      // No client: the frame's card says so, and the view nothing.
+      ["updates_no_clients", state("updates", service({ lists: lists(), targets: [] })), ["empty", "", null, false, []]],
+      ["installed_empty", state("installed", service({ lists: lists() })), ["empty", "No addons yet. Find some in Search.", "search", false, []]],
+      ["installed_filtered_empty", state("installed", service({ lists: lists() }), { filter: "era", allRows: 3 }),
+        ["filteredEmpty", "No addons on Classic Era yet. Find some in Search.", "search", false, []]],
+      ["issues_empty", state("issues", service({ errors: { targets: [] } })), ["empty", "Nothing needs fixing.", null, false, []]],
+      ["issues_filtered_empty", state("issues", service({ errors: { targets: [] } }), { filter: "retail", allRows: 1 }),
+        ["filteredEmpty", "Nothing needs fixing on Retail.", null, false, []]],
+      ["backups_empty", state("backups", service({ backups: { targets: [] } })), ["empty", "No backups yet.", "backup", false, []]],
+      ["backups_filtered_empty", state("backups", service({ backups: { targets: [] } }), { filter: "era", allRows: 1 }),
+        ["filteredEmpty", "No backups of Classic Era yet.", "backup", false, []]],
+      ["search_no_query", state("search", service()), ["empty", "Type a name, or paste a link from GitHub, WoWInterface, Tukui or WowAce.", null, false, []]],
+      ["search_nothing_found", state("search", service({ search: { rows: [], skipped: [], selection: { query: "zzz", target: "" } } }), { query: "zzz" }),
+        ["empty", "Nothing found for “zzz”.", null, false, []]],
+      // An answer for another query is not this one's.
+      ["search_another_query", state("search", service({ search: { rows: [], skipped: [], selection: { query: "dbm", target: "" } } }), { query: "zzz" }),
+        ["firstLoad", "Searching…", null, false, []]],
+    ]
+    for (const [name, got, expected] of cases) expect([name, got]).toEqual([name, expected])
+    // Each state has its glyph: loading, failed, a view's own when empty, a filter.
+    expect(M.viewState("updates", { service: service() }).glyph).toBe(0xF04E6)
+    expect(M.viewState("updates", { service: service({ outcomes: { list: "failed" } }) }).glyph).toBe(0xF0028)
+    expect(M.viewState("backups", { service: service({ backups: { targets: [] } }) }).glyph).toBe(0xF003C)
+    expect(M.viewState("updates", { service: service({ lists: lists() }), filter: "retail", allRows: 1 }).glyph).toBe(0xF0236)
+  })
+
+  test("offline, partial and stale qualify the rows they keep", () => {
+    const stale = targets().map((t) => Object.assign({}, t, { updates: Object.assign({}, t.updates, { stale: true }) }))
+    const backupsStale = targets().map((t) => Object.assign({}, t, { backups: Object.assign({}, t.backups, { stale: t.id === "era" }) }))
+    const skipped = M.reduceSearch(fixture("search-skipped"))
+    skipped.selection = { query: "damage meter", target: "retail" }
+    const limited = { rows: [], selection: { query: "x", target: "" }, skipped: [
+      { source: "github", reason: "rate_limited", reset_at: "2100-01-01T18:02:00Z" }, { source: "tukui", reason: "disabled" },
+      { source: "wowi", reason: "no_index" }] }
+    const cases = [
+      ["check_unreachable", state("updates", service({ lists: lists(), lastCheck: M.reduceCheck(fixture("check-unreachable"), "ok") }), { rows: 4, allRows: 4 }),
+        ["rows", "", null, false, [["offline", "Some sources didn't answer the last check; what they said before is shown.", "check"]]]],
+      ["check_failed_items", state("updates", service({ lists: lists(), lastCheck: { trouble: true, failed: 2 } }), { rows: 4, allRows: 4 }),
+        ["rows", "", null, false, [["offline", "2 addons couldn't be checked: their sources didn't answer.", "check"]]]],
+      ["check_failed_one_item", state("updates", service({ lists: lists(), lastCheck: { trouble: true, failed: 1 } })),
+        ["empty", "All up to date. Checked 25 min ago.", null, false, [["offline", "1 addon couldn't be checked: its source didn't answer.", "check"]]]],
+      ["check_stale", state("updates", service({ lists: lists(), targets: stale }), { rows: 4, allRows: 4 }),
+        ["rows", "", null, false, [["stale", "Last checked 25 min ago.", "check"]]]],
+      // Empty: its sentence says the age already, and Check now is its action.
+      ["check_stale_empty", state("updates", service({ lists: lists(), targets: stale })),
+        ["empty", "All up to date. Checked 25 min ago.", "check", false, []]],
+      // While a check runs, it says nothing about the last one.
+      ["check_running", state("updates", service({ lists: lists(), targets: stale, checking: true, lastCheck: { trouble: true, failed: 0 } }), { rows: 4, allRows: 4 }),
+        ["rows", "", null, true, []]],
+      ["a_good_check", state("updates", service({ lists: lists(), lastCheck: M.reduceCheck(fixture("check"), "ok") }), { rows: 4, allRows: 4 }), ["rows", "", null, false, []]],
+      ["errors_partial", state("issues", service({ errors: M.reduceErrors(fixture("errors-partial")) }), { rows: 3, allRows: 3 }),
+        ["rows", "", null, false, [["partial", "Some errors couldn't be read yet: the game was writing. Read again after you quit.", "read_errors"]]]],
+      // Another client's partial read is not this client's.
+      ["errors_partial_elsewhere", state("issues", service({ errors: M.reduceErrors(fixture("errors-partial")) }), { filter: "era", rows: 1, allRows: 3 }),
+        ["rows", "", null, false, []]],
+      ["backups_stale", state("backups", service({ backups: { targets: [] }, targets: backupsStale }), { rows: 2, allRows: 2 }),
+        ["rows", "", null, false, [["stale", "Backup details are out of date.", "refresh_backups"]]]],
+      ["backups_stale_elsewhere", state("backups", service({ backups: { targets: [] }, targets: backupsStale }), { filter: "retail", rows: 1, allRows: 2 }),
+        ["rows", "", null, false, []]],
+      ["search_offline", state("search", service({ search: skipped }), { filter: "retail", query: "damage meter" }),
+        ["empty", "Nothing found for “damage meter”.", null, false, [["offline", "GitHub, WoWInterface and Tukui couldn't be searched: offline.", null]]]],
+    ]
+    for (const [name, got, expected] of cases) expect([name, got]).toEqual([name, expected])
+    // Skipped sources, one notice per reason; a time in local time.
+    const notices = M.viewState("search", { service: service({ search: limited }), query: "x", rows: 1 }).notices.map((n) => n.sentence)
+    const clock = (iso) => { const d = new Date(iso); const two = (n) => (n < 10 ? "0" : "") + n; return two(d.getHours()) + ":" + two(d.getMinutes()) }
+    expect(notices).toEqual(["GitHub couldn't be searched: it asked to wait until " + clock("2100-01-01T18:02:00Z") + ".",
+      "Tukui couldn't be searched: turned off.", "WoWInterface couldn't be searched."])
+    // A rate limit without a time, and omaddons' own catalog by name.
+    expect(M.viewState("search", { service: service({ search: { rows: [], selection: { query: "x", target: "" },
+      skipped: [{ source: "catalog", reason: "rate_limited" }] } }), query: "x", rows: 1 }).notices[0].sentence)
+      .toBe("omaddons' catalog couldn't be searched: it asked to wait.")
+  })
+
+  test("every word is the copy guide's: no CLI term, and every view has every cell", () => {
+    const words = []
+    for (const view of ["updates", "installed", "search", "issues", "backups"]) {
+      for (const outcome of [{}, { [M.VIEW_RESOURCES[view]]: "failed" }]) {
+        const v = M.viewState(view, { service: service({ outcomes: outcome }), query: "q" })
+        words.push(v.sentence)
+        expect([view, Object.keys(v)]).toEqual([view, ["view", "state", "glyph", "sentence", "detail", "action", "refreshing", "notices"]])
+      }
+    }
+    for (const w of words) expect([w, /\b(plan|preview|token|precondition|target|ref)\b/i.test(w)]).toEqual([w, false])
+    expect(M.viewState("nosuchview", {}).state).toBe("firstLoad")
   })
 })

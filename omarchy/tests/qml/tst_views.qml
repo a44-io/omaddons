@@ -122,7 +122,15 @@ TestCase {
         copies = copies.concat([Model.copyArgv(text)])
         return true
       }
-      function check() {}
+      // What Model.viewState reads (1n2p.19), and the views' Try again and Check now.
+      property var reading: []
+      property var outcomes: ({})
+      property var lastCheck: null
+      property bool checking: false
+      property int checks: 0
+      property var readAgains: []
+      function readAgain(view) { readAgains = readAgains.concat([view]); return true }
+      function check() { checks++ }
       function refresh() {}
       function reinstallWidget() { return "ok" }
       function confirmYes() { confirm = null; return "" }
@@ -294,10 +302,76 @@ TestCase {
     svc.lists = Model.reduceList(listEnvelope([{ "id": "era", "key": "k", "label": "era", "counts": { "unmanaged": 0 },
       "addons": [addon("Bar", "v2", "v2", "current")] }]))
     view.nowMs = Date.parse("2100-01-01T00:25:00Z")
-    var empty = findChild(content(), "updatesEmpty")
+    var empty = findChild(content(), "stateEmpty")
     verify(empty.visible)
-    compare(empty.text, "Everything is current · checked 25 min ago")
+    compare(empty.sentence, "All up to date. Checked 25 min ago.")
     verify(!findChild(content(), "updateAll").visible)
+  }
+
+  // ------------------------------------------------------------- the views' states (1n2p.19)
+
+  // The rows stay while the list is read again, with a quiet line saying so.
+  function test_a_refresh_never_blanks_the_updates() {
+    svc.reading = ["list"]
+    var state = findChild(content(), "viewState")
+    verify(findChild(state, "stateRefreshing").visible, "refreshing says so")
+    verify(!findChild(state, "stateEmpty").visible)
+    compare(content().rows.length, 4, "the rows stay")
+    verify(findChild(content(), "updateRow_0").visible)
+    svc.reading = []
+    verify(!findChild(state, "stateRefreshing").visible)
+  }
+
+  // A check that could not reach a source keeps the rows, says so, and Check now checks.
+  function test_a_check_whose_source_did_not_answer_keeps_the_rows_with_check_now() {
+    svc.lastCheck = { "at": "2100-01-01T00:00:00Z", "trouble": true, "failed": 0, "outcome": "ok" }
+    var notices = findChild(findChild(content(), "viewState"), "stateNotices")
+    compare(notices.count, 1)
+    var notice = notices.itemAt(0)
+    compare(notice.title, "Some sources didn't answer the last check; what they said before is shown.")
+    verify(findChild(content(), "updateRow_0").visible, "the rows stay")
+    notice.clicked("check")
+    compare(svc.checks, 1, "Check now checks")
+  }
+
+  // No list yet: loading; a list that could not be read: the sentence and Try again,
+  // which reads it again.
+  function test_a_first_load_then_a_failed_read_offers_try_again() {
+    svc.lists = null
+    var state = findChild(content(), "viewState")
+    var empty = findChild(state, "stateEmpty")
+    verify(empty.visible)
+    compare(empty.sentence, "Reading your addons…")
+    compare(empty.actionText, "")
+    compare(content().rows.length, 0)
+    svc.outcomes = { "list": "failed" }
+    compare(empty.sentence, "Couldn't read your addons.")
+    compare(empty.actionText, "Try again")
+    empty.action()
+    compare(json(svc.readAgains), json(["updates"]), "Try again reads the view again")
+  }
+
+  // Search: the empty box says what to type; a search that failed asks again; skipped
+  // sources say why, over the results that came.
+  function test_search_says_what_to_type_and_why_sources_were_skipped() {
+    keyClick("3")
+    var search = content()
+    var state = findChild(search, "viewState")
+    compare(findChild(state, "stateEmpty").sentence, "Type a name, or paste a link from GitHub, WoWInterface, Tukui or WowAce.")
+    search.asked = "dbm"
+    compare(findChild(state, "stateEmpty").sentence, "Searching…")
+    svc.outcomes = { "search": "failed" }
+    compare(findChild(state, "stateEmpty").sentence, "The search didn't finish.")
+    findChild(state, "stateEmpty").action()
+    compare(json(svc.searches), json([["dbm", ""]]), "Try again searches again")
+    svc.outcomes = { "search": "ok" }
+    svc.search = { "query": "dbm", "rows": [{ "name": "DBM", "ref": "dbm", "source": "catalog", "compat": "", "hints": {} }],
+      "skipped": [{ "source": "github", "reason": "offline" }, { "source": "wowi", "reason": "offline" }],
+      "selection": { "query": "dbm", "target": "" } }
+    verify(!findChild(state, "stateEmpty").visible, "results: no empty state")
+    compare(findChild(state, "stateNotices").count, 1)
+    compare(findChild(state, "stateNotices").itemAt(0).title, "GitHub and WoWInterface couldn't be searched: offline.")
+    compare(search.rowCount, 1)
   }
 
   // ------------------------------------------------------------- Installed
@@ -337,7 +411,11 @@ TestCase {
     compare(lines.count, 1)
     compare(lines.itemAt(0).text, "2 unmanaged folders on retail: omaddons adopt -t retail")
     svc.lists = Model.reduceList(listEnvelope([{ "id": "era", "key": "k", "label": "era", "counts": { "unmanaged": 0 }, "addons": [] }]))
-    verify(findChild(content(), "installedEmpty").visible)
+    var empty = findChild(content(), "stateEmpty")
+    verify(empty.visible)
+    compare([empty.sentence, empty.actionText], ["No addons yet. Find some in Search.", "Search"])
+    empty.action()
+    compare(view.view, "search", "Search opens Search")
   }
 
   function test_an_incompatible_binary_leaves_the_rows_inert() {

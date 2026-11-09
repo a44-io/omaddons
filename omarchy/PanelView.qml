@@ -474,6 +474,22 @@ Item {
     return true
   }
 
+  // A view state's action (Model.viewState, design doc §7): Check now checks, Search opens
+  // Search, Back up now backs up; Try again, Read again and Refresh read the view's data
+  // again (a search asks again for its query).
+  function stateAction(name) {
+    if (!svc) return false
+    if (name === "check") return checkNow()
+    if (name === "search") {
+      showView("search")
+      return true
+    }
+    if (name === "backup") return backUp()
+    if (name !== "retry" && name !== "read_errors" && name !== "refresh_backups") return false
+    if (view === "search") return !!currentView && typeof currentView.searchAgain === "function" && currentView.searchAgain()
+    return typeof svc.readAgain === "function" && svc.readAgain(view) !== false
+  }
+
   function confirmYes() {
     if (svc) report(svc.confirmYes())
   }
