@@ -503,7 +503,7 @@ fn age(line: &str) -> Option<u64> {
 
 #[test]
 fn info_traces_each_memo_decision_and_its_timing() {
-    use super::common::http::{Asset, gh_release};
+    use super::common::http::{Asset, RepoMeta, gh_release, gh_repo};
     use super::common::memo;
     use super::common::netlog::net_log;
 
@@ -514,6 +514,17 @@ fn info_traces_each_memo_decision_and_its_timing() {
         vec![("Foo/Foo.toc", "## Interface: 120105\n")],
     )];
     gh_release(&home.http, "https://github.com/o/foo", "v1", &assets);
+    // What `about` asks, remembered for a day: a second run asks nothing at all.
+    gh_repo(
+        &home.http,
+        &RepoMeta {
+            owner: "o",
+            name: "foo",
+            description: Some("Foo"),
+            stars: 1,
+            pushed_at: "2026-10-28T09:30:00Z",
+        },
+    );
     let memo = "release memo gh:o/foo|stable: ";
     let info = |extra: &[&str]| {
         let mut args = vec!["info", "gh:o/foo"];

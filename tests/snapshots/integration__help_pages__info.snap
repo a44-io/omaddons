@@ -12,7 +12,7 @@ Arguments:
   <REF>  The addon: a catalog name, an installed addon's name, or a ref or link
 
 Options:
-      --refresh    Fetch the newest release from its source, even if checked recently
+      --refresh    Fetch the newest release and the about again, even if checked recently
       --changelog  Add the notes of every release newer than the oldest installed
 
 Examples:
@@ -34,7 +34,7 @@ Arguments:
 
 Options:
       --refresh
-          Fetch the newest release from its source, even if checked recently
+          Fetch the newest release and the about again, even if checked recently
 
       --changelog
           Add the notes of every release newer than the oldest installed

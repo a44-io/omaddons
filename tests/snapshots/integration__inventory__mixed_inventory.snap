@@ -17,6 +17,7 @@ expression: inv
         "file": "Blizzard_Console.toc",
         "title": "Console",
         "title_plain": "Console",
+        "notes": null,
         "version": null,
         "author": null,
         "interfaces": [
@@ -57,6 +58,7 @@ expression: inv
         "file": "Details.toc",
         "title": "Details!",
         "title_plain": "Details!",
+        "notes": null,
         "version": "2.3",
         "author": null,
         "interfaces": [
@@ -115,6 +117,7 @@ expression: inv
         "file": "OldThing.toc",
         "title": "Old",
         "title_plain": "Old",
+        "notes": null,
         "version": null,
         "author": null,
         "interfaces": [

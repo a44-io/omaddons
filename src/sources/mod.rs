@@ -8,6 +8,7 @@
 //! off (`[sources.<id>] enabled = false`), fail with `source_disabled` without touching
 //! the network (DEC-12).
 
+pub mod about;
 pub mod atom;
 pub mod changelog;
 pub mod git;
@@ -425,6 +426,9 @@ pub struct SourceRegistry {
     git: Option<std::sync::Arc<git_hosts::GitRunner>>,
     /// The Tukui source, when registered: its list serves `ReleaseCache::tukui_list`.
     tukui: Option<std::sync::Arc<tukui::TukuiSource>>,
+    /// The GitHub source's REST client, when registered: `info`'s `about` asks it for a
+    /// repository's metadata, against the same budget.
+    github_rest: Option<std::sync::Arc<github_rest::GithubRest>>,
     /// Sources this build has that config.toml turned off.
     off: BTreeSet<SourceId>,
 }
@@ -437,10 +441,13 @@ impl SourceRegistry {
     /// Every source this build ships that `config` leaves on.
     pub fn builtin(config: &SourceConfigView) -> Self {
         let tukui = std::sync::Arc::new(tukui::TukuiSource::default());
+        let rest = std::sync::Arc::new(
+            github_rest::GithubRest::with_github_token(config.github_token())
+                .offline(config.offline()),
+        );
         let shipped: [Box<dyn Source>; 7] = [
             Box::new(github::GithubSource::with_rest(Box::new(
-                github_rest::GithubRest::with_github_token(config.github_token())
-                    .offline(config.offline()),
+                std::sync::Arc::clone(&rest),
             ))),
             Box::new(git::GitSource::default()),
             Box::new(local::LocalSource),
@@ -460,12 +467,20 @@ impl SourceRegistry {
         if config.enabled(SourceId::Tukui) {
             registry.tukui = Some(tukui);
         }
+        if config.enabled(SourceId::Github) {
+            registry.github_rest = Some(rest);
+        }
         registry
     }
 
     /// The Tukui source, if registered.
     pub fn tukui(&self) -> Option<&tukui::TukuiSource> {
         self.tukui.as_deref()
+    }
+
+    /// The GitHub source's REST client, if the source is registered.
+    pub fn github_rest(&self) -> Option<&github_rest::GithubRest> {
+        self.github_rest.as_deref()
     }
 
     /// With `runner` for `git:` refs to configured non-GitHub hosts; unchanged when

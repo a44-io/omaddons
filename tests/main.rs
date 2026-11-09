@@ -95,6 +95,7 @@ mod game_modes;
 mod git_github;
 mod help_pages;
 mod history;
+mod info_about;
 mod info_netlog;
 mod inspect;
 mod install;

@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 
 use jiff::Timestamp;
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::limits::{DEPENDENCY_SOURCE_MAX_AGE, SEARCH_SUMMARY_MAX_CHARS};
 use crate::model::Ref;
@@ -33,8 +33,9 @@ pub enum HitSource {
     Github,
 }
 
-/// How popular a result is: WoWInterface downloads or GitHub stars.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+/// How popular a result is: WoWInterface downloads or GitHub stars. `info`'s `about`
+/// carries it too, and the about memo keeps it (`state::about_memo`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Popularity {
     Downloads(u64),

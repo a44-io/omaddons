@@ -42,6 +42,11 @@ pub struct WowiDetails {
     pub download: String,
     /// BBCode, CRLF line ends.
     pub changelog: String,
+    /// `UIAuthorName`, made safe; empty when missing.
+    pub author: String,
+    /// `UIHitCount`: the file's downloads, as the file list's `UIDownloadTotal` counts
+    /// them (its monthly twin is `UIHitCountMonthly`).
+    pub downloads: Option<u64>,
 }
 
 impl Source for WowiSource {
@@ -91,6 +96,12 @@ impl Source for WowiSource {
             })
             .collect()
     }
+}
+
+/// One project's file details (`filedetails/<id>.json`, one request): `Ok(None)` when
+/// WoWInterface knows no such id. `info`'s `about` reads it.
+pub fn details(id: u64, http: &dyn Http) -> Result<Option<WowiDetails>> {
+    Ok(fetch_batch(&[id], http)?.remove(&id))
 }
 
 /// One `filedetails` request: the entries by `UID`. A 404 carrying the API's own
@@ -150,6 +161,8 @@ pub fn decode_details(body: &[u8]) -> Result<Vec<WowiDetails>> {
                 file_name: text(&item["UIFileName"]),
                 download: text(&item["UIDownload"]),
                 changelog: text(&item["UIChangeLog"]),
+                author: source_text(&item["UIAuthorName"]),
+                downloads: number(&item["UIHitCount"]),
             })
         })
         .collect())
@@ -366,6 +379,11 @@ mod tests {
         assert_eq!(details[0].uid, 5995);
         assert_eq!(details[0].md5, MD5);
         assert_eq!(details[0].date_ms, Some(1_791_824_100_000));
+        assert_eq!(
+            (details[0].author.as_str(), details[0].downloads),
+            ("someone", Some(1)),
+            "the author and UIHitCount, `info`'s about"
+        );
         assert_eq!(
             details[1],
             WowiDetails {

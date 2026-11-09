@@ -28,10 +28,14 @@ mod support {
     }
 
     /// The requests so far.
+    /// The release path's requests so far: every `net.log` line but `info`'s `about`
+    /// of a GitHub repository (`rest-repo`), which its own memo keeps
+    /// (`tests/info_about.rs`).
     pub fn requests(home: &Home) -> usize {
         fs::read_to_string(home.state().join("net.log"))
             .unwrap_or_default()
             .lines()
+            .filter(|l| !l.contains("\"purpose\":\"rest-repo\""))
             .count()
     }
 
@@ -404,10 +408,13 @@ fn verdicts_remember_what_loads_and_how_current_it_is() {
 }
 
 /// The `net.log` lines after the first `before`, as `(host, purpose)`.
+/// The release path's `(host, purpose)` lines after its first `before`, `about`'s
+/// `rest-repo` aside (as [`support::requests`] counts them).
 fn lines_after(home: &Home, before: usize) -> Vec<(String, String)> {
     common::netlog::net_log(home)
         .entries
         .into_iter()
+        .filter(|e| e.purpose != "rest-repo")
         .skip(before)
         .map(|e| (e.host, e.purpose))
         .collect()

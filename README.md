@@ -633,7 +633,7 @@ A **ref** names where an addon comes from. Everything that works today is keyles
 | You type | It becomes | Where the release comes from |
 |---|---|---|
 | `weakauras`, `dbm`, `bw` | a catalog entry | [the built-in catalog](#the-built-in-catalog), by name or alias (case-insensitive); an installed addon's name also works. Any other name is `not_found`, with `omaddons search <name>` as the fix (no request is sent), except a client's name (`retail`, `era`, `sod`), which is a usage error that moves it into `-t` |
-| `gh:Owner/Repo` or `Owner/Repo` | GitHub | the stable path reads `releases/latest` and its `release.json` from github.com, with **no REST API calls**. The REST API (60 requests an hour without a token) is used only for `--channel beta`/`alpha`, for releases without a usable `release.json` (their `.zip` assets become the candidates), for pinned tags that lack one, and once to confirm a [look-back](#a-release-per-client-github-look-back)'s release is no prerelease |
+| `gh:Owner/Repo` or `Owner/Repo` | GitHub | the stable path reads `releases/latest` and its `release.json` from github.com, with **no REST API calls**. The REST API (60 requests an hour without a token) is used only for `--channel beta`/`alpha`, for releases without a usable `release.json` (their `.zip` assets become the candidates), for pinned tags that lack one, once to confirm a [look-back](#a-release-per-client-github-look-back)'s release is no prerelease, and by [`info`](#info-ref) for what the repository is (`about`, once a day per repository) |
 | `https://github.com/o/r` | `gh:o/r` | as above. `/releases/tag/T` pins tag `T`, `/releases/download/T/F` pins tag `T` and installs exactly the asset `F` (or nothing: `not_found` naming the release's assets, or refused when it does not load), and `/tree/branch` becomes a `git:` ref. A tag may hold `/` and `+`, written as GitHub writes them or percent-encoded. A link that names no repository (`https://github.com/o`) is `ref_invalid` |
 | `git:https://github.com/o/r#branch` | git on GitHub | the commits Atom feed resolves the branch or tag to a commit, and codeload serves a zip of that exact commit (a rev the feed does not serve is fetched as a tag by name). **No git binary.** A 40-hex sha is used as is. No `#rev` means the default branch |
 | `git:https://codeberg.org/o/r#tag` | git elsewhere | the `git` binary (2.32+), only for hosts listed in `git_hosts`: argv only, a cleared environment, an empty home and no user or system git config, https only, no redirects and no credentials (see [Network and privacy](#network-and-privacy)). Branches win over tags with the same name (on GitHub, the commits feed decides) |
@@ -1764,18 +1764,43 @@ The JSON lists per client `target`, `acknowledged` (`database`, `session`), `ski
 
 ### `info <REF>`
 
-What an addon is: installed records on every target, the catalog entry, and the newest release (`show` is an alias).
+What an addon is: what its source says of it and its project page, installed records on every target with the TOC each loads, the catalog entry, and the newest release (`show` is an alias).
 
 ```text
-$ omaddons info weakauras --offline
+$ omaddons info weakauras
 WeakAuras  gh:WeakAuras/WeakAuras2
+  World of Warcraft addon that displays auras
+  by WeakAuras · ★1k · updated 2026-10-28 · https://github.com/WeakAuras/WeakAuras2
+  catalog: folders WeakAuras, WeakAurasArchive, WeakAurasModelPaths, WeakAurasOptions, WeakAurasTemplates · families vanilla, tbc, cata, mists, titan
+  latest: 5.19.2 · likely to load on classic, era · not on retail
+
+$ omaddons info weakauras --offline      # on a machine that never asked
+WeakAuras  gh:WeakAuras/WeakAuras2
+  https://github.com/WeakAuras/WeakAuras2
+  about: not checked (offline)
   catalog: folders WeakAuras, WeakAurasArchive, WeakAurasModelPaths, WeakAurasOptions, WeakAurasTemplates · families vanilla, tbc, cata, mists, titan
   latest: not checked (offline)
 ```
 
+`about` is what the addon is, as its source describes it: `{summary, author, homepage, updated_at, popularity}`.
+
+- **`homepage`** is the project's page, built from the ref alone and never from a TOC: `https://github.com/<owner>/<repo>` for `gh:` refs and `git:` refs on GitHub, `https://www.wowinterface.com/downloads/info<id>`, `https://tukui.org/<slug>` and `https://www.wowace.com/projects/<slug>`.
+- **The rest comes from the source**, read as `search` reads the same source:
+  - GitHub's repository: its description, owner, stars (`popularity: {stars}`) and last push. One `rest-repo` request to `api.github.com`, on the REST budget, conditional, so asking again later costs none of it.
+  - WoWInterface's file details: the author, the downloads (`popularity: {downloads}`) and the file's date. The description there is a BBCode page, often opening with images and links, so there is no `summary`, as in `search`.
+  - The Tukui list: its one-line description, the author and the last update, from the list the release check already read.
+  - WowAce describes no project, so only its page.
+- **Remembered for a day.** An answer is kept in the about memo (`~/.cache/omaddons/about.json`) for `ABOUT_RECHECK_INTERVAL` (24 hours), a project the source does not know included: opening the same addon again sends no request. `--refresh` asks again, `--offline` answers from it whatever its age, and a request that fails falls back to the remembered answer.
+- **`null`** for a ref that names no project page: `url:`, `file:`, `git:` off GitHub, CurseForge and Wago.
+- **`about_unavailable`** (`{reason}`, `null` when the source answered) says why `about` is `null` or holds only its `homepage`: `source_has_no_metadata`, `not_supported` (WowAce), `source_disabled`, `offline` (nothing remembered), `not_found` (no such project, or a private one), `rate_limited` (GitHub's REST budget) or `fetch_failed`. None of them is a warning or makes the run partial; `-v` notes the failure on stderr.
+
+The human view prints the summary and a line of facts (`by <author> · <popularity> · updated <date> · <homepage>`) under the name, and `about: <why>` when the source could not be asked or knows no such project.
+
 `catalog` is the entry the query names: for a name with variants, the selected client's build (one `-t`, else the default target's, else the modern one) with its `variant`, and the others' `variants` (`{variant, families}`), shown as `other build (r152): families wrath-legacy`. `latest` is `{version, release_id, channel, flavors, targets, compat}`. `compat` says, for each selected client, how likely the release is to load: `verified` (a plan proved it) or `blocked` (a plan proved it does not), `declared` (its release metadata names the client), `unlikely` (the metadata names other clients only, the catalog lists none of the client's families, or no asset of the release is for the client), else `likely`. `targets` lists the clients that are `verified`, `declared` or `likely`, and the human line reads `likely to load on … · not on …`, or "not likely to load on any client here" (`-v` lists each client, and adds `asset_urls` and `record_path`). A hint only: `install` verifies every TOC.
 
 The newest release comes through the [release memo](#files-and-state): a check made in the last 15 minutes is reused without a request, and `--refresh` checks again anyway. With `--offline`, `latest` is the remembered answer whatever its age, with a `stale_check` warning, or `null` (as above) when nothing is remembered. A missing repository is remembered too, so asking again within the window costs nothing; a network or server error never is. Each installed record carries its `drift {state, files}` (as in [`status`](#status), with the paths under `-v`), checked locally, so `--offline` shows it too, and its `reason`, `required_by`, `orphan` and `any_flavor` (` · any flavor (--any-flavor)` in the human view) on that target. It also carries `left_out`: the folders of the installed release this client does not load, each `{name, reason, …}` exactly as the install's `folders.skipped` gave it (DBM's retail-only modules on Classic, ArkInventory's example module), so the reason a module is missing stays on record after the run's output is gone. Every install or update replaces it, `undo` restores it with the record, and `export` and `copy` never carry it (each client's install is judged there). The human view says `left out: DBM-Brawlers (gated to other game types), …` under the record's line.
+
+Each installed record also carries `toc`: the TOC its own folder (the one named like the addon, else its first) loads on that client, read from disk as the client reads it, conditional lines included: `{folder, title_plain, notes, author, version, interfaces, website, dependencies, optional_deps}`. Its text is the author's, so colour codes, textures and links, control characters and characters that reorder or hide text are removed, and each string is cut at `TOC_TEXT_MAX_CHARS` (400). `website` is the TOC's `X-Website` as text to show, never a link omaddons follows or offers (`about.homepage` is the project's page). `toc` is `null` when that folder is missing, is a symlink or cannot be read, or holds no TOC the client loads.
 
 `--changelog` adds the release notes of every release newer than the oldest one installed (the latest release's alone when no installed record names a release), as `changelog` and `changelog_unavailable` after `offline`, shaped and sourced as in [`outdated --changelog`](#outdated):
 
@@ -2414,8 +2439,8 @@ Sources:
   curseforge  off  needs a key (M5)
   wago        off  needs a key (M5)
   wowace      on
-43 error codes · 55 warning codes · 26 actions · 31 failure modes
-  115 limits (0 from config)
+43 error codes · 55 warning codes · 27 actions · 31 failure modes
+  119 limits (0 from config)
 --json for the full description
 ```
 
@@ -2793,7 +2818,7 @@ Three kinds of vocabulary keep their own spelling, and only these:
 
 ### Stability
 
-The envelope's `schema_version` is the contract's version; `capabilities` reports it as `contract_version`. It was 1.0 at the first tag, and is 1.1 since the first additive change after it (`display_name` on `status` and `targets`, and the `targets.<id>.name` setting; since then also the `info` action, which `search` offers, and `target` and `ref` on every `progress` event). The contract is pinned by a semantic manifest, `tests/contract/manifest.json`, generated from the code: every command path, flag and positional with its default, value grammar, arity, conflicts and requirements; every output field with its type (integer and number apart), whether it is always present, whether it may be null, its bounds, enum values and variants; every error code with its exit, retryability and typed `details`; every warning code, action, failure-mode id, event, phase, log level, exit code, doctor repair operation, release environment variable, `config.toml` key and `addons.toml` key; and every persisted file kind with its own version. `tests/contract/wire_names.txt` prints the same one name per line, for review. Both are regenerated with `OMADDONS_UPDATE_WIRE_NAMES=1 cargo test --test integration contract::wire_names`, and the gate fails when they differ from the code.
+The envelope's `schema_version` is the contract's version; `capabilities` reports it as `contract_version`. It was 1.0 at the first tag, and is 1.1 since the first additive change after it (`display_name` on `status` and `targets`, and the `targets.<id>.name` setting; since then also the `info` action, which `search` offers, `target` and `ref` on every `progress` event, `list -v`'s `latest.published_at`, and `info`'s `about`, `about_unavailable` and `installed[].toc`). The contract is pinned by a semantic manifest, `tests/contract/manifest.json`, generated from the code: every command path, flag and positional with its default, value grammar, arity, conflicts and requirements; every output field with its type (integer and number apart), whether it is always present, whether it may be null, its bounds, enum values and variants; every error code with its exit, retryability and typed `details`; every warning code, action, failure-mode id, event, phase, log level, exit code, doctor repair operation, release environment variable, `config.toml` key and `addons.toml` key; and every persisted file kind with its own version. `tests/contract/wire_names.txt` prints the same one name per line, for review. Both are regenerated with `OMADDONS_UPDATE_WIRE_NAMES=1 cargo test --test integration contract::wire_names`, and the gate fails when they differ from the code.
 
 Since the first tag (`v0.1.0`, contract 1.0), the gate also compares the contract with the released baseline, `tests/contract/released/<version>.json` (today `1.0.json`): a copy of the last released manifest with its provenance (contract version, tag, commit and date), which only the release step writes. A change that only adds (an output field, an enum value or a variant, a field now always present, a narrower bound; a flag, an alias, a value or an optional positional) needs a higher minor `schema_version`, such as 1.1. A change that removes or loosens anything (an output field removed, made optional or nullable, or moved between variants, an integer that may now be a fraction, a wider bound; a flag or value removed, a new requirement or conflict, a required positional, a narrower grammar, a changed default), or one the comparison cannot place, needs a higher major, such as 2.0. A persisted file's schema change needs that file kind's own version bump, not the contract's. Regenerating the golden never satisfies the comparison, and nothing in the golden's header switches it off: only the version bump does, and each bump is recorded in a comment on the vision bead. A bump also changes `schema_version` in every envelope snapshot, which are re-accepted with it.
 
@@ -2962,7 +2987,7 @@ omaddons contacts **only** these hosts. The list is checked on every redirect ho
 | Host | Used for | State |
 |---|---|---|
 | `github.com` | `releases/latest`, `release.json`, release asset URLs (which redirect), `releases.atom` (release notes and the look-back), commits feeds; one `doctor --online` probe | used |
-| `api.github.com` | REST fallback (beta and alpha channels, releases without `release.json`); `search`'s repository search; `auth github`'s `/rate_limit`; `doctor --online`'s `/rate_limit` checks | used |
+| `api.github.com` | REST fallback (beta and alpha channels, releases without `release.json`); `info`'s repository description (`/repos/<owner>/<repo>`); `search`'s repository search; `auth github`'s `/rate_limit`; `doctor --online`'s `/rate_limit` checks | used |
 | `codeload.github.com` | zips of exact commits for `git:` refs | used |
 | `objects.githubusercontent.com`, `release-assets.githubusercontent.com` | release asset downloads | used |
 | `api.mmoui.com`, `cdn.wowinterface.com` | WoWInterface: the file list, project details, downloads; one `doctor --online` probe (`api.mmoui.com`) | used |
@@ -2990,7 +3015,7 @@ omaddons contacts **only** these hosts. The list is checked on every redirect ho
 {"time":"2026-10-14T21:00:00Z","method":"GET","host":"github.com","path":"/WeakAuras/WeakAuras2/releases/latest","status":302,"bytes":0,"duration_ms":34,"purpose":"release-latest","via":"http","error":null}
 ```
 
-Production purposes for HTTP are `release-latest`, `release-json`, `releases-atom` (release notes and the look-back), `rest-releases`, `commits-atom`, `asset` (every download, WoWInterface's and Tukui's included), `wowi-filelist`, `wowi-details`, `tukui-list`, `tukui-addon`, `tukui-changelog`, `wowace-tags` (the `PROPFIND` of a WowAce project's tags, `"method":"PROPFIND"`), `wowace-tree` (a pinned directory listing), `wowace-file`, `github-search`, `rate-limit` and `doctor-probe` (each request of `doctor --online`'s checks). `wire_bytes` is what crossed the network when it differs from `bytes` (WoWInterface's file list arrives gzipped). A Tukui download link carries a token: its path is logged as `/v1/download/<slug>/…`, never with the token. git lines have `"method":"GIT"`, `"via":"git"`, the exit code as `status`, and a purpose of `ls-remote`, `clone`, `init`, `fetch`, `checkout` or `rev-parse`.
+Production purposes for HTTP are `release-latest`, `release-json`, `releases-atom` (release notes and the look-back), `rest-releases`, `rest-repo` (`info`'s `about` of a GitHub repository), `commits-atom`, `asset` (every download, WoWInterface's and Tukui's included), `wowi-filelist`, `wowi-details`, `tukui-list`, `tukui-addon`, `tukui-changelog`, `wowace-tags` (the `PROPFIND` of a WowAce project's tags, `"method":"PROPFIND"`), `wowace-tree` (a pinned directory listing), `wowace-file`, `github-search`, `rate-limit` and `doctor-probe` (each request of `doctor --online`'s checks). `wire_bytes` is what crossed the network when it differs from `bytes` (WoWInterface's file list arrives gzipped). A Tukui download link carries a token: its path is logged as `/v1/download/<slug>/…`, never with the token. git lines have `"method":"GIT"`, `"via":"git"`, the exit code as `status`, and a purpose of `ls-remote`, `clone`, `init`, `fetch`, `checkout` or `rev-parse`.
 
 **Offline.** `--offline` or `OMADDONS_OFFLINE=1` refuses all network access, git included, and runs no credential command. Local installs, `remove`, `undo` and every read command work offline. Release metadata a command fetched is remembered in the release memo; offline, `info` answers from it with a `stale_check` warning. When `--offline` alone made the run offline, an `offline` error's and a `stale_check` warning's `fix_argv` is the same command without it; under `OMADDONS_OFFLINE=1` the fix stays prose.
 
@@ -3159,6 +3184,7 @@ A test fails when the binary reads a variable this section does not list.
 | `~/.cache/omaddons/errors.json` | The errors memo: what `errors` last observed per client and database (file stamps, sessions, first-read baselines, counts per session and addon), so `status` can tell new errors without reading BugGrabber's files. No message, stack or locals text | Yes; but deleting it forgets which older errors were new, except what `errors dismiss` acknowledged (kept in `errors_ack.json`) |
 | `~/.cache/omaddons/history_tail.json` | The history projection: the end of `history.jsonl` that holds its newest 16 runs with something to undo (at most 1 MiB), so `status --cached` reports the last change without reading a history of any size, and `skill_dirs`, the newest 8 folders `robot-docs install-skill` wrote, however old their lines. Believed only while the history is exactly as long as it says and ends with its last line | Yes; `--cached` says `unknown` until the next change rebuilds it |
 | `~/.cache/omaddons/export.json` | The hash of the `addons.toml` `export --write` last wrote, so a hand-edited file is not overwritten | Yes; the next `--write` then needs `--overwrite` |
+| `~/.cache/omaddons/about.json` | The about memo: what each source last said of a project for `info`'s `about` (summary, author, date, popularity, or that it knows no such project), at most 1,024 projects, believed for a day | Yes; the next `info` asks each source again |
 | `<client>/Interface/.omaddons/target.json` | The client's identity, so a moved install keeps its id | Loses identity |
 | `<client>/Interface/.omaddons/snapshots/<tx>/` (`<tx>.wtf/` for a restore or the undo of one) | `AddOns/` (replaced and removed folders), `WTF/` (SavedVariables copies with a manifest) and, for a whole restore, `WTF.previous/` (the tree it replaced): most of the undo data | Loses undo |
 | `<client>/Interface/.omaddons/snapshots/<tx>.repair/` | A doctor repair's client-side half: `files/` (what it overwrote there) and `quarantine/` (what it set aside there). Deleted only by [`doctor gc`](#doctor-gc), never by retention or the orphan sweep | Loses that repair's undo |

@@ -2057,6 +2057,11 @@ describe("the other reducers", () => {
     expect(M.isSafeUrl("https://github.com/o/r")).toBe(true)
     expect(M.isSafeUrl("https://www.wowinterface.com/downloads/info1.html")).toBe(true)
     expect(M.isSafeUrl("https://tukui.org/elvui")).toBe(true)
+    // Every shape of `info`'s `about.homepage` (src/sources/about.rs, Project::homepage).
+    for (const url of ["https://github.com/WeakAuras/WeakAuras2", "https://www.wowinterface.com/downloads/info7032",
+      "https://tukui.org/elvui", "https://www.wowace.com/projects/bug-grabber"]) {
+      expect([url, M.isSafeUrl(url)]).toEqual([url, true])
+    }
     for (const url of ["http://github.com/o/r", "https://github.com.evil.example/x", "https://user@github.com/x",
       "https://github.com:8443/x", "javascript:alert(1)", "https://evil.example/https://github.com", "", null]) {
       expect([url, M.isSafeUrl(url)]).toEqual([url, false])

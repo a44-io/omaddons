@@ -484,6 +484,11 @@ impl Paths {
         self.cache.join("releases.json")
     }
 
+    /// The about memo: what each source last said of a project, for `info`'s `about`.
+    pub fn about_memo(&self) -> PathBuf {
+        self.cache.join("about.json")
+    }
+
     /// What `export --write` wrote: each file's hash, to protect hand edits.
     pub fn export_memo(&self) -> PathBuf {
         self.cache.join("export.json")

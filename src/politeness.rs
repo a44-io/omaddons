@@ -33,6 +33,10 @@ pub const BACKOFF_MAX: Duration = Duration::from_secs(8);
 pub const RETRY_AFTER_CAP: Duration = Duration::from_secs(60);
 /// `outdated` reuses the last per-source result inside this window unless `--refresh`.
 pub const SOURCE_RECHECK_MIN_INTERVAL: Duration = Duration::from_secs(15 * 60);
+/// `info`'s `about` reuses what a source said of a project inside this window unless
+/// `--refresh`: a description, author or star count moves slowly, and a page opened
+/// again costs no request (one GitHub REST request per repository a day at most).
+pub const ABOUT_RECHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 /// Widget background check interval. (config)
 pub const DEFAULT_CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 /// Minimum age of the WoWInterface file list before a refetch, or the server's
@@ -144,6 +148,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         LimitUnit::Ms,
         None,
         "outdated reuses the last per-source result inside the window unless --refresh",
+    ),
+    limit(
+        "ABOUT_RECHECK_INTERVAL",
+        LimitValue::Millis(ms(ABOUT_RECHECK_INTERVAL)),
+        LimitUnit::Ms,
+        None,
+        "info's about reuses what a source said of a project inside the window unless --refresh",
     ),
     limit(
         "DEFAULT_CHECK_INTERVAL",

@@ -11,7 +11,7 @@ use crate::common;
 use common::archives::zip_text;
 use common::home::Home;
 use common::http::{Resp, fixture_seq, gh_feed};
-use common::netlog::{assert_no_github_rest, net_log};
+use common::netlog::{assert_no_github_rest, assert_no_github_rest_beside_about, net_log};
 use common::tukui::{elvui, tukui_changelog, tukui_list};
 use common::wowi::{details, wowi_details, wowi_file};
 use serde_json::{Value, json};
@@ -211,7 +211,8 @@ fn info_shows_the_github_notes_newer_than_the_installed_tag_with_no_rest() {
         "{}",
         log.context()
     );
-    assert_no_github_rest(&log.entries);
+    // The notes cost no REST request; `about` asks what the repository is.
+    assert_no_github_rest_beside_about(&log.entries);
     insta::assert_json_snapshot!("info_changelog", stable(&envelope)["data"]["changelog"]);
 
     let human = home.exec(&["info".into(), "weakauras".into(), "--changelog".into()]);

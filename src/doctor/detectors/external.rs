@@ -582,6 +582,7 @@ mod tests {
                 file: format!("{name}.toc"),
                 title: None,
                 title_plain: None,
+                notes: None,
                 version: None,
                 author: None,
                 interfaces: interfaces.to_vec(),

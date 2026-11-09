@@ -137,6 +137,7 @@ pub const KINDS: &[KindRow] = &[
     KindRow::of::<crate::discover::cache::DiscoveryCache>(),
     KindRow::of::<crate::net::validators::CachedMeta>(),
     KindRow::of::<super::memo::ReleaseMemo>(),
+    KindRow::of::<super::about_memo::AboutMemo>(),
     KindRow::of::<crate::sources::wowi::index::StoredIndex>(),
     KindRow::of::<super::export_memo::ExportMemo>(),
     KindRow::of::<super::doorbell::Doorbell>(),

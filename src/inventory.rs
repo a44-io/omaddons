@@ -20,10 +20,10 @@ use serde::Serialize;
 use crate::discover::find_path;
 use crate::error::{Error, Result, Suggestion};
 use crate::model::{FolderName, Target};
-use crate::rules::RulesTable;
+use crate::rules::{ClientRules, RulesTable};
 use crate::state::paths::Paths;
 use crate::state::records::{TargetRecord, load_record};
-use crate::toc::{DiskFolder, VerdictReport, judge, loaded_toc};
+use crate::toc::{DiskFolder, LoadedToc, VerdictReport, judge, loaded_toc};
 
 /// How much to read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,6 +104,8 @@ pub struct TocSummary {
     pub title: Option<String>,
     /// The title without colour codes, textures and atlases (`toc::plain_title`).
     pub title_plain: Option<String>,
+    /// `## Notes`, as this client reads it, raw.
+    pub notes: Option<String>,
     pub version: Option<String>,
     pub author: Option<String>,
     pub interfaces: Vec<u32>,
@@ -371,32 +373,7 @@ fn read_details(
     };
     match loaded_toc(&view, &target.rules) {
         Ok(loaded) => {
-            entry.toc = loaded.as_ref().map(|l| {
-                let title = l.toc.title_for(&target.rules).map(str::to_owned);
-                let deps = l.toc.dependencies_for(&target.rules);
-                let strings =
-                    |names: &[FolderName]| names.iter().map(|n| n.as_str().to_owned()).collect();
-                TocSummary {
-                    file: l.file.clone(),
-                    title_plain: title.as_deref().map(crate::toc::plain_title),
-                    title,
-                    version: l.toc.version.clone(),
-                    author: l.toc.author.clone(),
-                    interfaces: l.toc.interfaces.clone(),
-                    x_ids: l
-                        .toc
-                        .x_fields
-                        .iter()
-                        .filter(|(k, _)| k.to_ascii_lowercase().ends_with("id"))
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect(),
-                    website: l.toc.website().map(str::to_owned),
-                    dependencies: strings(&deps.required),
-                    optional_deps: strings(&deps.optional),
-                    tukui_project_folders: l.toc.tukui_project_folders(),
-                    saved_variables: l.toc.saved_variables.clone(),
-                }
-            });
+            entry.toc = loaded.as_ref().map(|l| summary(l, &target.rules));
             entry.verdict = Some(judge(
                 &entry.name,
                 loaded.as_ref(),
@@ -408,6 +385,52 @@ fn read_details(
         }
         Err(_) => entry.unreadable = true,
     }
+}
+
+/// The TOC the client of `rules` loads from a folder, as listed: its fields as that
+/// client reads them, as written (the caller makes them safe to show).
+fn summary(l: &LoadedToc, rules: &ClientRules) -> TocSummary {
+    let title = l.toc.title_for(rules).map(str::to_owned);
+    let deps = l.toc.dependencies_for(rules);
+    let strings = |names: &[FolderName]| names.iter().map(|n| n.as_str().to_owned()).collect();
+    TocSummary {
+        file: l.file.clone(),
+        title_plain: title.as_deref().map(crate::toc::plain_title),
+        title,
+        notes: l.toc.notes.clone(),
+        version: l.toc.version.clone(),
+        author: l.toc.author.clone(),
+        interfaces: l.toc.interfaces.clone(),
+        x_ids: l
+            .toc
+            .x_fields
+            .iter()
+            .filter(|(k, _)| k.to_ascii_lowercase().ends_with("id"))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+        website: l.toc.website().map(str::to_owned),
+        dependencies: strings(&deps.required),
+        optional_deps: strings(&deps.optional),
+        tukui_project_folders: l.toc.tukui_project_folders(),
+        saved_variables: l.toc.saved_variables.clone(),
+    }
+}
+
+/// The TOC `target`'s client loads from its AddOns folder `folder` (both found ignoring
+/// case, as Wine does), as [`inventory`] lists it: `None` when the folder is missing, is
+/// a symlink (never read or followed) or cannot be read, or holds no TOC the client
+/// loads. `info` reads an installed addon's own folder this way.
+pub fn folder_toc(target: &Target, folder: &FolderName) -> Option<TocSummary> {
+    let path = find_path(
+        &target.client_dir,
+        &["Interface", "AddOns", folder.as_str()],
+    )?;
+    if !std::fs::symlink_metadata(&path).ok()?.is_dir() {
+        return None;
+    }
+    let view = DiskFolder::new(&path).ok()?;
+    let loaded = loaded_toc(&view, &target.rules).ok()??;
+    Some(summary(&loaded, &target.rules))
 }
 
 #[cfg(test)]

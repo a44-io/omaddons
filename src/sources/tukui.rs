@@ -44,6 +44,10 @@ pub struct TukuiAddon {
     /// `YYYY-MM-DD`.
     pub last_update: String,
     pub changelog_url: Option<String>,
+    /// `small_desc`, the project's one-line description, made safe; empty when missing.
+    /// Not kept in the release memo's slim entry: `info`'s `about` keeps it in the about
+    /// memo instead.
+    pub summary: String,
 }
 
 impl TukuiAddon {
@@ -377,8 +381,18 @@ fn addon(item: &Value) -> Option<TukuiAddon> {
             .as_str()
             .filter(|u| u.starts_with("https://"))
             .map(str::to_owned),
+        summary: crate::text::source_line(
+            &text("small_desc"),
+            crate::limits::SEARCH_SUMMARY_MAX_CHARS,
+            crate::text::Entities::Keep,
+        ),
         slug,
     })
+}
+
+/// When `addon` last changed, as its `last_update` (`YYYY-MM-DD`) says: midnight UTC.
+pub fn updated_at(addon: &TukuiAddon) -> Option<Timestamp> {
+    midnight(&addon.last_update)
 }
 
 #[cfg(test)]
@@ -405,6 +419,7 @@ mod tests {
             "directories": ["ElvUI", "ElvUI_Libraries", "ElvUI_Options"],
             "last_update": "2026-10-13",
             "web_url": "https://tukui.org/elvui",
+            "small_desc": "A user interface\u{200b} replacement.",
         })
     }
 
@@ -494,6 +509,15 @@ mod tests {
         }
         let (one, url) = decode_addon(elvui().to_string().as_bytes()).unwrap();
         assert_eq!(one.slug, "elvui");
+        assert_eq!(
+            (one.summary.as_str(), updated_at(&one)),
+            (
+                "A user interface replacement.",
+                Some("2026-10-13T00:00:00Z".parse().unwrap())
+            ),
+            "small_desc and last_update, `info`'s about"
+        );
+        assert_eq!(list[1].summary, "", "no small_desc");
         assert_eq!(
             url.as_deref(),
             Some("https://api.tukui.org/v1/download/elvui/SECRET-TOKEN")

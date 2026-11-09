@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 
 use super::Wanted;
 use super::github::{GithubRestFallback, ListedRelease, RestReason, encode_segment, release_set};
+use super::github_search::{RepoHit, decode_repo};
 use super::github_token::{GithubToken, TokenSource};
 use super::release_json;
 use crate::error::{Error, ErrorCode, Result, Suggestion};
@@ -105,7 +106,13 @@ pub struct RateLimit {
 /// adds one): it costs none of the budget it reports. `auth github status` and the
 /// doctor's online checks send it, each with its own `purpose`.
 pub fn rate_limit_request(purpose: &'static str) -> Request {
-    Request::get(format!("{API}/rate_limit"), purpose)
+    api_get("/rate_limit", purpose)
+}
+
+/// A GET of `path` on the API host with the API headers, logged as `purpose`, and no
+/// token (the caller adds one).
+fn api_get(path: &str, purpose: &'static str) -> Request {
+    Request::get(format!("{API}{path}"), purpose)
         .header("Accept", "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2022-11-28")
 }
@@ -156,12 +163,26 @@ impl GithubRest {
         self.budget.lock().map_or_else(|p| *p.into_inner(), |b| *b)
     }
 
-    /// A GET of `path` on the API host, with the API headers; the token is added only
-    /// as it is sent ([`GithubRest::authorized`]).
+    /// A GET of `path` on the API host, with the API headers, logged as `rest-releases`;
+    /// the token is added only as it is sent ([`GithubRest::authorized`]).
     pub fn api_request(&self, path: &str) -> Request {
-        Request::get(format!("{API}{path}"), "rest-releases")
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
+        api_get(path, "rest-releases")
+    }
+
+    /// What GitHub says of a repository (`/repos/{owner}/{repo}`, logged as `rest-repo`):
+    /// one conditional request against the same budget as the release path, so a 304
+    /// costs none of it. `Ok(None)` when GitHub answers 404 (no such repository, or a
+    /// private one). `info`'s `about` reads it.
+    pub fn repository(&self, owner: &str, repo: &str, http: &dyn Http) -> Result<Option<RepoHit>> {
+        let path = format!("/repos/{}/{}", encode_segment(owner), encode_segment(repo));
+        let mut req = api_get(&path, "rest-repo");
+        req.validators = true;
+        let resp = self.send(req, http)?;
+        if resp.status == 404 {
+            return Ok(None);
+        }
+        let body = resp.error_for_status("GitHub's API")?.bytes()?;
+        decode_repo(&body).map(Some)
     }
 
     /// `req` with the token, resolved now (a credential command runs on the first

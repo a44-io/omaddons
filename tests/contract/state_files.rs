@@ -54,6 +54,7 @@ fn kind_of(file: &Path, paths: &Paths, clients: &[ClientPaths]) -> Option<&'stat
         (paths.status_file(), "status"),
         (paths.discovery_cache(), "discovery_cache"),
         (paths.release_memo(), "release_memo"),
+        (paths.about_memo(), "about_memo"),
         (paths.wowi_index(), "wowi_index"),
         (paths.export_memo(), "export_memo"),
         (paths.backup_inventory(), "backup_inventory"),

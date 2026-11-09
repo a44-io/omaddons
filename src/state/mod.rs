@@ -1,6 +1,7 @@
 //! Persistent state: XDG paths, `config.toml`, the registry, target records, the per-file
 //! index, history, plans, `status.json` and the widget's doorbell.
 
+pub mod about_memo;
 pub mod config;
 pub mod desired;
 pub mod doorbell;

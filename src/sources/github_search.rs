@@ -201,33 +201,50 @@ impl GithubSearch {
             })
             .collect();
         let dropped = total - says_wow.len();
-        let repos = says_wow
-            .into_iter()
-            .filter_map(|item| {
-                let r#ref: Ref = format!("gh:{}/{}", item.owner.login, item.name)
-                    .parse()
-                    .ok()?;
-                // Untrusted text, made safe at once (names are restricted already;
-                // this makes it hold whatever GitHub sends).
-                let safe = |text: &str| {
-                    crate::text::source_line(
-                        text,
-                        crate::limits::SOURCE_TEXT_MAX_CHARS,
-                        crate::text::Entities::Keep,
-                    )
-                };
-                Some(RepoHit {
-                    r#ref,
-                    name: safe(&item.name),
-                    owner: safe(&item.owner.login),
-                    description: item.description.map(|d| safe(&d)).filter(|d| !d.is_empty()),
-                    stars: item.stargazers_count,
-                    pushed_at: item.pushed_at.and_then(|t| t.parse().ok()),
-                })
-            })
-            .collect();
+        let repos = says_wow.into_iter().filter_map(repo_hit).collect();
         Ok(Found { repos, dropped })
     }
+}
+
+/// One repository object, as a search page's items and `/repos/{owner}/{repo}` both
+/// send it: `None` when its owner and name make no `gh:` ref. Its text is untrusted and
+/// made safe at once (names are restricted already; this makes it hold whatever GitHub
+/// sends).
+fn repo_hit(item: Item) -> Option<RepoHit> {
+    let r#ref: Ref = format!("gh:{}/{}", item.owner.login, item.name)
+        .parse()
+        .ok()?;
+    let safe = |text: &str| {
+        crate::text::source_line(
+            text,
+            crate::limits::SOURCE_TEXT_MAX_CHARS,
+            crate::text::Entities::Keep,
+        )
+    };
+    Some(RepoHit {
+        r#ref,
+        name: safe(&item.name),
+        owner: safe(&item.owner.login),
+        description: item.description.map(|d| safe(&d)).filter(|d| !d.is_empty()),
+        stars: item.stargazers_count,
+        pushed_at: item.pushed_at.and_then(|t| t.parse().ok()),
+    })
+}
+
+/// The repository `/repos/{owner}/{repo}` describes, read as a search hit is
+/// ([`repo_hit`]): `info`'s `about` and `search` share one projection. A body that is not
+/// a repository object is a retryable `network` error.
+pub fn decode_repo(body: &[u8]) -> Result<RepoHit> {
+    let unreadable = |why: String| {
+        Error::new(
+            ErrorCode::Network,
+            format!("GitHub's API answered something that is not a repository ({why})"),
+            Suggestion::text("retry later; if it persists, GitHub changed its API"),
+        )
+        .retryable(true)
+    };
+    let item: Item = serde_json::from_slice(body).map_err(|e| unreadable(e.to_string()))?;
+    repo_hit(item).ok_or_else(|| unreadable("no owner and name".into()))
 }
 
 /// The search URL for `query`: addon-ish repositories (`wow`, `warcraft` or `addon` in
@@ -290,6 +307,45 @@ mod tests {
                 req.url,
                 Box::new(std::io::Cursor::new(self.0.clone().into_bytes())),
             ))
+        }
+    }
+
+    /// `/repos/{owner}/{repo}`'s object reads as a search item does, made safe; a body
+    /// that is no repository is a retryable `network` error.
+    #[test]
+    fn one_repository_reads_as_a_search_hit() {
+        let body = serde_json::json!({
+            "name": "WeakAuras2",
+            "owner": {"login": "WeakAuras"},
+            "description": "Auras\u{202e} for\u{7} WoW",
+            "stargazers_count": 1234,
+            "pushed_at": "2026-10-28T09:30:00Z",
+            "archived": false,
+        });
+        let hit = decode_repo(body.to_string().as_bytes()).unwrap();
+        assert_eq!(
+            hit,
+            RepoHit {
+                r#ref: "gh:WeakAuras/WeakAuras2".parse().unwrap(),
+                name: "WeakAuras2".into(),
+                owner: "WeakAuras".into(),
+                description: Some("Auras for WoW".into()),
+                stars: 1234,
+                pushed_at: Some("2026-10-28T09:30:00Z".parse().unwrap()),
+            }
+        );
+        for bad in [
+            &b"[]"[..],
+            b"{}",
+            b"<html>",
+            br#"{"name":"x","owner":{"login":"a b"}}"#,
+        ] {
+            let error = decode_repo(bad).unwrap_err();
+            assert_eq!(
+                (error.code, error.retryable),
+                (ErrorCode::Network, true),
+                "{bad:?}"
+            );
         }
     }
 

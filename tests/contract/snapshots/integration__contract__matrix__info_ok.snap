@@ -6,6 +6,16 @@ expression: s.stable(&c.envelope)
   "command": "info",
   "commands": [],
   "data": {
+    "about": {
+      "author": "WeakAuras",
+      "homepage": "https://github.com/WeakAuras/WeakAuras2",
+      "popularity": {
+        "stars": 1234
+      },
+      "summary": "World of Warcraft addon that displays auras",
+      "updated_at": "<time>"
+    },
+    "about_unavailable": null,
     "catalog": {
       "aliases": [
         "wa",

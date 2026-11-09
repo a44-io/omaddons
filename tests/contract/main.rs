@@ -617,6 +617,17 @@ mod support {
                 "5.19.2",
                 &wa,
             );
+            // What `info`'s `about` says of it.
+            common::http::gh_repo(
+                &home.http,
+                &common::http::RepoMeta {
+                    owner: "WeakAuras",
+                    name: "WeakAuras2",
+                    description: Some("World of Warcraft addon that displays auras"),
+                    stars: 1_234,
+                    pushed_at: "2026-10-28T09:30:00Z",
+                },
+            );
             let foo: [Asset<'_>; 1] = [(
                 "Foo.zip",
                 &[("mainline", 120_105)],

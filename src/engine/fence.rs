@@ -1860,6 +1860,7 @@ mod tests {
             1,
             "derived data: the WoWInterface index",
         ),
+        ("src/state/about_memo.rs", 1, "derived data: the about memo"),
         ("src/state/doorbell.rs", 1, "derived data: the doorbell"),
         (
             "src/state/history_tail.rs",

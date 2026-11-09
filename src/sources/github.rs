@@ -50,6 +50,22 @@ pub trait GithubRestFallback: Send + Sync {
     fn recent_releases(&self, wanted: &Wanted, http: &dyn Http) -> Result<Vec<ListedRelease>>;
 }
 
+/// A shared fallback, so the registry can lend the same client (and its budget) to
+/// `info`'s `about` ([`super::SourceRegistry::github_rest`]).
+impl<T: GithubRestFallback + ?Sized> GithubRestFallback for std::sync::Arc<T> {
+    fn fetch(&self, wanted: &Wanted, reason: &RestReason, http: &dyn Http) -> Result<ReleaseSet> {
+        (**self).fetch(wanted, reason, http)
+    }
+
+    fn is_prerelease(&self, wanted: &Wanted, tag: &str, http: &dyn Http) -> Result<bool> {
+        (**self).is_prerelease(wanted, tag, http)
+    }
+
+    fn recent_releases(&self, wanted: &Wanted, http: &dyn Http) -> Result<Vec<ListedRelease>> {
+        (**self).recent_releases(wanted, http)
+    }
+}
+
 /// One release of a REST listing, for a look-back.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListedRelease {

@@ -1005,6 +1005,7 @@ enum history data.entries[].repairs[].pre<untagged=kind>.kind absent,dir,file,sy
 enum history data.entries[].repairs[].pre<untagged=path,to>.path.kind absent,dir,file,symlink
 enum history data.entries[].repairs[].pre<untagged=path,to>.to.kind absent,dir,file,symlink
 enum history data.entries[].result committed
+enum info data.about_unavailable.reason fetch_failed,not_found,not_supported,offline,rate_limited,source_disabled,source_has_no_metadata
 enum info data.catalog.families[] cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum info data.catalog.variants[].families[] cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum info data.changelog.source curseforge,git,github,local,tukui,url,wago,wowace,wowi
@@ -1276,6 +1277,21 @@ exit general 3 not_found retryable=false
 exit general 4 refused retryable=false
 exit general 5 locked retryable=true
 exit general 6 check_failed retryable=false
+file about_memo . object
+file about_memo 1.0
+file about_memo entries object!
+file about_memo entries{} object
+file about_memo entries{}.fetched_at string!
+file about_memo entries{}.found object?!
+file about_memo entries{}.found.author string?!
+file about_memo entries{}.found.popularity object?!
+file about_memo entries{}.found.popularity<untagged=downloads> variant
+file about_memo entries{}.found.popularity<untagged=downloads>.downloads integer! minimum=0
+file about_memo entries{}.found.popularity<untagged=stars> variant
+file about_memo entries{}.found.popularity<untagged=stars>.stars integer! minimum=0
+file about_memo entries{}.found.summary string?!
+file about_memo entries{}.found.updated_at string?!
+file about_memo schema_version string!
 file backup . object
 file backup 1.0
 file backup actor string!
@@ -7595,6 +7611,18 @@ output history data.entries[].targets[].key string!
 output history data.entries[].tx string!
 output history data.truncated boolean!
 output info data object
+output info data.about object?!
+output info data.about.author string?!
+output info data.about.homepage string?!
+output info data.about.popularity object?!
+output info data.about.popularity<untagged=downloads> variant
+output info data.about.popularity<untagged=downloads>.downloads integer! minimum=0
+output info data.about.popularity<untagged=stars> variant
+output info data.about.popularity<untagged=stars>.stars integer! minimum=0
+output info data.about.summary string?!
+output info data.about.updated_at string?!
+output info data.about_unavailable object?!
+output info data.about_unavailable.reason string!
 output info data.catalog object?!
 output info data.catalog.aliases array!
 output info data.catalog.aliases[] string
@@ -7657,6 +7685,19 @@ output info data.installed[].state string!
 output info data.installed[].target object!
 output info data.installed[].target.id string!
 output info data.installed[].target.key string!
+output info data.installed[].toc object?!
+output info data.installed[].toc.author string?!
+output info data.installed[].toc.dependencies array!
+output info data.installed[].toc.dependencies[] string
+output info data.installed[].toc.folder string!
+output info data.installed[].toc.interfaces array!
+output info data.installed[].toc.interfaces[] integer minimum=0
+output info data.installed[].toc.notes string?!
+output info data.installed[].toc.optional_deps array!
+output info data.installed[].toc.optional_deps[] string
+output info data.installed[].toc.title_plain string?!
+output info data.installed[].toc.version string?!
+output info data.installed[].toc.website string?!
 output info data.installed[].tx string!
 output info data.installed[].version string!
 output info data.installed[].version_confidence string!

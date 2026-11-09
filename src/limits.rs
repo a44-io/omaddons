@@ -158,6 +158,12 @@ pub const SEARCH_MAX_RESULTS: usize = 50;
 pub const SEARCH_SUMMARY_MAX_CHARS: usize = 200;
 /// Characters kept from one name, author or version a source sends.
 pub const SOURCE_TEXT_MAX_CHARS: usize = 200;
+/// Characters `info` keeps from one field of an installed addon's TOC (its title,
+/// notes, author, version or website), written by the addon's author.
+pub const TOC_TEXT_MAX_CHARS: usize = 400;
+/// Projects the about memo (`<cache>/omaddons/about.json`) keeps; the oldest answers go
+/// first.
+pub const ABOUT_MEMO_MAX_ENTRIES: usize = 1_024;
 /// Account, realm and character names the privacy redactor learns per client (or
 /// archive); any other maps to `account ?`, `realm ?` or `character ?`.
 pub const REDACTOR_MAX_NAMES: usize = 4_096;
@@ -727,6 +733,20 @@ pub const REGISTRY: &[LimitInfo] = &[
         "Characters kept from a source's name, author or version",
     ),
     limit(
+        "TOC_TEXT_MAX_CHARS",
+        LimitValue::Count(TOC_TEXT_MAX_CHARS as u64),
+        LimitUnit::Count,
+        None,
+        "Characters info keeps from one field of an installed addon's TOC (title, notes, author, version, website)",
+    ),
+    limit(
+        "ABOUT_MEMO_MAX_ENTRIES",
+        LimitValue::Count(ABOUT_MEMO_MAX_ENTRIES as u64),
+        LimitUnit::Count,
+        None,
+        "Projects the about memo keeps for info; the oldest answers go first",
+    ),
+    limit(
         "REDACTOR_MAX_NAMES",
         LimitValue::Count(REDACTOR_MAX_NAMES as u64),
         LimitUnit::Count,
@@ -1226,7 +1246,8 @@ mod tests {
     const POLITENESS_NAMES: &[&str] = &[
         "USER_AGENT", "MAX_CONCURRENT_REQUESTS", "MAX_CONCURRENT_PER_HOST", "CONNECT_TIMEOUT",
         "API_READ_TIMEOUT", "DOWNLOAD_TIMEOUT", "MAX_RETRIES", "BACKOFF_BASE", "BACKOFF_MAX",
-        "RETRY_AFTER_CAP", "SOURCE_RECHECK_MIN_INTERVAL", "DEFAULT_CHECK_INTERVAL",
+        "RETRY_AFTER_CAP", "SOURCE_RECHECK_MIN_INTERVAL", "ABOUT_RECHECK_INTERVAL",
+        "DEFAULT_CHECK_INTERVAL",
         "WOWI_FILELIST_MIN_AGE", "GITHUB_REST_RESERVE", "CURSEFORGE_BATCH_SIZE",
         "WOWI_DETAILS_BATCH_SIZE", "DISCOVERY_MAX_DEPTH", "DISCOVERY_SKIP_DIRS",
         "DISCOVERY_MAX_DIRS", "MAX_REDIRECTS", "GITHUB_SEARCH_PER_PAGE", "LOOK_BACK_MAX_RELEASES",
@@ -1265,6 +1286,8 @@ mod tests {
         "SEARCH_MAX_RESULTS",
         "SEARCH_SUMMARY_MAX_CHARS",
         "SOURCE_TEXT_MAX_CHARS",
+        "TOC_TEXT_MAX_CHARS",
+        "ABOUT_MEMO_MAX_ENTRIES",
         "REDACTOR_MAX_NAMES",
         "BACKUP_TREE_MAX_ENTRIES",
         "BACKUP_TREE_MAX_DEPTH",

@@ -76,6 +76,17 @@ pub fn assert_no_github_rest(entries: &[NetLogEntry]) {
     );
 }
 
+/// [`assert_no_github_rest`] for an `info` run: its `about` asks the REST API what a
+/// repository is (`rest-repo`, `tests/info_about.rs`), and nothing else may.
+pub fn assert_no_github_rest_beside_about(entries: &[NetLogEntry]) {
+    let others: Vec<NetLogEntry> = entries
+        .iter()
+        .filter(|e| e.purpose != "rest-repo")
+        .cloned()
+        .collect();
+    assert_no_github_rest(&others);
+}
+
 /// Fails, listing them, if any method + host + path was requested more than once.
 pub fn assert_each_url_once(entries: &[NetLogEntry]) {
     let mut seen = std::collections::BTreeMap::new();

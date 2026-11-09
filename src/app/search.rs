@@ -217,7 +217,8 @@ fn source_name(source: SourceId) -> String {
     }
 }
 
-fn popularity_text(p: Popularity) -> String {
+/// `2.1M downloads`, `★412`: shared with `info`'s `about` line.
+pub(crate) fn popularity_text(p: Popularity) -> String {
     let short = |n: u64| -> String {
         match n {
             0..1_000 => n.to_string(),

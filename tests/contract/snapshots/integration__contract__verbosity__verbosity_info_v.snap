@@ -6,6 +6,16 @@ expression: s.stable(&checked.envelope)
   "command": "info",
   "commands": [],
   "data": {
+    "about": {
+      "author": "WeakAuras",
+      "homepage": "https://github.com/WeakAuras/WeakAuras2",
+      "popularity": {
+        "stars": 1234
+      },
+      "summary": "World of Warcraft addon that displays auras",
+      "updated_at": "<time>"
+    },
+    "about_unavailable": null,
     "catalog": {
       "aliases": [
         "wa",
@@ -62,6 +72,20 @@ expression: s.stable(&checked.envelope)
         "target": {
           "id": "retail",
           "key": "<ulid>"
+        },
+        "toc": {
+          "author": null,
+          "dependencies": [],
+          "folder": "WeakAuras",
+          "interfaces": [
+            120105,
+            50504
+          ],
+          "notes": null,
+          "optional_deps": [],
+          "title_plain": null,
+          "version": "3",
+          "website": null
         },
         "tx": "<ulid>",
         "version": "5.19.2",

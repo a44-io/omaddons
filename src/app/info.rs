@@ -25,23 +25,28 @@ use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
 use crate::drift::{DriftMode, DriftState};
 use crate::error::{Error, ErrorCode, Result, Warning};
+use crate::limits::{ABOUT_MEMO_MAX_ENTRIES, TOC_TEXT_MAX_CHARS};
 use crate::model::{
     AddonReason, AddonState, Channel, FolderName, LeftOutFolder, Ref, ReleaseSet, Target, TxId,
     VersionConfidence,
 };
 use crate::net::{NetConfig, NetLog, stack};
 use crate::output::{Outcome, Style};
-use crate::politeness::SOURCE_RECHECK_MIN_INTERVAL;
+use crate::politeness::{ABOUT_RECHECK_INTERVAL, SOURCE_RECHECK_MIN_INTERVAL};
 use crate::resolve::cache::{Freshness, ReleaseCache};
+use crate::resolve::search::Popularity;
 use crate::resolve::select::{newest, select};
 use crate::resolve::updates::{Confidence, rank_confidence};
 use crate::rules::Family;
+use crate::sources::about::{self, Project};
 use crate::sources::changelog::{
     Changelog, ChangelogUnavailable, Installed, changelog_for, human_lines, oldest_since,
 };
 use crate::sources::git_hosts::GitRunner;
 use crate::sources::{SourceRegistry, Wanted};
+use crate::state::about_memo::{self, AboutEntry};
 use crate::state::memo::FactIndex;
+use crate::text::{Entities, source_line};
 
 /// `info`'s own arguments.
 #[derive(Debug, Clone, Default, clap::Args)]
@@ -49,7 +54,7 @@ pub struct InfoArgs {
     /// The addon: a catalog name, an installed addon's name, or a ref or link
     #[arg(value_name = "REF")]
     pub query: String,
-    /// Fetch the newest release from its source, even if checked recently
+    /// Fetch the newest release and the about again, even if checked recently
     #[arg(long)]
     pub refresh: bool,
     /// Add the notes of every release newer than the oldest installed
@@ -68,6 +73,12 @@ pub struct InfoData {
     pub catalog: Option<CatalogInfo>,
     pub installed: Vec<InstalledInfo>,
     pub latest: Option<Latest>,
+    /// What the addon is, as its source describes it, with its project page; `null` when
+    /// the ref names no project on GitHub, WoWInterface, Tukui or WowAce.
+    pub about: Option<About>,
+    /// Why `about` is `null`, or holds only what the ref gives (`homepage`); `null` when
+    /// the source answered (now, or within `ABOUT_RECHECK_INTERVAL`).
+    pub about_unavailable: Option<AboutUnavailable>,
     pub offline: bool,
     /// `--changelog` only: the notes of the releases newer than the oldest installed one
     /// (the latest's alone when none records a release), or `null`. Omitted without
@@ -77,6 +88,142 @@ pub struct InfoData {
     /// Why `changelog` is `null`; omitted when `changelog` is absent or holds notes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub changelog_unavailable: Option<ChangelogUnavailable>,
+}
+
+/// What an addon is, as its source describes it (`sources::about`), made safe to show.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct About {
+    /// One line about it: GitHub's description, Tukui's `small_desc`. WoWInterface's
+    /// description is a page, not a line, so it gives none.
+    pub summary: Option<String>,
+    pub author: Option<String>,
+    /// The project's page, built from the ref alone (never from a TOC's `X-Website`), on
+    /// `github.com`, `www.wowinterface.com`, `tukui.org` or `www.wowace.com`.
+    pub homepage: Option<String>,
+    /// When it last changed, as its source says: GitHub's last push, WoWInterface's
+    /// file date, Tukui's last update.
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
+    pub updated_at: Option<jiff::Timestamp>,
+    /// WoWInterface's downloads or GitHub's stars.
+    pub popularity: Option<Popularity>,
+}
+
+/// Why `about` is missing, or holds only its `homepage`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct AboutUnavailable {
+    pub reason: AboutUnavailableReason,
+}
+
+/// What kept a source's description from `about`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AboutUnavailableReason {
+    /// The ref names no project page: `url:`, `file:`, `git:` off GitHub, CurseForge or
+    /// Wago (`about` is `null`).
+    SourceHasNoMetadata,
+    /// The source describes no project (WowAce): the page alone.
+    NotSupported,
+    /// The source is turned off in config.toml.
+    SourceDisabled,
+    /// `--offline`, and nothing is remembered.
+    Offline,
+    /// The source knows no such project (a deleted or private repository).
+    NotFound,
+    /// GitHub's REST budget is spent.
+    RateLimited,
+    /// The request failed, and nothing is remembered.
+    FetchFailed,
+}
+
+impl AboutUnavailableReason {
+    fn of(error: &Error) -> Self {
+        match error.code {
+            ErrorCode::Offline => Self::Offline,
+            ErrorCode::RateLimited => Self::RateLimited,
+            ErrorCode::SourceDisabled => Self::SourceDisabled,
+            _ => Self::FetchFailed,
+        }
+    }
+
+    /// The human view's words; `None` when `about`'s absence says it already.
+    fn words(self) -> Option<&'static str> {
+        match self {
+            Self::SourceHasNoMetadata | Self::NotSupported => None,
+            Self::SourceDisabled => Some("not checked (its source is disabled)"),
+            Self::Offline => Some("not checked (offline)"),
+            Self::NotFound => Some("its source knows no such project"),
+            Self::RateLimited => Some("not checked (GitHub's API budget is spent)"),
+            Self::FetchFailed => Some("its source did not answer"),
+        }
+    }
+}
+
+/// The TOC an installed addon's own folder loads on its client, as the client reads it
+/// (conditional lines evaluated), made safe to show: UI escapes, control characters and
+/// characters that hide text removed, each string cut at `TOC_TEXT_MAX_CHARS` (then `…`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct InstalledToc {
+    /// The folder read: the one named like the addon, else its first.
+    pub folder: FolderName,
+    /// `## Title`, as this client shows it, plain.
+    pub title_plain: Option<String>,
+    /// `## Notes`, plain.
+    pub notes: Option<String>,
+    pub author: Option<String>,
+    pub version: Option<String>,
+    pub interfaces: Vec<u32>,
+    /// `X-Website` as the author wrote it: text to show, never a link omaddons
+    /// follows or offers (`about.homepage` is the project's page).
+    pub website: Option<String>,
+    /// The folders it requires on this client.
+    pub dependencies: Vec<String>,
+    /// `## OptionalDeps` on this client.
+    pub optional_deps: Vec<String>,
+}
+
+impl InstalledToc {
+    /// `toc`, read from `folder`, made safe.
+    fn of(folder: FolderName, toc: crate::inventory::TocSummary) -> Self {
+        Self {
+            folder,
+            title_plain: toc_text(toc.title.as_deref()),
+            notes: toc_text(toc.notes.as_deref()),
+            author: toc_text(toc.author.as_deref()),
+            version: toc_text(toc.version.as_deref()),
+            interfaces: toc.interfaces,
+            website: toc
+                .website
+                .as_deref()
+                .map(|w| source_line(w, TOC_TEXT_MAX_CHARS, Entities::Keep))
+                .filter(|w| !w.is_empty()),
+            dependencies: toc.dependencies,
+            optional_deps: toc.optional_deps,
+        }
+    }
+}
+
+/// One TOC field, written by the addon's author: its UI escapes (colour codes, textures,
+/// atlases, links) removed, then made one safe line cut at `TOC_TEXT_MAX_CHARS` (then
+/// `…`); `None` when nothing is left.
+fn toc_text(raw: Option<&str>) -> Option<String> {
+    raw.map(|r| {
+        source_line(
+            &crate::text::strip_ui_escapes(r),
+            TOC_TEXT_MAX_CHARS,
+            Entities::Keep,
+        )
+    })
+    .filter(|s| !s.is_empty())
+}
+
+/// The TOC of `addon`'s own folder on `target`: the folder named like it (ignoring
+/// case), else its first, as the engine picks it for an adopted version.
+fn installed_toc(target: &Target, addon: &str, folders: &[FolderName]) -> Option<InstalledToc> {
+    let folder = folders
+        .iter()
+        .find(|f| f.as_str().eq_ignore_ascii_case(addon))
+        .or_else(|| folders.first())?;
+    crate::inventory::folder_toc(target, folder).map(|toc| InstalledToc::of(folder.clone(), toc))
 }
 
 /// The catalog entry.
@@ -126,6 +273,9 @@ pub struct InstalledInfo {
     pub left_out: Vec<LeftOutFolder>,
     /// Whether its files changed on disk (stat-first, local), with paths under `-v`.
     pub drift: DriftSummary,
+    /// The TOC its own folder loads here; `null` when that folder is missing, is a
+    /// symlink or cannot be read, or holds no TOC this client loads.
+    pub toc: Option<InstalledToc>,
     #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub installed_at: jiff::Timestamp,
     pub tx: TxId,
@@ -244,6 +394,27 @@ impl Outcome for InfoOutcome {
         let d = &self.data;
         let name = d.name.as_deref().unwrap_or(&d.query);
         writeln!(w, "{name}  {}", d.r#ref)?;
+        if let Some(about) = &d.about {
+            if let Some(summary) = &about.summary {
+                writeln!(w, "  {summary}")?;
+            }
+            let mut facts: Vec<String> = Vec::new();
+            facts.extend(about.author.as_ref().map(|a| format!("by {a}")));
+            facts.extend(about.popularity.map(super::search::popularity_text));
+            facts.extend(about.updated_at.map(|t| {
+                let day = t
+                    .to_zoned(jiff::tz::TimeZone::system())
+                    .strftime("%Y-%m-%d");
+                format!("updated {day}")
+            }));
+            facts.extend(about.homepage.clone());
+            if !facts.is_empty() {
+                writeln!(w, "  {}", facts.join(" · "))?;
+            }
+        }
+        if let Some(words) = d.about_unavailable.and_then(|u| u.reason.words()) {
+            writeln!(w, "  about: {words}")?;
+        }
         if let Some(c) = &d.catalog {
             let folders: Vec<&str> = c.folders.iter().map(FolderName::as_str).collect();
             let families = |list: &[Family]| -> String {
@@ -470,6 +641,7 @@ pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
                 folders: a.folders.clone(),
                 left_out: a.left_out.clone(),
                 drift,
+                toc: installed_toc(&d.target, &a.name, &a.folders),
                 installed_at: a.installed_at,
                 tx: a.tx_id,
                 record_path: verbose.then(|| world.paths.target_record(&key)),
@@ -588,6 +760,18 @@ pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
     } else {
         (None, None)
     };
+    let asked = AboutAsk {
+        offline: ctx.offline,
+        refresh: args.refresh,
+    };
+    let (about, about_unavailable) = about_of(
+        &r,
+        &registry,
+        http.as_ref(),
+        &world.paths,
+        asked,
+        &mut notes,
+    );
     Ok(InfoOutcome {
         data: InfoData {
             query: args.query.clone(),
@@ -596,6 +780,8 @@ pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
             catalog: catalog_info,
             installed,
             latest: latest.flatten(),
+            about,
+            about_unavailable,
             offline: ctx.offline,
             changelog,
             changelog_unavailable,
@@ -604,6 +790,116 @@ pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
         partial,
         notes,
     })
+}
+
+/// How `info` may ask a source about a project.
+#[derive(Debug, Clone, Copy)]
+struct AboutAsk {
+    /// `--offline`: the memo's answer, whatever its age, or nothing.
+    offline: bool,
+    /// `--refresh`: ask even inside `ABOUT_RECHECK_INTERVAL`.
+    refresh: bool,
+}
+
+/// `about` and `about_unavailable` for `r`. The page comes from the ref; the rest from
+/// the about memo inside `ABOUT_RECHECK_INTERVAL` (any age offline), else from one
+/// request to the project's source, which the memo then keeps (a project the source
+/// does not know too). A failed request falls back to the memo's older answer when it
+/// has one. Never a warning and never partial: what is missing says why, and `-v` notes
+/// the failure.
+fn about_of(
+    r: &Ref,
+    registry: &SourceRegistry,
+    http: &dyn crate::net::Http,
+    paths: &crate::state::paths::Paths,
+    ask: AboutAsk,
+    notes: &mut Vec<String>,
+) -> (Option<About>, Option<AboutUnavailable>) {
+    let unavailable = |reason| Some(AboutUnavailable { reason });
+    let Some(project) = Project::of(r) else {
+        return (
+            None,
+            unavailable(AboutUnavailableReason::SourceHasNoMetadata),
+        );
+    };
+    let page_only = About {
+        summary: None,
+        author: None,
+        homepage: project.homepage(),
+        updated_at: None,
+        popularity: None,
+    };
+    if !project.described() {
+        return (
+            Some(page_only),
+            unavailable(AboutUnavailableReason::NotSupported),
+        );
+    }
+    if !registry.enabled().contains(&project.source()) {
+        return (
+            Some(page_only),
+            unavailable(AboutUnavailableReason::SourceDisabled),
+        );
+    }
+    let (memo, note) = about_memo::load(paths);
+    notes.extend(note);
+    let key = project.key();
+    let remembered = memo.entries.get(&key);
+    let now = jiff::Timestamp::now();
+    let fresh = remembered
+        .filter(|e| ask.offline || (!ask.refresh && e.fresh(now, ABOUT_RECHECK_INTERVAL)));
+    let entry = match (fresh, ask.offline) {
+        (Some(entry), _) => entry.clone(),
+        (None, true) => {
+            return (
+                Some(page_only),
+                unavailable(AboutUnavailableReason::Offline),
+            );
+        }
+        (None, false) => match about::fetch(project, registry, http) {
+            Ok(found) => {
+                let entry = AboutEntry {
+                    fetched_at: now,
+                    found,
+                };
+                notes.extend(about_memo::record(
+                    paths,
+                    &key,
+                    entry.clone(),
+                    ABOUT_MEMO_MAX_ENTRIES,
+                ));
+                entry
+            }
+            Err(error) => {
+                notes.push(format!("about {key}: {}", error.message));
+                match remembered {
+                    Some(older) => older.clone(),
+                    None => {
+                        return (
+                            Some(page_only),
+                            unavailable(AboutUnavailableReason::of(&error)),
+                        );
+                    }
+                }
+            }
+        },
+    };
+    match entry.found {
+        Some(facts) => (
+            Some(About {
+                summary: facts.summary,
+                author: facts.author,
+                updated_at: facts.updated_at,
+                popularity: facts.popularity,
+                ..page_only
+            }),
+            None,
+        ),
+        None => (
+            Some(page_only),
+            unavailable(AboutUnavailableReason::NotFound),
+        ),
+    }
 }
 
 /// The newest stable release and the targets with a candidate for it; `None` when the
@@ -656,4 +952,33 @@ fn latest(
         compat,
         asset_urls: urls,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A TOC field is the author's text: one safe line, its UI escapes, controls and
+    /// hidden characters gone, cut at the cap, and nothing when nothing is left.
+    #[test]
+    fn a_toc_field_is_one_safe_line() {
+        let long = "x".repeat(TOC_TEXT_MAX_CHARS + 50);
+        let cut = format!("{}…", "x".repeat(TOC_TEXT_MAX_CHARS));
+        let cases: &[(&str, Option<&str>)] = &[
+            (
+                "|cff33ff99Details!|r Damage Meter",
+                Some("Details! Damage Meter"),
+            ),
+            ("Says\u{202e} hi\u{7}\nthere", Some("Says hi there")),
+            ("|TInterface\\Icons\\x:16|t", None),
+            ("   ", None),
+            ("", None),
+            ("a || b", Some("a | b")),
+            (&long, Some(&cut)),
+        ];
+        for (raw, want) in cases {
+            assert_eq!(toc_text(Some(raw)).as_deref(), *want, "{raw:?}");
+        }
+        assert_eq!(toc_text(None), None);
+    }
 }

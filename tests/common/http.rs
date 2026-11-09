@@ -280,6 +280,49 @@ pub fn gh_feed(scenario: &Path, base: &str, entries: &[(&str, &str)], etag: Opti
     fixture_seq(scenario, &name, &url, &responses);
 }
 
+/// What GitHub's API says of one repository (`info`'s `about`): the fields the decoder
+/// reads, as `/repos/{owner}/{repo}` writes them.
+pub struct RepoMeta<'a> {
+    pub owner: &'a str,
+    pub name: &'a str,
+    pub description: Option<&'a str>,
+    pub stars: u64,
+    pub pushed_at: &'a str,
+}
+
+/// Serves `/repos/{owner}/{repo}` on the API host: the repository as GitHub writes it,
+/// with a budget left and an ETag.
+pub fn gh_repo(scenario: &Path, repo: &RepoMeta<'_>) {
+    let body = json!({
+        "id": 1,
+        "name": repo.name,
+        "full_name": format!("{}/{}", repo.owner, repo.name),
+        "owner": {"login": repo.owner, "type": "Organization"},
+        "html_url": format!("https://github.com/{}/{}", repo.owner, repo.name),
+        "description": repo.description,
+        "topics": ["world-of-warcraft"],
+        "stargazers_count": repo.stars,
+        "pushed_at": repo.pushed_at,
+        "archived": false,
+    });
+    let resp = Resp::ok(serde_json::to_vec(&body).unwrap())
+        .header("content-type", "application/json; charset=utf-8")
+        .header("x-ratelimit-remaining", "59")
+        .header("etag", "\"repo\"");
+    gh_repo_responses(scenario, repo.owner, repo.name, &[resp]);
+}
+
+/// Serves `/repos/{owner}/{repo}` on the API host with `responses`, in order.
+pub fn gh_repo_responses(scenario: &Path, owner: &str, name: &str, responses: &[Resp]) {
+    let url = format!("https://api.github.com/repos/{owner}/{name}");
+    fixture_seq(
+        scenario,
+        &format!("gh-repo-{owner}-{name}"),
+        &url,
+        responses,
+    );
+}
+
 /// The `updated` time of the `i`th newest feed entry: a day apart, newest first.
 fn feed_time(i: usize) -> String {
     format!("2026-10-{:02}T12:00:00Z", 28 - i.min(27))

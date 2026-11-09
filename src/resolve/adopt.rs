@@ -1150,6 +1150,7 @@ mod tests {
             file: "X.toc".into(),
             title: title.map(str::to_owned),
             title_plain: title.map(plain_title),
+            notes: None,
             version: None,
             author: author.map(str::to_owned),
             interfaces: vec![120_105],

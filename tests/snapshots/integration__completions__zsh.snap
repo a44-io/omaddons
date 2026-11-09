@@ -980,7 +980,7 @@ _arguments "${_arguments_options[@]}" : \
 '--reason=[Why, recorded verbatim in history]:TEXT:_default' \
 '--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
-'--refresh[Fetch the newest release from its source, even if checked recently]' \
+'--refresh[Fetch the newest release and the about again, even if checked recently]' \
 '--changelog[Add the notes of every release newer than the oldest installed]' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
@@ -1007,7 +1007,7 @@ _arguments "${_arguments_options[@]}" : \
 '--reason=[Why, recorded verbatim in history]:TEXT:_default' \
 '--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
-'--refresh[Fetch the newest release from its source, even if checked recently]' \
+'--refresh[Fetch the newest release and the about again, even if checked recently]' \
 '--changelog[Add the notes of every release newer than the oldest installed]' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
