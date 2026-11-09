@@ -876,7 +876,9 @@ function problemRow(issue, targetId) {
     "action": action,
     "text": r.runnable ? "" : str(r.command),
     "note": r.irreversible ? IRREVERSIBLE_NOTE : "",
-    "hint": fix ? "Enter previews the repair" : action ? "Enter runs the fix" : explain ? "Enter explains it" : ""
+    // The key comes from the key map, as every other hint's does.
+    "hint": (fix || action || explain ? keyHint("enter", "issues") : "")
+      + (fix ? " previews the repair" : action ? " runs the fix" : explain ? " explains it" : "")
   }
 }
 
@@ -1841,7 +1843,7 @@ var KEYMAP = [
   { "keys": ["p"], "context": "installed", "action": "pin", "label": "pin or unpin it", "hint": "p", "nothing": "Nothing to pin here" },
   { "keys": ["x"], "context": "installed", "action": "remove", "label": "remove it, after a confirmation", "hint": "x", "nothing": "Nothing to remove here" },
   { "keys": ["r"], "context": "installed", "action": "restore", "label": "restore its settings from a backup", "hint": "r", "nothing": "No settings to restore here" },
-  { "keys": ["Enter", "Space"], "context": "issues", "action": "enter", "label": "run the fix; on a Lua error, update its addon or show the stack", "hint": "Enter" },
+  { "keys": ["Enter", "Space"], "context": "issues", "action": "enter", "label": "preview a repair, run the fix, or show why; on a Lua error, update its addon or show the stack", "hint": "Enter" },
   { "keys": ["u"], "context": "issues", "action": "update", "label": "update the addon a Lua error comes from", "hint": "u", "nothing": "Nothing to update here" },
   { "keys": ["r"], "context": "issues", "action": "restore", "label": "restore the erroring addon's settings from a backup", "hint": "r", "nothing": "No settings to restore here" },
   { "keys": ["y"], "context": "issues", "action": "copy", "label": "copy the command a row shows, to run in a terminal", "hint": "y", "nothing": "Nothing to copy here" },

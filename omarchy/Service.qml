@@ -80,6 +80,10 @@ Item {
   // The raw details an Issues row asked for, view-bound: `{selection, data}`.
   property var rawErrors: null
   property var rawSelection: null
+  // The doctor's explanation an Issues row asked for (`doctor explain`), view-bound to
+  // that row: `{selection, lines, failed}`.
+  property var explanation: null
+  property var explainSelection: null
   // The dismissals `d` still has to send, one client at a time.
   property var pendingDismissals: []
   property double backupsAt: 0
@@ -232,6 +236,26 @@ Item {
     rawErrors = null
   }
 
+  // An Issues row's explanation: the row's own `doctor explain` argv (from `status`,
+  // accepted by the classifier as that read path), view-bound to the row's key. A read:
+  // it runs while a change runs, on the local lane. Whether it was asked.
+  function readExplanation(key, argv) {
+    if (!Array.isArray(argv)) return false
+    var verdict = Model.classifyCliArgv(argv)
+    if (!verdict.ok || verdict.path !== "doctor explain") return false
+    var selection = { "key": String(key || "") }
+    explainSelection = selection
+    return request({
+      "resource": "explain", "cli": argv.slice(), "kind": "view", "lane": "local", "selection": selection, "label": "Explain"
+    })
+  }
+
+  // The explanation closed: a late answer is dropped.
+  function clearExplanation() {
+    explainSelection = null
+    explanation = null
+  }
+
   // Puts a command the widget shows instead of running (a purge, a forced repair) on the
   // clipboard: wl-copy with the text as one argument (Model.copyArgv), never a shell.
   // Whether there was anything to copy.
@@ -374,6 +398,27 @@ Item {
   function applyPreview(r, outcome, env) {
     confirm = null
     pendingConfirm = null
+    // A bound repair (M4-D44): the doctor's envelope has no `data` (M4-D34) and a dry run
+    // with something to repair exits 1, so Model.doctorPreviewDecision reads it before
+    // anything generic does. Yes runs the same argv bound to the preview's token.
+    if ((outcome === "ok" || outcome === "failed") && r.spec && r.spec.mode === "bind") {
+      var repair = Model.doctorPreviewDecision(r.spec, env, Build.CONTEXT, targets)
+      lastPreview = { "resource": r.resource, "decision": repair.kind, "planId": null }
+      if (repair.kind === "dialog") {
+        confirm = { "text": Model.dialogText(repair), "heading": "", "stale": r.stale }
+        pendingConfirm = { "spec": r.spec, "token": repair.token, "binds": true, "plan": null, "contextGeneration": r.contextGeneration }
+      } else if (repair.kind === "refresh") {
+        lastResult = { "ok": true, "line": repair.line, "partial": false, "commands": [], "fixes": [] }
+        changed()
+      } else if (repair.kind === "refuse") {
+        lastError = { "message": repair.line, "code": "not_previewed", "fixes": [], "fixText": repair.fixText || "" }
+        changed()
+      } else {
+        failedPreview = r.spec
+        lastError = errorOf(env, r.label + ": " + (outcome === "ok" ? "no repair report" : outcome))
+      }
+      return
+    }
     if (outcome !== "ok") {
       failedPreview = r.spec
       lastError = errorOf(env, r.label + ": " + outcome)
@@ -382,11 +427,13 @@ Item {
     var path = r.cli ? Model.classifyCliArgv(r.cli).path : Model.templateShape(r.template, templates).path
     if (!Model.storesPlan(path)) {
       var token = env.data && typeof env.data.precondition === "string" ? env.data.precondition : ""
-      confirm = { "text": Model.confirmText(r.template || path, env), "heading": "", "stale": r.stale }
+      confirm = { "text": Model.confirmText(r.template || path, env, Build.CONTEXT, targets), "heading": "", "stale": r.stale }
       pendingConfirm = { "spec": r.spec, "token": token, "binds": Model.CLI_PATHS[path].binds, "plan": null, "contextGeneration": r.contextGeneration }
       return
     }
-    var decision = Model.previewDecision({ "mode": r.mode, "shown": r.shown, "again": r.again === true, "path": path }, env)
+    // The context and clients shorten the paths a repair's undo lists (`<config>/…`).
+    var decision = Model.previewDecision({ "mode": r.mode, "shown": r.shown, "again": r.again === true, "path": path,
+      "context": Build.CONTEXT, "targets": targets }, env)
     lastPreview = { "resource": r.resource, "decision": decision.kind, "planId": decision.plan ? decision.plan.planId : null }
     if (decision.kind === "direct") {
       runPlan(decision.plan, r.spec, r.contextGeneration)
@@ -416,7 +463,8 @@ Item {
     if (refusal) return refusal
     var path = Model.templateShape(name, templates).path
     if (template.preview || Model.CLI_PATHS[path].destructive) {
-      spec.mode = template.preview === "match" ? "match" : "confirm"
+      // `bind` (a repair): Yes runs the same argv bound to the preview's token.
+      spec.mode = template.preview === "match" ? "match" : (template.preview === "bind" ? "bind" : "confirm")
       spec.shown = Array.isArray(shown) ? shown : []
       previewOf(spec, "", false)
     } else {
@@ -561,7 +609,8 @@ Item {
 
   function startAction(r) {
     action = { "name": r.template || r.resource, "label": r.label, "current": 0, "total": 0,
-      "message": !r.preview ? "" : r.mode === "match" ? "Preparing…" : "Checking what it would do…" }
+      "message": !r.preview ? "" : r.mode === "match" ? "Preparing…"
+        : r.mode === "bind" ? "Checking what it would repair…" : "Checking what it would do…" }
     bar = withSpinning(bar, true)
   }
 
@@ -577,6 +626,7 @@ Item {
     if (r.resource === "changelog") return changelogSelection
     if (r.resource === "errors_raw") return rawSelection
     if (r.resource === "backups_detail") return detailSelection
+    if (r.resource === "explain") return explainSelection
     return null
   }
 
@@ -630,7 +680,7 @@ Item {
       lastErrorResource = ""
     }
     if (r.resource === "status") {
-      applyStatus(outcome, env, tail)
+      applyStatus(r, outcome, env, tail)
     } else if (r.kind === "mutation" || r.purpose === "action") {
       var before = lastError
       applyAction(r, outcome, env, tail)
@@ -644,6 +694,7 @@ Item {
         lastErrorResource = r.resource
         // A row waiting for its notes says they could not be read, never "Reading…".
         if (r.resource === "changelog") changelog = { "selection": r.selection, "data": null, "failed": lastError.message }
+        if (r.resource === "explain") explanation = { "selection": r.selection, "lines": null, "failed": lastError.message }
       }
     } else if (r.resource === "list") {
       lists = Model.reduceList(env)
@@ -664,12 +715,14 @@ Item {
       search = found
     } else if (r.resource === "changelog") {
       changelog = { "selection": r.selection, "data": env.data }
+    } else if (r.resource === "explain") {
+      explanation = { "selection": r.selection, "lines": Model.explainLines(env, Build.CONTEXT, targets), "failed": "" }
     } else if (r.resource === "check") {
       refresh()
     }
   }
 
-  function applyStatus(outcome, env, tail) {
+  function applyStatus(r, outcome, env, tail) {
     if (outcome === "ok" || outcome === "failed") {
       var model = Model.reduceStatus(env, Date.now())
       bar = withSpinning(model.bar, action !== null)
@@ -692,6 +745,16 @@ Item {
       } else if (lastErrorResource === "status") {
         lastError = null
         lastErrorResource = ""
+      }
+      // A repair's result offers its Undo (the bound Undo last) only once a status asked
+      // after it finished names it as the last change: one already running read the
+      // history before the repair committed. A fresh object, so the change signal fires.
+      if (outcome === "ok" && lastResult && lastResult.repair === true && lastResult.statusSeen !== true
+          && r.id > lastResult.statusAfter) {
+        var seen = {}
+        for (var key in lastResult) if (lastResult.hasOwnProperty(key)) seen[key] = lastResult[key]
+        seen.statusSeen = true
+        lastResult = seen
       }
       if (outcome === "ok") statusApplied()
       return
@@ -721,14 +784,26 @@ Item {
             "argv": verdict && verdict.ok ? c.argv.slice() : null, "runnable": verdict !== null && verdict.ok })
         }
       }
-      // A plan's apply reads as the command it ran ("Updated 1 addon").
-      var view = r.purpose === "planned" ? (Model.applyResult(env) || env) : env
-      lastResult = { "ok": outcome === "ok", "line": Model.resultLine(view), "partial": !!env && env.partial === true, "commands": commandsOf,
-        "fixes": Model.itemFixes(view) }
-      lastError = outcome === "ok" ? null : errorOf(env, r.label + " failed")
-      // A plan gone stale or gone, or a client's part gone stale: the action is previewed
-      // again (first in line), never applied again (M4-D28).
-      if (r.purpose === "planned" && r.spec && Model.needsPreviewAgain(env)) previewOf(r.spec, Model.staleText(env), true)
+      var repair = Model.doctorResult(env)
+      if (repair) {
+        // A repair's report is an answer whatever its exit (1, 2 and 3 are findings left,
+        // a partial repair and a rolled-back one, M4-D34): its line says what happened, and
+        // only its error (a refusal, the lock, a changed subject) is the failure card.
+        // `statusAfter`: the last request asked before it, for its Undo (applyStatus).
+        lastResult = { "ok": repair.exitCode === 0, "line": Model.resultLine(env, Build.CONTEXT, targets),
+          "partial": repair.state === "DONE_PARTIAL", "commands": commandsOf, "fixes": [],
+          "repair": repair.repaired, "statusSeen": false, "statusAfter": lastRequestId }
+        lastError = repair.error ? errorOf(env, r.label + " failed") : null
+      } else {
+        // A plan's apply reads as the command it ran ("Updated 1 addon").
+        var view = r.purpose === "planned" ? (Model.applyResult(env) || env) : env
+        lastResult = { "ok": outcome === "ok", "line": Model.resultLine(view, Build.CONTEXT, targets), "partial": !!env && env.partial === true,
+          "commands": commandsOf, "fixes": Model.itemFixes(view) }
+        lastError = outcome === "ok" ? null : errorOf(env, r.label + " failed")
+        // A plan gone stale or gone, or a client's part gone stale: the action is previewed
+        // again (first in line), never applied again (M4-D28).
+        if (r.purpose === "planned" && r.spec && Model.needsPreviewAgain(env)) previewOf(r.spec, Model.staleText(env), true)
+      }
       var stale = outcome === "failed" && env.error && env.error.code === "plan_stale"
       // A preview gone stale is previewed again, never rerun with the same token.
       if (stale && r.purpose === "confirmed" && r.spec) previewOf(r.spec, Model.staleText(env), false)

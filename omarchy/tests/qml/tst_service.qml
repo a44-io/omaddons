@@ -593,6 +593,301 @@ TestCase {
     compare(runs("undo").length, 1, "the undo runs only through its plan")
   }
 
+  // ---- the doctor's repairs (G2, M4-D44): a bound preview of `doctor fix --only`, Yes
+  // the same argv bound to its token, the undo through `undo`'s stored plan. The doctor's
+  // envelope has the report's keys at the top level and no `data` (M4-D34).
+
+  readonly property string credentialFm: "fm-secrets-credential-file-mode"
+  readonly property string credentialPath: Build.CONTEXT.XDG_CONFIG_HOME + "/omaddons/credentials/github"
+  readonly property string repairToken: "pc1:" + "a".repeat(64)
+  readonly property string repairRun: "01M9RVNRVNRVNRVNRVNRVNRVNR"
+
+  function doctorEnvelope(command, exitCode, report) {
+    var e = { "ok": exitCode === 0, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION, "command": command, "exit_code": exitCode }
+    for (var key in report) e[key] = report[key]
+    e.warnings = []
+    e.commands = []
+    return JSON.stringify(e)
+  }
+
+  // One chmod of the credential (E6's ActionPlanned, its primitive flattened).
+  function chmodAction(extra) {
+    return merged({ "seq": 0, "fix": 0, "fm": credentialFm, "op": "chmod", "path": credentialPath, "mode": "0600",
+      "pre": { "kind": "file", "mode": "0644" }, "post": { "kind": "file", "mode": "0600" }, "guards": [], "bytes": 0 }, extra)
+  }
+
+  // A `doctor fix` report: `dryRun` plans `actions`, else takes them; `state` and `exit`
+  // follow the doctor's dictionary unless given.
+  function fixReport(o) {
+    var dryRun = o.dryRun === true
+    var state = o.state || (dryRun ? "DONE_FINDINGS" : "DONE_OK")
+    var exits = { "DONE_OK": 0, "DONE_FINDINGS": 1, "DONE_PARTIAL": 2, "DONE_FAILED": 3 }
+    var exit = o.exit !== undefined ? o.exit : exits[state]
+    var actions = o.actions || [chmodAction()]
+    var report = {
+      "doctor_contract_version": "1.0", "run_id": "2026-11-08T07-23-32Z__01M9RVN0000000000000000000", "run_dir": "/r",
+      "state": state, "dry_run": dryRun, "tx": dryRun ? null : "01M9TX00000000000000000000",
+      "summary": { "total_findings": 1, "findings_before": 1, "findings_after": dryRun ? null : (o.findingsAfter || 0),
+        "actions_taken": dryRun ? null : actions.length, "actions_failed": dryRun ? null : 0, "bytes_to_back_up": 0,
+        "bytes_backed_up": dryRun ? null : 0, "backups_restored": dryRun ? null : 0 },
+      "findings": [], "skipped": [],
+      "actions": dryRun ? null : actions.map(function(a) { return merged(a, { "ok": true }) }),
+      "delegated": dryRun ? null : [],
+      "actions_planned": dryRun ? actions : null,
+      "delegated_planned": dryRun ? [] : null,
+      "precondition": dryRun ? (o.token === undefined ? repairToken : o.token) : null,
+      "undo_command": dryRun ? null : "omaddons doctor undo r", "undo_argv": dryRun ? null : ["omaddons", "doctor", "undo", "r"]
+    }
+    if (o.error) report.error = o.error
+    return doctorEnvelope("doctor fix", exit, report)
+  }
+
+  function doctorError(code, message, details) {
+    return { "code": code, "message": message, "fix": "omaddons doctor fix --only " + credentialFm + " --dry-run",
+      "fix_argv": null, "alternatives": [], "retryable": false, "details": details || {} }
+  }
+
+  // A status whose last change is the repair, with its Undo (`undo --run`).
+  function repairStatus() {
+    return statusEnvelope(0, { "data": merged(JSON.parse(statusEnvelope(0)).data, { "last_change": {
+      "run": repairRun, "kind": "repair", "at": "2026-11-08T07:23:33Z", "actor": "widget", "reason": "Repair: the token file",
+      "targets": [], "changes": {}, "undo": { "command": "omaddons undo --run " + repairRun, "argv": ["omaddons", "undo", "--run", repairRun] } } }) })
+  }
+
+  // Asks for the credential repair; returns its preview's launch.
+  function previewRepair() {
+    compare(service.run("doctor_fix", { "fm": credentialFm }, "Repair: the token file"), "")
+    var launch = lastRun("doctor")
+    verify(launch !== null, "the repair's preview: " + launchLog())
+    return launch
+  }
+
+  // The repair previewed and confirmed: returns the bound run's launch.
+  function confirmRepair() {
+    answer(previewRepair(), fixReport({ "dryRun": true }))
+    verify(service.confirm !== null, "the repair asks first: " + launchLog())
+    compare(service.confirmYes(), "")
+    var bound = lastRun("doctor")
+    verify(bound.command.indexOf("--if-match") !== -1, "Yes runs bound: " + launchLog())
+    return bound
+  }
+
+  // The `--if-match` launches of `doctor fix` so far.
+  function boundRepairs() {
+    return runs("doctor").filter(function(l) { return l.command.indexOf("--if-match") !== -1 })
+  }
+
+  function test_a_repair_previews_then_runs_bound_to_its_token() {
+    ready(0)
+    var preview = previewRepair()
+    compare(words(preview.command), ["doctor", "fix", "--only=" + credentialFm])
+    verify(preview.command.indexOf("--dry-run") !== -1, "a dry run first")
+    verify(preview.command.indexOf("--if-match") === -1, "no token yet")
+    compare(JSON.parse(service.stateJson()).lanes.mutation.running, "doctor_fix", "on the mutation lane")
+    compare(service.action.message, "Checking what it would repair…")
+    // The dry run plans one chmod and exits 1 (findings): a dialog, never a failure.
+    answer(preview, fixReport({ "dryRun": true }))
+    compare(service.lastError, null, "a planning dry run is no failure")
+    verify(service.confirm !== null, "the repair asks first")
+    compare(service.confirm.text.split("\n"), ["chmod 0600 <config>/credentials/github (was 0644)", "Undo last reverts it"])
+    compare(boundRepairs().length, 0, "nothing ran before Yes: " + launchLog())
+    compare(service.confirmYes(), "")
+    var bound = lastRun("doctor")
+    verify(bound !== preview)
+    compare(words(bound.command), ["doctor", "fix", "--only=" + credentialFm])
+    compare(bound.command[bound.command.indexOf("--if-match") + 1], repairToken)
+    verify(bound.command.indexOf("--dry-run") === -1)
+    compare(bound.command.slice(4, 8), ["--reason", "Repair: the token file (bar widget)", "--progress", "json"])
+    compare(bound.environment, Build.CONTEXT)
+    compare(runs("apply").length, 0, "a repair stores no plan")
+    answer(bound, fixReport({}))
+    compare(service.lastResult.line, "Repaired: chmod 0600 <config>/credentials/github (was 0644)")
+    verify(service.lastResult.ok)
+    verify(service.lastResult.repair === true)
+    verify(service.lastResult.statusSeen === false, "its Undo waits for a status asked after it")
+    compare(service.lastError, null)
+    // The status the repair's change rang for: from then on its Undo may show.
+    answer(lastRun("status"), repairStatus())
+    verify(service.lastResult.statusSeen === true)
+    compare(service.lastChange.kind, "repair")
+    var undo = Model.resultUndo(service.lastResult, service.lastChange)
+    compare(undo.argv, ["omaddons", "undo", "--run", repairRun])
+  }
+
+  function test_a_status_read_before_the_repair_finished_offers_no_undo() {
+    ready(0)
+    var bound = confirmRepair()
+    // A status already running when the repair commits read the history before it.
+    service.refresh()
+    var early = lastRun("status")
+    answer(bound, fixReport({}))
+    answer(early, repairStatus())
+    verify(service.lastResult.statusSeen === false, "a status asked before the result is not its proof")
+    answer(lastRun("status"), repairStatus())
+    verify(service.lastResult.statusSeen === true)
+  }
+
+  function test_a_stale_repair_previews_again_and_runs_once() {
+    ready(0)
+    var bound = confirmRepair()
+    answer(bound, fixReport({ "state": "REFUSING", "exit": 4,
+      "error": doctorError("plan_stale", "the repair is no longer what its preview showed", { "changed": ["observed"] }) }))
+    var again = lastRun("doctor")
+    verify(again !== bound, "previewed again: " + launchLog())
+    verify(again.command.indexOf("--dry-run") !== -1)
+    verify(again.command.indexOf("--if-match") === -1)
+    answer(again, fixReport({ "dryRun": true }))
+    verify(service.confirm.stale.indexOf("Changed since you looked: the files this repair checks") === 0, service.confirm.stale)
+    compare(boundRepairs().length, 1, "the bound run is never launched twice: " + launchLog())
+  }
+
+  function test_a_repair_with_nothing_left_refreshes_and_runs_nothing() {
+    ready(0)
+    var statuses = runs("status").length
+    answer(previewRepair(), fixReport({ "dryRun": true, "state": "DONE_OK", "actions": [] }))
+    compare(service.confirm, null)
+    compare(service.lastResult.line, "Nothing to repair now; the view is refreshed")
+    compare(runs("status").length, statuses + 1, "the view is refreshed")
+    compare(boundRepairs().length, 0, launchLog())
+    compare(JSON.parse(service.stateJson()).lastPreview.decision, "refresh")
+  }
+
+  function test_a_repair_preview_that_plans_another_failure_mode_runs_nothing() {
+    ready(0)
+    answer(previewRepair(), fixReport({ "dryRun": true, "actions": [chmodAction(), chmodAction({ "seq": 1, "fm": "fm-other" })] }))
+    compare(service.confirm, null)
+    compare(service.lastError.code, "not_previewed")
+    compare(service.lastError.message, "The preview planned more than this repair; nothing ran")
+    compare(boundRepairs().length, 0, launchLog())
+  }
+
+  function test_a_repair_preview_without_a_token_runs_nothing() {
+    ready(0)
+    answer(previewRepair(), fixReport({ "dryRun": true, "token": null }))
+    compare(service.confirm, null)
+    compare(service.lastError.message, "The preview gave no token to bind; nothing ran")
+    compare(boundRepairs().length, 0, launchLog())
+  }
+
+  function test_a_refused_repair_preview_shows_its_error_and_fix() {
+    ready(0)
+    answer(previewRepair(), fixReport({ "dryRun": true, "state": "REFUSING", "exit": 4, "actions": [],
+      "error": doctorError("doctor_refused", "retail is running; quit the game first", { "reason": "client_running" }) }))
+    compare(service.confirm, null)
+    compare(service.lastError.message, "retail is running; quit the game first")
+    compare(service.lastError.code, "doctor_refused")
+    compare(service.lastError.fixText, "omaddons doctor fix --only " + credentialFm + " --dry-run")
+    compare(service.failedPreview.template, "doctor_fix")
+    compare(JSON.parse(service.stateJson()).lastPreview.decision, "failed")
+    compare(boundRepairs().length, 0)
+  }
+
+  function test_a_partial_repair_is_a_report_not_an_error() {
+    ready(0)
+    answer(confirmRepair(), fixReport({ "state": "DONE_PARTIAL", "findingsAfter": 1 }))
+    verify(!service.lastResult.ok)
+    verify(service.lastResult.partial)
+    compare(service.lastResult.line, "Partly repaired (1 change); 1 finding remains")
+    compare(service.lastError, null, "exit 2 is a report")
+  }
+
+  function test_a_rolled_back_repair_says_so_and_sets_no_error() {
+    ready(0)
+    answer(confirmRepair(), fixReport({ "state": "DONE_FAILED", "findingsAfter": 1 }))
+    compare(service.lastResult.line, "The repair failed and was rolled back; nothing changed")
+    verify(service.lastResult.repair === false, "nothing changed, so there is nothing to undo")
+    compare(service.lastError, null, "exit 3 is a report")
+  }
+
+  function test_a_locked_repair_shows_its_error() {
+    ready(0)
+    var locked = JSON.parse(fixReport({ "state": "REFUSING", "exit": 5,
+      "error": doctorError("locked", "another omaddons holds the lock", {}) }))
+    locked.error.retryable = true
+    var bound = confirmRepair()
+    bound.process.finish(5, JSON.stringify(locked))
+    compare(service.lastError.code, "locked")
+    compare(service.lastError.message, "another omaddons holds the lock")
+    compare(boundRepairs().length, 1, "nothing re-runs by itself: " + launchLog())
+    compare(runs("doctor").length, 2, launchLog())
+  }
+
+  function test_a_repair_finished_after_the_panel_closed_says_so_once() {
+    ready(0)
+    service.setPanelOpen("p", true)
+    var toasts = function() {
+      return Quickshell.detachedCommands.filter(function(c) { return c[0] === "omarchy-notification-send" })
+    }
+    var bound = confirmRepair()
+    compare(toasts().length, 0, "the preview raises none")
+    service.setPanelOpen("p", false)
+    answer(bound, fixReport({}))
+    compare(toasts().length, 1, JSON.stringify(Quickshell.detachedCommands))
+    verify(toasts()[0].indexOf("Repaired: chmod 0600 <config>/credentials/github (was 0644)") !== -1, JSON.stringify(toasts()[0]))
+  }
+
+  function test_state_reports_the_repair_preview() {
+    ready(0)
+    answer(previewRepair(), fixReport({ "dryRun": true }))
+    var state = JSON.parse(service.stateJson())
+    compare(state.lastPreview, { "resource": "doctor_fix", "decision": "dialog", "planId": null })
+    compare(state.confirm, { "heading": "", "planId": null })
+  }
+
+  function test_undo_last_reverts_a_repair_through_its_stored_plan() {
+    ready(0)
+    compare(service.runCliArgv(["omaddons", "undo", "--run", repairRun], "Undo repair"), "")
+    var preview = lastRun("undo")
+    verify(preview.command.indexOf("--dry-run") !== -1)
+    var undone = { "kind": "repair", "reverted": { "tx": "01M9TX00000000000000000000", "kind": "repair", "targets": [] }, "folders": null,
+      "repairs": [{ "seq": 0, "fix": 0, "fm": credentialFm, "op": "chmod", "path": credentialPath, "to_rel": null, "octal_mode": "0644", "activation": false }] }
+    answer(preview, planPreview("undo", [planItem({ "op": "undo", "addon": null, "source": null, "release_id": null, "asset": null,
+      "from_version": null, "to_version": null })], { "routine": false, "reasons": ["destructive"] }, undone, { "destructive": true }))
+    var lines = service.confirm.text.split("\n")
+    compare(lines[0], "Undo repair: 1 change")
+    compare(lines[1], "chmod 0644 <config>/credentials/github (readable by other users again)", "the paths are shortened")
+    compare(runs("apply").length, 0)
+    compare(service.confirmYes(), "")
+    var apply = lastRun("apply")
+    compare(words(apply.command), ["apply", planId], "Yes applies the undo's plan: " + launchLog())
+    answer(apply, applyEnvelope("undo", merged(undone, { "dry_run": false })))
+    compare(service.lastResult.line, "Undid repair (1 change)")
+    compare(runs("undo").length, 1, "the undo runs only through its plan")
+  }
+
+  function test_the_explanation_is_view_bound_and_dropped_once_closed() {
+    ready(0)
+    var explainEnv = function(title) {
+      return doctorEnvelope("doctor explain", 0, { "doctor_contract_version": "1.0",
+        "failure_mode": { "id": credentialFm, "title": title, "description": "d", "why": "w", "fixer": null, "manual": null },
+        "instances": [], "skipped": [], "incomplete": null })
+    }
+    var argv = ["omaddons", "doctor", "explain", "fm-x"]
+    verify(service.readExplanation("p//0", argv))
+    var first = lastRun("doctor")
+    compare(words(first.command), ["doctor", "explain", "fm-x"])
+    verify(first.command.indexOf("--progress") === -1, "a read")
+    compare(JSON.parse(service.stateJson()).lanes.local.running, "explain")
+    service.clearExplanation()
+    answer(first, explainEnv("stale"))
+    compare(service.explanation, null, "a late answer for a closed row is dropped")
+    verify(service.readExplanation("p//0", argv))
+    answer(lastRun("doctor"), explainEnv("The GitHub token file is readable by other users"))
+    compare(service.explanation.selection, { "key": "p//0" })
+    compare(service.explanation.lines[0], "The GitHub token file is readable by other users")
+    // A failed read says so for its row (an unknown id is the doctor's usage exit, 64).
+    verify(service.readExplanation("p//0", argv))
+    var failed = JSON.parse(doctorEnvelope("doctor explain", 64, {}))
+    failed.error = { "code": "usage", "message": "unknown failure mode fm-x", "fix": "omaddons help doctor explain",
+      "fix_argv": ["omaddons", "help", "doctor", "explain"], "alternatives": [], "retryable": false, "details": {} }
+    lastRun("doctor").process.finish(64, JSON.stringify(failed))
+    compare(service.explanation.lines, null)
+    compare(service.explanation.failed, "unknown failure mode fm-x")
+    // Only a `doctor explain` argv the classifier accepts is read.
+    verify(!service.readExplanation("p//0", ["omaddons", "doctor", "fix", "--only", "fm-x"]))
+    verify(!service.readExplanation("p//0", null))
+  }
+
   // ---- actions and lanes (M3-D11)
 
   function test_an_action_reports_progress_then_its_result() {

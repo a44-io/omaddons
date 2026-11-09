@@ -667,6 +667,42 @@ TestCase {
     verify(child("errorCard").visible)
   }
 
+  // A repair's Undo (G2) is the bound Undo last: shown only once a status read after the
+  // repair names it as the last change, never the fix envelope's own `doctor undo` hint.
+  function repairChange(run) {
+    return Model.lastChangeOf({ "run": run, "kind": "repair", "at": "2026-11-08T07:23:33Z", "actor": "widget", "reason": "Repair",
+      "targets": [], "changes": {}, "undo": { "command": "omaddons undo --run " + run, "argv": ["omaddons", "undo", "--run", run] } }, "ok")
+  }
+
+  function test_the_results_undo_of_a_repair_is_undo_last_once_status_names_it() {
+    var run = "01M9RVNRVNRVNRVNRVNRVNRVNR"
+    svc.lastChange = repairChange(run)
+    var result = { "ok": true, "line": "Repaired: chmod 0600 <config>/credentials/github (was 0644)", "partial": false,
+      "repair": true, "statusSeen": false, "fixes": [],
+      "commands": [{ "action": "undo", "command": "omaddons doctor undo r", "argv": null, "runnable": false }] }
+    svc.lastResult = result
+    compare(child("resultLine").text, "Repaired: chmod 0600 <config>/credentials/github (was 0644)")
+    verify(!child("resultUndo").visible, "no Undo before a status names the repair")
+    var seen = JSON.parse(JSON.stringify(result))
+    seen.statusSeen = true
+    svc.lastResult = seen
+    verify(child("resultUndo").visible)
+    child("resultUndo").clicked()
+    compare(json(svc.cliRuns[0]), json([["omaddons", "undo", "--run", run], "Undo"]))
+    // Another change since: the result's Undo would not revert the repair.
+    svc.lastChange = { "unknown": false, "kind": "update", "label": "Undo update on era",
+      "undo": { "command": "omaddons undo --run 01J", "argv": ["omaddons", "undo", "--run", "01J"], "destructive": true, "runnable": true } }
+    verify(!child("resultUndo").visible)
+  }
+
+  function test_undo_last_of_a_repair_reads_undo_repair() {
+    var run = "01M9RVNRVNRVNRVNRVNRVNRVNR"
+    svc.lastChange = repairChange(run)
+    compare(child("undoButton").tooltipText, "Undo repair (Ctrl+Z)")
+    keyClick(Qt.Key_Z, Qt.ControlModifier)
+    compare(json(svc.cliRuns[0]), json([["omaddons", "undo", "--run", run], "Undo repair"]))
+  }
+
   function test_a_partial_result_offers_each_failed_items_fix() {
     svc.lastResult = { "ok": true, "line": "Updated 2 of 3; Plater failed: the download stopped", "partial": true, "commands": [],
       "fixes": [{ "command": "omaddons update -t era -- Plater", "argv": ["omaddons", "update", "-t", "era", "--", "Plater"], "runnable": true }] }

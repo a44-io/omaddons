@@ -6,8 +6,11 @@ import ".."
 import "../Model.js" as Model
 
 // The Issues view (F6): what is wrong and its fix one key away (Model.issueSections).
-// Problems from `status` by severity, Enter running their remediation through the
-// classifier (destructive ones through the confirm dialog); each client's Lua errors
+// Problems from `status` by severity: Enter previews a repair the doctor can make (its
+// confirmed run bound to that preview, M4-D44), runs another fix through the classifier
+// (destructive ones through the confirm dialog), or shows the doctor's explanation; a
+// repair that needs deliberate consent (`--force --yes`) shows its terminal command
+// instead, never a button. Each client's Lua errors
 // from `errors` (strict text only: a custom message shows its length, received reports
 // only their count), Enter updating the likely source or showing its stack, `u`
 // updating it, a button on the cursored row showing its raw details under a label that
@@ -30,6 +33,8 @@ Item {
   // The addon row whose stack (Enter) or raw details (its button) are open, by key.
   property string expanded: ""
   property string rawOpen: ""
+  // The problem row whose explanation (`doctor explain`) is open, by key.
+  property string explainOpen: ""
   // The row whose command `y` copied last, by key.
   property string copied: ""
   // Each row's delegate, by its cursor index (for rowItem).
@@ -80,7 +85,30 @@ Item {
       }
       return
     }
-    if (row.action) frame.runCli(row.action, row.kind === "capture" ? "Install BugGrabber" : "Fix")
+    // A repair the doctor makes: its preview, through the bound template (never the
+    // remediation argv the CLI printed).
+    if (row.kind === "problem" && row.fix) {
+      if (canChange) frame.report(svc.run(row.fix.template, row.fix.slots, row.fix.label))
+      return
+    }
+    if (row.action) {
+      frame.runCli(row.action, row.kind === "capture" ? "Install BugGrabber" : "Fix")
+      return
+    }
+    // No fix to run here (a forced repair, a command for a terminal): why, from the doctor.
+    if (row.kind === "problem" && row.explain) toggleExplain(row)
+  }
+
+  // An explanation is a read: it opens while a change runs, as raw details do.
+  function toggleExplain(row) {
+    if (!svc) return
+    if (explainOpen === row.key) {
+      explainOpen = ""
+      svc.clearExplanation()
+      return
+    }
+    explainOpen = row.key
+    svc.readExplanation(row.key, row.explain.argv)
   }
 
   function toggleRaw(row) {
@@ -172,6 +200,13 @@ Item {
             readonly property bool open: root.expanded === modelData.key
             readonly property bool rawShown: root.rawOpen === modelData.key
             readonly property var raw: rawShown ? Model.rawLines(root.svc ? root.svc.rawErrors : null, modelData) : null
+            // The doctor's explanation of this row only: its lines, or why it could not
+            // be read (view-bound, as raw details).
+            readonly property bool explainShown: root.explainOpen === modelData.key
+            readonly property var explanationOf: explainShown && root.svc ? root.svc.explanation : null
+            readonly property var explained: explainShown ? Model.explainFor(explanationOf, modelData) : null
+            readonly property string explainFailed: !!explanationOf && !!explanationOf.selection
+              && explanationOf.selection.key === modelData.key && typeof explanationOf.failed === "string" ? explanationOf.failed : ""
 
             Component.onCompleted: root.items[modelData.index] = entry
             Component.onDestruction: if (root.items[modelData.index] === entry) delete root.items[modelData.index]
@@ -252,9 +287,26 @@ Item {
                   }
                 }
 
+                // A command that needs deliberate consent (`--force`, `--yes`): read why when
+                // the doctor explains it, then run it yourself.
+                PlainLabel {
+                  objectName: "consentNote"
+                  visible: entry.modelData.kind === "problem" && entry.modelData.forced === true
+                  width: rowColumn.width
+                  wrapMode: Text.WordWrap
+                  color: root.urgent
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  text: entry.modelData.explain
+                    ? "A deliberate repair: read why (" + Model.keyHint("enter", "issues") + "), then run this in a terminal:"
+                    : "This needs your deliberate consent: run it in a terminal:"
+                }
+
+                // The command, when it is no button; a repair's is not shown, since its
+                // preview lists what it does.
                 PlainLabel {
                   objectName: "commandText"
-                  visible: !!entry.modelData.text
+                  visible: !!entry.modelData.text && !entry.modelData.fix
                   width: rowColumn.width
                   wrapMode: Text.WordWrap
                   color: root.dim
@@ -277,7 +329,7 @@ Item {
 
                 PlainLabel {
                   objectName: "copyHint"
-                  visible: Model.copyText(entry.modelData) !== ""
+                  visible: Model.copyText(entry.modelData) !== "" && !entry.modelData.fix
                   text: root.copied === entry.modelData.key ? "Copied"
                     : Model.keyHint("copy", "issues") + " copies the command"
                   color: root.dim
@@ -285,11 +337,13 @@ Item {
                   font.pixelSize: Style.font.caption
                 }
 
+                // A problem's hint is its row's (Model.problemRow: previews the repair,
+                // runs the fix, explains it); a capture or warning row's says what Enter runs.
                 PlainLabel {
                   objectName: "enterHint"
-                  visible: !!entry.modelData.action
-                  text: Model.keyHint("enter", "issues")
-                    + (entry.modelData.kind === "capture" ? " installs it" : " runs the fix")
+                  visible: entry.modelData.kind === "problem" ? !!entry.modelData.hint : !!entry.modelData.action
+                  text: entry.modelData.kind === "problem" ? (entry.modelData.hint || "")
+                    : Model.keyHint("enter", "issues") + (entry.modelData.kind === "capture" ? " installs it" : " runs the fix")
                   color: root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
@@ -300,6 +354,52 @@ Item {
                 anchors.fill: parent
                 onClicked: root.select(entry.modelData.index)
                 onDoubleClicked: root.handleKey("enter", entry.modelData.index)
+              }
+            }
+
+            // Enter on a problem with no fix to run here: the doctor's explanation, its
+            // lines as plain text, under the row.
+            Column {
+              objectName: "explanation"
+              visible: entry.explainShown
+              width: entry.width
+              leftPadding: Style.spacing.lg
+              spacing: Style.spacing.sm
+
+              Repeater {
+                objectName: "explanationLines"
+                model: entry.explained || []
+
+                PlainLabel {
+                  required property string modelData
+                  width: entry.width - Style.spacing.lg * 2
+                  wrapMode: Text.WordWrap
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  text: modelData
+                }
+              }
+
+              Text {
+                objectName: "explanationReading"
+                visible: entry.explainShown && entry.explained === null && entry.explainFailed === ""
+                textFormat: Text.PlainText
+                text: "Reading…"
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+
+              PlainLabel {
+                objectName: "explanationFailed"
+                visible: entry.explainFailed !== ""
+                width: entry.width - Style.spacing.lg * 2
+                wrapMode: Text.WordWrap
+                color: root.urgent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                text: "Could not read the explanation: " + entry.explainFailed
               }
             }
 

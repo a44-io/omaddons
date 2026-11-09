@@ -78,7 +78,12 @@ TestCase {
       property var changelog: null
       property var errors: null
       property var statusWarnings: []
+      property var machineIssues: []
       property var rawErrors: null
+      // The doctor's explanation a problem row asked for, and every readExplanation call.
+      property var explanation: null
+      property var explains: []
+      property int explainClears: 0
       property var search: null
       property var backups: null
       property var backupsDetail: null
@@ -106,6 +111,8 @@ TestCase {
       function readChangelog(target, addon) { notes = notes.concat([[target, addon]]) }
       function readRawErrors(target, addon) { rawReads = rawReads.concat([[target, addon]]) }
       function clearRawErrors() { rawClears++; rawErrors = null }
+      function readExplanation(key, argv) { explains = explains.concat([[key, argv]]); return true }
+      function clearExplanation() { explainClears++; explanation = null }
       function searchFor(query, target) { searches = searches.concat([[query, target]]) }
       function dismissErrors(plan) { dismissals = dismissals.concat([JSON.parse(JSON.stringify(plan))]); return "" }
       // The real copyCommand runs Model.copyArgv(text); this records the argv instead.
@@ -443,6 +450,132 @@ TestCase {
     compare(json(svc.copies), json([["wl-copy", "--", purge.join(" ")]]))
     compare(findChild(row("issueRow", 1), "copyHint").text, "Copied")
     compare(svc.cliRuns.length, 0)
+  }
+
+  // ---- the doctor's repairs (G2): Enter previews a repair through its bound template,
+  // a forced one is a terminal command with the doctor's explanation, and a command that
+  // needs consent or deletes what repairs keep is text.
+
+  readonly property string credentialFm: "fm-secrets-credential-file-mode"
+
+  // `status`'s issues reduced as the service reduces them: these on retail, `machine` of
+  // no client.
+  function statusIssues(issues, machine) {
+    return Model.reduceStatus({ "ok": true, "schema_version": "1.1", "tool_version": "0.1.0", "command": "status",
+      "exit_code": 0, "data": { "targets": [{ "id": "retail", "issues": issues }], "issues": machine || [] } })
+  }
+
+  function credentialIssue() {
+    return { "id": credentialFm, "severity": "P2", "title": "the GitHub token file is readable by other users", "addon": null,
+      "remediation": { "command": "omaddons doctor fix --only " + credentialFm, "argv": ["omaddons", "doctor", "fix", "--only", credentialFm], "destructive": false },
+      "auto_fixable": true,
+      "explain": { "command": "omaddons doctor explain " + credentialFm, "argv": ["omaddons", "doctor", "explain", credentialFm] } }
+  }
+
+  function test_enter_on_an_auto_fixable_problem_previews_its_repair() {
+    var reduced = statusIssues([credentialIssue()], [credentialIssue()])
+    svc.targets = reduced.targets
+    svc.machineIssues = reduced.issues
+    keyClick("4")
+    compare(view.view, "issues")
+    // The machine's row first, then retail's: each previews its repair.
+    for (var i = 0; i < 2; i++) {
+      var r = row("issueRow", i)
+      compare(findChild(r, "enterHint").text, "Enter previews the repair", "row " + i)
+      verify(findChild(r, "enterHint").visible, "row " + i)
+      verify(!findChild(r, "commandText").visible, "row " + i + ": the preview lists what a repair does")
+      verify(!findChild(r, "copyHint").visible, "row " + i)
+      verify(!findChild(r, "consentNote").visible, "row " + i)
+    }
+    keyClick(Qt.Key_Return)
+    compare(json(svc.runs[0]), json(["doctor_fix", { "fm": credentialFm }, "Repair: the GitHub token file is readable by other users"]))
+    compare(json(words(svc.runs[0])), json(["doctor", "fix", "--only=" + credentialFm]))
+    keyClick("j")
+    keyClick(Qt.Key_Return)
+    compare(json(svc.runs[1]), json(["doctor_fix_target", { "target": "retail", "fm": credentialFm }, "Repair: the GitHub token file is readable by other users"]))
+    compare(json(words(svc.runs[1])), json(["doctor", "fix", "-t", "retail", "--only=" + credentialFm]))
+    compare(svc.cliRuns.length, 0, "the remediation argv the CLI printed is never run")
+    compare(svc.explains.length, 0)
+    // A change in progress: no repair starts.
+    svc.action = { "label": "Update all", "current": 0, "total": 0, "message": "" }
+    keyClick(Qt.Key_Return)
+    compare(svc.runs.length, 2, "no repair while a change runs")
+  }
+
+  function test_a_set_aside_row_has_no_fix_and_enter_shows_why() {
+    var fm = "fm-concurrency_primitives-journal-too-new"
+    var forced = ["omaddons", "doctor", "fix", "--only", fm, "-t", "retail", "--force", "--yes"]
+    var explain = ["omaddons", "doctor", "explain", fm, "-t", "retail"]
+    svc.targets = statusIssues([{ "id": fm, "severity": "P0", "title": "An interrupted change was started by a newer omaddons", "addon": null,
+      "remediation": { "command": forced.join(" "), "argv": forced, "destructive": true }, "auto_fixable": false,
+      "explain": { "command": explain.join(" "), "argv": explain } }]).targets
+    keyClick("4")
+    var r = row("issueRow", 0)
+    verify(findChild(r, "consentNote").visible)
+    compare(findChild(r, "consentNote").text, "A deliberate repair: read why (Enter), then run this in a terminal:")
+    verify(findChild(r, "commandText").visible)
+    compare(findChild(r, "commandText").text, forced.join(" "), "the exact remediation, --force --yes included")
+    compare(findChild(r, "enterHint").text, "Enter explains it")
+    verify(!findChild(r, "explanation").visible)
+    keyClick(Qt.Key_Return)
+    compare(json(svc.explains), json([["p/retail/0", explain]]))
+    compare(svc.runs.length, 0, "no repair from a forced row")
+    compare(svc.cliRuns.length, 0)
+    verify(findChild(r, "explanation").visible)
+    verify(findChild(r, "explanationReading").visible, "Reading… until the explanation answers")
+    // An answer for another row is not shown here.
+    svc.explanation = { "selection": { "key": "p/era/0" }, "lines": ["elsewhere"], "failed": "" }
+    compare(findChild(r, "explanationLines").count, 0)
+    var lines = ["An interrupted change was started by a newer omaddons", "Its repair needs your deliberate consent: read this, then run the command below in a terminal",
+      "  In a terminal: " + forced.join(" ")]
+    svc.explanation = { "selection": { "key": "p/retail/0" }, "lines": lines, "failed": "" }
+    compare(findChild(r, "explanationLines").count, 3)
+    compare(findChild(r, "explanationLines").itemAt(2).text, lines[2])
+    verify(!findChild(r, "explanationReading").visible)
+    // `y` copies the terminal command.
+    keyClick("y")
+    compare(json(svc.copies), json([["wl-copy", "--", forced.join(" ")]]))
+    // Enter again closes it.
+    keyClick(Qt.Key_Return)
+    compare(svc.explainClears, 1)
+    verify(!findChild(r, "explanation").visible)
+    compare(svc.explains.length, 1)
+    // A failed read says so for its row.
+    keyClick(Qt.Key_Return)
+    svc.explanation = { "selection": { "key": "p/retail/0" }, "lines": null, "failed": "omaddons doctor explain: timeout" }
+    compare(findChild(r, "explanationFailed").text, "Could not read the explanation: omaddons doctor explain: timeout")
+    verify(findChild(r, "explanationFailed").visible)
+    verify(!findChild(r, "explanationReading").visible)
+    compare(svc.runs.length, 0)
+    compare(svc.cliRuns.length, 0)
+  }
+
+  function test_a_doctor_gc_or_forced_remediation_is_text() {
+    var gc = ["omaddons", "doctor", "gc", "--before", "30d", "--dry-run"]
+    var forced = ["omaddons", "install", "Foo", "-t", "retail", "--force"]
+    svc.targets = statusIssues([
+      { "id": "fm-a", "severity": "P2", "title": "doctor runs take space", "addon": null,
+        "remediation": { "command": gc.join(" "), "argv": gc, "destructive": true } },
+      { "id": "fm-b", "severity": "P3", "title": "Foo's folder belongs to another addon", "addon": "Foo",
+        "remediation": { "command": forced.join(" "), "argv": forced, "destructive": false } }
+    ]).targets
+    keyClick("4")
+    var commands = [gc, forced]
+    for (var i = 0; i < 2; i++) {
+      var r = row("issueRow", i)
+      verify(findChild(r, "commandText").visible, "row " + i)
+      compare(findChild(r, "commandText").text, commands[i].join(" "))
+      verify(!findChild(r, "enterHint").visible, "row " + i + ": " + findChild(r, "enterHint").text)
+      compare(findChild(r, "copyHint").text, "y copies the command")
+      keyClick(Qt.Key_Return)
+      keyClick("j")
+    }
+    // A forced command with no explanation still says it needs consent.
+    compare(findChild(row("issueRow", 1), "consentNote").text, "This needs your deliberate consent: run it in a terminal:")
+    verify(!findChild(row("issueRow", 0), "consentNote").visible)
+    compare(svc.runs.length, 0)
+    compare(svc.cliRuns.length, 0)
+    compare(svc.explains.length, 0)
   }
 
   function test_lua_errors_show_strict_text_and_received_only_as_a_count() {
