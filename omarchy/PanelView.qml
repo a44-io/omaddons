@@ -584,6 +584,12 @@ Item {
     return true
   }
 
+  // The welcome card's page (1n2p.32).
+  Component {
+    id: addClientComponent
+    AddClientPage {}
+  }
+
   Timer {
     id: cardNoteTimer
     interval: 3000
@@ -604,6 +610,8 @@ Item {
     // A missing client's card (§2.2): scan for the clients again, or forget this one
     // through the plain `targets rm` its own problem offers (the forget plan sheet).
     if (name === "rescan") return typeof svc.rescan === "function" && svc.rescan() !== false
+    // The welcome card's Add a client folder (1n2p.32): a page with a path box.
+    if (name === "add") return push({ "title": Model.copy("addclient.title"), "component": addClientComponent, "props": {} })
     if (name === "forget") {
       var forget = Model.forgetAction(selectedTarget)
       return !!forget && runCli(forget, "Forget " + Model.heroTitle(targets, filter))
@@ -947,33 +955,8 @@ Item {
             }
           }
 
-          // ---------- First run and the widget's own issues ----------
-          Column {
-            objectName: "noTargets"
-            // Only an answer that lists no client; a failed status shows its error instead.
-            visible: root.phase === "ok" && root.targets.length === 0 && root.summary !== null
-            width: parent.width
-            spacing: Style.spacing.sm
-
-            Text {
-              width: parent.width
-              textFormat: Text.PlainText
-              text: "No World of Warcraft clients found"
-              color: root.foreground
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.body
-            }
-
-            // It needs a path only the user has: text, no button (M3-D2).
-            Text {
-              width: parent.width
-              textFormat: Text.PlainText
-              text: "Add one from a terminal: omaddons targets add <path>"
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-            }
-          }
+          // ---------- The widget's own notices ----------
+          // (No client on this computer is every view's welcome card: Model.viewState.)
 
           // A change a crash or a reload cut off (1n2p.34), from `status` alone: what
           // happened in words, and its problem's page, whose repair previews first. The

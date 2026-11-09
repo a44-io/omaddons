@@ -136,7 +136,8 @@ var COMMANDS = {
   "errors_target":  { "argv": ["errors", "--limit", "10", "-t", "{target}"],        "mutates": false, "lane": "local" },
   "backup_auto":    { "argv": ["backup", "create", "--auto", "-t", "{target}"],     "mutates": true, "silent": true },
   "doctor_fix":        { "argv": ["doctor", "fix", "--only={fm}"],                   "mutates": true, "preview": "bind" },
-  "doctor_fix_target": { "argv": ["doctor", "fix", "-t", "{target}", "--only={fm}"], "mutates": true, "preview": "bind" }
+  "doctor_fix_target": { "argv": ["doctor", "fix", "-t", "{target}", "--only={fm}"], "mutates": true, "preview": "bind" },
+  "targets_add":       { "argv": ["targets", "add", "--", "{path}"],               "mutates": true }
 }
 // END COMMANDS
 
@@ -217,7 +218,11 @@ var WIDGET_FLAGS = ["--json", "--robot", "--format", "--actor", "--reason", "--p
 var IRREVERSIBLE_FLAGS = ["--purge"]
 // What a row that shows an irreversible command says about it.
 var IRREVERSIBLE_NOTE = "It deletes omaddons' backups and undo snapshots for good, so it runs only from a terminal, after its preview."
-var SLOTS = { "target": true, "addon": true, "ref": true, "backup": true, "query": true, "fm": true }
+var SLOTS = { "target": true, "addon": true, "ref": true, "backup": true, "query": true, "fm": true, "path": true }
+// A client folder the player types (`targets add`, 1n2p.32): absolute, one line, no
+// control character, at most PATH_MAX_BYTES; the CLI judges what it holds.
+var PATH_PATTERN = /^\/[^\u0000-\u001f\u007f]*$/
+var PATH_MAX_BYTES = 4096
 // Exactly one failure-mode id, as `doctor fix --only` takes it (M4-D30): no list, no
 // subsystem name, lower case only.
 var FM_ID_PATTERN = /^fm-[a-z0-9_-]+$/
@@ -322,6 +327,9 @@ function checkSlot(name, slot, value, template) {
   }
   if (slot === "fm" && !FM_ID_PATTERN.test(value)) {
     throw refuse("bad_fm", name + ": " + JSON.stringify(value) + " is no failure-mode id")
+  }
+  if (slot === "path" && (!PATH_PATTERN.test(value) || utf8Length(value) > PATH_MAX_BYTES)) {
+    throw refuse("bad_path", name + ": " + JSON.stringify(value) + " is no absolute path")
   }
   if (slot === "query" && template.mutates) throw refuse("query_in_mutation", name)
 }
@@ -1485,6 +1493,31 @@ function interruptedChange(status) {
   }
 }
 
+// --------------------------------------------------------------- first run (1n2p.32)
+
+// With an answer that lists no client on this computer, the welcome card (design doc
+// §6.4): what omaddons looked for, and two ways on with no terminal, Scan again (a
+// `status` with its scan) and Add a client folder (a page with a path box, `targets
+// add`). null otherwise.
+function welcomeCard(summary, targets) {
+  if (!summary || liveTargets(targets).length > 0) return null
+  return { "kind": "welcome", "title": copy("welcome.title"), "sentence": copy("welcome.sentence"),
+    "buttons": [{ "name": "rescan", "text": copy("welcome.rescan") }, { "name": "add", "text": copy("welcome.add") }] }
+}
+
+// The path a player typed into the path box, made usable: surrounding blanks gone, a
+// leading "~" as the stamped home; `{path, error}`, the error a sentence when it cannot
+// be a client folder (not absolute, more than one line, too long). The CLI judges what
+// the folder holds.
+function clientPath(text, home) {
+  var s = String(text === null || text === undefined ? "" : text).replace(/^\s+|\s+$/g, "")
+  if (s === "") return { "path": "", "error": copy("addclient.error.empty") }
+  if ((s === "~" || s.indexOf("~/") === 0) && typeof home === "string" && home.charAt(0) === "/") s = home.replace(/\/+$/, "") + s.slice(1)
+  if (s.charAt(0) !== "/") return { "path": "", "error": copy("addclient.error.relative") }
+  if (!PATH_PATTERN.test(s) || utf8Length(s) > PATH_MAX_BYTES) return { "path": "", "error": copy("addclient.error.bad") }
+  return { "path": s, "error": "" }
+}
+
 // One kind of fact per part, urgent first (design doc §2.5): new Lua errors, problems
 // that need attention, updates, then the other problems when none needs attention.
 function barParts(errors, urgentIssues, issues, updates) {
@@ -2127,6 +2160,13 @@ function isChange(item) {
 // names the change it reverted and where; a dismissal counts the errors that stopped
 // being new. "" for any other command.
 function commandResultLine(command, data) {
+  // A client added by its folder (1n2p.32): its player name, as `targets add` gives it.
+  if (command === "targets add") {
+    if (data.changed === false) return copy("addclient.result.none")
+    var added = Array.isArray(data.targets) ? data.targets.map(function(t) { return str(t.display_name) || str(t.id) })
+      .filter(function(n) { return n !== "" }) : []
+    return added.length ? copy("addclient.result", { "clients": joinNames(added) }) : copy("addclient.result.none")
+  }
   if (command === "undo" && data.kind === "repair") {
     var undone = data.reverted && typeof data.reverted === "object" ? data.reverted : {}
     var ids = revertedIds(undone)
@@ -2445,6 +2485,7 @@ var KEY_CONTEXTS = [
   { "id": "page", "title": "A page" },
   { "id": "field", "title": "Search box" },
   { "id": "filter", "title": "Filter box" },
+  { "id": "pathbox", "title": "Path box" },
   { "id": "card", "title": "Problem card" },
   { "id": "sheet", "title": "Dialog" },
   { "id": "help", "title": "Key reference" }
@@ -2517,6 +2558,8 @@ var KEYMAP = [
   { "keys": ["Down", "Up"], "context": "filter", "action": "move", "label": "move the cursor in the list (the box keeps the keys)", "hint": "Down Up" },
   { "keys": ["Enter"], "context": "filter", "action": "first", "label": "go to the first match, and leave the box", "hint": "Enter" },
   { "keys": ["Esc"], "context": "filter", "action": "leave", "label": "leave the box (the filter stays: Esc again clears it)", "hint": "Esc" },
+  { "keys": ["Enter"], "context": "pathbox", "action": "add", "label": "add the client in this folder", "hint": "Enter" },
+  { "keys": ["Esc"], "context": "pathbox", "action": "leave", "label": "leave the box (its text stays: Esc again goes back)", "hint": "Esc" },
   { "keys": ["j", "k", "Down", "Up"], "context": "card", "action": "move", "label": "move between the card's buttons", "hint": "j k" },
   { "keys": ["Enter", "Space"], "context": "card", "action": "press", "label": "press the button", "hint": "Enter" },
   { "keys": ["Esc", "n", "N"], "context": "sheet", "action": "cancel", "label": "cancel, or go back a step", "hint": "Esc n" },
@@ -2771,6 +2814,8 @@ function heroTitle(targets, filter) {
 // first answer.
 function heroMeta(summary, targets, filter, machineIssues) {
   if (!summary) return ""
+  // No client on this computer (1n2p.32): nothing is "good" yet.
+  if (!filter && liveTargets(targets).length === 0) return copy("welcome.hero").toUpperCase()
   var facts = scopeFacts(targets, filter, machineIssues)
   var parts = []
   if (facts.errors > 0) parts.push(plural(facts.errors, "new error"))
@@ -3389,6 +3434,16 @@ function viewState(view, input) {
     out.refreshing = false
     out.notices.push({ "kind": "missing", "sentence": copy("state.missing", { "client": client }),
       "body": copy("state.missing.detail"), "action": null, "actions": actions })
+    return out
+  }
+  // No client on this computer (1n2p.32): the welcome card in every view, with Scan
+  // again and Add a client folder; no view says it is empty or up to date.
+  var welcome = filter ? null : welcomeCard(s.summary || null, targets)
+  if (welcome) {
+    out.state = "welcome"
+    out.refreshing = false
+    out.notices.push({ "kind": "welcome", "sentence": welcome.title, "body": welcome.sentence, "action": null,
+      "actions": welcome.buttons })
     return out
   }
   // An empty box: the catalog's rows when there are some (1n2p.26), with nothing about
@@ -5242,6 +5297,23 @@ var COPY = {
   "failure.missing": "Can't find omaddons",
   "failure.other": "{label} didn't finish ({outcome})",
 
+  // The first run (1n2p.32, design doc §6.4).
+  "welcome.title": "No World of Warcraft here yet",
+  "welcome.hero": "No clients yet",
+  "welcome.sentence": "omaddons looked where Battle.net, Steam, Lutris, Heroic and Bottles keep their games, in ~/Games and in ~/.wine. Install the game with one of them and scan again, or add the folder where it is.",
+  "welcome.rescan": "Scan again",
+  "welcome.add": "Add a client folder…",
+  "addclient.title": "Add a client",
+  "addclient.sentence": "The folder that holds the game: the one with Wow.exe (or WowClassic.exe) and its Interface folder, or the one above _retail_ and _classic_. Type it from / or ~/.",
+  "addclient.placeholder": "~/Games/World of Warcraft",
+  "addclient.add": "Add",
+  "addclient.adding": "Adding…",
+  "addclient.result": "Added {clients}",
+  "addclient.result.none": "Nothing new to add: omaddons knows this client already",
+  "addclient.error.empty": "Type the folder's path first.",
+  "addclient.error.relative": "Type the whole path, from / or ~/.",
+  "addclient.error.bad": "That isn't a path a folder can have: one line, at most 4096 bytes.",
+
   // A change a crash or a reload cut off (1n2p.34).
   "interrupted.title.none": "A change was interrupted",
   "interrupted.title.one": "A change on {clients} was interrupted",
@@ -6426,6 +6498,10 @@ if (typeof module !== "undefined") {
     phaseCard: phaseCard,
     missingBinaryCommand: missingBinaryCommand,
     interruptedChange: interruptedChange,
+    listOf: listOf,
+    welcomeCard: welcomeCard,
+    clientPath: clientPath,
+    PATH_MAX_BYTES: PATH_MAX_BYTES,
     badgeText: badgeText,
     reduceList: reduceList,
     reduceSearch: reduceSearch,

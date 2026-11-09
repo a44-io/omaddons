@@ -686,15 +686,24 @@ TestCase {
     verify(!child("copyDetails").visible)
   }
 
-  function test_no_clients_shows_how_to_add_one_as_text() {
+  // No client: no command line to type anywhere (1n2p.32). Every view's state is the
+  // welcome card with Scan again and Add a client folder (tst_onboarding.qml drives it).
+  function test_no_clients_offers_the_welcome_card_never_a_command() {
     svc.targets = []
-    verify(child("noTargets").visible)
     verify(!child("scope").visible, "no client to choose")
-    // A status that failed lists no client either: it is no "no clients found".
+    compare(findChild(view, "noTargets"), null, "the terminal-only text is gone")
+    var state = Model.viewState("updates", { "service": svc, "nowMs": Date.now() })
+    compare([state.state, state.notices[0].kind, state.notices[0].actions.map(function(a) { return a.name })],
+      ["welcome", "welcome", ["rescan", "add"]])
+    // A status that failed lists no client either: it is no welcome.
     var kept = svc.summary
     svc.summary = null
-    verify(!child("noTargets").visible)
+    verify(Model.viewState("updates", { "service": svc, "nowMs": Date.now() }).state !== "welcome")
     svc.summary = kept
+    // Add a client folder opens its page, with the path box.
+    verify(view.stateAction("add"))
+    verify(view.topPage !== null)
+    verify(findChild(view, "pathField") !== null)
   }
 
   // ------------------------------------------------------------- the plan sheet

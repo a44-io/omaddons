@@ -335,9 +335,17 @@ fn every_template_is_a_registry_command_with_safe_slots() {
             let slot = &part[open + 1..part.len() - 1];
             assert!(part.ends_with('}'), "{name}: malformed slot {part}");
             assert!(
-                ["target", "addon", "ref", "backup", "query", "fm"].contains(&slot),
+                ["target", "addon", "ref", "backup", "query", "fm", "path"].contains(&slot),
                 "{name}: unknown slot {part}"
             );
+            // A client folder the player types (1n2p.32) is the one positional of
+            // `targets add`, after --, never anything else's.
+            if slot == "path" {
+                assert!(
+                    part == "{path}" && path == "targets add" && after,
+                    "{name}: {{path}} outside targets add's positional ({part} on {path})"
+                );
+            }
             // A failure-mode id is one `--only=` element of `doctor fix`, never a list.
             if slot == "fm" {
                 assert!(
@@ -709,6 +717,10 @@ fn the_output_cap_bounds_every_template() {
             "backup_target" | "backup_all" | "backup_auto" | "restore" | "prune_backup"
         ) {
             // A record per client: ids and counts, never a list of files.
+            Some(CLIENTS * ROW + ANSWER)
+        } else if name == "targets_add" {
+            // The clients the folder held (a Battle.net root holds several), one record
+            // each (1n2p.32).
             Some(CLIENTS * ROW + ANSWER)
         } else if name == "errors_raw" {
             // One client, one addon, each error with its raw message, locals and the
@@ -2296,6 +2308,58 @@ fn states_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
     );
 }
 
+/// The first run (1n2p.32): a home where discovery finds no client, `targets add` refused
+/// for a folder that holds none, then accepted for a 3.3.5a private server discovery does
+/// not reach, and `status` with its scan once it is added.
+#[cfg(test)]
+fn first_run_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
+    use common::trees::CustomRoot;
+
+    let home = Home::new(&[]);
+    let status = write_fixture(dir, "status-none", &home.exec(&fill(t, "status", &[])), 0);
+    assert_eq!(status["data"]["targets"], serde_json::json!([]), "{status}");
+    let empty = home.env.root().join("empty");
+    fs::create_dir_all(&empty).unwrap();
+    let refused = write_fixture(
+        dir,
+        "targets-add-none",
+        &home.exec(&fill(
+            t,
+            "targets_add",
+            &[("path", &empty.display().to_string())],
+        )),
+        3,
+    );
+    assert_eq!(refused["error"]["code"], "target_not_found", "{refused}");
+    let server = CustomRoot::at(home.env.root().join("pserver")).build();
+    let added = write_fixture(
+        dir,
+        "targets-add",
+        &home.exec(&fill(
+            t,
+            "targets_add",
+            &[("path", &server.display().to_string())],
+        )),
+        0,
+    );
+    assert_eq!(added["command"], "targets add", "{added}");
+    // The widget reads the clients with their scan after an add: the cached ones know
+    // only what the last scan found (omad-jp9k).
+    let status = write_fixture(
+        dir,
+        "status-added",
+        &home.exec(&fill(t, "status_full", &[])),
+        0,
+    );
+    let listed: Vec<(&str, bool)> = status["data"]["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| (c["display_name"].as_str().unwrap(), c["missing"] == true))
+        .collect();
+    assert_eq!(listed, [("Wrath 3.3.5a private server", false)], "{status}");
+}
+
 /// The client switcher's home (omad-widget-user-first-1n2p.20), laid out like the
 /// development machine: Retail, Mists Classic, Classic Era, Anniversary and WoW: Forever
 /// in one Battle.net root, and a 3.3.5a private-server client beside it. Foo is one
@@ -2726,6 +2790,7 @@ fn write_widget_fixtures() {
     plans_fixtures(&dir, &t);
     repair_fixtures(&dir, &t);
     clients_fixtures(&dir, &t);
+    first_run_fixtures(&dir, &t);
 
     // Idle: Baz current on retail, checked just now.
     let home = Home::new(&["wow"]);

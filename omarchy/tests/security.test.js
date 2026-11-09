@@ -964,7 +964,7 @@ describe("the mechanisms behind the scans", () => {
   const opts = { binary: "/opt/omaddons", label: "Test", context: CONTEXT }
   // Every slot `x`, except a failure-mode id, which must be one (`fm-x`).
   const slotsOf = (name) => Object.fromEntries((M.COMMANDS[name].argv.join(" ").match(/\{(\w+)\}/g) || [])
-    .map((s) => [s.slice(1, -1), s === "{fm}" ? "fm-x" : "x"]))
+    .map((s) => [s.slice(1, -1), s === "{fm}" ? "fm-x" : s === "{path}" ? "/x" : "x"]))
 
   test("every previewed template and destructive path refuses to run without its preview", () => {
     const bound = Object.keys(M.COMMANDS).filter((name) => M.COMMANDS[name].preview === "bind")

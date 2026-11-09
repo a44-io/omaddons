@@ -145,6 +145,7 @@ const BENIGN = {
   query: "damage meter",
   backup: "01M6QZ0000000000000000000A",
   fm: "fm-secrets-credential-file-mode",
+  path: "/home/fixture/Games/World of Warcraft",
 }
 
 // What a template needs beyond its slots to build: a planned template builds as its
@@ -264,6 +265,17 @@ describe("buildArgv", () => {
           for (const value of HOSTILE) {
             const slots = Object.assign(benignSlots(name), { fm: value })
             expect([name, value, reasonOf(() => M.buildArgv(name, slots, runOpts(name)))]).toEqual([name, value, "bad_fm"])
+          }
+          continue
+        }
+        // A client folder has its own grammar (absolute, one line, 1n2p.32): every
+        // hostile value is refused, and the same value made absolute is one element after --.
+        if (slot === "path") {
+          for (const value of HOSTILE) {
+            const slots = Object.assign(benignSlots(name), { path: value })
+            expect([name, value, reasonOf(() => M.buildArgv(name, slots, runOpts(name)))]).toEqual([name, value, "bad_path"])
+            const argv = M.buildArgv(name, Object.assign(benignSlots(name), { path: "/" + value }), runOpts(name)).argv
+            expect(argv.slice(argv.indexOf("--") + 1)).toEqual(["/" + value])
           }
           continue
         }
@@ -679,6 +691,90 @@ describe("reduceStatus", () => {
     expect([model.failed, model.summary, model.targets.length]).toEqual([true, null, 0])
     expect(M.reduceStatus(null).failed).toBe(false)
     expect(M.reduceStatus(undefined).failed).toBe(false)
+  })
+})
+
+// The first run (1n2p.32, design doc §6.4): the welcome card, and the path box's checks.
+describe("first run", () => {
+  const noClients = () => {
+    const env = JSON.parse(JSON.stringify(fixture("status-idle")))
+    env.data.targets = []
+    env.data.summary.targets = 0
+    return M.reduceStatus(env)
+  }
+
+  test("with no client on this computer, every view shows the welcome card and none says it is empty", () => {
+    const model = noClients()
+    const card = M.welcomeCard(model.summary, model.targets)
+    expect(card).toEqual({ kind: "welcome", title: "No World of Warcraft here yet", sentence: M.COPY["welcome.sentence"],
+      buttons: [{ name: "rescan", text: "Scan again" }, { name: "add", text: "Add a client folder…" }] })
+    for (const view of M.VIEWS) {
+      const s = M.viewState(view, { service: { summary: model.summary, targets: model.targets, phase: "ok" }, nowMs: NOW })
+      expect([view, s.state, s.sentence, s.notices.map((n) => [n.kind, n.sentence, n.actions.map((a) => a.name)])])
+        .toEqual([view, "welcome", "", [["welcome", "No World of Warcraft here yet", ["rescan", "add"]]]])
+    }
+    // The hero says there is none yet, never "all good".
+    expect(M.heroMeta(model.summary, model.targets, "", [])).toBe("NO CLIENTS YET")
+    // A client here, or no answer yet: no welcome card.
+    const some = M.reduceStatus(fixture("status-idle"))
+    expect(M.welcomeCard(some.summary, some.targets)).toBeNull()
+    expect(M.welcomeCard(null, [])).toBeNull()
+    // Only a client gone from this computer counts as none.
+    const gone = JSON.parse(JSON.stringify(fixture("status-idle")))
+    gone.data.targets[0].missing = true
+    const g = M.reduceStatus(gone)
+    expect(M.welcomeCard(g.summary, g.targets).kind).toBe("welcome")
+    // No onboarding sentence names an omaddons command line.
+    const commandLine = /\bomaddons (install|update|remove|undo|status|targets|adopt|errors|backup|doctor|search|list|outdated|apply|config|omarchy)\b|(^|\s)--?[a-z]/
+    for (const id of Object.keys(M.COPY).filter((k) => /^(welcome|addclient)\./.test(k))) {
+      expect([id, commandLine.test(String(M.COPY[id]))]).toEqual([id, false])
+    }
+  })
+
+  test("the path box takes a folder from / or ~/, one line, and says why when it cannot", () => {
+    const home = CONTEXT.HOME
+    const cases = [
+      ["/home/fixture/Games/wow", "/home/fixture/Games/wow", ""],
+      ["  /mnt/games/World of Warcraft  ", "/mnt/games/World of Warcraft", ""],
+      ["~/Games/wow", home + "/Games/wow", ""],
+      ["~", home, ""],
+      ["/-t", "/-t", ""],
+      ["", "", "Type the folder's path first."],
+      ["   ", "", "Type the folder's path first."],
+      ["Games/wow", "", "Type the whole path, from / or ~/."],
+      ["~other/Games", "", "Type the whole path, from / or ~/."],
+      ["-t", "", "Type the whole path, from / or ~/."],
+      ["/a\nb", "", M.COPY["addclient.error.bad"]],
+      ["/a\u0000b", "", M.COPY["addclient.error.bad"]],
+      ["/" + "x".repeat(M.PATH_MAX_BYTES), "", M.COPY["addclient.error.bad"]],
+    ]
+    for (const [typed, path, error] of cases) {
+      expect([typed, M.clientPath(typed, home)]).toEqual([typed, { path, error }])
+    }
+    // With no home known, "~" stays relative.
+    expect(M.clientPath("~/Games", "").error).toBe("Type the whole path, from / or ~/.")
+  })
+
+  test("over the binary's envelopes: no client, an add refused, then an add the scan lists", () => {
+    const none = M.reduceStatus(fixture("status-none"))
+    expect(M.welcomeCard(none.summary, none.targets).kind).toBe("welcome")
+    expect(fixture("targets-add-none").error.code).toBe("target_not_found")
+    expect(M.resultLine(fixture("targets-add"), CONTEXT, [])).toBe("Added Wrath 3.3.5a private server")
+    const again = JSON.parse(JSON.stringify(fixture("targets-add")))
+    again.data.changed = false
+    expect(M.resultLine(again, CONTEXT, [])).toBe("Nothing new to add: omaddons knows this client already")
+    const added = M.reduceStatus(fixture("status-added"))
+    expect(added.targets.map((t) => [t.displayName, t.missing])).toEqual([["Wrath 3.3.5a private server", false]])
+    expect(M.welcomeCard(added.summary, added.targets)).toBeNull()
+  })
+
+  test("targets add takes only an absolute path, after --", () => {
+    const built = M.buildArgv("targets_add", { path: "/home/fixture/Games/World of Warcraft" }, opts())
+    expect(built.argv.slice(-4)).toEqual(["targets", "add", "--", "/home/fixture/Games/World of Warcraft"])
+    for (const path of ["Games/wow", "-t", "--force", "/a\nb", "/" + "y".repeat(M.PATH_MAX_BYTES)]) {
+      expect([path, reasonOf(() => M.buildArgv("targets_add", { path }, opts()))]).toEqual([path, "bad_path"])
+    }
+    expect(reasonOf(() => M.buildArgv("targets_add", { path: "" }, opts()))).toBe("bad_value")
   })
 })
 
@@ -3530,8 +3626,13 @@ test("writes every built argv and the classifier's verdicts for the Rust check",
     if (bound) record(name, base, { token: TOKEN })
     if (M.COMMANDS[name].preview) realForms.push([name, reasonOf(() => M.buildArgv(name, base, opts()))])
     for (const slot of M.templateShape(name).slots) {
-      // A hostile failure-mode id is refused (`bad_fm`, buildArgv's table above).
+      // A hostile failure-mode id is refused (`bad_fm`, buildArgv's table above); a
+      // hostile client folder too, unless it is absolute: those are parsed by clap.
       if (slot === "target" || slot === "fm") continue
+      if (slot === "path") {
+        for (const value of HOSTILE) record(name, Object.assign({}, base, { path: "/" + value }), extra)
+        continue
+      }
       for (const value of HOSTILE) record(name, Object.assign({}, base, { [slot]: value }), extra)
     }
   }

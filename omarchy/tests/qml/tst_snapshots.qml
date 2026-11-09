@@ -675,6 +675,20 @@ TestCase {
     shoot("phase-no-clients")
   }
 
+  // The welcome card's Add a client folder (1n2p.32): the page with its path box, a
+  // relative path refused in words.
+  function test_first_run_add_client() {
+    var scene = { "status": the("status-none"), "list": { "text": ok("list", { "targets": [] }) },
+      "errors": { "text": ok("errors", { "targets": [] }) }, "backups": { "text": ok("backup list", { "targets": [] }) } }
+    open(scene, "updates")
+    verify(frame.stateAction("add"), "the page opens")
+    var field = findChild(frame.current, "pathField")
+    verify(field !== null)
+    field.text = "Games/World of Warcraft"
+    frame.current.add()
+    shoot("first-run-add-client")
+  }
+
   // ---------------------------------------------------------------- Updates
 
   function test_updates_loading() {
