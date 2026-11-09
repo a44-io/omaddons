@@ -89,15 +89,21 @@ var WIDGET_OUTPUT_MAX_BYTES = 8 * 1024 * 1024
 // How long a finished run's stdout may stay open after `exited`: a killed omaddons can
 // leave a child (git) holding the pipe, and the lane must not wait on it forever.
 var WIDGET_STREAM_GRACE_SEC = 2
+// A failure mode's explanation shows at most this many instances, each with at most
+// this many evidence lines; a plain UI choice.
+var WIDGET_EXPLAIN_INSTANCES_MAX = 5
+var WIDGET_EXPLAIN_EVIDENCE_MAX = 12
 
 // ------------------------------------------------------ the templates (M3-D2)
 
 // BEGIN COMMANDS: checked by tests/omarchy_widget.rs; every entry must parse as an omaddons command line
 // F1 ships the entries for commands that exist at F1 time; F8 adds errors_target and backup_auto (B6, D3);
 // F6 adds errors, errors_raw and dismiss_errors (B6, B8); F9 adds backups, backup_target, backup_all,
-// restore, restore_addon and prune_backup (D2, D4, D7, D8). A `preview` template runs only as its dry
-// run; its confirmed run is `apply` of that preview's plan (M4-D28): `match` applies a routine plan
-// that is what the view showed, `confirm` always asks first.
+// restore, restore_addon and prune_backup (D2, D4, D7, D8). G2 adds doctor_fix and doctor_fix_target
+// (E6). A `preview` template runs only as its dry run; its confirmed run is `apply` of that preview's
+// plan (M4-D28): `match` applies a routine plan that is what the view showed, `confirm` always asks
+// first. `bind` runs first as its dry run too, and its confirmed run is the same argv bound to the
+// preview's token (`--if-match`): a binding path that stores no plan (M4-D44).
 var COMMANDS = {
   "status":         { "argv": ["status", "--cached", "-v"],                         "mutates": false, "lane": "local" },
   "status_full":    { "argv": ["status", "-v"],                                     "mutates": false, "lane": "local" },
@@ -125,7 +131,9 @@ var COMMANDS = {
   "restore_addon":  { "argv": ["backup", "restore", "-t", "{target}", "--addon={addon}", "--", "{backup}"], "mutates": true, "preview": "confirm" },
   "prune_backup":   { "argv": ["backup", "prune", "-t", "{target}", "--", "{backup}"],   "mutates": true, "preview": "confirm" },
   "errors_target":  { "argv": ["errors", "--limit", "10", "-t", "{target}"],        "mutates": false, "lane": "local" },
-  "backup_auto":    { "argv": ["backup", "create", "--auto", "-t", "{target}"],     "mutates": true, "silent": true }
+  "backup_auto":    { "argv": ["backup", "create", "--auto", "-t", "{target}"],     "mutates": true, "silent": true },
+  "doctor_fix":        { "argv": ["doctor", "fix", "--only={fm}"],                   "mutates": true, "preview": "bind" },
+  "doctor_fix_target": { "argv": ["doctor", "fix", "-t", "{target}", "--only={fm}"], "mutates": true, "preview": "bind" }
 }
 // END COMMANDS
 
@@ -206,7 +214,10 @@ var WIDGET_FLAGS = ["--json", "--robot", "--format", "--actor", "--reason", "--p
 var IRREVERSIBLE_FLAGS = ["--purge"]
 // What a row that shows an irreversible command says about it.
 var IRREVERSIBLE_NOTE = "It deletes omaddons' backups and undo snapshots for good, so it runs only from a terminal, after its preview."
-var SLOTS = { "target": true, "addon": true, "ref": true, "backup": true, "query": true }
+var SLOTS = { "target": true, "addon": true, "ref": true, "backup": true, "query": true, "fm": true }
+// Exactly one failure-mode id, as `doctor fix --only` takes it (M4-D30): no list, no
+// subsystem name, lower case only.
+var FM_ID_PATTERN = /^fm-[a-z0-9_-]+$/
 var TARGET_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._@-]*$/
 var TOKEN_PATTERN = /^pc1:[0-9a-f]{64}$/
 // What `Paths::from_env` reads, so a child given them resolves the installing run's
@@ -229,6 +240,20 @@ function flagName(arg) {
 
 // The command path an argument list starts with (no program name): the longest
 // CLI_PATHS key formed by its leading words, or "" when they form none.
+// The flags that give consent, which only a person in a terminal gives (M4-D38).
+var CONSENT_FLAGS = ["--force", "--yes"]
+
+// The first two words of an argument list (no program name), up to its first flag, as
+// one string: what pathOf reads, whether or not CLI_PATHS has them.
+function leadingWords(args) {
+  var words = []
+  for (var i = 0; i < args.length && words.length < 2; i++) {
+    if (typeof args[i] !== "string" || args[i] === "" || args[i].charAt(0) === "-") break
+    words.push(args[i])
+  }
+  return words.join(" ")
+}
+
 function pathOf(args) {
   var words = []
   for (var i = 0; i < args.length && words.length < 2; i++) {
@@ -291,6 +316,9 @@ function checkSlot(name, slot, value, template) {
   if (value.indexOf("\u0000") !== -1) throw refuse("bad_value", name + ": {" + slot + "} holds a NUL")
   if (slot === "target" && !TARGET_PATTERN.test(value)) {
     throw refuse("bad_target", name + ": " + JSON.stringify(value) + " is no target id or key")
+  }
+  if (slot === "fm" && !FM_ID_PATTERN.test(value)) {
+    throw refuse("bad_fm", name + ": " + JSON.stringify(value) + " is no failure-mode id")
   }
   if (slot === "query" && template.mutates) throw refuse("query_in_mutation", name)
 }
@@ -387,8 +415,11 @@ function buildArgv(name, slots, opts) {
   }
   var row = CLI_PATHS[shape.path]
   var preview = o.preview === true
-  if (template.preview && !preview) throw refuse("preview_required", name + " runs only as its preview; its Yes runs the plan's apply")
-  var ifMatch = ifMatchFor(name, row, template.preview === "confirm", template.bind === true, o, preview)
+  // `match` and `confirm` confirm through their plan's apply; a `bind` template's real
+  // run is its own argv bound to its preview's token, so it needs that token instead.
+  var planned = template.preview === "match" || template.preview === "confirm"
+  if (planned && !preview) throw refuse("preview_required", name + " runs only as its preview; its Yes runs the plan's apply")
+  var ifMatch = ifMatchFor(name, row, template.preview === "confirm", template.bind === true || template.preview === "bind", o, preview)
   var progress = template.mutates === true || name === "check"
   return { argv: standardFlags(o, progress, preview, ifMatch).concat(filled), env: contextOf(o.context) }
 }
@@ -445,6 +476,26 @@ function classifyCliArgv(argv, plan) {
       verdict.reason = "irreversible"
       return verdict
     }
+  }
+  // Consent is given in a terminal by someone who read why (M4-D38): an argv holding
+  // `--force` or `--yes` anywhere, past `--` too, is never one key away.
+  for (var c = 1; c < argv.length; c++) {
+    if (CONSENT_FLAGS.indexOf(flagName(argv[c])) !== -1) {
+      verdict.reason = "consent_flag"
+      return verdict
+    }
+  }
+  // Read on the words, not on CLI_PATHS: `doctor gc` deletes what repairs keep and may
+  // hold an only copy (M4-D36), not even its dry run is the widget's; a repair runs only
+  // through the bound templates, and its undo only through `undo`'s stored plan (M4-D22).
+  var words = leadingWords(argv.slice(1, end))
+  if (words === "doctor gc") {
+    verdict.reason = "doctor_gc"
+    return verdict
+  }
+  if (words === "doctor fix" || words === "doctor undo") {
+    verdict.reason = "own_flow_only"
+    return verdict
   }
   var path = pathOf(argv.slice(1, end))
   if (!path) {
@@ -769,14 +820,70 @@ function copyArgv(text) {
 function issueOf(issue) {
   var severity = str(issue.severity)
   var remediation = issue.remediation && typeof issue.remediation === "object" ? issue.remediation : {}
+  var explain = issue.explain && typeof issue.explain === "object" ? issue.explain : null
   return {
     "id": str(issue.id),
     "severity": severity,
     "urgent": severity === "P0" || severity === "P1",
     "title": str(issue.title),
     "addon": strOrNull(issue.addon),
-    "remediation": cliAction(remediation.command, remediation.argv, remediation.destructive)
+    "remediation": cliAction(remediation.command, remediation.argv, remediation.destructive),
+    // A repair the doctor makes with no force (`doctor fix --only <id>`, M4-D33).
+    "autoFixable": issue.auto_fixable === true,
+    // `doctor explain <id> [-t <id>]`: the issue's evidence and what its repair does.
+    "explain": explain ? cliAction(explain.command, explain.argv, false) : null,
+    // A remediation that needs consent (`--force`, `--yes`): read, then run in a terminal.
+    "forced": holdsConsent(remediation.argv)
   }
+}
+
+// Whether an argv holds a consent flag anywhere (the classifier's `consent_flag`).
+function holdsConsent(argv) {
+  if (!Array.isArray(argv)) return false
+  for (var i = 0; i < argv.length; i++) {
+    if (typeof argv[i] === "string" && CONSENT_FLAGS.indexOf(flagName(argv[i])) !== -1) return true
+  }
+  return false
+}
+
+// An auto-fixable issue's repair, as a bound template (M4-D44): `doctor fix --only=<id>`,
+// with `-t` for a client's issue; null for any other issue. The label is the repair's
+// recorded `--reason`: one line, at most LABEL_MAX_CHARS.
+function repairRequest(issue, targetId) {
+  if (!issue || issue.autoFixable !== true || !FM_ID_PATTERN.test(str(issue.id))) return null
+  var label = ("Repair: " + str(issue.title)).replace(/[\r\n]+/g, " ")
+  if (label.length > LABEL_MAX_CHARS) label = label.slice(0, LABEL_MAX_CHARS - 1) + "…"
+  return targetId
+    ? { "template": "doctor_fix_target", "slots": { "target": targetId, "fm": issue.id }, "label": label }
+    : { "template": "doctor_fix", "slots": { "fm": issue.id }, "label": label }
+}
+
+// A problem row's fix, explanation, text and hint (§3 of the repair bead): a repair
+// previews through its bound template; a `doctor explain` remediation is the row's
+// explanation, never its action; anything else keeps its runnable remediation.
+function problemRow(issue, targetId) {
+  var r = issue.remediation || {}
+  var fix = repairRequest(issue, targetId)
+  var explainsOnly = !!r.runnable && verdictPath(r.argv) === "doctor explain"
+  var issueExplain = issue.explain && issue.explain.runnable && verdictPath(issue.explain.argv) === "doctor explain"
+    ? issue.explain : null
+  var explain = explainsOnly ? r : issueExplain
+  var action = fix || explainsOnly ? null : (r.runnable ? r : null)
+  return {
+    "fix": fix,
+    "explain": explain,
+    "forced": issue.forced === true,
+    "action": action,
+    "text": r.runnable ? "" : str(r.command),
+    "note": r.irreversible ? IRREVERSIBLE_NOTE : "",
+    "hint": fix ? "Enter previews the repair" : action ? "Enter runs the fix" : explain ? "Enter explains it" : ""
+  }
+}
+
+// The registry path an accepted argv runs, or "".
+function verdictPath(argv) {
+  var verdict = Array.isArray(argv) ? classifyCliArgv(argv) : null
+  return verdict && verdict.ok ? verdict.path : ""
 }
 
 function summaryOf(summary) {
@@ -849,7 +956,8 @@ function targetOf(target) {
   }
 }
 
-var KIND_WORDS = { "install": "install", "update": "update", "remove": "removal", "undo": "undo", "restore": "restore" }
+var KIND_WORDS = { "install": "install", "update": "update", "remove": "removal", "undo": "undo", "restore": "restore",
+  "repair": "repair" }
 
 // The last change, or `{unknown: true}` when the history projection could not tell
 // (never "nothing to undo"); null when there is none.
@@ -1265,6 +1373,13 @@ function isChange(item) {
 // names the change it reverted and where; a dismissal counts the errors that stopped
 // being new. "" for any other command.
 function commandResultLine(command, data) {
+  if (command === "undo" && data.kind === "repair") {
+    var undone = data.reverted && typeof data.reverted === "object" ? data.reverted : {}
+    var ids = revertedIds(undone)
+    var n = Array.isArray(data.repairs) ? data.repairs.length : 0
+    return (undone.kind === "undo" ? "Redid repair" : "Undid repair") + (ids.length ? " on " + joinNames(ids) : "")
+      + " (" + plural(n, "change") + ")"
+  }
   if (command === "undo") {
     var reverted = data.reverted && typeof data.reverted === "object" ? data.reverted : {}
     var where = []
@@ -1364,8 +1479,10 @@ function itemFixes(env) {
   return out
 }
 
-function resultLine(env) {
+function resultLine(env, context, targets) {
   if (!envelopeOk(env)) return "omaddons did not answer"
+  // A repair's report is an answer whatever its exit (a dry run that plans exits 1).
+  if (doctorResult(env)) return doctorResultLine(env, context, targets)
   if (!env.ok) return env.error && typeof env.error.message === "string" ? env.error.message : "omaddons failed"
   var data = env.data && typeof env.data === "object" ? env.data : {}
   var targets = Array.isArray(data.targets) ? data.targets : [data]
@@ -1446,7 +1563,13 @@ function warningMessages(env, code) {
 
 // The confirmation dialog's text from a dry run (M3-D9): what would change, what
 // stays required, and a running client.
-function confirmText(name, env) {
+// The ids of a reverted repair's clients (`reverted.targets`, `{id, key}` each).
+function revertedIds(reverted) {
+  var list = reverted && Array.isArray(reverted.targets) ? reverted.targets : []
+  return list.map(function(t) { return t && typeof t === "object" ? str(t.id) : str(t) }).filter(function(id) { return !!id })
+}
+
+function confirmText(name, env, context, targets) {
   if (!envelopeOk(env)) return "omaddons did not answer"
   if (!env.ok) {
     var error = env.error || {}
@@ -1465,6 +1588,15 @@ function confirmText(name, env) {
     }
     var target = data.target && data.target.id ? data.target.id : ""
     lines.push("Remove " + joinNames(names) + (target ? " from " + target : "") + " (" + plural(folders, "folder") + ")")
+  } else if (env.command === "undo" && data.kind === "repair") {
+    // The undo of a repair (E7): its inverse operations, as the repair's were shown.
+    var undone = data.reverted && typeof data.reverted === "object" ? data.reverted : {}
+    var ops = Array.isArray(data.repairs) ? data.repairs : []
+    var ids = revertedIds(undone)
+    lines.push((undone.kind === "undo" ? "Redo " : "Undo ") + "repair" + (ids.length ? " on " + joinNames(ids) : "")
+      + ": " + plural(ops.length, "change"))
+    for (var o = 0; o < ops.length && o < WIDGET_DIALOG_ITEMS_MAX; o++) lines.push(repairActionLine(ops[o], context, targets))
+    if (ops.length > WIDGET_DIALOG_ITEMS_MAX) lines.push("(and " + (ops.length - WIDGET_DIALOG_ITEMS_MAX) + " more)")
   } else if (env.command === "undo") {
     var reverted = data.reverted && typeof data.reverted === "object" ? data.reverted : {}
     var txs = Array.isArray(data.transactions) ? data.transactions : []
@@ -1607,6 +1739,13 @@ function staleText(env) {
   var error = env && env.error && typeof env.error === "object" ? env.error : {}
   var details = error.details && typeof error.details === "object" ? error.details : {}
   var after = " Nothing ran; check the new preview."
+  // A bound repair (G2): what changed, in a person's words.
+  if (env && env.command === "doctor fix") {
+    var words = { "observed": "the files this repair checks", "selection": "what it would do",
+      "targets": "the clients it touches", "command": "the command" }
+    var parts = stringList(details.changed).filter(function(p) { return words.hasOwnProperty(p) }).map(function(p) { return words[p] })
+    return "Changed since you looked: " + (parts.length ? joinNames(parts) : "the repair") + "." + after
+  }
   if (error.code === "plan_not_found") return "The plan is gone (expired or cleared)." + after
   if (typeof details.reason === "string" && PLAN_STALE_REASONS.hasOwnProperty(details.reason)) {
     return PLAN_STALE_REASONS[details.reason] + after
@@ -2306,13 +2445,10 @@ function issueSections(statusTargets, errors, warnings, filter, machineIssues) {
   var machine = !filter && Array.isArray(machineIssues) ? machineIssues : []
   for (var n = 0; n < machine.length; n++) {
     var mi = machine[n]
-    var mr = mi.remediation || {}
-    problems.push({
+    problems.push(Object.assign({
       "kind": "problem", "key": "p//" + n, "target": "", "severity": mi.severity,
-      "urgent": mi.urgent, "title": mi.title,
-      "action": mr.runnable ? mr : null, "text": mr.runnable ? "" : str(mr.command),
-      "note": mr.irreversible ? IRREVERSIBLE_NOTE : ""
-    })
+      "urgent": mi.urgent, "title": mi.title, "autoFixable": mi.autoFixable === true
+    }, problemRow(mi, "")))
   }
   var targets = Array.isArray(statusTargets) ? statusTargets : []
   for (var i = 0; i < targets.length; i++) {
@@ -2320,13 +2456,10 @@ function issueSections(statusTargets, errors, warnings, filter, machineIssues) {
     if (filter && t.id !== filter) continue
     for (var j = 0; j < t.issues.length; j++) {
       var issue = t.issues[j]
-      var r = issue.remediation || {}
-      problems.push({
+      problems.push(Object.assign({
         "kind": "problem", "key": "p/" + t.id + "/" + j, "target": t.id, "severity": issue.severity,
-        "urgent": issue.urgent, "title": issue.title,
-        "action": r.runnable ? r : null, "text": r.runnable ? "" : str(r.command),
-        "note": r.irreversible ? IRREVERSIBLE_NOTE : ""
-      })
+        "urgent": issue.urgent, "title": issue.title, "autoFixable": issue.autoFixable === true
+      }, problemRow(issue, t.id)))
     }
   }
   // Within a severity, the order `status` ranked them in (the machine's first).
@@ -2703,8 +2836,18 @@ function boundStaleText(template, env) {
 }
 
 // The last result's Undo: its `undo` command when the classifier accepted it.
-function resultUndo(result) {
-  if (!result || !Array.isArray(result.commands)) return null
+// The Undo a result offers. A repair's is the bound Undo last (`undo --run <run>`, its
+// dry run's stored plan, then `apply`), never the fix envelope's own `doctor undo` hint,
+// and only once a `status` read after the repair names it as the last change
+// (`statusSeen`, set with `repair` by the view that ran it).
+function resultUndo(result, lastChange) {
+  if (!result) return null
+  if (result.repair === true) {
+    var undo = lastChange && !lastChange.unknown && lastChange.kind === "repair" ? lastChange.undo : null
+    if (result.statusSeen !== true || !undo || !undo.runnable || !Array.isArray(undo.argv)) return null
+    return { "action": "undo_run", "command": undo.command, "argv": undo.argv, "runnable": true }
+  }
+  if (!Array.isArray(result.commands)) return null
   // A change on several clients undoes as one run (`undo --run`); `undo <tx>` would
   // revert one client's part only.
   var single = null
@@ -3052,7 +3195,7 @@ function previewDecision(spec, env) {
   var reasons = reasonLines(approval)
   // Anything but a match is confirmed in the dialog: never applied directly.
   if (s.mode !== "match") {
-    decision.lines = confirmText(s.path, env).split("\n").concat(reasons)
+    decision.lines = confirmText(s.path, env, s.context, s.targets).split("\n").concat(reasons)
     return decision
   }
   var shown = Array.isArray(s.shown) ? s.shown : []
@@ -3100,6 +3243,231 @@ function needsPreviewAgain(env) {
   if (!env.ok && (code === "plan_stale" || code === "plan_not_found")) return true
   var view = applyResult(env)
   return !!view && view.outcomes.some(function(o) { return !!o && o.status === "stale" })
+}
+
+// -------------------------------------------------------------- the doctor's repairs (G2)
+//
+// Every decision the widget makes about a repair, pure (M4-D44, M4-D46): a repair runs
+// through the bound `doctor_fix` templates only, previewed, and its undo through
+// `undo`'s stored plan. The envelopes are the doctor's (M4-D34): the report's keys at
+// the top level, no `data`.
+
+function isDoctorEnvelope(env) {
+  if (!envelopeOk(env) || env.command.indexOf("doctor ") !== 0 || env.hasOwnProperty("data")) return false
+  return typeof env.state === "string" || (!!env.failure_mode && typeof env.failure_mode === "object")
+}
+
+// A `doctor fix` report (E6's FixReport), read defensively; null for anything else.
+// `report` is an answer to show (exits 0 to 3), `repaired` a real run that changed
+// something.
+function doctorResult(env) {
+  if (!isDoctorEnvelope(env) || env.command !== "doctor fix") return null
+  var s = env.summary && typeof env.summary === "object" ? env.summary : {}
+  var dryRun = env.dry_run === true
+  var exitCode = num(env.exit_code)
+  var error = env.error && typeof env.error === "object" ? env.error : null
+  var state = str(env.state)
+  var tx = strOrNull(env.tx)
+  var actionsTaken = num(s.actions_taken)
+  var list = function(value) { return Array.isArray(value) ? value.filter(function(v) { return !!v && typeof v === "object" }) : [] }
+  return {
+    "command": env.command, "exitCode": exitCode, "state": state, "dryRun": dryRun, "tx": tx,
+    "summary": {
+      "findingsBefore": num(s.findings_before), "findingsAfter": num(s.findings_after),
+      "actionsTaken": actionsTaken, "actionsFailed": num(s.actions_failed), "bytesToBackUp": num(s.bytes_to_back_up),
+      "bytesBackedUp": num(s.bytes_backed_up), "backupsRestored": num(s.backups_restored), "totalFindings": num(s.total_findings)
+    },
+    "actions": list(dryRun ? env.actions_planned : env.actions),
+    "delegated": list(dryRun ? env.delegated_planned : env.delegated),
+    "precondition": typeof env.precondition === "string" && TOKEN_PATTERN.test(env.precondition) ? env.precondition : "",
+    "findings": list(env.findings),
+    "undoable": Array.isArray(env.undo_argv),
+    "error": error,
+    "report": !error && [0, 1, 2, 3].indexOf(exitCode) !== -1,
+    // A run with repairs verified and other findings left is DONE_FINDINGS: it changed
+    // something too.
+    "repaired": !dryRun && !!tx && (state === "DONE_OK" || state === "DONE_PARTIAL" || state === "DONE_FINDINGS")
+      && actionsTaken > 0
+  }
+}
+
+// A path as a person reads it: below omaddons' own folders `<config>`, `<state>` and
+// `<cache>`, below a client `<id>:`, below HOME `~`, the longest prefix on a component
+// boundary winning; a path below a `WTF/` is never shown (it names the account).
+function displayPath(path, context, targets) {
+  var p = str(path)
+  if (/(^|\/)WTF\/./.test(p)) return "(a path under WTF/, not shown)"
+  if (!context || typeof context !== "object") return p
+  var roots = []
+  var add = function(prefix, shown, client) {
+    if (typeof prefix !== "string" || prefix.charAt(0) !== "/") return
+    var trimmed = prefix.replace(/\/+$/, "")
+    if (trimmed) roots.push({ "prefix": trimmed, "shown": shown, "client": client })
+  }
+  if (context.XDG_CONFIG_HOME) add(context.XDG_CONFIG_HOME + "/omaddons", "<config>", false)
+  if (context.XDG_STATE_HOME) add(context.XDG_STATE_HOME + "/omaddons", "<state>", false)
+  if (context.XDG_CACHE_HOME) add(context.XDG_CACHE_HOME + "/omaddons", "<cache>", false)
+  var list = Array.isArray(targets) ? targets : []
+  for (var i = 0; i < list.length; i++) if (list[i] && list[i].clientDir) add(list[i].clientDir, str(list[i].id) + ":", true)
+  add(context.HOME, "~", false)
+  var best = null
+  for (var j = 0; j < roots.length; j++) {
+    var r = roots[j]
+    if ((p === r.prefix || p.indexOf(r.prefix + "/") === 0) && (!best || r.prefix.length > best.prefix.length)) best = r
+  }
+  if (!best) return p
+  var rest = p.slice(best.prefix.length)
+  return best.client ? best.shown + rest.replace(/^\/+/, "") : best.shown + rest
+}
+
+// Whether a permission mode lets the group or others read (`0o044`).
+function exposesMode(mode) {
+  return typeof mode === "string" && /^[0-7]{3,4}$/.test(mode) && (parseInt(mode, 8) & 0o044) !== 0
+}
+
+// One repair operation as a dialog or result line: a planned action (E6's
+// ActionPlanned, or ActionDone), or an undo's inverse (E7's UndoRepairOp: `octal_mode`
+// and `to_rel`).
+function repairActionLine(action, context, targets) {
+  var a = action && typeof action === "object" ? action : {}
+  var op = str(a.op)
+  var path = displayPath(a.path, context, targets)
+  var pre = a.pre && typeof a.pre === "object" ? a.pre : {}
+  if (op === "chmod") {
+    var mode = str(a.mode || a.octal_mode)
+    var was = str(pre.mode)
+    return "chmod " + mode + " " + path + (was ? " (was " + was + ")" : "")
+      + (exposesMode(mode) && !exposesMode(was) ? " (readable by other users again)" : "")
+  }
+  if (op === "write_file") {
+    if (typeof a.backup === "string" || pre.kind === "file") {
+      return "Rewrite " + path + " (" + (typeof a.bytes === "number" ? bytesText(a.bytes) + "; " : "")
+        + "the old file is kept for undo)"
+    }
+    return "Create " + path + (typeof a.bytes === "number" && a.bytes > 0 ? " (" + bytesText(a.bytes) + ")" : "")
+  }
+  if (op === "rename_noreplace") {
+    var to = displayPath(a.to || a.to_rel, context, targets)
+    if (a.activation === true) return "Reactivate the interrupted change's journal (" + to + "); the next change finishes it"
+    return "Move " + path + " to " + to
+  }
+  return op.replace(/_/g, " ") + " " + path
+}
+
+// What a repair's preview decides (G1's decision shape, so dialogText renders it):
+// "dialog" with the token to bind and a line per change, "refresh" when nothing is
+// left to repair, "refuse" when the preview is not exactly this repair or gives no
+// token, "failed" for an error or another envelope.
+function doctorPreviewDecision(spec, env, context, targets) {
+  var slots = spec && spec.slots && typeof spec.slots === "object" ? spec.slots : {}
+  var decision = { "kind": "failed", "token": "", "heading": "", "lines": [], "line": "", "fixText": "" }
+  var result = doctorResult(env)
+  if (!result || result.error) return decision
+  if (result.actions.length === 0 && result.delegated.length === 0) {
+    decision.kind = "refresh"
+    decision.line = "Nothing to repair now; the view is refreshed"
+    return decision
+  }
+  decision.kind = "refuse"
+  for (var i = 0; i < result.actions.length; i++) {
+    if (str(result.actions[i].fm) !== str(slots.fm)) {
+      decision.line = "The preview planned more than this repair; nothing ran"
+      return decision
+    }
+  }
+  if (!result.precondition) {
+    decision.line = "The preview gave no token to bind; nothing ran"
+    return decision
+  }
+  decision.kind = "dialog"
+  decision.token = result.precondition
+  var lines = []
+  for (var j = 0; j < result.actions.length && j < WIDGET_DIALOG_ITEMS_MAX; j++) {
+    lines.push(repairActionLine(result.actions[j], context, targets))
+  }
+  if (result.actions.length > WIDGET_DIALOG_ITEMS_MAX) lines.push("(and " + (result.actions.length - WIDGET_DIALOG_ITEMS_MAX) + " more)")
+  for (var k = 0; k < result.delegated.length; k++) {
+    var d = result.delegated[k]
+    lines.push("Also finishes the interrupted change " + str(d.tx) + " (" + str(d.direction).replace(/_/g, " ") + ")")
+  }
+  if (result.summary.bytesToBackUp > 0) lines.push("Keeps a copy of " + bytesText(result.summary.bytesToBackUp) + " first, for undo")
+  lines.push("Undo last reverts it")
+  decision.lines = lines
+  return decision
+}
+
+// A repair's result line: its error, what it repaired, or why nothing was.
+function doctorResultLine(env, context, targets) {
+  var r = doctorResult(env)
+  if (!r) return ""
+  if (r.error) return str(r.error.message) || "The repair was refused"
+  var after = r.summary.findingsAfter
+  var remains = plural(after, "finding") + (after === 1 ? " remains" : " remain")
+  if (r.state === "DONE_FAILED") return "The repair failed and was rolled back; nothing changed"
+  if (r.state === "DONE_PARTIAL") return "Partly repaired (" + plural(r.summary.actionsTaken, "change") + "); " + remains
+  if (r.summary.actionsTaken > 0 && r.actions.length > 0) {
+    var n = r.actions.length
+    return "Repaired: " + repairActionLine(r.actions[0], context, targets) + (n > 1 ? " (and " + (n - 1) + " more)" : "")
+  }
+  return "Nothing was repaired" + (after > 0 ? "; " + remains + " (see Issues)" : "")
+}
+
+// One evidence value as text, or null to leave it out.
+function evidenceText(value, context, targets) {
+  if (typeof value === "string") return value.charAt(0) === "/" ? displayPath(value, context, targets) : value
+  if (typeof value === "boolean") return value ? "yes" : "no"
+  if (typeof value === "number" && isFinite(value)) return String(value)
+  if (Array.isArray(value) && value.length > 0 && value.every(function(v) { return typeof v === "string" })) {
+    var shown = value.slice(0, 5).map(function(v) { return v.charAt(0) === "/" ? displayPath(v, context, targets) : v })
+    return shown.join(", ") + (value.length > 5 ? " and " + (value.length - 5) + " more" : "")
+  }
+  return null
+}
+
+// A `doctor explain` answer (E3's ExplainReport) as lines: what it is, why it matters,
+// whether a repair exists, what to do by hand, and each instance now with its evidence
+// and the command for a terminal; [] for anything else.
+function explainLines(env, context, targets) {
+  if (!isDoctorEnvelope(env) || env.command !== "doctor explain" || !env.failure_mode || typeof env.failure_mode !== "object") return []
+  var fm = env.failure_mode
+  var lines = []
+  if (fm.title) lines.push(str(fm.title))
+  if (fm.description) lines.push(str(fm.description))
+  if (fm.why) lines.push("Why it matters: " + str(fm.why))
+  var fixer = fm.fixer && typeof fm.fixer === "object" ? fm.fixer : null
+  if (!fixer) lines.push("No automatic repair")
+  else if (fixer.needs_force === true) lines.push("Its repair needs your deliberate consent: read this, then run the command below in a terminal")
+  else if (fixer.enabled === false) lines.push("Its repair is off by default: run the command below in a terminal")
+  var manual = fm.manual && typeof fm.manual === "object" ? fm.manual : null
+  if (manual && manual.instruction) lines.push("By hand: " + str(manual.instruction) + (manual.why ? " (" + str(manual.why) + ")" : ""))
+  var instances = Array.isArray(env.instances) ? env.instances.filter(function(i) { return !!i && typeof i === "object" }) : []
+  for (var i = 0; i < instances.length && i < WIDGET_EXPLAIN_INSTANCES_MAX; i++) {
+    var inst = instances[i]
+    lines.push(str(inst.label) || str(inst.instance))
+    var evidence = inst.evidence && typeof inst.evidence === "object" && !Array.isArray(inst.evidence) ? inst.evidence : {}
+    var shown = 0
+    var keys = Object.keys(evidence).sort()
+    for (var k = 0; k < keys.length && shown < WIDGET_EXPLAIN_EVIDENCE_MAX; k++) {
+      var text = evidenceText(evidence[keys[k]], context, targets)
+      if (text === null) continue
+      lines.push("  " + keys[k].replace(/_/g, " ") + ": " + text)
+      shown++
+    }
+    var remediation = inst.remediation && typeof inst.remediation === "object" ? inst.remediation : {}
+    if (remediation.command) lines.push("  In a terminal: " + str(remediation.command))
+  }
+  if (instances.length > WIDGET_EXPLAIN_INSTANCES_MAX) lines.push("(and " + (instances.length - WIDGET_EXPLAIN_INSTANCES_MAX) + " more)")
+  if (instances.length === 0) lines.push("No instance found now; it may be resolved")
+  if (env.incomplete && typeof env.incomplete === "object" && env.incomplete.limit) {
+    lines.push("The check was cut short (" + str(env.incomplete.limit).replace(/_/g, " ") + "); this may be incomplete")
+  }
+  return lines
+}
+
+// The explanation's lines for its own row only (view-bound, as rawLines).
+function explainFor(explanation, row) {
+  if (!explanation || !explanation.selection || !row || explanation.selection.key !== row.key) return null
+  return Array.isArray(explanation.lines) ? explanation.lines : null
 }
 
 if (typeof module !== "undefined") {
@@ -3260,6 +3628,21 @@ if (typeof module !== "undefined") {
     previewDecision: previewDecision,
     dialogText: dialogText,
     applyResult: applyResult,
-    needsPreviewAgain: needsPreviewAgain
+    needsPreviewAgain: needsPreviewAgain,
+    FM_ID_PATTERN: FM_ID_PATTERN,
+    CONSENT_FLAGS: CONSENT_FLAGS,
+    WIDGET_EXPLAIN_INSTANCES_MAX: WIDGET_EXPLAIN_INSTANCES_MAX,
+    WIDGET_EXPLAIN_EVIDENCE_MAX: WIDGET_EXPLAIN_EVIDENCE_MAX,
+    holdsConsent: holdsConsent,
+    repairRequest: repairRequest,
+    isDoctorEnvelope: isDoctorEnvelope,
+    doctorResult: doctorResult,
+    displayPath: displayPath,
+    repairActionLine: repairActionLine,
+    doctorPreviewDecision: doctorPreviewDecision,
+    doctorResultLine: doctorResultLine,
+    explainLines: explainLines,
+    explainFor: explainFor,
+    lastChangeOf: lastChangeOf
   }
 }

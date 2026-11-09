@@ -118,6 +118,8 @@ describe("settings", () => {
     expect(M.WIDGET_LOCAL_DEADLINE_SEC).toBe(20)
     expect(M.WIDGET_KILL_GRACE_SEC).toBe(5)
     expect(M.WIDGET_STREAM_GRACE_SEC).toBe(2)
+    expect(M.WIDGET_EXPLAIN_INSTANCES_MAX).toBe(5)
+    expect(M.WIDGET_EXPLAIN_EVIDENCE_MAX).toBe(12)
   })
 })
 
@@ -142,12 +144,15 @@ const BENIGN = {
   ref: "gh:o/foo",
   query: "damage meter",
   backup: "01M6QZ0000000000000000000A",
+  fm: "fm-secrets-credential-file-mode",
 }
 
-// What a template needs beyond its slots to build: a previewed template builds as its
-// preview (its Yes is its plan's apply), a bound one with its view's token.
+// What a template needs beyond its slots to build: a planned template builds as its
+// preview (its Yes is its plan's apply), a bound one (a `bind` preview, G2) with its
+// view's token.
 function runOpts(name) {
   const t = M.COMMANDS[name]
+  if (t.preview === "bind") return opts({ token: TOKEN })
   if (t.preview) return opts({ preview: true })
   if (t.bind || M.CLI_PATHS[M.templateShape(name).path].destructive) return opts({ token: TOKEN })
   return opts()
@@ -155,6 +160,8 @@ function runOpts(name) {
 
 // The templates whose real run is refused: they run as their preview, then apply.
 const PREVIEWED = ["install", "prune_backup", "reinstall", "remove", "restore", "restore_addon", "update_addon", "update_all", "update_target"]
+// The templates bound to their preview's token (G2): their real run needs it.
+const BOUND_PREVIEWS = ["doctor_fix", "doctor_fix_target"]
 
 function benignSlots(name) {
   return Object.fromEntries(M.templateShape(name).slots.map((s) => [s, BENIGN[s]]))
@@ -187,7 +194,15 @@ describe("buildArgv", () => {
   })
 
   test("buildArgv refuses a previewed template's real run", () => {
-    expect(Object.keys(M.COMMANDS).filter((name) => M.COMMANDS[name].preview).sort()).toEqual(PREVIEWED)
+    expect(Object.keys(M.COMMANDS).filter((name) => ["match", "confirm"].includes(M.COMMANDS[name].preview)).sort()).toEqual(PREVIEWED)
+    expect(Object.keys(M.COMMANDS).filter((name) => M.COMMANDS[name].preview === "bind").sort()).toEqual(BOUND_PREVIEWS)
+    // A bound preview's real run needs its token, and its preview none.
+    for (const name of BOUND_PREVIEWS) {
+      expect([name, reasonOf(() => M.buildArgv(name, benignSlots(name), opts()))]).toEqual([name, "token_required"])
+      expect([name, reasonOf(() => M.buildArgv(name, benignSlots(name), opts({ confirmed: true })))]).toEqual([name, "token_required"])
+      expect([name, reasonOf(() => M.buildArgv(name, benignSlots(name), opts({ preview: true, token: TOKEN })))]).toEqual([name, "token_in_preview"])
+      expect([name, M.buildArgv(name, benignSlots(name), opts({ preview: true })).argv.includes("--dry-run")]).toEqual([name, true])
+    }
     for (const name of PREVIEWED) {
       for (const extra of [{}, { confirmed: true }, { token: TOKEN }]) {
         expect([name, extra, reasonOf(() => M.buildArgv(name, benignSlots(name), opts(extra)))]).toEqual([name, extra, "preview_required"])
@@ -231,6 +246,14 @@ describe("buildArgv", () => {
     for (const name of Object.keys(M.COMMANDS)) {
       for (const slot of M.templateShape(name).slots) {
         if (slot === "target") continue
+        // A failure-mode id has its own grammar: every hostile value is refused.
+        if (slot === "fm") {
+          for (const value of HOSTILE) {
+            const slots = Object.assign(benignSlots(name), { fm: value })
+            expect([name, value, reasonOf(() => M.buildArgv(name, slots, runOpts(name)))]).toEqual([name, value, "bad_fm"])
+          }
+          continue
+        }
         for (const value of HOSTILE) {
           const slots = Object.assign(benignSlots(name), { [slot]: value })
           const argv = M.buildArgv(name, slots, runOpts(name)).argv
@@ -284,7 +307,8 @@ describe("buildArgv", () => {
       // M4-D28: a preview template is on a plan-storing path, a destructive one asks
       // first, and the old confirm key is gone.
       expect([name, t.confirm]).toEqual([name, undefined])
-      if (t.preview) expect([name, ["match", "confirm"].includes(t.preview), M.storesPlan(shape.path)]).toEqual([name, true, true])
+      if (t.preview === "bind") expect([name, M.CLI_PATHS[shape.path].binds, M.storesPlan(shape.path)]).toEqual([name, true, false])
+      else if (t.preview) expect([name, ["match", "confirm"].includes(t.preview), M.storesPlan(shape.path)]).toEqual([name, true, true])
       if (M.CLI_PATHS[shape.path].destructive) expect([name, t.preview]).toEqual([name, "confirm"])
       expect(M.buildArgv(name, benignSlots(name), runOpts(name)).argv[0]).toBe(BINARY)
     }
@@ -309,6 +333,22 @@ const CLASSIFIER_TABLE = [
   [["omaddons", "update", "--reason=sneaky"], "widget_flag", false],
   [["omaddons", "remove", "--if-match", TOKEN, "--", "Foo"], "widget_flag", false],
   [["omaddons", "--progress", "none", "status"], "widget_flag", false],
+  // G2: a repair runs only through the bound doctor_fix templates, its undo only through
+  // undo's plan, and consent is a terminal's (M4-D38).
+  [["omaddons", "doctor", "fix", "--only", "fm-x"], "own_flow_only", false],
+  [["omaddons", "doctor", "fix", "--only", "fm-x", "-t", "retail", "--dry-run"], "own_flow_only", false],
+  [["omaddons", "doctor", "undo", "2026-10-30T18-03-40Z__01M8S0000000000000000000000"], "own_flow_only", false],
+  [["omaddons", "doctor", "fix", "--only", "fm-x", "-t", "retail", "--force", "--yes"], "consent_flag", false],
+  [["omaddons", "install", "Foo", "-t", "retail", "--force"], "consent_flag", false],
+  [["omaddons", "backup", "import", "x.tar", "--force"], "consent_flag", false],
+  [["omaddons", "install", "--force=true", "Foo"], "consent_flag", false],
+  [["omaddons", "remove", "--", "--force"], "consent_flag", false],
+  [["omaddons", "doctor", "gc", "--before", "30d", "--dry-run"], "doctor_gc", false],
+  [["omaddons", "doctor", "gc", "--before", "30d", "--yes"], "consent_flag", false],
+  [["omaddons", "--yes", "status"], "consent_flag", false],
+  [["omaddons", "doctor", "fix", "--if-match", TOKEN], "widget_flag", false],
+  [["omaddons", "doctor", "explain", "fm-x", "-t", "retail"], "", false],
+  [["omaddons", "doctor", "diagnose"], "", false],
   [["omaddons", "frobnicate"], "unknown_path", false],
   [["omaddons", "-t", "retail", "update"], "unknown_path", false],
   [["rm", "-rf", "/"], "not_omaddons", false],
@@ -1247,14 +1287,17 @@ describe("the Issues and Search views", () => {
     expect([forced.runnable, forced.argv, forced.command]).toEqual([false, null, FIX.concat(["--force", "--yes"]).join(" ")])
   })
 
-  test("cliAction keeps an argv without --force", () => {
+  test("cliAction keeps an argv without a consent flag, but a repair runs only through its own flow", () => {
+    const reinstall = ["omaddons", "install", "Plater", "-t", "retail", "--reinstall"]
+    expect([remediated(reinstall).runnable, remediated(reinstall).argv]).toEqual([true, reinstall])
+    // G2: `doctor fix` from CLI output is text; the bound doctor_fix template runs it.
     const fix = remediated(FIX)
-    expect([fix.runnable, fix.argv]).toEqual([true, FIX])
+    expect([fix.runnable, fix.argv, fix.command]).toEqual([false, null, FIX.join(" ")])
   })
 
-  test("--force after -- is an argument, not a flag", () => {
+  test("a consent flag past -- is refused too", () => {
     const install = remediated(["omaddons", "install", "--", "--force"])
-    expect([install.runnable, install.argv]).toEqual([true, ["omaddons", "install", "--", "--force"]])
+    expect([install.runnable, install.argv]).toEqual([false, null])
   })
 
   test("a remediation the classifier refuses is text", () => {
@@ -2258,16 +2301,21 @@ test("writes every built argv and the classifier's verdicts for the Rust check",
   const realForms = []
   for (const name of Object.keys(M.COMMANDS)) {
     const base = benignSlots(name)
+    const bound = M.COMMANDS[name].preview === "bind"
     const extra = M.COMMANDS[name].preview ? { preview: true } : { token: runOpts(name).token }
     record(name, base, extra)
+    // A bound preview (G2) is recorded bound too: the same argv with its token.
+    if (bound) record(name, base, { token: TOKEN })
     if (M.COMMANDS[name].preview) realForms.push([name, reasonOf(() => M.buildArgv(name, base, opts()))])
     for (const slot of M.templateShape(name).slots) {
-      if (slot === "target") continue
+      // A hostile failure-mode id is refused (`bad_fm`, buildArgv's table above).
+      if (slot === "target" || slot === "fm") continue
       for (const value of HOSTILE) record(name, Object.assign({}, base, { [slot]: value }), extra)
     }
   }
   expect(refused).toEqual([])
-  expect(realForms.sort((a, b) => (a[0] < b[0] ? -1 : 1))).toEqual(PREVIEWED.map((name) => [name, "preview_required"]))
+  expect(realForms.sort((a, b) => (a[0] < b[0] ? -1 : 1))).toEqual(PREVIEWED.concat(BOUND_PREVIEWS).sort()
+    .map((name) => [name, BOUND_PREVIEWS.includes(name) ? "token_required" : "preview_required"]))
 
   const classified = []
   const real = [
@@ -2308,4 +2356,371 @@ test("writes every built argv and the classifier's verdicts for the Rust check",
   expect(built.length).toBeGreaterThan(Object.keys(M.COMMANDS).length * 5)
   expect(classified.some((c) => c.refusal === "destructive_without_preview")).toBe(true)
   expect(classified.some((c) => c.verdict.reason === "apply_outside_plan")).toBe(true)
+})
+
+// ---------------------------------------------------------------- the doctor's repairs (G2)
+
+// ubs:ignore — a failure-mode id (the doctor's name for an exposed token file), not a secret
+const CREDENTIAL_FM = "fm-secrets-credential-file-mode"
+const CREDENTIAL_PATH = CONTEXT.XDG_CONFIG_HOME + "/omaddons/credentials/github"
+
+// A doctor envelope (M4-D34): the report's keys at the top level, no `data`.
+function doctorEnvelope(command, exitCode, report) {
+  return Object.assign({ ok: exitCode === 0, schema_version: "1.1", tool_version: "0.1.0", command: command, exit_code: exitCode },
+    report, { warnings: [], commands: [] })
+}
+
+// One planned chmod of the credential (E6's ActionPlanned, flattened primitive).
+function chmodAction(extra) {
+  return Object.assign({ seq: 0, fix: 0, fm: CREDENTIAL_FM, op: "chmod", path: CREDENTIAL_PATH, mode: "0600",
+    pre: { kind: "file", mode: "0644" }, post: { kind: "file", mode: "0600" }, guards: [], bytes: 0 }, extra || {})
+}
+
+// A `doctor fix` report: a dry run when `dryRun`, its actions planned, else taken.
+function fixEnvelope(o) {
+  const dryRun = o.dryRun === true
+  const state = o.state || (dryRun ? "DONE_FINDINGS" : "DONE_OK")
+  const exit = o.exit !== undefined ? o.exit : ({ DONE_OK: 0, DONE_FINDINGS: 1, DONE_PARTIAL: 2, DONE_FAILED: 3 })[state]
+  const actions = o.actions || [chmodAction()]
+  const report = {
+    doctor_contract_version: "1.0", run_id: "2026-10-31T07-23-32Z__01M68DF7000000000000000000", run_dir: "/r",
+    started_at: "2026-10-31T07:23:32Z", finished_at: "2026-10-31T07:23:33Z", state: state, dry_run: dryRun,
+    tx: dryRun ? null : "01M68DFDPC0000000000000000",
+    summary: { total_findings: 1, findings_before: 1, findings_after: o.findingsAfter === undefined ? (dryRun ? null : 0) : o.findingsAfter,
+      actions_taken: dryRun ? null : (o.taken !== undefined ? o.taken : actions.length), actions_failed: dryRun ? null : 0,
+      bytes_to_back_up: o.bytes || 0, bytes_backed_up: dryRun ? null : 0, backups_restored: dryRun ? null : 0 },
+    findings: [], skipped: [],
+    actions: dryRun ? null : actions.map((a) => Object.assign({}, a, { ok: true, bytes: undefined })),
+    delegated: dryRun ? null : [],
+    actions_planned: dryRun ? actions : null,
+    delegated_planned: dryRun ? (o.delegated || []) : null,
+    precondition: dryRun ? (o.token === undefined ? TOKEN : o.token) : null,
+    undo_command: dryRun ? null : "omaddons doctor undo r", undo_argv: dryRun ? null : ["omaddons", "doctor", "undo", "r"],
+  }
+  if (o.error) report.error = o.error
+  return doctorEnvelope("doctor fix", exit, report)
+}
+
+describe("the fm slot", () => {
+  test("the table", () => {
+    table([
+      ["credential", CREDENTIAL_FM, CREDENTIAL_FM],
+      ["underscore_subsystem", "fm-concurrency_primitives-journal-too-new", "fm-concurrency_primitives-journal-too-new"],
+      ["a_list", "fm-a,fm-b", "bad_fm"],
+      ["a_flag", "--force", "bad_fm"],
+      ["upper_case", "fm-Secrets", "bad_fm"],
+      ["a_subsystem_name", "concurrency_primitives", "bad_fm"],
+    ], (fm) => {
+      const reason = reasonOf(() => M.buildArgv("doctor_fix", { fm: fm }, opts({ preview: true })))
+      if (reason) return reason
+      const argv = M.buildArgv("doctor_fix", { fm: fm }, opts({ preview: true })).argv
+      expect(argv[argv.length - 1]).toBe("--only=" + fm)
+      return fm
+    })
+  })
+})
+
+describe("the doctor templates", () => {
+  const flags = [BINARY, "--json", "--actor", "widget", "--reason", "Test (bar widget)", "--progress", "json"]
+  test("the table", () => {
+    table([
+      ["machine_preview", ["doctor_fix", { fm: CREDENTIAL_FM }, { preview: true }],
+        flags.concat(["--dry-run", "doctor", "fix", "--only=" + CREDENTIAL_FM])],
+      ["client_preview", ["doctor_fix_target", { target: "retail", fm: CREDENTIAL_FM }, { preview: true }],
+        flags.concat(["--dry-run", "doctor", "fix", "-t", "retail", "--only=" + CREDENTIAL_FM])],
+      ["bound", ["doctor_fix", { fm: CREDENTIAL_FM }, { token: TOKEN }],
+        flags.concat(["--if-match", TOKEN, "doctor", "fix", "--only=" + CREDENTIAL_FM])],
+      ["real_without_a_token", ["doctor_fix", { fm: CREDENTIAL_FM }, {}], "token_required"],
+      ["preview_with_a_token", ["doctor_fix", { fm: CREDENTIAL_FM }, { preview: true, token: TOKEN }], "token_in_preview"],
+    ], ([name, slots, extra]) => reasonOf(() => M.buildArgv(name, slots, opts(extra))) || M.buildArgv(name, slots, opts(extra)).argv)
+  })
+})
+
+// A status envelope with these issues on retail, and these of no client.
+function statusWithIssues(issues, machine) {
+  return { ok: true, schema_version: "1.1", tool_version: "0.1.0", command: "status", exit_code: 0, partial: false,
+    data: { summary: { state: "attention", targets: 1, running: [], updates: { available: 0, targets: [] }, issues: { p0: 0, p1: 0, p2: 1, p3: 0 } },
+      targets: [{ id: "retail", key: "k", display_name: "Retail", issues: issues }], issues: machine || [] },
+    warnings: [], commands: [] }
+}
+
+function issueJson(extra) {
+  return Object.assign({ id: CREDENTIAL_FM, severity: "P2", title: "the GitHub token file is readable by other users", addon: null,
+    remediation: { command: "omaddons doctor fix --only " + CREDENTIAL_FM, argv: ["omaddons", "doctor", "fix", "--only", CREDENTIAL_FM], destructive: false },
+    auto_fixable: true,
+    explain: { command: "omaddons doctor explain " + CREDENTIAL_FM, argv: ["omaddons", "doctor", "explain", CREDENTIAL_FM] } }, extra || {})
+}
+
+describe("repairRequest", () => {
+  test("the table", () => {
+    const issue = (extra) => M.reduceStatus(statusWithIssues([issueJson(extra)])).targets[0].issues[0]
+    const long = "x".repeat(150) + "\nsecond line " + "y".repeat(50)
+    table([
+      ["machine", [issue(), ""], { template: "doctor_fix", slots: { fm: CREDENTIAL_FM }, label: "Repair: the GitHub token file is readable by other users" }],
+      ["client", [issue(), "retail"], { template: "doctor_fix_target", slots: { target: "retail", fm: CREDENTIAL_FM }, label: "Repair: the GitHub token file is readable by other users" }],
+      ["not_auto_fixable", [issue({ auto_fixable: false }), ""], null],
+      ["an_m3_issue", [issue({ auto_fixable: undefined }), ""], null],
+      ["an_id_the_pattern_refuses", [issue({ id: "fm-Bad,list" }), ""], null],
+    ], ([i, t]) => M.repairRequest(i, t))
+    const longRequest = M.repairRequest(issue({ title: long }), "")
+    expect([longRequest.label.length, longRequest.label.endsWith("…"), longRequest.label.indexOf("\n")]).toEqual([120, true, -1])
+    expect(M.buildArgv(longRequest.template, longRequest.slots, opts({ preview: true, label: longRequest.label })).argv).toContain("--dry-run")
+  })
+})
+
+describe("issue rows", () => {
+  const rowsOf = (issues, machine) => {
+    const status = M.reduceStatus(statusWithIssues(issues, machine))
+    return M.issueRows(M.issueSections(status.targets, null, [], "", status.issues))
+  }
+  test("issueOf keeps auto_fixable and explain, and an M3 issue gets none", () => {
+    const reduced = M.reduceStatus(statusWithIssues([issueJson(), { id: "drift", severity: "P2", title: "t", remediation: { command: "x", argv: null } }]))
+    const [repair, old] = reduced.targets[0].issues
+    expect([repair.autoFixable, repair.explain.runnable, repair.explain.argv, repair.forced])
+      .toEqual([true, true, ["omaddons", "doctor", "explain", CREDENTIAL_FM], false])
+    expect([old.autoFixable, old.explain, old.forced]).toEqual([false, null, false])
+  })
+  test("the table", () => {
+    const forcedArgv = ["omaddons", "doctor", "fix", "--only", "fm-concurrency_primitives-journal-too-new", "-t", "retail", "--force", "--yes"]
+    const setAside = issueJson({ id: "fm-concurrency_primitives-journal-too-new", severity: "P0", auto_fixable: false,
+      remediation: { command: forcedArgv.join(" "), argv: forcedArgv, destructive: true } })
+    const explainOnly = issueJson({ auto_fixable: false,
+      remediation: { command: "omaddons doctor explain fm-x -t retail", argv: ["omaddons", "doctor", "explain", "fm-x", "-t", "retail"], destructive: false } })
+    const reinstall = issueJson({ id: "fm-external_artifacts-managed-files-modified", auto_fixable: false, explain: null,
+      remediation: { command: "omaddons install Plater -t retail --reinstall", argv: ["omaddons", "install", "Plater", "-t", "retail", "--reinstall"], destructive: false } })
+    const gc = issueJson({ auto_fixable: false,
+      remediation: { command: "omaddons doctor gc --before 30d --dry-run", argv: ["omaddons", "doctor", "gc", "--before", "30d", "--dry-run"], destructive: true } })
+    const pick = (r) => ({ fix: r.fix ? r.fix.template : null, action: r.action ? r.action.argv : null,
+      explain: r.explain ? r.explain.argv : null, forced: r.forced, text: r.text, hint: r.hint })
+    table([
+      ["an_auto_fixable_row", [issueJson()], { fix: "doctor_fix_target", action: null, explain: ["omaddons", "doctor", "explain", CREDENTIAL_FM],
+        forced: false, text: "omaddons doctor fix --only " + CREDENTIAL_FM, hint: "Enter previews the repair" }],
+      ["a_set_aside_row", [setAside], { fix: null, action: null, explain: ["omaddons", "doctor", "explain", CREDENTIAL_FM],
+        forced: true, text: forcedArgv.join(" "), hint: "Enter explains it" }],
+      ["a_doctor_explain_remediation", [explainOnly], { fix: null, action: null, explain: ["omaddons", "doctor", "explain", "fm-x", "-t", "retail"],
+        forced: false, text: "", hint: "Enter explains it" }],
+      ["a_runnable_reinstall", [reinstall], { fix: null, action: ["omaddons", "install", "Plater", "-t", "retail", "--reinstall"],
+        explain: null, forced: false, text: "", hint: "Enter runs the fix" }],
+      ["a_doctor_gc_remediation", [gc], { fix: null, action: null, explain: ["omaddons", "doctor", "explain", CREDENTIAL_FM],
+        forced: false, text: "omaddons doctor gc --before 30d --dry-run", hint: "Enter explains it" }],
+    ], (issues) => pick(rowsOf(issues)[0]))
+    // A machine issue's repair takes no -t.
+    const machine = M.reduceStatus(statusWithIssues([], [issueJson()])).issues
+    expect(M.issueRows(M.issueSections([], null, [], "", machine))[0].fix.template).toBe("doctor_fix")
+    // A forced remediation is never runnable.
+    expect(M.reduceStatus(statusWithIssues([setAside])).targets[0].issues[0].remediation.runnable).toBe(false)
+  })
+})
+
+describe("doctorResult", () => {
+  test("the table", () => {
+    const pick = (r) => r === null ? null
+      : { dryRun: r.dryRun, actions: r.actions.length, token: r.precondition, report: r.report, repaired: r.repaired, undoable: r.undoable,
+        tx: r.tx, error: r.error ? r.error.code : null }
+    const stale = fixEnvelope({ dryRun: false, state: "REFUSING", exit: 4,
+      error: { code: "plan_stale", message: "the repair changed", fix: null, fix_argv: null, alternatives: [], retryable: false, details: { changed: ["observed"] } } })
+    const refused = fixEnvelope({ dryRun: true, state: "REFUSING", exit: 4,
+      error: { code: "doctor_refused", message: "needs --force", fix: null, fix_argv: null, alternatives: [], retryable: false, details: { reason: "force_required" } } })
+    const remove = { ok: true, schema_version: "1.1", tool_version: "0.1.0", command: "remove", exit_code: 0, partial: false, data: {}, warnings: [], commands: [] }
+    const explain = doctorEnvelope("doctor explain", 0, { failure_mode: { id: CREDENTIAL_FM }, instances: [], skipped: [], incomplete: null }) // ubs:ignore — a failure-mode id, not a secret
+    table([
+      ["dry_run_with_a_chmod", fixEnvelope({ dryRun: true }), { dryRun: true, actions: 1, token: TOKEN, report: true, repaired: false, undoable: false, tx: null, error: null }],
+      ["real_done_ok", fixEnvelope({}), { dryRun: false, actions: 1, token: "", report: true, repaired: true, undoable: true, tx: "01M68DFDPC0000000000000000", error: null }],
+      ["done_partial", fixEnvelope({ state: "DONE_PARTIAL" }), { dryRun: false, actions: 1, token: "", report: true, repaired: true, undoable: true, tx: "01M68DFDPC0000000000000000", error: null }],
+      ["done_failed", fixEnvelope({ state: "DONE_FAILED", taken: 0 }), { dryRun: false, actions: 1, token: "", report: true, repaired: false, undoable: true, tx: "01M68DFDPC0000000000000000", error: null }],
+      ["plan_stale", stale, { dryRun: false, actions: 1, token: "", report: false, repaired: false, undoable: true, tx: "01M68DFDPC0000000000000000", error: "plan_stale" }],
+      ["doctor_refused", refused, { dryRun: true, actions: 1, token: TOKEN, report: false, repaired: false, undoable: false, tx: null, error: "doctor_refused" }],
+      ["a_remove_envelope", remove, null],
+      ["a_doctor_explain_envelope", explain, null],
+      ["a_malformed_token", fixEnvelope({ dryRun: true, token: "pc1:nope" }), { dryRun: true, actions: 1, token: "", report: true, repaired: false, undoable: false, tx: null, error: null }], // ubs:ignore — a malformed preview token, not a secret
+    ], (env) => pick(M.doctorResult(env)))
+  })
+})
+
+describe("displayPath", () => {
+  const targets = [{ id: "retail", clientDir: CONTEXT.HOME + "/Games/wow/_retail_" }]
+  test("the table", () => {
+    table([
+      ["config", [CREDENTIAL_PATH, CONTEXT], "<config>/credentials/github"],
+      ["state", [CONTEXT.XDG_STATE_HOME + "/omaddons/history.jsonl", CONTEXT], "<state>/history.jsonl"],
+      ["cache", [CONTEXT.XDG_CACHE_HOME + "/omaddons/blobs/ab", CONTEXT], "<cache>/blobs/ab"],
+      ["a_client_dir", [CONTEXT.HOME + "/Games/wow/_retail_/Interface/AddOns/Foo", CONTEXT, targets], "retail:Interface/AddOns/Foo"],
+      ["home", [CONTEXT.HOME + "/notes.txt", CONTEXT], "~/notes.txt"],
+      ["outside_every_root", ["/etc/passwd", CONTEXT], "/etc/passwd"],
+      ["not_a_component_boundary", [CONTEXT.XDG_CONFIG_HOME + "/omaddons2/x", CONTEXT], "~/.config/omaddons2/x"],
+      ["below_wtf", [CONTEXT.HOME + "/Games/wow/_retail_/WTF/Account/ME/SavedVariables/x.lua", CONTEXT, targets], "(a path under WTF/, not shown)"],
+      ["the_longest_prefix_wins", [CONTEXT.HOME + "/Games/wow/_retail_", CONTEXT, targets], "retail:"],
+      ["no_context", [CREDENTIAL_PATH], CREDENTIAL_PATH],
+    ], ([p, context, t]) => M.displayPath(p, context, t))
+  })
+})
+
+describe("repairActionLine", () => {
+  test("the table", () => {
+    table([
+      ["chmod", chmodAction(), "chmod 0600 <config>/credentials/github (was 0644)"],
+      ["chmod_without_pre_mode", chmodAction({ pre: { kind: "file" } }), "chmod 0600 <config>/credentials/github"],
+      ["chmod_that_exposes", chmodAction({ mode: "0644", pre: { kind: "file", mode: "0600" } }),
+        "chmod 0644 <config>/credentials/github (was 0600) (readable by other users again)"],
+      ["rewrite_with_a_size", { op: "write_file", path: CREDENTIAL_PATH, mode: "0600", backup: "<run>/backups/github", bytes: 7, pre: { kind: "file" } },
+        "Rewrite <config>/credentials/github (7 B; the old file is kept for undo)"],
+      ["create", { op: "write_file", path: CREDENTIAL_PATH, mode: "0600", bytes: 2048, pre: { kind: "absent" } }, "Create <config>/credentials/github (2.0 KiB)"],
+      ["rewrite_in_a_real_run", { op: "write_file", path: CREDENTIAL_PATH, mode: "0600", backup: "<run>/b", ok: true, pre: { kind: "file" } },
+        "Rewrite <config>/credentials/github (the old file is kept for undo)"],
+      ["move", { op: "rename_noreplace", path: CONTEXT.XDG_CACHE_HOME + "/omaddons/blobs/ab", to: "<run>/quarantine/blobs/ab" },
+        "Move <cache>/blobs/ab to <run>/quarantine/blobs/ab"],
+      ["reactivation", { op: "rename_noreplace", path: "<run>/quarantine/j", to: CONTEXT.XDG_STATE_HOME + "/omaddons/journal/t.jsonl", activation: true },
+        "Reactivate the interrupted change's journal (<state>/journal/t.jsonl); the next change finishes it"],
+      ["an_unknown_op", { op: "set_xattr", path: "/x" }, "set xattr /x"],
+    ], (action) => M.repairActionLine(action, CONTEXT, []))
+  })
+})
+
+describe("doctorPreviewDecision", () => {
+  const spec = { template: "doctor_fix", slots: { fm: CREDENTIAL_FM } }
+  test("the table", () => {
+    const thirteen = Array.from({ length: 13 }, (_, i) => chmodAction({ seq: i, path: CONTEXT.XDG_CONFIG_HOME + "/omaddons/credentials/k" + i }))
+    const pick = (d) => ({ kind: d.kind, token: d.token, line: d.line, lines: d.lines })
+    table([
+      ["one_chmod", fixEnvelope({ dryRun: true }), { kind: "dialog", token: TOKEN, line: "",
+        lines: ["chmod 0600 <config>/credentials/github (was 0644)", "Undo last reverts it"] }],
+      ["bytes_to_back_up", fixEnvelope({ dryRun: true, bytes: 7 }), { kind: "dialog", token: TOKEN, line: "",
+        lines: ["chmod 0600 <config>/credentials/github (was 0644)", "Keeps a copy of 7 B first, for undo", "Undo last reverts it"] }],
+      ["a_delegated_recovery_only", fixEnvelope({ dryRun: true, actions: [], delegated: [{ tx: "01TX", family: "folder", phase: "prepared", direction: "roll_back" }] }),
+        { kind: "dialog", token: TOKEN, line: "", lines: ["Also finishes the interrupted change 01TX (roll back)", "Undo last reverts it"] }],
+      ["nothing_planned", fixEnvelope({ dryRun: true, actions: [] }), { kind: "refresh", token: "", line: "Nothing to repair now; the view is refreshed", lines: [] }],
+      ["another_failure_mode", fixEnvelope({ dryRun: true, actions: [chmodAction(), chmodAction({ fm: "fm-other" })] }),
+        { kind: "refuse", token: "", line: "The preview planned more than this repair; nothing ran", lines: [] }],
+      ["no_token", fixEnvelope({ dryRun: true, token: null }), { kind: "refuse", token: "", line: "The preview gave no token to bind; nothing ran", lines: [] }],
+      ["doctor_refused", fixEnvelope({ dryRun: true, state: "REFUSING", exit: 4, error: { code: "doctor_refused", message: "no" } }),
+        { kind: "failed", token: "", line: "", lines: [] }],
+      ["not_a_doctor_envelope", statusWithIssues([]), { kind: "failed", token: "", line: "", lines: [] }],
+    ], (env) => pick(M.doctorPreviewDecision(spec, env, CONTEXT, [])))
+    const many = M.doctorPreviewDecision(spec, fixEnvelope({ dryRun: true, actions: thirteen }), CONTEXT, [])
+    expect([many.lines.length, many.lines[12], many.lines[13]]).toEqual([14, "(and 1 more)", "Undo last reverts it"])
+    expect(M.dialogText(many).split("\n").length).toBe(14)
+  })
+})
+
+describe("doctorResultLine", () => {
+  test("the table", () => {
+    const three = [chmodAction(), chmodAction({ seq: 1 }), chmodAction({ seq: 2 })]
+    table([
+      ["repaired_one", fixEnvelope({}), "Repaired: chmod 0600 <config>/credentials/github (was 0644)"],
+      ["repaired_three", fixEnvelope({ actions: three }), "Repaired: chmod 0600 <config>/credentials/github (was 0644) (and 2 more)"],
+      ["nothing_repaired", fixEnvelope({ taken: 0, actions: [] }), "Nothing was repaired"],
+      ["nothing_repaired_one_finding_left", fixEnvelope({ state: "DONE_FINDINGS", taken: 0, actions: [], findingsAfter: 1 }),
+        "Nothing was repaired; 1 finding remains (see Issues)"],
+      ["partial", fixEnvelope({ state: "DONE_PARTIAL", findingsAfter: 2 }), "Partly repaired (1 change); 2 findings remain"],
+      ["rolled_back", fixEnvelope({ state: "DONE_FAILED", taken: 0 }), "The repair failed and was rolled back; nothing changed"],
+      ["plan_stale", fixEnvelope({ state: "REFUSING", exit: 4, error: { code: "plan_stale", message: "the files changed" } }), "the files changed"],
+    ], (env) => M.doctorResultLine(env, CONTEXT, []))
+    // resultLine answers a repair with its own line, whatever its exit.
+    expect(M.resultLine(fixEnvelope({ dryRun: true }), CONTEXT, [])).toBe("Nothing was repaired")
+    expect(M.resultLine(fixEnvelope({}), CONTEXT, [])).toBe("Repaired: chmod 0600 <config>/credentials/github (was 0644)")
+  })
+})
+
+describe("explainLines", () => {
+  const fm = (extra) => Object.assign({ id: CREDENTIAL_FM, subsystem: "secrets", severity: "P2", title: "A credential file other users can read",
+    description: "Its mode lets other users read it.", why: "Anyone on this machine can take the token.", tier: "cached",
+    fixer: { ops: ["chmod"], scopes: ["config"], enabled: true, needs_force: false }, manual: null }, extra || {})
+  const instance = (extra) => Object.assign({ id: CREDENTIAL_FM, instance: CREDENTIAL_FM + "@machine", label: "machine · <config>/credentials/github",
+    evidence: { path: CREDENTIAL_PATH, mode: "0644", private: false, size: 41 }, remediation: { command: "omaddons doctor fix --only " + CREDENTIAL_FM } }, extra || {})
+  const env = (f, instances, incomplete) => doctorEnvelope("doctor explain", 0, { failure_mode: f, instances: instances, skipped: [], incomplete: incomplete || null })
+  test("the table", () => {
+    const head = ["A credential file other users can read", "Its mode lets other users read it.", "Why it matters: Anyone on this machine can take the token."]
+    const one = ["machine · <config>/credentials/github", "  mode: 0644", "  path: <config>/credentials/github", "  private: no", "  size: 41",
+      "  In a terminal: omaddons doctor fix --only " + CREDENTIAL_FM]
+    table([
+      ["title_description_why", env(fm(), [instance()]), head.concat(one)],
+      ["no_fixer", env(fm({ fixer: null }), []), head.concat(["No automatic repair", "No instance found now; it may be resolved"])],
+      ["needs_force", env(fm({ fixer: { enabled: true, needs_force: true } }), []),
+        head.concat(["Its repair needs your deliberate consent: read this, then run the command below in a terminal", "No instance found now; it may be resolved"])],
+      ["off_by_default", env(fm({ fixer: { enabled: false, needs_force: false } }), []),
+        head.concat(["Its repair is off by default: run the command below in a terminal", "No instance found now; it may be resolved"])],
+      ["by_hand", env(fm({ manual: { instruction: "chmod 600 <path>", why: "it is outside <config>" } }), []),
+        head.concat(["By hand: chmod 600 <path> (it is outside <config>)", "No instance found now; it may be resolved"])],
+      ["no_instance_and_cut_short", env(fm(), [], { limit: "deadline", deadline_ms: 2000, max_entries: null }),
+        head.concat(["No instance found now; it may be resolved", "The check was cut short (deadline); this may be incomplete"])],
+      ["not_explain", fixEnvelope({ dryRun: true }), []],
+    ], (e) => M.explainLines(e, CONTEXT, []))
+  })
+  test("evidence values, and the bounds", () => {
+    const values = env(fm(), [instance({ evidence: { a_path: CREDENTIAL_PATH, b_wtf: CONTEXT.HOME + "/g/WTF/Account/ME/x", c_list: ["1", "2", "3", "4", "5", "6", "7"],
+      d_object: { x: 1 }, e_null: null } })])
+    expect(M.explainLines(values, CONTEXT, []).slice(4, 7)).toEqual(["  a path: <config>/credentials/github", "  b wtf: (a path under WTF/, not shown)",
+      "  c list: 1, 2, 3, 4, 5 and 2 more"])
+    const keys = {}
+    for (let i = 0; i < 13; i++) keys["k" + String(i).padStart(2, "0")] = i
+    const many = M.explainLines(env(fm(), [instance({ evidence: keys })]), CONTEXT, [])
+    expect(many.filter((l) => l.startsWith("  k")).length).toBe(12)
+    const six = M.explainLines(env(fm(), Array.from({ length: 6 }, (_, i) => instance({ label: "i" + i, evidence: {}, remediation: {} }))), CONTEXT, [])
+    expect(six.slice(3)).toEqual(["i0", "i1", "i2", "i3", "i4", "(and 1 more)"])
+  })
+})
+
+describe("explainFor", () => {
+  test("the table", () => {
+    const explanation = { selection: { key: "p/retail/0" }, lines: ["a"] }
+    table([
+      ["its_row", [explanation, { key: "p/retail/0" }], ["a"]],
+      ["another_row", [explanation, { key: "p/retail/1" }], null],
+      ["no_explanation", [null, { key: "p/retail/0" }], null],
+    ], ([e, row]) => M.explainFor(e, row))
+  })
+})
+
+describe("staleText for doctor fix", () => {
+  const staleFix = (changed) => fixEnvelope({ state: "REFUSING", exit: 4,
+    error: { code: "plan_stale", message: "m", details: changed === undefined ? {} : { changed: changed } } })
+  test("the table", () => {
+    const after = " Nothing ran; check the new preview."
+    table([
+      ["observed", staleFix(["observed"]), "Changed since you looked: the files this repair checks." + after],
+      ["selection_and_observed", staleFix(["selection", "observed"]), "Changed since you looked: what it would do and the files this repair checks." + after],
+      ["no_parts", staleFix(undefined), "Changed since you looked: the repair." + after],
+      ["a_remove", { ok: false, schema_version: "1.1", tool_version: "0.1.0", command: "remove", exit_code: 4,
+        error: { code: "plan_stale", message: "m", details: { changed: ["observed"] } } }, "Changed since you looked: observed." + after],
+    ], (env) => M.staleText(env))
+  })
+})
+
+describe("repair undo texts", () => {
+  const undoEnv = (revertedKind, targets) => ({ ok: true, schema_version: "1.1", tool_version: "0.1.0", command: "undo", exit_code: 0, partial: false,
+    data: { dry_run: true, kind: "repair", reverted: { tx: "01TX", kind: revertedKind, targets: targets }, folders: null,
+      repairs: [{ seq: 0, fix: 0, fm: CREDENTIAL_FM, op: "chmod", path: CREDENTIAL_PATH, to_rel: null, octal_mode: "0644", activation: false }] },
+    warnings: [], commands: [] })
+  test("the table", () => {
+    table([
+      ["label_home_side", M.lastChangeOf({ kind: "repair", targets: [], undo: null }).label, "Undo repair"],
+      ["label_on_a_client", M.lastChangeOf({ kind: "repair", targets: ["retail"], undo: null }).label, "Undo repair on retail"],
+      ["undo_dialog", M.confirmText("undo", undoEnv("repair", []), CONTEXT, []),
+        "Undo repair: 1 change\nchmod 0644 <config>/credentials/github (readable by other users again)"],
+      ["redo_dialog", M.confirmText("undo", undoEnv("undo", [{ id: "retail", key: "k" }]), CONTEXT, []).split("\n")[0], "Redo repair on retail: 1 change"],
+      ["result", M.resultLine(Object.assign(undoEnv("repair", []), { data: Object.assign(undoEnv("repair", []).data, { dry_run: false }) })), "Undid repair (1 change)"],
+      ["a_folder_undo", M.confirmText("undo", { ok: true, schema_version: "1.1", tool_version: "0.1.0", command: "undo", exit_code: 0,
+        data: { kind: "folders", reverted: { kind: "update" }, transactions: [{ target: { id: "retail" } }], folders: { restored: ["A"], removed: [] } } }),
+        "Undo update on retail: 1 folder restored, 0 removed"],
+    ], (value) => value)
+  })
+})
+
+describe("resultUndo", () => {
+  const undoArgv = ["omaddons", "undo", "--run", "01RUN"]
+  const repairChange = (extra) => Object.assign({ unknown: false, kind: "repair", label: "Undo repair",
+    undo: { command: undoArgv.join(" "), argv: undoArgv, runnable: true } }, extra || {})
+  const updateResult = { ok: true, commands: [{ action: "undo_run", command: "omaddons undo --run 01U", argv: ["omaddons", "undo", "--run", "01U"], runnable: true }] }
+  test("the table", () => {
+    table([
+      ["a_repair_status_seen", [{ repair: true, statusSeen: true }, repairChange()], { action: "undo_run", command: undoArgv.join(" "), argv: undoArgv, runnable: true }],
+      ["status_not_seen_yet", [{ repair: true, statusSeen: false }, repairChange()], null],
+      ["the_last_change_is_an_update", [{ repair: true, statusSeen: true }, repairChange({ kind: "update" })], null],
+      ["unknown", [{ repair: true, statusSeen: true }, { unknown: true }], null],
+      ["not_runnable", [{ repair: true, statusSeen: true }, repairChange({ undo: { command: "x", argv: null, runnable: false } })], null],
+      ["an_updates_result", [updateResult, null], updateResult.commands[0]],
+      ["a_repair_result_with_only_a_doctor_undo_hint", [{ repair: true, statusSeen: false,
+        commands: [{ action: "undo", command: "omaddons doctor undo r", argv: ["omaddons", "doctor", "undo", "r"], runnable: true }] }, null], null],
+    ], ([result, change]) => M.resultUndo(result, change))
+  })
 })

@@ -231,14 +231,36 @@ fn every_template_is_a_registry_command_with_safe_slots() {
         let preview = template.get("preview");
         if let Some(preview) = preview {
             assert!(
-                preview == "match" || preview == "confirm",
-                "{name}: preview is match or confirm, not {preview}"
+                preview == "match" || preview == "confirm" || preview == "bind",
+                "{name}: preview is match, confirm or bind, not {preview}"
             );
-            assert!(
-                plan_paths.contains(&path),
-                "{name}: a preview on {path}, which stores no plan"
-            );
+            if preview == "bind" {
+                // G2: a bound preview's Yes is its own argv with the preview's token, on a
+                // path that binds and stores no plan (M4-D44), never a destructive one.
+                assert!(
+                    BINDING_COMMANDS.contains(&path.as_str()),
+                    "{name}: bind on {path}, which takes no --if-match"
+                );
+                assert!(
+                    !plan_paths.contains(&path),
+                    "{name}: bind on {path}, a path that stores plans"
+                );
+                assert!(
+                    !DESTRUCTIVE.contains(&path.as_str()),
+                    "{name}: bind on the destructive {path}"
+                );
+            } else {
+                assert!(
+                    plan_paths.contains(&path),
+                    "{name}: a preview on {path}, which stores no plan"
+                );
+            }
         }
+        // Consent is a terminal's (M4-D38), and gc and doctor undo are never the widget's.
+        assert!(
+            path != "doctor gc" && path != "doctor undo",
+            "{name}: a template on {path}"
+        );
         if DESTRUCTIVE.contains(&path.as_str()) {
             assert!(
                 preview.is_some_and(|p| p == "confirm"),
@@ -267,13 +289,24 @@ fn every_template_is_a_registry_command_with_safe_slots() {
                     "{name}: {flag} is the widget's"
                 );
             }
+            assert!(
+                flag != "--force" && flag != "--yes",
+                "{name}: {flag} gives consent, which only a terminal gives"
+            );
             let Some(open) = part.find('{') else { continue };
             let slot = &part[open + 1..part.len() - 1];
             assert!(part.ends_with('}'), "{name}: malformed slot {part}");
             assert!(
-                ["target", "addon", "ref", "backup", "query"].contains(&slot),
+                ["target", "addon", "ref", "backup", "query", "fm"].contains(&slot),
                 "{name}: unknown slot {part}"
             );
+            // A failure-mode id is one `--only=` element of `doctor fix`, never a list.
+            if slot == "fm" {
+                assert!(
+                    part == "--only={fm}" && path == "doctor fix",
+                    "{name}: {{fm}} outside --only on doctor fix ({part} on {path})"
+                );
+            }
             if slot == "query" {
                 assert!(!mutates, "{name}: free text in a mutation");
             }
@@ -638,6 +671,15 @@ fn the_output_cap_bounds_every_template() {
         } else if name == "dismiss_errors" {
             // Counts per client, never a list of errors.
             Some(CLIENTS * ROW + ANSWER)
+        } else if matches!(name.as_str(), "doctor_fix" | "doctor_fix_target") {
+            // A repair's report (G2): at most DOCTOR_FIX_MAX_ACTIONS planned primitives
+            // (a larger plan is refused before it is reported), and every client's
+            // findings.
+            Some(
+                omaddons::limits::DOCTOR_FIX_MAX_ACTIONS as u64 * support::ACTION_ROW
+                    + CLIENTS * ADDONS * support::FINDING_ROW
+                    + ANSWER,
+            )
         } else if argv.contains("{addon}") || argv.contains("{ref}") {
             Some(base + slope)
         } else {
@@ -649,6 +691,13 @@ fn the_output_cap_bounds_every_template() {
             "{name}: worst case {bound:?} bytes ≥ {cap}"
         );
     }
+    // The CLI reads the widget runs from CLI argv, not from a template (G2): a row's
+    // `doctor explain`, every client's findings at worst.
+    let explain = CLIENTS * ADDONS * support::FINDING_ROW + ANSWER;
+    assert!(
+        explain < cap,
+        "doctor explain: worst case {explain} bytes ≥ {cap}"
+    );
 }
 
 /// Pipeline step 3: every argv bun built (`built-argv.json`) parses with the binary's
@@ -792,12 +841,40 @@ fn validate_built_argv() {
                 "unknown_path",
                 "not_omaddons",
                 "malformed",
-                "apply_outside_plan"
+                "apply_outside_plan",
+                "irreversible",
+                "consent_flag",
+                "doctor_gc",
+                "own_flow_only"
             ]
             .contains(&reason),
             "{argv:?}: unknown reason {reason:?}"
         );
+        // G2: the first two words before a flag, as the classifier reads them.
+        let words: Vec<&str> = argv[1..end]
+            .iter()
+            .take_while(|a| !a.is_empty() && !a.starts_with('-'))
+            .take(2)
+            .map(String::as_str)
+            .collect();
         match reason {
+            "consent_flag" => assert!(
+                argv[1..]
+                    .iter()
+                    .any(|a| matches!(a.split('=').next(), Some("--force" | "--yes"))),
+                "{argv:?}: consent_flag without --force or --yes"
+            ),
+            "doctor_gc" => assert_eq!(words, ["doctor", "gc"], "{argv:?}"),
+            "own_flow_only" => assert!(
+                words == ["doctor", "fix"] || words == ["doctor", "undo"],
+                "{argv:?}: own_flow_only on {words:?}"
+            ),
+            "irreversible" => assert!(
+                argv[1..end]
+                    .iter()
+                    .any(|a| a.split('=').next() == Some("--purge")),
+                "{argv:?}: irreversible without --purge"
+            ),
             "widget_flag" => assert!(
                 argv[1..end]
                     .iter()
@@ -867,6 +944,13 @@ mod support {
     use super::common::http::{Asset, gh_latest, gh_release_v, paths};
 
     /// The paths whose runs always go through a preview (M3-D9).
+    /// One planned repair primitive in a `doctor fix` report: two predicates, its
+    /// paths, its backup and its size (G2; omad-m4-agent-surface-doctor-c6cm.7.2.4
+    /// measures it from the binary's envelopes).
+    pub const ACTION_ROW: u64 = 1024;
+    /// One finding: its instance, label, evidence, remediation and explain argv.
+    pub const FINDING_ROW: u64 = 1024;
+
     pub const DESTRUCTIVE: &[&str] = &[
         "remove",
         "undo",

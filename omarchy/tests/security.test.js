@@ -760,12 +760,22 @@ describe("each scan catches its planted violation", () => {
 describe("the mechanisms behind the scans", () => {
   const CONTEXT = { HOME: "/h", XDG_CONFIG_HOME: "/h/c", XDG_STATE_HOME: "/h/s", XDG_CACHE_HOME: "/h/k", XDG_DATA_HOME: "/h/d" }
   const opts = { binary: "/opt/omaddons", label: "Test", context: CONTEXT }
-  const slotsOf = (name) => Object.fromEntries((M.COMMANDS[name].argv.join(" ").match(/\{(\w+)\}/g) || []).map((s) => [s.slice(1, -1), "x"]))
+  // Every slot `x`, except a failure-mode id, which must be one (`fm-x`).
+  const slotsOf = (name) => Object.fromEntries((M.COMMANDS[name].argv.join(" ").match(/\{(\w+)\}/g) || [])
+    .map((s) => [s.slice(1, -1), s === "{fm}" ? "fm-x" : "x"]))
 
   test("every previewed template and destructive path refuses to run without its preview", () => {
-    const needing = Object.keys(M.COMMANDS).filter(needsPreview)
+    const bound = Object.keys(M.COMMANDS).filter((name) => M.COMMANDS[name].preview === "bind")
+    const needing = Object.keys(M.COMMANDS).filter((name) => needsPreview(name) && bound.indexOf(name) === -1)
     expect(needing.sort()).toEqual(["install", "prune_backup", "reinstall", "remove", "restore", "restore_addon",
       "update_addon", "update_all", "update_target"])
+    // A repair's Yes is its own argv bound to its preview's token (G2): never without it.
+    expect(bound.sort()).toEqual(["doctor_fix", "doctor_fix_target"])
+    for (const name of bound) {
+      expect(() => M.buildArgv(name, slotsOf(name), opts)).toThrow(/token_required/)
+      expect(M.buildArgv(name, slotsOf(name), Object.assign({ preview: true }, opts)).argv).toContain("--dry-run")
+      expect(M.buildArgv(name, slotsOf(name), Object.assign({ token: "pc1:" + "0".repeat(64) }, opts)).argv).toContain("--if-match")
+    }
     for (const name of needing) {
       // Its Yes is its preview's plan, applied (M4-D28): the real form never builds.
       expect(() => M.buildArgv(name, slotsOf(name), opts)).toThrow(/preview_required/)
@@ -773,7 +783,9 @@ describe("the mechanisms behind the scans", () => {
     }
     for (const [cliPath, row] of Object.entries(M.CLI_PATHS)) {
       if (!row.destructive) continue
-      expect(() => M.cliArgv(["omaddons"].concat(cliPath.split(" ")).concat(["-t", "retail"]), opts)).toThrow(/destructive_without_preview/)
+      // `doctor undo` and `doctor gc` are refused before that, never the widget's (G2).
+      const refusal = cliPath === "doctor gc" ? /doctor_gc/ : cliPath === "doctor undo" ? /own_flow_only/ : /destructive_without_preview/
+      expect(() => M.cliArgv(["omaddons"].concat(cliPath.split(" ")).concat(["-t", "retail"]), opts)).toThrow(refusal)
     }
   })
 

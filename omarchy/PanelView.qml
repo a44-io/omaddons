@@ -107,7 +107,7 @@ Item {
   readonly property var undo: Model.undoAction(lastChange)
   readonly property var openArgv: Model.addonsDirArgv(selectedTarget)
   readonly property var lastResult: svc ? svc.lastResult : null
-  readonly property var resultUndo: Model.resultUndo(lastResult)
+  readonly property var resultUndo: Model.resultUndo(lastResult, lastChange)
   readonly property var lastError: svc ? svc.lastError : null
   readonly property var confirm: svc ? svc.confirm : null
   readonly property bool confirming: !!confirm
