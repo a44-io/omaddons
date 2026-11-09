@@ -6,46 +6,57 @@ import ".."
 import "../ui"
 import "../Model.js" as Model
 
-// The Issues view (F6): what is wrong and its fix one key away (Model.issueSections).
-// Problems from `status` by severity: Enter previews a repair the doctor can make (its
-// confirmed run bound to that preview, M4-D44), runs another fix through the classifier
-// (destructive ones through the confirm dialog), or shows the doctor's explanation; a
-// repair that needs deliberate consent (`--force --yes`) shows its terminal command
-// instead, never a button; the run warnings with their fixes. Lua errors have their own
-// view (ErrorsView.qml, 1n2p.27). The keys are Model.KEYMAP's issues rows.
+// The Issues view (1n2p.28, design doc §2.3, §6.5, §6.6): every problem in words, each
+// with one named fix (Model.issueSections). The machine's problems come first ("This
+// computer"), then each client's under its player name; then what `status` recommends
+// and no problem already offers ("Suggested"), then the notes of its warnings. A row is
+// its severity word, one sentence and its buttons: the fix (a repair the doctor makes
+// previews in the plan sheet and runs bound to that preview, M4-D44; a reinstall or an
+// update previews through its template; anything else runs through the classifier, or
+// opens the view that does it), Explain (the problem's page, ProblemPage.qml, with the
+// doctor's explanation) and Copy command for what the panel never runs (a forced
+// repair, a purge: §6.5.4, with why). Enter runs the fix, else explains; `e` explains;
+// `y` copies. The keys are Model.KEYMAP's issues rows.
 Item {
   id: root
 
   property var frame: null
   readonly property var svc: frame ? frame.svc : null
   readonly property string filter: frame ? frame.filter : ""
-  readonly property var sections: Model.issueSections(svc && Array.isArray(svc.targets) ? svc.targets : [],
-    svc && Array.isArray(svc.statusWarnings) ? svc.statusWarnings : [], filter,
-    svc && Array.isArray(svc.machineIssues) ? svc.machineIssues : [])
+  readonly property var statusTargets: svc && Array.isArray(svc.targets) ? svc.targets : []
+  readonly property var warnings: svc && Array.isArray(svc.statusWarnings) ? svc.statusWarnings : []
+  readonly property var machineIssues: svc && Array.isArray(svc.machineIssues) ? svc.machineIssues : []
+  readonly property var commands: svc && Array.isArray(svc.commands) ? svc.commands : []
+  readonly property var sections: Model.issueSections(statusTargets, warnings, filter, machineIssues, commands)
   readonly property var rows: Model.issueRows(sections)
-  // What the view says around its rows (design doc §7): checking, nothing to fix.
-  readonly property var viewState: Model.viewState("issues", { "service": svc, "filter": filter, "rows": rows.length,
-    "allRows": filter ? Model.issueRows(Model.issueSections(svc && Array.isArray(svc.targets) ? svc.targets : [],
-      svc && Array.isArray(svc.statusWarnings) ? svc.statusWarnings : [], "", svc && Array.isArray(svc.machineIssues) ? svc.machineIssues : [])).length
-      : rows.length, "nowMs": frame ? frame.nowMs : Date.now() })
+  // What the view says around its rows (design doc §7): checking, or nothing to fix. It
+  // counts problems only: suggestions and notes stay listed under "Nothing needs fixing."
+  readonly property var viewState: Model.viewState("issues", { "service": svc, "filter": filter,
+    "rows": Model.problemCount(sections),
+    "allRows": filter ? Model.problemCount(Model.issueSections(statusTargets, warnings, "", machineIssues, commands)) : Model.problemCount(sections),
+    "nowMs": frame ? frame.nowMs : Date.now() })
   readonly property int rowCount: rows.length
   readonly property bool typing: false
-  // The problem row whose explanation (`doctor explain`) is open, by key.
-  property string explainOpen: ""
-  // The row whose command `y` copied last, by key.
+  // The row whose command `y` copied last, by key, said for a moment (the copy flash).
   property string copied: ""
-  // Each row's delegate, by its cursor index (for rowItem).
-  property var items: ({})
 
   readonly property color foreground: frame ? frame.foreground : Commons.Color.foreground
   readonly property color dim: frame ? frame.dim : Qt.darker(foreground, 1.55)
   readonly property color urgent: frame ? frame.urgent : Commons.Color.urgent
+  readonly property color accent: frame ? frame.accent : Commons.Color.accent
   readonly property string fontFamily: frame ? frame.fontFamily : Style.font.family
   readonly property bool canChange: !!frame && frame.canAct && !frame.busy
 
   implicitHeight: column.implicitHeight
 
-  function rowItem(i) { return items[i] || null }
+  function rowItem(i) {
+    for (var s = 0; s < sectionRepeater.count; s++) {
+      var section = sectionRepeater.itemAt(s)
+      var found = section ? section.rowAt(i) : null
+      if (found) return found
+    }
+    return null
+  }
 
   function handleKey(name, cursor) {
     var row = cursor >= 0 && cursor < rows.length ? rows[cursor] : null
@@ -53,45 +64,97 @@ Item {
       if (row) activate(row)
       return true
     }
+    if (name === "explain") {
+      if (row && row.explain) openPage(row)
+      return true
+    }
     // `y`: the command a row shows instead of running (a purge, a forced repair), copied
     // to run from a terminal.
     if (name === "copy") {
-      if (row && svc && svc.copyCommand(Model.copyText(row))) copied = row.key
+      if (row) copyRow(row)
       return true
     }
     return false
   }
 
+  // Enter: the row's fix, else its explanation.
   function activate(row) {
-    // A repair the doctor makes: its preview, through the bound template (never the
-    // remediation argv the CLI printed).
-    if (row.kind === "problem" && row.fix) {
-      if (canChange) frame.report(svc.run(row.fix.template, row.fix.slots, row.fix.label))
-      return
-    }
-    if (row.action) {
-      frame.runCli(row.action, "Fix")
-      return
-    }
-    // No fix to run here (a forced repair, a command for a terminal): why, from the doctor.
-    if (row.kind === "problem" && row.explain) toggleExplain(row)
+    if (row.primary === "fix") return runFix(row)
+    if (row.primary === "explain") return openPage(row)
+    return false
   }
 
-  // An explanation is a read: it opens while a change runs, as raw details do.
-  function toggleExplain(row) {
-    if (!svc) return
-    if (explainOpen === row.key) {
-      explainOpen = ""
-      svc.clearExplanation()
-      return
+  // A button of a row, or of its page: its fix, its page, or its command copied.
+  function press(row, name) {
+    if (name === "fix") return runFix(row)
+    if (name === "explain") return openPage(row)
+    if (name === "copy") return copyRow(row)
+    return false
+  }
+
+  // The row's fix: a template (a repair the doctor makes, bound to its preview; a
+  // reinstall or update, previewed first), the CLI's own argv through the classifier, or
+  // the view or frame action that does it. Never the remediation argv of a repair.
+  function runFix(row) {
+    if (row.fix) {
+      if (canChange) frame.report(svc.run(row.fix.template, row.fix.slots, row.fix.label))
+      return true
     }
-    explainOpen = row.key
-    svc.readExplanation(row.key, row.explain.argv)
+    if (row.action) {
+      frame.runCli(row.action, row.fixLabel)
+      return true
+    }
+    if (row.go) return go(row.go)
+    return false
+  }
+
+  // A fix the panel has its own way to: Check now, a refresh, reinstalling the panel, or
+  // the view that shows it (reading its data again), scoped to the client it is for.
+  function go(where) {
+    if (where.kind === "check") return frame.checkNow()
+    if (where.kind === "refresh") return svc.refresh()
+    if (where.kind === "widget") {
+      if (canChange) svc.reinstallWidget()
+      return true
+    }
+    // Taking over folders is the first-run flow's, once it registers (as Addons' Take over…).
+    if (where.kind === "adopt" && frame.keyHandlers && typeof frame.keyHandlers["adopt"] === "function") {
+      if (canChange) frame.keyHandlers["adopt"](frame, where.target)
+      return true
+    }
+    if (where.target) frame.setFilter(where.target)
+    frame.showView(where.view)
+    if (where.view === "errors" || where.view === "backups") svc.readAgain(where.view)
+    return true
+  }
+
+  // The problem's page, on the navigation stack (§2.4): what the doctor says of it.
+  function openPage(row) {
+    if (!row.explain) return false
+    return frame.push({ "title": row.severityWord, "component": pageComponent, "props": { "rowKey": row.key, "initial": row, "owner": root } })
+  }
+
+  function copyRow(row) {
+    if (!svc || !svc.copyCommand(Model.copyText(row))) return false
+    copied = row.key
+    copiedTimer.restart()
+    return true
   }
 
   function select(index) {
     frame.cursor = index
     frame.cursorActive = true
+  }
+
+  Timer {
+    id: copiedTimer
+    interval: 1500
+    onTriggered: root.copied = ""
+  }
+
+  Component {
+    id: pageComponent
+    ProblemPage {}
   }
 
   Column {
@@ -109,223 +172,188 @@ Item {
     }
 
     Repeater {
+      id: sectionRepeater
       objectName: "sections"
       model: root.sections
 
       Column {
         id: section
         required property var modelData
+        objectName: "issuesSection_" + modelData.key
         width: column.width
-        spacing: Style.spacing.sm
+        spacing: Style.spacing.xs
 
-        // "Problems", "Run warnings".
+        function rowAt(i) {
+          for (var r = 0; r < rowRepeater.count; r++) {
+            var item = rowRepeater.itemAt(r)
+            if (item && item.modelData.index === i) return item
+          }
+          return null
+        }
+
+        // "This computer", a client's player name with its problems, "Suggested", "Notes".
         SectionHeader {
           objectName: "issuesSection"
           width: parent.width
           title: section.modelData.title
+          count: section.modelData.count
           foreground: root.foreground
           dim: root.dim
           fontFamily: root.fontFamily
         }
 
         Repeater {
+          id: rowRepeater
           model: section.modelData.rows
 
-          Column {
+          Item {
             id: entry
             required property var modelData
             objectName: "issueRow_" + modelData.index
             width: section.width
-            spacing: Style.spacing.sm
-            // The doctor's explanation of this row only: its lines, or why it could not
-            // be read (view-bound, as raw details).
-            readonly property bool explainShown: root.explainOpen === modelData.key
-            readonly property var explanationOf: explainShown && root.svc ? root.svc.explanation : null
-            readonly property var explained: explainShown ? Model.explainFor(explanationOf, modelData) : null
-            readonly property string explainFailed: !!explanationOf && !!explanationOf.selection
-              && explanationOf.selection.key === modelData.key && typeof explanationOf.failed === "string" ? explanationOf.failed : ""
+            implicitHeight: body.implicitHeight + Style.spacing.md * 2
+            height: implicitHeight
+            readonly property bool cursored: !!root.frame && root.frame.cursorActive && root.frame.cursor === entry.modelData.index
+            readonly property string glyph: entry.modelData.glyph ? String.fromCodePoint(entry.modelData.glyph) : ""
 
-            Component.onCompleted: root.items[modelData.index] = entry
-            Component.onDestruction: if (root.items[modelData.index] === entry) delete root.items[modelData.index]
+            Accessible.role: Accessible.ListItem
+            Accessible.name: [entry.modelData.severityWord, entry.modelData.title].filter(function(p) { return p !== "" }).join(": ")
 
             CursorSurface {
-              width: parent.width
-              implicitHeight: rowColumn.implicitHeight + Style.spacing.md * 2
-              hasCursor: !!root.frame && root.frame.cursorActive && root.frame.cursor === entry.modelData.index
+              anchors.fill: parent
+              hasCursor: entry.cursored
               foreground: root.foreground
+              accent: root.accent
+            }
 
-              Column {
-                id: rowColumn
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.leftMargin: Style.spacing.lg
-                anchors.rightMargin: Style.spacing.lg
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: Style.spacing.sm
-
-                // The row's headline: a problem's severity and title, or a warning.
-                Row {
-                  spacing: Style.spacing.lg
-
-                  PlainLabel {
-                    visible: entry.modelData.kind === "problem"
-                    text: entry.modelData.kind === "problem" ? entry.modelData.severity : ""
-                    color: entry.modelData.urgent ? root.urgent : root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
-                    font.bold: true
-                  }
-
-                  PlainLabel {
-                    objectName: "headline"
-                    color: root.foreground
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.body
-                    text: entry.modelData.title
-                  }
-
-                  // Problems of every client mix under All: each names its client by its
-                  // player name; under one client the scope already does (§2.1).
-                  PlainLabel {
-                    objectName: "problemClient"
-                    visible: root.filter === "" && entry.modelData.kind === "problem"
-                    color: root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
-                    text: entry.modelData.client || ""
-                  }
-                }
-
-                // A command that needs deliberate consent (`--force`, `--yes`): read why when
-                // the doctor explains it, then run it yourself.
-                PlainLabel {
-                  objectName: "consentNote"
-                  visible: entry.modelData.kind === "problem" && entry.modelData.forced === true
-                  width: rowColumn.width
-                  wrapMode: Text.WordWrap
-                  color: root.urgent
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  text: entry.modelData.explain
-                    ? "A deliberate repair: read why (" + Model.keyHint("enter", "issues") + "), then run this in a terminal:"
-                    : "This needs your deliberate consent: run it in a terminal:"
-                }
-
-                // The command, when it is no button; a repair's is not shown, since its
-                // preview lists what it does.
-                PlainLabel {
-                  objectName: "commandText"
-                  visible: !!entry.modelData.text && !entry.modelData.fix
-                  width: rowColumn.width
-                  wrapMode: Text.WordWrap
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  text: entry.modelData.text || ""
-                }
-
-                // What an irreversible command (a purge) deletes, and why it is no button.
-                PlainLabel {
-                  objectName: "irreversibleNote"
-                  visible: !!entry.modelData.note
-                  width: rowColumn.width
-                  wrapMode: Text.WordWrap
-                  color: root.urgent
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  text: entry.modelData.note || ""
-                }
-
-                PlainLabel {
-                  objectName: "copyHint"
-                  visible: Model.copyText(entry.modelData) !== "" && !entry.modelData.fix
-                  text: root.copied === entry.modelData.key ? "Copied"
-                    : Model.keyHint("copy", "issues") + " copies the command"
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                }
-
-                // A problem's hint is its row's (Model.problemRow: previews the repair,
-                // runs the fix, explains it); a warning row's says what Enter runs.
-                PlainLabel {
-                  objectName: "enterHint"
-                  visible: entry.modelData.kind === "problem" ? !!entry.modelData.hint : !!entry.modelData.action
-                  text: entry.modelData.kind === "problem" ? (entry.modelData.hint || "")
-                    : Model.keyHint("enter", "issues") + " runs the fix"
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                }
-              }
-
-              MouseArea {
-                anchors.fill: parent
-                onClicked: root.select(entry.modelData.index)
-                onDoubleClicked: root.handleKey("enter", entry.modelData.index)
+            // The whole row is the target (§4): a click puts the cursor on it, a double
+            // click runs Enter. Its buttons take their own clicks.
+            MouseArea {
+              anchors.fill: parent
+              onClicked: root.select(entry.modelData.index)
+              onDoubleClicked: {
+                root.select(entry.modelData.index)
+                root.handleKey("enter", entry.modelData.index)
               }
             }
 
-            // Enter on a problem with no fix to run here: the doctor's explanation, its
-            // lines as plain text, under the row.
+            // A problem's band: urgent for broken or needs attention (§5.3).
+            Rectangle {
+              objectName: "band"
+              width: Style.space(3)
+              height: parent.height
+              color: root.urgent
+              visible: entry.modelData.band === "urgent"
+            }
+
+            PlainLabel {
+              id: glyphLabel
+              objectName: "glyph"
+              x: Style.spacing.lg
+              y: Style.spacing.md
+              width: Style.font.icon + Style.spacing.sm
+              color: entry.modelData.band === "urgent" ? root.urgent : root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.icon
+              text: entry.glyph
+            }
+
             Column {
-              objectName: "explanation"
-              visible: entry.explainShown
-              width: entry.width
-              leftPadding: Style.spacing.lg
-              spacing: Style.spacing.sm
+              id: body
+              x: glyphLabel.x + glyphLabel.width + Style.spacing.sm
+              y: Style.spacing.md
+              width: entry.width - x - Style.spacing.lg
+              spacing: Style.spacing.xs
 
-              Repeater {
-                objectName: "explanationLines"
-                model: entry.explained || []
-
-                PlainLabel {
-                  required property string modelData
-                  width: entry.width - Style.spacing.lg * 2
-                  wrapMode: Text.WordWrap
-                  color: root.foreground
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  text: modelData
-                }
+              // "Broken", "Needs attention", "Worth fixing", "Minor" (§6.3).
+              PlainLabel {
+                objectName: "severity"
+                visible: entry.modelData.severityWord !== ""
+                width: parent.width
+                color: entry.modelData.urgent ? root.urgent : root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+                text: entry.modelData.severityWord
               }
 
-              Text {
-                objectName: "explanationReading"
-                visible: entry.explainShown && entry.explained === null && entry.explainFailed === ""
-                textFormat: Text.PlainText
-                text: "Reading…"
+              // The problem, the suggestion or the note: one sentence, wrapped, never elided.
+              PlainLabel {
+                objectName: "headline"
+                width: parent.width
+                wrapMode: Text.WordWrap
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                text: entry.modelData.title
+              }
+
+              // A fix that is prose: what to do, as `status` says it.
+              PlainLabel {
+                objectName: "prose"
+                visible: entry.modelData.prose !== ""
+                width: parent.width
+                wrapMode: Text.WordWrap
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
+                text: entry.modelData.prose
               }
 
+              // Why a command is no button (§6.5.4), then the command, code-styled.
               PlainLabel {
-                objectName: "explanationFailed"
-                visible: entry.explainFailed !== ""
-                width: entry.width - Style.spacing.lg * 2
+                objectName: "terminalNote"
+                visible: entry.modelData.note !== ""
+                width: parent.width
                 wrapMode: Text.WordWrap
                 color: root.urgent
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
-                text: "Could not read the explanation: " + entry.explainFailed
+                text: entry.modelData.note
+              }
+
+              PlainLabel {
+                objectName: "commandText"
+                visible: entry.modelData.text !== ""
+                width: parent.width
+                wrapMode: Text.WrapAnywhere
+                color: root.dim
+                font.family: "monospace"
+                font.pixelSize: Style.font.caption
+                text: entry.modelData.text
+              }
+
+              // The named fix, Explain and Copy command (§2.3); a key's hint on hover.
+              Flow {
+                objectName: "buttons"
+                visible: entry.modelData.buttons.length > 0
+                width: parent.width
+                spacing: Style.spacing.sm
+
+                Repeater {
+                  model: entry.modelData.buttons
+
+                  Button {
+                    required property var modelData
+                    objectName: "issueButton_" + modelData.name
+                    text: modelData.name === "copy" && root.copied === entry.modelData.key ? Model.copy("issues.copied") : modelData.text
+                    tooltipText: modelData.tooltip
+                    // A fix waits for a compatible answer and no change running; reading
+                    // why and copying a command never do.
+                    enabled: modelData.name !== "fix" || root.canChange
+                    opacity: enabled ? 1.0 : 0.4
+                    bordered: true
+                    foreground: root.foreground
+                    fontFamily: root.fontFamily
+                    fontSize: Style.font.bodySmall
+                    onClicked: {
+                      root.select(entry.modelData.index)
+                      root.press(entry.modelData, modelData.name)
+                    }
+                  }
+                }
               }
             }
-
-          }
-        }
-
-        // A section's lines, when it has some.
-        Repeater {
-          model: section.modelData.lines
-
-          PlainLabel {
-            required property string modelData
-            width: section.width
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            text: modelData
           }
         }
       }

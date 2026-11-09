@@ -207,8 +207,8 @@ TestCase {
     verify(at >= 0, "the credential row: " + JSON.stringify(content().rows))
     frame.cursor = at
     frame.cursorActive = true
-    compare(findChild(content(), "issueRow_" + at) && findChild(findChild(content(), "issueRow_" + at), "enterHint").text,
-      "Enter previews the repair")
+    var fixButton = findChild(content(), "issueRow_" + at) && findChild(findChild(content(), "issueRow_" + at), "issueButton_fix")
+    compare(fixButton && [fixButton.text, fixButton.tooltipText], ["Repair", "Enter previews the repair"])
     keyClick(Qt.Key_Return)
     var preview = lastRun("doctor")
     compare(words(preview.command), ["doctor", "fix", "--only=" + credentialFm], "Enter previews the repair")
@@ -263,22 +263,28 @@ TestCase {
     var row = findChild(content(), "issueRow_0")
     var issue = fixture("setaside-status").data.targets.filter(function(t) { return t.id === "retail" })[0].issues[0]
     compare(issue.id, setAsideFm)
-    verify(findChild(row, "consentNote").visible)
+    verify(findChild(row, "terminalNote").visible)
     compare(findChild(row, "commandText").text, issue.remediation.command, "the exact command, --force --yes included")
-    compare(findChild(row, "enterHint").text, "Enter explains it")
+    compare(findChild(row, "issueButton_fix"), null, "a forced repair is never a button")
+    compare(findChild(row, "issueButton_explain").text, "Explain")
+    // Enter, with nothing to run, opens the problem's page, which reads the explanation.
     keyClick(Qt.Key_Return)
+    compare(frame.pages.length, 1)
+    var page = findChild(frame, "page").item
     var explain = lastRun("doctor")
     compare(words(explain.command), ["doctor", "explain", setAsideFm, "-t", "retail"])
     verify(explain.command.indexOf("--progress") === -1, "a read")
     answer(explain, "setaside-explain")
-    var lines = findChild(row, "explanationLines")
+    var lines = findChild(page, "explanationLines")
     tryVerify(function() { return lines.count > 0 }, 3000, "the explanation's lines")
     compare(lines.itemAt(0).text, fixture("setaside-explain").failure_mode.title)
     var terminal = false
     for (var i = 0; i < lines.count; i++) if (lines.itemAt(i).text.indexOf("  In a terminal: ") === 0) terminal = true
     verify(terminal, "a line with the command for a terminal")
-    keyClick(Qt.Key_Return)
-    verify(!findChild(row, "explanation").visible, "Enter again closes it")
+    compare(findChild(page, "pageCommand").text, issue.remediation.command)
+    keyClick(Qt.Key_Escape)
+    compare(frame.pages.length, 0, "Esc goes back to the view")
+    compare(service.explanation, null, "the explanation goes with its page")
     compare(runs("doctor").filter(function(l) { return words(l.command)[1] === "fix" }).length, 0, "no repair from a forced row: " + launchLog())
   }
 

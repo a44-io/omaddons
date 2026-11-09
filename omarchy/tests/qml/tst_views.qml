@@ -85,6 +85,8 @@ TestCase {
       property var errors: null
       property var statusWarnings: []
       property var machineIssues: []
+      // `status`'s recommendations, reduced (the Issues view's suggestions, 1n2p.28).
+      property var commands: []
       property var rawErrors: null
       // The doctor's explanation a problem row asked for, and every readExplanation call.
       property var explanation: null
@@ -658,12 +660,13 @@ TestCase {
   }
 
   function issuesReady(partial) {
+    var reinstall = ["omaddons", "install", "Plater", "-t", "era", "--reinstall"]
     svc.targets = [
       { "id": "era", "running": false, "runningUnknown": false, "clientDir": "/games/era", "updates": null, "issues": [
-        { "id": "fm-1", "severity": "P2", "urgent": false, "title": "era: Plater's files changed", "addon": "Plater",
-          "remediation": { "command": "omaddons install Plater -t era --reinstall", "argv": ["omaddons", "install", "Plater", "-t", "era", "--reinstall"], "destructive": false, "runnable": true } },
+        { "id": "fm-1", "severity": "P2", "urgent": false, "title": "Plater's files changed on disk", "addon": "Plater",
+          "remediation": Model.cliAction(reinstall.join(" "), reinstall, false), "explain": null, "forced": false, "autoFixable": false },
         { "id": "fm-2", "severity": "P0", "urgent": true, "title": "a journal waits for repair", "addon": null,
-          "remediation": { "command": "see README: Troubleshooting", "argv": null, "destructive": false, "runnable": false } }
+          "remediation": Model.cliAction("see README: Troubleshooting", null, false), "explain": null, "forced": false, "autoFixable": false }
       ] },
       { "id": "retail", "running": false, "runningUnknown": false, "clientDir": "/games/retail", "updates": null, "issues": [] }
     ]
@@ -679,23 +682,117 @@ TestCase {
     compare(view.view, "errors")
   }
 
-  function test_issues_lists_problems_by_severity_then_warnings_never_lua_errors() {
-    svc.statusWarnings = [{ "code": "journal_pending", "message": "unfinished transactions wait", "fix": null, "fixText": "quit the game, then run any change" }]
+  // Every text a view shows, depth first.
+  function texts(item) {
+    var out = []
+    var collect = function(i) {
+      for (var c = 0; c < i.children.length; c++) {
+        var child = i.children[c]
+        if (child.visible !== false && typeof child.text === "string" && child.text !== "") out.push(child.text)
+        collect(child)
+      }
+    }
+    collect(item)
+    return out
+  }
+
+  // `status`'s warnings, reduced as the service reduces them.
+  function statusWarnings(warnings) {
+    return Model.reduceStatus({ "ok": true, "schema_version": "1.1", "tool_version": "0.1.0", "command": "status",
+      "exit_code": 0, "data": { "targets": [] }, "warnings": warnings }).warnings
+  }
+
+  function test_issues_lists_each_clients_problems_in_words_then_notes_never_lua_errors() {
+    svc.statusWarnings = statusWarnings([
+      { "code": "journal_pending", "message": "unfinished transactions wait", "fix": "quit the game", "fix_argv": null },
+      { "code": "unknown_flavor", "message": "xyz: an unknown flavor folder", "fix": "set its family: omaddons config set targets.xyz.family <family>", "fix_argv": null }])
     issuesReady(false)
     var issues = content()
-    compare(json(issues.rows.map(function(r) { return [r.index, r.kind] })),
-      json([[0, "problem"], [1, "problem"], [2, "warning"]]))
-    // P0 first; its prose remediation is text, never a button.
-    compare(findChild(row("issueRow", 0), "commandText").text, "see README: Troubleshooting")
-    verify(!findChild(row("issueRow", 0), "enterHint").visible)
+    compare(json(issues.rows.map(function(r) { return [r.index, r.kind, r.severityWord] })),
+      json([[0, "problem", "Broken"], [1, "problem", "Worth fixing"], [2, "note", ""]]))
+    // The client's header: its name (these clients carry no player name: their ids) and
+    // how many problems; its rows name no client (§2.2).
+    var header = findChild(findChild(issues, "issuesSection_client/era"), "issuesSection")
+    compare([header.title, header.count], ["era", "2 problems"])
+    compare(findChild(row("issueRow", 0), "severity").text, "Broken")
+    compare(findChild(row("issueRow", 0), "headline").text, "a journal waits for repair")
+    // The broken one first; its prose remediation is a sentence, never a button.
+    compare(findChild(row("issueRow", 0), "prose").text, "see README: Troubleshooting")
+    verify(!findChild(row("issueRow", 0), "buttons").visible)
+    verify(!findChild(row("issueRow", 0), "commandText").visible)
     keyClick(Qt.Key_Return)
-    compare(svc.cliRuns.length, 0)
-    // The P2's reinstall runs through the classifier's path.
+    compare(svc.runs.length + svc.cliRuns.length, 0)
+    // The reinstall is a named fix that previews through its template, as Addons' Repair.
+    compare(findChild(row("issueRow", 1), "issueButton_fix").text, "Repair Plater")
+    compare(findChild(row("issueRow", 1), "issueButton_fix").tooltipText, "Enter runs the fix")
     keyClick("j")
     keyClick(Qt.Key_Return)
-    compare(json(svc.cliRuns[0]), json([["omaddons", "install", "Plater", "-t", "era", "--reinstall"], "Fix"]))
-    // The warning's prose fix is text.
-    compare(findChild(row("issueRow", 2), "commandText").text, "quit the game, then run any change")
+    compare(json(svc.runs[0]), json(["reinstall", { "target": "era", "addon": "Plater" }, "Repair Plater"]))
+    compare(json(words(svc.runs[0])), json(["install", "-t", "era", "--reinstall", "--", "Plater"]))
+    compare(svc.cliRuns.length, 0, "never the remediation argv run as is")
+    // The note: the code's words, under Notes; its prose fix (it names a config key) is not
+    // shown, and journal_pending is the problems' to say.
+    compare(findChild(row("issueRow", 2), "headline").text, "A client's game version isn't recognised, so omaddons treats it carefully.")
+    verify(!findChild(row("issueRow", 2), "prose").visible)
+    var shown = texts(issues)
+    verify(shown.indexOf("unfinished transactions wait") < 0, json(shown))
+    // No Lua error, and no command line, anywhere in the view.
+    for (var t = 0; t < shown.length; t++) {
+      verify(shown[t].indexOf("omaddons ") !== 0 && shown[t].indexOf("attempt to") < 0, shown[t])
+    }
+  }
+
+  // `status`'s recommendations (1n2p.28): suggestions in words with a named fix, each run
+  // through its template, the frame's own action, or the view that does it.
+  function test_suggestions_run_through_their_templates_and_views() {
+    var adopt = ["omaddons", "adopt", "-t", "retail"]
+    var check = ["omaddons", "outdated"]
+    var backup = ["omaddons", "backup", "create", "-t", "retail"]
+    var errors = ["omaddons", "errors"]
+    var reduced = Model.reduceStatus({ "ok": true, "schema_version": "1.1", "tool_version": "0.1.0", "command": "status", "exit_code": 0,
+      "data": { "summary": { "state": "idle", "targets": 2, "running": [], "updates": { "available": 0, "targets": [] },
+          "issues": { "p0": 0, "p1": 0, "p2": 0, "p3": 0 }, "errors": { "new": 0, "targets": [] }, "check_due": true, "widget_outdated": false },
+        "targets": [{ "id": "retail", "display_name": "Retail", "adoptable": 2, "issues": [] }, { "id": "era", "display_name": "Classic Era", "issues": [] }] },
+      "commands": [{ "action": "adopt", "command": adopt.join(" "), "argv": adopt, "destructive": false },
+        { "action": "check_updates", "command": check.join(" "), "argv": check, "destructive": false },
+        { "action": "check_errors", "command": errors.join(" "), "argv": errors, "destructive": false },
+        { "action": "backup_create", "command": backup.join(" "), "argv": backup, "destructive": false }] })
+    svc.summary = reduced.summary
+    svc.targets = reduced.targets
+    svc.commands = reduced.commands
+    keyClick("5")
+    compare(view.view, "issues")
+    var issues = content()
+    // Nothing needs fixing, and the suggestions stay listed under it.
+    var state = findChild(issues, "viewState")
+    compare(state.viewState.state, "empty")
+    compare(state.viewState.sentence, "Nothing needs fixing.")
+    compare(json(issues.rows.map(function(r) { return findChild(row("issueRow", r.index), "headline").text })), json([
+      "2 addons on Retail were installed by hand or by another addon manager.", "Not checked for updates lately.",
+      "Lua errors changed since they were last read.", "Retail has no recent backup of its settings."]))
+    // Back up Retail: the template `b` runs.
+    compare(findChild(row("issueRow", 3), "issueButton_fix").text, "Back up Retail")
+    findChild(row("issueRow", 3), "issueButton_fix").clicked()
+    compare(json(svc.runs[0]), json(["backup_target", { "target": "retail" }, "Back up Retail"]))
+    // Check for updates: Check now.
+    keyClick("g")
+    keyClick("j")
+    keyClick(Qt.Key_Return)
+    compare(svc.checks, 1)
+    // Read Lua errors: the Errors view, read again.
+    keyClick("j")
+    keyClick(Qt.Key_Return)
+    compare(view.view, "errors")
+    compare(json(svc.readAgains), json(["errors"]))
+    // Show Retail's addons: the Addons view, on Retail (no take-over flow registered yet).
+    keyClick("5")
+    keyClick(Qt.Key_Return)
+    compare([view.view, view.filter], ["installed", "retail"])
+    compare(svc.cliRuns.length, 0, "every one ran through the panel's own way")
+    // Narrowed to Classic Era: none of these is for it, and the machine-wide ones go.
+    view.setFilter("era")
+    keyClick("5")
+    compare(content().rows.length, 0)
   }
 
   // Errors (1n2p.27): per client, a card where nothing records (its install previewed
@@ -778,22 +875,29 @@ TestCase {
     svc.targets = reduced.targets
     keyClick("5")
     compare(view.view, "issues")
-    // The forget row: a button (Enter runs the fix), nothing to copy.
-    verify(findChild(row("issueRow", 0), "enterHint").visible)
-    verify(!findChild(row("issueRow", 0), "copyHint").visible)
-    // The purge row: the command as text, what it deletes, and `y` to copy it.
+    // The forget row: its named fix, nothing to copy; Enter runs it through the
+    // classifier, which previews it first (targets rm is destructive).
+    compare(findChild(row("issueRow", 0), "issueButton_fix").text, "Forget classic…")
+    compare(findChild(row("issueRow", 0), "issueButton_copy"), null)
+    // The purge row: no fix, the command as text with what it deletes, and Copy command.
     var purgeRow = row("issueRow", 1)
     compare(findChild(purgeRow, "commandText").text, purge.join(" "))
-    compare(findChild(purgeRow, "irreversibleNote").text, Model.IRREVERSIBLE_NOTE)
-    verify(!findChild(purgeRow, "enterHint").visible)
-    compare(findChild(purgeRow, "copyHint").text, "y copies the command")
+    compare(findChild(purgeRow, "terminalNote").text, Model.IRREVERSIBLE_NOTE)
+    compare(findChild(purgeRow, "issueButton_fix"), null)
+    compare(findChild(purgeRow, "issueButton_copy").text, "Copy command")
+    compare(findChild(purgeRow, "issueButton_copy").tooltipText, "Copy the command a row shows, to run in a terminal (y)")
     keyClick("j")
     keyClick(Qt.Key_Return)
     compare(svc.cliRuns.length, 0)
     keyClick("y")
     compare(json(svc.copies), json([["wl-copy", "--", purge.join(" ")]]))
-    compare(findChild(row("issueRow", 1), "copyHint").text, "Copied")
+    compare(findChild(row("issueRow", 1), "issueButton_copy").text, "Copied")
+    // The copy flash goes after a moment (UX-36).
+    tryCompare(findChild(row("issueRow", 1), "issueButton_copy"), "text", "Copy command", 3000)
     compare(svc.cliRuns.length, 0)
+    keyClick("k")
+    keyClick(Qt.Key_Return)
+    compare(json(svc.cliRuns), json([[["omaddons", "targets", "rm", "classic"], "Forget classic…"]]))
   }
 
   // ---- the doctor's repairs (G2): Enter previews a repair through its bound template,
@@ -822,14 +926,16 @@ TestCase {
     svc.machineIssues = reduced.issues
     keyClick("5")
     compare(view.view, "issues")
-    // The machine's row first, then retail's: each previews its repair.
+    // The machine's row first ("This computer"), then retail's: each previews its repair.
+    compare(findChild(findChild(content(), "issuesSection_machine"), "issuesSection").title, "This computer")
     for (var i = 0; i < 2; i++) {
       var r = row("issueRow", i)
-      compare(findChild(r, "enterHint").text, "Enter previews the repair", "row " + i)
-      verify(findChild(r, "enterHint").visible, "row " + i)
+      compare(findChild(r, "issueButton_fix").text, "Repair", "row " + i)
+      compare(findChild(r, "issueButton_fix").tooltipText, "Enter previews the repair", "row " + i)
+      compare(findChild(r, "issueButton_explain").text, "Explain", "row " + i)
       verify(!findChild(r, "commandText").visible, "row " + i + ": the preview lists what a repair does")
-      verify(!findChild(r, "copyHint").visible, "row " + i)
-      verify(!findChild(r, "consentNote").visible, "row " + i)
+      compare(findChild(r, "issueButton_copy"), null, "row " + i)
+      verify(!findChild(r, "terminalNote").visible, "row " + i)
     }
     keyClick(Qt.Key_Return)
     compare(json(svc.runs[0]), json(["doctor_fix", { "fm": credentialFm }, "Repair: the GitHub token file is readable by other users"]))
@@ -840,10 +946,15 @@ TestCase {
     compare(json(words(svc.runs[1])), json(["doctor", "fix", "-t", "retail", "--only=" + credentialFm]))
     compare(svc.cliRuns.length, 0, "the remediation argv the CLI printed is never run")
     compare(svc.explains.length, 0)
-    // A change in progress: no repair starts.
+    // The button runs the same.
+    findChild(row("issueRow", 0), "issueButton_fix").clicked()
+    compare(json(svc.runs[2]), json(svc.runs[0]))
+    // A change in progress: no repair starts, and the button says so.
     svc.action = { "label": "Update all", "current": 0, "total": 0, "message": "" }
     keyClick(Qt.Key_Return)
-    compare(svc.runs.length, 2, "no repair while a change runs")
+    compare(svc.runs.length, 3, "no repair while a change runs")
+    verify(!findChild(row("issueRow", 0), "issueButton_fix").enabled)
+    verify(findChild(row("issueRow", 0), "issueButton_explain").enabled, "reading why is no change")
   }
 
   function test_a_set_aside_row_has_no_fix_and_enter_shows_why() {
@@ -854,44 +965,90 @@ TestCase {
       "remediation": { "command": forced.join(" "), "argv": forced, "destructive": true }, "auto_fixable": false,
       "explain": { "command": explain.join(" "), "argv": explain } }]).targets
     keyClick("5")
+    var key = "p/retail/" + fm + "/"
     var r = row("issueRow", 0)
-    verify(findChild(r, "consentNote").visible)
-    compare(findChild(r, "consentNote").text, "A deliberate repair: read why (Enter), then run this in a terminal:")
+    compare(findChild(r, "severity").text, "Broken")
+    compare(findChild(r, "terminalNote").text, "This needs your go-ahead, which the panel never gives: read the explanation, then run it in a terminal.")
     verify(findChild(r, "commandText").visible)
     compare(findChild(r, "commandText").text, forced.join(" "), "the exact remediation, --force --yes included")
-    compare(findChild(r, "enterHint").text, "Enter explains it")
-    verify(!findChild(r, "explanation").visible)
+    compare(findChild(r, "issueButton_fix"), null, "a forced repair is never a button")
+    compare(json(content().rows[0].buttons.map(function(b) { return b.text })), json(["Explain", "Copy command"]))
+    // Enter, with nothing to run, opens the problem's page, which reads its explanation.
     keyClick(Qt.Key_Return)
-    compare(json(svc.explains), json([["p/retail/0", explain]]))
+    compare(view.pages.length, 1)
+    compare(view.backText(), "Issues")
+    var page = findChild(view, "page").item
+    compare(findChild(page, "pageSeverity").text, "Broken")
+    compare(findChild(page, "pageTitle").text, "An interrupted change was started by a newer omaddons")
+    compare(findChild(page, "pageClient").text, "retail")
+    compare(findChild(page, "pageCommand").text, forced.join(" "))
+    compare(findChild(page, "pageButton_fix"), null)
+    compare(findChild(page, "pageButton_copy").text, "Copy command (y)")
+    compare(json(svc.explains), json([[key, explain]]))
     compare(svc.runs.length, 0, "no repair from a forced row")
     compare(svc.cliRuns.length, 0)
-    verify(findChild(r, "explanation").visible)
-    verify(findChild(r, "explanationReading").visible, "Reading… until the explanation answers")
+    verify(findChild(page, "explanationReading").visible, "Reading… until the explanation answers")
     // An answer for another row is not shown here.
-    svc.explanation = { "selection": { "key": "p/era/0" }, "lines": ["elsewhere"], "failed": "" }
-    compare(findChild(r, "explanationLines").count, 0)
+    svc.explanation = { "selection": { "key": "p/era/x/" }, "lines": ["elsewhere"], "failed": "" }
+    compare(findChild(page, "explanationLines").count, 0)
     var lines = ["An interrupted change was started by a newer omaddons", "Its repair needs your deliberate consent: read this, then run the command below in a terminal",
       "  In a terminal: " + forced.join(" ")]
-    svc.explanation = { "selection": { "key": "p/retail/0" }, "lines": lines, "failed": "" }
-    compare(findChild(r, "explanationLines").count, 3)
-    compare(findChild(r, "explanationLines").itemAt(2).text, lines[2])
-    verify(!findChild(r, "explanationReading").visible)
-    // `y` copies the terminal command.
+    svc.explanation = { "selection": { "key": key }, "lines": lines, "failed": "" }
+    compare(findChild(page, "explanationLines").count, 3)
+    compare(findChild(page, "explanationLines").itemAt(2).text, lines[2])
+    verify(!findChild(page, "explanationReading").visible)
+    // `y` copies the terminal command, from the page.
     keyClick("y")
     compare(json(svc.copies), json([["wl-copy", "--", forced.join(" ")]]))
-    // Enter again closes it.
+    compare(findChild(page, "pageButton_copy").text, "Copied")
+    // Enter on the page runs nothing: there is no fix to run here.
     keyClick(Qt.Key_Return)
+    compare(svc.runs.length + svc.cliRuns.length, 0)
+    // Esc goes back, and drops the explanation.
+    keyClick(Qt.Key_Escape)
+    compare(view.pages.length, 0)
     compare(svc.explainClears, 1)
-    verify(!findChild(r, "explanation").visible)
-    compare(svc.explains.length, 1)
-    // A failed read says so for its row.
-    keyClick(Qt.Key_Return)
-    svc.explanation = { "selection": { "key": "p/retail/0" }, "lines": null, "failed": "omaddons doctor explain: timeout" }
-    compare(findChild(r, "explanationFailed").text, "Could not read the explanation: omaddons doctor explain: timeout")
-    verify(findChild(r, "explanationFailed").visible)
-    verify(!findChild(r, "explanationReading").visible)
+    // `e` opens it again; a failed read says so.
+    keyClick("e")
+    compare(view.pages.length, 1)
+    page = findChild(view, "page").item
+    compare(svc.explains.length, 2)
+    svc.explanation = { "selection": { "key": key }, "lines": null, "failed": "omaddons doctor explain: timeout" }
+    compare(findChild(page, "explanationFailed").text, "Couldn't read the explanation: omaddons doctor explain: timeout")
+    verify(findChild(page, "explanationFailed").visible)
+    verify(!findChild(page, "explanationReading").visible)
+    // The row's Explain button opens it too, after back.
+    keyClick(Qt.Key_Escape)
+    findChild(row("issueRow", 0), "issueButton_explain").clicked()
+    compare(view.pages.length, 1)
     compare(svc.runs.length, 0)
     compare(svc.cliRuns.length, 0)
+  }
+
+  // A repair from a problem's page is the row's own: previewed through its bound
+  // template, by the Issues view; once status no longer reports it, the page says so.
+  function test_a_problems_page_repairs_through_its_row_and_says_when_it_is_gone() {
+    var reduced = statusIssues([credentialIssue()], [])
+    svc.summary = Model.reduceStatus({ "ok": true, "schema_version": "1.1", "tool_version": "0.1.0", "command": "status", "exit_code": 0,
+      "data": { "summary": { "state": "idle", "targets": 1, "running": [], "updates": { "available": 0, "targets": [] },
+        "issues": { "p0": 0, "p1": 0, "p2": 1, "p3": 0 }, "errors": { "new": 0, "targets": [] }, "check_due": false, "widget_outdated": false },
+        "targets": [] } }).summary
+    svc.targets = reduced.targets
+    keyClick("5")
+    keyClick("e")
+    compare(view.pages.length, 1)
+    var page = findChild(view, "page").item
+    compare(findChild(page, "pageButton_fix").text, "Repair (Enter)")
+    keyClick(Qt.Key_Return)
+    compare(json(svc.runs), json([["doctor_fix_target", { "target": "retail", "fm": credentialFm }, "Repair: the GitHub token file is readable by other users"]]))
+    verify(!findChild(page, "pageGone").visible)
+    // The repair landed: status reports it no more.
+    svc.targets = statusIssues([], []).targets
+    verify(findChild(page, "pageGone").visible)
+    compare(findChild(page, "pageGone").text, "omaddons no longer reports this problem.")
+    verify(!findChild(page, "pageButtons").visible)
+    keyClick(Qt.Key_Return)
+    compare(svc.runs.length, 1, "nothing more to run")
   }
 
   function test_a_doctor_gc_or_forced_remediation_is_text() {
@@ -909,14 +1066,15 @@ TestCase {
       var r = row("issueRow", i)
       verify(findChild(r, "commandText").visible, "row " + i)
       compare(findChild(r, "commandText").text, commands[i].join(" "))
-      verify(!findChild(r, "enterHint").visible, "row " + i + ": " + findChild(r, "enterHint").text)
-      compare(findChild(r, "copyHint").text, "y copies the command")
+      compare(findChild(r, "issueButton_fix"), null, "row " + i)
+      compare(findChild(r, "issueButton_copy").text, "Copy command", "row " + i)
       keyClick(Qt.Key_Return)
+      compare(view.pages.length, 0, "row " + i + ": no explanation to open")
       keyClick("j")
     }
-    // A forced command with no explanation still says it needs consent.
-    compare(findChild(row("issueRow", 1), "consentNote").text, "This needs your deliberate consent: run it in a terminal:")
-    verify(!findChild(row("issueRow", 0), "consentNote").visible)
+    // Each says why it is no button: the panel never runs doctor gc, nor gives consent.
+    compare(findChild(row("issueRow", 0), "terminalNote").text, "The panel never runs this one: run it in a terminal.")
+    compare(findChild(row("issueRow", 1), "terminalNote").text, "This needs your go-ahead, which the panel never gives: run it in a terminal.")
     compare(svc.runs.length, 0)
     compare(svc.cliRuns.length, 0)
     compare(svc.explains.length, 0)

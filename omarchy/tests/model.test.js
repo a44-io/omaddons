@@ -1615,16 +1615,149 @@ describe("the Issues and Search views", () => {
     expect(partial.partial).toBe(true)
   })
 
-  test("the Issues sections: problems by severity, then the run warnings, no Lua errors", () => {
-    const status = M.reduceStatus(fixture("status-attention"), NOW)
-    const sections = M.issueSections(status.targets, [
-      { code: "journal_pending", message: "unfinished transactions", fix: { command: "omaddons status", argv: ["omaddons", "status"], runnable: true }, fixText: "" }], "")
-    expect(sections.map((s) => s.title)).toEqual(["Problems", "Run warnings"])
+  // The binary's status-attention envelope (Baz's folder deleted on retail), with the
+  // warnings `status` can give besides (hand-added: the fixture home has none of them).
+  const attentionWithWarnings = () => {
+    const env = fixture("status-attention")
+    env.warnings = [
+      { code: "journal_pending", message: "transaction t on target k did not finish", fix: "omaddons doctor explain fm-x", fix_argv: ["omaddons", "doctor", "explain", "fm-x"] },
+      { code: "unknown_flavor", message: "xyz: an unknown flavor folder", fix: "set its family: omaddons config set targets.xyz.family <family>", fix_argv: null },
+      { code: "running_unknown", message: "/proc could not be read", fix: null, fix_argv: null },
+      { code: "a_code_from_a_newer_omaddons", message: "Something a newer omaddons says", fix: null, fix_argv: null },
+    ]
+    return M.reduceStatus(env, NOW)
+  }
+
+  test("the Issues sections: each client's problems under its name, then the notes; no Lua errors", () => {
+    const status = attentionWithWarnings()
+    const sections = M.issueSections(status.targets, status.warnings, "", status.issues, status.commands)
+    expect(sections.map((s) => [s.key, s.title, s.count])).toEqual([["client/retail", "Retail", "1 problem"], ["notes", "Notes", ""]])
     const rows = M.issueRows(sections)
-    expect(rows.map((r) => [r.index, r.kind])).toEqual([[0, "problem"], [1, "warning"]])
-    expect(rows[0].client).toBe("Retail")
-    expect(rows[0].action.argv[1]).toBe("install")
-    expect(M.issueSections(status.targets, [], "era", [])).toEqual([])
+    expect(rows.map((r) => [r.index, r.kind])).toEqual([[0, "problem"], [1, "note"], [2, "note"]])
+    // The problem in words: its severity, its sentence, its client, its named fix.
+    const baz = rows[0]
+    expect([baz.severityWord, baz.title, baz.client, baz.band, baz.glyph]).toEqual(["Needs attention", "Baz's folder is gone", "Retail", "urgent", 0xF0026])
+    // Its reinstall previews through the template, never the remediation argv run as is.
+    expect([baz.fix, baz.action, baz.go, baz.primary]).toEqual([{ template: "reinstall", slots: { target: "retail", addon: "Baz" }, label: "Repair Baz" }, null, null, "fix"])
+    expect(baz.buttons.map((b) => [b.name, b.text])).toEqual([["fix", "Repair Baz"], ["explain", "Explain"]])
+    expect(baz.buttons[1].tooltip).toBe("Read why: the problem's page, with the doctor's explanation (e)")
+    // `status`'s own reinstall recommendation is that row's fix: no second row.
+    expect(status.commands.map((c) => c.action)).toEqual(["reinstall"])
+    expect(rows.filter((r) => r.kind === "suggestion")).toEqual([])
+    // Notes, by code: words of the widget's own, the prose fix (it names a config key)
+    // left out; a newer omaddons's code keeps its message; the hero's and the problems'
+    // codes are not repeated.
+    expect(rows.slice(1).map((r) => [r.title, r.prose, r.buttons.length, r.text])).toEqual([
+      ["A client's game version isn't recognised, so omaddons treats it carefully.", "", 0, ""],
+      ["Something a newer omaddons says", "", 0, ""],
+    ])
+    // Narrowed to a client: its problems only; one with none has no section at all.
+    expect(M.issueSections(status.targets, status.warnings, "retail", status.issues, status.commands).map((s) => s.key)).toEqual(["client/retail"])
+    expect(M.issueSections(status.targets, status.warnings, "era", status.issues, status.commands)).toEqual([])
+  })
+
+  test("the clients with the most severe problems come first, the machine before them all", () => {
+    const env = fixture("status-clients")
+    const issue = env.data.targets.find((t) => t.id === "anniversary").issues[0]
+    env.data.targets.find((t) => t.id === "classic").issues = [Object.assign({}, issue, { severity: "P0", title: "broken" })]
+    env.data.targets.find((t) => t.id === "wotlk").issues = [Object.assign({}, issue, { severity: "P3", title: "minor" })]
+    env.data.issues = [Object.assign({}, issue, { severity: "P3", title: "the machine's" })]
+    const status = M.reduceStatus(env, NOW)
+    const sections = M.issueSections(status.targets, [], "", status.issues, status.commands)
+    expect(sections.map((s) => s.title)).toEqual(["This computer", "Mists of Pandaria Classic", "Burning Crusade Anniversary",
+      "Wrath 3.3.5a private server", "Suggested"])
+    expect(M.issueRows(sections).filter((r) => r.kind === "problem").map((r) => r.severityWord)).toEqual(["Minor", "Broken", "Worth fixing", "Minor"])
+    expect(M.problemCount(sections)).toBe(4)
+  })
+
+  test("status's recommendations are suggestions in words, each with its named fix", () => {
+    const due = M.reduceStatus(fixture("status-check-due"), NOW)
+    const rows = M.issueRows(M.issueSections(due.targets, due.warnings, "", due.issues, due.commands))
+    expect(rows.map((r) => [r.kind, r.title, r.buttons.map((b) => b.text), r.target])).toEqual([
+      ["suggestion", "1 addon on Retail was installed by hand or by another addon manager.", ["Show Retail's addons"], "retail"],
+      ["suggestion", "Not checked for updates lately.", ["Check for updates"], ""],
+      ["suggestion", "Retail has no recent backup of its settings.", ["Back up Retail"], "retail"],
+    ])
+    // Through the frame's own ways, or the template `b` runs.
+    expect(rows.map((r) => [r.go, r.fix])).toEqual([
+      [{ kind: "adopt", view: "installed", target: "retail" }, null],
+      [{ kind: "check", view: "", target: "" }, null],
+      [null, { template: "backup_target", slots: { target: "retail" }, label: "Back up Retail" }],
+    ])
+    expect(M.problemCount(M.issueSections(due.targets, due.warnings, "", due.issues, due.commands))).toBe(0)
+    // Narrowed to a client: the suggestions for that client only.
+    expect(M.issueRows(M.issueSections(due.targets, due.warnings, "retail", due.issues, due.commands)).map((r) => r.go ? r.go.kind : r.fix.template))
+      .toEqual(["adopt", "backup_target"])
+    expect(M.issueSections(due.targets, due.warnings, "era", due.issues, due.commands)).toEqual([])
+    // A missing client: its problem forgets it (a plan sheet first: targets rm is
+    // destructive); the same forget_target recommendation is not listed twice; the update
+    // of every client previews through its template.
+    const clients = M.reduceStatus(fixture("status-clients"), NOW)
+    const listed = M.issueRows(M.issueSections(clients.targets, clients.warnings, "", clients.issues, clients.commands))
+    expect(clients.commands.map((c) => c.action)).toEqual(["update", "forget_target"])
+    expect(listed.map((r) => [r.kind, r.title, r.buttons.map((b) => b.text)])).toEqual([
+      ["problem", "The client is gone or no longer installed", ["Forget Burning Crusade Anniversary…", "Explain"]],
+      ["suggestion", "2 updates are waiting on 2 clients.", ["Update all"]],
+    ])
+    expect([listed[0].action.argv, listed[0].action.destructive]).toEqual([["omaddons", "targets", "rm", "anniversary"], true])
+    expect(listed[1].fix).toEqual({ template: "update_all", slots: {}, label: "Update all" })
+  })
+
+  test("every recommendation the CLI makes has its own words", () => {
+    // ubs:ignore — action names, not secrets
+    const actions = ["reinstall", "update", "adopt", "check_updates", "check_errors", "backup_create", "refresh_backups", "reinstall_widget",
+      "remove_orphans", "forget_target", "inspect", "list_unmanaged", "status"]
+    for (const action of actions) {
+      expect([action, M.suggestionText(action, M.argvParts(["omaddons", "status"]), [])]).not.toEqual([action, "omaddons suggests this next step."])
+    }
+    const parts = M.argvParts(["omaddons", "remove", "LibA", "LibB", "-t", "retail"])
+    expect(parts).toEqual({ path: "remove", target: "retail", flags: [], operands: ["LibA", "LibB"] })
+    expect(M.suggestionText("remove_orphans", parts, [{ id: "retail", displayName: "Retail" }])).toBe("Nothing on Retail needs LibA and LibB any more.")
+    expect(M.suggestionText("something_new", parts, [])).toBe("omaddons suggests this next step.")
+  })
+
+  test("a CLI command runs through a template, a view of the panel's own, or the classifier", () => {
+    const targets = [{ id: "retail", displayName: "Retail", issues: [] }]
+    const way = (argv) => {
+      const found = M.issueFix(M.cliAction(argv.join(" "), argv, false), targets)
+      return found && [found.fix ? found.fix.template : found.go ? found.go.kind + ":" + found.go.view + ":" + found.go.target : found.action.argv.join(" "), found.label]
+    }
+    table([
+      ["a_reinstall", ["omaddons", "install", "Plater", "-t", "retail", "--reinstall"], ["reinstall", "Repair Plater"]],
+      ["an_update_of_one_addon", ["omaddons", "update", "DBM", "-t", "retail"], ["update_addon", "Update DBM"]],
+      ["an_update_of_one_client", ["omaddons", "update", "-t", "retail"], ["update_target", "Update Retail"]],
+      ["every_update", ["omaddons", "update"], ["update_all", "Update all"]],
+      ["a_backup", ["omaddons", "backup", "create", "-t", "retail"], ["backup_target", "Back up Retail"]],
+      ["every_backup", ["omaddons", "backup", "create"], ["backup_all", "Back up every client"]],
+      ["a_check", ["omaddons", "outdated"], ["check::", "Check for updates"]],
+      ["a_refresh", ["omaddons", "status"], ["refresh::", "Refresh"]],
+      ["the_panel", ["omaddons", "omarchy", "install"], ["widget::", "Reinstall panel"]],
+      ["the_lua_errors", ["omaddons", "errors"], ["view:errors:", "Read Lua errors"]],
+      ["the_backups", ["omaddons", "backup", "list", "-t", "retail"], ["view:backups:retail", "Refresh backups"]],
+      ["a_look", ["omaddons", "list", "-t", "retail", "-v"], ["view:installed:retail", "Show Retail's addons"]],
+      ["unmanaged_folders", ["omaddons", "list", "-t", "retail", "--unmanaged"], ["view:installed:retail", "Show Retail's addons"]],
+      ["the_adopt_report", ["omaddons", "adopt", "-t", "retail"], ["adopt:installed:retail", "Show Retail's addons"]],
+      ["a_forget", ["omaddons", "targets", "rm", "retail"], ["omaddons targets rm retail", "Forget Retail…"]],
+      ["a_removal", ["omaddons", "remove", "LibA", "-t", "retail"], ["omaddons remove LibA -t retail", "Remove LibA"]],
+      // Any other shape runs as itself, through the classifier.
+      ["an_install_with_more", ["omaddons", "install", "Plater", "-t", "retail", "--reinstall", "--channel", "beta"],
+        ["omaddons install Plater -t retail --reinstall --channel beta", "Run the fix"]],
+      ["a_pin", ["omaddons", "pin", "DBM", "-t", "retail"], ["omaddons pin DBM -t retail", "Run the fix"]],
+      // Nothing for what the panel never runs.
+      ["a_forced_command", ["omaddons", "install", "Foo", "-t", "retail", "--force"], null],
+      ["a_repair_outside_its_flow", ["omaddons", "doctor", "fix", "--only", "fm-x"], null],
+    ], way)
+    expect(M.issueFix(null, targets)).toBeNull()
+    // A long name: the button cuts it, the recorded reason keeps it whole.
+    const long = "Details_DamageMeter_StreamerModeAndPluginsCollection_Classic"
+    const repair = M.issueFix(M.cliAction("x", ["omaddons", "install", long, "-t", "retail", "--reinstall"], false), targets)
+    expect([repair.label, repair.fix.label]).toEqual(["Repair Details_DamageMeter_StreamerMod…", "Repair " + long])
+    expect(M.buttonName("Plater")).toBe("Plater")
+    // A client named at length: the run's label is one line within reasonOf's bound.
+    const named = [{ id: "retail", displayName: "R".repeat(200), issues: [] }]
+    const update = M.issueFix(M.cliAction("x", ["omaddons", "update", "-t", "retail"], false), named)
+    expect([update.fix.label.length, update.label]).toEqual([120, "Update " + "R".repeat(31) + "…"])
+    expect(M.buildArgv(update.fix.template, update.fix.slots, opts({ label: update.fix.label, preview: true })).argv).toContain("update")
   })
 
   test("problems keep status's order within a severity, whatever the engine's sort", () => {
@@ -1679,12 +1812,23 @@ describe("the Issues and Search views", () => {
     expect([install.runnable, install.argv]).toEqual([false, null])
   })
 
-  test("a remediation the classifier refuses is text", () => {
-    const status = M.reduceStatus(fixture("status-attention"), NOW)
-    const t = JSON.parse(JSON.stringify(status.targets))
-    t[0].issues[0].remediation = { command: "rm -rf ~", argv: null, runnable: false, destructive: true }
-    const rows = M.issueRows(M.issueSections(t, [], ""))
-    expect([rows[0].action, rows[0].text]).toEqual([null, "rm -rf ~"])
+  test("a prose remediation is a sentence with nothing to copy; a refused command is text to copy", () => {
+    const env = fixture("status-attention")
+    const prose = "quit the game, then run any change"
+    env.data.targets[0].issues.push(Object.assign({}, env.data.targets[0].issues[0], { remediation: { command: prose, argv: null, destructive: false } }))
+    env.data.targets[0].issues.push(Object.assign({}, env.data.targets[0].issues[0], { remediation: { command: "rm -rf ~", argv: ["rm", "-rf", "~"], destructive: true } }))
+    env.data.targets[0].issues.push(Object.assign({}, env.data.targets[0].issues[0], { remediation: { command: "omaddons install Foo --force", argv: ["omaddons", "install", "Foo", "--force"], destructive: false } }))
+    const rows = M.issueRows(M.issueSections(M.reduceStatus(env, NOW).targets, [], ""))
+    const pick = (r) => [r.action, r.fix, r.prose, r.text, r.note, r.buttons.map((b) => b.name), M.copyText(r)]
+    // The same problem three times, each with its own key.
+    expect(rows.map((r) => r.key)).toEqual(["p/retail/fm-state_files-record-folder-missing/Baz", "p/retail/fm-state_files-record-folder-missing/Baz#2",
+      "p/retail/fm-state_files-record-folder-missing/Baz#3", "p/retail/fm-state_files-record-folder-missing/Baz#4"])
+    expect(pick(rows[1])).toEqual([null, null, prose, "", "", ["explain"], ""])
+    // An argv that is no omaddons command line is neither run nor offered to copy.
+    expect(pick(rows[2])).toEqual([null, null, "", "", "", ["explain"], ""])
+    expect(pick(rows[3])).toEqual([null, null, "", "omaddons install Foo --force",
+      "This needs your go-ahead, which the panel never gives: read the explanation, then run it in a terminal.",
+      ["explain", "copy"], "omaddons install Foo --force"])
   })
 
   test("d dismisses what was shown, one client at a time", () => {
@@ -3169,18 +3313,21 @@ describe("issue rows", () => {
     const gc = issueJson({ auto_fixable: false,
       remediation: { command: "omaddons doctor gc --before 30d --dry-run", argv: ["omaddons", "doctor", "gc", "--before", "30d", "--dry-run"], destructive: true } })
     const pick = (r) => ({ fix: r.fix ? r.fix.template : null, action: r.action ? r.action.argv : null,
-      explain: r.explain ? r.explain.argv : null, forced: r.forced, text: r.text, hint: r.hint })
+      explain: r.explain ? r.explain.argv : null, forced: r.forced, text: r.text, hint: r.hint,
+      buttons: r.buttons.map((b) => b.text).join(", "), primary: r.primary })
     table([
+      // A repair's remediation argv is never shown: its preview lists what it does.
       ["an_auto_fixable_row", [issueJson()], { fix: "doctor_fix_target", action: null, explain: ["omaddons", "doctor", "explain", CREDENTIAL_FM],
-        forced: false, text: "omaddons doctor fix --only " + CREDENTIAL_FM, hint: "Enter previews the repair" }],
+        forced: false, text: "", hint: "Enter previews the repair", buttons: "Repair, Explain", primary: "fix" }],
       ["a_set_aside_row", [setAside], { fix: null, action: null, explain: ["omaddons", "doctor", "explain", CREDENTIAL_FM],
-        forced: true, text: forcedArgv.join(" "), hint: "Enter explains it" }],
+        forced: true, text: forcedArgv.join(" "), hint: "Enter explains it", buttons: "Explain, Copy command", primary: "explain" }],
       ["a_doctor_explain_remediation", [explainOnly], { fix: null, action: null, explain: ["omaddons", "doctor", "explain", "fm-x", "-t", "retail"],
-        forced: false, text: "", hint: "Enter explains it" }],
-      ["a_runnable_reinstall", [reinstall], { fix: null, action: ["omaddons", "install", "Plater", "-t", "retail", "--reinstall"],
-        explain: null, forced: false, text: "", hint: "Enter runs the fix" }],
+        forced: false, text: "", hint: "Enter explains it", buttons: "Explain", primary: "explain" }],
+      // A reinstall previews through its template, as the Addons view's Repair does.
+      ["a_runnable_reinstall", [reinstall], { fix: "reinstall", action: null,
+        explain: null, forced: false, text: "", hint: "Enter runs the fix", buttons: "Repair Plater", primary: "fix" }],
       ["a_doctor_gc_remediation", [gc], { fix: null, action: null, explain: ["omaddons", "doctor", "explain", CREDENTIAL_FM],
-        forced: false, text: "omaddons doctor gc --before 30d --dry-run", hint: "Enter explains it" }],
+        forced: false, text: "omaddons doctor gc --before 30d --dry-run", hint: "Enter explains it", buttons: "Explain, Copy command", primary: "explain" }],
     ], (issues) => pick(rowsOf(issues)[0]))
     // A machine issue's repair takes no -t.
     const machine = M.reduceStatus(statusWithIssues([], [issueJson()])).issues

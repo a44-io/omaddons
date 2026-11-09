@@ -802,7 +802,14 @@ function cliAction(command, argv, destructive) {
     "runnable": runnable,
     // A change no undo brings back (a purge): shown with what it deletes, and copied,
     // never run.
-    "irreversible": verdict !== null && verdict.reason === "irreversible"
+    "irreversible": verdict !== null && verdict.reason === "irreversible",
+    // An omaddons command the widget never runs (a purge, a forced repair, `doctor gc`, a
+    // repair outside its bound flow): shown under "Copy command" for a terminal. A fix
+    // with no argv is prose, and an argv that is no omaddons command line is neither.
+    // A plan's apply offered outside its preview is neither: it is no command for anyone.
+    "terminal": verdict !== null && !verdict.ok && ["malformed", "not_omaddons", "apply_outside_plan"].indexOf(verdict.reason) === -1,
+    // No argv at all: `command` is advice in words.
+    "prose": !Array.isArray(argv)
   }
 }
 
@@ -860,28 +867,159 @@ function repairRequest(issue, targetId) {
     : { "template": "doctor_fix", "slots": { "fm": issue.id }, "label": label }
 }
 
-// A problem row's fix, explanation, text and hint (§3 of the repair bead): a repair
-// previews through its bound template; a `doctor explain` remediation is the row's
-// explanation, never its action; anything else keeps its runnable remediation.
-function problemRow(issue, targetId) {
+// A problem row's fix, explanation, text and hint (§3 of the repair bead, 1n2p.28): a
+// repair previews through its bound template; a `doctor explain` remediation is the
+// row's explanation, never its action; any other runnable remediation runs as issueFix
+// says (a reinstall or an update through its template, so it previews first); a command
+// the widget never runs is text to copy, and a fix with no argv a sentence.
+function problemRow(issue, targetId, targets) {
   var r = issue.remediation || {}
-  var fix = repairRequest(issue, targetId)
+  var repair = repairRequest(issue, targetId)
   var explainsOnly = !!r.runnable && verdictPath(r.argv) === "doctor explain"
   var issueExplain = issue.explain && issue.explain.runnable && verdictPath(issue.explain.argv) === "doctor explain"
     ? issue.explain : null
   var explain = explainsOnly ? r : issueExplain
-  var action = fix || explainsOnly ? null : (r.runnable ? r : null)
-  return {
-    "fix": fix,
-    "explain": explain,
-    "forced": issue.forced === true,
-    "action": action,
-    "text": r.runnable ? "" : str(r.command),
-    "note": r.irreversible ? IRREVERSIBLE_NOTE : "",
-    // The key comes from the key map, as every other hint's does.
-    "hint": (fix || action || explain ? keyHint("enter", "issues") : "")
-      + (fix ? " previews the repair" : action ? " runs the fix" : explain ? " explains it" : "")
+  var way = repair ? { "fix": repair, "action": null, "go": null, "label": copy("issues.fix.repair") }
+    : (explainsOnly ? null : issueFix(r, targets))
+  return fixFields(way, explain, r, issue.forced === true, !!repair)
+}
+
+// The fields every Issues row shares (1n2p.28): what its fix runs (`fix`, a template;
+// `action`, the CLI's own argv through the classifier; `go`, a view or one of the
+// frame's own actions; at most one is set), the fix's button name (`fixLabel`), the
+// doctor's explanation (`explain`), the command it shows instead of running (`text`,
+// with `note` saying why it is no button), a fix that is prose (`prose`), its named
+// buttons in order (`buttons`: `{name, text, tooltip}`, `name` one of fix, explain,
+// copy), what Enter does (`primary`: "fix", "explain" or "") and Enter's hint.
+function fixFields(way, explain, r, forced, repair) {
+  var terminal = !way && !!r && r.terminal === true
+  var out = {
+    "fix": way ? way.fix : null,
+    "action": way ? way.action : null,
+    "go": way ? way.go : null,
+    "fixLabel": way ? way.label : "",
+    "explain": explain || null,
+    "forced": forced === true,
+    "repair": repair === true,
+    "text": terminal ? str(r.command) : "",
+    // Why a command is no button (design doc §6.5.4): what a purge deletes, that a forced
+    // repair is consented to in a terminal after reading why, or that the panel never
+    // runs it.
+    "note": !terminal ? "" : r.irreversible ? IRREVERSIBLE_NOTE
+      : forced === true ? copy(explain ? "issues.terminal.forced" : "issues.terminal.forced.unexplained")
+      : copy("issues.terminal.other"),
+    "prose": !way && !!r && r.prose === true ? str(r.command) : "",
+    "buttons": [],
+    "primary": way ? "fix" : (explain ? "explain" : "")
   }
+  var key = keyHint("enter", "issues")
+  out.hint = out.primary === "" ? "" : copy(out.repair ? "issues.hint.repair" : out.primary === "fix" ? "issues.hint.fix" : "issues.hint.explain", { "key": key })
+  if (way) out.buttons.push({ "name": "fix", "text": way.label, "tooltip": out.hint })
+  if (out.explain) out.buttons.push({ "name": "explain", "text": copy("issues.explain"), "tooltip": keyTip("explain", "issues") })
+  if (out.text) out.buttons.push({ "name": "copy", "text": copy("issues.copy"), "tooltip": keyTip("copy", "issues") })
+  return out
+}
+
+// An omaddons argv's parts after its command path (`argv[0]` is "omaddons"): the path
+// the classifier gives it ("" when it refuses it), the `-t` value, the other flags and
+// the operands, in order.
+function argvParts(argv) {
+  var out = { "path": verdictPath(argv), "target": "", "flags": [], "operands": [] }
+  if (!out.path) return out
+  for (var i = 1 + out.path.split(" ").length; i < argv.length; i++) {
+    var arg = argv[i]
+    if (arg === "--") {
+      out.operands = out.operands.concat(argv.slice(i + 1))
+      break
+    }
+    if (arg === "-t" || arg === "--target") {
+      out.target = str(argv[++i])
+    } else if (arg.charAt(0) === "-") {
+      out.flags.push(arg)
+    } else {
+      out.operands.push(arg)
+    }
+  }
+  return out
+}
+
+// How the panel runs a command the CLI offered (a problem's remediation, a status
+// recommendation, a warning's fix), from its argv's shape (1n2p.28): a template where one
+// fits it exactly (a reinstall or an update previews first, as the Addons and Updates
+// views' do; a backup runs as `b` does); the frame's own action or view where the panel
+// has one (Check now, a refresh, reinstalling the panel, the Errors, Backups or Addons
+// view); else the argv itself through the classifier. `{fix, action, go, label}`, one of
+// the three set and `label` its button's name; null for a command the widget never runs.
+function issueFix(action, targets) {
+  if (!action || action.runnable !== true || !Array.isArray(action.argv)) return null
+  var p = argvParts(action.argv)
+  var client = p.target ? sheetClient(targets, p.target, "") : ""
+  var owner = possessive(buttonName(client))
+  var plain = p.flags.length === 0 && p.operands.length === 0
+  var way = function(kind, value, label) {
+    var out = { "fix": null, "action": null, "go": null, "label": label }
+    out[kind] = value
+    return out
+  }
+  // The run's label (its recorded --reason) names the addon in full; the button, at most
+  // BUTTON_NAME_MAX_CHARS of it, so it fits the narrowest panel.
+  var template = function(name, slots, id, words) {
+    var full = words || {}
+    var short = {}
+    for (var key in full) short[key] = buttonName(full[key])
+    // One line of at most LABEL_MAX_CHARS, as reasonOf takes it (a client's own name may
+    // run to 200 characters).
+    var label = copy(id, full).replace(/[\r\n]+/g, " ")
+    if (label.length > LABEL_MAX_CHARS) label = label.slice(0, LABEL_MAX_CHARS - 1) + "…"
+    return way("fix", { "template": name, "slots": slots, "label": label }, copy(id, short))
+  }
+  if (p.path === "install" && p.target && p.operands.length === 1 && p.flags.length === 1 && p.flags[0] === "--reinstall") {
+    return template("reinstall", { "target": p.target, "addon": p.operands[0] }, "issues.fix.reinstall", { "addon": p.operands[0] })
+  }
+  if (p.path === "update" && p.flags.length === 0) {
+    if (p.target && p.operands.length === 1) return template("update_addon", { "target": p.target, "addon": p.operands[0] }, "issues.fix.update_addon", { "addon": p.operands[0] })
+    if (p.target && p.operands.length === 0) return template("update_target", { "target": p.target }, "issues.fix.update_client", { "client": client })
+    if (plain) return template("update_all", {}, "issues.fix.update_all")
+  }
+  if (p.path === "backup create" && plain) {
+    return p.target ? template("backup_target", { "target": p.target }, "issues.fix.backup_client", { "client": client })
+      : template("backup_all", {}, "issues.fix.backup_all")
+  }
+  if (p.path === "outdated" && plain && !p.target) return way("go", { "kind": "check", "view": "", "target": "" }, copy("issues.fix.check"))
+  if (p.path === "status" && !p.target && p.operands.length === 0) return way("go", { "kind": "refresh", "view": "", "target": "" }, copy("issues.fix.refresh"))
+  if (p.path === "omarchy install" && plain && !p.target) return way("go", { "kind": "widget", "view": "", "target": "" }, copy("issues.fix.widget"))
+  if (p.path === "errors" && plain) return way("go", { "kind": "view", "view": "errors", "target": p.target }, copy("issues.fix.errors"))
+  if (p.path === "backup list" && plain) return way("go", { "kind": "view", "view": "backups", "target": p.target }, copy("issues.fix.backups"))
+  if (p.path === "list" && p.operands.length === 0 && p.flags.every(function(f) { return ["-v", "--verbose", "--unmanaged"].indexOf(f) !== -1 })) {
+    return way("go", { "kind": "view", "view": "installed", "target": p.target },
+      copy(p.target ? "issues.fix.addons" : "issues.fix.addons.all", { "owner": owner }))
+  }
+  // `adopt -t <id>` alone is a report; the take-over flow is the frame's (first run).
+  if (p.path === "adopt" && plain && p.target) {
+    return way("go", { "kind": "adopt", "view": "installed", "target": p.target }, copy("issues.fix.addons", { "owner": owner }))
+  }
+  if (p.path === "targets rm" && p.flags.length === 0 && p.operands.length === 1) {
+    return way("action", action, copy("state.action.forget", { "client": buttonName(sheetClient(targets, p.operands[0], "")) }))
+  }
+  if (p.path === "remove" && p.operands.length > 0) {
+    return way("action", action, copy("issues.fix.remove", { "addons": buttonName(joinNames(p.operands)) }))
+  }
+  return way("action", action, copy("issues.fix.other"))
+}
+
+var BUTTON_NAME_MAX_CHARS = 32
+
+// A name as a button shows it: whole up to BUTTON_NAME_MAX_CHARS, else cut with "…".
+function buttonName(name) {
+  var s = str(name)
+  return s.length > BUTTON_NAME_MAX_CHARS ? s.slice(0, BUTTON_NAME_MAX_CHARS - 1) + "…" : s
+}
+
+// Whether two argv are the same command line, element for element.
+function sameArgv(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false
+  for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) return false
+  return true
 }
 
 // The registry path an accepted argv runs, or "".
@@ -940,6 +1078,10 @@ function targetOf(target) {
     "clientDir": str(target.client_dir),
     "missing": target.missing === true,
     "addons": target.addons && typeof target.addons === "object" ? num(target.addons.total) : null,
+    // Unmanaged folders a catalog entry names, and dependencies nothing needs: what the
+    // Issues view's suggestions count (1n2p.28).
+    "adoptable": num(target.adoptable),
+    "orphans": num(target.orphans),
     "updates": updates ? {
       "available": num(updates.available), "pinned": num(updates.pinned), "blocked": num(updates.blocked),
       "failed": num(updates.failed), "unchecked": num(updates.unchecked),
@@ -1115,7 +1257,10 @@ function warningsOf(env) {
     out.push({
       "code": str(w.code), "message": str(w.message),
       "fix": fix && fix.runnable ? fix : null,
-      "fixText": fix && fix.runnable ? "" : str(w.fix)
+      "fixText": fix && fix.runnable ? "" : str(w.fix),
+      // The fix as the classifier judged it, a command it refuses included (the Issues
+      // view shows such a command under Copy command, with why, 1n2p.28).
+      "cli": fix
     })
   }
   return out
@@ -2035,7 +2180,7 @@ var KEY_CONTEXTS = [
   { "id": "errors", "title": "Errors" },
   { "id": "issues", "title": "Issues" },
   { "id": "backups", "title": "Backups" },
-  { "id": "page", "title": "Error page" },
+  { "id": "page", "title": "A page" },
   { "id": "field", "title": "Search box" },
   { "id": "filter", "title": "Filter box" },
   { "id": "card", "title": "Problem card" },
@@ -2088,14 +2233,16 @@ var KEYMAP = [
   { "keys": ["u"], "context": "errors", "action": "update", "label": "update the addon the errors come from, when one is waiting", "hint": "u", "nothing": "Nothing to update here" },
   { "keys": ["r"], "context": "errors", "action": "restore", "label": "restore the addon's settings from a backup", "hint": "r", "nothing": "No settings to restore here" },
   { "keys": ["y"], "context": "errors", "action": "copy", "label": "copy a report of its errors, to send its author", "hint": "y", "nothing": "Nothing to copy here" },
-  { "keys": ["Enter", "Space"], "context": "issues", "action": "enter", "label": "preview a repair, run the fix, or show why", "hint": "Enter" },
+  { "keys": ["Enter", "Space"], "context": "issues", "action": "enter", "label": "run the row's fix (a repair previews first), or read why", "hint": "Enter" },
+  { "keys": ["e"], "context": "issues", "action": "explain", "label": "read why: the problem's page, with the doctor's explanation", "hint": "e", "nothing": "Nothing to explain here" },
   { "keys": ["y"], "context": "issues", "action": "copy", "label": "copy the command a row shows, to run in a terminal", "hint": "y", "nothing": "Nothing to copy here" },
   { "keys": ["Enter", "Space"], "context": "backups", "action": "enter", "label": "restore from this backup: choose what", "hint": "Enter" },
   { "keys": ["r"], "context": "backups", "action": "restore", "label": "restore from this backup: choose what", "hint": "r", "nothing": "No settings to restore here" },
   { "keys": ["x"], "context": "backups", "action": "remove", "label": "delete this backup, after a confirmation", "hint": "x", "nothing": "Nothing to remove here" },
-  { "keys": ["u"], "context": "page", "action": "update", "label": "update the addon, when one is waiting", "hint": "u", "nothing": "Nothing to update here" },
-  { "keys": ["r"], "context": "page", "action": "restore", "label": "restore the addon's settings from a backup", "hint": "r", "nothing": "No settings to restore here" },
-  { "keys": ["y"], "context": "page", "action": "copy", "label": "copy a report of its errors", "hint": "y", "nothing": "Nothing to copy here" },
+  { "keys": ["Enter", "Space"], "context": "page", "action": "enter", "label": "a problem's page: run its fix (a repair previews first)", "hint": "Enter" },
+  { "keys": ["u"], "context": "page", "action": "update", "label": "an error page: update the addon, when one is waiting", "hint": "u", "nothing": "Nothing to update here" },
+  { "keys": ["r"], "context": "page", "action": "restore", "label": "an error page: restore the addon's settings from a backup", "hint": "r", "nothing": "No settings to restore here" },
+  { "keys": ["y"], "context": "page", "action": "copy", "label": "copy an error page's report, or a problem page's command", "hint": "y", "nothing": "Nothing to copy here" },
   { "keys": ["Enter", "Space"], "context": "search", "action": "enter", "label": "install the result", "hint": "Enter" },
   { "keys": ["i"], "context": "search", "action": "install", "label": "install the result", "hint": "i", "nothing": "Nothing to install here" },
   { "keys": ["Enter"], "context": "field", "action": "search", "label": "search", "hint": "Enter" },
@@ -3243,51 +3390,150 @@ function notesFor(changelog, row) {
 // -------------------------------------------------------------- the Issues and Search views (F6)
 
 var SEVERITY_ORDER = ["P0", "P1", "P2", "P3"]
+// Each severity's glyph (design doc §5.4): broken, needs attention, minor.
+var SEVERITY_GLYPHS = { "P0": 0xF0029, "P1": 0xF0026, "P2": 0xF0026, "P3": 0xF02FD }
+var SUGGESTION_GLYPH = 0xF02FD
+// `commands[]` actions the Issues view never lists (design doc §6.5.1): installing the
+// agent skill is for agents. (A plan's apply, which runs only from its own preview, is
+// neither runnable nor a command to copy, so it is never listed either.)
+var SUGGESTION_SILENT = ["install_skill"]
+// Warning codes the Issues view leaves to another place (design doc §6.5.3): the hero
+// (`running_unknown`), the phase card (`widget_outdated`), the activity bar
+// (`tx_in_progress`), nowhere (`state_version_older`, `atomic_swap_unavailable`), or
+// `status`'s own problems, which name the same thing with its fix (the doctor's
+// cached checks: a credential file others can read, an interrupted change, a newer
+// omaddons's state).
+var NOTE_ELSEWHERE = ["running_unknown", "widget_outdated", "tx_in_progress", "state_version_older", "atomic_swap_unavailable",
+  "credential_file_mode", "journal_pending", "state_version_newer"]
 
-
-// The Issues view, in the filter, as sections (a title, lines of text, rows) whose rows
-// the cursor walks in order (`index`): problems from `status` by severity, then the
-// run warnings. Lua errors have their own view since 1n2p.27 (errorSections). A row's
-// `action` is the CLI argv Enter runs (the classifier accepted it), its `text` the
-// command it shows instead.
-function issueSections(statusTargets, warnings, filter, machineIssues) {
-  var sections = []
-  var problems = []
-  // The problems of no client, unless the view is narrowed to one.
-  var machine = !filter && Array.isArray(machineIssues) ? machineIssues : []
-  for (var n = 0; n < machine.length; n++) {
-    var mi = machine[n]
-    problems.push(Object.assign({
-      "kind": "problem", "key": "p//" + n, "target": "", "client": "", "severity": mi.severity,
-      "urgent": mi.urgent, "title": mi.title, "autoFixable": mi.autoFixable === true
-    }, problemRow(mi, "")))
-  }
+// The Issues view (1n2p.28, design doc §2.3, §6.5, §6.6), in the filter, as sections
+// whose rows the cursor walks in order (`index`):
+//   - the problems of no client ("This computer"), under All only;
+//   - each client's problems under its player name, the client whose problem is most
+//     severe first, each by severity in the order `status` ranked them;
+//   - `status`'s recommendations (`commands`) that no problem row already runs
+//     ("Suggested"), a client's only when the scope is that client or All;
+//   - the warnings of the last `status` the view shows ("Notes"), under All only.
+// A section is `{key, title, count, rows}`. A row is fixFields' and its `kind`
+// (problem, suggestion, note), a stable `key`, `target`, `client`, `severity` with its
+// word (`severityWord`), `urgent`, `band`, `glyph` (a code point) and `title`, one
+// sentence. Lua errors have their own view since 1n2p.27 (errorSections).
+function issueSections(statusTargets, warnings, filter, machineIssues, commands) {
   var targets = Array.isArray(statusTargets) ? statusTargets : []
+  var sections = []
+  var offered = []
+  var keys = {}
+  var keyOf = function(key) {
+    keys[key] = (keys[key] || 0) + 1
+    return keys[key] === 1 ? key : key + "#" + keys[key]
+  }
+  var problem = function(issue, target) {
+    var id = target ? target.id : ""
+    var severity = str(issue.severity)
+    var r = issue.remediation || {}
+    if (r.runnable && Array.isArray(r.argv)) offered.push(r.argv)
+    return Object.assign({
+      "kind": "problem", "key": keyOf("p/" + id + "/" + str(issue.id) + "/" + str(issue.addon)), "target": id,
+      "client": target ? (target.displayName || target.id) : "", "severity": severity,
+      "severityWord": COPY.hasOwnProperty("issues.severity." + severity) ? copy("issues.severity." + severity) : severity,
+      "urgent": issue.urgent === true, "band": issue.urgent === true ? "urgent" : "",
+      "glyph": SEVERITY_GLYPHS.hasOwnProperty(severity) ? SEVERITY_GLYPHS[severity] : SUGGESTION_GLYPH,
+      "title": str(issue.title), "autoFixable": issue.autoFixable === true
+    }, problemRow(issue, id, targets))
+  }
+  // Within a severity, the order `status` ranked them in (Qt's sort is not stable).
+  var bySeverity = function(a, b) { return SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity) }
+  var counted = function(rows) { return copy("issues.count", { "n": rows.length }) }
+
+  var machine = !filter && Array.isArray(machineIssues) ? machineIssues : []
+  if (machine.length) {
+    var own = stableSort(machine.map(function(mi) { return problem(mi, null) }), bySeverity)
+    sections.push({ "key": "machine", "title": copy("issues.section.machine"), "count": counted(own), "rows": own })
+  }
+  var clients = []
   for (var i = 0; i < targets.length; i++) {
     var t = targets[i]
-    if (filter && t.id !== filter) continue
-    for (var j = 0; j < t.issues.length; j++) {
-      var issue = t.issues[j]
-      problems.push(Object.assign({
-        "kind": "problem", "key": "p/" + t.id + "/" + j, "target": t.id, "client": t.displayName || t.id,
-        "severity": issue.severity, "urgent": issue.urgent, "title": issue.title, "autoFixable": issue.autoFixable === true
-      }, problemRow(issue, t.id)))
-    }
+    if ((filter && t.id !== filter) || !Array.isArray(t.issues) || t.issues.length === 0) continue
+    var rows = stableSort(t.issues.map(function(issue) { return problem(issue, t) }), bySeverity)
+    clients.push({ "key": "client/" + t.id, "title": t.displayName || t.id, "count": counted(rows), "rows": rows })
   }
-  // Within a severity, the order `status` ranked them in (the machine's first).
-  problems = stableSort(problems, function(a, b) { return SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity) })
-  if (problems.length) sections.push({ "title": "Problems", "lines": [], "rows": problems })
+  // The client with the most severe problem first; equals keep `status`'s client order.
+  sections = sections.concat(stableSort(clients, function(a, b) { return bySeverity(a.rows[0], b.rows[0]) }))
 
-  var runWarnings = (Array.isArray(warnings) ? warnings : []).map(function(w, n) {
-    return { "kind": "warning", "key": "w/" + n, "title": w.message, "action": w.fix, "text": w.fixText }
-  })
-  if (runWarnings.length) sections.push({ "title": "Run warnings", "lines": [], "rows": runWarnings })
+  var suggested = []
+  var list = Array.isArray(commands) ? commands : []
+  for (var c = 0; c < list.length; c++) {
+    var cmd = list[c]
+    if (!cmd || typeof cmd !== "object" || SUGGESTION_SILENT.indexOf(cmd.action) !== -1) continue
+    // Nothing to run and no command to copy: nothing to suggest.
+    if (cmd.runnable !== true && cmd.terminal !== true) continue
+    // A recommendation a problem row already runs is that row's fix, never a second row.
+    if (offered.some(function(argv) { return sameArgv(argv, cmd.argv) })) continue
+    var parts = Array.isArray(cmd.argv) ? argvParts(cmd.argv) : { "path": "", "target": "", "flags": [], "operands": [] }
+    if (filter && parts.target !== filter) continue
+    var client = parts.target ? sheetClient(targets, parts.target, "") : ""
+    suggested.push(Object.assign({
+      "kind": "suggestion", "key": keyOf("s/" + str(cmd.action) + "/" + str(cmd.command)), "target": parts.target, "client": client,
+      "severity": "", "severityWord": "", "urgent": false, "band": "", "glyph": SUGGESTION_GLYPH,
+      "title": suggestionText(str(cmd.action), parts, targets)
+    }, fixFields(issueFix(cmd, targets), null, cmd, false, false)))
+  }
+  if (suggested.length) sections.push({ "key": "suggested", "title": copy("issues.section.suggested"), "count": "", "rows": suggested })
+
+  // The warnings this view shows, by code: a code this build has words for gets them
+  // (warnings carry no typed client, so the words name none); a code from a newer
+  // omaddons shows its message. A prose fix is not shown (it names commands and config
+  // keys); a fix the classifier accepts is a named button, one it refuses a command to
+  // copy.
+  var notes = []
+  var shown = !filter && Array.isArray(warnings) ? warnings : []
+  for (var w = 0; w < shown.length; w++) {
+    var warning = shown[w]
+    if (!warning || typeof warning !== "object" || NOTE_ELSEWHERE.indexOf(warning.code) !== -1) continue
+    var words = COPY.hasOwnProperty("issues.note." + warning.code) ? copy("issues.note." + warning.code) : str(warning.message)
+    if (words === "") continue
+    var note = fixFields(issueFix(warning.cli, targets), null, warning.cli, false, false)
+    note.prose = ""
+    notes.push(Object.assign({
+      "kind": "note", "key": keyOf("n/" + str(warning.code)), "target": "", "client": "", "severity": "", "severityWord": "",
+      "urgent": false, "band": "", "glyph": SUGGESTION_GLYPH, "title": words
+    }, note))
+  }
+  if (notes.length) sections.push({ "key": "notes", "title": copy("issues.section.notes"), "count": "", "rows": notes })
 
   var index = 0
   for (var s = 0; s < sections.length; s++) {
     for (var n = 0; n < sections[s].rows.length; n++) sections[s].rows[n].index = index++
   }
   return sections
+}
+
+// What a `status` recommendation is about, in a sentence (design doc §6.5.1's actions),
+// from its action and the typed facts of `status` it names: the client its `-t` selects,
+// the addons its argv names, the counts `status` gives that client.
+function suggestionText(action, parts, targets) {
+  var client = parts.target ? sheetClient(targets, parts.target, "") : ""
+  var target = parts.target ? targetById(targets, parts.target) : null
+  var slots = { "client": client, "owner": possessive(client), "addons": joinNames(parts.operands), "addon": parts.operands[0] || "",
+    "n": parts.operands.length }
+  if (action === "update") {
+    var waiting = (target ? [target] : targets).filter(function(t) { return !!t.updates && t.updates.available > 0 })
+    slots.n = waiting.reduce(function(sum, t) { return sum + t.updates.available }, 0)
+    slots.m = waiting.length
+    if (slots.n === 0) return copy("issues.suggest.update.unknown")
+    return copy(target ? "issues.suggest.update" : "issues.suggest.update.clients", slots)
+  }
+  if (action === "adopt") {
+    slots.n = target ? target.adoptable : 0
+    return copy(slots.n > 0 ? "issues.suggest.adopt" : "issues.suggest.adopt.unknown", slots)
+  }
+  return COPY.hasOwnProperty("issues.suggest." + action) ? copy("issues.suggest." + action, slots) : copy("issues.suggest.other")
+}
+
+// How many problems the sections hold: what the Issues view's state counts (a view with
+// suggestions or notes but no problem still says nothing needs fixing).
+function problemCount(sections) {
+  return issueRows(sections).filter(function(r) { return r.kind === "problem" }).length
 }
 
 // -------------------------------------------------------------- the Errors view (1n2p.27)
@@ -4198,6 +4444,74 @@ var COPY = {
   "client.running_unknown": "can't tell if running",
   "client.not_found": "not found",
   "client.choose": "Choose a client first: t, or a row of one",
+
+  // The Issues view and a problem's page (1n2p.28, design doc §2.3, §6.3, §6.5).
+  "issues.severity.P0": "Broken",
+  "issues.severity.P1": "Needs attention",
+  "issues.severity.P2": "Worth fixing",
+  "issues.severity.P3": "Minor",
+  "issues.section.machine": "This computer",
+  "issues.section.suggested": "Suggested",
+  "issues.section.notes": "Notes",
+  "issues.count": { "one": "1 problem", "other": "{n} problems" },
+  "issues.fix.repair": "Repair",
+  "issues.fix.reinstall": "Repair {addon}",
+  "issues.fix.update_all": "Update all",
+  "issues.fix.update_client": "Update {client}",
+  "issues.fix.update_addon": "Update {addon}",
+  "issues.fix.backup_client": "Back up {client}",
+  "issues.fix.backup_all": "Back up every client",
+  "issues.fix.check": "Check for updates",
+  "issues.fix.refresh": "Refresh",
+  "issues.fix.widget": "Reinstall panel",
+  "issues.fix.errors": "Read Lua errors",
+  "issues.fix.backups": "Refresh backups",
+  "issues.fix.addons": "Show {owner} addons",
+  "issues.fix.addons.all": "Show the addons",
+  "issues.fix.remove": "Remove {addons}",
+  "issues.fix.other": "Run the fix",
+  "issues.explain": "Explain",
+  "issues.copy": "Copy command",
+  "issues.copied": "Copied",
+  "issues.hint.repair": "{key} previews the repair",
+  "issues.hint.fix": "{key} runs the fix",
+  "issues.hint.explain": "{key} explains it",
+  "issues.terminal.forced": "This needs your go-ahead, which the panel never gives: read the explanation, then run it in a terminal.",
+  "issues.terminal.forced.unexplained": "This needs your go-ahead, which the panel never gives: run it in a terminal.",
+  "issues.terminal.other": "The panel never runs this one: run it in a terminal.",
+  "issues.suggest.update": { "one": "1 update is waiting on {client}.", "other": "{n} updates are waiting on {client}." },
+  "issues.suggest.update.clients": { "one": "1 update is waiting.", "other": "{n} updates are waiting on {m} clients." },
+  "issues.suggest.update.unknown": "Updates are waiting.",
+  "issues.suggest.check_updates": "Not checked for updates lately.",
+  "issues.suggest.adopt": {
+    "one": "1 addon on {client} was installed by hand or by another addon manager.",
+    "other": "{n} addons on {client} were installed by hand or by another addon manager."
+  },
+  "issues.suggest.adopt.unknown": "Addons on {client} were installed by hand or by another addon manager.",
+  "issues.suggest.check_errors": "Lua errors changed since they were last read.",
+  "issues.suggest.backup_create": "{client} has no recent backup of its settings.",
+  "issues.suggest.refresh_backups": "{owner} backup details are out of date.",
+  "issues.suggest.reinstall_widget": "The panel is out of date.",
+  "issues.suggest.remove_orphans": "Nothing on {client} needs {addons} any more.",
+  "issues.suggest.forget_target": "{client} isn't on this computer any more.",
+  "issues.suggest.inspect": "Some addons on {client} need a look.",
+  "issues.suggest.list_unmanaged": "{client} has folders omaddons doesn't manage.",
+  "issues.suggest.reinstall": "{addon} on {client} isn't as it was installed: files changed, or a folder is gone.",
+  "issues.suggest.status": "omaddons hasn't looked for your clients yet.",
+  "issues.suggest.other": "omaddons suggests this next step.",
+  "issues.note.unknown_flavor": "A client's game version isn't recognised, so omaddons treats it carefully.",
+  "issues.note.client_not_launched_since_patch": "A client hasn't started since its last patch. Start it once.",
+  "issues.note.target_key_duplicate": "Two clients claim to be the same install (a copied folder?).",
+  "issues.note.target_addons_shared": "Two clients share one AddOns folder. Manage those addons from one of them.",
+  "issues.note.snapshot_cap_exceeded": "A client's undo data is over its size limit.",
+  "issues.note.restore_rolled_back": "An interrupted restore was undone; the settings it replaced are kept as a backup.",
+  "issues.note.config_unknown_key": "config.toml has a setting omaddons doesn't know.",
+  "issues.note.discovery_truncated": "Not every folder was searched for clients. Add a missing client by its folder.",
+  "issues.note.catalog_override_invalid": "One of your catalog files was skipped: it has a mistake.",
+  "issues.note.history_lines_skipped": "Some history can't be read, and isn't listed.",
+  "issues.page.reading": "Reading the explanation…",
+  "issues.page.failed": "Couldn't read the explanation: {why}",
+  "issues.page.gone": "omaddons no longer reports this problem.",
   "issues.errors_title": "Lua errors on {client}",
 
   "source.catalog": "omaddons' catalog",
@@ -5319,6 +5633,16 @@ if (typeof module !== "undefined") {
     notesFor: notesFor,
     issueSections: issueSections,
     issueRows: issueRows,
+    problemRow: problemRow,
+    fixFields: fixFields,
+    argvParts: argvParts,
+    issueFix: issueFix,
+    buttonName: buttonName,
+    sameArgv: sameArgv,
+    suggestionText: suggestionText,
+    problemCount: problemCount,
+    SEVERITY_GLYPHS: SEVERITY_GLYPHS,
+    NOTE_ELSEWHERE: NOTE_ELSEWHERE,
     errorSections: errorSections,
     errorRows: errorRows,
     errorPage: errorPage,

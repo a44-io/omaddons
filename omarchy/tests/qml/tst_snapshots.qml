@@ -894,16 +894,63 @@ TestCase {
     shoot("issues-long")
   }
 
+  // A long problem and a long client name (1n2p.28): the sentence wraps, never elides.
   function test_issues_long_name() {
     var scene = everyday()
-    scene.status = the("status-errors")
-    var env = fixture("errors")
-    for (var t = 0; t < env.data.targets.length; t++)
-      for (var i = 0; i < env.data.targets[t].addons.length; i++)
-        env.data.targets[t].addons[i].addon = "Details_DamageMeter_StreamerModeAndPluginsCollection_Classic"
-    scene.errors = { "text": text(env) }
+    scene.status = statusFrom("status-attention", function(env) {
+      var target = env.data.targets[0]
+      target.display_name = "Details_DamageMeter_StreamerModeAndPluginsCollection_Classic's own client"
+      target.issues[0].addon = "Details_DamageMeter_StreamerModeAndPluginsCollection_Classic"
+      target.issues[0].title = target.issues[0].addon + "'s folder is gone, and so are the 14 folders of its plugins"
+      // Its fix names it too (the button cuts it), as does status's recommendation of
+      // the same reinstall, which the row's fix stands for.
+      var argv = target.issues[0].remediation.argv
+      argv[argv.indexOf("Baz")] = target.issues[0].addon
+      target.issues[0].remediation.command = argv.join(" ")
+      env.commands[0].argv = argv.slice()
+      env.commands[0].command = argv.join(" ")
+    })
     open(scene, "issues")
     shoot("issues-long-name")
+  }
+
+  // Nothing needs fixing, and what `status` suggests (1n2p.28): take over, check, back up.
+  function test_issues_suggestions() {
+    var scene = everyday()
+    scene.status = the("status-check-due")
+    open(scene, "issues")
+    shoot("issues-suggestions")
+  }
+
+  // A forced repair (1n2p.28, design doc §6.5.4): Explain and Copy command, never a fix.
+  function test_issues_terminal_only() {
+    var scene = everyday()
+    scene.status = the("setaside-status")
+    open(scene, "issues")
+    frame.cursor = 0
+    frame.cursorActive = true
+    shoot("issues-terminal-only")
+  }
+
+  // The problem's page: the doctor's explanation, then the command for a terminal.
+  function test_issues_page() {
+    var scene = everyday()
+    scene.status = the("setaside-status")
+    scene.doctor = the("setaside-explain")
+    open(scene, "issues")
+    var issues = frame.currentView
+    verify(issues.rows.length > 0)
+    issues.openPage(issues.rows[0])
+    settle(scene)
+    shoot("issues-page")
+  }
+
+  // A machine problem the doctor repairs, under "This computer".
+  function test_issues_repair() {
+    var scene = everyday()
+    scene.status = the("repair-status")
+    open(scene, "issues")
+    shoot("issues-repair")
   }
 
   // ---------------------------------------------------------------- Backups

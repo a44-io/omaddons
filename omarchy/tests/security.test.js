@@ -609,8 +609,9 @@ function firstArgument(args) {
 // bound `--only={fm}` preview; the consent literals live only in CONSENT_FLAGS, which
 // the classifier refuses with `doctor gc` and the doctor's own flows; no QML file names
 // a doctor command or template, so the Issues view reaches a repair only through
-// `row.fix.template` (Model.repairRequest), never through the classifier's path; and a
-// bound repair's Yes always carries its preview's token.
+// `row.fix.template` (Model.repairRequest), never through the classifier's path, and a
+// problem's page runs nothing but through the view; and a bound repair's Yes always
+// carries its preview's token.
 function checkConsent(files) {
   const out = []
   const model = files["Model.js"] || ""
@@ -673,6 +674,14 @@ function checkConsent(files) {
     }
     for (const c of calls({ [issues]: files[issues] }, /\b(frame\.runCli|svc\.runCliArgv)\(/)) {
       if (/\.fix\b/.test(firstArgument(c.args))) out.push(violation(issues, c.line, "the Issues view runs a repair through the classifier's path"))
+    }
+  }
+  // A problem's page runs nothing itself: its buttons are the Issues view's (1n2p.28), so
+  // the rules above hold on the page too.
+  const page = "views/ProblemPage.qml"
+  if (files[page]) {
+    for (const c of calls({ [page]: files[page] }, /\b(svc\.run|svc\.runBound|svc\.runCliArgv|frame\.runCli)\(/)) {
+      out.push(violation(page, c.line, "a problem's page runs a fix itself (" + c.match[1] + "); its buttons go through the Issues view"))
     }
   }
   // The bind preview's Yes carries its token: the branch keeps the decision's token and
@@ -919,6 +928,9 @@ const PLANTED = [
   ["11. consent", checkConsent, "a doctor template named in a view, around row.fix",
     plant(REAL, "views/IssuesView.qml", "  function activate(row) {\n", '    svc.run("doctor_fix", { "fm": row.id }, "Repair")\n'),
     /runs a repair other than row\.fix\.template/],
+  ["11. consent", checkConsent, "a problem's page running its repair itself",
+    plant(REAL, "views/ProblemPage.qml", "  function handleKey(name, cursor) {\n", '    svc.run(row.fix.template, row.fix.slots, row.fix.label)\n'),
+    /a problem's page runs a fix itself/],
   ["11. consent", checkConsent, "a bind preview that does not bind",
     replaced(REAL, "Service.qml", '"token": repair.token, "binds": true', '"token": repair.token, "binds": false'),
     /a bind preview's Yes runs without its token$/],
