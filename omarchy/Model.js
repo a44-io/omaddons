@@ -144,7 +144,10 @@ var COMMANDS = {
   "doctor_fix":        { "argv": ["doctor", "fix", "--only={fm}"],                   "mutates": true, "preview": "bind" },
   "doctor_fix_target": { "argv": ["doctor", "fix", "-t", "{target}", "--only={fm}"], "mutates": true, "preview": "bind" },
   "targets_add":       { "argv": ["targets", "add", "--", "{path}"],               "mutates": true },
-  "adopt_target":      { "argv": ["adopt", "--apply", "-t", "{target}"],           "mutates": true, "preview": "confirm" }
+  "adopt_target":      { "argv": ["adopt", "--apply", "-t", "{target}"],           "mutates": true, "preview": "confirm" },
+  "history":           { "argv": ["history", "-v", "--limit", "100"],              "mutates": false, "lane": "local", "actor": false },
+  "undo_run":          { "argv": ["undo", "--run={run}"],                          "mutates": true, "preview": "confirm" },
+  "undo_run_target":   { "argv": ["undo", "-t", "{target}", "--run={run}"],        "mutates": true, "preview": "confirm" }
 }
 // END COMMANDS
 
@@ -225,7 +228,10 @@ var WIDGET_FLAGS = ["--json", "--robot", "--format", "--actor", "--reason", "--p
 var IRREVERSIBLE_FLAGS = ["--purge"]
 // What a row that shows an irreversible command says about it.
 var IRREVERSIBLE_NOTE = "It deletes omaddons' backups and undo snapshots for good, so it runs only from a terminal, after its preview."
-var SLOTS = { "target": true, "addon": true, "ref": true, "backup": true, "query": true, "fm": true, "path": true }
+var SLOTS = { "target": true, "addon": true, "ref": true, "backup": true, "query": true, "fm": true, "path": true, "run": true }
+// A run's id as `history` writes it, whole: a ULID in Crockford's upper case. History's
+// undo names the run it read (1n2p.30), never a prefix the CLI could match twice.
+var RUN_PATTERN = /^[0-9A-HJKMNP-TV-Z]{26}$/
 // A client folder the player types (`targets add`, 1n2p.32): absolute, one line, no
 // control character, at most PATH_MAX_BYTES; the CLI judges what it holds.
 var PATH_PATTERN = /^\/[^\u0000-\u001f\u007f]*$/
@@ -323,6 +329,8 @@ function templateShape(name, table) {
     }
     slots.push(slot)
   }
+  // A change always records who made it; only a read may name no actor (`actor: false`).
+  if (template.actor === false && template.mutates) throw refuse("bad_template", name + " names no actor but mutates")
   return { path: path, slots: slots }
 }
 
@@ -337,6 +345,9 @@ function checkSlot(name, slot, value, template) {
   }
   if (slot === "path" && (!PATH_PATTERN.test(value) || utf8Length(value) > PATH_MAX_BYTES)) {
     throw refuse("bad_path", name + ": " + JSON.stringify(value) + " is no absolute path")
+  }
+  if (slot === "run" && !RUN_PATTERN.test(value)) {
+    throw refuse("bad_run", name + ": " + JSON.stringify(value) + " is no run id")
   }
   if (slot === "query" && template.mutates) throw refuse("query_in_mutation", name)
 }
@@ -393,9 +404,13 @@ function ifMatchFor(what, row, needsConfirm, needsBinding, opts, preview) {
   return ifMatch
 }
 
-// The flags every run starts with, right after the binary (M3-D2).
-function standardFlags(opts, progress, preview, ifMatch) {
-  var argv = [binaryOf(opts), "--json", "--actor", "widget", "--reason", reasonOf(opts)]
+// The flags every run starts with, right after the binary (M3-D2). A read whose
+// template says `actor: false` names no actor: `history` reads an explicit `--actor` as
+// a filter (README `history`), and History lists every change, not only the panel's.
+function standardFlags(opts, progress, preview, ifMatch, anonymous) {
+  var argv = [binaryOf(opts), "--json"]
+  if (anonymous !== true) argv.push("--actor", "widget")
+  argv.push("--reason", reasonOf(opts))
   if (progress) argv.push("--progress", "json")
   if (preview) argv.push("--dry-run")
   if (ifMatch.length > 0) argv.push("--if-match", ifMatch)
@@ -441,7 +456,7 @@ function buildArgv(name, slots, opts) {
   // Every change, and every read that asks the sources: the activity bar counts them, and
   // their progress keeps a network read's inactivity deadline alive (1n2p.18).
   var progress = template.mutates === true || template.lane === "network"
-  return { argv: standardFlags(o, progress, preview, ifMatch).concat(filled), env: contextOf(o.context) }
+  return { argv: standardFlags(o, progress, preview, ifMatch, template.actor === false).concat(filled), env: contextOf(o.context) }
 }
 
 // ---------------------------------------------------------- argv from the CLI
@@ -2530,15 +2545,360 @@ function fixText(env) {
   return str(error.fix)
 }
 
+// ------------------------------------------------------------------ History (1n2p.30)
+
+// How many changes History reads, as COMMANDS.history asks for them: `-v` lists every
+// addon a change touched, so 100 lines stay under WIDGET_OUTPUT_MAX_BYTES at worst
+// (tests/omarchy_widget.rs, the output cap), where 200 would not.
+var HISTORY_LIMIT = 100
+// The kinds undo never reverts (README `undo`): a backup, and a settings change.
+var HISTORY_FIXED = ["backup", "config", "target", "auth", "export", "dismiss", "widget", "skill"]
+// The kinds whose lines name the addons they changed, and so a title that counts them.
+var HISTORY_ADDON_KINDS = ["install", "update", "remove", "adopt", "sync"]
+// History's glyphs (§5.4): a change, and a change an agent made.
+var HISTORY_GLYPH = 0xF02DA
+var AGENT_GLYPH = 0xF06A9
+
+function historyRef(t) {
+  return t && typeof t === "object" ? { "id": str(t.id), "key": str(t.key) } : null
+}
+
+// `history -v --limit 200`'s envelope as History's model: `{failed, entries, truncated,
+// skipped}`, each entry one transaction as `history` gives it, newest first. `skipped`:
+// lines `history` could not read (`history_lines_skipped`), which it leaves out.
+function reduceHistory(env) {
+  if (!envelopeOk(env) || !env.ok || !env.data || typeof env.data !== "object") {
+    return { "failed": !!env && typeof env === "object", "entries": [], "truncated": false, "skipped": false }
+  }
+  var lines = Array.isArray(env.data.entries) ? env.data.entries : []
+  var entries = []
+  for (var i = 0; i < lines.length; i++) {
+    var l = lines[i]
+    if (!l || typeof l !== "object" || str(l.tx) === "") continue
+    var refs = [historyRef(l.target)].concat(Array.isArray(l.targets) ? l.targets.map(historyRef) : [])
+    // A restore's backup: the one its `wtf` or `saved_variables` op put files back from.
+    var ops = Array.isArray(l.ops) ? l.ops : []
+    var restored = ""
+    for (var o = 0; o < ops.length && restored === ""; o++) if (ops[o] && typeof ops[o].backup === "string") restored = ops[o].backup
+    entries.push({
+      "restoredFrom": restored,
+      "tx": str(l.tx), "run": strOrNull(l.run), "kind": str(l.kind), "at": str(l.at), "actor": str(l.actor),
+      "reason": strOrNull(l.reason), "reverts": strOrNull(l.reverts), "plan": strOrNull(l.plan),
+      "targets": refs.filter(function(t) { return !!t && t.id !== "" }),
+      "items": (Array.isArray(l.items) ? l.items : []).filter(function(item) { return item && typeof item === "object" }).map(function(item) {
+        return { "addon": strOrNull(item.addon), "change": str(item.change), "folders": num(item.folders),
+          "from": strOrNull(item.from_version), "to": strOrNull(item.to_version) }
+      }),
+      "backup": l.backup && typeof l.backup === "object" ? { "id": str(l.backup.id), "kind": str(l.backup.kind) } : null
+    })
+  }
+  var codes = Array.isArray(env.warnings) ? env.warnings.map(function(w) { return w && typeof w === "object" ? str(w.code) : "" }) : []
+  return { "failed": false, "entries": entries, "truncated": env.data.truncated === true,
+    "skipped": codes.indexOf("history_lines_skipped") !== -1 }
+}
+
+// Whether each transaction's change stands, by its id: no undo reverts it, or every undo
+// that does was undone in turn (a redo). An undo outside the lines read counts as none.
+function historyStanding(entries) {
+  var revertedBy = {}
+  for (var i = 0; i < entries.length; i++) {
+    var e = entries[i]
+    if (e.kind !== "undo" || !e.reverts) continue
+    if (!revertedBy.hasOwnProperty(e.reverts)) revertedBy[e.reverts] = []
+    revertedBy[e.reverts].push(e.tx)
+  }
+  var memo = {}
+  var stands = function(tx, depth) {
+    if (memo.hasOwnProperty(tx)) return memo[tx]
+    // A cycle never happens (an undo reverts an older line); bound it all the same.
+    if (depth > entries.length) return true
+    var undos = revertedBy.hasOwnProperty(tx) ? revertedBy[tx] : []
+    var result = !undos.some(function(u) { return stands(u, depth + 1) })
+    memo[tx] = result
+    return result
+  }
+  var out = {}
+  for (var j = 0; j < entries.length; j++) out[entries[j].tx] = stands(entries[j].tx, 0)
+  return out
+}
+
+// An addon's change as one phrase: "DBM 12.1.14 → 12.1.15", "Bar 2.1.0", "DBM"; a
+// whole `WTF/` restore names no addon: "every setting".
+function historyItemText(item) {
+  var versions = item.from && item.to && item.from !== item.to ? item.from + " → " + item.to : (item.to || item.from || "")
+  if (!item.addon) return copy("history.item.settings")
+  return versions ? item.addon + " " + versions : item.addon
+}
+
+// What a run did, in one sentence (design doc §2.3): "Updated DBM", "Removed 2 addons",
+// "Undid the update", "Backed up settings".
+function historyTitle(kind, items, revertedKind) {
+  var addons = []
+  for (var i = 0; i < items.length; i++) if (items[i].addon && addons.indexOf(items[i].addon) === -1) addons.push(items[i].addon)
+  var slots = { "n": addons.length, "addon": addons.length === 1 ? addons[0] : "", "owner": addons.length === 1 ? possessive(addons[0]) : "" }
+  if (kind === "undo") {
+    return revertedKind ? copy("history.title.undo", { "change": COPY.hasOwnProperty("sheet.change." + revertedKind)
+      ? copy("sheet.change." + revertedKind) : copy("sheet.change.other") }) : copy("history.title.undo.unknown")
+  }
+  if (kind === "restore") return addons.length ? copy("history.title.restore.addons", slots) : copy("history.title.restore")
+  if (kind === "pin") {
+    var unpinned = items.some(function(item) { return item.change === "unpinned" }) && !items.some(function(item) { return item.change === "pinned" })
+    return addons.length ? copy(unpinned ? "history.title.unpin" : "history.title.pin", slots) : copy("history.title.pin.none")
+  }
+  if (kind === "update" && items.length > 0 && items.every(function(item) { return item.change === "reinstalled" })) {
+    return copy("history.title.reinstall", slots)
+  }
+  if (HISTORY_ADDON_KINDS.indexOf(kind) !== -1) {
+    return addons.length ? copy("history.title." + kind, slots) : copy("history.title." + kind + ".none")
+  }
+  return COPY.hasOwnProperty("history.title." + kind) ? copy("history.title." + kind) : copy("history.title.other")
+}
+
+// Why a change was made, quoted, when someone said: an agent's reason is often the only
+// explanation the player gets (bead Considerations). The panel's own is the label of
+// the button pressed ("Update all (bar widget)"), which says no more than "you, in the
+// panel" does, so it is left out.
+function historyReason(run) {
+  if (!run.reason || run.actor === "widget") return ""
+  return copy("history.reason", { "reason": run.reason })
+}
+
+// Who made a change, in a player's words (§6.3).
+function historyActor(actor) {
+  return COPY.hasOwnProperty("history.actor." + actor) ? copy("history.actor." + actor) : str(actor)
+}
+
+// History's runs, newest first: the transactions of one command run together (a line
+// from before runs, alone). Each is `{key, run, tx, kind, at, actor, reason, plan,
+// targets, clients, items, title, state, why}`: `state` is `undoable`, `redo` (an undo
+// that stands, undone in turn by undoing it), `undone` (nothing of it stands), `fixed`
+// (a backup or a settings change, which undo never reverts) or `old` (no run to name).
+// The widget never pre-judges an undo further: a later change on the same folders, or
+// a pruned snapshot, is the CLI's preview to say (bead Considerations).
+function historyRuns(history, statusTargets) {
+  var entries = history && Array.isArray(history.entries) ? history.entries : []
+  var stands = historyStanding(entries)
+  var byTx = {}
+  for (var e = 0; e < entries.length; e++) byTx[entries[e].tx] = entries[e]
+  var groups = {}
+  var order = []
+  for (var i = 0; i < entries.length; i++) {
+    var key = entries[i].run ? "run:" + entries[i].run : "tx:" + entries[i].tx
+    if (!groups.hasOwnProperty(key)) {
+      groups[key] = []
+      order.push(key)
+    }
+    groups[key].push(entries[i])
+  }
+  return order.map(function(key) {
+    var lines = groups[key]
+    // The change itself: its newest line that is no automatic backup before it.
+    var main = lines.filter(function(l) { return l.kind !== "backup" })[0] || lines[0]
+    var items = []
+    lines.forEach(function(l) { l.items.forEach(function(item) { items.push(item) }) })
+    var targets = []
+    var clients = []
+    lines.forEach(function(l) {
+      l.targets.forEach(function(t) {
+        if (targets.indexOf(t.id) !== -1) return
+        targets.push(t.id)
+        clients.push(sheetClient(statusTargets, t.id, t.key))
+      })
+    })
+    var undoable = lines.filter(function(l) { return HISTORY_FIXED.indexOf(l.kind) === -1 })
+    var standing = undoable.filter(function(l) { return stands[l.tx] === true })
+    var state = !undoable.length ? "fixed" : !main.run ? "old" : !standing.length ? "undone" : main.kind === "undo" ? "redo" : "undoable"
+    var reverted = main.kind === "undo" && main.reverts && byTx.hasOwnProperty(main.reverts) ? byTx[main.reverts].kind : ""
+    var why = ""
+    if (state === "fixed") why = copy(main.kind === "backup" ? "history.why.backup" : main.kind === "dismiss" ? "history.why.dismiss" : "history.why.settings")
+    else if (state === "old") why = copy("history.why.old")
+    else if (state === "undone") why = copy("history.why.undone")
+    return {
+      "key": key, "run": main.run, "tx": main.tx, "kind": main.kind, "at": main.at, "actor": main.actor,
+      "reason": main.reason, "plan": main.plan, "targets": targets, "clients": clients, "items": items,
+      "title": historyTitle(main.kind, items, reverted), "state": state, "why": why,
+      "restoredFrom": main.kind === "restore" ? str(main.restoredFrom) : ""
+    }
+  })
+}
+
+// Local midnight of an instant, as a day number for comparing days; NaN when it does not
+// parse.
+function localDay(ms) {
+  var d = new Date(ms)
+  return Math.round(new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() / 86400000)
+}
+
+function wordAt(id, index) {
+  var words = copy(id).split(" ")
+  return index >= 0 && index < words.length ? words[index] : ""
+}
+
+// A day as a heading (design doc §6.9): "Today", "Yesterday", "Monday" within the week,
+// else "9 November", with the year when it is not this year's.
+function dayText(iso, nowMs) {
+  var at = Date.parse(str(iso))
+  if (isNaN(at) || typeof nowMs !== "number") return ""
+  var days = localDay(nowMs) - localDay(at)
+  var d = new Date(at)
+  if (days <= 0) return copy("time.day.today")
+  if (days === 1) return copy("time.day.yesterday")
+  if (days < 7) return wordAt("time.weekdays", d.getDay())
+  var date = copy("time.day.date", { "d": d.getDate(), "month": wordAt("time.months", d.getMonth()) })
+  return d.getFullYear() === new Date(nowMs).getFullYear() ? date : date + " " + d.getFullYear()
+}
+
+// An instant in a player's words (design doc §6.9): "just now", "25 min ago", "3 h ago"
+// the same day, "yesterday 21:40", "Mon 18:02" within the week, then "9 Nov", with the
+// year when it differs.
+function whenText(iso, nowMs) {
+  var at = Date.parse(str(iso))
+  if (isNaN(at) || typeof nowMs !== "number") return ""
+  var minutes = Math.max(0, Math.floor((nowMs - at) / 60000))
+  var days = localDay(nowMs) - localDay(at)
+  var d = new Date(at)
+  if (minutes < 1) return copy("time.just_now")
+  if (minutes < 60) return copy("time.minutes", { "n": minutes })
+  if (days <= 0) return copy("time.hours", { "n": Math.floor(minutes / 60) })
+  if (days === 1) return copy("time.yesterday", { "time": clockText(iso) })
+  if (days < 7) return copy("time.weekday", { "day": wordAt("time.weekdays.short", d.getDay()), "time": clockText(iso) })
+  var date = copy("time.day.date", { "d": d.getDate(), "month": wordAt("time.months.short", d.getMonth()) })
+  return d.getFullYear() === new Date(nowMs).getFullYear() ? date : date + " " + d.getFullYear()
+}
+
+// The undo of a run as a request for Service.run: the whole run, or (with `target`) its
+// transaction on that client alone; null for a run nothing of which can be undone.
+function historyUndo(run, target) {
+  if (!run || !run.run || (run.state !== "undoable" && run.state !== "redo")) return null
+  var title = run.title.length > 90 ? run.title.slice(0, 89) + "…" : run.title
+  var label = copy(run.state === "redo" ? "history.redo.label" : "history.undo.label", { "title": title })
+  if (target) {
+    return { "template": "undo_run_target", "slots": { "run": run.run, "target": str(target) }, "label": label }
+  }
+  return { "template": "undo_run", "slots": { "run": run.run }, "label": label }
+}
+
+// History's rows (design doc §2.3), newest first, in the client filter: each run that
+// touched a filtered client, matching `view.query` (filterMatches over what it did, the
+// addons, the clients, who and why). A day's first row carries its heading (`group`);
+// under All, each row carries its clients as chips (§2.2: History interleaves them).
+// `view` is `{query, nowMs}`.
+function historyRows(history, filter, statusTargets, view) {
+  var options = view && typeof view === "object" ? view : {}
+  var query = str(options.query).trim()
+  var nowMs = typeof options.nowMs === "number" ? options.nowMs : Date.now()
+  var runs = historyRuns(history, statusTargets).filter(function(r) { return !filter || r.targets.indexOf(filter) !== -1 })
+  var rows = []
+  var lastDay = ""
+  for (var i = 0; i < runs.length; i++) {
+    var r = runs[i]
+    var actor = historyActor(r.actor)
+    var addons = r.items.map(function(item) { return str(item.addon) })
+    if (query !== "" && !filterMatches(query, [r.title, actor, str(r.reason)].concat(r.clients, addons))) continue
+    var chips = filter ? [] : r.clients.map(function(c) { return { "text": c, "urgent": false } })
+    if (r.state === "undone") chips.push({ "text": copy("history.chip.undone"), "urgent": false })
+    // Each change once: an update of two clients names each addon once.
+    var texts = []
+    r.items.forEach(function(item) {
+      var text = historyItemText(item)
+      if (texts.indexOf(text) === -1) texts.push(text)
+    })
+    var shown = texts.slice(0, 2)
+    if (texts.length > 2) shown.push(copy("history.item.more", { "n": texts.length - 2 }))
+    var meta = [clockText(r.at), actor]
+    var reason = historyReason(r)
+    if (reason) meta.push(reason)
+    var undo = historyUndo(r, "")
+    var day = dayText(r.at, nowMs)
+    var row = {}
+    for (var k in r) if (r.hasOwnProperty(k)) row[k] = r[k]
+    row.chips = chips
+    row.detail = shown.join(" · ")
+    row.meta = meta.filter(function(m) { return m !== "" }).join(" · ")
+    row.band = ""
+    row.glyph = r.actor === "agent" ? AGENT_GLYPH : HISTORY_GLYPH
+    row.actorWords = actor
+    row.undo = undo
+    row.actions = undo ? [{ "name": "undo", "glyph": String.fromCodePoint(0xF054C),
+      "tooltip": withKey(copy(r.state === "redo" ? "history.action.redo" : "history.action.undo"), "undo") }] : []
+    row.group = day !== lastDay ? day : ""
+    row.groupCount = ""
+    lastDay = day
+    rows.push(row)
+  }
+  return rows
+}
+
+// The filter box's "2 of 42" over History's runs in the client filter.
+function historyCount(history, filter, statusTargets, query, nowMs) {
+  var total = historyRuns(history, statusTargets).filter(function(r) { return !filter || r.targets.indexOf(filter) !== -1 }).length
+  var shown = str(query).trim() === "" ? total : historyRows(history, filter, statusTargets, { "query": query, "nowMs": nowMs }).length
+  return { "shown": shown, "total": total, "text": copy("installed.count", { "shown": shown, "total": total }), "none": total > 0 && shown === 0 }
+}
+
+// A change's page (design doc §2.4, Enter in History): what it did, when and by whom,
+// why when a reason was given, the plan it applied, then each client's addons, one line
+// each (`lines`, `{kind: "client"|"item", text, addon, target}`, the items cursorable
+// for their addon's page), and its undo: the whole run, and with several clients each
+// client's alone; or why it cannot be undone. Null when `key` names no run read.
+function historyPage(history, key, statusTargets, nowMs) {
+  var runs = historyRuns(history, statusTargets)
+  var run = null
+  for (var i = 0; i < runs.length; i++) if (runs[i].key === key) run = runs[i]
+  if (!run) return null
+  var entries = history && Array.isArray(history.entries) ? history.entries : []
+  var lines = []
+  var items = []
+  run.targets.forEach(function(id, at) {
+    var mine = entries.filter(function(e) {
+      return (run.run ? e.run === run.run : e.tx === run.tx) && e.targets.some(function(t) { return t.id === id })
+    })
+    var changed = []
+    mine.forEach(function(e) { e.items.forEach(function(item) { changed.push(item) }) })
+    if (run.targets.length > 1 || changed.length === 0) lines.push({ "kind": "client", "text": run.clients[at], "addon": "", "target": id })
+    changed.forEach(function(item) {
+      // A whole `WTF/` names no addon: its own words ("Restored every setting").
+      var id2 = (item.addon ? "history.change." : "history.change.whole.") + item.change
+      var text = COPY.hasOwnProperty(id2) ? copy(id2, { "item": historyItemText(item) }) : historyItemText(item)
+      var line = { "kind": "item", "text": text, "addon": str(item.addon), "target": id, "index": items.length }
+      items.push(line)
+      lines.push(line)
+    })
+  })
+  var undos = []
+  var whole = historyUndo(run, "")
+  if (whole) {
+    undos.push({ "name": "undo", "text": copy(run.targets.length > 1 ? (run.state === "redo" ? "history.page.redo_all" : "history.page.undo_all")
+      : (run.state === "redo" ? "history.action.redo" : "history.action.undo")), "request": whole })
+    if (run.targets.length > 1) {
+      run.targets.forEach(function(id, at) {
+        undos.push({ "name": "undo_" + id, "text": copy(run.state === "redo" ? "history.page.redo_on" : "history.page.undo_on",
+          { "client": run.clients[at] }), "request": historyUndo(run, id) })
+      })
+    }
+  }
+  var header = [run.title, whenText(run.at, nowMs), historyActor(run.actor)].filter(function(p) { return p !== "" }).join(" · ")
+  var notes = []
+  var reason = historyReason(run)
+  if (reason) notes.push(reason)
+  if (run.plan) notes.push(copy("history.page.plan"))
+  // A restore's backup, which its page's last line links to (the Backups view).
+  var backup = run.restoredFrom ? { "id": run.restoredFrom, "target": run.targets.length ? run.targets[0] : "" } : null
+  return { "key": run.key, "run": run, "title": run.title, "header": header, "notes": notes, "lines": lines, "items": items,
+    "undos": undos, "why": run.why, "state": run.state, "backup": backup }
+}
+
 // -------------------------------------------------------------- the panel frame (F4)
 
 // The panel's views, in tab order (design doc §2.1: Errors and History join with
 // their views, .27 and .30): h/l step through them, the digits jump. The ids stay
 // what IPC's `show <view>` takes; "installed" is titled Addons (§2.1, decided).
-var VIEWS = ["updates", "installed", "search", "errors", "issues", "backups"]
-var VIEW_TITLES = { "updates": "Updates", "installed": "Addons", "search": "Search", "errors": "Errors", "issues": "Issues", "backups": "Backups" }
+var VIEWS = ["updates", "installed", "search", "errors", "issues", "backups", "history"]
+var VIEW_TITLES = { "updates": "Updates", "installed": "Addons", "search": "Search", "errors": "Errors", "issues": "Issues", "backups": "Backups",
+  "history": "History" }
 // Each view's glyph (§5.4), which the tabs show alone below 480 px (§2.1).
-var VIEW_GLYPHS = { "updates": 0xF0CE1, "installed": 0xF0431, "search": 0xF0349, "errors": 0xF00E4, "issues": 0xF0026, "backups": 0xF003C }
+var VIEW_GLYPHS = { "updates": 0xF0CE1, "installed": 0xF0431, "search": 0xF0349, "errors": 0xF00E4, "issues": 0xF0026, "backups": 0xF003C,
+  "history": 0xF02DA }
 
 // ------------------------------------------------------------------ the key map (design doc §3)
 
@@ -2558,6 +2918,7 @@ var KEY_CONTEXTS = [
   { "id": "errors", "title": "Errors" },
   { "id": "issues", "title": "Issues" },
   { "id": "backups", "title": "Backups" },
+  { "id": "history", "title": "History" },
   { "id": "page", "title": "A page" },
   { "id": "field", "title": "Search box" },
   { "id": "filter", "title": "Filter box" },
@@ -2579,7 +2940,7 @@ var KEY_CONTEXTS = [
 // BEGIN KEYMAP: checked by tests/omarchy_widget.rs against README's key table
 var KEYMAP = [
   { "keys": ["h", "l", "Left", "Right"], "context": "panel", "action": "view_step", "label": "previous or next view (on a page, h goes back)", "hint": "h l" },
-  { "keys": ["1", "2", "3", "4", "5", "6"], "context": "panel", "action": "view", "label": "view 1 to 6: Updates, Addons, Search, Errors, Issues, Backups", "hint": "1–6" },
+  { "keys": ["1", "2", "3", "4", "5", "6", "7"], "context": "panel", "action": "view", "label": "view 1 to 7: Updates, Addons, Search, Errors, Issues, Backups, History", "hint": "1–7" },
   { "keys": ["?"], "context": "panel", "action": "help", "label": "this key reference", "hint": "?" },
   { "keys": ["z"], "context": "panel", "action": "zoom", "label": "fill the screen, and back", "hint": "z" },
   { "keys": ["Ctrl+=", "Ctrl+-", "Ctrl+0"], "context": "panel", "action": "text_zoom", "label": "bigger or smaller text, and back to normal (or Ctrl+wheel)", "hint": "Ctrl+= Ctrl+-" },
@@ -2592,7 +2953,7 @@ var KEYMAP = [
   { "keys": ["s"], "context": "view", "action": "search", "label": "Search, its box ready to type in", "hint": "s" },
   { "keys": ["c"], "context": "view", "action": "check", "label": "check for updates now", "hint": "c" },
   { "keys": ["U"], "context": "view", "action": "update_all", "label": "update everything on the chosen client, or on every client", "hint": "U" },
-  { "keys": ["Ctrl+Z"], "context": "view", "action": "undo", "label": "undo the last change, after a confirmation", "hint": "Ctrl+Z" },
+  { "keys": ["Ctrl+Z"], "context": "view", "action": "undo", "label": "undo the last change, after a confirmation (in History and on a change's page, that change)", "hint": "Ctrl+Z" },
   { "keys": ["o"], "context": "view", "action": "open", "label": "open the chosen client's AddOns folder (under All, the row's client)", "hint": "o" },
   { "keys": ["b"], "context": "view", "action": "backup", "label": "back up the chosen client's settings now, or every client's", "hint": "b" },
   { "keys": ["d"], "context": "view", "action": "dismiss", "label": "mark the new Lua errors shown as seen", "hint": "d" },
@@ -2618,7 +2979,9 @@ var KEYMAP = [
   { "keys": ["Enter", "Space"], "context": "backups", "action": "enter", "label": "restore from this backup: choose what", "hint": "Enter" },
   { "keys": ["r"], "context": "backups", "action": "restore", "label": "restore from this backup: choose what", "hint": "r", "nothing": "No settings to restore here" },
   { "keys": ["x"], "context": "backups", "action": "remove", "label": "delete this backup, after a confirmation", "hint": "x", "nothing": "Nothing to remove here" },
-  { "keys": ["Enter", "Space"], "context": "page", "action": "enter", "label": "run the page's main action: a problem's fix, or on an addon page the client line's repair, update or install", "hint": "Enter" },
+  { "keys": ["Enter", "Space"], "context": "history", "action": "enter", "label": "open the change's page: what it did on each client, and its undo", "hint": "Enter" },
+  { "keys": ["/"], "context": "history", "action": "filter", "label": "filter the changes by addon, client, who or reason", "hint": "/", "nothing": "Nothing to filter here" },
+  { "keys": ["Enter", "Space"], "context": "page", "action": "enter", "label": "run the page's main action: a problem's fix, on an addon page the client line's repair, update or install, or on a change's page the cursored addon's page", "hint": "Enter" },
   { "keys": ["u"], "context": "page", "action": "update", "label": "update the addon, when one is waiting (on an addon page, on the client line)", "hint": "u", "nothing": "Nothing to update here" },
   { "keys": ["i"], "context": "page", "action": "install", "label": "an addon page: install it on the client line's client", "hint": "i", "nothing": "Nothing to install here" },
   { "keys": ["x"], "context": "page", "action": "remove", "label": "an addon page: remove it from the client line's client, after a confirmation", "hint": "x", "nothing": "Nothing to remove here" },
@@ -2686,7 +3049,7 @@ function keyStep(name) {
 // "page" (a page on the navigation stack: the frame's keys, and the page's own rows when
 // pages bring some, .23), "card", "field", "sheet" or "help".
 // The text box each view has, whose keys the key reference lists with the view's.
-var VIEW_BOXES = { "search": "field", "installed": "filter" }
+var VIEW_BOXES = { "search": "field", "installed": "filter", "history": "filter" }
 
 function keyScopes(context) {
   if (context === "card") return ["panel", "card"]
@@ -2995,7 +3358,9 @@ function viewCounts(targets, filter, commands, machineIssues) {
     // New Lua errors, always urgent (§2.1); the problems in Issues, urgent for a P0 or P1.
     "errors": { "count": facts.errors, "urgent": facts.errors > 0 },
     "issues": { "count": facts.problems, "urgent": facts.urgent > 0 },
-    "backups": { "count": backups, "urgent": false }
+    "backups": { "count": backups, "urgent": false },
+    // History carries no count (§2.1).
+    "history": none
   }
 }
 
@@ -3052,10 +3417,12 @@ function updateRequest(filter, rows, targets) {
 }
 
 // The Undo-last control: its label ("Undo update on retail", "Redo …"), the CLI argv
-// it runs through the confirm flow, or why there is none.
+// it runs through the confirm flow, or why there is none. When the cached status cannot
+// tell which change is last (M3-D37: never a guessed run), it opens History instead
+// (`history: true`), where every change is listed with its own undo (1n2p.30).
 function undoAction(lastChange) {
   if (!lastChange) return { "label": "Undo last", "argv": null, "why": "nothing to undo" }
-  if (lastChange.unknown) return { "label": "Undo last", "argv": null, "why": "last change: unknown" }
+  if (lastChange.unknown) return { "label": copy("history.undo_last.unknown"), "argv": null, "why": "", "history": true }
   var undo = lastChange.undo
   if (!undo) return { "label": lastChange.label, "argv": null, "why": "nothing to undo" }
   if (!undo.runnable) return { "label": lastChange.label, "argv": null, "why": "not a command the widget runs: " + undo.command }
@@ -3352,14 +3719,16 @@ function oldestCheck(statusTargets, filter) {
 
 // The resource each view reads.
 // Issues lists `status`'s problems and its warnings: the frame's own read.
-var VIEW_RESOURCES = { "updates": "list", "installed": "list", "search": "search", "errors": "errors", "issues": "status", "backups": "backups" }
+var VIEW_RESOURCES = { "updates": "list", "installed": "list", "search": "search", "errors": "errors", "issues": "status", "backups": "backups",
+  "history": "history" }
 // The codes that mean a source did not answer: on the last check's warnings (the check
 // then showed what it remembered) or its failed items.
 var SOURCE_TROUBLE = ["network", "http_status", "rate_limited", "offline", "stale_check"]
 // A state's glyph (design doc §5.4): loading spins, a failure alerts, an empty view shows
 // its own (all good is a check).
 var STATE_GLYPHS = { "firstLoad": 0xF04E6, "failed": 0xF0028, "filteredEmpty": 0xF0236 }
-var EMPTY_GLYPHS = { "updates": 0xF05E0, "installed": 0xF0431, "search": 0xF0349, "errors": 0xF05E0, "issues": 0xF05E0, "backups": 0xF003C }
+var EMPTY_GLYPHS = { "updates": 0xF05E0, "installed": 0xF0431, "search": 0xF0349, "errors": 0xF05E0, "issues": 0xF05E0, "backups": 0xF003C,
+  "history": 0xF02DA }
 
 // The last `outdated` run (Check now, or the background check), as the Updates view
 // qualifies its rows: when it ran, and whether a source did not answer, from the codes
@@ -3427,6 +3796,7 @@ function viewHas(view, s, query, filter) {
   // Issues reads nothing of its own: `status`'s answer is its data.
   if (view === "issues") return !!s.summary
   if (view === "backups") return !!s.backups
+  if (view === "history") return !!s.history
   if (view === "search") {
     var selection = s.search && s.search.selection && typeof s.search.selection === "object" ? s.search.selection : null
     return !!selection && selection.query === query && selection.target === filter
@@ -3436,7 +3806,8 @@ function viewHas(view, s, query, filter) {
 
 // When the view's data was read, as an age ("25 min ago"), or "earlier".
 function readAge(view, s, nowMs) {
-  var at = view === "errors" ? num(s.errorsAt) : view === "backups" ? num(s.backupsAt) : view === "search" || view === "issues" ? 0 : num(s.listsAt)
+  var at = view === "errors" ? num(s.errorsAt) : view === "backups" ? num(s.backupsAt) : view === "history" ? num(s.historyAt)
+    : view === "search" || view === "issues" ? 0 : num(s.listsAt)
   return at > 0 ? sinceText(new Date(at).toISOString(), nowMs) : copy("state.age.unknown")
 }
 
@@ -3565,6 +3936,12 @@ function viewState(view, input) {
   // Only the answer for this query and client says which sources it skipped: rows kept
   // from the last query while the next one runs carry none of their notices.
   if (view === "search" && s.search && viewHas(view, s, query, filter)) out.notices = out.notices.concat(skippedNotices(s.search.skipped))
+  // Lines `history` could not read (§6.5.3), and a list cut at its limit: said, never
+  // guessed at.
+  if (view === "history" && s.history && !out.refreshing) {
+    if (s.history.skipped) out.notices.push(stateNotice("partial", copy("state.notice.history_skipped")))
+    if (s.history.truncated) out.notices.push(stateNotice("partial", copy("state.notice.history_truncated", { "n": HISTORY_LIMIT })))
+  }
   if (num(i.rows) > 0) return out
   var filtered = filter !== "" && num(i.allRows) > 0
   if (view === "updates") {
@@ -3584,6 +3961,8 @@ function viewState(view, input) {
   } else if (view === "backups") {
     set(filtered ? "filteredEmpty" : "empty", copy(filter ? "state.empty.backups.client" : "state.empty.backups", { "client": client }),
       stateAction("backup"))
+  } else if (view === "history") {
+    set(filtered ? "filteredEmpty" : "empty", copy(filter ? "state.empty.history.client" : "state.empty.history", { "client": client }))
   }
   return out
 }
@@ -4135,6 +4514,15 @@ function addonPage(input) {
     })
   })
 
+  // Its newest changes (1n2p.30), from History's read: at most ADDON_PAGE_CHANGES, each
+  // opening its change's page; one undone since says so.
+  var changes = name === "" ? [] : historyRuns(i.history || null, statusTargets).filter(function(r) {
+    return r.items.some(function(item) { return item.addon === name })
+  }).slice(0, ADDON_PAGE_CHANGES).map(function(r) {
+    return { "key": r.key, "title": r.title, "state": r.state,
+      "text": copy(r.state === "undone" ? "page.change.undone" : "page.change", { "title": r.title, "when": whenText(r.at, nowMs) }) }
+  })
+
   var state = i.reading === true ? "reading" : (str(i.failed) !== "" ? "failed" : "")
   var why = ""
   if (state === "" && info && info.aboutWhy) {
@@ -4156,11 +4544,15 @@ function addonPage(input) {
     "needs": needs,
     "neededBy": neededBy,
     "errors": errors,
+    "changes": changes,
     "state": state,
     "failed": str(i.failed),
     "why": why
   }
 }
+
+// How many of an addon's changes its page lists (the comment .23 left for 1n2p.30).
+var ADDON_PAGE_CHANGES = 5
 
 // -------------------------------------------------------------- the Errors view (1n2p.27)
 
@@ -5303,6 +5695,95 @@ var COPY = {
   "state.empty.issues.client": "Nothing needs fixing on {client}.",
   "state.empty.backups": "No backups yet.",
   "state.empty.backups.client": "No backups of {client} yet.",
+  "state.loading.history": "Reading history…",
+  "state.failed.history": "Couldn't read the history.",
+  "state.empty.history": "No changes yet.",
+  "state.empty.history.client": "No changes on {client} yet.",
+  "state.what.history": "the history",
+  "state.notice.history_skipped": "Some history can't be read and isn't listed.",
+  "state.notice.history_truncated": "Only the newest {n} changes are listed.",
+
+  "history.actor.human": "you, in a terminal",
+  "history.actor.agent": "an agent",
+  "history.actor.widget": "you, in the panel",
+  "history.title.install": { "one": "Installed {addon}", "other": "Installed {n} addons" },
+  "history.title.install.none": "Installed addons",
+  "history.title.update": { "one": "Updated {addon}", "other": "Updated {n} addons" },
+  "history.title.update.none": "Updated addons",
+  "history.title.reinstall": { "one": "Repaired {owner} files", "other": "Repaired the files of {n} addons" },
+  "history.title.remove": { "one": "Removed {addon}", "other": "Removed {n} addons" },
+  "history.title.remove.none": "Removed addons",
+  "history.title.adopt": { "one": "Took over {addon}", "other": "Took over {n} addons" },
+  "history.title.adopt.none": "Took over addons",
+  "history.title.sync": { "one": "Matched your addon list: {addon}", "other": "Matched your addon list: {n} addons" },
+  "history.title.sync.none": "Matched your addon list",
+  "history.title.pin": { "one": "Pinned {addon}", "other": "Pinned {n} addons" },
+  "history.title.unpin": { "one": "Unpinned {addon}", "other": "Unpinned {n} addons" },
+  "history.title.pin.none": "Pinned or unpinned addons",
+  "history.title.undo": "Undid the {change}",
+  "history.title.undo.unknown": "Undid a change",
+  "history.title.restore": "Restored the settings",
+  "history.title.restore.addons": { "one": "Restored {owner} settings", "other": "Restored the settings of {n} addons" },
+  "history.title.repair": "Repaired a problem",
+  "history.title.backup": "Backed up the settings",
+  "history.title.config": "Changed a setting",
+  "history.title.target": "Changed the clients",
+  "history.title.auth": "Changed the GitHub token",
+  "history.title.export": "Saved the addon list",
+  "history.title.dismiss": "Marked Lua errors as seen",
+  "history.title.widget": "Installed or removed the bar widget",
+  "history.title.skill": "Installed the agent guide",
+  "history.title.other": "Changed something",
+  "history.item.settings": "every setting",
+  "history.item.more": { "one": "1 more", "other": "{n} more" },
+  "history.change.installed": "Installed {item}",
+  "history.change.updated": "Updated {item}",
+  "history.change.reinstalled": "Repaired the files of {item}",
+  "history.change.removed": "Removed {item}",
+  "history.change.adopted": "Took over {item}",
+  "history.change.pinned": "Pinned {item}",
+  "history.change.unpinned": "Unpinned {item}",
+  "history.change.edited": "Changed {item}",
+  "history.change.settings_restored": "Restored the settings of {item}",
+  "history.change.reverted": "Put back {item}",
+  "history.change.whole.settings_restored": "Restored every setting",
+  "history.change.whole.reverted": "Put every setting back as it was",
+  "history.reason": "“{reason}”",
+  "history.filter": "Filter by addon, client, who or why",
+  "history.chip.undone": "undone",
+  "history.action.undo": "Undo",
+  "history.action.redo": "Redo",
+  "history.undo.label": "Undo: {title}",
+  "history.redo.label": "Redo: {title}",
+  "history.undo_last.unknown": "Undo: choose the change in History",
+  "history.page.undo_all": "Undo all of it",
+  "history.page.redo_all": "Redo all of it",
+  "history.page.undo_on": "Undo on {client} only",
+  "history.page.redo_on": "Redo on {client} only",
+  "history.page.plan": "Made from a preview you approved.",
+  "history.page.backup": "Put back from a backup: Enter on this line shows it in Backups.",
+  "history.page.gone": "This change isn't among the newest changes History reads any more.",
+  "page.section.changes": "Changes",
+  "page.change": "{title} · {when}",
+  "page.change.undone": "{title} · {when} · undone",
+  "history.why.backup": "A backup is no change to undo.",
+  "history.why.settings": "A settings change: undo doesn't revert it.",
+  "history.why.dismiss": "Marking errors as seen can't be undone.",
+  "history.why.old": "Made by an older omaddons, before changes were grouped: undo it from a terminal.",
+  "history.why.undone": "It was already undone.",
+
+  "time.just_now": "just now",
+  "time.minutes": "{n} min ago",
+  "time.hours": "{n} h ago",
+  "time.yesterday": "yesterday {time}",
+  "time.weekday": "{day} {time}",
+  "time.day.today": "Today",
+  "time.day.yesterday": "Yesterday",
+  "time.day.date": "{d} {month}",
+  "time.weekdays": "Sunday Monday Tuesday Wednesday Thursday Friday Saturday",
+  "time.weekdays.short": "Sun Mon Tue Wed Thu Fri Sat",
+  "time.months": "January February March April May June July August September October November December",
+  "time.months.short": "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec",
   "state.notice.failed": "Couldn't read {what} again; showing what was read {age}.",
   "state.notice.check_unreachable": "Some sources didn't answer the last check; what they said before is shown.",
   "state.notice.check_failed": {
@@ -6947,6 +7428,22 @@ if (typeof module !== "undefined") {
     explainLines: explainLines,
     explainFor: explainFor,
     explainArgv: explainArgv,
-    lastChangeOf: lastChangeOf
+    lastChangeOf: lastChangeOf,
+    HISTORY_LIMIT: HISTORY_LIMIT,
+    HISTORY_FIXED: HISTORY_FIXED,
+    RUN_PATTERN: RUN_PATTERN,
+    reduceHistory: reduceHistory,
+    historyStanding: historyStanding,
+    historyItemText: historyItemText,
+    historyTitle: historyTitle,
+    historyReason: historyReason,
+    historyActor: historyActor,
+    historyRuns: historyRuns,
+    historyUndo: historyUndo,
+    historyRows: historyRows,
+    historyCount: historyCount,
+    historyPage: historyPage,
+    dayText: dayText,
+    whenText: whenText
   }
 }

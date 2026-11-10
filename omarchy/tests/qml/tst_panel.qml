@@ -300,7 +300,7 @@ TestCase {
     compare(svc.reads[svc.reads.length - 1], "installed")
     keyClick("h")
     keyClick("h")
-    compare(view.view, "backups", "h wraps around")
+    compare(view.view, "history", "h wraps around")
     keyClick("3")
     compare(view.view, "search")
     keyClick(Qt.Key_Right)
@@ -315,7 +315,7 @@ TestCase {
     verify(child("tab_installed").selected)
     verify(child("content").item !== null)
     // Every view of the switcher has its component; one without would leave the slot empty.
-    for (var n = 1; n <= 6; n++) {
+    for (var n = 1; n <= Model.VIEWS.length; n++) {
       keyClick(String(n))
       verify(child("content").item !== null, "view " + n)
     }
@@ -787,12 +787,17 @@ TestCase {
 
   // ------------------------------------------------------------- the last change
 
-  function test_an_unknown_last_change_disables_undo_and_says_so() {
+  // A last change the cached status cannot tell (never a guessed run, M3-D37): Undo
+  // opens History, where every change has its own undo (1n2p.30), and runs nothing.
+  function test_an_unknown_last_change_opens_history() {
     svc.lastChange = { "unknown": true }
-    verify(child("lastChangeUnknown").visible)
-    verify(!child("undoButton").enabled)
-    keyClick("z")
+    verify(findChild(view, "lastChangeUnknown") === null, "no 'last change: unknown' line")
+    verify(child("undoButton").enabled)
+    compare(child("undoButton").tooltipText, "Undo: choose the change in History (Ctrl+Z)")
+    keyClick(Qt.Key_Z, Qt.ControlModifier)
+    compare(view.view, "history")
     compare(svc.cliRuns.length, 0)
+    compare(svc.reads[svc.reads.length - 1], "history")
   }
 
   function test_an_undo_is_offered_as_redo() {

@@ -59,11 +59,13 @@ TestCase {
 
   // ---- helpers
 
+  // The command words after the standard flags, by name: History's read names no actor
+  // (1n2p.30).
   function words(command) {
-    var i = 6
+    var i = 1
     while (i < command.length) {
-      if (command[i] === "--progress" || command[i] === "--if-match") i += 2
-      else if (command[i] === "--dry-run") i += 1
+      if (command[i] === "--json" || command[i] === "--dry-run") i += 1
+      else if (["--actor", "--reason", "--progress", "--if-match"].indexOf(command[i]) !== -1) i += 2
       else break
     }
     return command.slice(i)
@@ -114,7 +116,9 @@ TestCase {
     }
     var catalog = { "text": JSON.stringify({ "ok": true, "schema_version": "1.1", "tool_version": Build.TOOL_VERSION, "command": "search",
       "exit_code": 0, "partial": false, "data": { "results": [], "sources_skipped": [] }, "warnings": [], "commands": [] }) }
-    return { "list": empty("list"), "errors": empty("errors"), "backup": empty("backup list"), "search": catalog }
+    // History's read (1n2p.30) of a home that changed nothing.
+    return { "list": empty("list"), "errors": empty("errors"), "backup": empty("backup list"), "search": catalog,
+      "history": the("history-empty") }
   }
 
   // `status` with or without its scan (the panel opening asks for the scan) answer

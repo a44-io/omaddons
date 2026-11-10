@@ -72,7 +72,7 @@ Item {
   // `typing`, `focusSearch()`, `escapeFilter()` (true when it took Esc: a filter it cleared)
   // and `handleKey(action, cursor)`, which gets KEYMAP's action names.
   property var viewComponents: ({ "updates": updatesView, "installed": installedView, "errors": errorsView, "issues": issuesView,
-    "backups": backupsView, "search": searchView })
+    "backups": backupsView, "search": searchView, "history": historyView })
   // Frame-wide view actions a later task registers (backup, dismiss, …): action →
   // function(frame).
   property var keyHandlers: ({
@@ -337,6 +337,14 @@ Item {
       "props": { "name": String(name), "ref": String(ref || ""), "link": "" } })
   }
 
+  // A change's page (1n2p.30, design doc §2.4): Enter on a History row, by the run's key
+  // (the page reads it from History's data, so a doorbell's re-read keeps it current).
+  function openChange(key, title) {
+    if (!key) return false
+    return push({ "title": String(title || Model.VIEW_TITLES.history), "component": changePageComponent,
+      "props": { "changeKey": String(key) } })
+  }
+
   // The page of a ref or link pasted into Search (1n2p.25): read by that text, which
   // names nothing else; the read's answer names the addon (Model.addonPage).
   function openLink(text) {
@@ -478,7 +486,12 @@ Item {
     if (cardMode || !canAct) return false
     if (action === "update_all") return updateAll()
     if (action === "check") return checkNow()
-    if (action === "undo") return undoLast()
+    // History and a change's page undo their own change (design doc §3.2: "History: the
+    // cursored change"); every other view, the last change.
+    if (action === "undo") {
+      if (current && typeof current.handleKey === "function" && current.handleKey("undo", cursor) === true) return true
+      return undoLast()
+    }
     if (action === "open") return openAddOns()
     return routeKey(action)
   }
@@ -521,7 +534,13 @@ Item {
     return true
   }
 
+  // The last change's undo; when the cached status cannot tell which change is last
+  // (never a guessed run, M3-D37), History, where each change has its own undo.
   function undoLast() {
+    if (undo.history === true) {
+      showView("history")
+      return true
+    }
     if (busy || !undo.argv) return false
     return report(svc.runCliArgv(undo.argv, undo.label))
   }
@@ -809,7 +828,7 @@ Item {
                 // U+F054C nf-md-undo.
                 iconText: String.fromCodePoint(0xF054C)
                 tooltipText: Model.withKey(root.undo.label, "undo")
-                enabled: root.canAct && !root.busy && root.undo.argv !== null
+                enabled: root.canAct && (root.undo.history === true || (!root.busy && root.undo.argv !== null))
                 opacity: enabled ? 1.0 : 0.4
                 foreground: root.foreground
                 fontFamily: root.fontFamily
@@ -1359,18 +1378,6 @@ Item {
           text: root.keyNote
         }
 
-        // Never a guessed run (M3-D37).
-        Text {
-          objectName: "lastChangeUnknown"
-          visible: !!root.lastChange && root.lastChange.unknown === true
-          width: parent.width
-          textFormat: Text.PlainText
-          text: "last change: unknown"
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-        }
-
         // The freshness footer (§2.1, UX-23): the clients, the scope's oldest check,
         // who is running; it ticks while the panel is open.
         PlainLabel {
@@ -1519,11 +1526,23 @@ Item {
     BackupsView {}
   }
 
+  Component {
+    id: historyView
+    HistoryView {}
+  }
+
   // The addon page (1n2p.23): the frame owns its component, so a page can open another
   // addon's page (a dependency) on top of itself.
   Component {
     id: addonPageComponent
     AddonPage {}
+  }
+
+  // A change's page (1n2p.30): what a History row's change did, client by client, and
+  // its undo; an addon on it opens that addon's page on top.
+  Component {
+    id: changePageComponent
+    ChangePage {}
   }
 
   // The keys that are no single character (design doc §3: Ctrl+Z, PgUp, PgDn, the

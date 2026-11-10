@@ -260,11 +260,13 @@ TestCase {
   // ---------------------------------------------------------------- the binary
 
   // The command words and arguments after the standard flags (tst_plans.qml's).
+  // The command words after the standard flags, by name: History's read names no actor
+  // (1n2p.30).
   function words(command) {
-    var i = 6
+    var i = 1
     while (i < command.length) {
-      if (command[i] === "--progress" || command[i] === "--if-match") i += 2
-      else if (command[i] === "--dry-run") i += 1
+      if (command[i] === "--json" || command[i] === "--dry-run") i += 1
+      else if (["--actor", "--reason", "--progress", "--if-match"].indexOf(command[i]) !== -1) i += 2
       else break
     }
     return command.slice(i)
@@ -559,7 +561,7 @@ TestCase {
   // Updates behind on two clients, Lua errors on retail: the everyday scene.
   function everyday() {
     return { "status": the("status-updates"), "list": the("list"), "errors": the("errors"), "backups": the("backups"),
-      "backupsDetail": the("backups-detail"), "changelog": the("changelog") }
+      "backupsDetail": the("backups-detail"), "changelog": the("changelog"), "history": the("history") }
   }
 
   // ---------------------------------------------------------------- phases
@@ -1077,6 +1079,42 @@ TestCase {
     shoot("backups-long")
   }
 
+  // ---------------------------------------------------------------- History (1n2p.30)
+
+  function test_history_loading() {
+    var scene = everyday()
+    delete scene.history
+    open(scene, "history")
+    shoot("history-loading")
+  }
+
+  function test_history_empty() {
+    var scene = everyday()
+    scene.history = the("history-empty")
+    open(scene, "history")
+    shoot("history-empty")
+  }
+
+  // Every kind of row the scene has: a restore, removals (one undone), an undo, a
+  // backup, a settings change, an update of two clients, installs; the cursor on one.
+  function test_history_short() {
+    open(everyday(), "history")
+    var history = frame.currentView
+    verify(history.rows.length > 5, "the scene's changes are listed")
+    history.select(1)
+    shoot("history-short")
+  }
+
+  // Enter on the update of two clients: its page, each client's addons, and its undos.
+  function test_history_change_page() {
+    open(everyday(), "history")
+    var history = frame.currentView
+    var rows = history.rows.filter(function(r) { return r.kind === "update" })
+    verify(rows.length === 1)
+    frame.openChange(rows[0].key, rows[0].title)
+    shoot("history-change-page")
+  }
+
   // ---------------------------------------------------------------- Search
 
   function test_search_empty_box() {
@@ -1366,11 +1404,13 @@ TestCase {
       { "id": "era", "key": "k-era", "displayName": "Classic Era", "updates": { "checkedAt": "2100-01-01T00:00:00Z", "stale": false },
         "backups": { "stale": false } }]
     var data = { "lists": { "targets": [] }, "errors": { "targets": [{ "id": "retail", "partial": true }] }, "backups": { "targets": [] },
+      "history": { "failed": false, "entries": [], "truncated": false, "skipped": false },
       "search": { "rows": [], "selection": { "query": "dbm", "target": "" },
         "skipped": [{ "source": "github", "reason": "offline" }, { "source": "tukui", "reason": "disabled" }] } }
     var nowMs = Date.parse("2100-01-01T00:25:00Z")
     var service = function(fields) {
-      var s = { "targets": targets, "reading": [], "outcomes": {}, "listsAt": nowMs - 600000, "errorsAt": nowMs - 600000, "backupsAt": nowMs - 600000 }
+      var s = { "targets": targets, "reading": [], "outcomes": {}, "listsAt": nowMs - 600000, "errorsAt": nowMs - 600000, "backupsAt": nowMs - 600000,
+        "historyAt": nowMs - 600000 }
       for (var key in fields) s[key] = fields[key]
       return s
     }
@@ -1404,6 +1444,11 @@ TestCase {
     if (view === "errors") cells.push(cell("partial", withData, { "rows": 3, "allRows": 3 }))
     if (view === "backups") cells.push(cell("stale", withData, { "rows": 2, "allRows": 2, "filter": "retail" }))
     if (view === "search") cells.push(cell("skipped sources", withData, { "rows": 2, "allRows": 2 }))
+    // Lines `history` could not read, and a list cut at its limit (1n2p.30).
+    if (view === "history") {
+      cells.push(cell("skipped and cut", { "history": { "failed": false, "entries": [], "truncated": true, "skipped": true } },
+        { "rows": 3, "allRows": 3 }))
+    }
     return cells
   }
 
@@ -1423,6 +1468,7 @@ TestCase {
   function test_states_errors() { shootStates("errors") }
   function test_states_issues() { shootStates("issues") }
   function test_states_backups() { shootStates("backups") }
+  function test_states_history() { shootStates("history") }
 
   function test_components_at_540() { shootGallery(galleryComponent, 540, "components-540") }
   function test_components_at_400() { shootGallery(galleryComponent, 400, "components-400") }

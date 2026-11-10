@@ -67,6 +67,9 @@ Item {
   property var lists: null
   property var errors: null
   property var backups: null
+  // History's `history -v` (Model.reduceHistory), read locally when its view opens and
+  // after every change (1n2p.30).
+  property var history: null
   property var search: null
   // The built-in catalog per client scope ("" for All), reduced as a search's answer
   // (`search --catalog`, local and offline: Search's empty box, 1n2p.26), kept for the
@@ -146,6 +149,7 @@ Item {
   // The dismissals `d` still has to send, one client at a time.
   property var pendingDismissals: []
   property double backupsAt: 0
+  property double historyAt: 0
   // The restore chooser's `backup list -v -t`, view-bound: `{selection, data}`.
   property var backupsDetail: null
   property var detailSelection: null
@@ -366,6 +370,11 @@ Item {
     return request({ "resource": "backups", "template": "backups", "label": "Backups" })
   }
 
+  // History's changes (1n2p.30): local, never the network.
+  function readHistory() {
+    return request({ "resource": "history", "template": "history", "label": "History" })
+  }
+
   // The restore chooser opened for `target`: each backup's addon versions, view-bound.
   function readBackupsDetail(target) {
     var selection = { "target": String(target || "") }
@@ -398,15 +407,17 @@ Item {
     currentView = String(view || "")
     // Issues reads nothing of its own: `status`, which the frame keeps current, is its data.
     var resource = currentView === "updates" || currentView === "installed" ? "list"
-      : (currentView === "errors" ? "errors" : (currentView === "backups" ? "backups" : ""))
+      : (currentView === "errors" ? "errors" : (currentView === "backups" ? "backups"
+      : (currentView === "history" ? "history" : "")))
     if (resource === "") return false
-    var have = resource === "list" ? lists : (resource === "errors" ? errors : backups)
-    var at = resource === "list" ? listsAt : (resource === "errors" ? errorsAt : backupsAt)
+    var have = resource === "list" ? lists : (resource === "errors" ? errors : (resource === "backups" ? backups : history))
+    var at = resource === "list" ? listsAt : (resource === "errors" ? errorsAt : (resource === "backups" ? backupsAt : historyAt))
     if (have && staleReads[resource] !== true && Date.now() - at <= viewMaxAgeMs) return false
     var next = {}
     for (var key in staleReads) if (key !== resource) next[key] = staleReads[key]
     staleReads = next
-    return resource === "list" ? readList() : (resource === "errors" ? readErrors() : readBackups())
+    return resource === "list" ? readList() : (resource === "errors" ? readErrors()
+      : (resource === "backups" ? readBackups() : readHistory()))
   }
 
   // A view's Try again (Model.viewState's actions): its data read again now, whatever
@@ -425,7 +436,7 @@ Item {
   // the open panel's view.
   function changed() {
     refresh()
-    staleReads = { "list": true, "errors": true, "backups": true }
+    staleReads = { "list": true, "errors": true, "backups": true, "history": true }
     if (panelOpen && currentView !== "") readView(currentView)
   }
 
@@ -960,6 +971,9 @@ Item {
     } else if (r.resource === "backups") {
       backups = Model.reduceBackups(env)
       backupsAt = Date.now()
+    } else if (r.resource === "history") {
+      history = Model.reduceHistory(env)
+      historyAt = Date.now()
     } else if (r.resource === "backups_detail") {
       backupsDetail = { "selection": r.selection, "data": Model.reduceBackups(env) }
     } else if (r.resource === "search") {

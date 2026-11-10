@@ -146,6 +146,7 @@ const BENIGN = {
   backup: "01M6QZ0000000000000000000A",
   fm: "fm-secrets-credential-file-mode",
   path: "/home/fixture/Games/World of Warcraft",
+  run: "01M8Q2VA7K3N5P8R1T4W6X9Y0Z",
 }
 
 // What a template needs beyond its slots to build: a planned template builds as its
@@ -160,7 +161,7 @@ function runOpts(name) {
 }
 
 // The templates whose real run is refused: they run as their preview, then apply.
-const PREVIEWED = ["adopt_target", "install", "prune_backup", "reinstall", "remove", "restore", "restore_addon", "update_addon", "update_all", "update_target"]
+const PREVIEWED = ["adopt_target", "install", "prune_backup", "reinstall", "remove", "restore", "restore_addon", "undo_run", "undo_run_target", "update_addon", "update_all", "update_target"]
 // The templates bound to their preview's token (G2): their real run needs it.
 const BOUND_PREVIEWS = ["doctor_fix", "doctor_fix_target"]
 
@@ -265,6 +266,15 @@ describe("buildArgv", () => {
           for (const value of HOSTILE) {
             const slots = Object.assign(benignSlots(name), { fm: value })
             expect([name, value, reasonOf(() => M.buildArgv(name, slots, runOpts(name)))]).toEqual([name, value, "bad_fm"])
+          }
+          continue
+        }
+        // A run's id has its own grammar (a whole ULID, 1n2p.30): every hostile value is
+        // refused.
+        if (slot === "run") {
+          for (const value of HOSTILE) {
+            const slots = Object.assign(benignSlots(name), { run: value })
+            expect([name, value, reasonOf(() => M.buildArgv(name, slots, runOpts(name)))]).toEqual([name, value, "bad_run"])
           }
           continue
         }
@@ -1165,7 +1175,14 @@ describe("the key map", () => {
       ["i_installs_a_result", ["i", "search"], { action: "install", step: 0 }],
       ["a_digit_names_its_view", ["3", "updates"], { action: "view", step: 0, view: "search" }],
       ["the_errors_digit", ["4", "issues"], { action: "view", step: 0, view: "errors" }],
-      ["the_last_digit", ["6", "issues"], { action: "view", step: 0, view: "backups" }],
+      ["the_backups_digit", ["6", "issues"], { action: "view", step: 0, view: "backups" }],
+      ["the_last_digit", ["7", "issues"], { action: "view", step: 0, view: "history" }],
+      // History (1n2p.30): Enter opens a change's page, `/` filters, Ctrl+Z undoes (the
+      // frame asks the view first, so the cursored change).
+      ["enter_opens_a_change", ["Enter", "history"], { action: "enter", step: 0 }],
+      ["slash_filters_the_history", ["/", "history"], { action: "filter", step: 0 }],
+      ["Ctrl_Z_in_history", ["Ctrl+Z", "history"], { action: "undo", step: 0 }],
+      ["x_in_history_says_why_not", ["x", "history"], { action: null, note: "Nothing to remove here" }],
       ["t_steps_forward", ["t", "installed"], { action: "client", step: 1 }],
       ["T_steps_back", ["T", "installed"], { action: "client", step: -1 }],
       ["g_goes_to_the_top", ["g", "updates"], { action: "edge", step: -1 }],
@@ -1200,7 +1217,7 @@ describe("the key map", () => {
       ["slash_filters_the_updates", ["/", "updates"], { action: "filter", step: 0 }],
       ["slash_elsewhere_says_why_not", ["/", "backups"], { action: null, note: "Nothing to filter here" }],
       ["S_sorts_the_addons", ["S", "installed"], { action: "sort", step: 0 }],
-      ["a_digit_past_the_views", ["7", "updates"], null],
+      ["a_digit_past_the_views", ["8", "updates"], null],
       ["two_letters", ["uu", "updates"], null],
       ["nothing", ["", "updates"], null],
       ["no_context_is_the_first_view", ["u", undefined], { action: "update", step: 0 }],
@@ -1231,7 +1248,7 @@ describe("the key map", () => {
     for (const id of ids) expect([id, M.KEYMAP.some((r) => r.context === id)]).toEqual([id, true])
     // Every view has a context of its own, titled as the switcher titles it.
     for (const v of M.VIEWS) expect(M.KEY_CONTEXTS.find((c) => c.id === v).title).toBe(M.VIEW_TITLES[v])
-    expect(M.VIEWS.map((v) => M.VIEW_TITLES[v])).toEqual(["Updates", "Addons", "Search", "Errors", "Issues", "Backups"])
+    expect(M.VIEWS.map((v) => M.VIEW_TITLES[v])).toEqual(["Updates", "Addons", "Search", "Errors", "Issues", "Backups", "History"])
     for (const v of M.VIEWS) expect([v, typeof M.VIEW_GLYPHS[v]]).toEqual([v, "number"])
   })
 
@@ -1356,8 +1373,9 @@ describe("the panel frame", () => {
 
   test("views step and wrap", () => {
     expect(M.stepView("updates", 1)).toBe("installed")
-    expect(M.stepView("updates", -1)).toBe("backups")
-    expect(M.stepView("backups", 1)).toBe("updates")
+    expect(M.stepView("updates", -1)).toBe("history")
+    expect(M.stepView("backups", 1)).toBe("history")
+    expect(M.stepView("history", 1)).toBe("updates")
     expect(M.stepView("installed", 1)).toBe("search")
     expect(M.stepView("nonsense", 1)).toBe("installed")
   })
@@ -1627,7 +1645,10 @@ describe("the panel frame", () => {
     expect(undo.label).toBe("Undo update on era and retail")
     expect(undo.argv[1]).toBe("undo")
     expect(undo.why).toBe("")
-    expect(M.undoAction({ unknown: true })).toEqual({ label: "Undo last", argv: null, why: "last change: unknown" })
+    // A last change the cached status cannot tell (never a guessed run): Undo opens
+    // History, where every change has its own (1n2p.30); "last change: unknown" is gone.
+    expect(M.undoAction({ unknown: true })).toEqual({ label: "Undo: choose the change in History", argv: null, why: "", history: true })
+    expect(JSON.stringify(M.COPY) + JSON.stringify(M.undoAction({ unknown: true }))).not.toContain("last change: unknown")
     expect(M.undoAction(null).why).toBe("nothing to undo")
     const refused = JSON.parse(JSON.stringify(after.lastChange))
     refused.undo = { command: "rm -rf /", argv: null, runnable: false, destructive: true }
@@ -3769,6 +3790,199 @@ describe("the addon page", () => {
   })
 })
 
+// --------------------------------------------------------- History (1n2p.30)
+
+describe("History", () => {
+  // The fixture's scene (tests/omarchy_widget.rs history_fixtures), newest first: a
+  // person's whole restore, the agent's removal of Foo on era, a setting changed, a
+  // backup, the undo of a removal, that removal of Bar on retail (the agent's, with its
+  // reason), an update of era and retail from the panel, and four installs.
+  const history = () => M.reduceHistory(fixture("history"))
+  const runs = () => M.historyRuns(history(), [])
+  const byTitle = (title) => runs().find((r) => r.title === title)
+  const byKind = (kind) => runs().find((r) => r.kind === kind)
+  // Half an hour after the newest change.
+  const soon = () => Date.parse(fixture("history").data.entries[0].at) + 30 * 60000
+
+  test("the read names no actor, so it lists every change (an explicit --actor filters history)", () => {
+    const argv = M.buildArgv("history", {}, opts()).argv
+    expect(argv).not.toContain("--actor")
+    expect(argv.slice(argv.indexOf("history"))).toEqual(["history", "-v", "--limit", String(M.HISTORY_LIMIT)])
+    // Every other template still says who acts.
+    expect(M.buildArgv("list", {}, opts()).argv.slice(1, 4)).toEqual(["--json", "--actor", "widget"])
+    expect(() => M.templateShape("x", { x: { argv: ["update"], mutates: true, actor: false } })).toThrow(/names no actor but mutates/)
+  })
+
+  test("the envelope as History's model", () => {
+    const h = history()
+    expect([h.failed, h.truncated, h.skipped, h.entries.length]).toEqual([false, false, false, 12])
+    expect(h.entries[2]).toMatchObject({ kind: "config", actor: "human", targets: [] })
+    // A restore names the backup it put files back from (its `wtf` op's).
+    expect(h.entries[0].kind).toBe("restore")
+    expect(h.entries[0].restoredFrom).toMatch(M.RUN_PATTERN)
+    expect(M.reduceHistory(fixture("failure")).failed).toBe(true)
+    expect(M.reduceHistory(null).failed).toBe(false)
+    expect(M.reduceHistory(fixture("history-empty")).entries).toEqual([])
+    // Lines `history` could not read are said, never guessed at.
+    const skipped = Object.assign({}, fixture("history"), { warnings: [{ code: "history_lines_skipped", message: "m", fix: null, fix_argv: null }] })
+    expect(M.reduceHistory(skipped).skipped).toBe(true)
+  })
+
+  test("each run in words, with its undo state", () => {
+    table([
+      ["a_whole_restore", "restore", ["Restored the settings", "undoable", ""]],
+      ["config_is_fixed", "config", ["Changed a setting", "fixed", "A settings change: undo doesn't revert it."]],
+      ["a_backup_is_fixed", "backup", ["Backed up the settings", "fixed", "A backup is no change to undo."]],
+      ["the_undo_stands_so_it_redoes", "undo", ["Undid the removal", "redo", ""]],
+      ["the_update_of_two_clients", "update", ["Updated 2 addons", "undoable", ""]],
+    ], (kind) => { const r = byKind(kind); return [r.title, r.state, r.why] })
+    table([
+      ["the_removal_undone_since", "Removed Bar", ["undone", "It was already undone."]],
+      ["the_removal_in_effect", "Removed Foo", ["undoable", ""]],
+    ], (title) => { const r = byTitle(title); return [r.state, r.why] })
+    const update = byKind("update")
+    expect([update.targets, update.items.length, update.actor]).toEqual([["era", "retail"], 4, "widget"])
+    // Each install was a command of its own: four runs.
+    expect(runs().filter((r) => r.kind === "install").map((r) => r.title).sort())
+      .toEqual(["Installed Bar", "Installed Bar", "Installed Foo", "Installed Foo"])
+  })
+
+  test("an undo of an undo puts the change back in effect", () => {
+    const line = (tx, kind, reverts) => ({ tx, run: tx + "R", kind, at: "2026-11-01T00:00:00Z", actor: "human", reason: null, reverts: reverts || null,
+      plan: null, targets: [{ id: "retail", key: "K" }], items: [], restoredFrom: "" })
+    const entries = [line("C", "undo", "B"), line("B", "undo", "A"), line("A", "update")]
+    expect(M.historyStanding(entries)).toEqual({ C: true, B: false, A: true })
+    const states = M.historyRuns({ entries }, []).map((r) => [r.tx, r.state])
+    expect(states).toEqual([["C", "redo"], ["B", "undone"], ["A", "undoable"]])
+    // A line from before runs: nothing to name, so undo it from a terminal.
+    const old = M.historyRuns({ entries: [Object.assign(line("D", "update"), { run: null })] }, [])[0]
+    expect([old.state, old.why, M.historyUndo(old, "")]).toEqual(["old", "Made by an older omaddons, before changes were grouped: undo it from a terminal.", null])
+  })
+
+  test("the rows: day headings, clients under All, the addons once, who and why", () => {
+    const rows = M.historyRows(history(), "", [{ id: "retail", displayName: "Retail" }, { id: "era", displayName: "Classic Era" }], { nowMs: soon() })
+    expect(rows[0].group).toBe("Today")
+    expect(rows.slice(1).every((r) => r.group === "")).toBe(true)
+    const update = rows.find((r) => r.kind === "update")
+    expect(update.chips.map((c) => c.text)).toEqual(["Classic Era", "Retail"])
+    // An update of two clients names each addon once.
+    expect(update.detail).toBe("Bar v1 → v2 · Foo v1 → v2")
+    // The panel's own reason (its button's label) says nothing more; an agent's is shown.
+    expect(update.meta).toMatch(/^\d\d:\d\d · you, in the panel$/)
+    const removal = rows.find((r) => r.title === "Removed Bar")
+    expect(removal.meta).toMatch(/ · an agent · “Bar conflicts with ElvUI”$/)
+    expect(removal.chips.map((c) => c.text)).toEqual(["Retail", "undone"])
+    expect([removal.glyph, update.glyph]).toEqual([0xF06A9, 0xF02DA])
+    // A whole restore names no addon: "every setting".
+    expect(rows[0].detail).toBe("every setting")
+    // Undo where it can: the cursored row's action; none on an undone or fixed one.
+    expect(rows.map((r) => [r.title, r.actions.map((a) => a.name)]).slice(0, 7)).toEqual([
+      ["Restored the settings", ["undo"]], ["Removed Foo", ["undo"]], ["Changed a setting", []], ["Backed up the settings", []],
+      ["Undid the removal", ["undo"]], ["Removed Bar", []], ["Updated 2 addons", ["undo"]]])
+  })
+
+  test("the scope keeps its own changes, and the filter matches what a row says", () => {
+    const era = M.historyRows(history(), "era", [], { nowMs: soon() })
+    expect(era.map((r) => r.title)).toEqual(["Removed Foo", "Updated 2 addons", "Installed Bar", "Installed Foo"])
+    // Under one client, no client chips.
+    expect(era[0].chips).toEqual([])
+    table([
+      ["a_reason", "elvui", ["Removed Bar"]],
+      ["who", "agent", ["Removed Foo", "Removed Bar", "Installed Bar", "Installed Bar", "Installed Foo", "Installed Foo"]],
+      ["an_addon_and_a_word", "foo inst", ["Installed Foo", "Installed Foo"]],
+      ["nothing", "zzz", []],
+    ], (query) => M.historyRows(history(), "", [], { query, nowMs: soon() }).map((r) => r.title))
+    expect(M.historyCount(history(), "", [], "elvui", soon())).toMatchObject({ shown: 1, total: 11, text: "1 of 11", none: false })
+  })
+
+  test("undo names the run, whole or on one client, and previews first", () => {
+    const update = byKind("update")
+    expect(M.historyUndo(update, "")).toEqual({ template: "undo_run", slots: { run: update.run }, label: "Undo: Updated 2 addons" })
+    expect(M.historyUndo(update, "era")).toEqual({ template: "undo_run_target", slots: { run: update.run, target: "era" }, label: "Undo: Updated 2 addons" })
+    expect(M.historyUndo(byKind("undo"), "").label).toBe("Redo: Undid the removal")
+    expect([M.historyUndo(byTitle("Removed Bar"), ""), M.historyUndo(byKind("config"), "")]).toEqual([null, null])
+    // Its real run is refused: Yes applies the preview's plan.
+    expect(reasonOf(() => M.buildArgv("undo_run", { run: update.run }, opts()))).toBe("preview_required")
+    const preview = M.buildArgv("undo_run", { run: update.run }, opts({ preview: true })).argv
+    expect(preview.slice(preview.indexOf("--dry-run"))).toEqual(["--dry-run", "undo", "--run=" + update.run])
+    // The CLI's preview, in the plan sheet: the update it reverts, on both clients.
+    const targets = [{ id: "retail", displayName: "Retail" }, { id: "era", displayName: "Classic Era" }]
+    expect(M.confirmSheet("undo", fixture("history-undo-preview"), CONTEXT, targets).title).toMatch(/^Undo the update on Classic Era and Retail from /)
+    expect(M.confirmSheet("undo", fixture("history-undo-target-preview"), CONTEXT, targets).title).toMatch(/^Undo the update on Classic Era from /)
+  })
+
+  test("a change's page: each client's addons, and an undo for all of it and per client", () => {
+    const update = byKind("update")
+    const page = M.historyPage(history(), update.key, [{ id: "retail", displayName: "Retail" }, { id: "era", displayName: "Classic Era" }], soon())
+    expect(page.header).toBe("Updated 2 addons · 30 min ago · you, in the panel")
+    expect(page.lines.map((l) => [l.kind, l.text])).toEqual([
+      ["client", "Classic Era"], ["item", "Updated Bar v1 → v2"], ["item", "Updated Foo v1 → v2"],
+      ["client", "Retail"], ["item", "Updated Bar v1 → v2"], ["item", "Updated Foo v1 → v2"]])
+    expect(page.items.map((i) => [i.index, i.addon, i.target])).toEqual([[0, "Bar", "era"], [1, "Foo", "era"], [2, "Bar", "retail"], [3, "Foo", "retail"]])
+    expect(page.undos.map((u) => [u.text, u.request.template])).toEqual([
+      ["Undo all of it", "undo_run"], ["Undo on Classic Era only", "undo_run_target"], ["Undo on Retail only", "undo_run_target"]])
+    // One client: one undo, and the client's name only when it changed no addon.
+    const removal = M.historyPage(history(), byTitle("Removed Bar").key, [], soon())
+    expect([removal.lines.map((l) => l.text), removal.undos, removal.why]).toEqual([["Removed Bar v2"], [], "It was already undone."])
+    expect(removal.notes).toEqual(["“Bar conflicts with ElvUI”"])
+    // A whole restore: every setting, and the backup it came from, which its last line
+    // shows in Backups.
+    const restore = M.historyPage(history(), byKind("restore").key, [], soon())
+    expect([restore.lines.map((l) => l.text), restore.undos.map((u) => u.text)]).toEqual([["Restored every setting"], ["Undo"]])
+    expect(restore.backup).toEqual({ id: history().entries[0].restoredFrom, target: "retail" })
+    const config = M.historyPage(history(), byKind("config").key, [], soon())
+    expect([config.lines, config.undos.length, config.why]).toEqual([[], 0, "A settings change: undo doesn't revert it."])
+    expect(M.historyPage(history(), "run:nosuch", [], soon())).toBeNull()
+  })
+
+  test("an addon's page lists its newest changes, each opening its change's page", () => {
+    const page = M.addonPage({ name: "Bar", history: history(), statusTargets: [], nowMs: soon() })
+    expect(page.changes.map((c) => c.text.replace(/ · 30 min ago/, ""))).toEqual([
+      "Undid the removal", "Removed Bar · undone", "Updated 2 addons", "Installed Bar", "Installed Bar"])
+    expect(page.changes[0].key).toBe(byKind("undo").key)
+    // At most five, and none without History's read.
+    expect(M.addonPage({ name: "Foo", history: history(), statusTargets: [], nowMs: soon() }).changes.length).toBe(4)
+    expect(M.addonPage({ name: "Bar", statusTargets: [], nowMs: soon() }).changes).toEqual([])
+  })
+
+  test("times and days in a player's words (design doc §6.9)", () => {
+    const at = (y, mo, d, h, mi) => new Date(y, mo - 1, d, h, mi).toISOString()
+    const now = new Date(2026, 10, 10, 12, 0).getTime()
+    table([
+      ["just_now", at(2026, 11, 10, 12, 0), "just now"],
+      ["a_minute", at(2026, 11, 10, 11, 59), "1 min ago"],
+      ["minutes", at(2026, 11, 10, 11, 35), "25 min ago"],
+      ["hours_today", at(2026, 11, 10, 8, 30), "3 h ago"],
+      ["yesterday", at(2026, 11, 9, 21, 40), "yesterday 21:40"],
+      ["this_week", at(2026, 11, 6, 18, 2), "Fri 18:02"],
+      ["older", at(2026, 10, 9, 18, 2), "9 Oct"],
+      ["another_year", at(2025, 12, 31, 18, 2), "31 Dec 2025"],
+      ["no_time", "", ""],
+    ], (iso) => M.whenText(iso, now))
+    table([
+      ["today", at(2026, 11, 10, 0, 1), "Today"],
+      ["yesterday", at(2026, 11, 9, 23, 59), "Yesterday"],
+      ["this_week", at(2026, 11, 6, 9, 0), "Friday"],
+      ["older", at(2026, 10, 9, 9, 0), "9 October"],
+      ["another_year", at(2025, 12, 31, 9, 0), "31 December 2025"],
+    ], (iso) => M.dayText(iso, now))
+  })
+
+  test("the view's states: reading, failed, no changes, a filter on a client with none", () => {
+    const base = { targets: [{ id: "retail", displayName: "Retail" }], summary: { targets: 1 }, reading: [], outcomes: {} }
+    const state = (service, filter, rows) => M.viewState("history", { service: Object.assign({}, base, service), filter: filter || "", rows: rows || 0, allRows: rows || 0, nowMs: NOW })
+    expect([state({ reading: ["history"] }).state, state({ reading: ["history"] }).sentence]).toEqual(["firstLoad", "Reading history…"])
+    expect([state({ outcomes: { history: "failed" } }).state, state({ outcomes: { history: "failed" } }).sentence]).toEqual(["failed", "Couldn't read the history."])
+    const empty = M.reduceHistory(fixture("history-empty"))
+    expect(state({ history: empty }).sentence).toBe("No changes yet.")
+    expect(state({ history: empty }, "retail").sentence).toBe("No changes on Retail yet.")
+    // Lines it could not read, and a list cut at its limit, are notices over the rows.
+    const cut = Object.assign({}, history(), { skipped: true, truncated: true })
+    expect(state({ history: cut }, "", 9).notices.map((n) => n.sentence)).toEqual([
+      "Some history can't be read and isn't listed.", "Only the newest 100 changes are listed."])
+  })
+})
+
 // --------------------------------------------------- built-argv.json (step 3)
 
 test("writes every built argv and the classifier's verdicts for the Rust check", () => {
@@ -3797,9 +4011,10 @@ test("writes every built argv and the classifier's verdicts for the Rust check",
     if (bound) record(name, base, { token: TOKEN })
     if (M.COMMANDS[name].preview) realForms.push([name, reasonOf(() => M.buildArgv(name, base, opts()))])
     for (const slot of M.templateShape(name).slots) {
-      // A hostile failure-mode id is refused (`bad_fm`, buildArgv's table above); a
-      // hostile client folder too, unless it is absolute: those are parsed by clap.
-      if (slot === "target" || slot === "fm") continue
+      // A hostile failure-mode id is refused (`bad_fm`, buildArgv's table above), and so
+      // is a hostile run id (`bad_run`); a hostile client folder too, unless it is
+      // absolute: those are parsed by clap.
+      if (slot === "target" || slot === "fm" || slot === "run") continue
       if (slot === "path") {
         for (const value of HOSTILE) record(name, Object.assign({}, base, { path: "/" + value }), extra)
         continue

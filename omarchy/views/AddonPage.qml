@@ -40,7 +40,7 @@ Item {
     ? svc.addonInfo : null
   readonly property var page: Model.addonPage({ "name": name, "ref": ref, "link": link, "lists": svc ? svc.lists : null,
     "info": info ? info.data : null, "reading": !!info && !info.data && !info.failed, "failed": info ? info.failed : "",
-    "errors": svc ? svc.errors : null, "statusTargets": statusTargets, "nowMs": nowMs })
+    "errors": svc ? svc.errors : null, "history": svc ? svc.history : null, "statusTargets": statusTargets, "nowMs": nowMs })
   // The client lines the cursor walks (the frame's `o` opens the one under it).
   readonly property var rows: page.clients
   readonly property int rowCount: rows.length
@@ -71,6 +71,8 @@ Item {
     askedFor = query
     copied = ""
     svc.readAddonInfo(query)
+    // Its changes come from History's read, made once if nothing read it yet (local).
+    if (!svc.history && typeof svc.readHistory === "function") svc.readHistory()
   }
 
   function lineAt(cursor) {
@@ -460,6 +462,41 @@ Item {
           fontFamily: root.fontFamily
           fontSize: Style.font.bodySmall
           onClicked: root.openErrors(modelData)
+        }
+      }
+    }
+
+    // Its newest changes, from History's read (1n2p.30): each opens its change's page,
+    // with that change's undo.
+    SectionHeader {
+      objectName: "changesHeader"
+      visible: root.page.changes.length > 0
+      width: parent.width
+      title: Model.copy("page.section.changes")
+      foreground: root.foreground
+      dim: root.dim
+      fontFamily: root.fontFamily
+    }
+
+    Flow {
+      objectName: "changes"
+      visible: root.page.changes.length > 0
+      width: parent.width
+      spacing: Style.spacing.sm
+
+      Repeater {
+        model: root.page.changes
+
+        Button {
+          required property var modelData
+          required property int index
+          objectName: "change_" + index
+          text: modelData.text
+          foreground: modelData.state === "undone" ? root.dim : root.foreground
+          bordered: true
+          fontFamily: root.fontFamily
+          fontSize: Style.font.bodySmall
+          onClicked: root.frame.openChange(modelData.key, modelData.title)
         }
       }
     }

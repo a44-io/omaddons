@@ -262,6 +262,14 @@ fn every_template_is_a_registry_command_with_safe_slots() {
         let path = path.unwrap_or_default();
         let mutates = template["mutates"] == true;
         assert_eq!(mutates, app::mutates(&path), "{name}: mutates");
+        // Naming no actor (`actor: false`) is for `history`'s read alone, which reads an
+        // explicit `--actor` as a filter: a change always records who made it.
+        if let Some(actor) = template.get("actor") {
+            assert!(
+                actor == false && !mutates && path == "history",
+                "{name}: actor is only ever false, on history's read"
+            );
+        }
         assert!(
             template.get("confirm").is_none(),
             "{name}: the confirm key is gone; a preview: confirm template asks first"
@@ -335,9 +343,19 @@ fn every_template_is_a_registry_command_with_safe_slots() {
             let slot = &part[open + 1..part.len() - 1];
             assert!(part.ends_with('}'), "{name}: malformed slot {part}");
             assert!(
-                ["target", "addon", "ref", "backup", "query", "fm", "path"].contains(&slot),
+                [
+                    "target", "addon", "ref", "backup", "query", "fm", "path", "run"
+                ]
+                .contains(&slot),
                 "{name}: unknown slot {part}"
             );
+            // A run's id is History's undo of one run (1n2p.30): `undo --run=`, nothing else.
+            if slot == "run" {
+                assert!(
+                    part == "--run={run}" && path == "undo",
+                    "{name}: {{run}} outside --run on undo ({part} on {path})"
+                );
+            }
             // A client folder the player types (1n2p.32) is the one positional of
             // `targets add`, after --, never anything else's.
             if slot == "path" {
@@ -681,6 +699,30 @@ fn the_output_cap_bounds_every_template() {
         assert!(worst < cap, "{name}: worst case {worst} bytes ≥ {cap}");
     }
     let (base, slope) = per_client["update_all"];
+    // History (1n2p.30): `--limit` lines of `history -v`, each one client's transaction,
+    // listing an item and an op per addon it changed: at worst every addon there. The
+    // per-addon cost of one line is measured over homes of 10 and of 30 addons, each
+    // installed and then updated: two lines, the install and the update, that each name
+    // every addon.
+    let history_slope = {
+        let size = |n: usize| -> u64 {
+            let home = behind(n);
+            home.exec(&fill(&t, "update_all", &[])).expect(0);
+            let run = home.exec(&fill(&t, "history", &[]));
+            let envelope = run.expect(0);
+            let kinds: Vec<&str> = envelope["data"]["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| e["kind"].as_str().unwrap())
+                .collect();
+            assert_eq!(kinds, ["update", "install"], "history: {envelope}");
+            run.stdout.len() as u64
+        };
+        let (small, large) = (size(10), size(30));
+        assert!(large > small, "history: {small} {large}");
+        (large - small).div_ceil(20 * 2)
+    };
     for (name, template) in &t {
         let argv = template["argv"].to_string();
         let bound = if measured.contains(&name.as_str()) {
@@ -735,6 +777,15 @@ fn the_output_cap_bounds_every_template() {
         } else if name == "dismiss_errors" {
             // Counts per client, never a list of errors.
             Some(CLIENTS * ROW + ANSWER)
+        } else if name == "history" {
+            Some(limit_of(template) * (ROW + ADDONS * history_slope) + ANSWER)
+        } else if name == "undo_run" {
+            // A run's undo puts back what it changed, a transaction per client: at worst
+            // what an update of every addon on every client lists.
+            Some(CLIENTS * (base + ADDONS * slope))
+        } else if name == "undo_run_target" {
+            // The same, on one client.
+            Some(base + ADDONS * slope)
         } else if matches!(name.as_str(), "doctor_fix" | "doctor_fix_target") {
             // A repair's report (G2): at most DOCTOR_FIX_MAX_ACTIONS planned primitives
             // (a larger plan is refused before it is reported), and every client's
@@ -791,9 +842,19 @@ fn validate_built_argv() {
         let argv = strings(&entry["argv"]);
         let cli = parse(&argv);
         assert_eq!(argv[0], doc["binary"], "{argv:?}");
+        // A read whose template names no actor (`history`, which filters by an explicit
+        // `--actor`) has every standard flag but that one.
+        let anonymous = shipped
+            .get(entry["template"].as_str().unwrap_or_default())
+            .is_some_and(|t| t["actor"] == false);
+        let standard: &[&str] = if anonymous {
+            &["--json", "--reason"]
+        } else {
+            &["--json", "--actor", "widget", "--reason"]
+        };
         assert_eq!(
-            argv[1..5],
-            ["--json", "--actor", "widget", "--reason"],
+            argv[1..=standard.len()],
+            *standard,
             "{argv:?}: the standard flags come first"
         );
         // Past `--` clap reads a flag as one more positional, and parsing still works:
@@ -813,7 +874,11 @@ fn validate_built_argv() {
             }
         }
         assert!(cli.global.json, "{argv:?}: --json");
-        assert_eq!(cli.global.actor.as_deref(), Some("widget"), "{argv:?}");
+        assert_eq!(
+            cli.global.actor.as_deref(),
+            (!anonymous).then_some("widget"),
+            "{argv:?}"
+        );
         assert!(
             cli.global
                 .reason
@@ -1232,6 +1297,11 @@ mod support {
         let template = &templates[name];
         // As Model.buildArgv: every change, and every read on the network lane.
         let mut argv = standard(template["mutates"] == true || template["lane"] == "network");
+        // A read that names no actor (`actor: false`: `history`, which reads `--actor` as
+        // a filter).
+        if template["actor"] == false {
+            argv.drain(1..3);
+        }
         for part in template["argv"].as_array().unwrap() {
             let mut part = part.as_str().unwrap().to_owned();
             for (slot, value) in slots {
@@ -2599,6 +2669,153 @@ fn backups_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
     assert_eq!(ambiguous["error"]["code"], "ref_ambiguous", "{ambiguous}");
 }
 
+/// History's envelopes (1n2p.30): `history -v` of a home that changed nothing, then of
+/// one with every kind of row History words: an update of two clients from the panel,
+/// a removal an agent made with its reason and a person's undo of it, a backup, a
+/// settings change, another removal by the agent and a person's whole restore. Then, as
+/// the panel would make them and newest first (so each is the newest change on what it
+/// puts back), the preview and the apply of the undo of the restore, of that removal and
+/// of the update, and the preview of the update's undo on one client.
+#[cfg(test)]
+fn history_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
+    use common::wtf::Wtf;
+
+    let mut home = Home::new(&["wow", "wow_classic_era"]);
+    write_fixture(
+        dir,
+        "history-empty",
+        &home.exec(&fill(t, "history", &[])),
+        0,
+    );
+    Wtf::at(home.client("_retail_"))
+        .saved_variables("Foo", 200)
+        .build();
+    for (base, name) in [(support::FOO, "Foo"), (support::BAR, "Bar")] {
+        let (old, new) = (Rel::new(name, "v1"), Rel::new(name, "v2"));
+        home.installed_behind(
+            base,
+            ("v1", &old.assets()),
+            ("v2", &new.assets()),
+            &["retail", "era"],
+        );
+    }
+    home.exec(&fill(t, "update_all", &[])).expect(0);
+    let agent = [
+        "remove",
+        "Bar",
+        "-t",
+        "retail",
+        "--actor",
+        "agent",
+        "--reason",
+        "Bar conflicts with ElvUI",
+    ];
+    home.run(&agent).expect(0);
+    home.run(&["undo", "--actor", "human"]).expect(0);
+    let backed = home
+        .exec(&fill(t, "backup_target", &[("target", "retail")]))
+        .expect(0);
+    let backup = backed["data"]["targets"][0]["backup"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    home.run(&[
+        "config",
+        "set",
+        "check_interval_hours",
+        "6",
+        "--actor",
+        "human",
+    ])
+    .expect(0);
+    let again = [
+        "remove",
+        "Foo",
+        "-t",
+        "era",
+        "--actor",
+        "agent",
+        "--reason",
+        "Foo breaks the bags on Classic Era",
+    ];
+    home.run(&again).expect(0);
+    home.run(&[
+        "backup", "restore", &backup, "-t", "retail", "--actor", "human",
+    ])
+    .expect(0);
+    let history = write_fixture(dir, "history", &home.exec(&fill(t, "history", &[])), 0);
+    let entries = history["data"]["entries"].as_array().unwrap();
+    let kinds: BTreeSet<&str> = entries
+        .iter()
+        .map(|e| e["kind"].as_str().unwrap())
+        .collect();
+    for kind in [
+        "install", "update", "remove", "undo", "backup", "config", "restore",
+    ] {
+        assert!(kinds.contains(kind), "{kind}: {history}");
+    }
+    let run_of = |kind: &str| -> String {
+        let line = entries.iter().find(|e| e["kind"] == kind).unwrap();
+        line["run"].as_str().unwrap().to_owned()
+    };
+    // The update's run: one transaction on each client.
+    let update = run_of("update");
+    let on_both = entries
+        .iter()
+        .filter(|e| e["run"] == update.as_str())
+        .count();
+    assert_eq!(on_both, 2, "{history}");
+    // Each undo the panel makes: its preview (a stored plan), then that plan applied.
+    let preview = |name: &str, template: &str, slots: &[(&str, &str)]| -> String {
+        let preview = write_fixture(
+            dir,
+            name,
+            &home.exec(&support::preview_of(fill(t, template, slots))),
+            0,
+        );
+        assert!(preview["data"]["precondition"].is_string(), "{preview}");
+        assert!(!preview["partial"].as_bool().unwrap(), "{name}: {preview}");
+        support::planned(&preview)
+    };
+    for (kind, name) in [("restore", "restore"), ("remove", "remove")] {
+        let run = run_of(kind);
+        let plan = preview(
+            &format!("history-undo-{name}-preview"),
+            "undo_run",
+            &[("run", &run)],
+        );
+        let applied = write_fixture(
+            dir,
+            &format!("history-undo-{name}-apply"),
+            &home.exec(&support::apply_of(&plan)),
+            0,
+        );
+        assert_eq!(
+            applied["data"]["outcomes"][0]["status"], "committed",
+            "{applied}"
+        );
+    }
+    preview(
+        "history-undo-target-preview",
+        "undo_run_target",
+        &[("run", &update), ("target", "era")],
+    );
+    let plan = preview("history-undo-preview", "undo_run", &[("run", &update)]);
+    let applied = write_fixture(
+        dir,
+        "history-undo-apply",
+        &home.exec(&support::apply_of(&plan)),
+        0,
+    );
+    let committed: Vec<&Value> = applied["data"]["outcomes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| &o["status"])
+        .collect();
+    assert_eq!(committed, ["committed", "committed"], "{applied}");
+}
+
 /// The Issues view's envelopes: on retail, Foo (one release behind) with a Lua runtime
 /// error and a custom message naming a character, a report received from another
 /// player, and BugGrabber present; era without BugGrabber. `errors` strict, the same
@@ -2884,6 +3101,7 @@ fn write_widget_fixtures() {
 
     errors_fixtures(&dir, &t);
     backups_fixtures(&dir, &t);
+    history_fixtures(&dir, &t);
     plans_fixtures(&dir, &t);
     repair_fixtures(&dir, &t);
     clients_fixtures(&dir, &t);

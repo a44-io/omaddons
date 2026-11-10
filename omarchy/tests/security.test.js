@@ -977,15 +977,16 @@ describe("each scan catches its planted violation", () => {
 describe("the mechanisms behind the scans", () => {
   const CONTEXT = { HOME: "/h", XDG_CONFIG_HOME: "/h/c", XDG_STATE_HOME: "/h/s", XDG_CACHE_HOME: "/h/k", XDG_DATA_HOME: "/h/d" }
   const opts = { binary: "/opt/omaddons", label: "Test", context: CONTEXT }
-  // Every slot `x`, except a failure-mode id, which must be one (`fm-x`).
+  // Every slot `x`, except those with a grammar of their own: a failure-mode id
+  // (`fm-x`), a folder (`/x`) and a run's id (a whole ULID).
   const slotsOf = (name) => Object.fromEntries((M.COMMANDS[name].argv.join(" ").match(/\{(\w+)\}/g) || [])
-    .map((s) => [s.slice(1, -1), s === "{fm}" ? "fm-x" : s === "{path}" ? "/x" : "x"]))
+    .map((s) => [s.slice(1, -1), s === "{fm}" ? "fm-x" : s === "{path}" ? "/x" : s === "{run}" ? "01M8Q2VA7K3N5P8R1T4W6X9Y0Z" : "x"]))
 
   test("every previewed template and destructive path refuses to run without its preview", () => {
     const bound = Object.keys(M.COMMANDS).filter((name) => M.COMMANDS[name].preview === "bind")
     const needing = Object.keys(M.COMMANDS).filter((name) => needsPreview(name) && bound.indexOf(name) === -1)
     expect(needing.sort()).toEqual(["adopt_target", "install", "prune_backup", "reinstall", "remove", "restore", "restore_addon",
-      "update_addon", "update_all", "update_target"])
+      "undo_run", "undo_run_target", "update_addon", "update_all", "update_target"])
     // A repair's Yes is its own argv bound to its preview's token (G2): never without it.
     expect(bound.sort()).toEqual(["doctor_fix", "doctor_fix_target"])
     for (const name of bound) {
