@@ -26,7 +26,10 @@ var DEFAULT_SETTINGS = {
   // The first run's keybinding tip (1n2p.32): On until the player has seen it.
   "keyHint": "On",
   // The widget reinstalls itself once after its binary was upgraded (1n2p.35).
-  "autoUpdateWidget": "On"
+  "autoUpdateWidget": "On",
+  // Routine updates installed by themselves after a background check (1n2p.36): Off
+  // until the player turns it on.
+  "autoUpdate": "Off"
 }
 
 // What each setting accepts; anything else falls back to its default.
@@ -39,7 +42,8 @@ var SETTING_RULES = {
   "notifyWhilePlaying": { "type": "switch" },
   "refreshIntervalSec": { "type": "integer", "min": 30, "max": 3600, "step": 30 },
   "keyHint": { "type": "switch" },
-  "autoUpdateWidget": { "type": "switch" }
+  "autoUpdateWidget": { "type": "switch" },
+  "autoUpdate": { "type": "switch" }
 }
 
 function isInteger(value) {
@@ -86,8 +90,8 @@ function boolSetting(settings, key, def) {
 
 // The panel's own settings, in the sheet's order (design doc §2.7). `keyHint` is the
 // first run's tip, which seeing it turns off: never a setting a player picks.
-var PANEL_SETTING_KEYS = ["panelWidth", "refreshIntervalSec", "autoCheck", "notifyErrors", "notifyUpdates", "notifyWhilePlaying", "autoUpdateWidget",
-  "binary"]
+var PANEL_SETTING_KEYS = ["panelWidth", "refreshIntervalSec", "autoCheck", "autoUpdate", "notifyErrors", "notifyUpdates", "notifyWhilePlaying",
+  "autoUpdateWidget", "binary"]
 
 // "30 s", "5 min", "1 min 30 s".
 function secondsText(n) {
@@ -111,11 +115,14 @@ function settingText(key, value) {
 // The Panel section's rows (design doc §2.7): each setting's label, what it does, its
 // value (`setting`'s, so never an invalid one) in words, and its kind: "switch",
 // "integer" (stepped) or "path" (typed).
-function panelSettingRows(settings) {
+function panelSettingRows(settings, autoUpdateStopped) {
   return PANEL_SETTING_KEYS.map(function(key) {
     var value = setting(settings, key)
+    // Automatic updates a failure turned off say so until turned on again (1n2p.36).
+    var stopped = key === "autoUpdate" && autoUpdateStopped === true && value === "Off"
     return { "section": "panel", "key": key, "kind": SETTING_RULES[key].type, "label": copy("settings.panel." + key),
-      "about": copy("settings.panel." + key + ".about"), "value": value, "text": settingText(key, value) }
+      "about": stopped ? copy("settings.panel.autoUpdate.stopped") : copy("settings.panel." + key + ".about"), "value": value,
+      "text": settingText(key, value) }
   })
 }
 
@@ -305,7 +312,7 @@ function otherSettingRows(config) {
 
 function settingsSections(input) {
   var i = input || {}
-  var sections = [{ "key": "panel", "title": copy("settings.section.panel"), "rows": panelSettingRows(i.settings), "note": "" }]
+  var sections = [{ "key": "panel", "title": copy("settings.section.panel"), "rows": panelSettingRows(i.settings, i.autoUpdateStopped), "note": "" }]
   sections.push({ "key": "omaddons", "title": copy("settings.section.omaddons"), "rows": i.config ? omaddonsSettingRows(i.config) : [],
     "note": i.config ? "" : (i.configFailed ? copy("settings.omaddons.failed") : copy("settings.omaddons.reading")) })
   sections.push({ "key": "clients", "title": copy("settings.section.clients"), "rows": clientSettingRows(i.targets), "note": "" })
@@ -1851,6 +1858,78 @@ function selfUpdate(input) {
   var running = summary && Array.isArray(summary.running) ? summary.running : null
   if (running === null || running.length > 0) return answer("running", version)
   return answer("", version)
+}
+
+// Whether an automatic update starts now (1n2p.36): `{run, drop, why}`, `why` the first
+// reason it does not ("" when it runs). One starts only when a background check asked
+// for it (`pending`), with the `autoUpdate` setting On and not held off by a failure
+// in this service's life (`held`), none already underway (`stage`), the binary
+// answering this widget (`canAct`), no client running (`playing`: unknown counts as
+// running), no change cut off (`interrupted`: the widget never finishes one by
+// itself), nothing else underway (`busy`: a change running or queued, a plan sheet
+// open), and updates to install (`updates`, status's count). `drop` says the request is
+// spent: it runs, the setting is off, or there is nothing to update. A running game or
+// a busy panel keeps it for a later status, so it runs once the game stops.
+function autoUpdateDue(input) {
+  var i = input && typeof input === "object" ? input : {}
+  var answer = function(why, drop) { return { "run": why === "", "drop": drop === true, "why": why } }
+  if (i.pending !== true) return answer("not_asked")
+  if (setting(i.settings, "autoUpdate") !== "On") return answer("setting_off", true)
+  if (i.held === true) return answer("held", true)
+  if (str(i.stage) !== "") return answer("underway")
+  if (i.canAct !== true) return answer("cannot_act")
+  if (i.playing !== false) return answer("running")
+  if (i.interrupted === true) return answer("interrupted")
+  if (i.busy === true) return answer("busy")
+  if (num(i.updates) <= 0) return answer("no_updates", true)
+  return answer("", true)
+}
+
+// What an automatic update does with its preview (1n2p.36), from the preview's lane
+// `outcome`, its envelope and `decision`, Model.previewDecision's answer for it as a
+// `match` of what the Updates view shows: "run" the plan only when the panel itself
+// would apply it with no sheet (`direct`: routine, exactly the rows, nothing
+// destructive); "leave" what needs the player (any sheet: a new dependency, local edits
+// replaced, another source or channel, a downgrade, a release that moved) or may pass by
+// itself; "none" when nothing is left to update; "stop" an error that would only come
+// back.
+function autoUpdatePreviewAct(outcome, env, decision) {
+  var kind = decision && typeof decision === "object" ? decision.kind : ""
+  if (outcome === "ok" && kind === "direct") return "run"
+  if (outcome === "ok" && kind === "refresh") return "none"
+  if (outcome === "ok" && kind === "dialog") return "leave"
+  return autoUpdateFailureAct(outcome === "ok" ? "failed" : outcome, env)
+}
+
+// What an automatic update's apply came to (1n2p.36): "done" when every client
+// committed; "leave" a plan gone stale or gone before it changed anything (the next
+// check tries again) or a failure that may pass by itself; "stop" a failure, or a run
+// that changed some clients and not the rest.
+function autoUpdateApplyAct(outcome, env) {
+  if (outcome === "ok" && envelopeOk(env) && env.ok === true && env.partial !== true) return "done"
+  if (envelopeOk(env) && Object.keys(changedRows(env)).length === 0 && needsPreviewAgain(env)) return "leave"
+  return autoUpdateFailureAct(outcome === "ok" ? "failed" : outcome, env)
+}
+
+// An automatic update's answer that is no success: "leave" what may pass by itself (no
+// envelope at all: no answer in time, a child let go; or an error the CLI calls
+// retryable: the lock, the network), else "stop".
+function autoUpdateFailureAct(outcome, env) {
+  if (outcome !== "failed") return "leave"
+  var error = envelopeOk(env) && env.error && typeof env.error === "object" ? env.error : null
+  return error && error.retryable === true ? "leave" : "stop"
+}
+
+// What an automatic update changed (1n2p.36), from its apply's envelope: `{count,
+// targets}`, how many addons and their clients' names, for its toast.
+function autoUpdateFacts(env, targets) {
+  var keys = Object.keys(changedRows(env))
+  var ids = []
+  keys.forEach(function(k) {
+    var id = k.slice(0, k.indexOf("/"))
+    if (ids.indexOf(id) === -1) ids.push(id)
+  })
+  return { "count": keys.length, "targets": ids.map(function(id) { return sheetClient(targets, id, "") }) }
 }
 
 // Old panel setting names and the new ones that replace them (1n2p.35): none yet. A
@@ -6175,6 +6254,26 @@ function resultToastArgv(line, ok, pluginId) {
   return toastArgv(copy("toast.result.title"), String(line), ok === false ? "normal" : "low", pluginId, "")
 }
 
+// "Addons updated" · "Updated 4 addons on Retail and Classic Era · Undo is in History":
+// an automatic update's toast (1n2p.36), counts and client names only (`{count,
+// targets}`, Model.autoUpdateFacts'). A click opens History, where its run is first.
+function autoUpdateToastArgv(facts, pluginId) {
+  var count = num(facts && facts.count)
+  var where = Array.isArray(facts && facts.targets) ? facts.targets.map(String) : []
+  var body = where.length ? copy("toast.auto_update.on", { "n": count, "clients": joinNames(where) }) : copy("toast.auto_update", { "n": count })
+  return toastArgv(copy("toast.auto_update.title"), body, "low", pluginId, "history")
+}
+
+// "Automatic updates are off" · "An automatic update on Retail failed. Turn them on
+// again in Settings.": the one toast for the failure that turned them off (1n2p.36),
+// client names only (`{targets}`, Model.updateFacts'). A click opens the panel, whose
+// card says what failed.
+function autoUpdateStoppedToastArgv(facts, pluginId) {
+  var where = Array.isArray(facts && facts.targets) ? facts.targets.map(String) : []
+  var body = where.length ? copy("toast.auto_update.stopped.on", { "clients": joinNames(where) }) : copy("toast.auto_update.stopped")
+  return toastArgv(copy("toast.auto_update.stopped.title"), body, "normal", pluginId, "")
+}
+
 // Whether a game may be running: a client running, or one whose state could not be read
 // (the safe side while the player may be streaming).
 function playing(targets) {
@@ -6569,6 +6668,9 @@ var COPY = {
   "settings.panel.refreshIntervalSec.about": "omaddons tells the panel about every change; this is the safety net. Every 15 s while the panel is open.",
   "settings.panel.autoCheck": "Check for updates when due",
   "settings.panel.autoCheck.about": "In the background, when a client's last check is older than omaddons' check interval.",
+  "settings.panel.autoUpdate": "Update addons by themselves",
+  "settings.panel.autoUpdate.about": "After a background check, while no game runs, routine updates install by themselves and a notification offers Undo. Anything else waits for you.",
+  "settings.panel.autoUpdate.stopped": "Turned off after an automatic update failed. On tries again after the next check.",
   "settings.panel.notifyErrors": "Notify about Lua errors after a session",
   "settings.panel.notifyErrors.about": "Once you quit, if the session left new Lua errors.",
   "settings.panel.notifyUpdates": "Notify about new updates",
@@ -7402,6 +7504,14 @@ var COPY = {
   "toast.digest.title.now": "Lua errors and addon updates",
   "toast.digest.errors": { "one": "1 new Lua error in {addons}", "other": "{n} new Lua errors in {addons}" },
   "toast.result.title": "omaddons",
+  "auto_update.label": "Automatic update",
+  "toast.auto_update.title": "Addons updated",
+  "toast.auto_update": { "one": "Updated 1 addon · Undo is in History", "other": "Updated {n} addons · Undo is in History" },
+  "toast.auto_update.on": { "one": "Updated 1 addon on {clients} · Undo is in History",
+    "other": "Updated {n} addons on {clients} · Undo is in History" },
+  "toast.auto_update.stopped.title": "Automatic updates are off",
+  "toast.auto_update.stopped": "An automatic update failed. Turn them on again in Settings.",
+  "toast.auto_update.stopped.on": "An automatic update on {clients} failed. Turn them on again in Settings.",
   // A confirmation that ran nothing, or found nothing to do (previewDecision,
   // doctorPreviewDecision): the glossary's "what will happen", never its CLI words.
   "decision.unknown": "omaddons didn't say what this would change; nothing ran",
@@ -8432,6 +8542,10 @@ if (typeof module !== "undefined") {
     retryDelayMs: retryDelayMs,
     incompatibleOf: incompatibleOf,
     selfUpdate: selfUpdate,
+    autoUpdateDue: autoUpdateDue,
+    autoUpdatePreviewAct: autoUpdatePreviewAct,
+    autoUpdateApplyAct: autoUpdateApplyAct,
+    autoUpdateFacts: autoUpdateFacts,
     SETTING_RENAMES: SETTING_RENAMES,
     migrateSettings: migrateSettings,
     homeless: homeless,
@@ -8618,6 +8732,8 @@ if (typeof module !== "undefined") {
     updateToastArgv: updateToastArgv,
     digestToastArgv: digestToastArgv,
     resultToastArgv: resultToastArgv,
+    autoUpdateToastArgv: autoUpdateToastArgv,
+    autoUpdateStoppedToastArgv: autoUpdateStoppedToastArgv,
     TOAST_MIN_GAP_MS: TOAST_MIN_GAP_MS,
     playing: playing,
     emptyToastState: emptyToastState,

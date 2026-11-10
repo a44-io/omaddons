@@ -201,6 +201,20 @@ Item {
   signal requestFinished(string resource, string outcome)
   // A compatible status was applied; F8's triggers hang off it.
   signal statusApplied()
+  // A setting the service changes by itself (automatic updates turned off by a failure,
+  // 1n2p.36): the bar copies save it as they save the panel's.
+  signal settingRequested(string key, var value)
+
+  // ---- automatic updates (1n2p.36), Off by default: a background check that ends asks
+  // for one (`pending`); it runs once Model.autoUpdateDue allows it, through `stage`
+  // "list" (the rows `U` would compare with), "preview" and "plan". A failure holds it
+  // off (`held`, and the setting turned Off) until the player turns it on again, and the
+  // settings sheet says so (`autoUpdateStopped`).
+  property bool autoUpdatePending: false
+  property string autoUpdateStage: ""
+  property int autoUpdateListAfter: 0
+  property bool autoUpdateHeld: false
+  property bool autoUpdateStopped: false
 
   // ---- timing (the tests shrink these)
   property int bellDebounceMs: 150
@@ -266,10 +280,17 @@ Item {
   // the old one no longer apply.
   function applySettings(next) {
     var before = root.binary
+    var autoBefore = Model.setting(settings, "autoUpdate")
     // A setting renamed since the player chose it keeps its value (1n2p.35).
     settings = Model.migrateSettings(next)
+    // Automatic updates a failure turned off: held until the player turns them on again.
+    if (autoUpdateHeld && autoBefore === "Off" && Model.setting(settings, "autoUpdate") === "On") {
+      autoUpdateHeld = false
+      autoUpdateStopped = false
+    }
     if (root.binary !== before) {
       contextGeneration++
+      autoUpdateStage = ""
       refresh()
     }
     // `refreshIntervalSec` sets when an answer goes stale.
@@ -1090,6 +1111,8 @@ Item {
       scheduleRetry()
       refreshBar()
       if (r.kind === "mutation") lastError = failureOf(r, outcome, tail)
+      // An automatic update goes no further without its binary (1n2p.36).
+      if (r.spec && r.spec.auto === true) autoUpdateStage = ""
     } else if (outcome === "incompatible") {
       enterIncompatible(env)
     } else if (Model.acceptResult(r, lastApplied, selectionFor(r), contextGeneration)) {
@@ -1097,6 +1120,7 @@ Item {
       apply(r, outcome, env, tail)
     } else {
       console.log("omaddons: dropped a late", r.resource, "answer")
+      if (r.spec && r.spec.auto === true) autoUpdateStage = ""
     }
     pump()
   }
@@ -1131,6 +1155,9 @@ Item {
       applyAction(r, outcome, env, tail)
       if (lastError !== before) lastErrorResource = ""
     } else if (outcome !== "ok") {
+      // The list an automatic update waited for did not answer: it waits for the next
+      // background check (1n2p.36).
+      if (r.resource === "list" && autoUpdateStage === "list" && r.id >= autoUpdateListAfter) autoUpdateStage = ""
       // A background read's failure stays out of the panel; the next status says how
       // the read went.
       if (r.priority === "background") console.warn("omaddons:", r.label + ":", outcome)
@@ -1150,6 +1177,7 @@ Item {
     } else if (r.resource === "list") {
       lists = Model.reduceList(env)
       listsAt = Date.now()
+      if (autoUpdateStage === "list" && r.id >= autoUpdateListAfter) autoUpdatePreview()
     } else if (r.resource === "errors") {
       errors = Model.reduceErrors(env)
       errorsAt = Date.now()
@@ -1184,6 +1212,13 @@ Item {
     } else if (r.resource === "explain") {
       explanation = { "selection": r.selection, "lines": Model.explainLines(env, Build.CONTEXT, targets), "failed": "" }
     } else if (r.resource === "check") {
+      // A background check asks for an automatic update (1n2p.36); the status after it
+      // says whether there is one to make (afterStatus). A list read asked for the last
+      // one has long answered.
+      if (r.priority === "background") {
+        autoUpdatePending = true
+        if (autoUpdateStage === "list") autoUpdateStage = ""
+      }
       refresh()
     }
   }
@@ -1248,6 +1283,16 @@ Item {
   }
 
   function applyAction(r, outcome, env, tail) {
+    // An automatic update's preview and apply have their own rules (1n2p.36): never a
+    // sheet, never the player's confirmation touched.
+    if (r.purpose === "preview" && r.spec && r.spec.auto === true) {
+      autoUpdatePreviewed(r, outcome, env)
+      return
+    }
+    if (r.purpose === "planned" && r.spec && r.spec.auto === true) {
+      autoUpdateApplied(r, outcome, env, tail)
+      return
+    }
     if (r.purpose === "preview") {
       applyPreview(r, outcome, env)
       return
@@ -1340,6 +1385,8 @@ Item {
     pendingInstalls = []
     eachOutcome = null
     queues = { "mutation": [], "local": queues.local.slice(), "network": queues.network.slice() }
+    // An automatic update's queued step went with them (1n2p.36).
+    autoUpdateStage = ""
     queuedAction = ""
     queuedText = Model.queuedText(queues)
     // After its binary was upgraded, the widget reinstalls itself once from it (1n2p.35,
@@ -1439,6 +1486,7 @@ Item {
     }
     observed = { "generation": contextGeneration, "targets": targets, "updates": updatesNow, "errorsNew": errorsNow }
     autoCheck()
+    autoUpdate()
   }
 
   // One client's Lua errors, in the background, queued once per client. The read rings
@@ -1460,6 +1508,80 @@ Item {
 
   function switchOn(key) {
     return Model.setting(root.settings, key) === "On"
+  }
+
+  // ---- automatic updates (1n2p.36): the one place the widget changes addons with no
+  // key pressed, and only as `U` would, through the same preview and plan.
+
+  // After each compatible status: the update a background check asked for, once
+  // Model.autoUpdateDue allows it (no client running, nothing else underway). `list`
+  // first, so the preview is compared with the rows the Updates view would show.
+  function autoUpdate() {
+    var due = Model.autoUpdateDue({ "pending": autoUpdatePending, "settings": root.settings, "held": autoUpdateHeld,
+      "stage": autoUpdateStage, "canAct": canAct, "playing": Model.playing(targets), "interrupted": !!interrupted,
+      "busy": mutationLane.busy || queues.mutation.length > 0 || confirm !== null,
+      "updates": summary && summary.updates ? summary.updates.available : 0 })
+    if (due.drop) autoUpdatePending = false
+    if (!due.run) return
+    autoUpdateStage = "list"
+    autoUpdateListAfter = lastRequestId + 1
+    request({ "resource": "list", "template": "list", "label": "Installed", "priority": "background" })
+  }
+
+  // The list answered: `U`'s preview over every client, as a `match` of its update rows.
+  // A game started or a sheet opened meanwhile puts it back for a later status.
+  function autoUpdatePreview() {
+    if (!canAct || Model.playing(targets) || !!interrupted || confirm !== null) {
+      autoUpdateStage = ""
+      autoUpdatePending = true
+      return
+    }
+    var wanted = Model.updateRequest("", Model.updateRows(lists, "", targets), targets)
+    autoUpdateStage = "preview"
+    previewOf({ "template": wanted.template, "slots": wanted.slots, "label": Model.copy("auto_update.label"),
+      "priority": "background", "mode": "match", "shown": wanted.shown, "auto": true }, "", false)
+  }
+
+  // The preview's answer (Model.autoUpdatePreviewAct): its plan applied only when the
+  // panel itself would apply it with no sheet; anything that needs the player is left
+  // for them, with the Updates badge as before.
+  function autoUpdatePreviewed(r, outcome, env) {
+    var path = Model.templateShape(r.template, templates).path
+    var decision = Model.previewDecision({ "mode": "match", "shown": r.shown, "again": r.again === true, "path": path,
+      "context": Build.CONTEXT, "targets": targets }, env)
+    var act = Model.autoUpdatePreviewAct(outcome, env, decision)
+    if (act === "run") {
+      autoUpdateStage = "plan"
+      runPlan(decision.plan, r.spec, r.contextGeneration)
+      return
+    }
+    autoUpdateStage = ""
+    if (act === "stop") stopAutoUpdate(env ? errorOf(env, r.label + " failed") : null)
+  }
+
+  // The apply's answer (Model.autoUpdateApplyAct): a notification says what changed,
+  // whose click opens History with its Undo; a failure is said on the panel's card and
+  // once in a notification, and turns automatic updates off.
+  function autoUpdateApplied(r, outcome, env, tail) {
+    autoUpdateStage = ""
+    var act = Model.autoUpdateApplyAct(outcome, env)
+    if (act === "done" && canAct) Quickshell.execDetached(Model.autoUpdateToastArgv(Model.autoUpdateFacts(env, targets), Build.PLUGIN_ID))
+    if (act === "stop") stopAutoUpdate(env ? errorOf(env, r.label + " failed") : failureOf(r, outcome, tail))
+    changed()
+  }
+
+  // A failure: the setting turned Off (saved by the bar) and held off in this service
+  // until the player turns it on again; the panel's card says what failed.
+  function stopAutoUpdate(error) {
+    autoUpdatePending = false
+    autoUpdateHeld = true
+    autoUpdateStopped = true
+    if (error) {
+      lastError = error
+      lastResult = { "ok": false, "line": error.message, "partial": false, "commands": [] }
+    }
+    settingRequested("autoUpdate", "Off")
+    if (canAct) Quickshell.execDetached(Model.autoUpdateStoppedToastArgv(Model.updateFacts(targets, summary), Build.PLUGIN_ID))
   }
 
   // ------------------------------------------------------------- reinstall and show

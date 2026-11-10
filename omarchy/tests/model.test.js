@@ -92,12 +92,20 @@ describe("settings", () => {
     const rows = M.panelSettingRows({ panelWidth: 600, refreshIntervalSec: 90, autoCheck: "Off", binary: "relative/x" })
     expect(rows.map((r) => [r.key, r.kind, r.text])).toEqual([
       ["panelWidth", "integer", "600 px"], ["refreshIntervalSec", "integer", "1 min 30 s"], ["autoCheck", "switch", "Off"],
-      ["notifyErrors", "switch", "On"], ["notifyUpdates", "switch", "Off"], ["notifyWhilePlaying", "switch", "Off"],
-      ["autoUpdateWidget", "switch", "On"], ["binary", "path", "the one that installed the panel"]])
+      ["autoUpdate", "switch", "Off"], ["notifyErrors", "switch", "On"], ["notifyUpdates", "switch", "Off"],
+      ["notifyWhilePlaying", "switch", "Off"], ["autoUpdateWidget", "switch", "On"], ["binary", "path", "the one that installed the panel"]])
     expect(rows.every((r) => r.label !== "" && r.about !== "" && !r.label.startsWith("settings."))).toBe(true)
     expect([30, 60, 300, 3600].map(M.secondsText)).toEqual(["30 s", "1 min", "5 min", "60 min"])
-    expect(M.settingsSections({ settings: {} }).map((s) => [s.title, s.rows.map((r) => r.index)])).toEqual([["Panel", [0, 1, 2, 3, 4, 5, 6, 7]],
-      ["omaddons", []], ["Clients", [8, 9]]])
+    expect(M.settingsSections({ settings: {} }).map((s) => [s.title, s.rows.map((r) => r.index)])).toEqual([["Panel", [0, 1, 2, 3, 4, 5, 6, 7, 8]],
+      ["omaddons", []], ["Clients", [9, 10]]])
+    // Automatic updates (1n2p.36): Off by default, as the manifest says; a failure that
+    // turned them off is said on their row until they are on again.
+    expect([M.DEFAULT_SETTINGS.autoUpdate, manifest.barWidget.defaults.autoUpdate]).toEqual(["Off", "Off"])
+    const about = (stopped, value) => M.panelSettingRows({ autoUpdate: value }, stopped).find((r) => r.key === "autoUpdate").about
+    expect([about(false, "Off"), about(true, "Off"), about(true, "On")]).toEqual([M.copy("settings.panel.autoUpdate.about"),
+      "Turned off after an automatic update failed. On tries again after the next check.", M.copy("settings.panel.autoUpdate.about")])
+    expect(M.settingsSections({ settings: {}, autoUpdateStopped: true })[0].rows.find((r) => r.key === "autoUpdate").about)
+      .toBe(M.copy("settings.panel.autoUpdate.stopped"))
   })
 
   // 1n2p.35: after its binary was upgraded, the widget reinstalls itself once, only when
@@ -190,6 +198,30 @@ describe("settings", () => {
     expect(M.migrateSettings(null)).toEqual({})
   })
 
+  // 1n2p.36: an automatic update starts only when a background check asked for one, with
+  // the setting On, nothing underway, no game running and updates to install. A game
+  // running or a busy panel keeps the request; a setting Off or nothing to do spends it.
+  test("an automatic update starts only when asked, on, idle, with no game running", () => {
+    const ready = { pending: true, settings: { autoUpdate: "On" }, held: false, stage: "", canAct: true, playing: false,
+      interrupted: false, busy: false, updates: 2 }
+    const answer = (run, drop, why) => ({ run: run, drop: drop, why: why })
+    table([
+      ["ready", {}, answer(true, true, "")],
+      ["not asked by a background check", { pending: false }, answer(false, false, "not_asked")],
+      ["Off, the default", { settings: {} }, answer(false, true, "setting_off")],
+      ["an invalid value is the default", { settings: { autoUpdate: "yes" } }, answer(false, true, "setting_off")],
+      ["held off by a failure", { held: true }, answer(false, true, "held")],
+      ["one already underway", { stage: "preview" }, answer(false, false, "underway")],
+      ["another build answers", { canAct: false }, answer(false, false, "cannot_act")],
+      ["a game running", { playing: true }, answer(false, false, "running")],
+      ["running unknown counts as running", { playing: undefined }, answer(false, false, "running")],
+      ["a change cut off", { interrupted: true }, answer(false, false, "interrupted")],
+      ["a change underway or a sheet open", { busy: true }, answer(false, false, "busy")],
+      ["nothing to update", { updates: 0 }, answer(false, true, "no_updates")],
+    ], (change) => M.autoUpdateDue(Object.assign({}, ready, change)))
+    expect(M.autoUpdateDue(null)).toEqual(answer(false, false, "not_asked"))
+  })
+
   // 1n2p.31: omaddons' own settings, from `config` as the binary prints it; a step is one
   // `config set` through the key's own template.
   test("omaddons' settings: read whole, each changed by its own template", () => {
@@ -220,10 +252,10 @@ describe("settings", () => {
     const after = M.omaddonsSettingRows(M.reduceConfig(fixture("config-after")))
     expect(after[2].text).toBe("Daily, full copies where needed")
     expect(M.settingsSections({ settings: {}, config: null }).map((s) => [s.title, s.rows.length, s.note])).toEqual([
-      ["Panel", 8, ""], ["omaddons", 0, "Reading omaddons' settings…"], ["Clients", 2, ""]])
+      ["Panel", 9, ""], ["omaddons", 0, "Reading omaddons' settings…"], ["Clients", 2, ""]])
     expect(M.settingsSections({ settings: {}, config: null, configFailed: "x" })[1].note).toBe("Couldn't read omaddons' settings.")
     // config.toml's own line closes the sheet once `config` said where it is.
-    expect(M.settingsSections({ settings: {}, config }).flatMap((s) => s.rows.map((r) => r.index))).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])
+    expect(M.settingsSections({ settings: {}, config }).flatMap((s) => s.rows.map((r) => r.index))).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
     expect([M.reduceConfig(fixture("config-set-refused")), fixture("config-set").data.changed]).toEqual([null, true])
     // The result line, in the sheet's words.
     expect(M.resultLine(fixture("config-set"), CONTEXT, [])).toBe("Automatic backups: Daily, full copies where needed")
@@ -4025,6 +4057,107 @@ describe("plans from the binary", () => {
       const plan = M.planFrom(fixture(name))
       expect([name, plan !== null && M.PLAN_ID_PATTERN.test(plan.planId)]).toEqual([name, true])
     }
+  })
+
+  // ---- automatic updates (1n2p.36): what the background does with each preview, as
+  // Service.autoUpdatePreviewed asks: `U`'s preview, a match of every client's rows.
+  const autoAct = (shown, preview, again) => {
+    const env = envOf(preview)
+    return M.autoUpdatePreviewAct("ok", env, decide({ mode: "match", shown: shown, again: again === true }, env))
+  }
+  const everyRow = (list) => M.updateRequest("", M.updateRows(M.reduceList(fixture(list)), "", []), []).shown
+
+  test("an automatic update applies only a routine plan that is exactly the rows", () => {
+    const rows = everyRow("plan-list-after")
+    table([
+      ["plan-update-all, every row", [rows, "plan-update-all"], "run"],
+      ["fewer rows than the plan", [rows.slice(1), "plan-update-all"], "leave"],
+      ["a preview after a refused plan", [rows, "plan-update-all", true], "leave"],
+      ["nothing left to update", [rows, "plan-update-noop"], "none"],
+      // Each preview that needs a sheet, even with exactly its own row shown.
+      ["a moved release", [fooRow("plan-moved-list"), "plan-update-moved"], "leave"],
+      ["another asset", [fooRow("plan-asset-list"), "plan-update-asset"], "leave"],
+      ["a new dependency", [fooRow("plan-dependency-list"), "plan-update-dependency"], "leave"],
+      ["local edits replaced", [fooRow("plan-local-edits-list"), "plan-update-local-edits"], "leave"],
+      ["a folder removed", [fooRow("plan-removal-list"), "plan-update-removal"], "leave"],
+    ], ([shown, preview, again]) => autoAct(shown, preview, again))
+  })
+
+  test("a non-routine plan is never applied automatically, whatever the rows", () => {
+    for (const name of PLANNED_PREVIEWS) {
+      const env = fixture(name)
+      for (const list of ["plan-list", "plan-list-after"]) {
+        for (const shown of [everyRow(list), fooRow(list)]) {
+          if (autoAct(shown, env) !== "run") continue
+          expect([name, env.data.approval.routine, M.planFrom(env).destructive]).toEqual([name, true, false])
+        }
+      }
+    }
+    const derived = (edit) => {
+      const preview = copy("plan-update-all")
+      edit(preview.data.approval)
+      return autoAct(everyRow("plan-list-after"), preview)
+    }
+    table([
+      ["not routine", (a) => { a.routine = false }, "leave"],
+      ["a reason against it", (a) => { a.routine = false; a.reasons = ["force"] }, "leave"],
+      ["another source", (a) => { a.selection[0].source = "wowi" }, "leave"],
+    ], derived)
+  })
+
+  test("an automatic update stops on a failure that would come back, and leaves what may pass", () => {
+    const failed = (command, code, retryable) => {
+      const env = copy("failure")
+      env.command = command
+      env.error.code = code
+      env.error.retryable = retryable
+      return env
+    }
+    const unkept = copy("plan-update-all")
+    unkept.data.plan_id = null
+    const preview = (outcome, env) => M.autoUpdatePreviewAct(outcome, env, decide({ mode: "match", shown: [] }, env || {}))
+    table([
+      ["a failed preview", ["failed", failed("update", "source_unavailable", false)], "stop"],
+      ["a preview that kept no plan", ["ok", unkept], "stop"],
+      ["the lock", ["failed", failed("update", "locked", true)], "leave"],
+      ["no answer in time", ["timeout", null], "leave"],
+      ["a child let go", ["stuck", null], "leave"],
+    ], ([outcome, env]) => preview(outcome, env))
+    const partial = copy("plan-update-all-apply")
+    partial.partial = true
+    table([
+      ["every client committed", ["ok", fixture("plan-update-all-apply")], "done"],
+      ["some clients changed, others failed", ["ok", partial], "stop"],
+      ["the plan went stale before it ran", ["failed", failed("apply", "plan_stale", false)], "leave"],
+      ["the plan is gone", ["failed", failed("apply", "plan_not_found", false)], "leave"],
+      ["the lock", ["failed", failed("apply", "locked", true)], "leave"],
+      ["a failure", ["failed", failed("apply", "download_failed", false)], "stop"],
+      ["no answer in time", ["timeout", null], "leave"],
+    ], ([outcome, env]) => M.autoUpdateApplyAct(outcome, env))
+  })
+
+  test("an automatic update's notifications carry counts and client names only", () => {
+    const targets = M.reduceStatus(fixture("status-updates"), NOW).targets
+    const name = (id) => M.sheetClient(targets, id, "")
+    const facts = M.autoUpdateFacts(fixture("plan-update-all-apply"), targets)
+    expect(facts).toEqual({ count: 3, targets: [name("era"), name("retail")] })
+    expect(M.autoUpdateFacts(fixture("failure"), targets)).toEqual({ count: 0, targets: [] })
+    // "-u", urgency, title, body, then the click: this widget's panel at a view.
+    const tail = (argv) => argv.slice(-9)
+    table([
+      ["several on two clients", { count: 3, targets: ["Classic Era", "Retail"] },
+        ["-u", "low", "Addons updated", "Updated 3 addons on Classic Era and Retail · Undo is in History", "--exec", "omarchy-shell", "x.id", "show", "history"]],
+      ["one", { count: 1, targets: ["Retail"] },
+        ["-u", "low", "Addons updated", "Updated 1 addon on Retail · Undo is in History", "--exec", "omarchy-shell", "x.id", "show", "history"]],
+      ["no client named", { count: 2, targets: [] },
+        ["-u", "low", "Addons updated", "Updated 2 addons · Undo is in History", "--exec", "omarchy-shell", "x.id", "show", "history"]],
+    ], (f) => tail(M.autoUpdateToastArgv(f, "x.id")))
+    table([
+      ["where it failed", { count: 2, targets: ["Retail"], message: "a secret" },
+        ["-u", "normal", "Automatic updates are off", "An automatic update on Retail failed. Turn them on again in Settings.", "--exec", "omarchy-shell", "x.id", "show", ""]],
+      ["nowhere named", {},
+        ["-u", "normal", "Automatic updates are off", "An automatic update failed. Turn them on again in Settings.", "--exec", "omarchy-shell", "x.id", "show", ""]],
+    ], (f) => tail(M.autoUpdateStoppedToastArgv(f, "x.id")))
   })
 })
 

@@ -99,6 +99,13 @@ Panel {
       root.bar.shell.updateEntryInline(root.moduleName, entry)
   }
 
+  // A setting the service changes by itself (automatic updates turned off by a failure,
+  // 1n2p.36), saved as the panel's are.
+  Connections {
+    target: root.svc
+    function onSettingRequested(key, value) { root.saveSetting(key, value) }
+  }
+
   Component.onCompleted: bindService()
   Component.onDestruction: if (svc) svc.setPanelOpen(root.panelKey, false)
   onBarChanged: bindService()

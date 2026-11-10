@@ -35,7 +35,8 @@ Sheet {
   readonly property var settings: svc && svc.settings ? svc.settings : ({})
   readonly property var sections: Model.settingsSections({ "settings": settings, "config": svc ? svc.config : null,
     "configFailed": svc && svc.configFailed ? svc.configFailed : "",
-    "targets": svc && Array.isArray(svc.targets) ? svc.targets : [], "github": svc && svc.github ? svc.github : null })
+    "targets": svc && Array.isArray(svc.targets) ? svc.targets : [], "github": svc && svc.github ? svc.github : null,
+    "autoUpdateStopped": !!svc && svc.autoUpdateStopped === true })
   readonly property bool canChange: !!frame && frame.canAct && !frame.busy
   readonly property var rows: {
     var out = []

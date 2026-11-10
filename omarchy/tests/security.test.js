@@ -182,7 +182,8 @@ function checkRendering(files) {
 const LITERAL_TOOLS = ["inotifywait", "omarchy-notification-send", "xdg-open", "omarchy-launch-browser"]
 const ARGV_BUILDERS = { "toastArgv": "omarchy-notification-send", "errorToastArgv": "omarchy-notification-send",
   "updateToastArgv": "omarchy-notification-send", "digestToastArgv": "omarchy-notification-send",
-  "resultToastArgv": "omarchy-notification-send", "addonsDirArgv": "xdg-open",
+  "resultToastArgv": "omarchy-notification-send", "autoUpdateToastArgv": "omarchy-notification-send",
+  "autoUpdateStoppedToastArgv": "omarchy-notification-send", "addonsDirArgv": "xdg-open",
   "copyArgv": "wl-copy", "configEditorArgv": "omarchy-launch-config-editor" }
 // Two argv outside the three sources, allowed exactly as written: `show()`'s fallback
 // when the shell's summon facade is missing, and the self-reinstall (a fixed literal
@@ -790,7 +791,7 @@ function checkNotifications(files) {
     const read = new Set([...fn.body.matchAll(/facts\.(\w+)/g)].map((m) => m[1]))
     for (const field of read) if (!["names", "counts", "targets"].includes(field)) out.push(violation("Model.js", fn.line, name + " reads facts." + field))
   }
-  for (const c of calls(files, /\bModel\.(errorToastArgv|digestToastArgv|updateToastArgv|resultToastArgv)\(/, qmlNames(files))) {
+  for (const c of calls(files, /\bModel\.(errorToastArgv|digestToastArgv|updateToastArgv|resultToastArgv|autoUpdateToastArgv|autoUpdateStoppedToastArgv)\(/, qmlNames(files))) {
     for (const field of ERROR_FIELDS) {
       if (new RegExp("\\b" + field + "\\b").test(c.args)) out.push(violation(c.file, c.line, c.match[1] + " is passed " + field))
     }
@@ -823,7 +824,7 @@ function checkPluginId(files) {
     const target = (c.args.match(/^\s*target:\s*(.*)$/m) || [])[1]
     if (!target || target.trim() !== "Build.PLUGIN_ID") out.push(violation(c.file, c.line, "the IPC target is Build.PLUGIN_ID"))
   }
-  for (const c of calls(files, /\bModel\.(errorToastArgv|digestToastArgv|updateToastArgv|resultToastArgv)\(/, qmlNames(files))) {
+  for (const c of calls(files, /\bModel\.(errorToastArgv|digestToastArgv|updateToastArgv|resultToastArgv|autoUpdateToastArgv|autoUpdateStoppedToastArgv)\(/, qmlNames(files))) {
     if (!/, Build\.PLUGIN_ID\)$/.test(c.args)) out.push(violation(c.file, c.line, c.match[1] + " summons Build.PLUGIN_ID"))
   }
   return out

@@ -361,4 +361,153 @@ TestCase {
     answer(apply, "plan-undo-apply")
     verify(service.lastResult.line.indexOf("Undid update on") === 0, service.lastResult.line)
   }
+
+  // ---- automatic updates (1n2p.36): after a background check, with the setting On and
+  // no client running, `U`'s preview over the rows `list` gives, applied only when the
+  // panel would apply it with no sheet; a notification says what changed.
+
+  // The binary's `status-updates` (era and retail, updates waiting), as a check left it,
+  // with retail `running` when asked.
+  function updatesStatus(running) {
+    var env = JSON.parse(Fixtures.text("status-updates"))
+    for (var i = 0; i < env.data.targets.length; i++) env.data.targets[i].running = running === true && env.data.targets[i].id === "retail"
+    env.data.summary.running = running === true ? ["retail"] : []
+    return JSON.stringify(env)
+  }
+
+  // The background check autoCheck runs, answered: it asks for an automatic update, and
+  // the status after it (retail `running` when asked) says whether there is one to make.
+  // Every read after it is answered too, the list with the fixture `list`.
+  function backgroundCheck(running, list) {
+    service.request({ "resource": "check", "template": "check", "lane": "network", "priority": "background",
+      "label": "Automatic update check" })
+    var check = lastRun("outdated")
+    verify(check !== null && check.process.running, "the check runs: " + launchLog())
+    check.process.finish(0, envelope("outdated", { "checked_at": "2100-01-01T00:00:00Z", "targets": [] }))
+    answerReads(running, list)
+  }
+
+  // Every read and checkpoint the service runs meanwhile, answered: `status` with
+  // updatesStatus(running), `list` with the fixture `list`; `update` and `apply` are the
+  // test's own.
+  function answerReads(running, list) {
+    for (var round = 0; round < 20; round++) {
+      var answered = 0
+      for (var i = 0; i < ProcessRegistry.launches.length; i++) {
+        var launch = ProcessRegistry.launches[i]
+        if (!launch.process || launch.process.running !== true || launch.command[1] !== "--json") continue
+        var w = words(launch.command)[0]
+        if (w === "list") launch.process.finish(0, Fixtures.text(list))
+        else if (w === "status") launch.process.finish(0, updatesStatus(running))
+        else if (w === "errors" || w === "backup") launch.process.finish(0, envelope(w === "errors" ? "errors" : "backup create", { "targets": [] }))
+        else continue
+        answered++
+      }
+      wait(5)
+      if (!answered && round > 1) break
+    }
+  }
+
+  // "Era and Retail": status's clients with updates, as the stop's notification names them.
+  function updateClients() {
+    var where = Model.updateFacts(service.targets, service.summary).targets
+    return where.slice(0, -1).join(", ") + (where.length > 1 ? " and " : "") + where[where.length - 1]
+  }
+
+  function toasts() {
+    return Quickshell.detachedCommands.filter(function(c) { return c[0] === "omarchy-notification-send" })
+  }
+
+  function test_an_automatic_update_applies_a_routine_plan_and_says_so() {
+    service.applySettings({ "autoUpdate": "On" })
+    Quickshell.resetDetachedCommands()
+    backgroundCheck(false, "plan-list-after")
+    // `U`'s preview, as the background's: every client's rows, a match.
+    var preview = lastRun("update")
+    verify(preview !== null && preview.command.indexOf("--dry-run") !== -1, "the update is previewed first: " + launchLog())
+    compare(words(preview.command), ["update"])
+    answer(preview, "plan-update-all")
+    compare(service.confirm, null, "no sheet: exactly the rows, routine")
+    var apply = lastRun("apply")
+    verify(apply !== null, "its plan runs: " + launchLog())
+    compare(words(apply.command), ["apply", planIdOf("plan-update-all")])
+    answer(apply, "plan-update-all-apply")
+    // One notification: counts and clients, a click opening History.
+    var names = Model.sheetClient(service.targets, "era", "") + " and " + Model.sheetClient(service.targets, "retail", "")
+    compare(toasts().length, 1, JSON.stringify(Quickshell.detachedCommands))
+    compare(toasts()[0].slice(-9), ["-u", "low", "Addons updated", "Updated 3 addons on " + names + " · Undo is in History",
+      "--exec", "omarchy-shell", Build.PLUGIN_ID, "show", "history"])
+    compare([service.autoUpdateStage, service.autoUpdatePending, service.confirm], ["", false, null])
+    compare(runs("apply").length, 1, "applied once")
+  }
+
+  // Off by default: a background check changes nothing.
+  function test_automatic_updates_are_off_by_default() {
+    var before = runs("update").length
+    backgroundCheck(false, "plan-list-after")
+    compare([runs("update").length, service.autoUpdateStage, service.autoUpdatePending], [before, "", false], launchLog())
+  }
+
+  // A client running: nothing until it stops, then the update runs.
+  function test_an_automatic_update_waits_while_a_client_runs() {
+    service.applySettings({ "autoUpdate": "On" })
+    backgroundCheck(true, "plan-list-after")
+    compare([runs("list").length, runs("update").length, service.autoUpdatePending], [0, 0, true], launchLog())
+    // It stops: the next status (after its checkpoint) lets the update start.
+    service.refresh()
+    answerReads(false, "plan-list-after")
+    var preview = lastRun("update")
+    verify(preview !== null, "previewed once the client stopped: " + launchLog())
+    answer(preview, "plan-update-all")
+    verify(lastRun("apply") !== null, "applied: " + launchLog())
+  }
+
+  // A plan the rows do not show exactly, or one that needs a sheet: left for the player,
+  // with no sheet opened and nothing applied.
+  function test_an_automatic_update_leaves_a_plan_that_needs_the_player() {
+    service.applySettings({ "autoUpdate": "On" })
+    var shown = ["plan-update-moved", "plan-update-dependency"]
+    for (var i = 0; i < shown.length; i++) {
+      backgroundCheck(false, "plan-list-after")
+      var preview = lastRun("update")
+      verify(preview !== null && preview.process.running, shown[i] + ": previewed: " + launchLog())
+      answer(preview, shown[i])
+      compare([service.confirm, runs("apply").length, service.autoUpdateStage], [null, 0, ""], shown[i])
+    }
+    compare(toasts().length, 0)
+  }
+
+  // A failure: said on the card and once in a notification, the setting turned Off, and
+  // held off until the player turns it on again.
+  function test_a_failed_automatic_update_turns_itself_off_until_turned_on() {
+    service.applySettings({ "autoUpdate": "On" })
+    var spy = Qt.createQmlObject('import QtTest; SignalSpy { signalName: "settingRequested" }', testCase)
+    spy.target = service
+    Quickshell.resetDetachedCommands()
+    backgroundCheck(false, "plan-list-after")
+    answer(lastRun("update"), "plan-update-all")
+    var apply = lastRun("apply")
+    verify(apply !== null, launchLog())
+    var failed = JSON.parse(Fixtures.text("failure"))
+    failed.command = "apply"
+    failed.error.retryable = false
+    apply.process.finish(1, JSON.stringify(failed))
+    compare(spy.count, 1)
+    compare([spy.signalArguments[0][0], spy.signalArguments[0][1]], ["autoUpdate", "Off"])
+    compare([service.autoUpdateHeld, service.autoUpdateStopped, service.lastError.message], [true, true, failed.error.message])
+    compare(toasts().length, 1, JSON.stringify(Quickshell.detachedCommands))
+    compare(toasts()[0].slice(-9, -5), ["-u", "normal", "Automatic updates are off",
+      "An automatic update on " + updateClients() + " failed. Turn them on again in Settings."])
+    // Still On here (no bar saved it): held off all the same.
+    var previews = runs("update").length
+    backgroundCheck(false, "plan-list-after")
+    compare(runs("update").length, previews, "held off: " + launchLog())
+    // The bar saves Off, the player turns it On: the next check updates again.
+    service.applySettings({ "autoUpdate": "Off" })
+    service.applySettings({ "autoUpdate": "On" })
+    compare([service.autoUpdateHeld, service.autoUpdateStopped], [false, false])
+    backgroundCheck(false, "plan-list-after")
+    compare(runs("update").length, previews + 1, launchLog())
+    spy.destroy()
+  }
 }
