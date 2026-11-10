@@ -1792,60 +1792,195 @@ TestCase {
     compare(view.view, "backups")
   }
 
-  function test_backups_say_what_each_proves_and_which_is_in_use() {
+  // The items under `item` named `name`, in the order they are drawn.
+  function named(item, name) {
+    var out = []
+    var walk = function(at) {
+      for (var i = 0; i < at.children.length; i++) {
+        var c = at.children[i]
+        if (c.objectName === name) out.push(c)
+        walk(c)
+      }
+    }
+    walk(item)
+    return out
+  }
+
+  // 1n2p.29: a card per client (its name and whether it runs, its automatic backups and
+  // free space, its backups and their room), then two-line rows with markers as chips.
+  function test_backups_are_a_card_per_client_then_two_line_rows() {
     backupsReady()
     var backups = content()
     compare(json(backups.rows.map(function(r) { return [r.target, r.id] })), json([
       ["era", "01ERA00000000000000000000A"], ["retail", "01RET00000000000000000000B"], ["retail", "01RET00000000000000000000A"]]))
-    compare(findChild(row("backupRow", 0), "line").text, "1 hour ago · manual · 412 files · 15.2 MiB · stable")
-    compare(findChild(row("backupRow", 1), "line").text, "2 hours ago · manual · 412 files · 15.2 MiB · stable · verified (capture)")
-    compare(findChild(row("backupRow", 2), "line").text, "2 days ago · automatic (post session) · 412 files · 15.2 MiB · best effort · in use")
-    // Each client's section under its player name and whether it runs (§2.2).
-    var headers = []
-    var walk = function(item) {
-      for (var i = 0; i < item.children.length; i++) {
-        var c = item.children[i]
-        if (c.objectName === "clientHeader") headers.push([c.title, c.count])
-        walk(c)
-      }
-    }
-    walk(backups)
-    compare(json(headers), json([["Classic Era", ""], ["Retail", "running"]]))
+    var at = function(iso) { return Model.whenText(iso, view.nowMs) }
+    compare([row("backupRow", 0).title, row("backupRow", 0).meta], [at("2099-12-31T23:00:00Z") + " · made by you", "412 files · 15.9 MB"])
+    compare([row("backupRow", 1).title, row("backupRow", 1).meta],
+      [at("2099-12-31T22:00:00Z") + " · made by you", "412 files · 15.9 MB · checked when made"])
+    var busy = row("backupRow", 2)
+    compare([busy.title, busy.meta, json(busy.chips)], [at("2099-12-30T00:00:00Z") + " · after play",
+      "412 files · 15.9 MB · taken while the game was writing", json([{ "text": "in use", "urgent": false }])])
+    compare(json(named(backups, "clientHeader").map(function(h) { return [h.title, h.count] })), json([["Classic Era", ""], ["Retail", "running"]]))
+    compare(json(named(backups, "cardLine").map(function(l) { return l.text })), json([
+      "Automatic backups: off · 1.1 GB free", "1 backup · 100 B · newest " + at("2099-12-31T23:00:00Z"),
+      "Automatic backups: on · 228 GB free", "2 backups · 31.9 MB · newest " + at("2099-12-31T22:00:00Z")]))
+    // The cursored row shows its actions: restore and, for one not in use, delete.
+    keyClick("j")
+    compare(json(row("backupRow", 1).shownActions.map(function(a) { return a.name })), json(["restore", "remove"]))
+    keyClick("j")
+    compare(json(row("backupRow", 2).shownActions.map(function(a) { return a.name })), json(["restore"]))
   }
 
-  function test_b_backs_up_the_filtered_client_or_all() {
+  function test_b_backs_up_the_filtered_client_or_all_and_each_card_its_own() {
     backupsReady()
     keyClick("b")
     compare(json(svc.runs[0]), json(["backup_all", {}, "Back up all"]))
+    named(content(), "backUp")[1].clicked()
+    compare(json(svc.runs[1]), json(["backup_target", { "target": "retail" }, "Back up Retail"]))
     keyClick("t")
     keyClick("t")
     compare(view.filter, "retail")
     keyClick("b")
-    compare(json(svc.runs[1]), json(["backup_target", { "target": "retail" }, "Back up Retail"]))
-    compare(json(words(svc.runs[1])), json(["backup", "create", "-t", "retail"]))
+    compare(json(svc.runs[2]), json(["backup_target", { "target": "retail" }, "Back up Retail"]))
+    compare(json(words(svc.runs[2])), json(["backup", "create", "-t", "retail"]))
+    // In the client's scope, the card's button is `b`'s.
+    compare(named(content(), "backUp")[0].text, "Back up (b)")
   }
 
-  function test_x_prunes_the_exact_backup_and_never_one_in_use() {
+  // Never one in use (M3-D48); the label names it by date, never its id (UX-29).
+  function test_x_deletes_the_exact_backup_and_never_one_in_use() {
     backupsReady()
     keyClick("j")
     keyClick("j")
     keyClick("x")
     compare(svc.runs.length, 0)
-    compare(findChild(view, "notice").text, "this backup is in use; try again when it is free")
+    compare(findChild(view, "notice").text, "This backup is in use. Try again when it's free.")
     keyClick("k")
     keyClick("x")
-    compare(json(svc.runs[0]), json(["prune_backup", { "target": "retail", "backup": "01RET00000000000000000000B" }, "Delete backup 01RET00000000000000000000B"]))
+    compare(json(svc.runs[0]), json(["prune_backup", { "target": "retail", "backup": "01RET00000000000000000000B" },
+      "Delete Retail's backup from " + Model.dateText("2099-12-31T22:00:00Z")]))
     compare(json(words(svc.runs[0])), json(["backup", "prune", "-t", "retail", "--", "01RET00000000000000000000B"]))
   }
 
-  function test_enter_or_r_on_a_backup_opens_the_chooser_on_it() {
+  function test_r_on_a_backup_opens_the_chooser_on_it() {
     backupsReady()
     keyClick("j")
     keyClick("r")
     var chooser = findChild(view, "chooser")
     verify(chooser.opened)
-    compare([chooser.target, chooser.backup, chooser.step], ["retail", "01RET00000000000000000000B", "scope"])
+    compare([chooser.target, chooser.backup, chooser.step, chooser.origin], ["retail", "01RET00000000000000000000B", "scope", "backup"])
     compare(json(svc.detailReads), json(["retail"]))
+  }
+
+  // The `-v` read of retail's backups, with the addon versions that wrote them.
+  function backupsDetail() {
+    var env = backupsEnvelope()
+    env.data.targets = [env.data.targets[1]]
+    env.data.targets[0].backups[0].addons = [{ "name": "WeakAuras", "folders": ["WeakAuras"], "version": "5.19.2" },
+      { "name": "DBM", "folders": ["DBM-Core"], "version": "12.1.14" }]
+    env.data.targets[0].backups[1].addons = []
+    return { "selection": { "target": "retail" }, "data": Model.reduceBackups(env) }
+  }
+
+  function page() {
+    return findChild(view, "page").item
+  }
+
+  // 1n2p.29's three steps: Enter on the backup, Enter on the addon, then the plan sheet.
+  function test_enter_opens_the_backup_page_and_enter_on_an_addon_restores_its_settings() {
+    // Retail stopped: its restores are on.
+    svc.targets = [svc.targets[0], Object.assign({}, svc.targets[1], { "running": false })]
+    backupsReady()
+    keyClick("j")
+    keyClick(Qt.Key_Return)
+    var p = page()
+    verify(p !== null, "the backup's page")
+    compare([p.target, p.backupId], ["retail", "01RET00000000000000000000B"])
+    tryVerify(function() { return json(svc.detailReads) === json(["retail"]) }, 1000, "the page reads what its backup holds")
+    compare(findChild(p, "pageTitle").text, "Retail · " + Model.whenText("2099-12-31T22:00:00Z", view.nowMs) + " · made by you")
+    compare(findChild(p, "heldState").text, "Reading which addons' settings it holds…")
+    svc.backupsDetail = backupsDetail()
+    compare(p.rowCount, 2)
+    verify(!findChild(p, "heldState").visible)
+    compare(findChild(findChild(p, "heldAddon_0"), "heldName").text, "WeakAuras 5.19.2")
+    // Choosing the addon: Enter does nothing until the cursor is on one.
+    keyClick(Qt.Key_Return)
+    compare(svc.runs.length, 0)
+    keyClick("j")
+    keyClick("k")
+    compare([view.cursor, view.cursorActive], [0, true])
+    verify(findChild(findChild(p, "heldAddon_0"), "restoreHint").visible)
+    keyClick(Qt.Key_Return)
+    compare(json(svc.runs[0]), json(["restore_addon", { "target": "retail", "addon": "WeakAuras", "backup": "01RET00000000000000000000B" },
+      "Restore WeakAuras' settings"]))
+    compare(json(words(svc.runs[0])), json(["backup", "restore", "-t", "retail", "--addon=WeakAuras", "--", "01RET00000000000000000000B"]))
+    // Back to Backups: the page's -v read goes with it.
+    keyClick(Qt.Key_Escape)
+    verify(page() === null || !findChild(view, "page").visible)
+    compare(svc.detailClears, 1)
+  }
+
+  function test_a_backup_page_restores_nothing_while_the_game_runs() {
+    backupsReady()
+    keyClick("j")
+    keyClick(Qt.Key_Return)
+    svc.backupsDetail = backupsDetail()
+    svc.targets = [svc.targets[0], { "id": "retail", "displayName": "Retail", "running": true, "runningUnknown": false, "clientDir": "/games/retail",
+      "updates": { "checkedAt": "2100-01-01T00:00:00Z" }, "issues": [] }]
+    var p = page()
+    compare(findChild(p, "blocked").text, "Quit Retail first.")
+    verify(!findChild(p, "restore").enabled)
+    keyClick("j")
+    keyClick(Qt.Key_Return)
+    compare(svc.runs.length, 0)
+    compare(findChild(view, "notice").text, "Quit Retail first.")
+  }
+
+  function test_a_backup_page_deletes_it_or_opens_the_chooser_and_never_deletes_one_in_use() {
+    backupsReady()
+    keyClick("j")
+    keyClick(Qt.Key_Return)
+    keyClick("r")
+    var chooser = findChild(view, "chooser")
+    verify(chooser.opened)
+    compare([chooser.origin, chooser.backup], ["backup", "01RET00000000000000000000B"])
+    // The page holds the -v read: the chooser asks for none and drops none.
+    compare(chooser.ownsDetail, false)
+    keyClick(Qt.Key_Escape)
+    verify(!chooser.opened)
+    compare([svc.detailReads.length, svc.detailClears], [1, 0])
+    keyClick("x")
+    compare(json(svc.runs[0]), json(["prune_backup", { "target": "retail", "backup": "01RET00000000000000000000B" },
+      "Delete Retail's backup from " + Model.dateText("2099-12-31T22:00:00Z")]))
+    // The older one is in use: its page refuses.
+    keyClick(Qt.Key_Escape)
+    keyClick("j")
+    keyClick(Qt.Key_Return)
+    compare(page().backupId, "01RET00000000000000000000A")
+    verify(!findChild(page(), "delete").enabled)
+    keyClick("x")
+    compare(svc.runs.length, 1)
+    compare(findChild(view, "notice").text, "This backup is in use. Try again when it's free.")
+    // Deleted meanwhile: the page says so.
+    var env = backupsEnvelope()
+    env.data.targets[1].backups = [env.data.targets[1].backups[0]]
+    svc.backups = Model.reduceBackups(env)
+    verify(findChild(page(), "backupGone").visible)
+  }
+
+  // bmcx.4: the card states the undo data `status -v` measured; past the cleanup rules
+  // its repair is in Issues (the widget never names a problem by its id, M4-D48).
+  function test_a_card_states_its_undo_data_and_its_cleanup_is_in_issues() {
+    svc.targets = [svc.targets[0], Object.assign({}, svc.targets[1], {
+      "undoSnapshots": { "count": 30, "prunable": 12, "oldestAt": null, "bytes": 891000000, "truncated": false } })]
+    backupsReady()
+    var lines = named(content(), "cardLine").map(function(l) { return l.text })
+    compare(lines[lines.length - 1], "Undo data: 30 changes · 891 MB · 12 due for cleanup")
+    var cleanUps = named(content(), "cleanUp")
+    compare([cleanUps[0].visible, cleanUps[1].visible], [false, true])
+    cleanUps[1].clicked()
+    compare(view.view, "issues")
+    compare(svc.runs.length, 0)
   }
 
   // ------------------------------------------------------------- the real service

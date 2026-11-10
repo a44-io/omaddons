@@ -175,10 +175,11 @@ Item {
   // reference over them.
   readonly property real frameImplicitHeight: top.implicitHeight + contentArea.implicitHeight + bottom.implicitHeight
     + gap * 2
-  // The plan sheet asks for its whole plan (the bar caps the panel; past that it scrolls).
+  // The plan sheet asks for its whole plan, the restore chooser for its choices (the bar
+  // caps the panel; past that they scroll).
   readonly property real contentImplicitHeight: (confirming || chooser.opened || helpOpen
     ? Math.max(frameImplicitHeight, confirming ? Math.max(Style.space(220), planSheet.wantedHeight)
-      : Style.space(helpOpen ? 560 : 360))
+      : chooser.opened ? Math.max(Style.space(220), chooser.wantedHeight) : Style.space(560))
     : frameImplicitHeight) * uiScale
   readonly property real gap: Style.space(12)
   // The most height the panel may take (the bar's cap, which BarWidget hands down), and
@@ -352,6 +353,14 @@ Item {
     if (!key) return false
     return push({ "title": String(title || Model.VIEW_TITLES.history), "component": changePageComponent,
       "props": { "changeKey": String(key) } })
+  }
+
+  // A backup's page (1n2p.29, design doc §2.4): Enter on a Backups row, by its client and
+  // id (the page reads it from Backups' data, so a doorbell's re-read keeps it current).
+  function openBackup(target, id, title) {
+    if (!target || !id) return false
+    return push({ "title": String(title || Model.VIEW_TITLES.backups), "component": backupPageComponent,
+      "props": { "target": String(target), "backupId": String(id) } })
   }
 
   // The page of a ref or link pasted into Search (1n2p.25): read by that text, which
@@ -1562,6 +1571,12 @@ Item {
   Component {
     id: changePageComponent
     ChangePage {}
+  }
+
+  // A backup's page (1n2p.29): what it holds, Restore… and Delete….
+  Component {
+    id: backupPageComponent
+    BackupPage {}
   }
 
   // The keys that are no single character (design doc §3: Ctrl+Z, PgUp, PgDn, the

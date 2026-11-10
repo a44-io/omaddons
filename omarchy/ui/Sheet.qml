@@ -18,11 +18,22 @@ import "../Model.js" as Model
 // With `reference`, it is the key reference (`?`, design doc §2.4's help overlay): no
 // buttons, a line saying how it closes, and KEYMAP's help rows (`?` and Esc close it,
 // j/k scroll it, every other key is inert). It opens at the top every time.
+//
+// With `choosing`, it is a list to choose from (the restore chooser, 1n2p.29): no
+// buttons, `keysText` under the body, and the dialog rows read as a list's: j/k move
+// `choice` among `choiceCount` choices (the body scrolls to show it), Enter and Space
+// choose it (`chosen`, never from auto-repeat), Esc and n cancel, and `y` is inert.
 Item {
   id: root
 
   property bool opened: false
   property bool reference: false
+  property bool choosing: false
+  property int choice: 0
+  property int choiceCount: 0
+  property string keysText: ""
+  // The body's item for choice `i`, so a move can bring it into view; null shows nothing.
+  property var choiceItem: function(i) { return null }
   property string title: ""
   property string cancelText: "Cancel"
   property string confirmText: "Confirm"
@@ -45,18 +56,25 @@ Item {
 
   signal confirmed()
   signal canceled()
+  signal chosen(int index)
+
+  // A list that shrinks under the cursor keeps it on its last choice.
+  onChoiceCountChanged: if (choice >= choiceCount) choice = Math.max(0, choiceCount - 1)
 
   // The item the frame gives the keyboard to while the sheet is open.
   readonly property Item keyItem: keys
   // The width the body's content lays out in.
   readonly property real bodyWidth: body.width
+  // The note under the body (how the reference closes, how a list is used) in place of
+  // the buttons.
+  readonly property bool noted: reference || choosing
   readonly property real maxBodyHeight: Math.max(Style.space(60), height * 0.8 - header.implicitHeight
-    - (reference ? referenceNote.implicitHeight : footer.implicitHeight) - Style.spacing.xl * 4)
+    - (noted ? referenceNote.implicitHeight : footer.implicitHeight) - Style.spacing.xl * 4)
   // The height the sheet would need to show its whole body without scrolling: what a
   // frame asks for while it is open (it gets at most the panel's own cap, past which the
   // body scrolls).
   readonly property real wantedHeight: (body.implicitHeight + header.implicitHeight
-    + (reference ? referenceNote.implicitHeight : footer.implicitHeight) + Style.spacing.xl * 4) / 0.8
+    + (noted ? referenceNote.implicitHeight : footer.implicitHeight) + Style.spacing.xl * 4) / 0.8
 
   visible: opened
   onOpenedChanged: {
@@ -82,6 +100,12 @@ Item {
       return true
     }
     var action = Model.dialogKey(name, autoRepeat)
+    if (choosing) {
+      if (action === "cancel") cancel()
+      else if (action === "line") moveChoice(Model.keyStep(name))
+      else if (action === "press") choose(choice)
+      return true
+    }
     if (action === "cancel") cancel()
     else if (action === "line") scroll(Model.keyStep(name))
     else if (action === "switch") selectedIndex = selectedIndex === 0 ? 1 : 0
@@ -98,6 +122,28 @@ Item {
     var line = Style.font.caption * 2
     var bottom = Math.max(0, scroller.contentHeight - scroller.height)
     scroller.contentY = Math.max(0, Math.min(bottom, scroller.contentY + step * line))
+  }
+
+  // The choice `step` further down (1) or up (-1), within bounds, brought into view.
+  function moveChoice(step) {
+    if (choiceCount === 0) return
+    choice = Math.max(0, Math.min(choiceCount - 1, choice + step))
+    showChoice()
+  }
+
+  // The body scrolled the least that shows the cursor's choice whole.
+  function showChoice() {
+    var item = choiceItem(choice)
+    if (!item) return
+    var top = item.mapToItem(body, 0, 0).y
+    var bottom = Math.max(0, scroller.contentHeight - scroller.height)
+    if (top < scroller.contentY) scroller.contentY = Math.max(0, top)
+    else if (top + item.height > scroller.contentY + scroller.height) scroller.contentY = Math.min(bottom, top + item.height - scroller.height)
+  }
+
+  function choose(index) {
+    if (!opened || index < 0 || index >= choiceCount) return
+    chosen(index)
   }
 
   function confirm() {
@@ -184,22 +230,23 @@ Item {
         }
       }
 
-      // The key reference closes by its keys alone; letters beneath it do nothing.
+      // The key reference closes by its keys alone; letters beneath it do nothing. A list
+      // says how it is used.
       PlainLabel {
         id: referenceNote
         objectName: "referenceNote"
-        visible: root.reference
+        visible: root.noted
         width: parent.width
         wrapMode: Text.WordWrap
         color: root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
-        text: Model.keyHint("close", "help") + " closes this · keys beneath it do nothing while it is open"
+        text: root.choosing ? root.keysText : Model.keyHint("close", "help") + " closes this · keys beneath it do nothing while it is open"
       }
 
       Row {
         id: footer
-        visible: !root.reference
+        visible: !root.noted
         anchors.right: parent.right
         spacing: Style.spacing.md
 

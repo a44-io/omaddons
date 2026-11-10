@@ -1098,6 +1098,7 @@ function targetOf(target) {
   var updates = target.updates && typeof target.updates === "object" ? target.updates : null
   var errors = target.errors && typeof target.errors === "object" ? target.errors : null
   var backups = target.backups && typeof target.backups === "object" ? target.backups : null
+  var undo = target.undo_snapshots && typeof target.undo_snapshots === "object" ? target.undo_snapshots : null
   var issues = []
   if (Array.isArray(target.issues)) for (var i = 0; i < target.issues.length; i++) issues.push(issueOf(target.issues[i]))
   return {
@@ -1146,9 +1147,16 @@ function targetOf(target) {
         "id": str(backups.latest.id), "capturedAt": str(backups.latest.captured_at),
         "kind": str(backups.latest.kind), "trigger": strOrNull(backups.latest.trigger)
       } : null,
-      // For the Backups view's header of a client `backup list` names no backup of.
+      // For the Backups view's card of a client `backup list` names no backup of.
       "auto": autoOf(backups.auto),
-      "freeBytes": typeof backups.free_bytes === "number" ? backups.free_bytes : null
+      "freeBytes": typeof backups.free_bytes === "number" ? backups.free_bytes : null,
+      "bytes": typeof backups.bytes === "number" ? backups.bytes : null
+    } : null,
+    // The undo data kept for it (bmcx.4, the Backups card's line): null under
+    // `--cached`, which reads no history; `bytes` only with `-v`.
+    "undoSnapshots": undo ? {
+      "count": num(undo.count), "prunable": num(undo.prunable), "oldestAt": strOrNull(undo.oldest_at),
+      "bytes": typeof undo.bytes === "number" ? undo.bytes : null, "truncated": undo.truncated === true
     } : null
   }
 }
@@ -1955,6 +1963,8 @@ function reduceBackups(env) {
             "capturedAt": str(b.captured_at),
             "kind": str(b.kind),
             "trigger": strOrNull(b.trigger),
+            // Why it was made (`--reason`), as given: the row quotes it.
+            "reason": strOrNull(b.reason),
             "files": num(b.files),
             "bytes": num(b.bytes),
             "restorable": b.restorable === true,
@@ -3060,17 +3070,17 @@ var KEYMAP = [
   { "keys": ["Enter", "Space"], "context": "issues", "action": "enter", "label": "run the row's fix (a repair previews first), or read why", "hint": "Enter" },
   { "keys": ["e"], "context": "issues", "action": "explain", "label": "read why: the problem's page, with the doctor's explanation", "hint": "e", "nothing": "Nothing to explain here" },
   { "keys": ["y"], "context": "issues", "action": "copy", "label": "copy the command a row shows, to run in a terminal", "hint": "y", "nothing": "Nothing to copy here" },
-  { "keys": ["Enter", "Space"], "context": "backups", "action": "enter", "label": "restore from this backup: choose what", "hint": "Enter" },
+  { "keys": ["Enter", "Space"], "context": "backups", "action": "enter", "label": "open this backup's page: the addon settings it holds, restore, delete", "hint": "Enter" },
   { "keys": ["r"], "context": "backups", "action": "restore", "label": "restore from this backup: choose what", "hint": "r", "nothing": "No settings to restore here" },
   { "keys": ["x"], "context": "backups", "action": "remove", "label": "delete this backup, after a confirmation", "hint": "x", "nothing": "Nothing to remove here" },
   { "keys": ["Enter", "Space"], "context": "history", "action": "enter", "label": "open the change's page: what it did on each client, and its undo", "hint": "Enter" },
   { "keys": ["/"], "context": "history", "action": "filter", "label": "filter the changes by addon, client, who or reason", "hint": "/", "nothing": "Nothing to filter here" },
-  { "keys": ["Enter", "Space"], "context": "page", "action": "enter", "label": "run the page's main action: a problem's fix, on an addon page the client line's repair, update or install, or on a change's page the cursored addon's page", "hint": "Enter" },
+  { "keys": ["Enter", "Space"], "context": "page", "action": "enter", "label": "run the page's main action: a problem's fix, on an addon page the client line's repair, update or install, on a change's page the cursored addon's page, or on a backup's page the cursored addon's settings back", "hint": "Enter" },
   { "keys": ["u"], "context": "page", "action": "update", "label": "update the addon, when one is waiting (on an addon page, on the client line)", "hint": "u", "nothing": "Nothing to update here" },
   { "keys": ["i"], "context": "page", "action": "install", "label": "an addon page: install it on the client line's client", "hint": "i", "nothing": "Nothing to install here" },
-  { "keys": ["x"], "context": "page", "action": "remove", "label": "an addon page: remove it from the client line's client, after a confirmation", "hint": "x", "nothing": "Nothing to remove here" },
+  { "keys": ["x"], "context": "page", "action": "remove", "label": "remove the addon from the client line's client, or delete a backup's page's backup, after a confirmation", "hint": "x", "nothing": "Nothing to remove here" },
   { "keys": ["p"], "context": "page", "action": "pin", "label": "an addon page: pin or unpin it on the client line's client", "hint": "p", "nothing": "Nothing to pin here" },
-  { "keys": ["r"], "context": "page", "action": "restore", "label": "restore the addon's settings from a backup", "hint": "r", "nothing": "No settings to restore here" },
+  { "keys": ["r"], "context": "page", "action": "restore", "label": "restore the addon's settings from a backup, or choose what to restore from a backup's page's backup", "hint": "r", "nothing": "No settings to restore here" },
   { "keys": ["w"], "context": "page", "action": "web", "label": "an addon page: open its web page", "hint": "w", "nothing": "No web page here" },
   { "keys": ["y"], "context": "page", "action": "copy", "label": "copy an error page's report, a problem page's command, or an addon page's source", "hint": "y", "nothing": "Nothing to copy here" },
   { "keys": ["Enter", "Space"], "context": "search", "action": "enter", "label": "open the result's page (a pasted link's: where it works, and Install)", "hint": "Enter" },
@@ -5106,73 +5116,140 @@ function popularityText(row) {
   return ""
 }
 
-// -------------------------------------------------------------- the Backups view and the restore chooser (F9)
+// -------------------------------------------------------------- Backups, a backup's page and the restore chooser (F9, 1n2p.29)
 
-// "1.2 KiB", "15.2 MiB", "1.0 GiB".
+// "412 kB", "15.9 MB", "212 GB" (design doc §6.9): decimal units, as the desktop's file
+// manager shows them, with one decimal under 100.
 function bytesText(n) {
   var value = num(n)
-  if (value < 1024) return value + " B"
-  var units = ["KiB", "MiB", "GiB", "TiB"]
+  if (value < 1000) return value + " B"
+  var units = ["kB", "MB", "GB", "TB"]
   var at = -1
-  while (value >= 1024 && at < units.length - 1) {
-    value /= 1024
+  while (value >= 999.5 && at < units.length - 1) {
+    value /= 1000
     at++
   }
-  return (Math.round(value * 10) / 10).toFixed(1) + " " + units[at]
+  return (value < 99.95 ? (Math.round(value * 10) / 10).toFixed(1) : String(Math.round(value))) + " " + units[at]
 }
 
-var BACKUP_KINDS = { "manual": "manual", "auto": "automatic", "before_restore": "before restore", "imported": "imported", "recovered": "recovered" }
-
-// "automatic (post session)".
-function kindText(b) {
-  var kind = BACKUP_KINDS[b.kind] || b.kind
-  return b.trigger ? kind + " (" + String(b.trigger).replace(/_/g, " ") + ")" : kind
+// `parts` without the empty ones, joined by " · " (design doc §6.9: never a trailing
+// separator).
+function dotted(parts) {
+  return parts.filter(function(p) { return typeof p === "string" && p !== "" }).join(" · ")
 }
 
-// What a backup proves (M3-D47): "verified" only for `verified`, with its baseline;
-// damaged says so; metadata only says nothing.
-function integrityText(b) {
-  if (b.integrity === "verified") return "verified" + (b.baseline ? " (" + b.baseline + ")" : "")
-  if (b.integrity === "damaged") return "damaged"
-  return ""
+// A backup's kind in words (design doc §6.3): "made by you", "automatic, after play".
+// `short` drops "automatic, " where a trigger says when ("after play"), as a row's title
+// does.
+function backupKindText(b, short) {
+  var kind = str(b && b.kind)
+  var trigger = str(b && b.trigger)
+  if (kind === "auto" && (trigger === "pre_change" || trigger === "post_session")) {
+    return copy((short ? "backup.kind.short." : "backup.kind.auto.") + trigger)
+  }
+  return COPY.hasOwnProperty("backup.kind." + kind) ? copy("backup.kind." + kind) : kind
 }
 
-var AUTO_RESULTS = {
-  "created": "made one", "unchanged": "nothing changed", "done_today": "done today", "in_progress": "in progress",
-  "running": "skipped while the game ran", "failed": "failed", "no_wtf": "no WTF/ yet", "space_low": "skipped: low disk space",
-  "no_reflink": "this filesystem cannot clone"
+// What a backup proves (M3-D47, design doc §6.3): "checked when made", "checked when
+// imported" or "checked since" for a verified one; nothing for metadata only. A damaged
+// one is a chip.
+function backupProof(b) {
+  if (!b || b.integrity !== "verified") return ""
+  var baseline = str(b.baseline)
+  return COPY.hasOwnProperty("backup.proof." + baseline) ? copy("backup.proof." + baseline) : copy("backup.proof.verified")
 }
 
-// A client's automatic backups (M3-D30): its mode, what the filesystem allows, and the
-// last run.
-function autoLabel(auto, nowMs) {
-  if (!auto) return ""
-  if (auto.mode === "off") return "Automatic backups: off"
-  var last = auto.last
-  if (last && last.result === "space_low") return "Automatic backups: skipped: low disk space"
-  // Only `daily` needs clones: `daily-copy` copies on a filesystem that cannot clone.
-  if (auto.mode === "daily" && auto.capability === "unsupported") return "Automatic backups: daily, but this filesystem cannot clone"
-  var mode = auto.mode === "daily-copy" ? "daily (copies)" : "daily"
-  var lastText = last ? (AUTO_RESULTS[last.result] || last.result) + (last.at ? " " + sinceText(last.at, nowMs) : "") : "not run yet"
-  var copying = auto.mode === "daily-copy" && last !== null && last !== undefined
-    && ["created", "unchanged", "done_today", "running", "in_progress"].indexOf(last.result) !== -1
-  var working = auto.capability === "supported" || copying
-  return "Automatic backups: " + mode + (working ? ", working" : "") + " · last: " + lastText
+// A client's automatic backups in words (design doc §7, the Backups card): on, off, or
+// what keeps them from working; "" when nothing says.
+function autoSentence(auto) {
+  if (!auto || !auto.mode) return ""
+  if (auto.mode === "off") return copy("backups.auto.off")
+  var result = auto.last ? auto.last.result : ""
+  if (result === "space_low") return copy("backups.auto.space_low")
+  // Only `daily` needs clones: `daily-copy` copies where the drive cannot clone.
+  if (auto.mode === "daily" && (auto.capability === "unsupported" || result === "no_reflink")) return copy("backups.auto.no_reflink")
+  if (result === "failed") return copy("backups.auto.failed")
+  return copy("backups.auto.on")
 }
 
-// The Backups view, in the filter: per client, its automatic backups and space, then
-// its backups (newest first, as listed), walked by one cursor (`index`).
+var BACKUP_GLYPH = 0xF003C
+var RESTORE_GLYPH = 0xF006F
+var DELETE_GLYPH = 0xF01B4
+
+// When a backup's content was captured, as a player says it (§6.9).
+function backupWhen(b, nowMs) {
+  return whenText(b.capturedAt, nowMs) || dateText(b.capturedAt) || copy("backups.when.unknown")
+}
+
+// One backup as a row (design doc §5.3, UX-14, UX-40): when and why on the first line
+// ("3 h ago · after play · “before the raid”"), its size and what it proves on the
+// second; markers as chips ("in use"; "damaged", urgent, with the urgent band; "can't be
+// restored"); and the cursored row's actions: restore a restorable backup, delete one
+// no restore, export or verify is reading (M3-D48).
+function backupRow(t, b, index, nowMs) {
+  var damaged = b.integrity === "damaged"
+  var chips = []
+  if (b.busy) chips.push({ "text": copy("backups.chip.busy"), "urgent": false })
+  if (damaged) chips.push({ "text": copy("backups.chip.damaged"), "urgent": true })
+  else if (!b.restorable) chips.push({ "text": copy("backups.chip.unrestorable"), "urgent": false })
+  var actions = []
+  if (b.restorable) {
+    actions.push({ "name": "restore", "glyph": String.fromCodePoint(RESTORE_GLYPH), "tooltip": withKey(copy("backups.action.restore"), "restore", "backups") })
+  }
+  if (!b.busy) {
+    actions.push({ "name": "remove", "glyph": String.fromCodePoint(DELETE_GLYPH), "tooltip": withKey(copy("backups.action.delete"), "remove", "backups") })
+  }
+  return {
+    "key": t.id + "/" + b.id, "index": index, "target": t.id, "id": b.id, "busy": b.busy === true, "restorable": b.restorable === true,
+    "damaged": damaged, "at": dateText(b.capturedAt),
+    "title": dotted([backupWhen(b, nowMs), backupKindText(b, true), b.reason ? copy("backups.reason", { "reason": b.reason }) : ""]),
+    "meta": dotted([plural(num(b.files), "file"), bytesText(b.bytes), backupProof(b), b.consistency === "best_effort" ? copy("backups.writing") : ""]),
+    "chips": chips, "band": damaged ? "urgent" : "", "glyph": String.fromCodePoint(BACKUP_GLYPH), "actions": actions
+  }
+}
+
+// A client card's lines (design doc §2.3, §7): its automatic backups and free space; how
+// many backups and the room they take, with the newest's age ("No backups of Retail
+// yet." with none); its undo data, when `status` measured it.
+function backupCardLines(t, status, client, nowMs) {
+  var lines = []
+  var free = typeof t.freeBytes === "number" ? copy("backups.free", { "size": bytesText(t.freeBytes) }) : ""
+  var first = dotted([autoSentence(t.auto), free])
+  if (first) lines.push(first)
+  if (t.total === 0) {
+    lines.push(copy("state.empty.backups.client", { "client": client }))
+  } else {
+    lines.push(dotted([copy("backups.count", { "n": t.total }), typeof t.bytes === "number" ? bytesText(t.bytes) : "",
+      t.backups.length ? copy("backups.newest", { "when": backupWhen(t.backups[0], nowMs) }) : "",
+      t.shown < t.total ? copy("backups.shown", { "shown": t.shown, "total": t.total }) : ""]))
+  }
+  var undo = status ? status.undoSnapshots : null
+  if (undo && undo.count > 0) {
+    lines.push(dotted([copy("backups.undo", { "n": undo.count }),
+      typeof undo.bytes === "number" ? copy(undo.truncated ? "backups.undo.at_least" : "backups.undo.size", { "size": bytesText(undo.bytes) }) : "",
+      undo.prunable > 0 ? copy("backups.undo.due", { "n": undo.prunable }) : ""]))
+  }
+  return lines
+}
+
+// The Backups view in the filter (design doc §2.3, 1n2p.29): a card per client (its
+// player name and whether it runs; backUp, the client's `b`; its lines; cleanUp, true
+// when retention would prune some of its undo data now), then its backups as rows,
+// newest first as listed, walked by one cursor (`index`). The cleanup itself is the
+// client's retention problem in Issues, repaired there like any problem: the widget
+// lists problems generically and never matches one by its id (M4-D48), and composes no
+// deletion of its own.
 function backupSections(backups, filter, nowMs, statusTargets) {
   var listed = backups && Array.isArray(backups.targets) ? backups.targets : []
-  // `backup list` names only clients with backups: every other client `status` knows
-  // gets its header (automatic backups, free space), so "daily, but this filesystem
-  // cannot clone" shows exactly where none is ever made.
-  var targets = listed.slice()
   var known = Array.isArray(statusTargets) ? statusTargets : []
+  // `backup list` names only clients with backups: every other client `status` knows
+  // gets its card, so "this drive can't make them for free" shows exactly where none is
+  // ever made.
+  var targets = listed.slice()
   for (var s = 0; s < known.length; s++) {
     var st = known[s]
     if (!st.backups || targetById(listed, st.id)) continue
-    targets.push({ "id": st.id, "total": 0, "shown": 0, "bytes": null, "freeBytes": st.backups.freeBytes,
+    targets.push({ "id": st.id, "total": 0, "shown": 0, "bytes": st.backups.bytes, "freeBytes": st.backups.freeBytes,
       "auto": st.backups.auto, "backups": [] })
   }
   targets = stableSort(targets, function(a, b) { return a.id < b.id ? -1 : a.id > b.id ? 1 : 0 })
@@ -5181,21 +5258,15 @@ function backupSections(backups, filter, nowMs, statusTargets) {
   for (var i = 0; i < targets.length; i++) {
     var t = targets[i]
     if (filter && t.id !== filter) continue
-    var space = (t.freeBytes !== null ? bytesText(t.freeBytes) + " free · " : "") + (t.bytes !== null ? bytesText(t.bytes) + " apparent" : "")
-    var lines = [autoLabel(t.auto, nowMs), space].filter(function(l) { return l !== "" })
-    if (t.total > t.shown) lines.push(t.shown + " of " + t.total + " backups shown")
-    if (t.total === 0) lines.push("No backups yet")
-    var rows = t.backups.map(function(b) {
-      var parts = [sinceText(b.capturedAt, nowMs) || dateText(b.capturedAt), kindText(b), plural(b.files, "file"), bytesText(b.bytes),
-        b.consistency === "stable" ? "stable" : "best effort", integrityText(b)]
-      if (b.busy) parts.push("in use")
-      if (!b.restorable) parts.push("not restorable")
-      return { "key": t.id + "/" + b.id, "index": index++, "target": t.id, "id": b.id, "busy": b.busy, "restorable": b.restorable,
-        "line": parts.filter(function(p) { return p !== "" }).join(" · ") }
-    })
+    var status = targetById(known, t.id)
+    var rows = []
+    for (var j = 0; j < t.backups.length; j++) rows.push(backupRow(t, t.backups[j], index++, nowMs))
     // Titled with the client's player name, whether it runs (design doc §2.2).
     var group = clientGroup(known, t.id, "")
-    sections.push({ "title": group.title, "count": group.count, "target": t.id, "lines": lines, "rows": rows })
+    sections.push({ "target": t.id, "title": group.title, "count": group.count,
+      "lines": backupCardLines(t, status, sheetClient(known, t.id, ""), nowMs),
+      "backUp": backupRequest(t.id, known),
+      "cleanUp": !!status && !!status.undoSnapshots && status.undoSnapshots.prunable > 0, "rows": rows })
   }
   return sections
 }
@@ -5207,49 +5278,181 @@ function backupRequest(filter, targets) {
   return { "template": "backup_all", "slots": {}, "label": "Back up all" }
 }
 
-// Why a client's restores are off: the game runs, or nobody can tell (M3-D29: the CLI
-// refuses then too).
+// `x` on a backup: its deletion, previewed and bound (the plan sheet names it by date
+// and kind). The label, recorded as the change's reason, names it by its client and the
+// absolute time it was captured, never its id (UX-29).
+function pruneRequest(row, targets) {
+  return { "template": "prune_backup", "slots": { "target": row.target, "backup": row.id },
+    "label": copy("backups.delete.label", { "owner": possessive(sheetClient(targets, row.target, "")), "at": row.at || row.id }) }
+}
+
+// Why restores on a client are off (M3-D29, design doc §6.4): it runs, or nobody can
+// tell (the CLI refuses then too); "" when they are on.
 function restoreBlocked(statusTargets, target) {
   var t = targetById(statusTargets, target)
   if (!t) return ""
-  if (t.running) return "quit the game first"
-  if (t.runningUnknown) return "quit the game first (running: unknown)"
+  var client = sheetClient(statusTargets, target, "")
+  if (t.running) return copy("restore.blocked", { "client": client })
+  if (t.runningUnknown) return copy("restore.blocked.unknown", { "client": client })
   return ""
 }
 
-// The chooser's backups for `target`, newest first: when, kind and, from the `-v`
-// read, the version of `addon` that wrote its settings.
-function chooserBackups(backups, detail, target, addon, nowMs) {
-  var listed = targetById(backups && backups.targets, target)
-  var detailed = targetById(detail && detail.targets, target)
-  var versions = {}
-  if (detailed) {
-    for (var i = 0; i < detailed.backups.length; i++) {
-      var b = detailed.backups[i]
-      for (var j = 0; b.addons && j < b.addons.length; j++) {
-        if (b.addons[j].name === addon) versions[b.id] = b.addons[j].version
-      }
-    }
+// The addons whose settings backup `id` holds, from the service's view-bound `backup list
+// -v` read (`{selection, data, failed}`): `{state, addons}`, state "reading" until the
+// read for its client answers, "failed", "none" (it records none) or "ready"; each addon
+// `{name, version}`, the version that wrote its settings.
+function backupAddons(detail, target, id) {
+  if (!detail || !detail.selection || detail.selection.target !== target) return { "state": "reading", "addons": [] }
+  if (detail.failed) return { "state": "failed", "addons": [] }
+  var t = targetById(detail.data && detail.data.targets, target)
+  var addons = []
+  for (var i = 0; t && i < t.backups.length; i++) {
+    if (t.backups[i].id === id && Array.isArray(t.backups[i].addons)) addons = t.backups[i].addons
   }
-  return (listed ? listed.backups : []).filter(function(b) { return b.restorable }).map(function(b) {
-    var version = versions.hasOwnProperty(b.id) && versions[b.id] ? " · " + addon + " " + versions[b.id] : ""
-    return { "id": b.id, "label": (sinceText(b.capturedAt, nowMs) || dateText(b.capturedAt)) + " · " + kindText(b) + version }
-  })
+  return { "state": addons.length ? "ready" : "none", "addons": addons }
 }
 
-// The restore scopes, in this order on purpose: one addon's settings first, the whole
-// WTF/ second, labelled with everything else it changes (risk 11).
-function restoreScopes(addon) {
-  return [
-    { "template": "restore_addon", "label": addon ? addon + "'s settings" : "One addon's settings…", "note": "", "needsAddon": !addon },
-    { "template": "restore", "label": "Whole WTF/", "note": "also restores keybindings, macros, chat settings and every other addon's settings", "needsAddon": false }
-  ]
+// A backup's page (design doc §2.4, 1n2p.29), pushed by Enter on its row: its client,
+// when and its kind; when exactly, its size and what it proves; its reason; the addons
+// whose settings it holds, each with the version that wrote them (each takes the cursor:
+// Enter restores that addon's settings from it); Restore… and Delete…. Null when the
+// backup is no longer listed.
+function backupPage(backups, detail, target, id, statusTargets, nowMs) {
+  var t = targetById(backups && backups.targets, target)
+  var b = null
+  for (var i = 0; t && i < t.backups.length; i++) if (t.backups[i].id === id) b = t.backups[i]
+  if (!b) return null
+  var row = backupRow(t, b, 0, nowMs)
+  var client = sheetClient(statusTargets, target, "")
+  var held = backupAddons(detail, target, id)
+  return {
+    "target": target, "id": id, "client": client, "at": row.at,
+    "header": dotted([client, backupWhen(b, nowMs), backupKindText(b, false)]),
+    "facts": dotted([row.at, row.meta]),
+    "reason": b.reason ? copy("backups.reason", { "reason": b.reason }) : "",
+    "chips": row.chips, "restorable": row.restorable, "busy": row.busy,
+    "blocked": row.restorable ? restoreBlocked(statusTargets, target) : "",
+    "addonsState": held.state,
+    "addonsText": held.state === "ready" ? "" : copy("backups.page." + held.state),
+    "addons": held.addons.map(function(a, k) {
+      return { "index": k, "name": a.name, "version": str(a.version), "text": a.name + (a.version ? " " + a.version : "") }
+    })
+  }
 }
 
-// The managed addons of `target`, for "one addon's settings…".
+// A restore from `backup` on `target`, previewed in the plan sheet first: one addon's
+// settings (`addon`), or all of the client's (`addon` "").
+function restoreRequest(target, backup, addon, targets) {
+  if (addon) {
+    return { "template": "restore_addon", "slots": { "target": target, "addon": addon, "backup": backup },
+      "label": copy("restore.label.addon", { "owner": possessive(addon) }) }
+  }
+  return { "template": "restore", "slots": { "target": target, "backup": backup },
+    "label": copy("restore.label.whole", { "owner": possessive(sheetClient(targets, target, "")) }) }
+}
+
+// The managed addons of `target`, for "One addon's settings…" until the backup's own list
+// is read.
 function managedAddons(lists, target) {
   var t = targetById(lists && lists.targets, target)
-  return t ? t.addons.map(function(a) { return a.name }) : []
+  return t ? t.addons.map(function(a) { return { "name": a.name, "version": "" } }) : []
+}
+
+// The restore chooser (design doc §2.4, 1n2p.29): which settings, from which backup.
+// `input`: {origin, step, target, addon, backup, backups, detail, lists, statusTargets,
+// nowMs}. From an addon (origin "addon") it opens on the newest restorable backup with
+// that addon's settings first ("WeakAuras' settings (written by 5.19.2)"), all of the
+// client's settings second, and the backup above them as a choice of its own (step
+// "backup" lists the others, newest first, each with the version of the addon that
+// wrote it). From a backup (origin "backup") it offers one addon's settings (step
+// "addon": which addon) or all of them. Returns {title, from, blocked, choices, start,
+// empty}: each choice {key, text, note, enabled, next, backup, run}, where `next` is the
+// step it opens, `backup` the backup it picks and `run` the restore it previews
+// ({template, slots, label}). The chooser decides no folder, file or version: the CLI's
+// preview does (D7). While the client runs, or nobody can tell, nothing restores
+// (M3-D29).
+function restoreChooser(input) {
+  var i = input || {}
+  var target = str(i.target)
+  var addon = str(i.addon)
+  var origin = i.origin === "addon" ? "addon" : "backup"
+  var step = i.step === "backup" || i.step === "addon" ? i.step : "scope"
+  var nowMs = typeof i.nowMs === "number" ? i.nowMs : Date.now()
+  var targets = Array.isArray(i.statusTargets) ? i.statusTargets : []
+  var client = sheetClient(targets, target, "")
+  var blocked = restoreBlocked(targets, target)
+  // The client's `-v` read lists its backups too, the freshest: Backups' own list may not
+  // be read yet (it is read with its view, 1n2p.38).
+  var mine = !!i.detail && !!i.detail.selection && i.detail.selection.target === target
+  var detail = mine && i.detail.data ? i.detail.data : null
+  var detailed = targetById(detail && detail.targets, target)
+  var listed = detailed || targetById(i.backups && i.backups.targets, target)
+  var all = listed ? listed.backups : []
+  var restorable = all.filter(function(b) { return b.restorable })
+  // Neither read has answered: the chooser waits for them, it never says there is none.
+  var waiting = !listed ? (mine && i.detail.failed ? copy("restore.failed", { "owner": possessive(client) }) : copy("restore.reading")) : ""
+  // The version of `addon` that wrote each backup's settings, from the `-v` read.
+  var versions = {}
+  for (var d = 0; addon && detailed && d < detailed.backups.length; d++) {
+    var held = Array.isArray(detailed.backups[d].addons) ? detailed.backups[d].addons : []
+    for (var h = 0; h < held.length; h++) if (held[h].name === addon && held[h].version) versions[detailed.backups[d].id] = held[h].version
+  }
+  var backupId = str(i.backup) || (origin === "addon" && restorable.length ? restorable[0].id : "")
+  var chosen = null
+  for (var c = 0; c < all.length; c++) if (all[c].id === backupId) chosen = all[c]
+  var describe = function(b) { return dotted([backupWhen(b, nowMs), backupKindText(b, true)]) }
+  var restoreAddon = function(name) { return restoreRequest(target, backupId, name, targets) }
+  var whole = { "key": "whole", "text": copy("restore.whole", { "owner": possessive(client) }), "note": copy("restore.whole.note"),
+    "enabled": blocked === "", "next": "", "backup": "", "run": restoreRequest(target, backupId, "", targets) }
+  var out = { "title": "", "from": "", "blocked": blocked, "choices": [], "start": 0, "empty": "" }
+  if (step === "backup") {
+    out.title = copy("restore.title.backup", { "owner": possessive(addon) })
+    out.choices = restorable.map(function(b) {
+      return { "key": b.id, "text": dotted([describe(b), versions[b.id] ? addon + " " + versions[b.id] : ""]), "note": "", "enabled": true,
+        "next": "", "backup": b.id, "run": null }
+    })
+    for (var k = 0; k < out.choices.length; k++) if (out.choices[k].backup === backupId) out.start = k
+    out.empty = waiting || copy("restore.none", { "client": client })
+    return out
+  }
+  if (!chosen || !chosen.restorable) {
+    out.title = origin === "addon" ? copy("restore.title.owner", { "owner": possessive(addon), "client": client }) : copy("restore.title.client", { "client": client })
+    out.empty = chosen ? copy("restore.unrestorable") : (waiting || copy("restore.none", { "client": client }))
+    return out
+  }
+  if (step === "addon") {
+    out.title = copy("restore.title.addon", { "client": client })
+    out.from = copy("restore.from", { "backup": describe(chosen) })
+    var own = backupAddons(i.detail, target, backupId)
+    var names = own.state === "ready" ? own.addons : managedAddons(i.lists, target)
+    out.choices = names.map(function(a) {
+      return { "key": a.name, "text": a.name + (a.version ? " " + a.version : ""), "note": "", "enabled": blocked === "",
+        "next": "", "backup": "", "run": restoreAddon(a.name) }
+    })
+    out.empty = copy("restore.no_addons")
+    return out
+  }
+  if (origin === "addon") {
+    out.title = copy("restore.title.owner", { "owner": possessive(addon), "client": client })
+    var version = versions[backupId] || ""
+    out.choices = [
+      { "key": "from", "text": copy("restore.from", { "backup": describe(chosen) }), "note": "", "enabled": true, "next": "backup",
+        "backup": "", "run": null },
+      { "key": "addon", "text": copy(version ? "restore.addon.written" : "restore.addon", { "owner": possessive(addon), "version": version }),
+        "note": "", "enabled": blocked === "", "next": "", "backup": "", "run": restoreAddon(addon) },
+      whole
+    ]
+    // The narrow fix first (design doc J6: r, Enter, y).
+    out.start = 1
+    return out
+  }
+  out.title = copy("restore.title.client", { "client": client })
+  out.from = copy("restore.from", { "backup": describe(chosen) })
+  out.choices = [
+    { "key": "one", "text": copy("restore.one"), "note": "", "enabled": blocked === "", "next": "addon", "backup": "", "run": null },
+    whole
+  ]
+  return out
 }
 
 // -------------------------------------------------------------- the service's desktop triggers (F8)
@@ -5724,6 +5927,70 @@ var COPY = {
   "backup.kind.before_restore": "before a restore",
   "backup.kind.imported": "imported",
   "backup.kind.recovered": "rescued from an interrupted restore",
+  "backup.kind.auto.pre_change": "automatic, before a change",
+  "backup.kind.auto.post_session": "automatic, after play",
+  "backup.kind.short.pre_change": "before a change",
+  "backup.kind.short.post_session": "after play",
+  "backup.proof.capture": "checked when made",
+  "backup.proof.import": "checked when imported",
+  "backup.proof.later": "checked since",
+  "backup.proof.verified": "checked",
+
+  // The Backups view (1n2p.29, design doc §2.3, §6.3, §7).
+  "backups.auto.on": "Automatic backups: on",
+  "backups.auto.off": "Automatic backups: off",
+  "backups.auto.space_low": "Automatic backups: skipped: low disk space",
+  "backups.auto.no_reflink": "Automatic backups: on, but this drive can't make them for free: back up by hand",
+  "backups.auto.failed": "Automatic backups: on, but the last one failed",
+  "backups.free": "{size} free",
+  "backups.count": { "one": "1 backup", "other": "{n} backups" },
+  "backups.newest": "newest {when}",
+  "backups.shown": "{shown} of {total} shown",
+  "backups.undo": { "one": "Undo data: 1 change", "other": "Undo data: {n} changes" },
+  "backups.undo.size": "{size}",
+  "backups.undo.at_least": "at least {size}",
+  "backups.undo.due": { "one": "1 due for cleanup", "other": "{n} due for cleanup" },
+  "backups.back_up": "Back up",
+  "backups.clean_up": "Clean up undo data…",
+  "backups.clean_up.tip": "Its repair is in Issues: it says what it deletes before it runs",
+  "backups.when.unknown": "date unknown",
+  "backups.reason": "“{reason}”",
+  "backups.writing": "taken while the game was writing",
+  "backups.chip.busy": "in use",
+  "backups.chip.damaged": "damaged",
+  "backups.chip.unrestorable": "can't be restored",
+  "backups.action.restore": "Restore settings…",
+  "backups.action.delete": "Delete…",
+  "backups.delete.label": "Delete {owner} backup from {at}",
+  "backups.busy": "This backup is in use. Try again when it's free.",
+  "backups.page.held": "Addon settings in it",
+  "backups.page.reading": "Reading which addons' settings it holds…",
+  "backups.page.failed": "Couldn't read which addons' settings it holds.",
+  "backups.page.none": "It holds no addon's settings by name.",
+  "backups.page.gone": "This backup is gone.",
+  "backups.page.restore_one": "Restore its settings",
+
+  // The restore chooser (1n2p.29, design doc §2.4).
+  "restore.title.owner": "Restore {owner} settings on {client}",
+  "restore.title.client": "Restore on {client}",
+  "restore.title.backup": "Restore {owner} settings from which backup?",
+  "restore.title.addon": "Whose settings, on {client}?",
+  "restore.from": "From: {backup}",
+  "restore.addon": "{owner} settings",
+  "restore.addon.written": "{owner} settings (written by {version})",
+  "restore.whole": "All of {owner} settings…",
+  "restore.whole.note": "Keybindings, macros, chat and every addon's settings",
+  "restore.one": "One addon's settings…",
+  "restore.label.addon": "Restore {owner} settings",
+  "restore.label.whole": "Restore all of {owner} settings",
+  "restore.none": "No backup of {client} can be restored.",
+  "restore.reading": "Reading backups…",
+  "restore.failed": "Couldn't read {owner} backups.",
+  "restore.unrestorable": "This backup can't be restored.",
+  "restore.no_addons": "No addon's settings to choose.",
+  "restore.blocked": "Quit {client} first.",
+  "restore.blocked.unknown": "Quit {client} first: omaddons can't tell if it's running.",
+  "restore.keys": "j/k to move, Enter to choose, Esc to go back",
 
   "sheet.title.forget": "Forget {client}?",
   "sheet.confirm.forget": "Forget {client}",
@@ -7472,15 +7739,18 @@ if (typeof module !== "undefined") {
     instantMs: instantMs,
     dateText: dateText,
     bytesText: bytesText,
-    kindText: kindText,
-    integrityText: integrityText,
-    autoLabel: autoLabel,
+    backupKindText: backupKindText,
+    backupProof: backupProof,
+    autoSentence: autoSentence,
+    backupRow: backupRow,
     backupSections: backupSections,
     backupRequest: backupRequest,
+    pruneRequest: pruneRequest,
     restoreBlocked: restoreBlocked,
-    chooserBackups: chooserBackups,
-    restoreScopes: restoreScopes,
-    managedAddons: managedAddons,
+    backupAddons: backupAddons,
+    backupPage: backupPage,
+    restoreRequest: restoreRequest,
+    restoreChooser: restoreChooser,
     ambiguityChoices: ambiguityChoices,
     backupFolderOf: backupFolderOf,
     stoppedTargets: stoppedTargets,

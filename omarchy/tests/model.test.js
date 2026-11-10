@@ -2392,67 +2392,184 @@ describe("the Backups view and the restore chooser", () => {
     expect(M.dayText("", 0)).toBe("")
   })
 
-  test("rows say when, what, how big and what they prove; never verified for metadata only", () => {
+  // Design doc §6.9: decimal units, one decimal under 100.
+  test("sizes are decimal, as the file manager shows them", () => {
+    expect([0, 999, 1218, 15937536, 68719476736, 999500, 123456789].map(M.bytesText))
+      .toEqual(["0 B", "999 B", "1.2 kB", "15.9 MB", "68.7 GB", "1.0 MB", "123 MB"])
+  })
+
+  // 1n2p.29: a card per client, then two-line rows with markers as chips (UX-14, UX-40),
+  // and no CLI term anywhere.
+  test("a card per client, then rows that say when, why, how big and what they prove", () => {
     const listed = LISTED()
     const retail = listed.targets[0]
-    expect([retail.id, retail.auto.mode, retail.freeBytes > 0, retail.backups[0].integrity]).toEqual(["retail", "daily", true, "metadata_only"])
-    const at = Date.parse(retail.backups[0].capturedAt) + 3 * 3600000
-    const sections = M.backupSections(listed, "", at)
-    expect(sections[0].title).toBe("retail")
-    expect(sections[0].lines[0]).toBe("Automatic backups: daily · last: not run yet")
-    const line = sections[0].rows[0].line
-    expect(line).toMatch(/^3 hours ago · manual · 5 files · 1\.2 KiB · stable$/)
-    expect(line).not.toContain("verified")
-    const verified = JSON.parse(JSON.stringify(fixture("backups")))
-    Object.assign(verified.data.targets[0].backups[0], { integrity: "verified", baseline: "capture", busy: true, consistency: "best_effort" })
-    const v = M.backupSections(M.reduceBackups(verified), "retail", at)[0].rows[0]
-    expect(v.line).toContain("best effort · verified (capture) · in use")
-    expect(v.busy).toBe(true)
+    expect([retail.id, retail.auto.mode, retail.freeBytes > 0, retail.backups[0].integrity, retail.backups[0].reason])
+      .toEqual(["retail", "daily", true, "metadata_only", "Fixture (bar widget)"])
+    const at = Date.parse(retail.backups[0].capturedAt) + 30 * 60000
+    const targets = [{ id: "retail", displayName: "Retail", running: true, runningUnknown: false, issues: [], backups: null, undoSnapshots: null }]
+    const [card] = M.backupSections(listed, "", at, targets)
+    expect([card.title, card.count, card.backUp.label, card.cleanUp]).toEqual(["Retail", "running", "Back up Retail", false])
+    expect(card.lines).toEqual(["Automatic backups: on · 68.7 GB free", "1 backup · 1.2 kB · newest 30 min ago"])
+    const row = card.rows[0]
+    expect([row.title, row.meta, row.chips, row.band]).toEqual(["30 min ago · made by you · “Fixture (bar widget)”", "5 files · 1.2 kB", [], ""])
+    expect(row.actions.map((a) => [a.name, a.tooltip])).toEqual([["restore", "Restore settings… (r)"], ["remove", "Delete… (x)"]])
+    // Verified, taken while the game wrote, in use: its proof, the game writing, a chip,
+    // and no delete (M3-D48).
+    const other = JSON.parse(JSON.stringify(fixture("backups")))
+    Object.assign(other.data.targets[0].backups[0], { integrity: "verified", baseline: "capture", busy: true, consistency: "best_effort",
+      kind: "auto", trigger: "post_session", reason: null })
+    const busy = M.backupSections(M.reduceBackups(other), "retail", at)[0].rows[0]
+    expect([busy.title, busy.meta, busy.chips.map((c) => c.text)]).toEqual(["30 min ago · after play",
+      "5 files · 1.2 kB · checked when made · taken while the game was writing", ["in use"]])
+    expect(busy.actions.map((a) => a.name)).toEqual(["restore"])
+    // Damaged: the urgent band and chip, and nothing to restore.
+    Object.assign(other.data.targets[0].backups[0], { integrity: "damaged", busy: false, restorable: false })
+    const damaged = M.backupSections(M.reduceBackups(other), "retail", at)[0].rows[0]
+    expect([damaged.band, damaged.chips, damaged.actions.map((a) => a.name)]).toEqual(["urgent", [{ text: "damaged", urgent: true }], ["remove"]])
     expect(M.backupSections(listed, "era", at)).toEqual([])
-    // A client with no backups (which `backup list` omits) still has its header, from
-    // status: where automatic backups cannot work, it says so.
-    const era = { id: "era", backups: { count: 0, auto: { mode: "daily", capability: "unsupported", last: null }, freeBytes: 2 ** 30 } }
+    // A client with no backups (which `backup list` omits) still has its card, from
+    // status: where automatic backups cannot work it says so, and its undo data.
+    const era = { id: "era", displayName: "Classic Era", issues: [],
+      backups: { count: 0, auto: { mode: "daily", capability: "unsupported", last: null }, freeBytes: 2 * 10 ** 9, bytes: null },
+      undoSnapshots: { count: 30, prunable: 12, oldestAt: null, bytes: 891000000, truncated: false } }
     const withEra = M.backupSections(listed, "", at, [era])
-    expect(withEra.map((s) => s.title)).toEqual(["era", "retail"])
-    expect(withEra[0].lines[0]).toBe("Automatic backups: daily, but this filesystem cannot clone")
-    expect(withEra[0].lines[withEra[0].lines.length - 1]).toBe("No backups yet")
-    expect(withEra[0].rows).toEqual([])
-    // A header alone takes no cursor row: the first backup row is still row 0.
+    expect(withEra.map((s) => s.title)).toEqual(["Classic Era", "retail"])
+    expect(withEra[0].lines).toEqual(["Automatic backups: on, but this drive can't make them for free: back up by hand · 2.0 GB free",
+      "No backups of Classic Era yet.", "Undo data: 30 changes · 891 MB · 12 due for cleanup"])
+    expect([withEra[0].rows, withEra[0].cleanUp]).toEqual([[], true])
+    // A card takes no cursor row: the first backup row is still row 0.
     expect(withEra[1].rows[0].index).toBe(0)
+    const nothing = new RegExp(["WTF/", "apparent", "best effort", "metadata", "verified", "post session", "manual"].join("|"))
+    for (const s of withEra.concat([busy, damaged].map((r) => ({ lines: [r.title, r.meta], rows: [] })))) {
+      for (const text of s.lines.concat(s.rows.flatMap((r) => [r.title, r.meta]))) expect(text).not.toMatch(nothing)
+    }
   })
 
-  test("the automatic backups' four labels", () => {
-    const now = Date.parse("2026-10-22T12:00:00Z")
-    expect(M.autoLabel({ mode: "off", capability: "supported", last: null }, now)).toBe("Automatic backups: off")
-    expect(M.autoLabel({ mode: "daily", capability: "supported", last: { at: "2026-10-22T09:00:00Z", result: "created" } }, now))
-      .toBe("Automatic backups: daily, working · last: made one 3 hours ago")
-    expect(M.autoLabel({ mode: "daily", capability: "unsupported", last: { at: "", result: "no_reflink" } }, now))
-      .toBe("Automatic backups: daily, but this filesystem cannot clone")
-    expect(M.autoLabel({ mode: "daily", capability: "supported", last: { at: "", result: "space_low" } }, now))
-      .toBe("Automatic backups: skipped: low disk space")
+  // bmcx.4: the full read's undo data, from the binary after a change; `--cached` has none.
+  test("a client's undo data comes from the full status read only", () => {
+    const full = M.reduceStatus(fixture("status-full"), NOW).targets
+    const changed = full.filter((t) => t.undoSnapshots && t.undoSnapshots.count > 0)
+    expect(changed.length).toBeGreaterThan(0)
+    expect(typeof changed[0].undoSnapshots.bytes).toBe("number")
+    const line = M.backupSections(null, changed[0].id, NOW, full)[0].lines.find((l) => l.startsWith("Undo data: "))
+    expect(line).toMatch(/^Undo data: \d+ changes? · [\d.]+ (B|kB|MB)$/)
+    expect(M.reduceStatus(fixture("status-after-update"), NOW).targets.every((t) => t.undoSnapshots === null)).toBe(true)
+  })
+
+  test("automatic backups, kinds and proofs in words", () => {
+    expect(M.autoSentence({ mode: "off", capability: "supported", last: null })).toBe("Automatic backups: off")
+    expect(M.autoSentence({ mode: "daily", capability: "supported", last: { at: "2026-10-22T09:00:00Z", result: "created" } })).toBe("Automatic backups: on")
+    expect(M.autoSentence({ mode: "daily", capability: "unsupported", last: { at: "", result: "no_reflink" } }))
+      .toBe("Automatic backups: on, but this drive can't make them for free: back up by hand")
+    expect(M.autoSentence({ mode: "daily", capability: "supported", last: { at: "", result: "space_low" } })).toBe("Automatic backups: skipped: low disk space")
+    expect(M.autoSentence({ mode: "daily", capability: "supported", last: { at: "", result: "failed" } })).toBe("Automatic backups: on, but the last one failed")
     // daily-copy copies where clones are not possible: it works there.
-    expect(M.autoLabel({ mode: "daily-copy", capability: "unsupported", last: { at: "2026-10-22T09:00:00Z", result: "created" } }, now))
-      .toBe("Automatic backups: daily (copies), working · last: made one 3 hours ago")
+    expect(M.autoSentence({ mode: "daily-copy", capability: "unsupported", last: { at: "", result: "created" } })).toBe("Automatic backups: on")
+    expect(M.autoSentence(null)).toBe("")
+    // Design doc §6.3.
+    const b = (kind, trigger) => ({ kind, trigger: trigger || null })
+    expect([b("manual"), b("auto", "pre_change"), b("auto", "post_session"), b("before_restore"), b("imported"), b("recovered")]
+      .map((x) => M.backupKindText(x, false))).toEqual(["made by you", "automatic, before a change", "automatic, after play", "before a restore",
+      "imported", "rescued from an interrupted restore"])
+    expect(M.backupKindText(b("auto", "post_session"), true)).toBe("after play")
+    expect(["capture", "import", "later"].map((baseline) => M.backupProof({ integrity: "verified", baseline })))
+      .toEqual(["checked when made", "checked when imported", "checked since"])
+    expect([M.backupProof({ integrity: "metadata_only" }), M.backupProof({ integrity: "damaged" })]).toEqual(["", ""])
   })
 
-  test("b backs up the filtered client or all; restores wait for the game to close", () => {
+  test("b backs up the filtered client or all; x names a backup by date; restores wait for the game to close", () => {
     expect(M.backupRequest("")).toEqual({ template: "backup_all", slots: {}, label: "Back up all" })
     expect(M.backupRequest("retail").template).toBe("backup_target")
+    const row = { target: "retail", id: "01M72RX8V7R4DP5SRHM7DVXRF2", at: "2026-11-10 13:03" }
+    expect(M.pruneRequest(row, [{ id: "retail", displayName: "Retail" }])).toEqual({ template: "prune_backup",
+      slots: { target: "retail", backup: row.id }, label: "Delete Retail's backup from 2026-11-10 13:03" })
     const running = M.reduceStatus(fixture("status-running"), NOW).targets
-    expect(M.restoreBlocked(running, "retail")).toBe("quit the game first")
-    expect(M.restoreBlocked([{ id: "era", running: false, runningUnknown: true }], "era")).toBe("quit the game first (running: unknown)")
+    expect(M.restoreBlocked(running, "retail")).toBe("Quit Retail first.")
+    expect(M.restoreBlocked([{ id: "era", displayName: "Classic Era", running: false, runningUnknown: true }], "era"))
+      .toBe("Quit Classic Era first: omaddons can't tell if it's running.")
     expect(M.restoreBlocked([{ id: "era", running: false, runningUnknown: false }], "era")).toBe("")
   })
 
-  test("the chooser: backups with the addon's captured version, addon scope first", () => {
-    const id = LISTED().targets[0].backups[0].id
-    const rows = M.chooserBackups(LISTED(), DETAIL(), "retail", "WeakAuras", Date.parse(LISTED().targets[0].backups[0].capturedAt) + 60000)
-    expect(rows).toEqual([{ id: id, label: "1 min ago · manual · WeakAuras 5.19.2" }])
-    expect(M.chooserBackups(LISTED(), null, "retail", "WeakAuras", NOW)[0].label).not.toContain("5.19.2")
-    expect(M.restoreScopes("WeakAuras").map((s) => [s.template, s.label])).toEqual([
-      ["restore_addon", "WeakAuras's settings"], ["restore", "Whole WTF/"]])
-    expect(M.restoreScopes("")[0]).toMatchObject({ label: "One addon's settings…", needsAddon: true })
-    expect(M.restoreScopes("")[1].note).toContain("keybindings, macros, chat settings")
+  // 1n2p.29: what a backup holds, from its `-v` read for its client.
+  test("a backup's page: when, size, proof, and the addons whose settings it holds", () => {
+    const listed = LISTED()
+    const b = listed.targets[0].backups[0]
+    const at = Date.parse(b.capturedAt) + 30 * 60000
+    const targets = [{ id: "retail", displayName: "Retail", running: false, runningUnknown: false }]
+    const reading = M.backupPage(listed, null, "retail", b.id, targets, at)
+    expect([reading.header, reading.reason, reading.addonsState, reading.addonsText, reading.blocked]).toEqual(["Retail · 30 min ago · made by you",
+      "“Fixture (bar widget)”", "reading", "Reading which addons' settings it holds…", ""])
+    expect(reading.facts).toMatch(/^\d{4}-\d\d-\d\d \d\d:\d\d · 5 files · 1\.2 kB$/)
+    const detail = { selection: { target: "retail" }, data: DETAIL() }
+    const page = M.backupPage(listed, detail, "retail", b.id, targets, at)
+    expect([page.addonsState, page.addons]).toEqual(["ready", [{ index: 0, name: "WeakAuras", version: "5.19.2", text: "WeakAuras 5.19.2" }]])
+    // Another client's read is not this page's; a read that failed says so.
+    expect(M.backupPage(listed, { selection: { target: "era" }, data: DETAIL() }, "retail", b.id, targets, at).addonsState).toBe("reading")
+    expect(M.backupPage(listed, { selection: { target: "retail" }, data: null, failed: "x" }, "retail", b.id, targets, at).addonsText)
+      .toBe("Couldn't read which addons' settings it holds.")
+    expect(M.backupPage(listed, detail, "retail", b.id, [{ id: "retail", displayName: "Retail", running: true }], at).blocked).toBe("Quit Retail first.")
+    expect(M.backupPage(listed, detail, "retail", "01GONE", targets, at)).toBe(null)
+    expect(M.restoreRequest("retail", b.id, "WeakAuras", targets)).toEqual({ template: "restore_addon",
+      slots: { target: "retail", addon: "WeakAuras", backup: b.id }, label: "Restore WeakAuras' settings" })
+    expect(M.restoreRequest("retail", b.id, "", targets).label).toBe("Restore all of Retail's settings")
+  })
+
+  // 1n2p.29, design doc J6: from an addon, `r`, Enter, `y`: the newest backup and the
+  // addon's own settings first; from a backup, one addon's settings or all of them.
+  test("the chooser: the narrow fix first, the backup a choice of its own, nothing while the game runs", () => {
+    const listed = JSON.parse(JSON.stringify(fixture("backups")))
+    const newer = listed.data.targets[0].backups[0]
+    const older = Object.assign({}, newer, { id: "01M72RX8V7R4DP5SRHM7DVXRF1", captured_at: "2026-11-08T13:03:41Z", kind: "auto", trigger: "post_session" })
+    listed.data.targets[0].backups.push(older)
+    const backups = M.reduceBackups(listed)
+    const verbose = JSON.parse(JSON.stringify(fixture("backups-detail")))
+    verbose.data.targets[0].backups.push(Object.assign({}, verbose.data.targets[0].backups[0], { id: older.id, captured_at: older.captured_at,
+      kind: older.kind, trigger: older.trigger, addons: [{ name: "WeakAuras", folders: ["WeakAuras"], version: "5.18.0" }] }))
+    const detail = { selection: { target: "retail" }, data: M.reduceBackups(verbose) }
+    const at = Date.parse(newer.captured_at) + 30 * 60000
+    const targets = [{ id: "retail", displayName: "Retail", running: false, runningUnknown: false }]
+    const base = { origin: "addon", target: "retail", addon: "WeakAuras", backups, detail, statusTargets: targets, nowMs: at }
+    const scope = M.restoreChooser(base)
+    expect([scope.title, scope.start, scope.blocked]).toEqual(["Restore WeakAuras' settings on Retail", 1, ""])
+    expect(scope.choices.map((c) => [c.key, c.text, c.note])).toEqual([
+      ["from", "From: 30 min ago · made by you", ""],
+      ["addon", "WeakAuras' settings (written by 5.19.2)", ""],
+      ["whole", "All of Retail's settings…", "Keybindings, macros, chat and every addon's settings"]])
+    expect(scope.choices[1].run).toEqual({ template: "restore_addon", slots: { target: "retail", addon: "WeakAuras", backup: newer.id },
+      label: "Restore WeakAuras' settings" })
+    expect([scope.choices[0].next, scope.choices[2].run.template]).toEqual(["backup", "restore"])
+    // The other backups, newest first, each with the version that wrote the addon's settings.
+    const list = M.restoreChooser(Object.assign({}, base, { step: "backup", backup: newer.id }))
+    expect([list.title, list.start]).toEqual(["Restore WeakAuras' settings from which backup?", 0])
+    expect(list.choices.map((c) => [c.text.replace(/^.*? · /, ""), c.backup])).toEqual([
+      ["made by you · WeakAuras 5.19.2", newer.id], ["after play · WeakAuras 5.18.0", older.id]])
+    expect(M.restoreChooser(Object.assign({}, base, { backup: older.id })).choices[1].text).toBe("WeakAuras' settings (written by 5.18.0)")
+    // Without the -v read, no version yet.
+    expect(M.restoreChooser(Object.assign({}, base, { detail: null })).choices[1].text).toBe("WeakAuras' settings")
+    // From a backup: one addon's settings (which, from its own list) or all of them.
+    const fromBackup = M.restoreChooser({ origin: "backup", target: "retail", backup: older.id, backups, detail, statusTargets: targets, nowMs: at })
+    expect([fromBackup.title, fromBackup.from, fromBackup.choices.map((c) => [c.text, c.next])]).toEqual(["Restore on Retail",
+      "From: " + M.whenText(older.captured_at, at) + " · after play",
+      [["One addon's settings…", "addon"], ["All of Retail's settings…", ""]]])
+    const which = M.restoreChooser({ origin: "backup", step: "addon", target: "retail", backup: older.id, backups, detail, statusTargets: targets, nowMs: at })
+    expect([which.title, which.choices.map((c) => [c.text, c.run.slots.addon])]).toEqual(["Whose settings, on Retail?", [["WeakAuras 5.18.0", "WeakAuras"]]])
+    // While the game runs, or nobody can tell: nothing restores, the way is still shown.
+    const running = M.restoreChooser(Object.assign({}, base, { statusTargets: [{ id: "retail", displayName: "Retail", running: true }] }))
+    expect([running.blocked, running.choices.map((c) => c.enabled)]).toEqual(["Quit Retail first.", [true, false, false]])
+    // Nothing restorable: says so.
+    const none = JSON.parse(JSON.stringify(fixture("backups")))
+    none.data.targets[0].backups[0].restorable = false
+    const empty = M.restoreChooser(Object.assign({}, base, { backups: M.reduceBackups(none), detail: null }))
+    expect([empty.choices, empty.empty]).toEqual([[], "No backup of Retail can be restored."])
+    expect(M.restoreChooser({ origin: "backup", target: "retail", backup: newer.id, backups: M.reduceBackups(none), statusTargets: targets }).empty)
+      .toBe("This backup can't be restored.")
+    // Backups' own list is read with its view (1n2p.38): from an addon elsewhere, the
+    // chooser's -v read lists the backups; until one answers it waits, never "none".
+    const unread = M.restoreChooser(Object.assign({}, base, { backups: null, detail: { selection: { target: "retail" }, data: null } }))
+    expect([unread.choices, unread.empty]).toEqual([[], "Reading backups…"])
+    expect(M.restoreChooser(Object.assign({}, base, { backups: null })).choices.map((c) => c.key)).toEqual(["from", "addon", "whole"])
+    expect(M.restoreChooser(Object.assign({}, base, { backups: null, detail: { selection: { target: "retail" }, data: null, failed: "x" } })).empty)
+      .toBe("Couldn't read Retail's backups.")
   })
 
   test("the dry runs read as plan sheets, the version note included", () => {
@@ -2483,7 +2600,7 @@ describe("the Backups view and the restore chooser", () => {
     verified.data.backup.integrity = "verified"
     expect(M.dialogText(M.confirmSheet("restore", verified))).toContain("Checked against the backup's checksums.")
     const prune = M.confirmSheet("prune_backup", fixture("prune-preview"), CONTEXT, targets)
-    expect([prune.title, prune.confirmLabel, prune.items.map((i) => i.text)]).toEqual(["Delete a backup on Retail?", "Delete", ["made by you, 1.2 KiB"]])
+    expect([prune.title, prune.confirmLabel, prune.items.map((i) => i.text)]).toEqual(["Delete a backup on Retail?", "Delete", ["made by you, 1.2 kB"]])
     expect(M.resultLine(Object.assign({}, fixture("restore-addon-preview")))).toBe("Restored WeakAuras's settings on retail")
   })
 
@@ -4389,7 +4506,7 @@ describe("repairActionLine", () => {
         "chmod 0644 <config>/credentials/github (was 0600) (readable by other users again)"],
       ["rewrite_with_a_size", { op: "write_file", path: CREDENTIAL_PATH, mode: "0600", backup: "<run>/backups/github", bytes: 7, pre: { kind: "file" } },
         "Rewrite <config>/credentials/github (7 B; the old file is kept for undo)"],
-      ["create", { op: "write_file", path: CREDENTIAL_PATH, mode: "0600", bytes: 2048, pre: { kind: "absent" } }, "Create <config>/credentials/github (2.0 KiB)"],
+      ["create", { op: "write_file", path: CREDENTIAL_PATH, mode: "0600", bytes: 2048, pre: { kind: "absent" } }, "Create <config>/credentials/github (2.0 kB)"],
       ["rewrite_in_a_real_run", { op: "write_file", path: CREDENTIAL_PATH, mode: "0600", backup: "<run>/b", ok: true, pre: { kind: "file" } },
         "Rewrite <config>/credentials/github (the old file is kept for undo)"],
       ["move", { op: "rename_noreplace", path: CONTEXT.XDG_CACHE_HOME + "/omaddons/blobs/ab", to: "<run>/quarantine/blobs/ab" },

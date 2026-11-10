@@ -988,6 +988,8 @@ Item {
         if (r.resource === "changelog") changelog = { "selection": r.selection, "data": null, "failed": lastError.message }
         if (r.resource === "addon_info") addonInfo = { "selection": r.selection, "data": null, "failed": lastError.message }
         if (r.resource === "explain") explanation = { "selection": r.selection, "lines": null, "failed": lastError.message }
+        // A backup's page waiting for its addons says they could not be read.
+        if (r.resource === "backups_detail") backupsDetail = { "selection": r.selection, "data": null, "failed": lastError.message }
       }
     } else if (r.resource === "list") {
       lists = Model.reduceList(env)

@@ -5,11 +5,14 @@ import "../.."
 import "../../Model.js" as Model
 import "../../Build.js" as Build
 
-// The restore chooser over the frame (pipeline step 4), against a stub service: opened
-// from a Backups row, from Installed's `r` and from Issues' `r`; the addon scope first,
-// the whole WTF/ second with what else it changes; each addon's captured version from
-// the view-bound `-v` read; restores off while the client runs; Esc going back; and the
-// footer's buttons for a restore whose folders changed owner.
+// The restore chooser over the frame (pipeline step 4, 1n2p.29), against a stub service:
+// opened from a Backups row's `r`, from Installed's and Errors' `r` and from a backup's
+// page; from an addon, the newest backup with the addon's own settings first (J6: `r`,
+// Enter, `y`) and the backup a choice of its own; from a backup, one addon's settings or
+// all of them with what else that changes; each addon's captured version from the
+// view-bound `-v` read; "Quit Retail first" and nothing restored while the client runs;
+// Esc going back a step, then closing; and the footer's buttons for a restore whose
+// folders changed owner.
 TestCase {
   id: testCase
   name: "Chooser"
@@ -47,7 +50,8 @@ TestCase {
       property string phase: "ok"
       readonly property bool canAct: phase === "ok"
       property var summary: null
-      property var targets: [{ "id": "retail", "running": false, "runningUnknown": false, "clientDir": "/games/retail", "updates": null, "issues": [] }]
+      property var targets: [{ "id": "retail", "displayName": "Retail", "running": false, "runningUnknown": false, "clientDir": "/games/retail",
+        "updates": null, "issues": [] }]
       property var lastChange: null
       property var action: null
       property string queuedAction: ""
@@ -75,6 +79,12 @@ TestCase {
       function readBackupsDetail(target) { detailReads = detailReads.concat([target]) }
       function clearBackupsDetail() { detailClears++; backupsDetail = null }
       function restoreFolder(addon) { folders = folders.concat([addon]); return "" }
+      // An addon's page (1n2p.23): its own read, answered with nothing.
+      property var addonInfo: null
+      property var history: null
+      function readAddonInfo(ref) { return true }
+      function clearAddonInfo() { addonInfo = null }
+      function readHistory() { return true }
       function check() {}
       function refresh() {}
       function reinstallWidget() { return "ok" }
@@ -125,41 +135,52 @@ TestCase {
     return JSON.stringify(value)
   }
 
-  function test_from_a_backup_the_addon_scope_comes_first_and_whole_says_what_else_it_changes() {
+  function when(iso) {
+    return Model.whenText(iso, view.nowMs)
+  }
+
+  function test_from_a_backup_one_addon_or_all_and_all_says_what_else_it_changes() {
     keyClick("6")
-    keyClick(Qt.Key_Return)
+    keyClick("r")
     var c = chooser()
     verify(c.opened)
-    tryVerify(function() { return findChild(c, "chooserKeys").activeFocus })
-    compare(json(c.choices), json(["One addon's settings…",
-      "Whole WTF/: also restores keybindings, macros, chat settings and every other addon's settings"]))
-    // Behind the chooser the frame does nothing.
+    tryVerify(function() { return findChild(c, "sheetKeys").activeFocus })
+    compare([c.title, findChild(c, "chooserFrom").text], ["Restore on Retail", "From: " + when("2099-12-31T22:00:00Z") + " · made by you"])
+    compare(json(c.choiceTexts), json(["One addon's settings…", "All of Retail's settings…"]))
+    compare(findChild(findChild(c, "restoreChoice_1"), "choiceNote").text, "Keybindings, macros, chat and every addon's settings")
+    // Behind the chooser the frame does nothing, and `y` chooses nothing.
     keyClick("b")
+    keyClick("y")
     compare(svc.runs.length, 0)
     keyClick("j")
     keyClick(Qt.Key_Return)
-    compare(json(svc.runs[0]), json(["restore", { "target": "retail", "backup": newer }, "Restore the whole WTF/"]))
+    compare(json(svc.runs[0]), json(["restore", { "target": "retail", "backup": newer }, "Restore all of Retail's settings"]))
     verify(!c.opened)
     compare(svc.detailClears, 1)
     tryVerify(function() { return findChild(view, "keyCatcher").activeFocus })
   }
 
-  function test_one_addons_settings_asks_which_addon() {
+  function test_one_addons_settings_asks_which_addon_from_the_backups_own_list() {
     keyClick("6")
-    keyClick(Qt.Key_Return)
+    keyClick("r")
     var c = chooser()
     keyClick(Qt.Key_Return)
-    compare(c.step, "addon")
-    compare(json(c.choices), json(["WeakAuras", "Details"]))
+    compare([c.step, c.title], ["addon", "Whose settings, on Retail?"])
+    // Until the -v read answers: the managed addons.
+    compare(json(c.choiceTexts), json(["WeakAuras", "Details"]))
+    svc.backupsDetail = { "selection": { "target": "retail" }, "data": listing(true) }
+    compare(json(c.choiceTexts), json(["WeakAuras 5.20.0"]))
     keyClick(Qt.Key_Escape)
     compare(c.step, "scope", "Esc goes back a step")
+    svc.backupsDetail = null
     keyClick(Qt.Key_Return)
     keyClick("j")
     keyClick(Qt.Key_Return)
-    compare(json(svc.runs[0]), json(["restore_addon", { "target": "retail", "addon": "Details", "backup": newer }, "Restore Details's settings"]))
+    compare(json(svc.runs[0]), json(["restore_addon", { "target": "retail", "addon": "Details", "backup": newer }, "Restore Details' settings"]))
   }
 
-  function test_installed_r_picks_a_backup_by_its_captured_version_then_the_scope() {
+  // Design doc J6: `r` on the addon, Enter ("WeakAuras' settings", first), then `y`.
+  function test_installed_r_opens_on_the_newest_backup_with_the_addons_own_settings_first() {
     keyClick("2")
     // WeakAuras, after Details by name (1n2p.22).
     keyClick("j")
@@ -167,20 +188,74 @@ TestCase {
     keyClick("r")
     var c = chooser()
     verify(c.opened)
-    compare([c.step, c.addon], ["backup", "WeakAuras"])
+    compare([c.step, c.addon, c.origin, c.choice, c.title], ["scope", "WeakAuras", "addon", 1, "Restore WeakAuras' settings on Retail"])
     compare(json(svc.detailReads), json(["retail"]))
-    compare(c.choices[0], "2 hours ago · manual")
+    compare(json(c.choiceTexts), json(["From: " + when("2099-12-31T22:00:00Z") + " · made by you", "WeakAuras' settings", "All of Retail's settings…"]))
     // A -v read for another client is not this chooser's.
     svc.backupsDetail = { "selection": { "target": "era" }, "data": listing(true) }
-    compare(c.choices[0], "2 hours ago · manual")
+    compare(c.choiceTexts[1], "WeakAuras' settings")
     svc.backupsDetail = { "selection": { "target": "retail" }, "data": listing(true) }
-    compare(json(c.choices), json(["2 hours ago · manual · WeakAuras 5.20.0", "2 days ago · manual · WeakAuras 5.19.2"]))
+    compare(c.choiceTexts[1], "WeakAuras' settings (written by 5.20.0)")
+    keyClick(Qt.Key_Return)
+    compare(json(svc.runs[0]), json(["restore_addon", { "target": "retail", "addon": "WeakAuras", "backup": newer }, "Restore WeakAuras' settings"]))
+    verify(!c.opened)
+  }
+
+  // Backups' own list is read with its view (1n2p.38): from Addons, the chooser waits for
+  // its -v read, never saying there is none, and opens on the narrow fix once it lands.
+  function test_from_an_addon_it_reads_the_backups_itself_and_starts_on_the_addons_settings() {
+    svc.backups = null
+    keyClick("2")
+    keyClick("j")
+    keyClick("r")
+    var c = chooser()
+    verify(c.opened)
+    compare(json(c.choiceTexts), json([]))
+    compare(findChild(c, "chooserEmpty").text, "Reading backups…")
+    svc.backupsDetail = { "selection": { "target": "retail" }, "data": listing(true) }
+    compare([c.choiceTexts.length, c.choice], [3, 1])
+    keyClick(Qt.Key_Return)
+    compare(json(svc.runs[0]), json(["restore_addon", { "target": "retail", "addon": "WeakAuras", "backup": newer }, "Restore WeakAuras' settings"]))
+  }
+
+  function test_the_backup_is_a_choice_of_its_own_with_the_version_each_holds() {
+    svc.backupsDetail = null
+    keyClick("2")
+    keyClick("j")
+    keyClick("r")
+    var c = chooser()
+    svc.backupsDetail = { "selection": { "target": "retail" }, "data": listing(true) }
+    keyClick("k")
+    keyClick(Qt.Key_Return)
+    compare([c.step, c.title, c.choice], ["backup", "Restore WeakAuras' settings from which backup?", 0])
+    compare(json(c.choiceTexts), json([when("2099-12-31T22:00:00Z") + " · made by you · WeakAuras 5.20.0",
+      when("2099-12-30T00:00:00Z") + " · made by you · WeakAuras 5.19.2"]))
     keyClick("j")
     keyClick(Qt.Key_Return)
-    compare([c.step, c.backup], ["scope", older])
-    compare(c.choices[0], "WeakAuras's settings")
+    compare([c.step, c.backup, c.choice], ["scope", older, 1])
+    compare(c.choiceTexts[1], "WeakAuras' settings (written by 5.19.2)")
     keyClick(Qt.Key_Return)
-    compare(json(svc.runs[0]), json(["restore_addon", { "target": "retail", "addon": "WeakAuras", "backup": older }, "Restore WeakAuras's settings"]))
+    compare(json(svc.runs[0]), json(["restore_addon", { "target": "retail", "addon": "WeakAuras", "backup": older }, "Restore WeakAuras' settings"]))
+  }
+
+  // `r` on an addon's page (its client line): the backups with the version that wrote
+  // that addon's settings, from the client's -v read.
+  function test_an_addon_pages_r_lists_backups_with_the_version_that_wrote_its_settings() {
+    keyClick("2")
+    keyClick("j")
+    keyClick(Qt.Key_Return)
+    var page = findChild(view, "page").item
+    verify(page !== null, "WeakAuras' page")
+    keyClick("j")
+    keyClick("r")
+    var c = chooser()
+    verify(c.opened)
+    compare([c.origin, c.target, c.addon], ["addon", "retail", "WeakAuras"])
+    svc.backupsDetail = { "selection": { "target": "retail" }, "data": listing(true) }
+    keyClick("k")
+    keyClick(Qt.Key_Return)
+    compare(json(c.choiceTexts), json([when("2099-12-31T22:00:00Z") + " · made by you · WeakAuras 5.20.0",
+      when("2099-12-30T00:00:00Z") + " · made by you · WeakAuras 5.19.2"]))
   }
 
   // `r` in the Errors view (4, 1n2p.27) on the erroring addon.
@@ -194,31 +269,40 @@ TestCase {
     keyClick("r")
     var c = chooser()
     verify(c.opened)
-    compare([c.target, c.addon, c.step], ["retail", "WeakAuras", "backup"])
+    compare([c.target, c.addon, c.step, c.origin], ["retail", "WeakAuras", "scope", "addon"])
   }
 
+  // M3-D29: while the client runs, or nobody can tell, nothing restores; the way stays shown.
   function test_restores_are_off_while_the_client_runs() {
-    svc.targets = [{ "id": "retail", "running": true, "runningUnknown": false, "clientDir": "/games/retail", "updates": null, "issues": [] }]
+    svc.targets = [{ "id": "retail", "displayName": "Retail", "running": true, "runningUnknown": false, "clientDir": "/games/retail", "updates": null,
+      "issues": [] }]
     keyClick("6")
-    keyClick(Qt.Key_Return)
+    keyClick("r")
     var c = chooser()
     verify(findChild(c, "chooserBlocked").visible)
-    compare(findChild(c, "chooserBlocked").text, "Restores are off: quit the game first")
+    compare(findChild(c, "chooserBlocked").text, "Quit Retail first.")
+    keyClick(Qt.Key_Return)
     keyClick("j")
     keyClick(Qt.Key_Return)
-    compare(svc.runs.length, 0)
+    compare([svc.runs.length, c.step], [0, "scope"])
     keyClick(Qt.Key_Escape)
     verify(!c.opened)
+    svc.targets = [{ "id": "retail", "displayName": "Retail", "running": false, "runningUnknown": true, "clientDir": "/games/retail", "updates": null,
+      "issues": [] }]
+    keyClick("r")
+    compare(findChild(c, "chooserBlocked").text, "Quit Retail first: omaddons can't tell if it's running.")
   }
 
-  function test_esc_from_the_first_step_closes() {
+  function test_esc_goes_back_a_step_then_closes() {
     keyClick("2")
     keyClick("r")
     var c = chooser()
+    keyClick("k")
     keyClick(Qt.Key_Return)
-    compare(c.step, "scope")
+    compare(c.step, "backup")
     keyClick(Qt.Key_Escape)
-    compare([c.step, c.backup], ["backup", ""])
+    compare([c.step, c.choice], ["scope", 1])
+    verify(c.opened)
     keyClick(Qt.Key_Escape)
     verify(!c.opened)
   }

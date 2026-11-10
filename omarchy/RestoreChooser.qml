@@ -2,249 +2,214 @@ import QtQuick
 import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
+import "ui"
 import "Model.js" as Model
 
-// The restore chooser (F9), over the panel: the safest fix first. From an addon row
-// (Installed or Issues `r`) it asks which backup (each with the version of that addon
-// that wrote its settings, from `backup list -v`), then the scope; from a Backups row,
-// the scope, and for one addon's settings, which addon. The scopes come in this order on
-// purpose: the addon's settings, then the whole WTF/, labelled with everything else it
-// changes (risk 11). Choosing one runs its dry run through the service; the frame's
-// confirm dialog takes over from there. The chooser decides no folder, file or version:
-// the CLI's dry run does (D7). While the client runs, the scopes are off (M3-D29).
-Item {
+// The restore chooser (1n2p.29, design doc §2.4), a sheet over the panel: the narrow fix
+// first. From an addon (`r` on its row, its page or its Lua error) it opens on the
+// newest restorable backup with that addon's settings first ("WeakAuras' settings
+// (written by 5.19.2)"), all of the client's settings second, and the backup above them
+// as a choice of its own (Enter lists the others, newest first, each with the version of
+// that addon that wrote it): `r`, Enter, then `y` in the plan sheet. From a backup (its
+// row's `r`, its page's Restore…) it offers one addon's settings (which addon, next) or
+// all of them. Choosing one runs its preview through the service; the plan sheet takes
+// over from there. The chooser decides no folder, file or version: the CLI's preview does
+// (D7). While the client runs, or nobody can tell, it says "Quit Retail first" and
+// restores nothing (M3-D29). Esc goes back a step, then closes. The choices are
+// Model.restoreChooser's.
+Sheet {
   id: root
 
   property var frame: null
   readonly property var svc: frame ? frame.svc : null
-  property bool opened: false
   property string target: ""
   property string backup: ""
   property string addon: ""
-  // "backup", "scope" or "addon".
-  property string step: "scope"
-  property int cursor: 0
-  readonly property Item keyItem: keys
-
-  readonly property string blocked: Model.restoreBlocked(svc && Array.isArray(svc.targets) ? svc.targets : [], target)
-  readonly property var detail: svc && svc.backupsDetail && svc.backupsDetail.selection
-    && svc.backupsDetail.selection.target === target ? svc.backupsDetail.data : null
-  readonly property var backupChoices: Model.chooserBackups(svc ? svc.backups : null, detail, target, addon, frame ? frame.nowMs : Date.now())
-  readonly property var scopes: Model.restoreScopes(addon)
-  readonly property var addonChoices: Model.managedAddons(svc ? svc.lists : null, target)
-  readonly property var choices: step === "backup" ? backupChoices.map(function(b) { return b.label })
-    : step === "addon" ? addonChoices
-    : scopes.map(function(s) { return s.label + (s.note ? ": " + s.note : "") })
-  readonly property string title: step === "backup" ? "Restore " + addon + "'s settings on " + target + " from which backup?"
-    : step === "addon" ? "Whose settings, on " + target + "?"
-    : "Restore on " + target + " from backup " + backup
-
-  readonly property color foreground: frame ? frame.foreground : Commons.Color.foreground
-  readonly property color dim: frame ? frame.dim : Qt.darker(foreground, 1.55)
-  readonly property color urgent: frame ? frame.urgent : Commons.Color.urgent
-  readonly property string fontFamily: frame ? frame.fontFamily : Style.font.family
-
-  // Where it was opened: "addon" (an addon row) or "backup" (a Backups row).
+  // Where it was opened: "addon" (an addon) or "backup" (a backup).
   property string origin: "backup"
+  // "scope", "backup" or "addon".
+  property string step: "scope"
+  // Whether this chooser asked for the client's `backup list -v` read: a backup's page
+  // under it may hold that read, and keeps it.
+  property bool ownsDetail: false
 
-  // `spec`: `{target, backup}` from a Backups row, or `{target, addon}` from an addon row.
+  readonly property var model: Model.restoreChooser({ "origin": origin, "step": step, "target": target, "addon": addon,
+    "backup": backup, "backups": svc ? svc.backups : null, "detail": svc ? svc.backupsDetail : null, "lists": svc ? svc.lists : null,
+    "statusTargets": svc && Array.isArray(svc.targets) ? svc.targets : [], "nowMs": frame ? frame.nowMs : Date.now() })
+  readonly property var choices: model.choices
+  // What the chooser lists, as text (tests and the accessible name read it).
+  readonly property var choiceTexts: choices.map(function(c) { return c.text })
+  readonly property string blocked: model.blocked
+
+  title: model.title
+  choosing: true
+  keysText: Model.copy("restore.keys")
+  choiceCount: choices.length
+  choiceItem: function(i) { return choiceRepeater.itemAt(i) }
+  foreground: frame ? frame.foreground : Commons.Color.foreground
+  urgent: frame ? frame.urgent : Commons.Color.urgent
+  accent: frame ? frame.accent : Commons.Color.accent
+  fontFamily: frame ? frame.fontFamily : Style.font.family
+
+  onCanceled: back()
+  onChosen: function(index) { root.pick(index) }
+
+  // Choices that arrive after it opened (the backups read meanwhile) start where the
+  // chooser would have opened: on the narrow fix.
+  property int shown: 0
+  onChoiceTextsChanged: {
+    if (opened && shown === 0 && choices.length > 0) choice = model.start
+    shown = choices.length
+  }
+
+  // `spec`: `{target, backup}` from a backup, or `{target, addon}` from an addon; with
+  // `keepDetail`, a backup's page under it holds the client's `-v` read (asked, maybe not
+  // answered yet).
   function open(spec) {
     target = String(spec.target || "")
     backup = String(spec.backup || "")
     addon = String(spec.addon || "")
     origin = backup ? "backup" : "addon"
-    step = backup ? "scope" : "backup"
-    cursor = 0
+    step = "scope"
+    var held = spec.keepDetail === true
+      || (!!svc && !!svc.backupsDetail && !!svc.backupsDetail.selection && svc.backupsDetail.selection.target === target)
+    ownsDetail = !!svc && !held
+    if (ownsDetail) svc.readBackupsDetail(target)
+    choice = model.start
     opened = true
-    if (svc) svc.readBackupsDetail(target)
-    keys.forceActiveFocus()
+    // The keys are the chooser's from the next key on.
+    keyItem.forceActiveFocus()
   }
 
   function close() {
     opened = false
-    if (svc) svc.clearBackupsDetail()
+    if (svc && ownsDetail) svc.clearBackupsDetail()
+    ownsDetail = false
     if (frame) frame.chooserClosed()
   }
 
-  // Esc goes back a step, then closes.
+  // Esc: back to the scopes from a list of backups or addons, then closed.
   function back() {
-    if (step === "addon") {
-      step = "scope"
-      addon = ""
-    } else if (step === "scope" && origin === "addon") {
-      step = "backup"
-      backup = ""
-    } else {
+    if (step === "scope") {
       close()
       return
     }
-    cursor = 0
+    step = "scope"
+    choice = model.start
   }
 
-  function choose() {
-    if (step === "backup") {
-      var picked = backupChoices[cursor]
-      if (!picked) return
-      backup = picked.id
+  // A choice: a step it opens, a backup it picks, or the restore it previews. One that
+  // is off (the client runs) does nothing; the sheet says why.
+  function pick(index) {
+    var c = choices[index]
+    if (!c || !c.enabled) return
+    if (c.next) {
+      step = c.next
+      choice = model.start
+      return
+    }
+    if (c.backup) {
+      backup = c.backup
       step = "scope"
-      cursor = 0
+      choice = model.start
       return
     }
-    if (step === "addon") {
-      var name = addonChoices[cursor]
-      if (!name || blocked) return
-      addon = name
-      run("restore_addon")
-      return
-    }
-    var scope = scopes[cursor]
-    if (!scope || blocked) return
-    if (scope.needsAddon) {
-      step = "addon"
-      cursor = 0
-      return
-    }
-    run(scope.template)
-  }
-
-  function run(template) {
-    var whole = template === "restore"
-    var slots = whole ? { "target": target, "backup": backup } : { "target": target, "addon": addon, "backup": backup }
-    var label = whole ? "Restore the whole WTF/" : "Restore " + addon + "'s settings"
-    if (frame) frame.report(svc.run(template, slots, label))
+    if (!c.run || !svc) return
+    if (frame) frame.report(svc.run(c.run.template, c.run.slots, c.run.label))
     close()
   }
 
-  // A dialog's keys, as Model.KEYMAP's sheet rows say: Esc and n back out a step, j/k
-  // move between the choices, Enter and Space choose (never from auto-repeat, M3-D46).
-  // Every other key is the chooser's: nothing behind it acts.
-  function key(code, text, autoRepeat, modifiers) {
-    var name = Model.keyName(code, text, modifiers)
-    var action = Model.dialogKey(name, autoRepeat === true)
-    if (action === "cancel") back()
-    else if (action === "line") cursor = Math.max(0, Math.min(choices.length - 1, cursor + Model.keyStep(name)))
-    else if (action === "press") choose()
-    return true
+  // The backup a list of addons restores from.
+  PlainLabel {
+    objectName: "chooserFrom"
+    visible: root.model.from !== ""
+    width: root.bodyWidth
+    wrapMode: Text.WordWrap
+    color: root.dim
+    font.family: root.fontFamily
+    font.pixelSize: Style.font.caption
+    text: root.model.from
   }
 
-  visible: opened
-
-  Item {
-    id: keys
-    objectName: "chooserKeys"
-    Keys.onPressed: function(event) {
-      event.accepted = root.key(event.key, event.text, event.isAutoRepeat, event.modifiers)
-    }
+  PlainLabel {
+    objectName: "chooserBlocked"
+    visible: root.blocked !== "" && root.step !== "backup"
+    width: root.bodyWidth
+    wrapMode: Text.WordWrap
+    color: root.urgent
+    font.family: root.fontFamily
+    font.pixelSize: Style.font.caption
+    font.bold: true
+    text: root.blocked
   }
 
-  // The panel behind stays visible, dimmed; a click outside the card closes.
-  Rectangle {
-    anchors.fill: parent
-    color: Qt.rgba(Commons.Color.background.r, Commons.Color.background.g, Commons.Color.background.b, 0.7)
-
-    MouseArea {
-      anchors.fill: parent
-      onClicked: root.close()
-    }
+  PlainLabel {
+    objectName: "chooserEmpty"
+    visible: root.choices.length === 0
+    width: root.bodyWidth
+    wrapMode: Text.WordWrap
+    color: root.dim
+    font.family: root.fontFamily
+    font.pixelSize: Style.font.caption
+    text: root.model.empty
   }
 
-  BorderSurface {
-    id: card
-    objectName: "chooserCard"
-    anchors.centerIn: parent
-    width: Math.min(parent.width - Style.space(24), Style.space(460))
-    implicitHeight: cardColumn.implicitHeight + Style.spacing.xl * 2
-    color: Commons.Color.popups.background
-    borderSpec: Border.flat(Commons.Color.accent, 1)
-    radius: Style.cornerRadius
+  Repeater {
+    id: choiceRepeater
+    objectName: "chooserChoices"
+    model: root.choices
 
-    MouseArea { anchors.fill: parent }
+    CursorSurface {
+      id: entry
+      required property var modelData
+      required property int index
+      objectName: "restoreChoice_" + index
+      width: root.bodyWidth
+      implicitHeight: lines.implicitHeight + Style.spacing.md * 2
+      hasCursor: root.choice === index
+      opacity: modelData.enabled ? 1.0 : 0.4
+      foreground: root.foreground
 
-    Column {
-      id: cardColumn
-      anchors.left: parent.left
-      anchors.right: parent.right
-      anchors.verticalCenter: parent.verticalCenter
-      anchors.leftMargin: Style.space(14)
-      anchors.rightMargin: Style.space(14)
-      spacing: Style.spacing.md
+      Column {
+        id: lines
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.leftMargin: Style.spacing.lg
+        anchors.rightMargin: Style.spacing.lg
+        anchors.verticalCenter: parent.verticalCenter
+        spacing: Style.spacing.xs
 
-      PlainLabel {
-        objectName: "chooserTitle"
-        width: parent.width
-        wrapMode: Text.WordWrap
-        color: root.foreground
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.body
-        font.bold: true
-        text: root.title
-      }
+        PlainLabel {
+          objectName: "choiceText"
+          width: parent.width
+          wrapMode: Text.WordWrap
+          elide: Text.ElideNone
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
+          text: entry.modelData.text
+        }
 
-      Text {
-        objectName: "chooserBlocked"
-        visible: root.blocked !== "" && root.step !== "backup"
-        width: parent.width
-        textFormat: Text.PlainText
-        text: "Restores are off: " + root.blocked
-        color: root.urgent
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
-      }
-
-      Text {
-        visible: root.choices.length === 0
-        width: parent.width
-        textFormat: Text.PlainText
-        text: root.step === "backup" ? "No backup of this client can be restored" : "Nothing to choose"
-        color: root.dim
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
-      }
-
-      Repeater {
-        objectName: "chooserChoices"
-        model: root.choices
-
-        CursorSurface {
-          required property string modelData
-          required property int index
-          width: cardColumn.width
-          implicitHeight: choice.implicitHeight + Style.spacing.md * 2
-          hasCursor: root.cursor === index
-          opacity: root.step !== "backup" && root.blocked !== "" ? 0.4 : 1.0
-          foreground: root.foreground
-
-          PlainLabel {
-            id: choice
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.leftMargin: Style.spacing.lg
-            anchors.rightMargin: Style.spacing.lg
-            anchors.verticalCenter: parent.verticalCenter
-            wrapMode: Text.WordWrap
-            color: root.foreground
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.body
-            text: modelData
-          }
-
-          MouseArea {
-            anchors.fill: parent
-            onClicked: {
-              root.cursor = index
-              root.choose()
-            }
-          }
+        // What else a choice changes (all of a client's settings).
+        PlainLabel {
+          objectName: "choiceNote"
+          visible: entry.modelData.note !== ""
+          width: parent.width
+          wrapMode: Text.WordWrap
+          elide: Text.ElideNone
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          text: entry.modelData.note
         }
       }
 
-      Text {
-        width: parent.width
-        textFormat: Text.PlainText
-        text: "j/k to move, Enter to choose, Esc to go back"
-        color: root.dim
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
+      MouseArea {
+        anchors.fill: parent
+        onClicked: {
+          root.choice = entry.index
+          root.choose(entry.index)
+        }
       }
     }
   }

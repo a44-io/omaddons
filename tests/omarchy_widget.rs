@@ -3017,6 +3017,22 @@ fn write_widget_fixtures() {
         &home.exec(&fill(&t, "status", &[])),
         0,
     );
+    // The full read (`status -v`, never `--cached`) after a change: each client's undo
+    // data (bmcx.4), which the Backups card states (1n2p.29).
+    let full = write_fixture(
+        &dir,
+        "status-full",
+        &home.exec(&fill(&t, "status_full", &[])),
+        0,
+    );
+    assert!(
+        full["data"]["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["undo_snapshots"]["count"].as_u64().unwrap_or(0) > 0),
+        "{full}"
+    );
     // "Undo last" previews the CLI's own undo argv.
     let undo: Vec<String> = status["data"]["last_change"]["undo"]["argv"]
         .as_array()

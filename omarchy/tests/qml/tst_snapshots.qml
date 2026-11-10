@@ -1081,6 +1081,29 @@ TestCase {
     shoot("backups-long")
   }
 
+  // A backup's page (1n2p.29): when, size, the addons whose settings it holds, the cursor
+  // on the first with its Enter hint.
+  function test_backup_page() {
+    var scene = everyday()
+    open(scene, "backups")
+    var b = fixture("backups").data.targets[0].backups[0]
+    verify(frame.openBackup("retail", b.id, "backup"))
+    settle(scene)
+    frame.moveCursor(0)
+    shoot("backup-page")
+  }
+
+  // The chooser over a backup's page: one addon's settings or all of them.
+  function test_restore_chooser_over_a_backup_page() {
+    var scene = everyday()
+    open(scene, "backups")
+    var b = fixture("backups").data.targets[0].backups[0]
+    verify(frame.openBackup("retail", b.id, "backup"))
+    settle(scene)
+    verify(frame.openChooser({ "target": "retail", "backup": b.id, "keepDetail": true }))
+    shoot("chooser-backup-page")
+  }
+
   // ---------------------------------------------------------------- History (1n2p.30)
 
   function test_history_loading() {
