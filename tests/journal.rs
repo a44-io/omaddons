@@ -267,6 +267,25 @@ mod support {
             }
         }
 
+        /// Drops `writer`, the guard of this transaction's in-flight lock (the writer
+        /// "dies"), and waits until no process holds the lock. A `flock` belongs to the
+        /// open file description: a child another test of this binary forks while the
+        /// guard is open keeps a copy until its `exec` closes it, so the lock can outlive
+        /// the guard by a moment, and a probe in that moment rightly finds a live writer
+        /// (omad-7uze). Bounded, so a lock that never frees still fails the test.
+        pub fn release<T>(&self, writer: T) {
+            drop(writer);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while InflightLock::is_live(&self.paths, &self.tx).unwrap() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the in-flight lock of {} is still held 5 s after its guard dropped",
+                    self.tx
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+
         pub fn recover(&self) -> Vec<Warning> {
             let lock = GlobalLock::acquire(&self.paths, "test").unwrap();
             let env = RecoveryEnv {
@@ -516,7 +535,41 @@ fn a_live_transaction_is_never_recovered() {
         scene.paths.journal(&scene.tx).exists(),
         "its writer is alive"
     );
-    drop(inflight);
+    scene.release(inflight);
+    assert_eq!(scene.recover().len(), 1);
+    assert_eq!(tree_hash(&scene.addons), scene.old);
+}
+
+/// The wait in [`Scene::release`] lasts while another process still holds a copy of
+/// the lock's open file description, as a child forked by another test does until its
+/// `exec`; recovery then rolls the journal back. A child given a duplicate of the
+/// writer's descriptor as its standard input holds the lock until it is killed.
+#[test]
+fn recovery_waits_out_a_copy_of_the_writers_lock() {
+    let scene = Scene::new();
+    let lock = scene.paths.inflight_lock(&scene.tx);
+    fs::create_dir_all(lock.parent().unwrap()).unwrap();
+    let writer = fs::File::create(&lock).unwrap();
+    writer.lock().unwrap();
+    scene.run(1, false, false, false);
+    let mut copy = std::process::Command::new("sleep")
+        .arg("30")
+        .stdin(writer.try_clone().unwrap())
+        .spawn()
+        .unwrap();
+    drop(writer);
+    assert!(
+        InflightLock::is_live(&scene.paths, &scene.tx).unwrap(),
+        "the copy holds the lock after the guard dropped"
+    );
+    assert!(scene.recover().is_empty(), "a held copy is a live writer");
+    let ended = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        copy.kill().unwrap();
+        copy.wait().unwrap();
+    });
+    scene.release(());
+    ended.join().unwrap();
     assert_eq!(scene.recover().len(), 1);
     assert_eq!(tree_hash(&scene.addons), scene.old);
 }
@@ -665,7 +718,7 @@ fn diagnose_reports_a_live_writer_as_skipped() {
     assert_eq!(only(&prediction).1, Expected::Skipped);
     assert!(result.unwrap().is_empty());
     assert!(scene.paths.journal(&scene.tx).exists(), "untouched");
-    drop(inflight);
+    scene.release(inflight);
     let (prediction, _) = scene.predicted(&log, "its writer is gone");
     assert_eq!(only(&prediction).1, Expected::RolledBack);
     assert_eq!(tree_hash(&scene.addons), scene.old);
