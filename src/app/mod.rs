@@ -742,12 +742,13 @@ pub fn dispatch(cli: &Cli, ctx: &Context, reporter: &SharedReporter) -> ProcessE
         };
     }
     let exit = run_command(cli, ctx, &out);
-    // A command that may have appended history (by its full path: `config set`, not
-    // `config`) rebuilds the history projection it could not keep current under its
-    // lock, now that the lock is released (M3-D37).
-    let path = crate::cli::command_path(&ctx.argv);
-    if !path.is_empty()
-        && mutates(&path.join(" "))
+    // A command that may have appended history (by its canonical path, a `COMMANDS` row:
+    // `config set`, not `config`) rebuilds the history projection it could not keep
+    // current under its lock, now that the lock is released (M3-D37). The parsed command
+    // names it, so argv is not walked again: that walk builds every subcommand's clap
+    // definition, a fixed cost of about 0.35 ms that `status --cached` paid on every
+    // widget refresh.
+    if mutates(name)
         && !ctx.dry_run
         && let Ok(paths) = crate::state::paths::Paths::from_env()
     {

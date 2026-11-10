@@ -69,7 +69,7 @@ use crate::resolve::updates::{StatusKind, UncheckedReason, UpdateStatus};
 use crate::rules::{ClientVersion, Family, InstallKind, ModeName, RulesTable, TargetKind};
 use crate::sources::github_token::{GithubToken, TokenSource};
 use crate::state::history::{self, HistoryEntry, HistoryFilter, HistoryRead, Reach};
-use crate::state::history_tail::{self, Answer};
+use crate::state::history_tail::{self, Answer, HistoryTail};
 use crate::state::paths::ClientPaths;
 use crate::state::records::{TargetRecord, load_record};
 use crate::state::registry::RegistryEntry;
@@ -1085,6 +1085,9 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
     // twice. `-t` narrows the per-client rows as `doctor -t` does; `-t all` lists every
     // client, a vanished one too, as no `-t` does.
     let in_progress = matches!(lock, LockState::Held { .. });
+    // `--cached` reads the history projection once: for its last change, and for the
+    // Skill layer (the folders it lists). Plain `status` reads the whole history instead.
+    let tail = args.cached.then(|| history_tail::fresh(&world.paths));
     let view = DoctorView::seeded(
         ViewOptions {
             discovery: if args.cached {
@@ -1101,6 +1104,9 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             widget: widget.clone(),
             drift: drift_seed,
             history,
+            skill_dirs: tail
+                .as_ref()
+                .map(|tail| tail.as_ref().and_then(|t| t.skill_dirs.clone())),
         },
     );
     let scope = if world.selects_all(ctx) {
@@ -1141,7 +1147,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
     let needs_attention = needs_attention(&targets, &issues, unattributed);
     let summary = summary(&targets, &issues, &commands, widget_outdated);
     let read = if args.cached { None } else { view.history() };
-    let (last_change, last_change_state) = last_change(&world, args.cached, read);
+    let (last_change, last_change_state) = last_change(&world, tail.as_ref(), read);
     Ok(StatusOutcome {
         data: StatusData {
             cached: args.cached,
@@ -1341,12 +1347,12 @@ fn summary_state(issues: &SeverityCounts, new_errors: usize, updates: usize) -> 
     }
 }
 
-/// What bare `undo` would revert now. `--cached` asks the history projection and says
-/// `unknown` when it cannot tell (M3-D37); plain `status` reads the whole history. Neither
-/// writes anything.
+/// What bare `undo` would revert now. `--cached` asks the history projection (`tail`:
+/// `Some`, holding it when it is fresh) and says `unknown` when it cannot tell (M3-D37);
+/// plain `status` reads the whole history. Neither writes anything.
 fn last_change(
     world: &World,
-    cached: bool,
+    tail: Option<&Option<HistoryTail>>,
     read: Option<&HistoryRead>,
 ) -> (Option<LastChange>, LastChangeState) {
     let empty = match std::fs::metadata(world.paths.history_file()) {
@@ -1357,8 +1363,8 @@ fn last_change(
         // No history (a fresh home): nothing to undo, known without a projection.
         return (None, LastChangeState::Ok);
     }
-    if cached {
-        return match history_tail::fresh(&world.paths).map(|tail| tail.answer()) {
+    if let Some(tail) = tail {
+        return match tail.as_ref().map(HistoryTail::answer) {
             Some(Answer::Found(run)) => {
                 let entries: Vec<&HistoryEntry> = run.iter().collect();
                 (Some(change_of(world, &entries)), LastChangeState::Ok)

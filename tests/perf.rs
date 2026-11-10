@@ -553,8 +553,17 @@ fn status_cached_stays_under_5_ms_with_a_realistic_memo() {
     .collect();
     assert_eq!(sets.len(), 3);
 
-    // Retail, registered by a first install, then 100 records.
-    let home = Home::new(&["wow"]);
+    // Retail, registered by a first install, then 100 records. With `$STATUS_HOME` (read
+    // by this test alone) the home is built and kept there, with `status.env`, its
+    // environment, so a release `status --cached` can be profiled or timed on it.
+    let kept = std::env::var_os("STATUS_HOME").map(PathBuf::from);
+    let home = match &kept {
+        Some(dir) => {
+            assert!(!dir.exists(), "{} exists", dir.display());
+            Home::at(dir, &["wow"])
+        }
+        None => Home::new(&["wow"]),
+    };
     let dl = home.env.root().join("dl");
     fs::create_dir_all(&dl).unwrap();
     let zip = dl.join("seed.zip");
@@ -663,6 +672,10 @@ fn status_cached_stays_under_5_ms_with_a_realistic_memo() {
         let path = state.omarchy_plugin_dir().join(rel);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, bytes).unwrap();
+    }
+    if let Some(dir) = &kept {
+        let lines = home.env.env_lines();
+        fs::write(dir.join("status.env"), lines.join("\n") + "\n").unwrap();
     }
 
     // A cold run, then 21 warm ones.

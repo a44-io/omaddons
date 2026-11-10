@@ -316,24 +316,87 @@ struct Document<'a, T> {
     value: &'a T,
 }
 
-/// A document at `T::CURRENT`, decoded straight from its bytes, without the JSON value
-/// [`parse`] builds first: the common case, and `status --cached` reads a dozen of these
-/// on every widget refresh. `None` for anything else (another version, a document that
-/// does not decode, duplicate keys), which [`load_bytes`] then reads the general way, so
-/// its result and its errors are what they always were. The `schema_version` key is
-/// ignored as an unknown field: no stored type has a field of that name or keeps unknown
-/// keys.
+/// A document at `T::CURRENT`, decoded straight from its bytes in one pass, without the
+/// JSON value [`parse`] builds first: the common case, and `status --cached` reads a
+/// dozen of these on every widget refresh. Its first key must be `schema_version`, as
+/// [`encode`] writes it, so the version is known before the rest is read and the bytes
+/// are walked once (a probe of the whole document for its version first cost as much as
+/// decoding it). `None` for anything else (another version, `schema_version` not first or
+/// given twice, a document that does not decode, duplicate keys), which [`load_bytes`]
+/// then reads the general way, so its result and its errors are what they always were.
 fn current<T: Versioned>(bytes: &[u8]) -> Option<T> {
-    #[derive(Deserialize)]
-    struct Version<'a> {
-        #[serde(borrow)]
-        schema_version: &'a str,
+    serde_json::from_slice::<Current<T>>(bytes)
+        .ok()
+        .map(|c| c.0)
+}
+
+/// [`current`]'s one pass: `schema_version` first and at `T::CURRENT`, then `T` from the
+/// rest of the same object. Every other shape is an error, which [`current`] leaves to
+/// the general path.
+struct Current<T>(T);
+
+impl<'de, T: Versioned> Deserialize<'de> for Current<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        d.deserialize_map(CurrentVisitor(std::marker::PhantomData))
     }
-    let version = serde_json::from_slice::<Version<'_>>(bytes).ok()?;
-    let current = version.schema_version.parse::<SchemaVersion>().ok()? == T::CURRENT;
-    current
-        .then(|| serde_json::from_slice::<T>(bytes).ok())
-        .flatten()
+}
+
+struct CurrentVisitor<T>(std::marker::PhantomData<T>);
+
+impl<'de, T: Versioned> serde::de::Visitor<'de> for CurrentVisitor<T> {
+    type Value = Current<T>;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "a {} document at {}", T::KIND, T::CURRENT)
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(
+        self,
+        mut map: A,
+    ) -> std::result::Result<Self::Value, A::Error> {
+        use serde::de::Error as _;
+        if map.next_key::<String>()?.as_deref() != Some("schema_version") {
+            return Err(A::Error::custom("schema_version is not the first key"));
+        }
+        let version = map.next_value::<String>()?;
+        if version.parse::<SchemaVersion>().ok() != Some(T::CURRENT) {
+            return Err(A::Error::custom("not the current version"));
+        }
+        T::deserialize(serde::de::value::MapAccessDeserializer::new(Rest(map))).map(Current)
+    }
+}
+
+/// The object after its `schema_version`, for `T`: its keys handed on as read, except a
+/// second `schema_version`, which the general path settles (its last value wins there).
+struct Rest<A>(A);
+
+impl<'de, A: serde::de::MapAccess<'de>> serde::de::MapAccess<'de> for Rest<A> {
+    type Error = A::Error;
+
+    fn next_key_seed<K: serde::de::DeserializeSeed<'de>>(
+        &mut self,
+        seed: K,
+    ) -> std::result::Result<Option<K::Value>, A::Error> {
+        use serde::de::{Error as _, IntoDeserializer as _};
+        let Some(key) = self.0.next_key::<String>()? else {
+            return Ok(None);
+        };
+        if key == "schema_version" {
+            return Err(A::Error::custom("schema_version is given twice"));
+        }
+        seed.deserialize(key.into_deserializer()).map(Some)
+    }
+
+    fn next_value_seed<V: serde::de::DeserializeSeed<'de>>(
+        &mut self,
+        seed: V,
+    ) -> std::result::Result<V::Value, A::Error> {
+        self.0.next_value_seed(seed)
+    }
+
+    fn size_hint(&self) -> Option<usize> {
+        self.0.size_hint()
+    }
 }
 
 /// The version and the rest of the document.
@@ -745,8 +808,10 @@ mod tests {
         );
     }
 
-    /// A current document decodes straight from its bytes to what the general path gives;
-    /// any other (older, newer, duplicate keys, not a document) is left to that path.
+    /// A current document whose first key is `schema_version` (as `encode` writes it)
+    /// decodes straight from its bytes to what the general path gives; any other (older,
+    /// newer, `schema_version` elsewhere or twice, duplicate keys, not a document) is left
+    /// to that path, which `load_bytes` then takes to the same result as before.
     #[test]
     fn a_current_document_decodes_directly_and_anything_else_the_general_way() {
         let general = |bytes: &[u8]| {
@@ -757,22 +822,44 @@ mod tests {
         let saved = encode(&doc()).unwrap();
         assert_eq!(current::<TestDoc>(&saved), Some(general(&saved)));
         assert_eq!(current::<TestDoc>(&saved), Some(doc()));
-        let compact = br#"{"items":{"a":1},"schema_version":"1.1","name":"x"}"#;
+        let compact = br#"{"schema_version":"1.1","items":{"a":1},"name":"x"}"#;
         assert_eq!(current::<TestDoc>(compact), Some(general(compact)));
-        for other in [
-            &br#"{"schema_version":"1.0","name":"x","items":{}}"#[..],
-            br#"{"schema_version":"9.0","name":"x","items":{}}"#,
-            br#"{"schema_version":"1.1","name":"x","name":"y","items":{}}"#,
-            br#"{"schema_version":"1.1","name":3,"items":{}}"#,
-            b"[1,2]",
-            b"",
+        let path = Path::new("doc.json");
+        for (other, status) in [
+            (
+                &br#"{"items":{"a":1},"schema_version":"1.1","name":"x"}"#[..],
+                Some(VersionStatus::Current),
+            ),
+            (
+                br#"{"schema_version":"1.1","name":"x","items":{},"schema_version":"1.1"}"#,
+                Some(VersionStatus::Current),
+            ),
+            (
+                br#"{"schema_version":"1.1","name":"x","items":{},"schema_version":"9.0"}"#,
+                Some(VersionStatus::Newer),
+            ),
+            (
+                br#"{"schema_version":"1.0","name":"x","items":{}}"#,
+                Some(VersionStatus::Older),
+            ),
+            (
+                br#"{"schema_version":"9.0","name":"x","items":{}}"#,
+                Some(VersionStatus::Newer),
+            ),
+            // The general path's JSON value keeps the last of two keys.
+            (
+                br#"{"schema_version":"1.1","name":"x","name":"y","items":{}}"#,
+                Some(VersionStatus::Current),
+            ),
+            (br#"{"schema_version":"1.1","name":3,"items":{}}"#, None),
+            (b"[1,2]", None),
+            (b"", None),
         ] {
-            assert_eq!(
-                current::<TestDoc>(other),
-                None,
-                "{}",
-                String::from_utf8_lossy(other)
-            );
+            let text = String::from_utf8_lossy(other);
+            assert_eq!(current::<TestDoc>(other), None, "{text}");
+            // What the general path makes of it, as it did before the one-pass decode.
+            let loaded = load_bytes::<TestDoc>(path, other);
+            assert_eq!(loaded.as_ref().ok().map(|l| l.status), status, "{text}");
         }
     }
 

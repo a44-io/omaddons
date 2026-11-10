@@ -98,6 +98,9 @@ pub struct DoctorView {
     caches: OnceCell<LayerState<Caches>>,
     widget: OnceCell<LayerState<WidgetLayer>>,
     skill: OnceCell<LayerState<Vec<SkillFile>>>,
+    /// The projection's skill folders as the seed gave them ([`Seed::skill_dirs`]); `None`
+    /// when the Skill layer reads the projection itself.
+    skill_dirs: Option<Option<Vec<PathBuf>>>,
     credentials: OnceCell<LayerState<Credentials>>,
     /// The online checks' client, built at the first ask (not a layer: it reads nothing).
     online: OnceCell<std::result::Result<Online, OnlineUnavailable>>,
@@ -132,6 +135,7 @@ impl DoctorView {
             caches: OnceCell::new(),
             widget: OnceCell::new(),
             skill: OnceCell::new(),
+            skill_dirs: None,
             credentials: OnceCell::new(),
             online: OnceCell::new(),
             drift: RefCell::default(),
@@ -185,6 +189,7 @@ impl DoctorView {
             lock: OnceCell::from(LayerState::Available(seed.lock)),
             widget: OnceCell::from(LayerState::Available(WidgetLayer { info: seed.widget })),
             history,
+            skill_dirs: seed.skill_dirs,
             drift: RefCell::new(drift),
             loaded: RefCell::new(loaded),
             ..view
@@ -813,9 +818,11 @@ impl DoctorView {
     /// reads, and no walk.
     fn load_skill(&self) -> LayerState<Vec<SkillFile>> {
         let mut dirs = vec![self.paths.skill_dir()];
-        if let Some(listed) =
-            crate::state::history_tail::fresh(&self.paths).and_then(|tail| tail.skill_dirs)
-        {
+        let listed = match &self.skill_dirs {
+            Some(seeded) => seeded.clone(),
+            None => crate::state::history_tail::fresh(&self.paths).and_then(|tail| tail.skill_dirs),
+        };
+        if let Some(listed) = listed {
             dirs.extend(listed);
         }
         let mut seen: Vec<PathBuf> = Vec::new();
@@ -1097,6 +1104,11 @@ pub struct Seed {
     /// The whole history, when the command read it already (plain `status`); else the
     /// History layer reads it itself, when a check asks.
     pub history: Option<HistoryRead>,
+    /// The skill folders the history projection lists, when the command read the
+    /// projection already (`status --cached`, for its last change): `Some(None)` when no
+    /// fresh projection lists them. `None`: the Skill layer reads the projection itself,
+    /// when a check asks. A projection is decoded once per run, not once per reader.
+    pub skill_dirs: Option<Option<Vec<PathBuf>>>,
 }
 
 /// Whether a layer could be read; when not, the layer whose failure made it so.
@@ -3952,6 +3964,7 @@ pub(crate) mod tests {
             widget: None,
             drift: BTreeMap::new(),
             history: None,
+            skill_dirs: None,
         }
     }
 
@@ -3980,6 +3993,41 @@ pub(crate) mod tests {
             4,
             "asking a seeded layer loads nothing"
         );
+    }
+
+    /// A seed's skill folders answer the Skill layer, so the projection `status --cached`
+    /// decoded for its last change is not decoded again: a seeded folder is listed though
+    /// no projection exists, after the default one; a seed of `Some(None)` (no fresh
+    /// projection) lists the default alone, as an unseeded view without one does.
+    #[test]
+    fn seeded_skill_folders_answer_the_skill_layer() {
+        let (_dir, paths, target, _) = drift_home();
+        let world = Rc::new(world_of(&paths, vec![target]));
+        let elsewhere = paths.skill_dir().with_file_name("elsewhere");
+        let dirs = |skill_dirs: Option<Option<Vec<PathBuf>>>| -> Vec<PathBuf> {
+            let seed = Seed {
+                skill_dirs,
+                ..seed_of(Rc::clone(&world))
+            };
+            let view = DoctorView::seeded(ViewOptions::default(), seed);
+            view.skill()
+                .unwrap()
+                .iter()
+                .map(|f| f.dir.clone())
+                .collect()
+        };
+        let cases = [
+            (
+                "seeded",
+                Some(Some(vec![elsewhere.clone()])),
+                vec![paths.skill_dir(), elsewhere],
+            ),
+            ("seeded_none", Some(None), vec![paths.skill_dir()]),
+            ("unseeded", None, vec![paths.skill_dir()]),
+        ];
+        for (case, seed, expected) in cases {
+            assert_eq!(dirs(seed), expected, "case {case}");
+        }
     }
 
     /// Nothing a seeded view reads writes: every layer and the drift memo, on a home with
