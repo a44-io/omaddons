@@ -18,7 +18,7 @@ use serde::Serialize;
 
 use super::journal::{
     ClientFacts, CommitPayload, FileId, IndexChanges, Journal, Prepared, Recovered, RecoveryAction,
-    RecoveryEnv, SourceBackup, Step, StepOp, StepPurpose, recover_all, recover_tx,
+    RecoveryEnv, SourceBackup, Step, StepOp, StepPurpose, recover_kept, recover_tx,
 };
 use super::retention::WTF_PREVIOUS;
 use super::running::{PolicyContext, PolicyOp};
@@ -749,7 +749,8 @@ impl Window<'_> {
             own: &own,
             sv_writable: &writable,
         };
-        let mut warnings = recover_all(&recovery)?;
+        // Taken with the outcome; any other way out of the window notes it (omad-h590).
+        let recovered = recover_kept(&recovery, ctx.notes)?;
         failpoint::hit("engine.recovered").map_err(fail)?;
         // The `before_restore` backup stands whatever the restore does: its line goes
         // first, before the journal, so a roll-forward (which replays only the restore's
@@ -966,6 +967,7 @@ impl Window<'_> {
             failpoint::hit("engine.committed").map_err(fail)?;
             Ok(())
         })();
+        let mut rolled_forward = Vec::new();
         if let Err(error) = committed {
             // Read before recovery prunes it: committed already, the restore stands.
             let committed_swap = super::journal::committed_swap(paths, &tx);
@@ -981,7 +983,7 @@ impl Window<'_> {
                     _,
                 ) => {
                     note_undo(ctx, &tx);
-                    warnings.extend(rolled);
+                    rolled_forward = rolled;
                 }
                 (Ok(None), Some(_)) => note_undo(ctx, &tx),
                 (Ok(_), _) => return Err(error),
@@ -992,6 +994,8 @@ impl Window<'_> {
         drop(guard);
         failpoint::hit("engine.unlocked").map_err(fail)?;
         write_status(paths, self.scopes, &target, &record);
+        let mut warnings = recovered.take();
+        warnings.extend(rolled_forward);
         Ok((key, held, warnings))
     }
 

@@ -26,7 +26,7 @@ use super::edit::RecordEdit;
 use super::inspect::ArchiveLimits;
 use super::journal::{
     self, CommitPayload, IndexChanges, Journal, Prepared, Recovered, RecoveryAction, RecoveryEnv,
-    recover_all, recover_tx,
+    recover_tx,
 };
 use super::plan::{
     self, AddonWork, Against, Change, Plan, PlanCtx, PlanFailure, PlanRequest, Planned,
@@ -839,10 +839,13 @@ fn register_early(
         own: discovered.target.key.as_slice(),
         sv_writable: &sv_writable,
     };
-    let recovered = recover_all(&recovery)?;
+    // What it settled is the run's even when a later journal stops it (omad-h590).
+    let mut recovered = Vec::new();
+    let found = journal::recover_all_kept(&recovery, &mut recovered);
     if let Some(notes) = ctx.notes {
         notes.warn_all(&recovered);
     }
+    found?;
     // Registration writes the registry and the client's marker (E14's gate).
     let marker = ClientPaths::new(&discovered.target.client_dir).marker();
     super::fence::under_lock(
@@ -1234,7 +1237,8 @@ fn locked(
         own: discovered.target.key.as_slice(),
         sv_writable: &sv_writable,
     };
-    let recovered = recover_all(&recovery)?;
+    // Taken with the outcome; any other way out of the window notes it (omad-h590).
+    let recovered = journal::recover_kept(&recovery, ctx.notes)?;
     failpoint::hit("engine.recovered").map_err(fail)?;
     // The automatic backup stands whatever the change does: its line goes first, before
     // the journal, so a roll-forward (which replays only the change's own line) never
@@ -1362,7 +1366,7 @@ fn locked(
                 lock_held_ms: Some(millis(&guard)),
                 notes,
             },
-            recovered,
+            recovered.take(),
         ));
     };
 
@@ -1588,7 +1592,7 @@ fn locked(
             lock_held_ms: Some(held),
             notes,
         },
-        recovered,
+        recovered.take(),
     ))
 }
 
@@ -1927,6 +1931,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::engine::journal::recover_all;
     use crate::engine::testing::{Pause, TxScene};
     use crate::error::ErrorCode;
     use crate::state::history::HistoryFilter;

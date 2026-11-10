@@ -479,6 +479,208 @@ fn a_recovery_stopped_by_an_unattributed_journal_keeps_what_it_recovered_first()
     assert_eq!(bell.rung(&ran.to_run()), None, "it rang");
 }
 
+/// omad-h590: omad-ef89's scene for every command that commits. Its commit window's
+/// recovery rolls back an interrupted install, then stops at a journal no client owns:
+/// the command fails with that journal's error, and its warnings say what it rolled back
+/// (and the doorbell rings). Run again with only the stop left, it fails with the same
+/// error and exit, and says nothing more. The paths: install's commit window, the early
+/// registration an automatic backup makes for a client never changed, undo, a whole
+/// restore, an `--addon` restore, and `doctor undo` of a repair.
+#[test]
+fn a_committing_command_stopped_by_an_unattributed_journal_says_what_it_recovered_first() {
+    let log = common::tlog::tlog!();
+    for case in [
+        "install",
+        "register_early",
+        "undo",
+        "backup restore",
+        "backup restore --addon",
+        "doctor undo",
+    ] {
+        let log = log.case(case);
+        let (home, argv) = committing::scene(&log, case);
+        let state = home.state();
+        let interrupted = journals(&state);
+        let [crashed] = &interrupted[..] else {
+            panic!("{case}: one interrupted install: {interrupted:?}"); // ubs:ignore — fails the test
+        };
+        let crashed = crashed.file_stem().unwrap().to_str().unwrap().to_owned();
+
+        log.step("a journal no client owns, after the interrupted install's");
+        let stuck = state.join(format!("journal/{}.jsonl", committing::STUCK));
+        fs::write(&stuck, committing::UNATTRIBUTED).unwrap();
+        assert!(
+            crashed.as_str() < committing::STUCK,
+            "{case}: it sorts last"
+        );
+        let bell = Bell::of(&home);
+        bell.arm();
+
+        log.step("the command recovers the first, stops at the second, and says both");
+        let first = log.run(&home, &argv);
+        let error = first.envelope()["error"].clone();
+        log.assert_eq(
+            "the stop's reason and journal",
+            &(
+                &error["details"]["reason"],
+                &error["details"]["journal_pending"],
+            ),
+            &(
+                &Value::from("unattributed"),
+                &Value::from(committing::STUCK),
+            ),
+        );
+        log.assert_eq("journals left", &journals(&state), &vec![stuck.clone()]);
+        let recovered = committing::naming(first.envelope(), "journal_recovered", &crashed);
+        log.assert_eq(
+            "the rolled-back install's journal_recovered",
+            &recovered,
+            &1,
+        );
+        assert!(
+            bell.rung(&first.to_run()).is_some(),
+            "{case}: it did not ring"
+        );
+
+        log.step("again: the same failure, and nothing recovered");
+        let again = log.run(&home, &argv);
+        log.assert_eq(
+            "the error and exit, as the first run's",
+            &(&again.envelope()["error"], &again.envelope()["exit_code"]),
+            &(&error, &first.envelope()["exit_code"]),
+        );
+        log.assert_eq(
+            "journal_recovered warnings",
+            &committing::naming(again.envelope(), "journal_recovered", ""),
+            &0,
+        );
+    }
+}
+
+/// The scenes of [`a_committing_command_stopped_by_an_unattributed_journal_says_what_it_recovered_first`].
+#[cfg(test)]
+mod committing {
+    use std::fs;
+
+    use serde_json::Value;
+
+    use super::common::archives::zip_text;
+    use super::common::doctor::plant::credential_file_mode;
+    use super::common::engine::{Scene, V1, V2};
+    use super::common::home::Home;
+    use super::common::tlog::TestLog;
+    use super::common::wtf::Wtf;
+
+    /// An addon era loads.
+    const BAZ: &[(&str, &str)] = &[("Baz/Baz.toc", "## Interface: 11507\n## Version: 3\n")];
+    /// The greatest transaction id: its journal sorts after every other.
+    pub const STUCK: &str = "7ZZZZZZZZZZZZZZZZZZZZZZZZZ";
+    /// A `prepared` line naming no target: it stops every recovery that reaches it.
+    pub const UNATTRIBUTED: &str = "{\"type\":\"prepared\",\"schema_version\":\"1.1\"}\n";
+
+    /// How many of `envelope`'s warnings of `code` name `text`.
+    pub fn naming(envelope: &Value, code: &str, text: &str) -> usize {
+        envelope["warnings"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|w| w["code"] == code && w["message"].as_str().unwrap().contains(text))
+            .count()
+    }
+
+    /// `omaddons <args> --offline --json`.
+    fn argv(args: &[&str]) -> Vec<String> {
+        args.iter()
+            .chain(&["--offline", "--json"])
+            .map(|a| (*a).to_owned())
+            .collect()
+    }
+
+    /// Foo 1 on `target`, from `zips`, then an install of Foo 2 there killed after its
+    /// journal's `prepared` line.
+    fn installed_then_crashed(log: &TestLog, home: &Home, zips: &std::path::Path, target: &str) {
+        let zip = |name: &str| zips.join(format!("{name}.zip")).display().to_string();
+        let install =
+            |name: &str| argv(&["install", "gh:o/foo", "--file", &zip(name), "-t", target]);
+        log.run(home, &install("v1")).ok();
+        log.cmd(home, &install("v2"))
+            .env("OMADDONS_FAILPOINTS", "engine.journal.prepared=abort")
+            .run()
+            .aborted();
+    }
+
+    /// The home of `case`, holding one interrupted install, and the argv of the command
+    /// that commits.
+    pub fn scene(log: &TestLog, case: &str) -> (Home, Vec<String>) {
+        if case == "register_early" {
+            return unregistered(log);
+        }
+        let scene = Scene::new().with_saved_variables(&["Foo"]);
+        log.env(&scene);
+        let fix_run = (case == "doctor undo").then(|| {
+            log.step("a repair: the stored token's file made private");
+            credential_file_mode(&scene.home);
+            let fm = "fm-secrets-credential-file-mode";
+            let fixed = log.run(&scene, &argv(&["doctor", "fix", "--only", fm]));
+            fixed.ok();
+            fixed.envelope()["run_id"].as_str().unwrap().to_owned()
+        });
+        log.step("Foo installed on retail, its settings backed up");
+        let zip = |name: &str| scene.dl.join(format!("{name}.zip")).display().to_string();
+        let install = argv(&["install", "gh:o/foo", "--file", &zip("v1"), "-t", "retail"]);
+        log.run(&scene, &install).ok();
+        let created = log.run(&scene, &argv(&["backup", "create", "-t", "retail"]));
+        created.ok();
+        let backup = created.data()["targets"][0]["backup"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        log.step("an install of Foo 2 dies after prepared");
+        let v2 = argv(&["install", "gh:o/foo", "--file", &zip("v2"), "-t", "retail"]);
+        log.cmd(&scene, &v2)
+            .env("OMADDONS_FAILPOINTS", "engine.journal.prepared=abort")
+            .run()
+            .aborted();
+        let argv = match case {
+            "install" => argv(&["install", "gh:o/bar", "--file", &zip("bar"), "-t", "retail"]),
+            "undo" => argv(&["undo"]),
+            "backup restore" => argv(&["backup", "restore", &backup, "-t", "retail"]),
+            "backup restore --addon" => argv(&[
+                "backup", "restore", &backup, "-t", "retail", "--addon", "Foo",
+            ]),
+            "doctor undo" => argv(&["doctor", "undo", fix_run.as_deref().unwrap()]),
+            other => panic!("no scene {other}"), // ubs:ignore — fails the test
+        };
+        (scene.home, argv)
+    }
+
+    /// Retail holds the interrupted install; era, never changed, has settings, and
+    /// `auto_backup = "daily-copy"` makes a checkpoint before its first change, which
+    /// registers it first (`register_early`): that recovery settles retail's journal.
+    fn unregistered(log: &TestLog) -> (Home, Vec<String>) {
+        let home = Home::new(&["wow", "wow_classic_era"]);
+        log.env(&home);
+        let zips = home.env.root().join("dl");
+        fs::create_dir_all(&zips).unwrap();
+        for (name, entries) in [("v1", V1), ("v2", V2), ("baz", BAZ)] {
+            fs::write(zips.join(format!("{name}.zip")), zip_text(entries)).unwrap();
+        }
+        Wtf::at(home.client("_classic_era_"))
+            .saved_variables("Baz", 200)
+            .build();
+        log.step("automatic backups by copy; Foo on retail, then an install there dies");
+        log.run(
+            &home,
+            &argv(&["config", "set", "auto_backup", "daily-copy"]),
+        )
+        .ok();
+        installed_then_crashed(log, &home, &zips, "retail");
+        let era_zip = zips.join("baz.zip").display().to_string();
+        let argv = argv(&["install", "gh:o/baz", "--file", &era_zip, "-t", "era"]);
+        (home, argv)
+    }
+}
+
 #[test]
 fn a_doorbell_that_cannot_be_written_changes_no_outcome() {
     // The same commands in two homes, one whose doorbell cannot be written.

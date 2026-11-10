@@ -53,7 +53,7 @@ use crate::doctor::report::{RunState, UndoReport};
 use crate::doctor::runtime::Runtime;
 use crate::doctor::undo_script::{UNDO_SCRIPT, undo_script};
 use crate::engine::fence;
-use crate::engine::journal::{RecoveryEnv, recover_all};
+use crate::engine::journal::{RecoveryEnv, recover_all_kept};
 use crate::engine::repair_action::{
     Endpoint, Endpoints, FixEntry, FixKind, Guard, Identity, Mode, Primitive, Stamp, Step,
 };
@@ -1996,7 +1996,17 @@ fn undo_repair_recording(
     // 6. After the lock: the run's record, then cleanup.
     let (state, error, tx, done) = match ended {
         Ok(done) => (done.state, done.error.clone(), Some(done.tx), Some(done)),
-        Err(stop) => (stop.state, Some(stop.error), stop.tx, None),
+        Err(stop) => {
+            // No commit's cleanup rings for a stop; journals its recovery rolled back or
+            // forward first changed what `status` reports all the same (omad-h590).
+            if warnings
+                .iter()
+                .any(|w| matches!(w.code, WarningCode::JournalRecovered))
+            {
+                crate::state::doorbell::ring(paths, command, ctx.actor);
+            }
+            (stop.state, Some(stop.error), stop.tx, None)
+        }
     };
     let actions_taken = done.as_ref().map_or(0, |done| done.primitives);
     // A committed undo's `undo.sh`; one that cannot be written fails the run after its
@@ -2129,7 +2139,11 @@ fn committed(
             ));
         }
     };
-    let checked = (|| -> Result<(VerifiedPlan, Lowered, Vec<Warning>)> {
+    // What recovery settled stands whatever the undo then does: noted for the run as soon
+    // as it is found, so a failure's envelope says it too, and kept for the run's record
+    // either way (omad-h590). A success's envelope reports each warning once.
+    let mut found = Vec::new();
+    let checked = (|| -> Result<(VerifiedPlan, Lowered)> {
         failpoint::hit("engine.lock.acquired").map_err(|err| failpoint_error(paths, &err))?;
         let sv = |dir: &Path| super::super::tx::sv_writable(ctx, dir);
         let own: Vec<TargetKey> = c.clients.iter().map(|client| client.key).collect();
@@ -2143,21 +2157,24 @@ fn committed(
         // A plan made before recovery may name the journal the undo is about: the one an
         // undo of a reactivation sets aside again, which recovery cannot settle.
         let early = plan_undo_of(paths, c.reverts)?;
-        let mut found = match recover_all(&recovery) {
-            Ok(found) => found,
-            Err(error) if subject_of(&error, &early, paths) => {
-                // Recovery stops at the first journal it cannot settle, so any journal
-                // after the subject was never tried: one still there refuses the undo.
-                if let Some(other) = unsettled_besides(paths, &error)? {
-                    return Err(other);
-                }
-                vec![
-                    Warning::new(WarningCode::JournalPending, error.message.clone())
-                        .with_fix(error.fix.clone()),
-                ]
+        let recovered = recover_all_kept(&recovery, &mut found);
+        if let Some(notes) = ctx.notes {
+            notes.warn_all(&found);
+        }
+        if let Err(error) = recovered {
+            if !subject_of(&error, &early, paths) {
+                return Err(error);
             }
-            Err(error) => return Err(error),
-        };
+            // Recovery stops at the first journal it cannot settle, so any journal after
+            // the subject was never tried: one still there refuses the undo.
+            if let Some(other) = unsettled_besides(paths, &error)? {
+                return Err(other);
+            }
+            found.push(
+                Warning::new(WarningCode::JournalPending, error.message.clone())
+                    .with_fix(error.fix.clone()),
+            );
+        }
         failpoint::hit("engine.recovered").map_err(|err| failpoint_error(paths, &err))?;
         for target in c.targets {
             super::super::tx::refuse_newer_state(paths, target)?;
@@ -2218,16 +2235,16 @@ fn committed(
         )
         .map_err(|err| lowering_error(c.reverts, err))?;
         found.extend(running.warning());
-        Ok((verified, lowered, found))
+        Ok((verified, lowered))
     })();
-    let (verified, lowered, found) = match checked {
+    warnings.extend(found);
+    let (verified, lowered) = match checked {
         Ok(checked) => checked,
         Err(error) => {
             drop(lock);
             return Err(stop(rtx, warnings, refuse(error)));
         }
     };
-    warnings.extend(found);
     let tx = rtx.tx();
     let undo = UndoOf {
         reverts: c.reverts,

@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use super::edit::{EditField, changed_fields};
 use super::journal::{
     self, CommitPayload, IndexChanges, Journal, Prepared, Recovered, RecoveryAction, RecoveryEnv,
-    recover_all, recover_tx,
+    recover_tx,
 };
 use super::plan::{Change, ChangeKind, FolderSummary};
 use super::retention::{snapshot_of, state_snapshot_of};
@@ -443,7 +443,8 @@ fn commit(
         own: discovered.target.key.as_slice(),
         sv_writable: &sv_writable,
     };
-    let recovered = recover_all(&recovery)?;
+    // Taken with the outcome; any other way out of the window notes it (omad-h590).
+    let recovered = journal::recover_kept(&recovery, ctx.notes)?;
     failpoint::hit("engine.recovered").map_err(fail)?;
     // The automatic backup's line first, before the journal (M3-D33).
     if let Some(line) = auto_line {
@@ -637,7 +638,7 @@ fn commit(
     drop(guard);
     failpoint::hit("engine.unlocked").map_err(fail)?;
     write_status(paths, scopes, target, &planned.record);
-    let mut warnings = recovered;
+    let mut warnings = recovered.take();
     warnings.extend(swap_warnings);
     Ok(planned.outcome(target, Some(*tx), false, atomic_swap, warnings, Some(held)))
 }

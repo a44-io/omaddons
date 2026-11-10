@@ -1105,6 +1105,54 @@ pub fn recover_all(env: &RecoveryEnv<'_>) -> Result<Vec<Warning>> {
     recover_all_with(env, &mut OnDisk)
 }
 
+/// [`recover_all`], its warnings put in `warnings` as recovery finds them, so a caller
+/// still has those of the journals it settled when a later one stops it (omad-h590):
+/// what recovery rolled back or forward stands whatever then fails.
+pub fn recover_all_kept(env: &RecoveryEnv<'_>, warnings: &mut Vec<Warning>) -> Result<()> {
+    recover_all_in(env, &mut OnDisk, None, warnings)
+}
+
+/// A commit window's recovery ([`recover_all_kept`]), for a window that returns its
+/// warnings with its outcome: [`KeptRecovery::take`] them once nothing can fail any
+/// more. A window that ends any other way (recovery stopped at a later journal, or
+/// anything after it failing) drops them into the run's notes, where the failure's
+/// envelope reports them as found before it failed (omad-h590). The doorbell is the
+/// window's own: it rings after every way out of a commit window but a lock timeout.
+pub(crate) fn recover_kept<'n>(
+    env: &RecoveryEnv<'_>,
+    notes: Option<&'n crate::output::RunNotes>,
+) -> Result<KeptRecovery<'n>> {
+    let mut kept = KeptRecovery {
+        notes,
+        warnings: Vec::new(),
+    };
+    recover_all_kept(env, &mut kept.warnings)?;
+    Ok(kept)
+}
+
+/// The warnings of what a commit window's recovery settled ([`recover_kept`]): taken
+/// with the window's outcome, or noted for the run when it is dropped untaken.
+#[must_use = "take the warnings with the outcome; dropped, they become the run's notes"]
+pub(crate) struct KeptRecovery<'n> {
+    notes: Option<&'n crate::output::RunNotes>,
+    warnings: Vec<Warning>,
+}
+
+impl KeptRecovery<'_> {
+    /// The warnings, for the outcome: none are noted then.
+    pub(crate) fn take(mut self) -> Vec<Warning> {
+        std::mem::take(&mut self.warnings)
+    }
+}
+
+impl Drop for KeptRecovery<'_> {
+    fn drop(&mut self) {
+        if let Some(notes) = self.notes {
+            notes.warn_all(&self.warnings);
+        }
+    }
+}
+
 /// What recovery did with one transaction it reached, for a caller that reports each
 /// one's outcome rather than warnings to show (the doctor's delegation, M4-D37).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1329,7 +1377,7 @@ fn excluded(only: Option<&BTreeSet<TxId>>, tx: &TxId) -> bool {
 
 /// [`recover_all_with`], restricted to the transactions `only` names ([`recover_disclosed`]).
 /// Its warnings go to `warnings` as recovery finds them, so a caller still has those of
-/// the journals it settled when a later one stops it (omad-ef89).
+/// the journals it settled when a later one stops it (omad-ef89, omad-h590).
 fn recover_all_in(
     env: &RecoveryEnv<'_>,
     settle: &mut dyn Settle,
@@ -5888,6 +5936,122 @@ mod tests {
             "case stopped alone: {got:?}"
         );
         assert!(!doorbell.exists(), "case stopped alone: nothing rang");
+    }
+
+    /// omad-h590: a commit window's recovery keeps the `journal_recovered` of a journal it
+    /// settled before one no target owns stops it, and fails with that stop's error, as
+    /// [`recover_all`] does: in the caller's vector ([`recover_all_kept`]), or in the
+    /// run's notes once the window ends without taking it ([`recover_kept`]). Taken with
+    /// an outcome, nothing is noted. A stop alone keeps nothing.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_commit_windows_recovery_keeps_what_it_settled_before_a_stop() {
+        use crate::output::RunNotes;
+        fn with_env<T>(paths: &Paths, f: impl FnOnce(&RecoveryEnv<'_>) -> T) -> T {
+            let scopes = ScopeTable::new(paths, &[], None).unwrap();
+            let lock = GlobalLock::acquire(paths, "test").unwrap();
+            f(&RecoveryEnv {
+                lock: &lock,
+                paths,
+                scopes: &scopes,
+                own: &[],
+                sv_writable: &|_| false,
+            })
+        }
+        let codes = |warnings: &[Warning]| warnings.iter().map(|w| w.code).collect::<Vec<_>>();
+        // A settled journal, then one no target owns.
+        let settled_then_stopped = || {
+            let scene = interrupted_swap();
+            let stuck = TxId::new();
+            assert!(scene.tx < stuck, "the stop sorts after the settled journal");
+            plant_text(&scene.paths, stuck, UNATTRIBUTED);
+            (scene, stuck)
+        };
+        let is_the_stop = |error: &Error, stuck: &TxId| {
+            error.details["reason"] == "unattributed"
+                && error.details["journal_pending"] == stuck.to_string()
+        };
+
+        // `recover_all_kept`: the settled one's warning, and the stop's error.
+        let (scene, stuck) = settled_then_stopped();
+        let mut warnings = Vec::new();
+        let found = with_env(&scene.paths, |env| recover_all_kept(env, &mut warnings));
+        let error = found.expect_err("case kept: the stop fails it");
+        assert!(is_the_stop(&error, &stuck), "case kept: {error:?}");
+        assert_eq!(
+            codes(&warnings),
+            [WarningCode::JournalRecovered],
+            "case kept: {warnings:?}"
+        );
+        assert!(!scene.paths.journal(&scene.tx).exists(), "rolled back");
+        assert!(scene.paths.journal(&stuck).exists(), "the stop is left");
+
+        // `recover_all` fails the same way, its warnings gone with its vector.
+        let (scene, stuck) = settled_then_stopped();
+        let error = with_env(&scene.paths, recover_all).expect_err("case recover_all");
+        assert!(is_the_stop(&error, &stuck), "case recover_all: {error:?}");
+
+        // `recover_kept`, stopped: the window ends there, and the run's notes have it.
+        let (scene, stuck) = settled_then_stopped();
+        let notes = RunNotes::default();
+        let found = with_env(&scene.paths, |env| {
+            recover_kept(env, Some(&notes)).map(KeptRecovery::take)
+        });
+        let error = found.expect_err("case noted on a stop");
+        assert!(
+            is_the_stop(&error, &stuck),
+            "case noted on a stop: {error:?}"
+        );
+        let noted = notes.snapshot().0;
+        assert_eq!(
+            codes(&noted),
+            [WarningCode::JournalRecovered],
+            "case noted on a stop: {noted:?}"
+        );
+
+        // `recover_kept`, settled, then the window fails: dropped untaken, it is noted.
+        let scene = interrupted_swap();
+        let notes = RunNotes::default();
+        let kept = with_env(&scene.paths, |env| recover_kept(env, Some(&notes))).unwrap();
+        assert!(
+            notes.snapshot().0.is_empty(),
+            "nothing noted before the window ends"
+        );
+        drop(kept);
+        let noted = notes.snapshot().0;
+        assert_eq!(
+            codes(&noted),
+            [WarningCode::JournalRecovered],
+            "case noted on a later failure: {noted:?}"
+        );
+
+        // Taken with the outcome: the outcome's alone.
+        let scene = interrupted_swap();
+        let notes = RunNotes::default();
+        let taken = with_env(&scene.paths, |env| recover_kept(env, Some(&notes)))
+            .unwrap()
+            .take();
+        assert_eq!(codes(&taken), [WarningCode::JournalRecovered], "case taken");
+        assert!(notes.snapshot().0.is_empty(), "case taken: nothing noted");
+
+        // A stop alone: nothing kept, nothing noted, the same error.
+        let scene = crate::engine::testing::Scene::new();
+        let stuck = TxId::new();
+        plant_text(&scene.paths, stuck, UNATTRIBUTED);
+        let mut warnings = Vec::new();
+        let found = with_env(&scene.paths, |env| recover_all_kept(env, &mut warnings));
+        let error = found.expect_err("case stopped alone");
+        assert!(is_the_stop(&error, &stuck), "case stopped alone: {error:?}");
+        assert!(warnings.is_empty(), "case stopped alone: {warnings:?}");
+        let notes = RunNotes::default();
+        let found = with_env(&scene.paths, |env| {
+            recover_kept(env, Some(&notes)).map(KeptRecovery::take)
+        });
+        assert!(found.is_err(), "case stopped alone, kept");
+        assert!(
+            notes.snapshot().0.is_empty(),
+            "case stopped alone: nothing noted"
+        );
     }
 
     // -----------------------------------------------------------------------------------
