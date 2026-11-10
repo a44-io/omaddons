@@ -16,6 +16,10 @@ import "Model.js" as Model
 // - omaddons: its own settings, read with `config` when the sheet opens and changed one
 //   key at a time with `config set` (a template per key), applied directly, the result
 //   shown, then read again: config.toml stays the one source.
+// - Clients: each client's name (typed: `config set targets.<key>.name`), its game where
+//   omaddons can't tell it, the default client (`targets default`), each client no
+//   longer installed (Enter forgets it through the plan sheet, never a purge), Scan for
+//   clients, and Add a client by its folder (its page, under the closed sheet).
 // What the sheet shows comes back from the service, so it shows what was applied.
 Sheet {
   id: root
@@ -24,16 +28,21 @@ Sheet {
   readonly property var svc: frame ? frame.svc : null
   readonly property var settings: svc && svc.settings ? svc.settings : ({})
   readonly property var sections: Model.settingsSections({ "settings": settings, "config": svc ? svc.config : null,
-    "configFailed": svc && svc.configFailed ? svc.configFailed : "" })
+    "configFailed": svc && svc.configFailed ? svc.configFailed : "",
+    "targets": svc && Array.isArray(svc.targets) ? svc.targets : [] })
   readonly property bool canChange: !!frame && frame.canAct && !frame.busy
   readonly property var rows: {
     var out = []
     for (var i = 0; i < sections.length; i++) out = out.concat(sections[i].rows)
     return out
   }
-  // The key of the row whose box has the keys (the binary's path), or "".
+  // The key of the row whose box has the keys (the binary's path, a client's name), or "".
   property string editing: ""
   property string editError: ""
+  readonly property var editRow: {
+    for (var i = 0; i < rows.length; i++) if (rows[i].key === editing) return rows[i]
+    return null
+  }
   // Where the keys go: the box while one is open.
   readonly property Item focusItem: editing !== "" ? editField : keyItem
   property var rowItems: ({})
@@ -42,7 +51,8 @@ Sheet {
 
   title: Model.copy("settings.title")
   choosing: true
-  keysText: editing !== "" ? Model.copy("settings.panel.binary.edit") : Model.copy("settings.keys")
+  keysText: editing === "" ? Model.copy("settings.keys")
+    : Model.copy(editRow && editRow.kind === "name" ? "settings.clients.name.edit" : "settings.panel.binary.edit")
   choiceCount: rows.length
   choiceItem: function(i) { return root.rowItems[i] || null }
   foreground: frame ? frame.foreground : Commons.Color.foreground
@@ -61,21 +71,44 @@ Sheet {
     if (svc && typeof svc.readConfig === "function") svc.readConfig()
   }
 
-  // Row `index` changed by one step: a switch flips, a number moves, a path opens its
-  // box, an omaddons setting runs its `config set`.
+  // Row `index` changed by one step: a switch flips, a number moves, a path or a name
+  // opens its box, a choice runs its change, an action acts (on Enter or a click only).
   function change(index, step, wrap) {
     var row = rows[index]
     if (!row) return
-    if (row.section === "omaddons") {
+    if (row.kind === "choice") {
       var request = Model.configRequest(row, step, wrap)
       if (request && canChange) frame.report(svc.run(request.template, request.slots, request.label))
       return
     }
-    if (row.kind === "path") {
+    if (row.kind === "path" || row.kind === "name") {
       if (step > 0 || wrap) startEditing(row)
       return
     }
+    if (row.kind === "action") {
+      if (wrap) act(row)
+      return
+    }
     settingRequested(row.key, Model.steppedSetting(settings, row.key, step, wrap))
+  }
+
+  // A Clients action: scan again, add a client by its folder (its page, the sheet
+  // closed), or forget one no longer installed (the plain `targets rm` its own problem
+  // offers, through the plan sheet).
+  function act(row) {
+    if (!frame) return
+    if (row.action === "rescan") {
+      frame.stateAction("rescan")
+    } else if (row.action === "add") {
+      frame.settingsOpen = false
+      frame.stateAction("add")
+    } else if (row.action === "forget") {
+      var targets = svc && Array.isArray(svc.targets) ? svc.targets : []
+      var target = null
+      for (var i = 0; i < targets.length; i++) if (targets[i].id === row.id) target = targets[i]
+      var forget = Model.forgetAction(target)
+      if (forget && canChange) frame.runCli(forget, Model.copy("settings.clients.forget.label", { "client": row.client }))
+    }
   }
 
   function startEditing(row) {
@@ -92,8 +125,24 @@ Sheet {
     if (opened) keyItem.forceActiveFocus()
   }
 
-  // The box's Enter: a full path or nothing is saved; anything else says what a path is.
+  // The box's Enter. A path: a full one or nothing is saved, anything else says what a
+  // path is. A client's name: one line of at most 200 characters, run as its `config
+  // set` (empty brings back the built-in name).
   function commit() {
+    var row = editRow
+    if (row && row.kind === "name") {
+      var name = editField.text.trim()
+      if (name.length > 200) {
+        editError = Model.copy("settings.clients.name.invalid")
+        return
+      }
+      if (canChange) {
+        var request = Model.clientNameRequest(row, name)
+        frame.report(svc.run(request.template, request.slots, request.label))
+      }
+      stopEditing()
+      return
+    }
     var path = Model.typedPath(editField.text)
     if (path === null) {
       editError = Model.copy("settings.panel.binary.invalid")
@@ -193,7 +242,9 @@ Sheet {
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.body
                 font.bold: entry.cursored
-                text: entry.cursored && entry.modelData.kind !== "path" ? "‹ " + entry.modelData.text + " ›" : entry.modelData.text
+                // The marks only where h and l step the value.
+                text: entry.cursored && ["switch", "integer", "choice"].indexOf(entry.modelData.kind) !== -1
+                  ? "‹ " + entry.modelData.text + " ›" : entry.modelData.text
               }
             }
 

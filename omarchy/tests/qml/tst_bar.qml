@@ -342,7 +342,8 @@ TestCase {
     view.settingsOpen = true
     var sheet = part(widget, "settings")
     verify(sheet.opened)
-    compare(JSON.stringify(sheet.rows.map(function(r) { return r.key })), JSON.stringify(Model.PANEL_SETTING_KEYS))
+    compare(JSON.stringify(sheet.rows.filter(function(r) { return r.section === "panel" }).map(function(r) { return r.key })),
+      JSON.stringify(Model.PANEL_SETTING_KEYS))
     // Width: Enter steps it on; l on again; h back.
     sheet.choose(0)
     compare([saved[saved.length - 1][1].panelWidth, widget.settings.panelWidth, sheet.rows[0].text], [560, 560, "560 px"])

@@ -1842,6 +1842,61 @@ TestCase {
     tryVerify(function() { return findChild(view, "keyCatcher").activeFocus })
   }
 
+  // 1n2p.31: the settings sheet's Clients. A name typed and run through its template by
+  // the client's key (else its id); the default client stepped (`targets default`); Scan
+  // for clients; Add a client by its folder opens its page under the closed sheet.
+  function test_the_settings_clients_rename_choose_the_default_scan_and_add() {
+    keyClick(",")
+    var sheet = findChild(view, "settings")
+    tryVerify(function() { return findChild(sheet, "sheetKeys").activeFocus })
+    var at = function(key) {
+      for (var i = 0; i < sheet.rows.length; i++) if (sheet.rows[i].key === key) return i
+      return -1
+    }
+    sheet.choice = at("name:retail")
+    keyClick(Qt.Key_Return)
+    compare(sheet.editing, "name:retail")
+    var field = findChild(sheet, "settingEdit")
+    tryVerify(function() { return field.activeFocus })
+    compare(field.text, "Retail")
+    field.text = " My main "
+    keyClick(Qt.Key_Return)
+    compare(json(svc.runs[svc.runs.length - 1]), json(["config_client_name", { "target": "retail", "name": "My main" }, "Rename Retail"]))
+    compare(json(words(svc.runs[svc.runs.length - 1])), json(["config", "set", "targets.retail.name", "--", "My main"]))
+    tryVerify(function() { return findChild(sheet, "sheetKeys").activeFocus })
+    sheet.choice = at("default")
+    keyClick("l")
+    compare(json(svc.runs[svc.runs.length - 1]), json(["targets_default", { "target": "era" }, "Default client: Classic Era"]))
+    // An action acts on Enter only: h and l pass over it.
+    sheet.choice = at("rescan")
+    keyClick("l")
+    compare(svc.rescans, 0)
+    keyClick(Qt.Key_Return)
+    compare(svc.rescans, 1)
+    sheet.choice = at("add")
+    keyClick(Qt.Key_Return)
+    verify(!view.settingsOpen)
+    compare(view.topPage.title, Model.copy("addclient.title"))
+  }
+
+  // A client no longer installed: forgotten from the sheet through the plain `targets rm`
+  // its own problem offers (the plan sheet previews it), never a purge.
+  function test_the_settings_forget_a_client_no_longer_installed() {
+    var forget = Model.cliAction("omaddons targets rm classic", ["omaddons", "targets", "rm", "classic"], true)
+    svc.targets = svc.targets.concat([{ "id": "classic", "displayName": "Mists of Pandaria Classic", "missing": true,
+      "running": false, "runningUnknown": false, "updates": null, "issues": [{ "id": "fm-x", "severity": "P2", "urgent": false,
+        "title": "Mists of Pandaria Classic is no longer installed", "addon": null, "remediation": forget,
+        "autoFixable": false, "explain": null, "forced": false }] }])
+    keyClick(",")
+    var sheet = findChild(view, "settings")
+    var row = -1
+    for (var i = 0; i < sheet.rows.length; i++) if (sheet.rows[i].key === "forget:classic") row = i
+    compare(sheet.rows[row].label, "Mists of Pandaria Classic · not found")
+    sheet.choice = row
+    keyClick(Qt.Key_Return)
+    compare(json(svc.cliRuns[svc.cliRuns.length - 1]), json([["omaddons", "targets", "rm", "classic"], "Forget Mists of Pandaria Classic"]))
+  }
+
   // The items under `item` named `name`, in the order they are drawn.
   function named(item, name) {
     var out = []

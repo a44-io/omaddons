@@ -27,6 +27,10 @@ use support::{
     positional_and_option_values, strings, templates, widget_flags, write_fixture,
 };
 
+/// The only argv elements a slot may sit inside: `config set`'s key for a client's own
+/// setting, the client named by its key (the settings sheet's Clients, 1n2p.31).
+const KEYED_SETTINGS: [&str; 2] = ["targets.{target}.name", "targets.{target}.family"];
+
 /// `CLI_PATHS` has one row per registry path, with the registry's `mutates`, the
 /// destructive paths and the binding paths (A4's `BINDING_COMMANDS`).
 #[test]
@@ -340,18 +344,28 @@ fn every_template_is_a_registry_command_with_safe_slots() {
                 "{name}: {flag} gives consent, which only a terminal gives"
             );
             let Some(open) = part.find('{') else { continue };
+            // A client's own setting (the settings sheet's Clients, 1n2p.31): `config set`'s
+            // key names the client by its key, the one slot inside an element.
+            if KEYED_SETTINGS.contains(&part.as_str()) {
+                assert!(
+                    path == "config set" && i == 2 && !after,
+                    "{name}: {part} outside config set's key"
+                );
+                continue;
+            }
             let slot = &part[open + 1..part.len() - 1];
             assert!(part.ends_with('}'), "{name}: malformed slot {part}");
             assert!(
                 [
-                    "target", "addon", "ref", "backup", "query", "fm", "path", "run", "value"
+                    "target", "addon", "ref", "backup", "query", "fm", "path", "run", "value",
+                    "name"
                 ]
                 .contains(&slot),
                 "{name}: unknown slot {part}"
             );
             // A setting's value (the settings sheet, 1n2p.31) is the one positional of
             // `config set`, after -- and after the key its template names: never a key,
-            // never anything else's.
+            // never anything else's. A key holding a slot is a client's own setting.
             if slot == "value" {
                 assert!(
                     part == "{value}"
@@ -359,8 +373,21 @@ fn every_template_is_a_registry_command_with_safe_slots() {
                         && after
                         && i == argv.len() - 1
                         && argv.len() == 5
-                        && !argv[2].contains('{'),
+                        && (!argv[2].contains('{') || KEYED_SETTINGS.contains(&argv[2].as_str())),
                     "{name}: {{value}} outside config set's value ({part} on {path})"
+                );
+            }
+            // A client's name, the one free text a change takes: the value of `config set
+            // targets.{target}.name`, after --, nothing else's.
+            if slot == "name" {
+                assert!(
+                    part == "{name}"
+                        && path == "config set"
+                        && after
+                        && i == argv.len() - 1
+                        && argv.len() == 5
+                        && argv[2] == "targets.{target}.name",
+                    "{name}: {{name}} outside a client's name ({part} on {path})"
                 );
             }
             // A run's id is History's undo of one run (1n2p.30): `undo --run=`, nothing else.
@@ -796,8 +823,9 @@ fn the_output_cap_bounds_every_template() {
             // client's overrides, a name, a value and its source each (1n2p.31): never a
             // list that grows with addons.
             Some((64 + CLIENTS * 3) * ROW + ANSWER)
-        } else if name.starts_with("config_") {
-            // One setting: its name, its value and the one before it.
+        } else if name.starts_with("config_") || name == "targets_default" {
+            // One setting (its name, its value and the one before it), or the one client
+            // made the default.
             Some(ROW + ANSWER)
         } else if name == "history" {
             Some(limit_of(template) * (ROW + ADDONS * history_slope) + ANSWER)
@@ -921,7 +949,21 @@ fn validate_built_argv() {
         let values = positional_and_option_values(&argv);
         for (slot, value) in entry["slots"].as_object().unwrap() {
             let value = value.as_str().unwrap();
-            if slot == "target" {
+            // A client's own setting names it inside `config set`'s key (1n2p.31): the
+            // key arrives whole, the client in it.
+            let keyed = template
+                .iter()
+                .find(|p| KEYED_SETTINGS.contains(&p.as_str()));
+            if let Some(keyed) = keyed
+                && slot == "target"
+            {
+                let key = keyed.replace("{target}", value);
+                assert!(argv.contains(&key), "{argv:?}: no {key:?}");
+                continue;
+            }
+            // `-t {target}` is the global target; `targets default -- {target}` is
+            // the command's own positional, below.
+            if slot == "target" && template.iter().any(|p| p == "-t") {
                 assert_eq!(cli.global.target.as_deref(), Some(value), "{argv:?}");
                 continue;
             }
@@ -2504,7 +2546,7 @@ fn adopt_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
 /// (`config`), one changed through its template, read again, and a value the key refuses.
 #[cfg(test)]
 fn settings_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
-    let home = Home::new(&["wow"]);
+    let home = Home::new(&["wow", "wow_classic_era"]);
     let config = write_fixture(dir, "config", &home.exec(&fill(t, "config", &[])), 0);
     let named = |env: &Value, key: &str| {
         env["data"]["settings"]
@@ -2548,6 +2590,65 @@ fn settings_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
         2,
     );
     assert_eq!(refused["error"]["code"], "usage", "{refused}");
+    // The Clients section: a client renamed by its key, its built-in name back, and the
+    // default client chosen.
+    let status = write_fixture(
+        dir,
+        "status-settings",
+        &home.exec(&fill(t, "status_full", &[])),
+        0,
+    );
+    let retail = status["data"]["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "retail")
+        .cloned()
+        .unwrap();
+    // Its key once registered, else its id: `targets.<id or key>` both name it.
+    let key = retail["key"].as_str().unwrap_or("retail").to_owned();
+    let named = write_fixture(
+        dir,
+        "config-client-name",
+        &home.exec(&fill(
+            t,
+            "config_client_name",
+            &[("target", &key), ("name", "My main")],
+        )),
+        0,
+    );
+    assert_eq!(named["data"]["value"], "My main", "{named}");
+    let status = write_fixture(
+        dir,
+        "status-renamed",
+        &home.exec(&fill(t, "status", &[])),
+        0,
+    );
+    let shown: Vec<&str> = status["data"]["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["display_name"].as_str().unwrap())
+        .collect();
+    assert!(shown.contains(&"My main"), "{status}");
+    let builtin = write_fixture(
+        dir,
+        "config-client-name-builtin",
+        &home.exec(&fill(
+            t,
+            "config_client_name",
+            &[("target", &key), ("name", "")],
+        )),
+        0,
+    );
+    assert_eq!(builtin["data"]["value"], "", "{builtin}");
+    let chosen = write_fixture(
+        dir,
+        "targets-default",
+        &home.exec(&fill(t, "targets_default", &[("target", "era")])),
+        0,
+    );
+    assert!(chosen["ok"] == true, "{chosen}");
 }
 
 /// The first run (1n2p.32): a home where discovery finds no client, `targets add` refused

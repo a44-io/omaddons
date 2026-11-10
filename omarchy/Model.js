@@ -178,9 +178,11 @@ function omaddonsSettingRows(config) {
   })
 }
 
-// The `config set` a step on an omaddons row runs: the next offered value (Enter and l
-// on, h back, past the end round again when `wrap`), applied directly with the result
-// shown; null when there is nothing to change.
+// The change a step on a choice row runs: the next offered value (Enter and l on, h
+// back, past the end round again when `wrap`), applied directly with the result shown;
+// null when there is nothing to change. An omaddons setting sets its `{value}`; a
+// client's game sets it for that client (`{target}`, its key); the default client is
+// `targets default` with the chosen client's id.
 function configRequest(row, step, wrap) {
   if (!row || !Array.isArray(row.values) || row.values.length === 0) return null
   var at = -1
@@ -189,20 +191,82 @@ function configRequest(row, step, wrap) {
   if (next >= row.values.length) next = wrap ? 0 : row.values.length - 1
   if (next < 0) next = wrap ? row.values.length - 1 : 0
   if (next === at) return null
-  var value = row.values[next]
-  return { "template": row.template, "slots": { "value": String(value) },
-    "label": copy("settings.omaddons.change", { "setting": row.label, "value": configText(row.key, value) }) }
+  var value = String(row.values[next])
+  var words = row.texts && row.texts.hasOwnProperty(value) ? row.texts[value] : configText(row.key, row.values[next])
+  var slots = row.template === "targets_default" ? { "target": value }
+    : (row.target ? { "target": row.target, "value": value } : { "value": value })
+  return { "template": row.template, "slots": slots, "label": copy("settings.omaddons.change", { "setting": row.label, "value": words }) }
+}
+
+// The games a client's family can be set to (`targets.<key>.family`), for a client whose
+// version omaddons cannot read (`family` "unknown"), as the CLI takes them.
+var CLIENT_FAMILIES = ["mainline", "vanilla", "tbc", "wrath", "cata", "mists", "titan", "forever",
+  "vanilla-legacy", "tbc-legacy", "wrath-legacy", "cata-legacy", "mists-legacy"]
+
+// The Clients section's rows (design doc §2.7), from `status`'s clients: each client
+// present by its name (Enter types a new one; empty restores the built-in one), its game
+// where omaddons can't tell it, which client is the default (with more than one), each
+// client no longer installed (Enter forgets it, through the plan sheet), Scan for
+// clients, and Add a client by its folder.
+function clientSettingRows(statusTargets) {
+  var list = Array.isArray(statusTargets) ? statusTargets : []
+  var live = list.filter(function(t) { return t && t.missing !== true })
+  var rows = []
+  var nameOf = function(t) { return sheetClient(list, t.id, "") }
+  live.forEach(function(t) {
+    var client = nameOf(t)
+    rows.push({ "section": "clients", "key": "name:" + t.id, "kind": "name", "target": str(t.key) || str(t.id), "id": t.id,
+      "label": client, "value": client, "text": t.isDefault ? copy("settings.clients.default_mark") : "",
+      "about": copy("settings.clients.name.about", { "id": t.id }) })
+    if (t.family === "unknown") {
+      var texts = {}
+      CLIENT_FAMILIES.forEach(function(f) { texts[f] = copy("settings.family." + f) })
+      rows.push({ "section": "clients", "key": "family:" + t.id, "kind": "choice", "template": "config_client_family",
+        "target": str(t.key) || str(t.id), "label": copy("settings.clients.family", { "owner": possessive(client) }),
+        "about": copy("settings.clients.family.about"), "value": null, "text": copy("settings.clients.family.unknown"),
+        "values": CLIENT_FAMILIES, "texts": texts })
+    }
+  })
+  if (live.length > 1) {
+    var chosen = live.filter(function(t) { return t.isDefault })[0] || null
+    var names = {}
+    live.forEach(function(t) { names[t.id] = nameOf(t) })
+    rows.push({ "section": "clients", "key": "default", "kind": "choice", "template": "targets_default",
+      "label": copy("settings.clients.default"), "about": copy("settings.clients.default.about"),
+      "value": chosen ? chosen.id : null, "text": chosen ? names[chosen.id] : copy("settings.clients.default.none"),
+      "values": live.map(function(t) { return t.id }), "texts": names })
+  }
+  list.filter(function(t) { return t && t.missing === true }).forEach(function(t) {
+    var offered = forgetAction(t) !== null
+    rows.push({ "section": "clients", "key": "forget:" + t.id, "kind": "action", "action": offered ? "forget" : "", "id": t.id,
+      "client": nameOf(t), "label": copy("settings.clients.missing", { "client": nameOf(t) }), "text": offered ? copy("settings.clients.forget") : "",
+      "about": copy(offered ? "settings.clients.forget.about" : "settings.clients.forget.none") })
+  })
+  rows.push({ "section": "clients", "key": "rescan", "kind": "action", "action": "rescan", "label": copy("settings.clients.rescan"),
+    "text": "", "about": copy("settings.clients.rescan.about") })
+  rows.push({ "section": "clients", "key": "add", "kind": "action", "action": "add", "label": copy("settings.clients.add"),
+    "text": "", "about": copy("settings.clients.add.about") })
+  return rows
+}
+
+// What a client's typed name runs: `config set targets.<key>.name`; the label names the
+// client as it was, never the new text (a label is one short line).
+function clientNameRequest(row, text) {
+  return { "template": "config_client_name", "slots": { "target": row.target, "name": str(text).trim() },
+    "label": copy("settings.clients.name.label", { "client": row.label }) }
 }
 
 // The settings sheet's sections (design doc §2.7): each `{key, title, rows, note}`, every
 // row with its index for the sheet's one cursor; `note` says what a section waits for.
 // `input`: {settings} (the panel's, as the shell applied them), {config} (`config`,
-// reduced; null until read) and {configFailed} (the read's failure, or "").
+// reduced; null until read), {configFailed} (the read's failure, or "") and {targets}
+// (`status`'s clients).
 function settingsSections(input) {
   var i = input || {}
   var sections = [{ "key": "panel", "title": copy("settings.section.panel"), "rows": panelSettingRows(i.settings), "note": "" }]
   sections.push({ "key": "omaddons", "title": copy("settings.section.omaddons"), "rows": i.config ? omaddonsSettingRows(i.config) : [],
     "note": i.config ? "" : (i.configFailed ? copy("settings.omaddons.failed") : copy("settings.omaddons.reading")) })
+  sections.push({ "key": "clients", "title": copy("settings.section.clients"), "rows": clientSettingRows(i.targets), "note": "" })
   var index = 0
   sections.forEach(function(s) { s.rows.forEach(function(r) { r.index = index++ }) })
   return sections
@@ -233,7 +297,10 @@ var WIDGET_EXPLAIN_EVIDENCE_MAX = 12
 
 // The settings sheet's (1n2p.31): `config` reads omaddons' settings whole, and each
 // `config_*` sets one key named in its own argv, so no other key is reachable from the
-// panel; its value is a `{value}` CONFIG_VALUE_PATTERN admits.
+// panel; its value is a `{value}` CONFIG_VALUE_PATTERN admits. A client's own settings
+// (`config_client_*`) name the client by its key inside theirs (KEYED_SETTINGS), and its
+// name is the one free text a change takes (`{name}`, one line); `targets_default`
+// makes a client the default.
 // BEGIN COMMANDS: checked by tests/omarchy_widget.rs; every entry must parse as an omaddons command line
 // F1 ships the entries for commands that exist at F1 time; F8 adds errors_target and backup_auto (B6, D3);
 // F6 adds errors, errors_raw and dismiss_errors (B6, B8); F9 adds backups, backup_target, backup_all,
@@ -284,7 +351,10 @@ var COMMANDS = {
   "config_channel":    { "argv": ["config", "set", "default_channel", "--", "{value}"], "mutates": true },
   "config_running":    { "argv": ["config", "set", "running_policy", "--", "{value}"], "mutates": true },
   "config_backups":    { "argv": ["config", "set", "auto_backup", "--", "{value}"], "mutates": true },
-  "config_interval":   { "argv": ["config", "set", "check_interval_hours", "--", "{value}"], "mutates": true }
+  "config_interval":   { "argv": ["config", "set", "check_interval_hours", "--", "{value}"], "mutates": true },
+  "config_client_name": { "argv": ["config", "set", "targets.{target}.name", "--", "{name}"], "mutates": true },
+  "config_client_family": { "argv": ["config", "set", "targets.{target}.family", "--", "{value}"], "mutates": true },
+  "targets_default":   { "argv": ["targets", "default", "--", "{target}"],         "mutates": true }
 }
 // END COMMANDS
 
@@ -365,7 +435,17 @@ var WIDGET_FLAGS = ["--json", "--robot", "--format", "--actor", "--reason", "--p
 var IRREVERSIBLE_FLAGS = ["--purge"]
 // What a row that shows an irreversible command says about it.
 var IRREVERSIBLE_NOTE = "It deletes omaddons' backups and undo snapshots for good, so it runs only from a terminal, after its preview."
-var SLOTS = { "target": true, "addon": true, "ref": true, "backup": true, "query": true, "fm": true, "path": true, "run": true, "value": true }
+var SLOTS = { "target": true, "addon": true, "ref": true, "backup": true, "query": true, "fm": true, "path": true, "run": true, "value": true,
+  "name": true }
+// A client's own settings in `config set` (the settings sheet's Clients, 1n2p.31): the
+// only elements a slot sits inside, the client named by its key (a ULID: no dot to
+// split the key path). Each is `config set`'s key, right after `set`.
+var KEYED_SETTINGS = ["targets.{target}.name", "targets.{target}.family"]
+var KEY_SEGMENT_PATTERN = /^[A-Za-z0-9_-]+$/
+// A client's player name (`targets.<key>.name`): one line of at most 200 characters, as
+// the CLI keeps it; empty restores the built-in name.
+var CLIENT_NAME_PATTERN = /^[^\u0000-\u001f\u007f]*$/
+var CLIENT_NAME_MAX_CHARS = 200
 // A setting's value for `config set` (the settings sheet, 1n2p.31): one of the words or
 // numbers the sheet offers, never free text: lower case, digits and dashes, at most 16
 // characters. Each template names its own key; the CLI judges the value against it.
@@ -452,8 +532,14 @@ function templateShape(name, table) {
     if (open === -1) continue
     var close = part.indexOf("}", open)
     var slot = close === -1 ? "" : part.slice(open + 1, close)
-    if (!SLOTS.hasOwnProperty(slot) || close !== part.length - 1) {
+    // A client's own setting: its key names the client, the one slot inside an element.
+    var keyed = KEYED_SETTINGS.indexOf(part) !== -1 && path === "config set" && i === 2
+    if (!SLOTS.hasOwnProperty(slot) || (close !== part.length - 1 && !keyed)) {
       throw refuse("bad_template", name + " has a malformed slot in " + part)
+    }
+    if (keyed) {
+      slots.push(slot)
+      continue
     }
     var positional = open === 0
     var option = open > 0 && part.slice(0, 2) === "--" && part.charAt(open - 1) === "="
@@ -475,11 +561,19 @@ function templateShape(name, table) {
   return { path: path, slots: slots }
 }
 
-function checkSlot(name, slot, value, template) {
-  if (typeof value !== "string" || value === "") throw refuse("bad_value", name + ": {" + slot + "} is empty")
+function checkSlot(name, slot, value, template, part) {
+  // A client's name may be empty: that restores its built-in name.
+  if (typeof value !== "string" || (value === "" && slot !== "name")) throw refuse("bad_value", name + ": {" + slot + "} is empty")
   if (value.indexOf("\u0000") !== -1) throw refuse("bad_value", name + ": {" + slot + "} holds a NUL")
   if (slot === "target" && !TARGET_PATTERN.test(value)) {
     throw refuse("bad_target", name + ": " + JSON.stringify(value) + " is no target id or key")
+  }
+  // Inside a setting's key, the client is one key segment.
+  if (slot === "target" && part !== undefined && part !== "{target}" && !KEY_SEGMENT_PATTERN.test(value)) {
+    throw refuse("bad_target", name + ": " + JSON.stringify(value) + " is no key segment")
+  }
+  if (slot === "name" && (!CLIENT_NAME_PATTERN.test(value) || value.length > CLIENT_NAME_MAX_CHARS)) {
+    throw refuse("bad_name", name + ": a client's name is one line of at most " + CLIENT_NAME_MAX_CHARS + " characters")
   }
   if (slot === "fm" && !FM_ID_PATTERN.test(value)) {
     throw refuse("bad_fm", name + ": " + JSON.stringify(value) + " is no failure-mode id")
@@ -584,11 +678,13 @@ function buildArgv(name, slots, opts) {
       filled.push(part)
       continue
     }
-    var slot = part.slice(open + 1, part.length - 1)
+    var close = part.indexOf("}", open)
+    var slot = part.slice(open + 1, close)
     if (!given.hasOwnProperty(slot)) throw refuse("unfilled_slot", name + ": {" + slot + "}")
-    checkSlot(name, slot, given[slot], template)
-    // Slicing, never String.replace, whose `$&` patterns would rewrite the value.
-    filled.push(part.slice(0, open) + given[slot])
+    checkSlot(name, slot, given[slot], template, part)
+    // Slicing, never String.replace, whose `$&` patterns would rewrite the value; a
+    // client's setting keeps its key's tail (`targets.<key>.name`).
+    filled.push(part.slice(0, open) + given[slot] + part.slice(close + 1))
   }
   var row = CLI_PATHS[shape.path]
   var preview = o.preview === true
@@ -1254,6 +1350,8 @@ function targetOf(target) {
     "displayName": str(target.display_name) || str(target.id),
     "version": strOrNull(target.version),
     "family": str(target.family),
+    // `targets default`'s client: where an install goes without -t (the settings sheet).
+    "isDefault": target["default"] === true,
     "running": target.running === true,
     // `null` when the process table could not be read (`running_unknown`).
     "runningUnknown": target.running === null,
@@ -2486,6 +2584,13 @@ function isChange(item) {
 // being new. "" for any other command.
 function commandResultLine(command, data) {
   // A setting the settings sheet changed (1n2p.31): in the sheet's words.
+  if (command === "config set" && /^targets\.[^.]+\.name$/.test(str(data.name))) {
+    return str(data.value) === "" ? copy("settings.result.name.builtin") : copy("settings.result.name", { "value": str(data.value) })
+  }
+  if (command === "config set" && /^targets\.[^.]+\.family$/.test(str(data.name))) {
+    var family = "settings.family." + str(data.value)
+    return copy("settings.result.family", { "value": COPY.hasOwnProperty(family) ? copy(family) : str(data.value) })
+  }
   if (command === "config set") {
     var key = str(data.name)
     var known = OMADDONS_SETTINGS.some(function(s) { return s.key === key })
@@ -3188,7 +3293,7 @@ var KEYMAP = [
   { "keys": ["h", "l", "Left", "Right"], "context": "panel", "action": "view_step", "label": "previous or next view (on a page, h goes back)", "hint": "h l" },
   { "keys": ["1", "2", "3", "4", "5", "6", "7"], "context": "panel", "action": "view", "label": "view 1 to 7: Updates, Addons, Search, Errors, Issues, Backups, History", "hint": "1–7" },
   { "keys": ["?"], "context": "panel", "action": "help", "label": "this key reference", "hint": "?" },
-  { "keys": [","], "context": "panel", "action": "settings", "label": "settings: the panel's and omaddons'", "hint": "," },
+  { "keys": [","], "context": "panel", "action": "settings", "label": "settings: the panel's, omaddons' and the clients'", "hint": "," },
   { "keys": ["z"], "context": "panel", "action": "zoom", "label": "fill the screen, and back", "hint": "z" },
   { "keys": ["Ctrl+=", "Ctrl+-", "Ctrl+0"], "context": "panel", "action": "text_zoom", "label": "bigger or smaller text, and back to normal (or Ctrl+wheel)", "hint": "Ctrl+= Ctrl+-" },
   { "keys": ["Esc"], "context": "panel", "action": "close", "label": "back out one layer: a page, then a filter or a search, then the panel closes", "hint": "Esc" },
@@ -6157,6 +6262,44 @@ var COPY = {
   "settings.omaddons.change": "{setting}: {value}",
   "settings.result": "{setting}: {value}",
   "settings.result.unchanged": "{setting}: already {value}",
+  "settings.result.name": "Renamed it {value}",
+  "settings.result.name.builtin": "Its built-in name is back",
+  "settings.result.family": "Its game: {value}",
+  "settings.result.default": "Default client: {client}",
+  "settings.section.clients": "Clients",
+  "settings.clients.default_mark": "default",
+  "settings.clients.name.about": "Enter renames it: the panel and status show this name, and empty brings back the built-in one. Its id stays {id}.",
+  "settings.clients.name.label": "Rename {client}",
+  "settings.clients.name.edit": "Type its name, then Enter. Empty brings back the built-in name; Esc keeps this one.",
+  "settings.clients.name.invalid": "One line, at most 200 characters.",
+  "settings.clients.family": "{owner} game",
+  "settings.clients.family.about": "omaddons can't read this client's version. Its game decides which addon builds it takes.",
+  "settings.clients.family.unknown": "not known",
+  "settings.clients.default": "Default client",
+  "settings.clients.default.about": "Where an install goes when you don't choose a client. default_target in config.toml wins over it.",
+  "settings.clients.default.none": "none",
+  "settings.clients.missing": "{client} · not found",
+  "settings.clients.forget": "Forget…",
+  "settings.clients.forget.label": "Forget {client}",
+  "settings.clients.forget.about": "It's no longer installed. Enter forgets it, after showing what that does.",
+  "settings.clients.forget.none": "It's no longer installed. Issues says what can be done about it.",
+  "settings.clients.rescan": "Scan for clients",
+  "settings.clients.rescan.about": "Looks for World of Warcraft clients again: new ones, and ones that moved.",
+  "settings.clients.add": "Add a client by its folder…",
+  "settings.clients.add.about": "For a client omaddons doesn't find by itself, such as a private server's.",
+  "settings.family.mainline": "Retail",
+  "settings.family.vanilla": "Classic Era",
+  "settings.family.tbc": "Burning Crusade Classic",
+  "settings.family.wrath": "Wrath of the Lich King Classic",
+  "settings.family.cata": "Cataclysm Classic",
+  "settings.family.mists": "Mists of Pandaria Classic",
+  "settings.family.titan": "Titan",
+  "settings.family.forever": "WoW: Forever",
+  "settings.family.vanilla-legacy": "1.12 private server",
+  "settings.family.tbc-legacy": "2.4.3 private server",
+  "settings.family.wrath-legacy": "3.3.5a private server",
+  "settings.family.cata-legacy": "4.3.4 private server",
+  "settings.family.mists-legacy": "5.4.8 private server",
   "settings.omaddons.default_channel": "Channel for new installs",
   "settings.omaddons.default_channel.about": "Which releases a new install follows. Each addon can follow its own.",
   "settings.omaddons.default_channel.stable": "Stable",
@@ -7760,6 +7903,9 @@ if (typeof module !== "undefined") {
     configText: configText,
     omaddonsSettingRows: omaddonsSettingRows,
     configRequest: configRequest,
+    CLIENT_FAMILIES: CLIENT_FAMILIES,
+    clientSettingRows: clientSettingRows,
+    clientNameRequest: clientNameRequest,
     WIDGET_LOCAL_DEADLINE_SEC: WIDGET_LOCAL_DEADLINE_SEC,
     WIDGET_NETWORK_DEADLINE_SEC: WIDGET_NETWORK_DEADLINE_SEC,
     WIDGET_KILL_GRACE_SEC: WIDGET_KILL_GRACE_SEC,

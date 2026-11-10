@@ -97,7 +97,7 @@ describe("settings", () => {
     expect(rows.every((r) => r.label !== "" && r.about !== "" && !r.label.startsWith("settings."))).toBe(true)
     expect([30, 60, 300, 3600].map(M.secondsText)).toEqual(["30 s", "1 min", "5 min", "60 min"])
     expect(M.settingsSections({ settings: {} }).map((s) => [s.title, s.rows.map((r) => r.index)])).toEqual([["Panel", [0, 1, 2, 3, 4, 5, 6]],
-      ["omaddons", []]])
+      ["omaddons", []], ["Clients", [7, 8]]])
   })
 
   // 1n2p.31: omaddons' own settings, from `config` as the binary prints it; a step is one
@@ -130,15 +130,59 @@ describe("settings", () => {
     const after = M.omaddonsSettingRows(M.reduceConfig(fixture("config-after")))
     expect(after[2].text).toBe("Daily, full copies where needed")
     expect(M.settingsSections({ settings: {}, config: null }).map((s) => [s.title, s.rows.length, s.note])).toEqual([
-      ["Panel", 7, ""], ["omaddons", 0, "Reading omaddons' settings…"]])
+      ["Panel", 7, ""], ["omaddons", 0, "Reading omaddons' settings…"], ["Clients", 2, ""]])
     expect(M.settingsSections({ settings: {}, config: null, configFailed: "x" })[1].note).toBe("Couldn't read omaddons' settings.")
-    expect(M.settingsSections({ settings: {}, config }).flatMap((s) => s.rows.map((r) => r.index))).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    expect(M.settingsSections({ settings: {}, config }).flatMap((s) => s.rows.map((r) => r.index))).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
     expect([M.reduceConfig(fixture("config-set-refused")), fixture("config-set").data.changed]).toEqual([null, true])
     // The result line, in the sheet's words.
     expect(M.resultLine(fixture("config-set"), CONTEXT, [])).toBe("Automatic backups: Daily, full copies where needed")
     const same = JSON.parse(JSON.stringify(fixture("config-set")))
     same.data.changed = false
     expect(M.resultLine(same, CONTEXT, [])).toBe("Automatic backups: already Daily, full copies where needed")
+  })
+
+  // 1n2p.31: the Clients section, from `status`'s clients as the binary prints them.
+  test("clients: each one's name, its game where unknown, the default, forget, scan and add", () => {
+    const targets = M.reduceStatus(fixture("status-clients"), NOW).targets
+    const rows = M.clientSettingRows(targets)
+    const live = targets.filter((t) => !t.missing)
+    expect(rows.filter((r) => r.kind === "name").map((r) => r.label)).toEqual(live.map((t) => t.displayName))
+    expect(rows.slice(-2).map((r) => [r.key, r.action])).toEqual([["rescan", "rescan"], ["add", "add"]])
+    const def = rows.find((r) => r.key === "default")
+    expect(def.values).toEqual(live.map((t) => t.id))
+    const chosen = live.find((t) => t.isDefault)
+    expect(def.text).toBe(chosen ? chosen.displayName : "none")
+    const next = M.configRequest(def, 1, true)
+    expect(next.template).toBe("targets_default")
+    expect(next.label).toBe("Default client: " + live.find((t) => t.id === next.slots.target).displayName)
+    // A client no longer installed: forgotten through its own problem's plain `targets rm`, never a purge.
+    for (const t of targets.filter((x) => x.missing)) {
+      const row = rows.find((r) => r.key === "forget:" + t.id)
+      expect([row.label, row.action]).toEqual([t.displayName + " · not found", M.forgetAction(t) ? "forget" : ""])
+    }
+    // A client whose version can't be read: its game, set by its key.
+    const unknown = [{ id: "turtle", key: "01M5JHFF37RESHT6QWM5BT2SXW", displayName: "turtle", family: "unknown", issues: [] }]
+    const family = M.clientSettingRows(unknown).find((r) => r.kind === "choice")
+    expect([family.label, family.text, family.values]).toEqual(["turtle's game", "not known", M.CLIENT_FAMILIES])
+    expect(M.configRequest(family, 1, true)).toEqual({ template: "config_client_family",
+      slots: { target: "01M5JHFF37RESHT6QWM5BT2SXW", value: "mainline" }, label: "turtle's game: Retail" })
+    // One client: no default to choose.
+    expect(M.clientSettingRows([live[0]]).some((r) => r.key === "default")).toBe(false)
+    // A name, typed: by the client's key, one line, empty brings back the built-in one.
+    const retail = rows.find((r) => r.kind === "name")
+    const request = M.clientNameRequest(retail, "  My main ")
+    expect([request.template, request.slots.name, request.label]).toEqual(["config_client_name", "My main", "Rename " + retail.label])
+    const build = (slots) => M.buildArgv("config_client_name", slots, opts({ label: "Rename" })).argv
+    const argv = build({ target: retail.target, name: "My main" })
+    expect(argv.slice(argv.indexOf("config"))).toEqual(["config", "set", "targets." + retail.target + ".name", "--", "My main"])
+    expect(build({ target: retail.target, name: "" }).slice(-1)).toEqual([""])
+    expect(reasonOf(() => build({ target: "a.b", name: "x" }))).toBe("bad_target")
+    expect(reasonOf(() => build({ target: retail.target, name: "two\nlines" }))).toBe("bad_name")
+    expect(reasonOf(() => build({ target: retail.target, name: "x".repeat(201) }))).toBe("bad_name")
+    // The binary's answers, in words.
+    expect(M.resultLine(fixture("config-client-name"), CONTEXT, [])).toBe("Renamed it My main")
+    expect(M.resultLine(fixture("config-client-name-builtin"), CONTEXT, [])).toBe("Its built-in name is back")
+    expect(M.reduceStatus(fixture("status-renamed"), NOW).targets.map((t) => t.displayName)).toContain("My main")
   })
 
   test("a step changes one setting within its bounds; a path is typed", () => {
@@ -221,6 +265,7 @@ const BENIGN = {
   path: "/home/fixture/Games/World of Warcraft",
   run: "01M8Q2VA7K3N5P8R1T4W6X9Y0Z",
   value: "daily-copy",
+  name: "My main",
 }
 
 // What a template needs beyond its slots to build: a planned template builds as its
