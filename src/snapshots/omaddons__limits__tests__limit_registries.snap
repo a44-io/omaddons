@@ -471,7 +471,7 @@ expression: "(politeness, REGISTRY)"
       },
       "unit": "ms",
       "config_key": null,
-      "notes": "Doctor --quick / health, per detector"
+      "notes": "A cached or quick doctor check's budget, per detector (status, doctor --quick)"
     },
     {
       "name": "DOCTOR_DETECTOR_DEADLINE",
@@ -1095,15 +1095,6 @@ expression: "(politeness, REGISTRY)"
       "notes": "A global-lock holder older than this is reported (lock-held-long)"
     },
     {
-      "name": "DOCTOR_RUNS_SOFT_MAX",
-      "value": {
-        "count": 200
-      },
-      "unit": "count",
-      "config_key": null,
-      "notes": "fix and undo run directories past which doctor-runs-accumulated reports (diagnose runs do not count)"
-    },
-    {
       "name": "DOCTOR_GC_SUGGESTED_AGE",
       "value": {
         "millis": 2592000000
@@ -1120,15 +1111,6 @@ expression: "(politeness, REGISTRY)"
       "unit": "count",
       "config_key": null,
       "notes": "victims one doctor gc deletes at most; the report says how many remain"
-    },
-    {
-      "name": "DOCTOR_QUARANTINE_SOFT_MAX",
-      "value": {
-        "bytes": 1073741824
-      },
-      "unit": "bytes",
-      "config_key": null,
-      "notes": "quarantine bytes past which doctor-runs-accumulated reports"
     },
     {
       "name": "PURGE_MAX_ENTRIES",

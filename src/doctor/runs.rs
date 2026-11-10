@@ -1,7 +1,6 @@
 //! The doctor's run directories as data (M4-D33): which runs `<state>/doctor/runs/`
 //! holds, which of them a crash left under their stage name, and what each one's
-//! `report.json` says about itself. `doctor gc`'s retention plan reads them, and so may
-//! the growth row and `doctor ls`.
+//! `report.json` says about itself. `doctor gc`'s retention plan reads them.
 //!
 //! Reads only, and every read is bounded: a listing by its [`Budget`], a report by
 //! [`API_RESPONSE_MAX_BYTES`]. A name that is neither a run id nor a run's stage name is

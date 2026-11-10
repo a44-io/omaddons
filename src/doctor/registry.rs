@@ -1,7 +1,7 @@
 //! The failure-mode registry (M4-D29): every failure mode declared once, with its id,
 //! subsystem, severity, texts, tier, cost, the layers it reads, a pure detector, an
-//! optional fixer and a manual remediation. `status`, `doctor` and `doctor health` all
-//! read it, each up to its tier, so "is this broken?" has one implementation.
+//! optional fixer and a manual remediation. `status` and `doctor` both read it, each up
+//! to its tier, so "is this broken?" has one implementation.
 //!
 //! The rows are sorted by id, and catalog leaves insert theirs where they sort.
 //! [`invariant_violations`] holds every row to the registry's rules.
@@ -165,7 +165,7 @@ pub fn explain_fix(fm: &str, target_id: Option<&str>) -> crate::error::Suggestio
 // The row type and its closed sets.
 
 /// How costly a detector is, and so who runs it: `status --cached` runs `cached`;
-/// `status`, `doctor --quick` and `doctor health` run `cached` and `quick`; `doctor` all
+/// `status` and `doctor --quick` run `cached` and `quick`; `doctor` all
 /// but `deep`; `doctor --include-deep` all. `runtime` rows have no detector: the doctor
 /// runtime raises them about its own run, and no tier filter selects them (it sorts
 /// last, past every `max_tier`).

@@ -978,8 +978,6 @@ struct Names {
     cache_quarantine: PathBuf,
     /// Each quarantine root and its side.
     sides: Vec<(PathBuf, &'static str)>,
-    paths: Paths,
-    skill_dirs: Vec<PathBuf>,
     /// The clients the repair may touch, canonical, with their keys.
     clients: Vec<(PathBuf, TargetKey)>,
 }
@@ -1016,8 +1014,6 @@ impl Names {
             run_dir,
             cache_quarantine,
             sides,
-            paths: roots.paths.clone(),
-            skill_dirs: roots.skill_dirs.to_vec(),
             clients,
         }
     }
@@ -1105,24 +1101,6 @@ impl Names {
             out.write(resource.clone());
         }
         out
-    }
-
-    /// The directories `scope` resolves to for steps that touch `touched`.
-    fn scope_dirs(&self, scope: ScopeName, touched: &[&Path]) -> Vec<PathBuf> {
-        let clients = || {
-            self.clients
-                .iter()
-                .filter(|(dir, _)| touched.iter().any(|path| path.starts_with(dir)))
-                .map(|(dir, _)| ClientPaths::new(dir))
-        };
-        match scope {
-            ScopeName::State => vec![self.paths.state_dir().to_path_buf()],
-            ScopeName::Config => vec![self.paths.config_dir().to_path_buf()],
-            ScopeName::Cache => vec![self.paths.cache_dir().to_path_buf()],
-            ScopeName::Skill => self.skill_dirs.clone(),
-            ScopeName::ClientMeta => clients().map(|client| client.meta_dir()).collect(),
-            ScopeName::AddOns => clients().map(|client| client.addons()).collect(),
-        }
     }
 }
 
@@ -1320,80 +1298,6 @@ impl FixPlan {
             .chain(self.recoveries.iter().map(|r| r.fm))
             .collect()
     }
-
-    /// For `--robot-triage` (E4): one action per failure mode with planned fixes, in plan
-    /// order.
-    pub fn triage(&self) -> Vec<TriageAction> {
-        let mut out: Vec<TriageAction> = Vec::new();
-        for fix in &self.fixes {
-            let steps: Vec<&repair::LoweredStep> = self
-                .lowered
-                .steps
-                .iter()
-                .filter(|s| s.step.fix == fix.n)
-                .collect();
-            let bytes: u64 = steps
-                .iter()
-                .map(|s| s.content.as_ref().map_or(0, |c| c.len() as u64) + s.backup_bytes)
-                .sum();
-            let touched: Vec<&Path> = steps.iter().flat_map(|s| s.step.touched()).collect();
-            let dirs = fix
-                .writes_to
-                .iter()
-                .flat_map(|scope| self.names.scope_dirs(*scope, &touched))
-                .map(|dir| dir.display().to_string());
-            match out.iter_mut().find(|action| action.fixer_id == fix.fm) {
-                Some(action) => {
-                    action.writes_to.extend(dirs);
-                    action.estimated_bytes += bytes;
-                }
-                None => out.push(TriageAction {
-                    fixer_id: fix.fm,
-                    writes_to: dirs.collect(),
-                    estimated_bytes: bytes,
-                }),
-            }
-        }
-        for action in &mut out {
-            action.writes_to.sort();
-            action.writes_to.dedup();
-        }
-        out
-    }
-
-    /// The run that repairs what this plan repairs without `--force`: `omaddons doctor
-    /// fix --only <its failure modes> [-t <target>]`; `None` when it repairs nothing a
-    /// default run would. A forced fixer is never in it (M4-D38).
-    pub fn recommended_argv(&self, target: Option<&str>) -> Option<Vec<String>> {
-        let mut fms: Vec<&str> = Vec::new();
-        for fix in self.fixes.iter().filter(|fix| !fix.needs_force) {
-            if !fms.contains(&fix.fm) {
-                fms.push(fix.fm);
-            }
-        }
-        for recovery in &self.recoveries {
-            if !fms.contains(&recovery.fm) {
-                fms.push(recovery.fm);
-            }
-        }
-        if fms.is_empty() {
-            return None;
-        }
-        let mut argv = argv_of(&["omaddons", "doctor", "fix", "--only", &fms.join(",")]);
-        with_target(&mut argv, target);
-        Some(argv)
-    }
-}
-
-/// What `--robot-triage` shows of one failure mode the plan repairs (E4).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TriageAction {
-    pub fixer_id: &'static str,
-    /// Its fixer's write scopes, resolved to the directories this plan writes in, sorted.
-    pub writes_to: Vec<String>,
-    /// The bytes its writes write, and those of the files they replace, which the repair
-    /// keeps. A rename moves no data: quarantine never crosses a filesystem (M4-D35).
-    pub estimated_bytes: u64,
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1683,12 +1587,6 @@ impl FixPlan {
             client_dirs: Vec::new(),
             roots: Vec::new(),
         };
-        let paths = Paths::with_roots(
-            "/fixture/home",
-            "/fixture/config",
-            "/fixture/state",
-            "/fixture/cache",
-        );
         Self {
             fixes: Vec::new(),
             recoveries,
@@ -1705,8 +1603,6 @@ impl FixPlan {
                 run_dir: PathBuf::from("/fixture/state/omaddons/doctor/runs/R"),
                 cache_quarantine: PathBuf::from("/fixture/cache/omaddons/quarantine/R"),
                 sides: Vec::new(),
-                paths,
-                skill_dirs: Vec::new(),
                 clients: Vec::new(),
             },
         }
@@ -2286,7 +2182,6 @@ mod tests {
             [unplanned_of(&write, Group::NotSelected)],
             "only_forced_without_finding_is_nothing_to_do"
         );
-        assert_eq!(nothing.recommended_argv(None), None);
 
         let harmless = planned(
             "force_with_unforced_only_is_harmless",
@@ -2703,10 +2598,6 @@ mod tests {
         assert!(
             delegated.lowered.steps.is_empty(),
             "a delegation is no primitive"
-        );
-        assert_eq!(
-            delegated.recommended_argv(None),
-            Some(argv_of(&["omaddons", "doctor", "fix", "--only", DELEGATE]))
         );
 
         // A journal another process is only probing (its liveness check holds the
@@ -3296,80 +3187,6 @@ mod tests {
                 "{case}: {fix:?}"
             );
         }
-    }
-
-    #[test]
-    fn triage_and_recommended_argv() {
-        let home = repair_home();
-        let skill_size = std::fs::metadata(home.skill_file()).unwrap().len();
-        let findings = [
-            finding(WRITE, &home, at(home.skill_file())),
-            finding(
-                OTHER_WRITE,
-                &home,
-                at(home.paths.skill_dir().join("NOTES.md")),
-            ),
-            finding(
-                FLATTEN,
-                &home,
-                lift(home.addons("Wrap/Inner"), home.addons("Wrap")),
-            ),
-        ];
-        let plan = planned("triage", plan(&home, &findings, &[]));
-        let dirs = |paths: &[&Path]| {
-            let mut dirs: Vec<String> = paths.iter().map(|path| text(path)).collect();
-            dirs.sort();
-            dirs
-        };
-        let (state, skill) = (home.paths.state_dir(), home.paths.skill_dir());
-        let content = CONTENT.len() as u64;
-        assert_eq!(
-            plan.triage(),
-            [
-                TriageAction {
-                    fixer_id: WRITE,
-                    writes_to: dirs(&[state, &skill]),
-                    estimated_bytes: content + skill_size,
-                },
-                TriageAction {
-                    fixer_id: OTHER_WRITE,
-                    writes_to: dirs(&[state, &skill]),
-                    estimated_bytes: content,
-                },
-                TriageAction {
-                    fixer_id: FLATTEN,
-                    writes_to: dirs(&[state, &skill, &home.client.addons()]),
-                    estimated_bytes: 0,
-                },
-            ]
-        );
-        let only = [WRITE, OTHER_WRITE, FLATTEN].join(",");
-        assert_eq!(
-            plan.recommended_argv(None),
-            Some(argv_of(&["omaddons", "doctor", "fix", "--only", &only]))
-        );
-        assert_eq!(
-            plan.recommended_argv(Some("retail")),
-            Some(argv_of(&[
-                "omaddons", "doctor", "fix", "--only", &only, "-t", "retail"
-            ]))
-        );
-
-        // A forced fixer is never in a recommendation.
-        let forced = finding(FORCED, &home, into(&home, home.record(), "state"));
-        let forced = planned(
-            "forced",
-            plan_with(
-                &home,
-                &[forced],
-                &[Pick::Mode(FORCED)],
-                true,
-                &RunningScan::default(),
-                &crate::fsx::mount_id,
-            ),
-        );
-        assert_eq!(fms(&forced), [FORCED]);
-        assert_eq!(forced.recommended_argv(None), None);
     }
 
     #[test]

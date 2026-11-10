@@ -1719,12 +1719,10 @@ mod tests {
             "--force requires --yes"
         );
         assert!(fix(&["doctor", "fix", "--yes"]).is_ok_and(|f| f.yes && !f.force));
-        for flag in ["--since", "--robot-triage"] {
-            assert!(
-                fix(&["doctor", "fix", flag, "latest"]).is_err(),
-                "doctor fix takes no {flag}"
-            );
-        }
+        assert!(
+            fix(&["doctor", "fix", "--since", "latest"]).is_err(),
+            "doctor fix takes no --since"
+        );
     }
 
     #[test]

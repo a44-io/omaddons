@@ -1,10 +1,11 @@
-//! e2e suite: `status` reports its seven failure modes from the doctor's registry, unchanged
+//! e2e suite: `status` reports the failure modes it published before the doctor existed, from the doctor's registry, unchanged
 //!
-//! Each published failure mode planted on a synthetic home and read back through the real
-//! binary: the exact `issues` JSON, with and without `--cached`, the human line under its
-//! client, the `--check` exit, and every `status` run leaving every tree as it found it.
-//! It is the regression net for the seven published ids while the catalog leaves rewrite
-//! their detectors and F8 moves `status` onto the whole registry.
+//! Each of those failure modes, and the stuck-journal rows beside the pending one,
+//! planted on a synthetic home and read back through the real binary: the exact `issues`
+//! JSON, with and without `--cached`, the human line under its client, the `--check`
+//! exit, and every `status` run leaving every tree as it found it. It is the regression
+//! net for the ids README promises stable across releases, now that `status` reads the
+//! whole registry.
 
 use crate::common;
 

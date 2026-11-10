@@ -84,7 +84,8 @@ pub const TOC_LINE_MAX: usize = 1024;
 /// (`TocIssue::TooLarge`), never refused, since the game loads it. Above the largest
 /// real TOC seen, Questie's `QuestieDB_Mists.toc` (57.1 MB, 2026-11-09).
 pub const TOC_MAX_BYTES: u64 = 128 * MIB;
-/// Time budget per doctor `--quick` / `health` detector.
+/// Time budget per detector in the doctor's `cached` and `quick` tiers (`status`,
+/// `doctor --quick`).
 pub const QUICK_DETECTOR_BUDGET: Duration = Duration::from_millis(5);
 /// A default or deep doctor check's run-time deadline without `--budget` (M4-D43); past
 /// it the check stops and the run reports it incomplete.
@@ -278,16 +279,11 @@ pub const SKILL_DIRS_MAX: usize = 8;
 pub const DOCTOR_FIX_MAX_ACTIONS: usize = 1_000;
 /// A global-lock holder older than this is `fm-concurrency_primitives-lock-held-long`.
 pub const LOCK_HELD_LONG: Duration = Duration::from_secs(10 * 60);
-/// `fix` and `undo` run directories past which `doctor-runs-accumulated` reports
-/// (diagnose runs do not count).
-pub const DOCTOR_RUNS_SOFT_MAX: u64 = 200;
 /// The `--before` age remediations and usage fixes suggest (`doctor gc --before 30d
 /// --dry-run`).
 pub const DOCTOR_GC_SUGGESTED_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 /// Victims one `doctor gc` deletes at most; the report says how many remain.
 pub const DOCTOR_GC_MAX_DELETIONS: usize = 1_000;
-/// Quarantine bytes past which `doctor-runs-accumulated` reports.
-pub const DOCTOR_QUARANTINE_SOFT_MAX: u64 = GIB;
 /// Most entries `targets rm --purge` visits to list and size what it deletes (the
 /// client's `.omaddons/` and the trees below it, its state halves); past it the purge is
 /// refused before anything moves, never planned or sized from part of the walk.
@@ -574,7 +570,7 @@ pub const REGISTRY: &[LimitInfo] = &[
         LimitValue::Millis(ms(QUICK_DETECTOR_BUDGET)),
         LimitUnit::Ms,
         None,
-        "Doctor --quick / health, per detector",
+        "A cached or quick doctor check's budget, per detector (status, doctor --quick)",
     ),
     limit(
         "DOCTOR_DETECTOR_DEADLINE",
@@ -1063,13 +1059,6 @@ pub const REGISTRY: &[LimitInfo] = &[
         "A global-lock holder older than this is reported (lock-held-long)",
     ),
     limit(
-        "DOCTOR_RUNS_SOFT_MAX",
-        LimitValue::Count(DOCTOR_RUNS_SOFT_MAX),
-        LimitUnit::Count,
-        None,
-        "fix and undo run directories past which doctor-runs-accumulated reports (diagnose runs do not count)",
-    ),
-    limit(
         "DOCTOR_GC_SUGGESTED_AGE",
         LimitValue::Millis(ms(DOCTOR_GC_SUGGESTED_AGE)),
         LimitUnit::Ms,
@@ -1082,13 +1071,6 @@ pub const REGISTRY: &[LimitInfo] = &[
         LimitUnit::Count,
         None,
         "victims one doctor gc deletes at most; the report says how many remain",
-    ),
-    limit(
-        "DOCTOR_QUARANTINE_SOFT_MAX",
-        LimitValue::Bytes(DOCTOR_QUARANTINE_SOFT_MAX),
-        LimitUnit::Bytes,
-        None,
-        "quarantine bytes past which doctor-runs-accumulated reports",
     ),
     limit(
         "PURGE_MAX_ENTRIES",
@@ -1400,10 +1382,8 @@ mod tests {
         "SKILL_DIRS_MAX",
         "DOCTOR_FIX_MAX_ACTIONS",
         "LOCK_HELD_LONG",
-        "DOCTOR_RUNS_SOFT_MAX",
         "DOCTOR_GC_SUGGESTED_AGE",
         "DOCTOR_GC_MAX_DELETIONS",
-        "DOCTOR_QUARANTINE_SOFT_MAX",
         "PURGE_MAX_ENTRIES",
         "COMPLETION_MAX_VALUES",
     ];

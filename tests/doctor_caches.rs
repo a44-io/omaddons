@@ -207,7 +207,6 @@ fn a_damaged_blob_is_found_only_by_a_deep_diagnosis() {
             "{args:?} never runs the deep row"
         );
     }
-    log.note("`doctor health` has not landed (omad-m4-agent-surface-doctor-c6cm.5.4.1)");
     log.step("deep");
     let deep = run(&log, &home, &["doctor", "--include-deep"]);
     deep.exit(1);

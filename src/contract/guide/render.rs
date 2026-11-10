@@ -320,7 +320,7 @@ pub const ERRORS_COMMON: [ErrorCode; 15] = [
     ErrorCode::RateLimited,
 ];
 
-/// Things omaddons will never do: the guide's list, and `doctor robot-docs`'s.
+/// Things omaddons will never do: the guide's list.
 pub const NEVER: &[&str] = &[
     "Delete your files during a change. Removals go into undo snapshots or a quarantine, and only `backup prune`, `doctor gc --before --yes` and retention delete, by their documented rules.",
     "Write into `Interface/AddOns` outside a transaction, touch a `Blizzard_*` folder, or follow a symlinked folder.",
