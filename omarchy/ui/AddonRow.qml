@@ -80,7 +80,8 @@ Item {
   Text {
     id: glyphLabel
     objectName: "glyph"
-    x: Style.spacing.lg
+    // The kit's row inset (rowPaddingX, as its own popup rows use, 1n2p.39).
+    x: Style.spacing.rowPaddingX
     y: Style.spacing.md
     width: Style.font.icon + Style.spacing.sm
     visible: root.glyph !== "" || root.pending
@@ -103,7 +104,7 @@ Item {
     id: column
     x: glyphLabel.x + glyphLabel.width + Style.spacing.sm
     y: Style.spacing.md
-    width: root.width - x - Style.spacing.lg
+    width: root.width - x - Style.spacing.rowPaddingX
     spacing: Style.spacing.xs
 
     // The first line: the title takes what the versions and chips leave.

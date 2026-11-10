@@ -20,6 +20,11 @@ QtObject {
     readonly property int xxl: 12
     readonly property int controlPaddingX: 10
     readonly property int controlPaddingY: 6
+    // The kit's semantic tokens at their defaults (a theme's shell.toml can pin them).
+    readonly property int rowGap: 8
+    readonly property int rowPaddingX: 12
+    readonly property int labelGap: 4
+    readonly property int popupPadding: 14
   }
 
   readonly property QtObject font: QtObject {

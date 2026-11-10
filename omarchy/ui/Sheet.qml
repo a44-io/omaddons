@@ -71,13 +71,16 @@ Item {
   // The note under the body (how the reference closes, how a list is used) in place of
   // the buttons.
   readonly property bool noted: reference || choosing
+  // The card's own height around its parts: the kit's popup padding (popupPadding, as its
+  // PopupCard pads, 1n2p.39) above and below, and the column's two gaps.
+  readonly property real chrome: Style.spacing.popupPadding * 2 + Style.spacing.lg * 2
   readonly property real maxBodyHeight: Math.max(Style.space(60), height * 0.8 - header.implicitHeight
-    - (noted ? referenceNote.implicitHeight : footer.implicitHeight) - Style.spacing.xl * 4)
+    - (noted ? referenceNote.implicitHeight : footer.implicitHeight) - chrome)
   // The height the sheet would need to show its whole body without scrolling: what a
   // frame asks for while it is open (it gets at most the panel's own cap, past which the
   // body scrolls).
   readonly property real wantedHeight: (body.implicitHeight + header.implicitHeight
-    + (noted ? referenceNote.implicitHeight : footer.implicitHeight) + Style.spacing.xl * 4) / 0.8
+    + (noted ? referenceNote.implicitHeight : footer.implicitHeight) + chrome) / 0.8
 
   visible: opened
   onOpenedChanged: {
@@ -186,7 +189,7 @@ Item {
     id: card
     objectName: "sheetCard"
     width: Math.min(Style.space(480), root.width - Style.space(8) * 2)
-    height: column.implicitHeight + Style.spacing.xl * 2
+    height: column.implicitHeight + Style.spacing.popupPadding * 2
     anchors.centerIn: parent
     radius: Style.cornerRadius
     color: root.surface
@@ -197,9 +200,9 @@ Item {
 
     Column {
       id: column
-      x: Style.spacing.xl
-      y: Style.spacing.xl
-      width: card.width - Style.spacing.xl * 2
+      x: Style.spacing.popupPadding
+      y: Style.spacing.popupPadding
+      width: card.width - Style.spacing.popupPadding * 2
       spacing: Style.spacing.lg
 
       PlainLabel {

@@ -2,6 +2,7 @@ import QtQuick
 import QtTest
 import Quickshell.Io
 import qs.Commons
+import qs.Commons as Commons
 import "../.."
 import "../../Build.js" as Build
 import "../../Model.js" as Model
@@ -80,6 +81,7 @@ TestCase {
       property var asked: []
       property var shell: null
       property color foreground: "#cacccc"
+      property color barForeground: "#cacccc"
       property color urgent: "#e06c75"
       property string fontFamily: "monospace"
       Component.onCompleted: shell = {
@@ -366,6 +368,38 @@ TestCase {
     sheet.commit()
     compare([saved.length, saved[saved.length - 1][1].binary, sheet.editing], [count + 1, "/opt/omaddons-dev/omaddons", ""])
     compare(saved.every(function(s) { return s[0] === Build.PLUGIN_ID }), true)
+    api.destroy()
+  }
+
+  // 1n2p.39: a live theme switch (Omarchy re-binds the bar's colors and Commons.Color)
+  // recolors the open panel and the button with no reload: every color is a binding.
+  function test_a_theme_switch_recolors_the_open_panel_and_the_button() {
+    var api = barApiComponent.createObject(testCase)
+    api.shell = { "serviceFor": function(id) { return svc } }
+    svc.bar = barModel({ "badge": 3, "mark": "running" })
+    var widget = make()
+    widget.bar = api
+    part(widget, "button").pressed(Qt.LeftButton)
+    var view = part(widget, "view")
+    var title = part(widget, "viewTitle")
+    var freshness = part(widget, "freshness")
+    var mark = part(widget, "mark")
+    // As text: a color read from a property is a live reference.
+    var dim = String(freshness.color)
+    api.foreground = "#123456"
+    api.barForeground = "#345678"
+    api.urgent = "#a01020"
+    compare([Qt.colorEqual(view.foreground, "#123456"), Qt.colorEqual(title.color, "#123456"), Qt.colorEqual(view.urgent, "#a01020")],
+      [true, true, true])
+    verify(!Qt.colorEqual(freshness.color, dim), "the dim text follows the foreground")
+    // The button, its mark and badge: the bar's colors.
+    compare([Qt.colorEqual(part(widget, "button").foreground, "#345678"), Qt.colorEqual(mark.color, "#345678")], [true, true])
+    // The popups' background (a theme's) recolors the dim text and the panel's card.
+    var background = String(Commons.Color.popups.background)
+    dim = String(freshness.color)
+    Commons.Color.popups.background = "#f4f4f4"
+    verify(!Qt.colorEqual(freshness.color, dim), "the dim text follows the background")
+    Commons.Color.popups.background = background
     api.destroy()
   }
 

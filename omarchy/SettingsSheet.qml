@@ -212,17 +212,25 @@ Sheet {
             anchors.verticalCenter: parent.verticalCenter
             spacing: Style.spacing.xs
 
+            // The label, the value on its right; where both don't fit (400 px, a large
+            // text zoom), the value under the label, so neither is cut (1n2p.39).
             Item {
+              id: line
+              objectName: "settingLine"
+              readonly property bool stacked: label.implicitWidth + value.implicitWidth + Style.spacing.md > width
               width: parent.width
-              height: Math.max(label.implicitHeight, value.implicitHeight)
+              height: stacked ? label.implicitHeight + (value.visible ? value.implicitHeight : 0)
+                : Math.max(label.implicitHeight, value.implicitHeight)
 
               PlainLabel {
                 id: label
                 objectName: "settingLabel"
-                anchors.left: parent.left
-                anchors.right: value.left
-                anchors.rightMargin: Style.spacing.md
-                anchors.verticalCenter: parent.verticalCenter
+                x: 0
+                width: line.stacked ? line.width : Math.max(0, line.width - value.implicitWidth - Style.spacing.md)
+                y: line.stacked ? 0 : (line.height - implicitHeight) / 2
+                // Stacked, it has the row's width to wrap in, and never elides.
+                wrapMode: line.stacked ? Text.WordWrap : Text.NoWrap
+                elide: line.stacked ? Text.ElideNone : Text.ElideRight
                 color: root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.body
@@ -233,11 +241,14 @@ Sheet {
               PlainLabel {
                 id: value
                 objectName: "settingValue"
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                width: Math.min(implicitWidth, parent.width * 0.55)
+                x: line.stacked ? 0 : line.width - width
+                y: line.stacked ? label.implicitHeight : (line.height - implicitHeight) / 2
+                width: line.stacked ? line.width : Math.min(implicitWidth, line.width)
+                // Stacked, it wraps too (a path anywhere), never elides.
+                wrapMode: line.stacked ? Text.WrapAtWordBoundaryOrAnywhere : Text.NoWrap
+                elide: line.stacked ? Text.ElideNone : Text.ElideRight
                 visible: !entry.editingHere
-                horizontalAlignment: Text.AlignRight
+                horizontalAlignment: line.stacked ? Text.AlignLeft : Text.AlignRight
                 color: root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.body

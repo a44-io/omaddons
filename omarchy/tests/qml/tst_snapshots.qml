@@ -441,6 +441,30 @@ TestCase {
     var image = save(card, name)
     compare(image.width, panelWidth + cardPadding * 2, name + ": the panel's width")
     verify(image.height <= panelMaxHeight + cardPadding * 2, name + ": taller than the panel's cap")
+    compare(overflowing(frame).join("; "), "", name + ": drawn past the panel's edge or a clip")
+  }
+
+  // The visible items drawn past the panel's left or right edge, or past the sides of a
+  // clipping ancestor (where their text would be cut) (1n2p.39). Vertical overflow is a
+  // scroll area's to show.
+  function overflowing(root) {
+    var out = []
+    var walk = function(item, left, right) {
+      for (var i = 0; i < item.children.length; i++) {
+        var c = item.children[i]
+        if (!c.visible || c.opacity === 0 || c.width <= 0 || c.height <= 0) continue
+        // Both edges through the transforms between them (the text zoom scales a canvas).
+        var x = c.mapToItem(root, 0, 0).x
+        var end = c.mapToItem(root, c.width, 0).x
+        if (x < left - 1 || end > right + 1) {
+          out.push((c.objectName || String(c).split("(")[0]) + " at " + Math.round(x) + ".." + Math.round(end)
+            + " in " + Math.round(left) + ".." + Math.round(right))
+        }
+        walk(c, c.clip ? Math.max(left, x) : left, c.clip ? Math.min(right, end) : right)
+      }
+    }
+    walk(root, 0, root.width)
+    return out
   }
 
   // ---------------------------------------------------------------- envelopes
@@ -1093,6 +1117,30 @@ TestCase {
     settle(scene)
     frame.moveCursor(0)
     shoot("backup-page")
+  }
+
+  // 1n2p.39: every view and the settings sheet at both widths and three text zooms,
+  // nothing drawn past the panel's edge or a clip (shoot's check), on whichever kit and
+  // theme the run draws with.
+  function test_matrix_widths_and_text_zooms() {
+    var states = ["updates", "installed", "search", "errors", "issues", "backups", "history", "settings"]
+    for (var w of [540, 400]) {
+      for (var z of [0.8, 1.0, 1.5]) {
+        for (var s of states) {
+          cleanup()
+          panelWidth = w
+          var scene = everyday()
+          scene.config = the("config")
+          open(scene, s === "settings" ? "updates" : s)
+          frame.uiScale = z
+          if (s === "settings") {
+            frame.settingsOpen = true
+            settle(scene)
+          }
+          shoot("matrix-" + s + "-" + w + "-x" + Math.round(z * 10))
+        }
+      }
+    }
   }
 
   // The settings sheet (1n2p.31), the cursor on a switch with what it does, and
