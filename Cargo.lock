@@ -994,6 +994,7 @@ dependencies = [
  "jiff",
  "jsonschema",
  "md-5",
+ "memchr",
  "pelite",
  "predicates",
  "proptest",

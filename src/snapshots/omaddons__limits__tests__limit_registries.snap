@@ -438,6 +438,15 @@ expression: "(politeness, REGISTRY)"
       "notes": "Client rule: only the first 1024 characters of each TOC line are read"
     },
     {
+      "name": "TOC_MAX_BYTES",
+      "value": {
+        "bytes": 134217728
+      },
+      "unit": "bytes",
+      "config_key": null,
+      "notes": "The most of one TOC file read; a longer one is judged on what was read"
+    },
+    {
       "name": "QUICK_DETECTOR_BUDGET",
       "value": {
         "millis": 5

@@ -29,6 +29,9 @@ clap_complete = "4.6.11"
 flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }
 jiff ={ version = "0.2.38", features = ["serde"] }
 md-5 = "0.11"
+# TOC line ends (omad-btel): a QuestieDB TOC is 13 to 57 MB of lines. Already built in
+# through serde_json and zip.
+memchr = "2.8.3"
 pelite = "0.10.0"
 reflink-copy = "0.1.30"
 rustix = { version = "1.1.5", features = ["fs", "process", "termios"] }

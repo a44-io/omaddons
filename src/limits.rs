@@ -77,6 +77,10 @@ pub const NET_LOG_MAX_BYTES: u64 = 10 * MIB;
 pub const SAVEDVARIABLES_MAX_BYTES: u64 = 64 * MIB;
 /// Client rule: the client reads only the first 1024 characters of each TOC line.
 pub const TOC_LINE_MAX: usize = 1024;
+/// The most of one TOC file omaddons reads; a longer one is judged on what was read
+/// (`TocIssue::TooLarge`), never refused, since the game loads it. Above the largest
+/// real TOC seen, Questie's `QuestieDB_Mists.toc` (57.1 MB, 2026-11-09).
+pub const TOC_MAX_BYTES: u64 = 128 * MIB;
 /// Time budget per doctor `--quick` / `health` detector.
 pub const QUICK_DETECTOR_BUDGET: Duration = Duration::from_millis(5);
 /// A default or deep doctor check's run-time deadline without `--budget` (M4-D43); past
@@ -521,6 +525,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         LimitUnit::Chars,
         None,
         "Client rule: only the first 1024 characters of each TOC line are read",
+    ),
+    limit(
+        "TOC_MAX_BYTES",
+        LimitValue::Bytes(TOC_MAX_BYTES),
+        LimitUnit::Bytes,
+        None,
+        "The most of one TOC file read; a longer one is judged on what was read",
     ),
     limit(
         "QUICK_DETECTOR_BUDGET",
@@ -1262,7 +1273,7 @@ mod tests {
         "PLANS_SWEEP_MAX", "PLAN_EVIDENCE_LINES_MAX", "ORPHAN_MIN_AGE", "RETENTION_SWEEP_INTERVAL",
         "REASON_MAX_CHARS",
         "AUTH_TOKEN_MAX_BYTES", "NET_LOG_MAX_BYTES",
-        "SAVEDVARIABLES_MAX_BYTES", "TOC_LINE_MAX", "QUICK_DETECTOR_BUDGET",
+        "SAVEDVARIABLES_MAX_BYTES", "TOC_LINE_MAX", "TOC_MAX_BYTES", "QUICK_DETECTOR_BUDGET",
         "DOCTOR_DETECTOR_DEADLINE", "RUN_ID_RETRY",
         "DISCOVERY_FILE_MAX_BYTES", "CREDENTIAL_COMMAND_TIMEOUT", "RELEASE_MEMO_MAX_ENTRIES",
         "MEMO_KNOWN_RELEASES", "DEPENDENCY_SOURCE_MAX_AGE", "CHANGELOG_MAX_CHARS",

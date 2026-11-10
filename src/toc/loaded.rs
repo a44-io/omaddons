@@ -10,16 +10,15 @@
 //! count as `AllowLoadGameType` values; between case-variant TOCs the byte-wise
 //! smallest name is taken.
 
-use std::io::{self, BufRead, BufReader, Read};
+use std::io;
 use std::path::{Path, PathBuf};
 
 use rustix::fs::{Mode, OFlags};
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use super::{Toc, parse_toc};
+use super::Toc;
 use crate::error::{Suggestion, Warning, WarningCode};
-use crate::limits::TOC_LINE_MAX;
 use crate::model::{FolderName, Target};
 use crate::rules::{ClientRules, Family, RulesTable};
 
@@ -29,8 +28,9 @@ pub trait FolderView {
     fn folder_name(&self) -> &FolderName;
     /// The regular files directly inside the folder.
     fn root_files(&self) -> io::Result<Vec<String>>;
-    /// A root file's bytes, keeping at most `TOC_LINE_MAX + 1` bytes of each line.
-    fn read_toc(&self, file: &str) -> io::Result<Vec<u8>>;
+    /// A root file parsed as a TOC as no particular client reads it ([`super::parse_toc`]),
+    /// read line by line ([`super::parse_toc_from`]) or parsed once already.
+    fn toc(&self, file: &str) -> io::Result<Toc>;
 }
 
 /// A folder on disk. Symlinks inside it are never followed.
@@ -77,7 +77,7 @@ impl FolderView for DiskFolder {
         Ok(files)
     }
 
-    fn read_toc(&self, file: &str) -> io::Result<Vec<u8>> {
+    fn toc(&self, file: &str) -> io::Result<Toc> {
         if file.contains('/') || file == "." || file == ".." {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -96,33 +96,7 @@ impl FolderView for DiskFolder {
             OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
             Mode::empty(),
         )?;
-        read_bounded(std::fs::File::from(fd))
-    }
-}
-
-/// Every line of `reader`, keeping at most `TOC_LINE_MAX + 1` bytes of each (one more
-/// than the client reads, so the parser still records the truncation). Memory stays
-/// bounded however long a line is.
-pub fn read_bounded(reader: impl Read) -> io::Result<Vec<u8>> {
-    let mut reader = BufReader::new(reader);
-    let mut out = Vec::new();
-    let mut kept = 0usize;
-    loop {
-        let buf = reader.fill_buf()?;
-        if buf.is_empty() {
-            return Ok(out);
-        }
-        let len = buf.len();
-        for &byte in buf {
-            if byte == b'\n' || byte == b'\r' {
-                out.push(byte);
-                kept = 0;
-            } else if kept <= TOC_LINE_MAX {
-                out.push(byte);
-                kept += 1;
-            }
-        }
-        reader.consume(len);
+        super::parse_toc_from(std::fs::File::from(fd))
     }
 }
 
@@ -200,7 +174,7 @@ pub fn loaded_toc(view: &dyn FolderView, rules: &ClientRules) -> io::Result<Opti
         .iter()
         .skip(1)
         .any(|(r, other, _)| *r == best_rank && other.eq_ignore_ascii_case(&file));
-    let toc = parse_toc(&view.read_toc(&file)?).for_client(rules);
+    let toc = view.toc(&file)?.for_client(rules);
     Ok(Some(LoadedToc {
         file,
         level: best_rank.0,
@@ -586,7 +560,9 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+    use crate::limits::TOC_LINE_MAX;
     use crate::rules::{ClientVersion, InstallKind};
+    use crate::toc::{parse_toc, parse_toc_from};
 
     /// A record's `left_out[].reason` publishes exactly the tags `folders.skipped` has, in
     /// declaration order (rule 4).
@@ -642,10 +618,10 @@ mod tests {
         fn root_files(&self) -> io::Result<Vec<String>> {
             Ok(self.files.keys().cloned().collect())
         }
-        fn read_toc(&self, file: &str) -> io::Result<Vec<u8>> {
+        fn toc(&self, file: &str) -> io::Result<Toc> {
             self.files
                 .get(file)
-                .cloned()
+                .map(|bytes| parse_toc(bytes))
                 .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
         }
     }
@@ -1246,10 +1222,14 @@ mod tests {
         let mut input = b"## Title: ".to_vec();
         input.extend_from_slice(&long);
         input.extend_from_slice(b"\r\n## Version: 1\n");
-        let out = read_bounded(input.as_slice()).unwrap();
-        assert_eq!(out.len(), TOC_LINE_MAX + 1 + 2 + "## Version: 1\n".len());
-        let toc = parse_toc(&out);
+        let toc = parse_toc_from(input.as_slice()).unwrap();
+        assert_eq!(toc, parse_toc(&input), "the stream reads as the bytes do");
         assert_eq!(toc.version.as_deref(), Some("1"));
+        assert_eq!(
+            toc.title.as_ref().map(String::len),
+            Some(TOC_LINE_MAX - "## Title: ".len()),
+            "the client's first {TOC_LINE_MAX} bytes of the line"
+        );
         assert!(
             toc.issues
                 .contains(&crate::toc::TocIssue::LineTruncated { line: 1 })

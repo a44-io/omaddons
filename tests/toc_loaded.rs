@@ -32,7 +32,7 @@ fn symlinked_tocs_are_ignored_and_refused() {
         view.root_files().unwrap().is_empty(),
         "symlinks are not root files"
     );
-    assert!(view.read_toc("Foo.toc").is_err(), "and are never read");
+    assert!(view.toc("Foo.toc").is_err(), "and are never read");
     let (rules, table) = retail();
     assert_eq!(
         verdict(&view, &rules, rules.family, 120_105, &table)
@@ -49,7 +49,7 @@ fn symlinked_tocs_are_ignored_and_refused() {
             .verdict,
         Verdict::Compatible { out_of_date: false }
     );
-    assert!(view.read_toc("../outside.toc").is_err(), "no paths");
+    assert!(view.toc("../outside.toc").is_err(), "no paths");
 }
 
 #[test]
@@ -65,7 +65,7 @@ fn fifos_and_directories_are_not_tocs() {
     assert!(view.root_files().unwrap().is_empty());
     if made {
         assert!(
-            view.read_toc("Foo.toc").is_err(),
+            view.toc("Foo.toc").is_err(),
             "a FIFO is refused without blocking"
         );
     }
@@ -103,12 +103,9 @@ fn a_huge_single_line_toc_is_read_bounded() {
     drop(file);
 
     let view = DiskFolder::new(&foo).unwrap();
-    let bytes = view.read_toc("Foo.toc").unwrap();
-    assert!(
-        bytes.len() < 3 * (TOC_LINE_MAX + 2),
-        "{} bytes kept",
-        bytes.len()
-    );
+    let toc = view.toc("Foo.toc").unwrap();
+    let kept: usize = toc.lines.iter().map(|d| d.raw_value.len()).sum();
+    assert!(kept < 3 * (TOC_LINE_MAX + 2), "{kept} bytes kept");
     let (rules, table) = retail();
     let report = verdict(&view, &rules, rules.family, 120_105, &table).unwrap();
     assert_eq!(report.verdict, Verdict::Compatible { out_of_date: false });

@@ -33,8 +33,8 @@ use crate::limits::{
 use crate::model::{FolderName, Target};
 use crate::rules::RulesTable;
 use crate::toc::{
-    DepList, FolderView, Verdict, VerdictReport, WrongFlavorReason, judge, loaded_toc,
-    primary_interface, read_bounded,
+    DepList, FolderView, Toc, Verdict, VerdictReport, WrongFlavorReason, judge, loaded_toc,
+    parse_toc_from, primary_interface,
 };
 
 /// The archive limits in force.
@@ -88,9 +88,11 @@ pub struct InspectedFolder {
     /// Regular files directly inside the folder.
     #[serde(skip)]
     root_files: Vec<String>,
-    /// The TOCs among them, each line kept to `TOC_LINE_MAX + 1` bytes.
+    /// The TOCs among them, parsed once as they were read ([`parse_toc_from`]): only
+    /// the lines omaddons evaluates, never the file's bytes (Questie's `QuestieDB`
+    /// ships seven TOCs of 13 to 57 MB).
     #[serde(skip)]
-    tocs: BTreeMap<String, Vec<u8>>,
+    tocs: BTreeMap<String, Toc>,
 }
 
 /// One file of a folder, measured from its decompressed bytes.
@@ -125,7 +127,7 @@ impl InspectedFolder {
     }
 }
 
-/// [`FolderView`] over an inspected folder; TOC bytes were captured during inspection.
+/// [`FolderView`] over an inspected folder; its TOCs were parsed during inspection.
 pub struct ArchiveFolderView<'a>(&'a InspectedFolder);
 
 impl FolderView for ArchiveFolderView<'_> {
@@ -137,7 +139,7 @@ impl FolderView for ArchiveFolderView<'_> {
         Ok(self.0.root_files.clone())
     }
 
-    fn read_toc(&self, file: &str) -> io::Result<Vec<u8>> {
+    fn toc(&self, file: &str) -> io::Result<Toc> {
         self.0.tocs.get(file).cloned().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
@@ -570,8 +572,8 @@ pub fn inspect_zip<R: Read + Seek>(
                 continue;
             };
             let entry = archive.by_index(index).map_err(zip_error)?;
-            let bytes = read_bounded(entry).map_err(|e| read_error(&name, &e))?;
-            folder.tocs.insert(name, bytes);
+            let toc = parse_toc_from(entry).map_err(|e| read_error(&name, &e))?;
+            folder.tocs.insert(name, toc);
         }
     }
     Ok(Inspected {
@@ -689,8 +691,8 @@ pub fn inspect_dir(dir: &Path, limits: &ArchiveLimits, table: &RulesTable) -> Re
                 continue;
             };
             let file = std::fs::File::open(&path).map_err(|e| Error::io(&path, &e, io_fix()))?;
-            let bytes = read_bounded(file).map_err(|e| Error::io(&path, &e, io_fix()))?;
-            folder.tocs.insert(name, bytes);
+            let toc = parse_toc_from(file).map_err(|e| Error::io(&path, &e, io_fix()))?;
+            folder.tocs.insert(name, toc);
         }
     }
     Ok(Inspected {

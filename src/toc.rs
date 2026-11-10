@@ -18,26 +18,33 @@
 mod loaded;
 
 use std::collections::BTreeMap;
+use std::io::{self, BufRead, BufReader, Read as _};
 
 pub use loaded::{
     DiskFolder, FolderView, JUDGE_VERSION, LoadedToc, LoadedTocSummary, TocLevel, Verdict,
     VerdictReport, WrongFlavorReason, best_in_family, effective_interfaces, judge, judge_digest,
-    loaded_toc, primary_interface, read_bounded, reason_names_schema, verdict, verify_target,
+    loaded_toc, primary_interface, reason_names_schema, verdict, verify_target,
 };
 
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use crate::limits::TOC_LINE_MAX;
+use crate::limits::{TOC_LINE_MAX, TOC_MAX_BYTES};
 use crate::model::FolderName;
 use crate::rules::ClientRules;
 
-/// A parsed TOC: every directive line, and the fields one reading of them gives (no
-/// particular client from [`parse_toc`], one client from [`Toc::for_client`]).
+/// A parsed TOC: the directive lines omaddons evaluates, and the fields one reading of
+/// them gives (no particular client from [`parse_toc`], one client from
+/// [`Toc::for_client`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct Toc {
-    /// Every `## Key: Value` line, in file order.
+    /// Every `## Key: Value` line whose key omaddons evaluates ([`evaluated`]), in file
+    /// order.
     pub lines: Vec<Directive>,
+    /// The other `## Key: Value` lines, counted and never stored: a TOC can carry
+    /// hundreds of thousands of metadata lines only the addon reads in game (Questie's
+    /// `QuestieDB` keeps its quest database as `## X-Quest-…` lines, 13 to 57 MB a TOC).
+    pub ignored_directives: u32,
     /// The lines read, keyed by the lowercased key: the last one of each key.
     pub directives: BTreeMap<String, Directive>,
     /// The `## Interface` value read (never `Interface-Vanilla` and the like).
@@ -236,16 +243,123 @@ pub enum TocIssue {
     BadInterface { value: String },
     /// A dependency that cannot be a folder name.
     BadDependency { name: String },
+    /// The file is larger than omaddons reads ([`TOC_MAX_BYTES`]); it is judged on its
+    /// first `max_bytes`. The game reads such a TOC, so it is never refused for it.
+    TooLarge { max_bytes: u64 },
 }
 
 const PATH_VARS: &[&str] = &["Family", "Game", "TextLocale"];
 
+const BOM: &[u8] = b"\xef\xbb\xbf";
+
+/// How much of a TOC [`parse_toc_from`] reads at a time: a 15 MB `QuestieDB` TOC in 60
+/// reads rather than 1,900.
+const TOC_READ_CHUNK: usize = 256 * 1024;
+
 /// Parses a TOC. Infallible: problems are recorded in [`Toc::issues`].
 pub fn parse_toc(bytes: &[u8]) -> Toc {
-    let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
-    let mut toc = Toc::default();
-    for (index, raw) in lines(bytes).enumerate() {
-        let line = u32::try_from(index + 1).unwrap_or(u32::MAX);
+    let bytes = bytes.strip_prefix(BOM).unwrap_or(bytes);
+    let mut parser = Parser::default();
+    for raw in lines(bytes) {
+        parser.line(raw);
+    }
+    parser.finish()
+}
+
+/// Parses a TOC from `reader` line by line, as [`parse_toc`] parses the same bytes,
+/// holding at most [`TOC_LINE_MAX`] + 1 bytes of a line and only the lines omaddons
+/// evaluates. It reads at most [`TOC_MAX_BYTES`]; a longer file is judged on what was
+/// read, with [`TocIssue::TooLarge`]. Fails only when `reader` does.
+pub fn parse_toc_from(reader: impl io::Read) -> io::Result<Toc> {
+    parse_bounded(reader, TOC_MAX_BYTES)
+}
+
+/// [`parse_toc_from`], reading at most `max_bytes`.
+fn parse_bounded(reader: impl io::Read, max_bytes: u64) -> io::Result<Toc> {
+    let mut limited = reader.take(max_bytes);
+    let mut head = Vec::with_capacity(BOM.len());
+    io::Read::by_ref(&mut limited)
+        .take(BOM.len() as u64)
+        .read_to_end(&mut head)?;
+    if head == BOM {
+        head.clear();
+    }
+    let mut parser = Parser::default();
+    let mut current = Vec::new();
+    let mut after_cr = false;
+    {
+        let source = io::Cursor::new(head).chain(&mut limited);
+        let mut buffered = BufReader::with_capacity(TOC_READ_CHUNK, source);
+        loop {
+            let buf = buffered.fill_buf()?;
+            if buf.is_empty() {
+                break;
+            }
+            let len = buf.len();
+            let mut rest = buf;
+            while let Some((&first, tail)) = rest.split_first() {
+                // A `\r\n` is one end of line, also across two reads.
+                if std::mem::take(&mut after_cr) && first == b'\n' {
+                    rest = tail;
+                    continue;
+                }
+                match memchr::memchr2(b'\n', b'\r', rest) {
+                    Some(end) => {
+                        let (line, end_and_after) = rest.split_at(end);
+                        // A line wholly inside this read is parsed where it is.
+                        if current.is_empty() {
+                            parser.line(line);
+                        } else {
+                            keep_capped(&mut current, line);
+                            parser.line(&current);
+                            current.clear();
+                        }
+                        after_cr = end_and_after.first() == Some(&b'\r');
+                        rest = end_and_after.get(1..).unwrap_or_default();
+                    }
+                    None => {
+                        keep_capped(&mut current, rest);
+                        rest = &[];
+                    }
+                }
+            }
+            buffered.consume(len);
+        }
+    }
+    if !current.is_empty() {
+        parser.line(&current);
+    }
+    if limited.limit() == 0 {
+        let mut probe = Vec::with_capacity(1);
+        limited.into_inner().take(1).read_to_end(&mut probe)?;
+        if !probe.is_empty() {
+            parser.toc.issues.push(TocIssue::TooLarge { max_bytes });
+        }
+    }
+    Ok(parser.finish())
+}
+
+/// Appends `bytes` to the line being read, keeping at most `TOC_LINE_MAX + 1` bytes:
+/// one more than the client reads, so the truncation is still recorded.
+fn keep_capped(line: &mut Vec<u8>, bytes: &[u8]) {
+    let room = (TOC_LINE_MAX + 1).saturating_sub(line.len());
+    line.extend_from_slice(bytes.get(..room).unwrap_or(bytes));
+}
+
+/// A TOC being parsed one line at a time, in file order.
+#[derive(Default)]
+struct Parser {
+    toc: Toc,
+    /// Lines seen so far.
+    seen: usize,
+}
+
+impl Parser {
+    /// One line, without its end of line.
+    fn line(&mut self, raw: &[u8]) {
+        self.seen += 1;
+        let line = u32::try_from(self.seen).unwrap_or(u32::MAX);
+        let toc = &mut self.toc;
         let raw = match raw.get(..TOC_LINE_MAX) {
             Some(head) if raw.len() > TOC_LINE_MAX => {
                 toc.issues.push(TocIssue::LineTruncated { line });
@@ -253,22 +367,33 @@ pub fn parse_toc(bytes: &[u8]) -> Toc {
             }
             _ => raw,
         };
+        if ignored_on_sight(raw) {
+            toc.ignored_directives = toc.ignored_directives.saturating_add(1);
+            return;
+        }
         let text = String::from_utf8_lossy(raw);
         let trimmed = text.trim();
         if trimmed.is_empty() {
-            continue;
+            return;
         }
         if let Some(rest) = trimmed.strip_prefix("##") {
-            toc.lines.extend(directive(rest, line));
-            continue;
+            match evaluated_directive(rest, line) {
+                Some(Some(d)) => toc.lines.push(d),
+                Some(None) => toc.ignored_directives = toc.ignored_directives.saturating_add(1),
+                None => {}
+            }
+            return;
         }
         if trimmed.starts_with('#') {
-            continue;
+            return;
         }
         toc.files.push(file(trimmed));
     }
-    resolve(&mut toc, View::Unconditional);
-    toc
+
+    fn finish(mut self) -> Toc {
+        resolve(&mut self.toc, View::Unconditional);
+        self.toc
+    }
 }
 
 /// Lines split on `\n`, `\r\n` or a lone `\r`.
@@ -289,6 +414,109 @@ fn lines(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
         };
         Some(line)
     })
+}
+
+/// Whether `raw`, one line as the client reads it, is a `##` directive whose key
+/// omaddons never evaluates, told from the key's bytes alone: a metadata TOC's hundreds
+/// of thousands of such lines then cost no decoding of their values. `false` whenever
+/// only the full reading can tell ([`evaluated_directive`], which agrees on every line
+/// this calls ignored): anything but ASCII whitespace before the `##`, a bracket before
+/// the first colon, no colon, or a key that is empty or not ASCII.
+fn ignored_on_sight(raw: &[u8]) -> bool {
+    // The ASCII characters `char::is_whitespace` matches, which `str::trim` trims
+    // (`u8::is_ascii_whitespace` leaves out the vertical tab).
+    let space = |b: &u8| matches!(b, b' ' | b'\t' | b'\n' | b'\x0b' | b'\x0c' | b'\r');
+    let start = raw.iter().position(|b| !space(b)).unwrap_or(raw.len());
+    let Some(rest) = raw.get(start..).and_then(|r| r.strip_prefix(b"##")) else {
+        return false;
+    };
+    let Some(stop) = rest.iter().position(|b| matches!(b, b':' | b'[' | b']')) else {
+        return false;
+    };
+    let (Some(b':'), Some(key)) = (rest.get(stop), rest.get(..stop)) else {
+        return false;
+    };
+    let first = key.iter().position(|b| !space(b)).unwrap_or(key.len());
+    let last = key.iter().rposition(|b| !space(b)).map_or(first, |i| i + 1);
+    match key.get(first..last).map(std::str::from_utf8) {
+        Some(Ok(key)) if !key.is_empty() && key.is_ascii() => !evaluated(key),
+        _ => false,
+    }
+}
+
+/// The directive after a line's `##` when omaddons evaluates its key ([`evaluated`]),
+/// read as either kind of client reads it (its key without inline directives, or as
+/// written); `Some(None)` for a directive it never reads, decided on the line's own
+/// text before anything is copied; `None` for no directive ([`directive`]).
+fn evaluated_directive(rest: &str, line: u32) -> Option<Option<Directive>> {
+    let (raw_key, _) = split_at_colon_borrowed(rest)?;
+    if !raw_key.contains('[') {
+        // No inline directive before the colon: its key is the key as written.
+        if raw_key.is_empty() {
+            return None;
+        }
+        if !evaluated(raw_key) {
+            return Some(None);
+        }
+    }
+    let d = directive(rest, line)?;
+    Some((evaluated(&d.key) || evaluated(&d.raw_key)).then_some(d))
+}
+
+/// Whether omaddons ever reads a directive of `key` (ASCII case ignored): the keys the
+/// fields come from ([`resolve`], [`list_key`]), `Interface` and its variants, and the
+/// `X-` keys a reader looks up: the ones [`Toc`]'s accessors name, and every `X-…ID`,
+/// which inventory lists (`TocSummary::x_ids`).
+fn evaluated(key: &str) -> bool {
+    const EXACT: &[&str] = &[
+        "title",
+        "notes",
+        "author",
+        "version",
+        "optionaldeps",
+        "loadondemand",
+        "loadwith",
+        "loadmanagers",
+        "savedvariables",
+        "savedvariablespercharacter",
+        "allowloadgametype",
+        "excludeloadgametype",
+        "x-website",
+        "x-tukui-projectfolders",
+        "x-addonprovider",
+        "x-part-of",
+    ];
+    let starts = |prefix: &str| {
+        key.as_bytes()
+            .get(..prefix.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(prefix.as_bytes()))
+    };
+    let ends = |suffix: &str| {
+        key.len()
+            .checked_sub(suffix.len())
+            .and_then(|cut| key.as_bytes().get(cut..))
+            .is_some_and(|tail| tail.eq_ignore_ascii_case(suffix.as_bytes()))
+    };
+    EXACT.iter().any(|k| key.eq_ignore_ascii_case(k))
+        || starts("interface")
+        || key.eq_ignore_ascii_case("requireddeps")
+        || (starts("dep") && is_dependency_key(&key.to_ascii_lowercase()))
+        || (starts("x-") && ends("id"))
+}
+
+/// [`split_at_colon`] without copying: the key and value, trimmed.
+fn split_at_colon_borrowed(text: &str) -> Option<(&str, &str)> {
+    let mut depth = 0usize;
+    let colon = text.char_indices().find_map(|(i, c)| {
+        match c {
+            '[' => depth += 1,
+            ']' => depth = depth.saturating_sub(1),
+            ':' if depth == 0 => return Some(i),
+            _ => {}
+        }
+        None
+    })?;
+    Some((text.get(..colon)?.trim(), text.get(colon + 1..)?.trim()))
 }
 
 /// The directive after a line's `##`; `None` without a colon outside brackets, or
@@ -313,18 +541,8 @@ fn directive(rest: &str, line: u32) -> Option<Directive> {
 /// The key and value of a directive's text, at its first colon outside brackets,
 /// trimmed.
 fn split_at_colon(text: &str) -> Option<(String, String)> {
-    let mut depth = 0usize;
-    let colon = text.char_indices().find_map(|(i, c)| {
-        match c {
-            '[' => depth += 1,
-            ']' => depth = depth.saturating_sub(1),
-            ':' if depth == 0 => return Some(i),
-            _ => {}
-        }
-        None
-    })?;
-    let (key, value) = (text.get(..colon)?, text.get(colon + 1..)?);
-    Some((key.trim().to_owned(), value.trim().to_owned()))
+    let (key, value) = split_at_colon_borrowed(text)?;
+    Some((key.to_owned(), value.to_owned()))
 }
 
 /// `text` without the inline directives in it, and those, parsed in order. A bracket
@@ -845,10 +1063,12 @@ mod tests {
         let toc = parse(
             "## Title: My AddOn in Classic [AllowLoadGameType classic]\n\
              ## Interface [allowloadgametype Vanilla]: 11509\n\
-             ## X-Odd: a [AllowLoadGameType mists][ExcludeLoadGameType camelot]\n\
+             ## X-Odd-ID: a [AllowLoadGameType mists][ExcludeLoadGameType camelot]\n\
              ## Notes: [AllowLoad Game] both\n\
              ## Title: BigWigs [|cffeda55fCore|r]\n\
-             ## Notes [Game:Mainline]: colon inside\n\
+             ## Interface-Odd [Game:Mainline]: colon inside\n\
+             ## X-Quest-1-1: never evaluated [AllowLoadGameType mists]\n\
+             ## Notes [Game:Mainline]: no client reads this key\n\
              ## Version: 1 [AllowLoadGameType]\n\
              ## Author [AllowLoadGameType a:b]: Someone\n",
         );
@@ -884,9 +1104,9 @@ mod tests {
                     vec![allow.clone()]
                 ),
                 (
-                    "X-Odd",
+                    "X-Odd-ID",
                     "a",
-                    "X-Odd",
+                    "X-Odd-ID",
                     "a [AllowLoadGameType mists][ExcludeLoadGameType camelot]",
                     vec![allow.clone(), ConditionKind::ExcludeLoadGameType]
                 ),
@@ -906,9 +1126,9 @@ mod tests {
                     vec![]
                 ),
                 (
-                    "Notes [Game:Mainline]",
+                    "Interface-Odd [Game:Mainline]",
                     "colon inside",
-                    "Notes [Game:Mainline]",
+                    "Interface-Odd [Game:Mainline]",
                     "colon inside",
                     vec![]
                 ),
@@ -929,6 +1149,11 @@ mod tests {
                     vec![allow]
                 ),
             ]
+        );
+        assert_eq!(
+            toc.ignored_directives, 2,
+            "keys no client evaluates are counted, never stored: X-Quest-1-1, and \
+             `Notes [Game:Mainline]` (bracket text that is no inline directive is the key's)"
         );
         assert_eq!(
             toc.lines[0].conditions[0].values,
@@ -1433,6 +1658,171 @@ mod tests {
         );
     }
 
+    /// `bytes`, served `step` bytes per read, as a zip entry or a slow pipe may serve them.
+    struct Chunked<'a> {
+        bytes: &'a [u8],
+        step: usize,
+    }
+
+    impl std::io::Read for Chunked<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.step.min(buf.len()).min(self.bytes.len());
+            let (head, tail) = self.bytes.split_at(n);
+            buf[..n].copy_from_slice(head);
+            self.bytes = tail;
+            Ok(n)
+        }
+    }
+
+    fn streamed(bytes: &[u8], step: usize) -> Toc {
+        parse_toc_from(Chunked { bytes, step }).unwrap()
+    }
+
+    /// The bytes of every stored line: what a parsed TOC holds of its directives.
+    fn stored(toc: &Toc) -> usize {
+        let line =
+            |d: &Directive| d.key.len() + d.value.len() + d.raw_key.len() + d.raw_value.len();
+        toc.lines.iter().map(line).sum::<usize>()
+            + toc.directives.values().map(line).sum::<usize>()
+            + toc
+                .x_fields
+                .iter()
+                .map(|(k, v)| k.len() + v.len())
+                .sum::<usize>()
+    }
+
+    /// Questie's `QuestieDB` keeps its quest database as `## X-Quest-…` lines, 13 to 57 MB
+    /// a TOC (omad-btel): such lines are counted, never stored, and the keys omaddons
+    /// reads are still found after them.
+    #[test]
+    fn a_metadata_toc_keeps_only_the_keys_read() {
+        let mut text = b"## Interface: 11508\n".to_vec();
+        let payload = "QUJD".repeat(25);
+        for n in 0..200_000 {
+            text.extend_from_slice(format!("## X-Quest-{n}-1: {payload}\n").as_bytes());
+        }
+        text.extend_from_slice(
+            b"## Title: Big\n## Dependencies: Lib\n## X-Website: https://example.org\n\
+              ## X-WoWI-ID: 42\nBig.lua\n",
+        );
+        assert!(text.len() > 20_000_000, "{} bytes", text.len());
+        for toc in [parse_toc(&text), streamed(&text, 64 * 1024)] {
+            assert_eq!(toc.ignored_directives, 200_000);
+            assert!(stored(&toc) < 1024, "{} bytes stored", stored(&toc));
+            assert_eq!(toc.lines.len(), 5);
+            assert_eq!(toc.interfaces, [11_508]);
+            assert_eq!(toc.title.as_deref(), Some("Big"));
+            assert_eq!(toc.dependencies, ["Lib"]);
+            assert_eq!(toc.website(), Some("https://example.org"));
+            assert_eq!(toc.wowi_id(), Some("42"));
+            assert_eq!(toc.files.len(), 1);
+        }
+    }
+
+    /// Every key a reader looks up is kept, in any case; any other is counted.
+    #[test]
+    fn the_keys_read_are_kept() {
+        for key in [
+            "Interface",
+            "interface-vanilla",
+            "Title",
+            "NOTES",
+            "Author",
+            "Version",
+            "RequiredDeps",
+            "Dependencies",
+            "Dep-Lib",
+            "OptionalDeps",
+            "LoadOnDemand",
+            "LoadWith",
+            "LoadManagers",
+            "SavedVariables",
+            "SavedVariablesPerCharacter",
+            "AllowLoadGameType",
+            "ExcludeLoadGameType",
+            "X-Website",
+            "X-Tukui-ProjectID",
+            "X-Tukui-ProjectFolders",
+            "X-WoWI-ID",
+            "X-Curse-Project-ID",
+            "x-wago-id",
+            "X-AddonProvider",
+            "X-Part-Of",
+            "X-Anything-Id",
+        ] {
+            let toc = parse(&format!("## {key}: v\n"));
+            assert_eq!((toc.lines.len(), toc.ignored_directives), (1, 0), "{key}");
+        }
+        for key in [
+            "X-Quest-1-1",
+            "X-Category",
+            "Title-deDE",
+            "Notes [Game:Mainline]",
+            "DefaultState",
+            "IconTexture",
+            "Category",
+            "Dep Lib",
+        ] {
+            let toc = parse(&format!("## {key}: v\n"));
+            assert_eq!((toc.lines.len(), toc.ignored_directives), (0, 1), "{key}");
+        }
+        // Not a directive at all: no colon, or an empty key.
+        let toc = parse("## no colon\n##: empty key\n## [AllowLoad game]: empty too\n");
+        assert_eq!((toc.lines.len(), toc.ignored_directives), (0, 0));
+    }
+
+    /// A stream parses as the same bytes in memory, however it is cut into reads: line
+    /// ends (`\r\n` split across two reads included), a byte-order mark (whole, partial or
+    /// alone), truncated lines and line numbers.
+    #[test]
+    fn the_stream_reads_as_the_bytes_do() {
+        let long = "y".repeat(3 * TOC_LINE_MAX);
+        let cases: Vec<Vec<u8>> = vec![
+            Vec::new(),
+            b"\n".to_vec(),
+            b"\r".to_vec(),
+            b"\r\n".to_vec(),
+            b"\r\r\n\n".to_vec(),
+            b"\xef\xbb\xbf".to_vec(),
+            b"\xef\xbb".to_vec(),
+            b"\xef\xbb\xbf## Title: Bom\r\n## Version: 1".to_vec(),
+            b"\xef\xbb## Title: Half a mark\n".to_vec(),
+            format!("\u{feff}## Title: {long}\r## Notes: after a long line\rFoo.lua").into_bytes(),
+            format!("## Title: {long}\n## Title: second\n").into_bytes(),
+            include_bytes!("../tests/fixtures/toc/parser/modern.toc").to_vec(),
+            include_bytes!("../tests/fixtures/toc/parser/wotlk.toc").to_vec(),
+        ];
+        for bytes in &cases {
+            let whole = parse_toc(bytes);
+            for step in [1, 2, 3, 7, 4096, usize::MAX] {
+                assert_eq!(streamed(bytes, step), whole, "{bytes:?} in reads of {step}");
+            }
+        }
+    }
+
+    /// A TOC past its bound is judged on what was read, and says so; one at its bound
+    /// does not.
+    #[test]
+    fn a_toc_past_its_bound_is_judged_on_what_was_read() {
+        let text = b"## Interface: 11508\n## Title: Big\n## X-Quest-1-1: abc\n## Version: 9\n";
+        let cut = 36;
+        assert_eq!(&text[..cut], b"## Interface: 11508\n## Title: Big\n##");
+        let toc = parse_bounded(text.as_slice(), cut as u64).unwrap();
+        assert_eq!(
+            (toc.interfaces.as_slice(), toc.version.as_deref()),
+            ([11_508].as_slice(), None)
+        );
+        assert_eq!(
+            toc.issues,
+            [TocIssue::TooLarge {
+                max_bytes: cut as u64
+            }]
+        );
+        let whole = parse_bounded(text.as_slice(), text.len() as u64).unwrap();
+        assert_eq!(whole, parse_toc(text), "a file at its bound is read whole");
+        assert!(whole.issues.is_empty());
+    }
+
     #[test]
     fn plain_titles_drop_ui_escapes() {
         for (raw, plain) in [
@@ -1472,6 +1862,42 @@ mod tests {
             let _ = parse_toc(&bytes);
         }
 
+        /// Every line [`ignored_on_sight`] skips is one the full reading ignores too.
+        #[test]
+        fn ignored_on_sight_agrees_with_the_full_reading(
+            parts in proptest::collection::vec(prop_oneof![
+                Just("##".to_owned()), Just(":".to_owned()), Just("[".to_owned()),
+                Just("]".to_owned()), Just(" ".to_owned()), Just("\t".to_owned()),
+                Just("\u{b}".to_owned()), Just("\u{a0}".to_owned()), Just("é".to_owned()),
+                Just("X-Quest-1".to_owned()), Just("Title".to_owned()), Just("Dep".to_owned()),
+                Just("Interface".to_owned()), Just("-ID".to_owned()),
+                Just("AllowLoadGameType classic".to_owned()), "[a-zA-Z0-9 -]{0,8}",
+            ], 0..12),
+            invalid in proptest::option::of(any::<u8>()),
+        ) {
+            let mut raw = parts.concat().into_bytes();
+            if let Some(byte) = invalid {
+                raw.push(0x80 | byte);
+            }
+            if ignored_on_sight(&raw) {
+                let text = String::from_utf8_lossy(&raw);
+                let rest = text.trim().strip_prefix("##");
+                let full = rest.and_then(|rest| evaluated_directive(rest, 1));
+                prop_assert_eq!(full, Some(None), "{:?}", text);
+            }
+        }
+
+        #[test]
+        fn streams_parse_as_bytes(
+            bytes in proptest::collection::vec(
+                prop_oneof![Just(b'\r'), Just(b'\n'), Just(b'#'), Just(b':'), Just(0xef), any::<u8>()],
+                0..4096,
+            ),
+            step in 1usize..64,
+        ) {
+            prop_assert_eq!(streamed(&bytes, step), parse_toc(&bytes));
+        }
+
         #[test]
         fn hostile_shapes_never_panic(
             parts in proptest::collection::vec(prop_oneof![
@@ -1501,10 +1927,14 @@ mod tests {
             let directives: Vec<(String, String)> = keys.into_iter().zip(values).collect();
             let text = render(&directives, &files);
             let toc = parse(&text);
-            prop_assert_eq!(toc.directives.len(), directives.len(), "{}", text);
+            let kept = directives.iter().filter(|(key, _)| evaluated(key)).count();
+            prop_assert_eq!(toc.directives.len(), kept, "{}", text);
+            prop_assert_eq!(toc.ignored_directives as usize, directives.len() - kept, "{}", text);
             for (key, value) in &directives {
-                prop_assert_eq!(toc.get(key), Some(value.as_str()), "{}", text);
+                let read = evaluated(key).then_some(value.as_str());
+                prop_assert_eq!(toc.get(key), read, "{}", text);
             }
+            prop_assert_eq!(&parse_toc_from(text.as_bytes()).unwrap(), &toc, "{}", text);
             let paths: Vec<&str> = toc.files.iter().map(|f| f.path.as_str()).collect();
             prop_assert_eq!(paths, files.iter().map(String::as_str).collect::<Vec<_>>());
         }

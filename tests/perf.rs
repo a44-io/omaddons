@@ -38,7 +38,7 @@ use omaddons::sources::{SourceConfigView, SourceRegistry, Wanted, fetch_once};
 use omaddons::state::memo::{self, MemoEntry, ReleaseMemo};
 use support::{
     addon_release, drift_report, history_line, lua_workload, measured, median_of_21, peak_rss,
-    restore_lock_hold,
+    restore_lock_hold, sampled_peak_rss,
 };
 
 /// Held by each 500 MiB test, so two never share the disk.
@@ -128,6 +128,27 @@ mod support {
             plan: None,
             doctor_run_id: None,
             repairs: Vec::new(),
+        }
+    }
+
+    /// The highest `VmHWM` of `child` sampled until it exits: a high-water mark, so any
+    /// sample after the peak holds it, and the result can only fall short of the peak,
+    /// never exceed it.
+    pub fn sampled_peak_rss(child: &mut std::process::Child) -> (u64, std::process::ExitStatus) {
+        let status_file = format!("/proc/{}/status", child.id());
+        let mut peak = 0u64;
+        loop {
+            if let Ok(status) = std::fs::read_to_string(&status_file)
+                && let Some(kib) = status
+                    .lines()
+                    .find_map(|l| l.strip_prefix("VmHWM:"))
+                    .and_then(|v| v.trim().trim_end_matches("kB").trim().parse::<u64>().ok())
+            {
+                peak = peak.max(kib * 1024);
+            }
+            if let Some(exit) = child.try_wait().unwrap() {
+                return (peak, exit);
+            }
         }
     }
 
@@ -1630,4 +1651,75 @@ fn blob_reverification_cost() {
     measured(format_args!(
         "blob re-verification: {ms:.2} ms per 5 MiB (median of 21)"
     ));
+}
+
+/// Questie's `QuestieDB` keeps its quest database in its TOCs, 13 to 57 MB each
+/// (omad-btel). With an addon whose 20 MB TOC is 200,000 `## X-Quest-…` lines, `list -v`,
+/// `errors` and `status -v` each take under 30 ms more than with the same addon's TOC
+/// without them, and none peaks over 64 MiB of resident memory.
+#[test]
+#[ignore = "a release-build budget: cargo test --release --test integration perf:: -- --ignored"]
+fn a_large_metadata_toc_costs_under_30_ms_and_64_mib() {
+    const MIB: u64 = 1 << 20;
+    let homes: Vec<(&str, Home)> = [("without", 0usize), ("with", 200_000)]
+        .into_iter()
+        .map(|(label, quests)| {
+            let home = Home::new(&["wow"]);
+            let src = home.env.root().join("src/Big");
+            fs::create_dir_all(&src).unwrap();
+            let mut toc =
+                b"## Interface: 120105\n## Title: Big\n## SavedVariables: BigDB\n".to_vec();
+            let payload = "QUJD".repeat(25);
+            for n in 0..quests {
+                toc.extend_from_slice(format!("## X-Quest-{n}-1: {payload}\n").as_bytes());
+            }
+            toc.extend_from_slice(b"## Version: 1.0\nBig.lua\n");
+            fs::write(src.join("Big.toc"), &toc).unwrap();
+            fs::write(src.join("Big.lua"), "-- big\n").unwrap();
+            let src = src.to_str().unwrap();
+            home.run(&["install", src, "-t", "retail", "--json"])
+                .expect(0);
+            (label, home)
+        })
+        .collect();
+    for args in [
+        &["list", "-t", "retail", "-v", "--json"][..],
+        &["errors", "-t", "retail", "--json"][..],
+        &["status", "-v", "--json"][..],
+    ] {
+        let mut medians = Vec::new();
+        for (label, home) in &homes {
+            let argv: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
+            home.run(args).expect(0);
+            let (median, _) = median_of_21(|| {
+                assert!(
+                    home.std_command(&argv, &[])
+                        .output()
+                        .unwrap()
+                        .status
+                        .success()
+                );
+            });
+            let mut child = home
+                .std_command(&argv, &[])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap();
+            let (peak, exit) = sampled_peak_rss(&mut child);
+            assert!(exit.success(), "{args:?} {label}");
+            measured(format_args!(
+                "{} {label} the large TOC: median {median:?}, peak RSS {} KiB",
+                args.join(" "),
+                peak / 1024
+            ));
+            assert!(peak < 64 * MIB, "{args:?} {label}: peak {peak} bytes");
+            medians.push(median);
+        }
+        let extra = medians[1].saturating_sub(medians[0]);
+        assert!(
+            extra < Duration::from_millis(30),
+            "{args:?}: {extra:?} more with the large TOC ({medians:?})"
+        );
+    }
 }
