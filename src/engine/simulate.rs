@@ -346,19 +346,39 @@ pub fn diagnose(
     client_dirs: &[PathBuf],
     sv_writable: &dyn Fn(&Path) -> bool,
 ) -> Diagnoses {
-    // Recovery's order: the folder journals, then the repairs (E5), each by transaction.
-    let listed = journal::list(paths).and_then(|folder| {
-        let repairs = super::repair::journal::list(paths)?;
-        Ok(folder
-            .into_iter()
-            .map(|(tx, path)| (tx, JournalFamily::Folder, path))
-            .chain(
-                repairs
-                    .into_iter()
-                    .map(|(tx, path)| (tx, JournalFamily::Repair, path)),
-            )
-            .collect::<Vec<_>>())
-    });
+    diagnose_listed(paths, list_journals(paths), client_dirs, sv_writable)
+}
+
+/// The journal directory's listing, in recovery's order: the folder journals, then the
+/// repairs (E5), each by transaction.
+pub(crate) fn list_journals(
+    paths: &Paths,
+) -> crate::error::Result<Vec<(TxId, JournalFamily, PathBuf)>> {
+    let folder = journal::list(paths)?;
+    let repairs = super::repair::journal::list(paths)?;
+    Ok(folder
+        .into_iter()
+        .map(|(tx, path)| (tx, JournalFamily::Folder, path))
+        .chain(
+            repairs
+                .into_iter()
+                .map(|(tx, path)| (tx, JournalFamily::Repair, path)),
+        )
+        .collect())
+}
+
+/// [`diagnose`] over `listed`, the journal directory as [`list_journals`] listed it,
+/// each journal then read. A journal gone by its read is left out, as if it had not been
+/// listed: a finished writer prunes its own journal under its own in-flight lock, never
+/// the global one, so it can go in between, and recovery skips it the same way (5c7b3d6,
+/// omad-4ycd; omad-fgw3). Only a journal no longer there is left out: one still there
+/// that does not read stays, and is diagnosed as unreadable.
+pub(crate) fn diagnose_listed(
+    paths: &Paths,
+    listed: crate::error::Result<Vec<(TxId, JournalFamily, PathBuf)>>,
+    client_dirs: &[PathBuf],
+    sv_writable: &dyn Fn(&Path) -> bool,
+) -> Diagnoses {
     let (found, unlisted) = match listed {
         Ok(found) => (found, None),
         Err(error) => (
@@ -371,11 +391,14 @@ pub fn diagnose(
     };
     let listing = found
         .into_iter()
-        .map(|(tx, family, path)| Listed {
-            text: read_listed(&path),
-            tx,
-            family,
-            path,
+        .filter_map(|(tx, family, path)| {
+            let text = read_listed(&path);
+            (text.is_ok() || !repair::recover::gone(&path)).then_some(Listed {
+                text,
+                tx,
+                family,
+                path,
+            })
         })
         .collect();
     let base = DiskBase::new(paths);
@@ -4409,6 +4432,87 @@ mod tests {
         std::fs::set_permissions(&dir, mode).unwrap();
         assert!(found.journals.is_empty(), "{found:#?}");
         assert_eq!(found.unlisted.map(|failure| failure.dir), Some(dir));
+    }
+
+    /// A folder journal and a repair journal, neither of whose writers is alive, each
+    /// holding `text`: listed, then each case's change, then diagnosed from that listing.
+    fn listed_then(change: impl FnOnce(&Paths, TxId, TxId)) -> (Diagnoses, TxId, TxId) {
+        let scene = crate::engine::testing::Scene::new();
+        let (folder, repair) = (TxId::new(), TxId::new());
+        std::fs::create_dir_all(scene.paths.journal_dir()).unwrap();
+        let text = "{\"type\":\"prepared\",\"schema_version\":\"1.1\"}\n";
+        std::fs::write(scene.paths.journal(&folder), text).unwrap();
+        std::fs::write(scene.paths.journal_repair(&repair), text).unwrap();
+        let listed = list_journals(&scene.paths);
+        assert_eq!(listed.as_ref().map(Vec::len).ok(), Some(2), "{listed:?}");
+        change(&scene.paths, folder, repair);
+        let found = diagnose_listed(&scene.paths, listed, &[], &|_| true);
+        (found, folder, repair)
+    }
+
+    /// omad-fgw3: a journal of either family listed, then gone before it is read (a
+    /// finished writer prunes its own), is left out of the diagnosis, as recovery skips
+    /// it: no verdict, so no finding, no fence and no stop. The other is diagnosed.
+    #[test]
+    fn a_journal_gone_since_the_listing_is_left_out() {
+        type Gone = fn(&Paths, TxId, TxId) -> PathBuf;
+        let cases: [(&str, Gone); 2] = [
+            ("folder", |paths, folder, _| paths.journal(&folder)),
+            ("repair", |paths, _, repair| paths.journal_repair(&repair)),
+        ];
+        for (case, gone) in cases {
+            let mut removed = None;
+            let (found, folder, repair) = listed_then(|paths, folder, repair| {
+                let path = gone(paths, folder, repair);
+                std::fs::remove_file(&path).unwrap();
+                removed = Some(path);
+            });
+            let kept = if case == "folder" { repair } else { folder };
+            assert_eq!(
+                found.journals.iter().map(|d| d.tx).collect::<Vec<_>>(),
+                [kept],
+                "case {case}: only the journal still there, {removed:?} left out: {found:#?}"
+            );
+            assert_eq!(found.unlisted, None, "case {case}");
+        }
+    }
+
+    /// omad-fgw3: a journal still there that does not read (a directory at its path) is
+    /// not left out: it is diagnosed as one that cannot be read, exactly as when it was
+    /// read at once. Only a journal no longer there is skipped.
+    #[test]
+    fn an_unreadable_journal_is_still_unreadable() {
+        type At = fn(&Paths, &TxId) -> PathBuf;
+        let cases: [(&str, JournalFamily, At); 2] = [
+            ("folder", JournalFamily::Folder, Paths::journal),
+            ("repair", JournalFamily::Repair, Paths::journal_repair),
+        ];
+        for (case, family, at) in cases {
+            let scene = crate::engine::testing::Scene::new();
+            let tx = TxId::new();
+            let path = at(&scene.paths, &tx);
+            std::fs::create_dir_all(scene.paths.journal_dir()).unwrap();
+            std::fs::write(&path, "{\"type\":\"prepared\"}\n").unwrap();
+            let listed = list_journals(&scene.paths);
+            std::fs::remove_file(&path).unwrap();
+            std::fs::create_dir(&path).unwrap();
+            let found = diagnose_listed(&scene.paths, listed, &[], &|_| true);
+            assert_eq!(
+                found
+                    .journals
+                    .iter()
+                    .map(|d| (d.tx, d.family, d.verdict))
+                    .collect::<Vec<_>>(),
+                [(
+                    tx,
+                    family,
+                    JournalVerdict::Unattributed {
+                        cause: UnattributedCause::ReadFailed
+                    }
+                )],
+                "case {case}: still there, so diagnosed as unreadable: {found:#?}"
+            );
+        }
     }
 
     // -----------------------------------------------------------------------------------

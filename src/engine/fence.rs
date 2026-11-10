@@ -241,16 +241,23 @@ pub(crate) fn closes_read(paths: &Paths, read: &PreparedRead) -> bool {
 /// the set. Reads `journal::diagnose` only when a repair journal exists: otherwise one
 /// listing.
 pub fn load(paths: &Paths, client_dirs: &[PathBuf]) -> FenceSet {
-    let mut set = FenceSet::new();
     match super::repair::journal::list(paths) {
-        Ok(found) if found.is_empty() => return set,
+        Ok(found) if found.is_empty() => return FenceSet::new(),
         Ok(_) => {}
         Err(_) => {
+            let mut set = FenceSet::new();
             close_unlisted(&mut set, paths);
             return set;
         }
     }
     let diagnoses = journal::diagnose(paths, client_dirs, &journal::no_saved_variables);
+    of_diagnoses(paths, &diagnoses)
+}
+
+/// The fences [`load`] carries for `diagnoses`: a journal they leave out (one gone since
+/// the listing, omad-fgw3) fences nothing.
+fn of_diagnoses(paths: &Paths, diagnoses: &journal::Diagnoses) -> FenceSet {
+    let mut set = FenceSet::new();
     if diagnoses.unlisted.is_some() {
         close_unlisted(&mut set, paths);
     }
@@ -1295,6 +1302,55 @@ mod tests {
             let got = load(&home.paths, &clients(&home));
             set_mode(&home.paths.journal_dir(), 0o755);
             assert_eq!(shape(&got), want(&home, tx), "{case}");
+        }
+    }
+
+    /// omad-fgw3: a stuck repair's journal listed, then gone before it is read (its
+    /// writer's cleanup prunes it under its own in-flight lock), fences nothing, as
+    /// recovery skips it; one still there that does not read (a directory at its path)
+    /// closes the set, as before.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_repair_journal_gone_since_the_listing_fences_nothing() {
+        use crate::engine::simulate::{diagnose_listed, list_journals};
+        type Change = fn(&Path);
+        let cases: [(&str, Change, bool); 2] = [
+            (
+                "gone",
+                |journal| std::fs::remove_file(journal).unwrap(),
+                false,
+            ),
+            (
+                "a_directory",
+                |journal| {
+                    std::fs::remove_file(journal).unwrap();
+                    std::fs::create_dir(journal).unwrap();
+                },
+                true,
+            ),
+        ];
+        for (case, change, closes) in cases {
+            let home = repair_home();
+            let tx = stuck(&home);
+            let listed = list_journals(&home.paths);
+            change(&home.paths.journal_repair(&tx));
+            let diagnoses = diagnose_listed(
+                &home.paths,
+                listed,
+                &clients(&home),
+                &journal::no_saved_variables,
+            );
+            let got = shape(&of_diagnoses(&home.paths, &diagnoses));
+            assert_eq!(
+                got.closed
+                    .as_ref()
+                    .map(|(resource, tx, ..)| (resource.clone(), *tx)),
+                closes.then(|| (format!("journal:{tx}"), Some(tx))),
+                "{case}: {got:?}"
+            );
+            if !closes {
+                assert_eq!(got.fences, Vec::new(), "{case}");
+            }
         }
     }
 

@@ -157,7 +157,7 @@ pub(crate) fn settle_outcome(
 }
 
 /// Whether nothing is at `path` any more (`ENOENT` on its `lstat`): a read, never a write.
-fn gone(path: &Path) -> bool {
+pub(crate) fn gone(path: &Path) -> bool {
     matches!(
         std::fs::symlink_metadata(path),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound
