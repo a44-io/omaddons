@@ -124,6 +124,10 @@ pub(crate) fn settle_one(env: &RecoveryEnv<'_>, tx: TxId, path: &Path) -> Result
 pub(crate) enum Settled {
     /// Its writer holds its in-flight lock: left as it is.
     Live,
+    /// Gone since recovery listed it: its writer pruned it once finished, under its own
+    /// in-flight lock (omad-4ycd). Nothing to settle and nothing done here, as if it had
+    /// never been listed.
+    Gone,
     /// Removed with nothing run: never prepared, or committed or rolled back already.
     Pruned,
     Rolled(RecoveryAction),
@@ -140,10 +144,24 @@ pub(crate) fn settle_outcome(
     if live {
         return Ok((Settled::Live, None));
     }
-    // A journal that cannot be read names no client, as one with no target does.
-    let parsed = journal::read(env.paths, path).map_err(|error| unattributed(error, Some(&tx)))?;
+    // A journal that cannot be read names no client, as one with no target does; one gone
+    // since the listing was pruned by its finished writer (omad-4ycd), as a folder
+    // journal can be (`journal::existing`). Only a file that is no longer there is gone.
+    let parsed = match journal::read(env.paths, path) {
+        Ok(parsed) => parsed,
+        Err(_) if gone(path) => return Ok((Settled::Gone, None)),
+        Err(error) => return Err(unattributed(error, Some(&tx))),
+    };
     let (action, warning) = recover_one(env, tx, path, &parsed)?;
     Ok((action.map_or(Settled::Pruned, Settled::Rolled), warning))
+}
+
+/// Whether nothing is at `path` any more (`ENOENT` on its `lstat`): a read, never a write.
+fn gone(path: &Path) -> bool {
+    matches!(
+        std::fs::symlink_metadata(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+    )
 }
 
 /// Every repair journal through [`settle_one`], in transaction order and without the
@@ -1307,6 +1325,58 @@ mod tests {
         drop(holder);
         assert_eq!(recover(&home).unwrap().len(), 1, "once its writer is gone");
         assert_eq!(left(&home, &tx), (false, false));
+    }
+
+    /// omad-4ycd: a repair journal its finished writer pruned between recovery's listing
+    /// and its read is skipped: nothing settled, no outcome, no error; recovery of the
+    /// rest goes on.
+    #[test]
+    fn a_repair_journal_gone_since_the_listing_is_skipped() {
+        let home = repair_home();
+        no_folder_journal(&home);
+        let tx = crashed(&home, &[flatten(&home)], "fsx.mutate.executed=panic@1");
+        let path = home.paths.journal_repair(&tx);
+        std::fs::remove_file(&path).unwrap();
+        let lock = GlobalLock::acquire(&home.paths, "test").unwrap();
+        let settled = settle_outcome(&env(&home, &lock), tx, &path);
+        assert!(
+            matches!(settled, Ok((Settled::Gone, None))),
+            "case gone: {settled:?}"
+        );
+        drop(lock);
+        let only = std::collections::BTreeSet::from([tx]);
+        let lock = GlobalLock::acquire(&home.paths, "test").unwrap();
+        let disclosed = crate::engine::journal::recover_disclosed(
+            &lock,
+            &home.paths,
+            &no_saved_variables,
+            "test",
+            crate::model::Actor::Human,
+            Some(&only),
+        );
+        assert!(
+            disclosed.outcomes.is_empty() && disclosed.error.is_none(),
+            "case gone, disclosed: {disclosed:?}"
+        );
+    }
+
+    /// omad-4ycd: only a journal that is no longer there is skipped; one still there that
+    /// does not read stops recovery as before (`unattributed`).
+    #[test]
+    fn an_unreadable_repair_journal_still_stops() {
+        let home = repair_home();
+        no_folder_journal(&home);
+        let tx = crashed(&home, &[flatten(&home)], "fsx.mutate.executed=panic@1");
+        let path = home.paths.journal_repair(&tx);
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let lock = GlobalLock::acquire(&home.paths, "test").unwrap();
+        let error = settle_outcome(&env(&home, &lock), tx, &path).unwrap_err();
+        assert_eq!(
+            error.details["reason"], "unattributed",
+            "case unreadable: {error:?}"
+        );
+        assert!(path.is_dir(), "case unreadable: left as it is");
     }
 
     #[test]

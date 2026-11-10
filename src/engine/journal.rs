@@ -1186,7 +1186,8 @@ impl Settle for Disclosing {
         use super::repair::recover::Settled;
         let settled = super::repair::recover::settle_outcome(env, tx, path);
         let result = match &settled {
-            Ok((Settled::Live, _)) => None,
+            // Its writer's, or gone since it was listed: nothing of this run's.
+            Ok((Settled::Live | Settled::Gone, _)) => None,
             Ok((Settled::Pruned, _)) => Some(TxResult::Pruned),
             Ok((Settled::Rolled(RecoveryAction::RolledBack), _)) => Some(TxResult::RolledBack),
             Ok((Settled::Rolled(RecoveryAction::RolledForward), _)) => {
