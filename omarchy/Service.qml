@@ -190,6 +190,15 @@ Item {
   property int panelPollMs: 15000
   property int runningPollMs: 30000
   property int windowDebounceMs: 500
+  // The open's full scan (1n2p.38): when the last finished, and how old it may grow
+  // before an open asks for another (Model.FULL_SCAN_MAX_AGE_MS).
+  property double lastFullScanAt: 0
+  property int fullScanMaxAgeMs: Model.FULL_SCAN_MAX_AGE_MS
+  // An open waits for its cached status, then asks for the rest (afterOpen).
+  property bool openFollowUp: false
+  // The addresses of the windows that may be WoW's, from their `openwindow`: their
+  // `closewindow` names only the address (1n2p.38). The newest WINDOW_MEMORY.
+  property var wowWindows: []
   // After a window closed while a client ran: refreshes this long after the close.
   property var followUpDelaysMs: [2000, 5000, 15000]
   property int autoCheckIntervalMs: Model.AUTO_CHECK_INTERVAL_MS
@@ -253,11 +262,31 @@ Item {
     var any = Object.keys(next).length > 0
     var opened = any && !panelOpen
     panelOpen = any
+    // The open (1n2p.38): the cached status first, in milliseconds; the shown view asks
+    // its own read next (PanelView); once the status answers, quietly, what the frame
+    // needs that was never read and a full scan when one is due (afterOpen). A view
+    // never visited reads nothing.
     if (opened) {
-      request({ "resource": "status", "template": "status_full", "label": "Open panel" })
-      readList()
-      readErrors()
-      readBackups()
+      openFollowUp = true
+      request({ "resource": "status", "template": "status", "label": "Open panel" })
+    }
+  }
+
+  // After an open's cached status: Lua errors (the first-run card asks whether a client
+  // records them) and the list (Search and addon pages mark what is installed) when
+  // never read, then a full scan when Model.fullScanDue says so, all in the background,
+  // behind the shown view's read.
+  function afterOpen(commandsNow) {
+    openFollowUp = false
+    // Never in place of the shown view's own read of the same data (one per key).
+    if (!errors && reading.indexOf("errors") === -1) {
+      request({ "resource": "errors", "template": "errors", "label": "Issues", "priority": "background" })
+    }
+    if (!lists && reading.indexOf("list") === -1) {
+      request({ "resource": "list", "template": "list", "label": "Installed", "priority": "background" })
+    }
+    if (Model.fullScanDue(lastFullScanAt, Date.now(), fullScanMaxAgeMs, commandsNow)) {
+      request({ "resource": "status", "template": "status_full", "label": "Scan for clients", "priority": "background" })
     }
   }
 
@@ -1038,7 +1067,9 @@ Item {
         lastResult = seen
       }
       refreshBar()
+      if (outcome === "ok" && r.template === "status_full") lastFullScanAt = Date.now()
       if (outcome === "ok") statusApplied()
+      if (openFollowUp && r.label === "Open panel") afterOpen(model.commands)
       return
     }
     // malformed, oversized, timeout, cancelled or stuck: no answer to show. The card says
@@ -1145,12 +1176,18 @@ Item {
   // compatible answer (M3-D42).
 
   // Hyprland's window events ring like the doorbell (M3-D13): a client starting or
-  // exiting shows within a second. A Wine game outlives its window, so a close while a
-  // client ran is followed by refreshes at each of followUpDelaysMs.
-  function windowEvent(name) {
-    if (name !== "openwindow" && name !== "closewindow") return
+  // exiting shows within a second. Only a window that may be WoW's rings
+  // (Model.windowEventAction, 1n2p.38): a terminal or a stream overlay opening runs no
+  // `status`. A Wine game outlives its window, so a close while a client ran is followed
+  // by refreshes at each of followUpDelaysMs.
+  function windowEvent(name, data) {
+    var verdict = Model.windowEventAction(name, data, wowWindows, anyRunning)
+    if (!verdict) return
+    if (verdict.remember) wowWindows = wowWindows.concat([verdict.remember]).slice(-Model.WINDOW_MEMORY)
+    if (verdict.forget) wowWindows = wowWindows.filter(function(a) { return a !== verdict.forget })
+    if (!verdict.refresh) return
     windowDebounce.restart()
-    if (name === "closewindow" && anyRunning) {
+    if (verdict.followUp) {
       followUpStep = 0
       followUpTimer.interval = followUpDelaysMs[0]
       followUpTimer.restart()
@@ -1385,11 +1422,13 @@ Item {
     onTriggered: root.refreshBar()
   }
 
-  // Window events, with no class filter: a Proton game window's class names its
-  // launcher, not the game (M3-D13).
+  // Window events, filtered to the windows that may be WoW's (windowEvent): a Proton
+  // game window's class names its launcher, not the game (M3-D13), so the filter is wide.
   Connections {
     target: Hyprland
-    function onRawEvent(event) { root.windowEvent(String(event && event.name ? event.name : "")) }
+    function onRawEvent(event) {
+      root.windowEvent(String(event && event.name ? event.name : ""), String(event && event.data ? event.data : ""))
+    }
   }
 
   Timer {

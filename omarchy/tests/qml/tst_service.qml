@@ -1253,12 +1253,9 @@ TestCase {
     compare(service.pendingDismissals.length, 0)
   }
 
-  function test_the_backups_are_read_with_the_panel_and_their_detail_is_view_bound() {
+  function test_the_backups_are_read_with_their_view_and_their_detail_is_view_bound() {
     ready(0)
-    service.setPanelOpen("bar@DP-1", true)
-    answer(lastRun("status"), statusEnvelope(0))
-    answer(lastRun("list"), envelope("list", { "targets": [] }))
-    answer(lastRun("errors"), envelope("errors", { "targets": [] }))
+    service.readView("backups")
     compare(words(lastRun("backup").command), ["backup", "list", "--limit", "50"])
     answer(lastRun("backup"), envelope("backup list", { "targets": [{ "target": { "id": "retail" }, "backups": [], "total": 0 }] }))
     compare(service.backups.targets[0].id, "retail")
@@ -1388,25 +1385,42 @@ TestCase {
     compare(words(ProcessRegistry.launches[ProcessRegistry.launches.length - 1].command)[0], "status")
   }
 
-  function test_opening_a_panel_reads_full_status_then_list_locally() {
+  // The open (1n2p.38): the cached status first; once it answers, quietly, the Lua
+  // errors and the list never read, then a full scan, which none was made yet. Backups
+  // and History wait for their views.
+  function test_opening_a_panel_reads_the_cached_status_first_then_the_rest_quietly() {
     ready(0)
     var statuses = runs("status").length
     service.setPanelOpen("bar@DP-1", true)
-    var full = lastRun("status")
-    compare(words(full.command), ["status", "-v"])
-    answer(full, statusEnvelope(0))
-    compare(words(lastRun("list").command), ["list", "-v"])
-    // Then the Issues view's errors, still local.
-    answer(lastRun("list"), envelope("list", { "targets": [] }))
+    var cached = lastRun("status")
+    compare(words(cached.command), ["status", "--cached", "-v"])
+    compare(runs("errors").length + runs("list").length, 0, "nothing else before the status answers")
+    answer(cached, statusEnvelope(0))
+    // In the order asked: background reads queue behind each other, the scan last.
     compare(words(lastRun("errors").command), ["errors", "--limit", "10"])
+    answer(lastRun("errors"), envelope("errors", { "targets": [] }))
+    compare(words(lastRun("list").command), ["list", "-v"])
+    answer(lastRun("list"), envelope("list", { "targets": [] }))
+    var full = lastRun("status")
+    compare(words(full.command), ["status", "-v"], "the scan, none having been made")
+    answer(full, statusEnvelope(0))
+    compare(runs("backup").filter(function(l) { return words(l.command)[1] === "list" }).length, 0, "backups wait for their view")
+    compare(runs("history").length, 0, "history waits for its view")
+    verify(service.lastFullScanAt > 0)
     // A second copy opening adds nothing.
     service.setPanelOpen("bar@HDMI-A-1", true)
-    compare(runs("status").length, statuses + 1)
+    compare(runs("status").length, statuses + 2)
     verify(service.panelOpen)
     service.setPanelOpen("bar@DP-1", false)
     verify(service.panelOpen)
     service.setPanelOpen("bar@HDMI-A-1", false)
     verify(!service.panelOpen)
+    // Opened again with a recent scan and every read made: the cached status alone.
+    var before = ProcessRegistry.launches.length
+    service.setPanelOpen("bar@DP-1", true)
+    answer(lastRun("status"), statusEnvelope(0))
+    wait(20)
+    compare(ProcessRegistry.launches.slice(before).map(function(l) { return words(l.command) }), [["status", "--cached", "-v"]])
   }
 
   function test_a_view_reads_when_old_or_stale_and_a_doorbell_rereads_the_open_one() {
@@ -1423,12 +1437,13 @@ TestCase {
     answer(lastRun("status"), statusEnvelope(0))
     verify(service.readView("installed"))
     answer(lastRun("list"), envelope("list", { "targets": [] }))
-    // With the panel open on a view, the doorbell reads that view again.
+    // With the panel open on a view, the doorbell reads that view again. The open: its
+    // cached status, then the errors never read and the scan never made (1n2p.38).
     service.setPanelOpen("bar@DP-1", true)
     answer(lastRun("status"), statusEnvelope(0))
-    answer(lastRun("list"), envelope("list", { "targets": [] }))
     answer(lastRun("errors"), envelope("errors", { "targets": [] }))
-    answer(lastRun("backup"), envelope("backup list", { "targets": [] }))
+    compare(words(lastRun("status").command), ["status", "-v"])
+    answer(lastRun("status"), statusEnvelope(0))
     var lists = runs("list").length
     bell().process.emitStdout("doorbell.json")
     wait(50)

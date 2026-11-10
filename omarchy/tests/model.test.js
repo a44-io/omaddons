@@ -540,6 +540,22 @@ describe("scheduler", () => {
     expect(M.nextRequest(q, { local: true }).start.local).toBeNull()
   })
 
+  // An open's quiet reads and its scan (1n2p.38) wait behind the reads someone waits on,
+  // a background status included.
+  test("background reads go last on the local lane", () => {
+    let q = M.emptyQueues()
+    q = M.enqueue(q, req({ resource: "errors", priority: "background" })).queues
+    q = M.enqueue(q, req({ resource: "status", priority: "background" })).queues
+    q = M.enqueue(q, req({ resource: "list" })).queues
+    const order = []
+    for (let next = M.nextRequest(q, {}); next.start.local; next = M.nextRequest(next.queues, {})) order.push(next.start.local.resource)
+    expect(order).toEqual(["list", "errors", "status"])
+    // A user's status still jumps everything.
+    q = M.enqueue(M.emptyQueues(), req({ resource: "list", priority: "background" })).queues
+    q = M.enqueue(q, req({ resource: "status" })).queues
+    expect(M.nextRequest(q, {}).start.local.resource).toBe("status")
+  })
+
   test("user mutations go before background ones; one background per key; one queued user", () => {
     let q = M.emptyQueues()
     const auto1 = req({ resource: "update_target", kind: "mutation", priority: "background", target: "retail" })
@@ -3787,6 +3803,63 @@ describe("the addon page", () => {
     expect(built.slice(built.indexOf("info"))).toEqual(["info", "--changelog", "--", "gh:o/foo"])
     expect(built).toContain("--progress")
     expect(M.activityHeadline({ kind: "read", resource: "addon_info", label: "x" }, [])).toBe("Reading about the addon")
+  })
+})
+
+// ------------------------------------------------------------ the open (1n2p.38)
+
+describe("the open", () => {
+  test("a full scan only when none was made, the last is old, or the cached status asks", () => {
+    const now = 1_000_000_000
+    table([
+      ["never", [0, now, undefined, []], true],
+      ["recent", [now - 60_000, now, undefined, []], false],
+      ["older_than_the_default", [now - M.FULL_SCAN_MAX_AGE_MS - 1, now, undefined, []], true],
+      ["older_than_its_own_max", [now - 5_000, now, 1_000, []], true],
+      ["no_discovery_cache_yet", [now - 60_000, now, undefined, [{ action: "status" }]], true],
+      ["other_recommendations", [now - 60_000, now, undefined, [{ action: "update" }]], false],
+    ], ([last, nowMs, max, commands]) => M.fullScanDue(last, nowMs, max, commands))
+  })
+})
+
+// ---------------------------------------------- window events (M3-D13, 1n2p.38)
+
+describe("window events", () => {
+  // Hyprland's raw events as the shell gives them: `openwindow` is
+  // `<address>,<workspace>,<class>,<title>`, `closewindow` the address alone.
+  const open = (cls, title) => ["openwindow", "5612abc,1," + cls + "," + title]
+  const verdict = (event, remembered, running) => {
+    const v = M.windowEventAction(event[0], event[1], remembered || [], running === true)
+    return v ? [v.refresh, v.followUp, v.remember, v.forget] : null
+  }
+
+  test("a window that may be WoW's refreshes and is remembered; any other asks nothing", () => {
+    table([
+      // F0 (2026-10-22): the 3.3.5a client under umu, at its login screen.
+      ["umu_wow_client", open("steam_app_wow335", "World of Warcraft"), [true, false, "5612abc", ""]],
+      // Omarchy's rule for every window of the Battle.net prefix.
+      ["battle_net_prefix", open("steam_app_battlenet", "Battle.net"), [true, false, "5612abc", ""]],
+      ["another_proton_game", open("steam_app_1086940", "Baldur's Gate 3"), [true, false, "5612abc", ""]],
+      ["a_wine_window_named_for_its_exe", open("wow.exe", "World of Warcraft"), [true, false, "5612abc", ""]],
+      ["wow_classic_exe", open("WoWClassic.exe", ""), [true, false, "5612abc", ""]],
+      ["a_title_naming_the_game", open("explorer", "World of Warcraft"), [true, false, "5612abc", ""]],
+      ["a_title_with_commas", open("steam_app_wow335", "World of Warcraft, Retail"), [true, false, "5612abc", ""]],
+      ["a_terminal", open("kitty", "kitty"), null],
+      ["a_browser", open("firefox", "Hello, world - Mozilla Firefox"), null],
+      ["a_stream_overlay", open("com.obsproject.Studio", "OBS 31.0.1 - Profile"), null],
+      ["the_native_steam_client", open("steam", "Steam"), null],
+      ["no_data", ["openwindow", ""], null],
+      ["focus_changes", ["activewindow", "kitty,kitty"], null],
+    ], (event) => verdict(event))
+  })
+
+  test("a close refreshes for a remembered window, or while a client runs, and only then follows up", () => {
+    table([
+      ["a_remembered_window", [["closewindow", "5612abc"], ["5612abc"], false], [true, false, "", "5612abc"]],
+      ["an_unknown_window_with_nothing_running", [["closewindow", "77aa"], ["5612abc"], false], null],
+      ["any_window_while_a_client_runs", [["closewindow", "77aa"], [], true], [true, true, "", ""]],
+      ["a_remembered_window_while_one_runs", [["closewindow", "5612abc"], ["5612abc"], true], [true, true, "", "5612abc"]],
+    ], ([event, remembered, running]) => verdict(event, remembered, running))
   })
 })
 

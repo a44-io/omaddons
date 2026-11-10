@@ -205,6 +205,21 @@ TestCase {
     compare(runs("status").length, before + 1, "one refresh for the burst, and no follow-ups with nothing running")
   }
 
+  // A window that is no WoW's (a terminal, a browser, a stream overlay) runs no `status`
+  // (1n2p.38): only the doorbell and the poll refresh then.
+  function test_a_window_that_is_no_wows_runs_no_status() {
+    start({ "retail": {} })
+    settle()
+    var before = runs("status").length
+    Hyprland.emitRaw("openwindow", "77aa,1,kitty,kitty")
+    Hyprland.emitRaw("openwindow", "77ab,2,firefox,Hello, world - Mozilla Firefox")
+    Hyprland.emitRaw("openwindow", "77ac,3,com.obsproject.Studio,OBS 31.0.1 - Profile")
+    Hyprland.emitRaw("closewindow", "77aa")
+    wait(800)
+    compare(runs("status").length, before, "no status for windows that are no WoW's")
+    compare(service.wowWindows, [])
+  }
+
   function test_a_window_closing_while_a_client_runs_is_followed_up() {
     start({ "retail": { "running": true } })
     settle()

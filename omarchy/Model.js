@@ -710,8 +710,9 @@ function enqueue(queues, request) {
 }
 
 // The request each free lane starts next: `{start: {mutation, local, network},
-// queues}`. User mutations go before background ones (none preempts a running one),
-// and `status` jumps the local queue.
+// queues}`. User mutations go before background ones (none preempts a running one).
+// On the local lane a user's `status` jumps the queue, then the reads someone waits on,
+// then the background's (an open's quiet reads and its scan, 1n2p.38).
 function nextRequest(queues, lanesBusy) {
   var out = copyQueues(queues)
   var busy = lanesBusy || {}
@@ -721,7 +722,10 @@ function nextRequest(queues, lanesBusy) {
     if (busy[lane] || list.length === 0) continue
     var at = 0
     if (lane === "mutation") at = Math.max(0, indexWhere(list, function(r) { return r.priority === "user" }))
-    if (lane === "local") at = Math.max(0, indexWhere(list, function(r) { return r.resource === "status" }))
+    if (lane === "local") {
+      at = indexWhere(list, function(r) { return r.resource === "status" && r.priority !== "background" })
+      if (at === -1) at = Math.max(0, indexWhere(list, function(r) { return r.priority !== "background" }))
+    }
     start[lane] = list.splice(at, 1)[0]
   }
   return { "start": start, "queues": out }
@@ -1292,6 +1296,70 @@ var BAR_STATES = ["broken", "starting", "stale", "empty", "attention", "updates"
 // How often the service recomputes the bar with nothing else changing: the stale mark
 // and the tooltip's ages follow the clock.
 var BAR_TICK_MS = 30000
+
+// ------------------------------------------------------------ the open (1n2p.38)
+
+// How old the last full `status -v` (discovery's scan) may be before a panel open asks
+// for another, in the background after the open's own reads: a client installed or
+// moved since shows within this. The widget's cost baseline (design doc, "Costs,
+// baseline") found the scan cheap and the open's cost the widget's own reducing and
+// rendering, so an open shows what `status --cached -v` says first, and rescans rarely.
+var FULL_SCAN_MAX_AGE_MS = 10 * 60 * 1000
+
+// Whether a panel open asks for a full scan after its own reads: none was made yet, the
+// last is older than `maxAgeMs`, or the cached status itself asks for one (it offers
+// `status` when no discovery cache exists yet).
+function fullScanDue(lastAtMs, nowMs, maxAgeMs, commands) {
+  if (typeof lastAtMs !== "number" || lastAtMs <= 0) return true
+  if (typeof nowMs === "number" && nowMs - lastAtMs > (typeof maxAgeMs === "number" ? maxAgeMs : FULL_SCAN_MAX_AGE_MS)) return true
+  return (Array.isArray(commands) ? commands : []).some(function(c) { return c && c.action === "status" })
+}
+
+// --------------------------------------------------- window events (M3-D13, 1n2p.38)
+
+// The windows that may be a WoW client's or its launcher's, by Hyprland's class and
+// title. Under Wine a window's class names its launcher, not the game (vision, F0
+// 2026-10-22: umu gave the 3.3.5a client `steam_app_wow335` from its GAMEID; Omarchy
+// names the Battle.net prefix's windows `steam_app_battlenet`), or the exe for a plain
+// Wine window; the game's title is "World of Warcraft". So every Proton or umu window,
+// every Wine window named for its exe, and anything that names WoW or Battle.net
+// passes: generous on purpose, since a client start missed costs more than one
+// `status --cached`, and the poll (every 30 s while a client runs) stays the net.
+var WINDOW_CLASS_PATTERNS = [/^steam_app_/i, /\.exe$/i, /wow/i, /warcraft/i, /battle\.?net/i]
+var WINDOW_TITLE_PATTERNS = [/warcraft/i, /battle\.?net/i]
+// How many such windows' addresses the service remembers for their `closewindow`, which
+// names only the address.
+var WINDOW_MEMORY = 32
+
+// What a Hyprland raw event asks of the service: `{refresh, followUp, remember,
+// forget}`, or null for an event that asks nothing. An `openwindow`'s data is
+// `<address>,<workspace>,<class>,<title>` (the title may hold commas): a window that may
+// be WoW's refreshes and is remembered by its address. A `closewindow`'s data is the
+// address alone: it refreshes when the window was remembered, or while a client runs
+// (its window may have opened before the widget did), and only then is followed up,
+// since a Wine game outlives its window. Any other window (a terminal, a browser, a
+// stream overlay) asks nothing.
+function windowEventAction(name, data, remembered, anyRunning) {
+  var text = str(data)
+  var known = Array.isArray(remembered) ? remembered : []
+  if (name === "openwindow") {
+    var parts = text.split(",")
+    var address = parts[0] || ""
+    var cls = parts.length > 2 ? parts[2] : ""
+    var title = parts.length > 3 ? parts.slice(3).join(",") : ""
+    var wow = WINDOW_CLASS_PATTERNS.some(function(p) { return p.test(cls) })
+      || WINDOW_TITLE_PATTERNS.some(function(p) { return p.test(title) })
+    if (!wow) return null
+    return { "refresh": true, "followUp": false, "remember": address, "forget": "" }
+  }
+  if (name === "closewindow") {
+    var closed = text.split(",")[0]
+    var mine = closed !== "" && known.indexOf(closed) !== -1
+    if (!mine && anyRunning !== true) return null
+    return { "refresh": true, "followUp": anyRunning === true, "remember": "", "forget": mine ? closed : "" }
+  }
+  return null
+}
 // The marks' glyphs (design doc §5.4): md-alert_circle, md-clock_outline, md-alert,
 // md-play.
 var BAR_MARK_GLYPHS = { "broken": 0xF0028, "stale": 0xF0150, "attention": 0xF0026, "running": 0xF040A }
@@ -7444,6 +7512,10 @@ if (typeof module !== "undefined") {
     historyCount: historyCount,
     historyPage: historyPage,
     dayText: dayText,
-    whenText: whenText
+    whenText: whenText,
+    WINDOW_MEMORY: WINDOW_MEMORY,
+    windowEventAction: windowEventAction,
+    FULL_SCAN_MAX_AGE_MS: FULL_SCAN_MAX_AGE_MS,
+    fullScanDue: fullScanDue
   }
 }
