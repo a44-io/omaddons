@@ -352,13 +352,33 @@ fn elements<'a>(text: &'a str, local: &str) -> Vec<&'a str> {
 /// decides: a re-tag of an old version can have a high one.
 pub fn newest_stable_tag(tags: &[TagRev]) -> Option<&TagRev> {
     tags.iter()
-        .filter_map(|t| stable_version(&t.tag).map(|v| (v, suffix_of(&t.tag), t)))
-        .max_by(|(a, sa, ta), (b, sb, tb)| {
-            compare_versions(a, b)
-                .then_with(|| compare_suffixes(sa.as_ref(), sb.as_ref()))
-                .then_with(|| tb.tag.len().cmp(&ta.tag.len()))
-        })
+        .filter_map(stable_key)
+        .max_by(stable_order)
         .map(|(_, _, t)| t)
+}
+
+/// Every stable tag, newest first by [`newest_stable_tag`]'s order: what `info
+/// --releases` lists, the first being the one a fetch installs.
+pub fn stable_tags_newest_first(tags: &[TagRev]) -> Vec<&TagRev> {
+    let mut stable: Vec<StableKey<'_>> = tags.iter().filter_map(stable_key).collect();
+    stable.sort_by(|a, b| stable_order(b, a));
+    stable.into_iter().map(|(_, _, t)| t).collect()
+}
+
+/// A stable tag's numbers and suffix, beside the tag; `None` for any other tag.
+type StableKey<'a> = (Vec<&'a str>, Option<(String, String)>, &'a TagRev);
+
+fn stable_key(tag: &TagRev) -> Option<StableKey<'_>> {
+    stable_version(&tag.tag).map(|v| (v, suffix_of(&tag.tag), tag))
+}
+
+/// Older first: by numbers, then a bare tag before a suffixed one, then the longer tag
+/// of two equal versions (`v12.1.0` before `v12.1`).
+fn stable_order(a: &StableKey<'_>, b: &StableKey<'_>) -> Ordering {
+    let ((va, sa, ta), (vb, sb, tb)) = (a, b);
+    compare_versions(va, vb)
+        .then_with(|| compare_suffixes(sa.as_ref(), sb.as_ref()))
+        .then_with(|| tb.tag.len().cmp(&ta.tag.len()))
 }
 
 /// A stable tag's suffix after its numbers, as (word lowercased, digits): `-hotfix2` is
@@ -775,6 +795,52 @@ mod tests {
         TagRev {
             tag: tag.into(),
             rev,
+        }
+    }
+
+    #[test]
+    fn stable_tags_are_listed_newest_first_as_the_newest_is_chosen() {
+        let names = |tags: &[TagRev]| -> Vec<String> {
+            stable_tags_newest_first(tags)
+                .into_iter()
+                .map(|t| t.tag.clone())
+                .collect()
+        };
+        let cases: [(&str, Vec<TagRev>, &[&str]); 4] = [
+            (
+                "numbers decide, never the revision; pre-releases and odd tags are left out",
+                vec![
+                    tag("v9.9.9", 900),
+                    tag("v12.1.0", 401),
+                    tag("v12.1.0-beta1", 399),
+                    tag("latest", 950),
+                    tag("v12.0.9", 369),
+                ],
+                &["v12.1.0", "v12.0.9", "v9.9.9"],
+            ),
+            (
+                "a hotfix after its base, the later hotfix first",
+                vec![
+                    tag("v2.5.0", 10),
+                    tag("v2.5.0-hotfix2", 12),
+                    tag("v2.5.0-hotfix10", 11),
+                ],
+                &["v2.5.0-hotfix10", "v2.5.0-hotfix2", "v2.5.0"],
+            ),
+            (
+                "equal versions: the shorter tag first",
+                vec![tag("v12.1.0", 401), tag("v12.1", 500)],
+                &["v12.1", "v12.1.0"],
+            ),
+            ("no stable tag", vec![tag("1.0rc2", 1)], &[]),
+        ];
+        for (name, tags, expected) in cases {
+            assert_eq!(names(&tags), expected, "{name}: {tags:?}");
+            assert_eq!(
+                stable_tags_newest_first(&tags).first().copied(),
+                newest_stable_tag(&tags),
+                "{name}: the first listed is the one a fetch installs"
+            );
         }
     }
 

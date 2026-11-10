@@ -972,6 +972,7 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (info)
 _arguments "${_arguments_options[@]}" : \
+'--limit=[How many releases --releases lists (default 10, at most 20)]:N:_default' \
 '--format=[Output format]:FORMAT:(json human)' \
 '-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
@@ -982,6 +983,7 @@ _arguments "${_arguments_options[@]}" : \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--refresh[Fetch the newest release and the about again, even if checked recently]' \
 '--changelog[Add the notes of every release newer than the oldest installed]' \
+'--releases[Add the recent releases, with how likely each loads on each client]' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
 '--dry-run[Show the plan without changing anything]' \
@@ -999,6 +1001,7 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (show)
 _arguments "${_arguments_options[@]}" : \
+'--limit=[How many releases --releases lists (default 10, at most 20)]:N:_default' \
 '--format=[Output format]:FORMAT:(json human)' \
 '-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
 '--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
@@ -1009,6 +1012,7 @@ _arguments "${_arguments_options[@]}" : \
 '--progress=[Progress events on stderr]:MODE:(json human none)' \
 '--refresh[Fetch the newest release and the about again, even if checked recently]' \
 '--changelog[Add the notes of every release newer than the oldest installed]' \
+'--releases[Add the recent releases, with how likely each loads on each client]' \
 '--json[One JSON envelope on stdout]' \
 '--robot[The same as --json]' \
 '--dry-run[Show the plan without changing anything]' \

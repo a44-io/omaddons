@@ -66,7 +66,7 @@ impl<T: GithubRestFallback + ?Sized> GithubRestFallback for std::sync::Arc<T> {
     }
 }
 
-/// One release of a REST listing, for a look-back.
+/// One release of a REST listing, for a look-back and `info --releases`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListedRelease {
     pub tag: String,
@@ -74,6 +74,8 @@ pub struct ListedRelease {
     pub published_at: Option<jiff::Timestamp>,
     /// It has a `release.json` asset.
     pub release_json: bool,
+    /// Its zip assets, with what their file names hint (no `release.json` is read).
+    pub assets: Vec<crate::model::Asset>,
 }
 
 /// The `gh:` source.
@@ -225,6 +227,39 @@ impl Source for GithubSource {
                 )
             }
         })
+    }
+
+    /// The REST API's newest releases (one request, on the REST budget; the keyless path
+    /// has no listing with assets): drafts left out, newest first, a prerelease on the
+    /// beta channel, as a beta run would take it.
+    fn releases(&self, r: &Ref, http: &dyn Http) -> Option<Result<Vec<Release>>> {
+        if !matches!(r, Ref::GitHub { .. }) {
+            return None;
+        }
+        let rest = self.rest.as_ref()?;
+        Some(
+            rest.recent_releases(&Wanted::stable(r.clone()), http)
+                .map(|listed| {
+                    listed
+                        .into_iter()
+                        .map(|l| Release {
+                            release_id: format!("{r}@{}", l.tag),
+                            version: l.tag,
+                            channel: if l.prerelease {
+                                Channel::Beta
+                            } else {
+                                Channel::Stable
+                            },
+                            published_at: l.published_at,
+                            assets: l.assets,
+                            changelog_url: None,
+                            notes: None,
+                            name_hint: None,
+                            revision: None,
+                        })
+                        .collect()
+                }),
+        )
     }
 }
 
@@ -1271,6 +1306,77 @@ mod tests {
             ..wanted("gh:o/a")
         };
         assert!(source.fetch(&[w], &http).pop().unwrap().is_ok());
+    }
+
+    /// `info --releases` from the REST listing: a prerelease on the beta channel, the
+    /// release ids `install --version` names, the listing's order and archives kept, and
+    /// nothing for another source's ref.
+    #[test]
+    fn releases_come_from_the_rest_listing() {
+        struct Listing;
+        impl GithubRestFallback for Listing {
+            fn fetch(&self, _: &Wanted, _: &RestReason, _: &dyn Http) -> Result<ReleaseSet> {
+                unreachable!("a listing fetches no release")
+            }
+
+            fn is_prerelease(&self, _: &Wanted, _: &str, _: &dyn Http) -> Result<bool> {
+                unreachable!("a listing asks about no release")
+            }
+
+            fn recent_releases(&self, w: &Wanted, _: &dyn Http) -> Result<Vec<ListedRelease>> {
+                assert_eq!(w.channel, Channel::Stable);
+                let listed = |tag: &str, prerelease, zip: Option<&str>| ListedRelease {
+                    tag: tag.into(),
+                    prerelease,
+                    published_at: None,
+                    release_json: false,
+                    assets: zip
+                        .map(|name| Asset {
+                            filename: name.into(),
+                            location: AssetLocation::Url(format!("https://x/{name}")),
+                            size: None,
+                            expected_hash: None,
+                            flavors: Vec::new(),
+                            name_flavors: Vec::new(),
+                            nolib: false,
+                        })
+                        .into_iter()
+                        .collect(),
+                };
+                Ok(vec![
+                    listed("v3-beta", true, Some("A-v3.zip")),
+                    listed("v2", false, None),
+                ])
+            }
+        }
+        let http = Canned::default();
+        let source = GithubSource::with_rest(Box::new(Listing));
+        let r: Ref = "gh:o/a".parse().unwrap();
+        let releases = source.releases(&r, &http).unwrap().unwrap();
+        let rows: Vec<(&str, &str, Channel, Vec<&str>)> = releases
+            .iter()
+            .map(|r| {
+                (
+                    r.release_id.as_str(),
+                    r.version.as_str(),
+                    r.channel,
+                    r.assets.iter().map(|a| a.filename.as_str()).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("gh:o/a@v3-beta", "v3-beta", Channel::Beta, vec!["A-v3.zip"]),
+                ("gh:o/a@v2", "v2", Channel::Stable, vec![]),
+            ]
+        );
+        let other: Ref = "wowace:bug-grabber".parse().unwrap();
+        assert!(source.releases(&other, &http).is_none());
+        assert!(
+            http.seen().is_empty(),
+            "the fake answered; nothing was sent"
+        );
     }
 
     #[test]

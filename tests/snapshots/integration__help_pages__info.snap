@@ -14,6 +14,8 @@ Arguments:
 Options:
       --refresh    Fetch the newest release and the about again, even if checked recently
       --changelog  Add the notes of every release newer than the oldest installed
+      --releases   Add the recent releases, with how likely each loads on each client
+      --limit <N>  How many releases --releases lists (default 10, at most 20)
 
 Examples:
   omaddons info bigwigs          where it is installed, and its newest release
@@ -38,6 +40,12 @@ Options:
 
       --changelog
           Add the notes of every release newer than the oldest installed
+
+      --releases
+          Add the recent releases, with how likely each loads on each client
+
+      --limit <N>
+          How many releases --releases lists (default 10, at most 20)
 
 Examples:
   omaddons info bigwigs          where it is installed, and its newest release

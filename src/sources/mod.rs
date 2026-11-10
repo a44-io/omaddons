@@ -334,6 +334,16 @@ pub trait Source: Send + Sync {
         let _ = (r, latest, since, limit, http);
         None
     }
+
+    /// `r`'s recent releases, newest first, from one listing request (`info
+    /// --releases`): each with the release id, version and channel `install --version`
+    /// would give it, its date when the source has one, and its archives as the listing
+    /// names them (no release metadata is read). `None` when the source serves only its
+    /// latest release, or `r` names one fixed build.
+    fn releases(&self, r: &Ref, http: &dyn Http) -> Option<Result<Vec<Release>>> {
+        let _ = (r, http);
+        None
+    }
 }
 
 /// A shared source is the source (the registry keeps a typed handle to Tukui's list).
@@ -372,6 +382,10 @@ impl<S: Source> Source for std::sync::Arc<S> {
         http: &dyn Http,
     ) -> Option<Result<changelog::Changelog>> {
         S::changelog(self, r, latest, since, limit, http)
+    }
+
+    fn releases(&self, r: &Ref, http: &dyn Http) -> Option<Result<Vec<Release>>> {
+        S::releases(self, r, http)
     }
 }
 
@@ -454,7 +468,7 @@ impl SourceRegistry {
             Box::new(url::UrlSource::new()),
             Box::new(wowi::WowiSource),
             Box::new(std::sync::Arc::clone(&tukui)),
-            Box::new(wowace::WowAceSource),
+            Box::new(wowace::WowAceSource::default()),
         ];
         let mut registry = Self::new();
         for source in shipped {

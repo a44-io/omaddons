@@ -98,6 +98,7 @@ mod history;
 mod history_items;
 mod info_about;
 mod info_netlog;
+mod info_releases;
 mod inspect;
 mod install;
 mod install_any_flavor;

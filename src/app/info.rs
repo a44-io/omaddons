@@ -24,13 +24,13 @@ use super::world::World;
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
 use crate::drift::{DriftMode, DriftState};
-use crate::error::{Error, ErrorCode, Result, Warning};
-use crate::limits::{ABOUT_MEMO_MAX_ENTRIES, TOC_TEXT_MAX_CHARS};
+use crate::error::{Error, ErrorCode, Result, Suggestion, Warning};
+use crate::limits::{ABOUT_MEMO_MAX_ENTRIES, INFO_RELEASES_MAX, TOC_TEXT_MAX_CHARS};
 use crate::model::{
-    AddonReason, AddonState, Channel, FolderName, LeftOutFolder, Ref, ReleaseSet, Target, TxId,
-    VersionConfidence,
+    AddonReason, AddonState, Channel, FolderName, LeftOutFolder, Ref, Release, ReleaseSet, Target,
+    TxId, VersionConfidence,
 };
-use crate::net::{NetConfig, NetLog, stack};
+use crate::net::{Http, NetConfig, NetLog, stack};
 use crate::output::{Outcome, Style};
 use crate::politeness::{ABOUT_RECHECK_INTERVAL, SOURCE_RECHECK_MIN_INTERVAL};
 use crate::resolve::cache::{Freshness, ReleaseCache};
@@ -43,7 +43,7 @@ use crate::sources::changelog::{
     Changelog, ChangelogUnavailable, Installed, changelog_for, human_lines, oldest_since,
 };
 use crate::sources::git_hosts::GitRunner;
-use crate::sources::{SourceRegistry, Wanted};
+use crate::sources::{SourceId, SourceRegistry, Wanted};
 use crate::state::about_memo::{self, AboutEntry};
 use crate::state::memo::FactIndex;
 use crate::text::{Entities, source_line};
@@ -60,7 +60,16 @@ pub struct InfoArgs {
     /// Add the notes of every release newer than the oldest installed
     #[arg(long)]
     pub changelog: bool,
+    /// Add the recent releases, with how likely each loads on each client
+    #[arg(long)]
+    pub releases: bool,
+    /// How many releases --releases lists (default 10, at most 20)
+    #[arg(long, value_name = "N", requires = "releases")]
+    pub limit: Option<usize>,
 }
+
+/// The releases `--releases` lists when `--limit` is not given.
+const DEFAULT_RELEASES: usize = 10;
 
 /// `info`'s data.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -88,6 +97,84 @@ pub struct InfoData {
     /// Why `changelog` is `null`; omitted when `changelog` is absent or holds notes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub changelog_unavailable: Option<ChangelogUnavailable>,
+    /// `--releases` only: the source's recent releases, newest first, at most `--limit`,
+    /// from one listing request; `null` when it lists none (`releases_unavailable` says
+    /// why). Omitted without `--releases`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub releases: Option<Option<Vec<ListedRelease>>>,
+    /// Why `releases` is `null`; omitted when `releases` is absent or lists releases.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub releases_unavailable: Option<ReleasesUnavailable>,
+}
+
+/// One release `--releases` lists: what `install --version <version>` installs.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ListedRelease {
+    pub version: String,
+    /// When its source published it; `null` when the listing gives no date (WowAce).
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
+    pub published_at: Option<jiff::Timestamp>,
+    /// `beta` for a GitHub prerelease; WowAce lists its stable tags only.
+    pub channel: Channel,
+    /// The release id a plan of `install --version <version>` names.
+    pub release_id: String,
+    /// Its archives by file name, as the listing names them (WowAce: the tree omaddons
+    /// packs).
+    pub assets: Vec<String>,
+    /// For each selected client, how likely it is to load: `latest.compat`'s judgment
+    /// (the newest stable release's own, when it is listed), from what plans proved,
+    /// the archives' names and the catalog's families. No release metadata is read, so
+    /// an older release is never `declared`. A hint only: `install` verifies every TOC.
+    pub compat: std::collections::BTreeMap<String, LoadHint>,
+}
+
+/// Why `--releases` lists nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct ReleasesUnavailable {
+    pub reason: ReleasesUnavailableReason,
+}
+
+/// What kept a source from listing its releases.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReleasesUnavailableReason {
+    /// The source serves only its latest release (WoWInterface, Tukui, `url:`, `git:`,
+    /// a local archive or folder), or the ref names one fixed build (a WowAce revision).
+    SourceListsLatestOnly,
+    /// The source is turned off in config.toml, or not in this build (CurseForge, Wago).
+    SourceDisabled,
+    /// `--offline`: no listing is ever kept, so nothing is asked.
+    Offline,
+    /// The source knows no such project.
+    NotFound,
+    /// GitHub's REST budget is spent.
+    RateLimited,
+    /// The request failed.
+    FetchFailed,
+}
+
+impl ReleasesUnavailableReason {
+    fn of(error: &Error) -> Self {
+        match error.code {
+            ErrorCode::Offline => Self::Offline,
+            ErrorCode::RateLimited => Self::RateLimited,
+            ErrorCode::NotFound => Self::NotFound,
+            ErrorCode::SourceDisabled => Self::SourceDisabled,
+            _ => Self::FetchFailed,
+        }
+    }
+
+    /// The human view's words.
+    fn words(self) -> &'static str {
+        match self {
+            Self::SourceListsLatestOnly => "its source serves only its latest release",
+            Self::SourceDisabled => "not listed (its source is disabled)",
+            Self::Offline => "not listed (offline)",
+            Self::NotFound => "its source knows no such project",
+            Self::RateLimited => "not listed (GitHub's API budget is spent)",
+            Self::FetchFailed => "its source did not answer",
+        }
+    }
 }
 
 /// What an addon is, as its source describes it (`sources::about`), made safe to show.
@@ -517,6 +604,22 @@ impl Outcome for InfoOutcome {
             (None, true) => writeln!(w, "  latest: not checked (offline)")?,
             (None, false) => writeln!(w, "  latest: unavailable")?,
         }
+        match (&d.releases, d.releases_unavailable) {
+            (Some(Some(list)), _) if list.is_empty() => writeln!(w, "  releases: none")?,
+            (Some(Some(list)), _) => {
+                writeln!(w, "  releases:")?;
+                let rows: Vec<Vec<String>> = list.iter().map(release_row).collect();
+                for line in crate::output::table(&rows).lines() {
+                    writeln!(w, "    {line}")?;
+                }
+            }
+            (Some(None), unavailable) => writeln!(
+                w,
+                "  releases: {}",
+                unavailable.map_or("unavailable", |u| u.reason.words())
+            )?,
+            (None, _) => {}
+        }
         if let Some(changelog) = &d.changelog {
             writeln!(w, "  changelog:")?;
             for line in human_lines(changelog.as_ref(), d.changelog_unavailable) {
@@ -529,6 +632,7 @@ impl Outcome for InfoOutcome {
 
 /// Runs `info`.
 pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
+    let limit = check_limit(args)?;
     let world = World::load(ctx)?;
     let verbose = ctx.output.style.detail();
     let mut warnings = world.warnings.clone();
@@ -724,11 +828,11 @@ pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
     // Before any error return: a remembered failure is worth keeping too.
     let remembered = cache.remember(&[]);
     warnings.extend(remembered.warnings);
+    let families = catalog_info
+        .as_ref()
+        .map_or(&[][..], |c| c.families.as_slice());
     let (latest, partial, set) = match fetched {
         Ok(set) => {
-            let families = catalog_info
-                .as_ref()
-                .map_or(&[][..], |c| c.families.as_slice());
             let found = latest(&set, &targets, verbose, &facts, families);
             (Some(found), false, Some(set))
         }
@@ -740,7 +844,35 @@ pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
         }
         Err(error) => return Err(error),
     };
+    let latest = latest.flatten();
     let mut notes = remembered.notes;
+    // `--releases`: one listing request, judged client by client as `latest` is.
+    let (listed, listed_unavailable) = if args.releases {
+        let judged = Judged {
+            r: &r,
+            targets: &targets,
+            facts: &facts,
+            families,
+            latest: latest.as_ref(),
+        };
+        match listed_releases(&registry, &r, http.as_ref()) {
+            Ok(list) => (
+                Some(Some(
+                    list.into_iter()
+                        .take(limit)
+                        .map(|release| judged.listed(release))
+                        .collect(),
+                )),
+                None,
+            ),
+            Err((reason, error)) => {
+                notes.extend(error.map(|e| format!("releases: {}", e.message)));
+                (Some(None), Some(ReleasesUnavailable { reason }))
+            }
+        }
+    } else {
+        (None, None)
+    };
     // `--changelog`: the releases newer than the oldest installed one.
     let (changelog, changelog_unavailable) = if args.changelog {
         let newest_stable = set
@@ -779,17 +911,133 @@ pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
             name,
             catalog: catalog_info,
             installed,
-            latest: latest.flatten(),
+            latest,
             about,
             about_unavailable,
             offline: ctx.offline,
             changelog,
             changelog_unavailable,
+            releases: listed,
+            releases_unavailable: listed_unavailable,
         },
         warnings,
         partial,
         notes,
     })
+}
+
+/// One listed release in the human view: its version, day, channel and where it is
+/// likely to load (`v2  2026-10-28  stable  likely on retail · not on classic`).
+fn release_row(l: &ListedRelease) -> Vec<String> {
+    let day = l.published_at.map_or_else(
+        || "-".to_owned(),
+        |t| {
+            t.to_zoned(jiff::tz::TimeZone::system())
+                .strftime("%Y-%m-%d")
+                .to_string()
+        },
+    );
+    let channel = serde_json::to_value(l.channel)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_default();
+    let (likely, not): (Vec<_>, Vec<_>) = l.compat.iter().partition(|(_, hint)| hint.likely());
+    let ids = |list: Vec<(&String, &LoadHint)>| -> String {
+        list.into_iter()
+            .map(|(id, _)| id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let fits = match (likely.is_empty(), not.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => "not likely to load on any client here".to_owned(),
+        (false, true) => format!("likely on {}", ids(likely)),
+        (false, false) => format!("likely on {} · not on {}", ids(likely), ids(not)),
+    };
+    vec![l.version.clone(), day, channel, fits]
+}
+
+/// `--limit` within 1..=`INFO_RELEASES_MAX` (`usage` otherwise, before anything is read,
+/// the fix using the bound), or the default.
+fn check_limit(args: &InfoArgs) -> Result<usize> {
+    let limit = args.limit.unwrap_or(DEFAULT_RELEASES);
+    if (1..=INFO_RELEASES_MAX).contains(&limit) {
+        return Ok(limit);
+    }
+    let bound = if limit == 0 { 1 } else { INFO_RELEASES_MAX };
+    Err(Error::new(
+        ErrorCode::Usage,
+        format!("--limit takes 1 to {INFO_RELEASES_MAX}, not {limit}"),
+        Suggestion::command([
+            "omaddons".to_owned(),
+            "info".to_owned(),
+            args.query.clone(),
+            "--releases".to_owned(),
+            "--limit".to_owned(),
+            bound.to_string(),
+        ]),
+    ))
+}
+
+/// `r`'s recent releases from its source, newest first: the reason they are not listed
+/// otherwise, with the error behind it when there was one.
+fn listed_releases(
+    registry: &SourceRegistry,
+    r: &Ref,
+    http: &dyn Http,
+) -> std::result::Result<Vec<Release>, (ReleasesUnavailableReason, Option<Error>)> {
+    let Some(source) = registry.get(SourceId::of(r)) else {
+        return Err((ReleasesUnavailableReason::SourceDisabled, None));
+    };
+    match source.releases(r, http) {
+        None => Err((ReleasesUnavailableReason::SourceListsLatestOnly, None)),
+        Some(Ok(list)) => Ok(list),
+        Some(Err(error)) => Err((ReleasesUnavailableReason::of(&error), Some(error))),
+    }
+}
+
+/// What judges each listed release on each selected client.
+struct Judged<'a> {
+    r: &'a Ref,
+    targets: &'a [&'a DiscoveredTarget],
+    facts: &'a FactIndex,
+    families: &'a [Family],
+    /// The newest stable release, judged from its own metadata.
+    latest: Option<&'a Latest>,
+}
+
+impl Judged<'_> {
+    /// `release` as `--releases` lists it. The newest stable release keeps `latest`'s
+    /// judgment, which read its metadata; any other is judged alone, as a stable release,
+    /// since how likely it is to load does not depend on its channel.
+    fn listed(&self, release: Release) -> ListedRelease {
+        let newest = self.latest.filter(|l| l.release_id == release.release_id);
+        let alone = ReleaseSet {
+            r#ref: self.r.clone(),
+            releases: vec![Release {
+                channel: Channel::Stable,
+                ..release.clone()
+            }],
+        };
+        let compat = self
+            .targets
+            .iter()
+            .map(|d| {
+                let hint = newest
+                    .and_then(|l| l.compat.get(&d.target.id).copied())
+                    .unwrap_or_else(|| judge(&alone, &d.target, self.facts, self.families));
+                (d.target.id.clone(), hint)
+            })
+            .collect();
+        ListedRelease {
+            assets: release.assets.iter().map(|a| a.filename.clone()).collect(),
+            version: release.version,
+            published_at: release.published_at,
+            channel: release.channel,
+            release_id: release.release_id,
+            compat,
+        }
+    }
 }
 
 /// How `info` may ask a source about a project.
@@ -980,5 +1228,35 @@ mod tests {
             assert_eq!(toc_text(Some(raw)).as_deref(), *want, "{raw:?}");
         }
         assert_eq!(toc_text(None), None);
+    }
+
+    /// `--limit` is 1 to `INFO_RELEASES_MAX`, 10 when absent; out of range it is
+    /// `usage`, its fix the same command at the bound.
+    #[test]
+    fn the_release_limit_is_bounded() {
+        let args = |limit: Option<usize>| InfoArgs {
+            query: "dbm".into(),
+            releases: true,
+            limit,
+            ..InfoArgs::default()
+        };
+        for (limit, want) in [
+            (None, Ok(DEFAULT_RELEASES)),
+            (Some(1), Ok(1)),
+            (Some(INFO_RELEASES_MAX), Ok(INFO_RELEASES_MAX)),
+            (Some(0), Err("1")),
+            (Some(INFO_RELEASES_MAX + 1), Err("20")),
+        ] {
+            let got = check_limit(&args(limit)).map_err(|e| {
+                assert_eq!(e.code, ErrorCode::Usage, "{limit:?}");
+                let argv = e.fix.argv().unwrap_or_default().to_vec();
+                assert_eq!(
+                    argv[..5],
+                    ["omaddons", "info", "dbm", "--releases", "--limit"]
+                );
+                argv[5].clone()
+            });
+            assert_eq!(got, want.map_err(str::to_owned), "{limit:?}");
+        }
     }
 }

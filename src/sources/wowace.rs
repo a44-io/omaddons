@@ -22,7 +22,7 @@ use serde_json::json;
 
 use self::listing::{
     ListingError, TagRev, newest_stable_tag, parse_listing, parse_pkgmeta, parse_tag_revs,
-    scan_keywords, unescape_percent,
+    scan_keywords, stable_tags_newest_first, unescape_percent,
 };
 use super::{Source, SourceId, Wanted};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
@@ -46,9 +46,38 @@ const PROJECT_VERSION: &[u8] = b"@project-version@";
 /// `details.reason` of a project refused for needing the packager.
 pub const PACKAGING_UNSUPPORTED: &str = "packaging_unsupported";
 
-/// The `wowace:` source.
+/// The `wowace:` source. It keeps each tag list its fetches read during the run, so a
+/// listing of the same project (`info --releases`) asks nothing again.
 #[derive(Debug, Default)]
-pub struct WowAceSource;
+pub struct WowAceSource {
+    tag_lists: std::sync::Mutex<BTreeMap<String, Vec<TagRev>>>,
+}
+
+impl WowAceSource {
+    /// Keeps `slug`'s tag list as a fetch read it.
+    fn keep(&self, slug: &str, tags: &Result<Vec<TagRev>>) {
+        if let (Ok(tags), Ok(mut kept)) = (tags, self.tag_lists.lock()) {
+            kept.insert(slug.to_owned(), tags.clone());
+        }
+    }
+
+    /// `slug`'s tag list as this run read it, else from one `PROPFIND`.
+    fn kept_or_listed(&self, http: &dyn Http, slug: &str) -> Result<Vec<TagRev>> {
+        let kept = self
+            .tag_lists
+            .lock()
+            .ok()
+            .and_then(|kept| kept.get(slug).cloned());
+        match kept {
+            Some(tags) => Ok(tags),
+            None => {
+                let tags = tag_list(http, slug);
+                self.keep(slug, &tags);
+                tags
+            }
+        }
+    }
+}
 
 impl Source for WowAceSource {
     fn id(&self) -> SourceId {
@@ -74,7 +103,11 @@ impl Source for WowAceSource {
                 let mut tags = || {
                     lists
                         .entry(slug.clone())
-                        .or_insert_with(|| tag_list(http, slug))
+                        .or_insert_with(|| {
+                            let tags = tag_list(http, slug);
+                            self.keep(slug, &tags);
+                            tags
+                        })
                         .clone()
                 };
                 let releases = match rev {
@@ -97,6 +130,26 @@ impl Source for WowAceSource {
                 })
             })
             .collect()
+    }
+
+    /// The project's stable tags, newest first, from the tag list this run's fetch read,
+    /// else one `PROPFIND` of `tags/`: the stream a fetch installs from (pre-release tags
+    /// are never offered), each the release `install --version <tag>` installs, undated
+    /// (the list asks for revisions only). `None` for a revision peg (`#r<rev>`,
+    /// `#r<rev>:<dir>`), which names one tree.
+    fn releases(&self, r: &Ref, http: &dyn Http) -> Option<Result<Vec<Release>>> {
+        let Ref::WowAce { slug, rev } = r else {
+            return None;
+        };
+        if matches!(rev, Some(WowAceRev::Revision(_) | WowAceRev::Path { .. })) {
+            return None;
+        }
+        Some(self.kept_or_listed(http, slug).map(|tags| {
+            stable_tags_newest_first(&tags)
+                .into_iter()
+                .map(|t| tagged(slug, t))
+                .collect()
+        }))
     }
 }
 
@@ -1112,7 +1165,7 @@ mod tests {
     const TAGS: &str = "https://repos.wowace.com/wow/bug-grabber/tags/";
 
     fn fetch(http: &dyn Http, wanted: &[Wanted]) -> Vec<Result<ReleaseSet>> {
-        WowAceSource.fetch(wanted, http)
+        WowAceSource::default().fetch(wanted, http)
     }
 
     #[test]

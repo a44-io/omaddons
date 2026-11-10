@@ -462,6 +462,7 @@ impl GithubRestFallback for GithubRest {
                 prerelease: r.prerelease,
                 published_at: when(r),
                 release_json: r.assets.iter().any(|a| a.name.eq("release.json")),
+                assets: r.assets.iter().filter_map(zip_asset).collect(),
             })
             .collect())
     }

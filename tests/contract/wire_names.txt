@@ -1020,6 +1020,9 @@ enum info data.installed[].state degraded,ok
 enum info data.installed[].version_confidence release,toc
 enum info data.latest.channel alpha,beta,stable
 enum info data.latest.compat{} blocked,declared,likely,unlikely,verified
+enum info data.releases[].channel alpha,beta,stable
+enum info data.releases[].compat{} blocked,declared,likely,unlikely,verified
+enum info data.releases_unavailable.reason fetch_failed,not_found,offline,rate_limited,source_disabled,source_lists_latest_only
 enum install data.approval.reasons[] channel_changed,dependency_added,destructive,downgrade,folders_removed,force,local_changes_replaced,reinstall,source_changed,while_running
 enum install data.approval.selection[].channel alpha,beta,stable
 enum install data.approval.selection[].op adopt,edit,install,prune,remove,restore,undo,update
@@ -3462,7 +3465,9 @@ input history --limit integer default= arity=1..1
 input history --run string default= arity=1..1
 input history --since string default= arity=1..1
 input info --changelog flag default=false arity=0..0
+input info --limit integer default= arity=1..1 requires=--releases
 input info --refresh flag default=false arity=0..0
+input info --releases flag default=false arity=0..0
 input info @1 <REF> string default= arity=1..1 required
 input install --any-flavor flag default=false arity=0..0 conflicts=--no-any-flavor
 input install --channel enum(alpha|beta|stable) default= arity=1..1
@@ -7727,6 +7732,18 @@ output info data.name string?!
 output info data.offline boolean!
 output info data.query string!
 output info data.ref string!
+output info data.releases array?
+output info data.releases[] object
+output info data.releases[].assets array!
+output info data.releases[].assets[] string
+output info data.releases[].channel string!
+output info data.releases[].compat object!
+output info data.releases[].compat{} string
+output info data.releases[].published_at string?!
+output info data.releases[].release_id string!
+output info data.releases[].version string!
+output info data.releases_unavailable object?
+output info data.releases_unavailable.reason string!
 output install data object
 output install data.approval object?!
 output install data.approval.reasons array!

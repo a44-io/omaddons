@@ -708,6 +708,15 @@ expression: "(politeness, REGISTRY)"
       "notes": "Characters a search result's summary keeps"
     },
     {
+      "name": "INFO_RELEASES_MAX",
+      "value": {
+        "count": 20
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Releases info --releases lists at most (--limit; 10 by default)"
+    },
+    {
       "name": "SOURCE_TEXT_MAX_CHARS",
       "value": {
         "count": 200

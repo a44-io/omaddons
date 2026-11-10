@@ -160,6 +160,9 @@ pub const RACY_SLACK_COARSE_NS: i128 = 2_000_000_000;
 pub const SEARCH_MAX_RESULTS: usize = 50;
 /// Characters a search result's `summary` keeps.
 pub const SEARCH_SUMMARY_MAX_CHARS: usize = 200;
+/// Most releases `info --releases` lists (`--limit`'s bound; its default is 10): one
+/// listing request, and GitHub's API lists 20 releases a page.
+pub const INFO_RELEASES_MAX: usize = 20;
 /// Characters kept from one name, author or version a source sends.
 pub const SOURCE_TEXT_MAX_CHARS: usize = 200;
 /// Characters `info` keeps from one field of an installed addon's TOC (its title,
@@ -737,6 +740,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         "Characters a search result's summary keeps",
     ),
     limit(
+        "INFO_RELEASES_MAX",
+        LimitValue::Count(INFO_RELEASES_MAX as u64),
+        LimitUnit::Count,
+        None,
+        "Releases info --releases lists at most (--limit; 10 by default)",
+    ),
+    limit(
         "SOURCE_TEXT_MAX_CHARS",
         LimitValue::Count(SOURCE_TEXT_MAX_CHARS as u64),
         LimitUnit::Count,
@@ -1296,6 +1306,7 @@ mod tests {
         "RACY_SLACK_COARSE_NS",
         "SEARCH_MAX_RESULTS",
         "SEARCH_SUMMARY_MAX_CHARS",
+        "INFO_RELEASES_MAX",
         "SOURCE_TEXT_MAX_CHARS",
         "TOC_TEXT_MAX_CHARS",
         "ABOUT_MEMO_MAX_ENTRIES",

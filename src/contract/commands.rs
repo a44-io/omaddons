@@ -435,6 +435,13 @@ pub const REQUIRES: &[Requirement] = &[
         long: "force",
         requires: &["yes"],
     },
+    // How many releases to list means nothing without the list
+    // (omad-widget-user-first-1n2p.4).
+    Requirement {
+        path: "info",
+        long: "limit",
+        requires: &["releases"],
+    },
     // A purge's confirmation confirms only a purge (omad-launch-week-fixes-bmcx.2).
     Requirement {
         path: "targets rm",

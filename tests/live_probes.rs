@@ -500,7 +500,7 @@ fn wowace_bug_grabber_decodes() {
         Wanted::stable("wowace:bug-grabber".parse().unwrap()),
         Wanted::stable("wowace:bug-grabber#r152".parse().unwrap()),
     ];
-    let sets = WowAceSource.fetch(&wanted, http.as_ref());
+    let sets = WowAceSource::default().fetch(&wanted, http.as_ref());
     let tree = |i: usize| {
         let release = sets[i].as_ref().unwrap().releases[0].clone();
         let AssetLocation::WowAceTree { base, revision } = &release.assets[0].location else {
