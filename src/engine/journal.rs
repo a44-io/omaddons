@@ -1141,7 +1141,7 @@ pub struct Disclosed {
     /// restriction, every warning.
     pub warnings: Vec<Warning>,
     /// What stopped recovery before it went through every journal, when something did; it
-    /// is also a `journal_pending` warning in `warnings`.
+    /// is also a `journal_pending` warning in `warnings`, the last one.
     pub error: Option<Error>,
 }
 
@@ -1215,7 +1215,8 @@ impl Settle for Disclosing {
 /// A journal `only` does not name is skipped in every pass exactly as one whose writer is
 /// alive: left as it is, no warning, no error (so a barrier owner skipped this way holds
 /// back what it names, silently). What stopped recovery is in `error`, and a
-/// `journal_pending` warning. Rolling any journal back or forward rings the doorbell once.
+/// `journal_pending` warning after those of the journals it settled first (omad-ef89).
+/// Rolling any journal back or forward rings the doorbell once, a stop after it too.
 pub fn recover_disclosed(
     lock: &GlobalLockGuard,
     paths: &Paths,
@@ -1257,24 +1258,24 @@ pub fn recover_disclosed(
         sv_writable,
     };
     let mut disclosing = Disclosing::default();
+    let mut warnings = Vec::new();
     let recovered = match only {
-        None => recover_all(&env),
-        Some(only) => recover_all_in(&env, &mut disclosing, Some(only)),
+        None => recover_all_in(&env, &mut OnDisk, None, &mut warnings),
+        Some(only) => recover_all_in(&env, &mut disclosing, Some(only), &mut warnings),
     };
     let outcomes = disclosing.outcomes;
-    let (warnings, error) = match recovered {
-        Ok(mut all) => {
-            // What a reached transaction gave is its outcome's; the rest is the run's.
-            for warning in outcomes.iter().flat_map(|o| &o.warnings) {
-                // ubs:ignore — comparing warnings (a code and its text), not secrets
-                if let Some(at) = all.iter().position(|w| w == warning) {
-                    all.remove(at);
-                }
-            }
-            (all, None)
+    // What a reached transaction gave is its outcome's; the rest is the run's, those of
+    // the journals settled before a stop included (omad-ef89), the stop's own last.
+    for warning in outcomes.iter().flat_map(|o| &o.warnings) {
+        // ubs:ignore — comparing warnings (a code and its text), not secrets
+        if let Some(at) = warnings.iter().position(|w| w == warning) {
+            warnings.remove(at);
         }
-        Err(error) => (vec![left(&error)], Some(error)),
-    };
+    }
+    let error = recovered.err();
+    if let Some(error) = &error {
+        warnings.push(left(error));
+    }
     if warnings
         .iter()
         .chain(outcomes.iter().flat_map(|o| &o.warnings))
@@ -1316,7 +1317,8 @@ pub(crate) fn recover_all_with(
     env: &RecoveryEnv<'_>,
     settle: &mut dyn Settle,
 ) -> Result<Vec<Warning>> {
-    recover_all_in(env, settle, None)
+    let mut warnings = Vec::new();
+    recover_all_in(env, settle, None, &mut warnings).map(|()| warnings)
 }
 
 /// Whether `only` leaves `tx` out.
@@ -1325,11 +1327,14 @@ fn excluded(only: Option<&BTreeSet<TxId>>, tx: &TxId) -> bool {
 }
 
 /// [`recover_all_with`], restricted to the transactions `only` names ([`recover_disclosed`]).
+/// Its warnings go to `warnings` as recovery finds them, so a caller still has those of
+/// the journals it settled when a later one stops it (omad-ef89).
 fn recover_all_in(
     env: &RecoveryEnv<'_>,
     settle: &mut dyn Settle,
     only: Option<&BTreeSet<TxId>>,
-) -> Result<Vec<Warning>> {
+    warnings: &mut Vec<Warning>,
+) -> Result<()> {
     // Recovery writes with the caller's scopes but never its fences (E14): it is ordered,
     // never refused mid-way. Order is what keeps it off a stuck repair's resources.
     let unfenced = env.scopes.without_fences();
@@ -1337,7 +1342,6 @@ fn recover_all_in(
         scopes: &unfenced,
         ..*env
     };
-    let mut warnings = Vec::new();
     let listing = super::repair::recover::listing(env.paths)?;
     let mut passes = Passes::new(
         listing.iter().map(|l| l.listed.clone()).collect(),
@@ -1352,7 +1356,7 @@ fn recover_all_in(
                     finished: listed.finished,
                 }
             } else {
-                repair_pass(env, settle, &passes, listed, &mut warnings)
+                repair_pass(env, settle, &passes, listed, warnings)
             };
             passes.record(owner, outcome);
         }
@@ -1471,10 +1475,10 @@ fn recover_all_in(
                 continue;
             }
         }
-        let outcome = repair_pass(env, settle, &passes, listed, &mut warnings);
+        let outcome = repair_pass(env, settle, &passes, listed, warnings);
         passes.record(tx, outcome);
     }
-    Ok(warnings)
+    Ok(())
 }
 
 /// One repair in pass 1 or 3: skipped while its writer is alive, left as it is behind an
@@ -5832,6 +5836,57 @@ mod tests {
                 && w.message.starts_with("unfinished transactions could not be recovered")),
             "{under:?}"
         );
+    }
+
+    /// omad-ef89: a journal recovery settles before one that stops it (no target owns it)
+    /// keeps its `journal_recovered`, ahead of the stop's `journal_pending`, and the
+    /// doorbell rings; a stop alone is one `journal_pending`, and nothing rings.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_stop_keeps_what_recovery_settled_before_it() {
+        let under = |paths: &Paths| {
+            let lock = GlobalLock::acquire(paths, "test").unwrap();
+            recover_under(&lock, paths, &|_| false, "config set", Actor::Human)
+        };
+        let codes = |warnings: &[Warning]| warnings.iter().map(|w| w.code).collect::<Vec<_>>();
+
+        let scene = interrupted_swap();
+        let stuck = TxId::new();
+        assert!(
+            scene.tx < stuck,
+            "the stuck journal sorts after the settled one"
+        );
+        plant_text(&scene.paths, stuck, UNATTRIBUTED);
+        let doorbell = scene.paths.doorbell_file();
+        let _ = std::fs::remove_file(&doorbell);
+        let got = under(&scene.paths);
+        assert_eq!(
+            codes(&got),
+            [WarningCode::JournalRecovered, WarningCode::JournalPending],
+            "case settled, then stopped: {got:?}"
+        );
+        assert!(
+            got[1]
+                .message
+                .starts_with("unfinished transactions could not be recovered"),
+            "{}",
+            got[1].message
+        );
+        assert!(!scene.paths.journal(&scene.tx).exists(), "rolled back");
+        assert!(scene.paths.journal(&stuck).exists(), "the stop is left");
+        assert!(doorbell.is_file(), "case settled, then stopped: rang");
+
+        let scene = crate::engine::testing::Scene::new();
+        plant_text(&scene.paths, TxId::new(), UNATTRIBUTED);
+        let doorbell = scene.paths.doorbell_file();
+        let _ = std::fs::remove_file(&doorbell);
+        let got = under(&scene.paths);
+        assert_eq!(
+            codes(&got),
+            [WarningCode::JournalPending],
+            "case stopped alone: {got:?}"
+        );
+        assert!(!doorbell.exists(), "case stopped alone: nothing rang");
     }
 
     // -----------------------------------------------------------------------------------

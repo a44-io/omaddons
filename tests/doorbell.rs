@@ -1,3 +1,5 @@
+//! e2e suite: the doorbell end to end, and the recovery warnings it rings for.
+//!
 //! The doorbell end to end (M3-D4): `<cache>/omaddons/doorbell.json` rings after every
 //! command that can change what `status --cached` reports, naming the command and its
 //! actor, and never after a read. Each step starts from a sentinel doorbell an hour old:
@@ -407,6 +409,74 @@ fn a_recovery_that_rolled_a_journal_rings_and_one_with_nothing_to_do_does_not() 
         Some(Value::from("install"))
     );
     s.silent(&install);
+}
+
+/// omad-ef89: a settings command whose recovery rolls one journal back and then stops at
+/// one no client owns still says it recovered the first (`journal_recovered`, then the
+/// stop's `journal_pending`) and rings the doorbell; the stopped journal is left as it
+/// is. With the stopped one alone, it says only that, and rings nothing.
+#[test]
+fn a_recovery_stopped_by_an_unattributed_journal_keeps_what_it_recovered_first() {
+    let log = common::tlog::tlog!();
+    let scene = Scene::new();
+    log.env(&scene);
+    log.step("Foo installed, then an install of v2 dies after prepared");
+    scene.install("gh:o/foo", "v1");
+    let v2 = scene.dl.join("v2.zip").display().to_string();
+    let install = [
+        "install",
+        "gh:o/foo",
+        "--file",
+        &v2,
+        "-t",
+        "retail",
+        "--offline",
+        "--json",
+    ];
+    log.cmd(&scene, &install)
+        .env("OMADDONS_FAILPOINTS", "engine.journal.prepared=abort")
+        .run()
+        .aborted();
+    let state = scene.home.state();
+    log.assert_eq("the crashed install's journal", &journals(&state).len(), &1);
+
+    log.step("a journal no client owns, after it");
+    let stuck = state.join("journal/7ZZZZZZZZZZZZZZZZZZZZZZZZZ.jsonl");
+    fs::write(
+        &stuck,
+        "{\"type\":\"prepared\",\"schema_version\":\"1.1\"}\n",
+    )
+    .unwrap();
+    let bell = Bell::of(&scene.home);
+    bell.arm();
+
+    log.step("config set recovers the first, stops at the second, and says both");
+    let set = ["config", "set", "check_interval_hours", "6", "--json"];
+    let ran = log.run(&scene, &set);
+    ran.ok();
+    log.assert_eq(
+        "the warnings, in order",
+        &ran.warnings(),
+        &vec!["journal_recovered".to_owned(), "journal_pending".to_owned()],
+    );
+    let rung = bell.rung(&ran.to_run());
+    log.assert_eq(
+        "the doorbell's command",
+        &rung.map(|b| b["command"].clone()),
+        &Some(Value::from("config set")),
+    );
+    log.assert_eq("journals left", &journals(&state), &vec![stuck.clone()]);
+
+    log.step("again: only the stop is left, said alone, and nothing rings");
+    bell.arm();
+    let ran = log.run(&scene, &set);
+    ran.ok();
+    log.assert_eq(
+        "the warnings",
+        &ran.warnings(),
+        &vec!["journal_pending".to_owned()],
+    );
+    assert_eq!(bell.rung(&ran.to_run()), None, "it rang");
 }
 
 #[test]
