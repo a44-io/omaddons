@@ -1392,6 +1392,7 @@ mod support {
     pub const BAR: &str = "https://github.com/o/bar";
     pub const BAZ: &str = "https://github.com/o/baz";
     pub const LIBFOO: &str = "https://github.com/o/libfoo";
+    pub const QUX: &str = "https://github.com/o/qux";
 
     /// Every fixture `plans_fixtures` writes (M4-D28): the plan runner's scenes, as the
     /// real binary answers them.
@@ -1422,6 +1423,10 @@ mod support {
         "plan-update-local-edits",
         "plan-removal-list",
         "plan-update-removal",
+        "plan-install-two-retail",
+        "plan-install-two-era",
+        "plan-install-two-retail-apply",
+        "plan-install-two-era-apply",
     ];
 
     /// Every fixture `repair_fixtures` writes (G2): the doctor's repairs as the real
@@ -1974,6 +1979,47 @@ fn plans_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
         "{removal}"
     );
     planned(&removal);
+
+    // Scene F (omad-3rre): an install on every client it works on, as Search's chooser
+    // runs it. Each client's preview in turn, then each plan applied in turn: a client's
+    // plan stays good after another client's apply.
+    log.step("scene F: an install on two clients");
+    let home = Home::new(&["wow", "wow_classic_era"]);
+    let qux = CustomRel::new("Qux.zip", "v1", &[("Qux", &[])]);
+    gh_release_v(&home.http, support::QUX, "v1", &qux.assets());
+    gh_latest(&home.http, support::QUX, "v1");
+    let previews: Vec<(String, String)> = ["retail", "era"]
+        .iter()
+        .map(|client| {
+            let preview = plan_fixture(
+                &log,
+                &home,
+                dir,
+                &format!("plan-install-two-{client}"),
+                &preview_of(fill(
+                    t,
+                    "install",
+                    &[("target", client), ("ref", "gh:o/qux")],
+                )),
+                0,
+            );
+            ((*client).to_owned(), planned(&preview))
+        })
+        .collect();
+    for (client, id) in &previews {
+        let applied = plan_fixture(
+            &log,
+            &home,
+            dir,
+            &format!("plan-install-two-{client}-apply"),
+            &apply_of(id),
+            0,
+        );
+        assert_eq!(
+            applied["data"]["outcomes"][0]["status"], "committed",
+            "{client}'s plan, applied after the other's: {applied}"
+        );
+    }
 
     let mut written: Vec<String> = fs::read_dir(dir)
         .unwrap()

@@ -152,6 +152,12 @@ Item {
   property var explainSelection: null
   // The dismissals `d` still has to send, one client at a time.
   property var pendingDismissals: []
+  // An install on several clients (omad-3rre): the previews made so far while they run
+  // (`{addon, specs, done}`), then, after Yes, the plans still to apply and what the
+  // applies made so far (`{addon, committed}`).
+  property var eachInstall: null
+  property var pendingInstalls: []
+  property var eachOutcome: null
   property double backupsAt: 0
   property double historyAt: 0
   // The restore chooser's `backup list -v -t`, view-bound: `{selection, data}`.
@@ -527,6 +533,88 @@ Item {
     return runBound("dismiss_errors", { "target": entry.target }, "Dismiss errors on " + entry.target, entry.token)
   }
 
+  // Search's "Every client it works on" (omad-3rre): `ref` installed on each client of
+  // `targetIds`. `install` lands on one client per command, so each client's preview runs
+  // in turn and one sheet shows every plan; Yes applies them in turn, each bound to its
+  // own preview (`apply <plan_id>`), the first that does not commit stopping the rest.
+  function installEach(ref, addon, targetIds) {
+    if (!canAct) return incompatibleText || "omaddons is not ready"
+    var ids = Array.isArray(targetIds) ? targetIds : []
+    if (ids.length < 2) return "choose two clients or more"
+    var specs = []
+    for (var i = 0; i < ids.length; i++) {
+      var spec = { "template": "install", "slots": { "target": String(ids[i]), "ref": String(ref || "") },
+        "label": "Install " + String(addon || ref), "priority": "user", "mode": "match", "shown": [], "each": true }
+      var refusal = trialBuild(spec)
+      if (refusal) return refusal
+      specs.push(spec)
+    }
+    eachInstall = { "addon": String(addon || ref), "specs": specs, "done": [] }
+    previewOf(specs[0], "", false)
+    return ""
+  }
+
+  // One client's preview of an install on several: kept with its plan and sheet (or why
+  // it plans nothing there), then the next client's; after the last, the one sheet. A
+  // preview that fails stops the rest, and nothing runs.
+  function previewedEach(r, outcome, env) {
+    var each = eachInstall
+    var client = Model.sheetClient(targets, r.spec.slots.target, "")
+    if (outcome !== "ok") {
+      eachInstall = null
+      failedPreview = r.spec
+      lastError = errorOf(env, r.label + " on " + client + ": " + outcome)
+      return
+    }
+    var decision = Model.previewDecision({ "mode": "match", "shown": [], "again": false, "path": "install",
+      "context": Build.CONTEXT, "targets": targets }, env)
+    // Each client's plan is exactly its own preview's (M4-D28): applied later, in turn.
+    var entry = { "spec": r.spec, "client": client, "plan": decision.plan, "sheet": decision.sheet || null,
+      "why": decision.plan && decision.sheet ? "" : String(decision.line || "") }
+    var done = each.done.concat([entry])
+    if (done.length < each.specs.length) {
+      eachInstall = { "addon": each.addon, "specs": each.specs, "done": done }
+      previewOf(each.specs[done.length], "", false)
+      return
+    }
+    eachInstall = null
+    var withPlans = done.filter(function(e) { return !!e.plan && !!e.sheet })
+    var notes = done.filter(function(e) { return !e.plan || !e.sheet })
+      .map(function(e) { return Model.copy("each.skipped", { "client": e.client, "why": e.why }) })
+    if (withPlans.length === 0) {
+      lastResult = { "ok": true, "line": notes.join("; "), "partial": false, "commands": [], "fixes": [] }
+      changed()
+      return
+    }
+    confirm = { "sheet": Model.eachSheet(each.addon, withPlans.map(function(e) { return e.sheet }), notes), "heading": "", "stale": "" }
+    pendingConfirm = { "each": withPlans, "addon": each.addon, "contextGeneration": r.contextGeneration }
+  }
+
+  // One client's apply of an install on several: the next client's plan when it
+  // committed, else the end: the result names the clients installed on, the one that
+  // failed (a plan gone stale there is previewed again, that client alone) and the ones
+  // never reached.
+  function appliedEach(r, outcome, env) {
+    var o = eachOutcome
+    var client = Model.sheetClient(targets, r.spec.slots.target, "")
+    var stale = !!env && Model.needsPreviewAgain(env)
+    var ok = outcome === "ok" && !stale
+    var committed = ok ? o.committed.concat([client]) : o.committed
+    var failure = ok ? null : { "client": client, "why": stale ? Model.copy("each.stale") : (lastError ? lastError.message : outcome) }
+    if (ok && pendingInstalls.length > 0) {
+      var next = pendingInstalls[0]
+      pendingInstalls = pendingInstalls.slice(1)
+      eachOutcome = { "addon": o.addon, "committed": committed }
+      runPlan(next.plan, next.spec, r.contextGeneration)
+      return
+    }
+    var notRun = pendingInstalls.map(function(p) { return p.client })
+    pendingInstalls = []
+    eachOutcome = null
+    lastResult = { "ok": failure === null, "line": Model.eachInstallLine(o.addon, committed, failure, notRun),
+      "partial": committed.length > 0 && failure !== null, "commands": [], "fixes": [] }
+  }
+
   // An addon page opened on `ref` (its ref, else its name): what its source says of it,
   // its records and release notes, on the network lane, view-bound to that ref, so a
   // late answer for another page never lands. Read once per page open.
@@ -600,6 +688,11 @@ Item {
   function applyPreview(r, outcome, env) {
     confirm = null
     pendingConfirm = null
+    // One client's preview of an install on several (omad-3rre).
+    if (r.spec && r.spec.each === true && eachInstall) {
+      previewedEach(r, outcome, env)
+      return
+    }
     // A bound repair (M4-D44): the doctor's envelope has no `data` (M4-D34) and a dry run
     // with something to repair exits 1, so Model.doctorPreviewDecision reads it before
     // anything generic does. Yes runs the same argv bound to the preview's token.
@@ -724,6 +817,13 @@ Item {
     var pending = pendingConfirm
     confirm = null
     pendingConfirm = null
+    // An install on several clients: the first client's plan; the rest follow it.
+    if (pending.each) {
+      eachOutcome = { "addon": pending.addon, "committed": [] }
+      pendingInstalls = pending.each.slice(1)
+      runPlan(pending.each[0].plan, pending.each[0].spec, pending.contextGeneration)
+      return ""
+    }
     var spec = pending.spec
     if (pending.plan) {
       runPlan(pending.plan, spec, pending.contextGeneration)
@@ -944,6 +1044,10 @@ Item {
     }
     if (outcome === "missing") {
       pendingDismissals = []
+      // An install on several clients goes no further without its binary.
+      eachInstall = null
+      pendingInstalls = []
+      eachOutcome = null
       phase = "missing"
       statusFailure = failureFacts(r, outcome, tail)
       scheduleRetry()
@@ -1156,9 +1260,13 @@ Item {
       lastError = failureOf(r, outcome, tail)
       lastResult = { "ok": false, "line": lastError.message, "partial": false, "commands": [] }
     }
+    // One client's apply of an install on several (omad-3rre): the next, or the end and
+    // its result. Only the end speaks.
+    if (r.purpose === "planned" && r.spec && r.spec.each === true && eachOutcome) appliedEach(r, outcome, env)
+    var chaining = eachOutcome !== null
     // A change asked in the panel that finished after every panel closed: its result
     // line as a toast; a click opens the panel.
-    if (r.kind === "mutation" && r.priority !== "background" && !panelOpen && canAct) {
+    if (!chaining && r.kind === "mutation" && r.priority !== "background" && !panelOpen && canAct) {
       Quickshell.execDetached(Model.resultToastArgv(lastResult.line, lastResult.ok, Build.PLUGIN_ID))
     }
     changed()
@@ -1183,6 +1291,9 @@ Item {
     confirm = null
     pendingConfirm = null
     pendingDismissals = []
+    eachInstall = null
+    pendingInstalls = []
+    eachOutcome = null
     queues = { "mutation": [], "local": queues.local.slice(), "network": queues.network.slice() }
     queuedAction = ""
     queuedText = Model.queuedText(queues)

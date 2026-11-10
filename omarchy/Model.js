@@ -6118,6 +6118,18 @@ var COPY = {
   "sheet.title.install.clients": "Install {n} addons on {m} clients?",
   "sheet.confirm.install.one": "Install {addon}",
   "sheet.confirm.install.many": "Install {n}",
+  // An install on several clients (omad-3rre).
+  "sheet.title.install.each": "Install {addon} on {clients}?",
+  "sheet.confirm.install.each": { "one": "Install on 1 client", "other": "Install on {n} clients" },
+  "sheet.each.effect": "{client}: {text}",
+  "each.result.installed": "Installed {addon} on {clients}",
+  "each.result.failed": "{client} failed: {why}",
+  "each.result.not_run": "not run on {clients}",
+  "each.result.none": "Installed {addon} nowhere",
+  "each.result.undo": "Undo takes back {owner} install; History has each",
+  "each.skipped": "{client}: {why}",
+  "each.stale": "changed since you looked, so it is shown again",
+  "search.chooser.every": { "one": "Every client it works on (1)", "other": "Every client it works on ({n})" },
   "sheet.title.reinstall.one": "Repair {addon} on {client}?",
   "sheet.title.reinstall.client": "Repair {n} addons on {client}?",
   "sheet.title.reinstall.clients": "Repair {n} addons on {m} clients?",
@@ -7415,6 +7427,56 @@ function finishSheet(sheet) {
   }
 }
 
+// One sheet for an install on several clients (omad-3rre, Search's "Every client it
+// works on"): every client's items, grouped under its name (finishSheet), each effect
+// once when every client's sheet has it, else once per client that has it, named; then
+// the clients left out, with why (`notes`). Titled with the clients, by name up to three.
+function eachSheet(addon, sheets, notes) {
+  var list = Array.isArray(sheets) ? sheets : []
+  var items = []
+  var count = {}
+  list.forEach(function(s) {
+    (s.effects || []).forEach(function(e) { count[e.kind + "\n" + e.text] = (count[e.kind + "\n" + e.text] || 0) + 1 })
+  })
+  var effects = []
+  var seen = {}
+  list.forEach(function(s) {
+    var its = Array.isArray(s.items) ? s.items : []
+    its.forEach(function(it) { items.push(Object.assign({}, it)) })
+    var client = sheetClients(its)[0] || ""
+    ;(s.effects || []).forEach(function(e) {
+      var key = e.kind + "\n" + e.text
+      if (count[key] === list.length) {
+        if (!seen[key]) effects.push(e)
+        seen[key] = true
+      } else {
+        effects.push(Object.assign({}, e, { "text": copy("sheet.each.effect", { "client": client, "text": e.text }) }))
+      }
+    })
+  })
+  ;(Array.isArray(notes) ? notes : []).forEach(function(n) { effects.push(sheetEffect("note", n)) })
+  var clients = sheetClients(items)
+  return finishSheet({
+    "title": copy("sheet.title.install.each", { "addon": addon, "clients": clients.length <= 3 ? joinNames(clients) : plural(clients.length, "client") }),
+    "stale": list.map(function(s) { return str(s.stale) }).filter(function(t) { return t !== "" }).join(" · "),
+    "items": items, "effects": effects, "confirmLabel": copy("sheet.confirm.install.each", { "n": clients.length }),
+    "destructive": list.some(function(s) { return s.destructive === true }), "glyph": list.length ? list[0].glyph : 0
+  })
+}
+
+// What an install on several clients did (omad-3rre): the clients it installed on, the
+// one that failed and why, the ones it never reached; and that Undo takes back the last
+// one only (each client's install is its own change), History each.
+function eachInstallLine(addon, committed, failure, notRun) {
+  var parts = []
+  if (committed.length) parts.push(copy("each.result.installed", { "addon": addon, "clients": joinNames(committed) }))
+  if (failure) parts.push(copy("each.result.failed", { "client": failure.client, "why": str(failure.why) }))
+  if (notRun.length) parts.push(copy("each.result.not_run", { "clients": joinNames(notRun) }))
+  var line = parts.join("; ") || copy("each.result.none", { "addon": addon })
+  if (committed.length > 1) line += " · " + copy("each.result.undo", { "owner": possessive(committed[committed.length - 1]) })
+  return line
+}
+
 // The sheet of a preview that is no stored plan's (`targets rm`), or of a command's own
 // data (undo, restore, prune). `context` and `targets` shorten a repair undo's paths and
 // name the clients.
@@ -8152,6 +8214,8 @@ if (typeof module !== "undefined") {
     selectionItem: selectionItem,
     reasonEffects: reasonEffects,
     confirmSheet: confirmSheet,
+    eachSheet: eachSheet,
+    eachInstallLine: eachInstallLine,
     previewSheet: previewSheet,
     withStale: withStale,
     planItemLine: planItemLine,

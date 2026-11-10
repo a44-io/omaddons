@@ -376,12 +376,30 @@ function checkApplyProvenance(files) {
       out.push(violation("Service.qml", line, notFromPlan + ": decision is not Model.previewDecision's"))
     }
   }
-  // runPlan applies only a decision's plan or the pending confirmation's.
+  // runPlan applies only a decision's plan or the pending confirmation's; or, for an
+  // install on several clients (omad-3rre), one of the pending confirmation's plans,
+  // each previewedEach's own `decision.plan`: the first in confirmYes, the next
+  // (pendingInstalls' first, the confirmation's rest) in appliedEach.
   for (const c of calls({ "Service.qml": files["Service.qml"] || "" }, /(?<!function )\brunPlan\(/)) {
-    const from = c.args.match(/^\((decision|pending)\.plan,/)
+    const from = c.args.match(/^\((decision|pending|pending\.each\[0\]|next)\.plan,/)
+    const fn = enclosing(lineIndex(service, c.line))
     if (!from) out.push(violation("Service.qml", c.line, notFromPlan + ": runPlan" + c.args.slice(0, 40)))
-    else if (from[1] === "decision" && !/var decision = Model\.previewDecision\(/.test(enclosing(lineIndex(service, c.line)).body)) {
+    else if (from[1] === "decision" && !/var decision = Model\.previewDecision\(/.test(fn.body)) {
       out.push(violation("Service.qml", c.line, notFromPlan + ": decision is not Model.previewDecision's"))
+    } else if (from[1] === "pending.each[0]" && !/^function confirmYes\(/.test(fn.head)) {
+      out.push(violation("Service.qml", c.line, notFromPlan + ": the confirmation's first plan outside confirmYes"))
+    } else if (from[1] === "next" && (!/^function appliedEach\(/.test(fn.head) || !/var next = pendingInstalls\[0\]/.test(fn.body))) {
+      out.push(violation("Service.qml", c.line, notFromPlan + ": next is not the pending installs' first"))
+    }
+  }
+  // The pending installs are the confirmation's plans: set from it in confirmYes, then
+  // only shortened (or emptied) as each applies.
+  const installs = /\bpendingInstalls\s*=\s*([^\n]+)/g
+  let p
+  while ((p = installs.exec(service))) {
+    const value = p[1].trim()
+    if (value !== "pending.each.slice(1)" && value !== "pendingInstalls.slice(1)" && value !== "[]") {
+      out.push(violation("Service.qml", lineAt(service, p.index), notFromPlan + ": pendingInstalls = " + value.slice(0, 40)))
     }
   }
   const argvOf = service.slice(service.indexOf("function argvOf("))
@@ -888,6 +906,13 @@ const PLANTED = [
     /plan not from Model\.planFrom/],
   ["3b. apply from its plan", checkApplyProvenance, "a fix that offers apply",
     plant(REAL, "Model.js", "function fixButtons(env) {\n", '  var sneaky = ["omaddons", "apply"]\n'), /apply argv outside Model\.planFrom/],
+  // omad-3rre: an install on several clients applies only the confirmation's own plans.
+  ["3b. apply from its plan", checkApplyProvenance, "a next plan outside the install chain",
+    plant(REAL, "Service.qml", "  function afterStatus() {\n", '    var next = { "plan": null }\n    runPlan(next.plan, {}, 0)\n'),
+    /next is not the pending installs' first/],
+  ["3b. apply from its plan", checkApplyProvenance, "pending installs from elsewhere",
+    plant(REAL, "Service.qml", "  function afterStatus() {\n", '    pendingInstalls = lastResult.commands\n'),
+    /pendingInstalls = lastResult/],
   ["6. previews", checkPreviews, "update_addon without its preview",
     unplant(REAL, "Model.js", '"update_addon":', ', "preview": "match"'), /update_addon changes addons without a preview/],
   ["6. previews", checkPreviews, "a pin with a version and no preview",

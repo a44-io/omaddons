@@ -110,6 +110,9 @@ TestCase {
       property var folders: []
       // The panel's settings as the shell applied them (the settings sheet reads them).
       property var settings: ({})
+      // Search's "Every client it works on" (omad-3rre): every installEach call.
+      property var eachInstalls: []
+      function installEach(ref, addon, ids) { eachInstalls = eachInstalls.concat([[ref, addon, ids]]); return "" }
 
       function readBackupsDetail(target) { detailReads = detailReads.concat([target]) }
       function clearBackupsDetail() { detailClears++; backupsDetail = null }
@@ -1538,6 +1541,30 @@ TestCase {
     compare(json(svc.runs[0]), json(["install", { "target": "retail", "ref": "wowi:23056" }, "Install Details!", []]))
     verify(!findChild(search, "chooser").visible)
     tryVerify(function() { return findChild(view, "keyCatcher").activeFocus })
+  }
+
+  // omad-3rre: with two or more clients it works on, the chooser's first line installs it
+  // on each of them (each client's preview, then one sheet), never preselected.
+  function test_the_chooser_offers_every_client_it_works_on_first() {
+    searchReady({ "retail": "likely", "era": "yes" })
+    keyClick("i")
+    var search = content()
+    compare(search.chooserCursor, -1)
+    var targets = findChild(search, "chooserTargets")
+    compare([findChild(targets.itemAt(0), "choice").text, findChild(targets.itemAt(1), "choice").text,
+      findChild(targets.itemAt(2), "choice").text], ["Every client it works on (2)", "Works on Classic Era", "Probably works on Retail"])
+    keyClick(Qt.Key_Return)
+    compare(svc.eachInstalls.length, 0, "nothing chosen, nothing installed")
+    keyClick("j")
+    compare(search.chooserCursor, 0)
+    keyClick(Qt.Key_Return)
+    compare(json(svc.eachInstalls), json([["wowi:23056", "Details!", ["era", "retail"]]]))
+    compare(svc.runs.length, 0)
+    verify(!findChild(search, "chooser").visible)
+    // One client it works on: no such line.
+    searchReady({ "retail": "likely", "era": "no" })
+    keyClick("i")
+    compare(findChild(findChild(content(), "chooserTargets").itemAt(0), "choice").text, "Not made for Classic Era")
   }
 
   // The search box, focused (`s` in Search).

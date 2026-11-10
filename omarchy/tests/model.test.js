@@ -3502,6 +3502,35 @@ describe("previewDecision", () => {
     for (const name of runtime) expect([name, /\bConfirmDialog\b/.test(fs.readFileSync(path.join(root, name), "utf8"))]).toEqual([name, false])
     expect(fs.readFileSync(path.join(root, "PanelView.qml"), "utf8")).toContain("PlanSheet {")
   })
+
+  // omad-3rre: an install on every client it works on, one sheet over each client's own
+  // preview (the binary's, scene F), and what the applies made of it.
+  test("an install on several clients: one sheet, each client's items under its name", () => {
+    const targets = [{ id: "retail", key: "", displayName: "Retail" }, { id: "era", key: "", displayName: "Classic Era" }]
+    const sheets = ["retail", "era"].map((c) => M.previewDecision({ mode: "match", shown: [], again: false, path: "install", context: CONTEXT,
+      targets }, fixture("plan-install-two-" + c)))
+    expect(sheets.map((d) => d.kind)).toEqual(["dialog", "dialog"])
+    const sheet = M.eachSheet("Qux", sheets.map((d) => d.sheet), [])
+    expect([sheet.title, sheet.confirmLabel, sheet.destructive]).toEqual(["Install Qux on Retail and Classic Era?", "Install on 2 clients", false])
+    expect(sheet.items.map((i) => [i.header, i.text])).toEqual([["Retail", "Qux v1 (new)"], ["Classic Era", "Qux v1 (new)"]])
+    // An effect every client's sheet has shows once; one only some have, under their names;
+    // a client left out says why.
+    const effect = (text) => ({ kind: "note", severity: "normal", text })
+    const a = Object.assign({}, sheets[0].sheet, { effects: [effect("Also installs LibQux."), effect("Then restart the game.")] })
+    const b = Object.assign({}, sheets[1].sheet, { effects: [effect("Also installs LibQux.")] })
+    expect(M.eachSheet("Qux", [a, b], ["Forever: Qux is already installed"]).effects.map((e) => e.text)).toEqual([
+      "Also installs LibQux.", "Retail: Then restart the game.", "Forever: Qux is already installed"])
+    // Three or fewer clients by name, more by count.
+    const four = M.eachSheet("Qux", [0, 1, 2, 3].map((n) => Object.assign({}, sheets[0].sheet, {
+      items: [Object.assign({}, sheets[0].sheet.items[0], { client: "C" + n, clientKey: "c" + n })] })), [])
+    expect(four.title).toBe("Install Qux on 4 clients?")
+    // The result: where it installed, the one that failed and why, the ones not reached.
+    expect(M.eachInstallLine("Qux", ["Retail", "Classic Era"], null, [])).toBe(
+      "Installed Qux on Retail and Classic Era · Undo takes back Classic Era's install; History has each")
+    expect(M.eachInstallLine("Qux", ["Retail"], { client: "Classic Era", why: "the game is running" }, ["Forever"])).toBe(
+      "Installed Qux on Retail; Classic Era failed: the game is running; not run on Forever")
+    expect(M.eachInstallLine("Qux", [], { client: "Retail", why: "x" }, ["Classic Era"])).toBe("Retail failed: x; not run on Classic Era")
+  })
 })
 
 describe("applyResult and needsPreviewAgain", () => {

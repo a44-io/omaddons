@@ -181,6 +181,56 @@ TestCase {
     compare(words(lastRun("apply").command), ["apply", planIdOf("plan-install-dependency")], "Yes applies the plan")
   }
 
+  // omad-3rre: Search's "Every client it works on". Each client's preview in turn (the
+  // binary's, scene F), one sheet, nothing before Yes; then each client's own plan.
+  function installTwo() {
+    compare(service.installEach("gh:o/qux", "Qux", ["retail", "era"]), "")
+    var first = lastRun("install")
+    verify(first.command.indexOf("--dry-run") !== -1, "a preview: " + launchLog())
+    compare(words(first.command), ["install", "-t", "retail", "--", "gh:o/qux"])
+    answer(first, "plan-install-two-retail")
+    compare(service.confirm, null, "no sheet before every client's preview answered")
+    var second = lastRun("install")
+    verify(second !== first, "the next client's preview: " + launchLog())
+    compare(words(second.command), ["install", "-t", "era", "--", "gh:o/qux"])
+    answer(second, "plan-install-two-era")
+    compare(runs("apply").length, 0, "nothing runs before Yes: " + launchLog())
+    compare([sheet().title, sheet().confirmLabel], ["Install Qux on retail and era?", "Install on 2 clients"])
+    compare(sheet().items.map(function(i) { return i.header }), ["retail", "era"])
+    compare(service.confirmYes(), "")
+  }
+
+  function test_an_install_on_two_clients_applies_each_clients_plan_in_turn() {
+    installTwo()
+    compare(words(lastRun("apply").command), ["apply", planIdOf("plan-install-two-retail")])
+    answer(lastRun("apply"), "plan-install-two-retail-apply")
+    compare(words(lastRun("apply").command), ["apply", planIdOf("plan-install-two-era")], "the next plan, once the first committed")
+    answer(lastRun("apply"), "plan-install-two-era-apply")
+    compare(runs("apply").length, 2)
+    compare(service.lastResult.line, "Installed Qux on retail and era · Undo takes back era's install; History has each")
+    verify(service.lastResult.ok)
+  }
+
+  function test_an_install_on_two_clients_stops_at_the_first_apply_that_does_not_commit() {
+    installTwo()
+    answer(lastRun("apply"), "plan-apply-not-found", 3)
+    compare(runs("apply").length, 1, "the rest never runs: " + launchLog())
+    verify(!service.lastResult.ok)
+    var line = service.lastResult.line
+    verify(line.indexOf("retail failed: ") === 0 && line.indexOf("; not run on era") > 0, line)
+  }
+
+  // A plan gone stale on one client: that client alone is previewed again.
+  function test_an_install_on_two_clients_whose_plan_went_stale_previews_that_client_again() {
+    installTwo()
+    var installs = runs("install").length
+    answer(lastRun("apply"), "plan-apply-stale", 1)
+    compare(runs("install").length, installs + 1, "one preview again: " + launchLog())
+    compare(words(lastRun("install").command), ["install", "-t", "retail", "--", "gh:o/qux"])
+    compare(runs("apply").length, 1, "era's plan is not applied")
+    compare(service.lastResult.line, "retail failed: changed since you looked, so it is shown again; not run on era")
+  }
+
   function test_a_moved_release_opens_the_dialog_with_changed_since_you_looked() {
     showList("plan-moved-list")
     answer(updateFoo(), "plan-update-moved")

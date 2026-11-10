@@ -67,6 +67,12 @@ Item {
   property var chooserRow: null
   property int chooserCursor: -1
   readonly property var chooserTargets: chooserRow ? chooserRow.targets : []
+  readonly property var chooserEligible: chooserTargets.filter(function(t) { return t.eligible })
+  // The chooser's lines: with two or more eligible clients, "Every client it works on
+  // (n)" first (omad-3rre), never preselected; then each client with its verdict.
+  readonly property var chooserChoices: (chooserEligible.length >= 2
+    ? [{ "id": "", "every": true, "eligible": true, "words": Model.copy("search.chooser.every", { "n": chooserEligible.length }) }]
+    : []).concat(chooserTargets)
   // Whether the panel shows this view: a new scope searches the shown query again only
   // then, and on coming back.
   readonly property bool current: !!frame && frame.view === "search"
@@ -237,10 +243,17 @@ Item {
     return frame.report(svc.run("install", { "target": target, "ref": row.ref }, "Install " + row.name, []))
   }
 
-  // The chooser's cursor moves among the eligible clients only; it starts on none.
+  // Every eligible client at once (omad-3rre): each client's preview in turn, one sheet
+  // for all of them, then each plan applied in turn.
+  function installEverywhere(row) {
+    if (!canChange) return false
+    return frame.report(svc.installEach(row.ref, row.name, chooserEligible.map(function(t) { return t.id })))
+  }
+
+  // The chooser's cursor moves among the eligible lines only; it starts on none.
   function moveChooser(step) {
     var eligible = []
-    for (var i = 0; i < chooserTargets.length; i++) if (chooserTargets[i].eligible) eligible.push(i)
+    for (var i = 0; i < chooserChoices.length; i++) if (chooserChoices[i].eligible) eligible.push(i)
     if (eligible.length === 0) return
     var at = eligible.indexOf(chooserCursor)
     at = at < 0 ? (step > 0 ? 0 : eligible.length - 1) : Math.max(0, Math.min(eligible.length - 1, at + step))
@@ -262,9 +275,10 @@ Item {
     if (action === "cancel") closeChooser()
     else if (action === "line") moveChooser(Model.keyStep(name))
     else if (action === "press") {
-      var chosen = chooserCursor >= 0 ? chooserTargets[chooserCursor] : null
+      var chosen = chooserCursor >= 0 ? chooserChoices[chooserCursor] : null
       if (chosen && chosen.eligible) {
-        installInto(chosen.id, chooserRow)
+        if (chosen.every) installEverywhere(chooserRow)
+        else installInto(chosen.id, chooserRow)
         closeChooser()
       }
     }
@@ -321,7 +335,7 @@ Item {
 
       Repeater {
         objectName: "chooserTargets"
-        model: root.chooserTargets
+        model: root.chooserChoices
 
         CursorSurface {
           required property var modelData
