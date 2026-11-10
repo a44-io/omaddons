@@ -10,8 +10,9 @@ import "Fixtures.js" as Fixtures
 
 // Five player journeys through the rebuilt widget end to end (1n2p.41, design doc §1.1),
 // on the real Service and frame over envelopes the binary wrote (pipeline step 1), by
-// keys, at 540 and at 400 px wide. Each step asserts what the player sees, in the copy
-// table's words, and what the service ran; no step shows an omaddons command line.
+// keys and by mouse, at 540 and at 400 px wide, and by keys again with the text zoomed.
+// Each step asserts what the player sees, in the copy table's words, and what the
+// service ran; no step shows an omaddons command line.
 //
 //   J1 before a raid: Update all, applied as the rows showed it, with its Undo.
 //   J2 after a session: opened on Errors, the culprit's page, its report copied, the
@@ -22,8 +23,9 @@ import "Fixtures.js" as Fixtures
 //   J5 the first run: the welcome card, a client added by its folder, its addons taken
 //      over, BugGrabber offered.
 //
-// The mouse reaches what a click reaches today (buttons, cards, the sheet); opening a
-// row's page by a click waits for the mouse pass (.15).
+// By mouse (omad-y4f8, after the mouse pass .15), every step clicks the item where it
+// shows (a tab, a row, its button, a page's button, a card's, the chooser's line, the
+// sheet's confirm), never a key and never a signal; typing a name or a path stays typing.
 TestCase {
   id: testCase
   name: "Journeys"
@@ -80,8 +82,9 @@ TestCase {
 
   // Each journey at 400 px with the text zoomed to 1.5 (design doc §5.6).
   function test_every_journey_at_400_with_the_text_zoomed() {
-    var journeys = [function() { journeyBeforeRaid(400, false) }, function() { journeyAfterSession(400) },
-      function() { journeyFindAndInstall(400, false) }, function() { journeyUndoYesterday(400) }, function() { journeyFirstRun(400) }]
+    var journeys = [function() { journeyBeforeRaid(400, false) }, function() { journeyAfterSession(400, false) },
+      function() { journeyFindAndInstall(400, false) }, function() { journeyUndoYesterday(400, false) },
+      function() { journeyFirstRun(400, false) }]
     for (var i = 0; i < journeys.length; i++) {
       cleanup()
       zoom = 1.5
@@ -188,6 +191,55 @@ TestCase {
     return service.confirm.sheet
   }
 
+  // ---- the mouse (omad-y4f8): every step clicks the item where it shows, never its signal
+
+  // Every item laid out where it shows (no positioner's layout pending), so a pointer
+  // reaches what the player would see; at once when nothing is pending.
+  function laidOut() {
+    verify(waitForPolish(testCase.Window.window), "the window's layout settles")
+  }
+
+  // A click on `item` at its centre, once the frame has laid it out.
+  function click(item) {
+    laidOut()
+    verify(item !== null && item.visible, "visible to click: " + (item ? item.objectName : "nothing"))
+    mouseClick(item, item.width / 2, item.height / 2)
+  }
+
+  // The pointer moved over `item` (twice: the first sample only primes the gate), so the
+  // cursor follows it.
+  function pointAt(item) {
+    laidOut()
+    mouseMove(item, item.width / 2 - 6, item.height / 2)
+    mouseMove(item, item.width / 2, item.height / 2)
+  }
+
+  // Row `i`'s own target: the AddonRow in its delegate.
+  function addonRowIn(item) {
+    if (!item) return null
+    if (item.shownActions !== undefined && item.activated !== undefined) return item
+    for (var i = 0; i < item.children.length; i++) {
+      var found = addonRowIn(item.children[i])
+      if (found) return found
+    }
+    return null
+  }
+
+  function rowTarget(i) {
+    var item = frame.currentView.rowItem(i)
+    verify(item !== null, "row " + i + " is built")
+    return addonRowIn(item) || item
+  }
+
+  function confirmSheet(mouse) {
+    var planSheet = child("planSheet")
+    if (mouse) click(child("sheetConfirm", planSheet))
+    else {
+      tryVerify(function() { return planSheet.keyItem.activeFocus })
+      keyClick("y")
+    }
+  }
+
   function resultLine() {
     tryVerify(function() { return child("result").visible }, 2000, "a result shows")
     var line = child("resultLine").text
@@ -209,7 +261,7 @@ TestCase {
     compare(hero.meta.indexOf("UPDATES") > 0, true, hero.meta)
     var button = child("updateAll", updates)
     compare(button.text, "Update all (3)")
-    if (mouse) button.clicked()
+    if (mouse) click(button)
     else keyClick("U")
     // The plan is exactly what the rows showed: applied with no sheet (M4-D28).
     var preview = answerChange("update", "plan-update-all")
@@ -230,7 +282,7 @@ TestCase {
 
   // ---- J2 after a session: the errors
 
-  function journeyAfterSession(width) {
+  function journeyAfterSession(width, mouse) {
     var answers = quiet("status-errors")
     answers.errors = the("errors")
     begin(width, answers)
@@ -242,30 +294,38 @@ TestCase {
     verify(errors.rowCount > 0, "the culprit's row")
     var row = errors.rows[0]
     compare(row.addon, "Foo")
-    keyClick("j")
-    keyClick("k")
-    keyClick(Qt.Key_Return)
+    if (mouse) click(rowTarget(0))
+    else {
+      keyClick("j")
+      keyClick("k")
+      keyClick(Qt.Key_Return)
+    }
     verify(frame.topPage !== null, "the error page opens")
     var page = frame.current
     noCommandLine(child("pageTitle", page).text)
-    // `y`: the report on the clipboard, one argument, never run as a command.
-    keyClick("y")
+    // `y` or Copy report: the report on the clipboard, one argument, never run.
+    if (mouse) click(child("pageCopy", page))
+    else keyClick("y")
     var copied = Quickshell.detachedCommands.filter(function(c) { return c[0] === "wl-copy" })
     compare(copied.length, 1)
     compare(copied[0].slice(0, 2), ["wl-copy", "--"])
     verify(copied[0][2].indexOf("Foo") !== -1, "the report names the addon")
-    keyClick(Qt.Key_Escape)
+    if (mouse) click(child("backButton"))
+    else keyClick(Qt.Key_Escape)
     compare(frame.topPage, null)
-    // `d`: the new errors marked as seen, bound to the read the panel showed.
-    keyClick("d")
+    // `d` or Dismiss: the new errors marked as seen, bound to the read the panel showed.
+    if (mouse) click(child("dismiss", frame.currentView))
+    else keyClick("d")
     var dismiss = answerChange("errors", "dismiss")
     compare(words(dismiss.command).slice(0, 2), ["errors", "dismiss"])
     verify(dismiss.command.indexOf("--if-match") !== -1, "bound to the read it showed")
     resultLine()
   }
 
-  function test_j2_after_a_session_by_keys_540() { journeyAfterSession(540) }
-  function test_j2_after_a_session_by_keys_400() { journeyAfterSession(400) }
+  function test_j2_after_a_session_by_keys_540() { journeyAfterSession(540, false) }
+  function test_j2_after_a_session_by_keys_400() { journeyAfterSession(400, false) }
+  function test_j2_after_a_session_by_mouse_540() { journeyAfterSession(540, true) }
+  function test_j2_after_a_session_by_mouse_400() { journeyAfterSession(400, true) }
 
   // ---- J3 find and install on every client it works on
 
@@ -275,13 +335,18 @@ TestCase {
     // on Retail and on Classic Era.
     answers.search = the("search-catalog")
     begin(width, answers)
-    keyClick("3")
+    if (mouse) click(child("tab_search"))
+    else keyClick("3")
     settle(answers)
-    keyClick("s")
     var field = child("searchField", frame.currentView)
+    if (mouse) click(field)
+    else keyClick("s")
     tryVerify(function() { return field.activeFocus })
     field.text = "advanced"
-    keyClick(Qt.Key_Return)
+    // By keys, Enter searches now; by mouse, the search runs as the name is typed.
+    if (!mouse) keyClick(Qt.Key_Return)
+    tryVerify(function() { return ran("search").some(function(l) { return words(l.command).indexOf("advanced") !== -1 }) }, 2000,
+      "the search runs: " + launchLog())
     settle(answers)
     var search = frame.currentView
     tryVerify(function() { return search.rowCount > 0 }, 2000, "results: " + launchLog())
@@ -289,21 +354,30 @@ TestCase {
     noCommandLine(first.meta)
     // Every client it works on: each client's preview in turn, then one sheet.
     var row = null
-    for (var i = 0; i < search.rows.length; i++) {
+    var at = -1
+    for (var i = 0; i < search.rows.length && at < 0; i++) {
       if (search.rows[i].targets.filter(function(t) { return t.eligible }).length >= 2) {
         row = search.rows[i]
-        frame.cursor = i
-        frame.cursorActive = true
-        break
+        at = i
       }
     }
     verify(row !== null, "a result that works on two clients")
-    keyClick("i")
+    if (mouse) {
+      // The pointer on its row shows its buttons; Install opens the chooser.
+      var target = rowTarget(at)
+      pointAt(target)
+      compare(frame.cursor, at)
+      click(child("action_install", target))
+    } else {
+      frame.cursor = at
+      frame.cursorActive = true
+      keyClick("i")
+    }
     verify(search.chooserOpen, "under All, the chooser")
     compare(search.chooserChoices[0].words, Model.copy("search.chooser.every", { "n": 2 }))
     if (mouse) {
-      search.chooserCursor = 0
-      search.chooserKey(Qt.Key_Return, "")
+      laidOut()
+      click(child("chooserTargets", search).itemAt(0))
     } else {
       keyClick("j")
       keyClick(Qt.Key_Return)
@@ -315,11 +389,7 @@ TestCase {
     compare(s.items.map(function(it) { return it.header }).filter(function(h) { return h !== "" }).length, 2)
     compare(s.effects.map(function(e) { return e.text }), ["Also installs LibFoo 1.0, which Qux needs."])
     compare(ran("apply").length, 0, "nothing runs before Yes")
-    if (mouse) child("sheetConfirm", child("planSheet")).clicked()
-    else {
-      tryVerify(function() { return child("planSheet").keyItem.activeFocus })
-      keyClick("y")
-    }
+    confirmSheet(mouse)
     answerChange("apply", "plan-install-two-retail-apply")
     answerChange("apply", "plan-install-two-era-apply")
     var line = resultLine()
@@ -329,41 +399,48 @@ TestCase {
   function test_j3_find_and_install_by_keys_540() { journeyFindAndInstall(540, false) }
   function test_j3_find_and_install_by_keys_400() { journeyFindAndInstall(400, false) }
   function test_j3_find_and_install_by_mouse_540() { journeyFindAndInstall(540, true) }
+  function test_j3_find_and_install_by_mouse_400() { journeyFindAndInstall(400, true) }
 
   // ---- J4 undo yesterday
 
-  function journeyUndoYesterday(width) {
+  function journeyUndoYesterday(width, mouse) {
     var answers = quiet("status-updates")
     answers.history = the("history")
     begin(width, answers)
-    keyClick("7")
+    if (mouse) click(child("tab_history"))
+    else keyClick("7")
     settle(answers)
     var history = frame.currentView
     verify(history.rowCount > 0)
     var at = -1
     for (var i = 0; i < history.rows.length; i++) if (history.rows[i].undo) { at = i; break }
     verify(at >= 0, "a change that can be undone")
-    frame.cursor = at
-    frame.cursorActive = true
     noCommandLine(history.rows[at].title)
-    keyClick(Qt.Key_Return)
+    if (mouse) click(rowTarget(at))
+    else {
+      frame.cursor = at
+      frame.cursorActive = true
+      keyClick(Qt.Key_Return)
+    }
     verify(frame.topPage !== null, "the change's page")
-    // Ctrl+Z on its page: the undo, previewed in the plan sheet.
-    keySequence("Ctrl+Z")
+    // Ctrl+Z or the page's Undo: the undo, previewed in the plan sheet.
+    if (mouse) click(child("pageUndo_0", frame.current))
+    else keySequence("Ctrl+Z")
     var preview = answerChange("undo", "history-undo-preview")
     verify(preview.command.indexOf("--dry-run") !== -1)
     compare(words(preview.command).slice(0, 1), ["undo"])
     var s = sheet()
     noCommandLine(s.title)
     compare(ran("apply").length, 0, "nothing runs before Yes")
-    tryVerify(function() { return child("planSheet").keyItem.activeFocus })
-    keyClick("y")
+    confirmSheet(mouse)
     answerChange("apply", "history-undo-apply")
     resultLine()
   }
 
-  function test_j4_undo_yesterday_by_keys_540() { journeyUndoYesterday(540) }
-  function test_j4_undo_yesterday_by_keys_400() { journeyUndoYesterday(400) }
+  function test_j4_undo_yesterday_by_keys_540() { journeyUndoYesterday(540, false) }
+  function test_j4_undo_yesterday_by_keys_400() { journeyUndoYesterday(400, false) }
+  function test_j4_undo_yesterday_by_mouse_540() { journeyUndoYesterday(540, true) }
+  function test_j4_undo_yesterday_by_mouse_400() { journeyUndoYesterday(400, true) }
 
   // ---- J5 the first run
 
@@ -376,28 +453,32 @@ TestCase {
     return card && card.visible && card.title === Model.copy("welcome.title") ? card : null
   }
 
-  function press(card, text) {
+  // A card's button by its words: clicked where it shows by mouse, its signal by keys.
+  function press(card, text, mouse) {
     var buttons = card.buttons
     for (var i = 0; i < buttons.length; i++) {
       if (buttons[i].text === text) {
-        findChild(card, "noticeButton_" + i).clicked()
+        var button = findChild(card, "noticeButton_" + i)
+        if (mouse) click(button)
+        else button.clicked()
         return
       }
     }
     fail("no button " + text + " on the card")
   }
 
-  function journeyFirstRun(width) {
+  function journeyFirstRun(width, mouse) {
     begin(width, quiet("status-none"))
     var card = welcome()
     verify(card !== null, "the welcome card")
     noCommandLine(card.detail)
-    press(card, "Add a client folder…")
+    press(card, "Add a client folder…", mouse)
     var page = frame.current
     var field = child("pathField", page)
     tryVerify(function() { return field.activeFocus })
     field.text = "~/pserver"
-    keyClick(Qt.Key_Return)
+    if (mouse) click(child("addClient", page))
+    else keyClick(Qt.Key_Return)
     var added = answerChange("targets", "targets-add")
     compare(words(added.command), ["targets", "add", "--", Build.CONTEXT.HOME + "/pserver"])
     compare(resultLine(), "Added Wrath 3.3.5a private server")
@@ -411,11 +492,10 @@ TestCase {
     var onboarding = child("onboardingCard")
     tryVerify(function() { return onboarding.visible }, 1000)
     compare(onboarding.title, "Take over the addons already on Retail?")
-    findChild(onboarding, "noticeButton_0").clicked()
+    press(onboarding, onboarding.buttons[0].text, mouse)
     answerChange("adopt", "adopt-preview")
     compare(sheet().title, "Take over 2 addons on Retail?")
-    tryVerify(function() { return child("planSheet").keyItem.activeFocus })
-    keyClick("y")
+    confirmSheet(mouse)
     answerChange("apply", "adopt-apply")
     resultLine()
     // A client that records no Lua errors yet: BugGrabber offered, previewed first.
@@ -428,13 +508,15 @@ TestCase {
     settle(errors)
     tryVerify(function() { return onboarding.visible && onboarding.title === "Record Lua errors on Classic Era?" }, 2000,
       "the BugGrabber card: " + onboarding.title)
-    findChild(onboarding, "noticeButton_0").clicked()
+    press(onboarding, onboarding.buttons[0].text, mouse)
     var install = null
     tryVerify(function() { install = runningOf("install"); return install !== null }, 2000)
     compare(words(install.command), ["install", "buggrabber", "-t", "era"])
     verify(install.command.indexOf("--dry-run") !== -1, "a preview, never the install itself")
   }
 
-  function test_j5_the_first_run_540() { journeyFirstRun(540) }
-  function test_j5_the_first_run_400() { journeyFirstRun(400) }
+  function test_j5_the_first_run_540() { journeyFirstRun(540, false) }
+  function test_j5_the_first_run_400() { journeyFirstRun(400, false) }
+  function test_j5_the_first_run_by_mouse_540() { journeyFirstRun(540, true) }
+  function test_j5_the_first_run_by_mouse_400() { journeyFirstRun(400, true) }
 }

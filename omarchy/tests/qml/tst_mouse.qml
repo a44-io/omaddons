@@ -126,6 +126,12 @@ TestCase {
     return found
   }
 
+  // Every item laid out where it shows (no positioner's layout pending), so a pointer
+  // reaches what the player would see; at once when nothing is pending.
+  function laidOut() {
+    verify(waitForPolish(testCase.Window.window), "the window's layout settles")
+  }
+
   // A row's own target: the AddonRow in a view's delegate (under its day or section
   // heading), or the delegate itself when it is its own row (Issues).
   function addonRowIn(item) {
@@ -226,7 +232,7 @@ TestCase {
     }
     verify(at >= 0, "a change with an addon's line")
     compare(frame.pages.length, 1)
-    waitForRendering(frame)
+    laidOut()
     var line = child("itemLine_" + at, page)
     mouseClick(line, 30, line.height / 2)
     compare(frame.pages.length, 2, "one click opened the addon's page")
@@ -294,7 +300,7 @@ TestCase {
     mouseMove(row, 40, 10)
     compare(frame.cursor, 0)
     tryVerify(function() { return row.shownActions.length > 0 }, 1000, "the cursored row shows its actions")
-    waitForRendering(frame)
+    laidOut()
     var name = row.shownActions[0].name
     compare(name, "update")
     var button = child("action_update", row)
@@ -331,7 +337,7 @@ TestCase {
     keyClick("i")
     verify(search.chooserOpen)
     // Its lines laid out where they show, before the pointer reaches for them.
-    waitForRendering(frame)
+    laidOut()
     var choices = child("chooserTargets", search)
     var line = choices.itemAt(2)
     mouseMove(line, 30, line.height / 2)
