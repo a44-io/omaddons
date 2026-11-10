@@ -1,0 +1,22 @@
+---
+source: tests/contract/matrix.rs
+expression: "without_length(&s, &c.envelope, \"zsh\")"
+---
+{
+  "command": "install-completions",
+  "commands": [],
+  "data": {
+    "bytes": "<bytes>",
+    "dir_created": true,
+    "dry_run": true,
+    "file": "<root>/home/.zfunc/_omaddons",
+    "shell": "zsh",
+    "written": "fresh"
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.1",
+  "tool_version": "<version>",
+  "warnings": []
+}

@@ -2729,6 +2729,102 @@ fn completions() {
     );
 }
 
+/// `install-completions`' rows: each on a fresh scene. `bytes` is asserted against the
+/// script `completions` prints plus the marker line, then stood in for in the snapshot,
+/// so a change to the command tree re-accepts the scripts' snapshots only.
+#[test]
+fn install_completions() {
+    use common::tlog::tlog;
+    let log = tlog!();
+    let run = |s: &Scene, args: &[&str], code: i32| {
+        let mut argv = vec!["install-completions"];
+        argv.extend_from_slice(args);
+        argv.push("--json");
+        support::check(log.run(&s.home, &argv).to_run(), code)
+    };
+    let without_length = |s: &Scene, envelope: &Value, shell: &str| {
+        let script = s.json(&["completions", shell], 0).envelope["data"]["script"]
+            .as_str()
+            .unwrap_or_default()
+            .len();
+        let marker = omaddons::app::install_completions::MARKER.len() + 1;
+        assert_eq!(
+            envelope["data"]["bytes"],
+            json!(script + marker),
+            "bytes is the script's length with its marker line"
+        );
+        let mut projection = s.stable(envelope);
+        projection["data"]["bytes"] = json!("<bytes>");
+        projection
+    };
+
+    log.step("ok: bash, where bash-completion looks");
+    let s = Scene::new();
+    let c = run(&s, &["bash"], 0);
+    assert_eq!(c.envelope["command"], "install-completions");
+    assert_eq!(c.envelope["data"]["written"], "fresh");
+    assert_eq!(c.envelope["data"]["dir_created"], true);
+    let file = s
+        .home
+        .env
+        .data()
+        .join("bash-completion/completions/omaddons");
+    let written = fs::read_to_string(&file).unwrap_or_default();
+    assert!(
+        written.starts_with(omaddons::app::install_completions::MARKER),
+        "the marker comes first: {:?}",
+        written.lines().next()
+    );
+    insta::assert_json_snapshot!(
+        "install_completions_ok",
+        without_length(&s, &c.envelope, "bash")
+    );
+
+    log.step("dry run: zsh, which would create ~/.zfunc");
+    let s = Scene::new();
+    let c = run(&s, &["zsh", "--dry-run"], 0);
+    assert_eq!(c.envelope["data"]["written"], "fresh");
+    assert_eq!(c.envelope["data"]["dir_created"], true);
+    assert!(
+        !s.home.env.home().join(".zfunc").exists(),
+        "a dry run creates nothing"
+    );
+    insta::assert_json_snapshot!(
+        "install_completions_dry_run",
+        without_length(&s, &c.envelope, "zsh")
+    );
+
+    log.step("file exists: a fish script omaddons did not write");
+    let s = Scene::new();
+    let fish = s.home.env.config().join("fish/completions");
+    fs::create_dir_all(&fish).unwrap();
+    fs::write(fish.join("omaddons.fish"), b"complete -c omaddons -f\n").unwrap();
+    let c = run(&s, &["fish"], 4);
+    assert_eq!(c.envelope["error"]["code"], "file_exists");
+    assert_eq!(c.envelope["error"]["fix_argv"], Value::Null);
+    assert_eq!(
+        c.envelope["error"]["alternatives"][0]["argv"],
+        json!(["omaddons", "install-completions", "fish", "--force"])
+    );
+    assert_eq!(
+        fs::read(fish.join("omaddons.fish")).unwrap(),
+        b"complete -c omaddons -f\n",
+        "left as it is"
+    );
+    insta::assert_json_snapshot!("install_completions_file_exists", s.stable(&c.envelope));
+
+    log.step("usage: elvish loads completions from rc.elv");
+    let s = Scene::new();
+    let c = run(&s, &["elvish"], 2);
+    assert_eq!(c.envelope["error"]["code"], "usage");
+    assert_eq!(c.envelope["error"]["fix_argv"], Value::Null);
+    assert_eq!(
+        c.envelope["error"]["alternatives"][0]["argv"],
+        json!(["omaddons", "completions", "elvish"])
+    );
+    insta::assert_json_snapshot!("install_completions_rc_only", s.stable(&c.envelope));
+}
+
 #[test]
 fn robot_docs() {
     use common::tlog::tlog;

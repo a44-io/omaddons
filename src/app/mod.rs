@@ -27,6 +27,7 @@ pub mod history;
 pub mod history_items;
 pub mod info;
 pub mod install;
+pub mod install_completions;
 pub mod install_skill;
 pub mod intent;
 pub mod issues;
@@ -288,6 +289,7 @@ pub const COMMANDS: &[CommandEntry] = &[
     entry("omarchy install", Setup, true, &[0, 1, 2, 3, 4, 5], data_schema::<omarchy::InstallOutcome>, Network::None),
     entry("omarchy remove", Setup, true, &[0, 1, 2, 3, 4, 5], data_schema::<omarchy::RemoveOutcome>, Network::None),
     entry("completions", Setup, false, &[0, 1, 2], data_schema::<completions::CompletionsOutcome>, Network::None),
+    entry("install-completions", Setup, true, &[0, 1, 2, 3, 4, 5], data_schema::<install_completions::InstallCompletionsOutcome>, Network::None),
     entry("robot-docs", Setup, false, &[0, 1, 2], data_schema::<robot_docs::GuideOutcome>, Network::None),
     entry("robot-docs schema", Setup, false, &[0, 1, 2], data_schema::<robot_docs::SchemaOutcome>, Network::None),
     entry("robot-docs errors", Setup, false, &[0, 1, 2], data_schema::<robot_docs::ErrorsOutcome>, Network::None),
@@ -435,6 +437,7 @@ pub fn canonical_path(command: &Command) -> &'static str {
             .as_ref()
             .map_or("omarchy status", omarchy::OmarchyAction::command),
         Command::Completions(_) => "completions",
+        Command::InstallCompletions(_) => install_completions::INSTALL_COMPLETIONS_COMMAND,
         Command::RobotDocs(args) => args.action.as_ref().map_or(
             robot_docs::GUIDE_COMMAND,
             robot_docs::RobotDocsAction::command,
@@ -866,6 +869,7 @@ fn run_command(cli: &Cli, ctx: &Context, out: &Out<'_>) -> Exit {
             }
         }
         Some(Command::Completions(args)) => out.emit(completions::run(args)),
+        Some(Command::InstallCompletions(args)) => out.emit(install_completions::run(ctx, args)),
         Some(Command::RobotDocs(args)) => match &args.action {
             None | Some(robot_docs::RobotDocsAction::Guide) => out.emit(robot_docs::guide()),
             Some(robot_docs::RobotDocsAction::Schema(schema)) => {

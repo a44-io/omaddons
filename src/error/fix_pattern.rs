@@ -79,7 +79,9 @@ impl ErrorCode {
             Self::FilesystemUnsupported => {
                 "prose: copy what you need from `details.backup_dir` by hand, with the game closed"
             }
-            Self::FileExists => "prose: choose another file name, or delete that file yourself",
+            Self::FileExists => {
+                "prose: choose another file name or move that file away; `install-completions` offers `--force` as an alternative"
+            }
             Self::Locked => "the same command again, once the other omaddons process has finished",
             Self::CheckFailed => {
                 "`omaddons update`, `omaddons errors -t <id>` or `status`'s first fix, else prose pointing at the failed items in `data`"

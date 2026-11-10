@@ -214,6 +214,7 @@ pub const CLIENT_FREE: &[&str] = &[
     "apply",
     "plans",
     "completions",
+    "install-completions",
     "robot-docs",
     // It reads no -t: resolving one would need discovery, which it never runs (M4-D4).
     "capabilities",

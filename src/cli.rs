@@ -284,6 +284,12 @@ pub enum Command {
     /// For bash, zsh, fish, elvish or powershell.
     #[command(after_long_help = COMPLETIONS_HELP)]
     Completions(crate::app::completions::CompletionsArgs),
+    /// Install the completion script where your shell looks for it
+    ///
+    /// For bash, zsh or fish: the script completions prints, written to the shell's own
+    /// folder. Run it again after upgrading.
+    #[command(after_long_help = crate::app::install_completions::INSTALL_COMPLETIONS_HELP)]
+    InstallCompletions(crate::app::install_completions::InstallCompletionsArgs),
     /// Print documentation for agents
     ///
     /// The agent guide (bare robot-docs), the JSON Schemas and the error catalog.

@@ -519,7 +519,8 @@ pub(crate) const FILESYSTEM_UNSUPPORTED: DetailSpec = DetailSpec::Object(&[
     ),
 ]);
 
-/// `backup/export.rs::file_exists` and the equivalent dry-run check in `app/backup.rs`.
+/// `backup/export.rs::file_exists` and the equivalent dry-run check in `app/backup.rs`;
+/// `app/install_completions.rs`'s refusal of a completion file it did not write.
 pub(crate) const FILE_EXISTS: DetailSpec = DetailSpec::Object(&[Field::req("file", &STR)]);
 
 /// `fsx/lock.rs::busy`, and `apply`'s plan lease (`lease`, the plan id); item

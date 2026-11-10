@@ -11,8 +11,8 @@ Look      status  list  outdated  info  search  errors  export  history  plans
           net-log  doctor
 Change    install  update  pin  unpin  adopt  sync  copy  remove  undo  apply
           backup
-Setup     targets  config  auth  omarchy  completions  robot-docs  capabilities
-          help
+Setup     targets  config  auth  omarchy  completions  install-completions
+          robot-docs  capabilities  help
 
 Start with `omaddons status`. Run `omaddons help <command>` for details; add
 --json for one JSON envelope on stdout.
@@ -38,8 +38,8 @@ Look      status  list  outdated  info  search  errors  export  history  plans
           net-log  doctor
 Change    install  update  pin  unpin  adopt  sync  copy  remove  undo  apply
           backup
-Setup     targets  config  auth  omarchy  completions  robot-docs  capabilities
-          help
+Setup     targets  config  auth  omarchy  completions  install-completions
+          robot-docs  capabilities  help
 
 Start with `omaddons status`. Run `omaddons help <command>` for details; add
 --json for one JSON envelope on stdout.
@@ -93,6 +93,7 @@ Setup:
   auth                           Store, check or clear the opt-in GitHub token
   omarchy                        Put the omaddons widget on Omarchy's bar
   completions                    Print a shell completion script
+  install-completions            Install the completion script where your shell looks for it
   robot-docs                     Print documentation for agents
   capabilities                   Describe everything this build can do, for agents
   help                           Show help for omaddons or one command

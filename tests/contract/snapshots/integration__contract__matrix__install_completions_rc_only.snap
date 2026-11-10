@@ -1,0 +1,31 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "install-completions",
+  "commands": [],
+  "error": {
+    "alternatives": [
+      {
+        "argv": [
+          "omaddons",
+          "completions",
+          "elvish"
+        ],
+        "display": "omaddons completions elvish"
+      }
+    ],
+    "code": "usage",
+    "details": {},
+    "fix": "add the line README's \"Shell completions\" gives for elvish to rc.elv",
+    "fix_argv": null,
+    "message": "install-completions writes a file for bash, zsh and fish only; elvish loads completions from rc.elv, which omaddons never edits",
+    "retryable": false
+  },
+  "exit_code": 2,
+  "ok": false,
+  "schema_version": "1.1",
+  "tool_version": "<version>",
+  "warnings": []
+}

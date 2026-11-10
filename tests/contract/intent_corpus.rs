@@ -1046,6 +1046,45 @@ pub const CORPUS: &[Row] = &[
         ),
     )
     .by_leaf("B3"),
+    row(
+        CommandTypo,
+        &["install-completion", "bash"],
+        &[],
+        "a mutating guess becomes help",
+        error(
+            2,
+            "usage",
+            &["omaddons", "help", "install-completions"],
+            &[0],
+        ),
+    )
+    .by_leaf("bmcx.11"),
+    row(
+        FlagTypo,
+        &["install-completions", "bash", "--forse"],
+        &["install-completions"],
+        "a flag corrected in place; the fix installs the bash script",
+        error(
+            2,
+            "usage",
+            &["omaddons", "install-completions", "bash", "--force"],
+            &[0],
+        ),
+    )
+    .by_leaf("bmcx.11"),
+    row(
+        ValueTypo,
+        &["install-completions", "zhs"],
+        &["install-completions"],
+        "a shell name corrected; the fix installs the zsh script",
+        error(
+            2,
+            "usage",
+            &["omaddons", "install-completions", "zsh"],
+            &[0],
+        ),
+    )
+    .by_leaf("bmcx.11"),
 ];
 
 /// A row whose surface another leaf owns and that has not landed yet (common rule 18).

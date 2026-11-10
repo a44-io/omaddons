@@ -64,7 +64,7 @@ pub struct Paths {
     /// `<config>` itself, for paths of other tools under it (the Omarchy plugin).
     config_home: PathBuf,
     /// `<data>` (`$XDG_DATA_HOME`), where launchers keep their configs; omaddons
-    /// writes nothing there.
+    /// writes nothing there but the bash completion script `install-completions` installs.
     data_home: PathBuf,
     config: PathBuf,
     state: PathBuf,
@@ -292,6 +292,26 @@ impl Paths {
     /// [`Paths::skill_dir`] only when it exists, creating `skills/` and `skills/omaddons/`.
     pub fn claude_dir(&self) -> PathBuf {
         self.home.join(".claude")
+    }
+
+    // ---- Shell completion scripts (`install-completions`) ------------------------------
+
+    /// Where bash-completion loads a user's script for `omaddons` on its first Tab:
+    /// `<data>/bash-completion/completions/omaddons`.
+    pub fn bash_completion_file(&self) -> PathBuf {
+        self.data_home.join("bash-completion/completions/omaddons")
+    }
+
+    /// A folder of the user's own for zsh's `fpath`, `<home>/.zfunc`, and the script
+    /// `compinit` autoloads from it: `<home>/.zfunc/_omaddons`.
+    pub fn zsh_completion_file(&self) -> PathBuf {
+        self.home.join(".zfunc/_omaddons")
+    }
+
+    /// Where fish loads a user's completions for `omaddons` on first use:
+    /// `<config>/fish/completions/omaddons.fish`.
+    pub fn fish_completion_file(&self) -> PathBuf {
+        self.config_home.join("fish/completions/omaddons.fish")
     }
 
     // ---- <state>/omaddons --------------------------------------------------------------

@@ -124,7 +124,7 @@ fn bare_omaddons_prints_help_and_exits_0() {
         r.stdout.contains("\nLook      status")
             && r.stdout.contains("\nChange    install")
             && r.stdout.contains(
-                "\nSetup     targets  config  auth  omarchy  completions  robot-docs  capabilities\n          help\n"
+                "\nSetup     targets  config  auth  omarchy  completions  install-completions\n          robot-docs  capabilities  help\n"
             ),
         "one line per group\n{}",
         r.context()

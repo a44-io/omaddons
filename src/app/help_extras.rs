@@ -699,7 +699,21 @@ pub const EXTRAS: &[Extras] = &[
             ),
             ("omaddons completions zsh > ~/.zfunc/_omaddons", ""),
         ],
-        see_also: &["help"],
+        see_also: &["install-completions", "help"],
+    },
+    Extras {
+        path: "install-completions",
+        examples: &[
+            (
+                "omaddons install-completions bash",
+                "where bash-completion looks",
+            ),
+            (
+                "omaddons install-completions zsh --dry-run",
+                "where it would write, and what",
+            ),
+        ],
+        see_also: &["completions"],
     },
     Extras {
         path: "robot-docs",

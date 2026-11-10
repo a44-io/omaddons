@@ -1,0 +1,22 @@
+---
+source: tests/contract/matrix.rs
+expression: "without_length(&s, &c.envelope, \"bash\")"
+---
+{
+  "command": "install-completions",
+  "commands": [],
+  "data": {
+    "bytes": "<bytes>",
+    "dir_created": true,
+    "dry_run": false,
+    "file": "<root>/home/.local/share/bash-completion/completions/omaddons",
+    "shell": "bash",
+    "written": "fresh"
+  },
+  "exit_code": 0,
+  "ok": true,
+  "partial": false,
+  "schema_version": "1.1",
+  "tool_version": "<version>",
+  "warnings": []
+}

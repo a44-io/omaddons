@@ -40,7 +40,7 @@ fish, client ids, addon names and plan, backup, transaction and doctor ids compl
 read from omaddons' own files at each Tab (a client once it is registered). Generate the
 script again after upgrading omaddons.
 
-See also: help
+See also: install-completions, help
 
 Global options:
       --json             One JSON envelope on stdout

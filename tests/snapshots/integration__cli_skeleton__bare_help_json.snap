@@ -191,6 +191,12 @@ expression: envelope
         "name": "completions"
       },
       {
+        "about": "Install the completion script where your shell looks for it",
+        "aliases": [],
+        "group": "setup",
+        "name": "install-completions"
+      },
+      {
         "about": "Print documentation for agents",
         "aliases": [],
         "group": "setup",

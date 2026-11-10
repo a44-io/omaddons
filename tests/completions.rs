@@ -1338,3 +1338,352 @@ fn no_help_capabilities_or_guide_names_the_reader() {
         &false,
     );
 }
+
+// ---------------------------------------------------------------------------------------
+// 11. install-completions: the script written where each shell looks (bmcx.11).
+
+/// The marker line `install-completions` writes.
+const MARKER: &str = omaddons::app::install_completions::MARKER;
+
+/// What `install-completions <shell>` writes: `completions <shell>`' script with the
+/// marker line first, or second after zsh's `#compdef omaddons`.
+fn marked(log: &TestLog, env: &TestEnv, shell: &str) -> String {
+    let script = script_of(log, env, shell);
+    match script.strip_prefix("#compdef omaddons\n") {
+        Some(rest) if shell == "zsh" => format!("#compdef omaddons\n{MARKER}\n{rest}"),
+        _ => format!("{MARKER}\n{script}"),
+    }
+}
+
+/// Each shell's file, under `env`'s home and XDG folders.
+fn completion_file(env: &TestEnv, shell: &str) -> std::path::PathBuf {
+    match shell {
+        "bash" => env.data().join("bash-completion/completions/omaddons"),
+        "zsh" => env.home().join(".zfunc/_omaddons"),
+        _ => env.config().join("fish/completions/omaddons.fish"),
+    }
+}
+
+/// The kinds of `history --json`'s lines, newest first.
+fn history_kinds(log: &TestLog, env: &TestEnv) -> Vec<String> {
+    let ran = log.run(env, &["history", "--json"]);
+    ran.ok();
+    ran.data()["entries"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|line| line["kind"].as_str().map(str::to_owned))
+        .collect()
+}
+
+#[test]
+fn install_completions_writes_each_shells_file_once() {
+    let log = tlog!();
+    let env = TestEnv::new();
+    for shell in ["bash", "zsh", "fish"] {
+        let file = completion_file(&env, shell);
+        let want = marked(&log, &env, shell);
+        log.step(&format!("{shell}: dry run"));
+        log.tree("home", &env.home());
+        log.tree("config", &env.config());
+        let ran = log.run(&env, &["install-completions", shell, "--dry-run", "--json"]);
+        ran.ok();
+        log.assert_eq("dry run written", &ran.data()["written"], &json!("fresh"));
+        log.assert_eq(
+            "dry run dir_created",
+            &ran.data()["dir_created"],
+            &json!(true),
+        );
+        log.assert_eq("dry run bytes", &ran.data()["bytes"], &json!(want.len()));
+        log.assert_unchanged("home", &env.home());
+        log.assert_unchanged("config", &env.config());
+
+        log.step(&format!("{shell}: install"));
+        let ran = log.run(&env, &["install-completions", shell]);
+        ran.ok();
+        log.note(ran.stdout());
+        log.assert_eq(
+            "the human line names the file",
+            &ran.stdout().contains(&file.display().to_string()),
+            &true,
+        );
+        log.assert_eq(
+            "zsh's output says the fpath line",
+            &ran.stdout().contains("fpath+=(\"$HOME/.zfunc\")"),
+            &(shell == "zsh"),
+        );
+        log.assert_eq(
+            "the file is the script with its marker",
+            &(fs::read_to_string(&file).unwrap_or_default() == want),
+            &true,
+        );
+        let mode =
+            std::os::unix::fs::PermissionsExt::mode(&fs::metadata(&file).unwrap().permissions());
+        log.assert_eq("mode", &format!("{:o}", mode & 0o7777), &"644".to_owned());
+        if shell == "zsh" {
+            let text = fs::read_to_string(&file).unwrap_or_default();
+            let lines: Vec<&str> = text.lines().take(2).collect();
+            log.assert_eq(
+                "compinit's line first, the marker second",
+                &lines,
+                &vec!["#compdef omaddons", MARKER],
+            );
+        }
+
+        log.step(&format!("{shell}: again, unchanged"));
+        log.tree("home", &env.home());
+        log.tree("config", &env.config());
+        let ran = log.run(&env, &["install-completions", shell, "--json"]);
+        ran.ok();
+        log.assert_eq("written", &ran.data()["written"], &json!("unchanged"));
+        log.assert_eq("dir_created", &ran.data()["dir_created"], &json!(false));
+        log.assert_eq(
+            "file",
+            &ran.data()["file"],
+            &json!(file.display().to_string()),
+        );
+        log.assert_unchanged("home", &env.home());
+        log.assert_unchanged("config", &env.config());
+    }
+    log.step("like backup export, it records nothing: no history line, no state");
+    log.assert_eq("history", &history_kinds(&log, &env), &Vec::<String>::new());
+    log.assert_eq(
+        "the state folder",
+        &env.state().join("omaddons").exists(),
+        &false,
+    );
+}
+
+#[test]
+fn install_completions_replaces_only_a_file_it_wrote() {
+    let log = tlog!();
+    let env = TestEnv::new();
+    let file = completion_file(&env, "bash");
+    let want = marked(&log, &env, "bash");
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+
+    log.step("a script without the marker is refused, dry run too");
+    fs::write(&file, b"complete -F _mine omaddons\n").unwrap();
+    for extra in [&[][..], &["--dry-run"]] {
+        let mut argv = vec!["install-completions", "bash", "--json"];
+        argv.extend_from_slice(extra);
+        let ran = log.run(&env, &argv);
+        ran.fails(4, "file_exists");
+        let error = &ran.envelope()["error"];
+        log.assert_eq(
+            "details",
+            &error["details"],
+            &json!({"file": file.display().to_string()}),
+        );
+        log.assert_eq("a prose fix", &error["fix_argv"], &Value::Null);
+        let mut retry = vec!["omaddons", "install-completions", "bash"];
+        retry.extend_from_slice(extra);
+        retry.push("--force");
+        log.assert_eq(
+            "the alternative adds --force, the rest kept",
+            &error["alternatives"][0]["argv"],
+            &json!(retry),
+        );
+        log.assert_eq(
+            "left as it is",
+            &fs::read(&file).unwrap(),
+            &b"complete -F _mine omaddons\n".to_vec(),
+        );
+    }
+
+    log.step("--force replaces it");
+    let ran = log.run(&env, &["install-completions", "bash", "--force", "--json"]);
+    ran.ok();
+    log.assert_eq("written", &ran.data()["written"], &json!("replaced"));
+    log.assert_eq(
+        "ours now",
+        &(fs::read_to_string(&file).unwrap() == want),
+        &true,
+    );
+
+    log.step("an older script it wrote is replaced without --force");
+    fs::write(&file, format!("{MARKER}\n# an older build's script\n")).unwrap();
+    let ran = log.run(&env, &["install-completions", "bash", "--json"]);
+    ran.ok();
+    log.assert_eq("written", &ran.data()["written"], &json!("replaced"));
+    log.assert_eq(
+        "current",
+        &(fs::read_to_string(&file).unwrap() == want),
+        &true,
+    );
+
+    log.step("a symlink is refused, even with --force");
+    let dotfiles = env.home().join("dotfiles/omaddons.bash");
+    fs::create_dir_all(dotfiles.parent().unwrap()).unwrap();
+    fs::write(&dotfiles, b"my dotfiles copy\n").unwrap();
+    fs::remove_file(&file).unwrap();
+    std::os::unix::fs::symlink(&dotfiles, &file).unwrap();
+    for extra in [&[][..], &["--force"]] {
+        let mut argv = vec!["install-completions", "bash", "--json"];
+        argv.extend_from_slice(extra);
+        let ran = log.run(&env, &argv);
+        ran.fails(4, "scope_denied");
+        log.assert_eq(
+            "reason",
+            &ran.envelope()["error"]["details"]["reason"],
+            &json!("symlink"),
+        );
+        log.assert_eq(
+            "the link stays",
+            &fs::symlink_metadata(&file)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            &true,
+        );
+        log.assert_eq(
+            "its target is untouched",
+            &fs::read(&dotfiles).unwrap(),
+            &b"my dotfiles copy\n".to_vec(),
+        );
+    }
+}
+
+#[test]
+fn install_completions_never_replaces_a_file_created_meanwhile() {
+    let log = tlog!();
+    let env = TestEnv::new();
+    log.step("the file's folder exists, so the first write fsx checks is the file's");
+    let file = completion_file(&env, "bash");
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+
+    log.step("paused after its checks, another program creates the file");
+    let pause = common::pause::Pause::new(env.root());
+    let running = log
+        .cmd(&env, &["install-completions", "bash", "--json"])
+        .failpoints("fsx.mutate.checked=pause@1")
+        .pause(&pause)
+        .spawn();
+    log.reached(&pause, "fsx.mutate.checked");
+    fs::write(&file, b"another program's script\n").unwrap();
+    log.resume(&pause, "fsx.mutate.checked");
+    let ran = running.wait();
+    ran.fails(4, "file_exists");
+    log.assert_eq(
+        "the other program's file stays",
+        &fs::read(&file).unwrap(),
+        &b"another program's script\n".to_vec(),
+    );
+    log.assert_eq(
+        "a retry is the same command",
+        &ran.envelope()["error"]["alternatives"][0]["argv"],
+        &json!(["omaddons", "install-completions", "bash"]),
+    );
+}
+
+#[test]
+fn install_completions_refusals_change_nothing() {
+    let log = tlog!();
+    let home = Home::new(&["wow"]);
+    let env = &home.env;
+
+    // The cache is left out: every mutating command rebuilds the derived history
+    // projection as it exits (M3-D37), a refusal too.
+    let trees = [
+        ("home", env.home()),
+        ("config", env.config()),
+        ("state", env.state()),
+    ];
+    for (shell, rc) in [("elvish", "rc.elv"), ("powershell", "$PROFILE")] {
+        log.step(&format!("{shell}: usage, writing nothing"));
+        for (label, root) in &trees {
+            log.tree(label, root);
+        }
+        let ran = log.run(&home, &["install-completions", shell, "--json"]);
+        ran.fails(2, "usage");
+        let error = &ran.envelope()["error"];
+        log.assert_eq(
+            "names the rc file",
+            &error["message"].as_str().unwrap_or_default().contains(rc),
+            &true,
+        );
+        log.assert_eq("a prose fix", &error["fix_argv"], &Value::Null);
+        log.assert_eq(
+            "the alternative prints the script",
+            &error["alternatives"][0]["argv"],
+            &json!(["omaddons", "completions", shell]),
+        );
+        for (label, root) in &trees {
+            log.assert_unchanged(label, root);
+        }
+    }
+
+    log.step("a missing config folder: not_found, nothing created");
+    let missing = env.root().join("no-config");
+    let ran = log
+        .cmd(&home, &["install-completions", "fish", "--json"])
+        .env("XDG_CONFIG_HOME", &missing)
+        .run();
+    ran.fails(3, "not_found");
+    log.assert_eq(
+        "details.path",
+        &ran.envelope()["error"]["details"]["path"],
+        &json!(missing.display().to_string()),
+    );
+    log.assert_eq("nothing created", &missing.exists(), &false);
+
+    log.step("a data folder inside a registered client: scope_denied");
+    log.run(&home, &["targets", "default", "retail", "--json"])
+        .ok();
+    let retail = home.client("_retail_");
+    let inside = retail.join("share");
+    fs::create_dir_all(&inside).unwrap();
+    log.tree("client", &retail);
+    let ran = log
+        .cmd(&home, &["install-completions", "bash", "--json"])
+        .env("XDG_DATA_HOME", &inside)
+        .run();
+    ran.fails(4, "scope_denied");
+    log.assert_eq(
+        "names the client",
+        &ran.envelope()["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("inside the game client"),
+        &true,
+    );
+    log.assert_unchanged("client", &retail);
+    assert_private_all(ran.stdout(), ran.stderr());
+}
+
+#[test]
+fn the_installed_bash_script_completes() {
+    let log = tlog!();
+    let env = TestEnv::new();
+    log.step("install");
+    log.run(&env, &["install-completions", "bash"]).ok();
+    let installed = fs::read_to_string(completion_file(&env, "bash")).unwrap();
+    log.step("complete with it");
+    let dir = env.root().join("bash-installed");
+    let cwd = env.root().join("bash-installed-cwd");
+    fs::create_dir_all(&dir).unwrap();
+    fs::create_dir_all(&cwd).unwrap();
+    let file = dir.join("omaddons.bash");
+    fs::write(&file, installed).unwrap();
+    let cases = vec![
+        vec!["sta".to_owned()],
+        vec!["install-comp".to_owned()],
+        vec!["install-completions".to_owned(), String::new()],
+    ];
+    let (run, offers) = shells::bash_complete(&file, &cases, &cwd, Some(&env));
+    log.json("bash completion", &run);
+    log.json("offers", &offers);
+    log.assert_eq("sta", &offers[0].contains(&"status".to_owned()), &true);
+    log.assert_eq(
+        "the command itself",
+        &offers[1].contains(&"install-completions".to_owned()),
+        &true,
+    );
+    for shell in ["bash", "zsh", "fish"] {
+        log.assert_eq(
+            &format!("its shells: {shell}"),
+            &offers[2].contains(&shell.to_owned()),
+            &true,
+        );
+    }
+}

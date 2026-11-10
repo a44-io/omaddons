@@ -489,6 +489,7 @@ var CLI_PATHS = {
   "omarchy install":   { "mutates": true,  "destructive": false, "binds": false },
   "omarchy remove":    { "mutates": true,  "destructive": false, "binds": false },
   "completions":       { "mutates": false, "destructive": false, "binds": false },
+  "install-completions": { "mutates": true, "destructive": false, "binds": false },
   "robot-docs":        { "mutates": false, "destructive": false, "binds": false },
   "robot-docs schema": { "mutates": false, "destructive": false, "binds": false },
   "robot-docs errors": { "mutates": false, "destructive": false, "binds": false },

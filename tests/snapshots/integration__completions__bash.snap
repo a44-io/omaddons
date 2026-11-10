@@ -77,6 +77,9 @@ _omaddons() {
             omaddons,install)
                 cmd="omaddons__subcmd__install"
                 ;;
+            omaddons,install-completions)
+                cmd="omaddons__subcmd__install__subcmd__completions"
+                ;;
             omaddons,list)
                 cmd="omaddons__subcmd__list"
                 ;;
@@ -243,7 +246,7 @@ _omaddons() {
 
     case "${cmd}" in
         omaddons)
-            opts="-t -v -h -V --json --robot --format --flavor --target --dry-run --actor --reason --offline --while-running --if-match --no-color --no-progress --progress --quiet --verbose --help --version help status install add update upgrade pin unpin adopt sync copy remove uninstall rm delete undo revert rollback apply backup history log plans outdated check info show search find errors export net-log doctor list ls targets config auth omarchy completions robot-docs capabilities"
+            opts="-t -v -h -V --json --robot --format --flavor --target --dry-run --actor --reason --offline --while-running --if-match --no-color --no-progress --progress --quiet --verbose --help --version help status install add update upgrade pin unpin adopt sync copy remove uninstall rm delete undo revert rollback apply backup history log plans outdated check info show search find errors export net-log doctor list ls targets config auth omarchy completions install-completions robot-docs capabilities"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 1 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1938,6 +1941,52 @@ _omaddons() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
+        omaddons__subcmd__install__subcmd__completions)
+            opts="-t -v -h --force --json --robot --format --flavor --target --dry-run --actor --reason --offline --while-running --if-match --no-color --no-progress --progress --quiet --verbose --help bash zsh fish elvish powershell"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --format)
+                    COMPREPLY=($(compgen -W "json human" -- "${cur}"))
+                    return 0
+                    ;;
+                --target)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --flavor)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                -t)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --actor)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --reason)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --if-match)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --progress)
+                    COMPREPLY=($(compgen -W "json human none" -- "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
         omaddons__subcmd__list)
             opts="-t -v -h --unmanaged --protected --deep --json --robot --format --flavor --target --dry-run --actor --reason --offline --while-running --if-match --no-color --no-progress --progress --quiet --verbose --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
@@ -3326,6 +3375,7 @@ _omaddons_dynamic() {
                 "omarchy,install") cmdpath="omarchy install"; n=0; continue ;;
                 "omarchy,remove") cmdpath="omarchy remove"; n=0; continue ;;
                 ",completions") cmdpath="completions"; n=0; continue ;;
+                ",install-completions") cmdpath="install-completions"; n=0; continue ;;
                 ",robot-docs") cmdpath="robot-docs"; n=0; continue ;;
                 "robot-docs,guide") cmdpath="robot-docs guide"; n=0; continue ;;
                 "robot-docs,schema") cmdpath="robot-docs schema"; n=0; continue ;;

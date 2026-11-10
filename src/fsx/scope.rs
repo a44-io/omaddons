@@ -43,6 +43,9 @@ pub enum Writer {
     Skill,
     /// Doctor repairs (M4); never `WTF/`.
     Doctor,
+    /// `install-completions`: the one shell completion file it chose, and nothing else
+    /// (no history line: it records nothing, as `backup export` does not).
+    Completions,
 }
 
 impl Writer {
@@ -58,6 +61,7 @@ impl Writer {
             Self::Omarchy => "omarchy",
             Self::Skill => "skill",
             Self::Doctor => "doctor",
+            Self::Completions => "completions",
         }
     }
 }
@@ -102,6 +106,10 @@ pub enum Scope {
     /// The one file `backup export` writes, chosen at run time (M3-D34): that path
     /// exactly. (fsx's hidden temp sibling of it is fsx's own, never a `mutate` target.)
     ExportFile,
+    /// The one shell completion file `install-completions` writes, chosen at run time:
+    /// that path exactly, and its missing folders below the one it may create them from
+    /// (created only).
+    CompletionFile,
 }
 
 impl Scope {
@@ -137,6 +145,7 @@ impl Scope {
             Self::Skill => matches!(writer, W::Skill | W::Doctor),
             Self::RecordFixtures => writer == W::Derived,
             Self::ExportFile => writer == W::Backup,
+            Self::CompletionFile => writer == W::Completions,
         }
     }
 }
@@ -244,6 +253,10 @@ pub struct ScopeTable {
     record_fixtures: Option<PathBuf>,
     /// The file `backup export` writes, once [`ScopeTable::with_export_file`] admits it.
     export_file: Option<PathBuf>,
+    /// The completion file `install-completions` writes and the existing folder its
+    /// missing folders are created below, once [`ScopeTable::with_completion_file`]
+    /// admits them.
+    completion_file: Option<(PathBuf, PathBuf)>,
     client_dirs: Vec<PathBuf>,
     /// What stuck journals protect (M4-D62): empty unless [`ScopeTable::with_fences`].
     fences: FenceSet,
@@ -272,6 +285,7 @@ impl ScopeTable {
             skill_anchor: None,
             record_fixtures: None,
             export_file: None,
+            completion_file: None,
             client_dirs: Vec::new(),
             fences: FenceSet::new(),
         };
@@ -519,6 +533,65 @@ impl ScopeTable {
         self.skills.first().map_or(Path::new(""), PathBuf::as_path)
     }
 
+    /// The one shell completion file an `install-completions` run writes: `file`, and
+    /// nothing else, becomes writable by `Completions` alone, and the folders missing
+    /// between it and its deepest existing ancestor become creatable (`CreateDir` only).
+    /// `create_from` must exist as a folder (the shell's base: `$XDG_DATA_HOME`,
+    /// `$XDG_CONFIG_HOME` or `$HOME`), so nothing above it is ever created: one missing is
+    /// `not_found` naming it. A file whose folder is inside a registered client dir, a
+    /// Wine prefix or omaddons' own config, state or cache dir is `scope_denied`
+    /// (`details.path`). The folder is judged where it resolves; the file's own name is
+    /// never resolved, so a link there is the caller's to refuse. The admitted path, its
+    /// folder canonical, is [`ScopeTable::completion_file`].
+    pub fn with_completion_file(mut self, file: &Path, create_from: &Path) -> Result<Self> {
+        if !std::fs::canonicalize(create_from).is_ok_and(|anchor| anchor.is_dir()) {
+            return Err(Error::new(
+                ErrorCode::NotFound,
+                format!(
+                    "{} is not a folder, so it cannot hold {}; install-completions creates only the folders below it",
+                    create_from.display(),
+                    file.display()
+                ),
+                Suggestion::text("create that folder first, then run it again"),
+            )
+            .details(serde_json::json!({ "path": create_from.display().to_string() })));
+        }
+        let (Some(name), Some(parent)) = (file.file_name(), file.parent()) else {
+            return Err(Error::internal(format!(
+                "the completion file {} names no file in a folder",
+                file.display()
+            )));
+        };
+        let folder = canonical(parent)?;
+        if let Some(why) = self.inside_refused(&folder) {
+            return Err(Error::new(
+                ErrorCode::ScopeDenied,
+                format!(
+                    "{} {why}; a completion script goes in your shell's own folders",
+                    file.display()
+                ),
+                Suggestion::text(
+                    "point XDG_DATA_HOME or XDG_CONFIG_HOME at your own folders, or save the script yourself where your shell reads it",
+                ),
+            )
+            .details(serde_json::json!({ "path": file.display().to_string() })));
+        }
+        let existing = folder
+            .ancestors()
+            .find(|dir| dir.is_dir())
+            .unwrap_or(Path::new("/"))
+            .to_path_buf();
+        self.completion_file = Some((folder.join(name), existing));
+        Ok(self)
+    }
+
+    /// The file [`ScopeTable::with_completion_file`] admitted, its folder canonical.
+    pub fn completion_file(&self) -> Option<&Path> {
+        self.completion_file
+            .as_ref()
+            .map(|(file, _)| file.as_path())
+    }
+
     /// The paths the table was built from.
     pub fn paths(&self) -> &Paths {
         &self.paths
@@ -705,6 +778,23 @@ impl ScopeTable {
                 Position::Below,
                 Side::Home,
             ));
+        }
+        // An `install-completions` run's file, and the folders missing below its deepest
+        // existing ancestor: created only, by `check`'s rule for any position but `Below`.
+        if let Some((file, existing)) = &self.completion_file {
+            if path == file.as_path() {
+                found.push(Candidate::new(
+                    Scope::CompletionFile,
+                    Position::Below,
+                    Side::Home,
+                ));
+            } else if file.starts_with(path) && path != existing && path.starts_with(existing) {
+                found.push(Candidate::new(
+                    Scope::CompletionFile,
+                    Position::Ancestor,
+                    Side::Home,
+                ));
+            }
         }
         if let Some(position) = self.omarchy_position(path) {
             found.push(Candidate::new(Scope::Omarchy, position, Side::Home));
@@ -917,7 +1007,7 @@ mod tests {
         OwnedFolders::new(&folders)
     }
 
-    const ALL: [Writer; 10] = [
+    const ALL: [Writer; 11] = [
         Writer::Config,
         Writer::Auth,
         Writer::Mutating,
@@ -928,6 +1018,7 @@ mod tests {
         Writer::Omarchy,
         Writer::Skill,
         Writer::Doctor,
+        Writer::Completions,
     ];
 
     /// Every writer, and whether each may write `path` with `access`.
@@ -1114,6 +1205,114 @@ mod tests {
                     "{other:?} {access:?}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn a_completion_file_is_one_path_and_its_missing_folders_for_completions_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let mk = |rel: &str| {
+            let path = root.join(rel);
+            std::fs::create_dir_all(&path).unwrap();
+            path
+        };
+        let home = mk("home");
+        let data = mk("home/.local/share");
+        let client = mk("games/wow/_retail_");
+        mk("prefix/drive_c/users/me");
+        mk("prefix/dosdevices");
+        let paths = Paths::with_roots(
+            &home,
+            home.join(".config"),
+            home.join(".local/state"),
+            home.join(".cache"),
+        );
+        for app in [paths.config_dir(), paths.state_dir(), paths.cache_dir()] {
+            std::fs::create_dir_all(app).unwrap();
+        }
+        let base = || ScopeTable::new(&paths, std::slice::from_ref(&client), None).unwrap();
+        for (case, file, create_from, code, why) in [
+            (
+                "missing_base",
+                root.join("nope/bash-completion/completions/omaddons"),
+                root.join("nope"),
+                ErrorCode::NotFound,
+                "is not a folder",
+            ),
+            (
+                "inside_a_client",
+                client.join("fish/completions/omaddons.fish"),
+                client.clone(),
+                ErrorCode::ScopeDenied,
+                "inside the game client",
+            ),
+            (
+                "inside_a_prefix",
+                root.join("prefix/drive_c/users/me/.zfunc/_omaddons"),
+                root.join("prefix/drive_c/users/me"),
+                ErrorCode::ScopeDenied,
+                "inside the Wine prefix",
+            ),
+            (
+                "inside_own_config",
+                paths.config_dir().join("fish/completions/omaddons.fish"),
+                home.join(".config"),
+                ErrorCode::ScopeDenied,
+                "own config folder",
+            ),
+        ] {
+            let err = base()
+                .with_completion_file(&file, &create_from)
+                .unwrap_err();
+            assert_eq!(err.code, code, "{case}: {err}");
+            assert!(err.message.contains(why), "{case}: {}", err.message);
+        }
+
+        let file = data.join("bash-completion/completions/omaddons");
+        let t = base().with_completion_file(&file, &data).unwrap();
+        assert_eq!(t.completion_file(), Some(file.as_path()));
+        let none = OwnedFolders::default();
+        for writer in ALL {
+            assert_eq!(
+                t.check(writer, &none, &file, Access::Write).is_ok(),
+                writer == Writer::Completions,
+                "{writer}: the file"
+            );
+        }
+        for (case, folder, create) in [
+            ("its_folder", data.join("bash-completion/completions"), true),
+            ("a_missing_ancestor", data.join("bash-completion"), true),
+            ("the_existing_base", data.clone(), false),
+            ("a_sibling", data.join("bash-completion/other"), false),
+            ("another_shells_folder", home.join(".zfunc"), false),
+        ] {
+            assert_eq!(
+                t.check(Writer::Completions, &none, &folder, Access::CreateDir)
+                    .is_ok(),
+                create,
+                "{case}: create {folder:?}"
+            );
+            for access in [Access::Write, Access::Rename] {
+                assert!(
+                    t.check(Writer::Completions, &none, &folder, access)
+                        .is_err(),
+                    "{case}: {access:?} {folder:?}"
+                );
+            }
+        }
+        for other in [
+            data.join("bash-completion/completions/other"),
+            data.join("omaddons"),
+            paths.skill_dir().join("SKILL.md"),
+            paths.history_file(),
+            paths.config_file(),
+        ] {
+            assert!(
+                t.check(Writer::Completions, &none, &other, Access::Write)
+                    .is_err(),
+                "{other:?}"
+            );
         }
     }
 

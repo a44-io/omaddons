@@ -172,6 +172,7 @@ Milestones 1 (the working slice), 2 (updates, dependencies, adoption and desired
 | Previews that bind: a `--dry-run` of `install`, `update`, `sync`, `copy`, `remove`, `undo`, `backup restore`, `backup prune` or `errors dismiss` returns a token, and the real run with `--if-match` does exactly what it showed, client by client, or nothing (`plan_stale`). Stored plans: the dry run keeps its preview, and `apply <plan_id>` runs exactly it | ✅ Done (milestone 3; `install`, `update`, `sync` and `copy`, stored plans and `apply` in milestone 4) |
 | The Omarchy bar widget: `omarchy install` renders it for this binary, validates it, swaps it in atomically and puts it on the bar; `omarchy status` says whether it is current and on the bar, and `status` reports it on every call (an outdated one is warned about and turns read-only); `omarchy remove` takes it away. The button says at a glance what needs you (a badge counting new Lua errors and urgent problems, or else updates; a mark for a running game, an answer gone stale or omaddons it cannot use; the sync glyph turning while a check or change runs), its tooltip says it in words, client by client, and right-click checks for updates. Its panel works by keys and by mouse: its frame (the scope's summary, Check now, Undo last, the client scope, the tabs with their counts, the pinned progress, results and freshness footer, the key reference, zoom), its seven views (Updates, Addons, Search, Errors, Issues, Backups and History), a page per addon (with its versions and channels), per addon's Lua errors, and per problem, backup and change, the plan sheet every confirmation goes through, the restore chooser, and the settings sheet (the panel's, omaddons' and the clients' settings, and the GitHub token). Its first run finds or adds clients, takes over the addons already there, installs BugGrabber and offers a key, with no terminal. On its own it follows a game starting and exiting, takes the after-play checkpoint and reads the session's Lua errors, checks for updates when due, notifies about new errors after the session (and, when asked, new updates), and reinstalls itself once after omaddons is upgraded; its safety rules are scanned on every gate | ✅ Done (milestone 3; rebuilt user-first after `v0.1.0`) |
 | `completions`: a completion script for bash, zsh, fish, elvish and PowerShell (commands, subcommands, aliases, flags and fixed values), generated from the command tree; in bash, zsh and fish also client ids, addon names and plan, backup, transaction, run, doctor run and failure-mode ids, read from omaddons' own files at each Tab with no scan, lock, write or request; `--json` gives `{shell, script}` | ✅ Done (milestone 4; the values after `v0.1.0`) |
+| `install-completions`: the bash, zsh or fish script written where that shell looks for your own completions, with a marker line, so running it again after an upgrade replaces it; a file it did not write is replaced only with `--force`, and a symlink never | ✅ Done (after `v0.1.0`) |
 | `robot-docs guide`, `robot-docs schema` and `robot-docs errors`: the agent guide, every output's JSON Schema and the error and warning catalog, from the binary | ✅ Done (milestone 4) |
 | `robot-docs install-skill`: the agent guide written byte for byte as `SKILL.md` where coding agents load skills (`$HOME/.claude/skills/omaddons`, or `--dir`), never through a symlink or into a client, a Wine prefix or omaddons' own folders, keeping each hand-edited copy as `SKILL.md.bak` (then `.bak.1`, `.bak.2`, never over an earlier one), recorded in history | ✅ Done (milestone 4) |
 | `apply <plan_id>`: a stored preview run exactly, by one applier at a time, every source checked again, each client reported (`committed`, `unchanged`, `stale`, `failed`) | ✅ Done (milestone 4) |
@@ -187,7 +188,7 @@ Milestones 1 (the working slice), 2 (updates, dependencies, adoption and desired
 | The widget's accessibility pass: every control named for a screen reader, nothing told by colour alone, AA contrast on the polish pass's themes, text zoom from 0.6 to 2 times, Esc out of every sheet and page, and reduced motion (see [Accessibility](#accessibility)) | ✅ Done (after `v0.1.0`) |
 | Opt-in automatic updates in the widget: after a background check, while no game runs, a routine **Update all** that is exactly what the Updates view shows installs by itself and a notification offers its Undo; anything else waits for you, and a failure turns it off (see [Play sessions and notifications](#play-sessions-and-notifications)) | ✅ Done (after `v0.1.0`) |
 | Sharing an addon set from the widget: **Copy addon list** puts a client's (or every client's) `export` on the clipboard, and **Paste addon list…** previews a list someone shared as `sync -`, grouped as conflicts, new and unchanged, and applies it after the plan sheet (see [What it does](#what-it-does)) | ✅ Done (after `v0.1.0`) |
-| Launch-week fixes: the [Known issues](#known-issues), a `--help` overhaul to the standard of `br` and `bv`, and an installer for the completion scripts | 🗓️ Planned |
+| Launch-week fixes: the [Known issues](#known-issues), a `--help` overhaul to the standard of `br` and `bv`, and an installer for the completion scripts (done: [`install-completions`](#install-completions-shell)) | 🗓️ Planned |
 | Optional CurseForge and Wago (bring your own key), release packaging | 🗓️ Milestone 5 |
 
 `omaddons outdated` lists what has updates, and `omaddons update` installs them on every client, one transaction per client, all undone by one `omaddons undo`. Two kinds of addon are left alone. A `url:` ref's release is the URL itself, so there is nothing newer to fetch. A pinned addon (by `pin`, or installed with `--version`) stays where it is (`skipped`, reason `pinned`) until `unpin`.
@@ -280,7 +281,13 @@ For Claude Code: `omaddons robot-docs install-skill` installs the agent guide as
 
 ### Shell completions
 
-`omaddons completions <SHELL>` prints a completion script for bash, zsh, fish, elvish or PowerShell, generated from this build's own command tree. Save it where your shell looks for completions. Generate it again after upgrading: a script from an older build does not know newer commands.
+`omaddons completions <SHELL>` prints a completion script for bash, zsh, fish, elvish or PowerShell, generated from this build's own command tree. For bash, zsh and fish, `omaddons install-completions <SHELL>` writes it where that shell looks for your own completions (see [`install-completions`](#install-completions-shell)):
+
+```bash
+omaddons install-completions bash    # or zsh, or fish; --dry-run says where first
+```
+
+Run it again after upgrading: a script from an older build does not know newer commands. To place it yourself instead, save what `completions` prints:
 
 **bash** (bash-completion loads it on the first Tab):
 
@@ -291,7 +298,7 @@ omaddons completions bash > "${XDG_DATA_HOME:-$HOME/.local/share}/bash-completio
 
 Without bash-completion, add `source <(omaddons completions bash)` to `.bashrc`.
 
-**zsh** (a directory on `$fpath`, read by `compinit`): `omaddons completions zsh > "${fpath[1]}/_omaddons"` works when that directory is yours. Often it is a system directory; then use one of your own:
+**zsh** (a directory on `$fpath`, read by `compinit`): `omaddons completions zsh > "${fpath[1]}/_omaddons"` works when that directory is yours. Often it is a system directory; then use one of your own (`install-completions zsh` writes `$HOME/.zfunc/_omaddons`, and says the `fpath` line when it creates the folder):
 
 ```zsh
 mkdir -p "$HOME/.zfunc"
@@ -308,6 +315,8 @@ Start a new shell. If the new script is not picked up, delete `.zcompdump` in yo
 ```fish
 omaddons completions fish > "${XDG_CONFIG_HOME:-$HOME/.config}/fish/completions/omaddons.fish"
 ```
+
+A file you saved this way has no `install-completions` marker, so `install-completions` refuses to replace it until you pass `--force` (its refusal offers that command).
 
 **elvish:** add `eval (omaddons completions elvish | slurp)` to `rc.elv`.
 
@@ -329,7 +338,7 @@ At each Tab on one of those, the script runs `omaddons __complete`, a hidden rea
 
 ### Why there is no installer or package
 
-The repository is private, and the project deliberately has no CI, public distribution or public installer until it fully works on its owner's setup (vision decision D16). Shell completion scripts come from `omaddons completions` (see [Shell completions](#shell-completions)); packaged completions, a local `PKGBUILD`, a man page and a version scheme are planned for milestone 5. The public installer is reconsidered after that.
+The repository is private, and the project deliberately has no CI, public distribution or public installer until it fully works on its owner's setup (vision decision D16). Shell completion scripts come from `omaddons completions`, and `omaddons install-completions` puts them in your own folders (see [Shell completions](#shell-completions)); packaged completions, a local `PKGBUILD`, a man page and a version scheme are planned for milestone 5. The public installer is reconsidered after that.
 
 ### Uninstall
 
@@ -338,6 +347,8 @@ omaddons omarchy remove                # if you installed the bar widget
 cargo uninstall omaddons
 rm -rf ~/.config/omaddons ~/.local/state/omaddons ~/.cache/omaddons
 rm -rf ~/.claude/skills/omaddons       # if you installed the agent skill (or the --dir folder)
+rm -f ~/.local/share/bash-completion/completions/omaddons ~/.zfunc/_omaddons \
+  ~/.config/fish/completions/omaddons.fish   # the scripts install-completions wrote, if any
 ```
 
 Deleting the state directory loses the history and every undo snapshot. Each client managed by omaddons also has an `Interface/.omaddons/` folder that holds its identity marker, staging area, folder snapshots and `WTF/` backups; deleting it loses them. The addons themselves stay where they are.
@@ -462,7 +473,7 @@ A target is **registered** on its first change (or with `targets add`, `rename` 
 
 ### Where discovery looks
 
-Discovery runs whenever a command needs the clients: every command except `auth`, `config`, `net-log`, `help`, `completions`, `robot-docs`, `capabilities`, `plans show` and `targets rm` (but `targets rm --purge`, which checks that the client is no longer installed). The doctor's checks scan only when one of them needs the clients, and never write the discovery cache. Each walk goes at most 4 levels deep, and all the walks in one run share a budget of 50,000 directories.
+Discovery runs whenever a command needs the clients: every command except `auth`, `config`, `net-log`, `help`, `completions`, `install-completions`, `robot-docs`, `capabilities`, `plans show` and `targets rm` (but `targets rm --purge`, which checks that the client is no longer installed). The doctor's checks scan only when one of them needs the clients, and never write the discovery cache. Each walk goes at most 4 levels deep, and all the walks in one run share a budget of 50,000 directories.
 
 It first collects the Wine prefixes (directories containing `drive_c/`):
 
@@ -2519,6 +2530,40 @@ Prints a completion script for `bash`, `zsh`, `fish`, `elvish` or `powershell` o
 
 `data` is `{shell, script}`, where `script` is byte for byte what the human form prints. A shell outside the five is a usage error whose fix is the closest one (`omaddons completions bsh` → `omaddons completions bash`); with no shell, the fix is `omaddons help completions`.
 
+### `install-completions <SHELL>`
+
+Writes the script `completions <SHELL>` prints where that shell looks for your own completions, so you need not know the place, and running it again after an upgrade brings the script up to date.
+
+```bash
+omaddons install-completions bash             # bash-completion's folder
+omaddons install-completions zsh --dry-run    # where it would write, and what
+omaddons install-completions fish --force     # replace a script it did not write
+```
+
+| Shell | File | Its folder above, which must exist |
+|---|---|---|
+| bash | `${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions/omaddons`, which bash-completion loads on the first Tab | the data folder |
+| zsh | `$HOME/.zfunc/_omaddons`, which `compinit` autoloads once `$HOME/.zfunc` is on `fpath` | your home |
+| fish | `${XDG_CONFIG_HOME:-$HOME/.config}/fish/completions/omaddons.fish`, loaded on first use | the config folder |
+
+- **What it writes.** Exactly the script `completions` prints, with one marker line: `# generated by omaddons install-completions; run it again after upgrading omaddons`, the first line, or for zsh the second, after `#compdef omaddons`, which `compinit` requires first. The file is mode 0644, and the folders missing between it and the folder above are created (that folder itself must exist: `not_found`, `details.path`, otherwise). When it creates `$HOME/.zfunc`, the output says to add `fpath+=("$HOME/.zfunc")` to `.zshrc` before `compinit`. Start a new shell to use it.
+- **`written`.** `fresh` (there was no file), `replaced` (an older script it wrote, or with `--force` one it did not) or `unchanged` (it already held these bytes; nothing is written).
+- **Never someone else's file.** A file whose marker line is missing (one you wrote, or saved from `completions` by hand) is refused with `file_exists` (`details.file`, exit 4), and left as it is. The fix is prose; the alternative is the same command with `--force`, which replaces it. A symlink there (a dotfiles setup) is never written through or replaced, even with `--force`: `scope_denied` with `details.reason: "symlink"`, `path` and `link_target`. Anything but a regular file is `io`.
+- **Never a race.** A fresh file is published without replacing one another program created meanwhile, and a file is replaced only while it is still the one it read (its inode and mode); either change is `file_exists`, whose alternative runs the command again.
+- **Never there.** A folder inside a registered game client, a Wine prefix or omaddons' own config, state or cache folders (where `XDG_DATA_HOME` or `XDG_CONFIG_HOME` could point) is `scope_denied`, `details.path`.
+- **elvish and PowerShell** load completions from `rc.elv` and `$PROFILE`, which omaddons never edits: `usage` (exit 2), before anything is read, with a prose fix naming the line [Shell completions](#shell-completions) gives, and the alternative `omaddons completions <shell>`.
+- **What it records.** Nothing: like `backup export`, it writes a file of yours and nothing of omaddons', so there is no history line and nothing to undo; delete the file to be rid of it. It takes no lock and makes no request. `--dry-run` decides, refuses and reports as the real run would, and writes nothing. It neither stores a plan nor takes `--if-match`: the bytes come from the binary and the place from your environment.
+
+`data` is `{dry_run, shell, file, written, bytes, dir_created}`: `file` with its folder canonical, `bytes` the script's length with the marker line, and `dir_created` whether the run created the file's folder (with `--dry-run`, would create it).
+
+```text
+$ omaddons install-completions zsh
+installed the zsh completion script: /home/me/.zfunc/_omaddons (132,829 bytes)
+  add fpath+=("$HOME/.zfunc") to .zshrc before compinit, then start a new shell
+$ omaddons install-completions zsh
+the zsh completion script is up to date: /home/me/.zfunc/_omaddons
+```
+
 ### `robot-docs`
 
 Documentation for programs and agents, generated from the code, so it cannot drift from what the binary does. `guide`, `schema` and `errors` read no file or setting, need no `HOME`, send no request and change nothing; `install-skill` writes the guide where coding agents load skills. Bare `omaddons robot-docs` prints the agent guide, as `omaddons robot-docs guide` does.
@@ -2618,7 +2663,7 @@ The human form names the build, counts the commands by group, prints help's exit
 ```text
 $ omaddons capabilities
 omaddons 0.1.0 · contract 1.1 · build e49d5dfe18e17d93
-58 commands: look 18 · change 18 · setup 22 (omaddons help <command> for one)
+59 commands: look 18 · change 18 · setup 23 (omaddons help <command> for one)
 Exit codes:
   0  ok            Success, including partial success (partial: true)
   1  failed        Runtime failure; see error.retryable
@@ -2800,7 +2845,7 @@ Every error code has its doctor exit, from its general exit: 2 → 64, 3 → 66,
 | `scope_denied` | 4 | no | the filesystem writer refused a path outside its scope; also recovery's stop for a journal whose client no longer carries its target's marker (`details.reason: "marker_mismatch"`, `details.journal_pending`; fix `omaddons doctor explain fm-concurrency_primitives-journal-marker-mismatch -t <client>`), or for a doctor repair's journal that names a skill directory omaddons did not install (`details.reason: "skill_dir"`, `details.target: null`). `details.tx` and `details.resource` when a stuck repair's fence refused the write. `robot-docs install-skill` into a folder inside a client, a Wine prefix or omaddons' own folders, or holding one (`details.reason: "skill_dir"`, `details.path`), or onto a symlinked `SKILL.md` (`details.reason: "symlink"`, `details.path`, `details.link_target`) |
 | `state_too_new` | 4 | no | a state file written by a newer omaddons: a change is refused before anything is staged when its client's record or files index, or (to register a client) the registry, is newer; a journal a newer omaddons started (`details.reason: "journal_too_new"`, `details.journal_pending`; fix `omaddons doctor explain fm-concurrency_primitives-journal-too-new -t <client>`); a failure recovery cannot attribute to one client, which fails every change on every client (`details.reason: "unattributed"`): here, such a journal that does not say which client it is for. `details.tx` and `details.resource` when a stuck repair's fence refused the write (a repair journal a newer omaddons wrote refuses every change) |
 | `filesystem_unsupported` | 4 | no | a `WTF/` restore cannot run on this client: `WTF/` is a mount point (`details.reason: "wtf_is_mount_point"`), the client's `Interface/.omaddons/` is on another mount (`stage_cross_mount`), or the filesystem cannot exchange two directories atomically (`no_rename_exchange`); `details.backup_dir` is the backup's folder to copy from by hand, with the game closed. Checked before anything is copied |
-| `file_exists` | 4 | no | a file omaddons would create exists, at the start or created by another program meanwhile, and is never replaced (`backup export`'s destination); `details.file` |
+| `file_exists` | 4 | no | a file omaddons would create exists, at the start or created by another program meanwhile, and is never replaced (`backup export`'s destination); a shell completion file `install-completions` did not write (no marker line), whose alternative adds `--force`, or one that appeared or changed while it was written; `details.file` |
 | `locked` | 5 | yes | lock held past 5 s; `details.holder`. Also a plan's lease another `apply` held past 30 s (`details.lease`, the plan id; `details.holder` with `age_s`) |
 | `check_failed` | 6 | no | `--check` or `--strict` |
 | `network` | 1 | yes (no for too many redirects or an undecodable encoding) | connection failure, also mid-body; more than 5 redirects; a `Content-Encoding` omaddons does not decode; a source response it cannot read, such as a web page (`text/html`, a site's browser check) served where a release's file was asked for, refused before it is read and not asked for again; a git run that times out, or fails outside clone and fetch |
@@ -3347,8 +3392,8 @@ Every rules edit applies on the next command. The discovery cache records the ru
 | `OMADDONS_GITHUB_TOKEN` | Bearer token for `api.github.com` only |
 | `NO_COLOR`, `CI`, `TERM=dumb` | No color; `CI` and `TERM=dumb` also switch stderr to NDJSON |
 | `HOME` | Required and absolute: `~/Games`, `~/.wine`, launcher configs |
-| `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME` | Move omaddons' config, state and cache (used only when absolute). `XDG_CONFIG_HOME` also moves the Lutris and Heroic config lookups |
-| `XDG_DATA_HOME` | Moves the Lutris, Steam and Bottles data lookups; omaddons keeps no files there |
+| `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME` | Move omaddons' config, state and cache (used only when absolute). `XDG_CONFIG_HOME` also moves the Lutris and Heroic config lookups, and where `install-completions fish` writes |
+| `XDG_DATA_HOME` | Moves the Lutris, Steam and Bottles data lookups, and where `install-completions bash` writes; omaddons keeps no files of its own there |
 | `OMARCHY_PATH` | Where `omarchy install` also looks for Omarchy's shell (`$OMARCHY_PATH/shell`) when `omarchy-shell` is not on `PATH`. Omarchy's tools get it, with the rest of the environment, unchanged |
 | `PATH` | Where `gh`, `git` and `omarchy-shell` are found; `git` runs with only `PATH` from your environment |
 
@@ -3397,6 +3442,7 @@ A test fails when the binary reads a variable this section does not list.
 | `~/.config/omarchy/plugins/omaddons/` | The bar widget `omarchy install` wrote: `manifest.json` and its code in an `r-<hash>/` folder, whose generated `Build.js` records the binary, the `HOME` and XDG directories it runs under and the code's hash | Use `omaddons omarchy remove`; `omarchy install` writes it again |
 | `~/.config/omarchy/plugins/.omaddons.stage-<id>/`, `.omaddons.old-<id>/`, `.omaddons.trash/` | Hidden from Omarchy: an install's stage (one per run), the old widget a swap without `RENAME_EXCHANGE` parks, and the widget side's staged deletions | Yes when no install is running; the next install removes what is left |
 | `~/.claude/skills/omaddons/SKILL.md`, or `SKILL.md` in a `--dir` folder | The agent guide `robot-docs install-skill` wrote, byte for byte; `SKILL.md.bak`, `SKILL.md.bak.1`, … beside it are hand-edited copies it replaced, one per distinct edit | Yes; delete the folder to remove the skill |
+| `<data>/bash-completion/completions/omaddons`, `~/.zfunc/_omaddons`, `<config>/fish/completions/omaddons.fish` (`<data>` and `<config>` the XDG data and config folders) | The completion scripts `install-completions` wrote, each `completions`' script with a marker line | Yes; the shell then completes nothing for omaddons |
 
 The state directory honors `XDG_STATE_HOME`, the cache `XDG_CACHE_HOME`, and the config `XDG_CONFIG_HOME`. State files carry a `schema_version`. A file written by a newer omaddons is read, never overwritten (`state_too_new`).
 
@@ -3730,7 +3776,7 @@ An interrupted `WTF/` restore adds three cases. While its game runs, it waits (`
 - "Not while the game runs" is a check, not a lock on the game: a client launched in the milliseconds before a restore's exchange may write its in-memory settings over the restored files at logout. The restore's undo keeps the tree it replaced (see [Transactions](#transactions)).
 - WowAce projects that need packaging steps (externals, ignored or moved folders, build-time keywords such as `--@debug@` blocks, nolib builds) are refused with `packaging_unsupported`, never installed half-built; download a packaged release in a browser instead. A WowAce tree is fetched one request at a time.
 - Private GitHub repositories and HTTP proxies are not supported.
-- Shell completion of values (client ids, addon names and the various ids) works in bash, zsh and fish, not in elvish or PowerShell, and offers only what omaddons' files hold, never running discovery on a Tab press: a client once it is registered, addons omaddons manages (not a folder installed by hand), transactions and runs from the history projection (the runs since the oldest of the 16 newest with something undoable), and backups as the backup inventory last recorded them. clap's own dynamic completion (unstable) is not used: the scripts are clap's static ones with a small function added. A script is as current as the build that generated it: generate it again after upgrading.
+- Shell completion of values (client ids, addon names and the various ids) works in bash, zsh and fish, not in elvish or PowerShell, and offers only what omaddons' files hold, never running discovery on a Tab press: a client once it is registered, addons omaddons manages (not a folder installed by hand), transactions and runs from the history projection (the runs since the oldest of the 16 newest with something undoable), and backups as the backup inventory last recorded them. clap's own dynamic completion (unstable) is not used: the scripts are clap's static ones with a small function added. A script is as current as the build that generated it: generate it again after upgrading (`install-completions` again, for a script it installed).
 - Restores need atomic renames: a whole restore exchanges `WTF/`, and `--addon` exchanges each file in place. On a filesystem without `RENAME_EXCHANGE` (NTFS through ntfs-3g, many FUSE and network filesystems), or with SavedVariables on another mount than `Interface/.omaddons/`, both are refused (`filesystem_unsupported`). The workaround: with the game closed, copy what you need by hand from the backup's own folder, `Interface/.omaddons/backups/<id>/WTF/`, a plain directory (`details.backup_dir` names it).
 - Two clients sharing one AddOns directory (an AddOns symlinked between Classic clients) keep separate records: a folder one records is `shared` on the other, which cannot record it too, so manage those addons from one client. Records made on both before this check stay doubled: `status` warns `target_addons_shared`, and a change through either warns the same. The doctor has no check for them.
 - A file whose `release.json` or name labels it for other clients only is refused even when its TOCs would load, unless the addon's own folder carries a TOC named for the client (see [archive grading](#how-omaddons-decides-what-loads)). A multi-client plain `Folder.toc` under such metadata is refused. [`--any-flavor`](#a-build-not-made-for-this-client---any-flavor) installs it anyway, on the client it is given for.
@@ -3757,7 +3803,7 @@ None at HEAD.
 | **M3: the widget** | The Omarchy bar widget (QML, embedded in the binary, managed by `omaddons omarchy install`, `status` and `remove`), `errors` (BugGrabber, installed keyless from a new `wowace:` source), `backup` of `WTF/` (list, create, verify, restore, export and import, automatic backups) | ✅ Done (2026-10-23) |
 | **M4: the agent surface** | Shipped: `capabilities`; `robot-docs guide`, `schema`, `errors` and `install-skill`; `completions`; intent inference; stored plans (`--dry-run`, then `apply`), `plans show` and `--if-match`; the doctor (`doctor`, `explain`, `fix`, `diff`, `undo`, `gc`, `--online`); bare help's discovery line and `help --json`'s `discovery`; `status` on the doctor's registry; the pre-freeze contract audit; verbosity levels; the contract's golden; the checkpoint's run on the real machine; and **the first tag, `v0.1.0`, which froze the contract at 1.0**. Dropped from M4 when it was re-scoped on 2026-11-04, and may return if real use asks for them: `doctor health`, `ls`, `capabilities`, `robot-docs` and `--robot-triage`, and further detector batches (more state-file, config, userland, permission and external-artifact checks) | ✅ Done (2026-11-08) |
 | Omarchy widget overhaul | A user-first overhaul of the bar widget: a UX audit and design system first, then every view rebuilt (Updates, Installed, an addon page, Search, Lua errors, Issues, Backups, History, Settings, first run), a readable plan sheet for every confirmation, a `?` key reference and mouse support (`omad-widget-user-first-1n2p`) | 🗓️ Planned |
-| Launch-week fixes | The [Known issues](#known-issues), a `--help` overhaul to the standard of `br` and `bv`, dynamic completion of client ids, addon names and ids (done), and an installer for the completion scripts (`omad-launch-week-fixes-bmcx`) | 🗓️ Planned |
+| Launch-week fixes | The [Known issues](#known-issues), a `--help` overhaul to the standard of `br` and `bv`, dynamic completion of client ids, addon names and ids (done), and an installer for the completion scripts (done: `install-completions`) (`omad-launch-week-fixes-bmcx`) | 🗓️ Planned |
 | **M5: accounts and release** | Optional CurseForge and Wago (bring your own credential, never cached), fingerprint adoption; release engineering: versioning, CHANGELOG, a local PKGBUILD, packaged completions and a man page. Not yet broken down into tasks | 🗓️ Planned |
 
 The authoritative design is the pinned vision bead. Its body is revision 2, and comments added after it supersede it.
@@ -3825,7 +3871,7 @@ The gate runs about 4,500 Rust tests, unit tests in `src/` and integration tests
 | `tests/preconditions_matrix.rs` | The `--if-match` binding's adversarial matrix (debug builds): concurrent commits at every pause before the lock, crashes at every engine step with repeated recovery and the re-run rule, injected I/O errors at the swap, two runs holding one token, a stale bound run with nothing to do recovering nothing, an unreadable folder, and a paused bound dry run holding no lock |
 | `tests/omarchy.rs`, `tests/omarchy_widget.rs`, `omarchy/tests/` | The bar widget: `omarchy install`, `status` and `remove` over stub Omarchy tools (never this machine's shell), `status`'s widget block; and the widget pipeline: envelopes from the real binary, `bun` over `Model.js` and the source's security scans, the words guard (`omarchy/tests/copy.test.js`: every word a player reads, and every name a screen reader says, lives in `Model.js`'s `COPY`, or the code tables `ERROR_WORDS` and `WARNING_WORDS`, with a shrink-only allowlist of what predates it), the accessibility checks (`omarchy/tests/accessibility.test.js`: contrast over every pair of theme colours the widget draws, on four themes, and every state-switched colour registered with what else says that state; the snapshot harness walks every render for a control without a name, and Esc out of every sheet and page), the binary's parser over every argv `bun` built, `qmltestrunner` over the QML; and `omarchy/tests/contract-reads.test.js`, which records every envelope key a `Model.js` reader touches (and every literal `env.…` read in the QML) and fails on one the published schemas do not declare, so a renamed key cannot silently read as `undefined` |
 | `tests/help_pages.rs` | Every command path's `-h` and `--help` pages (and bare `omaddons`), rendered at 100 columns without color and snapshotted one file per path; `help <path>` equal to `<path> --help` for every path; no line over 100 columns (80 on bare help), no ESC byte and no developer note (a bead or decision id, `TODO`, a source path, `unwrap`) on a page or in a command's definition, each check with a shrink-only allowlist (`tests/help_pages_allowlist.txt`, empty today); a path without an accepted snapshot, or a snapshot no path renders, fails naming it |
-| `tests/completions.rs` | `omaddons completions`: each shell's script snapshot-tested; `bash -n` and bash's own completion function over the whole command tree in every gate; generating a script pure (no state read, no write, no request) and the same bytes on every terminal; the scripts running omaddons only as `omaddons __complete`; that reader over a home with two clients, addons, stored plans, a backup, history and a doctor run: each kind's values, nothing written, no request, no wait while another command holds the lock, nothing printed for what it cannot read, and bash completing them; `zsh -n` and `fish --no-execute` at checkpoints |
+| `tests/completions.rs` | `omaddons completions`: each shell's script snapshot-tested; `bash -n` and bash's own completion function over the whole command tree in every gate; generating a script pure (no state read, no write, no request) and the same bytes on every terminal; the scripts running omaddons only as `omaddons __complete`; that reader over a home with two clients, addons, stored plans, a backup, history and a doctor run: each kind's values, nothing written, no request, no wait while another command holds the lock, nothing printed for what it cannot read, and bash completing them; `zsh -n` and `fish --no-execute` at checkpoints; `install-completions` writing each shell's file (zsh's marker on line 2) and then changing nothing, a file without the marker refused without `--force`, a symlink always, a file another program creates mid-write never replaced, a destination inside a client refused, elvish and PowerShell refused before anything is read, and the installed bash script completing |
 | `tests/capabilities.rs` | `capabilities`: the round trip of every command, flag, value, alias, conflict and requirement it lists, against the binary's own parser, and every command's help and pointer run through the binary; completeness against every registry; purity (no request, no write, hashed trees, nothing created on a fresh home); broken configurations and an unusable `HOME`; effective values with their source; credentials detected without being read or run; the human summary; and each check proven to catch a planted fault |
 | `tests/robot_docs.rs` | `robot-docs schema` and `robot-docs errors` end to end: every path, the envelope, the events and the files listed and equal to the library's schemas; one path's entry and every path's own schema command; unknown paths' fixes run; the catalog equal to the registries; the published schemas validating live output, strictly too; byte-identical repeats in other environments; no reads, writes or requests, and no `HOME` needed; `robot-docs guide` the same bytes on every machine (a broken or overriding config, a managed or relative home, any terminal width, verbosity, directory or `-t`), equal to bare `robot-docs` and to its JSON content, its help paths and usage fixes |
 | `tests/skill.rs` | The committed skill is the guide, byte for byte; its frontmatter and stamp; the compiled digest is its stamp; the regeneration's fixed point; every command the guide names parses |

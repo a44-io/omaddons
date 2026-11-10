@@ -60,6 +60,7 @@ command help exits=0,1,2 dictionary=general mutates=false binds=false stores_pla
 command history aliases=log exits=0,1,2,3,4 dictionary=general mutates=false binds=false stores_plan=false network=none
 command info aliases=show exits=0,1,2,3,4 dictionary=general mutates=false binds=false stores_plan=false network=optional
 command install aliases=add exits=0,1,2,3,4,5,6 dictionary=general mutates=true binds=true stores_plan=true network=optional
+command install-completions exits=0,1,2,3,4,5 dictionary=general mutates=true binds=false stores_plan=false network=none
 command list aliases=ls exits=0,1,2,3,4 dictionary=general mutates=false binds=false stores_plan=false network=none
 command net-log exits=0,1,2 dictionary=general mutates=false binds=false stores_plan=false network=none
 command omaddons exits=1,2 binds=false envelope_only
@@ -1042,6 +1043,8 @@ enum install data.items[].unresolved[].reason limit_reached,managed_folder_missi
 enum install data.items[].version_confidence release,toc
 enum install data.kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,sync,target,undo,update,widget
 enum install data.reload_required none,reload,restart
+enum install-completions data.shell bash,elvish,fish,powershell,zsh
+enum install-completions data.written fresh,replaced,unchanged
 enum list data.targets[].addons[].channel alpha,beta,stable
 enum list data.targets[].addons[].drift.state clean,missing,modified,unindexed
 enum list data.targets[].addons[].folder_tocs[].class invalid,linked,managed,protected,shared,unmanaged
@@ -3509,6 +3512,8 @@ input install --reinstall flag default=false arity=0..0
 input install --strict flag default=false arity=0..0
 input install --version string default= arity=1..1
 input install @1 <REF> string default= arity=1.. repeat required
+input install-completions --force flag default=false arity=0..0
+input install-completions @1 <SHELL> enum(bash|elvish|fish|powershell|zsh) default= arity=1..1 required
 input list --deep flag default=false arity=0..0
 input list --protected flag default=false arity=0..0
 input list --unmanaged flag default=false arity=0..0
@@ -7922,6 +7927,13 @@ output install data.target.mode.name string!
 output install data.target.mode.shared_with array!
 output install data.target.mode.shared_with[] string
 output install data.tx string?!
+output install-completions data object
+output install-completions data.bytes integer! minimum=0
+output install-completions data.dir_created boolean!
+output install-completions data.dry_run boolean!
+output install-completions data.file string!
+output install-completions data.shell string!
+output install-completions data.written string!
 output list data object
 output list data.targets array!
 output list data.targets[] object

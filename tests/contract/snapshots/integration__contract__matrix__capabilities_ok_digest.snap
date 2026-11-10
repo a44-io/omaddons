@@ -267,7 +267,7 @@ expression: digest
   "counts": {
     "actions": 27,
     "client_rules": 18,
-    "commands": 58,
+    "commands": 59,
     "env_vars": 14,
     "error_codes": 43,
     "families": 14,
@@ -364,6 +364,7 @@ expression: digest
     "omarchy install",
     "omarchy remove",
     "completions",
+    "install-completions",
     "robot-docs",
     "robot-docs schema",
     "robot-docs errors",

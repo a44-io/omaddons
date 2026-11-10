@@ -257,9 +257,10 @@ error_codes! {
     FilesystemUnsupported = "filesystem_unsupported", Refused,  false,
         "The client or its settings paths are on mounts or a filesystem that cannot perform the restore's required atomic exchange.", specs::FILESYSTEM_UNSUPPORTED;
     /// A file omaddons would create already exists (at the start, or created by another
-    /// process meanwhile); it is never replaced (`backup export`, M3-D34).
+    /// process meanwhile); it is never replaced (`backup export`, M3-D34). Also a shell
+    /// completion file `install-completions` did not write, replaced only with `--force`.
     FileExists          = "file_exists",           Refused,     false,
-        "A destination that must be newly created already exists.", specs::FILE_EXISTS;
+        "A destination that must be newly created already exists, or a completion file omaddons did not write is there.", specs::FILE_EXISTS;
     Locked              = "locked",                Locked,      true,
         "Another omaddons process held the lock past the acquire timeout.", specs::LOCKED;
     CheckFailed         = "check_failed",          CheckFailed, false,
