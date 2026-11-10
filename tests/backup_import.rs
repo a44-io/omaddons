@@ -544,6 +544,94 @@ fn hostile_archives_are_refused_before_anything_is_kept() {
 }
 
 /// More entries than an import reads.
+/// A regular file with the setuid or setgid bit, in its header and its manifest alike, is
+/// refused before anything is kept, its path redacted, its fix saying how to clear the
+/// bit; a setgid directory imports with its exact mode.
+#[test]
+fn a_setuid_or_setgid_file_is_refused_and_a_setgid_directory_imports() {
+    let home = Home::new(&["wow"]);
+    let file = exported_archive(&home);
+    let good = tar_entries(&fs::read(&file).unwrap());
+    let wtf_before = tree_hash(&wtf_of(&home));
+    // `path` (below `WTF/`) at `mode`, in its tar header and its manifest entry.
+    let with_mode = |path: &str, mode: u32| -> Vec<u8> {
+        let mut entries = good.clone();
+        for e in &mut entries {
+            if e.path().trim_end_matches('/') == format!("WTF/{path}") {
+                e.mode = mode;
+            }
+        }
+        let entries = with_manifest(&entries, |m| {
+            for entry in m["entries"].as_array_mut().unwrap() {
+                if entry["path"] == path {
+                    entry["mode"] = json!(mode);
+                }
+            }
+        });
+        tar_zst(&entries)
+    };
+    let foo = "Account/FAKEACCT/SavedVariables/Foo.lua";
+    for (case, mode, bit) in [
+        ("setuid", 0o4755, "setuid bit (mode 4755)"),
+        ("setgid", 0o2644, "setgid bit (mode 2644)"),
+        ("both", 0o6755, "setuid and setgid bits (mode 6755)"),
+    ] {
+        let error = refuse(
+            &home,
+            &format!("{case}.tar.zst"),
+            &with_mode(foo, mode),
+            "unsafe_archive",
+            Some("special_mode"),
+        );
+        let message = error["message"].as_str().unwrap();
+        assert!(message.contains(bit), "{case}: {message}");
+        let path = error["details"]["path"].as_str().unwrap();
+        assert!(path.starts_with("Account/"), "{case}: {path}");
+        assert!(path.ends_with("SavedVariables/Foo.lua"), "{case}: {path}");
+        assert!(!path.contains("FAKEACCT"), "{case}: redacted: {path}");
+        let fix = error["fix"].as_str().unwrap();
+        assert!(fix.contains("chmod u-s,g-s"), "{case}: {fix}");
+        assert!(error["fix_argv"].is_null(), "{case}: prose");
+        assert_eq!(
+            tree_hash(&wtf_of(&home)),
+            wtf_before,
+            "{case}: WTF/ untouched"
+        );
+    }
+
+    // A setgid directory is a group-shared folder's, and imports exactly.
+    let sv = "Account/FAKEACCT/SavedVariables";
+    let dir_file = home.env.root().join("usb").join("setgid-dir.tar.zst");
+    fs::write(&dir_file, with_mode(sv, 0o2755)).unwrap();
+    let backup = imported(&home, &dir_file);
+    let id = backup["id"].as_str().unwrap().to_owned();
+    // A stored directory stays owner-writable; its exact mode is the manifest's, which a
+    // restore puts back.
+    let manifest: Value = serde_json::from_slice(
+        &fs::read(
+            home.client("_retail_")
+                .join("Interface/.omaddons/backups")
+                .join(&id)
+                .join("manifest.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let recorded = manifest["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["path"] == sv)
+        .unwrap()["mode"]
+        .clone();
+    assert_eq!(recorded, json!(0o2755), "the manifest keeps the exact mode");
+    run(&home, &["backup", "restore", &id, "-t", "retail"]).expect(0);
+    let live = wtf_of(&home).join(sv);
+    let mode = std::os::unix::fs::PermissionsExt::mode(&fs::metadata(&live).unwrap().permissions())
+        & 0o7777;
+    assert_eq!(mode, 0o2755, "{}: {mode:04o}", live.display());
+}
+
 #[test]
 fn an_archive_with_too_many_entries_is_refused() {
     let home = Home::new(&["wow"]);

@@ -1,0 +1,25 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&c.envelope)
+---
+{
+  "command": "backup import",
+  "commands": [],
+  "error": {
+    "alternatives": [],
+    "code": "unsafe_archive",
+    "details": {
+      "path": "Account/account 1/realm 1/character 1/SavedVariables/Addon0.lua",
+      "reason": "special_mode"
+    },
+    "fix": "clear the setuid bit on that file in the client's WTF/ (chmod u-s,g-s), then make and export a new backup",
+    "fix_argv": null,
+    "message": "the archive is not an exact omaddons export: it holds a file with the setuid bit (mode 4644), which no WTF/ file needs (Account/account 1/realm 1/character 1/SavedVariables/Addon0.lua)",
+    "retryable": false
+  },
+  "exit_code": 4,
+  "ok": false,
+  "schema_version": "1.1",
+  "tool_version": "<version>",
+  "warnings": []
+}

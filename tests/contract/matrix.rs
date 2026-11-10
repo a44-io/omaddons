@@ -2273,6 +2273,38 @@ fn backup_import() {
         4,
     );
     insta::assert_json_snapshot!("backup_import_unsafe_archive", s.stable(&c.envelope));
+    // A setuid file, its header and its manifest entry agreeing: `special_mode`.
+    let mut entries = tar_entries(&std::fs::read(&file).unwrap());
+    let target = entries
+        .iter_mut()
+        .find(|e| e.kind == b'0' && e.path().starts_with("WTF/"))
+        .unwrap();
+    target.mode = 0o4644;
+    let rel = target.path().trim_start_matches("WTF/").to_owned();
+    for e in &mut entries {
+        if e.path() == "manifest.json" {
+            let mut manifest: serde_json::Value = serde_json::from_slice(&e.body).unwrap();
+            for m in manifest["entries"].as_array_mut().unwrap() {
+                if m["path"] == rel.as_str() {
+                    m["mode"] = serde_json::json!(0o4644);
+                }
+            }
+            e.body = serde_json::to_vec(&manifest).unwrap();
+        }
+    }
+    let setuid = dir.join("setuid.tar.zst");
+    std::fs::write(&setuid, tar_zst(&entries)).unwrap();
+    let c = s.json(
+        &[
+            "backup",
+            "import",
+            &setuid.display().to_string(),
+            "-t",
+            "retail",
+        ],
+        4,
+    );
+    insta::assert_json_snapshot!("backup_import_special_mode", s.stable(&c.envelope));
     // A fixed bound: `archive_too_large` with the number and the constant's name, as
     // every `archive_too_large` gives them (`config_key` instead when config raises it).
     let mut entries = tar_entries(&std::fs::read(&file).unwrap());

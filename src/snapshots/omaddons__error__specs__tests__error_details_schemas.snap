@@ -4696,7 +4696,8 @@ expression: schemas
           "duplicate_metadata",
           "missing_metadata",
           "manifest_mismatch",
-          "symlink_escape"
+          "symlink_escape",
+          "special_mode"
         ]
       },
       "recovery_error": {

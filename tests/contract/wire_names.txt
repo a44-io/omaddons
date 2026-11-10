@@ -792,7 +792,7 @@ enum error:undo_conflict details.reason changed_since_repair,changed_since_suspe
 enum error:unmanaged_folder details.class invalid,linked,unmanaged
 enum error:unmanaged_folder details.folders[].class linked
 enum error:unmanaged_folder details.folders[].reason case_collision,case_duplicates,linked,owned_by_another,owned_on_shared_target,unmanaged
-enum error:unsafe_archive details.reason absolute_path,bad_name,case_collision,control_character,drive_letter,duplicate_entry,duplicate_metadata,duplicate_name,file_and_directory,invalid_folder_name,manifest_mismatch,missing_metadata,not_utf8,parent_dir,ratio,size_overrun,special_file,symlink,symlink_escape,unsupported_entry
+enum error:unsafe_archive details.reason absolute_path,bad_name,case_collision,control_character,drive_letter,duplicate_entry,duplicate_metadata,duplicate_name,file_and_directory,invalid_folder_name,manifest_mismatch,missing_metadata,not_utf8,parent_dir,ratio,size_overrun,special_file,special_mode,symlink,symlink_escape,unsupported_entry
 enum errors data.targets[].addons[].errors[].attribution.confidence high,low,medium
 enum errors data.targets[].addons[].errors[].attribution.method blizzard_only,first_addon_frame,library_frame,none,protected_call
 enum errors data.targets[].addons[].errors[].last_seen.meaning first_or_last,last,unknown

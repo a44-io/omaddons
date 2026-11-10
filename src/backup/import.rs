@@ -194,6 +194,7 @@ pub fn scan_reader(compressed: impl Read, len: u64) -> Result<Scanned> {
         .transpose()?;
     let names = WtfPathRedactor::for_paths(entries.iter().map(|e| e.path.as_str()));
     check_tree(&entries, &names)?;
+    check_modes(&entries, &names)?;
     check_bijection(&entries, &mut manifest, &names)?;
     check_links(&entries, &names)?;
     let count = |kind| entries.iter().filter(|e| e.kind == kind).count() as u64;
@@ -456,6 +457,46 @@ fn check_tree(entries: &[Payload], names: &WtfPathRedactor) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// No regular file carries the setuid or setgid bit: no `WTF/` file needs one, and the
+/// import would write it as it is, into the backup and, restored, into `WTF/`. A
+/// directory keeps every bit (setgid is a group-shared folder's), and the sticky bit
+/// means nothing on a file. Decided on the first read, before a byte is written.
+fn check_modes(entries: &[Payload], names: &WtfPathRedactor) -> Result<()> {
+    match entries
+        .iter()
+        .find(|e| e.kind == EntryKind::File && e.mode & 0o6000 != 0)
+    {
+        Some(e) => Err(special_mode(e, names)),
+        None => Ok(()),
+    }
+}
+
+/// `unsafe_archive` with `details.reason: "special_mode"`: which bit file `e` carries,
+/// its path as every refusal shows one, and how to clear it at the source.
+fn special_mode(e: &Payload, names: &WtfPathRedactor) -> Error {
+    let bit = match (e.mode & 0o4000 != 0, e.mode & 0o2000 != 0) {
+        (true, true) => "setuid and setgid bits",
+        (true, false) => "setuid bit",
+        _ => "setgid bit",
+    };
+    let path = shown(&e.path, names);
+    let mut message = format!(
+        "the archive is not an exact omaddons export: it holds a file with the {bit} (mode {:04o}), which no WTF/ file needs",
+        e.mode
+    );
+    if let Some(path) = &path {
+        message.push_str(&format!(" ({path})"));
+    }
+    Error::new(
+        ErrorCode::UnsafeArchive,
+        message,
+        Suggestion::text(format!(
+            "clear the {bit} on that file in the client's WTF/ (chmod u-s,g-s), then make and export a new backup"
+        )),
+    )
+    .details(serde_json::json!({ "reason": "special_mode", "path": path }))
 }
 
 /// The payload and the manifest name the same entries, each with the same kind, size

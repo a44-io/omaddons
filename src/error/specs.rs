@@ -419,6 +419,7 @@ pub(crate) const UNSAFE_ARCHIVE: DetailSpec = DetailSpec::Object(&[
             "missing_metadata",
             "manifest_mismatch",
             "symlink_escape",
+            "special_mode",
         ]),
     ),
 ]);

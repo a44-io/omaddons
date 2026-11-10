@@ -1877,7 +1877,7 @@
     "error unsafe_archive details.limit": {"kind":"output_position","nullable":false,"required":false,"types":["integer"]},
     "error unsafe_archive details.measured": {"kind":"output_position","nullable":false,"required":false,"types":["integer"]},
     "error unsafe_archive details.path": {"kind":"output_position","nullable":true,"required":false,"types":["string"]},
-    "error unsafe_archive details.reason": {"enum":["absolute_path","bad_name","case_collision","control_character","drive_letter","duplicate_entry","duplicate_metadata","duplicate_name","file_and_directory","invalid_folder_name","manifest_mismatch","missing_metadata","not_utf8","parent_dir","ratio","size_overrun","special_file","symlink","symlink_escape","unsupported_entry"],"kind":"output_position","nullable":false,"required":false,"types":["string"]},
+    "error unsafe_archive details.reason": {"enum":["absolute_path","bad_name","case_collision","control_character","drive_letter","duplicate_entry","duplicate_metadata","duplicate_name","file_and_directory","invalid_folder_name","manifest_mismatch","missing_metadata","not_utf8","parent_dir","ratio","size_overrun","special_file","special_mode","symlink","symlink_escape","unsupported_entry"],"kind":"output_position","nullable":false,"required":false,"types":["string"]},
     "error unsafe_archive details.recovery_error": {"kind":"output_position","nullable":false,"required":false,"types":["object"]},
     "error unsafe_archive details.recovery_error.code": {"kind":"output_position","nullable":false,"required":true,"types":["string"]},
     "error unsafe_archive details.recovery_error.message": {"kind":"output_position","nullable":false,"required":true,"types":["string"]},
