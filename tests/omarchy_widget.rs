@@ -444,6 +444,24 @@ fn every_template_is_a_registry_command_with_safe_slots() {
     }
 }
 
+/// `omarchy install`'s next steps suggest the key the widget's own first-run tip does
+/// (1n2p.35): one constant on each side, held equal here.
+#[test]
+fn the_install_suggests_the_widgets_own_key() {
+    let source = support::model_js();
+    let line = source
+        .lines()
+        .find(|l| l.starts_with("var KEY_HINT_KEY = "))
+        .unwrap_or_default();
+    assert_eq!(
+        line,
+        format!(
+            "var KEY_HINT_KEY = {:?}",
+            omaddons::app::omarchy::KEY_HINT_KEY
+        )
+    );
+}
+
 /// `omarchy/manifest.json` is exactly the planned manifest (F1, M3-D5, M3-D10); E1 stamps
 /// its `version` at install.
 #[test]
@@ -471,7 +489,7 @@ fn the_manifest_is_the_planned_one() {
         "aliases": ["omaddons", "wow", "warcraft", "addons"],
         "allowMultiple": false,
         "defaultSection": "right",
-        "defaults": { "binary": "", "panelWidth": 540, "autoCheck": "On", "notifyUpdates": "Off", "notifyErrors": "On", "notifyWhilePlaying": "Off", "refreshIntervalSec": 300, "keyHint": "On" },
+        "defaults": { "binary": "", "panelWidth": 540, "autoCheck": "On", "notifyUpdates": "Off", "notifyErrors": "On", "notifyWhilePlaying": "Off", "refreshIntervalSec": 300, "keyHint": "On", "autoUpdateWidget": "On" },
         "schema": [
           { "key": "binary", "type": "path", "label": "omaddons binary", "defaultValue": "", "description": "Empty runs the binary that installed the widget (omaddons omarchy install stamps its path). Set a path to run another build." },
           { "key": "panelWidth", "type": "integer", "label": "Panel width", "min": 400, "max": 800, "step": 20, "defaultValue": 540, "description": "How wide the panel opens, from 400 to 800 px; z in the panel fills the screen." },
@@ -480,7 +498,8 @@ fn the_manifest_is_the_planned_one() {
           { "key": "notifyErrors", "type": "enum", "label": "Notify about Lua errors after a session", "options": ["On", "Off"], "defaultValue": "On", "description": "A notification once you quit, if the session left new Lua errors." },
           { "key": "notifyWhilePlaying", "type": "enum", "label": "Notify while a game runs", "options": ["On", "Off"], "defaultValue": "Off", "description": "Off keeps notifications quiet while a World of Warcraft client runs (or might), and says what came up in one notification when the last one stops." },
           { "key": "refreshIntervalSec", "type": "integer", "label": "Fallback refresh (seconds)", "min": 30, "max": 3600, "step": 30, "defaultValue": 300, "description": "Safety-net refresh behind the doorbell; 15 s while the panel is open." },
-          { "key": "keyHint", "type": "enum", "label": "Show the keybinding tip", "options": ["On", "Off"], "defaultValue": "On", "description": "After the panel is first opened by mouse, a card shows the line that binds a key to it. Seeing it turns this Off." }
+          { "key": "keyHint", "type": "enum", "label": "Show the keybinding tip", "options": ["On", "Off"], "defaultValue": "On", "description": "After the panel is first opened by mouse, a card shows the line that binds a key to it. Seeing it turns this Off." },
+          { "key": "autoUpdateWidget", "type": "enum", "label": "Update the widget by itself", "options": ["On", "Off"], "defaultValue": "On", "description": "After omaddons was upgraded, the widget reinstalls itself from that binary once, while no game runs, and the bar reloads. Off: it offers Update the widget instead. Never from a binary set above." }
         ]
       }
     });

@@ -1850,9 +1850,11 @@ TestCase {
     verify(findChild(findChild(sheet, "setting_autoCheck"), "settingAbout").visible)
     keyClick(Qt.Key_Space)
     compare(json(requested[requested.length - 1]), json(["autoCheck", "Off"]))
-    // The binary: Enter opens its box, Enter there saves, the sheet keeps the keys after.
-    for (var i = 0; i < 4; i++) keyClick("j")
-    compare(sheet.choice, 6)
+    // The binary (the last of the panel's): Enter opens its box, Enter there saves, the
+    // sheet keeps the keys after.
+    var binary = Model.PANEL_SETTING_KEYS.indexOf("binary")
+    while (sheet.choice < binary) keyClick("j")
+    compare(sheet.choice, binary)
     keyClick(Qt.Key_Return)
     var field = findChild(sheet, "settingEdit")
     tryVerify(function() { return field.activeFocus })

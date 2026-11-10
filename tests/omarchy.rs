@@ -713,6 +713,23 @@ fn the_human_output_names_the_widget_and_how_to_reinstall() {
         "{text}"
     );
     assert!(text.contains("→ omaddons omarchy install"), "{text}");
+    // What to do next (1n2p.35): where it is, how to move it, a key for it.
+    let next = text.split("\nnext:\n").nth(1).unwrap_or_default();
+    assert_eq!(
+        next,
+        format!(
+            "  find it: the gamepad in the bar's right section; a click opens its panel\n  \
+             move it: omarchy bar move {ID} --section <left|center|right>\n  \
+             a key for it, in ~/.config/hypr/bindings.lua: o.bind(\"SUPER + ALT + W\", \"WoW addons\", {{ panel = \"{ID}\" }})\n"
+        ),
+        "{text}"
+    );
+    // A dry run, or a widget left off the bar, suggests nothing.
+    let dry = desk
+        .command(binary, &["omarchy", "install", "--dry-run"], &[])
+        .output()
+        .unwrap();
+    assert!(!String::from_utf8(dry.stdout).unwrap().contains("\nnext:\n"));
 }
 
 // ---------------------------------------------------------------------------------------

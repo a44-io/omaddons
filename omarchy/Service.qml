@@ -44,6 +44,9 @@ Item {
   property var incompatible: null
   // When Update the panel last ran (ms since the epoch; 0 for never).
   property double reinstalledAtMs: 0
+  // The omaddons version the widget reinstalled itself for (1n2p.35): once per version
+  // in this service's life.
+  property string selfUpdatedFor: ""
   // The retries while the binary is missing or gave no answer (Model.retryDelayMs).
   property var retryDelaysMs: Model.RETRY_BACKOFF_MS
   property int retryStep: 0
@@ -258,7 +261,8 @@ Item {
   // the old one no longer apply.
   function applySettings(next) {
     var before = root.binary
-    settings = next && typeof next === "object" ? next : ({})
+    // A setting renamed since the player chose it keeps its value (1n2p.35).
+    settings = Model.migrateSettings(next)
     if (root.binary !== before) {
       contextGeneration++
       refresh()
@@ -1324,6 +1328,16 @@ Item {
     queues = { "mutation": [], "local": queues.local.slice(), "network": queues.network.slice() }
     queuedAction = ""
     queuedText = Model.queuedText(queues)
+    // After its binary was upgraded, the widget reinstalls itself once from it (1n2p.35,
+    // Model.selfUpdate says when): a toast says so, and the bar reloads with the new
+    // widget. Otherwise the phase card offers it.
+    var update = Model.selfUpdate({ "phase": phase, "incompatible": incompatible, "env": env, "settings": root.settings,
+      "tried": selfUpdatedFor })
+    if (update.run) {
+      selfUpdatedFor = update.version
+      Quickshell.execDetached(Model.resultToastArgv(Model.copy("widget.self_update", { "version": update.version }), true, Build.PLUGIN_ID))
+      reinstallWidget()
+    }
     refreshBar()
   }
 

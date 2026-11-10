@@ -358,7 +358,7 @@ TestCase {
     compare(sheet.rows[2].text, "Off")
     // The binary's path is typed: a full path or nothing; anything else says what a path is.
     var count = saved.length
-    sheet.choose(6)
+    sheet.choose(Model.PANEL_SETTING_KEYS.indexOf("binary"))
     compare(sheet.editing, "binary")
     var field = part(widget, "settingEdit")
     field.text = "omaddons"

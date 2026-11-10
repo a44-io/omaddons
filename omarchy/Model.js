@@ -24,7 +24,9 @@ var DEFAULT_SETTINGS = {
   "notifyWhilePlaying": "Off",
   "refreshIntervalSec": 300,
   // The first run's keybinding tip (1n2p.32): On until the player has seen it.
-  "keyHint": "On"
+  "keyHint": "On",
+  // The widget reinstalls itself once after its binary was upgraded (1n2p.35).
+  "autoUpdateWidget": "On"
 }
 
 // What each setting accepts; anything else falls back to its default.
@@ -36,7 +38,8 @@ var SETTING_RULES = {
   "notifyErrors": { "type": "switch" },
   "notifyWhilePlaying": { "type": "switch" },
   "refreshIntervalSec": { "type": "integer", "min": 30, "max": 3600, "step": 30 },
-  "keyHint": { "type": "switch" }
+  "keyHint": { "type": "switch" },
+  "autoUpdateWidget": { "type": "switch" }
 }
 
 function isInteger(value) {
@@ -83,7 +86,8 @@ function boolSetting(settings, key, def) {
 
 // The panel's own settings, in the sheet's order (design doc §2.7). `keyHint` is the
 // first run's tip, which seeing it turns off: never a setting a player picks.
-var PANEL_SETTING_KEYS = ["panelWidth", "refreshIntervalSec", "autoCheck", "notifyErrors", "notifyUpdates", "notifyWhilePlaying", "binary"]
+var PANEL_SETTING_KEYS = ["panelWidth", "refreshIntervalSec", "autoCheck", "notifyErrors", "notifyUpdates", "notifyWhilePlaying", "autoUpdateWidget",
+  "binary"]
 
 // "30 s", "5 min", "1 min 30 s".
 function secondsText(n) {
@@ -1747,6 +1751,59 @@ function incompatibleOf(env, build) {
   if (!envelopeOk(env) || schemaMajor(env.schema_version) !== 1) return { "kind": "version", "theirs": "" }
   if (env.tool_version !== mine) return { "kind": "version", "theirs": str(env.tool_version) }
   return { "kind": "outdated", "theirs": str(env.tool_version) }
+}
+
+// Whether the widget reinstalls itself now, after its binary was upgraded (1n2p.35):
+// `{run, version, why}`, `why` the first reason it does not ("" when it runs). It runs
+// only when another omaddons version answered (`incompatible`, incompatibleOf's, of kind
+// "version" with the version read), from the binary that installed it (no `binary`
+// setting: a build the player pointed it at may be a test build), whose status (`env`)
+// says the installed widget is outdated and serves this state (as `status` recommends
+// the reinstall), with no client running (unknown counts as running), the
+// `autoUpdateWidget` setting On, and not tried for that version yet in this service's
+// life (`tried`). Never for the same version with other files: a reinstall from that
+// binary leaves the widget at its version, so a fresh service, which remembers nothing,
+// never meets the "version" case again until the binary changes, and no reload loop can
+// start. Otherwise the phase card offers the update.
+function selfUpdate(input) {
+  var i = input && typeof input === "object" ? input : {}
+  var answer = function(why, version) { return { "run": why === "", "version": str(version), "why": why } }
+  var incompatible = i.incompatible && typeof i.incompatible === "object" ? i.incompatible : null
+  if (i.phase !== "incompatible" || !incompatible) return answer("compatible")
+  if (incompatible.kind !== "version") return answer("same_version")
+  var version = str(incompatible.theirs)
+  if (version === "") return answer("unreadable")
+  if (setting(i.settings, "autoUpdateWidget") !== "On") return answer("setting_off", version)
+  if (setting(i.settings, "binary") !== "") return answer("binary_set", version)
+  if (str(i.tried) === version) return answer("tried", version)
+  var data = i.env && i.env.data && typeof i.env.data === "object" ? i.env.data : {}
+  var widget = data.widget && typeof data.widget === "object" ? data.widget : null
+  if (!widget || widget.installed !== true || widget.outdated !== true) return answer("not_outdated", version)
+  if (widget.context_matches === false) return answer("other_state", version)
+  var summary = data.summary && typeof data.summary === "object" ? data.summary : null
+  var running = summary && Array.isArray(summary.running) ? summary.running : null
+  if (running === null || running.length > 0) return answer("running", version)
+  return answer("", version)
+}
+
+// Old panel setting names and the new ones that replace them (1n2p.35): none yet. A
+// rename adds `{from, to}` here, so a player's choice survives it.
+var SETTING_RENAMES = []
+
+// `settings` as this widget names them: each renamed key's value moved to its new name
+// (unless that is set too), the old one dropped; a copy, never the shell's own object.
+// `renames` defaults to SETTING_RENAMES (a test passes its own).
+function migrateSettings(settings, renames) {
+  var given = settings && typeof settings === "object" ? settings : {}
+  var out = {}
+  for (var key in given) if (given.hasOwnProperty(key)) out[key] = given[key]
+  var list = Array.isArray(renames) ? renames : SETTING_RENAMES
+  list.forEach(function(r) {
+    if (!r || !out.hasOwnProperty(r.from)) return
+    if (!out.hasOwnProperty(r.to)) out[r.to] = out[r.from]
+    delete out[r.from]
+  })
+  return out
 }
 
 // `text` with the stamped home shown as "~" (Copy details, design doc §6.5): a path of
@@ -6409,6 +6466,10 @@ var COPY = {
   "settings.panel.notifyUpdates.about": "When a check finds updates that weren't there before.",
   "settings.panel.notifyWhilePlaying": "Notify while a game runs",
   "settings.panel.notifyWhilePlaying.about": "Off holds them while a game runs, and says what came up in one notification when it stops.",
+  "settings.panel.autoUpdateWidget": "Update the widget by itself",
+  "settings.panel.autoUpdateWidget.about": "After omaddons was upgraded, the widget reinstalls itself once, while no game runs. Off: it asks first.",
+  // The widget updating itself (1n2p.35), said as it starts: the bar reloads next.
+  "widget.self_update": "Updating the widget for omaddons {version}: the bar reloads.",
   "settings.panel.binary": "omaddons binary",
   "settings.panel.binary.about": "Empty runs the omaddons that installed the panel. A full path runs another build.",
   "settings.panel.binary.edit": "Type a full path, then Enter. Esc keeps the one before.",
@@ -8196,6 +8257,9 @@ if (typeof module !== "undefined") {
     RETRY_BACKOFF_MS: RETRY_BACKOFF_MS,
     retryDelayMs: retryDelayMs,
     incompatibleOf: incompatibleOf,
+    selfUpdate: selfUpdate,
+    SETTING_RENAMES: SETTING_RENAMES,
+    migrateSettings: migrateSettings,
     homeless: homeless,
     failureDetails: failureDetails,
     failureWords: failureWords,

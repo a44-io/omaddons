@@ -90,7 +90,9 @@ Panel {
   // save theirs), which writes shell.json; the widget writes no file.
   function saveSetting(key, value) {
     var entry = { "id": root.moduleName }
-    for (var name in root.settings) if (name !== "id") entry[name] = root.settings[name]
+    // Saved under the names this widget reads (a renamed setting moves, 1n2p.35).
+    var current = Model.migrateSettings(root.settings)
+    for (var name in current) if (name !== "id") entry[name] = current[name]
     entry[key] = value
     root.settings = entry
     if (root.bar && root.bar.shell && typeof root.bar.shell.updateEntryInline === "function")
@@ -195,7 +197,7 @@ Panel {
     open: root.opened
     focusTarget: view.focusItem
     contentWidth: view.zoomed ? panel.fittedContentWidth(999999)
-      : panel.fittedContentWidth(Style.space(Model.intSetting(root.settings, "panelWidth", 540, 400, 800)))
+      : panel.fittedContentWidth(Style.space(Model.intSetting(Model.migrateSettings(root.settings), "panelWidth", 540, 400, 800)))
     contentHeight: view.zoomed ? panel.fittedContentHeight(999999)
       : panel.fittedContentHeight(view.contentImplicitHeight, Style.space(720))
 

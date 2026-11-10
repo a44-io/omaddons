@@ -93,11 +93,59 @@ describe("settings", () => {
     expect(rows.map((r) => [r.key, r.kind, r.text])).toEqual([
       ["panelWidth", "integer", "600 px"], ["refreshIntervalSec", "integer", "1 min 30 s"], ["autoCheck", "switch", "Off"],
       ["notifyErrors", "switch", "On"], ["notifyUpdates", "switch", "Off"], ["notifyWhilePlaying", "switch", "Off"],
-      ["binary", "path", "the one that installed the panel"]])
+      ["autoUpdateWidget", "switch", "On"], ["binary", "path", "the one that installed the panel"]])
     expect(rows.every((r) => r.label !== "" && r.about !== "" && !r.label.startsWith("settings."))).toBe(true)
     expect([30, 60, 300, 3600].map(M.secondsText)).toEqual(["30 s", "1 min", "5 min", "60 min"])
-    expect(M.settingsSections({ settings: {} }).map((s) => [s.title, s.rows.map((r) => r.index)])).toEqual([["Panel", [0, 1, 2, 3, 4, 5, 6]],
-      ["omaddons", []], ["Clients", [7, 8]]])
+    expect(M.settingsSections({ settings: {} }).map((s) => [s.title, s.rows.map((r) => r.index)])).toEqual([["Panel", [0, 1, 2, 3, 4, 5, 6, 7]],
+      ["omaddons", []], ["Clients", [8, 9]]])
+  })
+
+  // 1n2p.35: after its binary was upgraded, the widget reinstalls itself once, only when
+  // everything says it is safe; otherwise the phase card offers it.
+  test("the widget updates itself only from the binary that installed it, with nothing running, once per version", () => {
+    const env = (widget, running) => {
+      const e = fixture("status-updates")
+      e.tool_version = "9.9.9"
+      e.data.widget = widget === undefined ? { omarchy: true, installed: true, enabled: true, version: M.DEFAULT_SETTINGS ? "0.1.0" : "",
+        outdated: true, context_matches: true } : widget
+      e.data.summary.running = running === undefined ? [] : running
+      return e
+    }
+    const base = { phase: "incompatible", incompatible: { kind: "version", theirs: "9.9.9" }, env: env(), settings: {}, tried: "" }
+    const decide = (change) => M.selfUpdate(Object.assign({}, base, change))
+    expect(decide({})).toEqual({ run: true, version: "9.9.9", why: "" })
+    const why = (change) => decide(change).why
+    expect([
+      why({ phase: "ok" }),
+      why({ incompatible: { kind: "outdated", theirs: "9.9.9" } }),
+      why({ incompatible: { kind: "version", theirs: "" } }),
+      why({ settings: { autoUpdateWidget: "Off" } }),
+      why({ settings: { binary: "/opt/test-build/omaddons" } }),
+      why({ tried: "9.9.9" }),
+      why({ env: env(null) }),
+      why({ env: env({ installed: true, outdated: false, context_matches: true }) }),
+      why({ env: env({ installed: true, outdated: true, context_matches: false }) }),
+      why({ env: env(undefined, ["retail"]) }),
+      why({ env: env(undefined, null) }),
+    ]).toEqual(["compatible", "same_version", "unreadable", "setting_off", "binary_set", "tried", "not_outdated", "not_outdated",
+      "other_state", "running", "running"])
+    // Tried for an older version: the newer one runs once more.
+    expect(decide({ tried: "9.9.8" }).run).toBe(true)
+    // An invalid setting value is its default, On.
+    expect(decide({ settings: { autoUpdateWidget: "maybe" } }).run).toBe(true)
+  })
+
+  test("a renamed setting keeps the player's value", () => {
+    expect(M.SETTING_RENAMES).toEqual([])
+    const given = { oldWidth: 600, keyHint: "Off" }
+    const renames = [{ from: "oldWidth", to: "panelWidth" }]
+    expect(M.migrateSettings(given, renames)).toEqual({ panelWidth: 600, keyHint: "Off" })
+    expect(given).toEqual({ oldWidth: 600, keyHint: "Off" })
+    // The new name set too: it stands, and the old one goes.
+    expect(M.migrateSettings({ oldWidth: 600, panelWidth: 700 }, renames)).toEqual({ panelWidth: 700 })
+    // Nothing renamed: a copy of what was given; nothing given: nothing.
+    expect(M.migrateSettings({ panelWidth: 480 })).toEqual({ panelWidth: 480 })
+    expect(M.migrateSettings(null)).toEqual({})
   })
 
   // 1n2p.31: omaddons' own settings, from `config` as the binary prints it; a step is one
@@ -130,9 +178,9 @@ describe("settings", () => {
     const after = M.omaddonsSettingRows(M.reduceConfig(fixture("config-after")))
     expect(after[2].text).toBe("Daily, full copies where needed")
     expect(M.settingsSections({ settings: {}, config: null }).map((s) => [s.title, s.rows.length, s.note])).toEqual([
-      ["Panel", 7, ""], ["omaddons", 0, "Reading omaddons' settings…"], ["Clients", 2, ""]])
+      ["Panel", 8, ""], ["omaddons", 0, "Reading omaddons' settings…"], ["Clients", 2, ""]])
     expect(M.settingsSections({ settings: {}, config: null, configFailed: "x" })[1].note).toBe("Couldn't read omaddons' settings.")
-    expect(M.settingsSections({ settings: {}, config }).flatMap((s) => s.rows.map((r) => r.index))).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+    expect(M.settingsSections({ settings: {}, config }).flatMap((s) => s.rows.map((r) => r.index))).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
     expect([M.reduceConfig(fixture("config-set-refused")), fixture("config-set").data.changed]).toEqual([null, true])
     // The result line, in the sheet's words.
     expect(M.resultLine(fixture("config-set"), CONTEXT, [])).toBe("Automatic backups: Daily, full copies where needed")

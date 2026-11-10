@@ -441,6 +441,57 @@ TestCase {
     compare(runs("update").length, 1)
   }
 
+  // 1n2p.35: a status from the upgraded binary (another version), saying the installed
+  // widget is outdated and serves this state, with `running` the clients that run.
+  function upgradedStatus(running) {
+    var env = JSON.parse(statusEnvelope(0, { "tool_version": "9.9.9" }))
+    env.data.widget = { "omarchy": true, "installed": true, "enabled": true, "version": Build.TOOL_VERSION, "outdated": true,
+      "context_matches": true }
+    env.data.summary.running = running
+    return JSON.stringify(env)
+  }
+
+  function selfUpdateToasts() {
+    return Quickshell.detachedCommands.filter(function(c) { return c.join(" ").indexOf("Updating the widget for omaddons 9.9.9") !== -1 })
+  }
+
+  // After its binary was upgraded, the widget reinstalls itself once from it, with a
+  // toast, while no client runs; until then it only offers it.
+  function test_the_widget_updates_itself_once_after_its_binary_was_upgraded() {
+    Quickshell.resetDetachedCommands()
+    ready(0)
+    service.refresh()
+    answer(lastRun("status"), upgradedStatus(["retail"]))
+    compare(service.phase, "incompatible")
+    compare(ProcessRegistry.detached.length, 0, "a client runs: offered, not run")
+    service.refresh()
+    answer(lastRun("status"), upgradedStatus([]))
+    compare(ProcessRegistry.detached.length, 1)
+    compare(ProcessRegistry.detached[0].command, [Build.BINARY, "--actor", "widget", "--reason", "reinstall from the bar widget", "omarchy", "install"])
+    compare(selfUpdateToasts().length, 1)
+    // The bar has not reloaded yet: never a second time for this version.
+    service.refresh()
+    answer(lastRun("status"), upgradedStatus([]))
+    compare(ProcessRegistry.detached.length, 1)
+    compare(selfUpdateToasts().length, 1)
+  }
+
+  // Off, or a binary the player set by hand (maybe a test build): offered, never run.
+  function test_the_widget_never_updates_itself_when_off_or_from_a_binary_set_by_hand() {
+    Quickshell.resetDetachedCommands()
+    ready(0)
+    service.applySettings({ "autoUpdateWidget": "Off" })
+    service.refresh()
+    answer(lastRun("status"), upgradedStatus([]))
+    compare(service.phase, "incompatible")
+    compare(ProcessRegistry.detached.length, 0, "Off")
+    service.applySettings({ "binary": "/opt/test-build/omaddons" })
+    service.refresh()
+    answer(lastRun("status"), upgradedStatus([]))
+    compare(ProcessRegistry.detached.length, 0, "a binary set by hand")
+    compare(selfUpdateToasts().length, 0)
+  }
+
   function test_a_confirmation_from_another_context_never_runs() {
     ready(0)
     service.run("remove", { "target": "retail", "addon": "Baz" }, "Remove")

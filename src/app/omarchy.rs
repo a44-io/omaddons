@@ -258,9 +258,33 @@ impl Outcome for InstallOutcome {
         writeln!(
             w,
             "  note: reinstall after moving the binary or changing XDG directories → omaddons omarchy install"
-        )
+        )?;
+        // What to do next, once it is on the bar (1n2p.35): where, how to move it, and
+        // the line that gives it a key (the widget's own first-run tip offers the same).
+        if !d.dry_run && matches!(d.enabled, Enabled::Yes | Enabled::Already) {
+            let id = &d.plugin.id;
+            writeln!(w, "next:")?;
+            writeln!(
+                w,
+                "  find it: the gamepad in the bar's {section} section; a click opens its panel"
+            )?;
+            writeln!(
+                w,
+                "  move it: omarchy bar move {id} --section <left|center|right>"
+            )?;
+            writeln!(
+                w,
+                "  a key for it, in ~/.config/hypr/bindings.lua: o.bind(\"{KEY_HINT_KEY}\", \"WoW addons\", {{ panel = \"{id}\" }})"
+            )?;
+        }
+        Ok(())
     }
 }
+
+/// The key `omarchy install`'s next steps suggest for the panel: one free in Omarchy's
+/// defaults, the widget's own first-run tip's (`KEY_HINT_KEY` in `omarchy/Model.js`, held
+/// equal by `tests/omarchy_widget.rs`).
+pub const KEY_HINT_KEY: &str = "SUPER + ALT + W";
 
 /// `omarchy install`.
 pub fn install(ctx: &Context, enable: bool, section: Section) -> Result<InstallOutcome> {
