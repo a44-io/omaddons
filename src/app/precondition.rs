@@ -1290,8 +1290,9 @@ pub fn of_purge(parts: &PurgeTokenParts<'_>) -> Precondition {
 ///   (each step's `pre` proves its paths unchanged, so an unrelated change on the client
 ///   does not stale it);
 /// - the selection: each primitive (`fm`, `fix`, `op`, its canonical `path`, a rename's
-///   destination as `to_rel`, a mode) and each delegated recovery (`tx`, `family`,
-///   `phase`, `direction`);
+///   destination as `to_rel`, a mode), each delegated recovery (`tx`, `family`,
+///   `phase`, `direction`) and each client's prune (its key and transactions), the last
+///   only in a plan that prunes;
 /// - what it observed: each primitive's `pre` predicate and guards, and every journal
 ///   whose writer is gone with its verdict and protected resources, so one that appears,
 ///   goes or changes between the preview and the run stales the token.
@@ -1364,6 +1365,21 @@ pub fn of_bound_repair(bound: &BoundRepair) -> Precondition {
             })
         })
         .collect();
+    let mut selection = json!({ "primitives": primitives, "recoveries": recoveries });
+    // Only a plan that prunes names them, so every other plan's token is as it was.
+    if let (false, Some(map)) = (bound.prunes.is_empty(), selection.as_object_mut()) {
+        let prunes: Vec<Value> = bound
+            .prunes
+            .iter()
+            .map(|(key, txs)| {
+                json!({
+                    "target": key.to_string(),
+                    "txs": txs.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        map.insert("prunes".to_owned(), json!(prunes));
+    }
     Precondition::new(
         "doctor fix",
         bound
@@ -1371,7 +1387,7 @@ pub fn of_bound_repair(bound: &BoundRepair) -> Precondition {
             .iter()
             .map(|key| (TargetRef::Key(*key), None))
             .collect(),
-        json!({ "primitives": primitives, "recoveries": recoveries }),
+        selection,
         json!({ "pre": pre, "journals": journals }),
     )
 }
@@ -2557,6 +2573,7 @@ mod tests {
                 repair_phase: None,
                 direction: json!("back"),
             }],
+            prunes: Vec::new(),
             journals: vec![
                 journal(SET_ASIDE, json!("too_new")),
                 journal(
@@ -2572,7 +2589,7 @@ mod tests {
         use crate::doctor::fix::BoundJournal;
         let token = of_bound_repair(&bound_repair()).token();
         type Edit = fn(&mut BoundRepair);
-        let cases: [(&str, Edit, &[Part]); 21] = [
+        let cases: [(&str, Edit, &[Part]); 22] = [
             ("nothing", |_| {}, &[]),
             (
                 "a_steps_path",
@@ -2679,6 +2696,16 @@ mod tests {
             ),
             ("a_target", |b| b.targets.push(key(OTHER)), &[Part::Targets]),
             (
+                "a_prune",
+                |b| {
+                    b.prunes.push((
+                        key(OTHER),
+                        vec!["01JB8Q2VA0000000000000000C".parse().unwrap()],
+                    ));
+                },
+                &[Part::Selection],
+            ),
+            (
                 "a_step_and_a_journal",
                 |b| {
                     b.steps[0].mode = Some(0o400);
@@ -2698,6 +2725,20 @@ mod tests {
                 precondition.parts()
             );
         }
+
+        // A prune binds its transactions, not only its client.
+        let pruning = |tx: &str| {
+            let mut b = bound_repair();
+            b.prunes.push((key(OTHER), vec![tx.parse().unwrap()]));
+            of_bound_repair(&b).token()
+        };
+        assert_eq!(
+            changed_parts(
+                &pruning("01JB8Q2VA0000000000000000C"),
+                &pruning("01JB8Q2VA0000000000000000D")
+            ),
+            &[Part::Selection]
+        );
 
         // A bound run names what moved, and previews again.
         let mut moved = bound_repair();

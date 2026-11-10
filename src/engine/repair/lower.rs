@@ -698,7 +698,8 @@ impl Lowering<'_, '_> {
             Fix::Flatten { inner, outer } => self.flatten(of, inner, outer),
             Fix::Suspend { journal } => self.suspend(of, journal),
             // The engine's own recovery settles it before the primitives run (M4-D37).
-            Fix::Delegate { .. } => Ok(()),
+            // So does its snapshot retention (`doctor fix`'s prunes), after them.
+            Fix::Delegate { .. } | Fix::Retain { .. } => Ok(()),
         }
     }
 

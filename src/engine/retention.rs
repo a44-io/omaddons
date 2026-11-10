@@ -264,6 +264,56 @@ pub fn judge(
     Judgment { txs, selection }
 }
 
+/// Prunes the snapshots of `planned` (the target `key`'s transactions a preview listed)
+/// that retention still prunes at `now`, judged again here without sizes as the preview
+/// was: never more than the preview showed, and never one a later change made worth
+/// keeping. Under `lock`, the caller's held global lock (`doctor fix`), through
+/// [`fsx::prune`] as a commit's retention does. Returns the transactions pruned, in
+/// history order.
+#[allow(clippy::too_many_arguments)]
+pub fn prune_selected(
+    paths: &Paths,
+    scopes: &ScopeTable,
+    key: TargetKey,
+    client: &ClientPaths,
+    planned: &[TxId],
+    limits: &RetentionLimits,
+    now: Timestamp,
+    lock: &fsx::GlobalLockGuard,
+) -> Result<Vec<TxId>> {
+    let history = HistoryView::read(paths)?;
+    let judged = judge(
+        paths,
+        client,
+        key,
+        &history.entries,
+        &history.pinned,
+        limits,
+        now,
+        Sizes::Unmeasured,
+    );
+    let due: Vec<TxId> = judged
+        .due()
+        .into_iter()
+        .map(|t| t.tx)
+        .filter(|tx| planned.contains(tx))
+        .collect();
+    let victims: Vec<PathBuf> = due
+        .iter()
+        .flat_map(|tx| snapshot_dirs(paths, client, tx))
+        .filter(|p| p.exists())
+        .collect();
+    if !victims.is_empty() {
+        fsx::prune(
+            scopes,
+            PruneReason::Retention,
+            &victims,
+            LockUse::Held(lock),
+        )?;
+    }
+    Ok(due)
+}
+
 /// The apparent size of `txs`' snapshots (both halves, under either name), visiting at
 /// most `max_entries` entries: the bytes counted, and whether every entry was visited (a
 /// cut-short walk's bytes are a lower bound). Symlinks are counted, never followed.

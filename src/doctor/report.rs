@@ -16,7 +16,7 @@ use super::selection::{SkipReason, Skipped};
 use crate::engine::journal::JournalFamily;
 use crate::engine::repair_action::{Direction, JournalPhase, Step};
 use crate::error::{CommandHint, ErrorBody, Warning};
-use crate::model::TxId;
+use crate::model::{TargetKey, TxId};
 use crate::output::RunKind;
 
 /// The version of the doctor contract the report follows (M4-D3).
@@ -300,9 +300,12 @@ pub struct FixReport {
     pub actions: Option<Vec<ActionDone>>,
     /// The recoveries it had the engine run.
     pub delegated: Option<Vec<DelegatedOutcome>>,
+    /// The undo snapshots it had engine retention prune, per client.
+    pub prunes: Option<Vec<PruneDone>>,
     /// What a real run would do. This run's own names are written `<run>` and `<tx>`.
     pub actions_planned: Option<Vec<ActionPlanned>>,
     pub delegated_planned: Option<Vec<RecoveryPlanned>>,
+    pub prunes_planned: Option<Vec<PrunePlanned>>,
     /// The token `--if-match` takes to run exactly this.
     pub precondition: Option<String>,
     pub actions_jsonl_path: Option<String>,
@@ -361,12 +364,60 @@ pub struct RecoveryPlanned {
     pub direction: Direction,
 }
 
+/// One client's undo snapshots a repair would have engine retention prune: those
+/// retention would prune now by its count and age rules, listed by transaction in
+/// history order. Pruning them gives up their undo, and cannot itself be undone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct PrunePlanned {
+    pub fm: &'static str,
+    /// The client's id.
+    pub target: String,
+    pub key: TargetKey,
+    pub txs: Vec<TxId>,
+}
+
+/// One client's prune as it ended (a fix report's `prunes[]`): `pruned` lists the
+/// transactions whose snapshots went, which is every planned one retention still prunes
+/// under the lock, never another; `failed` keeps what it could not prune, with the error
+/// code in `reason`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct PruneDone {
+    pub fm: &'static str,
+    /// The client's id.
+    pub target: String,
+    pub key: TargetKey,
+    pub outcome: PruneOutcome,
+    /// The transactions whose snapshots were pruned, in history order.
+    pub pruned: Vec<TxId>,
+    /// Present only when the prune failed: its error code.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "prune_reason_schema")]
+    pub reason: Option<String>,
+}
+
+fn prune_reason_schema(_: &mut SchemaGenerator) -> Schema {
+    let codes: Vec<&'static str> = crate::error::ErrorCode::ALL
+        .iter()
+        .map(|c| c.wire())
+        .collect();
+    schemars::json_schema!({ "type": "string", "enum": codes })
+}
+
+/// How a client's prune ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PruneOutcome {
+    Pruned,
+    Failed,
+}
+
 /// `doctor diff`'s report: what `doctor fix` would change, or what changed since a run.
 /// Every key present, the other mode's `null`.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct DiffReport {
     pub actions_planned: Option<Vec<ActionPlanned>>,
     pub delegated_planned: Option<Vec<RecoveryPlanned>>,
+    pub prunes_planned: Option<Vec<PrunePlanned>>,
     pub bytes_to_back_up: Option<u64>,
     pub precondition: Option<String>,
     pub since: Option<Since>,

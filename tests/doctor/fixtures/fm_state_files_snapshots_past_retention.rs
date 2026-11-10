@@ -22,9 +22,11 @@ const ID: &str = "fm-state_files-snapshots-past-retention";
 /// <retail's key>`), title "retail keeps 2 undo snapshots retention would prune now",
 /// evidence `{path: <retail>/Interface/.omaddons/snapshots, count: 2, txs: [the two
 /// oldest], oldest_at}`: the newest is the client's most recent transaction, which
-/// retention always keeps. Its remediation is advice (retention prunes them with the next
-/// change), and the remedy is that change: one more install on retail, whose own
-/// retention prunes both. The subject is the two transactions' snapshot halves.
+/// retention always keeps. Its remediation is `omaddons doctor fix --only
+/// fm-state_files-snapshots-past-retention -t retail`, auto-fixable: the fixer has engine
+/// retention prune exactly the transactions its preview listed, still due under the lock.
+/// The next change on retail would prune them too, through its own retention. The subject
+/// is the two transactions' snapshot halves, which the repair deletes (not undoable).
 #[derive(Default)]
 pub struct SnapshotsPastRetention {
     txs: std::cell::RefCell<Vec<String>>,
@@ -109,9 +111,7 @@ impl Fixture for SnapshotsPastRetention {
             .collect()
     }
 
-    /// The next change on retail: its own retention prunes them.
-    fn remedy(&self, home: &Home) {
-        let bar = Self::zip(home, "Bar");
-        Self::run(home, &["install", bar.as_str(), "-t", "retail"]);
+    fn fixer(&self) -> bool {
+        true
     }
 }

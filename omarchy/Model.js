@@ -5276,6 +5276,9 @@ var COPY = {
   "sheet.effect.forget_untouched": "Nothing in its folder is touched.",
   "sheet.effect.forget_record": "omaddons keeps its record of {addons}.",
   "sheet.effect.delegated": "Also finishes the interrupted change {tx} ({direction}).",
+  "sheet.item.prune_snapshots": "Delete {snapshots} on {client}",
+  "sheet.effect.prune_final": "Those changes can no longer be undone; omaddons would delete these snapshots after its next change anyway.",
+  "result.snapshots_pruned": "Deleted {snapshots} on {client}",
   "sheet.effect.keeps_copy": "Keeps a copy of {size} first, for undo.",
   "sheet.effect.undo_last": "Undo last reverts it.",
 
@@ -6464,6 +6467,8 @@ function doctorResult(env) {
     },
     "actions": list(dryRun ? env.actions_planned : env.actions),
     "delegated": list(dryRun ? env.delegated_planned : env.delegated),
+    // Undo snapshots engine retention prunes, per client: `txs` planned, `pruned` done.
+    "prunes": list(dryRun ? env.prunes_planned : env.prunes),
     "precondition": typeof env.precondition === "string" && TOKEN_PATTERN.test(env.precondition) ? env.precondition : "",
     "findings": list(env.findings),
     "undoable": Array.isArray(env.undo_argv),
@@ -6549,14 +6554,15 @@ function doctorPreviewDecision(spec, env, context, targets) {
   var decision = { "kind": "failed", "token": "", "heading": "", "sheet": null, "line": "", "fixText": "" }
   var result = doctorResult(env)
   if (!result || result.error) return decision
-  if (result.actions.length === 0 && result.delegated.length === 0) {
+  if (result.actions.length === 0 && result.delegated.length === 0 && result.prunes.length === 0) {
     decision.kind = "refresh"
     decision.line = "Nothing to repair now; the view is refreshed"
     return decision
   }
   decision.kind = "refuse"
-  for (var i = 0; i < result.actions.length; i++) {
-    if (str(result.actions[i].fm) !== str(slots.fm)) {
+  var mine = result.actions.concat(result.prunes)
+  for (var i = 0; i < mine.length; i++) {
+    if (str(mine[i].fm) !== str(slots.fm)) {
       decision.line = "The preview planned more than this repair; nothing ran"
       return decision
     }
@@ -6568,11 +6574,18 @@ function doctorPreviewDecision(spec, env, context, targets) {
   decision.kind = "dialog"
   decision.token = result.precondition
   var items = result.actions.map(function(a) { return sheetItem({ "op": "repair", "name": repairActionLine(a, context, targets) }) })
+  result.prunes.forEach(function(p) {
+    var txs = Array.isArray(p.txs) ? p.txs.length : 0
+    items.push(sheetItem({ "op": "repair", "name": copy("sheet.item.prune_snapshots", {
+      "snapshots": plural(txs, "undo snapshot"), "client": sheetClient(targets, str(p.target), str(p.key)) }) }))
+  })
   var effects = result.delegated.map(function(d) {
     return sheetEffect("delegated", copy("sheet.effect.delegated", { "tx": str(d.tx), "direction": str(d.direction).replace(/_/g, " ") }))
   })
+  if (result.prunes.length > 0) effects.push(sheetEffect("folders_removed", copy("sheet.effect.prune_final")))
   if (result.summary.bytesToBackUp > 0) effects.push(sheetEffect("kept_backup", copy("sheet.effect.keeps_copy", { "size": bytesText(result.summary.bytesToBackUp) })))
-  effects.push(sheetEffect("undo_last", copy("sheet.effect.undo_last")))
+  // A prune is no repair transaction: Undo last never brings snapshots back.
+  if (result.actions.length > 0 || result.delegated.length > 0) effects.push(sheetEffect("undo_last", copy("sheet.effect.undo_last")))
   var label = str(spec && spec.label)
   decision.sheet = finishSheet({
     "title": label.indexOf("Repair: ") === 0 && label.length > 8 ? copy("sheet.title.repair", { "problem": label.slice(8) })
@@ -6594,6 +6607,11 @@ function doctorResultLine(env, context, targets) {
   if (r.summary.actionsTaken > 0 && r.actions.length > 0) {
     var n = r.actions.length
     return "Repaired: " + repairActionLine(r.actions[0], context, targets) + (n > 1 ? " (and " + (n - 1) + " more)" : "")
+  }
+  var pruned = r.prunes.filter(function(p) { return p.outcome === "pruned" && Array.isArray(p.pruned) && p.pruned.length > 0 })
+  if (pruned.length > 0) {
+    return copy("result.snapshots_pruned", { "snapshots": plural(pruned[0].pruned.length, "undo snapshot"),
+      "client": sheetClient(targets, str(pruned[0].target), str(pruned[0].key)) })
   }
   return "Nothing was repaired" + (after > 0 ? "; " + remains + " (see Issues)" : "")
 }

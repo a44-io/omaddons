@@ -38,6 +38,8 @@ expression: "scrubbed(value, &base_of(&paths))"
     "omaddons doctor undo <run_id>"
   ],
   "precondition": null,
+  "prunes": [],
+  "prunes_planned": null,
   "run_dir": "<base>/home/.local/state/omaddons/doctor/runs/<run_id>",
   "run_id": "<run_id>",
   "skipped": [],

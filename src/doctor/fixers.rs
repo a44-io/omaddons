@@ -5,4 +5,5 @@
 pub mod chmod;
 pub mod quarantine;
 pub mod recover;
+pub mod retention;
 pub mod set_aside;

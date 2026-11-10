@@ -27,7 +27,7 @@ use super::fixers::recover::delegation_for;
 use super::registry::{
     FailureMode, FixerPrecondition, FixerSpec, Refusal, ScopeName, failure_modes, ids,
 };
-use super::report::{ActionPlanned, RecoveryPlanned};
+use super::report::{ActionPlanned, PrunePlanned, RecoveryPlanned};
 use super::selection::Pick;
 use super::view::DoctorView;
 use crate::discover::running::RunningScan;
@@ -123,6 +123,21 @@ pub struct PlannedRecovery {
     pub disclosed: Delegation,
 }
 
+/// Snapshots the plan has engine retention prune on one client, after its recoveries:
+/// exactly what its fixer listed, never more (`retention::prune_selected`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedPrune {
+    pub fm: &'static str,
+    /// The client, by id and key.
+    pub target: String,
+    pub key: TargetKey,
+    pub client_dir: PathBuf,
+    /// The transactions whose snapshots go, in history order.
+    pub txs: Vec<TxId>,
+    /// The policy they were judged by, which judges them again under the lock.
+    pub limits: crate::engine::retention::RetentionLimits,
+}
+
 /// An interrupted journal whose writer is gone, as the plan saw it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObservedJournal {
@@ -139,6 +154,8 @@ pub struct FixPlan {
     pub fixes: Vec<PlannedFix>,
     /// By transaction.
     pub recoveries: Vec<PlannedRecovery>,
+    /// By client id.
+    pub prunes: Vec<PlannedPrune>,
     /// Every journal whose writer is gone, by transaction.
     pub journals: Vec<ObservedJournal>,
     /// The clients a step touches or a recovery settles, by key.
@@ -383,12 +400,14 @@ pub fn plan_fix_in(
     // Nothing explains a failed whole: its own error.
     let lowered = combined.map_err(|err| unexplained(err, &owners, &diagnoses))?;
     let fixes = planned_fixes(&lowered, &owners, &inputs);
+    let prunes = prunes(&inputs, &owners);
     let mut targets = lowered.targets.clone();
     targets.extend(
         recoveries
             .iter()
             .filter_map(|r| diagnosis_of(&diagnoses, r.tx).and_then(|d| d.target)),
     );
+    targets.extend(prunes.iter().map(|p| p.key));
     targets.sort();
     targets.dedup();
     let suspended = inputs
@@ -407,6 +426,7 @@ pub fn plan_fix_in(
     Ok(FixPlan {
         fixes,
         recoveries,
+        prunes,
         journals,
         targets,
         unplanned: unplanned.into_iter().map(|(_, u)| u).collect(),
@@ -543,6 +563,7 @@ fn touched(fixes: &[Fix], diagnoses: &Diagnoses) -> Vec<PathBuf> {
             Fix::Delegate { what } => {
                 out.extend(diagnosis_of(diagnoses, what.tx).and_then(|d| d.client_dir.clone()));
             }
+            Fix::Retain { what } => out.push(what.client_dir.clone()),
         }
     }
     out
@@ -625,6 +646,30 @@ fn recoveries(inputs: &[repair::PlannedFix], diagnoses: &Diagnoses) -> Vec<Plann
         });
     }
     out.sort_by_key(|r| r.tx);
+    out
+}
+
+/// One prune per client a retention fix names, by client id; a client named twice keeps
+/// its first fix's transactions.
+fn prunes(inputs: &[repair::PlannedFix], owners: &[&Proposed<'_>]) -> Vec<PlannedPrune> {
+    let mut out: Vec<PlannedPrune> = Vec::new();
+    for (input, owner) in inputs.iter().zip(owners) {
+        let Fix::Retain { what } = &input.fix else {
+            continue;
+        };
+        if what.txs.is_empty() || out.iter().any(|p| p.key == what.target) {
+            continue;
+        }
+        out.push(PlannedPrune {
+            fm: owner.finding.id,
+            target: target_id(owner.finding).unwrap_or_else(|| what.target.to_string()),
+            key: what.target,
+            client_dir: what.client_dir.clone(),
+            txs: what.txs.clone(),
+            limits: what.limits,
+        });
+    }
+    out.sort_by(|a, b| a.target.cmp(&b.target));
     out
 }
 
@@ -1093,6 +1138,8 @@ pub struct BoundRepair {
     pub steps: Vec<BoundStep>,
     /// By transaction.
     pub recoveries: Vec<BoundRecovery>,
+    /// By client id: each client's key and the transactions whose snapshots go.
+    pub prunes: Vec<(TargetKey, Vec<TxId>)>,
     /// By transaction.
     pub journals: Vec<BoundJournal>,
 }
@@ -1217,14 +1264,28 @@ impl FixPlan {
             targets: self.targets.clone(),
             steps,
             recoveries,
+            prunes: self.prunes.iter().map(|p| (p.key, p.txs.clone())).collect(),
             journals,
         }
     }
 
-    /// Whether the plan changes nothing: no primitive and no recovery (a chmod to the
-    /// mode a file has, or a delegation recovery no longer needs, lowers to none).
+    /// Whether the plan changes nothing: no primitive, no recovery and no prune (a chmod
+    /// to the mode a file has, or a delegation recovery no longer needs, lowers to none).
     pub fn is_empty(&self) -> bool {
-        !self.has_steps() && self.recoveries.is_empty()
+        !self.has_steps() && self.recoveries.is_empty() && self.prunes.is_empty()
+    }
+
+    /// Each client's prune as a preview shows it.
+    pub fn prunes_planned(&self) -> Vec<PrunePlanned> {
+        self.prunes
+            .iter()
+            .map(|p| PrunePlanned {
+                fm: p.fm,
+                target: p.target.clone(),
+                key: p.key,
+                txs: p.txs.clone(),
+            })
+            .collect()
     }
 
     /// Whether the plan runs a primitive.
@@ -1631,6 +1692,7 @@ impl FixPlan {
         Self {
             fixes: Vec::new(),
             recoveries,
+            prunes: Vec::new(),
             journals: Vec::new(),
             targets: Vec::new(),
             unplanned: Vec::new(),

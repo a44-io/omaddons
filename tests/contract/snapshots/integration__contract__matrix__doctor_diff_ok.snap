@@ -11,6 +11,7 @@ expression: s.stable(&c.envelope)
   "exit_code": 0,
   "ok": true,
   "precondition": "<precondition>",
+  "prunes_planned": [],
   "schema_version": "1.1",
   "since": null,
   "tool_version": "<version>",

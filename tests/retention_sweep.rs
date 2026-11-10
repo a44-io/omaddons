@@ -480,10 +480,106 @@ fn status_and_the_doctor_name_the_snapshots_retention_would_prune() {
     log.assert_unchanged("state snapshots", &home.state().join("snapshots"));
 }
 
-/// The doctor's fixture (M4-D47) is found as its README says, and its manual remedy, the
-/// next change on the client, clears it: that change's own retention prunes them.
+/// The doctor's repair: its preview lists the snapshots it would prune with a token, and
+/// the bound run has engine retention prune exactly those, records no history line, and
+/// leaves nothing for the check to find; a new commit between the preview and the bound
+/// run makes it `plan_stale`.
 #[test]
-fn the_fixture_is_found_and_the_next_change_clears_it() {
+fn doctor_fix_prunes_exactly_what_its_preview_listed() {
+    let log = tlog!();
+    let (home, era, txs) = era_with_twelve_changes(&log);
+    age_lines(&log, &home, &txs, &old_ages());
+    let lines = history_lines(&home);
+
+    log.step("doctor fix --dry-run: the prune and its token");
+    let ran = json(
+        &log,
+        &home,
+        &["doctor", "fix", "--only", PAST_RETENTION, "--dry-run"],
+    );
+    // A dry run that plans something exits 1.
+    ran.exit(1);
+    let planned = ran.envelope()["prunes_planned"].clone();
+    log.assert_eq("one client", &planned.as_array().unwrap().len(), &1);
+    log.assert_eq("era", &planned[0]["target"], &"era".into());
+    log.assert_eq("its key", &planned[0]["key"], &era.to_string().into());
+    log.assert_eq(
+        "the eleven oldest",
+        &planned[0]["txs"],
+        &serde_json::to_value(&txs[..11]).unwrap(),
+    );
+    let token = ran.envelope()["precondition"].as_str().unwrap().to_owned();
+    log.assert_eq("nothing pruned yet", &snapshots(&home, &txs).len(), &12);
+
+    log.step("doctor fix --if-match: exactly those");
+    let ran = json(
+        &log,
+        &home,
+        &[
+            "doctor",
+            "fix",
+            "--only",
+            PAST_RETENTION,
+            "--if-match",
+            &token,
+        ],
+    );
+    ran.exit(0);
+    log.assert_eq("DONE_OK", &ran.envelope()["state"], &"DONE_OK".into());
+    let done = ran.envelope()["prunes"].clone();
+    log.assert_eq("pruned", &done[0]["outcome"], &"pruned".into());
+    log.assert_eq(
+        "the transactions",
+        &done[0]["pruned"],
+        &serde_json::to_value(&txs[..11]).unwrap(),
+    );
+    log.assert_eq(
+        "only the most recent kept",
+        &snapshots(&home, &txs),
+        &txs[11..].to_vec(),
+    );
+    log.assert_eq("no history line", &history_lines(&home), &lines);
+    log.assert_eq("no repair transaction", &ran.envelope()["tx"], &Value::Null);
+    let ran = json(&log, &home, &["doctor", "--only", PAST_RETENTION]);
+    log.assert_eq("nothing left", &findings_of(&ran, PAST_RETENTION).len(), &0);
+}
+
+#[test]
+fn a_new_commit_between_the_preview_and_the_bound_run_makes_it_stale() {
+    let log = tlog!();
+    let (home, _, txs) = era_with_twelve_changes(&log);
+    age_lines(&log, &home, &txs, &old_ages());
+    let ran = json(
+        &log,
+        &home,
+        &["doctor", "fix", "--only", PAST_RETENTION, "--dry-run"],
+    );
+    let token = ran.envelope()["precondition"].as_str().unwrap().to_owned();
+
+    log.step("a new change on era");
+    let foo = zip(&home, "Bar", "11509");
+    json(&log, &home, &["install", &foo, "-t", "era"]).ok();
+
+    log.step("the bound run refuses");
+    let ran = json(
+        &log,
+        &home,
+        &[
+            "doctor",
+            "fix",
+            "--only",
+            PAST_RETENTION,
+            "--if-match",
+            &token,
+        ],
+    );
+    ran.fails(4, "plan_stale");
+}
+
+/// The doctor's fixture (M4-D47) is found as its README says, and its remediation, the
+/// repair a default `doctor fix` runs, clears it.
+#[test]
+fn the_fixture_is_found_and_its_repair_clears_it() {
     use crate::fixture::Fixture;
     use crate::fixture::fixtures::fm_state_files_snapshots_past_retention::SnapshotsPastRetention;
     let log = tlog!();
@@ -501,14 +597,25 @@ fn the_fixture_is_found_and_the_next_change_clears_it() {
     log.assert_eq("one finding", &found.len(), &1);
     log.assert_eq("count", &found[0]["evidence"]["count"], &2.into());
     log.assert_eq("severity", &found[0]["severity"], &"P3".into());
+    let remediation = &found[0]["remediation"];
     log.assert_eq(
-        "its advice is prose",
-        &found[0]["remediation"]["argv"],
-        &Value::Null,
+        "its repair",
+        &remediation["argv"],
+        &serde_json::json!([
+            "omaddons",
+            "doctor",
+            "fix",
+            "--only",
+            PAST_RETENTION,
+            "-t",
+            "retail"
+        ]),
     );
+    log.assert_eq("auto-fixable", &remediation["auto_fixable"], &true.into());
+    assert!(fx.fixer());
 
-    log.step("the remedy: the next change");
-    fx.remedy(&home);
+    log.step("a default doctor fix repairs it");
+    json(&log, &home, &["doctor", "fix"]).exit(0);
     fx.assert_healthy(&home);
 }
 

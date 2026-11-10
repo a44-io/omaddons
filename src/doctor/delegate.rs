@@ -10,13 +10,16 @@ use std::path::Path;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::Serialize;
 
-use super::fix::PlannedRecovery;
+use super::fix::{PlannedPrune, PlannedRecovery};
+use super::report::{PruneDone, PruneOutcome};
 use crate::discover::registry::same_dir;
 use crate::discover::running::{RunningScan, detect_running};
 use crate::engine::journal::{self, Disclosed, JournalFamily, StopReason, TxOutcome, TxResult};
+use crate::engine::retention;
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::fsx::GlobalLockGuard;
 use crate::model::{Actor, Target, TxId};
+use crate::state::paths::ClientPaths;
 use crate::state::paths::Paths;
 
 /// What runs a plan's disclosed recoveries.
@@ -30,6 +33,23 @@ pub trait RecoveryDelegate {
         disclosed: &[PlannedRecovery],
         targets: &[Target],
     ) -> Result<DelegationReport>;
+
+    /// Has engine retention prune each of `prunes` under `lock`, exactly the planned
+    /// transactions it still prunes; one outcome per client, in order, a failure kept
+    /// with its error code and the next client still pruned.
+    fn retain(&self, lock: &GlobalLockGuard, prunes: &[PlannedPrune]) -> Vec<PruneDone>;
+}
+
+/// `prune`'s failed outcome, with `error`'s code.
+fn prune_failed(prune: &PlannedPrune, error: &Error) -> PruneDone {
+    PruneDone {
+        fm: prune.fm,
+        target: prune.target.clone(),
+        key: prune.key,
+        outcome: PruneOutcome::Failed,
+        pruned: Vec::new(),
+        reason: Some(error.code.wire().to_owned()),
+    }
 }
 
 /// What a delegation did: one outcome per disclosed recovery, in disclosure order, and the
@@ -103,6 +123,11 @@ impl RecoveryDelegate for NoDelegate {
             disclosed.len()
         )))
     }
+
+    fn retain(&self, _: &GlobalLockGuard, prunes: &[PlannedPrune]) -> Vec<PruneDone> {
+        let error = Error::internal("this build has no retention delegate; nothing was pruned");
+        prunes.iter().map(|p| prune_failed(p, &error)).collect()
+    }
 }
 
 /// The real delegate: the engine's recovery (`journal::recover_disclosed`), restricted to
@@ -136,6 +161,46 @@ impl RecoveryDelegate for JournalDelegate<'_> {
             Some(&only),
         );
         Ok(report_of(disclosed, found))
+    }
+
+    /// Each client through `retention::prune_selected`, with a fenced write table of its
+    /// own as the daily pass builds one, at the system clock's now, as retention's ages
+    /// are told.
+    fn retain(&self, lock: &GlobalLockGuard, prunes: &[PlannedPrune]) -> Vec<PruneDone> {
+        let now = jiff::Timestamp::now();
+        prunes
+            .iter()
+            .map(|p| {
+                let one = || -> Result<Vec<TxId>> {
+                    let scopes = crate::engine::fence::table(
+                        self.paths,
+                        std::slice::from_ref(&p.client_dir),
+                        None,
+                    )?;
+                    retention::prune_selected(
+                        self.paths,
+                        &scopes,
+                        p.key,
+                        &ClientPaths::new(&p.client_dir),
+                        &p.txs,
+                        &p.limits,
+                        now,
+                        lock,
+                    )
+                };
+                match one() {
+                    Ok(pruned) => PruneDone {
+                        fm: p.fm,
+                        target: p.target.clone(),
+                        key: p.key,
+                        outcome: PruneOutcome::Pruned,
+                        pruned,
+                        reason: None,
+                    },
+                    Err(error) => prune_failed(p, &error),
+                }
+            })
+            .collect()
     }
 }
 

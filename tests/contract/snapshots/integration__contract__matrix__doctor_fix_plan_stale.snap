@@ -40,6 +40,8 @@ expression: s.stable(&c.envelope)
   "next_steps": [],
   "ok": false,
   "precondition": null,
+  "prunes": [],
+  "prunes_planned": null,
   "run_dir": "<root>/state/omaddons/doctor/runs/<run>",
   "run_id": "<run>",
   "schema_version": "1.1",

@@ -890,6 +890,32 @@ fn recovery_line(r: &crate::doctor::report::RecoveryPlanned) -> String {
     format!("recovers tx {} ({way})", r.tx)
 }
 
+/// One client's prune a preview lists: how many undo snapshots retention would prune, and
+/// that their undo goes with them.
+fn prune_planned_line(p: &crate::doctor::report::PrunePlanned) -> String {
+    format!(
+        "prunes {} on {} (retention; their transactions can no longer be undone)",
+        crate::output::count(p.txs.len(), "undo snapshot"),
+        p.target
+    )
+}
+
+/// One client's prune as it ended: how many undo snapshots went, or why none did.
+fn pruned_line(p: &crate::doctor::report::PruneDone) -> String {
+    match p.outcome {
+        crate::doctor::report::PruneOutcome::Pruned => format!(
+            "pruned {} on {} (retention)",
+            crate::output::count(p.pruned.len(), "undo snapshot"),
+            p.target
+        ),
+        crate::doctor::report::PruneOutcome::Failed => format!(
+            "could not prune {}'s undo snapshots: {}",
+            p.target,
+            p.reason.as_deref().unwrap_or("unknown")
+        ),
+    }
+}
+
 /// One delegated recovery as a line (M4-D37): a roll-forward with the undo that reverts
 /// it, a wait, or a failure with its reason. Transactions only, never a path.
 fn delegated_line(d: &DelegatedOutcome) -> String {
@@ -1010,7 +1036,12 @@ impl DoctorOutcome for FixRun {
         if r.dry_run {
             let planned = r.actions_planned.as_deref().unwrap_or_default();
             let recoveries = r.delegated_planned.as_deref().unwrap_or_default();
-            if r.findings.is_empty() && planned.is_empty() && recoveries.is_empty() {
+            let prunes = r.prunes_planned.as_deref().unwrap_or_default();
+            if r.findings.is_empty()
+                && planned.is_empty()
+                && recoveries.is_empty()
+                && prunes.is_empty()
+            {
                 writeln!(
                     w,
                     "{} · no findings",
@@ -1058,6 +1089,13 @@ impl DoctorOutcome for FixRun {
             for recovery in recoveries {
                 writeln!(w, "  {}", recovery_line(recovery))?;
             }
+            for prune in prunes {
+                if !fms.iter().any(|fm| fm == prune.fm) {
+                    writeln!(w, "  {}", prune.fm)?;
+                    fms.push(prune.fm.to_owned());
+                }
+                writeln!(w, "    {}", prune_planned_line(prune))?;
+            }
             let left: Vec<&Finding> = r
                 .findings
                 .iter()
@@ -1074,9 +1112,10 @@ impl DoctorOutcome for FixRun {
         }
         let actions = r.actions.as_deref().unwrap_or_default();
         let delegated = r.delegated.as_deref().unwrap_or_default();
+        let pruned = r.prunes.as_deref().unwrap_or_default();
         if r.state == RunState::DoneFailed {
             // What the delegation finished before the repair stands (its lines follow).
-            let changed = if delegated.is_empty() {
+            let changed = if delegated.is_empty() && pruned.is_empty() {
                 "; nothing was changed"
             } else {
                 ""
@@ -1087,7 +1126,7 @@ impl DoctorOutcome for FixRun {
                 style.bold("omaddons doctor fix"),
                 crate::output::count(r.summary.backups_restored as usize, "action")
             )?;
-        } else if actions.is_empty() && delegated.is_empty() {
+        } else if actions.is_empty() && delegated.is_empty() && pruned.is_empty() {
             let what = if r.findings.is_empty() {
                 "no findings"
             } else {
@@ -1132,8 +1171,14 @@ impl DoctorOutcome for FixRun {
         for d in delegated {
             writeln!(w, "{}", delegated_line(d))?;
         }
-        let repaired: std::collections::BTreeSet<&str> =
-            actions.iter().map(|a| a.step.fm.as_ref()).collect();
+        for p in pruned {
+            writeln!(w, "{}", pruned_line(p))?;
+        }
+        let repaired: std::collections::BTreeSet<&str> = actions
+            .iter()
+            .map(|a| a.step.fm.as_ref())
+            .chain(pruned.iter().map(|p| p.fm))
+            .collect();
         let mut left: Vec<&Finding> = Vec::new();
         for f in &r.findings {
             if repaired.contains(f.id) {
@@ -1200,7 +1245,8 @@ impl DoctorOutcome for DiffRun {
         };
         let planned = r.actions_planned.as_deref().unwrap_or_default();
         let recoveries = r.delegated_planned.as_deref().unwrap_or_default();
-        if planned.is_empty() && recoveries.is_empty() {
+        let prunes = r.prunes_planned.as_deref().unwrap_or_default();
+        if planned.is_empty() && recoveries.is_empty() && prunes.is_empty() {
             return writeln!(
                 w,
                 "{} · nothing to repair",
@@ -1226,6 +1272,10 @@ impl DoctorOutcome for DiffRun {
         }
         for recovery in recoveries {
             writeln!(w, "  {}", recovery_line(recovery))?;
+        }
+        for prune in prunes {
+            writeln!(w, "  {}", prune.fm)?;
+            writeln!(w, "    {}", prune_planned_line(prune))?;
         }
         if let Some(token) = &r.precondition {
             writeln!(

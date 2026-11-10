@@ -18,11 +18,14 @@ use std::time::Instant;
 use super::delegate::{DelegatedOutcome, RecoveryDelegate, RecoveryOutcome};
 use super::exit::{Exit, exit_for};
 use super::finding::Finding;
-use super::fix::{FixOptions, FixPlan, PlanRefusal, PlannedRecovery, RepairRoots, plan_fix_in};
+use super::fix::{
+    FixOptions, FixPlan, PlanRefusal, PlannedPrune, PlannedRecovery, RepairRoots, plan_fix_in,
+};
 use super::plan::DiagnosePlan;
 use super::registry::{FailureMode, ids};
 use super::report::{
-    self, ActionDone, DOCTOR_CONTRACT_VERSION, DiffReport, FixReport, FixSummary, RunState,
+    self, ActionDone, DOCTOR_CONTRACT_VERSION, DiffReport, FixReport, FixSummary, PruneDone,
+    PruneOutcome, RunState,
 };
 use super::runtime::{self, Diagnosis, DoctorRunId, Runtime};
 use super::selection::Selection;
@@ -144,11 +147,14 @@ pub(crate) enum Terminal {
     Stopped {
         stop: Stop,
         delegated: Vec<DelegatedOutcome>,
+        /// The prunes that ran before.
+        pruned: Vec<PruneDone>,
     },
     /// A real run that ended: with nothing to do, committed, or rolled back.
     Done {
         plan: FixPlan,
         delegated: Vec<DelegatedOutcome>,
+        pruned: Vec<PruneDone>,
         commit: Option<RepairOutcome>,
         verification: Option<Verification>,
     },
@@ -173,6 +179,8 @@ pub(crate) trait FixEffects {
         lock: &Self::Lock,
         disclosed: &[PlannedRecovery],
     ) -> Result<Vec<DelegatedOutcome>>;
+    /// Engine retention prunes exactly the plan's prunes still due, after the recoveries.
+    fn retain(&mut self, lock: &Self::Lock, prunes: &[PlannedPrune]) -> Vec<PruneDone>;
     /// `MUTATING`: E5's commit, which rolls back a failed step itself.
     fn commit(&mut self, lock: &Self::Lock, plan: &FixPlan) -> Result<RepairOutcome>;
     fn release(&mut self, lock: Self::Lock);
@@ -190,6 +198,7 @@ pub(crate) fn fix_flow<F: FixEffects + ?Sized>(fx: &mut F, dry_run: bool, bound:
     let stopped = |stop| Terminal::Stopped {
         stop,
         delegated: Vec::new(),
+        pruned: Vec::new(),
     };
     let plan = match fx.plan() {
         Ok(plan) => plan,
@@ -224,6 +233,7 @@ pub(crate) fn fix_flow<F: FixEffects + ?Sized>(fx: &mut F, dry_run: bool, bound:
         return fx.finish(Terminal::Done {
             plan: fresh,
             delegated: Vec::new(),
+            pruned: Vec::new(),
             commit: None,
             verification: None,
         });
@@ -238,6 +248,12 @@ pub(crate) fn fix_flow<F: FixEffects + ?Sized>(fx: &mut F, dry_run: bool, bound:
             }
         }
     }
+    // After the recoveries, as a commit's retention runs after recovery.
+    let pruned = if fresh.prunes.is_empty() {
+        Vec::new()
+    } else {
+        fx.retain(&lock, &fresh.prunes)
+    };
     let commit = if fresh.has_steps() {
         match fx.commit(&lock, &fresh) {
             Ok(outcome) => Some(outcome),
@@ -246,6 +262,7 @@ pub(crate) fn fix_flow<F: FixEffects + ?Sized>(fx: &mut F, dry_run: bool, bound:
                 return fx.finish(Terminal::Stopped {
                     stop: Stop::Error(error),
                     delegated,
+                    pruned,
                 });
             }
         }
@@ -257,6 +274,7 @@ pub(crate) fn fix_flow<F: FixEffects + ?Sized>(fx: &mut F, dry_run: bool, bound:
         return fx.finish(Terminal::Done {
             plan: fresh,
             delegated,
+            pruned,
             commit,
             verification: None,
         });
@@ -265,6 +283,7 @@ pub(crate) fn fix_flow<F: FixEffects + ?Sized>(fx: &mut F, dry_run: bool, bound:
     fx.finish(Terminal::Done {
         plan: fresh,
         delegated,
+        pruned,
         commit,
         verification: Some(verification),
     })
@@ -305,6 +324,7 @@ pub(crate) fn state_of(terminal: &Terminal, findings: bool) -> (RunState, Exit) 
         Terminal::Done {
             verification: Some(verification),
             delegated,
+            pruned,
             ..
         } => {
             let settled = delegated.iter().all(|d| {
@@ -312,7 +332,7 @@ pub(crate) fn state_of(terminal: &Terminal, findings: bool) -> (RunState, Exit) 
                     d.outcome,
                     RecoveryOutcome::RolledBack | RecoveryOutcome::RolledForward
                 )
-            });
+            }) && pruned.iter().all(|p| p.outcome == PruneOutcome::Pruned);
             // A repaired mode still found, or a recovery left unsettled, is partial; with
             // the repairs verified, anything else the report still holds (another mode, an
             // instance its fixer cannot repair, a check that could not finish) is left, so
@@ -551,17 +571,20 @@ impl RealEffects<'_> {
         let findings = self.final_findings();
         let (state, mut exit) = state_of(&terminal, !findings.is_empty());
         let mut warnings = std::mem::take(&mut self.warnings);
-        let (plan, delegated, commit, mut error) = match terminal {
-            Terminal::Planned(plan) => (Some(plan), Vec::new(), None, None),
-            Terminal::Stopped { stop, delegated } => {
-                (None, delegated, None, Some(stop.into_error(target)))
-            }
+        let (plan, delegated, pruned, commit, mut error) = match terminal {
+            Terminal::Planned(plan) => (Some(plan), Vec::new(), Vec::new(), None, None),
+            Terminal::Stopped {
+                stop,
+                delegated,
+                pruned,
+            } => (None, delegated, pruned, None, Some(stop.into_error(target))),
             Terminal::Done {
                 plan,
                 delegated,
+                pruned,
                 commit,
                 ..
-            } => (Some(plan), delegated, commit, None),
+            } => (Some(plan), delegated, pruned, commit, None),
         };
         if let Some(pending) = error
             .as_ref()
@@ -686,6 +709,7 @@ impl RealEffects<'_> {
             skipped: self.diagnosis.skipped.clone(),
             actions: (!dry_run).then_some(actions),
             delegated: (!dry_run).then_some(delegated),
+            prunes: (!dry_run).then_some(pruned),
             actions_planned: plan
                 .as_ref()
                 .filter(|_| dry_run)
@@ -694,6 +718,10 @@ impl RealEffects<'_> {
                 .as_ref()
                 .filter(|_| dry_run)
                 .map(FixPlan::recoveries_planned),
+            prunes_planned: plan
+                .as_ref()
+                .filter(|_| dry_run)
+                .map(FixPlan::prunes_planned),
             precondition,
             actions_jsonl_path: self
                 .started
@@ -766,6 +794,10 @@ impl FixEffects for RealEffects<'_> {
             .recover(lock, disclosed, &self.fresh_targets)?;
         self.warnings.extend(report.warnings);
         Ok(report.delegated)
+    }
+
+    fn retain(&mut self, lock: &GlobalLockGuard, prunes: &[PlannedPrune]) -> Vec<PruneDone> {
+        self.delegate.retain(lock, prunes)
     }
 
     fn commit(&mut self, lock: &GlobalLockGuard, plan: &FixPlan) -> Result<RepairOutcome> {
@@ -1034,6 +1066,7 @@ pub fn run_diff_at(
             report: DiffReport {
                 actions_planned: None,
                 delegated_planned: None,
+                prunes_planned: None,
                 bytes_to_back_up: None,
                 precondition: None,
                 since: Some(report::since(run.clone(), old, &diagnosis.findings)),
@@ -1087,6 +1120,7 @@ pub fn run_diff_at(
         report: DiffReport {
             actions_planned: Some(plan.actions_planned()),
             delegated_planned: Some(plan.recoveries_planned()),
+            prunes_planned: Some(plan.prunes_planned()),
             bytes_to_back_up: Some(plan.bytes_to_back_up),
             precondition: Some(token),
             since: None,
@@ -1257,6 +1291,21 @@ mod tests {
                 .unwrap_or_else(|| Ok(delegated(RecoveryOutcome::RolledBack)))
         }
 
+        fn retain(&mut self, (): &(), prunes: &[PlannedPrune]) -> Vec<PruneDone> {
+            self.calls.push("retain");
+            prunes
+                .iter()
+                .map(|p| PruneDone {
+                    fm: p.fm,
+                    target: p.target.clone(),
+                    key: p.key,
+                    outcome: PruneOutcome::Pruned,
+                    pruned: p.txs.clone(),
+                    reason: None,
+                })
+                .collect()
+        }
+
         fn commit(&mut self, (): &(), _: &FixPlan) -> Result<RepairOutcome> {
             self.calls.push("commit");
             self.script.commit.take().unwrap_or_else(|| Ok(committed()))
@@ -1282,6 +1331,126 @@ mod tests {
     /// `ORDER` without the calls `skip` names, in order.
     fn order_without(skip: &[&str]) -> Vec<&'static str> {
         ORDER.into_iter().filter(|c| !skip.contains(c)).collect()
+    }
+
+    /// `plan(steps, recoveries)` that also prunes one client's two snapshots.
+    fn pruning(steps: u32, recoveries: bool) -> FixPlan {
+        let mut p = plan(steps, recoveries);
+        p.prunes = vec![PlannedPrune {
+            fm: ids::SNAPSHOTS_PAST_RETENTION,
+            target: "era".to_owned(),
+            key: "01JB8Q2VA00000000000000002".parse().unwrap(),
+            client_dir: PathBuf::from("/fixture/_classic_era_"),
+            txs: vec![TxId::new(), TxId::new()],
+            limits: crate::engine::retention::RetentionLimits::default(),
+        }];
+        p
+    }
+
+    /// Retention prunes after the recoveries and before the commit, under the lock and
+    /// only once the token matched; a plan that only prunes is no empty plan, and a
+    /// mismatch or a dry run prunes nothing.
+    #[test]
+    fn a_plan_that_prunes_retains_after_recovery_and_before_the_commit() {
+        let run = |script: Script, dry_run: bool, bound: bool| {
+            let mut fake = Recording {
+                script,
+                calls: Vec::new(),
+                handed: Vec::new(),
+            };
+            let terminal = fix_flow(&mut fake, dry_run, bound);
+            (fake.calls, terminal)
+        };
+        let (calls, terminal) = run(
+            Script {
+                plan: Some(Ok(pruning(1, true))),
+                fresh: Some(Ok(pruning(1, true))),
+                ..Script::default()
+            },
+            false,
+            true,
+        );
+        let at = |name: &str| calls.iter().position(|c| *c == name).unwrap();
+        assert!(
+            at("delegate") < at("retain") && at("retain") < at("commit"),
+            "{calls:?}"
+        );
+        assert!(
+            at("compare") < at("retain") && at("retain") < at("release"),
+            "{calls:?}"
+        );
+        let Terminal::Done { pruned, .. } = &terminal else {
+            panic!("{terminal:?}");
+        };
+        assert_eq!(pruned.len(), 1);
+        assert_eq!(state_of(&terminal, false).0, RunState::DoneOk);
+
+        let (calls, terminal) = run(
+            Script {
+                plan: Some(Ok(pruning(0, false))),
+                fresh: Some(Ok(pruning(0, false))),
+                ..Script::default()
+            },
+            false,
+            false,
+        );
+        assert!(
+            calls.contains(&"retain") && !calls.contains(&"commit"),
+            "{calls:?}"
+        );
+        assert!(calls.contains(&"verify"), "a prune is verified: {calls:?}");
+        assert!(matches!(
+            terminal,
+            Terminal::Done {
+                verification: Some(_),
+                ..
+            }
+        ));
+
+        for (case, script, dry_run) in [
+            (
+                "mismatch",
+                Script {
+                    fresh: Some(Ok(pruning(1, false))),
+                    compare: Some(Err(stale())),
+                    ..Script::default()
+                },
+                false,
+            ),
+            (
+                "dry run",
+                Script {
+                    plan: Some(Ok(pruning(1, false))),
+                    ..Script::default()
+                },
+                true,
+            ),
+        ] {
+            let (calls, _) = run(script, dry_run, true);
+            assert!(!calls.contains(&"retain"), "{case}: {calls:?}");
+        }
+    }
+
+    #[test]
+    fn a_failed_prune_makes_the_run_partial() {
+        let mut p = pruning(0, false);
+        let done = PruneDone {
+            fm: ids::SNAPSHOTS_PAST_RETENTION,
+            target: "era".to_owned(),
+            key: p.prunes[0].key,
+            outcome: PruneOutcome::Failed,
+            pruned: Vec::new(),
+            reason: Some("io".to_owned()),
+        };
+        p.prunes.clear();
+        let terminal = Terminal::Done {
+            plan: p,
+            delegated: Vec::new(),
+            pruned: vec![done],
+            commit: None,
+            verification: Some(Verification { remaining: 0 }),
+        };
+        assert_eq!(state_of(&terminal, false).0, RunState::DonePartial);
     }
 
     #[test]
@@ -1661,6 +1830,7 @@ mod tests {
             let terminal = Terminal::Done {
                 plan: plan(1, true),
                 delegated: delegated(outcome),
+                pruned: Vec::new(),
                 commit: Some(committed()),
                 verification: Some(Verification { remaining }),
             };
@@ -2183,16 +2353,29 @@ mod tests {
         let real = run_fix_at(&paths, &request(false), &NoDelegate).unwrap();
         let [dry, real] = [dry, real].map(|o| serde_json::to_value(&o.report).unwrap());
         assert_eq!(keys(dry.clone()), keys(real.clone()));
-        for key in ["actions", "delegated", "tx", "undo_command", "undo_argv"] {
+        for key in [
+            "actions",
+            "delegated",
+            "prunes",
+            "tx",
+            "undo_command",
+            "undo_argv",
+        ] {
             assert!(dry[key].is_null(), "a dry run's {key} is null");
         }
-        for key in ["actions_planned", "delegated_planned", "precondition"] {
+        for key in [
+            "actions_planned",
+            "delegated_planned",
+            "prunes_planned",
+            "precondition",
+        ] {
             assert!(real[key].is_null(), "a real run's {key} is null");
         }
         let diffs = [
             DiffReport {
                 actions_planned: None,
                 delegated_planned: None,
+                prunes_planned: None,
                 bytes_to_back_up: None,
                 precondition: None,
                 since: None,
@@ -2200,6 +2383,7 @@ mod tests {
             DiffReport {
                 actions_planned: Some(Vec::new()),
                 delegated_planned: Some(Vec::new()),
+                prunes_planned: Some(Vec::new()),
                 bytes_to_back_up: Some(0),
                 precondition: Some(format!("pc1:{}", "0".repeat(64))),
                 since: None,
@@ -2215,6 +2399,7 @@ mod tests {
                 "bytes_to_back_up",
                 "delegated_planned",
                 "precondition",
+                "prunes_planned",
                 "since"
             ]
         );

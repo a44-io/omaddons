@@ -29,6 +29,7 @@ expression: both
     "bytes_to_back_up": 6,
     "delegated_planned": [],
     "precondition": "<token>",
+    "prunes_planned": [],
     "since": null
   },
   "since": {
@@ -36,6 +37,7 @@ expression: both
     "bytes_to_back_up": null,
     "delegated_planned": null,
     "precondition": null,
+    "prunes_planned": null,
     "since": {
       "new_instances": [
         "fm-state_files-test-stale-file@machine:path=<base>/home/.local/state/omaddons/fixme-1.txt"

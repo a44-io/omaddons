@@ -420,6 +420,106 @@ fn rule_for(kind: NodeKind, name: &str) -> Option<&'static Row> {
         .find(|row| row.fact == name && row.kinds.contains(&kind))
 }
 
+/// An untagged variant's keys, from its id's last segment (`<untagged=r1,r2|o1>`):
+/// (required, optional). `None` for any other id, and for one whose keys are quoted, which
+/// [`extensions`] leaves to the plain comparison.
+fn untagged_keys<'a>(id: &'a str) -> Option<(&'a str, BTreeSet<&'a str>, BTreeSet<&'a str>)> {
+    let at = id.rfind("<untagged=")?;
+    let inner = id[at..].strip_prefix("<untagged=")?.strip_suffix('>')?;
+    if inner.contains(['"', '<', '>', '.', '[', '{']) {
+        return None;
+    }
+    let (required, optional) = inner.split_once('|').unwrap_or((inner, ""));
+    let keys = |list: &'a str| -> BTreeSet<&'a str> {
+        list.split(',').filter(|k| !k.is_empty()).collect()
+    };
+    Some((&id[..at], keys(required), keys(optional)))
+}
+
+/// The untagged variants of `baseline` that `current` extends: each removed one whose
+/// position holds exactly one added untagged variant keeping every key it had (a required
+/// key still required, an optional one still present) and adding some, and that added one
+/// extends no other. An untagged variant is named by its keys, so a key added to it
+/// renames it: a reader of the old variant reads the new one as it did, so the change is
+/// the keys added, never a variant removed. Outermost first, as `(old, new)` ids.
+fn extensions(baseline: &Manifest, current: &Manifest) -> Vec<(String, String)> {
+    let variant = |node: &Node| {
+        matches!(
+            node.kind(),
+            Some(K::OutputVariant | K::FileVariant | K::DesiredVariant)
+        )
+    };
+    let mut nodes: BTreeMap<String, Node> = baseline.nodes.clone();
+    let mut out: Vec<(String, String)> = Vec::new();
+    loop {
+        let removed: Vec<&String> = nodes
+            .iter()
+            .filter(|(id, node)| variant(node) && !current.nodes.contains_key(*id))
+            .map(|(id, _)| id)
+            .collect();
+        let added: Vec<&String> = current
+            .nodes
+            .iter()
+            .filter(|(id, node)| variant(node) && !nodes.contains_key(*id))
+            .map(|(id, _)| id)
+            .collect();
+        let extends = |old: &str, new: &str| {
+            let (Some((at, r, o)), Some((at2, r2, o2))) = (untagged_keys(old), untagged_keys(new))
+            else {
+                return false;
+            };
+            at == at2
+                && r.is_subset(&r2)
+                && o.iter().all(|k| r2.contains(k) || o2.contains(k))
+                && (r != r2 || o != o2)
+        };
+        let mut pair = None;
+        let mut ordered = removed.clone();
+        ordered.sort_by_key(|id| id.len());
+        for old in ordered {
+            let candidates: Vec<&&String> = added.iter().filter(|new| extends(old, new)).collect();
+            if let [new] = candidates.as_slice()
+                && removed.iter().filter(|o| extends(o, new)).count() == 1
+            {
+                pair = Some((old.clone(), (**new).clone()));
+                break;
+            }
+        }
+        let Some((old, new)) = pair else {
+            return out;
+        };
+        move_subtree(&mut nodes, &old, &new);
+        out.push((old, new));
+    }
+}
+
+/// Every node of `nodes` at or below the variant `old`, moved under `new`. A variant id
+/// ends with its `>`, so only it and its descendants start with it.
+fn move_subtree(nodes: &mut BTreeMap<String, Node>, old: &str, new: &str) {
+    let moved: Vec<String> = nodes
+        .keys()
+        .filter(|id| id.starts_with(old))
+        .cloned()
+        .collect();
+    for id in moved {
+        if let Some(node) = nodes.remove(&id) {
+            nodes.insert(format!("{new}{}", &id[old.len()..]), node);
+        }
+    }
+}
+
+/// `baseline` with each extended variant's subtree under its new id ([`extensions`]).
+fn extended(baseline: &Manifest, pairs: &[(String, String)]) -> Manifest {
+    let mut nodes = baseline.nodes.clone();
+    for (old, new) in pairs {
+        move_subtree(&mut nodes, old, new);
+    }
+    Manifest {
+        format: baseline.format,
+        nodes,
+    }
+}
+
 /// Compares `current` with `baseline`. Pure and total: it reads nothing else.
 pub fn classify(baseline: &Manifest, current: &Manifest) -> Changes {
     if baseline.format != current.format {
@@ -437,8 +537,24 @@ pub fn classify(baseline: &Manifest, current: &Manifest) -> Changes {
             kinds: Vec::new(),
         };
     }
+    // An untagged variant that gained keys is compared under its new name.
+    let pairs = extensions(baseline, current);
+    let renamed = extended(baseline, &pairs);
+    let baseline = &renamed;
     let ids: BTreeSet<&String> = baseline.nodes.keys().chain(current.nodes.keys()).collect();
-    let mut changes = Vec::new();
+    let mut changes: Vec<Change> = pairs
+        .iter()
+        .map(|(old, new)| Change {
+            node: new.clone(),
+            kind: ChangeKind::Changed,
+            fact: None,
+            before: Some(old.clone()),
+            after: Some(new.clone()),
+            label: Label::Additive,
+            rule: "variant extended (keys added)",
+            persisted: persisted(new),
+        })
+        .collect();
     for id in ids {
         match (baseline.nodes.get(id), current.nodes.get(id)) {
             (None, Some(node)) => changes.push(node_change(id, node, ChangeKind::Added, baseline)),
@@ -2121,6 +2237,86 @@ mod tests {
             ));
         }
         nodes
+    }
+
+    /// A persisted kind `k` at `version` whose root is an untagged variant with `required`
+    /// keys (and one more variant beside it, `<untagged=z>`), each key a string field.
+    fn untagged_file(version: &str, required: &[&str]) -> Vec<N> {
+        let variant = format!("file k <untagged={}>", required.join(","));
+        let mut nodes = vec![
+            node("file k", "file_kind", &[(fact::VERSION, t(version))]),
+            node(&variant, "file_variant", &[]),
+            node("file k <untagged=z>", "file_variant", &[]),
+        ];
+        for key in required {
+            nodes.push(node(
+                &format!("{variant}.{key}"),
+                "file_position",
+                &[(fact::TYPES, l(&["string"])), (fact::REQUIRED, yes())],
+            ));
+        }
+        nodes
+    }
+
+    #[test]
+    fn an_untagged_variant_that_gains_keys_is_extended_not_removed() {
+        let changes = classify(
+            &man(&untagged_file("1.0", &["a", "b"])),
+            &man(&untagged_file("1.1", &["a", "b", "c"])),
+        );
+        let labels: Vec<(&str, Label, &str)> = changes
+            .changes
+            .iter()
+            .map(|c| (c.node.as_str(), c.label, c.rule))
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                (
+                    "file k <untagged=a,b,c>",
+                    Label::Additive,
+                    "variant extended (keys added)"
+                ),
+                ("file k <untagged=a,b,c>.c", Label::Additive, "field added"),
+            ],
+            "{changes:#?}"
+        );
+        assert_eq!(changes.kinds.len(), 1);
+        assert!(changes.kinds[0].satisfied, "{:?}", changes.kinds);
+    }
+
+    #[test]
+    fn an_untagged_variant_that_loses_or_trades_a_key_is_still_breaking() {
+        for (case, after) in [
+            ("a_key_lost", &["a"][..]),
+            ("a_key_traded", &["a", "c"][..]),
+        ] {
+            let changes = classify(
+                &man(&untagged_file("1.0", &["a", "b"])),
+                &man(&untagged_file("1.1", after)),
+            );
+            assert!(
+                changes
+                    .changes
+                    .iter()
+                    .any(|c| c.label == Label::Breaking && c.rule == "variant removed"),
+                "{case}: {changes:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn two_variants_that_could_extend_one_are_left_to_the_plain_comparison() {
+        let mut after = untagged_file("1.1", &["a", "b", "c"]);
+        after.push(node("file k <untagged=a,b,d>", "file_variant", &[]));
+        let changes = classify(&man(&untagged_file("1.0", &["a", "b"])), &man(&after));
+        assert!(
+            changes
+                .changes
+                .iter()
+                .any(|c| c.label == Label::Breaking && c.rule == "variant removed"),
+            "{changes:#?}"
+        );
     }
 
     #[test]

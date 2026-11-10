@@ -75,6 +75,8 @@ expression: "scrubbed(value, &base_of(&paths))"
     "omaddons doctor fix --if-match <token>"
   ],
   "precondition": "<token>",
+  "prunes": null,
+  "prunes_planned": [],
   "run_dir": "<base>/home/.local/state/omaddons/doctor/runs/<run_id>",
   "run_id": "<run_id>",
   "skipped": [],

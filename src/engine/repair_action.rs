@@ -822,6 +822,22 @@ pub enum Fix {
     Suspend { journal: JournalSet },
     /// Has the engine's own recovery settle a journal (M4-D37): no primitive.
     Delegate { what: Delegation },
+    /// Has the engine's own snapshot retention prune what it would prune now on one
+    /// client, a delegation as `Delegate` is: no primitive.
+    Retain { what: RetentionPrune },
+}
+
+/// Snapshots the doctor has engine retention prune (`doctor fix`), as its preview lists
+/// them (`prunes_planned`) and its token selects them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetentionPrune {
+    pub target: TargetKey,
+    pub client_dir: PathBuf,
+    /// The transactions whose snapshots go, in history order.
+    pub txs: Vec<TxId>,
+    /// The policy that judged them (config's limits), which judges them again under the
+    /// lock.
+    pub limits: crate::engine::retention::RetentionLimits,
 }
 
 impl Fix {
@@ -832,7 +848,7 @@ impl Fix {
             Self::Quarantine { .. } => FixKind::Quarantine,
             Self::Flatten { .. } => FixKind::Flatten,
             Self::Suspend { .. } => FixKind::Suspend,
-            Self::Delegate { .. } => FixKind::Delegate,
+            Self::Delegate { .. } | Self::Retain { .. } => FixKind::Delegate,
         }
     }
 
@@ -852,7 +868,7 @@ impl Fix {
                 if own_name { 3 } else { 2 }
             }
             Self::Suspend { journal } => u32::try_from(journal.artifacts.len()).unwrap_or(u32::MAX),
-            Self::Delegate { .. } => 0,
+            Self::Delegate { .. } | Self::Retain { .. } => 0,
         }
     }
 }

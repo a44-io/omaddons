@@ -1096,12 +1096,8 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         cost_ms: 2,
         requires: &[Layer::Discovery, Layer::History],
         detect: Some(state_files::snapshots_past_retention),
-        fix: None,
-        manual: Some(Manual {
-            instruction: "nothing is wrong: retention prunes them with the next change on this client, or the day's first change or backup on any client",
-            why: "pruning them gives up the undo of those transactions, which retention does on its own schedule",
-            remediation: retention_manual,
-        }),
+        fix: Some(RETAIN),
+        manual: None,
     },
     FailureMode {
         id: ids::TARGET_VANISHED,
@@ -1129,6 +1125,20 @@ pub static FAILURE_MODES: &[FailureMode] = &[
 /// scopes are those recovery writes as the doctor sees it; a restore's or an undo's
 /// recovery also writes `WTF/` and SavedVariables, under the engine's own writers
 /// (`BackupRestore`, `Undo`) and rules, never as `Writer::Doctor`.
+/// The retention delegation of `snapshots-past-retention`: `doctor fix` has engine
+/// retention prune exactly the transactions its preview listed, still due under the lock
+/// (`retention::prune_selected`). Retention writes the client's snapshots and the state's,
+/// under its own writer (`Retention`), as after a commit.
+const RETAIN: FixerSpec = FixerSpec {
+    plan: super::fixers::retention::plan,
+    writes_to: &[ScopeName::State, ScopeName::ClientMeta],
+    ops: &[FixKind::Delegate],
+    enabled: true,
+    needs_force: false,
+    cardinality: Cardinality::High,
+    preconditions: &[FixerPrecondition::LockHeld],
+};
+
 const DELEGATE: FixerSpec = FixerSpec {
     plan: super::fixers::recover::plan,
     writes_to: &[ScopeName::State, ScopeName::ClientMeta, ScopeName::AddOns],
@@ -1339,12 +1349,6 @@ fn update_manual(f: &Finding) -> Remediation {
 /// A crashed check is a bug: no command helps.
 fn crashed_manual(_: &Finding) -> Remediation {
     prose("this is a bug in omaddons: report the detector and location above")
-}
-
-fn retention_manual(_: &Finding) -> Remediation {
-    prose(
-        "retention prunes them with the next change on this client, or the day's first change or backup on any client",
-    )
 }
 
 /// A token GitHub refuses, or that cannot be had: undone where it comes from, as
