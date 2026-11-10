@@ -293,7 +293,13 @@ Item {
         urgent: root.urgent
         accent: root.accent
         fontFamily: root.fontFamily
-        onActivated: root.select(index)
+        pointerGate: root.frame ? root.frame.pointerGate : null
+        onHovered: root.select(index)
+        // One click is Enter (§4, 1n2p.15): the line's change, previewed first.
+        onActivated: {
+          root.select(index)
+          root.handleKey("enter", index)
+        }
         onAction: function(name) {
           root.select(index)
           root.handleKey(name, index)

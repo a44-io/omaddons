@@ -36,6 +36,15 @@ Item {
   property string keysText: ""
   // The body's item for choice `i`, so a move can bring it into view; null shows nothing.
   property var choiceItem: function(i) { return null }
+  // Hover moves the choice only on real pointer motion (design doc §4, 1n2p.15): a
+  // choice's MouseArea calls hoverChoice(i, area, mouse) from onPositionChanged. The gate
+  // measures the pointer against the sheet, which never scrolls, so a choice scrolled
+  // under a still pointer never takes it; the keys and a new content reset it.
+  readonly property var pointerGate: gate
+  PointerMoveGate {
+    id: gate
+    referenceItem: root
+  }
   property string title: ""
   property string cancelText: "Cancel"
   property string confirmText: "Confirm"
@@ -93,6 +102,7 @@ Item {
   function reset() {
     selectedIndex = 0
     scroller.contentY = 0
+    gate.reset()
   }
 
   // The dialog's keys; true when the sheet took the key (it takes every key).
@@ -134,8 +144,15 @@ Item {
   // The choice `step` further down (1) or up (-1), within bounds, brought into view.
   function moveChoice(step) {
     if (choiceCount === 0) return
+    gate.reset()
     choice = Math.max(0, Math.min(choiceCount - 1, choice + step))
     showChoice()
+  }
+
+  // The pointer over choice `index`: the cursor follows it once the pointer itself moved.
+  function hoverChoice(index, area, mouse) {
+    if (!opened || index < 0 || index >= choiceCount) return
+    if (gate.moved(area, mouse)) choice = index
   }
 
   // The body scrolled the least that shows the cursor's choice whole.
@@ -257,8 +274,11 @@ Item {
         anchors.right: parent.right
         spacing: Style.spacing.md
 
+        // Both buttons at least the kit's control height (§4: 28 px), easy to hit with
+        // a coarse pointer while the game runs.
         Button {
           objectName: "sheetCancel"
+          height: Math.max(implicitHeight, Style.spacing.controlHeight)
           text: root.cancelText
           tooltipText: Model.withKey(root.cancelText, "cancel", "sheet")
           bordered: true
@@ -274,6 +294,7 @@ Item {
         Button {
           id: confirmButton
           objectName: "sheetConfirm"
+          height: Math.max(implicitHeight, Style.spacing.controlHeight)
           text: (root.destructive && root.confirmGlyph !== "" ? root.confirmGlyph + " " : "") + root.confirmText
           tooltipText: Model.withKey(root.confirmText, "confirm", "sheet")
           bordered: true

@@ -59,6 +59,14 @@ Item {
   property bool helpOpen: false
   // The settings sheet (`,`, 1n2p.31) is open over the views, under a dialog.
   property bool settingsOpen: false
+  // Hover moves the cursor only on real pointer motion (design doc §4, 1n2p.15): rows
+  // that move under a still pointer (a scroll, a re-read, a key) never take it. Rows ask
+  // it from their onPositionChanged; the keys and every change of view or page reset it.
+  readonly property var pointerGate: gate
+  PointerMoveGate {
+    id: gate
+    referenceItem: root
+  }
   // The views opened once: each is created on its first visit and kept.
   property var visitedViews: []
   // The navigation stack (§2.4): pages pushed on the view, each `{title, component,
@@ -291,6 +299,7 @@ Item {
   // A view (a tab): the stack is cleared, and the view is created on its first visit
   // and kept (the one it leaves too, which may be the one the panel opened on).
   function showView(name) {
+    pointerGate.reset()
     var visited = visitedViews.slice()
     for (var v of [view, name]) if (visited.indexOf(v) < 0) visited.push(v)
     visitedViews = visited
@@ -325,6 +334,7 @@ Item {
   // to the same row (design doc §2.4).
   function push(page) {
     if (!page || !page.component) return false
+    pointerGate.reset()
     var entry = Object.assign({}, page, { "under": { "cursor": cursor, "active": cursorActive, "y": flick.contentY } })
     pages = pages.concat([entry])
     cursor = 0
@@ -379,6 +389,7 @@ Item {
   // Back one page, to where the cursor stood beneath it; false when no page is open.
   function pop() {
     if (pages.length === 0) return false
+    pointerGate.reset()
     var under = pages[pages.length - 1].under || { "cursor": 0, "active": false, "y": 0 }
     pages = pages.slice(0, -1)
     cursor = under.cursor
@@ -428,6 +439,8 @@ Item {
 
   // The cursor to row `to` (the card's button in a problem card), kept in range.
   function moveCursor(to) {
+    // The keys moved it: rows that scroll under a still pointer don't take it back.
+    pointerGate.reset()
     var count = cardMode ? cardActions.length : rowCount
     cursorActive = true
     cursor = count > 0 ? Math.max(0, Math.min(count - 1, to)) : 0

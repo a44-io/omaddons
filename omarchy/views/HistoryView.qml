@@ -245,7 +245,13 @@ Item {
           urgent: root.urgent
           accent: root.accent
           fontFamily: root.fontFamily
-          onActivated: root.select(entry.index)
+          pointerGate: root.frame ? root.frame.pointerGate : null
+          onHovered: root.select(entry.index)
+          // One click opens the change's page, as Enter does (§4, 1n2p.15).
+          onActivated: {
+            root.select(entry.index)
+            root.handleKey("enter", entry.index)
+          }
           onAction: function(name) {
             root.select(entry.index)
             root.handleKey(name, entry.index)

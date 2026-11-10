@@ -352,7 +352,13 @@ Item {
           fontFamily: root.fontFamily
           // A click puts the cursor on it; its buttons act (design doc §4 waits for the
           // addon page, .23, before a click opens).
-          onActivated: root.select(entry.index)
+          pointerGate: root.frame ? root.frame.pointerGate : null
+          onHovered: root.select(entry.index)
+          // One click opens the addon's page, as Enter does (§4, 1n2p.15).
+          onActivated: {
+            root.select(entry.index)
+            root.handleKey("enter", entry.index)
+          }
           onAction: function(name) {
             root.select(entry.index)
             root.handleKey(name, entry.index)

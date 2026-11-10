@@ -12,3 +12,4 @@ TextField 1.0 TextField.qml
 PanelSeparator 1.0 PanelSeparator.qml
 Dropdown 1.0 Dropdown.qml
 BarIconButton 1.0 BarIconButton.qml
+PointerMoveGate 1.0 PointerMoveGate.qml

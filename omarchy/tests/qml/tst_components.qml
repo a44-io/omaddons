@@ -56,6 +56,40 @@ TestCase {
     }
   }
 
+  // A sheet of choices, each line as the choosers build theirs (1n2p.15): hover through
+  // the sheet's gate, one click chooses.
+  Component {
+    id: choosingComponent
+    Sheet {
+      id: choosing
+      width: 540
+      height: 600
+      title: "Restore which?"
+      choosing: true
+      choiceCount: 3
+      Repeater {
+        model: 3
+        Rectangle {
+          required property int index
+          objectName: "choiceLine_" + index
+          width: 400
+          height: 40
+          color: "transparent"
+          MouseArea {
+            id: lineArea
+            anchors.fill: parent
+            hoverEnabled: true
+            onPositionChanged: function(mouse) { choosing.hoverChoice(index, lineArea, mouse) }
+            onClicked: {
+              choosing.choice = index
+              choosing.choose(index)
+            }
+          }
+        }
+      }
+    }
+  }
+
   Component { id: planComponent; PlanSheet { width: 540; height: 600 } }
 
   // A PlanSheet handed `sheet` as the service hands it, by a JS assignment (createObject's
@@ -310,6 +344,34 @@ TestCase {
     var card = child(sheet, "sheetCard")
     mouseClick(card, 5, 5)
     compare(canceled, 1, "a click on the card is not a cancel")
+    // Both buttons are easy to hit: at least the kit's control height (§4).
+    verify(child(sheet, "sheetCancel").height >= 28, "Cancel is " + child(sheet, "sheetCancel").height + " px")
+    verify(child(sheet, "sheetConfirm").height >= 28, "the confirm is " + child(sheet, "sheetConfirm").height + " px")
+  }
+
+  // Design doc §4 (1n2p.15): a choosing sheet's cursor follows the pointer only when the
+  // pointer itself moves, a key's move holds against a still pointer, one click chooses.
+  function test_a_choosing_sheet_follows_the_pointer_and_chooses_on_one_click() {
+    var sheet = make(choosingComponent)
+    var chosen = []
+    sheet.chosen.connect(function(i) { chosen.push(i) })
+    sheet.opened = true
+    waitForRendering(sheet)
+    var line = child(sheet, "choiceLine_2")
+    mouseMove(line, 20, 20)
+    mouseMove(line, 30, 20)
+    compare(sheet.choice, 2, "the pointer moved over the third choice")
+    verify(sheet.handleKey(Qt.Key_K, "k", false))
+    compare(sheet.choice, 1)
+    mouseMove(line, 30, 20)
+    compare(sheet.choice, 1, "a still pointer does not take the cursor back from the keys")
+    var first = child(sheet, "choiceLine_0")
+    mouseMove(first, 20, 20)
+    mouseMove(first, 30, 20)
+    compare(sheet.choice, 0)
+    compare(chosen, [], "hovering chooses nothing")
+    mouseClick(child(sheet, "choiceLine_1"), 30, 20)
+    compare(chosen, [1], "one click chooses")
   }
 
   // ---- PlanSheet (1n2p.17)

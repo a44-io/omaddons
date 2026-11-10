@@ -46,6 +46,9 @@ Item {
   property color muted: Commons.Color.muted
   property string fontFamily: Style.font.family
 
+  // The frame's PointerMoveGate (PanelView.pointerGate): hover counts only real motion.
+  property var pointerGate: null
+
   signal activated()
   signal action(string name)
   signal hovered()
@@ -231,14 +234,19 @@ Item {
     }
   }
 
-  // The whole row is the target (§4): hover reports, a click opens. Action buttons
-  // above it take their own clicks.
+  // The whole row is the target (§4, 1n2p.15): the pointer moving over it reports
+  // `hovered` (through the frame's PointerMoveGate, so a row scrolled under a still
+  // pointer reports nothing), one click reports `activated`, which the views open as
+  // Enter does. Action buttons above it take their own clicks.
   MouseArea {
+    id: rowArea
     anchors.fill: parent
     z: -1
     hoverEnabled: true
     enabled: !root.inert
-    onEntered: root.hovered()
+    onPositionChanged: function(mouse) {
+      if (!root.pointerGate || root.pointerGate.moved(rowArea, mouse)) root.hovered()
+    }
     onClicked: root.activated()
   }
 }

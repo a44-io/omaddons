@@ -226,12 +226,18 @@ Item {
               accent: root.accent
             }
 
-            // The whole row is the target (§4): a click puts the cursor on it, a double
-            // click runs Enter. Its buttons take their own clicks.
+            // The whole row is the target (§4, 1n2p.15): the pointer moving over it puts
+            // the cursor on it (through the frame's PointerMoveGate), one click runs
+            // Enter (its fix, previewed first, else its explanation). Its buttons take
+            // their own clicks.
             MouseArea {
+              id: rowArea
               anchors.fill: parent
-              onClicked: root.select(entry.modelData.index)
-              onDoubleClicked: {
+              hoverEnabled: true
+              onPositionChanged: function(mouse) {
+                if (!root.frame || root.frame.pointerGate.moved(rowArea, mouse)) root.select(entry.modelData.index)
+              }
+              onClicked: {
                 root.select(entry.modelData.index)
                 root.handleKey("enter", entry.modelData.index)
               }

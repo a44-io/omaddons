@@ -228,7 +228,13 @@ Item {
               urgent: root.urgent
               accent: root.accent
               fontFamily: root.fontFamily
-              onActivated: root.select(entry.modelData.index)
+              pointerGate: root.frame ? root.frame.pointerGate : null
+              onHovered: root.select(entry.modelData.index)
+              // One click opens, as Enter does (§4, 1n2p.15).
+              onActivated: {
+                root.select(entry.modelData.index)
+                root.handleKey("enter", entry.modelData.index)
+              }
               onAction: function(name) {
                 root.select(entry.modelData.index)
                 root.handleKey(name, entry.modelData.index)

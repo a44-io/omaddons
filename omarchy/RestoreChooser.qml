@@ -204,8 +204,12 @@ Sheet {
         }
       }
 
+      // Hover moves the choice on real pointer motion; one click chooses (§4).
       MouseArea {
+        id: choiceArea
         anchors.fill: parent
+        hoverEnabled: true
+        onPositionChanged: function(mouse) { root.hoverChoice(entry.index, choiceArea, mouse) }
         onClicked: {
           root.choice = entry.index
           root.choose(entry.index)

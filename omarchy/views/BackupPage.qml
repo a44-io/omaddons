@@ -255,10 +255,19 @@ Item {
           text: Model.withKey(Model.copy("backups.page.restore_one"), "enter", "page")
         }
 
+        // Hover moves the cursor (through the frame's PointerMoveGate), one click
+        // restores this addon alone, previewed first, as Enter does (§4, 1n2p.15).
         MouseArea {
+          id: heldArea
           anchors.fill: parent
-          onClicked: root.select(line.index)
-          onDoubleClicked: root.handleKey("enter", line.index)
+          hoverEnabled: true
+          onPositionChanged: function(mouse) {
+            if (!root.frame || root.frame.pointerGate.moved(heldArea, mouse)) root.select(line.index)
+          }
+          onClicked: {
+            root.select(line.index)
+            root.handleKey("enter", line.index)
+          }
         }
       }
     }

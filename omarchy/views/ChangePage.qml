@@ -172,11 +172,20 @@ Item {
             text: line.modelData.text
           }
 
+          // Hover moves the cursor (through the frame's PointerMoveGate), one click
+          // opens the addon's page, as Enter does (§4, 1n2p.15).
           MouseArea {
+            id: itemArea
             anchors.fill: parent
             enabled: line.item
-            onClicked: root.select(line.modelData.index)
-            onDoubleClicked: root.handleKey("enter", line.modelData.index)
+            hoverEnabled: true
+            onPositionChanged: function(mouse) {
+              if (!root.frame || root.frame.pointerGate.moved(itemArea, mouse)) root.select(line.modelData.index)
+            }
+            onClicked: {
+              root.select(line.modelData.index)
+              root.handleKey("enter", line.modelData.index)
+            }
           }
         }
       }
@@ -205,9 +214,16 @@ Item {
       }
 
       MouseArea {
+        id: backupArea
         anchors.fill: parent
-        onClicked: root.select(root.rows.length - 1)
-        onDoubleClicked: root.handleKey("enter", root.rows.length - 1)
+        hoverEnabled: true
+        onPositionChanged: function(mouse) {
+          if (!root.frame || root.frame.pointerGate.moved(backupArea, mouse)) root.select(root.rows.length - 1)
+        }
+        onClicked: {
+          root.select(root.rows.length - 1)
+          root.handleKey("enter", root.rows.length - 1)
+        }
       }
     }
 

@@ -230,6 +230,7 @@ Item {
       return false
     }
     if (filter) return installInto(filter, row)
+    frame.pointerGate.reset()
     chooserRow = row
     chooserCursor = -1
     chooserOpen = true
@@ -255,6 +256,7 @@ Item {
     var eligible = []
     for (var i = 0; i < chooserChoices.length; i++) if (chooserChoices[i].eligible) eligible.push(i)
     if (eligible.length === 0) return
+    if (frame) frame.pointerGate.reset()
     var at = eligible.indexOf(chooserCursor)
     at = at < 0 ? (step > 0 ? 0 : eligible.length - 1) : Math.max(0, Math.min(eligible.length - 1, at + step))
     chooserCursor = eligible[at]
@@ -360,9 +362,16 @@ Item {
             text: modelData.words
           }
 
+          // Hover moves the chooser's cursor on real pointer motion; one click installs
+          // (§4, 1n2p.15).
           MouseArea {
+            id: choiceArea
             anchors.fill: parent
             enabled: modelData.eligible
+            hoverEnabled: true
+            onPositionChanged: function(mouse) {
+              if (!root.frame || root.frame.pointerGate.moved(choiceArea, mouse)) root.chooserCursor = index
+            }
             onClicked: {
               root.chooserCursor = index
               root.chooserKey(Qt.Key_Return, "")
@@ -449,7 +458,13 @@ Item {
           accent: root.accent
           fontFamily: root.fontFamily
           // A click puts the cursor on it; its buttons act (design doc §4).
-          onActivated: root.select(entry.index)
+          pointerGate: root.frame ? root.frame.pointerGate : null
+          onHovered: root.select(entry.index)
+          // One click opens, as Enter does (§4, 1n2p.15).
+          onActivated: {
+            root.select(entry.index)
+            root.handleKey("enter", entry.index)
+          }
           onAction: function(name) {
             root.select(entry.index)
             root.handleKey(name, entry.index)

@@ -223,7 +223,13 @@ Item {
             Component.onDestruction: if (root.items[modelData.index] === entry) delete root.items[modelData.index]
 
             // A click puts the cursor on it; its buttons act (design doc §4).
-            onActivated: root.select(modelData.index)
+            pointerGate: root.frame ? root.frame.pointerGate : null
+            onHovered: root.select(modelData.index)
+            // One click opens its page, as Enter does (§4, 1n2p.15).
+            onActivated: {
+              root.select(modelData.index)
+              root.handleKey("enter", modelData.index)
+            }
             onAction: function(name) {
               root.select(modelData.index)
               root.handleKey(name, modelData.index)

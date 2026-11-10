@@ -25,6 +25,7 @@ QtObject {
     readonly property int rowPaddingX: 12
     readonly property int labelGap: 4
     readonly property int popupPadding: 14
+    readonly property int controlHeight: 28
   }
 
   readonly property QtObject font: QtObject {

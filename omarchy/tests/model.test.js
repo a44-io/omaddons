@@ -3503,6 +3503,24 @@ describe("previewDecision", () => {
     expect(fs.readFileSync(path.join(root, "PanelView.qml"), "utf8")).toContain("PlanSheet {")
   })
 
+  // Design doc §4 (1n2p.15): one click opens, as Enter does; nothing waits for a double
+  // click, which a coarse pointer over a running game misses.
+  test("no runtime file needs a double click", () => {
+    const root = path.join(__dirname, "..")
+    const found = []
+    const walk = (dir) => {
+      for (const entry of fs.readdirSync(path.join(root, dir), { withFileTypes: true })) {
+        const rel = dir ? dir + "/" + entry.name : entry.name
+        if (entry.isDirectory()) {
+          if (rel !== "tests") walk(rel)
+        } else if (entry.name.endsWith(".qml")) found.push(rel)
+      }
+    }
+    walk("")
+    expect(found).toContain("views/ChangePage.qml")
+    for (const name of found) expect([name, /\bonDoubleClicked\b|\bdoubleClicked\b/.test(fs.readFileSync(path.join(root, name), "utf8"))]).toEqual([name, false])
+  })
+
   // omad-3rre: an install on every client it works on, one sheet over each client's own
   // preview (the binary's, scene F), and what the applies made of it.
   test("an install on several clients: one sheet, each client's items under its name", () => {
