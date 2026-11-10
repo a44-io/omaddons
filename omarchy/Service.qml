@@ -65,6 +65,9 @@ Item {
   property var summary: null
   property var lastChange: null
   property var widgetInfo: null
+  // The GitHub token's state from `status` (omad-r0to): `{configured, source}`, never the
+  // token; null until a status says.
+  property var github: null
   // `status`'s recommendations, as buttons where the classifier accepts them.
   property var commands: []
   property var lists: null
@@ -1184,6 +1187,8 @@ Item {
       summary = model.summary
       lastChange = model.lastChange
       widgetInfo = model.widget
+      // A failed status keeps the token's state it last knew.
+      if (model.github) github = model.github
       commands = model.commands
       statusWarnings = model.warnings
       machineIssues = model.issues

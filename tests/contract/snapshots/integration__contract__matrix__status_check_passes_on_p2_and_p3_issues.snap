@@ -18,6 +18,10 @@ expression: s.stable(&c.envelope)
   ],
   "data": {
     "cached": false,
+    "github": {
+      "configured": true,
+      "source": "file"
+    },
     "issues": [
       {
         "addon": null,

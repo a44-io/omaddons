@@ -135,6 +135,48 @@ describe("settings", () => {
     expect(decide({ settings: { autoUpdateWidget: "maybe" } }).run).toBe(true)
   })
 
+  // omad-r0to: the GitHub section, from status's `github` (the binary's), and the sheet's
+  // last line, config.toml in the player's editor.
+  test("GitHub: the token's state in words, and only the changes that count where it comes from", () => {
+    const stored = M.reduceStatus(fixture("status-github-file"), NOW).github
+    expect(stored).toEqual({ configured: true, source: "file" })
+    expect(M.reduceStatus(fixture("status-github-none"), NOW).github).toEqual({ configured: false, source: "none" })
+    const rows = (github) => M.githubSettingRows(github).map((r) => [r.label, r.action])
+    expect(rows(stored)).toEqual([["A token omaddons stored", ""], ["Use the gh login", "from_gh"], ["Set a token in a terminal", "copy_set"],
+      ["Forget the token", "clear"]])
+    expect(rows({ configured: false, source: "none" })).toEqual([["No token: GitHub allows 60 requests an hour", ""],
+      ["Use the gh login", "from_gh"], ["Set a token in a terminal", "copy_set"]])
+    // The environment and config.toml outrank a stored token: nothing here would change it.
+    expect(rows({ configured: true, source: "env" })).toEqual([["From OMADDONS_GITHUB_TOKEN", ""]])
+    expect(rows({ configured: true, source: "config" })).toEqual([["From config.toml's credential", ""]])
+    expect(rows({ configured: false, source: "config" })).toEqual([["config.toml names a token omaddons can't read", ""]])
+    expect(rows(null)).toEqual([])
+    for (const r of M.githubSettingRows(stored)) expect(r.about.length > 0 && !r.label.startsWith("settings.")).toBe(true)
+    // The command copied puts the token on standard input, never in argv.
+    expect(M.GITHUB_SET_COMMAND).toBe("echo \"$TOKEN\" | omaddons auth github set")
+    // Each change builds as a plain run of `auth github`, and says what it did.
+    expect(M.buildArgv("auth_from_gh", {}, opts({ label: "Use the gh login for GitHub" })).argv.slice(-3)).toEqual(["auth", "github", "--from-gh"])
+    expect(M.buildArgv("auth_clear", {}, opts({ label: "Forget the GitHub token" })).argv.slice(-3)).toEqual(["auth", "github", "clear"])
+    expect(M.resultLine(fixture("auth-from-gh"), CONTEXT, [])).toBe("GitHub token stored from the gh login")
+    expect(M.resultLine(fixture("auth-clear"), CONTEXT, [])).toBe("GitHub token forgotten")
+  })
+
+  test("everything else: config.toml where `config` said, through its builder only", () => {
+    const config = M.reduceConfig(fixture("config"))
+    expect(config.path.endsWith("/omaddons/config.toml")).toBe(true)
+    const other = M.otherSettingRows(config)
+    expect(other.map((r) => [r.label, r.action, r.path])).toEqual([["Open config.toml", "open_config", config.path]])
+    expect(M.configEditorArgv(config.path)).toEqual(["omarchy-launch-config-editor", config.path])
+    for (const bad of ["", "config.toml", "~/config.toml", "/a\nb", "/a\u0000b", "-x"]) expect([bad, M.configEditorArgv(bad)]).toEqual([bad, null])
+    expect(M.otherSettingRows(Object.assign({}, config, { path: "" }))).toEqual([])
+    expect(M.otherSettingRows(null)).toEqual([])
+    // Both sections close the sheet, after Clients.
+    const sections = M.settingsSections({ settings: {}, config, github: { configured: false, source: "none" } })
+    expect(sections.map((s) => s.key)).toEqual(["panel", "omaddons", "clients", "github", "other"])
+    const all = sections.flatMap((s) => s.rows.map((r) => r.index))
+    expect(all).toEqual(all.map((_, i) => i))
+  })
+
   test("a renamed setting keeps the player's value", () => {
     expect(M.SETTING_RENAMES).toEqual([])
     const given = { oldWidth: 600, keyHint: "Off" }
@@ -180,7 +222,8 @@ describe("settings", () => {
     expect(M.settingsSections({ settings: {}, config: null }).map((s) => [s.title, s.rows.length, s.note])).toEqual([
       ["Panel", 8, ""], ["omaddons", 0, "Reading omaddons' settings…"], ["Clients", 2, ""]])
     expect(M.settingsSections({ settings: {}, config: null, configFailed: "x" })[1].note).toBe("Couldn't read omaddons' settings.")
-    expect(M.settingsSections({ settings: {}, config }).flatMap((s) => s.rows.map((r) => r.index))).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
+    // config.toml's own line closes the sheet once `config` said where it is.
+    expect(M.settingsSections({ settings: {}, config }).flatMap((s) => s.rows.map((r) => r.index))).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])
     expect([M.reduceConfig(fixture("config-set-refused")), fixture("config-set").data.changed]).toEqual([null, true])
     // The result line, in the sheet's words.
     expect(M.resultLine(fixture("config-set"), CONTEXT, [])).toBe("Automatic backups: Daily, full copies where needed")

@@ -158,7 +158,9 @@ function reduceConfig(env) {
   env.data.settings.forEach(function(s) {
     if (s && typeof s.name === "string") settings[s.name] = { "value": s.value, "source": str(s.source) }
   })
-  return { "settings": settings }
+  // The file they live in, for "Everything else: config.toml" (omad-r0to).
+  var path = str(env.data.path)
+  return { "settings": settings, "path": PATH_PATTERN.test(path) ? path : "", "exists": env.data.exists === true }
 }
 
 // An omaddons setting's value in words ("Stable", "Safe ones", "6 h").
@@ -265,12 +267,52 @@ function clientNameRequest(row, text) {
 // `input`: {settings} (the panel's, as the shell applied them), {config} (`config`,
 // reduced; null until read), {configFailed} (the read's failure, or "") and {targets}
 // (`status`'s clients).
+// The GitHub section (omad-r0to, design doc §2.7), from `status`'s `github` (null until a
+// status says): the token's state in words, never the token; "Use the gh login" (`auth
+// github --from-gh`) and "Forget the token" (`auth github clear`) where a stored token is
+// what counts (the environment and config.toml outrank it); setting one by hand is a
+// command to copy and run in a terminal, since the token goes only on standard input.
+function githubSettingRows(github) {
+  if (!github || typeof github !== "object") return []
+  var source = str(github.source)
+  var state = source === "config" && github.configured !== true ? "config_unreadable" : (source || "none")
+  var rows = [{ "section": "github", "key": "github:state", "kind": "action", "action": "",
+    "label": copy("settings.github.state." + state), "text": "", "about": copy("settings.github.state." + state + ".about") }]
+  if (source === "none" || source === "file") {
+    rows.push({ "section": "github", "key": "github:from_gh", "kind": "action", "action": "from_gh",
+      "label": copy("settings.github.from_gh"), "text": "", "about": copy("settings.github.from_gh.about") })
+    rows.push({ "section": "github", "key": "github:set", "kind": "action", "action": "copy_set",
+      "label": copy("settings.github.set"), "text": "", "about": copy("settings.github.set.about") })
+  }
+  if (source === "file") {
+    rows.push({ "section": "github", "key": "github:clear", "kind": "action", "action": "clear",
+      "label": copy("settings.github.clear"), "text": "", "about": copy("settings.github.clear.about") })
+  }
+  return rows
+}
+
+// What "Set a token in a terminal" copies: the token on standard input, never argv.
+var GITHUB_SET_COMMAND = "echo \"$TOKEN\" | omaddons auth github set"
+
+// The sheet's last line (design doc §2.7): everything else lives in config.toml, opened
+// in the player's editor (configEditorArgv) once `config` said where it is.
+function otherSettingRows(config) {
+  var path = config && typeof config === "object" ? str(config.path) : ""
+  if (!configEditorArgv(path)) return []
+  return [{ "section": "other", "key": "other:config", "kind": "action", "action": "open_config", "path": path,
+    "label": copy("settings.other.config"), "text": "", "about": copy("settings.other.config.about", { "path": path }) }]
+}
+
 function settingsSections(input) {
   var i = input || {}
   var sections = [{ "key": "panel", "title": copy("settings.section.panel"), "rows": panelSettingRows(i.settings), "note": "" }]
   sections.push({ "key": "omaddons", "title": copy("settings.section.omaddons"), "rows": i.config ? omaddonsSettingRows(i.config) : [],
     "note": i.config ? "" : (i.configFailed ? copy("settings.omaddons.failed") : copy("settings.omaddons.reading")) })
   sections.push({ "key": "clients", "title": copy("settings.section.clients"), "rows": clientSettingRows(i.targets), "note": "" })
+  var github = githubSettingRows(i.github)
+  if (github.length) sections.push({ "key": "github", "title": copy("settings.section.github"), "rows": github, "note": "" })
+  var other = otherSettingRows(i.config)
+  if (other.length) sections.push({ "key": "other", "title": copy("settings.section.other"), "rows": other, "note": "" })
   var index = 0
   sections.forEach(function(s) { s.rows.forEach(function(r) { r.index = index++ }) })
   return sections
@@ -304,7 +346,9 @@ var WIDGET_EXPLAIN_EVIDENCE_MAX = 12
 // panel; its value is a `{value}` CONFIG_VALUE_PATTERN admits. A client's own settings
 // (`config_client_*`) name the client by its key inside theirs (KEYED_SETTINGS), and its
 // name is the one free text a change takes (`{name}`, one line); `targets_default`
-// makes a client the default.
+// makes a client the default. Its GitHub section (omad-r0to) stores the token the gh login
+// prints (`auth_from_gh`) or forgets the stored one (`auth_clear`); setting a token by
+// hand stays in a terminal (standard input only), so no template takes one.
 // BEGIN COMMANDS: checked by tests/omarchy_widget.rs; every entry must parse as an omaddons command line
 // F1 ships the entries for commands that exist at F1 time; F8 adds errors_target and backup_auto (B6, D3);
 // F6 adds errors, errors_raw and dismiss_errors (B6, B8); F9 adds backups, backup_target, backup_all,
@@ -361,7 +405,9 @@ var COMMANDS = {
   "config_interval":   { "argv": ["config", "set", "check_interval_hours", "--", "{value}"], "mutates": true },
   "config_client_name": { "argv": ["config", "set", "targets.{target}.name", "--", "{name}"], "mutates": true },
   "config_client_family": { "argv": ["config", "set", "targets.{target}.family", "--", "{value}"], "mutates": true },
-  "targets_default":   { "argv": ["targets", "default", "--", "{target}"],         "mutates": true }
+  "targets_default":   { "argv": ["targets", "default", "--", "{target}"],         "mutates": true },
+  "auth_from_gh":      { "argv": ["auth", "github", "--from-gh"],                    "mutates": true },
+  "auth_clear":        { "argv": ["auth", "github", "clear"],                        "mutates": true }
 }
 // END COMMANDS
 
@@ -1487,7 +1533,8 @@ function reduceStatus(env) {
   if (!envelopeOk(env) || !env.ok || !env.data || typeof env.data !== "object") {
     return {
       "failed": !!env && typeof env === "object",
-      "targets": [], "summary": null, "journal": null, "lastChange": null, "widget": null, "commands": [], "warnings": [], "issues": []
+      "targets": [], "summary": null, "journal": null, "lastChange": null, "widget": null, "github": null, "commands": [], "warnings": [],
+      "issues": []
     }
   }
   var data = env.data
@@ -1511,6 +1558,10 @@ function reduceStatus(env) {
     "lastChange": lastChangeOf(data.last_change, data.last_change_state),
     // Absent until the binary reports it.
     "widget": data.widget && typeof data.widget === "object" ? data.widget : null,
+    // The GitHub token's state (the settings sheet's GitHub section, omad-r0to): never
+    // the token, which `status` never reads into its answer.
+    "github": data.github && typeof data.github === "object"
+      ? { "configured": data.github.configured === true, "source": str(data.github.source) || "none" } : null,
     "commands": commands,
     "warnings": warningsOf(env),
     // The problems of no client (a pending journal naming none): counted in the summary,
@@ -2655,6 +2706,10 @@ function isChange(item) {
 // names the change it reverted and where; a dismissal counts the errors that stopped
 // being new. "" for any other command.
 function commandResultLine(command, data) {
+  // The GitHub section's two changes (omad-r0to), in its words.
+  if (command === "auth github") {
+    return copy(data && data.configured === true ? "settings.github.result.stored" : "settings.github.result.cleared")
+  }
   // A setting the settings sheet changed (1n2p.31): in the sheet's words.
   if (command === "config set" && /^targets\.[^.]+\.name$/.test(str(data.name))) {
     return str(data.value) === "" ? copy("settings.result.name.builtin") : copy("settings.result.name", { "value": str(data.value) })
@@ -3818,6 +3873,15 @@ function stepFilter(targets, current, step) {
 function addonsDirArgv(target) {
   if (!target || !target.clientDir || target.clientDir.charAt(0) !== "/") return null
   return ["xdg-open", target.clientDir.replace(/\/+$/, "") + "/Interface/AddOns"]
+}
+
+// The settings sheet's "Everything else: config.toml" (omad-r0to): the config file
+// `config` reported, in the player's editor through Omarchy's own launcher (a literal
+// tool, an argv); null for a path that is not absolute and one line.
+function configEditorArgv(path) {
+  var p = str(path)
+  if (!PATH_PATTERN.test(p) || utf8Length(p) > PATH_MAX_BYTES) return null
+  return ["omarchy-launch-config-editor", p]
 }
 
 // `o`'s client (design doc §2.2): the scoped one, or under All the client of the row
@@ -6513,6 +6577,33 @@ var COPY = {
   "settings.clients.rescan.about": "Looks for World of Warcraft clients again: new ones, and ones that moved.",
   "settings.clients.add": "Add a client by its folder…",
   "settings.clients.add.about": "For a client omaddons doesn't find by itself, such as a private server's.",
+  // The GitHub section (omad-r0to).
+  "settings.section.github": "GitHub",
+  "settings.github.state.none": "No token: GitHub allows 60 requests an hour",
+  "settings.github.state.none.about": "Enough for a few dozen addons from GitHub. A token raises it to 5,000; most addons never need one.",
+  "settings.github.state.file": "A token omaddons stored",
+  "settings.github.state.file.about": "Stored from the gh login or set in a terminal; only api.github.com ever sees it.",
+  "settings.github.state.env": "From OMADDONS_GITHUB_TOKEN",
+  "settings.github.state.env.about": "The environment's token comes first: change it where it is set.",
+  "settings.github.state.config": "From config.toml's credential",
+  "settings.github.state.config.about": "config.toml names where the token comes from: change it there.",
+  "settings.github.state.config_unreadable": "config.toml names a token omaddons can't read",
+  "settings.github.state.config_unreadable.about": "Its credential isn't there: GitHub is asked without a token until it is.",
+  "settings.github.from_gh": "Use the gh login",
+  "settings.github.from_gh.about": "Stores the token gh auth token prints, the only time omaddons asks gh.",
+  "settings.github.from_gh.label": "Use the gh login for GitHub",
+  "settings.github.set": "Set a token in a terminal",
+  "settings.github.set.about": "Copies the command: the token goes on standard input, never through the panel.",
+  "settings.github.set.copied": "Copied: run it in a terminal",
+  "settings.github.clear": "Forget the token",
+  "settings.github.clear.about": "Deletes the stored token; GitHub is then asked without one.",
+  "settings.github.clear.label": "Forget the GitHub token",
+  "settings.github.result.stored": "GitHub token stored from the gh login",
+  "settings.github.result.cleared": "GitHub token forgotten",
+  // The sheet's last line (omad-r0to): everything else lives in config.toml.
+  "settings.section.other": "Everything else",
+  "settings.other.config": "Open config.toml",
+  "settings.other.config.about": "Every other setting is in {path}, opened in your editor.",
   "settings.family.mainline": "Retail",
   "settings.family.vanilla": "Classic Era",
   "settings.family.tbc": "Burning Crusade Classic",
@@ -8206,6 +8297,10 @@ if (typeof module !== "undefined") {
     steppedSetting: steppedSetting,
     typedPath: typedPath,
     settingsSections: settingsSections,
+    githubSettingRows: githubSettingRows,
+    otherSettingRows: otherSettingRows,
+    GITHUB_SET_COMMAND: GITHUB_SET_COMMAND,
+    configEditorArgv: configEditorArgv,
     OMADDONS_SETTINGS: OMADDONS_SETTINGS,
     CONFIG_VALUE_PATTERN: CONFIG_VALUE_PATTERN,
     reduceConfig: reduceConfig,

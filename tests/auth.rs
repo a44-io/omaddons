@@ -246,6 +246,78 @@ fn env_then_config_then_file_and_never_github_token() {
     assert_eq!(envelope(&run)["error"]["code"], "auth_required");
 }
 
+/// `status` says where the token comes from, as `auth github --offline` does (the
+/// widget's settings sheet, omad-r0to): no request, no credential command run, never the
+/// token itself; a configured credential it cannot have is configured: false.
+#[test]
+fn status_says_where_the_token_comes_from_and_runs_nothing() {
+    let home = Home::new(&["wow"]);
+    let github = |extra: &[(&str, &str)]| {
+        let run = home.exec_with(&argv(&["status", "--cached"]), extra);
+        assert_eq!(run.code, 0, "{}", run.context());
+        assert!(
+            !run.stdout.contains(TOKEN) && !run.stderr.contains(TOKEN),
+            "{}",
+            run.context()
+        );
+        envelope(&run)["data"]["github"].clone()
+    };
+    assert_eq!(
+        github(&[]),
+        json!({ "configured": false, "source": "none" })
+    );
+    home.exec_input(
+        &argv(&["auth", "github", "set"]),
+        &[],
+        format!("{TOKEN}\n").as_bytes(),
+    );
+    assert_eq!(github(&[]), json!({ "configured": true, "source": "file" }));
+    fs::write(
+        home.env.config().join("omaddons/config.toml"),
+        "[sources.github]\ncredential = { env = \"MY_GH_TOKEN\" }\n",
+    )
+    .unwrap();
+    assert_eq!(
+        github(&[("MY_GH_TOKEN", TOKEN)]),
+        json!({ "configured": true, "source": "config" })
+    );
+    // A configured credential it cannot have: never the file behind it, never an error.
+    assert_eq!(
+        github(&[]),
+        json!({ "configured": false, "source": "config" })
+    );
+    assert_eq!(
+        github(&[("OMADDONS_GITHUB_TOKEN", TOKEN)]),
+        json!({ "configured": true, "source": "env" })
+    );
+    // A command credential counts as configured, and never runs for status.
+    let ran = home.env.root().join("cred-ran.log");
+    let cred = home.env.root().join("cred");
+    write_executable(
+        &cred,
+        &format!("#!/bin/sh\necho x >> '{}'\necho {TOKEN}\n", ran.display()),
+    );
+    fs::write(
+        home.env.config().join("omaddons/config.toml"),
+        format!(
+            "[sources.github]\ncredential = {{ command = [\"{}\"] }}\n",
+            cred.display()
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        github(&[]),
+        json!({ "configured": true, "source": "config" })
+    );
+    let full = home.exec(&argv(&["status"]));
+    assert_eq!(
+        envelope(&full)["data"]["github"],
+        json!({ "configured": true, "source": "config" })
+    );
+    assert!(!ran.exists(), "the credential command never ran");
+    assert!(net_log(&home).is_empty(), "no request");
+}
+
 /// A `command` credential runs only when a REST request needs it: never offline, and
 /// never for `set` or `clear`; online, `status` runs it once.
 #[test]

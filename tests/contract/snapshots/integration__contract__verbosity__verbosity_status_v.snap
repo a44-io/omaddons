@@ -31,6 +31,10 @@ expression: s.stable(&checked.envelope)
   ],
   "data": {
     "cached": false,
+    "github": {
+      "configured": false,
+      "source": "none"
+    },
     "issues": [],
     "journal": {
       "in_progress": false,

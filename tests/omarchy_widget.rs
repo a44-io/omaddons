@@ -866,6 +866,9 @@ fn the_output_cap_bounds_every_template() {
             // client's overrides, a name, a value and its source each (1n2p.31): never a
             // list that grows with addons.
             Some((64 + CLIENTS * 3) * ROW + ANSWER)
+        } else if name.starts_with("auth_") {
+            // The token's state after storing or forgetting it (omad-r0to): never a list.
+            Some(ROW + ANSWER)
         } else if name.starts_with("config_") || name == "targets_default" {
             // One setting (its name, its value and the one before it), or the one client
             // made the default.
@@ -2750,6 +2753,56 @@ fn settings_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
         0,
     );
     assert!(chosen["ok"] == true, "{chosen}");
+
+    // The GitHub section (omad-r0to): the gh login's token stored through a fake `gh`,
+    // the state `status` then reports, the token forgotten, and the state after. The
+    // token itself is in none of them.
+    // ubs:ignore — a canary to find leaks, not a credential
+    const TOKEN: &str = "ghp_fixture0123456789";
+    let bin = home.env.root().join("fake-bin");
+    fs::create_dir_all(&bin).unwrap();
+    common::exec::write_executable(
+        &bin.join("gh"),
+        &format!("#!/bin/sh\nprintf '%s\\n' '{TOKEN}'\n"),
+    );
+    let path = bin.display().to_string();
+    let stored = home.exec_with(&fill(t, "auth_from_gh", &[]), &[("PATH", &path)]);
+    let stored = write_fixture(dir, "auth-from-gh", &stored, 0);
+    assert_eq!(
+        (&stored["data"]["configured"], &stored["data"]["source"]),
+        (&Value::Bool(true), &Value::from("file")),
+        "{stored}"
+    );
+    let status = write_fixture(
+        dir,
+        "status-github-file",
+        &home.exec(&fill(t, "status", &[])),
+        0,
+    );
+    assert_eq!(status["data"]["github"]["source"], "file", "{status}");
+    let cleared = write_fixture(
+        dir,
+        "auth-clear",
+        &home.exec(&fill(t, "auth_clear", &[])),
+        0,
+    );
+    assert_eq!(cleared["data"]["configured"], false, "{cleared}");
+    let status = write_fixture(
+        dir,
+        "status-github-none",
+        &home.exec(&fill(t, "status", &[])),
+        0,
+    );
+    assert_eq!(status["data"]["github"]["source"], "none", "{status}");
+    for name in [
+        "auth-from-gh",
+        "status-github-file",
+        "auth-clear",
+        "status-github-none",
+    ] {
+        let text = fs::read_to_string(dir.join(format!("{name}.json"))).unwrap();
+        assert!(!text.contains(TOKEN), "{name} holds the token");
+    }
 }
 
 /// The first run (1n2p.32): a home where discovery finds no client, `targets add` refused

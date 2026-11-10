@@ -1105,6 +1105,7 @@ enum search data.results[].compat{} abandoned,likely,no,unknown,unlikely,yes
 enum search data.results[].source catalog,github,tukui,wowi
 enum search data.sources_skipped[].reason disabled,no_index,offline,rate_limited
 enum search data.sources_skipped[].source curseforge,git,github,local,tukui,url,wago,wowace,wowi
+enum status data.github.source config,env,file,none
 enum status data.issues[].severity P0,P1,P2,P3
 enum status data.last_change.actor agent,human,widget
 enum status data.last_change.kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,sync,target,undo,update,widget
@@ -8491,6 +8492,9 @@ output search data.sources_skipped[].reset_at string?
 output search data.sources_skipped[].source string!
 output status data object
 output status data.cached boolean!
+output status data.github object!
+output status data.github.configured boolean!
+output status data.github.source string!
 output status data.issues array!
 output status data.issues[] object
 output status data.issues[].addon string?!

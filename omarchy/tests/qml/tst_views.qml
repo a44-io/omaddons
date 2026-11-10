@@ -157,6 +157,9 @@ TestCase {
       property var reading: []
       property var outcomes: ({})
       property var lastCheck: null
+      // The settings sheet's GitHub section and config.toml line (omad-r0to).
+      property var github: null
+      property var config: null
       property bool checking: false
       property int checks: 0
       property var readAgains: []
@@ -1929,6 +1932,42 @@ TestCase {
     keyClick(Qt.Key_Return)
     verify(!view.settingsOpen)
     compare(view.topPage.title, Model.copy("addclient.title"))
+  }
+
+  // omad-r0to: the GitHub section (the token's state, the gh login, forgetting it, the
+  // command to set one in a terminal) and the sheet's last line, config.toml in the
+  // player's editor through its builder only.
+  function test_the_settings_github_section_and_config_toml() {
+    svc.github = { "configured": true, "source": "file" }
+    svc.config = { "settings": {}, "path": "/home/fixture/.config/omaddons/config.toml", "exists": true }
+    keyClick(",")
+    var sheet = findChild(view, "settings")
+    tryVerify(function() { return findChild(sheet, "sheetKeys").activeFocus })
+    var at = function(key) {
+      for (var i = 0; i < sheet.rows.length; i++) if (sheet.rows[i].key === key) return i
+      return -1
+    }
+    compare(sheet.rows[at("github:state")].label, "A token omaddons stored")
+    sheet.choice = at("github:from_gh")
+    keyClick(Qt.Key_Return)
+    compare(json(svc.runs[svc.runs.length - 1]), json(["auth_from_gh", {}, "Use the gh login for GitHub"]))
+    compare(json(words(svc.runs[svc.runs.length - 1])), json(["auth", "github", "--from-gh"]))
+    sheet.choice = at("github:clear")
+    keyClick(Qt.Key_Return)
+    compare(json(svc.runs[svc.runs.length - 1]), json(["auth_clear", {}, "Forget the GitHub token"]))
+    // Setting one by hand: the command copied, the token for standard input only.
+    sheet.choice = at("github:set")
+    keyClick(Qt.Key_Return)
+    compare(json(svc.copies[svc.copies.length - 1]), json(["wl-copy", "--", Model.GITHUB_SET_COMMAND]))
+    compare(findChild(findChild(sheet, "setting_github:set"), "settingValue").text, "Copied: run it in a terminal")
+    // config.toml, where `config` said, in the player's editor.
+    Quickshell.resetDetachedCommands()
+    sheet.choice = at("other:config")
+    keyClick(Qt.Key_Return)
+    compare(json(Quickshell.detachedCommands), json([["omarchy-launch-config-editor", "/home/fixture/.config/omaddons/config.toml"]]))
+    // A token from the environment: only its state, nothing here would change it.
+    svc.github = { "configured": true, "source": "env" }
+    compare([sheet.rows[at("github:state")].label, at("github:from_gh"), at("github:clear")], ["From OMADDONS_GITHUB_TOKEN", -1, -1])
   }
 
   // A client no longer installed: forgotten from the sheet through the plain `targets rm`

@@ -67,6 +67,7 @@ use crate::politeness::DEFAULT_CHECK_INTERVAL;
 use crate::resolve::catalog::Catalog;
 use crate::resolve::updates::{StatusKind, UncheckedReason, UpdateStatus};
 use crate::rules::{ClientVersion, Family, InstallKind, ModeName, RulesTable, TargetKind};
+use crate::sources::github_token::{GithubToken, TokenSource};
 use crate::state::history::{self, HistoryEntry, HistoryFilter, HistoryRead, Reach};
 use crate::state::history_tail::{self, Answer};
 use crate::state::paths::ClientPaths;
@@ -110,8 +111,34 @@ pub struct StatusData {
     /// The bar widget (E4): installed, on the bar, from this build; `null` without
     /// Omarchy's config directory.
     pub widget: Option<WidgetInfo>,
+    /// The GitHub token, as `auth github --offline` sees it.
+    pub github: GithubState,
     /// Issues of no client: the machine's own (today, an outdated bar widget's).
     pub issues: Vec<Issue>,
+}
+
+/// The GitHub token as `auth github --offline` sees it (the widget's settings sheet,
+/// omad-r0to): whether one is configured and where it comes from, resolved with no
+/// request and no credential command run (a `command` credential counts as configured
+/// unrun), never the token itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct GithubState {
+    pub configured: bool,
+    pub source: TokenSource,
+}
+
+impl GithubState {
+    /// The token `paths` and `sources` configure, by `GithubToken::resolve`'s order.
+    fn of(
+        paths: &crate::state::paths::Paths,
+        sources: &BTreeMap<String, crate::state::config::SourceConfig>,
+    ) -> Self {
+        let token = GithubToken::resolve(paths, sources);
+        Self {
+            configured: token.configured(),
+            source: token.source(),
+        }
+    }
 }
 
 /// Every target at a glance.
@@ -1128,6 +1155,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             last_change,
             last_change_state,
             widget,
+            github: GithubState::of(&world.paths, &world.config.sources),
             issues,
         },
         warnings,
@@ -2125,6 +2153,10 @@ mod tests {
                 last_change: None,
                 last_change_state: LastChangeState::Ok,
                 widget: None,
+                github: GithubState {
+                    configured: false,
+                    source: TokenSource::None,
+                },
                 issues: machine,
             },
             warnings: Vec::new(),

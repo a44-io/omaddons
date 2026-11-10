@@ -2,6 +2,7 @@ import QtQuick
 import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
+import Quickshell
 import "ui"
 import "Model.js" as Model
 
@@ -20,6 +21,11 @@ import "Model.js" as Model
 //   omaddons can't tell it, the default client (`targets default`), each client no
 //   longer installed (Enter forgets it through the plan sheet, never a purge), Scan for
 //   clients, and Add a client by its folder (its page, under the closed sheet).
+// - GitHub (omad-r0to): the token's state from `status` in words, never the token; Use
+//   the gh login (`auth github --from-gh`) and Forget the token (`auth github clear`)
+//   where a stored token counts; setting one by hand is a command copied for a terminal.
+// - Everything else: config.toml, opened in the player's editor (Model.configEditorArgv,
+//   the path `config` reported).
 // What the sheet shows comes back from the service, so it shows what was applied.
 Sheet {
   id: root
@@ -29,7 +35,7 @@ Sheet {
   readonly property var settings: svc && svc.settings ? svc.settings : ({})
   readonly property var sections: Model.settingsSections({ "settings": settings, "config": svc ? svc.config : null,
     "configFailed": svc && svc.configFailed ? svc.configFailed : "",
-    "targets": svc && Array.isArray(svc.targets) ? svc.targets : [] })
+    "targets": svc && Array.isArray(svc.targets) ? svc.targets : [], "github": svc && svc.github ? svc.github : null })
   readonly property bool canChange: !!frame && frame.canAct && !frame.busy
   readonly property var rows: {
     var out = []
@@ -38,6 +44,13 @@ Sheet {
   }
   // The key of the row whose box has the keys (the binary's path, a client's name), or "".
   property string editing: ""
+  // The row whose command was just copied (GitHub's "Set a token in a terminal"), or "".
+  property string copiedKey: ""
+  Timer {
+    id: copiedTimer
+    interval: 1500
+    onTriggered: root.copiedKey = ""
+  }
   property string editError: ""
   readonly property var editRow: {
     for (var i = 0; i < rows.length; i++) if (rows[i].key === editing) return rows[i]
@@ -108,6 +121,20 @@ Sheet {
       for (var i = 0; i < targets.length; i++) if (targets[i].id === row.id) target = targets[i]
       var forget = Model.forgetAction(target)
       if (forget && canChange) frame.runCli(forget, Model.copy("settings.clients.forget.label", { "client": row.client }))
+    } else if (row.action === "from_gh") {
+      // GitHub (omad-r0to): the gh login's token stored, the result line saying so.
+      if (canChange) frame.report(svc.run("auth_from_gh", {}, Model.copy("settings.github.from_gh.label")))
+    } else if (row.action === "clear") {
+      if (canChange) frame.report(svc.run("auth_clear", {}, Model.copy("settings.github.clear.label")))
+    } else if (row.action === "copy_set") {
+      // The token goes on standard input in a terminal: the command, copied.
+      if (svc && svc.copyCommand(Model.GITHUB_SET_COMMAND)) {
+        copiedKey = row.key
+        copiedTimer.restart()
+      }
+    } else if (row.action === "open_config") {
+      // Everything else: config.toml in the player's editor, the path `config` said.
+      if (Model.configEditorArgv(row.path)) Quickshell.execDetached(Model.configEditorArgv(row.path))
     }
   }
 
@@ -253,8 +280,10 @@ Sheet {
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.body
                 font.bold: entry.cursored
-                // The marks only where h and l step the value.
-                text: entry.cursored && ["switch", "integer", "choice"].indexOf(entry.modelData.kind) !== -1
+                // The marks only where h and l step the value; a row whose command was
+                // just copied says so for a moment.
+                text: root.copiedKey === entry.modelData.key ? Model.copy("settings.github.set.copied")
+                  : entry.cursored && ["switch", "integer", "choice"].indexOf(entry.modelData.kind) !== -1
                   ? "‹ " + entry.modelData.text + " ›" : entry.modelData.text
               }
             }

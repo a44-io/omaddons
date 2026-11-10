@@ -183,7 +183,7 @@ const LITERAL_TOOLS = ["inotifywait", "omarchy-notification-send", "xdg-open", "
 const ARGV_BUILDERS = { "toastArgv": "omarchy-notification-send", "errorToastArgv": "omarchy-notification-send",
   "updateToastArgv": "omarchy-notification-send", "digestToastArgv": "omarchy-notification-send",
   "resultToastArgv": "omarchy-notification-send", "addonsDirArgv": "xdg-open",
-  "copyArgv": "wl-copy" }
+  "copyArgv": "wl-copy", "configEditorArgv": "omarchy-launch-config-editor" }
 // Two argv outside the three sources, allowed exactly as written: `show()`'s fallback
 // when the shell's summon facade is missing, and the self-reinstall (a fixed literal
 // under the stamped context, check 2).
@@ -874,6 +874,9 @@ const PLANTED = [
     plant(REAL, "PanelView.qml", "  function openAddOns() {\n", '    Quickshell.execDetached(["bash", "-c", "xdg-open ~"])\n'), /through a shell/],
   ["3. argv provenance", checkProvenance, "a hand-built omaddons argv",
     plant(REAL, "Service.qml", "  Process {\n    id: reinstallProc\n  }\n", '  Process {\n    id: planted\n    command: [root.binary, "update"]\n    environment: Build.CONTEXT\n  }\n'), /no allowed source/],
+  // omad-r0to: the config editor runs only through its builder (the path `config` said).
+  ["3. argv provenance", checkProvenance, "a bare config editor launch",
+    plant(REAL, "PanelView.qml", "  function openAddOns() {\n", '    Quickshell.execDetached(["omarchy-launch-config-editor", root.filter])\n'), /an argv from no allowed source/],
   ["3. argv provenance", checkProvenance, "a browser launch without isSafeUrl",
     plant(REAL, "PanelView.qml", "  function openAddOns() {\n", '    Quickshell.execDetached(["omarchy-launch-browser", svc.lastError.message])\n'), /without Model\.isSafeUrl/],
   ["4. files and URLs", checkFiles, "a FileView writing",
