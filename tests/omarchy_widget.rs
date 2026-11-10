@@ -358,11 +358,26 @@ fn every_template_is_a_registry_command_with_safe_slots() {
             assert!(
                 [
                     "target", "addon", "ref", "backup", "query", "fm", "path", "run", "value",
-                    "name"
+                    "name", "version", "channel"
                 ]
                 .contains(&slot),
                 "{name}: unknown slot {part}"
             );
+            // A release's version (an addon page's Versions, 1n2p.24) is `install
+            // --version=`, which pins it; nothing else's.
+            if slot == "version" {
+                assert!(
+                    part == "--version={version}" && path == "install",
+                    "{name}: {{version}} outside --version on install ({part} on {path})"
+                );
+            }
+            // A channel to follow (1n2p.24) is `update --channel=`, nothing else's.
+            if slot == "channel" {
+                assert!(
+                    part == "--channel={channel}" && path == "update",
+                    "{name}: {{channel}} outside --channel on update ({part} on {path})"
+                );
+            }
             // A setting's value (the settings sheet, 1n2p.31) is the one positional of
             // `config set`, after -- and after the key its template names: never a key,
             // never anything else's. A key holding a slot is a client's own setting.
@@ -786,6 +801,15 @@ fn the_output_cap_bounds_every_template() {
             )
         } else if argv.contains("--changelog") {
             Some(CHANGELOG_MAX_ENTRIES as u64 * (CHANGELOG_MAX_CHARS as u64 * 6 + ROW) + ANSWER)
+        } else if argv.contains("--releases") {
+            // An addon page's Versions (1n2p.24): at most INFO_RELEASES_MAX releases, each
+            // with its archives' names and a hint per client, beside the addon's record on
+            // each client.
+            Some(
+                omaddons::limits::INFO_RELEASES_MAX as u64 * (ROW + CLIENTS * 64)
+                    + CLIENTS * ROW
+                    + ANSWER,
+            )
         } else if name == "errors" {
             // `--limit` addons per client, each listing at most ERRORS_SHOWN_PER_ADDON
             // strict errors.
@@ -3176,6 +3200,172 @@ fn errors_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
     assert_eq!(due["data"]["summary"]["check_due"], true, "{due}");
 }
 
+/// An addon page's Versions (1n2p.24), from the real binary, for the bun cases and
+/// `tst_versions.qml`: Foo publishes v1, v2 (its latest) and the beta v3, and v2 is
+/// installed on retail. Its releases as the page lists them; the switch to the beta
+/// channel previewed and applied, with `list -v` after; then v1 installed as a fixed
+/// version (a downgrade, which pins it) previewed and applied, with `list -v` and
+/// `history -v` after. Every argv is the one the widget builds.
+#[cfg(test)]
+fn versions_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
+    use common::http::{fixture, gh_release_v};
+    use support::{apply_of, planned, preview_of};
+
+    let log = tlog!();
+    log.step("Foo v1, v2 (latest) and the beta v3; v2 on retail");
+    let home = Home::new(&["wow"]);
+    log.env(&home);
+    let mut listed = Vec::new();
+    for (tag, prerelease, hour) in [("v3", true, 3), ("v2", false, 2), ("v1", false, 1)] {
+        gh_release_v(
+            &home.http,
+            support::FOO,
+            tag,
+            &Rel::new("Foo", tag).assets(),
+        );
+        let download = format!("{}/releases/download/{tag}", support::FOO);
+        listed.push(serde_json::json!({
+            "tag_name": tag,
+            "prerelease": prerelease,
+            "draft": false,
+            "published_at": format!("2026-11-01T{hour:02}:00:00Z"),
+            "assets": [
+                {"name": "release.json", "browser_download_url": format!("{download}/release.json")},
+                {"name": "Foo.zip", "browser_download_url": format!("{download}/Foo.zip")},
+            ],
+        }));
+    }
+    gh_latest(&home.http, support::FOO, "v2");
+    fixture(
+        &home.http,
+        "rest-listing",
+        "https://api.github.com/repos/o/foo/releases?per_page=20",
+        200,
+        &[("x-ratelimit-remaining", "59")],
+        Some(&Value::from(listed).to_string()),
+    );
+    home.run(&["install", "gh:o/foo", "-t", "retail"]).expect(0);
+    write_fixture(
+        dir,
+        "versions-status",
+        &home.exec(&fill(t, "status", &[])),
+        0,
+    );
+    let list = write_fixture(
+        dir,
+        "versions-list-stable",
+        &home.exec(&fill(t, "list", &[])),
+        0,
+    );
+    let foo = list_row(&list, "retail", "Foo");
+    assert_eq!(
+        (&foo["version"], &foo["channel"]),
+        (&Value::from("v2"), &Value::from("stable")),
+        "{list}"
+    );
+    let releases = plan_fixture(
+        &log,
+        &home,
+        dir,
+        "versions-releases",
+        &fill(t, "addon_releases", &[("ref", "gh:o/foo")]),
+        0,
+    );
+    let tags: Vec<&str> = releases["data"]["releases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["version"].as_str().unwrap())
+        .collect();
+    assert_eq!(tags, ["v3", "v2", "v1"], "newest first: {releases}");
+    assert_eq!(
+        releases["data"]["releases"][0]["channel"], "beta",
+        "{releases}"
+    );
+
+    log.step("the beta channel, previewed and applied");
+    let channel = plan_fixture(
+        &log,
+        &home,
+        dir,
+        "versions-channel-preview",
+        &preview_of(fill(
+            t,
+            "update_channel",
+            &[("target", "retail"), ("channel", "beta"), ("addon", "Foo")],
+        )),
+        0,
+    );
+    let applied = plan_fixture(
+        &log,
+        &home,
+        dir,
+        "versions-channel-apply",
+        &apply_of(&planned(&channel)),
+        0,
+    );
+    assert_eq!(
+        applied["data"]["outcomes"][0]["status"], "committed",
+        "{applied}"
+    );
+    let list = write_fixture(
+        dir,
+        "versions-list-beta",
+        &home.exec(&fill(t, "list", &[])),
+        0,
+    );
+    let foo = list_row(&list, "retail", "Foo");
+    assert_eq!(
+        (&foo["version"], &foo["channel"]),
+        (&Value::from("v3"), &Value::from("beta")),
+        "{list}"
+    );
+
+    log.step("v1 installed as a fixed version: a downgrade, pinned");
+    let version = plan_fixture(
+        &log,
+        &home,
+        dir,
+        "versions-install-preview",
+        &preview_of(fill(
+            t,
+            "install_version",
+            &[("target", "retail"), ("version", "v1"), ("ref", "gh:o/foo")],
+        )),
+        0,
+    );
+    let applied = plan_fixture(
+        &log,
+        &home,
+        dir,
+        "versions-install-apply",
+        &apply_of(&planned(&version)),
+        0,
+    );
+    assert_eq!(
+        applied["data"]["outcomes"][0]["status"], "committed",
+        "{applied}"
+    );
+    let list = write_fixture(
+        dir,
+        "versions-list-fixed",
+        &home.exec(&fill(t, "list", &[])),
+        0,
+    );
+    let foo = list_row(&list, "retail", "Foo");
+    assert_eq!(
+        (&foo["version"], &foo["pinned"]),
+        (&Value::from("v1"), &Value::Bool(true)),
+        "{list}"
+    );
+    write_fixture(
+        dir,
+        "versions-history",
+        &home.exec(&fill(t, "history", &[])),
+        0,
+    );
+}
+
 /// `$OMADDONS_WIDGET_OUT/fixtures/`: `status` in the `updates`, `idle` and `attention`
 /// states, `list`, `search`, the `check` and `update_all` results (with their progress
 /// lines), a `remove` preview, a `remove` whose token went stale, and a failure.
@@ -3355,6 +3545,7 @@ fn write_widget_fixtures() {
     first_run_fixtures(&dir, &t);
     adopt_fixtures(&dir, &t);
     settings_fixtures(&dir, &t);
+    versions_fixtures(&dir, &t);
 
     // Idle: Baz current on retail, checked just now.
     let home = Home::new(&["wow"]);

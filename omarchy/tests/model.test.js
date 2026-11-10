@@ -266,6 +266,8 @@ const BENIGN = {
   run: "01M8Q2VA7K3N5P8R1T4W6X9Y0Z",
   value: "daily-copy",
   name: "My main",
+  version: "v12.1.0-beta.2",
+  channel: "beta",
 }
 
 // What a template needs beyond its slots to build: a planned template builds as its
@@ -280,7 +282,7 @@ function runOpts(name) {
 }
 
 // The templates whose real run is refused: they run as their preview, then apply.
-const PREVIEWED = ["adopt_target", "install", "prune_backup", "reinstall", "remove", "restore", "restore_addon", "undo_run", "undo_run_target", "update_addon", "update_all", "update_target"]
+const PREVIEWED = ["adopt_target", "install", "install_version", "prune_backup", "reinstall", "remove", "restore", "restore_addon", "undo_run", "undo_run_target", "update_addon", "update_all", "update_channel", "update_target"]
 // The templates bound to their preview's token (G2): their real run needs it.
 const BOUND_PREVIEWS = ["doctor_fix", "doctor_fix_target"]
 
@@ -394,6 +396,16 @@ describe("buildArgv", () => {
           for (const value of HOSTILE) {
             const slots = Object.assign(benignSlots(name), { value })
             expect([name, value, reasonOf(() => M.buildArgv(name, slots, runOpts(name)))]).toEqual([name, value, "bad_setting"])
+          }
+          continue
+        }
+        // A release's version and a channel have their own grammars (a listed tag, one of
+        // the CLI's channels: an addon page's Versions, 1n2p.24): every hostile value is
+        // refused.
+        if (slot === "version" || slot === "channel") {
+          for (const value of HOSTILE) {
+            const slots = Object.assign(benignSlots(name), { [slot]: value })
+            expect([name, value, reasonOf(() => M.buildArgv(name, slots, runOpts(name)))]).toEqual([name, value, "bad_" + slot])
           }
           continue
         }
@@ -4027,6 +4039,124 @@ describe("repairs from the binary", () => {
 // The page over what the binary wrote: `list -v` (Foo on era and retail, one release
 // behind), `info --changelog` of Foo on retail (its about, TOC and notes), `errors`
 // (Foo's errors on retail) and `status`'s clients.
+// 1n2p.24: an addon page's Versions, over the binary's scene (versions_fixtures): Foo
+// v1, v2 (its latest) and the beta v3, listed newest first; its channel switched to beta
+// (v3), then v1 installed as a fixed version (a downgrade, pinned).
+describe("an addon page's Versions", () => {
+  const targets = () => M.reduceStatus(fixture("versions-status"), NOW).targets
+  const read = (env) => ({ selection: { ref: "gh:o/foo" }, data: env ? M.reduceInfo(env) : null, failed: "" })
+  const versions = (lists, extra) => M.addonPage(Object.assign({ name: "Foo", ref: "gh:o/foo", lists: M.reduceList(fixture(lists)),
+    info: null, errors: null, statusTargets: targets(), nowMs: NOW, versionsFor: "retail",
+    releasesRead: read(fixture("versions-releases")) }, extra || {}))
+  const lines = (p) => p.versions.lines.map((l) => [l.kind, l.title, l.meta, l.chips.map((c) => c.text), l.request ? l.request.template : ""])
+
+  test("the releases reduce newest first, each with its channel and a hint per client", () => {
+    const info = M.reduceInfo(fixture("versions-releases"))
+    expect(info.releases.map((r) => [r.version, r.channel, r.compat.retail])).toEqual([["v3", "beta", "likely"],
+      ["v2", "stable", "verified"], ["v1", "stable", "likely"]])
+    expect(info.releasesWhy).toBe("")
+    // A read without --releases has none.
+    expect(M.reduceInfo(fixture("changelog")).releases).toBeNull()
+  })
+
+  test("following beta: the channels with their newest, each release with what it is", () => {
+    // Its dates in UTC, whatever this machine's zone.
+    const zone = process.env.TZ
+    process.env.TZ = "UTC"
+    let p
+    try {
+      p = versions("versions-list-beta")
+    } finally {
+      if (zone === undefined) delete process.env.TZ
+      else process.env.TZ = zone
+    }
+    expect([p.versions.open, p.versions.client, p.versions.state]).toEqual([true, "Retail", ""])
+    expect(lines(p)).toEqual([
+      ["channel", "Follow stable releases", "newest listed: v2", [], "update_channel"],
+      ["channel", "Follow betas", "newest listed: v3", ["following"], ""],
+      ["channel", "Follow alphas", "none listed", [], "update_channel"],
+      ["release", "v3", "1 Nov 2026 · beta releases · probably works here", ["installed"], ""],
+      ["release", "v2", "1 Nov 2026 · works here", [], "install_version"],
+      ["release", "v1", "1 Nov 2026 · probably works here", [], "install_version"],
+    ])
+    // The cursor walks them after the client line.
+    expect(p.lines.map((l) => l.index === undefined ? "client" : l.index)).toEqual(["client", 1, 2, 3, 4, 5, 6])
+    const stable = p.versions.lines[0].request
+    expect(stable).toEqual({ template: "update_channel", slots: { target: "retail", channel: "stable", addon: "Foo" },
+      label: "Follow stable releases of Foo on Retail" })
+    const v1 = p.versions.lines[5].request
+    expect(v1).toEqual({ template: "install_version", slots: { target: "retail", version: "v1", ref: "gh:o/foo" },
+      label: "Install Foo v1 on Retail" })
+    // Each builds as its preview, the version and the channel one element each.
+    for (const r of [stable, v1]) {
+      const argv = M.buildArgv(r.template, r.slots, opts({ preview: true, label: r.label })).argv
+      expect(argv.slice(argv.indexOf("--dry-run") + 1)).toEqual(r.template === "install_version"
+        ? ["install", "-t", "retail", "--version=v1", "--", "gh:o/foo"] : ["update", "-t", "retail", "--channel=stable", "--", "Foo"])
+    }
+  })
+
+  test("a fixed version: its pin with why, and the undo of that update first", () => {
+    const history = M.reduceHistory(fixture("versions-history"))
+    const p = versions("versions-list-fixed", { history: history })
+    const all = lines(p)
+    expect(all[0][0]).toBe("undo")
+    expect(all[0][1].indexOf("Undo the update from ")).toBe(0)
+    expect(p.versions.lines[0].request.template).toBe("undo_run_target")
+    expect(p.versions.lines[0].request.slots.target).toBe("retail")
+    expect(all.filter((l) => l[0] === "release").map((l) => [l[1], l[3], l[4]])).toEqual([
+      ["v3", [], "install_version"], ["v2", [], "install_version"], ["v1", ["installed", "installed as a fixed version"], ""]])
+    // Following stable again (the fixed install kept the channel it had: beta).
+    expect(all.filter((l) => l[0] === "channel").map((l) => l[3])).toEqual([[], ["following"], []])
+  })
+
+  test("closed, reading, failed, for another addon, or listing none", () => {
+    expect(versions("versions-list-beta", { versionsFor: "" }).versions).toMatchObject({ open: false, lines: [] })
+    expect(versions("versions-list-beta", { versionsFor: "" }).lines.length).toBe(1)
+    const reading = versions("versions-list-beta", { releasesRead: read(null) })
+    expect([reading.versions.state, reading.versions.lines.map((l) => l.kind)]).toEqual(["reading", ["channel", "channel", "channel"]])
+    const failed = versions("versions-list-beta", { releasesRead: { selection: { ref: "gh:o/foo" }, data: null, failed: "GitHub asked to wait" } })
+    expect([failed.versions.state, failed.versions.failed]).toEqual(["failed", "GitHub asked to wait"])
+    // Another page's read is not this one's.
+    const other = versions("versions-list-beta", { releasesRead: Object.assign(read(fixture("versions-releases")), { selection: { ref: "gh:o/bar" } }) })
+    expect(other.versions.state).toBe("reading")
+    // A source that serves only its latest says so; the channels stay.
+    const env = fixture("versions-releases")
+    env.data.releases = null
+    env.data.releases_unavailable = { reason: "source_lists_latest_only" }
+    const latest = versions("versions-list-beta", { releasesRead: read(env) })
+    expect([latest.versions.why, latest.versions.lines.map((l) => [l.kind, l.meta])]).toEqual(["Its source offers only its newest release.",
+      [["channel", ""], ["channel", ""], ["channel", ""]]])
+  })
+
+  test("a version that cannot be passed whole is shown, never offered", () => {
+    const env = fixture("versions-releases")
+    env.data.releases[2].version = "--force"
+    env.data.releases[1].version = "v 2"
+    const p = versions("versions-list-beta", { releasesRead: read(env) })
+    const offered = p.versions.lines.filter((l) => l.kind === "release").map((l) => [l.title, !!l.request, l.meta.indexOf("can't be passed") !== -1])
+    expect(offered).toEqual([["v3", false, false], ["v 2", false, true], ["--force", false, true]])
+    for (const bad of ["--force", "v 2", "-x", "", "a\nb", "x".repeat(129)]) {
+      expect(reasonOf(() => M.buildArgv("install_version", { target: "retail", version: bad, ref: "gh:o/foo" }, opts({ preview: true }))))
+        .toBe(bad === "" ? "bad_value" : "bad_version")
+    }
+    expect(reasonOf(() => M.buildArgv("update_channel", { target: "retail", channel: "nightly", addon: "Foo" }, opts({ preview: true }))))
+      .toBe("bad_channel")
+  })
+
+  test("the sheets: a channel switch, and a downgrade that says it pins", () => {
+    const targets = [{ id: "retail", key: "", displayName: "Retail" }]
+    const spec = (pins) => ({ mode: "confirm", shown: [], again: false, path: pins ? "install" : "update", context: CONTEXT, targets, pins })
+    const channel = M.previewDecision(spec(false), fixture("versions-channel-preview"))
+    expect(channel.kind).toBe("dialog")
+    expect(channel.sheet.effects.map((e) => e.text)).toEqual(["Foo switches to beta releases."])
+    const fixed = M.previewDecision(spec(true), fixture("versions-install-preview"))
+    expect(fixed.sheet.effects.map((e) => e.text)).toEqual(["Goes back to an older version (v3 → v1).",
+      "Pins it: it stays at this version until you unpin it."])
+    // An install of no fixed version says nothing of a pin.
+    expect(M.previewDecision(spec(false), fixture("versions-install-preview")).sheet.effects.map((e) => e.kind)).toEqual(["downgrade"])
+  })
+})
+
 describe("the addon page", () => {
   const status = () => M.reduceStatus(fixture("status-updates"), NOW)
   const page = (extra) => M.addonPage(Object.assign({ name: "Foo", ref: "", lists: M.reduceList(fixture("list")),
@@ -4052,8 +4182,8 @@ describe("the addon page", () => {
       .toEqual(["edited by hand", "Foo", "gh:o/foo", "GitHub", "https://github.com/o/foo", "", "Its source didn't answer."])
     // Where it is installed first, each as an Addons row, so its actions run as there.
     expect(p.clients.filter((c) => c.installed).map((c) => [c.client, c.meta, c.primary, c.actions.map((a) => a.name)])).toEqual([
-      ["Classic Era", "v1 installed · v2 available", "update", ["update", "pin", "restore", "remove"]],
-      ["Retail", "v1 installed · v2 available", "update", ["update", "pin", "restore", "remove"]],
+      ["Classic Era", "v1 installed · v2 available", "update", ["update", "pin", "restore", "remove", "versions"]],
+      ["Retail", "v1 installed · v2 available", "update", ["update", "pin", "restore", "remove", "versions"]],
     ])
     expect(M.rowAction(p.clients[1].row, "update")).toMatchObject({ template: "update_addon", slots: { target: "retail", addon: "Foo" } })
     expect(p.clients[0].actions[0].tooltip).toBe("Update (u)")
@@ -4095,7 +4225,10 @@ describe("the addon page", () => {
       ["Classic Era", "not installed · not made for this client", ""],
       ["Retail", "not installed · probably works here", "install"],
     ])
-    expect(p.clients[1].actions.map((a) => [a.name, a.tooltip])).toEqual([["install", "Install here (i)"]])
+    // A version of its own choosing, on either (1n2p.24).
+    expect(p.clients[1].actions.map((a) => [a.name, a.tooltip])).toEqual([["install", "Install here (i)"],
+      ["versions", "Versions and channels (v)"]])
+    expect(p.clients[0].actions.map((a) => a.name)).toEqual(["versions"])
   })
 
   test("what it needs and what needs it, each a page of its own", () => {
@@ -4394,9 +4527,10 @@ test("writes every built argv and the classifier's verdicts for the Rust check",
     if (M.COMMANDS[name].preview) realForms.push([name, reasonOf(() => M.buildArgv(name, base, opts()))])
     for (const slot of M.templateShape(name).slots) {
       // A hostile failure-mode id is refused (`bad_fm`, buildArgv's table above), and so
-      // are a hostile run id (`bad_run`) and setting value (`bad_setting`); a hostile
-      // client folder too, unless it is absolute: those are parsed by clap.
-      if (slot === "target" || slot === "fm" || slot === "run" || slot === "value") continue
+      // are a hostile run id (`bad_run`), setting value (`bad_setting`), version
+      // (`bad_version`) and channel (`bad_channel`); a hostile client folder too, unless it
+      // is absolute: those are parsed by clap.
+      if (["target", "fm", "run", "value", "version", "channel"].indexOf(slot) !== -1) continue
       if (slot === "path") {
         for (const value of HOSTILE) record(name, Object.assign({}, base, { path: "/" + value }), extra)
         continue

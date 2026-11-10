@@ -747,6 +747,12 @@ Item {
     var item = null
     if (cardMode) item = cardButtons.itemAt(cursor)
     else if (current && typeof current.rowItem === "function") item = current.rowItem(cursor)
+    showItem(item)
+  }
+
+  // Scrolls the content the least that shows `item` whole: the cursor's row, or what a
+  // key just opened on a page (an addon page's Versions, 1n2p.24).
+  function showItem(item) {
     if (!item) return
     var y = item.mapToItem(flick.contentItem, 0, 0).y
     var margin = Style.space(8)
@@ -754,6 +760,12 @@ Item {
       flick.contentY = Math.max(0, y - margin)
     else if (y + item.height > flick.contentY + flick.height - margin)
       flick.contentY = Math.min(Math.max(0, flick.contentHeight - flick.height), y + item.height - flick.height + margin)
+  }
+
+  // Lays the content out now rather than before the next frame, so a page that just grew
+  // can bring what it added into view at once (its own column laid out first).
+  function layoutContent() {
+    contentArea.forceLayout()
   }
 
   // The service's (or a view's) text field gives the keyboard back.

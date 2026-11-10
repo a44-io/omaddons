@@ -315,6 +315,7 @@ var COMMANDS = {
   "list":           { "argv": ["list", "-v"],                                       "mutates": false, "lane": "local" },
   "changelog":      { "argv": ["info", "-t", "{target}", "--changelog", "--", "{addon}"], "mutates": false, "lane": "network" },
   "addon_info":     { "argv": ["info", "--changelog", "--", "{ref}"],               "mutates": false, "lane": "network" },
+  "addon_releases": { "argv": ["info", "--releases", "--", "{ref}"],                "mutates": false, "lane": "network" },
   "search":         { "argv": ["search", "--limit", "20", "-t", "{target}", "--", "{query}"], "mutates": false, "lane": "network" },
   "check":          { "argv": ["outdated"],                                         "mutates": false, "lane": "network" },
   "update_all":     { "argv": ["update"],                                           "mutates": true, "preview": "match" },
@@ -325,6 +326,8 @@ var COMMANDS = {
   "pin":            { "argv": ["pin", "-t", "{target}", "--", "{addon}"],           "mutates": true },
   "unpin":          { "argv": ["unpin", "-t", "{target}", "--", "{addon}"],         "mutates": true },
   "install":        { "argv": ["install", "-t", "{target}", "--", "{ref}"],         "mutates": true, "preview": "match" },
+  "install_version": { "argv": ["install", "-t", "{target}", "--version={version}", "--", "{ref}"], "mutates": true, "preview": "confirm" },
+  "update_channel": { "argv": ["update", "-t", "{target}", "--channel={channel}", "--", "{addon}"], "mutates": true, "preview": "confirm" },
   "errors":         { "argv": ["errors", "--limit", "10"],                          "mutates": false, "lane": "local" },
   "errors_raw":     { "argv": ["errors", "--raw-details", "-t", "{target}", "--addon={addon}"], "mutates": false, "lane": "local" },
   "dismiss_errors": { "argv": ["errors", "dismiss", "-t", "{target}"],              "mutates": true, "bind": true },
@@ -436,7 +439,13 @@ var IRREVERSIBLE_FLAGS = ["--purge"]
 // What a row that shows an irreversible command says about it.
 var IRREVERSIBLE_NOTE = "It deletes omaddons' backups and undo snapshots for good, so it runs only from a terminal, after its preview."
 var SLOTS = { "target": true, "addon": true, "ref": true, "backup": true, "query": true, "fm": true, "path": true, "run": true, "value": true,
-  "name": true }
+  "name": true, "version": true, "channel": true }
+// A release's version as a source lists it (an addon page's Versions, 1n2p.24), for
+// `install --version=`: a tag or a revision, one word that starts with a letter or digit,
+// at most 128 characters. A listed version that is not one is shown, never offered.
+var VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._+~@\/-]{0,127}$/
+// The channels `update --channel=` takes (its `possible values`), least stable last.
+var CHANNELS = ["stable", "beta", "alpha"]
 // A client's own settings in `config set` (the settings sheet's Clients, 1n2p.31): the
 // only elements a slot sits inside, the client named by its key (a ULID: no dot to
 // split the key path). Each is `config set`'s key, right after `set`.
@@ -586,6 +595,12 @@ function checkSlot(name, slot, value, template, part) {
   }
   if (slot === "value" && !CONFIG_VALUE_PATTERN.test(value)) {
     throw refuse("bad_setting", name + ": " + JSON.stringify(value) + " is no setting value the panel offers")
+  }
+  if (slot === "version" && !VERSION_PATTERN.test(value)) {
+    throw refuse("bad_version", name + ": " + JSON.stringify(value) + " is no release version the panel can pass")
+  }
+  if (slot === "channel" && CHANNELS.indexOf(value) === -1) {
+    throw refuse("bad_channel", name + ": " + JSON.stringify(value) + " is no channel")
   }
   if (slot === "query" && template.mutates) throw refuse("query_in_mutation", name)
 }
@@ -3340,6 +3355,7 @@ var KEYMAP = [
   { "keys": ["p"], "context": "page", "action": "pin", "label": "an addon page: pin or unpin it on the client line's client", "hint": "p", "nothing": "Nothing to pin here" },
   { "keys": ["r"], "context": "page", "action": "restore", "label": "restore the addon's settings from a backup, or choose what to restore from a backup's page's backup", "hint": "r", "nothing": "No settings to restore here" },
   { "keys": ["w"], "context": "page", "action": "web", "label": "an addon page: open its web page", "hint": "w", "nothing": "No web page here" },
+  { "keys": ["v"], "context": "page", "action": "versions", "label": "an addon page: its versions and channels on the client line's client (again: close them)", "hint": "v", "nothing": "No versions to choose here" },
   { "keys": ["y"], "context": "page", "action": "copy", "label": "copy an error page's report, a problem page's command, or an addon page's source", "hint": "y", "nothing": "Nothing to copy here" },
   { "keys": ["Enter", "Space"], "context": "search", "action": "enter", "label": "open the result's page (a pasted link's: where it works, and Install)", "hint": "Enter" },
   { "keys": ["i"], "context": "search", "action": "install", "label": "install the result where it works (under All, choose the client)", "hint": "i", "nothing": "Nothing to install here" },
@@ -4728,7 +4744,18 @@ function reduceInfo(env) {
       "truncated": changelog.truncated === true,
       "moreUrl": isSafeUrl(changelog.more_url) ? changelog.more_url : ""
     } : null,
-    "changelogWhy": d.changelog_unavailable && typeof d.changelog_unavailable === "object" ? str(d.changelog_unavailable.reason) : ""
+    "changelogWhy": d.changelog_unavailable && typeof d.changelog_unavailable === "object" ? str(d.changelog_unavailable.reason) : "",
+    // `--releases` (an addon page's Versions, 1n2p.24): newest first, each with its
+    // date, channel and a hint per client; null when the source listed none
+    // (`releasesWhy` says why) or the read did not ask.
+    "releases": Array.isArray(d.releases) ? d.releases.map(function(r) {
+      var hints = r && r.compat && typeof r.compat === "object" ? r.compat : {}
+      var compatOf = {}
+      for (var id in hints) if (hints.hasOwnProperty(id)) compatOf[id] = str(hints[id])
+      return { "version": str(r.version), "publishedAt": str(r.published_at), "channel": str(r.channel) || "stable",
+        "compat": compatOf }
+    }).filter(function(r) { return r.version !== "" }) : null,
+    "releasesWhy": d.releases_unavailable && typeof d.releases_unavailable === "object" ? str(d.releases_unavailable.reason) : ""
   }
 }
 
@@ -4740,7 +4767,8 @@ var COMPAT_WORDS = { "verified": "page.compat.works", "declared": "page.compat.w
 // (the row it opened from; `ref` may be null), `lists` (`list -v`, reduced: the local
 // facts, there at once), `info` (the page's own `info` read, reduced, null until it
 // answers), `reading` and `failed` (that read's state), `errors` (`errors`, reduced),
-// `statusTargets` (`status`'s clients, for their names), `nowMs`. The answer:
+// `statusTargets` (`status`'s clients, for their names), `nowMs`, and for its Versions
+// (1n2p.24) `versionsFor` (the client they are open on) and `releasesRead`. The answer:
 //   - the header: `title` (its TOC's title, else its name), `name`, `summary`, `facts`
 //     ("by …", popularity, when it last changed), `source` (a word), `homepage` (a safe
 //     URL or "");
@@ -4748,6 +4776,8 @@ var COMPAT_WORDS = { "verified": "page.compat.works", "declared": "page.compat.w
 //     row, `row`, so every action runs as it does there), then where it is not, with how
 //     likely the newest release loads there; each line's `actions` (named, with their
 //     key: the cursored line's) and `primary` (Enter);
+//   - `versions` (addonVersions) and `lines`, what the cursor walks: `clients`, then the
+//     Versions' lines;
 //   - `notes`: the release notes newer than the oldest installed version, newest first;
 //   - `folders`: what it owns on each client, and what that client leaves out;
 //   - `needs` (its TOCs' dependencies, each `{name, installed}`) and `neededBy`;
@@ -4800,6 +4830,7 @@ function addonPage(input) {
     act("pin", row.pinned ? "installed.action.unpin" : "installed.action.pin", row.pinned ? 0xF0404 : 0xF0403)
     act("restore", "installed.action.restore", 0xF006F)
     act("remove", "installed.action.remove", 0xF01B4)
+    if (ref) act("versions", "page.versions.hint", 0xF03D6)
     var meta = [rec.a.version ? copy("page.installed", { "version": rec.a.version }) : copy("page.installed.unknown")]
     if (row.updateAvailable && rec.a.latest) meta.push(copy("page.update", { "version": rec.a.latest }))
     if (rec.a.channel && rec.a.channel !== "stable") meta.push(copy("page.channel", { "channel": rec.a.channel }))
@@ -4816,12 +4847,15 @@ function addonPage(input) {
     if (seen[t.id] || t.missing === true) return
     var verdict = compat.hasOwnProperty(t.id) ? str(compat[t.id]) : ""
     var installable = !!ref && (verdict === "verified" || verdict === "declared" || verdict === "likely")
+    var actions = installable ? [{ "name": "install", "text": copy("page.install_here"), "glyph": String.fromCodePoint(0xF0415),
+      "tooltip": withKey(copy("page.install_here"), "install", "page") }] : []
+    // A version of its own choosing, here too (1n2p.24).
+    if (ref && name) actions.push({ "name": "versions", "text": copy("page.versions.hint"), "glyph": String.fromCodePoint(0xF03D6),
+      "tooltip": withKey(copy("page.versions.hint"), "versions", "page") })
     clients.push({
       "key": "c/" + t.id, "target": t.id, "client": t.displayName || t.id, "installed": false, "row": null,
       "meta": copy("page.not_installed") + (COMPAT_WORDS.hasOwnProperty(verdict) ? " · " + copy(COMPAT_WORDS[verdict]) : ""),
-      "chips": [], "band": "", "glyph": 0, "primary": installable ? "install" : "",
-      "actions": installable ? [{ "name": "install", "text": copy("page.install_here"), "glyph": String.fromCodePoint(0xF0415),
-        "tooltip": withKey(copy("page.install_here"), "install", "page") }] : []
+      "chips": [], "band": "", "glyph": 0, "primary": installable ? "install" : "", "actions": actions
     })
   })
 
@@ -4876,6 +4910,9 @@ function addonPage(input) {
       "text": copy(r.state === "undone" ? "page.change.undone" : "page.change", { "title": r.title, "when": whenText(r.at, nowMs) }) }
   })
 
+  // Its Versions on one client, when `v` opened them: lines after the client lines.
+  var versions = addonVersions(i, name, ref, records, statusTargets, nowMs, clients.length)
+
   var state = i.reading === true ? "reading" : (str(i.failed) !== "" ? "failed" : "")
   var why = ""
   if (state === "" && info && info.aboutWhy) {
@@ -4891,6 +4928,9 @@ function addonPage(input) {
     "source": ref ? (SOURCE_WORDS[sourceKind(ref)] || copy("installed.source.unknown")) : "",
     "homepage": about ? about.homepage : "",
     "clients": clients,
+    "versions": versions,
+    // What the cursor walks: the client lines, then the Versions' lines.
+    "lines": clients.concat(versions.lines),
     "notes": notes,
     "moreUrl": moreUrl,
     "folders": folders,
@@ -4906,6 +4946,119 @@ function addonPage(input) {
 
 // How many of an addon's changes its page lists (the comment .23 left for 1n2p.30).
 var ADDON_PAGE_CHANGES = 5
+
+// An addon page's Versions on one client (1n2p.24): `v` on a client line opens them,
+// from the page's own `info --releases` read, asked for only then (GitHub's anonymous
+// budget is small). `input` is addonPage's (`versionsFor`, the client they are open on,
+// "" when closed; `releasesRead`, the service's `{selection, data, failed}`, whose
+// `data` reduceInfo reduced, used only when it is this ref's; `history`); `records` its
+// installed records (`{t, a}`); `first` the cursor index of the first line. The lines
+// the cursor walks after the client lines:
+//   - the undo of the addon's last update on that client, first, while it stands;
+//   - one line per channel where it is installed (`update --channel`, previewed): the
+//     one it follows marked, each with the newest release listed for it;
+//   - each release listed, newest first, with its age, channel and how likely it loads
+//     there; the installed one marked, and its pin with why; any other offers
+//     `install --version`, which pins it, previewed.
+// Each offered line has `request` ({template, slots, label}) for Enter.
+function addonVersions(input, name, ref, records, statusTargets, nowMs, first) {
+  var target = str(input.versionsFor)
+  var none = { "open": false, "target": "", "client": "", "state": "", "failed": "", "why": "", "lines": [] }
+  if (target === "" || name === "") return none
+  var client = sheetClient(statusTargets, target, "")
+  var rec = records.filter(function(r) { return r.t.id === target })[0] || null
+  var record = rec ? rec.a : null
+  var read = input.releasesRead && typeof input.releasesRead === "object" && input.releasesRead.selection
+    && input.releasesRead.selection.ref === ref ? input.releasesRead : null
+  var info = read && read.data && typeof read.data === "object" ? read.data : null
+  var releases = info && Array.isArray(info.releases) ? info.releases : []
+  var failed = read ? str(read.failed) : ""
+  var state = failed !== "" ? "failed" : (!info ? "reading" : "")
+  var why = ""
+  if (state === "" && info && info.releases === null) {
+    why = COPY.hasOwnProperty("page.versions.why." + info.releasesWhy) ? copy("page.versions.why." + info.releasesWhy)
+      : copy("page.versions.why.other")
+  }
+  var lines = []
+  var push = function(line) {
+    line.index = first + lines.length
+    line.target = target
+    lines.push(line)
+  }
+  var offer = function(text, glyph) {
+    return [{ "name": "enter", "text": text, "glyph": String.fromCodePoint(glyph), "tooltip": withKey(text, "enter", "page") }]
+  }
+  // A change's label is its `--reason`: one line of at most LABEL_MAX_CHARS.
+  var labelOf = function(text) { return text.length > LABEL_MAX_CHARS ? text.slice(0, LABEL_MAX_CHARS - 1) + "…" : text }
+
+  // Its newest change on this client: an update that stands is undone first; a pin's
+  // why comes from it (`pin`: the player's; `install` of a fixed version).
+  var history = input.history || null
+  var run = historyRuns(history, statusTargets).filter(function(r) {
+    return r.targets.indexOf(target) !== -1 && r.items.some(function(item) { return item.addon === name })
+  })[0] || null
+  if (run && run.kind === "update" && run.state === "undoable") {
+    var others = []
+    var entries = history && Array.isArray(history.entries) ? history.entries : []
+    entries.forEach(function(e) {
+      if (e.run !== run.run || !e.targets.some(function(t) { return t.id === target })) return
+      e.items.forEach(function(item) {
+        if (item.addon && item.addon !== name && others.indexOf(item.addon) === -1) others.push(item.addon)
+      })
+    })
+    var undo = historyUndo(run, target)
+    push({ "kind": "undo", "key": "u/" + run.key, "title": copy("page.versions.undo", { "when": whenText(run.at, nowMs) }),
+      "meta": [run.title].concat(others.length ? [copy("page.versions.undo.others", { "n": others.length })] : []).join(" · "),
+      "chips": [], "band": "", "glyph": 0xF054C, "request": undo, "actions": offer(copy("history.action.undo"), 0xF054C) })
+  }
+  // A pin is the player's (`pin`), or came with a version installed by name (`install
+  // --version`, a sync entry's `version`), which History records as the install, update
+  // or sync that put it there.
+  var pinWhy = ""
+  if (record && record.pinned && run) {
+    pinWhy = run.kind === "pin" ? copy("page.versions.pinned.by_you")
+      : (["install", "update", "sync"].indexOf(run.kind) !== -1 ? copy("page.versions.pinned.fixed") : "")
+  }
+
+  // The channels, where it is installed.
+  if (record) {
+    CHANNELS.forEach(function(channel) {
+      var newest = releases.filter(function(r) { return r.channel === channel })[0] || null
+      var current = (record.channel || "stable") === channel
+      var text = copy("page.versions.channel." + channel)
+      push({ "kind": "channel", "key": "ch/" + channel, "channel": channel, "title": text,
+        "meta": newest ? copy("page.versions.newest", { "version": newest.version }) : (releases.length ? copy("page.versions.none_listed") : ""),
+        "chips": current ? [{ "text": copy("page.versions.following") }] : [], "band": current ? "accent" : "", "glyph": 0xF04E1,
+        "request": current ? null : { "template": "update_channel", "slots": { "target": target, "channel": channel, "addon": name },
+          "label": labelOf(copy("page.versions.channel.label", { "channel": channel, "addon": name, "client": client })) },
+        "actions": current ? [] : offer(text, 0xF04E1) })
+    })
+  }
+
+  // The releases, newest first.
+  releases.forEach(function(r) {
+    var here = !!record && record.version === r.version
+    var meta = []
+    // When it came out, in a player's words (design doc §6.9): "yesterday 21:40", "9 Nov".
+    var age = r.publishedAt ? whenText(r.publishedAt, nowMs) : ""
+    if (age) meta.push(age)
+    if (r.channel !== "stable") meta.push(copy("page.channel", { "channel": r.channel }))
+    var verdict = r.compat.hasOwnProperty(target) ? r.compat[target] : ""
+    if (COMPAT_WORDS.hasOwnProperty(verdict)) meta.push(copy(COMPAT_WORDS[verdict]))
+    var passable = VERSION_PATTERN.test(r.version)
+    if (!passable) meta.push(copy("page.versions.unsafe"))
+    var chips = []
+    if (here) chips.push({ "text": copy("page.versions.installed") })
+    if (here && record.pinned) chips.push({ "text": pinWhy || copy("page.versions.pinned") })
+    var offered = passable && !here && ref !== ""
+    push({ "kind": "release", "key": "r/" + r.version, "title": r.version, "meta": meta.join(" · "), "chips": chips,
+      "band": here ? "accent" : "", "glyph": 0xF03D6,
+      "request": offered ? { "template": "install_version", "slots": { "target": target, "version": r.version, "ref": ref },
+        "label": labelOf(copy("page.versions.install.label", { "addon": name, "version": r.version, "client": client })) } : null,
+      "actions": offered ? offer(copy("page.versions.install"), 0xF0415) : [] })
+  })
+  return { "open": true, "target": target, "client": client, "state": state, "failed": failed, "why": why, "lines": lines }
+}
 
 // -------------------------------------------------------------- the Errors view (1n2p.27)
 
@@ -6386,6 +6539,8 @@ var COPY = {
   "sheet.effect.force": "Takes over folders another addon owns.",
   "sheet.effect.downgrade": "Goes back to an older version ({from} → {to}).",
   "sheet.effect.downgrade.unnamed": "Goes back to an older version.",
+  // `install --version` (an addon page's Versions, 1n2p.24): the version chosen stays.
+  "sheet.effect.pins": "Pins it: it stays at this version until you unpin it.",
   "sheet.effect.unknown": "Also: {words}.",
   "sheet.effect.still_required": "Other addons still need {addon} and won't load without it.",
   "sheet.effect.adopt_in_place": "Nothing is reinstalled or moved: omaddons starts keeping track of these folders as they are, and can undo that.",
@@ -6846,6 +7001,34 @@ var COPY = {
   "page.why.not_supported": "Its source says nothing more about it.",
   "page.why.source_has_no_metadata": "Its source says nothing more about it.",
   "page.why.other": "Nothing more is known about it.",
+  // An addon page's Versions (1n2p.24): `v` on a client line.
+  "page.section.versions": "Versions on {client}",
+  "page.versions.hint": "Versions and channels",
+  "page.versions.reading": "Listing its releases…",
+  "page.versions.failed": "Couldn't list its releases: {why}",
+  "page.versions.why.source_lists_latest_only": "Its source offers only its newest release.",
+  "page.versions.why.source_disabled": "Its source is turned off.",
+  "page.versions.why.offline": "Not listed: omaddons is offline.",
+  "page.versions.why.not_found": "Its source knows no such project.",
+  "page.versions.why.rate_limited": "GitHub asked to wait; try again later.",
+  "page.versions.why.fetch_failed": "Its source didn't answer.",
+  "page.versions.why.other": "Its source listed no releases.",
+  "page.versions.installed": "installed",
+  "page.versions.pinned": "pinned",
+  "page.versions.pinned.by_you": "pinned by you",
+  "page.versions.pinned.fixed": "installed as a fixed version",
+  "page.versions.install": "Install this version",
+  "page.versions.install.label": "Install {addon} {version} on {client}",
+  "page.versions.unsafe": "This version's name can't be passed on safely.",
+  "page.versions.channel.stable": "Follow stable releases",
+  "page.versions.channel.beta": "Follow betas",
+  "page.versions.channel.alpha": "Follow alphas",
+  "page.versions.channel.label": "Follow {channel} releases of {addon} on {client}",
+  "page.versions.following": "following",
+  "page.versions.newest": "newest listed: {version}",
+  "page.versions.none_listed": "none listed",
+  "page.versions.undo": "Undo the update from {when}",
+  "page.versions.undo.others": { "one": "it also undoes 1 other addon", "other": "it also undoes {n} other addons" },
 
   "source.catalog": "omaddons' catalog",
   "source.github": "GitHub",
@@ -7039,7 +7222,7 @@ var SHEET_GLYPHS = {
   "source_changed": 0xF059F, "channel_changed": 0xF0093, "while_running": 0xF040A, "reinstall": 0xF006F,
   "force": 0xF0026, "downgrade": 0xF02DA, "still_required": 0xF0026, "changed_since": 0xF02DA,
   "restore_scope": 0xF006F, "kept_backup": 0xF003C, "verified": 0xF05E0, "undo_last": 0xF054C,
-  "delegated": 0xF04E6, "note": 0xF02FD
+  "delegated": 0xF04E6, "pins": 0xF0403, "note": 0xF02FD
 }
 var SHEET_URGENT = ["folders_removed", "local_changes_replaced", "force", "still_required", "changed_since", "restore_scope"]
 // The destructive verb's glyph, by what the sheet changes (design doc §5.4).
@@ -7605,9 +7788,11 @@ function warningFix(env, code) {
 }
 
 // What to do with a preview's envelope (M4-D28). `spec` is `{mode: "match" | "confirm",
-// shown, again, path, context, targets}`: `match` compares the plan with what the view
-// `shown`, `again` marks a preview run after a refused plan, `path` is the previewed
-// command's, and `context` and `targets` name clients and shorten paths. The decision
+// shown, again, path, context, targets, pins}`: `match` compares the plan with what the
+// view `shown`, `again` marks a preview run after a refused plan, `path` is the previewed
+// command's, `context` and `targets` name clients and shorten paths, and `pins` says the
+// change pins what it installs (`install --version`, 1n2p.24), which the plan does not
+// name: the sheet says so. The decision
 // is `{kind, plan, heading, sheet, line, fixText}`, its kind one of "failed", "refuse"
 // (nothing ran, `line` says why), "refresh" (nothing to do), "dialog" (ask, with the
 // plan `sheet`) and "direct" (apply `plan` with no sheet: a routine plan that is exactly
@@ -7643,6 +7828,7 @@ function previewDecision(spec, env) {
   // Anything but a match is confirmed in the sheet: never applied directly.
   if (s.mode !== "match") {
     decision.sheet = previewSheet(s.path, env, approval, plan, s.context, s.targets)
+    if (s.pins === true) decision.sheet.effects.push(sheetEffect("pins", copy("sheet.effect.pins")))
     return decision
   }
   var shown = Array.isArray(s.shown) ? s.shown : []

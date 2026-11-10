@@ -309,6 +309,8 @@ TestCase {
       return { "text": ok("backup create", { "dry_run": false, "run": null, "targets": [] }) }
     if (w[0] === "search" && w.indexOf("--catalog") !== -1) return scene.catalog
     if (w[0] === "search") return scene.search
+    // An addon page's Versions (1n2p.24) read its releases.
+    if (w[0] === "info" && w.indexOf("--releases") !== -1) return scene.releases
     if (w[0] === "info") return scene.changelog
     // omaddons' settings, for the settings sheet (1n2p.31).
     if (w[0] === "config" && w.length === 1) return scene.config
@@ -1066,6 +1068,47 @@ TestCase {
     frame.cursor = 1
     frame.cursorActive = true
     shoot("addon-page")
+  }
+
+  // Its Versions on Retail (1n2p.24), over the binary's Versions scene: following beta,
+  // the channels with their newest, and each release with its date, channel and how
+  // likely it loads, the installed one marked; the cursor on the older stable release.
+  function test_addon_page_versions() {
+    var scene = { "status": the("versions-status"), "list": the("versions-list-beta"), "errors": { "text": ok("errors", { "targets": [] }) },
+      "backups": { "text": ok("backup list", { "targets": [] }) }, "changelog": the("changelog"), "history": the("history-empty"),
+      "releases": the("versions-releases") }
+    open(scene, "installed")
+    frame.openAddon("Foo", "gh:o/foo")
+    settle(scene)
+    var page = findChild(frame, "page").item
+    frame.cursor = 0
+    frame.cursorActive = true
+    verify(page.handleKey("versions", 0))
+    settle(scene)
+    compare(page.page.versions.state, "")
+    compare(page.page.versions.lines.length, 6)
+    frame.cursor = 5
+    shoot("addon-page-versions")
+  }
+
+  // A source that serves only its newest release says so; the channels stay.
+  function test_addon_page_versions_latest_only() {
+    var releases = fixture("versions-releases")
+    releases.data.releases = null
+    releases.data.releases_unavailable = { "reason": "source_lists_latest_only" }
+    var scene = { "status": the("versions-status"), "list": the("versions-list-beta"), "errors": { "text": ok("errors", { "targets": [] }) },
+      "backups": { "text": ok("backup list", { "targets": [] }) }, "changelog": the("changelog"), "history": the("history-empty"),
+      "releases": { "text": text(releases) } }
+    open(scene, "installed")
+    frame.openAddon("Foo", "gh:o/foo")
+    settle(scene)
+    var page = findChild(frame, "page").item
+    frame.cursor = 0
+    frame.cursorActive = true
+    verify(page.handleKey("versions", 0))
+    settle(scene)
+    compare(findChild(page, "versionsState").text, "Its source offers only its newest release.")
+    shoot("addon-page-versions-latest")
   }
 
   // Its read still running: the local facts, and "Reading about it…".

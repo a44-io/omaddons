@@ -84,6 +84,9 @@ Item {
   // The open addon page's own `info --changelog` read (1n2p.23), view-bound to the ref it
   // was asked for: `{selection, data, failed}`, `data` Model.reduceInfo's.
   property var addonInfo: null
+  // Its Versions' `info --releases` read (1n2p.24), asked for only when `v` opens them:
+  // the same shape.
+  property var addonReleases: null
   // The running mutation: {name, label, current, total, message}.
   property var action: null
   // The label of the queued user mutation ("next: …").
@@ -230,6 +233,7 @@ Item {
   property var searchSelection: null
   property var changelogSelection: null
   property var addonInfoSelection: null
+  property var addonReleasesSelection: null
   // What the open confirmation runs on Yes, and the generation it was previewed in.
   property var pendingConfirm: null
   property bool bellStarted: false
@@ -633,6 +637,22 @@ Item {
   function clearAddonInfo() {
     addonInfoSelection = null
     addonInfo = null
+    addonReleasesSelection = null
+    addonReleases = null
+  }
+
+  // An addon page's Versions (1n2p.24): its source's recent releases, with how likely
+  // each loads on each client; asked once per ref while the page stays open.
+  function readAddonReleases(ref) {
+    var selection = { "ref": String(ref || "") }
+    if (selection.ref === "") return false
+    if (addonReleases && addonReleases.selection.ref === selection.ref && !addonReleases.failed) return true
+    addonReleasesSelection = selection
+    addonReleases = { "selection": selection, "data": null, "failed": "" }
+    return request({
+      "resource": "addon_releases", "template": "addon_releases", "lane": "network", "kind": "view",
+      "selection": selection, "slots": { "ref": selection.ref }, "label": "Releases of " + selection.ref
+    })
   }
 
   function readChangelog(target, addon) {
@@ -729,7 +749,7 @@ Item {
     }
     // The context and clients shorten the paths a repair's undo lists (`<config>/…`).
     var decision = Model.previewDecision({ "mode": r.mode, "shown": r.shown, "again": r.again === true, "path": path,
-      "context": Build.CONTEXT, "targets": targets }, env)
+      "context": Build.CONTEXT, "targets": targets, "pins": r.template === "install_version" }, env)
     lastPreview = { "resource": r.resource, "decision": decision.kind, "planId": decision.plan ? decision.plan.planId : null }
     if (decision.kind === "direct") {
       runPlan(decision.plan, r.spec, r.contextGeneration)
@@ -982,6 +1002,7 @@ Item {
     if (r.resource === "search") return searchSelection
     if (r.resource === "changelog") return changelogSelection
     if (r.resource === "addon_info") return addonInfoSelection
+    if (r.resource === "addon_releases") return addonReleasesSelection
     if (r.resource === "errors_raw") return rawSelection
     if (r.resource === "backups_detail") return detailSelection
     if (r.resource === "explain") return explainSelection
@@ -1075,6 +1096,9 @@ Item {
       if (r.resource === "addon_info") {
         addonInfo = { "selection": r.selection, "data": null, "failed": Model.copy("activity.cancelled", { "label": r.label }) }
       }
+      if (r.resource === "addon_releases") {
+        addonReleases = { "selection": r.selection, "data": null, "failed": Model.copy("activity.cancelled", { "label": r.label }) }
+      }
       return
     }
     // Every check, answered or not: whether a source did not answer.
@@ -1100,6 +1124,7 @@ Item {
         // A row waiting for its notes says they could not be read, never "Reading…".
         if (r.resource === "changelog") changelog = { "selection": r.selection, "data": null, "failed": lastError.message }
         if (r.resource === "addon_info") addonInfo = { "selection": r.selection, "data": null, "failed": lastError.message }
+        if (r.resource === "addon_releases") addonReleases = { "selection": r.selection, "data": null, "failed": lastError.message }
         if (r.resource === "explain") explanation = { "selection": r.selection, "lines": null, "failed": lastError.message }
         // A backup's page waiting for its addons says they could not be read.
         if (r.resource === "backups_detail") backupsDetail = { "selection": r.selection, "data": null, "failed": lastError.message }
@@ -1138,6 +1163,8 @@ Item {
       changelog = { "selection": r.selection, "data": env.data }
     } else if (r.resource === "addon_info") {
       addonInfo = { "selection": r.selection, "data": Model.reduceInfo(env), "failed": "" }
+    } else if (r.resource === "addon_releases") {
+      addonReleases = { "selection": r.selection, "data": Model.reduceInfo(env), "failed": "" }
     } else if (r.resource === "explain") {
       explanation = { "selection": r.selection, "lines": Model.explainLines(env, Build.CONTEXT, targets), "failed": "" }
     } else if (r.resource === "check") {
