@@ -3462,7 +3462,7 @@ The state directory honors `XDG_STATE_HOME`, the cache `XDG_CACHE_HOME`, and the
 | `src/build_info/` | The build id (`build.rs` computes it from the input manifest in `inputs.rs`), which stored plans, tokens and `capabilities` name |
 | `src/vocabulary.rs` | The words a client can be called by, in `-t`'s order: what intent inference recognizes as a client named in the wrong place, without running discovery |
 | `src/output/` | The JSON envelope, human rendering, stderr events, terminal detection |
-| `src/error.rs` | The error and warning code registries and the exit-code table |
+| `src/error.rs`, `src/error/` | The error and warning code registries and the exit-code table; each code's declared `details` shape (`detail_spec.rs`, `specs.rs`) and the form its fix takes (`fix_pattern.rs`), and the test-only style checks of their wording (`sentence.rs`) |
 | `src/model.rs` | Domain types: refs, folder names, actors, channels, records |
 | `src/discover/` | Client discovery, launcher readers, running detection, the target registry and cache |
 | `src/rules.rs` | Products, the version-to-family table, family ranges, client-rules rows, game modes |
@@ -3476,7 +3476,7 @@ The state directory honors `XDG_STATE_HOME`, the cache `XDG_CACHE_HOME`, and the
 | `src/net/` | HTTP client, allowlist, guard, retries, concurrency limits, validators, net.log, record/replay |
 | `src/engine/` | The transaction engine, with `restore.rs` and `restore_addons.rs` (settings put back by exchange), `preserve.rs` (what a restore's recovery keeps as a `recovered` backup), `repair_action.rs` (the data a `doctor` repair is made of: fixes, the one-operation primitives they lower to with each path's predicate before and after, and a set-aside's guards; data only) and `repair.rs` with `repair/` (the repair transaction: `lower.rs` turns a run's fixes into those primitives, each predicate captured against what the steps before it leave, and refuses what a repair may never do, such as a write below `WTF/` or a rename across mounts; it reads and never writes; `commit.rs` runs it under the lock, `inverse.rs` holds the one rollback walk, and `recover.rs` settles a repair a crash left at every recovery point), and `simulate.rs` (`journal::diagnose`: what recovery will do with each interrupted journal of either family, by recovery's own decisions on a simulated tree, writing nothing) |
 | `src/fsx/` | The only code allowed to write to the filesystem: the write-scope table, the global flock and per-directory locks, `renameat2`, the reflink clone policy, stamp digests, pruning, failpoints |
-| `src/state/` | Config, paths, registry, records and the files index, history, status, the release memo, `addons.toml`, the export memo, the doorbell |
+| `src/state/` | Config, paths, registry, records and the files index, history, status, the release memo, `addons.toml`, the export memo, the doorbell, the about memo (`about_memo.rs`), stored plans (`plans.rs`), the history projection (`history_tail.rs`) and the retention-sweep stamp (`retention_sweep.rs`) |
 | `src/backup/` | `WTF/` backups: the on-disk model, the one tree copy, the inventory projection, automatic backups, export, import and verify, filesystem hints |
 | `src/lua.rs` | A parser of the Lua literals the client writes as SavedVariables, read-only and infallible |
 | `src/errors/` | Lua errors: BugGrabber's databases decoded into one model, attribution, the errors memo and dismissals |
