@@ -145,6 +145,12 @@ TestCase {
       function dismissErrors(plan) { dismissals = dismissals.concat([JSON.parse(JSON.stringify(plan))]); return "" }
       // The real copyCommand runs Model.copyArgv(text) and answers `done` with wl-copy's
       // outcome; this records the argv and answers `copyOk` (false: wl-copy missing).
+      // Sharing (1n2p.37): what the view asked, and the answer it waits for.
+      property var shareCopies: []
+      property var sharePastes: []
+      property var shareDone: null
+      function copyAddonList(filter, done) { shareCopies = shareCopies.concat([filter]); shareDone = done; return true }
+      function pasteAddonList(filter, done) { sharePastes = sharePastes.concat([filter]); shareDone = done; return true }
       property var copies: []
       property bool copyOk: true
       function copyCommand(text, done) {
@@ -772,6 +778,68 @@ TestCase {
     compare(installed.sort, "name")
     verify(!findChild(installed, "sortLabel").visible)
     compare(installed.rows[view.cursor].name, "Foo")
+  }
+
+  // Sharing (1n2p.37): the Addons view's share line copies the scope's list (`y`) and
+  // pastes one (Ctrl+V); what went on the clipboard flashes, why nothing did is the
+  // panel's notice, and both keys and buttons ask the service for the scope's.
+  function test_the_share_line_copies_and_pastes_the_scopes_addon_list() {
+    keyClick("2")
+    var line = findChild(content(), "shareLine")
+    verify(line.visible)
+    compare(findChild(line, "shareText").text, "Share your addon list, or use one someone shared")
+    var copyButton = findChild(line, "copyList")
+    var pasteButton = findChild(line, "pasteList")
+    compare(copyButton.text, "Copy addon list (y)")
+    compare(pasteButton.text, "Paste addon list… (Ctrl+V)")
+    compare(copyButton.Accessible.name, copyButton.text)
+    verify(copyButton.enabled && pasteButton.enabled)
+    // `y` under All: every client's list; the flash says what went on the clipboard.
+    keyClick("y")
+    compare(json(svc.shareCopies), json([""]))
+    svc.shareDone(true, "Copied the addon list of every client: 6 addons")
+    var flash = findChild(content(), "copyFlash")
+    verify(flash.visible)
+    compare(flash.text, "Copied the addon list of every client: 6 addons")
+    compare(findChild(view, "notice").text, "")
+    // A copy that did not happen is the notice, never a flash.
+    copyButton.clicked()
+    compare(json(svc.shareCopies), json(["", ""]))
+    svc.shareDone(false, "Couldn't copy (wl-copy is missing)")
+    compare(findChild(view, "notice").text, "Couldn't copy (wl-copy is missing)")
+    // Ctrl+V: the paste, its refusal the notice; a preview asked clears it.
+    keyClick(Qt.Key_V, Qt.ControlModifier)
+    compare(json(svc.sharePastes), json([""]))
+    svc.shareDone("The clipboard doesn't hold an addon list. Ask for one copied with Copy addon list.")
+    compare(findChild(view, "notice").text, "The clipboard doesn't hold an addon list. Ask for one copied with Copy addon list.")
+    pasteButton.clicked()
+    svc.shareDone("")
+    compare(findChild(view, "notice").text, "")
+    // On one client, that client's.
+    view.setFilter("era")
+    keyClick("y")
+    keyClick(Qt.Key_V, Qt.ControlModifier)
+    compare(json(svc.shareCopies.slice(-1).concat(svc.sharePastes.slice(-1))), json(["era", "era"]))
+    // Elsewhere, Ctrl+V says where it works.
+    keyClick("1")
+    keyClick(Qt.Key_V, Qt.ControlModifier)
+    compare(findChild(view, "keyNote").text, "Addon lists paste in Addons (2)")
+    compare(svc.sharePastes.length, 3)
+  }
+
+  function test_the_share_line_pastes_with_no_addons_yet_and_copies_nothing() {
+    svc.lists = Model.reduceList(listEnvelope([{ "id": "retail", "key": "k-retail", "label": "retail",
+      "counts": { "managed": 0, "unmanaged": 0 }, "addons": [] }]))
+    keyClick("2")
+    var line = findChild(content(), "shareLine")
+    verify(line.visible, "a new computer starts from a shared list")
+    verify(!findChild(line, "copyList").enabled, "nothing to copy")
+    verify(findChild(line, "pasteList").enabled)
+    findChild(line, "pasteList").clicked()
+    compare(json(svc.sharePastes), json([""]))
+    // Before the list is read, no share line.
+    svc.lists = null
+    verify(!findChild(content(), "shareLine").visible)
   }
 
   function test_unmanaged_folders_are_a_hint_and_an_empty_client_says_how_to_add() {

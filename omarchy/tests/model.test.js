@@ -399,13 +399,21 @@ const BENIGN = {
 function runOpts(name) {
   const t = M.COMMANDS[name]
   if (t.preview === "bind") return opts({ token: TOKEN })
-  if (t.preview) return opts({ preview: true })
+  if (t.preview) return opts(withInput(name, { preview: true }))
   if (t.bind || M.CLI_PATHS[M.templateShape(name).path].destructive) return opts({ token: TOKEN })
   return opts()
 }
 
+// A pasted addon list (1n2p.37), as `export` writes one.
+const LIST = "# omaddons addon list\nschema_version = \"1.0\"\n\n[[family.mainline.addon]]\nname = \"DBM\"\nref = \"gh:o/dbm\"\n"
+
+// `extra` with the pasted list a template that takes one on standard input needs.
+function withInput(name, extra) {
+  return M.COMMANDS[name].stdin ? Object.assign({ stdin: LIST }, extra) : extra
+}
+
 // The templates whose real run is refused: they run as their preview, then apply.
-const PREVIEWED = ["adopt_target", "install", "install_version", "prune_backup", "reinstall", "remove", "restore", "restore_addon", "undo_run", "undo_run_target", "update_addon", "update_all", "update_channel", "update_target"]
+const PREVIEWED = ["adopt_target", "install", "install_version", "prune_backup", "reinstall", "remove", "restore", "restore_addon", "sync_all", "sync_target", "undo_run", "undo_run_target", "update_addon", "update_all", "update_channel", "update_target"]
 // The templates bound to their preview's token (G2): their real run needs it.
 const BOUND_PREVIEWS = ["doctor_fix", "doctor_fix_target"]
 
@@ -464,9 +472,9 @@ describe("buildArgv", () => {
     }
     for (const name of PREVIEWED) {
       for (const extra of [{}, { confirmed: true }, { token: TOKEN }]) {
-        expect([name, extra, reasonOf(() => M.buildArgv(name, benignSlots(name), opts(extra)))]).toEqual([name, extra, "preview_required"])
+        expect([name, extra, reasonOf(() => M.buildArgv(name, benignSlots(name), opts(withInput(name, extra))))]).toEqual([name, extra, "preview_required"])
       }
-      expect([name, M.buildArgv(name, benignSlots(name), opts({ preview: true })).argv.includes("--dry-run")]).toEqual([name, true])
+      expect([name, M.buildArgv(name, benignSlots(name), opts(withInput(name, { preview: true }))).argv.includes("--dry-run")]).toEqual([name, true])
     }
   })
 
@@ -601,7 +609,9 @@ describe("buildArgv", () => {
       const shape = M.templateShape(name)
       const t = M.COMMANDS[name]
       expect(M.CLI_PATHS[shape.path]).toBeDefined()
-      expect(t.mutates).toBe(M.CLI_PATHS[shape.path].mutates)
+      // An export copies a set and writes nothing without `--write` (1n2p.37): a read.
+      if (shape.path === "export") expect([name, t.mutates, t.argv.includes("--write")]).toEqual([name, false, false])
+      else expect(t.mutates).toBe(M.CLI_PATHS[shape.path].mutates)
       // M4-D28: a preview template is on a plan-storing path, a destructive one asks
       // first, and the old confirm key is gone.
       expect([name, t.confirm]).toEqual([name, undefined])
@@ -4739,6 +4749,192 @@ describe("History", () => {
   })
 })
 
+// ------------------------------------------------- sharing an addon set (1n2p.37)
+
+describe("sharing an addon set", () => {
+  const status = () => M.reduceStatus(fixture("share-status"))
+  const targets = () => status().targets
+  const decide = (name) => M.previewDecision({ mode: "confirm", path: "sync", targets: targets() }, fixture(name))
+
+  test("an export is a pasted list: what Copy addon list puts on the clipboard, Paste takes", () => {
+    const content = fixture("share-export-retail").data.content
+    expect(M.pastedList(content)).toEqual({ ok: true, text: content, reason: "" })
+    expect(M.pastedList(fixture("share-export-all").data.content).ok).toBe(true)
+  })
+
+  test("a pasted list a person wrote passes: comments, arrays over lines, quoted clients, tables", () => {
+    const written = [
+      "# for the guild",
+      "[family.mainline]                # every retail client",
+      "addons = [",
+      "  \"WeakAuras\",",
+      "  \"gh:BigWigsMods/BigWigs\",",
+      "]",
+      "",
+      "[[family.mainline.addon]]",
+      "name = \"Plater\"",
+      "version = \"Plater-v661\"",
+      "pinned = true",
+      "",
+      "[target.\"retail@steam\"]",
+      "addons = []",
+      "[ target . wotlk ]",
+      "addons = [\"gbb\"]",
+    ].join("\r\n")
+    expect(M.pastedList(written)).toEqual({ ok: true, text: written, reason: "" })
+  })
+
+  test("what is plainly no addon list is refused before the CLI, and says why", () => {
+    const cases = [
+      [undefined, "empty"],
+      ["", "empty"],
+      [" \n\t\n", "empty"],
+      ["x".repeat(M.PASTE_MAX_BYTES + 1), "too_large"],
+      // Bytes, not characters: 3 bytes each.
+      ["€".repeat(Math.floor(M.PASTE_MAX_BYTES / 3) + 1), "too_large"],
+      [LIST + "\u0000", "not_text"],
+      [LIST + "\u001b[31m", "not_text"],
+      ["https://github.com/o/foo", "not_a_list"],
+      ["default_channel = \"beta\"\n", "not_a_list"],
+      ["schema_version = \"1.0\"\n", "not_a_list"],
+      ["schema_version = \"1.0\"\n[limits]\ndownload_max_bytes = 1\n", "not_a_list"],
+      ["[family.mainline]\naddons = [\"DBM\"]\n[sources.wowi]\nenabled = false\n", "not_a_list"],
+      ["[[family.mainline.addon]]\nname = \"x\"\n[[family.mainline.addon.extra]]\n", "not_a_list"],
+      ["running_policy = \"allow\"\n[family.mainline]\naddons = []\n", "not_a_list"],
+    ]
+    for (const [text, reason] of cases) {
+      const shown = String(JSON.stringify(text)).slice(0, 40)
+      expect([shown, M.pastedList(text)]).toEqual([shown, { ok: false, text: "", reason }])
+    }
+    // At the bound exactly, a list passes.
+    const padded = LIST + "#".repeat(M.PASTE_MAX_BYTES - LIST.length)
+    expect([padded.length, M.pastedList(padded).ok]).toEqual([M.PASTE_MAX_BYTES, true])
+    // Each refusal in the player's words, the size bound named.
+    expect(M.pasteRefusal("empty")).toBe("The clipboard is empty. Copy an addon list first, then paste it here.")
+    expect(M.pasteRefusal("too_large")).toBe("The clipboard holds more than an addon list can (64 KB at most)")
+    expect(M.pasteRefusal("not_text")).toBe("The clipboard doesn't hold plain text")
+    expect(M.pasteRefusal("not_a_list")).toBe("The clipboard doesn't hold an addon list. Ask for one copied with Copy addon list.")
+    expect(M.pasteRefusal("unreadable")).toBe("Couldn't read the clipboard: wl-paste is missing, or it holds no text")
+    expect(M.pasteRefusal("anything else")).toBe(M.pasteRefusal("not_a_list"))
+    expect(M.pasteArgv()).toEqual(["wl-paste", "--no-newline", "--type", "text"])
+  })
+
+  test("Copy addon list reads the scope's export; Paste previews sync - there, never with --prune", () => {
+    expect(M.exportRequest("", targets())).toEqual({ template: "export_all", slots: {}, label: "Copy every client's addon list" })
+    expect(M.exportRequest("retail", targets())).toEqual({ template: "export_target", slots: { target: "retail" }, label: "Copy Retail's addon list" })
+    expect(M.syncRequest("", targets())).toEqual({ template: "sync_all", slots: {}, label: "Use a pasted addon list" })
+    expect(M.syncRequest("retail", targets())).toEqual({ template: "sync_target", slots: { target: "retail" }, label: "Use a pasted addon list on Retail" })
+    const preview = M.buildArgv("sync_target", { target: "retail" }, opts({ preview: true, stdin: LIST }))
+    expect(preview.argv.slice(9)).toEqual(["sync", "-v", "-", "-t", "retail"])
+    expect(preview.argv).toContain("--dry-run")
+    expect(preview.stdin).toBe(LIST)
+    for (const name of ["export_all", "export_target", "sync_all", "sync_target"]) {
+      expect([name, M.COMMANDS[name].argv.some((a) => ["--prune", "--write", "--overwrite", "--locked"].includes(a))]).toEqual([name, false])
+    }
+    // The export is a read: no progress, no stdin, no preview.
+    const exported = M.buildArgv("export_target", { target: "retail" }, opts())
+    expect(exported.argv.slice(6)).toEqual(["export", "-t", "retail"])
+    expect(exported.stdin).toBeUndefined()
+    expect(M.laneOf({ resource: "export", lane: "local" })).toBe("local")
+  })
+
+  test("the copy's words: what went on the clipboard, or why nothing did", () => {
+    const t = targets()
+    expect(M.exportedList(fixture("share-export-retail"), "retail", t)).toEqual({ ok: true,
+      text: fixture("share-export-retail").data.content, entries: 3, line: "Copied Retail's addon list: 3 addons" })
+    expect(M.exportedList(fixture("share-export-all"), "", t).line).toBe("Copied the addon list of every client: 3 addons")
+    expect(M.exportedList(fixture("share-export-era"), "era", t)).toEqual({ ok: false, text: "", entries: 0,
+      line: "omaddons manages no addons on Classic Era yet, so there's no list to copy" })
+    expect(M.exportedList(null, "", t).line).toBe("Couldn't read the addon list to copy")
+    const huge = JSON.parse(JSON.stringify(fixture("share-export-retail")))
+    huge.data.content += "#".repeat(M.PASTE_MAX_BYTES)
+    expect(M.exportedList(huge, "retail", t)).toEqual({ ok: false, text: "", entries: 0,
+      line: "This addon list is longer than a paste can take (64 KB at most), so it isn't copied" })
+    // Once wl-copy answered: the site's words, or that nothing was copied.
+    expect(M.copyFlash(false, "Copied Retail's addon list: 3 addons")).toBe("Couldn't copy (wl-copy is missing)")
+  })
+
+  test("the pasted list's sheet groups what it would do: Conflicts, New, Unchanged, per client", () => {
+    const all = decide("share-sync-preview")
+    expect(all.kind).toBe("dialog")
+    expect(all.plan.planId).toBe(fixture("share-sync-preview").data.plan_id)
+    expect(M.dialogText(all.sheet).split("\n")).toEqual([
+      "Use the pasted addon list on 2 clients?",
+      "Classic Era · New",
+      "Baz v1 (new)",
+      "Retail · Conflicts",
+      "qux installed here from another source; kept as it is",
+      "Bar pinned at v1",
+      "Retail · New",
+      "Baz v1 (new)",
+      "Retail · Unchanged",
+      "Foo v1",
+      "Part of the list is for a client that isn't on this computer; it's left out.",
+      "Addons the list doesn't have stay as they are.",
+    ])
+    expect([all.sheet.confirmLabel, all.sheet.cancelLabel, all.sheet.destructive]).toEqual(["Make 3 changes", "Cancel", false])
+    // On one client, the groups alone.
+    const retail = decide("share-sync-preview-retail")
+    expect(retail.sheet.title).toBe("Use the pasted addon list on Retail?")
+    expect(retail.sheet.items.map((i) => i.header).filter((h) => h !== "")).toEqual(["Conflicts", "New", "Unchanged"])
+    expect(retail.sheet.confirmLabel).toBe("Make 2 changes")
+    // Nothing to change: no plan, and the paste says so.
+    expect(decide("share-sync-nothing")).toEqual({ kind: "refresh", plan: null, heading: "", sheet: null,
+      line: "Your addons already match the pasted list; the view is refreshed", fixText: "" })
+  })
+
+  test("what a list leaves out says why, and other changes say what they do", () => {
+    const env = JSON.parse(JSON.stringify(fixture("share-sync-preview-retail")))
+    const items = env.data.targets[0].items
+    items.push({ request: "gh:o/gone", name: null, status: "failed", error: { code: "not_found", message: "m" } })
+    items.push({ request: "wowi:1", name: null, status: "failed", error: { code: "no_compatible_release", message: "m" } })
+    items.push({ request: "gh:o/odd", name: null, status: "failed", error: { code: "network", message: "m" } })
+    items.push({ request: "Foo", name: "Foo", status: "skipped", skip_reason: "duplicate" })
+    items.push({ request: "gh:o/up", name: "Up", status: "updated", from_version: "v2", to_version: "v1" })
+    items.push({ request: "gh:o/free", name: "Free", status: "unpinned", from_version: "v3", to_version: "v3" })
+    const lines = M.dialogText(M.previewDecision({ mode: "confirm", path: "sync", targets: targets() }, env).sheet).split("\n")
+    expect(lines.slice(lines.indexOf("Left out"), lines.indexOf("Left out") + 5)).toEqual(["Left out", "gone not found",
+      "wowi:1 no version for Retail", "odd can't be installed on Retail", "Foo listed twice"])
+    expect(lines).toContain("Up v2 → v1")
+    expect(lines).toContain("Free no longer pinned at v3")
+  })
+
+  test("a sheet item's group heads it on one client, and with its client on several", () => {
+    const item = (client, group, name) => ({ op: "x", addon: name, client: client, clientKey: client, from: "", to: "", name: name, detail: "", header: "", group: group })
+    const one = M.finishSheet({ items: [item("Retail", "New", "A"), item("Retail", "New", "B"), item("Retail", "Unchanged", "C")] })
+    expect(one.items.map((i) => i.header)).toEqual(["New", "", "Unchanged"])
+    const two = M.finishSheet({ items: [item("Retail", "New", "A"), item("Era", "New", "B")] })
+    expect(two.items.map((i) => i.header)).toEqual(["Retail · New", "Era · New"])
+    // Without groups, the clients alone head their items, as before.
+    const plain = M.finishSheet({ items: [item("Retail", "", "A"), item("Retail", "", "B"), item("Era", "", "C")] })
+    expect(plain.items.map((i) => i.header)).toEqual(["Retail", "", "Era"])
+  })
+
+  test("applying it says what changed; another source's addon was kept, never a failure", () => {
+    const applied = M.applyResult(fixture("share-sync-apply"))
+    expect(M.resultLine(applied, CONTEXT, targets())).toBe("Matched the addon list: 3 addons changed on 2 clients · 1 kept as it is")
+  })
+
+  test("a list the CLI refuses says where its mistake is, never <stdin>", () => {
+    expect(M.pasteFailure(fixture("share-sync-invalid"))).toBe("The pasted addon list names a game omaddons doesn't know on line 3; nothing ran")
+    const env = JSON.parse(JSON.stringify(fixture("share-sync-invalid")))
+    env.error.details.reason = "bad_value"
+    expect(M.pasteFailure(env)).toBe("The pasted addon list has a mistake on line 3; nothing ran")
+    env.error.details.reason = "newer_schema"
+    expect(M.pasteFailure(env)).toBe("The pasted addon list was made by a newer omaddons; update omaddons to use it")
+    expect(M.pasteFailure(fixture("share-sync-preview"))).toBeNull()
+  })
+
+  test("y copies and Ctrl+V pastes in Addons; elsewhere Ctrl+V says where it works", () => {
+    expect(M.keyName(0x56, "\u0016", 0x04000000)).toBe("Ctrl+V")
+    expect(M.panelKey("y", "installed")).toEqual({ action: "copy", step: 0 })
+    expect(M.panelKey("Ctrl+V", "installed")).toEqual({ action: "paste", step: 0 })
+    expect(M.panelKey("Ctrl+V", "updates")).toEqual({ action: null, note: "Addon lists paste in Addons (2)" })
+    expect(M.withKey(M.copy("share.copy"), "copy", "installed")).toBe("Copy addon list (y)")
+    expect(M.withKey(M.copy("share.paste"), "paste", "installed")).toBe("Paste addon list… (Ctrl+V)")
+  })
+})
+
 // --------------------------------------------------- built-argv.json (step 3)
 
 test("writes every built argv and the classifier's verdicts for the Rust check", () => {
@@ -4761,7 +4957,7 @@ test("writes every built argv and the classifier's verdicts for the Rust check",
   for (const name of Object.keys(M.COMMANDS)) {
     const base = benignSlots(name)
     const bound = M.COMMANDS[name].preview === "bind"
-    const extra = M.COMMANDS[name].preview ? { preview: true } : { token: runOpts(name).token }
+    const extra = M.COMMANDS[name].preview ? withInput(name, { preview: true }) : { token: runOpts(name).token }
     record(name, base, extra)
     // A bound preview (G2) is recorded bound too: the same argv with its token.
     if (bound) record(name, base, { token: TOKEN })

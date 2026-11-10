@@ -15,6 +15,12 @@ QtObject {
   property var processId: null
   property var stdout: null
   property var stderr: null
+  // Standard input as Quickshell's: enabled before the start, written with write() while
+  // the child runs, closed (its end of file) by turning it off. `written` is what the
+  // child was given, `stdinClosed` whether its end came.
+  property bool stdinEnabled: false
+  property string written: ""
+  property bool stdinClosed: false
 
   // Test controls and records. `ignoreKill` stands for a child that never reports its
   // end, even after SIGKILL (the lane's watchdog lets it go).
@@ -98,6 +104,14 @@ QtObject {
     detachedStarts++
     ProcessRegistry.detachedStart(root)
   }
+
+  // Data reaches a running child whose standard input is open; anything else is lost,
+  // as a real pipe's would be.
+  function write(data) {
+    if (running && stdinEnabled && !stdinClosed) written = written + String(data)
+  }
+
+  onStdinEnabledChanged: if (!stdinEnabled && running) stdinClosed = true
 
   Component.onCompleted: ProcessRegistry.add(root)
   Component.onDestruction: ProcessRegistry.remove(root)

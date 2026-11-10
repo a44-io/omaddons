@@ -31,7 +31,8 @@ QtObject {
   }
 
   function launched(process) {
-    launches = launches.concat([{ "process": process, "command": copy(process.command), "environment": copy(process.environment) }])
+    launches = launches.concat([{ "process": process, "command": copy(process.command), "environment": copy(process.environment),
+      "stdinEnabled": process.stdinEnabled === true }])
   }
 
   function detachedStart(process) {

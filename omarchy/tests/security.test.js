@@ -178,13 +178,13 @@ function checkRendering(files) {
 
 // The four literal tools besides omaddons (M3-D2), and the argv builders in Model.js
 // with the tool each returns: the clipboard (`wl-copy`, 1n2p.43) only through its builder,
-// with the text as one argument.
+// with the text as one argument, and read (`wl-paste`, 1n2p.37) only through its own.
 const LITERAL_TOOLS = ["inotifywait", "omarchy-notification-send", "xdg-open", "omarchy-launch-browser"]
 const ARGV_BUILDERS = { "toastArgv": "omarchy-notification-send", "errorToastArgv": "omarchy-notification-send",
   "updateToastArgv": "omarchy-notification-send", "digestToastArgv": "omarchy-notification-send",
   "resultToastArgv": "omarchy-notification-send", "autoUpdateToastArgv": "omarchy-notification-send",
   "autoUpdateStoppedToastArgv": "omarchy-notification-send", "addonsDirArgv": "xdg-open",
-  "copyArgv": "wl-copy", "configEditorArgv": "omarchy-launch-config-editor" }
+  "copyArgv": "wl-copy", "pasteArgv": "wl-paste", "configEditorArgv": "omarchy-launch-config-editor" }
 // Two argv outside the three sources, allowed exactly as written: `show()`'s fallback
 // when the shell's summon facade is missing, and the self-reinstall (a fixed literal
 // under the stamped context, check 2).
@@ -275,24 +275,25 @@ function checkProvenance(files) {
       if (!ok) out.push(violation("Model.js", fn.line, name + " returns something other than " + tool + "'s argv: " + r))
     }
   }
-  // Processes: a literal tool, the exact reinstall, the lane's argv, or a copy's argv
-  // from its builder alone (omad-phcg: a copy reads wl-copy's exit, so it runs as a
-  // Process, never from a literal argv).
+  // Processes: a literal tool, the exact reinstall, the lane's argv, or the clipboard's
+  // argv from its builder alone (omad-phcg: a copy reads wl-copy's exit, and a paste
+  // wl-paste's output, so each runs as a Process, never from a literal argv).
   for (const name of qmlNames(files)) {
     for (const l of lines(files[name])) {
       const prop = l.text.match(/^\s*command:\s*(.*)$/)
       const assigned = l.text.match(/\w+\.command\s*=\s*(.*)$/)
       if (prop) {
         const tool = prop[1].match(/^\[\s*"([^"]+)"/)
-        const copy = /^Model\.copyArgv\([\w.]+\)\s*$/.test(prop[1])
+        const copy = /^Model\.copyArgv\([\w.]+\)\s*$/.test(prop[1]) || /^Model\.pasteArgv\(\)\s*$/.test(prop[1])
         if (!copy && (!tool || !LITERAL_TOOLS.includes(tool[1]))) out.push(violation(name, l.n, "a Process command from no allowed source: " + prop[1].slice(0, 60)))
       }
       if (assigned && assigned[1].trim() !== REINSTALL) out.push(violation(name, l.n, "a Process command from no allowed source: " + assigned[1].slice(0, 60)))
     }
   }
   const service = codeOf(files["Service.qml"] || "")
+  // The lane runs argvOf's build: its argv, its env and its standard input (1n2p.37).
   for (const c of calls(files, /\.run\((?=r,)/, ["Service.qml"])) {
-    if (!c.args.startsWith("(r, built.argv, built.env)")) out.push(violation("Service.qml", c.line, "a lane runs an argv not from argvOf"))
+    if (!c.args.startsWith("(r, built.argv, built.env, built.stdin)")) out.push(violation("Service.qml", c.line, "a lane runs an argv not from argvOf"))
   }
   if (!/var built = null[\s\S]*?built = argvOf\(r\)/.test(service.slice(service.indexOf("function pump(")))) {
     out.push(violation("Service.qml", 1, "pump's argv is not argvOf's"))
@@ -830,6 +831,50 @@ function checkPluginId(files) {
   return out
 }
 
+// 13. Standard input (1n2p.37): a pasted addon list is the only data the widget ever
+// writes to a child, and only to the lane's child of a request built with it. buildArgv
+// takes it from pastedList alone, for a `stdin: "list"` template, which is `sync -`'s
+// confirmed preview; the lane's input is its run's own argument, written once the child
+// starts, then closed. Nothing else opens or writes a child's standard input.
+const STDIN_LINES = [
+  /^\s*proc = processComponent\.createObject\(lane, \{ "stdinEnabled": input !== null, "command": argv, "environment": env \}\)$/,
+  /^\s*child\.write\(input\)$/,
+  /^\s*child\.stdinEnabled = false$/,
+]
+
+function checkStdin(files) {
+  const out = []
+  for (const name of Object.keys(files)) {
+    for (const l of lines(files[name])) {
+      if (!/\bstdinEnabled\b|\.write\(/.test(l.text)) continue
+      if (name !== "Service.qml" || !STDIN_LINES.some((re) => re.test(l.text))) {
+        out.push(violation(name, l.n, "a child's standard input outside the lane's request: " + l.text.trim().slice(0, 60)))
+      }
+    }
+  }
+  const service = codeOf(files["Service.qml"] || "")
+  const lane = service.slice(service.indexOf("function run(r, argv, env, stdin)"))
+  if (service.indexOf("function run(r, argv, env, stdin)") < 0 || !/^\s*input = typeof stdin === "string" \? stdin : null$/m.test(balanced(lane, lane.indexOf("{")))) {
+    out.push(violation("Service.qml", 1, "the lane's input is not its run's stdin"))
+  }
+  if ((service.match(/\binput = /g) || []).length !== 2 || !/^\s*input = null$/m.test(service)) {
+    out.push(violation("Service.qml", 1, "the lane's input is set other than from its run, or never cleared"))
+  }
+  const model = files["Model.js"] || ""
+  const build = functionBody(model, "buildArgv")
+  if (!build || !/if \(template\.stdin === "list"\) \{\s*var list = pastedList\(o\.stdin\)\s*if \(!list\.ok\) throw[^\n]*\s*stdin = list\.text/.test(build.body)) {
+    out.push(violation("Model.js", build ? build.line : 1, "buildArgv's standard input is not pastedList's"))
+  }
+  const table = tableOf(model) || {}
+  for (const [name, t] of Object.entries(table)) {
+    if (t.stdin === undefined) continue
+    if (t.stdin !== "list" || t.argv[0] !== "sync" || !t.argv.includes("-") || t.preview !== "confirm") {
+      out.push(violation("Model.js", lineAt(model, model.indexOf('"' + name + '":')), name + " takes standard input other than as sync -'s confirmed preview"))
+    }
+  }
+  return out
+}
+
 const CHECKS = [
   ["1. rendering", checkRendering],
   ["2. process launching", checkLaunching],
@@ -844,6 +889,7 @@ const CHECKS = [
   ["10. no issue id by name", checkIssueIds],
   ["11. consent", checkConsent],
   ["12. irreversible stays out", checkIrreversible],
+  ["13. standard input", checkStdin],
 ]
 
 // ------------------------------------------------------------------ the tests
@@ -998,6 +1044,29 @@ const PLANTED = [
     plant(REAL, "Model.js", "var COMMANDS = {\n",
       '  "doctor_fix_more": { "argv": ["doctor", "fix", "--only={fm}", "--skip={fm}"], "mutates": true, "preview": "bind" },\n'),
     /option slot other than --only=\{fm\}/],
+  // 1n2p.37: the clipboard is read through its builder alone, and a child's standard
+  // input is the lane's request's, only for sync -'s confirmed preview.
+  ["3. argv provenance", checkProvenance, "a paste through a Process with a literal argv",
+    plant(REAL, "Service.qml", "  Process {\n    id: reinstallProc\n  }\n", '  Process {\n    id: planted\n    command: ["wl-paste", "--primary"]\n  }\n'),
+    /a Process command from no allowed source: \["wl-paste"/],
+  ["3. argv provenance", checkProvenance, "a lane run without argvOf's standard input",
+    replaced(REAL, "Service.qml", "laneNamed(name).run(r, built.argv, built.env, built.stdin)", "laneNamed(name).run(r, built.argv, built.env, r.label)"),
+    /a lane runs an argv not from argvOf/],
+  ["13. standard input", checkStdin, "a Process given standard input outside the lane",
+    plant(REAL, "PanelView.qml", "  function openAddOns() {\n", '    planted.stdinEnabled = true\n    planted.write(root.filter)\n'),
+    /PanelView\.qml:\d+: a child's standard input outside the lane's request/],
+  ["13. standard input", checkStdin, "the lane writing something other than its input",
+    replaced(REAL, "Service.qml", "      child.write(input)\n", "      child.write(root.binary)\n"),
+    /Service\.qml:\d+: a child's standard input outside the lane's request: child\.write\(root\.binary\)/],
+  ["13. standard input", checkStdin, "the lane's input taken from somewhere other than its run",
+    replaced(REAL, "Service.qml", '      input = typeof stdin === "string" ? stdin : null\n', "      input = r.label\n"),
+    /the lane's input is not its run's stdin/],
+  ["13. standard input", checkStdin, "buildArgv passing standard input it did not check",
+    replaced(REAL, "Model.js", "    stdin = list.text\n", "    stdin = o.stdin\n"),
+    /buildArgv's standard input is not pastedList's/],
+  ["13. standard input", checkStdin, "a template other than sync's preview taking standard input",
+    plant(REAL, "Model.js", "var COMMANDS = {\n", '  "install_paste": { "argv": ["install", "--", "{ref}"], "mutates": true, "preview": "confirm", "stdin": "list" },\n'),
+    /install_paste takes standard input other than as sync -'s confirmed preview/],
 ]
 
 describe("each scan catches its planted violation", () => {
@@ -1024,7 +1093,7 @@ describe("the mechanisms behind the scans", () => {
     const bound = Object.keys(M.COMMANDS).filter((name) => M.COMMANDS[name].preview === "bind")
     const needing = Object.keys(M.COMMANDS).filter((name) => needsPreview(name) && bound.indexOf(name) === -1)
     expect(needing.sort()).toEqual(["adopt_target", "install", "install_version", "prune_backup", "reinstall", "remove", "restore",
-      "restore_addon", "undo_run", "undo_run_target", "update_addon", "update_all", "update_channel", "update_target"])
+      "restore_addon", "sync_all", "sync_target", "undo_run", "undo_run_target", "update_addon", "update_all", "update_channel", "update_target"])
     // A repair's Yes is its own argv bound to its preview's token (G2): never without it.
     expect(bound.sort()).toEqual(["doctor_fix", "doctor_fix_target"])
     for (const name of bound) {
@@ -1033,9 +1102,11 @@ describe("the mechanisms behind the scans", () => {
       expect(M.buildArgv(name, slotsOf(name), Object.assign({ token: "pc1:" + "0".repeat(64) }, opts)).argv).toContain("--if-match")
     }
     for (const name of needing) {
-      // Its Yes is its preview's plan, applied (M4-D28): the real form never builds.
-      expect(() => M.buildArgv(name, slotsOf(name), opts)).toThrow(/preview_required/)
-      expect(M.buildArgv(name, slotsOf(name), Object.assign({ preview: true }, opts)).argv).toContain("--dry-run")
+      // Its Yes is its preview's plan, applied (M4-D28): the real form never builds. A
+      // pasted list's preview builds with the list (1n2p.37).
+      const input = M.COMMANDS[name].stdin ? { stdin: LIST } : {}
+      expect(() => M.buildArgv(name, slotsOf(name), Object.assign({}, input, opts))).toThrow(/preview_required/)
+      expect(M.buildArgv(name, slotsOf(name), Object.assign({ preview: true }, input, opts)).argv).toContain("--dry-run")
     }
     for (const [cliPath, row] of Object.entries(M.CLI_PATHS)) {
       if (!row.destructive) continue
@@ -1080,11 +1151,36 @@ describe("the mechanisms behind the scans", () => {
 
   test("every built argv runs under the stamped context", () => {
     for (const name of Object.keys(M.COMMANDS)) {
-      // A `bind` template runs with its view's token.
+      // A `bind` template runs with its view's token, a pasted list's with the list.
       const bound = M.COMMANDS[name].bind ? { token: "pc1:" + "0".repeat(64) } : {}
-      const built = M.buildArgv(name, slotsOf(name), Object.assign({ preview: needsPreview(name) }, bound, opts))
+      const input = M.COMMANDS[name].stdin ? { stdin: LIST } : {}
+      const built = M.buildArgv(name, slotsOf(name), Object.assign({ preview: needsPreview(name) }, bound, input, opts))
       expect(built.env).toEqual(CONTEXT)
     }
+  })
+
+  // 1n2p.37: standard input is a checked addon list, for sync -'s preview alone.
+  const LIST = 'schema_version = "1.0"\n\n[family.mainline]\naddons = ["DBM"]\n'
+  test("standard input reaches only sync -'s preview, checked again when it is built", () => {
+    const takers = Object.keys(M.COMMANDS).filter((name) => M.COMMANDS[name].stdin !== undefined)
+    expect(takers.sort()).toEqual(["sync_all", "sync_target"])
+    for (const name of takers) {
+      const preview = Object.assign({ preview: true }, opts)
+      expect(M.buildArgv(name, slotsOf(name), Object.assign({ stdin: LIST }, preview)).stdin).toBe(LIST)
+      // Its real run is the plan's apply, which holds the text: never built here.
+      expect(() => M.buildArgv(name, slotsOf(name), Object.assign({ stdin: LIST }, opts))).toThrow(/preview_required/)
+      for (const bad of [undefined, "", "default_channel = \"beta\"\n", "[limits]\nx = 1\n", "x".repeat(M.PASTE_MAX_BYTES + 1)]) {
+        expect(() => M.buildArgv(name, slotsOf(name), Object.assign({ stdin: bad }, preview))).toThrow(/bad_input/)
+      }
+    }
+    for (const name of Object.keys(M.COMMANDS).filter((n) => takers.indexOf(n) === -1)) {
+      const form = Object.assign({ preview: needsPreview(name) }, M.COMMANDS[name].bind ? { token: "pc1:" + "0".repeat(64) } : {}, opts)
+      expect(() => M.buildArgv(name, slotsOf(name), Object.assign({ stdin: LIST }, form))).toThrow(/stdin_not_taken/)
+      expect(M.buildArgv(name, slotsOf(name), form).stdin).toBeUndefined()
+    }
+    // A plan's apply never carries it.
+    const plan = { "argv": ["omaddons", "apply", "01M8Q2VA7K3N5P8R1T4W6X9Y0Z"] }
+    expect(M.cliArgv(plan.argv, Object.assign({ plan: plan }, opts)).stdin).toBeUndefined()
   })
 
   test("a doctor template never runs forced, and only bound or as its preview", () => {

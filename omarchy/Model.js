@@ -345,6 +345,13 @@ var WIDGET_STREAM_GRACE_SEC = 2
 // this many evidence lines; a plain UI choice.
 var WIDGET_EXPLAIN_INSTANCES_MAX = 5
 var WIDGET_EXPLAIN_EVIDENCE_MAX = 12
+// The largest addon list a paste may hold (1n2p.37): what `sync -` reads from standard
+// input (SYNC_STDIN_MAX_BYTES; tests/omarchy_widget.rs holds them equal). A larger paste
+// is refused before anything runs.
+var PASTE_MAX_BYTES = 64 * 1024
+// How long reading the clipboard may take before the paste says it could not; a plain UI
+// choice, as a copy's.
+var WIDGET_PASTE_DEADLINE_MS = 3000
 
 // ------------------------------------------------------ the templates (M3-D2)
 
@@ -363,7 +370,11 @@ var WIDGET_EXPLAIN_EVIDENCE_MAX = 12
 // (E6). A `preview` template runs only as its dry run; its confirmed run is `apply` of that preview's
 // plan (M4-D28): `match` applies a routine plan that is what the view showed, `confirm` always asks
 // first. `bind` runs first as its dry run too, and its confirmed run is the same argv bound to the
-// preview's token (`--if-match`): a binding path that stores no plan (M4-D44).
+// preview's token (`--if-match`): a binding path that stores no plan (M4-D44). Sharing an
+// addon set (1n2p.37): `export_*` read the set to copy (export without `--write` writes
+// nothing, so they are reads), and `sync_*` preview a pasted list, which they take on
+// standard input (`stdin: "list"`, checked by pastedList) and only as that preview: Yes
+// applies its plan, which holds the text.
 var COMMANDS = {
   "status":         { "argv": ["status", "--cached", "-v"],                         "mutates": false, "lane": "local" },
   "status_full":    { "argv": ["status", "-v"],                                     "mutates": false, "lane": "local" },
@@ -414,7 +425,11 @@ var COMMANDS = {
   "config_client_family": { "argv": ["config", "set", "targets.{target}.family", "--", "{value}"], "mutates": true },
   "targets_default":   { "argv": ["targets", "default", "--", "{target}"],         "mutates": true },
   "auth_from_gh":      { "argv": ["auth", "github", "--from-gh"],                    "mutates": true },
-  "auth_clear":        { "argv": ["auth", "github", "clear"],                        "mutates": true }
+  "auth_clear":        { "argv": ["auth", "github", "clear"],                        "mutates": true },
+  "export_all":        { "argv": ["export"],                                       "mutates": false, "lane": "local" },
+  "export_target":     { "argv": ["export", "-t", "{target}"],                     "mutates": false, "lane": "local" },
+  "sync_all":          { "argv": ["sync", "-v", "-"],                              "mutates": true, "preview": "confirm", "stdin": "list" },
+  "sync_target":       { "argv": ["sync", "-v", "-", "-t", "{target}"],            "mutates": true, "preview": "confirm", "stdin": "list" }
 }
 // END COMMANDS
 
@@ -624,6 +639,17 @@ function templateShape(name, table) {
   }
   // A change always records who made it; only a read may name no actor (`actor: false`).
   if (template.actor === false && template.mutates) throw refuse("bad_template", name + " names no actor but mutates")
+  // Standard input (1n2p.37): a pasted addon list, for `sync -` alone and only as its
+  // confirmed preview, so nothing the player pasted runs before Yes.
+  if (template.hasOwnProperty("stdin")) {
+    if (template.stdin !== "list" || path !== "sync" || argv.indexOf("-") === -1 || template.preview !== "confirm") {
+      throw refuse("bad_template", name + " takes standard input other than as sync -'s confirmed preview")
+    }
+  }
+  // An export copies a set and writes nothing: never `--write` (1n2p.37).
+  if (path === "export" && (argv.indexOf("--write") !== -1 || argv.indexOf("--overwrite") !== -1)) {
+    throw refuse("bad_template", name + " writes a file")
+  }
   return { path: path, slots: slots }
 }
 
@@ -765,10 +791,127 @@ function buildArgv(name, slots, opts) {
   var planned = template.preview === "match" || template.preview === "confirm"
   if (planned && !preview) throw refuse("preview_required", name + " runs only as its preview; its Yes runs the plan's apply")
   var ifMatch = ifMatchFor(name, row, template.preview === "confirm", template.bind === true || template.preview === "bind", o, preview)
+  // Standard input (1n2p.37): a template that takes a pasted list gets it checked again
+  // here (pastedList), whoever built the request; every other template takes none.
+  var stdin = null
+  if (template.stdin === "list") {
+    var list = pastedList(o.stdin)
+    if (!list.ok) throw refuse("bad_input", name + ": the pasted text is no addon list (" + list.reason + ")")
+    stdin = list.text
+  } else if (o.stdin !== undefined && o.stdin !== null) {
+    throw refuse("stdin_not_taken", name + " takes no standard input")
+  }
   // Every change, and every read that asks the sources: the activity bar counts them, and
   // their progress keeps a network read's inactivity deadline alive (1n2p.18).
   var progress = template.mutates === true || template.lane === "network"
-  return { argv: standardFlags(o, progress, preview, ifMatch, template.actor === false).concat(filled), env: contextOf(o.context) }
+  var built = { argv: standardFlags(o, progress, preview, ifMatch, template.actor === false).concat(filled), env: contextOf(o.context) }
+  if (stdin !== null) built.stdin = stdin
+  return built
+}
+
+// --------------------------------------------------------- sharing a set (1n2p.37)
+
+// A table header a pasted addon list may hold: a family's or a client's section, or the
+// table form of one of its entries (`[[family.mainline.addon]]`).
+var LIST_HEADER = /^\[\[?\s*(family|target)\s*\.\s*("[^"\\\n]*"|'[^'\n]*'|[A-Za-z0-9_-]+)(\s*\.\s*addon)?\s*\]\]?\s*(#.*)?$/
+
+// A pasted addon list, checked before it reaches the CLI: `{ok, text, reason}`. The CLI
+// reads it in full (`sync -`) and says what is wrong with one line of it; this refuses
+// only what is plainly no addon list, with the reason a player is told: nothing to paste
+// (`empty`), more than PASTE_MAX_BYTES (`too_large`), a control character (`not_text`),
+// or no family or client section, a table of another kind, or a top-level key other
+// than `schema_version` (`not_a_list`: a settings file, a link, a chat line).
+function pastedList(text) {
+  var refused = function(reason) { return { "ok": false, "text": "", "reason": reason } }
+  if (typeof text !== "string" || text.trim() === "") return refused("empty")
+  if (utf8Length(text) > PASTE_MAX_BYTES) return refused("too_large")
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(text)) return refused("not_text")
+  var sections = 0
+  var lines = text.split("\n")
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].trim()
+    if (line === "" || line.charAt(0) === "#") continue
+    // A table header (an addon list's arrays hold names and refs, never an array, so no
+    // other line starts with a bracket).
+    if (line.charAt(0) === "[") {
+      if (!LIST_HEADER.test(line)) return refused("not_a_list")
+      sections++
+      continue
+    }
+    if (sections === 0 && !/^schema_version\s*=/.test(line)) return refused("not_a_list")
+  }
+  return sections > 0 ? { "ok": true, "text": text, "reason": "" } : refused("not_a_list")
+}
+
+// Why a paste ran nothing, in the player's words: the clipboard could not be read
+// (`unreadable`: wl-paste is missing, gave no answer in time, or found no text), or
+// pastedList's reason.
+function pasteRefusal(reason) {
+  var known = ["unreadable", "empty", "too_large", "not_text", "not_a_list"]
+  return copy("share.paste." + (known.indexOf(reason) !== -1 ? reason : "not_a_list"), { "kb": Math.round(PASTE_MAX_BYTES / 1024) })
+}
+
+// Why the CLI refused a pasted list, from its code and typed details (`sync -` reads it
+// as `<stdin>`, a name a player never sees): where and what kind of mistake; null for
+// any other answer, whose own words stand.
+function pasteFailure(env) {
+  var error = env && env.error && typeof env.error === "object" ? env.error : null
+  if (!error || error.code !== "desired_state_invalid") return null
+  var details = error.details && typeof error.details === "object" ? error.details : {}
+  var reason = str(details.reason)
+  var line = num(details.line)
+  if (reason === "newer_schema") return copy("share.paste.invalid.newer_schema")
+  if (line <= 0) return copy("share.paste.invalid.nowhere")
+  return copy(["unknown_family", "duplicate"].indexOf(reason) !== -1 ? "share.paste.invalid." + reason : "share.paste.invalid", { "line": line })
+}
+
+// The clipboard's reader: wl-paste's text, as it was copied (no newline added), of a
+// text type only.
+function pasteArgv() {
+  return ["wl-paste", "--no-newline", "--type", "text"]
+}
+
+// The share line's requests for the chosen client (`filter`), or every client: the
+// export a copy reads, and the sync a paste previews. `targets` name the client.
+function exportRequest(filter, targets) {
+  if (filter) {
+    return { "template": "export_target", "slots": { "target": filter },
+      "label": copy("share.copy.label.client", { "owner": possessive(sheetClient(targets, filter, "")) }) }
+  }
+  return { "template": "export_all", "slots": {}, "label": copy("share.copy.label") }
+}
+
+function syncRequest(filter, targets) {
+  if (filter) {
+    return { "template": "sync_target", "slots": { "target": filter },
+      "label": copy("share.paste.label.client", { "client": sheetClient(targets, filter, "") }) }
+  }
+  return { "template": "sync_all", "slots": {}, "label": copy("share.paste.label") }
+}
+
+// An export's answer as what a copy puts on the clipboard: `{ok, text, entries, line}`,
+// `line` the flash's words before wl-copy answers (copyFlash says whether it took the
+// text). Nothing to copy, or an export that failed, is `ok: false` with why.
+function exportedList(env, filter, targets) {
+  var client = filter ? sheetClient(targets, filter, "") : ""
+  var out = { "ok": false, "text": "", "entries": 0, "line": copy("share.copy.failed") }
+  if (!envelopeOk(env) || !env.ok || !env.data || typeof env.data !== "object") return out
+  var entries = num(env.data.entries)
+  if (typeof env.data.content !== "string" || entries <= 0) {
+    out.line = filter ? copy("share.copy.nothing.client", { "client": client }) : copy("share.copy.nothing")
+    return out
+  }
+  // A list no paste could take (pastedList's bound) is not copied: wl-copy takes it as
+  // one argument, and the paste on the other side would refuse it.
+  if (utf8Length(env.data.content) > PASTE_MAX_BYTES) {
+    out.line = copy("share.copy.too_large", { "kb": Math.round(PASTE_MAX_BYTES / 1024) })
+    return out
+  }
+  out.ok = true
+  out.text = env.data.content
+  out.entries = entries
+  out.line = filter ? copy("share.copy.done.client", { "owner": possessive(client), "n": entries }) : copy("share.copy.done", { "n": entries })
+  return out
 }
 
 // ---------------------------------------------------------- argv from the CLI
@@ -2801,6 +2944,8 @@ function isChange(item) {
 // names the change it reverted and where; a dismissal counts the errors that stopped
 // being new. "" for any other command.
 function commandResultLine(command, data) {
+  // A pasted list applied (1n2p.37), in History's word for a sync.
+  if (command === "sync") return syncResultLine(data)
   // The GitHub section's two changes (omad-r0to), in its words.
   if (command === "auth github") {
     return copy(data && data.configured === true ? "settings.github.result.stored" : "settings.github.result.cleared")
@@ -2914,6 +3059,39 @@ function failedItems(env) {
     }
   }
   return out
+}
+
+// A pasted list applied (1n2p.37): how many addons it changed, on how many clients; an
+// addon installed here from another source was kept as its sheet said (never a
+// failure); any other failure is named with its message, as every result's is.
+function syncResultLine(data) {
+  var targets = Array.isArray(data.targets) ? data.targets : []
+  var changed = 0
+  var touched = 0
+  var kept = 0
+  var failed = []
+  for (var i = 0; i < targets.length; i++) {
+    var items = targets[i] && Array.isArray(targets[i].items) ? targets[i].items : []
+    var before = changed
+    for (var j = 0; j < items.length; j++) {
+      var item = items[j]
+      if (isChange(item)) changed++
+      else if (item && item.status === "failed") {
+        var error = item.error && typeof item.error === "object" ? item.error : {}
+        if (error.code === "ownership_conflict") kept++
+        else failed.push({ "name": shareName(item), "error": error })
+      }
+    }
+    if (changed > before) touched++
+  }
+  var line = changed === 0 ? copy("share.result.none")
+    : touched > 1 ? copy("share.result.clients", { "n": changed, "m": touched }) : copy("share.result", { "n": changed })
+  if (kept > 0) line += " · " + copy("share.result.kept", { "n": kept })
+  if (failed.length) {
+    line += " · " + copy("share.result.failed", { "addon": failed[0].name, "why": str(failed[0].error.message) })
+    if (failed.length > 1) line += " " + copy("share.result.more", { "n": failed.length - 1 })
+  }
+  return line
 }
 
 // The fixes of a partial result's failed items, as buttons when the classifier accepts
@@ -3543,6 +3721,8 @@ var KEYMAP = [
   { "keys": ["r"], "context": "installed", "action": "restore", "label": "restore its settings from a backup", "hint": "r", "nothing": "No settings to restore here" },
   { "keys": ["/"], "context": "installed", "action": "filter", "label": "filter the list by name, source or state", "hint": "/", "nothing": "Nothing to filter here" },
   { "keys": ["S"], "context": "installed", "action": "sort", "label": "sort by name, by recently updated, or by source", "hint": "S", "nothing": "Nothing to sort here" },
+  { "keys": ["y"], "context": "installed", "action": "copy", "label": "copy the chosen client's addon list (or every client's), to share it", "hint": "y", "nothing": "Nothing to copy here" },
+  { "keys": ["Ctrl+V"], "context": "installed", "action": "paste", "label": "paste an addon list someone shared: see what it would change, then apply it", "hint": "Ctrl+V", "nothing": "Addon lists paste in Addons (2)" },
   { "keys": ["Enter", "Space"], "context": "errors", "action": "enter", "label": "show the addon's errors and their stacks", "hint": "Enter" },
   { "keys": ["u"], "context": "errors", "action": "update", "label": "update the addon the errors come from, when one is waiting", "hint": "u", "nothing": "Nothing to update here" },
   { "keys": ["r"], "context": "errors", "action": "restore", "label": "restore the addon's settings from a backup", "hint": "r", "nothing": "No settings to restore here" },
@@ -7046,6 +7226,61 @@ var COPY = {
   "installed.unmanaged.client": { "one": "1 folder on {client} omaddons doesn't manage", "other": "{n} folders on {client} omaddons doesn't manage" },
   "installed.take_over": "Take over…",
   "installed.take_over.label": "Take over the addons on {client}",
+  // Sharing an addon set (1n2p.37): the Addons view's share line, the copy's and the
+  // paste's labels and what each says, and the sheet of a pasted list.
+  "share.line": "Share your addon list, or use one someone shared",
+  "share.copy": "Copy addon list",
+  "share.paste": "Paste addon list…",
+  "share.copy.label": "Copy every client's addon list",
+  "share.copy.label.client": "Copy {owner} addon list",
+  "share.copy.done": { "one": "Copied the addon list of every client: 1 addon", "other": "Copied the addon list of every client: {n} addons" },
+  "share.copy.done.client": { "one": "Copied {owner} addon list: 1 addon", "other": "Copied {owner} addon list: {n} addons" },
+  "share.copy.nothing": "omaddons manages no addons yet, so there's no list to copy",
+  "share.copy.nothing.client": "omaddons manages no addons on {client} yet, so there's no list to copy",
+  "share.copy.failed": "Couldn't read the addon list to copy",
+  "share.copy.too_large": "This addon list is longer than a paste can take ({kb} KB at most), so it isn't copied",
+  "share.paste.label": "Use a pasted addon list",
+  "share.paste.label.client": "Use a pasted addon list on {client}",
+  "share.paste.unreadable": "Couldn't read the clipboard: wl-paste is missing, or it holds no text",
+  "share.paste.empty": "The clipboard is empty. Copy an addon list first, then paste it here.",
+  "share.paste.too_large": "The clipboard holds more than an addon list can ({kb} KB at most)",
+  "share.paste.not_text": "The clipboard doesn't hold plain text",
+  "share.paste.not_a_list": "The clipboard doesn't hold an addon list. Ask for one copied with Copy addon list.",
+  "share.paste.nothing": "Your addons already match the pasted list; the view is refreshed",
+  "share.paste.invalid": "The pasted addon list has a mistake on line {line}; nothing ran",
+  "share.paste.invalid.nowhere": "The pasted addon list has a mistake; nothing ran",
+  "share.paste.invalid.unknown_family": "The pasted addon list names a game omaddons doesn't know on line {line}; nothing ran",
+  "share.paste.invalid.duplicate": "The pasted addon list names one addon twice, on line {line}; nothing ran",
+  "share.paste.invalid.newer_schema": "The pasted addon list was made by a newer omaddons; update omaddons to use it",
+  "share.title.client": "Use the pasted addon list on {client}?",
+  "share.title.clients": "Use the pasted addon list on {m} clients?",
+  "share.confirm": { "one": "Make 1 change", "other": "Make {n} changes" },
+  "share.group.conflict": "Conflicts",
+  "share.group.new": "New",
+  "share.group.unchanged": "Unchanged",
+  "share.group.left": "Left out",
+  "share.item.updated": "{from} → {to}",
+  "share.item.pinned": "pinned at {version}",
+  "share.item.unpinned": "no longer pinned at {version}",
+  "share.item.edited": "its settings change",
+  "share.item.other_source": "installed here from another source; kept as it is",
+  "share.item.failed": "can't be installed on {client}",
+  "share.item.failed.not_found": "not found",
+  "share.item.failed.no_compatible_release": "no version for {client}",
+  "share.item.failed.source_disabled": "its source is turned off",
+  "share.item.failed.ref_ambiguous": "names more than one addon",
+  "share.item.duplicate": "listed twice",
+  "share.item.skipped": "left as it is",
+  "share.effect.unknown_target": "Part of the list is for a client that isn't on this computer; it's left out.",
+  "share.effect.unknown_key": "The list has settings omaddons doesn't know; they're ignored.",
+  "share.effect.kept": "Addons the list doesn't have stay as they are.",
+  "share.result": { "one": "Matched the addon list: 1 addon changed", "other": "Matched the addon list: {n} addons changed" },
+  "share.result.clients": { "one": "Matched the addon list: 1 addon changed on {m} clients", "other": "Matched the addon list: {n} addons changed on {m} clients" },
+  "share.result.none": "Matched the addon list: nothing changed",
+  "share.result.kept": { "one": "1 kept as it is", "other": "{n} kept as they are" },
+  "share.result.failed": "{addon} failed: {why}",
+  "share.result.more": "(and {n} more)",
+  "sheet.group": "{client} · {group}",
 
   // The Errors view and its page (1n2p.27, design doc §6.6).
   "errors.source.high": "probably caused by it",
@@ -7585,7 +7820,9 @@ function sheetItem(fields) {
   var f = fields && typeof fields === "object" ? fields : {}
   var item = {
     "op": str(f.op), "addon": str(f.addon), "client": str(f.client), "clientKey": str(f.clientKey) || str(f.client),
-    "from": str(f.from), "to": str(f.to), "name": str(f.name), "detail": str(f.detail), "header": ""
+    "from": str(f.from), "to": str(f.to), "name": str(f.name), "detail": str(f.detail), "header": "",
+    // The group it is listed under on its client ("New", a pasted list's sheet), or "".
+    "group": str(f.group)
   }
   item.text = item.detail ? item.name + " " + item.detail : item.name
   return item
@@ -7794,6 +8031,112 @@ function selectionSheet(path, env, approval, targets) {
     "confirmLabel": countedConfirm(kind, items), "glyph": kind === "remove" ? SHEET_VERB_GLYPHS.remove : 0 }
 }
 
+// The groups of a pasted list's sheet, in the order a player reads them: what it would
+// change of addons already there first, then what it installs, what is already as the
+// list has it, and what it leaves out.
+var SHARE_GROUPS = ["conflict", "new", "unchanged", "left"]
+
+// An entry of a pasted list by the name a player knows: the addon's name when the
+// preview found it, else what the list wrote, a GitHub ref by its repository's name
+// (`gh:o/qux` is "qux").
+function shareName(it) {
+  var name = str(it.name)
+  if (name) return name
+  var request = str(it.request)
+  var gh = /^gh:[^\/]+\/([^\/]+)$/.exec(request)
+  return gh ? gh[1] : request
+}
+
+// One `sync` item of a pasted list's preview as `{group, item}`, on `client`: its group
+// and its line. `fields` are the record fields an edit changes (from the approval).
+// `sync -v` lists the addons already as the list has them (`unchanged`), too.
+function shareItem(it, client, clientKey, fields) {
+  var status = str(it.status)
+  var name = shareName(it)
+  var from = str(it.from_version)
+  var to = str(it.to_version)
+  var code = it.error && typeof it.error === "object" ? str(it.error.code) : ""
+  var group = "left"
+  var detail = ""
+  if (status === "installed") {
+    group = "new"
+    detail = copy("sheet.item.install", { "version": to }).replace(/^ /, "")
+  } else if (status === "unchanged") {
+    group = "unchanged"
+    detail = from || to
+  } else if (status === "updated") {
+    group = "conflict"
+    detail = from && to && from !== to ? copy("share.item.updated", { "from": from, "to": to }) : (to || from)
+  } else if (status === "pinned") {
+    group = "conflict"
+    detail = copy("share.item.pinned", { "version": to || from })
+  } else if (status === "unpinned") {
+    group = "conflict"
+    detail = copy("share.item.unpinned", { "version": to || from })
+  } else if (status === "edited") {
+    group = "conflict"
+    detail = fields.length ? copy("sheet.item.edit", { "fields": joinNames(fields.map(function(f) { return f.replace(/_/g, " ") })) })
+      : copy("share.item.edited")
+  } else if (status === "failed" && code === "ownership_conflict") {
+    // Installed here from another source: the list's is not installed over it.
+    group = "conflict"
+    detail = copy("share.item.other_source")
+  } else if (status === "failed") {
+    detail = copy(["not_found", "no_compatible_release", "source_disabled", "ref_ambiguous"].indexOf(code) !== -1
+      ? "share.item.failed." + code : "share.item.failed", { "client": client })
+  } else if (status === "skipped") {
+    detail = copy(str(it.skip_reason) === "duplicate" ? "share.item.duplicate" : "share.item.skipped")
+  }
+  return { "group": group, "item": sheetItem({ "op": status, "addon": name, "client": client, "clientKey": clientKey,
+    "from": from, "to": to, "name": name, "detail": detail, "group": copy("share.group." + group) }) }
+}
+
+// A pasted list's sheet (1n2p.37): what `sync -` would do on each client the list
+// reaches, its items grouped as SHARE_GROUPS (each client's under its name when there
+// are several), the effects its approval names, and the notes the list's own warnings
+// call for (by code, never their text). Addons the list does not have stay as they are:
+// the panel never syncs with `--prune`, and the sheet says so.
+function syncSheet(env, approval, targets) {
+  var data = env.data && typeof env.data === "object" ? env.data : {}
+  var list = Array.isArray(data.targets) ? data.targets : []
+  var selection = Array.isArray(approval.selection) ? approval.selection : []
+  var fieldsOf = function(key, id, addon) {
+    for (var i = 0; i < selection.length; i++) {
+      var s = selection[i]
+      var here = (key && s.target_key === key) || (!key && s.target_id === id)
+      if (s && here && asciiLower(str(s.addon)) === asciiLower(addon)) return stringList(s.fields)
+    }
+    return []
+  }
+  var items = []
+  var changes = []
+  for (var t = 0; t < list.length; t++) {
+    var entry = list[t] && typeof list[t] === "object" ? list[t] : {}
+    var target = entry.target && typeof entry.target === "object" ? entry.target : {}
+    var key = str(target.key)
+    var client = sheetClient(targets, str(target.id), key)
+    var byGroup = { "conflict": [], "new": [], "unchanged": [], "left": [] }
+    ;(Array.isArray(entry.items) ? entry.items : []).forEach(function(it) {
+      if (!it || typeof it !== "object") return
+      var one = shareItem(it, client, key || str(target.id), fieldsOf(key, str(target.id), shareName(it)))
+      byGroup[one.group].push(one.item)
+      if (isChange(it)) changes.push(one.item)
+    })
+    SHARE_GROUPS.forEach(function(g) { items = items.concat(byGroup[g]) })
+  }
+  var effects = reasonEffects(approval, changes, targets, data)
+  var codes = Array.isArray(env.warnings) ? env.warnings.map(function(w) { return w && w.code }) : []
+  if (codes.indexOf("desired_unknown_target") !== -1) effects.push(sheetEffect("note", copy("share.effect.unknown_target")))
+  if (codes.indexOf("desired_unknown_key") !== -1) effects.push(sheetEffect("note", copy("share.effect.unknown_key")))
+  effects.push(sheetEffect("note", copy("share.effect.kept")))
+  var clients = sheetClients(items)
+  return {
+    "title": clients.length <= 1 ? copy("share.title.client", { "client": clients[0] || "" }) : copy("share.title.clients", { "m": clients.length }),
+    "items": items, "effects": effects.concat(commonEffects(env, items, effects)),
+    "confirmLabel": copy("share.confirm", { "n": changes.length }), "glyph": 0
+  }
+}
+
 // An undo's sheet (or a repair's undo, E7): what it reverts, where and from when, and
 // each folder or operation it puts back.
 function undoSheet(env, context, targets) {
@@ -7926,16 +8269,21 @@ function forgetSheet(env, targets) {
 }
 
 // The sheet as PlanSheet.qml reads it: every key present, the items grouped by client
-// when they span several (`header` on each group's first item), and the effects that
-// cost something first, in their order otherwise.
+// when they span several (`header` on each group's first item), each client's items by
+// their own `group` when they have one ("Retail · New", or "New" on one client), and the
+// effects that cost something first, in their order otherwise.
 function finishSheet(sheet) {
   var s = sheet && typeof sheet === "object" ? sheet : {}
   var items = Array.isArray(s.items) ? s.items : []
   var grouped = sheetClients(items).length > 1
   var last = null
   for (var i = 0; i < items.length; i++) {
-    items[i].header = grouped && items[i].clientKey !== last ? items[i].client : ""
-    last = items[i].clientKey
+    var group = str(items[i].group)
+    var mark = items[i].clientKey + "\n" + group
+    var title = group === "" ? (grouped ? items[i].client : "")
+      : (grouped ? copy("sheet.group", { "client": items[i].client, "group": group }) : group)
+    items[i].header = mark !== last ? title : ""
+    last = mark
   }
   var effects = Array.isArray(s.effects) ? s.effects : []
   var urgent = effects.filter(function(e) { return e.severity === "urgent" })
@@ -8022,6 +8370,9 @@ function previewSheet(path, env, approval, plan, context, targets) {
     var data = env.data && typeof env.data === "object" ? env.data : {}
     var effects = reasonEffects(approval, sheet.items, targets, data).concat(sheet.effects)
     sheet.effects = effects.concat(commonEffects(env, sheet.items, effects))
+  } else if (path === "sync") {
+    // The panel previews `sync` only for a pasted list (1n2p.37).
+    sheet = syncSheet(env, approval, targets)
   } else {
     sheet = selectionSheet(path, env, approval, targets)
   }
@@ -8147,7 +8498,8 @@ function previewDecision(spec, env) {
   }
   if (data.plan_id === null && approval.selection.length === 0) {
     decision.kind = "refresh"
-    decision.line = copy(s.mode === "match" ? "decision.refresh.match" : "decision.refresh")
+    // A pasted list everything here already matches (1n2p.37) says so in its words.
+    decision.line = copy(s.mode === "match" ? "decision.refresh.match" : s.path === "sync" ? "share.paste.nothing" : "decision.refresh")
     return decision
   }
   if (data.plan_id === null) {
@@ -8515,6 +8867,17 @@ if (typeof module !== "undefined") {
     copyText: copyText,
     copyArgv: copyArgv,
     copyFlash: copyFlash,
+    PASTE_MAX_BYTES: PASTE_MAX_BYTES,
+    WIDGET_PASTE_DEADLINE_MS: WIDGET_PASTE_DEADLINE_MS,
+    pastedList: pastedList,
+    pasteRefusal: pasteRefusal,
+    pasteFailure: pasteFailure,
+    pasteArgv: pasteArgv,
+    exportRequest: exportRequest,
+    syncRequest: syncRequest,
+    exportedList: exportedList,
+    syncSheet: syncSheet,
+    finishSheet: finishSheet,
     envelopeOk: envelopeOk,
     parseEnvelope: parseEnvelope,
     compatible: compatible,

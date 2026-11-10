@@ -8,9 +8,12 @@
 //   letter (copy ids, keys and slot names are lowercase single words; glyphs are code
 //   points).
 // - model-literal: a Model.js string literal of two or more words outside COPY,
-//   ERROR_WORDS, WARNING_WORDS and comments. Not counted: a command path (a CLI_PATHS
-//   key), and the message of a `refuse(…)` or `Error(…)`, a diagnostic the widget keys
-//   by its code, as it keys the CLI's errors (§6.1).
+//   ERROR_WORDS, WARNING_WORDS, KEYMAP and comments. Not counted: a command path (a
+//   CLI_PATHS key), and the message of a `refuse(…)` or `Error(…)`, a diagnostic the
+//   widget keys by its code, as it keys the CLI's errors (§6.1). KEYMAP is a word table
+//   of its own (1n2p.37): its labels and notes are the key reference's and every
+//   tooltip's words, and tests/omarchy_widget.rs holds each row equal to README's key
+//   table, so they live in that one checked place, never split into COPY ids.
 // - unused-id: a COPY id no runtime file names, as a literal or under a prefix the code
 //   builds ids from (`"card.action." + name`).
 // - code-without-words: an error or warning code of `omaddons robot-docs errors` with no
@@ -21,7 +24,7 @@
 
 const WORD_PROPERTIES = ["text", "tooltipText", "placeholderText", "heading", "Accessible\\.name", "Accessible\\.description"]
 const DIAGNOSTIC_CALLS = ["refuse", "Error"]
-const WORD_TABLES = ["COPY", "ERROR_WORDS", "WARNING_WORDS"]
+const WORD_TABLES = ["COPY", "ERROR_WORDS", "WARNING_WORDS", "KEYMAP"]
 
 // The characters after which a `/` starts a regex literal, not a division.
 const REGEX_AFTER = "(,=:[!&|?{};+-*%<>~^"
@@ -109,12 +112,16 @@ function words(text) {
 function tableSpans(src, names) {
   const spans = []
   for (const name of names) {
-    const head = src.indexOf("var " + name + " = {")
+    // An object table (`var COPY = {`), or a list of rows (`var KEYMAP = [`).
+    const brace = src.indexOf("var " + name + " = {")
+    const bracket = src.indexOf("var " + name + " = [")
+    const head = brace >= 0 ? brace : bracket
     if (head < 0) continue
-    const open = src.indexOf("{", head)
+    const opener = brace >= 0 ? "{" : "["
+    const open = src.indexOf(opener, head)
     let depth = 0
-    for (const token of braces(src, open)) {
-      depth += token.char === "{" ? 1 : -1
+    for (const token of braces(src, open, opener)) {
+      depth += token.char === opener ? 1 : -1
       if (depth === 0) {
         spans.push([open, token.at])
         break
@@ -125,7 +132,9 @@ function tableSpans(src, names) {
 }
 
 // The braces of `src` from `from` on, outside strings and comments.
-function* braces(src, from) {
+function* braces(src, from, opener) {
+  const open = opener || "{"
+  const close = open === "[" ? "]" : "}"
   let i = from
   while (i < src.length) {
     const c = src[i]
@@ -139,7 +148,7 @@ function* braces(src, from) {
       while (i < src.length && src[i] !== c) i += src[i] === "\\" ? 2 : 1
       i++
     } else {
-      if (c === "{" || c === "}") yield { char: c, at: i }
+      if (c === open || c === close) yield { char: c, at: i }
       i++
     }
   }

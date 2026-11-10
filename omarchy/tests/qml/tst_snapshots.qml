@@ -1521,6 +1521,25 @@ TestCase {
   function test_confirm_update_on_two_clients() { updateOnTwoClients(540, "confirm-update-two-clients") }
   function test_confirm_update_on_two_clients_at_400() { updateOnTwoClients(400, "confirm-update-two-clients-400") }
 
+  // A pasted addon list (1n2p.37) on every client, from Addons: its plan sheet groups
+  // each client's Conflicts, New and Unchanged under the client's name, at 540 and 400.
+  function pastedList(width, name) {
+    panelWidth = width
+    var scene = everyday()
+    scene.status = the("share-status")
+    scene.list = the("share-list")
+    open(scene, "installed")
+    scene.sync = the("share-sync-preview")
+    var list = JSON.parse(Fixtures.text("share-export-retail")).data.content
+    compare(service.run("sync_all", {}, "Use a pasted addon list", [], list), "")
+    settle(scene)
+    verify(service.confirm !== null, "the pasted list's plan sheet")
+    shoot(name)
+  }
+
+  function test_confirm_pasted_list() { pastedList(540, "confirm-pasted-list") }
+  function test_confirm_pasted_list_at_400() { pastedList(400, "confirm-pasted-list-400") }
+
   // `u` on Foo's update whose release moved since the list was read: the dialog says
   // what changed instead of applying.
   function test_confirm_changed_since_you_looked() {

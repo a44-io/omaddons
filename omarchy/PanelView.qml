@@ -1686,13 +1686,20 @@ Item {
   }
 
   // The keys that are no single character (design doc §3: Ctrl+Z, PgUp, PgDn, the
-  // text zoom) are window shortcuts: they fire on the ShortcutOverride pass, before the
-  // key catcher sees the key, and go through the same KEYMAP lookup as every other key.
+  // text zoom, and Ctrl+V's paste of an addon list, 1n2p.37) are window shortcuts: they
+  // fire on the ShortcutOverride pass, before the key catcher sees the key, and go
+  // through the same KEYMAP lookup as every other key. A box that is typing keeps its own
+  // Ctrl+V (shortcutsOn).
   Item {
     Shortcut {
       sequence: "Ctrl+Z"
       enabled: root.shortcutsOn
       onActivated: root.act("Ctrl+Z")
+    }
+    Shortcut {
+      sequence: "Ctrl+V"
+      enabled: root.shortcutsOn
+      onActivated: root.act("Ctrl+V")
     }
     Shortcut {
       sequence: "PgUp"

@@ -20,6 +20,11 @@ import "../Model.js" as Model
 // settings (the restore chooser). The keys are Model.KEYMAP's installed and filter rows.
 // Folders omaddons does not manage are one line per client, in words; their Take over…
 // leads to the take-over flow, which the first-run bead (.32) registers.
+// Last, the share line (1n2p.37): Copy addon list (`y`) puts the chosen client's set, or
+// every client's, on the clipboard as `export` prints it; Paste addon list… (Ctrl+V)
+// previews a list someone shared as `sync -`, and the plan sheet says what it would
+// change before anything does. It shows with no addons yet too: a new computer starts
+// from a shared list.
 Item {
   id: root
 
@@ -48,6 +53,11 @@ Item {
   readonly property bool filterShown: query !== "" || filterField.activeFocus
   // The take-over flow, once the first-run bead registers it (`frame.keyHandlers.adopt`).
   readonly property bool canTakeOver: !!frame && !!frame.keyHandlers && typeof frame.keyHandlers["adopt"] === "function"
+  // The share line, once the list was read: a copy needs a managed addon in the scope.
+  readonly property bool canShare: !!svc && !!svc.lists
+  readonly property bool hasAddons: canShare && Model.installedRows(svc.lists, filter).length > 0
+  // What the last copy put on the clipboard, said for a moment (the copy flash).
+  property string copied: ""
 
   readonly property color foreground: frame ? frame.foreground : Commons.Color.foreground
   readonly property color dim: frame ? frame.dim : Qt.darker(foreground, 1.55)
@@ -100,7 +110,35 @@ Item {
       keepCursor(function() { root.sort = Model.nextSort(root.sort) })
       return true
     }
+    if (name === "copy") {
+      copyList()
+      return true
+    }
+    if (name === "paste") {
+      pasteList()
+      return true
+    }
     return false
+  }
+
+  // `y`: the scope's addon list on the clipboard. The flash says what went on it once
+  // wl-copy took it; why nothing did is the panel's notice.
+  function copyList() {
+    if (!canShare) return false
+    return svc.copyAddonList(filter, function(ok, line) {
+      if (ok) {
+        root.copied = line
+        copiedTimer.restart()
+        if (root.frame) root.frame.report("")
+      } else if (root.frame) root.frame.report(line)
+    })
+  }
+
+  // Ctrl+V: a shared list from the clipboard, previewed on the scope; the plan sheet asks
+  // before anything changes. Why it ran nothing is the panel's notice.
+  function pasteList() {
+    if (!canShare || !canChange) return false
+    return svc.pasteAddonList(filter, function(refusal) { if (root.frame) root.frame.report(refusal) })
   }
 
   function run(action) {
@@ -247,7 +285,7 @@ Item {
       width: column.width
       height: root.scrollsItself
         ? Math.max(Style.space(200), (root.frame ? root.frame.contentRoom - root.frame.viewTop : Style.space(480))
-          - y - unmanagedLines.height - column.spacing * 2)
+          - y - unmanagedLines.height - shareLine.height - column.spacing * 3)
         : 0
       spacing: column.spacing
       model: root.scrollsItself ? root.rows : []
@@ -302,6 +340,83 @@ Item {
         }
       }
     }
+
+    // Sharing (1n2p.37): the line in words, its two buttons with their keys, and what the
+    // last copy put on the clipboard, for a moment.
+    Column {
+      id: shareLine
+      objectName: "shareLine"
+      visible: root.canShare
+      width: column.width
+      height: visible ? implicitHeight : 0
+      spacing: Style.spacing.xs
+
+      PlainLabel {
+        objectName: "shareText"
+        width: parent.width
+        wrapMode: Text.WordWrap
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        text: Model.copy("share.line")
+      }
+
+      // The buttons wrap at a narrow panel or a large text zoom, never past its edge.
+      Flow {
+        width: parent.width
+        spacing: Style.spacing.sm
+
+        Button {
+          objectName: "copyList"
+          width: Math.min(implicitWidth, shareLine.width)
+          text: Model.withKey(Model.copy("share.copy"), "copy", "installed")
+          tooltipText: Model.keyTip("copy", "installed")
+          Accessible.role: Accessible.Button
+          Accessible.name: text
+          enabled: root.hasAddons
+          opacity: enabled ? 1.0 : 0.4
+          bordered: true
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          fontSize: Style.font.caption
+          onClicked: root.copyList()
+        }
+
+        Button {
+          objectName: "pasteList"
+          width: Math.min(implicitWidth, shareLine.width)
+          text: Model.withKey(Model.copy("share.paste"), "paste", "installed")
+          tooltipText: Model.keyTip("paste", "installed")
+          Accessible.role: Accessible.Button
+          Accessible.name: text
+          enabled: root.canChange
+          opacity: enabled ? 1.0 : 0.4
+          bordered: true
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          fontSize: Style.font.caption
+          onClicked: root.pasteList()
+        }
+      }
+
+      // The copy flash (design doc §5.5): what went on the clipboard.
+      PlainLabel {
+        objectName: "copyFlash"
+        visible: root.copied !== ""
+        width: parent.width
+        // Accent is never text's colour (§5.1, 1n2p.40).
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        text: root.copied
+      }
+    }
+  }
+
+  Timer {
+    id: copiedTimer
+    interval: 1500
+    onTriggered: root.copied = ""
   }
 
   // One row, as both lists build it: under All, its client's header above the client's

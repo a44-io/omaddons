@@ -265,7 +265,26 @@ fn every_template_is_a_registry_command_with_safe_slots() {
         assert!(path.is_some(), "{name}: no command path");
         let path = path.unwrap_or_default();
         let mutates = template["mutates"] == true;
-        assert_eq!(mutates, app::mutates(&path), "{name}: mutates");
+        // An export copies a set (1n2p.37): without `--write` it writes nothing (README
+        // `export`), so its template is a read, and it never names `--write`.
+        if path == "export" {
+            assert!(
+                !mutates && !argv.iter().any(|a| a == "--write" || a == "--overwrite"),
+                "{name}: an export template reads, and never writes a file"
+            );
+        } else {
+            assert_eq!(mutates, app::mutates(&path), "{name}: mutates");
+        }
+        // Standard input (1n2p.37): a pasted list, for `sync -`'s confirmed preview alone.
+        if let Some(stdin) = template.get("stdin") {
+            assert!(
+                stdin == "list"
+                    && path == "sync"
+                    && argv.iter().any(|a| a == "-")
+                    && template.get("preview").is_some_and(|p| p == "confirm"),
+                "{name}: standard input other than sync -'s confirmed preview"
+            );
+        }
         // Naming no actor (`actor: false`) is for `history`'s read alone, which reads an
         // explicit `--actor` as a filter: a change always records who made it.
         if let Some(actor) = template.get("actor") {
@@ -702,6 +721,17 @@ fn the_network_deadline_outlasts_the_longest_polite_request() {
     );
 }
 
+/// A pasted addon list (1n2p.37) is refused in the widget exactly past what `sync -`
+/// reads from standard input, so the panel never sends a list the CLI would refuse for
+/// its size, nor refuses one the CLI would read.
+#[test]
+fn the_paste_cap_is_what_sync_reads_from_standard_input() {
+    assert_eq!(
+        constant(&model_js(), "PASTE_MAX_BYTES"),
+        omaddons::limits::SYNC_STDIN_MAX_BYTES
+    );
+}
+
 /// Every template's worst-case output stays under `WIDGET_OUTPUT_MAX_BYTES`. The worst
 /// case is every Battle.net flavor plus two custom clients, 400 addons each, all with
 /// an update. Templates that list every addon are measured at 10 and 30 addons and
@@ -729,7 +759,14 @@ fn the_output_cap_bounds_every_template() {
     const ANSWER: u64 = 64 * 1024;
     let cap = constant(&model_js(), "WIDGET_OUTPUT_MAX_BYTES");
     let t = templates();
-    let measured = ["status", "status_full", "list", "check", "update_all"];
+    let measured = [
+        "status",
+        "status_full",
+        "list",
+        "check",
+        "update_all",
+        "export_all",
+    ];
     let sizes = |n: usize| -> BTreeMap<&str, u64> {
         let home = behind(n);
         let mut out = BTreeMap::new();
@@ -744,7 +781,7 @@ fn the_output_cap_bounds_every_template() {
     let mut per_client = BTreeMap::new();
     for name in measured {
         // These list every addon; a flat answer means the homes did not differ.
-        if matches!(name, "list" | "check" | "update_all") {
+        if matches!(name, "list" | "check" | "update_all" | "export_all") {
             assert!(large[name] > small[name], "{name}: {small:?} {large:?}");
         }
         let slope = large[name].saturating_sub(small[name]).div_ceil(20);
@@ -775,6 +812,7 @@ fn the_output_cap_bounds_every_template() {
         assert!(worst < cap, "{name}: worst case {worst} bytes ≥ {cap}");
     }
     let (base, slope) = per_client["update_all"];
+    let (export_base, export_slope) = per_client["export_all"];
     // History (1n2p.30): `--limit` lines of `history -v`, each one client's transaction,
     // listing an item and an op per addon it changed: at worst every addon there. The
     // per-addon cost of one line is measured over homes of 10 and of 30 addons, each
@@ -883,6 +921,16 @@ fn the_output_cap_bounds_every_template() {
         } else if name == "undo_run_target" {
             // The same, on one client.
             Some(base + ADDONS * slope)
+        } else if name == "export_target" {
+            // One client's set, as `export_all` lists each (1n2p.37).
+            Some(export_base + ADDONS * export_slope)
+        } else if name == "sync_all" {
+            // A pasted list's preview (1n2p.37): an item and an approval row per addon on
+            // every client, as an update of every addon lists them.
+            Some(CLIENTS * (base + ADDONS * slope))
+        } else if name == "sync_target" {
+            // The same, on one client.
+            Some(base + ADDONS * slope)
         } else if matches!(name.as_str(), "doctor_fix" | "doctor_fix_target") {
             // A repair's report (G2): at most DOCTOR_FIX_MAX_ACTIONS planned primitives
             // (a larger plan is refused before it is reported), and every client's
@@ -985,7 +1033,16 @@ fn validate_built_argv() {
         );
         let path = command_name(cli.command.as_ref());
         assert_eq!(path, entry["path"], "{argv:?}");
-        assert_eq!(entry["mutates"], app::mutates(path), "{argv:?}");
+        // An export without `--write` writes nothing (1n2p.37): the widget's are reads.
+        if path == "export" {
+            assert!(
+                entry["mutates"] == false
+                    && !argv.iter().any(|a| a == "--write" || a == "--overwrite"),
+                "{argv:?}: an export the widget runs reads"
+            );
+        } else {
+            assert_eq!(entry["mutates"], app::mutates(path), "{argv:?}");
+        }
         assert_eq!(cli.global.dry_run, entry["preview"] == true, "{argv:?}");
         assert_eq!(
             cli.global.if_match.as_deref().unwrap_or(""),
@@ -2647,6 +2704,188 @@ fn adopt_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
     assert!(loose.join("Loose.toc").is_file(), "Loose stays as it was");
 }
 
+/// A list someone shared (1n2p.37): Foo as retail has it, Bar pinned at its release, Qux
+/// (which ships the LibFoo folder retail has from LibFoo's own repository) and Baz, new
+/// on retail and on Classic Era, and a section for a client this home does not have.
+#[cfg(test)]
+const SHARED_LIST: &str = r#"# shared by a guildmate
+schema_version = "1.0"
+
+[family.mainline]
+addons = [
+  "gh:o/foo",
+  "gh:o/baz",
+  "gh:o/qux",
+]
+
+[[family.mainline.addon]]
+ref = "gh:o/bar"
+version = "v1"
+pinned = true
+
+[family.vanilla]
+addons = ["gh:o/baz"]
+
+[target."ptr"]
+addons = ["gh:o/foo"]
+"#;
+
+/// Sharing an addon set (1n2p.37), in a home of its own: retail with Foo, Bar and LibFoo,
+/// Classic Era with nothing. The copy's `export` of retail, of every client and of Classic
+/// Era (nothing to copy); a pasted list's preview (`sync -`, the list on standard input)
+/// on every client and on retail alone, and the apply of the first; a list everything
+/// already matches; and one the CLI refuses (a family it does not know).
+#[cfg(test)]
+fn share_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
+    use support::{apply_of, planned, preview_of};
+
+    let log = tlog!();
+    let home = Home::new(&["wow", "wow_classic_era"]);
+    let libfoo = Rel::new("LibFoo", "v1");
+    for (base, rel) in [
+        (support::FOO, Rel::new("Foo", "v1")),
+        (support::BAR, Rel::new("Bar", "v1")),
+        (support::BAZ, Rel::new("Baz", "v1")),
+        (support::LIBFOO, Rel::new("LibFoo", "v1")),
+    ] {
+        gh_release(&home.http, base, "v1", &rel.assets());
+        gh_latest(&home.http, base, "v1");
+    }
+    // Qux ships the LibFoo folder too: another source for an addon retail has.
+    gh_release(&home.http, support::QUX, "v1", &libfoo.assets());
+    gh_latest(&home.http, support::QUX, "v1");
+    home.run(&[
+        "install",
+        "gh:o/foo",
+        "gh:o/bar",
+        "gh:o/libfoo",
+        "-t",
+        "retail",
+    ])
+    .expect(0);
+    write_fixture(dir, "share-status", &home.exec(&fill(t, "status", &[])), 0);
+    write_fixture(dir, "share-list", &home.exec(&fill(t, "list", &[])), 0);
+    let retail = write_fixture(
+        dir,
+        "share-export-retail",
+        &home.exec(&fill(t, "export_target", &[("target", "retail")])),
+        0,
+    );
+    assert_eq!(retail["data"]["entries"], 3, "{retail}");
+    let content = retail["data"]["content"].as_str().unwrap_or_default();
+    assert!(
+        content.contains("gh:o/foo") && content.contains("schema_version"),
+        "{retail}"
+    );
+    write_fixture(
+        dir,
+        "share-export-all",
+        &home.exec(&fill(t, "export_all", &[])),
+        0,
+    );
+    let era = write_fixture(
+        dir,
+        "share-export-era",
+        &home.exec(&fill(t, "export_target", &[("target", "era")])),
+        0,
+    );
+    assert_eq!(era["data"]["entries"], 0, "nothing to copy on era: {era}");
+
+    // The pasted list's preview on every client, then on retail alone.
+    let paste = |name: &str, argv: Vec<String>, text: &str, code: i32| -> Value {
+        let run = home.exec_input(&argv, &[], text.as_bytes());
+        let envelope = write_fixture(dir, name, &run, code);
+        log.json(name, &envelope);
+        envelope
+    };
+    let preview = paste(
+        "share-sync-preview",
+        preview_of(fill(t, "sync_all", &[])),
+        SHARED_LIST,
+        0,
+    );
+    let statuses = |env: &Value, id: &str| -> Vec<(String, String)> {
+        let target = env["data"]["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["target"]["id"] == id)
+            .cloned()
+            .unwrap_or_default();
+        target["items"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|i| {
+                        let name = i["name"].as_str().or(i["request"].as_str());
+                        (
+                            name.unwrap_or_default().to_owned(),
+                            i["status"].as_str().unwrap_or_default().to_owned(),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mut on_retail = statuses(&preview, "retail");
+    on_retail.sort();
+    log.json("retail statuses", &serde_json::json!(on_retail));
+    for (name, status) in [
+        ("Bar", "pinned"),
+        ("Baz", "installed"),
+        ("Foo", "unchanged"),
+    ] {
+        assert!(
+            on_retail.contains(&(name.to_owned(), status.to_owned())),
+            "{name} {status} on retail: {on_retail:?}"
+        );
+    }
+    assert!(
+        on_retail.iter().any(|(_, s)| s == "failed"),
+        "Qux's LibFoo is another source's: {on_retail:?}"
+    );
+    assert_eq!(
+        statuses(&preview, "era"),
+        [("Baz".to_owned(), "installed".to_owned())],
+        "{preview}"
+    );
+    assert!(
+        preview["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w["code"] == "desired_unknown_target"),
+        "the ptr section names no client here: {preview}"
+    );
+    let id = planned(&preview);
+    paste(
+        "share-sync-preview-retail",
+        preview_of(fill(t, "sync_target", &[("target", "retail")])),
+        SHARED_LIST,
+        0,
+    );
+    plan_fixture(&log, &home, dir, "share-sync-apply", &apply_of(&id), 0);
+    // After it, a list everything already matches: nothing to do, no plan.
+    let nothing = paste(
+        "share-sync-nothing",
+        preview_of(fill(t, "sync_target", &[("target", "retail")])),
+        "schema_version = \"1.0\"\n\n[family.mainline]\naddons = [\"gh:o/foo\"]\n",
+        0,
+    );
+    assert!(nothing["data"]["plan_id"].is_null(), "{nothing}");
+    let invalid = paste(
+        "share-sync-invalid",
+        preview_of(fill(t, "sync_all", &[])),
+        "schema_version = \"1.0\"\n\n[family.mainlien]\naddons = [\"gh:o/foo\"]\n",
+        2,
+    );
+    assert_eq!(
+        invalid["error"]["code"], "desired_state_invalid",
+        "{invalid}"
+    );
+}
+
 /// The settings sheet (1n2p.31), in a home of its own: omaddons' settings read whole
 /// (`config`), one changed through its template, read again, and a value the key refuses.
 #[cfg(test)]
@@ -3619,6 +3858,7 @@ fn write_widget_fixtures() {
     adopt_fixtures(&dir, &t);
     settings_fixtures(&dir, &t);
     versions_fixtures(&dir, &t);
+    share_fixtures(&dir, &t);
 
     // Idle: Baz current on retail, checked just now.
     let home = Home::new(&["wow"]);

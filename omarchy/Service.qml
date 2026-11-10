@@ -243,6 +243,9 @@ Item {
   property int rowDoneMs: Model.ACTIVITY_ROW_DONE_MS
   // How long a copy waits for wl-copy's exit before it says nothing was copied (UX-36).
   property int copyDeadlineMs: 3000
+  // How long a paste waits for wl-paste before it says the clipboard could not be read
+  // (1n2p.37).
+  property int pasteDeadlineMs: Model.WIDGET_PASTE_DEADLINE_MS
 
   // The template table: Model.COMMANDS; the tests add fixture templates.
   property var templates: Model.COMMANDS
@@ -443,6 +446,74 @@ Item {
     var copier = copyComponent.createObject(root, { "text": text, "done": callback })
     if (copier) copier.start()
     else if (callback) callback(false)
+    return true
+  }
+
+  // ---- sharing an addon set (1n2p.37)
+
+  // Copy addon list: the chosen client's set (`filter`), or every client's, read with
+  // `export` on the local lane (it writes nothing) and put on the clipboard as the TOML
+  // it printed (copyCommand). `done(ok, line)`, when given, hears what to flash: what was
+  // copied, once wl-copy took it, or why nothing was (Model.exportedList). Whether the
+  // read was asked.
+  function copyAddonList(filter, done) {
+    var asked = Model.exportRequest(filter || "", targets)
+    return request({ "resource": "export", "template": asked.template, "slots": asked.slots, "label": asked.label,
+      "lane": "local", "purpose": "copy", "target": filter || "", "done": typeof done === "function" ? done : null })
+  }
+
+  // The export a copy read: its text to the clipboard, or why there is none. A failure
+  // is the copy's to say beside its button, never a failure card.
+  function copiedList(r, outcome, env) {
+    var done = typeof r.done === "function" ? r.done : null
+    var answer = function(ok, line) {
+      if (!done) return
+      // The view that asked may have gone before the answer came.
+      try {
+        done(ok, line)
+      } catch (e) {
+        console.warn("omaddons: a copy's answer reached no view:", e)
+      }
+    }
+    var list = Model.exportedList(outcome === "ok" ? env : null, String(r.target || ""), targets)
+    if (!list.ok) {
+      answer(false, list.line)
+      return
+    }
+    if (!copyCommand(list.text, function(ok) { answer(ok, Model.copyFlash(ok, list.line)) })) answer(false, Model.copy("share.copy.failed"))
+  }
+
+  // Paste addon list: the clipboard read (pasteComponent: wl-paste, on no lane), checked
+  // (Model.pastedList), then previewed as `sync -` on the chosen client (`filter`) or
+  // every client, the text on its standard input: the plan sheet says what it would
+  // change before anything does, and its Yes applies the stored plan. `done(refusal)`
+  // hears "" once the preview is asked, or why nothing ran, in the player's words.
+  // Whether the clipboard is being read.
+  function pasteAddonList(filter, done) {
+    var answer = typeof done === "function" ? done : function(refusal) {}
+    if (!canAct) {
+      answer(incompatibleText || "omaddons is not ready")
+      return false
+    }
+    var scope = String(filter || "")
+    var reader = pasteComponent.createObject(root, { "done": function(ok, text) {
+      if (!ok) {
+        answer(Model.pasteRefusal("unreadable"))
+        return
+      }
+      var list = Model.pastedList(text)
+      if (!list.ok) {
+        answer(Model.pasteRefusal(list.reason))
+        return
+      }
+      var asked = Model.syncRequest(scope, targets)
+      answer(run(asked.template, asked.slots, asked.label, [], list.text))
+    } })
+    if (!reader) {
+      answer(Model.pasteRefusal("unreadable"))
+      return false
+    }
+    reader.start()
     return true
   }
 
@@ -720,6 +791,9 @@ Item {
       "preview": true, "purpose": "preview", "spec": spec, "stale": stale || "",
       "mode": spec.mode || "", "shown": spec.shown || null, "again": again === true, "continuation": again === true
     }
+    // A pasted list goes with its preview, and again with a preview made after its plan
+    // was refused; never with the plan's apply, which holds the text (1n2p.37).
+    if (typeof spec.stdin === "string") fields.stdin = spec.stdin
     // A match preview may ask the sources: the network deadline, kept alive by progress.
     // A confirm preview and every apply run under the mutation lane's (none).
     if (spec.mode === "match") {
@@ -774,6 +848,9 @@ Item {
     if (outcome !== "ok") {
       failedPreview = r.spec
       lastError = errorOf(env, r.label + ": " + outcome)
+      // A pasted list the CLI refused (1n2p.37): where its mistake is, in the panel's words.
+      var pasted = typeof r.stdin === "string" ? Model.pasteFailure(env) : null
+      if (pasted) lastError = { "message": pasted, "code": "desired_state_invalid", "fixes": [], "fixText": "", "choices": [], "folder": "" }
       return
     }
     var path = r.cli ? Model.classifyCliArgv(r.cli).path : Model.templateShape(r.template, templates).path
@@ -804,14 +881,16 @@ Item {
 
   // A mutating template by name: a `preview` template (and any destructive one) runs its
   // dry run first (M3-D9, M4-D28), silent ones run in the background. `shown` is what
-  // the view showed of the change, for a `match` preview. Returns "" or why it was
-  // refused.
-  function run(name, slots, label, shown) {
+  // the view showed of the change, for a `match` preview. `input` is a pasted addon list
+  // for a template that takes one on standard input (1n2p.37); buildArgv checks it again.
+  // Returns "" or why it was refused.
+  function run(name, slots, label, shown, input) {
     if (!canAct) return incompatibleText || "omaddons is not ready"
     var template = templates.hasOwnProperty(name) ? templates[name] : null
     if (!template || template.mutates !== true) return "no such action: " + name
     if (template.bind === true) return name + " runs with its view's token (runBound)"
     var spec = { "template": name, "slots": slots || {}, "label": String(label || name), "priority": template.silent === true ? "background" : "user" }
+    if (typeof input === "string") spec.stdin = input
     var refusal = trialBuild(spec)
     if (refusal) return refusal
     var path = Model.templateShape(name, templates).path
@@ -903,7 +982,7 @@ Item {
   function trialBuild(spec) {
     try {
       argvOf({ "template": spec.template || "", "slots": spec.slots || {}, "cli": spec.cli || null, "label": spec.label,
-        "preview": true, "token": "", "confirmed": false })
+        "preview": true, "token": "", "confirmed": false, "stdin": typeof spec.stdin === "string" ? spec.stdin : null })
     } catch (e) {
       return String(e.message || e)
     }
@@ -914,7 +993,7 @@ Item {
     var opts = {
       "binary": root.binary, "label": r.label || r.template || "omaddons", "context": Build.CONTEXT,
       "templates": root.templates, "preview": r.preview === true, "token": r.token || "", "confirmed": r.confirmed === true,
-      "plan": r.plan || null
+      "plan": r.plan || null, "stdin": typeof r.stdin === "string" ? r.stdin : null
     }
     return r.cli ? Model.cliArgv(r.cli, opts) : Model.buildArgv(r.template, r.slots, opts)
   }
@@ -952,7 +1031,7 @@ Item {
       // asked meanwhile queues behind it ("next: …").
       if (r.kind === "mutation" && r.priority !== "background") startAction(r)
       setActivity(name, Model.activityStart(r, Date.now(), lists))
-      laneNamed(name).run(r, built.argv, built.env)
+      laneNamed(name).run(r, built.argv, built.env, built.stdin)
     }
     queuedAction = queuedLabel()
     queuedText = Model.queuedText(queues)
@@ -1126,6 +1205,11 @@ Item {
   }
 
   function apply(r, outcome, env, tail) {
+    // A copy's export (1n2p.37): its answer goes to the clipboard, or says why not.
+    if (r.purpose === "copy") {
+      copiedList(r, outcome, env)
+      return
+    }
     var read = r.resource !== "status" && r.kind !== "mutation" && r.purpose !== "action"
     // A read the player stopped (the activity bar's Cancel, the only one that cancels):
     // no failure card, and the last check stands. Notes waiting for it say they stopped.
@@ -1833,6 +1917,82 @@ Item {
     }
   }
 
+  // One read of the clipboard (pasteAddonList): wl-paste through its builder, in a
+  // process of its own on no lane, decided once it exited 0 and its output ended (in
+  // either order, F0). A missing wl-paste never starts, any other exit means no text was
+  // there, and a read past pasteDeadlineMs is stopped: each is "could not read". The
+  // reader answers once, then goes. Its text is checked by the caller, never run.
+  Component {
+    id: pasteComponent
+
+    Item {
+      id: reader
+
+      property var done: null
+      property bool started: false
+      property bool exited: false
+      property bool ended: false
+      property int code: -1
+      property bool settled: false
+
+      function start() {
+        deadline.restart()
+        child.running = true
+      }
+
+      function settle(ok) {
+        if (settled) return
+        settled = true
+        deadline.stop()
+        var callback = done
+        done = null
+        var text = ok && typeof collector.text === "string" ? collector.text : ""
+        if (callback) {
+          try {
+            callback(ok, text)
+          } catch (e) {
+            console.warn("omaddons: a paste's answer reached no view:", e)
+          }
+        }
+        reader.destroy()
+      }
+
+      function check() {
+        if (exited && code !== 0) settle(false)
+        else if (exited && ended) settle(true)
+      }
+
+      // No answer in time: the child is stopped (SIGTERM, F0) and nothing is pasted.
+      Timer {
+        id: deadline
+        interval: root.pasteDeadlineMs
+        onTriggered: {
+          if (child.running) child.running = false
+          reader.settle(false)
+        }
+      }
+
+      Process {
+        id: child
+        command: Model.pasteArgv()
+        stdout: StdioCollector {
+          id: collector
+          onStreamFinished: {
+            reader.ended = true
+            reader.check()
+          }
+        }
+        onStarted: reader.started = true
+        onExited: function(exitCode, exitStatus) {
+          reader.exited = true
+          reader.code = exitStatus === 0 ? exitCode : -1
+          reader.check()
+        }
+        onRunningChanged: if (!running && !reader.started) reader.settle(false)
+      }
+    }
+  }
+
   IpcHandler {
     id: ipc
     target: Build.PLUGIN_ID
@@ -1848,7 +2008,9 @@ Item {
   // One lane runs one request at a time: a fresh Process per request, completion on
   // `exited` and the end of stdout (in either order, F0) with `running` false, a
   // deadline for reads (from the start, or of inactivity for network reads), and
-  // SIGTERM then SIGKILL, the lane held until the child really exits.
+  // SIGTERM then SIGKILL, the lane held until the child really exits. A request built
+  // with standard input (a pasted list, 1n2p.37) gets it written once the child starts,
+  // then closed, so `sync -` reads it to its end; every other child gets none.
   component Lane: Item {
     id: lane
 
@@ -1873,8 +2035,10 @@ Item {
     property bool timedOut: false
     property bool cancelled: false
     property var tail: []
+    // The running request's standard input (buildArgv's `stdin`), or null for none.
+    property var input: null
 
-    function run(r, argv, env) {
+    function run(r, argv, env, stdin) {
       started = false
       exitedSeen = false
       streamSeen = false
@@ -1887,9 +2051,17 @@ Item {
       var own = typeof r.deadlineMs === "number" && r.deadlineMs >= 0
       runDeadlineMs = own ? r.deadlineMs : deadlineMs
       runInactivity = own ? r.inactivity === true : inactivity
-      proc = processComponent.createObject(lane, { "command": argv, "environment": env })
+      input = typeof stdin === "string" ? stdin : null
+      proc = processComponent.createObject(lane, { "stdinEnabled": input !== null, "command": argv, "environment": env })
       if (runDeadlineMs > 0) deadline.restart()
       proc.running = true
+    }
+
+    // The child started: its standard input written whole, then closed (its end of file).
+    function feed(child) {
+      if (input === null) return
+      child.write(input)
+      child.stdinEnabled = false
     }
 
     function cancel() {
@@ -1947,6 +2119,7 @@ Item {
       var meta = { "argv": Model.listOf(old.command).slice(), "exitCode": exitedSeen ? exitCode : -1 }
       request = null
       proc = null
+      input = null
       old.destroy()
       sink.laneFinished(done, outcome, text, shown, meta)
     }
@@ -2006,7 +2179,10 @@ Item {
         stderr: SplitParser {
           onRead: function(data) { if (lane.proc === child) lane.line(data) }
         }
-        onStarted: if (lane.proc === child) lane.started = true
+        onStarted: if (lane.proc === child) {
+          lane.started = true
+          lane.feed(child)
+        }
         onExited: function(exitCode, exitStatus) {
           if (lane.proc !== child) return
           lane.exitedSeen = true
