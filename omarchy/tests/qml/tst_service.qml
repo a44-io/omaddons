@@ -1620,6 +1620,95 @@ TestCase {
     compare(ProcessRegistry.detached[0].environment, Build.CONTEXT)
   }
 
+  // ---- the clipboard (omad-phcg, UX-36)
+
+  // The clipboard's launches: each copy is a wl-copy process of its own.
+  function copyLaunches() {
+    return ProcessRegistry.launches.filter(function(l) { return l.command[0] === "wl-copy" })
+  }
+
+  // A copy runs wl-copy with the text as one argument, in a process of its own, never
+  // detached and on no lane, and answers `done` once, with wl-copy's own exit.
+  function test_a_copy_answers_with_wl_copys_exit_code() {
+    ready(0)
+    var lanes = JSON.stringify(JSON.parse(service.stateJson()).lanes)
+    var cases = [["exit 0 is copied", 0, true], ["exit 1 is not (no display)", 1, false], ["a crash is not", 9, false]]
+    for (var i = 0; i < cases.length; i++) {
+      var answers = []
+      var text = "a; rm -rf ~ | x " + i
+      var runsBefore = runs().length
+      compare(service.copyCommand(text, function(ok) { answers.push(ok) }), true, cases[i][0])
+      var copies = copyLaunches()
+      compare(copies[copies.length - 1].command, ["wl-copy", "--", text], cases[i][0])
+      compare(answers, [], cases[i][0] + ": nothing said before wl-copy answers")
+      copies[copies.length - 1].process.exit(cases[i][1], cases[i][1] === 9 ? 1 : 0)
+      compare(answers, [cases[i][2]], cases[i][0])
+      wait(0)
+      compare(answers, [cases[i][2]], cases[i][0] + ": answered once")
+      compare(runs().length, runsBefore, cases[i][0] + ": no omaddons run")
+    }
+    compare(copyLaunches().length, 3)
+    compare(Quickshell.detachedCommands, [])
+    compare(ProcessRegistry.detached.length, 0)
+    compare(JSON.stringify(JSON.parse(service.stateJson()).lanes), lanes, "no lane ran or queued a copy")
+  }
+
+  function test_a_copy_with_wl_copy_missing_says_it_was_not_copied() {
+    ready(0)
+    var answers = []
+    ProcessRegistry.missingBinary = true
+    compare(service.copyCommand("omaddons omarchy install", function(ok) { answers.push(ok) }), true)
+    compare(copyLaunches().length, 1)
+    tryVerify(function() { return answers.length === 1 }, 1000, "wl-copy's absence is answered")
+    compare(answers, [false])
+    ProcessRegistry.missingBinary = false
+    // The phase is the binary's, never wl-copy's.
+    compare(service.phase, "ok")
+  }
+
+  function test_a_copy_wl_copy_never_answers_is_not_copied_by_its_deadline() {
+    make({ "copyDeadlineMs": 80 })
+    ready(0)
+    var answers = []
+    var copy = null
+    var runningAtAnswer = null
+    service.copyCommand("x", function(ok) { answers.push(ok); runningAtAnswer = copy.process.running })
+    copy = copyLaunches()[0]
+    wait(20)
+    verify(copy.process.running, "started, not answered yet")
+    compare(answers, [])
+    tryVerify(function() { return answers.length === 1 }, 1000, "the deadline answers")
+    compare(answers, [false])
+    compare(runningAtAnswer, false, "the child is stopped before the answer")
+    // The copier is gone with its child: nothing answers twice.
+    wait(20)
+    compare(answers, [false])
+  }
+
+  function test_a_copy_of_nothing_runs_nothing_and_says_nothing() {
+    var answers = []
+    var cases = [["empty", ""], ["a NUL", "a\u0000b"], ["not a string", 7], ["null", null]]
+    for (var i = 0; i < cases.length; i++) {
+      compare(service.copyCommand(cases[i][1], function(ok) { answers.push(ok) }), false, cases[i][0])
+    }
+    wait(20)
+    compare([copyLaunches().length, answers.length], [0, 0])
+  }
+
+  // A copy waits behind no request: a read still running on every lane changes nothing.
+  function test_a_copy_waits_behind_no_lane() {
+    service.refresh()
+    verify(lastRun("status").process.running, "status still running")
+    var answers = []
+    compare(service.copyCommand("x"), true, "no callback is fine")
+    service.copyCommand("y", function(ok) { answers.push(ok) })
+    var copies = copyLaunches()
+    compare(copies.length, 2)
+    copies[1].process.exit(0)
+    compare(answers, [true])
+    verify(lastRun("status").process.running, "the read is untouched")
+  }
+
   function test_show_summons_the_widget_by_its_build_id() {
     var calls = []
     service.shell = { "summon": function(id, payload) { calls.push([id, payload]); return true } }

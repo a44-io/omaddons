@@ -174,7 +174,7 @@ Item {
           required property var modelData
           objectName: "pageButton_" + modelData.name
           text: modelData.name === "copy" && !!root.owner && !!root.row && root.owner.copied === root.row.key
-            ? Model.copy("issues.copied") : Model.withKey(modelData.text, modelData.name === "fix" ? "enter" : "copy", "page")
+            ? root.owner.copiedText : Model.withKey(modelData.text, modelData.name === "fix" ? "enter" : "copy", "page")
           tooltipText: modelData.tooltip
           Accessible.role: Accessible.Button
           Accessible.name: text

@@ -68,11 +68,14 @@ Item {
     return false
   }
 
+  // Whether there was a report to copy; the flash follows once wl-copy answers.
   function copyReport() {
-    if (!svc || !row || !svc.copyCommand(Model.errorReport(row, statusTargets))) return false
-    copied = Model.copy("errors.copied", { "addon": row.addon })
-    copiedTimer.restart()
-    return true
+    if (!svc || !row) return false
+    var addon = row.addon
+    return svc.copyCommand(Model.errorReport(row, statusTargets), function(ok) {
+      root.copied = Model.copyFlash(ok, Model.copy("errors.copied", { "addon": addon }))
+      copiedTimer.restart()
+    })
   }
 
   function toggleRaw() {

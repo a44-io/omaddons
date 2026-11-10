@@ -1168,6 +1168,13 @@ function copyArgv(text) {
   return ["wl-copy", "--", text]
 }
 
+// What a copy's flash says once wl-copy answered (UX-36): `copied`, the site's own
+// words for what went on the clipboard, when wl-copy took the text (`ok` true), else
+// that nothing was copied. Never "Copied" for a copy that did not happen.
+function copyFlash(ok, copied) {
+  return ok === true ? str(copied) : copy("errors.copy_failed")
+}
+
 function issueOf(issue) {
   var severity = str(issue.severity)
   var remediation = issue.remediation && typeof issue.remediation === "object" ? issue.remediation : {}
@@ -8397,6 +8404,7 @@ if (typeof module !== "undefined") {
     cliAction: cliAction,
     copyText: copyText,
     copyArgv: copyArgv,
+    copyFlash: copyFlash,
     envelopeOk: envelopeOk,
     parseEnvelope: parseEnvelope,
     compatible: compatible,

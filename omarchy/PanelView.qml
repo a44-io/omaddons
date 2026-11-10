@@ -639,11 +639,16 @@ Item {
     else if (action === "reinstall") svc.reinstallWidget()
     else if (action === "copy_command" || action === "copy_details") {
       var text = action === "copy_command" ? Model.missingBinaryCommand() : (card ? card.details : "")
-      if (!svc.copyCommand(text)) return false
-      cardNote = Model.copy("card.copied")
-      cardNoteTimer.restart()
+      return svc.copyCommand(text, function(ok) { root.cardCopied(ok) })
     } else return false
     return true
+  }
+
+  // The card notes' copy flash, once wl-copy answered: copied, or that it did not take
+  // the text (UX-36).
+  function cardCopied(ok) {
+    cardNote = Model.copyFlash(ok, Model.copy("card.copied"))
+    cardNoteTimer.restart()
   }
 
   // A client's take-over (1n2p.32): the folders already there brought under management
@@ -663,11 +668,13 @@ Item {
     if (name === "take_over") return takeOver(card.target)
     if (name === "install") return !!card.action && runCli(card.action, Model.copy("errors.capture.install"))
     if (name === "copy") {
-      if (!svc.copyCommand(card.line)) return false
-      onboardingNote = Model.copy("card.copied")
-      cardNoteTimer.restart()
-      settingRequested("keyHint", "Off")
-      return true
+      // A tip copied was seen: Off for good. One wl-copy did not take stays on the card
+      // to be read, with the words saying so.
+      return svc.copyCommand(card.line, function(ok) {
+        root.onboardingNote = Model.copyFlash(ok, Model.copy("card.copied"))
+        cardNoteTimer.restart()
+        if (ok) root.settingRequested("keyHint", "Off")
+      })
     }
     if (name !== "not_now") return false
     if (card.kind === "keyhint") settingRequested("keyHint", "Off")
@@ -677,10 +684,8 @@ Item {
 
   // The failure card's Copy details.
   function copyErrorDetails() {
-    if (!svc || !lastError || !svc.copyCommand(String(lastError.details || ""))) return false
-    cardNote = Model.copy("card.copied")
-    cardNoteTimer.restart()
-    return true
+    if (!svc || !lastError) return false
+    return svc.copyCommand(String(lastError.details || ""), function(ok) { root.cardCopied(ok) })
   }
 
   // The interrupted change's notice: its problem's page in Issues, whose repair previews

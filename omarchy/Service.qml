@@ -227,6 +227,8 @@ Item {
   property int streamGraceMs: Model.WIDGET_STREAM_GRACE_SEC * 1000
   property int resultHoldMs: Model.RESULT_HOLD_MS
   property int rowDoneMs: Model.ACTIVITY_ROW_DONE_MS
+  // How long a copy waits for wl-copy's exit before it says nothing was copied (UX-36).
+  property int copyDeadlineMs: 3000
 
   // The template table: Model.COMMANDS; the tests add fixture templates.
   property var templates: Model.COMMANDS
@@ -407,12 +409,19 @@ Item {
     explanation = null
   }
 
-  // Puts a command the widget shows instead of running (a purge, a forced repair) on the
-  // clipboard: wl-copy with the text as one argument (Model.copyArgv), never a shell.
-  // Whether there was anything to copy.
-  function copyCommand(text) {
+  // Puts a command the widget shows instead of running (a purge, a forced repair), or an
+  // error report, on the clipboard: wl-copy with the text as one argument
+  // (Model.copyArgv), never a shell, in a process of its own on no lane, so a copy never
+  // waits behind a read and never holds one up. `done(ok)`, when given, hears whether
+  // the text went on the clipboard: wl-copy's own exit code 0, never a probe (UX-36). A
+  // missing wl-copy, any other exit, or none within copyDeadlineMs is false. Whether
+  // there was anything to copy.
+  function copyCommand(text, done) {
     if (!Model.copyArgv(text)) return false
-    Quickshell.execDetached(Model.copyArgv(text))
+    var callback = typeof done === "function" ? done : null
+    var copier = copyComponent.createObject(root, { "text": text, "done": callback })
+    if (copier) copier.start()
+    else if (callback) callback(false)
     return true
   }
 
@@ -1642,6 +1651,64 @@ Item {
 
   Process {
     id: reinstallProc
+  }
+
+  // One copy (copyCommand): its own wl-copy, decided on `exited` alone. wl-copy forks a
+  // child that serves the clipboard and may keep the output open, so the end of a
+  // stream proves nothing; a missing binary never starts and never exits, it only stops
+  // running (F0). The copier answers once, then goes.
+  Component {
+    id: copyComponent
+
+    Item {
+      id: copier
+
+      property string text: ""
+      property var done: null
+      property bool started: false
+      property bool settled: false
+
+      function start() {
+        deadline.restart()
+        child.running = true
+      }
+
+      function settle(ok) {
+        if (settled) return
+        settled = true
+        deadline.stop()
+        var callback = done
+        done = null
+        // The view that asked may have gone (a page closed) before wl-copy answered.
+        if (callback) {
+          try {
+            callback(ok)
+          } catch (e) {
+            console.warn("omaddons: a copy's answer reached no view:", e)
+          }
+        }
+        copier.destroy()
+      }
+
+      // No exit in time: the child is stopped (SIGTERM, F0) and the copy did not happen.
+      // Only here: after `exited` the child is gone, and nothing is signalled.
+      Timer {
+        id: deadline
+        interval: root.copyDeadlineMs
+        onTriggered: {
+          if (child.running) child.running = false
+          copier.settle(false)
+        }
+      }
+
+      Process {
+        id: child
+        command: Model.copyArgv(copier.text)
+        onStarted: copier.started = true
+        onExited: function(exitCode, exitStatus) { copier.settle(exitCode === 0 && exitStatus === 0) }
+        onRunningChanged: if (!running && !copier.started) copier.settle(false)
+      }
+    }
   }
 
   IpcHandler {

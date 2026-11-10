@@ -37,8 +37,10 @@ Item {
     "nowMs": frame ? frame.nowMs : Date.now() })
   readonly property int rowCount: rows.length
   readonly property bool typing: false
-  // The row whose command `y` copied last, by key, said for a moment (the copy flash).
+  // The row whose command `y` copied last, by key, said for a moment (the copy flash),
+  // and what the flash says: "Copied", or that wl-copy did not take it (UX-36).
   property string copied: ""
+  property string copiedText: ""
 
   readonly property color foreground: frame ? frame.foreground : Commons.Color.foreground
   readonly property color dim: frame ? frame.dim : Qt.darker(foreground, 1.55)
@@ -134,11 +136,15 @@ Item {
     return frame.push({ "title": row.severityWord, "component": pageComponent, "props": { "rowKey": row.key, "initial": row, "owner": root } })
   }
 
+  // Whether there was a command to copy; the flash follows once wl-copy answers.
   function copyRow(row) {
-    if (!svc || !svc.copyCommand(Model.copyText(row))) return false
-    copied = row.key
-    copiedTimer.restart()
-    return true
+    if (!svc) return false
+    var key = row.key
+    return svc.copyCommand(Model.copyText(row), function(ok) {
+      root.copiedText = Model.copyFlash(ok, Model.copy("issues.copied"))
+      root.copied = key
+      copiedTimer.restart()
+    })
   }
 
   function select(index) {
@@ -344,7 +350,7 @@ Item {
                   Button {
                     required property var modelData
                     objectName: "issueButton_" + modelData.name
-                    text: modelData.name === "copy" && root.copied === entry.modelData.key ? Model.copy("issues.copied") : modelData.text
+                    text: modelData.name === "copy" && root.copied === entry.modelData.key ? root.copiedText : modelData.text
                     tooltipText: modelData.tooltip
                     Accessible.role: Accessible.Button
                     Accessible.name: text

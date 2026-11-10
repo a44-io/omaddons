@@ -274,14 +274,17 @@ function checkProvenance(files) {
       if (!ok) out.push(violation("Model.js", fn.line, name + " returns something other than " + tool + "'s argv: " + r))
     }
   }
-  // Processes: a literal tool, the exact reinstall, or the lane's argv.
+  // Processes: a literal tool, the exact reinstall, the lane's argv, or a copy's argv
+  // from its builder alone (omad-phcg: a copy reads wl-copy's exit, so it runs as a
+  // Process, never from a literal argv).
   for (const name of qmlNames(files)) {
     for (const l of lines(files[name])) {
       const prop = l.text.match(/^\s*command:\s*(.*)$/)
       const assigned = l.text.match(/\w+\.command\s*=\s*(.*)$/)
       if (prop) {
         const tool = prop[1].match(/^\[\s*"([^"]+)"/)
-        if (!tool || !LITERAL_TOOLS.includes(tool[1])) out.push(violation(name, l.n, "a Process command from no allowed source: " + prop[1].slice(0, 60)))
+        const copy = /^Model\.copyArgv\([\w.]+\)\s*$/.test(prop[1])
+        if (!copy && (!tool || !LITERAL_TOOLS.includes(tool[1]))) out.push(violation(name, l.n, "a Process command from no allowed source: " + prop[1].slice(0, 60)))
       }
       if (assigned && assigned[1].trim() !== REINSTALL) out.push(violation(name, l.n, "a Process command from no allowed source: " + assigned[1].slice(0, 60)))
     }
@@ -874,6 +877,11 @@ const PLANTED = [
     plant(REAL, "PanelView.qml", "  function openAddOns() {\n", '    Quickshell.execDetached(["bash", "-c", "xdg-open ~"])\n'), /through a shell/],
   ["3. argv provenance", checkProvenance, "a hand-built omaddons argv",
     plant(REAL, "Service.qml", "  Process {\n    id: reinstallProc\n  }\n", '  Process {\n    id: planted\n    command: [root.binary, "update"]\n    environment: Build.CONTEXT\n  }\n'), /no allowed source/],
+  // omad-phcg: a copy runs as a Process with its builder's argv, never a literal one.
+  ["3. argv provenance", checkProvenance, "a copy through a Process with a literal argv",
+    plant(REAL, "Service.qml", "  Process {\n    id: reinstallProc\n  }\n", '  Process {\n    id: planted\n    command: ["wl-copy", "--", root.binary]\n  }\n'), /a Process command from no allowed source: \["wl-copy"/],
+  ["3. argv provenance", checkProvenance, "a copy Process whose builder is not the clipboard's",
+    plant(REAL, "Service.qml", "  Process {\n    id: reinstallProc\n  }\n", '  Process {\n    id: planted\n    command: Model.configEditorArgv(root.binary)\n  }\n'), /a Process command from no allowed source: Model\.configEditorArgv/],
   // omad-r0to: the config editor runs only through its builder (the path `config` said).
   ["3. argv provenance", checkProvenance, "a bare config editor launch",
     plant(REAL, "PanelView.qml", "  function openAddOns() {\n", '    Quickshell.execDetached(["omarchy-launch-config-editor", root.filter])\n'), /an argv from no allowed source/],

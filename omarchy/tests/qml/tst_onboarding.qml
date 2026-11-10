@@ -266,6 +266,11 @@ TestCase {
     findChild(onboardingCard(), "noticeButton_" + index).clicked()
   }
 
+  // The clipboard's launches (omad-phcg: each copy is a wl-copy process of its own).
+  function copyLaunches() {
+    return ProcessRegistry.launches.filter(function(l) { return l.command[0] === "wl-copy" })
+  }
+
   function test_take_over_comes_first_and_not_now_puts_it_off() {
     var answers = scene("status-adoptable")
     answers.list = the("list-adoptable")
@@ -315,13 +320,39 @@ TestCase {
     spy.target = frame
     Quickshell.resetDetachedCommands()
     pressCard(0)
-    compare(JSON.stringify(Quickshell.detachedCommands), JSON.stringify([["wl-copy", "--", line]]))
-    compare(child("onboardingCopied").text, "Copied")
+    // The line goes to wl-copy as one argument, in a process of its own whose exit says
+    // whether it was copied (omad-phcg); nothing is said or turned Off before it answers.
+    compare(Quickshell.detachedCommands, [])
+    var copies = copyLaunches()
+    compare(copies.length, 1)
+    compare(JSON.stringify(copies[0].command), JSON.stringify(["wl-copy", "--", line]))
+    compare(spy.count, 0)
+    copies[0].process.exit(0)
+    tryCompare(child("onboardingCopied"), "text", "Copied", 1000)
     compare(spy.count, 1)
     compare([spy.signalArguments[0][0], spy.signalArguments[0][1]], ["keyHint", "Off"])
     // The bar copy saves it and pushes it back: the tip is gone for good.
     service.applySettings({ "keyHint": "Off" })
     verify(!onboardingCard().visible)
+    spy.destroy()
+  }
+
+  // omad-phcg (UX-36): with wl-copy missing, the tip says nothing was copied and stays
+  // on the card to be read; it is not turned Off.
+  function test_a_tip_wl_copy_could_not_take_says_so_and_stays() {
+    settle(scene("status-idle"))
+    service.openedByMouse = true
+    verify(onboardingCard().visible)
+    var spy = Qt.createQmlObject('import QtTest; SignalSpy { signalName: "settingRequested" }', testCase)
+    spy.target = frame
+    ProcessRegistry.missingBinary = true
+    pressCard(0)
+    compare(copyLaunches().length, 1)
+    tryCompare(child("onboardingCopied"), "text", "Couldn't copy (wl-copy is missing)", 1000)
+    compare(spy.count, 0)
+    verify(onboardingCard().visible)
+    compare(onboardingCard().title, "Open this panel with a key")
+    ProcessRegistry.missingBinary = false
     spy.destroy()
   }
 

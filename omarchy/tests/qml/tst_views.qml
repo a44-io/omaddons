@@ -143,11 +143,14 @@ TestCase {
       property var catalogReads: []
       function readCatalog(target) { catalogReads = catalogReads.concat([target]); return true }
       function dismissErrors(plan) { dismissals = dismissals.concat([JSON.parse(JSON.stringify(plan))]); return "" }
-      // The real copyCommand runs Model.copyArgv(text); this records the argv instead.
+      // The real copyCommand runs Model.copyArgv(text) and answers `done` with wl-copy's
+      // outcome; this records the argv and answers `copyOk` (false: wl-copy missing).
       property var copies: []
-      function copyCommand(text) {
+      property bool copyOk: true
+      function copyCommand(text, done) {
         if (!Model.copyArgv(text)) return false
         copies = copies.concat([Model.copyArgv(text)])
+        if (typeof done === "function") done(copyOk)
         return true
       }
       // What a change runs on and just changed (1n2p.18): the rows' own phase.
@@ -1085,6 +1088,12 @@ TestCase {
     compare(findChild(row("issueRow", 1), "issueButton_copy").text, "Copied")
     // The copy flash goes after a moment (UX-36).
     tryCompare(findChild(row("issueRow", 1), "issueButton_copy"), "text", "Copy command", 3000)
+    // wl-copy missing (omad-phcg): the flash says nothing was copied, never "Copied".
+    svc.copyOk = false
+    keyClick("y")
+    compare(svc.copies.length, 2)
+    compare(findChild(row("issueRow", 1), "issueButton_copy").text, "Couldn't copy (wl-copy is missing)")
+    tryCompare(findChild(row("issueRow", 1), "issueButton_copy"), "text", "Copy command", 3000)
     compare(svc.cliRuns.length, 0)
     keyClick("k")
     keyClick(Qt.Key_Return)
@@ -1194,6 +1203,11 @@ TestCase {
     keyClick("y")
     compare(json(svc.copies), json([["wl-copy", "--", forced.join(" ")]]))
     compare(findChild(page, "pageButton_copy").text, "Copied")
+    // wl-copy missing (omad-phcg): the page's button says so instead.
+    svc.copyOk = false
+    keyClick("y")
+    compare(svc.copies.length, 2)
+    compare(findChild(page, "pageButton_copy").text, "Couldn't copy (wl-copy is missing)")
     // Enter on the page runs nothing: there is no fix to run here.
     keyClick(Qt.Key_Return)
     compare(svc.runs.length + svc.cliRuns.length, 0)
@@ -1294,6 +1308,13 @@ TestCase {
     verify(report.indexOf("attempt to index a nil value (field 'x')") > 0, report)
     verify(report.indexOf("a message from the addon (25 characters)") > 0, report)
     compare(findChild(content(), "copyFlash").text, "Copied the report on Foo")
+    // wl-copy missing (omad-phcg): the flash says nothing was copied, then goes.
+    svc.copyOk = false
+    keyClick("y")
+    compare(svc.copies.length, 2)
+    compare(findChild(content(), "copyFlash").text, "Couldn't copy (wl-copy is missing)")
+    tryCompare(findChild(content(), "copyFlash"), "visible", false, 3000)
+    svc.copyOk = true
     // Bar (no update waits): `u` does nothing.
     keyClick("j")
     keyClick("u")
@@ -1316,7 +1337,13 @@ TestCase {
     keyClick("u")
     compare(json(svc.runs[1].slice(0, 3)), json(["update_addon", { "target": "retail", "addon": "Foo" }, "Update Foo"]))
     keyClick("y")
-    compare(svc.copies.length, 2)
+    compare(svc.copies.length, 3)
+    compare(findChild(page, "copyFlash").text, "Copied the report on Foo")
+    // wl-copy missing (omad-phcg): the page's flash says so instead.
+    svc.copyOk = false
+    keyClick("y")
+    compare(svc.copies.length, 4)
+    compare(findChild(page, "copyFlash").text, "Couldn't copy (wl-copy is missing)")
     // Esc goes back to the view.
     keyClick(Qt.Key_Escape)
     compare(view.pages.length, 0)
@@ -1472,6 +1499,12 @@ TestCase {
     keyClick("y")
     compare(json(svc.copies), json([["wl-copy", "--", "wowi:23056"]]))
     compare(findChild(page, "pageCopy").text, "Copied wowi:23056")
+    // wl-copy missing (omad-phcg): the button says so, then reads as before.
+    tryCompare(findChild(page, "pageCopy"), "text", Model.withKey(Model.copy("page.copy_ref"), "copy", "page"), 3000)
+    svc.copyOk = false
+    keyClick("y")
+    compare(svc.copies.length, 2)
+    compare(findChild(page, "pageCopy").text, "Couldn't copy (wl-copy is missing)")
   }
 
   // A late answer for another addon never lands on this page; a dependency's page goes
@@ -1972,6 +2005,11 @@ TestCase {
     keyClick(Qt.Key_Return)
     compare(json(svc.copies[svc.copies.length - 1]), json(["wl-copy", "--", Model.GITHUB_SET_COMMAND]))
     compare(findChild(findChild(sheet, "setting_github:set"), "settingValue").text, "Copied: run it in a terminal")
+    // wl-copy missing (omad-phcg): the row says nothing was copied.
+    svc.copyOk = false
+    keyClick(Qt.Key_Return)
+    compare(json(svc.copies[svc.copies.length - 1]), json(["wl-copy", "--", Model.GITHUB_SET_COMMAND]))
+    compare(findChild(findChild(sheet, "setting_github:set"), "settingValue").text, "Couldn't copy (wl-copy is missing)")
     // config.toml, where `config` said, in the player's editor.
     Quickshell.resetDetachedCommands()
     sheet.choice = at("other:config")

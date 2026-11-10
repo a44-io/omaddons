@@ -44,8 +44,10 @@ Sheet {
   }
   // The key of the row whose box has the keys (the binary's path, a client's name), or "".
   property string editing: ""
-  // The row whose command was just copied (GitHub's "Set a token in a terminal"), or "".
+  // The row whose command was just copied (GitHub's "Set a token in a terminal"), or "",
+  // and what it says for that moment: copied, or that wl-copy did not take it (UX-36).
   property string copiedKey: ""
+  property string copiedText: ""
   Timer {
     id: copiedTimer
     interval: 1500
@@ -127,11 +129,14 @@ Sheet {
     } else if (row.action === "clear") {
       if (canChange) frame.report(svc.run("auth_clear", {}, Model.copy("settings.github.clear.label")))
     } else if (row.action === "copy_set") {
-      // The token goes on standard input in a terminal: the command, copied.
-      if (svc && svc.copyCommand(Model.GITHUB_SET_COMMAND)) {
-        copiedKey = row.key
+      // The token goes on standard input in a terminal: the command, copied, said once
+      // wl-copy answers.
+      var copiedRow = row.key
+      if (svc) svc.copyCommand(Model.GITHUB_SET_COMMAND, function(ok) {
+        root.copiedText = Model.copyFlash(ok, Model.copy("settings.github.set.copied"))
+        root.copiedKey = copiedRow
         copiedTimer.restart()
-      }
+      })
     } else if (row.action === "open_config") {
       // Everything else: config.toml in the player's editor, the path `config` said.
       if (Model.configEditorArgv(row.path)) Quickshell.execDetached(Model.configEditorArgv(row.path))
@@ -286,7 +291,7 @@ Sheet {
                 font.bold: entry.cursored
                 // The marks only where h and l step the value; a row whose command was
                 // just copied says so for a moment.
-                text: root.copiedKey === entry.modelData.key ? Model.copy("settings.github.set.copied")
+                text: root.copiedKey === entry.modelData.key ? root.copiedText
                   : entry.cursored && ["switch", "integer", "choice"].indexOf(entry.modelData.kind) !== -1
                   ? "‹ " + entry.modelData.text + " ›" : entry.modelData.text
               }

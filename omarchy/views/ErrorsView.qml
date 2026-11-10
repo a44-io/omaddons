@@ -83,12 +83,15 @@ Item {
       Model.shownForAddon(svc.lists, row.target, row.addon)))
   }
 
-  // `y`: the report on the addon's errors, strict text only (Model.errorReport).
+  // `y`: the report on the addon's errors, strict text only (Model.errorReport). Whether
+  // there was a report to copy; the flash follows once wl-copy answers.
   function copyReport(row) {
-    if (!svc || !svc.copyCommand(Model.errorReport(row, statusTargets))) return false
-    copied = Model.copy("errors.copied", { "addon": row.addon })
-    copiedTimer.restart()
-    return true
+    if (!svc) return false
+    var addon = row.addon
+    return svc.copyCommand(Model.errorReport(row, statusTargets), function(ok) {
+      root.copied = Model.copyFlash(ok, Model.copy("errors.copied", { "addon": addon }))
+      copiedTimer.restart()
+    })
   }
 
   // Enter: the addon's error page, on the navigation stack (§2.4).

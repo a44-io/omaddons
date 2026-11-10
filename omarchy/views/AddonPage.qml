@@ -168,11 +168,14 @@ Item {
     if (Model.isSafeUrl(url)) Quickshell.execDetached(["omarchy-launch-browser", url])
   }
 
+  // Whether there was a source to copy; the flash follows once wl-copy answers.
   function copyRef() {
-    if (!svc || page.ref === "" || !svc.copyCommand(page.ref)) return false
-    copied = Model.copy("page.copied", { "ref": page.ref })
-    copiedTimer.restart()
-    return true
+    if (!svc || page.ref === "") return false
+    var ref = page.ref
+    return svc.copyCommand(ref, function(ok) {
+      root.copied = Model.copyFlash(ok, Model.copy("page.copied", { "ref": ref }))
+      copiedTimer.restart()
+    })
   }
 
   function select(index) {

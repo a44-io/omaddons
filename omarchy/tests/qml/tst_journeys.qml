@@ -306,10 +306,13 @@ TestCase {
     // `y` or Copy report: the report on the clipboard, one argument, never run.
     if (mouse) click(child("pageCopy", page))
     else keyClick("y")
-    var copied = Quickshell.detachedCommands.filter(function(c) { return c[0] === "wl-copy" })
+    // Its own wl-copy process, whose exit says whether it was copied (omad-phcg).
+    var copied = ProcessRegistry.launches.filter(function(l) { return l.command[0] === "wl-copy" })
     compare(copied.length, 1)
-    compare(copied[0].slice(0, 2), ["wl-copy", "--"])
-    verify(copied[0][2].indexOf("Foo") !== -1, "the report names the addon")
+    compare(copied[0].command.slice(0, 2), ["wl-copy", "--"])
+    verify(copied[0].command[2].indexOf("Foo") !== -1, "the report names the addon")
+    copied[0].process.exit(0)
+    tryCompare(child("copyFlash", page), "text", "Copied the report on Foo", 1000)
     if (mouse) click(child("backButton"))
     else keyClick(Qt.Key_Escape)
     compare(frame.topPage, null)

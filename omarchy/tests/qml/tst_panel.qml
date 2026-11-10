@@ -95,8 +95,16 @@ TestCase {
       // (Model.phaseCard, Model.interruptedChange, 1n2p.34); what Copy put on the clipboard.
       property var phaseCard: null
       property var interrupted: null
+      // The real copyCommand answers `done` with wl-copy's outcome; this answers `copyOk`
+      // (false: wl-copy missing).
       property var copies: []
-      function copyCommand(text) { copies = copies.concat([text]); return typeof text === "string" && text !== "" }
+      property bool copyOk: true
+      function copyCommand(text, done) {
+        copies = copies.concat([text])
+        if (typeof text !== "string" || text === "") return false
+        if (typeof done === "function") done(copyOk)
+        return true
+      }
       function confirmYes() { yes++; confirm = null; return "" }
       function confirmNo() { no++; confirm = null }
       function applySettings(settings) {}
@@ -661,6 +669,12 @@ TestCase {
     keyClick(Qt.Key_Return)
     compare(svc.copies, ["omaddons omarchy install"])
     compare(child("cardCopied").text, "Copied")
+    // wl-copy missing (omad-phcg): the card says nothing was copied, never "Copied".
+    svc.copyOk = false
+    keyClick(Qt.Key_Return)
+    compare(svc.copies.length, 2)
+    compare(child("cardCopied").text, "Couldn't copy (wl-copy is missing)")
+    svc.copyOk = true
     // No answer in time, an unreadable one, a child let go: their words, Retry and Copy
     // details; the child's output only in the details, never on the card.
     var kinds = [["timeout", "omaddons didn't answer in time"], ["malformed", "omaddons didn't answer"],
@@ -710,6 +724,11 @@ TestCase {
     child("copyDetails").clicked()
     compare(svc.copies, ["What: Update all\nEnded: timed out, no exit code"])
     compare(child("errorCopied").text, "Copied")
+    // wl-copy missing (omad-phcg): the card says nothing was copied.
+    svc.copyOk = false
+    child("copyDetails").clicked()
+    compare(svc.copies.length, 2)
+    compare(child("errorCopied").text, "Couldn't copy (wl-copy is missing)")
     // A failure the CLI described has no details to copy.
     svc.lastError = { "message": "no target matches", "code": "target_not_found", "fixes": [], "fixText": "" }
     verify(!child("copyDetails").visible)

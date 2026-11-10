@@ -3833,6 +3833,19 @@ describe("an irreversible purge is never a button", () => {
     ], (text) => M.copyArgv(text))
     expect(M.panelKey("y", "issues")).toEqual({ "action": "copy", "step": 0 })
   })
+
+  // omad-phcg (UX-36): the flash says what was copied only when wl-copy took the text.
+  test("a copy's flash says Copied only when wl-copy took the text", () => {
+    const failed = "Couldn't copy (wl-copy is missing)"
+    expect(M.copy("errors.copy_failed")).toBe(failed)
+    table([
+      ["wl-copy exited 0", [true, "Copied the report on Foo"], "Copied the report on Foo"],
+      ["wl-copy missing, failed or silent", [false, "Copied the report on Foo"], failed],
+      ["no answer is no copy", [undefined, "Copied"], failed],
+      ["a truthy non-boolean is no copy", [1, "Copied"], failed],
+      ["copied words that are not a string", [true, null], ""],
+    ], ([ok, copied]) => M.copyFlash(ok, copied))
+  })
 })
 
 describe("classifyCliArgv's apply rule", () => {
