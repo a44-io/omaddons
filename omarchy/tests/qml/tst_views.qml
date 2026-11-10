@@ -201,6 +201,9 @@ TestCase {
   }
 
   function init() {
+    // A binding loop keeps a stale value for its pass (omad-5k9k: the page stack's top
+    // page behind its own stack): every one fails the test that meets it.
+    failOnWarning(/Binding loop detected/)
     Quickshell.resetDetachedCommands()
     svc = serviceComponent.createObject(testCase)
     svc.lists = Model.reduceList(listing())
@@ -1932,6 +1935,15 @@ TestCase {
     keyClick(Qt.Key_Return)
     verify(!view.settingsOpen)
     compare(view.topPage.title, Model.copy("addclient.title"))
+    // The page opened over the clients already here stays, and the stack says so: back
+    // from it is the view, never the panel closing (omad-5k9k).
+    compare(view.pages.length, 1)
+    compare(view.topPage, view.pages[0])
+    // It goes back once `status` lists one more live client: the one added.
+    svc.targets = svc.targets.concat([Object.assign({}, svc.targets[0],
+      { "id": "classic", "displayName": "Mists of Pandaria Classic", "missing": false })])
+    tryVerify(function() { return view.topPage === null }, 1000, "the page goes back once the client is here")
+    compare(view.pages.length, 0)
   }
 
   // omad-r0to: the GitHub section (the token's state, the gh login, forgetting it, the

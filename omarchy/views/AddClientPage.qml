@@ -21,8 +21,12 @@ Item {
   readonly property bool typing: field.activeFocus
   // What the page says under the box: the path's own problem, or that it is adding.
   property string note: ""
+  // The live clients `status` lists; -1 while the page has no service to ask, which is
+  // unknown, never none.
   readonly property int liveCount: svc && svc.targets && typeof svc.targets.length === "number"
-    ? Model.liveTargets(Model.listOf(svc.targets)).length : 0
+    ? Model.liveTargets(Model.listOf(svc.targets)).length : -1
+  // The live count the page last saw, -1 before it saw one.
+  property int seenLive: -1
   readonly property color foreground: frame ? frame.foreground : Commons.Color.foreground
   readonly property color dim: frame ? frame.dim : Model.dimColor(foreground, Commons.Color.popups.background)
   readonly property string fontFamily: frame ? frame.fontFamily : Style.font.family
@@ -30,7 +34,15 @@ Item {
 
   implicitHeight: column.implicitHeight
 
-  onLiveCountChanged: if (liveCount > 0 && frame) frame.pop()
+  // The page goes back once `status` lists one more live client than it last saw: the
+  // one just added. Never for the clients it opened over (Settings' Add a client, with
+  // clients here): their count arrives with the frame, inside the loader's onLoaded, and
+  // a pop there would rewrite the frame's page stack while its top page is updating.
+  onLiveCountChanged: {
+    var before = seenLive
+    seenLive = liveCount
+    if (frame && before >= 0 && liveCount > before) frame.pop()
+  }
 
   function rowItem(i) { return null }
 
