@@ -434,7 +434,9 @@ Item {
       showView(Model.stepView(view, dx))
       return
     }
-    moveCursor(cursor + dy)
+    // With no row highlighted (a fresh view or page), the first j or k highlights the
+    // first row, as the filter boxes do (omad-88pf); after that it moves by one.
+    moveCursor(cursorActive ? cursor + dy : 0)
   }
 
   // The cursor to row `to` (the card's button in a problem card), kept in range.

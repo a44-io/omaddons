@@ -182,8 +182,11 @@ TestCase {
   // Design doc J6: `r` on the addon, Enter ("WeakAuras' settings", first), then `y`.
   function test_installed_r_opens_on_the_newest_backup_with_the_addons_own_settings_first() {
     keyClick("2")
-    // WeakAuras, after Details by name (1n2p.22).
+    // WeakAuras, after Details by name (1n2p.22): the first j highlights Details, the
+    // second WeakAuras.
     keyClick("j")
+    keyClick("j")
+    compare(view.cursor, 1)
     compare(findChild(view, "content").item.rows[view.cursor].name, "WeakAuras")
     keyClick("r")
     var c = chooser()
@@ -206,7 +209,10 @@ TestCase {
   function test_from_an_addon_it_reads_the_backups_itself_and_starts_on_the_addons_settings() {
     svc.backups = null
     keyClick("2")
+    // WeakAuras, the second row after Details.
     keyClick("j")
+    keyClick("j")
+    compare(view.cursor, 1)
     keyClick("r")
     var c = chooser()
     verify(c.opened)
@@ -221,7 +227,10 @@ TestCase {
   function test_the_backup_is_a_choice_of_its_own_with_the_version_each_holds() {
     svc.backupsDetail = null
     keyClick("2")
+    // WeakAuras, the second row after Details.
     keyClick("j")
+    keyClick("j")
+    compare(view.cursor, 1)
     keyClick("r")
     var c = chooser()
     svc.backupsDetail = { "selection": { "target": "retail" }, "data": listing(true) }
@@ -242,11 +251,16 @@ TestCase {
   // that addon's settings, from the client's -v read.
   function test_an_addon_pages_r_lists_backups_with_the_version_that_wrote_its_settings() {
     keyClick("2")
+    // WeakAuras, the second row after Details.
     keyClick("j")
+    keyClick("j")
+    compare(view.cursor, 1)
     keyClick(Qt.Key_Return)
     var page = findChild(view, "page").item
     verify(page !== null, "WeakAuras' page")
+    // The page's first j highlights its first row: Retail's line, its only client.
     keyClick("j")
+    compare([view.cursor, page.rows[view.cursor].target], [0, "retail"])
     keyClick("r")
     var c = chooser()
     verify(c.opened)

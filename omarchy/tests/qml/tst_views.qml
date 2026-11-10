@@ -423,8 +423,11 @@ TestCase {
     compare(json(svc.runs[0]), json(["update_addon", { "target": "era", "addon": "Bar" }, "Update Bar",
       [shownRow("k-era", "era", "Bar", "v1", "v2")]]))
     compare(json(words(svc.runs[0])), json(["update", "-t", "era", "--", "Bar"]))
-    // A failed check has nothing to update.
+    // A failed check has nothing to update: Plater. The first j highlights Bar, the next
+    // moves to Plater.
     keyClick("j")
+    keyClick("j")
+    compare(view.cursor, 1)
     keyClick("u")
     compare(svc.runs.length, 1)
     keyClick("j")
@@ -444,6 +447,8 @@ TestCase {
   function test_enter_on_an_update_opens_its_page_and_back_returns_to_the_row() {
     keyClick("j")
     keyClick("j")
+    keyClick("j")
+    compare(view.cursor, 2)
     keyClick(Qt.Key_Return)
     compare(svc.runs.length, 0, "Enter updates nothing")
     compare(view.pages.length, 1)
@@ -461,6 +466,8 @@ TestCase {
   function test_e_shows_every_pending_note_of_its_own_row_and_safe_links_only() {
     keyClick("j")
     keyClick("j")
+    keyClick("j")
+    compare(view.cursor, 2)
     keyClick("e")
     compare(json(svc.notes), json([["retail", "DBM"]]))
     var entry = row("updateRow", 2)
@@ -498,6 +505,8 @@ TestCase {
     var failed = findChild(row("updateRow", 1), "addonRow")
     compare(failed.meta, "Couldn't check GitHub for a new release")
     keyClick("j")
+    keyClick("j")
+    compare(view.cursor, 1)
     keyClick("u")
     compare(svc.runs.length, 0)
   }
@@ -637,6 +646,7 @@ TestCase {
     // Foo: its first button, Repair, puts back its modified files.
     keyClick("j")
     keyClick("j")
+    keyClick("j")
     compare(view.cursor, 2)
     verify(foo.cursored)
     compare(json(foo.actions.map(function(a) { return a.name })), json(["repair", "pin", "restore", "remove"]))
@@ -738,6 +748,8 @@ TestCase {
     compare(json(names()), json(["DBM", "BigWigs", "Foo", "WeakAuras"]))
     keyClick("j")
     keyClick("j")
+    keyClick("j")
+    compare(view.cursor, 2)
     compare(installed.rows[view.cursor].name, "Foo")
     keyClick("S")
     compare(installed.sort, "recent")
@@ -893,6 +905,8 @@ TestCase {
     compare(findChild(row("issueRow", 1), "issueButton_fix").text, "Repair Plater")
     compare(findChild(row("issueRow", 1), "issueButton_fix").tooltipText, "Enter runs the fix")
     keyClick("j")
+    keyClick("j")
+    compare(view.cursor, 1)
     keyClick(Qt.Key_Return)
     compare(json(svc.runs[0]), json(["reinstall", { "target": "era", "addon": "Plater" }, "Repair Plater"]))
     compare(json(words(svc.runs[0])), json(["install", "-t", "era", "--reinstall", "--", "Plater"]))
@@ -1056,6 +1070,8 @@ TestCase {
     compare(findChild(purgeRow, "issueButton_copy").text, "Copy command")
     compare(findChild(purgeRow, "issueButton_copy").tooltipText, "Copy the command a row shows, to run in a terminal (y)")
     keyClick("j")
+    keyClick("j")
+    compare(view.cursor, 1)
     keyClick(Qt.Key_Return)
     compare(svc.cliRuns.length, 0)
     keyClick("y")
@@ -1110,6 +1126,8 @@ TestCase {
     compare(json(svc.runs[0]), json(["doctor_fix", { "fm": credentialFm }, "Repair: the GitHub token file is readable by other users"]))
     compare(json(words(svc.runs[0])), json(["doctor", "fix", "--only=" + credentialFm]))
     keyClick("j")
+    keyClick("j")
+    compare(view.cursor, 1)
     keyClick(Qt.Key_Return)
     compare(json(svc.runs[1]), json(["doctor_fix_target", { "target": "retail", "fm": credentialFm }, "Repair: the GitHub token file is readable by other users"]))
     compare(json(words(svc.runs[1])), json(["doctor", "fix", "-t", "retail", "--only=" + credentialFm]))
@@ -1237,9 +1255,11 @@ TestCase {
       compare(findChild(r, "commandText").text, commands[i].join(" "))
       compare(findChild(r, "issueButton_fix"), null, "row " + i)
       compare(findChild(r, "issueButton_copy").text, "Copy command", "row " + i)
+      // Enter on this row: the first j highlights row 0, the next moves to row 1.
+      keyClick("j")
+      compare(view.cursor, i)
       keyClick(Qt.Key_Return)
       compare(view.pages.length, 0, "row " + i + ": no explanation to open")
-      keyClick("j")
     }
     // Each says why it is no button: the panel never runs doctor gc, nor gives consent.
     compare(findChild(row("issueRow", 0), "terminalNote").text, "The panel never runs this one: run it in a terminal.")
@@ -1301,6 +1321,7 @@ TestCase {
     errorsReady(false)
     keyClick("j")
     keyClick("k")
+    compare(view.cursor, 0)
     keyClick(Qt.Key_Return)
     var page = findChild(view, "page").item
     var button = findChild(page, "rawButton")
@@ -1436,6 +1457,7 @@ TestCase {
     // `i` on Retail's line: Install here, as Search's install runs.
     keyClick("j")
     keyClick("j")
+    compare(view.cursor, 1)
     keyClick("i")
     compare(json(svc.runs[0]), json(["install", { "target": "retail", "ref": "wowi:23056" }, "Install Details!", []]))
     // `w` opens its web page; `y` copies its source.
@@ -1664,6 +1686,7 @@ TestCase {
     compare([page.page.title, page.page.name, page.page.ref], ["OmniCC", "OmniCC", "gh:tullamods/OmniCC"])
     keyClick("j")
     keyClick("j")
+    compare(view.cursor, 1)
     keyClick("i")
     compare(json(svc.runs[0]), json(["install", { "target": "retail", "ref": "gh:tullamods/OmniCC" }, "Install OmniCC", []]))
     // `i` on the link row opens its page too: it never installs the text.
@@ -1960,6 +1983,8 @@ TestCase {
       "Automatic backups: on · 228 GB free", "2 backups · 31.9 MB · newest " + at("2099-12-31T22:00:00Z")]))
     // The cursored row shows its actions: restore and, for one not in use, delete.
     keyClick("j")
+    keyClick("j")
+    compare(view.cursor, 1)
     compare(json(row("backupRow", 1).shownActions.map(function(a) { return a.name })), json(["restore", "remove"]))
     keyClick("j")
     compare(json(row("backupRow", 2).shownActions.map(function(a) { return a.name })), json(["restore"]))
@@ -1986,6 +2011,8 @@ TestCase {
     backupsReady()
     keyClick("j")
     keyClick("j")
+    keyClick("j")
+    compare(view.cursor, 2)
     keyClick("x")
     compare(svc.runs.length, 0)
     compare(findChild(view, "notice").text, "This backup is in use. Try again when it's free.")
@@ -1999,6 +2026,8 @@ TestCase {
   function test_r_on_a_backup_opens_the_chooser_on_it() {
     backupsReady()
     keyClick("j")
+    keyClick("j")
+    compare(view.cursor, 1)
     keyClick("r")
     var chooser = findChild(view, "chooser")
     verify(chooser.opened)
@@ -2026,6 +2055,8 @@ TestCase {
     svc.targets = [svc.targets[0], Object.assign({}, svc.targets[1], { "running": false })]
     backupsReady()
     keyClick("j")
+    keyClick("j")
+    compare(view.cursor, 1)
     keyClick(Qt.Key_Return)
     var p = page()
     verify(p !== null, "the backup's page")
@@ -2057,6 +2088,8 @@ TestCase {
   function test_a_backup_page_restores_nothing_while_the_game_runs() {
     backupsReady()
     keyClick("j")
+    keyClick("j")
+    compare(view.cursor, 1)
     keyClick(Qt.Key_Return)
     svc.backupsDetail = backupsDetail()
     svc.targets = [svc.targets[0], { "id": "retail", "displayName": "Retail", "running": true, "runningUnknown": false, "clientDir": "/games/retail",
@@ -2064,7 +2097,9 @@ TestCase {
     var p = page()
     compare(findChild(p, "blocked").text, "Quit Retail first.")
     verify(!findChild(p, "restore").enabled)
+    // The first addon under the cursor (a fresh page's first j highlights it).
     keyClick("j")
+    compare([view.cursor, view.cursorActive], [0, true])
     keyClick(Qt.Key_Return)
     compare(svc.runs.length, 0)
     compare(findChild(view, "notice").text, "Quit Retail first.")
@@ -2073,6 +2108,8 @@ TestCase {
   function test_a_backup_page_deletes_it_or_opens_the_chooser_and_never_deletes_one_in_use() {
     backupsReady()
     keyClick("j")
+    keyClick("j")
+    compare(view.cursor, 1)
     keyClick(Qt.Key_Return)
     keyClick("r")
     var chooser = findChild(view, "chooser")

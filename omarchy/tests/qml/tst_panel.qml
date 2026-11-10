@@ -403,9 +403,8 @@ TestCase {
   function test_view_keys_go_to_the_view_or_their_registration_and_else_nowhere() {
     view.viewComponents = { "updates": fakeView }
     var loaded = child("content").item
-    keyClick("j")
-    keyClick("j")
-    keyClick("j")
+    // The first j highlights row 0; three more would pass the last row (2).
+    for (var i = 0; i < 4; i++) keyClick("j")
     compare(view.cursor, 2, "the cursor stops at the last row")
     keyClick("k")
     keyClick("p")
@@ -558,6 +557,29 @@ TestCase {
     verify(view.cursorActive)
   }
 
+  // With no row highlighted (a fresh view or page), the first j or k highlights row 0;
+  // after that they move by one (omad-88pf).
+  function test_the_first_j_or_k_highlights_the_first_row() {
+    view.viewComponents = { "updates": fakeView }
+    verify(!view.cursorActive)
+    keyClick("j")
+    compare([view.cursorActive, view.cursor], [true, 0])
+    keyClick("j")
+    compare(view.cursor, 1)
+    // k too, in the panel opened again.
+    view.opened = false
+    open(view)
+    verify(!view.cursorActive)
+    keyClick("k")
+    compare([view.cursorActive, view.cursor], [true, 0])
+    // A page pushed on top starts with nothing highlighted; its first j is its line 0.
+    verify(view.push({ "title": "DBM", "component": fakeView }))
+    compare(child("page").item.rowCount, 3)
+    verify(!view.cursorActive)
+    keyClick("j")
+    compare([view.cursorActive, view.cursor], [true, 0])
+  }
+
   function test_every_button_with_a_key_says_it_from_the_key_map() {
     compare(child("checkButton").tooltipText, "Check now (" + Model.keyHint("check") + ")")
     compare(child("undoButton").tooltipText, "Undo update on era (" + Model.keyHint("undo") + ")")
@@ -603,7 +625,10 @@ TestCase {
     compare(child("card_reinstall").text, "Update the panel")
     keyClick(Qt.Key_Return)
     compare(svc.reinstalls, 1)
+    // The first j highlights Update the panel, the second Retry.
     keyClick("j")
+    keyClick("j")
+    compare(view.cursor, 1)
     keyClick(Qt.Key_Return)
     compare(svc.refreshes, 1)
     child("card_retry").clicked()
@@ -628,7 +653,10 @@ TestCase {
     verify(findChild(view, "card_reinstall") === null)
     keyClick(Qt.Key_Return)
     compare(svc.refreshes, 1)
+    // The first j highlights Retry, the second the command's Copy.
     keyClick("j")
+    keyClick("j")
+    compare(view.cursor, 1)
     keyClick(Qt.Key_Return)
     compare(svc.copies, ["omaddons omarchy install"])
     compare(child("cardCopied").text, "Copied")
@@ -1089,6 +1117,8 @@ TestCase {
     compare(Quickshell.detachedCommands.length, 0)
     compare(child("keyNote").text, "Choose a client first: t, or a row of one")
     verify(!child("openButton").enabled)
+    // The first j highlights the era row, the second the retail row.
+    keyClick("j")
     keyClick("j")
     compare([view.cursorActive, view.cursor], [true, 1])
     verify(child("openButton").enabled)
