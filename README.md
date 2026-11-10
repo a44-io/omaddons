@@ -275,7 +275,7 @@ cargo build --locked --release
 ./target/release/omaddons status
 ```
 
-The release profile uses thin LTO, a single codegen unit and stripped symbols; the binary is about 25 MB, with the catalog, the agent guide and the bar widget embedded. Making it smaller is milestone 5's: `omad-ylko` (the release profile, measured at 16.1 MB) and `omad-ho1p` (schema generation out of the binary).
+The release profile uses thin LTO, a single codegen unit and stripped symbols; the binary is about 25 MB, with the catalog, the agent guide and the bar widget embedded. Milestone 5 brings it under 18 MB with a release profile built for size (`omad-ylko`, measured at 16.1 MB). Moving schema generation out of the binary (`omad-ho1p`, about 1.5 MB more) is needed only if that profile proves too slow and a milder one (measured at 17.7 MB) is used instead.
 
 For Claude Code: `omaddons robot-docs install-skill` installs the agent guide as a skill (see [`robot-docs install-skill`](#robot-docs-install-skill)).
 
@@ -3804,7 +3804,7 @@ None at HEAD.
 | **M4: the agent surface** | Shipped: `capabilities`; `robot-docs guide`, `schema`, `errors` and `install-skill`; `completions`; intent inference; stored plans (`--dry-run`, then `apply`), `plans show` and `--if-match`; the doctor (`doctor`, `explain`, `fix`, `diff`, `undo`, `gc`, `--online`); bare help's discovery line and `help --json`'s `discovery`; `status` on the doctor's registry; the pre-freeze contract audit; verbosity levels; the contract's golden; the checkpoint's run on the real machine; and **the first tag, `v0.1.0`, which froze the contract at 1.0**. Dropped from M4 when it was re-scoped on 2026-11-04, and may return if real use asks for them: `doctor health`, `ls`, `capabilities`, `robot-docs` and `--robot-triage`, and further detector batches (more state-file, config, userland, permission and external-artifact checks) | ✅ Done (2026-11-08) |
 | Omarchy widget overhaul | A user-first overhaul of the bar widget: a UX audit and design system first, then every view rebuilt (Updates, Installed, an addon page, Search, Lua errors, Issues, Backups, History, Settings, first run), a readable plan sheet for every confirmation, a `?` key reference and mouse support (`omad-widget-user-first-1n2p`) | 🚧 Landed after `v0.1.0`; follow-ups open |
 | Launch-week fixes | The [Known issues](#known-issues) of launch day, a `--help` overhaul to the standard of `br` and `bv`, dynamic completion of client ids, addon names and ids, an installer for the completion scripts (`install-completions`), and the binary's size measured with its cuts filed for M5 (`omad-ylko`, `omad-ho1p`) (`omad-launch-week-fixes-bmcx`) | ✅ Done (2026-11-10) |
-| **M5: accounts and release** | Optional CurseForge and Wago (bring your own credential, never cached), fingerprint adoption; release engineering: versioning, CHANGELOG, a local PKGBUILD, packaged completions and a man page. Not yet broken down into tasks | 🗓️ Planned |
+| **M5: accounts and release** | Optional CurseForge and Wago (bring your own credential, never cached), fingerprint adoption; release engineering: versioning, CHANGELOG, a local PKGBUILD, packaged completions, a man page and a release binary under 18 MB. Not yet broken down into tasks | 🗓️ Planned |
 
 The authoritative design is the pinned vision bead. Its body is revision 2, and comments added after it supersede it.
 
