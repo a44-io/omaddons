@@ -294,6 +294,9 @@ impl InflightLock {
         Ok(Self::held(paths.inflight_lock(tx))? || Self::held(paths.cache_inflight_lock(tx))?)
     }
 
+    /// A writer holds its lock exclusively, so a shared probe fails only on a writer.
+    /// Probes stay shared so that two processes probing one lock at once never take
+    /// each other for its writer (omad-7xzw).
     fn held(path: PathBuf) -> Result<bool> {
         let file = match File::open(&path) {
             Ok(file) => file,
@@ -307,7 +310,7 @@ impl InflightLock {
                 ));
             }
         };
-        match file.try_lock() {
+        match file.try_lock_shared() {
             Ok(()) => {
                 drop(file.unlock());
                 Ok(false)
@@ -708,6 +711,53 @@ mod tests {
         );
         drop(lock);
         assert!(freed(|| !InflightLock::is_live(&p, &tx).unwrap()));
+    }
+
+    /// Another process's liveness probe holds the file for a moment; a second probe
+    /// meanwhile must not take it for a writer (omad-7xzw: two `doctor fix` runs probing
+    /// one journal each saw the other's probe as a live writer, and one left it alone).
+    /// Each `File::open` is an open file description of its own, so its flock conflicts
+    /// as another process's would.
+    #[test]
+    fn a_liveness_probe_is_no_writer() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = paths(dir.path());
+        for (case, path) in [
+            ("state", p.inflight_lock(&TxId::new())),
+            ("cache", p.cache_inflight_lock(&TxId::new())),
+        ] {
+            let tx: TxId = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .and_then(|s| s.parse().ok())
+                .unwrap();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "").unwrap();
+            let probing = File::open(&path).unwrap();
+            probing.lock_shared().unwrap();
+            assert!(
+                !InflightLock::is_live(&p, &tx).unwrap(),
+                "{case}: a probe in progress is no writer"
+            );
+            drop(probing);
+            std::fs::remove_file(&path).unwrap();
+            let writer = InflightLock::create_at(path.parent().unwrap(), path.clone(), &tx);
+            let writer = writer.unwrap();
+            let probing = File::open(&path).unwrap();
+            assert!(
+                probing.try_lock_shared().is_err(),
+                "{case}: a probe never shares a writer's lock"
+            );
+            assert!(
+                InflightLock::is_live(&p, &tx).unwrap(),
+                "{case}: a writer is live"
+            );
+            drop(writer);
+            assert!(
+                freed(|| !InflightLock::is_live(&p, &tx).unwrap()),
+                "{case}: a writer gone is not live"
+            );
+        }
     }
 
     #[test]

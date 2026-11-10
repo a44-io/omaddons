@@ -2647,6 +2647,17 @@ mod tests {
             Some(argv_of(&["omaddons", "doctor", "fix", "--only", DELEGATE]))
         );
 
+        // A journal another process is only probing (its liveness check holds the
+        // in-flight lock shared, for a moment) is still a recovery: a probe is no writer.
+        // Two `doctor fix` runs probing one journal at once once each took the other's
+        // probe for a writer, and one of them planned no delegation (omad-7xzw).
+        let probing = std::fs::File::open(home.paths.inflight_lock(&stuck)).unwrap();
+        probing.lock_shared().unwrap();
+        let probed = planned("probed", plan(&home, std::slice::from_ref(&delegate), &[]));
+        let txs_of = |plan: &FixPlan| plan.recoveries.iter().map(|r| r.tx).collect::<Vec<_>>();
+        assert_eq!(txs_of(&probed), [stuck], "probed");
+        drop(probing);
+
         // A transaction that left no journal is no recovery.
         let gone = finding(DELEGATE, &home, of_tx(TxId::new()));
         let gone = planned("gone", plan(&home, &[gone], &[]));

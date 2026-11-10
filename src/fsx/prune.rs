@@ -877,9 +877,10 @@ fn is_plain(name: &str) -> bool {
         && !name.contains(['/', '\\'])
 }
 
-/// Whether someone holds the lock file at `path`.
+/// Whether someone holds the lock file at `path`: a writer holds it exclusively, and a
+/// shared probe never takes another process's probe for one (omad-7xzw).
 fn held(path: &Path) -> bool {
-    File::open(path).is_ok_and(|file| match file.try_lock() {
+    File::open(path).is_ok_and(|file| match file.try_lock_shared() {
         Ok(()) => {
             drop(file.unlock());
             false
@@ -2070,6 +2071,28 @@ mod tests {
         )
         .unwrap();
         assert_eq!(report.removed, victims);
+        assert!(!victim.exists());
+    }
+
+    /// Another process's liveness probe (a shared hold for a moment) is no live
+    /// transaction: the lock it probes is still pruned (omad-7xzw).
+    #[test]
+    fn a_probed_inflight_lock_is_pruned() {
+        let f = fixture();
+        let tx: TxId = TX.parse().unwrap();
+        drop(super::super::lock::InflightLock::create(&f.paths, &tx).unwrap());
+        let victim = f.paths.inflight_lock(&tx);
+        let probing = File::open(&victim).unwrap();
+        probing.lock_shared().unwrap();
+        let victims = std::slice::from_ref(&victim);
+        let report = prune(
+            &f.scopes,
+            PruneReason::PostCommitCleanup,
+            victims,
+            LockUse::Acquire,
+        )
+        .unwrap();
+        assert_eq!(report.removed, victims, "{:?}", report.skipped);
         assert!(!victim.exists());
     }
 
