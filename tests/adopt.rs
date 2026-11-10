@@ -606,6 +606,99 @@ fn adopt_writes_nothing_but_the_cache_and_repeats_identically() {
     assert_eq!(strip(&a), strip(&b), "repeat runs are identical");
 }
 
+/// A run's `phase` progress events, `(current, total, target, ref)` each.
+fn phase_events(r: &Run, phase: &str) -> Vec<(u64, u64, String, String)> {
+    r.stderr
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|e| e["event"] == "progress" && e["phase"] == phase)
+        .map(|e| {
+            let text = |key: &str| e[key].as_str().unwrap_or_default().to_owned();
+            (
+                e["current"].as_u64().unwrap_or_default(),
+                e["total"].as_u64().unwrap_or_default(),
+                text("target"),
+                text("ref"),
+            )
+        })
+        .collect()
+}
+
+/// `verify` counts each of `refs`' groups once, 1 to their number, each event naming
+/// its client and ref; `download` ends at the total it announced.
+fn assert_counted(r: &Run, refs: &[&str]) {
+    let verify = phase_events(r, "verify");
+    let total = refs.len() as u64;
+    let currents: Vec<u64> = verify.iter().map(|e| e.0).collect();
+    assert_eq!(
+        currents,
+        (1..=total).collect::<Vec<u64>>(),
+        "{}",
+        r.context()
+    );
+    assert!(verify.iter().all(|e| e.1 == total), "{}", r.context());
+    let mut named: Vec<(String, String)> = verify
+        .into_iter()
+        .map(|(_, _, target, named)| (target, named))
+        .collect();
+    named.sort();
+    let mut want: Vec<(String, String)> = refs
+        .iter()
+        .map(|r| ("retail".to_owned(), (*r).to_owned()))
+        .collect();
+    want.sort();
+    assert_eq!(named, want, "{}", r.context());
+    let download = phase_events(r, "download");
+    if let Some(last) = download.last() {
+        assert_eq!(
+            last.0,
+            last.1,
+            "download ends at its total: {}",
+            r.context()
+        );
+    }
+}
+
+/// `adopt`'s report counts every identified group through `verify`, whether its download
+/// is cached or not: the engine's check of one group reports into the run's total, never
+/// a total of its own (omad-tqtk).
+#[test]
+fn verify_progress_counts_every_identified_group() {
+    let two_groups = || {
+        let home = foo_home();
+        catalog(
+            &home,
+            &[
+                ("Foo", "gh:o/foo", &["Foo", "Foo_Options"]),
+                ("Bar", "gh:o/bar", &["Bar"]),
+            ],
+        );
+        release(&home.http, BAR, "v2", &bar("v2"), RETAIL);
+        home
+    };
+
+    // Neither download cached.
+    let home = two_groups();
+    let addons = home.addons("_retail_");
+    unpack(&addons, &borrowed(&foo("v1")));
+    unpack(&addons, &borrowed(&bar("v1")));
+    let fresh = home.run(&["adopt", "--progress", "json"]);
+    fresh.expect(0);
+    assert_counted(&fresh, &["gh:o/bar", "gh:o/foo"]);
+
+    // Foo's download cached by a run that saw it alone, Bar's not.
+    let home = two_groups();
+    let addons = home.addons("_retail_");
+    unpack(&addons, &borrowed(&foo("v1")));
+    let alone = home.run(&["adopt", "--progress", "json"]);
+    alone.expect(0);
+    assert_counted(&alone, &["gh:o/foo"]);
+    unpack(&addons, &borrowed(&bar("v1")));
+    let one_cached = home.run(&["adopt", "--progress", "json"]);
+    one_cached.expect(0);
+    assert_counted(&one_cached, &["gh:o/bar", "gh:o/foo"]);
+}
+
 /// The folder names of `addon`'s record on retail.
 fn recorded_folders(home: &Home, addon: &str) -> Vec<String> {
     record(home, "retail").addons[addon]

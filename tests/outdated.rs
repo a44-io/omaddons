@@ -621,6 +621,43 @@ fn verify_downloads_unverified_updates_only_and_remembers_the_verdicts() {
     assert_eq!(net_log(&home).len(), before);
 }
 
+/// `--verify` counts each update it checks once through `verify`, 1 to their number,
+/// each naming its client: the engine's dry run gives the phase every target's total
+/// (checked with adopt's shape, omad-tqtk).
+#[test]
+fn verify_progress_counts_each_checked_update_once() {
+    let mut home = Home::new(&["wow", "wow_classic_era"]);
+    let (old, new) = (
+        Rel::new("Foo", "v1", EVERY, ALL),
+        Rel::new("Foo", "v2", EVERY, ALL),
+    );
+    home.installed_behind(
+        FOO,
+        ("v1", &old.assets()),
+        ("v2", &new.assets()),
+        &["retail", "era"],
+    );
+    let r = home.run(&["outdated", "--verify", "--progress", "json"]);
+    r.expect(0);
+    let verify: Vec<Value> = r
+        .stderr
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|e| e["event"] == "progress" && e["phase"] == "verify")
+        .collect();
+    let counts: Vec<(u64, u64)> = verify
+        .iter()
+        .map(|e| (e["current"].as_u64().unwrap(), e["total"].as_u64().unwrap()))
+        .collect();
+    assert_eq!(counts, [(1, 2), (2, 2)], "{}", r.context());
+    let mut targets: Vec<&str> = verify
+        .iter()
+        .map(|e| e["target"].as_str().unwrap_or_default())
+        .collect();
+    targets.sort_unstable();
+    assert_eq!(targets, ["era", "retail"], "{}", r.context());
+}
+
 /// A verdict remembered under another judge says nothing (omad-fxma). A build before
 /// retail 12's interface floor recorded v2, whose TOC is below it, as loading out of
 /// date on retail 12.1.5: `outdated` must not call v2 a verified update, and `--verify`
