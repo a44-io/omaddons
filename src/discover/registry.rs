@@ -858,23 +858,35 @@ fn path_names(path: &Path, d: &DiscoveredTarget) -> bool {
     .any(|p| std::fs::canonicalize(p).ok().as_deref() == Some(path))
 }
 
-/// `target_not_found` when `selector` names, by key or id, a registered client whose
-/// directory is gone or that Battle.net uninstalled (`missing`) and no discovered target
-/// by either: a later kind of
-/// selector (a family its id shadows, a mode) would pick another client.
-pub fn missing_named(
+/// The registered client `selector` names by key or id whose directory is gone or that
+/// Battle.net uninstalled (`missing`), when no discovered target answers to it by either.
+/// Only `backup list -t` and `backup export` reach it (omad-hz6h); every other command
+/// refuses it through [`missing_named`].
+pub fn missing_entry<'a>(
     selector: &str,
     targets: &[DiscoveredTarget],
-    missing: &[RegistryEntry],
-) -> Result<()> {
+    missing: &'a [RegistryEntry],
+) -> Option<&'a RegistryEntry> {
     let key = selector.parse::<TargetKey>().ok();
     let names = |k: Option<TargetKey>, id: &str| {
         (key.is_some() && k == key) || id.eq_ignore_ascii_case(selector)
     };
     if targets.iter().any(|d| names(d.target.key, &d.target.id)) {
-        return Ok(());
+        return None;
     }
-    match missing.iter().find(|e| names(Some(e.key), &e.id)) {
+    missing.iter().find(|e| names(Some(e.key), &e.id))
+}
+
+/// `target_not_found` when `selector` names, by key or id, a registered client whose
+/// directory is gone or that Battle.net uninstalled (`missing`) and no discovered target
+/// by either ([`missing_entry`]): a later kind of selector (a family its id shadows, a
+/// mode) would pick another client.
+pub fn missing_named(
+    selector: &str,
+    targets: &[DiscoveredTarget],
+    missing: &[RegistryEntry],
+) -> Result<()> {
+    match missing_entry(selector, targets, missing) {
         Some(e) => Err(Error::new(
             ErrorCode::TargetNotFound,
             format!(

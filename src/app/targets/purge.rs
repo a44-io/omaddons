@@ -51,8 +51,8 @@ const COMMAND: &str = "targets rm";
 pub struct PurgeData {
     /// Each path that goes, sorted by path, with what it is and its apparent bytes.
     pub deletions: Vec<PurgeDeletion>,
-    /// The client's `WTF/` backups among them, newest capture first: copy one out of its
-    /// `path` before the purge to keep it.
+    /// The client's `WTF/` backups among them, newest capture first: `backup export <id> -t
+    /// <client> <file>` keeps one before the purge (or a copy of its `path`).
     pub backups: Vec<PurgeBackup>,
     /// The transactions whose undo snapshots go, sorted: none of them can be undone
     /// after.
@@ -644,10 +644,7 @@ pub(super) fn render(data: &RmData, purge: &PurgeData, w: &mut dyn Write) -> std
         )?;
     }
     if !purge.backups.is_empty() && data.dry_run {
-        writeln!(
-            w,
-            "its backups (copy one out of its folder first to keep it):"
-        )?;
+        writeln!(w, "its backups (to keep one, export it before the purge):")?;
         let now = crate::clock::now();
         for b in &purge.backups {
             let kind = b.kind.map_or_else(
@@ -659,6 +656,12 @@ pub(super) fn render(data: &RmData, purge: &PurgeData, w: &mut dyn Write) -> std
                 |at| format!("captured {}", crate::app::backup::when(at, now)),
             );
             writeln!(w, "  {} ({kind}, {when})  {}", b.id, b.path.display())?;
+            // `backup export` reaches a client no longer installed (omad-hz6h).
+            writeln!(
+                w,
+                "    keep it: omaddons backup export {} -t {} <file>",
+                b.id, data.id
+            )?;
         }
     }
     match purge.lost_undos.len() {

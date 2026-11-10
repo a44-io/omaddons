@@ -39,7 +39,9 @@ Examples:
   omaddons backup list 01M6Q2VA -v      one backup, with the addon versions it holds
 
 Sizes are apparent: on btrfs and xfs a backup initially shares its data with the
-live WTF/, so the free space beside them says what is really left.
+live WTF/, so the free space beside them says what is really left. -t naming a client
+that is no longer installed lists its backups too, so they can be exported before
+targets rm --purge deletes them.
 
 See also: backup create, backup restore
 

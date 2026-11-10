@@ -10,8 +10,8 @@ use std::sync::Arc;
 use crate::cli::Context;
 use crate::discover::cache::{CacheStats, DiscoveryMode, discover_cached};
 use crate::discover::registry::{
-    Resolved, is_all_keyword, missing_named, reconcile, reserved_id_warning, resolve,
-    resolve_one_in,
+    Resolved, is_all_keyword, missing_entry, missing_named, reconcile, reserved_id_warning,
+    resolve, resolve_one_in,
 };
 use crate::discover::running::process_prefixes;
 use crate::discover::{DiscoveredTarget, DiscoveryInput, DiscoverySource, ScanLimits};
@@ -24,7 +24,7 @@ use crate::sources::github_token::GithubToken;
 use crate::state::config::{Config, LoadedConfig};
 use crate::state::paths::Paths;
 use crate::state::records::{TargetRecord, load_record};
-use crate::state::registry::{Origin, Registry, load_registry};
+use crate::state::registry::{Origin, Registry, RegistryEntry, load_registry};
 use crate::state::store::Loaded;
 
 /// The discovered targets, reconciled with the registry.
@@ -291,6 +291,15 @@ impl World {
         select_many(ctx.target.as_deref(), &self.resolved.targets, &self.table)
     }
 
+    /// The registered client `-t` names by key or id that discovery no longer finds (its
+    /// directory is gone, or Battle.net uninstalled it), when no discovered target answers
+    /// to it: what [`World::select_many`] refuses. Only the read-only `backup list` and
+    /// `backup export` reach its backups through it (omad-hz6h).
+    pub fn missing_selected(&self, ctx: &Context) -> Option<&RegistryEntry> {
+        let selector = ctx.target.as_deref()?;
+        missing_entry(selector, &self.resolved.targets, &self.resolved.missing)
+    }
+
     /// [`World::select_many`] for `selector`, without first refusing a registered client
     /// whose directory is gone: the doctor reports such a client instead.
     pub fn select_in(&self, selector: Option<&str>) -> Result<Vec<&DiscoveredTarget>> {
@@ -538,6 +547,32 @@ mod tests {
         );
         let retail = world.select_in(Some("retail")).unwrap();
         assert_eq!(ids(&retail), ["retail"], "case retail");
+    }
+
+    /// What `backup list -t` and `backup export` reach of a client no longer installed
+    /// (omad-hz6h): the registered client a selector names by key or id, never by another
+    /// kind, and never one a discovered target answers to.
+    #[test]
+    fn a_missing_client_is_reached_by_key_or_id_only() {
+        let dir = PathBuf::from("/c/gone");
+        let gone = manual_entry("gone", &dir);
+        let mut shadowed = manual_entry("retail", &dir);
+        let targets = vec![found("retail", Family::Mainline, Some("wow"))];
+        shadowed.key = targets[0].target.key.unwrap_or_else(TargetKey::new);
+        let missing = vec![gone.clone(), shadowed];
+        let key = gone.key.to_string();
+        let cases: [(&str, Option<&str>); 6] = [
+            ("gone", Some("gone")),
+            ("GONE", Some("gone")),
+            (key.as_str(), Some("gone")),
+            ("retail", None),
+            ("mainline", None),
+            ("nowhere", None),
+        ];
+        for (selector, expected) in cases {
+            let reached = missing_entry(selector, &targets, &missing).map(|e| e.id.as_str());
+            assert_eq!(reached, expected, "case {selector}");
+        }
     }
 
     #[test]

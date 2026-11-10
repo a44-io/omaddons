@@ -38,8 +38,9 @@ Writes one backup as a zstd-compressed tar: its description, its WTF/ with the m
 it recorded, and every file's SHA-256, checked against the backup's own hashes when it
 has them. The same backup always exports to the same bytes. It never replaces a file,
 writes nothing anywhere else, and refuses a destination inside a game client, a Wine
-prefix or omaddons' own folders. The archive holds account and character names, as WTF/
-does: keep it private.
+prefix or omaddons' own folders. It also reaches the backups of a client that is no
+longer installed, so one can be kept before targets rm --purge deletes them. The
+archive holds account and character names, as WTF/ does: keep it private.
 
 See also: backup import, backup list
 

@@ -228,6 +228,202 @@ fn a_purge_previews_then_deletes_exactly_what_it_listed() {
     .fails(3, "target_not_found");
 }
 
+/// omad-hz6h: a purge's backups can be kept first. `backup list -t` and `backup export`
+/// reach the backups of a client Battle.net uninstalled, read-only; the export imports
+/// elsewhere; every change naming the client is still refused, and nothing in its
+/// folder changes until the purge.
+#[test]
+fn a_backup_of_a_client_no_longer_installed_is_listed_and_exported_before_the_purge() {
+    let log = tlog!();
+    let home = uninstalled_classic(&log);
+    let classic = home.client("_classic_");
+    log.tree("classic", &classic);
+
+    log.step("backup list -t classic lists its backup, by id and by key");
+    let listed = log.run(&home, &["backup", "list", "-t", "classic", "--json"]);
+    listed.ok();
+    let targets = listed.data()["targets"].as_array().unwrap().clone();
+    assert_eq!(targets.len(), 1, "{targets:?}");
+    assert_eq!(targets[0]["target"]["id"], "classic");
+    assert_eq!(targets[0]["total"], 1);
+    let id = targets[0]["backups"][0]["id"].as_str().unwrap().to_owned();
+    let key = targets[0]["target"]["key"].as_str().unwrap().to_owned();
+    // A client no longer installed takes no new backup, so none is recommended.
+    let actions: Vec<String> = listed.commands().into_iter().map(|c| c.action).collect();
+    log.assert_eq("its next steps", &actions, &Vec::<String>::new());
+    let by_key = log.run(&home, &["backup", "list", "-t", &key, "--json"]);
+    by_key.ok();
+    log.assert_eq(
+        "by key",
+        &by_key.data()["targets"][0]["backups"][0]["id"],
+        &json!(id),
+    );
+    let one = log.run(
+        &home,
+        &["backup", "list", &id[..10], "-t", "classic", "--json"],
+    );
+    one.ok();
+    assert_eq!(one.data()["targets"][0]["shown"], 1);
+    let human = log.run(&home, &["backup", "list", "-t", "classic"]);
+    human.ok();
+    assert!(
+        human
+            .stdout()
+            .contains("classic (no longer installed) · 1 backup"),
+        "{}",
+        human.stdout()
+    );
+
+    log.step("backup export writes it off the client, with -t and without");
+    let out = home.env.root().join("keep");
+    fs::create_dir_all(&out).unwrap();
+    let file = out.join("classic-wtf.tar.zst");
+    let file_arg = file.to_string_lossy().into_owned();
+    let exported = log.run(
+        &home,
+        &[
+            "backup", "export", &id, "-t", "classic", &file_arg, "--json",
+        ],
+    );
+    exported.ok();
+    assert_eq!(exported.data()["target"]["id"], "classic");
+    assert_eq!(exported.data()["target"]["key"], json!(key));
+    assert!(file.is_file());
+    let again = out.join("again.tar.zst");
+    log.run(
+        &home,
+        &["backup", "export", &id, &again.to_string_lossy(), "--json"],
+    )
+    .ok();
+    assert_eq!(
+        fs::read(&file).unwrap(),
+        fs::read(&again).unwrap(),
+        "one backup always exports to the same bytes"
+    );
+
+    log.step("never into the folder of a client no longer installed");
+    let inside = classic.join("Fonts/wtf.tar.zst");
+    let refused = log.run(
+        &home,
+        &[
+            "backup",
+            "export",
+            &id,
+            "-t",
+            "classic",
+            &inside.to_string_lossy(),
+            "--json",
+        ],
+    );
+    refused.fails(4, "scope_denied");
+    let message = refused.envelope()["error"]["message"].as_str().unwrap();
+    assert!(message.contains("inside the game client"), "{message}");
+    log.assert_unchanged("classic", &classic);
+
+    log.step("every change naming classic is still refused, and touches nothing");
+    let bar = home.env.root().join("addons/Bar");
+    let bar = bar.to_string_lossy().into_owned();
+    for argv in [
+        &["install", bar.as_str(), "-t", "classic", "--json"][..],
+        &["update", "-t", "classic", "--json"],
+        &["backup", "create", "-t", "classic", "--json"],
+        &["backup", "restore", id.as_str(), "-t", "classic", "--json"],
+        &["backup", "verify", id.as_str(), "-t", "classic", "--json"],
+        &["backup", "prune", "-t", "classic", "--json"],
+    ] {
+        log.run(&home, argv).fails(3, "target_not_found");
+    }
+    log.assert_unchanged("classic", &classic);
+
+    log.step("the export imports on another client");
+    let import = [
+        "backup",
+        "import",
+        file_arg.as_str(),
+        "-t",
+        "retail",
+        "--json",
+    ];
+    log.run(&home, &import).fails(4, "wrong_flavor");
+    let forced: Vec<&str> = [&import[..], &["--force"][..]].concat();
+    let imported = log.run(&home, &forced);
+    imported.ok();
+    assert_eq!(imported.data()["backup"]["kind"], "imported");
+    assert_eq!(imported.data()["source"]["id"], json!(id));
+    assert_eq!(imported.data()["source"]["target_id"], "classic");
+
+    log.step("the purge preview names the export of each backup");
+    let preview = log.run(&home, &["targets", "rm", "classic", "--purge", "--dry-run"]);
+    preview.ok();
+    let text = preview.stdout();
+    assert!(
+        text.contains(&format!(
+            "keep it: omaddons backup export {id} -t classic <file>"
+        )),
+        "{text}"
+    );
+    log.assert_unchanged("classic", &classic);
+
+    log.step("after the purge, classic is no client at all, and its export stays");
+    log.run(
+        &home,
+        &["targets", "rm", "classic", "--purge", "--yes", "--json"],
+    )
+    .ok();
+    log.run(&home, &["backup", "list", "-t", "classic", "--json"])
+        .fails(3, "target_not_found");
+    let retail = log.run(&home, &["backup", "list", "-t", "retail", "--json"]);
+    retail.ok();
+    assert_eq!(retail.data()["targets"][0]["total"], 1);
+    assert!(file.is_file());
+}
+
+/// omad-hz6h: a registered client whose folder is gone entirely has no backups to
+/// reach: `backup list -t` says so, and an export finds no such backup, rather than
+/// failing on the missing path.
+#[test]
+fn a_client_whose_folder_is_gone_lists_no_backups() {
+    let log = tlog!();
+    let home = uninstalled_classic(&log);
+    let classic = home.client("_classic_");
+    fs::remove_dir_all(&classic).unwrap();
+
+    log.step("backup list -t classic lists none");
+    let listed = log.run(&home, &["backup", "list", "-t", "classic", "--json"]);
+    listed.ok();
+    let target = &listed.data()["targets"][0];
+    assert_eq!(target["target"]["id"], "classic");
+    assert_eq!(target["total"], 0);
+    assert_eq!(target["backups"], json!([]));
+    let human = log.run(&home, &["backup", "list", "-t", "classic"]);
+    human.ok();
+    assert!(
+        human
+            .stdout()
+            .contains("classic (no longer installed) · no backups"),
+        "{}",
+        human.stdout()
+    );
+
+    log.step("an export of a backup it no longer has is not_found");
+    let file = home.env.root().join("wtf.tar.zst");
+    log.run(
+        &home,
+        &[
+            "backup",
+            "export",
+            "01JB8Q2VA0",
+            "-t",
+            "classic",
+            &file.to_string_lossy(),
+            "--json",
+        ],
+    )
+    .fails(3, "not_found");
+    assert!(!classic.exists(), "nothing made its folder again");
+    assert!(!file.exists());
+}
+
 #[test]
 fn a_stale_preview_deletes_nothing() {
     let log = tlog!();

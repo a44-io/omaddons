@@ -66,6 +66,7 @@ use crate::state::config::AutoBackup;
 use crate::state::doorbell;
 use crate::state::history::{self, BackupNote, HistoryEntry, TxResult};
 use crate::state::paths::{ClientPaths, Paths};
+use crate::state::registry::RegistryEntry;
 
 /// `backup`'s actions.
 #[derive(Debug, Clone, clap::Args)]
@@ -164,8 +165,9 @@ Writes one backup as a zstd-compressed tar: its description, its WTF/ with the m
 it recorded, and every file's SHA-256, checked against the backup's own hashes when it
 has them. The same backup always exports to the same bytes. It never replaces a file,
 writes nothing anywhere else, and refuses a destination inside a game client, a Wine
-prefix or omaddons' own folders. The archive holds account and character names, as WTF/
-does: keep it private.";
+prefix or omaddons' own folders. It also reaches the backups of a client that is no
+longer installed, so one can be kept before targets rm --purge deletes them. The
+archive holds account and character names, as WTF/ does: keep it private.";
 
 /// `backup export`'s arguments.
 #[derive(Debug, Clone, clap::Args)]
@@ -245,7 +247,9 @@ Examples:
   omaddons backup list 01M6Q2VA -v      one backup, with the addon versions it holds
 
 Sizes are apparent: on btrfs and xfs a backup initially shares its data with the
-live WTF/, so the free space beside them says what is really left.";
+live WTF/, so the free space beside them says what is really left. -t naming a client
+that is no longer installed lists its backups too, so they can be exported before
+targets rm --purge deletes them.";
 
 const PRUNE_HELP: &str = "\
 Examples:
@@ -549,18 +553,99 @@ pub(super) fn size(bytes: u64) -> String {
     format!("{bytes} B")
 }
 
+/// Whose backups a command reads: a client discovery found, or a registered one it no
+/// longer finds (its directory gone, or Battle.net uninstalled it). Only the read-only
+/// `backup list -t` and `backup export` reach the second (omad-hz6h), so a purge's
+/// backups can be kept first; nothing writes into its folder.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum Owner<'w> {
+    Found(&'w DiscoveredTarget),
+    Missing(&'w RegistryEntry),
+}
+
+impl<'w> Owner<'w> {
+    fn id(self) -> &'w str {
+        match self {
+            Self::Found(d) => &d.target.id,
+            Self::Missing(e) => &e.id,
+        }
+    }
+
+    fn key(self) -> Option<TargetKey> {
+        match self {
+            Self::Found(d) => d.target.key,
+            Self::Missing(e) => Some(e.key),
+        }
+    }
+
+    fn client_dir(self) -> &'w std::path::Path {
+        match self {
+            Self::Found(d) => &d.target.client_dir,
+            Self::Missing(e) => &e.client_dir,
+        }
+    }
+
+    fn target_ref(self) -> TargetRef {
+        TargetRef {
+            id: self.id().to_owned(),
+            key: self.key(),
+            mode: None,
+        }
+    }
+
+    /// The human view's name for it: `retail (12.1.5, mainline)`, or `classic (no longer
+    /// installed)`.
+    fn label(self) -> String {
+        match self {
+            Self::Found(d) => format!(
+                "{} ({}, {})",
+                d.target.id,
+                d.target.version,
+                family_name(d.target.family)
+            ),
+            Self::Missing(e) => format!("{} (no longer installed)", e.id),
+        }
+    }
+
+    /// The same client: by key, else by directory.
+    fn same(self, other: Owner<'_>) -> bool {
+        match (self.key(), other.key()) {
+            // ubs:ignore — comparing target keys (ULIDs), not secrets
+            (Some(a), Some(b)) => a == b,
+            _ => self.client_dir() == other.client_dir(),
+        }
+    }
+}
+
+/// A client whose backups are listed, as [`only`] names it.
+pub(super) trait Holder {
+    fn holder_id(&self) -> &str;
+}
+
+impl Holder for &DiscoveredTarget {
+    fn holder_id(&self) -> &str {
+        &self.target.id
+    }
+}
+
+impl Holder for Owner<'_> {
+    fn holder_id(&self) -> &str {
+        self.id()
+    }
+}
+
 /// Runs `backup list` (and bare `backup`).
 pub fn list(ctx: &Context, args: &BackupListArgs) -> Result<BackupListOutcome> {
     let world = World::load(ctx)?;
     let mut warnings = world.warnings.clone();
     let mode = world.config.auto_backup.unwrap_or_default();
     let verbose = ctx.output.style.detail();
-    let mut listed = listed(ctx, &world, &mut warnings)?;
+    let mut listed = readable(ctx, &world, &mut warnings)?;
     let mut show = None;
     if let Some(prefix) = &args.id {
         let (client, id) = only(&listed, prefix, ctx.target.as_deref())?;
         // ubs:ignore — comparing target ids, not secrets
-        listed.retain(|(d, _)| d.target.id == client);
+        listed.retain(|(o, _)| o.id() == client);
         show = Some(id);
     }
     let mut targets = Vec::new();
@@ -570,21 +655,19 @@ pub fn list(ctx: &Context, args: &BackupListArgs) -> Result<BackupListOutcome> {
         command: ctx.command,
         actor: ctx.actor,
     };
-    for (d, backups) in listed {
-        labels.push(format!(
-            "{} ({}, {})",
-            d.target.id,
-            d.target.version,
-            family_name(d.target.family)
-        ));
+    for (owner, backups) in listed {
+        labels.push(owner.label());
         let view = View {
             mode,
             limit: args.limit,
             show,
             verbose,
         };
-        targets.push(target(&world.paths, d, &backups, &view, ring));
-        if stale(d, &backups, crate::clock::now()) {
+        targets.push(target(&world.paths, owner, &backups, &view, ring));
+        // A client no longer installed takes no new backup.
+        if let Owner::Found(d) = owner
+            && stale(d, &backups, crate::clock::now())
+        {
             commands.push(CommandHint::new(
                 Action::BackupCreate,
                 ["omaddons", "backup", "create", "-t", d.target.id.as_str()],
@@ -598,6 +681,25 @@ pub fn list(ctx: &Context, args: &BackupListArgs) -> Result<BackupListOutcome> {
         labels,
         one: show.is_some(),
     })
+}
+
+/// [`listed`] for the read-only `backup list`: when `-t` names, by key or id, a
+/// registered client discovery no longer finds, that client alone (omad-hz6h). Its
+/// directory may be gone entirely: it then lists no backup.
+fn readable<'w>(
+    ctx: &Context,
+    world: &'w World,
+    warnings: &mut Vec<Warning>,
+) -> Result<Vec<(Owner<'w>, Vec<BackupRef>)>> {
+    if let Some(entry) = world.missing_selected(ctx) {
+        let (backups, found) = backup::list(&ClientPaths::new(&entry.client_dir));
+        warnings.extend(found);
+        return Ok(vec![(Owner::Missing(entry), backups)]);
+    }
+    Ok(listed(ctx, world, warnings)?
+        .into_iter()
+        .map(|(d, backups)| (Owner::Found(d), backups))
+        .collect())
 }
 
 /// Each client `-t` selects, else each that has a `backups/` dir, with its backups, by
@@ -640,8 +742,8 @@ fn stale(d: &DiscoveredTarget, backups: &[BackupRef], now: Timestamp) -> bool {
 }
 
 /// The client and id of the one backup in `listed` whose id starts with `prefix`.
-pub(super) fn only(
-    listed: &[(&DiscoveredTarget, Vec<BackupRef>)],
+pub(super) fn only<H: Holder>(
+    listed: &[(H, Vec<BackupRef>)],
     prefix: &str,
     selector: Option<&str>,
 ) -> Result<(String, BackupId)> {
@@ -650,14 +752,14 @@ pub(super) fn only(
         None => Suggestion::command(["omaddons", "backup", "list"]),
     };
     backup::check_prefix(prefix, list_fix())?;
-    let mut found: Vec<(&DiscoveredTarget, BackupRef)> = Vec::new();
-    for (d, backups) in listed {
+    let mut found: Vec<(&H, BackupRef)> = Vec::new();
+    for (holder, backups) in listed {
         for b in backup::matching(backups, prefix) {
-            found.push((*d, b.clone()));
+            found.push((holder, b.clone()));
         }
     }
     match found.as_slice() {
-        [(d, b)] => Ok((d.target.id.clone(), b.id)),
+        [(holder, b)] => Ok((holder.holder_id().to_owned(), b.id)),
         [] => {
             let mut newest: Vec<BackupRef> = listed.iter().flat_map(|(_, b)| b.clone()).collect();
             newest.sort_by_key(|b| std::cmp::Reverse(b.captured_at()));
@@ -667,7 +769,7 @@ pub(super) fn only(
             prefix,
             found
                 .iter()
-                .map(|(d, b)| (b.id, d.target.id.as_str()))
+                .map(|(holder, b)| (b.id, holder.holder_id()))
                 .collect(),
         )),
     }
@@ -686,21 +788,20 @@ struct View {
 /// projection (rebuilt when stale, which rings the doorbell for `ring`).
 fn target(
     paths: &Paths,
-    d: &DiscoveredTarget,
+    owner: Owner<'_>,
     backups: &[BackupRef],
     view: &View,
     ring: Ring<'_>,
 ) -> BackupTarget {
-    let client = ClientPaths::new(&d.target.client_dir);
-    let projection =
-        d.target.key.map(
-            |key| match inventory::load_validated(paths, &client, &key) {
-                Inventory::Fresh(inventory) => inventory,
-                Inventory::Stale(..) | Inventory::Missing(_) => {
-                    inventory::rebuild(paths, &client, &key, ring).inventory
-                }
-            },
-        );
+    let client = ClientPaths::new(owner.client_dir());
+    let projection = owner.key().map(
+        |key| match inventory::load_validated(paths, &client, &key) {
+            Inventory::Fresh(inventory) => inventory,
+            Inventory::Stale(..) | Inventory::Missing(_) => {
+                inventory::rebuild(paths, &client, &key, ring).inventory
+            }
+        },
+    );
     let total = backups.len() as u64;
     let bytes = backups
         .iter()
@@ -718,11 +819,7 @@ fn target(
         .map(|p| p.auto.clone())
         .unwrap_or_default();
     BackupTarget {
-        target: TargetRef {
-            id: d.target.id.clone(),
-            key: d.target.key,
-            mode: None,
-        },
+        target: owner.target_ref(),
         auto: AutoView {
             mode: view.mode,
             capability: auto.capability,
@@ -2080,22 +2177,55 @@ pub(super) fn named_backup<'w>(
     what: &str,
     warnings: &mut Vec<Warning>,
 ) -> Result<(&'w DiscoveredTarget, BackupRef)> {
-    let mut all: Vec<(&DiscoveredTarget, Vec<BackupRef>)> = Vec::new();
-    for d in &world.resolved.targets {
-        let (backups, found) = backup::list(&ClientPaths::new(&d.target.client_dir));
-        warnings.extend(found);
-        all.push((d, backups));
+    match named(ctx, world, prefix, what, warnings, Reach::Found)? {
+        (Owner::Found(d), b) => Ok((d, b)),
+        (Owner::Missing(_), _) => Err(Error::internal(
+            "a backup of a client no longer installed was named for a change",
+        )),
     }
-    all.sort_by(|a, b| a.0.target.id.cmp(&b.0.target.id));
-    let found = |listed: &[(&'w DiscoveredTarget, Vec<BackupRef>)], selector| {
+}
+
+/// Which clients' backups [`named`] looks among.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reach {
+    /// The clients discovery found: a command that may write to the backup's client.
+    Found,
+    /// Also the registered clients it no longer finds, for `backup export`, which only
+    /// reads them (omad-hz6h).
+    AlsoMissing,
+}
+
+/// [`named_backup`] over the clients `reach` admits.
+fn named<'w>(
+    ctx: &Context,
+    world: &'w World,
+    prefix: &str,
+    what: &str,
+    warnings: &mut Vec<Warning>,
+    reach: Reach,
+) -> Result<(Owner<'w>, BackupRef)> {
+    let missing: &[RegistryEntry] = match reach {
+        Reach::Found => &[],
+        Reach::AlsoMissing => &world.resolved.missing,
+    };
+    let owners =
+        (world.resolved.targets.iter().map(Owner::Found)).chain(missing.iter().map(Owner::Missing));
+    let mut all: Vec<(Owner<'w>, Vec<BackupRef>)> = Vec::new();
+    for owner in owners {
+        let (backups, found) = backup::list(&ClientPaths::new(owner.client_dir()));
+        warnings.extend(found);
+        all.push((owner, backups));
+    }
+    all.sort_by(|a, b| a.0.id().cmp(b.0.id()));
+    let found = |listed: &[(Owner<'w>, Vec<BackupRef>)], selector| {
         only(listed, prefix, selector).and_then(|(client, id)| {
             listed
                 .iter()
                 // ubs:ignore — comparing target ids, not secrets
-                .filter(|(d, _)| d.target.id == client)
-                .find_map(|(d, backups)| {
+                .filter(|(o, _)| o.id() == client)
+                .find_map(|(o, backups)| {
                     let b = backups.iter().find(|b| b.id == id)?;
-                    Some((*d, b.clone()))
+                    Some((*o, b.clone()))
                 })
                 .ok_or_else(|| Error::internal("a matched backup is listed"))
         })
@@ -2103,20 +2233,21 @@ pub(super) fn named_backup<'w>(
     let Some(selector) = ctx.target.as_deref() else {
         return found(&all, None);
     };
-    let selected = world.select_many(ctx)?;
-    let d = match selected.as_slice() {
-        [one] => *one,
-        many => return Err(several(ctx, many, what)),
+    let chosen = match world.missing_selected(ctx) {
+        Some(entry) if reach == Reach::AlsoMissing => Owner::Missing(entry),
+        _ => match world.select_many(ctx)?.as_slice() {
+            [one] => Owner::Found(one),
+            many => return Err(several(ctx, many, what)),
+        },
     };
-    let on_it: Vec<(&DiscoveredTarget, Vec<BackupRef>)> = all
+    let on_it: Vec<(Owner<'w>, Vec<BackupRef>)> = all
         .iter()
-        // ubs:ignore — comparing target ids, not secrets
-        .filter(|(t, _)| t.target.id == d.target.id)
+        .filter(|(o, _)| o.same(chosen))
         .cloned()
         .collect();
     match found(&on_it, Some(selector)) {
         Err(error) if matches!(error.code, ErrorCode::NotFound) => match found(&all, None) {
-            Ok((owner, b)) => Err(elsewhere(ctx, &b, &d.target.id, &owner.target.id)),
+            Ok((owner, b)) => Err(elsewhere(ctx, &b, chosen.id(), owner.id())),
             Err(_) => Err(error),
         },
         other => other,
@@ -2155,6 +2286,19 @@ fn elsewhere(ctx: &Context, b: &BackupRef, selected: &str, owner: &str) -> Error
         Suggestion::command(crate::discover::registry::with_target(&ctx.argv, owner)),
     )
     .details(serde_json::json!({ "id": id, "target": selected, "owner": owner }))
+}
+
+/// An export found a backup of `client`, a client no longer installed, damaged on disk
+/// (`error`, a `hash_mismatch`). Nothing writes into such a client's folder, so the
+/// damage is not recorded there as [`backup::verify::damage_found`] would, and `backup
+/// verify` cannot reach it: the fix says what is left. Any other error stands as it is.
+fn damage_unrecorded(client: &str, mut error: Error) -> Error {
+    if error.code == ErrorCode::HashMismatch {
+        error.fix = Suggestion::text(format!(
+            "{client} is no longer installed, so this backup cannot be checked again; export another of its backups, or copy what you need from its folder by hand"
+        ));
+    }
+    error
 }
 
 /// `usage`: a partial backup (the files a crashed partial restore displaced) holds only
@@ -2746,19 +2890,27 @@ pub fn export_backup(ctx: &Context, args: &BackupExportArgs) -> Result<BackupExp
     }
     let world = World::load(ctx)?;
     let mut warnings = world.warnings.clone();
-    let (d, backup) = named_backup(ctx, &world, &args.id, "an export", &mut warnings)?;
+    // A client no longer installed is reached too: an export only reads its backup.
+    let (owner, backup) = named(
+        ctx,
+        &world,
+        &args.id,
+        "an export",
+        &mut warnings,
+        Reach::AlsoMissing,
+    )?;
     let reservation = export::reserve(&backup)?;
     let plan = export::plan(&backup)?;
-    let client_dirs: Vec<std::path::PathBuf> = world
-        .resolved
-        .targets
-        .iter()
+    // Every registered client's folder is refused as the destination, a missing one's
+    // too.
+    let client_dirs: Vec<std::path::PathBuf> = (world.resolved.targets.iter())
         .map(|t| t.target.client_dir.clone())
+        .chain(world.resolved.missing.iter().map(|e| e.client_dir.clone()))
         .collect();
     let mut scopes = fence::table(&world.paths, &client_dirs, None)?;
     let cwd = std::env::current_dir().unwrap_or_default();
     let file = scopes.with_export_file(&cwd.join(&args.file))?;
-    let names = WtfPathRedactor::for_client(&ClientPaths::new(&d.target.client_dir));
+    let names = WtfPathRedactor::for_client(&ClientPaths::new(owner.client_dir()));
     let (compressed_bytes, sha256) = if ctx.dry_run {
         if std::fs::symlink_metadata(&file).is_ok() {
             return Err(Error::new(
@@ -2775,8 +2927,16 @@ pub fn export_backup(ctx: &Context, args: &BackupExportArgs) -> Result<BackupExp
             actor: ctx.actor,
         };
         let exported = export::export(&scopes, &backup, &plan, &file, (&names, &ctx.progress))
-            .map_err(|e| {
-                backup::verify::damage_found(&world.paths, &scopes, &backup, &d.target.id, ring, e)
+            .map_err(|e| match owner {
+                Owner::Found(d) => backup::verify::damage_found(
+                    &world.paths,
+                    &scopes,
+                    &backup,
+                    &d.target.id,
+                    ring,
+                    e,
+                ),
+                Owner::Missing(entry) => damage_unrecorded(&entry.id, e),
             })?;
         (Some(exported.compressed_bytes), Some(exported.sha256))
     };
@@ -2784,7 +2944,7 @@ pub fn export_backup(ctx: &Context, args: &BackupExportArgs) -> Result<BackupExp
     Ok(BackupExportOutcome {
         data: BackupExportData {
             dry_run: ctx.dry_run,
-            target: target_ref(d),
+            target: owner.target_ref(),
             backup: item(&backup, false),
             file,
             files: plan.files,
