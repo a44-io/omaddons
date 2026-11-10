@@ -14,15 +14,18 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::Instant;
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use super::paths::Paths;
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
-use crate::limits::{BACKUP_AUTO_KEEP_DAYS_MAX, CREDENTIAL_COMMAND_TIMEOUT, EffectiveLimits};
+use crate::limits::{
+    BACKUP_AUTO_KEEP_DAYS_MAX, CREDENTIAL_COMMAND_TIMEOUT, CREDENTIAL_KILL_GRACE,
+    CREDENTIAL_OUTPUT_MAX_BYTES, EffectiveLimits,
+};
 use crate::model::Channel;
 use crate::rules::{ClientRulesOverride, Family, RulesOverrides, RulesTable};
 
@@ -1245,9 +1248,21 @@ pub fn resolve_credential(credential: &CredentialRef) -> Result<(Secret, Vec<War
     }
 }
 
-/// Runs `argv` without a shell, stdin closed, stderr discarded, for at most
-/// [`CREDENTIAL_COMMAND_TIMEOUT`]; its trimmed stdout is the secret.
+/// Runs `argv` without a shell, stdin closed, stderr discarded, in a process group of
+/// its own; its trimmed stdout is the secret. One deadline,
+/// [`CREDENTIAL_COMMAND_TIMEOUT`], covers both its exit and the end of its output, so a
+/// process it left holding the output cannot keep omaddons waiting. Past that deadline,
+/// or past [`CREDENTIAL_OUTPUT_MAX_BYTES`] of output, the whole group is stopped and the
+/// credential refused. A command that succeeds is never stopped: a helper it started
+/// with its output elsewhere keeps running.
 fn run_credential_command(argv: &[String]) -> Result<Secret> {
+    run_credential_command_for(argv, CREDENTIAL_COMMAND_TIMEOUT)
+}
+
+/// [`run_credential_command`] with its deadline `timeout` after the start.
+fn run_credential_command_for(argv: &[String], timeout: Duration) -> Result<Secret> {
+    use std::os::unix::process::CommandExt;
+    use std::sync::mpsc::{TryRecvError, channel};
     let rejected = |message: String| {
         Error::new(
             ErrorCode::AuthRejected,
@@ -1259,54 +1274,123 @@ fn run_credential_command(argv: &[String]) -> Result<Secret> {
         return Err(rejected("the credential command is empty".into()));
     };
     // The user's own config.toml names this argv (credentials by reference); it runs
-    // without a shell, with stdin closed and stderr discarded.
+    // without a shell, with stdin closed and stderr discarded, in its own process group,
+    // so stopping it stops what it started too.
     let mut command = Command::new(program); // ubs:ignore — user-configured credential argv
     let mut child = command
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
+        .process_group(0)
         .spawn()
         .map_err(|err| {
             rejected(format!(
                 "cannot run the credential command {program}: {err}"
             ))
         })?;
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| rejected("the credential command has no stdout".into()))?;
-    let reader = std::thread::spawn(move || {
-        // A seam (DEC-7): a panic here is recovered below, so it must print nothing.
+    // ubs:ignore — a timeout clock, not randomness
+    let deadline = Instant::now() + timeout;
+    let Some(mut stdout) = child.stdout.take() else {
+        stop_credential_command(&mut child);
+        return Err(rejected("the credential command has no stdout".into()));
+    };
+    let (sender, output) = channel();
+    std::thread::spawn(move || {
+        // A seam (DEC-7): a panic here is recovered below (the channel closes with no
+        // output), so it must print nothing.
         let _ = crate::fsx::failpoint::hit("config.credential.reader");
         let mut out = Vec::new();
-        let _ = stdout.read_to_end(&mut out);
-        out
+        // One byte past the cap tells an output over it from one exactly at it.
+        let _ = (&mut stdout)
+            .take(CREDENTIAL_OUTPUT_MAX_BYTES + 1)
+            .read_to_end(&mut out);
+        let _ = sender.send(out);
     });
-    // ubs:ignore — a timeout clock, not randomness
-    let started = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if started.elapsed() < CREDENTIAL_COMMAND_TIMEOUT => {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(rejected(format!(
-                    "the credential command {program} timed out"
-                )));
+    // The output ends (EOF, or the cap) and the command exits, in either order; neither
+    // waits past the deadline. The exit is observed without reaping the command, so its
+    // process group's id stays its own until the group is stopped.
+    let mut out = None;
+    let mut exited = false;
+    loop {
+        if out.is_none() {
+            match output.try_recv() {
+                Ok(bytes) => out = Some(bytes),
+                // The reader panicked (the seam): no output.
+                Err(TryRecvError::Disconnected) => out = Some(Vec::new()),
+                Err(TryRecvError::Empty) => {}
             }
         }
-    };
-    let out = reader.join().unwrap_or_default();
+        if out
+            .as_ref()
+            .is_some_and(|bytes: &Vec<u8>| bytes.len() as u64 > CREDENTIAL_OUTPUT_MAX_BYTES)
+        {
+            stop_credential_command(&mut child);
+            return Err(rejected(format!(
+                "the credential command {program} printed more than {CREDENTIAL_OUTPUT_MAX_BYTES} bytes; a token is one short line"
+            )));
+        }
+        if !exited {
+            exited = match has_exited(&child) {
+                Ok(exited) => exited,
+                Err(err) => {
+                    stop_credential_command(&mut child);
+                    return Err(rejected(format!(
+                        "waiting for the credential command {program} failed: {err}"
+                    )));
+                }
+            };
+        }
+        if exited && out.is_some() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            stop_credential_command(&mut child);
+            let seconds = timeout.as_secs_f64();
+            return Err(rejected(if exited {
+                format!(
+                    "the credential command {program} exited, but a process it started still held its output after {seconds} s; it was stopped (start that process with its output redirected, such as to /dev/null)"
+                )
+            } else {
+                format!("the credential command {program} timed out after {seconds} s")
+            }));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let status = child.wait().map_err(|err| {
+        rejected(format!(
+            "waiting for the credential command {program} failed: {err}"
+        ))
+    })?;
+    let out = out.unwrap_or_default();
     if !status.success() {
         return Err(rejected(format!(
             "the credential command {program} failed ({status})"
         )));
     }
     Ok(Secret(String::from_utf8_lossy(&out).trim().to_owned()))
+}
+
+/// Whether `child` has exited, observed without reaping it (`WNOWAIT`).
+fn has_exited(child: &Child) -> std::io::Result<bool> {
+    use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
+    let options = WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT;
+    waitid(WaitId::Pid(Pid::from_child(child)), options)
+        .map(|status| status.is_some())
+        .map_err(std::io::Error::from)
+}
+
+/// Stops the credential command and every process of the group it leads: SIGTERM, then
+/// SIGKILL after [`CREDENTIAL_KILL_GRACE`], then reaps it. It is not reaped before the
+/// SIGKILL, so the group's id cannot have passed to another process meanwhile.
+fn stop_credential_command(child: &mut Child) {
+    use rustix::process::{Pid, Signal, kill_process_group};
+    let group = Pid::from_child(child);
+    let _ = kill_process_group(group, Signal::TERM);
+    std::thread::sleep(CREDENTIAL_KILL_GRACE);
+    let _ = kill_process_group(group, Signal::KILL);
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 #[cfg(test)]
@@ -2149,6 +2233,180 @@ max = 11_599
             assert_eq!(credential_present_with(&credential, &env), want, "{case}");
         }
         assert!(!marker.exists(), "a credential command ran");
+    }
+
+    fn sh(script: &str) -> Vec<String> {
+        vec!["sh".into(), "-c".into(), script.into()]
+    }
+
+    fn read_pid(path: &Path) -> i32 {
+        std::fs::read_to_string(path)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap()
+    }
+
+    /// `/proc` no longer lists `pid`, or lists it only as a zombie its reaper has not
+    /// collected yet.
+    fn process_gone(pid: i32) -> bool {
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |stat| {
+            // The state follows the command's name, which is in parentheses.
+            stat.rsplit_once(')').is_some_and(|(_, rest)| {
+                matches!(rest.trim_start().chars().next(), Some('Z' | 'X'))
+            })
+        })
+    }
+
+    /// [`process_gone`] within 5 s: a killed process's reaper may take a moment.
+    fn gone_soon(pid: i32) -> bool {
+        let until = Instant::now() + Duration::from_secs(5);
+        while !process_gone(pid) {
+            if Instant::now() >= until {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        true
+    }
+
+    /// The command exits at once, but a process it started in the background still holds
+    /// its stdout: omaddons stops the group at the deadline instead of waiting on it.
+    #[test]
+    fn a_credential_command_whose_helper_holds_its_output_is_stopped_at_the_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("helper.pid");
+        let argv = sh(&format!(
+            "sleep 30 & echo $! > '{}'; echo tok",
+            pid_file.display()
+        ));
+        let timeout = Duration::from_secs(2);
+        let started = Instant::now();
+        let err = run_credential_command_for(&argv, timeout).unwrap_err();
+        let took = started.elapsed();
+        assert_eq!(err.code, ErrorCode::AuthRejected, "{}", err.message);
+        assert!(
+            err.message.contains("still held its output"),
+            "{argv:?} → {}",
+            err.message
+        );
+        assert!(
+            took < timeout + Duration::from_secs(3),
+            "{argv:?} took {took:?}"
+        );
+        let helper = read_pid(&pid_file);
+        assert!(gone_soon(helper), "the helper {helper} outlived the stop");
+    }
+
+    /// A command still running at the deadline is stopped with everything it started.
+    #[test]
+    fn a_credential_command_past_its_deadline_is_stopped_with_its_whole_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("helper.pid");
+        let argv = sh(&format!(
+            "sleep 30 & echo $! > '{}'; sleep 30",
+            pid_file.display()
+        ));
+        let timeout = Duration::from_secs(1);
+        let started = Instant::now();
+        let err = run_credential_command_for(&argv, timeout).unwrap_err();
+        let took = started.elapsed();
+        assert_eq!(err.code, ErrorCode::AuthRejected, "{}", err.message);
+        assert!(
+            err.message.contains("timed out"),
+            "{argv:?} → {}",
+            err.message
+        );
+        assert!(
+            took < timeout + Duration::from_secs(3),
+            "{argv:?} took {took:?}"
+        );
+        let helper = read_pid(&pid_file);
+        assert!(gone_soon(helper), "the helper {helper} outlived the stop");
+    }
+
+    /// Output past the cap stops the command at once, long before the deadline.
+    #[test]
+    fn a_credential_command_printing_past_the_cap_is_stopped_without_waiting() {
+        let argv = vec!["yes".to_owned()];
+        let timeout = Duration::from_secs(60);
+        let started = Instant::now();
+        let err = run_credential_command_for(&argv, timeout).unwrap_err();
+        let took = started.elapsed();
+        assert_eq!(err.code, ErrorCode::AuthRejected, "{}", err.message);
+        assert!(
+            err.message.contains(&format!(
+                "printed more than {CREDENTIAL_OUTPUT_MAX_BYTES} bytes"
+            )),
+            "{argv:?} → {}",
+            err.message
+        );
+        assert!(took < Duration::from_secs(10), "{argv:?} took {took:?}");
+    }
+
+    /// A command that succeeds is never stopped: a helper it started with its output
+    /// elsewhere keeps running, and the answer comes at once.
+    #[test]
+    fn a_successful_credential_command_leaves_a_detached_helper_running() {
+        use rustix::process::{Pid, Signal, kill_process};
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("helper.pid");
+        let argv = sh(&format!(
+            "sleep 30 > /dev/null & echo $! > '{}'; echo tok",
+            pid_file.display()
+        ));
+        let started = Instant::now();
+        let got = run_credential_command_for(&argv, Duration::from_secs(10));
+        let took = started.elapsed();
+        let helper = read_pid(&pid_file);
+        let running = !process_gone(helper);
+        let _ = kill_process(Pid::from_raw(helper).unwrap(), Signal::KILL);
+        assert_eq!(got.unwrap().expose(), "tok", "{argv:?}");
+        assert!(took < Duration::from_secs(5), "{argv:?} took {took:?}");
+        assert!(running, "the helper {helper} was stopped after a success");
+    }
+
+    /// Well-behaved commands: the trimmed output (up to exactly the cap) is the secret,
+    /// and a failure says why.
+    #[test]
+    fn a_credential_command_answers_with_its_trimmed_output_or_why_it_failed() {
+        let cap = usize::try_from(CREDENTIAL_OUTPUT_MAX_BYTES).unwrap();
+        let cases: Vec<(&str, Vec<String>, std::result::Result<String, &str>)> = vec![
+            ("plain", vec!["echo".into(), "tok".into()], Ok("tok".into())),
+            ("trimmed", sh("printf '  tok \\n\\n'"), Ok("tok".into())),
+            (
+                "exactly_the_cap",
+                sh(&format!("head -c {cap} /dev/zero | tr '\\0' a")),
+                Ok("a".repeat(cap)),
+            ),
+            ("exit_status", sh("exit 3"), Err("failed (exit status: 3)")),
+            (
+                "missing_program",
+                vec!["/nonexistent/omaddons-credential".into()],
+                Err("cannot run the credential command"),
+            ),
+            ("empty", Vec::new(), Err("the credential command is empty")),
+        ];
+        for (case, argv, want) in cases {
+            let got = run_credential_command_for(&argv, Duration::from_secs(10));
+            match (got, want) {
+                (Ok(secret), Ok(want)) => {
+                    assert!(
+                        secret.expose() == want, // ubs:ignore — a test fixture's value, no credential check
+                        "{case}: {argv:?} answered another secret"
+                    );
+                }
+                (Err(err), Err(want)) => {
+                    assert_eq!(err.code, ErrorCode::AuthRejected, "{case}: {}", err.message);
+                    assert!(
+                        err.message.contains(want),
+                        "{case}: {argv:?} → {}",
+                        err.message
+                    );
+                }
+                (got, want) => panic!("{case}: {argv:?} → {got:?}, want {want:?}"),
+            }
+        }
     }
 
     use std::os::unix::fs::PermissionsExt;

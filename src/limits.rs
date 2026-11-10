@@ -97,8 +97,16 @@ pub const RUN_ID_RETRY: u32 = 2;
 /// the doctor's view reads of one state or config file (`config.toml`, `registry.json`,
 /// a target's record): a larger one is a finding, never read in part.
 pub const DISCOVERY_FILE_MAX_BYTES: u64 = MIB;
-/// How long a credential `command` may run before it is killed.
+/// How long a credential `command` may take, its exit and the end of its output both:
+/// past it, the command is stopped with its whole process group. A command that exits
+/// while a process it started still holds its output is stopped at this deadline too.
 pub const CREDENTIAL_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+/// Most bytes a credential `command` may print (a token is well under 1 KiB); past them
+/// it is stopped with its process group and refused, without waiting for the deadline.
+pub const CREDENTIAL_OUTPUT_MAX_BYTES: u64 = 64 * 1024;
+/// How long a credential command's process group has between SIGTERM and SIGKILL when
+/// it is stopped.
+pub const CREDENTIAL_KILL_GRACE: Duration = Duration::from_millis(200);
 /// Most bytes `auth github set` reads from standard input for the token's line.
 pub const AUTH_TOKEN_MAX_BYTES: u64 = 4_096;
 /// Most bytes `sync -` reads from standard input for the desired state. Its plan holds
@@ -594,7 +602,21 @@ pub const REGISTRY: &[LimitInfo] = &[
         LimitValue::Millis(ms(CREDENTIAL_COMMAND_TIMEOUT)),
         LimitUnit::Ms,
         None,
-        "A credential command is killed after this long",
+        "A credential command's exit and the end of its output must both come within this; past it, its process group is stopped",
+    ),
+    limit(
+        "CREDENTIAL_OUTPUT_MAX_BYTES",
+        LimitValue::Bytes(CREDENTIAL_OUTPUT_MAX_BYTES),
+        LimitUnit::Bytes,
+        None,
+        "Most bytes a credential command may print; past them, its process group is stopped and the credential refused",
+    ),
+    limit(
+        "CREDENTIAL_KILL_GRACE",
+        LimitValue::Millis(ms(CREDENTIAL_KILL_GRACE)),
+        LimitUnit::Ms,
+        None,
+        "Time between SIGTERM and SIGKILL when a credential command's process group is stopped",
     ),
     limit(
         "RELEASE_MEMO_MAX_ENTRIES",
@@ -1317,7 +1339,8 @@ mod tests {
         "AUTH_TOKEN_MAX_BYTES", "SYNC_STDIN_MAX_BYTES", "NET_LOG_MAX_BYTES",
         "SAVEDVARIABLES_MAX_BYTES", "TOC_LINE_MAX", "TOC_MAX_BYTES", "QUICK_DETECTOR_BUDGET",
         "DOCTOR_DETECTOR_DEADLINE", "RUN_ID_RETRY",
-        "DISCOVERY_FILE_MAX_BYTES", "CREDENTIAL_COMMAND_TIMEOUT", "RELEASE_MEMO_MAX_ENTRIES",
+        "DISCOVERY_FILE_MAX_BYTES", "CREDENTIAL_COMMAND_TIMEOUT", "CREDENTIAL_OUTPUT_MAX_BYTES",
+        "CREDENTIAL_KILL_GRACE", "RELEASE_MEMO_MAX_ENTRIES",
         "MEMO_KNOWN_RELEASES", "DEPENDENCY_SOURCE_MAX_AGE", "CHANGELOG_MAX_CHARS",
         "CHANGELOG_MAX_ENTRIES", "API_RESPONSE_MAX_BYTES",
         "WOWACE_TREE_MAX_FILES",

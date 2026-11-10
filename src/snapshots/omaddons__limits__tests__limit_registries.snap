@@ -507,7 +507,25 @@ expression: "(politeness, REGISTRY)"
       },
       "unit": "ms",
       "config_key": null,
-      "notes": "A credential command is killed after this long"
+      "notes": "A credential command's exit and the end of its output must both come within this; past it, its process group is stopped"
+    },
+    {
+      "name": "CREDENTIAL_OUTPUT_MAX_BYTES",
+      "value": {
+        "bytes": 65536
+      },
+      "unit": "bytes",
+      "config_key": null,
+      "notes": "Most bytes a credential command may print; past them, its process group is stopped and the credential refused"
+    },
+    {
+      "name": "CREDENTIAL_KILL_GRACE",
+      "value": {
+        "millis": 200
+      },
+      "unit": "ms",
+      "config_key": null,
+      "notes": "Time between SIGTERM and SIGKILL when a credential command's process group is stopped"
     },
     {
       "name": "RELEASE_MEMO_MAX_ENTRIES",
