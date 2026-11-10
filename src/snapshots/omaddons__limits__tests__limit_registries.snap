@@ -420,6 +420,15 @@ expression: "(politeness, REGISTRY)"
       "notes": "auth github set: the token's line on stdin; past it, refused"
     },
     {
+      "name": "SYNC_STDIN_MAX_BYTES",
+      "value": {
+        "bytes": 65536
+      },
+      "unit": "bytes",
+      "config_key": null,
+      "notes": "sync -: the desired state on stdin, which its plan holds; past it, refused"
+    },
+    {
       "name": "NET_LOG_MAX_BYTES",
       "value": {
         "bytes": 10485760

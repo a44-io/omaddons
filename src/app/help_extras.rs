@@ -360,8 +360,8 @@ pub const EXTRAS: &[Extras] = &[
                 "the exact versions the file records",
             ),
             (
-                "omaddons sync --prune --dry-run",
-                "also what it would remove",
+                "omaddons sync - --prune --dry-run",
+                "a list piped in, previewed with what it would remove",
             ),
         ],
         see_also: &["export", "update"],

@@ -338,7 +338,7 @@ _arguments "${_arguments_options[@]}" : \
 '*--verbose[More detail (repeatable)]' \
 '-h[Show help]' \
 '--help[Show help]' \
-'::file -- The desired-state file; default\: addons.toml in the config directory:_files' \
+'::file -- The desired-state file, or - for stdin; default\: addons.toml in config:_files' \
 && ret=0
 ;;
 (copy)

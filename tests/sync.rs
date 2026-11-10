@@ -795,6 +795,198 @@ fn a_relative_desired_file_is_stored_as_the_absolute_file_the_preview_read() {
     assert!(!home.addons("_retail_").join("Foo").exists());
 }
 
+// ---- `sync -`: the desired state from standard input (1n2p.8)
+
+/// `omaddons sync - <args> --json` with `text` piped to its standard input.
+fn sync_stdin(home: &Home, args: &[&str], text: &str) -> common::home::Run {
+    let mut argv = vec!["sync".to_owned(), "-".to_owned()];
+    argv.extend(args.iter().map(|a| (*a).to_owned()));
+    argv.push("--json".to_owned());
+    home.exec_input(&argv, &[], text.as_bytes())
+}
+
+#[test]
+fn a_desired_state_on_stdin_previews_exactly_what_its_file_does() {
+    let home = two_clients();
+    let text = "[family.mainline]\naddons = [\"gh:o/foo\", \"gh:o/bar\"]\n";
+    home.write_desired(text);
+    let from_file = home.run(&["sync", "--dry-run"]);
+    let file = from_file.expect(0);
+    let piped = sync_stdin(&home, &["--dry-run"], text);
+    let stdin = piped.expect(0);
+    assert_eq!(
+        stdin["data"]["approval"],
+        file["data"]["approval"],
+        "{}",
+        piped.context()
+    );
+    for id in ["retail", "ptr"] {
+        assert_eq!(
+            statuses(&stdin, id),
+            statuses(&file, id),
+            "{id}: {}",
+            piped.context()
+        );
+    }
+    assert_eq!(
+        statuses(&stdin, "retail"),
+        [pair("gh:o/foo", "installed"), pair("gh:o/bar", "installed")]
+    );
+    assert!(!home.addons("_retail_").join("Foo").exists(), "a dry run");
+}
+
+#[test]
+fn a_plan_from_stdin_holds_the_text_and_applies_without_stdin() {
+    let home = two_clients();
+    let text = "[family.mainline]\naddons = [\"gh:o/foo\"]\n";
+    let piped = sync_stdin(&home, &["-t", "retail", "--dry-run"], text);
+    let preview = piped.expect(0);
+    let plans = common::plans::plan_files(&home.env);
+    assert_eq!(plans.len(), 1, "{}", piped.context());
+    let stored: Value = serde_json::from_slice(&fs::read(&plans[0]).unwrap()).unwrap();
+    assert_eq!(stored["intent"]["file"], "/dev/stdin", "{stored}");
+    assert_eq!(stored["intent"]["stdin"], text, "{stored}");
+    assert_eq!(stored["intent"]["default_file"], false, "{stored}");
+    assert_eq!(
+        stored["display_argv"],
+        json!(["omaddons", "sync", "-", "-t", "retail"]),
+        "{stored}"
+    );
+    // No file to find again: `plans show` lists no input.
+    let id = preview["data"]["plan_id"].as_str().unwrap().to_owned();
+    let shown = home.run(&["plans", "show", &id]);
+    assert_eq!(
+        shown.expect(0)["data"]["inputs"],
+        json!([]),
+        "{}",
+        shown.context()
+    );
+    // `apply` reads no stdin (a run's stdin is closed): the plan's own text.
+    let applied = home.run(&["apply", &id]);
+    let envelope = applied.expect(0);
+    assert_eq!(
+        envelope["data"]["applied"]["display_argv"],
+        json!(["omaddons", "sync", "-", "-t", "retail"]),
+        "{}",
+        applied.context()
+    );
+    assert!(
+        record_of(&home, "retail", "Foo").is_some(),
+        "{}",
+        applied.context()
+    );
+    assert!(
+        !home.addons("_ptr_").join("Foo").exists(),
+        "only the client it previewed"
+    );
+}
+
+#[test]
+fn a_relative_path_on_stdin_is_read_against_the_working_directory() {
+    use std::io::Write as _;
+    use std::process::Stdio;
+    let home = Home::new(&["wow"]);
+    let work = home.env.root().join("work");
+    fs::create_dir_all(work.join("MyAddon")).unwrap();
+    fs::write(
+        work.join("MyAddon/MyAddon.toc"),
+        toc("120105", &["## Version: 1.0"]),
+    )
+    .unwrap();
+    let argv: Vec<String> = ["sync", "-", "--json"].map(str::to_owned).to_vec();
+    let mut child = home
+        .std_command(&argv, &[])
+        .current_dir(&work)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Written, then closed by the drop.
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"[[family.mainline.addon]]\nref = \"./MyAddon\"\n")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    let run = common::home::Run {
+        argv,
+        code: output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8(output.stdout).unwrap(),
+        stderr: String::from_utf8(output.stderr).unwrap(),
+    };
+    run.expect(0);
+    assert!(
+        record_of(&home, "retail", "MyAddon").is_some(),
+        "{}",
+        run.context()
+    );
+}
+
+#[test]
+fn prune_previews_from_stdin_as_from_its_file() {
+    let home = prune_home();
+    for r in ["gh:o/foo", "gh:o/bar"] {
+        home.run(&["install", r, "-t", "retail"]).expect(0);
+    }
+    let text = "[family.mainline]\naddons = [\"gh:o/foo\"]\n";
+    let piped = sync_stdin(&home, &["--prune", "--dry-run"], text);
+    let envelope = piped.expect(0);
+    assert_eq!(
+        statuses(&envelope, "retail"),
+        [pair("Bar", "removed")],
+        "{}",
+        piped.context()
+    );
+    assert!(record_of(&home, "retail", "Bar").is_some(), "a dry run");
+}
+
+#[test]
+fn stdin_past_its_cap_or_malformed_is_refused_as_a_file_would_be() {
+    let home = two_clients();
+    // Past the cap: a usage error that says to use a file, before anything is read.
+    let cap = omaddons::limits::SYNC_STDIN_MAX_BYTES as usize;
+    let long = format!(
+        "[family.mainline]\naddons = [\"gh:o/foo\"]\n{}",
+        "#".repeat(cap)
+    );
+    let r = sync_stdin(&home, &["--dry-run"], &long);
+    let envelope = r.expect(2);
+    assert_eq!(envelope["error"]["code"], "usage", "{}", r.context());
+    assert_eq!(
+        envelope["error"]["details"]["limit"],
+        "SYNC_STDIN_MAX_BYTES"
+    );
+    let fix = envelope["error"]["fix"].to_string();
+    assert!(fix.contains("omaddons sync <path>"), "{fix}");
+    assert!(common::plans::plan_files(&home.env).is_empty());
+    // Malformed: `desired_state_invalid`, as a malformed file is, naming `<stdin>`.
+    let r = sync_stdin(
+        &home,
+        &[],
+        "[family.mainline]\naddons = [\"gh:o/foo\"]\n\n[family.bogus]\n",
+    );
+    let envelope = r.expect(2);
+    assert_eq!(
+        (
+            &envelope["error"]["code"],
+            &envelope["error"]["details"]["reason"],
+            &envelope["error"]["details"]["line"],
+            &envelope["error"]["details"]["path"],
+        ),
+        (
+            &json!("desired_state_invalid"),
+            &json!("unknown_family"),
+            &json!(4),
+            &json!("<stdin>"),
+        ),
+        "{}",
+        r.context()
+    );
+    assert!(common::state::history(&home).is_empty());
+}
+
 /// Every file and directory under `root`.
 fn walk(root: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();

@@ -35,7 +35,7 @@ use crate::sources::SourceId;
 use crate::state::paths::Paths;
 use crate::state::store::{self, SchemaVersion, VersionStatus, Versioned};
 
-/// One stored plan (kind `plan` 1.0).
+/// One stored plan (kind `plan` 1.1).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StoredPlan {
@@ -61,7 +61,10 @@ pub struct StoredPlan {
 
 impl Versioned for StoredPlan {
     const KIND: &'static str = "plan";
-    const CURRENT: SchemaVersion = SchemaVersion::new(1, 0);
+    /// 1.1: a `sync` intent may hold `stdin`, the text `sync -` read, which its `apply`
+    /// syncs instead of reading standard input (1n2p.8). A 1.0 plan holds none: the
+    /// default migration reads it as is.
+    const CURRENT: SchemaVersion = SchemaVersion::new(1, 1);
 }
 
 impl StoredPlan {
@@ -1108,7 +1111,7 @@ mod tests {
         let f = fixture();
         let plan = live(0);
         let bytes = encode(&plan).unwrap();
-        assert!(bytes.starts_with(b"{\"schema_version\":\"1.0\",\"plan_id\":"));
+        assert!(bytes.starts_with(b"{\"schema_version\":\"1.1\",\"plan_id\":"));
         assert_eq!(bytes.iter().filter(|&&b| b == b'\n').count(), 1);
         assert_eq!(bytes.last(), Some(&b'\n'));
         assert_eq!(load(&plant(&f, &plan)).unwrap(), plan);
@@ -1117,7 +1120,7 @@ mod tests {
         assert!(
             store::KINDS
                 .iter()
-                .any(|row| row.kind == "plan" && row.current == SchemaVersion::new(1, 0))
+                .any(|row| row.kind == "plan" && row.current == SchemaVersion::new(1, 1))
         );
     }
 
@@ -1165,7 +1168,7 @@ mod tests {
                         "no_any_flavor": false, "while_running": false
                     });
                 }
-                "newer minor" => value["schema_version"] = json!("1.1"),
+                "newer minor" => value["schema_version"] = json!("1.2"),
                 "newer major" => value["schema_version"] = json!("2.0"),
                 "id mismatch" => value["plan_id"] = json!(id(1)),
                 "extended expiry" => value["expires_at"] = json!("2026-10-28T12:00:00Z"),

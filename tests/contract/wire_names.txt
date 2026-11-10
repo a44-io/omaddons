@@ -2767,7 +2767,7 @@ file journal <type=step>.to_id.dev integer! minimum=0
 file journal <type=step>.to_id.ino integer! minimum=0
 file journal <type=swapped> variant
 file plan . object
-file plan 1.0
+file plan 1.1
 file plan actor string!
 file plan approval object!
 file plan approval.reasons array!
@@ -2896,6 +2896,7 @@ file plan intent<command=sync>.scope.targets array!
 file plan intent<command=sync>.scope.targets[] object
 file plan intent<command=sync>.scope.targets[].target string!
 file plan intent<command=sync>.scope.targets[].target_id string!
+file plan intent<command=sync>.stdin string?
 file plan intent<command=sync>.strict boolean!
 file plan intent<command=sync>.while_running boolean!
 file plan intent<command=undo> variant

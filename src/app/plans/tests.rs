@@ -308,6 +308,7 @@ fn records_history_is_false_only_for_backup_prune() {
         StoredIntent::Sync(SyncIntent {
             file: "/home/u/addons.toml".to_owned().try_into().unwrap(),
             default_file: true,
+            stdin: None,
             scope: scope(),
             strict: false,
             no_deps: false,

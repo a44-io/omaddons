@@ -101,6 +101,10 @@ pub const DISCOVERY_FILE_MAX_BYTES: u64 = MIB;
 pub const CREDENTIAL_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 /// Most bytes `auth github set` reads from standard input for the token's line.
 pub const AUTH_TOKEN_MAX_BYTES: u64 = 4_096;
+/// Most bytes `sync -` reads from standard input for the desired state. Its plan holds
+/// the text (`apply` never reads stdin again), so the text and the plan around it stay
+/// under `PLAN_MAX_BYTES`, even JSON-escaped; a longer list is a file.
+pub const SYNC_STDIN_MAX_BYTES: u64 = 64 * 1024;
 /// Most entries (and most candidate facts) the release memo keeps; past it, the oldest
 /// go.
 pub const RELEASE_MEMO_MAX_ENTRIES: usize = 4_096;
@@ -517,6 +521,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         LimitUnit::Bytes,
         None,
         "auth github set: the token's line on stdin; past it, refused",
+    ),
+    limit(
+        "SYNC_STDIN_MAX_BYTES",
+        LimitValue::Bytes(SYNC_STDIN_MAX_BYTES),
+        LimitUnit::Bytes,
+        None,
+        "sync -: the desired state on stdin, which its plan holds; past it, refused",
     ),
     limit(
         "NET_LOG_MAX_BYTES",
@@ -1292,7 +1303,7 @@ mod tests {
         "BLOB_CACHE_MAX_BYTES", "PLAN_TTL", "PLAN_LEASE_TIMEOUT", "PLAN_MAX_BYTES", "PLANS_MAX_FILES", "PLANS_MAX_BYTES",
         "PLANS_SWEEP_MAX", "PLAN_EVIDENCE_LINES_MAX", "ORPHAN_MIN_AGE", "RETENTION_SWEEP_INTERVAL",
         "UNDO_SNAPSHOT_SIZE_MAX_ENTRIES", "REASON_MAX_CHARS",
-        "AUTH_TOKEN_MAX_BYTES", "NET_LOG_MAX_BYTES",
+        "AUTH_TOKEN_MAX_BYTES", "SYNC_STDIN_MAX_BYTES", "NET_LOG_MAX_BYTES",
         "SAVEDVARIABLES_MAX_BYTES", "TOC_LINE_MAX", "TOC_MAX_BYTES", "QUICK_DETECTOR_BUDGET",
         "DOCTOR_DETECTOR_DEADLINE", "RUN_ID_RETRY",
         "DISCOVERY_FILE_MAX_BYTES", "CREDENTIAL_COMMAND_TIMEOUT", "RELEASE_MEMO_MAX_ENTRIES",

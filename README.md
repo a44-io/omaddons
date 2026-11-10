@@ -1001,7 +1001,7 @@ A pin without `--version` changes only the record, never a game file, so it work
 
 ### `sync [FILE]`
 
-Make every client match a desired-state file: `addons.toml` in the config directory (`~/.config/omaddons/addons.toml`), or the file named.
+Make every client match a desired-state file: `addons.toml` in the config directory (`~/.config/omaddons/addons.toml`), or the file named, or, with `-`, the list on standard input (`omaddons sync - --dry-run < shared.toml`, or a list pasted from someone else).
 
 ```toml
 schema_version = "1.0"
@@ -1043,6 +1043,8 @@ addons = ["DBM"]
 - Unknown keys are warned about (`desired_unknown_key`), and so are sections naming no known client (`desired_unknown_target`).
 - A file that does not parse, or holds a bad value, an unknown `[family.<name>]` section (`reason: "unknown_family"`) or a newer `schema_version` (`newer_schema`), changes nothing: `desired_state_invalid`, exit 2, with the line. A missing file is `not_found` (exit 3).
 - `-t` limits which clients are synced.
+
+**From standard input (`sync -`).** The list is read and checked exactly as a file is, every flag included, and a mistake in it is named as `<stdin>` with its line. It is read whole, up to 64 KiB (`SYNC_STDIN_MAX_BYTES`); a longer one is refused with `usage` and the fix "pass its file". A terminal is refused rather than waited on. Relative paths in it are read against the working directory, since there is no file directory to read them against. A dry run's stored plan keeps the text it read, so `omaddons apply <plan_id>` syncs exactly that list and reads no standard input. Its command line shows as `omaddons sync - …`, and `plans show` lists no input file for it.
 
 **What sync does.**
 

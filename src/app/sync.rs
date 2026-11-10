@@ -1,6 +1,6 @@
-//! `omaddons sync [<file>] [-t T] [--strict] [--no-deps]`: makes each client match the
-//! desired-state file (`<config>/omaddons/addons.toml` unless named), idempotently
-//! (vision D32).
+//! `omaddons sync [<file>|-] [-t T] [--strict] [--no-deps]`: makes each client match the
+//! desired-state file (`<config>/omaddons/addons.toml` unless named; `-` reads it from
+//! standard input, and a plan of that keeps the text), idempotently (vision D32).
 //!
 //! Each selected target takes its family's section (live targets only) and its own
 //! `[target."<id>"]` section, each entry resolved as `install` reads its arguments. A
@@ -12,6 +12,7 @@
 //! reverts the whole sync.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde_json::json;
@@ -33,6 +34,7 @@ use crate::engine::edit::RecordEdit;
 use crate::engine::plan::{AnyFlavorIntent, PinIntent, RequestedChange};
 use crate::engine::{Binding, TxOutcomes, TxRequest, TxTarget};
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
+use crate::limits::SYNC_STDIN_MAX_BYTES;
 use crate::model::{AddonReason, AddonRecord, Ref, RunId, Target, TxId, TxKind};
 use crate::output::{Outcome, Style};
 use crate::politeness::SOURCE_RECHECK_MIN_INTERVAL;
@@ -43,12 +45,21 @@ use crate::sources::changelog::same_version;
 use crate::state::desired::{self, DesiredState, Entry};
 use crate::state::records::TargetRecord;
 
+/// The `FILE` that reads the desired state from standard input.
+pub const STDIN: &str = "-";
+/// How messages name standard input where they would name the file.
+const STDIN_NAME: &str = "<stdin>";
+
 /// `sync`'s own arguments.
 #[derive(Debug, Clone, Default, clap::Args)]
 pub struct SyncArgs {
-    /// The desired-state file; default: addons.toml in the config directory
+    /// The desired-state file, or - for stdin; default: addons.toml in config
     #[arg(value_name = "FILE")]
     pub file: Option<PathBuf>,
+    /// The text a stored plan's `sync -` read, which `apply` syncs instead of reading
+    /// standard input again; never a command-line argument.
+    #[arg(skip)]
+    pub input: Option<String>,
     /// Exit 6 when only some of the addons sync
     #[arg(long)]
     pub strict: bool,
@@ -446,6 +457,57 @@ fn read(path: &Path, given: bool) -> Result<String> {
     }
 }
 
+/// `sync -`: the desired state comes from standard input.
+fn reads_stdin(args: &SyncArgs) -> bool {
+    args.file.as_deref() == Some(Path::new(STDIN))
+}
+
+/// The desired state's text from standard input (`sync -`), refused before any read when
+/// it is a terminal, and past [`SYNC_STDIN_MAX_BYTES`] (its plan holds the text).
+fn read_stdin(is_tty: bool, input: &mut dyn Read) -> Result<String> {
+    let fix = || {
+        Suggestion::text(
+            "pipe the list in (`omaddons sync - < addons.toml`), or pass its file: `omaddons sync <path>`",
+        )
+    };
+    if is_tty {
+        return Err(Error::new(
+            ErrorCode::Usage,
+            "sync - reads the desired state from standard input, not a terminal",
+            fix(),
+        ));
+    }
+    let mut bytes = Vec::new();
+    input
+        .take(SYNC_STDIN_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| {
+            Error::new(
+                ErrorCode::Usage,
+                format!("could not read standard input: {e}"),
+                fix(),
+            )
+        })?;
+    if bytes.len() as u64 > SYNC_STDIN_MAX_BYTES {
+        return Err(Error::new(
+            ErrorCode::Usage,
+            format!(
+                "standard input holds more than {} KiB of desired state, the most sync - reads",
+                SYNC_STDIN_MAX_BYTES / 1024
+            ),
+            Suggestion::text("write the list to a file and pass its path: `omaddons sync <path>`"),
+        )
+        .details(json!({ "limit": "SYNC_STDIN_MAX_BYTES", "max_bytes": SYNC_STDIN_MAX_BYTES })));
+    }
+    String::from_utf8(bytes).map_err(|_| {
+        Error::new(
+            ErrorCode::Usage,
+            "standard input is not UTF-8 text, so it is not desired state",
+            fix(),
+        )
+    })
+}
+
 /// The lowercase hex SHA-256 of the desired-state file's text, as read.
 fn desired_digest(text: &str) -> String {
     Sha256::digest(text.as_bytes())
@@ -486,10 +548,18 @@ fn target_work(
     // What the file names, or may name, on this target: never pruned.
     let mut named: Vec<Ref> = Vec::new();
     let t = &d.target;
-    let base = path.parent().unwrap_or_else(|| Path::new("/"));
+    // A file's relative paths are its directory's; standard input has none, so its are
+    // the working directory's, as `install` reads them.
+    let base = if reads_stdin(args) {
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))
+    } else {
+        path.parent()
+            .unwrap_or_else(|| Path::new("/"))
+            .to_path_buf()
+    };
     let git_hosts = &world.config.git_hosts;
     let wanted = desired::desired_for(state, t, |e| {
-        resolve_entry(e, (&t.id, t.family), records, catalog, git_hosts, base)
+        resolve_entry(e, (&t.id, t.family), records, catalog, git_hosts, &base)
     });
     let at = |entry: &Entry| format!("{} line {}", path.display(), entry.line);
     let mut work = TargetWork::default();
@@ -645,8 +715,20 @@ pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
     let verbose = ctx.output.style.detail();
     let mut warnings = world.warnings.clone();
     let mut notes = Vec::new();
-    let path = file_path(&world, args);
-    let text = read(&path, args.file.is_some())?;
+    // `sync -`: standard input's text (a stored plan's, on `apply`), named `<stdin>` where
+    // a message would name the file.
+    let stdin = reads_stdin(args);
+    let (path, text) = if stdin {
+        let text = match &args.input {
+            Some(text) => text.clone(),
+            None => read_stdin(ctx.stdin_is_tty, &mut std::io::stdin().lock())?,
+        };
+        (PathBuf::from(STDIN_NAME), text)
+    } else {
+        let path = file_path(&world, args);
+        let text = read(&path, args.file.is_some())?;
+        (path, text)
+    };
     // The exact bytes parsed, which the token covers (the engine never reads the file).
     let extras = PlanExtras {
         desired_sha256: Some(desired_digest(&text)),
@@ -846,10 +928,14 @@ pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
         .filter(|done| done.plan.has_ops())
         .zip(plan_precondition)
     {
-        Some((done, p)) => match std::env::current_dir()
-            .map_err(|err| err.to_string())
-            .and_then(|cwd| AbsPath::resolve(&cwd, &path))
-        {
+        // Standard input is named as such, its text kept in the plan.
+        Some((done, p)) => match if stdin {
+            Ok(AbsPath::stdin())
+        } else {
+            std::env::current_dir()
+                .map_err(|err| err.to_string())
+                .and_then(|cwd| AbsPath::resolve(&cwd, &path))
+        } {
             Ok(file) => intent::preview_plan(
                 ctx,
                 &StorableArgs::Sync {
@@ -857,6 +943,7 @@ pub fn run(ctx: &Context, args: &SyncArgs) -> Result<SyncOutcome> {
                     scope: TargetScope::of(ctx.target.as_deref(), &selected),
                     file,
                     default_file: args.file.is_none(),
+                    stdin: stdin.then(|| text.clone()),
                 },
                 p,
                 &done.plan,
@@ -1010,6 +1097,41 @@ mod tests {
             desired_digest(text),
             "a comment changes it"
         );
+    }
+
+    // 1n2p.8: `sync -` reads standard input whole up to its cap, never a terminal.
+    #[test]
+    fn stdin_is_read_whole_up_to_its_cap_and_never_from_a_terminal() {
+        let text = "[family.mainline]\naddons = [\"gh:o/foo\"]\n";
+        assert_eq!(read_stdin(false, &mut text.as_bytes()).unwrap(), text);
+        let tty = read_stdin(true, &mut text.as_bytes()).unwrap_err();
+        assert_eq!(tty.code, ErrorCode::Usage);
+        assert!(tty.message.contains("not a terminal"), "{}", tty.message);
+        let cap = SYNC_STDIN_MAX_BYTES as usize;
+        let at = "#".repeat(cap);
+        assert_eq!(
+            read_stdin(false, &mut at.as_bytes()).unwrap().len(),
+            cap,
+            "at the cap: read"
+        );
+        let over = read_stdin(false, &mut format!("{at}#").as_bytes()).unwrap_err();
+        assert_eq!(over.code, ErrorCode::Usage);
+        assert!(over.message.contains("64 KiB"), "{}", over.message);
+        let binary = read_stdin(false, &mut &[0xff_u8, 0xfe][..]).unwrap_err();
+        assert_eq!(binary.code, ErrorCode::Usage);
+        assert!(binary.message.contains("UTF-8"), "{}", binary.message);
+    }
+
+    #[test]
+    fn only_a_lone_dash_reads_stdin() {
+        let args = |file: Option<&str>| SyncArgs {
+            file: file.map(PathBuf::from),
+            ..SyncArgs::default()
+        };
+        assert!(reads_stdin(&args(Some("-"))));
+        for other in [None, Some("addons.toml"), Some("./-"), Some("--")] {
+            assert!(!reads_stdin(&args(other)), "{other:?}");
+        }
     }
 
     fn record(addons: &[(&str, &str, &str, Channel, bool)]) -> TargetRecord {

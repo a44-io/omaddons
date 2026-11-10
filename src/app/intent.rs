@@ -281,6 +281,12 @@ impl AbsPath {
         Ok(Self(text))
     }
 
+    /// Where `sync -` read its input from: standard input, which a plan names as this
+    /// path and never reads again (it holds the text).
+    pub fn stdin() -> Self {
+        Self("/dev/stdin".to_owned())
+    }
+
     pub fn as_path(&self) -> &Path {
         Path::new(&self.0)
     }
@@ -599,12 +605,16 @@ pub struct AdoptIntent {
     pub while_running: bool,
 }
 
-/// `sync` of the file its dry run read; `default_file` when no file was named.
+/// `sync` of the file its dry run read; `default_file` when no file was named. A dry run
+/// that read standard input (`sync -`) keeps the text it read in `stdin`, so its `apply`
+/// syncs exactly that text and reads no stdin; its `file` is then [`AbsPath::stdin`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SyncIntent {
     pub file: AbsPath,
     pub default_file: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdin: Option<String>,
     pub scope: TargetScope,
     pub strict: bool,
     pub no_deps: bool,
@@ -717,6 +727,8 @@ pub enum StorableArgs<'a> {
         scope: TargetScope,
         file: AbsPath,
         default_file: bool,
+        /// The text read from standard input, when `sync -` read it.
+        stdin: Option<String>,
     },
     Copy {
         args: &'a CopyArgs,
@@ -820,6 +832,8 @@ impl StoredIntent {
                 .filter_map(NormalizedRef::file)
                 .chain(i.file.as_ref())
                 .collect(),
+            // Standard input's text is in the plan: no file to find again.
+            Self::Sync(s) if s.stdin.is_some() => Vec::new(),
             Self::Sync(s) => vec![&s.file],
             Self::Update(_)
             | Self::Pin(_)
@@ -970,7 +984,9 @@ impl StoredIntent {
                 f.switch("--locked", s.locked);
                 f.switch("--prune", s.prune);
                 f.switch("--while-running", s.while_running);
-                if s.default_file {
+                if s.stdin.is_some() {
+                    vec![crate::app::sync::STDIN.to_owned()]
+                } else if s.default_file {
                     Vec::new()
                 } else {
                     vec![s.file.to_string()]
@@ -1020,7 +1036,8 @@ impl StoredIntent {
         };
         let mut argv = vec!["omaddons".to_owned()];
         argv.extend(self.command_path().split(' ').map(str::to_owned));
-        if positionals.iter().any(|p| p.starts_with('-')) {
+        // A lone `-` (`sync -`, standard input) is a value, never a flag: no `--` for it.
+        if positionals.iter().any(|p| p.starts_with('-') && p != "-") {
             argv.extend(f.0);
             argv.push("--".to_owned());
             argv.extend(positionals);
@@ -1092,9 +1109,11 @@ impl StoredIntent {
                 scope,
                 file,
                 default_file,
+                stdin,
             } => Self::Sync(SyncIntent {
                 file: file.clone(),
                 default_file: *default_file,
+                stdin: stdin.clone(),
                 scope: scope.clone(),
                 strict: args.strict,
                 no_deps: args.no_deps,
@@ -1256,12 +1275,19 @@ impl From<&AdoptIntent> for AdoptArgs {
 }
 
 /// `sync`'s arguments for `intent`: the file it read, or none when it read the default
-/// (the config directory's `addons.toml`, found again the same way). Defaulted: `strict`
-/// (as for `install`).
+/// (the config directory's `addons.toml`, found again the same way), or `-` with the
+/// text standard input gave, which the run syncs instead of reading stdin. Defaulted:
+/// `strict` (as for `install`).
 impl From<&SyncIntent> for SyncArgs {
     fn from(s: &SyncIntent) -> Self {
+        let file = if s.stdin.is_some() {
+            Some(PathBuf::from(crate::app::sync::STDIN))
+        } else {
+            (!s.default_file).then(|| s.file.as_path().to_path_buf())
+        };
         Self {
-            file: (!s.default_file).then(|| s.file.as_path().to_path_buf()),
+            file,
+            input: s.stdin.clone(),
             strict: false,
             no_deps: s.no_deps,
             locked: s.locked,
@@ -1753,6 +1779,7 @@ mod tests {
         let intent = SyncIntent {
             file: abs("/home/u/dotfiles/addons.toml"),
             default_file: false,
+            stdin: None,
             scope: every(),
             strict: true,
             no_deps: true,
@@ -1762,21 +1789,52 @@ mod tests {
         };
         let SyncArgs {
             file,
+            input,
             strict,
             no_deps,
             locked,
             prune,
         } = SyncArgs::from(&intent);
         assert_eq!(file, Some(PathBuf::from("/home/u/dotfiles/addons.toml")));
+        assert_eq!(input, None, "a file is read again");
         assert_eq!((no_deps, locked, prune), (true, true, true), "copied");
         assert!(!strict, "defaulted");
         let default = SyncArgs::from(&SyncIntent {
             default_file: true,
-            ..intent
+            ..intent.clone()
         });
         assert_eq!(
             default.file, None,
             "the default file is found again, as a direct run finds it"
+        );
+        // `sync -` (1n2p.8): the text standard input gave, synced again without stdin.
+        let text = "[family.retail]\nDBM = {}\n".to_owned();
+        let piped = SyncIntent {
+            file: AbsPath::stdin(),
+            stdin: Some(text.clone()),
+            ..intent
+        };
+        let args = SyncArgs::from(&piped);
+        assert_eq!(args.file, Some(PathBuf::from("-")));
+        assert_eq!(args.input, Some(text));
+        let stored = StoredIntent::Sync(piped);
+        assert!(
+            stored.inputs().is_empty(),
+            "no file to find again: the plan holds the text"
+        );
+        assert_eq!(
+            stored.display_argv(),
+            strings(&[
+                "omaddons",
+                "sync",
+                "-",
+                "--strict",
+                "--no-deps",
+                "--locked",
+                "--prune",
+                "--while-running"
+            ]),
+            "shown as `sync -`, flags after it"
         );
     }
 
@@ -1987,6 +2045,7 @@ mod tests {
                 StoredIntent::Sync(SyncIntent {
                     file: abs("/home/u/addons.toml"),
                     default_file: true,
+                    stdin: None,
                     scope: one("era", ERA),
                     strict: false,
                     no_deps: false,
@@ -2306,6 +2365,7 @@ mod tests {
                 scope: s.scope.clone(),
                 file: s.file.clone(),
                 default_file: s.default_file,
+                stdin: s.stdin.clone(),
             },
             (Args::Copy(args), StoredIntent::Copy(c)) => StorableArgs::Copy {
                 args,
@@ -2586,6 +2646,7 @@ mod tests {
                 name: "sync of the default file",
                 args: Args::Sync(SyncArgs {
                     file: None,
+                    input: None,
                     strict: true,
                     no_deps: false,
                     locked: true,
@@ -2595,6 +2656,7 @@ mod tests {
                 intent: StoredIntent::Sync(SyncIntent {
                     file: abs("/c/omaddons/addons.toml"),
                     default_file: true,
+                    stdin: None,
                     scope: every(),
                     strict: true,
                     no_deps: false,
@@ -2615,6 +2677,7 @@ mod tests {
                 intent: StoredIntent::Sync(SyncIntent {
                     file: abs("/w/addons.toml"),
                     default_file: false,
+                    stdin: None,
                     scope: one("retail", RETAIL),
                     strict: false,
                     no_deps: true,
@@ -2630,6 +2693,28 @@ mod tests {
                     "retail",
                     "--no-deps",
                 ],
+            },
+            // 1n2p.8: the plan holds standard input's text and names no file to read.
+            Row {
+                name: "sync of standard input",
+                args: Args::Sync(SyncArgs {
+                    file: Some("-".into()),
+                    locked: true,
+                    ..SyncArgs::default()
+                }),
+                while_running: false,
+                intent: StoredIntent::Sync(SyncIntent {
+                    file: AbsPath::stdin(),
+                    default_file: false,
+                    stdin: Some("[family.retail]\nDBM = {}\n".to_owned()),
+                    scope: every(),
+                    strict: false,
+                    no_deps: false,
+                    locked: true,
+                    prune: false,
+                    while_running: false,
+                }),
+                display: &["omaddons", "sync", "-", "--locked"],
             },
             Row {
                 name: "copy",

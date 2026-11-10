@@ -8,7 +8,7 @@ Make every client match addons.toml
 Usage: omaddons sync [OPTIONS] [FILE]
 
 Arguments:
-  [FILE]  The desired-state file; default: addons.toml in the config directory
+  [FILE]  The desired-state file, or - for stdin; default: addons.toml in config
 
 Options:
       --strict   Exit 6 when only some of the addons sync
@@ -19,7 +19,7 @@ Options:
 Examples:
   omaddons sync                       every client made to match addons.toml
   omaddons sync addons.toml --locked  the exact versions the file records
-  omaddons sync --prune --dry-run     also what it would remove
+  omaddons sync - --prune --dry-run   a list piped in, previewed with what it would remove
 
 Global: -t <TARGET>  --json  --dry-run  -v  --quiet  --no-color  --offline  (--help lists them all)
 ==> omaddons sync --help <==
@@ -32,7 +32,7 @@ Usage: omaddons sync [OPTIONS] [FILE]
 
 Arguments:
   [FILE]
-          The desired-state file; default: addons.toml in the config directory
+          The desired-state file, or - for stdin; default: addons.toml in config
 
 Options:
       --strict
