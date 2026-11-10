@@ -205,6 +205,8 @@ Panel {
       anchors.fill: parent
       svc: root.svc
       opened: root.opened
+      // The most the panel may take, as contentHeight's cap: a long list fills it.
+      heightCap: view.zoomed ? panel.fittedContentHeight(999999) : panel.fittedContentHeight(999999, Style.space(720))
       foreground: root.bar ? root.bar.foreground : Commons.Color.foreground
       urgent: root.bar ? root.bar.urgent : Commons.Color.urgent
       fontFamily: root.bar ? root.bar.fontFamily : Style.font.family

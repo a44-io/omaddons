@@ -2964,6 +2964,9 @@ function historyPage(history, key, statusTargets, nowMs) {
 var VIEWS = ["updates", "installed", "search", "errors", "issues", "backups", "history"]
 var VIEW_TITLES = { "updates": "Updates", "installed": "Addons", "search": "Search", "errors": "Errors", "issues": "Issues", "backups": "Backups",
   "history": "History" }
+// A list longer than this builds only the rows in view (ui/VirtualList, design doc §5.5,
+// 1n2p.38): Updates, Addons, Search and History.
+var LONG_LIST_ROWS = 50
 // Each view's glyph (§5.4), which the tabs show alone below 480 px (§2.1).
 var VIEW_GLYPHS = { "updates": 0xF0CE1, "installed": 0xF0431, "search": 0xF0349, "errors": 0xF00E4, "issues": 0xF0026, "backups": 0xF003C,
   "history": 0xF02DA }
@@ -7516,6 +7519,7 @@ if (typeof module !== "undefined") {
     WINDOW_MEMORY: WINDOW_MEMORY,
     windowEventAction: windowEventAction,
     FULL_SCAN_MAX_AGE_MS: FULL_SCAN_MAX_AGE_MS,
-    fullScanDue: fullScanDue
+    fullScanDue: fullScanDue,
+    LONG_LIST_ROWS: LONG_LIST_ROWS
   }
 }

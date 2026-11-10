@@ -180,6 +180,14 @@ Item {
       : Style.space(helpOpen ? 560 : 360))
     : frameImplicitHeight) * uiScale
   readonly property real gap: Style.space(12)
+  // The most height the panel may take (the bar's cap, which BarWidget hands down), and
+  // so the most room the content has, in the canvas's units: a long list sizes itself
+  // from these, never from the panel's own height, which follows the content
+  // (1n2p.38: no binding loop through the panel).
+  property real heightCap: Style.space(720)
+  readonly property real contentRoom: Math.max(Style.space(160), heightCap / uiScale - top.implicitHeight - bottom.implicitHeight - gap * 2)
+  // Where the views start in the content (below the cards and notices above them).
+  readonly property real viewTop: content.y
 
   // For IPC's state() (design doc §2.1): the scope, view, page depth, open sheet and
   // zoom, set on the service while this panel is open.
@@ -698,6 +706,12 @@ Item {
   // Keeps the cursor's row (or card button) inside the scrolled area: the key catcher
   // consumes j/k, so the Flickable never scrolls by itself (F0).
   function ensureCursorVisible() {
+    // A long list scrolls itself (VirtualList, 1n2p.38): a row it has not built has no
+    // item to map, so it positions the cursor's row itself.
+    if (!cardMode && current && current.scrollsItself === true && typeof current.positionCursor === "function") {
+      current.positionCursor()
+      return
+    }
     var item = null
     if (cardMode) item = cardButtons.itemAt(cursor)
     else if (current && typeof current.rowItem === "function") item = current.rowItem(cursor)

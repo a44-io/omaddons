@@ -25,11 +25,22 @@ ListView {
     return i >= 0 && i < count ? itemAtIndex(i) : null
   }
 
-  // The cursor's row brought into view, the least scroll that shows it whole.
+  // The cursor's row brought into view, the least scroll that shows it whole. A row
+  // grows when it becomes the cursor's (its actions show, 1n2p.38): while the move
+  // settles, a change of the list's height positions it again; a scroll after that is
+  // the player's, never undone.
   function positionCursor() {
     if (cursor < 0 || cursor >= count) return
     positionViewAtIndex(cursor, ListView.Contain)
+    settling.restart()
   }
+
+  Timer {
+    id: settling
+    interval: 250
+  }
+
+  onContentHeightChanged: if (settling.running && cursor >= 0 && cursor < count) positionViewAtIndex(cursor, ListView.Contain)
 
   onCursorChanged: positionCursor()
   onCountChanged: if (cursor >= count) cursor = count - 1

@@ -40,6 +40,9 @@ Item {
     "allRows": filter ? Model.installedRows(svc ? svc.lists : null, "").length : rows.length, "nowMs": frame ? frame.nowMs : Date.now() })
   readonly property var unmanaged: Model.unmanagedRows(svc ? svc.lists : null, filter, statusTargets)
   readonly property int rowCount: rows.length
+  // Past LONG_LIST_ROWS the rows are a VirtualList that builds only those in view and
+  // scrolls itself (1n2p.38): the frame asks it to position the cursor's row.
+  readonly property bool scrollsItself: rows.length > Model.LONG_LIST_ROWS
   // The filter box has the keyboard: the frame's key catcher lets it type.
   readonly property bool typing: filterField.activeFocus
   readonly property bool filterShown: query !== "" || filterField.activeFocus
@@ -55,7 +58,9 @@ Item {
 
   implicitHeight: column.implicitHeight
 
-  function rowItem(i) { return rowRepeater.itemAt(i) }
+  function rowItem(i) { return scrollsItself ? rowList.rowItem(i) : rowRepeater.itemAt(i) }
+
+  function positionCursor() { rowList.positionCursor() }
 
   function handleKey(name, cursor) {
     var row = cursor >= 0 && cursor < rows.length ? rows[cursor] : null
@@ -223,9 +228,81 @@ Item {
       onAction: function(name) { if (root.frame) root.frame.stateAction(name) }
     }
 
+    // Short lists: every row built, in the content the frame scrolls.
     Repeater {
       id: rowRepeater
-      model: root.rows
+      model: root.scrollsItself ? [] : root.rows
+      delegate: rowDelegate
+    }
+
+    // Long lists: only the rows in view, in a list that fills the room left and scrolls
+    // itself (the frame's content then fits, 1n2p.38).
+    VirtualList {
+      id: rowList
+      objectName: "rowList"
+      visible: root.scrollsItself
+      width: column.width
+      height: root.scrollsItself
+        ? Math.max(Style.space(200), (root.frame ? root.frame.contentRoom - root.frame.viewTop : Style.space(480))
+          - y - unmanagedLines.height - column.spacing * 2)
+        : 0
+      spacing: column.spacing
+      model: root.scrollsItself ? root.rows : []
+      delegate: rowDelegate
+      cursor: root.frame && root.frame.cursorActive ? root.frame.cursor : -1
+    }
+
+    // The folders omaddons does not manage, in words, never a command line (UX-13).
+    Column {
+      id: unmanagedLines
+      width: column.width
+      spacing: column.spacing
+
+      Repeater {
+        objectName: "unmanaged"
+        model: root.unmanaged
+
+        Item {
+          required property var modelData
+          objectName: "unmanaged_" + modelData.target
+          width: column.width
+          height: Math.max(unmanagedText.implicitHeight, takeOverButton.visible ? takeOverButton.implicitHeight : 0)
+
+          PlainLabel {
+            id: unmanagedText
+            objectName: "unmanagedText"
+            anchors.verticalCenter: parent.verticalCenter
+            width: parent.width - (takeOverButton.visible ? takeOverButton.width + Style.spacing.lg : 0)
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            text: modelData.text
+          }
+
+          Button {
+            id: takeOverButton
+            objectName: "takeOver"
+            visible: root.canTakeOver
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            text: Model.copy("installed.take_over")
+            enabled: root.canChange
+            opacity: enabled ? 1.0 : 0.4
+            bordered: true
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            fontSize: Style.font.caption
+            onClicked: root.takeOver(modelData.target)
+          }
+        }
+      }
+    }
+  }
+
+  // One row, as both lists build it: under All, its client's header above the client's
+  // first row; the AddonRow, a dependency indented under what needs it.
+  Component {
+    id: rowDelegate
 
       Column {
         id: entry
@@ -282,46 +359,5 @@ Item {
           }
         }
       }
-    }
-
-    // The folders omaddons does not manage, in words, never a command line (UX-13).
-    Repeater {
-      objectName: "unmanaged"
-      model: root.unmanaged
-
-      Item {
-        required property var modelData
-        objectName: "unmanaged_" + modelData.target
-        width: column.width
-        height: Math.max(unmanagedText.implicitHeight, takeOverButton.visible ? takeOverButton.implicitHeight : 0)
-
-        PlainLabel {
-          id: unmanagedText
-          objectName: "unmanagedText"
-          anchors.verticalCenter: parent.verticalCenter
-          width: parent.width - (takeOverButton.visible ? takeOverButton.width + Style.spacing.lg : 0)
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          text: modelData.text
-        }
-
-        Button {
-          id: takeOverButton
-          objectName: "takeOver"
-          visible: root.canTakeOver
-          anchors.right: parent.right
-          anchors.verticalCenter: parent.verticalCenter
-          text: Model.copy("installed.take_over")
-          enabled: root.canChange
-          opacity: enabled ? 1.0 : 0.4
-          bordered: true
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          fontSize: Style.font.caption
-          onClicked: root.takeOver(modelData.target)
-        }
-      }
-    }
   }
 }

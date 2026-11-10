@@ -169,6 +169,8 @@ TestCase {
     PanelView {
       width: 540
       height: 700
+      // As BarWidget hands down the bar's cap: here the panel's own height.
+      heightCap: 700
     }
   }
 
@@ -242,6 +244,52 @@ TestCase {
   }
 
   // ------------------------------------------------------------- Updates
+
+  // The rows a long list has built (its delegates now, kept or reused).
+  function builtRows(list, prefix) {
+    var children = list.contentItem.children
+    var built = 0
+    for (var i = 0; i < children.length; i++) if (String(children[i].objectName).indexOf(prefix) === 0 && children[i].visible) built++
+    return built
+  }
+
+  // 500 addons (1n2p.38): Addons builds only the rows in view, within its budget, and
+  // keeps the cursor's row built and in view as it moves; a short list stays plain.
+  function test_five_hundred_addons_build_fewer_than_sixty_rows() {
+    var addons = []
+    for (var i = 0; i < 500; i++) addons.push(addon("Addon" + (1000 + i), "v1", "v1", "current"))
+    svc.lists = Model.reduceList(listEnvelope([{ "id": "retail", "key": "k-retail", "label": "retail", "counts": { "unmanaged": 0 },
+      "addons": addons }]))
+    var started = Date.now()
+    keyClick("2")
+    var installed = view.currentView
+    compare(installed.rowCount, 500)
+    var list = findChild(installed, "rowList")
+    // The list lays out its rows on its next polish.
+    tryVerify(function() { return builtRows(list, "installedRow_") > 0 }, 3000, "the list built its first rows")
+    var elapsed = Date.now() - started
+    verify(installed.scrollsItself, "a long list scrolls itself")
+    var built = builtRows(list, "installedRow_")
+    verify(built > 0 && built < 60, built + " rows built for 500")
+    // Generous: the budget (design doc, "Costs, baseline": 100 ms at 500 rows) on a
+    // loaded test machine.
+    verify(elapsed < 1500, "Addons shown in " + elapsed + " ms")
+    // G: the last row, built and in view; the frame's own content does not scroll.
+    keyClick("G")
+    compare(view.cursor, 499)
+    tryVerify(function() { return installed.rowItem(499) !== null }, 2000, "the cursor's row is built")
+    // In view once the list has laid out the move.
+    tryVerify(function() {
+      var last = installed.rowItem(499)
+      var y = last ? last.mapToItem(list, 0, 0).y : -1
+      return !!last && y >= 0 && y + last.height <= list.height + 1
+    }, 2000, "the cursor's row is in view")
+    verify(builtRows(list, "installedRow_") < 60, "still fewer than 60 rows built")
+    // Back to a short list: every row built, the frame scrolling as before.
+    svc.lists = Model.reduceList(listing())
+    verify(!installed.scrollsItself)
+    compare(installed.rowItem(0) !== null, true)
+  }
 
   function test_updates_are_grouped_by_client_with_the_count_U_runs() {
     var updates = content()
