@@ -466,6 +466,9 @@ fn run_with(
     let fallback = fallback_output(raw, term);
     let early_offline = output::offline_from_argv(raw, env);
     set_panic_state(fallback, "omaddons", &argv, started, early_offline);
+    if crate::app::complete::is_invocation(raw) {
+        return complete(raw, term, env, started);
+    }
     let cli = match Cli::try_parse_from(raw) {
         Ok(cli) => cli,
         // `-h` on a command with required arguments: help, not a usage error.
@@ -523,6 +526,40 @@ fn run_with(
     ctx.progress = output::ProgressSink::new(&reporter, &output);
     output::trace::install(&reporter, &output);
     crate::app::dispatch(&cli, &ctx, &reporter)
+}
+
+/// `omaddons __complete …`, the completion scripts' reader (`app::complete`): its values
+/// as bare lines, whatever `OMADDONS_FORMAT` or the terminal say, and exit 0 whatever it
+/// found. No `Context` is built (a bad `OMADDONS_ACTOR` must not fail a Tab press), and
+/// nothing after the command runs (no history projection rebuild).
+fn complete(
+    raw: &[OsString],
+    term: &TermEnv,
+    env: &dyn Fn(&str) -> Option<String>,
+    started: Instant,
+) -> ProcessExit {
+    let flags = OutputFlags {
+        format: Some("human".to_owned()),
+        progress: Some("none".to_owned()),
+        no_color: true,
+        no_progress: true,
+        quiet: true,
+        ..OutputFlags::default()
+    };
+    let cfg = output::resolve(&flags, term);
+    let paths = crate::state::paths::Paths::from_lookup(|name| env(name).map(OsString::from));
+    let outcome = crate::app::complete::run(raw.get(2..).unwrap_or_default(), paths.ok().as_ref());
+    let mut reporter = Reporter::stderr(&cfg);
+    output::emit(
+        &cfg,
+        &mut reporter,
+        crate::app::complete::WORD,
+        started,
+        false,
+        &output::RunNotes::default(),
+        Ok(outcome),
+    )
+    .into()
 }
 
 /// The output configuration until argv parses: its presentation flags read token by
@@ -707,8 +744,10 @@ Examples:
   omaddons completions fish > \"${XDG_CONFIG_HOME:-$HOME/.config}/fish/completions/omaddons.fish\"
   omaddons completions bash --json    the script as data: {shell, script}
 
-The script is static: commands, subcommands, flags and fixed values complete; client
-ids and addon names do not. Generate it again after upgrading omaddons.";
+Commands, subcommands, flags and fixed values complete in every shell. In bash, zsh and
+fish, client ids, addon names and plan, backup, transaction and doctor ids complete too,
+read from omaddons' own files at each Tab (a client once it is registered). Generate the
+script again after upgrading omaddons.";
 
 const ROBOT_DOCS_HELP: &str = "\
 Examples:

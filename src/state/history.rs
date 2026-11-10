@@ -988,6 +988,26 @@ pub(crate) fn line_facts(line: &str) -> Option<LineFacts> {
     })
 }
 
+/// The ids one history line names, for shell completion (`omaddons __complete`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LineIds {
+    pub tx: Option<TxId>,
+    pub run: Option<RunId>,
+    /// A transaction undo can revert (never a settings change or a backup).
+    pub undoable: bool,
+}
+
+/// One complete line's ids, salvaged like [`read_line`] does; `None` for a line that does
+/// not read. Its ops are skipped, as [`line_facts`] skips them.
+pub(crate) fn line_ids(line: &str) -> Option<LineIds> {
+    let fields = salvaged::<FactFields>(line)?;
+    Some(LineIds {
+        tx: fields.tx,
+        run: fields.run,
+        undoable: fields.kind.is_undoable(),
+    })
+}
+
 /// The fields of a line [`skill_dir_of`] reads.
 #[derive(Deserialize)]
 struct SkillFields {
@@ -2808,6 +2828,51 @@ mod tests {
             facts.undoable,
             "the projection counts it as a change to undo"
         );
+    }
+
+    #[test]
+    fn line_ids_name_the_transaction_the_run_and_whether_undo_reverts_it() {
+        const TX: &str = "01JB8Q2VA00000000000000000";
+        const RUN: &str = "01JB8Q2VB00000000000000000";
+        let tx = TX.parse::<TxId>().ok();
+        let run = RUN.parse::<RunId>().ok();
+        let head = r#"{"schema_version":"1.0","at":"2026-10-14T21:00:00Z""#;
+        for (case, line, expected) in [
+            (
+                "an install of a run",
+                format!(r#"{head},"kind":"install","tx":"{TX}","run":"{RUN}","ops":[]}}"#),
+                Some((tx, run, true)),
+            ),
+            (
+                "a transaction of no run",
+                format!(r#"{head},"kind":"remove","tx":"{TX}"}}"#),
+                Some((tx, None, true)),
+            ),
+            (
+                "a backup",
+                format!(r#"{head},"kind":"backup","tx":"{TX}","run":"{RUN}"}}"#),
+                Some((tx, run, false)),
+            ),
+            (
+                "a setting",
+                format!(r#"{head},"kind":"config"}}"#),
+                Some((None, None, false)),
+            ),
+            (
+                "a merged line, salvaged from its last line start",
+                format!(r#"{head},"kind":"inst{head},"kind":"update","tx":"{TX}"}}"#),
+                Some((tx, None, true)),
+            ),
+            ("not json", "{ not json".to_owned(), None),
+            (
+                "an unknown kind",
+                format!(r#"{head},"kind":"teleport"}}"#),
+                None,
+            ),
+        ] {
+            let ids = line_ids(&line).map(|ids| (ids.tx, ids.run, ids.undoable));
+            assert_eq!(ids, expected, "{case}: {line}");
+        }
     }
 
     #[test]

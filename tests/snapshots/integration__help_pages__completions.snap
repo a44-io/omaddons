@@ -35,8 +35,10 @@ Examples:
   omaddons completions fish > "${XDG_CONFIG_HOME:-$HOME/.config}/fish/completions/omaddons.fish"
   omaddons completions bash --json    the script as data: {shell, script}
 
-The script is static: commands, subcommands, flags and fixed values complete; client
-ids and addon names do not. Generate it again after upgrading omaddons.
+Commands, subcommands, flags and fixed values complete in every shell. In bash, zsh and
+fish, client ids, addon names and plan, backup, transaction and doctor ids complete too,
+read from omaddons' own files at each Tab (a client once it is registered). Generate the
+script again after upgrading omaddons.
 
 See also: help
 

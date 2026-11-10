@@ -1120,6 +1120,15 @@ expression: "(politeness, REGISTRY)"
       "unit": "count",
       "config_key": null,
       "notes": "entries targets rm --purge visits to list and size what it deletes; past it the purge is refused"
+    },
+    {
+      "name": "COMPLETION_MAX_VALUES",
+      "value": {
+        "count": 1000
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "values one shell completion offers: client ids, addon names or ids"
     }
   ]
 ]

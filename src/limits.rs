@@ -285,6 +285,10 @@ pub const DOCTOR_QUARANTINE_SOFT_MAX: u64 = GIB;
 /// refused before anything moves, never planned or sized from part of the walk.
 /// Retention keeps a client's snapshots and backups far below it.
 pub const PURGE_MAX_ENTRIES: usize = 1_000_000;
+/// Most values one shell completion offers (`omaddons __complete`), after its prefix
+/// filter: the newest ids, or the first names in order. zsh and fish match the values
+/// themselves, so they get the whole list up to this bound.
+pub const COMPLETION_MAX_VALUES: usize = 1_000;
 
 /// Snapshot retention: keep everything younger than `min_age`; beyond that, keep the
 /// last `keep_last` transactions per target that are younger than `window`.
@@ -1071,6 +1075,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         None,
         "entries targets rm --purge visits to list and size what it deletes; past it the purge is refused",
     ),
+    limit(
+        "COMPLETION_MAX_VALUES",
+        LimitValue::Count(COMPLETION_MAX_VALUES as u64),
+        LimitUnit::Count,
+        None,
+        "values one shell completion offers: client ids, addon names or ids",
+    ),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -1371,6 +1382,7 @@ mod tests {
         "DOCTOR_GC_MAX_DELETIONS",
         "DOCTOR_QUARANTINE_SOFT_MAX",
         "PURGE_MAX_ENTRIES",
+        "COMPLETION_MAX_VALUES",
     ];
 
     const CONFIG_NAMES: &[&str] = &[

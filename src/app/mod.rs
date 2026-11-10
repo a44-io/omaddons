@@ -9,6 +9,7 @@ pub mod backup;
 pub mod backup_verify;
 pub mod backups_status;
 pub mod capabilities;
+pub mod complete;
 pub mod completions;
 pub mod config;
 pub mod copy;

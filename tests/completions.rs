@@ -1,22 +1,28 @@
-//! e2e suite: omaddons completions (A7, M4-D16, checkpoint criterion 15). Every multi-command scenario is a TestLog scenario.
+//! e2e suite: omaddons completions (A7, M4-D16, checkpoint criterion 15) and the values its scripts ask `omaddons __complete` for (omad-launch-week-fixes-bmcx.10). Every multi-command scenario is a TestLog scenario.
 //!
 //! Each shell's script is snapshot-tested through the real binary. bash checks its own
 //! script (`bash -n`) and runs its completion function over the whole command tree in
-//! every gate, and never skips. The scripts are static (no call back into the binary, no
-//! client id offered), the same bytes on every terminal, and pure: no state read, no
-//! write, no request, no home needed. zsh's and fish's syntax checks are checkpoint tests
-//! (`--ignored`), which skip only where their shell is missing.
+//! every gate, and never skips. Generating a script is pure (no state read, no write, no
+//! request, no home needed) and gives the same bytes on every terminal. The bash, zsh and
+//! fish scripts call back into the binary only as `omaddons __complete`, which offers
+//! client ids, addon names and ids from omaddons' own files, reads nothing else, writes
+//! nothing, takes no lock and prints nothing it cannot offer; bash completes them here
+//! from a home with clients, addons, plans, a backup, history and a doctor run. zsh's and
+//! fish's syntax checks are checkpoint tests (`--ignored`), which skip only where their
+//! shell is missing.
 
 use crate::common;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::path::Path;
 
 use clap::CommandFactory;
 use common::archives::zip_text;
 use common::checkpoint;
 use common::env::TestEnv;
 use common::home::Home;
+use common::http::paths;
 use common::netlog::net_log;
 use common::privacy::assert_private_all;
 use common::shells::{self, Checker};
@@ -264,8 +270,10 @@ fn completion_cases() -> Vec<Case> {
             false,
         ),
         case(&["install", "--dry"], &["--dry-run"], false),
-        // Static (M4-D16): no client id, only file names, and the directory is empty.
+        // No client is registered yet: no id, then file names, and the directory is empty.
         case(&["status", "-t", ""], &[], true),
+        // The reader is no command: nothing offers it.
+        case(&["__"], &[], true),
     ];
 
     for row in omaddons::app::COMMANDS {
@@ -359,7 +367,7 @@ fn bash_completes_commands_flags_and_values() {
     log.step("complete");
     let mut cases = completion_cases();
     let words: Vec<Vec<String>> = cases.iter().map(|c| c.words.clone()).collect();
-    let (run, offers) = shells::bash_complete(&file, &words, &cwd);
+    let (run, offers) = shells::bash_complete(&file, &words, &cwd, Some(&home.env));
     log.json("bash completion", &run);
     log.note(format!("{} cases in one bash process", cases.len()));
     let mut failing = Vec::new();
@@ -386,19 +394,52 @@ fn bash_completes_commands_flags_and_values() {
 }
 
 // ---------------------------------------------------------------------------------------
-// 6. Static, and registered for omaddons only.
+// 6. Calling back only as the reader, and registered for omaddons only.
+
+/// The reader's invocation, the one way a script may run omaddons.
+const READER: &str = "omaddons __complete ";
+
+/// Where `line` starts omaddons other than as [`READER`]: through `COMPLETE=` (clap's
+/// dynamic engine, never used), or `omaddons` right after `$(`, a backtick, `& `, or `(`
+/// and before a space (fish's command substitution; zsh's `(omaddons)` is a case label).
+fn calls_other_than_the_reader(line: &str) -> bool {
+    line.contains("COMPLETE=")
+        || ["$(omaddons", "`omaddons", "(omaddons ", "& omaddons"]
+            .iter()
+            .any(|opener| {
+                let to_name = opener.find("omaddons").unwrap_or_default();
+                line.match_indices(opener)
+                    .any(|(at, _)| !line[at + to_name..].starts_with(READER))
+            })
+}
 
 #[test]
-fn the_scripts_are_static_and_register_only_omaddons() {
+fn a_call_back_other_than_the_reader_is_caught() {
+    for (line, caught) in [
+        (
+            "mapfile -t COMPREPLY < <(omaddons __complete \"$kind\")",
+            false,
+        ),
+        ("found=(${(f)\"$(omaddons __complete $kind)\"})", false),
+        ("        omaddons __complete $slot[1] 2>/dev/null", false),
+        ("x=$(omaddons status --json)", true),
+        ("x=`omaddons list`", true),
+        ("complete -a '(omaddons list)'", true),
+        ("true & omaddons update", true),
+        ("COMPLETE=bash omaddons", true),
+        ("x=$(omaddons __completes)", true),
+        ("    (omaddons)", false),
+    ] {
+        assert_eq!(calls_other_than_the_reader(line), caught, "{line}");
+    }
+}
+
+#[test]
+fn the_scripts_call_back_only_through_the_reader_and_register_only_omaddons() {
     let log = tlog!();
     let env = TestEnv::new();
     let root = env.root().display().to_string();
     let forbidden = [
-        "COMPLETE=",
-        "$(omaddons",
-        "`omaddons",
-        "(omaddons ",
-        "& omaddons",
         "\x1b",
         root.as_str(),
         env!("CARGO_BIN_EXE_omaddons"),
@@ -408,12 +449,28 @@ fn the_scripts_are_static_and_register_only_omaddons() {
         log.step(shell);
         let script = script_of(&log, &env, shell);
         let registered = match shell {
+            // clap's registration of its function, then the glue's of the one wrapping it.
             "bash" => {
-                let lines: Vec<&str> = script
+                let lines = |function: &str| -> Vec<&str> {
+                    script
+                        .lines()
+                        .filter(|l| {
+                            l.trim_start()
+                                .starts_with(&format!("complete -F {function} "))
+                        })
+                        .collect()
+                };
+                let (clap, glue) = (lines("_omaddons"), lines("_omaddons_dynamic"));
+                let last = script
                     .lines()
-                    .filter(|l| l.trim_start().starts_with("complete -F _omaddons"))
-                    .collect();
-                lines.len() == 2 && lines.iter().all(|l| l.ends_with(" omaddons"))
+                    .rfind(|l| l.trim_start().starts_with("complete -F "))
+                    .unwrap_or_default();
+                clap.len() == 2
+                    && glue.len() == 2
+                    && clap.iter().chain(&glue).all(|l| l.ends_with(" omaddons"))
+                    && last
+                        .trim_start()
+                        .starts_with("complete -F _omaddons_dynamic ")
             }
             "zsh" => script.lines().next() == Some("#compdef omaddons"),
             "fish" => script
@@ -429,7 +486,7 @@ fn the_scripts_are_static_and_register_only_omaddons() {
             _ => script.matches("-CommandName 'omaddons'").count() == 1,
         };
         log.assert_eq(&format!("{shell} registers omaddons"), &registered, &true);
-        let found: Vec<String> = forbidden
+        let mut found: Vec<String> = forbidden
             .iter()
             .filter_map(|needle| {
                 script.lines().position(|l| l.contains(needle)).map(|n| {
@@ -441,7 +498,24 @@ fn the_scripts_are_static_and_register_only_omaddons() {
                 })
             })
             .collect();
+        found.extend(
+            script
+                .lines()
+                .enumerate()
+                .filter(|(_, l)| calls_other_than_the_reader(l))
+                .map(|(n, l)| format!("{shell}: line {} runs omaddons: {l}", n + 1)),
+        );
         log.assert_eq("forbidden text", &found, &Vec::<String>::new());
+        let calls = script.matches(READER).count();
+        let expected = match shell {
+            "elvish" | "powershell" => 0,
+            _ => 1,
+        };
+        log.assert_eq(
+            &format!("{shell}: calls of the reader"),
+            &calls.min(1),
+            &expected,
+        );
     }
 }
 
@@ -773,4 +847,494 @@ fn zsh_accepts_its_script() {
 #[ignore = "checkpoint: fish --no-execute over the generated script"]
 fn fish_accepts_its_script() {
     shell_accepts_its_script(&tlog!(), "fish_accepts_its_script", Checker::Fish);
+}
+
+// ---------------------------------------------------------------------------------------
+// 12. The reader: values from omaddons' own files, and nothing else.
+
+/// Every kind `__complete` takes.
+const KINDS: [&str; 8] = [
+    "target",
+    "addon",
+    "plan",
+    "backup",
+    "tx",
+    "run",
+    "doctor-run",
+    "fm",
+];
+
+/// A home with two registered clients (three addons on retail, none on era), two stored
+/// plans, a backup of retail, a history projection and a doctor run; and the values each
+/// kind must offer, read from the envelopes and directories that made them.
+struct Fixture {
+    home: Home,
+    plans: Vec<String>,
+    backups: Vec<String>,
+    txs: Vec<String>,
+    runs: Vec<String>,
+    doctor_runs: Vec<String>,
+}
+
+/// The names of `dir`'s directories that do not start with a dot, newest first (their
+/// names start with their time).
+fn dirs_newest_first(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .filter(|e| e.path().is_dir())
+                .filter_map(|e| e.file_name().into_string().ok())
+                .filter(|name| !name.starts_with('.'))
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort_unstable_by(|a, b| b.cmp(a));
+    names
+}
+
+fn fixture(log: &TestLog) -> Fixture {
+    let home = Home::new(&["wow", "wow_classic_era"]);
+    let retail = home.client("_retail_");
+    Wtf::at(&retail).saved_variables("Foo", 64).build();
+    let dl = home.env.root().join("dl");
+    let made = fs::create_dir_all(&dl);
+    assert!(made.is_ok(), "{}: {made:?}", dl.display());
+    let zip = |name: &str| {
+        let path = dl.join(format!("{name}.zip"));
+        let toc = format!("{name}/{name}.toc");
+        let written = fs::write(
+            &path,
+            zip_text(&[(&toc, "## Interface: 120105\n## Version: 1\n")]),
+        );
+        assert!(written.is_ok(), "{}: {written:?}", path.display());
+        path.display().to_string()
+    };
+    let zips = [zip("Foo"), zip("Bar"), zip("Baz")];
+
+    log.step("three addons on retail");
+    log.run(
+        &home,
+        &[
+            "install", &zips[0], &zips[1], &zips[2], "-t", "retail", "--json",
+        ],
+    )
+    .ok();
+    log.step("era registered");
+    log.run(&home, &["targets", "default", "era", "--json"])
+        .ok();
+    log.step("two stored plans");
+    let mut plans = Vec::new();
+    for argv in [
+        &["remove", "Foo", "-t", "retail", "--dry-run", "--json"][..],
+        &["remove", "Bar", "-t", "retail", "--dry-run", "--json"],
+    ] {
+        let ran = log.run(&home, argv);
+        ran.ok();
+        plans.push(
+            ran.data()["plan_id"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+        );
+    }
+    plans.sort_unstable_by(|a, b| b.cmp(a));
+    log.step("a backup of retail");
+    log.run(&home, &["backup", "create", "-t", "retail", "--json"])
+        .ok();
+    let backups = dirs_newest_first(&retail.join("Interface/.omaddons/backups"));
+    log.step("a doctor run");
+    let doctor = log.run(&home, &["doctor", "--quick", "--json"]);
+    log.json("doctor exit", &doctor.run.code);
+    let doctor_runs = dirs_newest_first(&home.env.state().join("omaddons/doctor/runs"));
+    log.step("the history");
+    let history = log.run(&home, &["history", "--json"]);
+    history.ok();
+    let entries = history.data()["entries"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let field = |entry: &Value, key: &str| entry[key].as_str().map(str::to_owned);
+    let mut txs: Vec<String> = entries
+        .iter()
+        .filter(|e| e["kind"] == "install")
+        .filter_map(|e| field(e, "tx"))
+        .collect();
+    txs.sort_unstable_by(|a, b| b.cmp(a));
+    let mut runs: Vec<String> = entries
+        .iter()
+        .filter_map(|e| field(e, "run"))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    runs.sort_unstable_by(|a, b| b.cmp(a));
+    let fixture = Fixture {
+        home,
+        plans,
+        backups,
+        txs,
+        runs,
+        doctor_runs,
+    };
+    for (what, values) in [
+        ("plans", &fixture.plans),
+        ("backups", &fixture.backups),
+        ("txs", &fixture.txs),
+        ("runs", &fixture.runs),
+        ("doctor runs", &fixture.doctor_runs),
+    ] {
+        log.json(what, values);
+        assert!(
+            values.iter().all(|v| !v.is_empty()) && !values.is_empty(),
+            "the fixture made no {what}: {values:?}"
+        );
+    }
+    assert_eq!(fixture.plans.len(), 2, "two stored plans");
+    fixture
+}
+
+/// `omaddons __complete <args>` on `home`: exit 0, nothing on stderr, and its lines.
+#[track_caller]
+fn complete(log: &TestLog, home: &Home, args: &[&str]) -> (Vec<String>, u64) {
+    let argv: Vec<&str> = std::iter::once("__complete")
+        .chain(args.iter().copied())
+        .collect();
+    let ran = log.run(home, &argv);
+    ran.exit(0);
+    log.assert_eq("stderr", &ran.stderr(), &"");
+    let lines = ran.stdout().lines().map(str::to_owned).collect();
+    (lines, ran.elapsed_ms)
+}
+
+fn strings(values: &[&str]) -> Vec<String> {
+    values.iter().map(|v| (*v).to_owned()).collect()
+}
+
+fn strs(values: &[String]) -> Vec<&str> {
+    values.iter().map(String::as_str).collect()
+}
+
+fn failure_modes() -> Vec<String> {
+    omaddons::doctor::registry::FAILURE_MODES
+        .iter()
+        .map(|fm| fm.id.to_owned())
+        .collect()
+}
+
+#[test]
+fn the_reader_offers_each_kind_from_omaddons_files() {
+    let log = tlog!();
+    let f = fixture(&log);
+    let home = &f.home;
+    let mut latest = vec!["latest".to_owned()];
+    latest.extend(f.doctor_runs.iter().cloned());
+    let plan_prefix = f.plans[0][..10].to_ascii_lowercase();
+    let cases: Vec<(&str, Vec<&str>, Vec<String>)> = vec![
+        (
+            "every registered client",
+            vec!["target"],
+            strings(&["era", "retail"]),
+        ),
+        (
+            "a prefix, ignoring case",
+            vec!["target", "--prefix", "R"],
+            strings(&["retail"]),
+        ),
+        (
+            "one client's addons",
+            vec!["addon", "--target", "retail"],
+            strings(&["Bar", "Baz", "Foo"]),
+        ),
+        (
+            "a client with none",
+            vec!["addon", "--target", "era"],
+            Vec::new(),
+        ),
+        (
+            "every client's addons",
+            vec!["addon"],
+            strings(&["Bar", "Baz", "Foo"]),
+        ),
+        (
+            "addons by prefix",
+            vec!["addon", "--target=retail", "--prefix=b"],
+            strings(&["Bar", "Baz"]),
+        ),
+        (
+            "the stored plans, newest first",
+            vec!["plan"],
+            f.plans.clone(),
+        ),
+        (
+            "a plan by a lowercase prefix",
+            vec!["plan", "--prefix", &plan_prefix],
+            vec![f.plans[0].clone()],
+        ),
+        (
+            "retail's backups",
+            vec!["backup", "--target", "retail"],
+            f.backups.clone(),
+        ),
+        (
+            "era has none",
+            vec!["backup", "--target", "era"],
+            Vec::new(),
+        ),
+        ("what undo can revert", vec!["tx"], f.txs.clone()),
+        ("the runs", vec!["run"], f.runs.clone()),
+        ("latest, then the doctor's runs", vec!["doctor-run"], latest),
+        ("every failure mode", vec!["fm"], failure_modes()),
+    ];
+    for (case, args, expected) in cases {
+        log.step(case);
+        let (values, _) = complete(&log, home, &args);
+        log.assert_eq(case, &values, &expected);
+    }
+}
+
+#[test]
+fn the_reader_reads_only_takes_no_lock_and_fails_silently() {
+    let log = tlog!();
+    let f = fixture(&log);
+    let home = &f.home;
+
+    log.step("before");
+    let trees = [
+        ("state", home.env.state()),
+        ("cache", home.env.cache()),
+        ("config", home.env.config()),
+        ("home", home.env.home()),
+    ];
+    for (label, root) in &trees {
+        log.tree(label, root);
+    }
+    let requests = net_log(home).len();
+
+    log.step("every kind, with and without a client and a prefix");
+    let mut slowest = 0;
+    for kind in KINDS {
+        for extra in [&[][..], &["--target", "retail"], &["--prefix", "x"]] {
+            let args: Vec<&str> = std::iter::once(kind).chain(extra.iter().copied()).collect();
+            let argv: Vec<&str> = std::iter::once("__complete")
+                .chain(args.iter().copied())
+                .collect();
+            let ran = log.run(home, &argv);
+            ran.exit(0);
+            assert_private_all(ran.stdout(), ran.stderr());
+            slowest = slowest.max(ran.elapsed_ms);
+        }
+    }
+    log.note(format!(
+        "the slowest __complete took {slowest} ms (a debug build)"
+    ));
+    log.assert_eq("no Tab press waits seconds", &(slowest < 2_000), &true);
+
+    log.step("what it cannot read or parse: nothing, exit 0");
+    for args in [
+        &[][..],
+        &["client"],
+        &["target", "addon"],
+        &["target", "--json"],
+        &["target", "--help"],
+        &["--version"],
+    ] {
+        let (values, _) = complete(&log, home, args);
+        log.assert_eq(&format!("{args:?}"), &values, &Vec::<String>::new());
+    }
+
+    log.step("after: nothing written, nothing sent");
+    for (label, root) in &trees {
+        log.assert_unchanged(label, root);
+    }
+    log.assert_eq("net.log lines", &net_log(home).len(), &requests);
+
+    log.step("while another command holds the global lock");
+    let guard = omaddons::fsx::GlobalLock::acquire(&paths(&home.env), "test holder");
+    assert!(guard.is_ok(), "{guard:?}");
+    let (values, ms) = complete(&log, home, &["target"]);
+    log.assert_eq(
+        "values under the lock",
+        &values,
+        &strings(&["era", "retail"]),
+    );
+    log.note(format!("answered in {ms} ms while the lock was held"));
+    log.assert_eq("never waited for the lock", &(ms < 2_000), &true);
+    drop(guard);
+
+    log.step("an environment that fails every other command");
+    for (case, key, value) in [
+        ("a JSON format", "OMADDONS_FORMAT", "json"),
+        ("an unknown actor", "OMADDONS_ACTOR", "nobody"),
+    ] {
+        let ran = log
+            .cmd(home, &["__complete", "target"])
+            .env(key, value)
+            .run();
+        ran.exit(0);
+        log.assert_eq(case, &ran.stdout(), &"era\nretail\n");
+        log.assert_eq("stderr", &ran.stderr(), &"");
+    }
+    let ran = log
+        .cmd(home, &["__complete", "target"])
+        .env("HOME", "relative/home")
+        .run();
+    ran.exit(0);
+    log.assert_eq("no usable HOME", &ran.stdout(), &"");
+    log.assert_eq("stderr", &ran.stderr(), &"");
+
+    log.step("an empty home");
+    let empty = Home::new(&["wow"]);
+    for kind in KINDS.iter().filter(|k| **k != "fm") {
+        let (values, _) = complete(&log, &empty, &[kind]);
+        log.assert_eq(kind, &values, &Vec::<String>::new());
+    }
+}
+
+#[test]
+fn bash_completes_values_from_omaddons_files() {
+    let log = tlog!();
+    let f = fixture(&log);
+    let home = &f.home;
+    log.step("generate");
+    let script = script_of(&log, &home.env, "bash");
+    let dir = home.env.root().join("bash-completion");
+    let cwd = home.env.root().join("bash-completion-cwd");
+    fs::create_dir_all(&dir).unwrap();
+    fs::create_dir_all(&cwd).unwrap();
+    let file = dir.join("omaddons.bash");
+    fs::write(&file, &script).unwrap();
+
+    let fms = failure_modes();
+    let fm_refs: Vec<&str> = fms.iter().map(String::as_str).collect();
+    let caches: Vec<String> = fms
+        .iter()
+        .filter(|id| id.starts_with("fm-caches-"))
+        .map(|id| format!("{},{id}", fms[0]))
+        .collect();
+    let caches: Vec<&str> = caches.iter().map(String::as_str).collect();
+    let only_prefix = format!("{},fm-caches-", fms[0]);
+    let mut latest = vec!["latest".to_owned()];
+    latest.extend(f.doctor_runs.iter().cloned());
+    let (plans, txs, backups, latest, runs) = (
+        strs(&f.plans),
+        strs(&f.txs),
+        strs(&f.backups),
+        strs(&latest),
+        strs(&f.runs),
+    );
+    let addons = ["Bar", "Baz", "Foo"];
+    let clients = ["era", "retail"];
+    let mut cases = vec![
+        case(&["status", "-t", ""], &clients, true),
+        case(&["-t", "r"], &["retail"], true),
+        case(&["--target", ""], &clients, true),
+        case(&["status", "--target", "=", ""], &clients, true),
+        case(&["remove", "-t", "retail", ""], &addons, true),
+        case(
+            &["remove", "-t", "retail", "Foo", "B"],
+            &["Bar", "Baz"],
+            true,
+        ),
+        case(&["update", "--target", "=", "retail", ""], &addons, true),
+        case(
+            &[
+                "update",
+                "--dry-run",
+                "-t",
+                "retail",
+                "--channel",
+                "beta",
+                "",
+            ],
+            &addons,
+            true,
+        ),
+        case(&["pin", ""], &addons, true),
+        case(&["pin", "Foo", "B"], &[], true),
+        case(
+            &["copy", "--from", "retail", "--to", "era", ""],
+            &addons,
+            true,
+        ),
+        case(&["copy", "--from", ""], &clients, true),
+        case(&["errors", "--addon", ""], &addons, true),
+        case(&["apply", ""], &plans, true),
+        case(&["plans", "show", ""], &plans, true),
+        case(&["undo", ""], &txs, true),
+        case(&["revert", ""], &txs, true),
+        case(&["undo", "--run", ""], &runs, true),
+        case(&["history", "--run", ""], &runs, true),
+        case(&["backup", "restore", "-t", "retail", ""], &backups, true),
+        case(&["backup", "restore", "x", "--addon", ""], &addons, true),
+        case(&["doctor", "explain", ""], &fm_refs, true),
+        case(&["doctor", "--only", &only_prefix], &caches, true),
+        case(&["doctor", "diff", ""], &latest, true),
+        case(&["doctor", "--since", ""], &latest, true),
+        case(&["targets", "rm", ""], &clients, true),
+        // A path, after `--`, an option, or a word that names no slot: clap's offers
+        // (its flags, which no letter starts, or the empty directory's file names).
+        case(&["targets", "rename", "retail", "r"], &[], true),
+        case(&["-t", "./"], &[], true),
+        case(&["--", "-t", ""], &[], true),
+        case(&["remove", "-"], &["--help"], false),
+        case(&["list", "B"], &[], true),
+    ];
+    log.step("complete");
+    let words: Vec<Vec<String>> = cases.iter().map(|c| c.words.clone()).collect();
+    let (run, offers) = shells::bash_complete(&file, &words, &cwd, Some(&home.env));
+    log.json("bash completion", &run);
+    let mut failing = Vec::new();
+    for (case, offered) in cases.iter_mut().zip(offers) {
+        case.offered = offered;
+        let offered: BTreeSet<&String> = case.offered.iter().collect();
+        let held = if case.exact {
+            case.offered == case.expected
+        } else {
+            case.expected.iter().all(|w| offered.contains(w))
+        };
+        if !held {
+            failing.push(format!(
+                "{:?}: expected {:?} {} {:?}",
+                case.words,
+                case.expected,
+                if case.exact { "exactly, got" } else { "among" },
+                case.offered
+            ));
+        }
+    }
+    log.json("cases", &cases);
+    log.assert_eq("failing cases", &failing, &Vec::<String>::new());
+}
+
+#[test]
+fn no_help_capabilities_or_guide_names_the_reader() {
+    let log = tlog!();
+    let env = TestEnv::new();
+    for argv in [
+        &["--help"][..],
+        &["help", "--json"],
+        &["capabilities", "--json"],
+        &["capabilities"],
+        &["robot-docs", "guide"],
+        &["robot-docs", "schema", "--json"],
+        &["robot-docs", "errors", "--json"],
+        &["completions", "--help"],
+    ] {
+        log.step(&argv.join(" "));
+        let ran = log.run(&env, argv);
+        ran.ok();
+        log.assert_eq(
+            "names __complete",
+            &(ran.stdout().contains("__complete") || ran.stderr().contains("__complete")),
+            &false,
+        );
+    }
+    log.step("a typo of a command never offers the reader");
+    let ran = log.run(&env, &["complete", "--json"]);
+    ran.fails(2, "usage");
+    log.assert_eq(
+        "names __complete",
+        &ran.stdout().contains("__complete"),
+        &false,
+    );
 }

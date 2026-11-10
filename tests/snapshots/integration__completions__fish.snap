@@ -1671,3 +1671,449 @@ complete -c omaddons -n "__fish_omaddons_using_subcommand capabilities" -l no-pr
 complete -c omaddons -n "__fish_omaddons_using_subcommand capabilities" -l quiet -d 'Only errors on stderr'
 complete -c omaddons -n "__fish_omaddons_using_subcommand capabilities" -s v -l verbose -d 'More detail (repeatable)'
 complete -c omaddons -n "__fish_omaddons_using_subcommand capabilities" -s h -l help -d 'Show help'
+
+# Values from omaddons' own files, where the script above offers only file names:
+# client ids, addon names, and plan, backup, transaction, run, doctor run and
+# failure-mode ids. The hidden reader, omaddons __complete, reads them without scanning,
+# locking, writing or going online, and prints nothing when it has nothing to offer.
+function __fish_omaddons_slot --description 'What omaddons completes at the cursor: its kind, option or positional, and the client'
+    set -l words (commandline -opc)
+    set -e words[1]
+    set -l cur (commandline -ct)
+    set -l cmdpath ''
+    set -l value_of ''
+    set -l target ''
+    set -l from ''
+    set -l n 0
+    set -l rest 0
+    for word in $words
+        if test -n "$value_of"
+            if contains -- $value_of -t --target --flavor
+                set target $word
+            else if contains -- $value_of --from
+                set from $word
+            end
+            set value_of ''
+            continue
+        end
+        if test $rest -eq 0
+            if test "x$word" = x--
+                set rest 1
+                continue
+            else if string match -q -- '--*=*' $word
+                set -l pair (string split -m 1 = -- $word)
+                if contains -- $pair[1] -t --target --flavor
+                    set target $pair[2]
+                else if contains -- $pair[1] --from
+                    set from $pair[2]
+                end
+                continue
+            else if string match -qr -- '^-t.' $word
+                set target (string sub -s 3 -- $word)
+                continue
+            else if string match -q -- '-*' $word
+                if contains -- $word --actor --addon --before --budget --by --channel --dir --file --flavor --format --from --if-match --keep --last-by --limit --name --older-than --only --progress --reason --ref --run --saved-variables --section --severity --since --skip --source --target --to --version -t
+                    set value_of $word
+                end
+                continue
+            end
+            switch "$cmdpath,$word"
+                case ',help'
+                    set cmdpath 'help'
+                    set n 0
+                    continue
+                case ',status'
+                    set cmdpath 'status'
+                    set n 0
+                    continue
+                case ',install' ',add'
+                    set cmdpath 'install'
+                    set n 0
+                    continue
+                case ',update' ',upgrade'
+                    set cmdpath 'update'
+                    set n 0
+                    continue
+                case ',pin'
+                    set cmdpath 'pin'
+                    set n 0
+                    continue
+                case ',unpin'
+                    set cmdpath 'unpin'
+                    set n 0
+                    continue
+                case ',adopt'
+                    set cmdpath 'adopt'
+                    set n 0
+                    continue
+                case ',sync'
+                    set cmdpath 'sync'
+                    set n 0
+                    continue
+                case ',copy'
+                    set cmdpath 'copy'
+                    set n 0
+                    continue
+                case ',remove' ',uninstall' ',rm' ',delete'
+                    set cmdpath 'remove'
+                    set n 0
+                    continue
+                case ',undo' ',revert' ',rollback'
+                    set cmdpath 'undo'
+                    set n 0
+                    continue
+                case ',apply'
+                    set cmdpath 'apply'
+                    set n 0
+                    continue
+                case ',backup'
+                    set cmdpath 'backup'
+                    set n 0
+                    continue
+                case 'backup,list'
+                    set cmdpath 'backup list'
+                    set n 0
+                    continue
+                case 'backup,create'
+                    set cmdpath 'backup create'
+                    set n 0
+                    continue
+                case 'backup,restore'
+                    set cmdpath 'backup restore'
+                    set n 0
+                    continue
+                case 'backup,prune'
+                    set cmdpath 'backup prune'
+                    set n 0
+                    continue
+                case 'backup,export'
+                    set cmdpath 'backup export'
+                    set n 0
+                    continue
+                case 'backup,import'
+                    set cmdpath 'backup import'
+                    set n 0
+                    continue
+                case 'backup,verify'
+                    set cmdpath 'backup verify'
+                    set n 0
+                    continue
+                case ',history' ',log'
+                    set cmdpath 'history'
+                    set n 0
+                    continue
+                case ',plans'
+                    set cmdpath 'plans'
+                    set n 0
+                    continue
+                case 'plans,show'
+                    set cmdpath 'plans show'
+                    set n 0
+                    continue
+                case ',outdated' ',check'
+                    set cmdpath 'outdated'
+                    set n 0
+                    continue
+                case ',info' ',show'
+                    set cmdpath 'info'
+                    set n 0
+                    continue
+                case ',search' ',find'
+                    set cmdpath 'search'
+                    set n 0
+                    continue
+                case ',errors'
+                    set cmdpath 'errors'
+                    set n 0
+                    continue
+                case 'errors,dismiss'
+                    set cmdpath 'errors dismiss'
+                    set n 0
+                    continue
+                case ',export'
+                    set cmdpath 'export'
+                    set n 0
+                    continue
+                case ',net-log'
+                    set cmdpath 'net-log'
+                    set n 0
+                    continue
+                case ',doctor'
+                    set cmdpath 'doctor'
+                    set n 0
+                    continue
+                case 'doctor,diagnose'
+                    set cmdpath 'doctor diagnose'
+                    set n 0
+                    continue
+                case 'doctor,explain'
+                    set cmdpath 'doctor explain'
+                    set n 0
+                    continue
+                case 'doctor,fix'
+                    set cmdpath 'doctor fix'
+                    set n 0
+                    continue
+                case 'doctor,diff'
+                    set cmdpath 'doctor diff'
+                    set n 0
+                    continue
+                case 'doctor,undo'
+                    set cmdpath 'doctor undo'
+                    set n 0
+                    continue
+                case 'doctor,gc'
+                    set cmdpath 'doctor gc'
+                    set n 0
+                    continue
+                case ',list' ',ls'
+                    set cmdpath 'list'
+                    set n 0
+                    continue
+                case ',targets'
+                    set cmdpath 'targets'
+                    set n 0
+                    continue
+                case 'targets,add'
+                    set cmdpath 'targets add'
+                    set n 0
+                    continue
+                case 'targets,rm'
+                    set cmdpath 'targets rm'
+                    set n 0
+                    continue
+                case 'targets,rename'
+                    set cmdpath 'targets rename'
+                    set n 0
+                    continue
+                case 'targets,default'
+                    set cmdpath 'targets default'
+                    set n 0
+                    continue
+                case ',config'
+                    set cmdpath 'config'
+                    set n 0
+                    continue
+                case 'config,get'
+                    set cmdpath 'config get'
+                    set n 0
+                    continue
+                case 'config,set'
+                    set cmdpath 'config set'
+                    set n 0
+                    continue
+                case 'config,path'
+                    set cmdpath 'config path'
+                    set n 0
+                    continue
+                case ',auth'
+                    set cmdpath 'auth'
+                    set n 0
+                    continue
+                case 'auth,github'
+                    set cmdpath 'auth github'
+                    set n 0
+                    continue
+                case ',omarchy'
+                    set cmdpath 'omarchy'
+                    set n 0
+                    continue
+                case 'omarchy,status'
+                    set cmdpath 'omarchy status'
+                    set n 0
+                    continue
+                case 'omarchy,install'
+                    set cmdpath 'omarchy install'
+                    set n 0
+                    continue
+                case 'omarchy,remove'
+                    set cmdpath 'omarchy remove'
+                    set n 0
+                    continue
+                case ',completions'
+                    set cmdpath 'completions'
+                    set n 0
+                    continue
+                case ',robot-docs'
+                    set cmdpath 'robot-docs'
+                    set n 0
+                    continue
+                case 'robot-docs,guide'
+                    set cmdpath 'robot-docs guide'
+                    set n 0
+                    continue
+                case 'robot-docs,schema'
+                    set cmdpath 'robot-docs schema'
+                    set n 0
+                    continue
+                case 'robot-docs,errors'
+                    set cmdpath 'robot-docs errors'
+                    set n 0
+                    continue
+                case 'robot-docs,install-skill'
+                    set cmdpath 'robot-docs install-skill'
+                    set n 0
+                    continue
+                case ',capabilities'
+                    set cmdpath 'capabilities'
+                    set n 0
+                    continue
+            end
+        end
+        set n (math $n + 1)
+    end
+    set -l where option
+    if test -z "$value_of"
+        set where positional
+        if string match -q -- '--*=*' $cur
+            set value_of (string split -m 1 = -- $cur)[1]
+            set where option
+        end
+    end
+    set -l kind ''
+    if test -n "$value_of"
+        switch "$cmdpath $value_of"
+            case 'copy --from'
+                set kind target
+            case 'copy --to'
+                set kind target
+            case 'errors --addon'
+                set kind addon
+            case 'backup restore --addon'
+                set kind addon
+            case 'undo --run'
+                set kind run
+            case 'history --run'
+                set kind run
+            case 'doctor --since'
+                set kind doctor-run
+            case 'doctor diagnose --since'
+                set kind doctor-run
+            case 'doctor --only'
+                set kind fm
+            case 'doctor --skip'
+                set kind fm
+            case 'doctor diagnose --only'
+                set kind fm
+            case 'doctor diagnose --skip'
+                set kind fm
+            case 'doctor fix --only'
+                set kind fm
+            case 'doctor fix --skip'
+                set kind fm
+            case '*'
+                if contains -- $value_of -t --target --flavor
+                    set kind target
+                end
+        end
+    else if not string match -q -- '-*' $cur
+        switch "$cmdpath"
+            case 'apply'
+                if test $n -eq 0
+                    set kind plan
+                end
+            case 'backup export'
+                if test $n -eq 0
+                    set kind backup
+                end
+            case 'backup list'
+                if test $n -eq 0
+                    set kind backup
+                end
+            case 'backup prune'
+                if test $n -ge 0
+                    set kind backup
+                end
+            case 'backup restore'
+                if test $n -eq 0
+                    set kind backup
+                end
+            case 'backup verify'
+                if test $n -ge 0
+                    set kind backup
+                end
+            case 'copy'
+                if test $n -ge 0
+                    set kind addon
+                end
+            case 'doctor diff'
+                if test $n -eq 0
+                    set kind doctor-run
+                end
+            case 'doctor explain'
+                if test $n -eq 0
+                    set kind fm
+                end
+            case 'doctor undo'
+                if test $n -eq 0
+                    set kind doctor-run
+                end
+            case 'pin'
+                if test $n -eq 0
+                    set kind addon
+                end
+            case 'plans show'
+                if test $n -eq 0
+                    set kind plan
+                end
+            case 'remove'
+                if test $n -ge 0
+                    set kind addon
+                end
+            case 'targets default'
+                if test $n -eq 0
+                    set kind target
+                end
+            case 'targets rename'
+                if test $n -eq 0
+                    set kind target
+                end
+            case 'targets rm'
+                if test $n -eq 0
+                    set kind target
+                end
+            case 'undo'
+                if test $n -eq 0
+                    set kind tx
+                end
+            case 'unpin'
+                if test $n -eq 0
+                    set kind addon
+                end
+            case 'update'
+                if test $n -ge 0
+                    set kind addon
+                end
+        end
+    end
+    test -n "$kind"; or return 1
+    set -l client $target
+    test "$cmdpath" = copy; and set client $from
+    printf '%s\n' $kind $where
+    test -n "$client"; and printf '%s\n' $client
+    return 0
+end
+
+function __fish_omaddons_at --description 'Whether omaddons completes a value at the cursor, as an option value or as a positional'
+    set -l slot (__fish_omaddons_slot); or return 1
+    test "$slot[2]" = $argv[1]
+end
+
+function __fish_omaddons_values --description 'The values omaddons offers at the cursor'
+    set -l slot (__fish_omaddons_slot); or return
+    if set -q slot[3]
+        omaddons __complete $slot[1] --target=$slot[3] 2>/dev/null
+    else
+        omaddons __complete $slot[1] 2>/dev/null
+    end
+end
+
+complete -c omaddons -n '__fish_omaddons_at positional' -f -a '(__fish_omaddons_values)'
+complete -c omaddons -n '__fish_omaddons_at option' -l addon -r -f -a '(__fish_omaddons_values)'
+complete -c omaddons -n '__fish_omaddons_at option' -l from -r -a '(__fish_omaddons_values)'
+complete -c omaddons -n '__fish_omaddons_at option' -l only -r -f -a '(__fish_omaddons_values)'
+complete -c omaddons -n '__fish_omaddons_at option' -l run -r -f -a '(__fish_omaddons_values)'
+complete -c omaddons -n '__fish_omaddons_at option' -l since -r -f -a '(__fish_omaddons_values)'
+complete -c omaddons -n '__fish_omaddons_at option' -l skip -r -f -a '(__fish_omaddons_values)'
+complete -c omaddons -n '__fish_omaddons_at option' -l to -r -a '(__fish_omaddons_values)'
+complete -c omaddons -n '__fish_omaddons_at option' -s t -l target -l flavor -r -a '(__fish_omaddons_values)'

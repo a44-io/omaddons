@@ -1,7 +1,9 @@
 //! Shell checks for generated completion scripts (A7): find a shell on PATH, check a
 //! script's syntax without running it, and drive bash's completion function. Every child
 //! gets HOME, ZDOTDIR and XDG_CONFIG_HOME inside the test's own directory, so no rc file
-//! of the developer is read, and the real home is never touched.
+//! of the developer is read, and the real home is never touched. The binary under test
+//! comes first on PATH, so a script's `omaddons __complete` runs it, never an installed
+//! omaddons; given a [`TestEnv`], it reads that home's files.
 
 use std::ffi::OsString;
 use std::fs;
@@ -11,6 +13,8 @@ use std::process::{Command, Stdio};
 use std::time::Instant;
 
 use serde::Serialize;
+
+use super::env::TestEnv;
 
 /// A shell that can check a script without running it.
 #[derive(Debug, Clone, Copy)]
@@ -78,7 +82,7 @@ pub fn syntax_check(checker: Checker, script: &str, dir: &Path) -> Result<ShellR
     };
     let mut args: Vec<OsString> = checker.args().iter().map(OsString::from).collect();
     args.push(file.into_os_string());
-    let run = run(&shell, &args, dir, &dir.join("shell-home"));
+    let run = run(&shell, &args, dir, &dir.join("shell-home"), None);
     if run.code == Some(0) {
         Ok(run)
     } else {
@@ -88,9 +92,16 @@ pub fn syntax_check(checker: Checker, script: &str, dir: &Path) -> Result<ShellR
 
 /// The driver `bash_complete` sources the script with: each line of the cases file is one
 /// command line's words separated by `\x1f`, ending in `\x1fEND` so that a trailing empty
-/// word survives `read -a` (the `unset` drops `END`). One output line per case, offers
-/// separated by `\x1f`.
+/// word survives `read -a` (the `unset` drops `END`). It calls the function the script
+/// registered for `omaddons` (`complete -p`), as bash would, and exits 91 when there is
+/// none. One output line per case, offers separated by `\x1f`.
 const BASH_DRIVER: &str = r#"source "$1" || exit 90
+read -r -a spec <<< "$(complete -p omaddons 2>/dev/null)"
+fn=
+for (( i = 0; i + 1 < ${#spec[@]}; i++ )); do
+    [[ ${spec[i]} == -F ]] && fn=${spec[i+1]}
+done
+[[ -n $fn ]] || exit 91
 while IFS=$'\x1f' read -r -a words; do
     unset 'words[${#words[@]}-1]'
     COMP_WORDS=("${words[@]}")
@@ -98,20 +109,23 @@ while IFS=$'\x1f' read -r -a words; do
     COMP_LINE="${COMP_WORDS[*]}"
     COMP_POINT=${#COMP_LINE}
     COMPREPLY=()
-    _omaddons omaddons "${COMP_WORDS[COMP_CWORD]}" "${COMP_WORDS[COMP_CWORD-1]}"
+    "$fn" omaddons "${COMP_WORDS[COMP_CWORD]}" "${COMP_WORDS[COMP_CWORD-1]}"
     printf '%s\x1f' "${COMPREPLY[@]}"
     printf '\n'
 done < "$2"
 "#;
 
-/// What bash's `_omaddons` offers for each case (its words after `omaddons`, the last
-/// being the word being completed, possibly empty): one `bash --norc --noprofile` process
-/// sources `script` and runs every case, in the empty directory `cwd`. Panics if bash is
-/// missing (never skipped), if the script does not source, or if a case gives no line.
+/// What the function bash runs for `omaddons` offers for each case (its words after
+/// `omaddons`, the last being the word being completed, possibly empty): one `bash
+/// --norc --noprofile` process sources `script` and runs every case, in the empty
+/// directory `cwd`, with `env`'s home when given (else an empty one). Panics if bash is
+/// missing (never skipped), if the script does not source or registers no function, or
+/// if a case gives no line.
 pub fn bash_complete(
     script: &Path,
     cases: &[Vec<String>],
     cwd: &Path,
+    env: Option<&TestEnv>,
 ) -> (ShellRun, Vec<Vec<String>>) {
     let bash = find("bash").unwrap_or_else(|| {
         panic!("bash is required by this test and is never skipped (M4 checkpoint criterion 15)") // ubs:ignore — fails the test
@@ -142,11 +156,17 @@ pub fn bash_complete(
         cases_file.into_os_string(),
     ];
     // The shell's home beside the script, never in `cwd`: file-name fallbacks list `cwd`.
-    let run = run(&bash, &args, cwd, &beside.join("shell-home"));
+    let run = run(&bash, &args, cwd, &beside.join("shell-home"), env);
     assert_ne!(
         run.code,
         Some(90),
         "the completion script did not source: {}",
+        run.stderr
+    );
+    assert_ne!(
+        run.code,
+        Some(91),
+        "the completion script registered no function for omaddons: {}",
         run.stderr
     );
     let offers: Vec<Vec<String>> = run
@@ -171,21 +191,43 @@ pub fn bash_complete(
     (run, offers)
 }
 
-/// Runs `program` with `args` in `cwd`, with only PATH from this process's environment
-/// and HOME, ZDOTDIR and XDG_CONFIG_HOME under `home` (inside the test's directory).
-fn run(program: &Path, args: &[OsString], cwd: &Path, home: &Path) -> ShellRun {
+/// PATH for a shell child: the directory of the binary under test, then this process's.
+fn path_with_binary() -> OsString {
+    let binary = Path::new(env!("CARGO_BIN_EXE_omaddons"));
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let dirs = binary
+        .parent()
+        .map(Path::to_path_buf)
+        .into_iter()
+        .chain(std::env::split_paths(&path));
+    std::env::join_paths(dirs).unwrap()
+}
+
+/// Runs `program` with `args` in `cwd`, with PATH (the binary under test first), and
+/// HOME, ZDOTDIR and XDG_CONFIG_HOME under `home` (inside the test's directory); then
+/// `env`'s variables, when given, so omaddons reads that home.
+fn run(
+    program: &Path,
+    args: &[OsString],
+    cwd: &Path,
+    home: &Path,
+    env: Option<&TestEnv>,
+) -> ShellRun {
     fs::create_dir_all(home).unwrap();
     let mut command = Command::new(program); // ubs:ignore — bash, zsh or fish, found on PATH by `find`
     command
         .args(args)
         .current_dir(cwd)
         .env_clear()
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("PATH", path_with_binary())
         .env("HOME", home)
         .env("ZDOTDIR", home)
         .env("XDG_CONFIG_HOME", home.join(".config"))
         .env("LC_ALL", "C")
         .stdin(Stdio::null());
+    if let Some(env) = env {
+        env.apply_to(&mut command);
+    }
     let started = Instant::now();
     let output = command.output().unwrap();
     ShellRun {

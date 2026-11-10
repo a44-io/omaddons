@@ -1,5 +1,12 @@
-//! `omaddons completions <SHELL>`: a static completion script for one shell, generated in
-//! memory from the live clap tree (M4-D16). It reads nothing and writes nothing.
+//! `omaddons completions <SHELL>`: a completion script for one shell, generated in memory
+//! from the live clap tree (M4-D16). It reads nothing and writes nothing.
+//!
+//! Every script is clap_complete's static one: commands, subcommands, aliases, flags and
+//! fixed values. For bash, zsh and fish, [`glue`] adds the values omaddons' own files
+//! hold (client ids, addon names and the various ids), which the script asks
+//! `omaddons __complete` for at the press of Tab (`app::complete`).
+
+mod glue;
 
 use std::io::Write;
 
@@ -100,18 +107,45 @@ pub fn run(args: &CompletionsArgs) -> crate::error::Result<CompletionsOutcome> {
     })
 }
 
-/// The script for `shell`, generated from `Cli::command()` at a fixed width with the bin
-/// name `omaddons`: exactly what `clap_complete::generate` does, with its write error
-/// returned instead of a panic inside the dependency.
+/// The script for `shell`: [`static_script`], with the dynamic values' [`glue`] added for
+/// bash and fish (after it) and zsh (woven in by [`weave_zsh`]).
 pub fn script(shell: Shell) -> crate::error::Result<String> {
+    let cmd = command();
+    let mut script = static_script(shell, &cmd)?;
+    let dynamic = |glue_shell| {
+        glue::glue(glue_shell, &cmd).map_err(|e| {
+            Error::internal(format!(
+                "the {} completion script's values could not be placed: {e}",
+                shell.generator()
+            ))
+        })
+    };
+    match shell {
+        Shell::Bash => script.push_str(&dynamic(glue::Shell::Bash)?),
+        Shell::Fish => script.push_str(&dynamic(glue::Shell::Fish)?),
+        Shell::Zsh => script = weave_zsh(&script, &dynamic(glue::Shell::Zsh)?)?,
+        Shell::Elvish | Shell::Powershell => {}
+    }
+    Ok(script)
+}
+
+/// The built command tree scripts are generated from, at a fixed width with the bin name
+/// `omaddons`.
+fn command() -> clap::Command {
     let mut cmd = Cli::command()
         .term_width(SCRIPT_TERM_WIDTH)
         .max_term_width(SCRIPT_TERM_WIDTH);
     cmd.set_bin_name("omaddons");
     cmd.build();
+    cmd
+}
+
+/// clap_complete's script for `shell` from `cmd`: exactly what `clap_complete::generate`
+/// does, with its write error returned instead of a panic inside the dependency.
+fn static_script(shell: Shell, cmd: &clap::Command) -> crate::error::Result<String> {
     let mut buf = Vec::new();
     let generator = shell.generator();
-    generator.try_generate(&cmd, &mut buf).map_err(|e| {
+    generator.try_generate(cmd, &mut buf).map_err(|e| {
         Error::internal(format!(
             "the {generator} completion script could not be generated: {e}"
         ))
@@ -121,6 +155,31 @@ pub fn script(shell: Shell) -> crate::error::Result<String> {
             "the {generator} completion script is not UTF-8: {e}"
         ))
     })
+}
+
+/// clap's zsh function, as its script defines it.
+const ZSH_DEFINITION: &str = "\n_omaddons() {\n";
+/// The same function under the name the glue falls back to.
+const ZSH_RENAMED: &str = "\n_omaddons_static() {\n";
+/// The script's last lines: run `_omaddons` when autoloaded, else register it.
+const ZSH_TRAILER: &str = "\nif [ \"$funcstack[1]\" = \"_omaddons\" ]; then\n";
+
+/// clap's zsh `script` with its `_omaddons` renamed `_omaddons_static` and `glue` (which
+/// defines the new `_omaddons`) inserted before the last lines, which then call or
+/// register the new one: the file's `#compdef` line and its autoload work as before.
+fn weave_zsh(script: &str, glue: &str) -> crate::error::Result<String> {
+    let found = |what: &str| script.matches(what).count();
+    if found(ZSH_DEFINITION) != 1 || found(ZSH_TRAILER) != 1 {
+        return Err(Error::internal(format!(
+            "the zsh completion script has {} definitions of _omaddons and {} trailers, not one each",
+            found(ZSH_DEFINITION),
+            found(ZSH_TRAILER)
+        )));
+    }
+    let renamed = script.replacen(ZSH_DEFINITION, ZSH_RENAMED, 1);
+    let at = renamed.find(ZSH_TRAILER).map_or(renamed.len(), |at| at + 1);
+    let (head, tail) = renamed.split_at(at);
+    Ok(format!("{head}{glue}{tail}"))
 }
 
 #[cfg(test)]
@@ -234,6 +293,66 @@ mod tests {
                 b.len(),
                 head(&a)
             );
+        }
+    }
+
+    #[test]
+    fn every_script_is_claps_static_one_with_the_glue_added() {
+        let cmd = command();
+        for shell in Shell::ALL {
+            let full = generated(shell);
+            let base = static_script(shell, &cmd).unwrap_or_default();
+            assert!(!base.is_empty(), "{shell:?}");
+            match shell {
+                Shell::Bash | Shell::Fish => {
+                    assert!(full.starts_with(&base), "{shell:?}: clap's script first");
+                    assert!(full.len() > base.len(), "{shell:?}: then the glue");
+                    assert!(full.contains("omaddons __complete "), "{shell:?}");
+                }
+                Shell::Zsh => {
+                    let glue = glue::glue(glue::Shell::Zsh, &cmd).unwrap_or_default();
+                    let unwoven =
+                        full.replacen(&glue, "", 1)
+                            .replacen(ZSH_RENAMED, ZSH_DEFINITION, 1);
+                    assert!(unwoven == base, "zsh: clap's script, one function renamed");
+                    let trailer = full.find(ZSH_TRAILER).unwrap_or_default();
+                    let static_fn = full.find(ZSH_RENAMED).unwrap_or(usize::MAX);
+                    let dynamic_fn = full.find(ZSH_DEFINITION).unwrap_or(usize::MAX);
+                    assert!(static_fn < dynamic_fn && dynamic_fn < trailer, "zsh order");
+                    assert!(full.starts_with("#compdef omaddons\n"));
+                }
+                Shell::Elvish | Shell::Powershell => {
+                    assert!(full == base, "{shell:?} stays static");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_zsh_weave_refuses_a_script_it_does_not_know() {
+        let known = "#compdef omaddons\n\n_omaddons() {\n}\n\nif [ \"$funcstack[1]\" = \"_omaddons\" ]; then\n    _omaddons \"$@\"\nfi\n";
+        let woven = weave_zsh(known, "GLUE\n");
+        assert_eq!(
+            woven.ok().as_deref(),
+            Some(
+                "#compdef omaddons\n\n_omaddons_static() {\n}\n\nGLUE\nif [ \"$funcstack[1]\" = \"_omaddons\" ]; then\n    _omaddons \"$@\"\nfi\n"
+            )
+        );
+        for (case, script) in [
+            (
+                "no trailer",
+                "#compdef omaddons\n\n_omaddons() {\n}\n".to_owned(),
+            ),
+            (
+                "no definition",
+                known.replace("_omaddons() {", "_other() {"),
+            ),
+            (
+                "two definitions",
+                known.replace("\n}\n", "\n}\n\n_omaddons() {\n}\n"),
+            ),
+        ] {
+            assert!(weave_zsh(&script, "GLUE\n").is_err(), "{case}");
         }
     }
 
