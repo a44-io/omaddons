@@ -776,6 +776,20 @@ pub const CORPUS: &[Row] = &[
         error(2, "usage", &["omaddons", "targets"], &[0]),
     ),
     row(
+        TargetAll,
+        &["copy", "--from", "all", "--to", "era"],
+        &["copy"],
+        "an ambiguous side's fix leaves out the other side's client",
+        error(
+            3,
+            "target_ambiguous",
+            &["omaddons", "copy", "--from", "retail", "--to", "era"],
+            &[0],
+        ),
+    )
+    .then(no_copy_suggestion_names_one_client_twice)
+    .by_leaf("omad-rkux"),
+    row(
         Argument,
         &["sync", "missing.toml"],
         &["sync"],
@@ -1092,6 +1106,47 @@ fn installs_on_retail(log: &TestLog, runs: &RowRuns<'_>) {
 }
 
 /// A prose fix (no argv), the missing file resolved in the work directory.
+/// No suggestion of an ambiguous `copy` side names one client on both sides, which
+/// would be a usage error of its own; `details.candidates` still lists every client
+/// the selector matched.
+fn no_copy_suggestion_names_one_client_twice(log: &TestLog, runs: &RowRuns<'_>) {
+    let error = &runs.wrong.envelope()["error"];
+    let alternatives = error["alternatives"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let argvs: Vec<&Value> = std::iter::once(&error["fix_argv"])
+        .chain(alternatives.iter().map(|a| &a["argv"]))
+        .collect();
+    log.json("suggestions", &argvs);
+    log.assert_eq("one alternative besides the fix", &argvs.len(), &2);
+    for argv in argvs {
+        let words: Vec<&str> = argv
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect();
+        let value = |flag: &str| {
+            words
+                .iter()
+                .position(|w| *w == flag)
+                .and_then(|at| words.get(at + 1))
+                .copied()
+        };
+        assert!(
+            value("--from").is_some() && value("--to").is_some(),
+            "{words:?}"
+        );
+        assert_ne!(value("--from"), value("--to"), "{words:?}");
+    }
+    log.assert_eq(
+        "candidates",
+        &error["details"]["candidates"],
+        &serde_json::json!(["era", "retail", "wotlk"]),
+    );
+}
+
 fn names_the_missing_file(log: &TestLog, runs: &RowRuns<'_>) {
     let error = &runs.wrong.envelope()["error"];
     log.assert_eq("fix_argv", &error["fix_argv"], &Value::Null);

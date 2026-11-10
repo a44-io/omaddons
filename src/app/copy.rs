@@ -212,8 +212,8 @@ pub fn run(ctx: &Context, args: &CopyArgs) -> Result<CopyOutcome> {
     let mut notes = Vec::new();
     let (catalog, catalog_warnings) = world.catalog(ctx);
     warnings.extend(catalog_warnings);
-    let from = side(ctx, &world, "--from", &args.from)?;
-    let to = side(ctx, &world, "--to", &args.to)?;
+    let from = side(ctx, &world, "--from", &args.from, &args.to)?;
+    let to = side(ctx, &world, "--to", &args.to, &args.from)?;
     if from.target.id == to.target.id {
         return Err(Error::new(
             ErrorCode::Usage,
@@ -516,6 +516,7 @@ fn side<'w>(
     world: &'w World,
     flag: &str,
     selector: &str,
+    other_selector: &str,
 ) -> Result<&'w DiscoveredTarget> {
     resolve_one_in(selector, &world.resolved, &world.table, &ctx.argv).map_err(|error| {
         if !matches!(error.code, ErrorCode::TargetAmbiguous) {
@@ -530,7 +531,11 @@ fn side<'w>(
             })
             .unwrap_or_default();
         let argv = crate::cli::fix_argv(&ctx.argv);
-        let Some((first, rest)) = candidates.split_first() else {
+        // The other side's client, when it names one; else its selector as typed.
+        let other = resolve_one_in(other_selector, &world.resolved, &world.table, &ctx.argv)
+            .map_or_else(|_| other_selector.to_owned(), |d| d.target.id.clone());
+        let suggested = suggested_sides(&candidates, &other);
+        let Some((first, rest)) = suggested.split_first() else {
             return error;
         };
         let mut named = Error::new(
@@ -548,6 +553,18 @@ fn side<'w>(
         }
         named
     })
+}
+
+/// The candidates an ambiguous side's fixes offer: every one but the client the other
+/// side names (`other`, an id, or the other selector as typed when it names no single
+/// client), since copying a client onto itself is a usage error of its own. The refusal
+/// stands either way: the selector matched them all.
+fn suggested_sides<'a>(candidates: &'a [String], other: &str) -> Vec<&'a str> {
+    candidates
+        .iter()
+        .map(String::as_str)
+        .filter(|id| !id.eq_ignore_ascii_case(other))
+        .collect()
 }
 
 /// `argv` with `flag`'s value replaced by `id`.
@@ -867,5 +884,44 @@ mod tests {
         assert!(no_build(&body(ErrorCode::WrongFlavor)));
         assert!(!no_build(&body(ErrorCode::Network)));
         assert!(!no_build(&body(ErrorCode::NotFound)));
+    }
+
+    /// An ambiguous side's fixes never name the other side's client (omad-rkux).
+    #[test]
+    fn an_ambiguous_sides_fixes_leave_out_the_other_sides_client() {
+        let ids = |list: &[&str]| -> Vec<String> { list.iter().map(|s| (*s).to_owned()).collect() };
+        let cases: [(&str, Vec<String>, &str, &[&str]); 4] = [
+            (
+                "--from all --to era",
+                ids(&["era", "retail", "wotlk"]),
+                "era",
+                &["retail", "wotlk"],
+            ),
+            (
+                "the other side's id in another case",
+                ids(&["classic", "retail"]),
+                "Classic",
+                &["retail"],
+            ),
+            (
+                "the other side names no candidate",
+                ids(&["era", "retail"]),
+                "wotlk",
+                &["era", "retail"],
+            ),
+            (
+                "both sides ambiguous: the other selector as typed",
+                ids(&["era", "retail"]),
+                "all",
+                &["era", "retail"],
+            ),
+        ];
+        for (name, candidates, other, want) in cases {
+            assert_eq!(
+                suggested_sides(&candidates, other),
+                want,
+                "{name}: candidates {candidates:?}, other {other:?}"
+            );
+        }
     }
 }
