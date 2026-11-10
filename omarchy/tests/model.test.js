@@ -3502,11 +3502,11 @@ describe("previewDecision", () => {
   test("the table", () => {
     const cases = [
       ["failed_envelope", match([shownItem()]), Object.assign(previewOf([item()]), { ok: false }), decision({ kind: "failed", planId: null })],
-      ["no_approval", match([shownItem()]), noApproval, refused("The preview did not say what it would change; nothing ran")],
+      ["no_approval", match([shownItem()]), noApproval, refused(M.copy("decision.unknown"))],
       ["nothing_to_do_match", match([shownItem()]), nothing, decision({ kind: "refresh", line: "Already up to date; the view is refreshed", planId: null })],
       ["nothing_to_do_confirm", { mode: "confirm", path: "remove" }, nothing, decision({ kind: "refresh", line: "Nothing to do; the view is refreshed", planId: null })],
-      ["not_stored", match([shownItem()]), notStored, refused("The preview could not be kept as a plan; nothing ran", "previews are kept again as plans expire")],
-      ["offer_mismatch", match([shownItem()]), previewOf([item()], {}, [offer("01M8Q2YYYYYYYYYYYYYYYYYYYY")]), refused("The preview offered no plan to apply; nothing ran")],
+      ["not_stored", match([shownItem()]), notStored, refused(M.copy("decision.not_kept"), "previews are kept again as plans expire")],
+      ["offer_mismatch", match([shownItem()]), previewOf([item()], {}, [offer("01M8Q2YYYYYYYYYYYYYYYYYYYY")]), refused(M.copy("decision.no_offer"))],
       ["confirm", { mode: "confirm", path: "remove" }, removal, decision({
         text: "Remove Baz from retail?\nBaz v1 (1 folder)\nRemoves the folder Baz. Undo brings it back.", confirm: "Remove Baz", destructive: true })],
       ["match_equal_routine", match([shownItem()]), previewOf([item()]), decision({ kind: "direct" })],
@@ -4035,7 +4035,7 @@ describe("repairs from the binary", () => {
     const row = credentialRow()
     expect(row && { fix: row.fix, action: row.action, hint: row.hint, forced: row.forced })
       .toEqual({ fix: { template: "doctor_fix", slots: { fm: CREDENTIAL }, label: "Repair: " + rawIssue().title }, action: null,
-        hint: "Enter previews the repair", forced: false })
+        hint: "Enter shows what the repair will do", forced: false })
     expect(M.classifyCliArgv(rawIssue().remediation.argv).reason).toBe("own_flow_only")
     expect(row.explain.runnable).toBe(true)
   })
@@ -4819,7 +4819,7 @@ describe("issue rows", () => {
     table([
       // A repair's remediation argv is never shown: its preview lists what it does.
       ["an_auto_fixable_row", [issueJson()], { fix: "doctor_fix_target", action: null, explain: ["omaddons", "doctor", "explain", CREDENTIAL_FM],
-        forced: false, text: "", hint: "Enter previews the repair", buttons: "Repair, Explain", primary: "fix" }],
+        forced: false, text: "", hint: "Enter shows what the repair will do", buttons: "Repair, Explain", primary: "fix" }],
       ["a_set_aside_row", [setAside], { fix: null, action: null, explain: ["omaddons", "doctor", "explain", CREDENTIAL_FM],
         forced: true, text: forcedArgv.join(" "), hint: "Enter explains it", buttons: "Explain, Copy command", primary: "explain" }],
       ["a_doctor_explain_remediation", [explainOnly], { fix: null, action: null, explain: ["omaddons", "doctor", "explain", "fm-x", "-t", "retail"],
@@ -4937,10 +4937,10 @@ describe("doctorPreviewDecision", () => {
         { kind: "dialog", token: TOKEN, line: "", lines: ["Delete 2 undo snapshots on era",
           "Those changes can no longer be undone; omaddons would delete these snapshots after its next change anyway."] }],
       ["a_prune_of_another_failure_mode", fixEnvelope({ dryRun: true, prunes: [{ fm: "fm-other", target: "era", key: "01KEY", txs: ["01A"] }] }),
-        { kind: "refuse", token: "", line: "The preview planned more than this repair; nothing ran", lines: [] }],
+        { kind: "refuse", token: "", line: M.copy("decision.repair.more"), lines: [] }],
       ["another_failure_mode", fixEnvelope({ dryRun: true, actions: [chmodAction(), chmodAction({ fm: "fm-other" })] }),
-        { kind: "refuse", token: "", line: "The preview planned more than this repair; nothing ran", lines: [] }],
-      ["no_token", fixEnvelope({ dryRun: true, token: null }), { kind: "refuse", token: "", line: "The preview gave no token to bind; nothing ran", lines: [] }],
+        { kind: "refuse", token: "", line: M.copy("decision.repair.more"), lines: [] }],
+      ["no_token", fixEnvelope({ dryRun: true, token: null }), { kind: "refuse", token: "", line: M.copy("decision.repair.unbound"), lines: [] }],
       ["doctor_refused", fixEnvelope({ dryRun: true, state: "REFUSING", exit: 4, error: { code: "doctor_refused", message: "no" } }),
         { kind: "failed", token: "", line: "", lines: [] }],
       ["not_a_doctor_envelope", statusWithIssues([]), { kind: "failed", token: "", line: "", lines: [] }],

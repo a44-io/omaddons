@@ -593,7 +593,7 @@ TestCase {
     answer(previewFoo(), planPreview("update", [planItem()], null, null, { "offerId": "01M8Q2YYYYYYYYYYYYYYYYYYYY" }))
     compare(runs("apply").length, 0, launchLog())
     compare(service.confirm, null)
-    compare(service.lastError.message, "The preview offered no plan to apply; nothing ran")
+    compare(service.lastError.message, Model.copy("decision.no_offer"))
     compare(service.lastError.code, "not_previewed")
   }
 
@@ -602,7 +602,7 @@ TestCase {
     answer(previewFoo(), envelope("update", { "dry_run": true, "plan_id": planId, "plan_expires_at": "2100-01-02T00:00:00Z" },
       { "commands": [{ "action": "apply", "command": "omaddons apply " + planId, "argv": ["omaddons", "apply", planId], "destructive": false }] }))
     compare(runs("apply").length, 0, launchLog())
-    compare(service.lastError.message, "The preview did not say what it would change; nothing ran")
+    compare(service.lastError.message, Model.copy("decision.unknown"))
   }
 
   function test_a_full_plan_store_runs_nothing_and_says_so() {
@@ -612,7 +612,7 @@ TestCase {
     full.warnings = [{ "code": "plan_not_stored", "message": "the plan store is full", "fix": "previews are kept again as plans expire", "fix_argv": null }]
     answer(previewFoo(), JSON.stringify(full))
     compare(runs("apply").length, 0, launchLog())
-    compare(service.lastError.message, "The preview could not be kept as a plan; nothing ran")
+    compare(service.lastError.message, Model.copy("decision.not_kept"))
     compare(service.lastError.fixText, "previews are kept again as plans expire")
   }
 
@@ -912,7 +912,7 @@ TestCase {
     answer(previewRepair(), fixReport({ "dryRun": true, "actions": [chmodAction(), chmodAction({ "seq": 1, "fm": "fm-other" })] }))
     compare(service.confirm, null)
     compare(service.lastError.code, "not_previewed")
-    compare(service.lastError.message, "The preview planned more than this repair; nothing ran")
+    compare(service.lastError.message, Model.copy("decision.repair.more"))
     compare(boundRepairs().length, 0, launchLog())
   }
 
@@ -920,7 +920,7 @@ TestCase {
     ready(0)
     answer(previewRepair(), fixReport({ "dryRun": true, "token": null }))
     compare(service.confirm, null)
-    compare(service.lastError.message, "The preview gave no token to bind; nothing ran")
+    compare(service.lastError.message, Model.copy("decision.repair.unbound"))
     compare(boundRepairs().length, 0, launchLog())
   }
 

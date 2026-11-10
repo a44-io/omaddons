@@ -6807,7 +6807,7 @@ var COPY = {
   "history.page.redo_all": "Redo all of it",
   "history.page.undo_on": "Undo on {client} only",
   "history.page.redo_on": "Redo on {client} only",
-  "history.page.plan": "Made from a preview you approved.",
+  "history.page.plan": "Made from what you approved in the panel.",
   "history.page.backup": "Put back from a backup: Enter on this line shows it in Backups.",
   "history.page.gone": "This change isn't among the newest changes History reads any more.",
   "page.section.changes": "Changes",
@@ -7076,7 +7076,7 @@ var COPY = {
   "issues.explain": "Explain",
   "issues.copy": "Copy command",
   "issues.copied": "Copied",
-  "issues.hint.repair": "{key} previews the repair",
+  "issues.hint.repair": "{key} shows what the repair will do",
   "issues.hint.fix": "{key} runs the fix",
   "issues.hint.explain": "{key} explains it",
   "issues.terminal.forced": "This needs your go-ahead, which the panel never gives: read the explanation, then run it in a terminal.",
@@ -7344,8 +7344,26 @@ var COPY = {
   "toast.digest.title": "After your session",
   "toast.digest.title.now": "Lua errors and addon updates",
   "toast.digest.errors": { "one": "1 new Lua error in {addons}", "other": "{n} new Lua errors in {addons}" },
-  "toast.result.title": "omaddons"
+  "toast.result.title": "omaddons",
+  // A confirmation that ran nothing, or found nothing to do (previewDecision,
+  // doctorPreviewDecision): the glossary's "what will happen", never its CLI words.
+  "decision.unknown": "omaddons didn't say what this would change; nothing ran",
+  "decision.refresh.match": "Already up to date; the view is refreshed",
+  "decision.refresh": "Nothing to do; the view is refreshed",
+  "decision.not_kept": "omaddons couldn't keep this change for you to confirm; nothing ran",
+  "decision.no_offer": "omaddons couldn't offer to run exactly this; nothing ran",
+  "decision.repair.refresh": "Nothing to repair now; the view is refreshed",
+  "decision.repair.more": "omaddons would change more than this repair; nothing ran",
+  "decision.repair.unbound": "omaddons couldn't promise to run only what it showed; nothing ran"
 }
+
+// The words of each error and warning code `omaddons robot-docs errors` lists (design
+// doc §6.2): the code to a function of the item's `details` that returns `{title,
+// sentence, buttons}`, or "not met" for a code the widget can never meet. The views add
+// theirs as they are rebuilt; the words guard (tests/copy.test.js) lists the codes still
+// without words in its allowlist.
+var ERROR_WORDS = {}
+var WARNING_WORDS = {}
 
 // COPY[id] with its {slots} filled; a pair by `slots.n` (1 is "one"). A missing slot is
 // empty, and an unknown id shows as itself, so a typo is seen, never thrown.
@@ -7957,22 +7975,22 @@ function previewDecision(spec, env) {
   var approval = approvalOf(data.approval)
   decision.kind = "refuse"
   if (!approval) {
-    decision.line = "The preview did not say what it would change; nothing ran"
+    decision.line = copy("decision.unknown")
     return decision
   }
   if (data.plan_id === null && approval.selection.length === 0) {
     decision.kind = "refresh"
-    decision.line = s.mode === "match" ? "Already up to date; the view is refreshed" : "Nothing to do; the view is refreshed"
+    decision.line = copy(s.mode === "match" ? "decision.refresh.match" : "decision.refresh")
     return decision
   }
   if (data.plan_id === null) {
-    decision.line = "The preview could not be kept as a plan; nothing ran"
+    decision.line = copy("decision.not_kept")
     decision.fixText = warningFix(env, "plan_not_stored")
     return decision
   }
   var plan = planFrom(env)
   if (!plan) {
-    decision.line = "The preview offered no plan to apply; nothing ran"
+    decision.line = copy("decision.no_offer")
     return decision
   }
   decision.kind = "dialog"
@@ -8165,19 +8183,19 @@ function doctorPreviewDecision(spec, env, context, targets) {
   if (!result || result.error) return decision
   if (result.actions.length === 0 && result.delegated.length === 0 && result.prunes.length === 0) {
     decision.kind = "refresh"
-    decision.line = "Nothing to repair now; the view is refreshed"
+    decision.line = copy("decision.repair.refresh")
     return decision
   }
   decision.kind = "refuse"
   var mine = result.actions.concat(result.prunes)
   for (var i = 0; i < mine.length; i++) {
     if (str(mine[i].fm) !== str(slots.fm)) {
-      decision.line = "The preview planned more than this repair; nothing ran"
+      decision.line = copy("decision.repair.more")
       return decision
     }
   }
   if (!result.precondition) {
-    decision.line = "The preview gave no token to bind; nothing ran"
+    decision.line = copy("decision.repair.unbound")
     return decision
   }
   decision.kind = "dialog"
@@ -8551,6 +8569,8 @@ if (typeof module !== "undefined") {
     requestedItems: requestedItems,
     selectionMatches: selectionMatches,
     COPY: COPY,
+    ERROR_WORDS: ERROR_WORDS,
+    WARNING_WORDS: WARNING_WORDS,
     copy: copy,
     possessive: possessive,
     SHEET_GLYPHS: SHEET_GLYPHS,

@@ -1119,7 +1119,7 @@ TestCase {
     for (var i = 0; i < 2; i++) {
       var r = row("issueRow", i)
       compare(findChild(r, "issueButton_fix").text, "Repair", "row " + i)
-      compare(findChild(r, "issueButton_fix").tooltipText, "Enter previews the repair", "row " + i)
+      compare(findChild(r, "issueButton_fix").tooltipText, "Enter shows what the repair will do", "row " + i)
       compare(findChild(r, "issueButton_explain").text, "Explain", "row " + i)
       verify(!findChild(r, "commandText").visible, "row " + i + ": the preview lists what a repair does")
       compare(findChild(r, "issueButton_copy"), null, "row " + i)
