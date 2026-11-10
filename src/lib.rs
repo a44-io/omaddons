@@ -1,8 +1,9 @@
 //! omaddons: the sole authority over every World of Warcraft client on a Linux machine.
 //!
-//! The binary in `main.rs` parses arguments, calls into [`app`], and renders the typed
-//! outcome through [`output`]. Commands never print. Every filesystem mutation goes
-//! through [`fsx`].
+//! A run starts in [`cli::run`], which `main.rs` calls with the arguments: it parses
+//! them, builds the run's context and dispatches into [`app`], whose commands return
+//! typed outcomes that [`output`] renders. Commands never print. Every filesystem
+//! mutation goes through [`fsx`].
 
 // Release-mode unit tests skip the failpoint tests (failpoints are debug-only, DEC-7),
 // leaving their imports and helpers unused there.

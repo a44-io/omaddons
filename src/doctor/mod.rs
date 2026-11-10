@@ -1,5 +1,9 @@
 //! The doctor (M4): the failure-mode registry every `status` issue and doctor finding
-//! comes from, and the finding model. Pure: nothing here writes.
+//! comes from, the finding model, and the commands over them. Its checks only read,
+//! through the tolerant view ([`view`]). What writes does so through [`crate::fsx`]: a
+//! run's own directory ([`runtime`]), `doctor fix`'s repair transaction and the
+//! recoveries it delegates ([`fix_runtime`], [`delegate`]), and `doctor gc`'s deletions
+//! ([`gc`]).
 
 pub mod attribution;
 pub mod budget;
