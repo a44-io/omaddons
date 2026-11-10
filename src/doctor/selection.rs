@@ -13,6 +13,7 @@ use super::finding::{Finding, FindingTarget, Subsystem};
 use super::registry::{self, FailureMode, Layer, Tier, ids};
 use super::view::{Availability, DoctorView};
 use crate::cli::{fix_argv, levenshtein};
+use crate::discover::registry::{is_all_keyword, reserved_id_warning};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::model::TargetKey;
 use crate::state::registry::RegistryEntry;
@@ -99,6 +100,20 @@ impl Selection {
         let names = |entry: &&RegistryEntry| {
             Some(entry.key) == key || entry.id.eq_ignore_ascii_case(selector)
         };
+        // `-t all` selects every client, as no `-t` does, a registered client whose
+        // directory is gone included; a client named `all` wins over the keyword
+        // (`target_id_reserved`), as everywhere.
+        if is_all_keyword(selector) {
+            let named_all = match view.world() {
+                Some(world) => reserved_id_warning(selector, &world.resolved).is_some(),
+                None => view
+                    .registry()
+                    .is_some_and(|registry| registry.value.targets.iter().any(|e| names(&e))),
+            };
+            if !named_all {
+                return Ok(Scope::All);
+            }
+        }
         let recorded = || key.filter(|key| view.records().is_some_and(|r| r.contains(key)));
         let one = |key: TargetKey| Scope::Targets(BTreeSet::from([TargetSel::Key(key)]));
         let Some(world) = view.world() else {
@@ -801,6 +816,42 @@ mod tests {
                 ..Preloaded::default()
             },
         )
+    }
+
+    /// `-t all` is every client, a vanished one included, as no `-t` is (README, Choosing
+    /// a target); a client named `all`, vanished or not, wins over the keyword.
+    #[test]
+    fn the_all_keyword_selects_every_client_unless_one_is_named_all() {
+        let (_dir, paths) = home();
+        let view = discovered(&paths);
+        for (case, selector) in [("all_keyword", "all"), ("any_case_all", "ALL")] {
+            assert_eq!(
+                selecting(selector).scope(&view).unwrap(),
+                Scope::All,
+                "case {case}: input -t {selector}"
+            );
+        }
+        let named = |view: crate::doctor::view::DoctorView| selecting("all").scope(&view).unwrap();
+        let mut world = world_of(&paths, Vec::new());
+        world.resolved.missing = vec![crate::state::registry::RegistryEntry {
+            key: key(K2),
+            id: "all".to_owned(),
+            install_root: paths.home().join("all"),
+            client_dir: paths.home().join("all/_retail_"),
+            flavor_dir: Some("_retail_".to_owned()),
+            product: Some("wow".to_owned()),
+            qualifier: "test".to_owned(),
+            origin: crate::state::registry::Origin::Discovered,
+            registered_at: "2026-10-14T12:00:00Z".parse().unwrap(),
+        }];
+        let named_all = crate::doctor::view::DoctorView::preloaded(
+            paths.clone(),
+            Preloaded {
+                world: Some(LayerState::Available(world)),
+                ..Preloaded::default()
+            },
+        );
+        assert_eq!(named(named_all), one(K2), "case all_named_client");
     }
 
     #[test]

@@ -1,0 +1,112 @@
+---
+source: tests/contract/matrix.rs
+expression: s.stable(&all.envelope)
+---
+{
+  "command": "doctor diagnose",
+  "commands": [
+    {
+      "action": "doctor_explain",
+      "argv": [
+        "omaddons",
+        "doctor",
+        "explain",
+        "fm-userland_state-target-vanished",
+        "-t",
+        "classic"
+      ],
+      "command": "omaddons doctor explain fm-userland_state-target-vanished -t classic",
+      "destructive": false
+    }
+  ],
+  "doctor_contract_version": "1.0",
+  "exit_code": 1,
+  "findings": [
+    {
+      "addon": null,
+      "confidence": "high",
+      "evidence": {
+        "path": "<root>/home/Games/battlenet/drive_c/Program Files (x86)/World of Warcraft/_classic_"
+      },
+      "folder": null,
+      "id": "fm-userland_state-target-vanished",
+      "instance": "fm-userland_state-target-vanished@<ulid>",
+      "label": "classic",
+      "remediation": {
+        "argv": [
+          "omaddons",
+          "targets",
+          "rm",
+          "classic"
+        ],
+        "auto_fixable": false,
+        "command": "omaddons targets rm classic",
+        "destructive": true,
+        "estimated_actions": 0,
+        "explain_argv": [
+          "omaddons",
+          "doctor",
+          "explain",
+          "fm-userland_state-target-vanished",
+          "-t",
+          "classic"
+        ],
+        "explain_command": "omaddons doctor explain fm-userland_state-target-vanished -t classic",
+        "needs_force": false
+      },
+      "severity": "P2",
+      "subsystem": "userland_state",
+      "target": {
+        "id": "classic",
+        "key": "<ulid>"
+      },
+      "title": "The client is gone or no longer installed"
+    }
+  ],
+  "finished_at": "<time>",
+  "next_steps": [
+    "omaddons doctor explain fm-userland_state-target-vanished -t classic"
+  ],
+  "ok": false,
+  "run_dir": "<root>/state/omaddons/doctor/runs/<run>",
+  "run_id": "<run>",
+  "schema_version": "1.1",
+  "skipped": [
+    {
+      "id": "fm-network-credential-rejected",
+      "reason": "online_required",
+      "target": null
+    },
+    {
+      "id": "fm-network-github-rate-limited",
+      "reason": "online_required",
+      "target": null
+    },
+    {
+      "id": "fm-network-source-unreachable",
+      "reason": "online_required",
+      "target": null
+    }
+  ],
+  "started_at": "<time>",
+  "state": "DONE_FINDINGS",
+  "summary": {
+    "auto_fixable": 0,
+    "by_severity": {
+      "P0": 0,
+      "P1": 0,
+      "P2": 1,
+      "P3": 0
+    },
+    "duration_ms": 0,
+    "incomplete": 0,
+    "manual": 1,
+    "needs_force": 0,
+    "online_required": 3,
+    "skipped": 3,
+    "total_findings": 1
+  },
+  "tool_version": "<version>",
+  "view": "full",
+  "warnings": []
+}

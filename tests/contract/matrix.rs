@@ -1460,6 +1460,47 @@ fn doctor() {
     insta::assert_json_snapshot!("doctor_explain_unknown", s.stable(&c.envelope));
 }
 
+/// `-t all` is every client, as no `-t` is (README, Choosing a target): a registered
+/// client whose directory is gone is reported by `doctor -t all`, `doctor explain … -t
+/// all` and `doctor fix --dry-run -t all` exactly as without `-t`.
+#[test]
+fn doctor_all_reports_a_vanished_client() {
+    let s = Scene::new();
+    common::doctor::plant::target_vanished(&s.home, "classic");
+    let instances = |c: &crate::contract::support::Checked, key: &str| -> Vec<String> {
+        let mut found: Vec<String> = c.envelope[key]
+            .as_array()
+            .unwrap_or_else(|| panic!("{key} is a list: {}", c.envelope)) // ubs:ignore — the test's own failure
+            .iter()
+            .map(|f| f["instance"].as_str().unwrap().to_owned())
+            .collect();
+        found.sort();
+        found
+    };
+    let vanished = "fm-userland_state-target-vanished";
+    for (args, code, key) in [
+        (&["doctor"][..], 1, "findings"),
+        (&["doctor", "explain", vanished][..], 0, "instances"),
+        (&["doctor", "fix", "--dry-run"][..], 1, "findings"),
+    ] {
+        let plain = s.json(args, code);
+        let all_args: Vec<&str> = args.iter().copied().chain(["-t", "all"]).collect();
+        let all = s.json(&all_args, code);
+        let found = instances(&all, key);
+        assert_eq!(found, instances(&plain, key), "{args:?} with -t all");
+        assert!(
+            found.iter().any(|i| i.starts_with(vanished)),
+            "{args:?} -t all reports the vanished client: {found:?}"
+        );
+        if args == ["doctor"] {
+            insta::assert_json_snapshot!(
+                "doctor_all_with_a_vanished_client",
+                s.stable(&all.envelope)
+            );
+        }
+    }
+}
+
 /// A journal a newer omaddons started, on retail (F1): `status`'s issue and `doctor`'s
 /// finding in full, and every remediation and explain argv either offers runs.
 #[test]
