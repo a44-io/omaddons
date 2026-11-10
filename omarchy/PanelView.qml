@@ -68,7 +68,8 @@ Item {
 
   // The views by name: F5 adds updates and installed, F6 issues and search, F9 backups.
   // A view without one leaves its slot empty; the switcher and the key map are final.
-  // A view (and a page) may offer `frame` (set on load), `rowCount`, `rowItem(i)`,
+  // A view (and a page) may offer `frame` (the frame's own views have it from creation;
+  // another's and a page get it on load), `rowCount`, `rowItem(i)`,
   // `typing`, `focusSearch()`, `escapeFilter()` (true when it took Esc: a filter it cleared)
   // and `handleKey(action, cursor)`, which gets KEYMAP's action names.
   property var viewComponents: ({ "updates": updatesView, "installed": installedView, "errors": errorsView, "issues": issuesView,
@@ -1136,7 +1137,8 @@ Item {
                 visible: root.view === modelData
                 active: root.view === modelData || root.visitedViews.indexOf(modelData) >= 0
                 sourceComponent: root.viewComponents[modelData] || null
-                onLoaded: if (item && "frame" in item) item.frame = root
+                // The frame's own views have it already; another's (a test's) gets it here.
+                onLoaded: if (item && "frame" in item && item.frame !== root) item.frame = root
                 onItemChanged: root.loadTick++
               }
             }
@@ -1510,39 +1512,42 @@ Item {
     }
   }
 
+  // Each view has its frame from creation: given on load instead, every binding that
+  // reads the frame ran again for each of its properties as they arrived (the Updates
+  // view built its 500 rows five times on its first visit, 1n2p.38).
   Component {
     id: updatesView
-    UpdatesView {}
+    UpdatesView { frame: root }
   }
 
   Component {
     id: installedView
-    InstalledView {}
+    InstalledView { frame: root }
   }
 
   Component {
     id: issuesView
-    IssuesView {}
+    IssuesView { frame: root }
   }
 
   Component {
     id: errorsView
-    ErrorsView {}
+    ErrorsView { frame: root }
   }
 
   Component {
     id: searchView
-    SearchView {}
+    SearchView { frame: root }
   }
 
   Component {
     id: backupsView
-    BackupsView {}
+    BackupsView { frame: root }
   }
 
   Component {
     id: historyView
-    HistoryView {}
+    HistoryView { frame: root }
   }
 
   // The addon page (1n2p.23): the frame owns its component, so a page can open another

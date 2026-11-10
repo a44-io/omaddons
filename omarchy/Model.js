@@ -1179,9 +1179,21 @@ function lastChangeOf(change, state) {
   }
 }
 
+// An RFC 3339 instant, as the CLI writes them ("2026-11-01T10:00:00.123456789Z"), or a
+// date, in ms since the epoch; NaN for any other text, which never reaches Date.parse:
+// Qt's V4 engine spends about a millisecond on a text it cannot parse (a slow fallback),
+// which the Updates view paid for every row without a release date, 480 ms at 500 rows
+// (1n2p.38). Every time the widget reads from text goes through here.
+var INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}(?:[Tt]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:[Zz]|[+-]\d{2}:\d{2})?)?$/
+
+function instantMs(iso) {
+  var s = typeof iso === "string" ? iso : ""
+  return INSTANT_PATTERN.test(s) ? Date.parse(s) : NaN
+}
+
 // "25 min ago", "3 hours ago", "2 days ago", "just now"; "" without a time.
 function sinceText(iso, nowMs) {
-  var at = Date.parse(iso)
+  var at = instantMs(iso)
   if (isNaN(at) || typeof nowMs !== "number") return ""
   var minutes = Math.max(0, Math.floor((nowMs - at) / 60000))
   if (minutes < 1) return "just now"
@@ -2525,8 +2537,9 @@ function revertedIds(reverted) {
 // does not parse, as it is.
 function dateText(iso) {
   var s = str(iso)
-  var at = new Date(s)
-  if (s === "" || isNaN(at.getTime())) return s
+  var ms = instantMs(s)
+  if (isNaN(ms)) return s
+  var at = new Date(ms)
   var two = function(n) { return n < 10 ? "0" + n : String(n) }
   return at.getFullYear() + "-" + two(at.getMonth() + 1) + "-" + two(at.getDate())
     + " " + two(at.getHours()) + ":" + two(at.getMinutes())
@@ -2805,7 +2818,7 @@ function wordAt(id, index) {
 // A day as a heading (design doc §6.9): "Today", "Yesterday", "Monday" within the week,
 // else "9 November", with the year when it is not this year's.
 function dayText(iso, nowMs) {
-  var at = Date.parse(str(iso))
+  var at = instantMs(iso)
   if (isNaN(at) || typeof nowMs !== "number") return ""
   var days = localDay(nowMs) - localDay(at)
   var d = new Date(at)
@@ -2820,7 +2833,7 @@ function dayText(iso, nowMs) {
 // the same day, "yesterday 21:40", "Mon 18:02" within the week, then "9 Nov", with the
 // year when it differs.
 function whenText(iso, nowMs) {
-  var at = Date.parse(str(iso))
+  var at = instantMs(iso)
   if (isNaN(at) || typeof nowMs !== "number") return ""
   var minutes = Math.max(0, Math.floor((nowMs - at) / 60000))
   var days = localDay(nowMs) - localDay(at)
@@ -3369,7 +3382,7 @@ function footerText(summary, targets, filter, nowMs) {
   var oldest = null
   for (var i = 0; i < scoped.length; i++) {
     var checked = scoped[i].updates ? scoped[i].updates.checkedAt : null
-    if (checked && (!oldest || Date.parse(checked) < Date.parse(oldest))) oldest = checked
+    if (checked && (!oldest || instantMs(checked) < instantMs(oldest))) oldest = checked
   }
   if (scoped.length > 0) parts.push(oldest ? ageText(oldest, nowMs) : "never checked")
   var facts = scopeFacts(targets, filter, [])
@@ -3597,7 +3610,7 @@ function listTargets(lists, filter) {
 // How old a release is, in words ("out today", "2 days old", "3 months old"), from its
 // `published_at`; "" when its source gave no date (GitHub's keyless path gives none).
 function releaseAge(iso, nowMs) {
-  var at = Date.parse(str(iso))
+  var at = instantMs(iso)
   if (!isFinite(at)) return ""
   var days = Math.floor(Math.max(0, num(nowMs) - at) / 86400000)
   if (days < 1) return copy("updates.age.today")
@@ -3772,7 +3785,7 @@ function oldestCheck(statusTargets, filter) {
   for (var i = 0; i < targets.length; i++) {
     if (filter && targets[i].id !== filter) continue
     var checked = targets[i].updates ? targets[i].updates.checkedAt : null
-    if (checked && (!oldest || Date.parse(checked) < Date.parse(oldest))) oldest = checked
+    if (checked && (!oldest || instantMs(checked) < instantMs(oldest))) oldest = checked
   }
   return oldest
 }
@@ -3853,8 +3866,9 @@ function refreshingText(view) {
 
 // "18:02", local time, from an RFC 3339 instant; "" for one that does not parse.
 function clockText(iso) {
-  var at = new Date(str(iso))
-  if (isNaN(at.getTime())) return ""
+  var ms = instantMs(str(iso))
+  if (isNaN(ms)) return ""
+  var at = new Date(ms)
   var two = function(n) { return n < 10 ? "0" + n : String(n) }
   return two(at.getHours()) + ":" + two(at.getMinutes())
 }
@@ -4864,19 +4878,40 @@ function searchVerdict(hint) {
 // Where a result is installed already, from `list -v` (reduced): the clients whose
 // records hold its ref, or its name (ignoring case), each `{id, version}`.
 function installedOf(result, lists) {
+  return installedIn(result, installedIndex(lists))
+}
+
+// `list -v` (reduced) as installedIn looks it up: per client, the position of the first
+// addon of each ref and of each name (lowercased). Built once for a page of results, so
+// each result is looked up instead of scanning every addon: the catalog's 500 rows over
+// 500 addons were half a million comparisons under Qt's engine (1n2p.38).
+function installedIndex(lists) {
+  var listTargets = lists && Array.isArray(lists.targets) ? lists.targets : []
+  return listTargets.map(function(t) {
+    var addons = Array.isArray(t.addons) ? t.addons : []
+    var byRef = new Map()
+    var byName = new Map()
+    for (var i = 0; i < addons.length; i++) {
+      var ref = str(addons[i].ref)
+      var name = str(addons[i].name).toLowerCase()
+      if (ref !== "" && !byRef.has(ref)) byRef.set(ref, i)
+      if (name !== "" && !byName.has(name)) byName.set(name, i)
+    }
+    return { "id": str(t.id), "addons": addons, "byRef": byRef, "byName": byName }
+  })
+}
+
+// installedOf, from installedIndex's index: on each client, its first addon with the
+// result's ref or name.
+function installedIn(result, index) {
   var name = str(result && result.name).toLowerCase()
   var ref = str(result && result.ref)
   var out = []
-  var listTargets = lists && Array.isArray(lists.targets) ? lists.targets : []
-  listTargets.forEach(function(t) {
-    var addons = Array.isArray(t.addons) ? t.addons : []
-    for (var i = 0; i < addons.length; i++) {
-      var a = addons[i]
-      if ((ref !== "" && str(a.ref) === ref) || (name !== "" && str(a.name).toLowerCase() === name)) {
-        out.push({ "id": str(t.id), "version": str(a.version) })
-        return
-      }
-    }
+  index.forEach(function(t) {
+    var at = ref !== "" && t.byRef.has(ref) ? t.byRef.get(ref) : -1
+    var named = name !== "" && t.byName.has(name) ? t.byName.get(name) : -1
+    if (named >= 0 && (at < 0 || named < at)) at = named
+    if (at >= 0) out.push({ "id": t.id, "version": str(t.addons[at].version) })
   })
   return out
 }
@@ -4886,8 +4921,12 @@ function installedOf(result, lists) {
 // `likely` are eligible (the CLI's own rule for its `commands`), and never a client that
 // has it already (`installed`). `lists` (`list -v`, reduced) is optional.
 function installTargets(result, statusTargets, lists) {
+  return targetsFor(result, statusTargets, installedOf(result, lists))
+}
+
+// installTargets, with the result's installedOf already found.
+function targetsFor(result, statusTargets, installed) {
   var hints = result && result.hints ? result.hints : {}
-  var installed = installedOf(result, lists)
   return liveTargets(statusTargets).map(function(t) {
     var hint = hints.hasOwnProperty(t.id) ? hints[t.id] : "unknown"
     var client = str(t.displayName) || str(t.id)
@@ -4970,10 +5009,13 @@ function searchRows(input) {
     }]
   }
   var rows = Array.isArray(i.rows) ? i.rows : []
+  var index = installedIndex(i.lists)
+  var live = liveTargets(statusTargets)
   return rows.map(function(r, at) {
-    var targets = installTargets(r, statusTargets, i.lists)
+    var everywhere = installedIn(r, index)
+    var targets = targetsFor(r, statusTargets, everywhere)
     var verdict = searchVerdictOf(targets, filter)
-    var installed = installedOf(r, i.lists).filter(function(x) { return !!targetById(liveTargets(statusTargets), x.id) })
+    var installed = everywhere.filter(function(x) { return !!targetById(live, x.id) })
     var chips = []
     var marker = installedChip(installed, statusTargets, filter)
     if (marker) chips.push(marker)
@@ -7427,6 +7469,7 @@ if (typeof module !== "undefined") {
     rawLines: rawLines,
     popularityText: popularityText,
     sinceText: sinceText,
+    instantMs: instantMs,
     dateText: dateText,
     bytesText: bytesText,
     kindText: kindText,

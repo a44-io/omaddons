@@ -2376,6 +2376,22 @@ describe("the Backups view and the restore chooser", () => {
     }
   })
 
+  // 1n2p.38: Qt's engine spends about a millisecond on a text Date.parse cannot read, so
+  // only an RFC 3339 instant or a date reaches it; the CLI's nanoseconds parse.
+  test("times are read from RFC 3339 text only", () => {
+    expect(M.instantMs("2026-11-01T10:00:00Z")).toBe(Date.UTC(2026, 10, 1, 10))
+    expect(M.instantMs("2026-11-01T10:00:00.123456789Z")).toBe(Date.UTC(2026, 10, 1, 10, 0, 0, 123))
+    expect(M.instantMs("2026-11-01T11:00:00+01:00")).toBe(Date.UTC(2026, 10, 1, 10))
+    expect(M.instantMs("2026-11-01")).toBe(Date.UTC(2026, 10, 1))
+    for (const text of ["", "not a time", "v1.2", "Nov 1, 2026", "2026-11-01T10:00:00Z trailing", null, undefined, 1793527200000])
+      expect(Number.isNaN(M.instantMs(text))).toBe(true)
+    // What every caller then says of no time.
+    expect(M.releaseAge(null, 0)).toBe("")
+    expect(M.sinceText("", 0)).toBe("")
+    expect(M.whenText("", 0)).toBe("")
+    expect(M.dayText("", 0)).toBe("")
+  })
+
   test("rows say when, what, how big and what they prove; never verified for metadata only", () => {
     const listed = LISTED()
     const retail = listed.targets[0]
@@ -5000,6 +5016,17 @@ describe("the Search view", () => {
     expect(M.installedOf(byName, lists)).toEqual([{ id: "era", version: "v1" }, { id: "retail", version: "v1" }])
     expect(M.installedOf(byRef, lists)).toEqual([{ id: "retail", version: "v1" }])
     expect(M.installedOf(nowhere, lists)).toEqual([])
+    // On each client, its first addon with the ref or the name, in the list's order,
+    // looked up once per page of results (1n2p.38).
+    const twice = { targets: [{ id: "retail", addons: [
+      { name: "Other", ref: "gh:o/x", version: "v0" },
+      { name: "FOO", ref: "gh:o/foo-fork", version: "v1" },
+      { name: "Third", ref: "gh:o/foo", version: "v2" },
+      { name: "foo", ref: "gh:o/foo", version: "v3" }
+    ] }] }
+    expect(M.installedOf({ name: "Foo", ref: "gh:o/foo" }, twice)).toEqual([{ id: "retail", version: "v1" }])
+    expect(M.installedOf({ name: "Nope", ref: "gh:o/foo" }, twice)).toEqual([{ id: "retail", version: "v2" }])
+    expect(M.installedOf({ name: "", ref: "" }, twice)).toEqual([])
     const shown = (filter) => M.searchRows({ rows: [byName, byRef, nowhere], filter, statusTargets: TARGETS, lists, nowMs: SEARCH_NOW })
     // (All three are copies of Questie, a catalog hit: the catalog's chip comes second.)
     expect(shown("retail").map((r) => [r.chips.map((c) => c.text), r.action, r.note])).toEqual([

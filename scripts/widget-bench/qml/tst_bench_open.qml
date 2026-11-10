@@ -132,26 +132,19 @@ TestCase {
       frame.opened = true
       waitForRendering(card)
       var rendered = Date.now() - t0
-      var need = ["status", "list", "errors", "backups"]
-      var start = Date.now()
-      while (true) {
-        var seen = {}
-        for (var k = 0; k < finished.length; k++) seen[finished[k].resource] = true
-        var all = need.every(function(r) { return seen[r] === true })
-        if (all) break
-        if (Date.now() - start > 120000) fail("open " + i + ": not every read finished: " + JSON.stringify(finished))
-        wait(1)
-      }
+      // Every read the open made, done (1n2p.38: the open asks only what it needs: the
+      // cached status, the shown view's read when its data is old, and the first open's
+      // quiet reads and scan), each by its first answer.
+      waitIdle(120000)
       var reads = []
       var firsts = {}
       for (var f = 0; f < finished.length; f++) {
         var r = finished[f]
-        if (need.indexOf(r.resource) < 0 || firsts[r.resource]) continue
+        if (firsts[r.resource]) continue
         firsts[r.resource] = true
         reads.push({ "resource": r.resource, "outcome": r.outcome, "done_ms": r.at - t0 })
       }
-      var dataMs = Math.max.apply(null, reads.map(function(x) { return x.done_ms }))
-      waitIdle(120000)
+      var dataMs = reads.length ? Math.max.apply(null, reads.map(function(x) { return x.done_ms })) : 0
       opens.push({ "open": i + 1, "rendered_ms": rendered, "data_ms": dataMs, "reads": reads,
         "rows": frame.rowCount, "view": frame.view })
       service.setPanelOpen("bench", false)

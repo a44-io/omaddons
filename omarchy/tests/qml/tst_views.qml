@@ -245,6 +245,31 @@ TestCase {
 
   // ------------------------------------------------------------- Updates
 
+  // The open (1n2p.38): with what was read before, a panel shows its rows at once,
+  // before any read answers, within a generous budget (the baseline's is 50 ms).
+  function test_an_open_with_cached_data_shows_its_rows_at_once() {
+    var started = Date.now()
+    var opened = make(svc)
+    tryVerify(function() { return !!opened.currentView && opened.currentView.rowCount > 0 && opened.currentView.rowItem(0) !== null },
+      2000, "the open shows the rows read before")
+    var elapsed = Date.now() - started
+    verify(elapsed < 1000, "rows shown in " + elapsed + " ms")
+  }
+
+  // 1n2p.38: every view the frame makes has its frame from creation, so each binding
+  // that reads it runs once with it (given on load, the Updates view built its rows
+  // five times on a first visit: 155 ms at 500 rows).
+  function test_every_view_has_its_frame_from_creation() {
+    var names = Object.keys(view.viewComponents)
+    compare(names.length, Model.VIEWS.length)
+    for (var i = 0; i < names.length; i++) {
+      var item = view.viewComponents[names[i]].createObject(null)
+      verify(item !== null, names[i])
+      compare(item.frame, view, names[i] + " has its frame at creation")
+      item.destroy()
+    }
+  }
+
   // The rows a long list has built (its delegates now, kept or reused).
   function builtRows(list, prefix) {
     var children = list.contentItem.children
@@ -289,6 +314,22 @@ TestCase {
     svc.lists = Model.reduceList(listing())
     verify(!installed.scrollsItself)
     compare(installed.rowItem(0) !== null, true)
+  }
+
+  // 1n2p.38: Qt's engine spent about a millisecond a row on Updates rows without a
+  // release date (Date.parse of a text it cannot read: 480 ms at 500 rows). Now only an
+  // RFC 3339 instant reaches it, and 500 such rows build well inside the view's budget.
+  function test_five_hundred_updates_without_release_dates_build_within_budget() {
+    var addons = []
+    for (var i = 0; i < 500; i++) addons.push(addon("Addon" + (1000 + i), "v1", "v2", "update_available"))
+    var lists = Model.reduceList(listEnvelope([{ "id": "retail", "key": "k-retail", "label": "retail", "counts": { "unmanaged": 0 },
+      "addons": addons }]))
+    var started = Date.now()
+    var rows = Model.updateRows(lists, "", svc.targets, { "nowMs": Date.now(), "done": null })
+    var elapsed = Date.now() - started
+    compare(rows.length, 500)
+    compare(rows[0].meta.indexOf("old"), -1, "no release date, no age")
+    verify(elapsed < 200, "500 update rows built in " + elapsed + " ms")
   }
 
   // 150 updates (1n2p.38; the cost baseline: Updates built 786 ms at 150 rows): only the
