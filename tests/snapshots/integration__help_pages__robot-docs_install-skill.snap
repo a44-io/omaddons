@@ -36,9 +36,11 @@ Examples:
 Writes the agent guide, the same bytes as omaddons robot-docs guide, as SKILL.md in
 the skill folder. The default needs $HOME/.claude and creates skills/omaddons in it; a
 --dir folder is created when its parent exists. A SKILL.md you edited is kept as
-SKILL.md.bak. It never writes through a symlink, into a game client, a Wine prefix or
-omaddons' own folders. omaddons doctor reports an installed skill that holds another
-guide than this build's. Remove the skill by deleting the folder.
+SKILL.md.bak, or SKILL.md.bak.1, .2 and so on: an earlier backup is never replaced. A
+SKILL.md that is a symlink is refused; a symlinked folder is followed and judged where it
+points. It never writes into a game client, a Wine prefix or omaddons' own folders.
+omaddons doctor reports an installed skill that holds another guide than this build's.
+Remove the skill by deleting the folder.
 
 See also: robot-docs guide, doctor
 

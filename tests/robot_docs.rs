@@ -1076,7 +1076,9 @@ fn guide_usage_fix_runs() {
 /// a dry run changes no file anywhere; the install writes the committed skill byte for
 /// byte, mode 0644, records a `skill` line naming its folder, which the history
 /// projection keeps and bare `undo` steps over; a second run changes nothing; a pristine
-/// older guide is replaced without a copy, and an edited file is kept as `SKILL.md.bak`.
+/// older guide is replaced without a copy, and an edited file is kept as `SKILL.md.bak`,
+/// a later edit as `SKILL.md.bak.1` (never over the first), the same bytes again not at
+/// all, and the doctor's skill check reads `SKILL.md` alone (omad-syc2).
 #[test]
 fn install_skill_round_trip_on_a_throwaway_home() {
     use std::os::unix::fs::PermissionsExt;
@@ -1180,4 +1182,59 @@ fn install_skill_round_trip_on_a_throwaway_home() {
         .filter(|entry| entry["kind"] == "skill")
         .count();
     log.assert_eq("skill lines", &skill_lines, &3);
+
+    // omad-syc2: a second edit never replaces the first one's backup.
+    log.step("a second edit goes to SKILL.md.bak.1; the first stays in SKILL.md.bak");
+    let second = b"my second notes\n";
+    std::fs::write(&file, second).unwrap();
+    let ran = log.run(&env, &["robot-docs", "install-skill"]);
+    ran.ok();
+    let numbered = dir.join("SKILL.md.bak.1");
+    assert!(
+        ran.stdout().contains(&format!(
+            "your edited copy is kept as {}",
+            numbered.display()
+        )),
+        "{}",
+        ran.stdout()
+    );
+    log.assert_eq(
+        "(SKILL.md.bak, SKILL.md.bak.1)",
+        &(
+            std::fs::read(&copy).unwrap(),
+            std::fs::read(&numbered).unwrap(),
+        ),
+        &(edited.to_vec(), second.to_vec()),
+    );
+
+    log.step("the same edit again is kept already: no new copy");
+    std::fs::write(&file, second).unwrap();
+    let ran = log.run(&env, &["robot-docs", "install-skill"]);
+    ran.ok();
+    assert!(
+        ran.stdout().contains(&format!(
+            "your edited copy is already kept as {}",
+            numbered.display()
+        )),
+        "{}",
+        ran.stdout()
+    );
+    assert!(!dir.join("SKILL.md.bak.2").exists(), "no duplicate");
+    assert!(
+        std::fs::read(&file).unwrap() == committed,
+        "the guide again"
+    );
+
+    log.step("the doctor judges SKILL.md alone, the backups beside it aside");
+    let ran = log.run(
+        &env,
+        &[
+            "doctor",
+            "--only",
+            "fm-plugins-skill-version-drift",
+            "--json",
+        ],
+    );
+    ran.ok();
+    log.assert_eq("findings", &ran.envelope()["findings"], &json!([]));
 }

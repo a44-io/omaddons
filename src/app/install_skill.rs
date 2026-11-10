@@ -4,7 +4,8 @@
 //!
 //! It writes through fsx as `Writer::Skill`, into that one folder only (the scope
 //! `ScopeTable::with_skill_dir` builds), never through a symlink, keeps a hand-edited copy
-//! as `SKILL.md.bak`, and records a `skill` settings line, which undo never reverts. It
+//! as the first free one of `SKILL.md.bak`, `SKILL.md.bak.1`, … (never replacing an
+//! earlier one), and records a `skill` settings line, which undo never reverts. It
 //! neither stores a plan nor binds (M4-D22): the bytes come from the binary, the
 //! destination is the argument, and the one outside input, the file already there, is
 //! read again and decided again under the lock. There is no remove command: deleting the
@@ -40,8 +41,54 @@ pub const INSTALL_SKILL_COMMAND: &str = "robot-docs install-skill";
 /// The file a skill folder holds.
 const SKILL_FILE: &str = "SKILL.md";
 
-/// Where a hand-edited `SKILL.md` is kept when the guide replaces it.
+/// Where a hand-edited `SKILL.md` is kept when the guide replaces it: this name, else this
+/// name with `.1`, `.2`, … (omad-syc2).
 const EDITED_COPY: &str = "SKILL.md.bak";
+
+/// The `n`th name an edited copy may take in `dir`: `SKILL.md.bak`, then
+/// `SKILL.md.bak.1`, `SKILL.md.bak.2`, …
+fn backup_name(dir: &Path, n: usize) -> PathBuf {
+    match n {
+        0 => dir.join(EDITED_COPY),
+        n => dir.join(format!("{EDITED_COPY}.{n}")),
+    }
+}
+
+/// Where an edited `SKILL.md` is kept (omad-syc2). A run never replaces an earlier backup:
+/// the user's own edits are not regenerable, unlike `addons.toml.bak`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Keep {
+    /// Kept (under `--dry-run`, would be kept) as this new backup.
+    New(PathBuf),
+    /// A backup already holds exactly its bytes: no copy is made.
+    Already(PathBuf),
+}
+
+/// Where `file`'s edited copy goes in `dir`: a backup (`SKILL.md.bak[.N]`, a regular
+/// file within the read bound) that already holds exactly its bytes, else the first free
+/// backup name. Reads at most one bounded file per name, never through a link.
+fn keep_slot(dir: &Path, file: &Path) -> Keep {
+    let edited = match read_skill_file(file) {
+        Ok(SkillFile::Bytes(bytes)) => Some(bytes),
+        _ => None,
+    };
+    // Some name among the first `entries + 1` is free.
+    let entries = std::fs::read_dir(dir).map_or(0, Iterator::count);
+    let mut free = None;
+    for n in 0..=entries {
+        let name = backup_name(dir, n);
+        if std::fs::symlink_metadata(&name).is_err() {
+            free.get_or_insert(name);
+            continue;
+        }
+        if let (Some(edited), Ok(SkillFile::Bytes(kept))) = (&edited, read_skill_file(&name))
+            && kept == *edited
+        {
+            return Keep::Already(name);
+        }
+    }
+    Keep::New(free.unwrap_or_else(|| backup_name(dir, entries + 1)))
+}
 
 /// `robot-docs install-skill`'s long help.
 pub const INSTALL_SKILL_HELP: &str = "\
@@ -53,9 +100,11 @@ Examples:
 Writes the agent guide, the same bytes as omaddons robot-docs guide, as SKILL.md in
 the skill folder. The default needs $HOME/.claude and creates skills/omaddons in it; a
 --dir folder is created when its parent exists. A SKILL.md you edited is kept as
-SKILL.md.bak. It never writes through a symlink, into a game client, a Wine prefix or
-omaddons' own folders. omaddons doctor reports an installed skill that holds another
-guide than this build's. Remove the skill by deleting the folder.";
+SKILL.md.bak, or SKILL.md.bak.1, .2 and so on: an earlier backup is never replaced. A
+SKILL.md that is a symlink is refused; a symlinked folder is followed and judged where it
+points. It never writes into a game client, a Wine prefix or omaddons' own folders.
+omaddons doctor reports an installed skill that holds another guide than this build's.
+Remove the skill by deleting the folder.";
 
 /// `robot-docs install-skill`'s arguments.
 #[derive(Debug, Clone, Default, clap::Args)]
@@ -73,7 +122,7 @@ pub struct InstallSkillArgs {
 pub enum Written {
     /// There was no `SKILL.md`.
     Fresh,
-    /// Another `SKILL.md` was replaced (an edited one kept as `SKILL.md.bak`).
+    /// Another `SKILL.md` was replaced (an edited one kept as `SKILL.md.bak[.N]`).
     Replaced,
     /// It already held these bytes: nothing was written.
     Unchanged,
@@ -100,8 +149,8 @@ pub struct InstallSkillData {
 pub struct InstallSkillOutcome {
     data: InstallSkillData,
     commands: Vec<CommandHint>,
-    /// The replaced file was not a guide's: it was kept as `SKILL.md.bak` (or would be).
-    kept_edited: bool,
+    /// The replaced file was not a guide's: where it was kept (or would be).
+    kept: Option<Keep>,
 }
 
 impl Outcome for InstallSkillOutcome {
@@ -140,14 +189,23 @@ impl InstallSkillOutcome {
             (true, Written::Fresh) => format!("would install the omaddons skill: {file} {size}"),
             (true, Written::Replaced) => format!("would update the omaddons skill: {file} {size}"),
         }];
-        if self.kept_edited {
-            let copy = d.dir.join(EDITED_COPY);
-            let verb = if d.dry_run {
-                "would keep your edited copy as"
-            } else {
-                "your edited copy is kept as"
-            };
-            lines.push(format!("  {verb} {}", copy.display()));
+        match (&self.kept, d.dry_run) {
+            (Some(Keep::New(copy)), false) => {
+                lines.push(format!("  your edited copy is kept as {}", copy.display()));
+            }
+            (Some(Keep::New(copy)), true) => {
+                lines.push(format!(
+                    "  would keep your edited copy as {}",
+                    copy.display()
+                ));
+            }
+            (Some(Keep::Already(copy)), _) => {
+                lines.push(format!(
+                    "  your edited copy is already kept as {}",
+                    copy.display()
+                ));
+            }
+            (None, _) => {}
         }
         for hint in &self.commands {
             lines.push(format!("other agents: {}", hint.command()));
@@ -212,7 +270,7 @@ pub fn run(ctx: &Context, args: &InstallSkillArgs) -> Result<InstallSkillOutcome
     let file = dir.join(SKILL_FILE);
     let mut decision = decide_at(&file, &guide)?;
     let commands = hints(&paths, &dir, &guide);
-    let outcome = |decision: Decision| InstallSkillOutcome {
+    let outcome = |decision: Decision, kept: Option<Keep>| InstallSkillOutcome {
         data: InstallSkillData {
             dry_run: ctx.dry_run,
             dir: dir.clone(),
@@ -222,10 +280,11 @@ pub fn run(ctx: &Context, args: &InstallSkillArgs) -> Result<InstallSkillOutcome
             tool_version: env!("CARGO_PKG_VERSION"),
         },
         commands: commands.clone(),
-        kept_edited: decision.keeps_edited(),
+        kept,
     };
     if decision == Decision::Unchanged || ctx.dry_run {
-        return Ok(outcome(decision));
+        let kept = decision.keeps_edited().then(|| keep_slot(&dir, &file));
+        return Ok(outcome(decision, kept));
     }
     let guard = GlobalLock::acquire(&paths, ctx.command)?;
     ctx.notes.warn_all(&recover_under(
@@ -239,19 +298,32 @@ pub fn run(ctx: &Context, args: &InstallSkillArgs) -> Result<InstallSkillOutcome
     // made under the lock is the one carried out and reported.
     decision = decide_at(&file, &guide)?;
     if decision == Decision::Unchanged {
-        return Ok(outcome(decision));
+        return Ok(outcome(decision, None));
     }
     // The fences as recovery left them.
     let scopes = scope(&paths, &clients, &destination)?;
     let mut s = WriteSession::untracked(Writer::Skill, &scopes, SKILL_FILE);
     ensure_dir_all(&mut s, &dir)?;
+    let mut kept = None;
     if decision.keeps_edited() {
-        let copy = dir.join(EDITED_COPY);
-        let op = Op::Rename {
-            to: &copy,
-            mode: RenameMode::Replace,
-        };
-        mutate(&mut s, &file, op)?;
+        // Never over an earlier backup (omad-syc2): renamed without replacing, and a name
+        // another program took meanwhile moves the copy to the next free one.
+        let mut tries = 0;
+        kept = Some(loop {
+            let keep = keep_slot(&dir, &file);
+            let Keep::New(copy) = &keep else {
+                break keep;
+            };
+            let op = Op::Rename {
+                to: copy,
+                mode: RenameMode::NoReplace,
+            };
+            match mutate(&mut s, &file, op) {
+                Ok(_) => break keep,
+                Err(_) if tries < 3 && std::fs::symlink_metadata(copy).is_ok() => tries += 1,
+                Err(error) => return Err(error.into()),
+            }
+        });
     }
     let op = Op::WriteFile {
         content: Content::Bytes(&guide),
@@ -274,7 +346,7 @@ pub fn run(ctx: &Context, args: &InstallSkillArgs) -> Result<InstallSkillOutcome
     crate::state::doorbell::ring(&paths, ctx.command, ctx.actor);
     drop(s);
     drop(guard);
-    Ok(outcome(decision))
+    Ok(outcome(decision, kept))
 }
 
 /// The process's working directory, for a relative `--dir`.
@@ -705,10 +777,65 @@ mod tests {
         );
     }
 
+    /// omad-syc2: an edited copy goes to the first free backup name, never over an
+    /// earlier one; one a backup already holds byte for byte is not copied again; a
+    /// backup name that is a link counts as taken and is never read through.
+    #[test]
+    fn an_edited_copy_never_replaces_an_earlier_backup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let file = dir.join(SKILL_FILE);
+        let write = |name: &str, text: &str| std::fs::write(dir.join(name), text).unwrap();
+        write(SKILL_FILE, "edit C\n");
+        /// What a case adds to the folder before asking.
+        type Plant = fn(&Path);
+        let cases: [(&str, Plant, Keep); 4] = [
+            ("no backup yet", |_| {}, Keep::New(dir.join("SKILL.md.bak"))),
+            (
+                "one taken",
+                |d| std::fs::write(d.join("SKILL.md.bak"), "edit A\n").unwrap(),
+                Keep::New(dir.join("SKILL.md.bak.1")),
+            ),
+            (
+                "two taken",
+                |d| std::fs::write(d.join("SKILL.md.bak.1"), "edit B\n").unwrap(),
+                Keep::New(dir.join("SKILL.md.bak.2")),
+            ),
+            (
+                "a link to the same bytes is taken, not a backup",
+                |d| {
+                    std::os::unix::fs::symlink(d.join(SKILL_FILE), d.join("SKILL.md.bak.2"))
+                        .unwrap()
+                },
+                Keep::New(dir.join("SKILL.md.bak.3")),
+            ),
+        ];
+        for (case, plant, want) in cases {
+            plant(dir);
+            assert_eq!(keep_slot(dir, &file), want, "case {case}");
+        }
+        write("SKILL.md.bak.3", "edit C\n");
+        assert_eq!(
+            keep_slot(dir, &file),
+            Keep::Already(dir.join("SKILL.md.bak.3")),
+            "case identical bytes kept already"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("SKILL.md.bak")).unwrap(),
+            "edit A\n",
+            "earlier backups untouched"
+        );
+    }
+
+    /// `name` in the test skill folder.
+    fn in_dir(name: &str) -> PathBuf {
+        PathBuf::from("/h/.claude/skills/omaddons").join(name)
+    }
+
     fn outcome(
         dry_run: bool,
         written: Written,
-        kept_edited: bool,
+        kept: Option<Keep>,
         hints: usize,
     ) -> InstallSkillOutcome {
         let dir = PathBuf::from("/h/.claude/skills/omaddons");
@@ -727,13 +854,13 @@ mod tests {
                 tool_version: "0.1.0",
             },
             commands,
-            kept_edited,
+            kept,
         }
     }
 
     #[test]
     fn data_serializes_in_order_with_closed_written_values() {
-        let json = serde_json::to_string(&outcome(false, Written::Fresh, false, 0).data).unwrap();
+        let json = serde_json::to_string(&outcome(false, Written::Fresh, None, 0).data).unwrap();
         assert_eq!(
             json,
             "{\"dry_run\":false,\"dir\":\"/h/.claude/skills/omaddons\",\"file\":\"/h/.claude/skills/omaddons/SKILL.md\",\"written\":\"fresh\",\"bytes\":18432,\"tool_version\":\"0.1.0\"}"
@@ -771,42 +898,64 @@ mod tests {
                 "other agents: omaddons robot-docs install-skill --dir /h/{root}/skills/omaddons"
             )
         };
+        let new = |name: &str| Some(Keep::New(in_dir(name)));
         let cases: Vec<(&str, InstallSkillOutcome, Vec<String>)> = vec![
             (
                 "fresh",
-                outcome(false, Written::Fresh, false, 0),
+                outcome(false, Written::Fresh, None, 0),
                 vec![format!(
                     "installed the omaddons skill: {file} (18,432 bytes)"
                 )],
             ),
             (
                 "replaced_without_a_copy",
-                outcome(false, Written::Replaced, false, 0),
+                outcome(false, Written::Replaced, None, 0),
                 vec![format!("updated the omaddons skill: {file} (18,432 bytes)")],
             ),
             (
                 "replaced_keeping_a_copy",
-                outcome(false, Written::Replaced, true, 0),
+                outcome(false, Written::Replaced, new("SKILL.md.bak"), 0),
                 vec![
                     format!("updated the omaddons skill: {file} (18,432 bytes)"),
                     format!("  your edited copy is kept as {file}.bak"),
                 ],
             ),
             (
+                "replaced_keeping_a_numbered_copy",
+                outcome(false, Written::Replaced, new("SKILL.md.bak.2"), 0),
+                vec![
+                    format!("updated the omaddons skill: {file} (18,432 bytes)"),
+                    format!("  your edited copy is kept as {file}.bak.2"),
+                ],
+            ),
+            (
+                "replaced_already_kept",
+                outcome(
+                    false,
+                    Written::Replaced,
+                    Some(Keep::Already(in_dir("SKILL.md.bak.1"))),
+                    0,
+                ),
+                vec![
+                    format!("updated the omaddons skill: {file} (18,432 bytes)"),
+                    format!("  your edited copy is already kept as {file}.bak.1"),
+                ],
+            ),
+            (
                 "unchanged",
-                outcome(false, Written::Unchanged, false, 0),
+                outcome(false, Written::Unchanged, None, 0),
                 vec![format!("the omaddons skill is up to date: {file}")],
             ),
             (
                 "dry_run_fresh",
-                outcome(true, Written::Fresh, false, 0),
+                outcome(true, Written::Fresh, None, 0),
                 vec![format!(
                     "would install the omaddons skill: {file} (18,432 bytes)"
                 )],
             ),
             (
                 "dry_run_replaced_keeping_a_copy",
-                outcome(true, Written::Replaced, true, 0),
+                outcome(true, Written::Replaced, new("SKILL.md.bak"), 0),
                 vec![
                     format!("would update the omaddons skill: {file} (18,432 bytes)"),
                     format!("  would keep your edited copy as {file}.bak"),
@@ -814,7 +963,7 @@ mod tests {
             ),
             (
                 "fresh_with_two_hints",
-                outcome(false, Written::Fresh, false, 2),
+                outcome(false, Written::Fresh, None, 2),
                 vec![
                     format!("installed the omaddons skill: {file} (18,432 bytes)"),
                     hint(".codex"),

@@ -1243,6 +1243,13 @@ mod tests {
                 Access::Rename,
                 vec![W::Skill, W::Doctor],
             ),
+            // omad-syc2: a later edit's copy, never over an earlier backup.
+            (
+                "numbered_backup_rename",
+                dir.join("SKILL.md.bak.2"),
+                Access::Rename,
+                vec![W::Skill, W::Doctor],
+            ),
             (
                 "the_folder_created",
                 dir.clone(),
