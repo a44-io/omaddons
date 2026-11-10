@@ -4,6 +4,12 @@
 //! `<meta>/backups/` and one of `<meta>/snapshots/`: no `backup.json` is read and no tree
 //! walked, so `status --cached` stays within its budget however many backups there are.
 //! A stale projection is reported as such and never rebuilt here; `status` writes nothing.
+//!
+//! Beside them, the client's undo snapshots (`undo_snapshots`): counted by retention's own
+//! rule from the history plain `status` reads, with one `stat` per transaction, and sized
+//! only under `-v`, by a walk bounded by `UNDO_SNAPSHOT_SIZE_MAX_ENTRIES`.
+
+use std::collections::BTreeSet;
 
 use jiff::Timestamp;
 use schemars::JsonSchema;
@@ -14,11 +20,13 @@ use crate::backup::fs::{CloneHint, clone_hint, free_bytes};
 use crate::backup::inventory::{self, Capability, Inventory, InventoryFile, Latest, Qualifying};
 use crate::backup::{self, BackupKind, Trigger};
 use crate::contract::actions::Action;
+use crate::engine::retention::{self, RetentionLimits, Sizes};
 use crate::error::CommandHint;
-use crate::limits::BACKUP_STALE_AFTER;
-use crate::model::TargetKey;
+use crate::limits::{BACKUP_STALE_AFTER, UNDO_SNAPSHOT_SIZE_MAX_ENTRIES};
+use crate::model::{TargetKey, TxId};
 use crate::state::config::AutoBackup;
-use crate::state::paths::ClientPaths;
+use crate::state::history::HistoryEntry;
+use crate::state::paths::{ClientPaths, Paths};
 
 /// One client's backups at a glance.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -97,6 +105,95 @@ pub fn summary(
         free_bytes: free_bytes(&client.backups()),
         due,
     }
+}
+
+/// A client's undo snapshots, as retention counts them (`status`'s `undo_snapshots`):
+/// every transaction that touched the client and still has a snapshot half on disk, its
+/// client side (`Interface/.omaddons/snapshots/`) or its state side.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct UndoSnapshots {
+    /// The transactions whose undo snapshots are kept.
+    pub count: u64,
+    /// When the oldest of them committed; `null` when there is none.
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
+    pub oldest_at: Option<Timestamp>,
+    /// How many of them retention would prune now by its count and age rules (the size
+    /// cap needs every snapshot's size, which `status` never measures for this).
+    pub prunable: u64,
+    /// Their apparent size, both halves, a restore's `WTF.previous` included; `null`
+    /// without `-v`.
+    pub bytes: Option<u64>,
+    /// The `-v` walk stopped at `UNDO_SNAPSHOT_SIZE_MAX_ENTRIES` entries, so `bytes` is a
+    /// lower bound.
+    pub truncated: bool,
+}
+
+/// `client`'s undo snapshots at `now`, from the whole history `entries` (oldest first)
+/// and `pinned` ([`retention::pinned_by`] of them), by retention's own rule; sized, within
+/// [`UNDO_SNAPSHOT_SIZE_MAX_ENTRIES`], only when `measure`.
+#[allow(clippy::too_many_arguments)]
+pub fn undo_snapshots(
+    paths: &Paths,
+    client: &ClientPaths,
+    key: TargetKey,
+    entries: &[HistoryEntry],
+    pinned: &BTreeSet<TxId>,
+    limits: &RetentionLimits,
+    now: Timestamp,
+    measure: bool,
+) -> UndoSnapshots {
+    let judged = retention::judge(
+        paths,
+        client,
+        key,
+        entries,
+        pinned,
+        limits,
+        now,
+        Sizes::Unmeasured,
+    );
+    let (bytes, truncated) = if measure {
+        let txs: Vec<TxId> = judged.txs.iter().map(|t| t.tx).collect();
+        let (bytes, complete) =
+            retention::snapshot_bytes(paths, client, &txs, UNDO_SNAPSHOT_SIZE_MAX_ENTRIES);
+        (Some(bytes), !complete)
+    } else {
+        (None, false)
+    };
+    UndoSnapshots {
+        count: judged.txs.len() as u64,
+        oldest_at: judged.txs.iter().map(|t| t.at).min(),
+        prunable: judged.selection.prune.len() as u64,
+        bytes,
+        truncated,
+    }
+}
+
+/// What the backups line adds for the undo snapshots: with their size (`-v`),
+/// ` · undo: 30 snapshots, 891 MB, oldest 13 days`; else ` · undo: 30 snapshots (over
+/// policy)` only when retention would prune some, and nothing otherwise.
+pub fn undo_phrase(u: &UndoSnapshots, now: Timestamp) -> Option<String> {
+    let snapshots =
+        crate::output::count(usize::try_from(u.count).unwrap_or(usize::MAX), "snapshot");
+    let over = if u.prunable > 0 { " (over policy)" } else { "" };
+    let Some(bytes) = u.bytes else {
+        return (u.prunable > 0).then(|| format!(" · undo: {snapshots}{over}"));
+    };
+    let mut phrase = format!(" · undo: {snapshots}");
+    if u.count > 0 {
+        let at_least = if u.truncated { "at least " } else { "" };
+        phrase.push_str(&format!(", {at_least}{}", size(bytes)));
+    }
+    if let Some(oldest) = u.oldest_at {
+        let days = now.as_second().saturating_sub(oldest.as_second()) / 86_400;
+        phrase.push_str(&match days {
+            0 => ", oldest under a day".to_owned(),
+            1 => ", oldest 1 day".to_owned(),
+            n => format!(", oldest {n} days"),
+        });
+    }
+    phrase.push_str(over);
+    Some(phrase)
 }
 
 /// Whether `latest` is missing or captured [`BACKUP_STALE_AFTER`] or longer before `now`
@@ -293,6 +390,59 @@ mod tests {
             human_line(&summary_of(3, None, true), now),
             "  backups: 3 · details out of date · auto: daily, working · 212 GB free"
         );
+    }
+
+    #[test]
+    fn the_undo_phrase_sizes_under_v_and_says_over_policy_only_when_it_is() {
+        let now = at("2026-10-15T18:00:00Z");
+        let undo = |count, oldest: Option<&str>, prunable, bytes, truncated| UndoSnapshots {
+            count,
+            oldest_at: oldest.map(at),
+            prunable,
+            bytes,
+            truncated,
+        };
+        let cases = [
+            (
+                "default, within policy",
+                undo(30, Some("2026-10-10T18:00:00Z"), 0, None, false),
+                None,
+            ),
+            (
+                "default, over policy",
+                undo(30, Some("2026-10-02T18:00:00Z"), 3, None, false),
+                Some(" · undo: 30 snapshots (over policy)"),
+            ),
+            (
+                "-v",
+                undo(
+                    30,
+                    Some("2026-10-02T18:00:00Z"),
+                    0,
+                    Some(891_000_000),
+                    false,
+                ),
+                Some(" · undo: 30 snapshots, 891 MB, oldest 13 days"),
+            ),
+            (
+                "-v, over policy and cut short",
+                undo(1, Some("2026-10-14T17:00:00Z"), 1, Some(5_000), true),
+                Some(" · undo: 1 snapshot, at least 5.0 kB, oldest 1 day (over policy)"),
+            ),
+            (
+                "-v, young",
+                undo(2, Some("2026-10-15T08:00:00Z"), 0, Some(10), false),
+                Some(" · undo: 2 snapshots, 10 B, oldest under a day"),
+            ),
+            (
+                "-v, none",
+                undo(0, None, 0, Some(0), false),
+                Some(" · undo: 0 snapshots"),
+            ),
+        ];
+        for (case, u, expected) in cases {
+            assert_eq!(undo_phrase(&u, now).as_deref(), expected, "{case}");
+        }
     }
 
     #[test]

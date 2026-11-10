@@ -32,7 +32,7 @@ use jiff::tz::TimeZone;
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use super::backups_status::{self, BackupSummary};
+use super::backups_status::{self, BackupSummary, UndoSnapshots};
 use super::drift::{DriftItem, needs_reinstall, reinstall_hint};
 use super::errors::CoverageState;
 use super::errors_status::{self, TargetErrors};
@@ -53,6 +53,7 @@ use crate::doctor::selection::{Selection, Skipped};
 use crate::doctor::view::{DoctorView, Journals, Seed, ViewDiscovery, ViewOptions};
 use crate::drift::{AddonDrift, DriftMode, DriftReport, DriftState};
 use crate::engine::journal;
+use crate::engine::retention::{self, RetentionLimits};
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning, WarningCode};
 use crate::errors::observe::{Observe, read_target};
 use crate::errors::{ack, memo};
@@ -66,7 +67,7 @@ use crate::politeness::DEFAULT_CHECK_INTERVAL;
 use crate::resolve::catalog::Catalog;
 use crate::resolve::updates::{StatusKind, UncheckedReason, UpdateStatus};
 use crate::rules::{ClientVersion, Family, InstallKind, ModeName, RulesTable, TargetKind};
-use crate::state::history::{self, HistoryEntry, HistoryFilter, Reach};
+use crate::state::history::{self, HistoryEntry, HistoryFilter, HistoryRead, Reach};
 use crate::state::history_tail::{self, Answer};
 use crate::state::paths::ClientPaths;
 use crate::state::records::{TargetRecord, load_record};
@@ -259,6 +260,10 @@ pub struct StatusTarget {
     /// Its `WTF/` backups, from the inventory projection (M3-D37); `null` for a client
     /// whose directory is gone.
     pub backups: Option<BackupSummary>,
+    /// Its undo snapshots, as retention counts them, sized under `-v`; `null` under
+    /// `--cached` (which reads no history), when the history cannot be read, and for a
+    /// client whose directory is gone.
+    pub undo_snapshots: Option<UndoSnapshots>,
     /// `-v` only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_dir: Option<PathBuf>,
@@ -458,7 +463,12 @@ impl Outcome for StatusOutcome {
                 writeln!(w, "{line}")?;
             }
             if let Some(backups) = &t.backups {
-                writeln!(w, "{}", backups_status::human_line(backups, now))?;
+                let undo = t
+                    .undo_snapshots
+                    .as_ref()
+                    .and_then(|u| backups_status::undo_phrase(u, Timestamp::now()))
+                    .unwrap_or_default();
+                writeln!(w, "{}{undo}", backups_status::human_line(backups, now))?;
             }
             if !t.any_flavor_addons.is_empty() {
                 writeln!(
@@ -717,6 +727,21 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
         .effective_limits()
         .map_or(DEFAULT_CHECK_INTERVAL, |l| l.default_check_interval);
     let now = Timestamp::now();
+    // Plain `status` reads the whole history once: for each client's undo snapshots, the
+    // last change, and the doctor's view. `--cached` reads none of it.
+    let history = if args.cached {
+        None
+    } else {
+        history::read(&world.paths, &HistoryFilter::default()).ok()
+    };
+    let pinned = history
+        .as_ref()
+        .map(|h| retention::pinned_by(&h.entries))
+        .unwrap_or_default();
+    let retention_limits = world.config.effective_limits().map_or_else(
+        |_| RetentionLimits::default(),
+        |l| RetentionLimits::from(&l),
+    );
     let mut catalog: Option<Catalog> = None;
     let mut check_due = false;
     // `--cached` stays a presence check (M2-D15); plain `status` checks stat-first.
@@ -868,6 +893,27 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             auto_mode,
             errors_now,
         );
+        // Retention's clock: the system's, as its snapshot ages are.
+        let undo_snapshots = history.as_ref().map(|h| match t.key {
+            Some(key) => backups_status::undo_snapshots(
+                &world.paths,
+                &client,
+                key,
+                &h.entries,
+                &pinned,
+                &retention_limits,
+                now,
+                verbose,
+            ),
+            // Nothing committed on an unregistered client.
+            None => UndoSnapshots {
+                count: 0,
+                oldest_at: None,
+                prunable: 0,
+                bytes: verbose.then_some(0),
+                truncated: false,
+            },
+        });
         let modes = world.table.mode_names(t.product.as_deref());
         let target = StatusTarget {
             id: t.id.clone(),
@@ -914,6 +960,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             issues: Vec::new(),
             errors,
             backups: Some(backups),
+            undo_snapshots,
             client_dir: verbose.then(|| t.client_dir.clone()),
             install_root: verbose.then(|| t.install_root.clone()),
             exe_name: if verbose { t.exe_name.clone() } else { None },
@@ -975,6 +1022,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             // Nothing to read: the directory is gone.
             errors: TargetErrors::uncaptured(CoverageState::Complete),
             backups: None,
+            undo_snapshots: None,
             client_dir: verbose.then(|| e.client_dir.clone()),
             install_root: verbose.then(|| e.install_root.clone()),
             exe_name: None,
@@ -1025,6 +1073,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             lock,
             widget: widget.clone(),
             drift: drift_seed,
+            history,
         },
     );
     let scope = if world.selects_all(ctx) {
@@ -1064,7 +1113,8 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
     }
     let needs_attention = needs_attention(&targets, &issues, unattributed);
     let summary = summary(&targets, &issues, &commands, widget_outdated);
-    let (last_change, last_change_state) = last_change(&world, args.cached);
+    let read = if args.cached { None } else { view.history() };
+    let (last_change, last_change_state) = last_change(&world, args.cached, read);
     Ok(StatusOutcome {
         data: StatusData {
             cached: args.cached,
@@ -1266,7 +1316,11 @@ fn summary_state(issues: &SeverityCounts, new_errors: usize, updates: usize) -> 
 /// What bare `undo` would revert now. `--cached` asks the history projection and says
 /// `unknown` when it cannot tell (M3-D37); plain `status` reads the whole history. Neither
 /// writes anything.
-fn last_change(world: &World, cached: bool) -> (Option<LastChange>, LastChangeState) {
+fn last_change(
+    world: &World,
+    cached: bool,
+    read: Option<&HistoryRead>,
+) -> (Option<LastChange>, LastChangeState) {
     let empty = match std::fs::metadata(world.paths.history_file()) {
         Ok(meta) => meta.len() == 0,
         Err(error) => error.kind() == std::io::ErrorKind::NotFound,
@@ -1285,7 +1339,7 @@ fn last_change(world: &World, cached: bool) -> (Option<LastChange>, LastChangeSt
             _ => (None, LastChangeState::Unknown),
         };
     }
-    let Ok(read) = history::read(&world.paths, &HistoryFilter::default()) else {
+    let Some(read) = read else {
         return (None, LastChangeState::Unknown);
     };
     match history::newest_run(&read.entries, None, None) {
@@ -1738,6 +1792,7 @@ pub(crate) fn test_target(
         issues: Vec::new(),
         errors: TargetErrors::uncaptured(CoverageState::Complete),
         backups: None,
+        undo_snapshots: None,
         client_dir: None,
         install_root: None,
         exe_name: None,

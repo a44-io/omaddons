@@ -101,6 +101,13 @@ expression: s.stable(&c.envelope)
         "product": "wow_classic",
         "registered": false,
         "running": null,
+        "undo_snapshots": {
+          "bytes": null,
+          "count": 0,
+          "oldest_at": null,
+          "prunable": 0,
+          "truncated": false
+        },
         "updates": {
           "available": 0,
           "blocked": 0,
@@ -176,6 +183,13 @@ expression: s.stable(&c.envelope)
         "product": "wow",
         "registered": false,
         "running": null,
+        "undo_snapshots": {
+          "bytes": null,
+          "count": 0,
+          "oldest_at": null,
+          "prunable": 0,
+          "truncated": false
+        },
         "updates": {
           "available": 0,
           "blocked": 0,

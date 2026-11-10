@@ -393,6 +393,15 @@ expression: "(politeness, REGISTRY)"
       "notes": "How often snapshot retention also prunes every other client discovery found"
     },
     {
+      "name": "UNDO_SNAPSHOT_SIZE_MAX_ENTRIES",
+      "value": {
+        "count": 200000
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Entries status -v visits per client to size its undo snapshots; past it the size is a lower bound"
+    },
+    {
       "name": "REASON_MAX_CHARS",
       "value": {
         "count": 200

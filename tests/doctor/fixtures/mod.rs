@@ -20,6 +20,7 @@ pub mod fm_plugins_widget_version_drift;
 pub mod fm_secrets_credential_file_mode;
 pub mod fm_state_files_check_incomplete;
 pub mod fm_state_files_detector_crashed;
+pub mod fm_state_files_snapshots_past_retention;
 pub mod fm_test_flatten;
 pub mod fm_test_quarantine;
 pub mod fm_test_write;
@@ -55,6 +56,7 @@ pub fn all() -> Vec<Box<dyn Fixture>> {
         Box::new(fm_secrets_credential_file_mode::CredentialFileMode),
         Box::new(fm_state_files_check_incomplete::CheckIncomplete),
         Box::new(fm_state_files_detector_crashed::DetectorCrashed),
+        Box::new(fm_state_files_snapshots_past_retention::SnapshotsPastRetention::default()),
     ]
 }
 

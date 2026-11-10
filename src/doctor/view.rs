@@ -158,12 +158,19 @@ impl DoctorView {
             .map(|_| OnceCell::new())
             .collect();
         let view = Self::load_at(seed.world.paths.clone(), options);
-        let loaded = BTreeSet::from([
+        let mut loaded = BTreeSet::from([
             Layer::Discovery,
             Layer::Journals,
             Layer::Lock,
             Layer::Widget,
         ]);
+        let history = match seed.history {
+            Some(read) => {
+                loaded.insert(Layer::History);
+                OnceCell::from(LayerState::Available(read))
+            }
+            None => OnceCell::new(),
+        };
         let drift = seed
             .drift
             .into_iter()
@@ -177,6 +184,7 @@ impl DoctorView {
             journals: OnceCell::from(LayerState::Available(seed.journals)),
             lock: OnceCell::from(LayerState::Available(seed.lock)),
             widget: OnceCell::from(LayerState::Available(WidgetLayer { info: seed.widget })),
+            history,
             drift: RefCell::new(drift),
             loaded: RefCell::new(loaded),
             ..view
@@ -1086,6 +1094,9 @@ pub struct Seed {
     pub lock: LockState,
     pub widget: Option<WidgetInfo>,
     pub drift: BTreeMap<TargetKey, DriftReport>,
+    /// The whole history, when the command read it already (plain `status`); else the
+    /// History layer reads it itself, when a check asks.
+    pub history: Option<HistoryRead>,
 }
 
 /// Whether a layer could be read; when not, the layer whose failure made it so.
@@ -3940,6 +3951,7 @@ pub(crate) mod tests {
             lock: LockState::Free,
             widget: None,
             drift: BTreeMap::new(),
+            history: None,
         }
     }
 
@@ -3996,14 +4008,16 @@ pub(crate) mod tests {
     }
 
     /// `status`'s tiers read only what `status` reads, plus single-file reads: the
-    /// `cached` and `quick` rows load no history, cache listing or inventory.
+    /// `cached` and `quick` rows load no cache listing or inventory, and no history of
+    /// their own. `status --cached` reads no history, so its `cached` rows load none;
+    /// plain `status` reads it once and seeds it, which its `quick` rows answer from.
     #[test]
     fn the_status_tiers_load_no_history_caches_or_inventory() {
         use crate::doctor::registry::Tier;
         use crate::doctor::selection::Selection;
-        for (case, tiers) in [
-            ("cached", &[Tier::Cached][..]),
-            ("cached_and_quick", &[Tier::Cached, Tier::Quick][..]),
+        for (case, tiers, seeded) in [
+            ("cached", &[Tier::Cached][..], false),
+            ("cached_and_quick", &[Tier::Cached, Tier::Quick][..], true),
         ] {
             let (_dir, paths, target, record) = drift_home();
             plant(
@@ -4011,12 +4025,21 @@ pub(crate) mod tests {
                 &Plant::Bytes(store::encode(&record).unwrap()),
             );
             let world = Rc::new(world_of(&paths, vec![target]));
-            let view = DoctorView::seeded(ViewOptions::default(), seed_of(world));
+            let mut seed = seed_of(world);
+            if seeded {
+                seed.history = Some(history::read(&paths, &HistoryFilter::default()).unwrap());
+            }
+            let view = DoctorView::seeded(ViewOptions::default(), seed);
             crate::doctor::detect(&view, &Selection::all(), tiers).unwrap();
             let loaded = view.loaded_layers();
-            for layer in [Layer::History, Layer::Caches, Layer::Inventory] {
+            for layer in [Layer::Caches, Layer::Inventory] {
                 assert!(!loaded.contains(&layer), "{case}: {loaded:?}");
             }
+            assert_eq!(
+                loaded.contains(&Layer::History),
+                seeded,
+                "{case}: {loaded:?}"
+            );
         }
     }
 

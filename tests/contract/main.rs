@@ -500,6 +500,13 @@ mod support {
                 for (key, v) in map.iter_mut() {
                     if matches!(key.as_str(), "duration_ms" | "elapsed_ms" | "lock_held_ms") {
                         *v = Value::from(0);
+                    } else if key == "undo_snapshots"
+                        && let Some(bytes) = v.get_mut("bytes").filter(|b| b.is_number())
+                    {
+                        // Undo snapshots hold state files with RFC 3339 times, whose
+                        // fractional seconds vary in length from run to run.
+                        *bytes = Value::from(0);
+                        scrub(v, root);
                     } else if key == "build_id" && v.is_string() {
                         // Every build has its own.
                         *v = Value::from("<build_id>");

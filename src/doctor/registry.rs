@@ -94,6 +94,8 @@ pub mod ids {
     pub const LOCK_HELD_LONG: &str = "fm-concurrency_primitives-lock-held-long";
     /// A cached download's bytes no longer hash to its name, or it cannot be read.
     pub const BLOB_HASH_MISMATCH: &str = "fm-caches-blob-hash-mismatch";
+    /// A client keeps undo snapshots that retention would prune now.
+    pub const SNAPSHOTS_PAST_RETENTION: &str = "fm-state_files-snapshots-past-retention";
 
     /// The failure mode a recovery stop reports as (E10 points each stop error's fix at
     /// its `doctor explain`).
@@ -1083,6 +1085,25 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         }),
     },
     FailureMode {
+        id: ids::SNAPSHOTS_PAST_RETENTION,
+        subsystem: Subsystem::StateFiles,
+        severity: Severity::P3,
+        title: "undo snapshots retention would prune now",
+        description: "A client keeps undo snapshots of transactions that snapshot retention would prune now by its count and age rules: older than the retention window, or beyond the newest kept within it. Retention prunes a client after each of its changes, and every client at most once a day after any change or backup, so a client nobody changes keeps them until then.",
+        why: "They take disk space in the client's Interface/.omaddons/snapshots/ and in the state directory, for undos the retention policy has already given up.",
+        tier: Tier::Quick,
+        online: false,
+        cost_ms: 2,
+        requires: &[Layer::Discovery, Layer::History],
+        detect: Some(state_files::snapshots_past_retention),
+        fix: None,
+        manual: Some(Manual {
+            instruction: "nothing is wrong: retention prunes them with the next change on this client, or the day's first change or backup on any client",
+            why: "pruning them gives up the undo of those transactions, which retention does on its own schedule",
+            remediation: retention_manual,
+        }),
+    },
+    FailureMode {
         id: ids::TARGET_VANISHED,
         subsystem: Subsystem::UserlandState,
         severity: Severity::P2,
@@ -1318,6 +1339,12 @@ fn update_manual(f: &Finding) -> Remediation {
 /// A crashed check is a bug: no command helps.
 fn crashed_manual(_: &Finding) -> Remediation {
     prose("this is a bug in omaddons: report the detector and location above")
+}
+
+fn retention_manual(_: &Finding) -> Remediation {
+    prose(
+        "retention prunes them with the next change on this client, or the day's first change or backup on any client",
+    )
 }
 
 /// A token GitHub refuses, or that cannot be had: undone where it comes from, as
@@ -1936,8 +1963,9 @@ mod tests {
         // inventory rows of `external_artifacts`, the nine journal and lock rows of
         // `concurrency_primitives`, `caches`' blob row (F6), and F7's three online rows of
         // `network`, the `secrets` row, `plugins`' widget-invalid row and its
-        // skill-version-drift row (M4-D64).
-        assert_eq!(FAILURE_MODES.len(), 31);
+        // skill-version-drift row (M4-D64), and `state_files`' snapshots-past-retention row
+        // (launch week).
+        assert_eq!(FAILURE_MODES.len(), 32);
     }
 
     /// Appendix B rows 1-10: the journal and lock rows, all `cached` and report-only.

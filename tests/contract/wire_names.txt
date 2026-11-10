@@ -1855,6 +1855,7 @@ file doctor_report <untagged=actions,actions_jsonl_path,actions_planned,backups_
 file doctor_report <untagged=actions,actions_jsonl_path,actions_planned,backups_dir,delegated,delegated_planned,doctor_contract_version,dry_run,findings,finished_at,next_steps,precondition,run_dir,run_id,skipped,started_at,state,summary,tx,undo_argv,undo_command>.findings[].evidence.may_hold_only_copy boolean?
 file doctor_report <untagged=actions,actions_jsonl_path,actions_planned,backups_dir,delegated,delegated_planned,doctor_contract_version,dry_run,findings,finished_at,next_steps,precondition,run_dir,run_id,skipped,started_at,state,summary,tx,undo_argv,undo_command>.findings[].evidence.mode string?
 file doctor_report <untagged=actions,actions_jsonl_path,actions_planned,backups_dir,delegated,delegated_planned,doctor_contract_version,dry_run,findings,finished_at,next_steps,precondition,run_dir,run_id,skipped,started_at,state,summary,tx,undo_argv,undo_command>.findings[].evidence.observed string?
+file doctor_report <untagged=actions,actions_jsonl_path,actions_planned,backups_dir,delegated,delegated_planned,doctor_contract_version,dry_run,findings,finished_at,next_steps,precondition,run_dir,run_id,skipped,started_at,state,summary,tx,undo_argv,undo_command>.findings[].evidence.oldest_at string?
 file doctor_report <untagged=actions,actions_jsonl_path,actions_planned,backups_dir,delegated,delegated_planned,doctor_contract_version,dry_run,findings,finished_at,next_steps,precondition,run_dir,run_id,skipped,started_at,state,summary,tx,undo_argv,undo_command>.findings[].evidence.origin string?
 file doctor_report <untagged=actions,actions_jsonl_path,actions_planned,backups_dir,delegated,delegated_planned,doctor_contract_version,dry_run,findings,finished_at,next_steps,precondition,run_dir,run_id,skipped,started_at,state,summary,tx,undo_argv,undo_command>.findings[].evidence.owners array?
 file doctor_report <untagged=actions,actions_jsonl_path,actions_planned,backups_dir,delegated,delegated_planned,doctor_contract_version,dry_run,findings,finished_at,next_steps,precondition,run_dir,run_id,skipped,started_at,state,summary,tx,undo_argv,undo_command>.findings[].evidence.owners[] string
@@ -1877,6 +1878,8 @@ file doctor_report <untagged=actions,actions_jsonl_path,actions_planned,backups_
 file doctor_report <untagged=actions,actions_jsonl_path,actions_planned,backups_dir,delegated,delegated_planned,doctor_contract_version,dry_run,findings,finished_at,next_steps,precondition,run_dir,run_id,skipped,started_at,state,summary,tx,undo_argv,undo_command>.findings[].evidence.step integer? minimum=0
 file doctor_report <untagged=actions,actions_jsonl_path,actions_planned,backups_dir,delegated,delegated_planned,doctor_contract_version,dry_run,findings,finished_at,next_steps,precondition,run_dir,run_id,skipped,started_at,state,summary,tx,undo_argv,undo_command>.findings[].evidence.target string?
 file doctor_report <untagged=actions,actions_jsonl_path,actions_planned,backups_dir,delegated,delegated_planned,doctor_contract_version,dry_run,findings,finished_at,next_steps,precondition,run_dir,run_id,skipped,started_at,state,summary,tx,undo_argv,undo_command>.findings[].evidence.tx string?
+file doctor_report <untagged=actions,actions_jsonl_path,actions_planned,backups_dir,delegated,delegated_planned,doctor_contract_version,dry_run,findings,finished_at,next_steps,precondition,run_dir,run_id,skipped,started_at,state,summary,tx,undo_argv,undo_command>.findings[].evidence.txs array?
+file doctor_report <untagged=actions,actions_jsonl_path,actions_planned,backups_dir,delegated,delegated_planned,doctor_contract_version,dry_run,findings,finished_at,next_steps,precondition,run_dir,run_id,skipped,started_at,state,summary,tx,undo_argv,undo_command>.findings[].evidence.txs[] string
 file doctor_report <untagged=actions,actions_jsonl_path,actions_planned,backups_dir,delegated,delegated_planned,doctor_contract_version,dry_run,findings,finished_at,next_steps,precondition,run_dir,run_id,skipped,started_at,state,summary,tx,undo_argv,undo_command>.findings[].evidence.unattributed_dirs array?
 file doctor_report <untagged=actions,actions_jsonl_path,actions_planned,backups_dir,delegated,delegated_planned,doctor_contract_version,dry_run,findings,finished_at,next_steps,precondition,run_dir,run_id,skipped,started_at,state,summary,tx,undo_argv,undo_command>.findings[].evidence.unattributed_dirs[] string
 file doctor_report <untagged=actions,actions_jsonl_path,actions_planned,backups_dir,delegated,delegated_planned,doctor_contract_version,dry_run,findings,finished_at,next_steps,precondition,run_dir,run_id,skipped,started_at,state,summary,tx,undo_argv,undo_command>.findings[].folder string?!
@@ -2144,6 +2147,7 @@ file doctor_report <untagged=doctor_contract_version,findings,finished_at,next_s
 file doctor_report <untagged=doctor_contract_version,findings,finished_at,next_steps,run_dir,run_id,skipped,started_at,state,summary,view>.findings[].evidence.may_hold_only_copy boolean?
 file doctor_report <untagged=doctor_contract_version,findings,finished_at,next_steps,run_dir,run_id,skipped,started_at,state,summary,view>.findings[].evidence.mode string?
 file doctor_report <untagged=doctor_contract_version,findings,finished_at,next_steps,run_dir,run_id,skipped,started_at,state,summary,view>.findings[].evidence.observed string?
+file doctor_report <untagged=doctor_contract_version,findings,finished_at,next_steps,run_dir,run_id,skipped,started_at,state,summary,view>.findings[].evidence.oldest_at string?
 file doctor_report <untagged=doctor_contract_version,findings,finished_at,next_steps,run_dir,run_id,skipped,started_at,state,summary,view>.findings[].evidence.origin string?
 file doctor_report <untagged=doctor_contract_version,findings,finished_at,next_steps,run_dir,run_id,skipped,started_at,state,summary,view>.findings[].evidence.owners array?
 file doctor_report <untagged=doctor_contract_version,findings,finished_at,next_steps,run_dir,run_id,skipped,started_at,state,summary,view>.findings[].evidence.owners[] string
@@ -2166,6 +2170,8 @@ file doctor_report <untagged=doctor_contract_version,findings,finished_at,next_s
 file doctor_report <untagged=doctor_contract_version,findings,finished_at,next_steps,run_dir,run_id,skipped,started_at,state,summary,view>.findings[].evidence.step integer? minimum=0
 file doctor_report <untagged=doctor_contract_version,findings,finished_at,next_steps,run_dir,run_id,skipped,started_at,state,summary,view>.findings[].evidence.target string?
 file doctor_report <untagged=doctor_contract_version,findings,finished_at,next_steps,run_dir,run_id,skipped,started_at,state,summary,view>.findings[].evidence.tx string?
+file doctor_report <untagged=doctor_contract_version,findings,finished_at,next_steps,run_dir,run_id,skipped,started_at,state,summary,view>.findings[].evidence.txs array?
+file doctor_report <untagged=doctor_contract_version,findings,finished_at,next_steps,run_dir,run_id,skipped,started_at,state,summary,view>.findings[].evidence.txs[] string
 file doctor_report <untagged=doctor_contract_version,findings,finished_at,next_steps,run_dir,run_id,skipped,started_at,state,summary,view>.findings[].evidence.unattributed_dirs array?
 file doctor_report <untagged=doctor_contract_version,findings,finished_at,next_steps,run_dir,run_id,skipped,started_at,state,summary,view>.findings[].evidence.unattributed_dirs[] string
 file doctor_report <untagged=doctor_contract_version,findings,finished_at,next_steps,run_dir,run_id,skipped,started_at,state,summary,view>.findings[].folder string?!
@@ -3389,6 +3395,7 @@ fm fm-secrets-credential-file-mode
 fm fm-state_files-check-incomplete
 fm fm-state_files-detector-crashed
 fm fm-state_files-record-folder-missing
+fm fm-state_files-snapshots-past-retention
 fm fm-userland_state-target-vanished
 input adopt --apply flag default=false arity=0..0
 input adopt --no-verify flag default=false arity=0..0
@@ -6195,6 +6202,7 @@ output doctor data.findings[].evidence.max_entries integer? minimum=0
 output doctor data.findings[].evidence.may_hold_only_copy boolean?
 output doctor data.findings[].evidence.mode string?
 output doctor data.findings[].evidence.observed string?
+output doctor data.findings[].evidence.oldest_at string?
 output doctor data.findings[].evidence.origin string?
 output doctor data.findings[].evidence.owners array?
 output doctor data.findings[].evidence.owners[] string
@@ -6217,6 +6225,8 @@ output doctor data.findings[].evidence.stage_folders integer? minimum=0
 output doctor data.findings[].evidence.step integer? minimum=0
 output doctor data.findings[].evidence.target string?
 output doctor data.findings[].evidence.tx string?
+output doctor data.findings[].evidence.txs array?
+output doctor data.findings[].evidence.txs[] string
 output doctor data.findings[].evidence.unattributed_dirs array?
 output doctor data.findings[].evidence.unattributed_dirs[] string
 output doctor data.findings[].folder string?!
@@ -6319,6 +6329,7 @@ output doctor diagnose data.findings[].evidence.max_entries integer? minimum=0
 output doctor diagnose data.findings[].evidence.may_hold_only_copy boolean?
 output doctor diagnose data.findings[].evidence.mode string?
 output doctor diagnose data.findings[].evidence.observed string?
+output doctor diagnose data.findings[].evidence.oldest_at string?
 output doctor diagnose data.findings[].evidence.origin string?
 output doctor diagnose data.findings[].evidence.owners array?
 output doctor diagnose data.findings[].evidence.owners[] string
@@ -6341,6 +6352,8 @@ output doctor diagnose data.findings[].evidence.stage_folders integer? minimum=0
 output doctor diagnose data.findings[].evidence.step integer? minimum=0
 output doctor diagnose data.findings[].evidence.target string?
 output doctor diagnose data.findings[].evidence.tx string?
+output doctor diagnose data.findings[].evidence.txs array?
+output doctor diagnose data.findings[].evidence.txs[] string
 output doctor diagnose data.findings[].evidence.unattributed_dirs array?
 output doctor diagnose data.findings[].evidence.unattributed_dirs[] string
 output doctor diagnose data.findings[].folder string?!
@@ -6629,6 +6642,7 @@ output doctor explain data.instances[].evidence.max_entries integer? minimum=0
 output doctor explain data.instances[].evidence.may_hold_only_copy boolean?
 output doctor explain data.instances[].evidence.mode string?
 output doctor explain data.instances[].evidence.observed string?
+output doctor explain data.instances[].evidence.oldest_at string?
 output doctor explain data.instances[].evidence.origin string?
 output doctor explain data.instances[].evidence.owners array?
 output doctor explain data.instances[].evidence.owners[] string
@@ -6651,6 +6665,8 @@ output doctor explain data.instances[].evidence.stage_folders integer? minimum=0
 output doctor explain data.instances[].evidence.step integer? minimum=0
 output doctor explain data.instances[].evidence.target string?
 output doctor explain data.instances[].evidence.tx string?
+output doctor explain data.instances[].evidence.txs array?
+output doctor explain data.instances[].evidence.txs[] string
 output doctor explain data.instances[].evidence.unattributed_dirs array?
 output doctor explain data.instances[].evidence.unattributed_dirs[] string
 output doctor explain data.instances[].folder string?!
@@ -7038,6 +7054,7 @@ output doctor fix data.findings[].evidence.max_entries integer? minimum=0
 output doctor fix data.findings[].evidence.may_hold_only_copy boolean?
 output doctor fix data.findings[].evidence.mode string?
 output doctor fix data.findings[].evidence.observed string?
+output doctor fix data.findings[].evidence.oldest_at string?
 output doctor fix data.findings[].evidence.origin string?
 output doctor fix data.findings[].evidence.owners array?
 output doctor fix data.findings[].evidence.owners[] string
@@ -7060,6 +7077,8 @@ output doctor fix data.findings[].evidence.stage_folders integer? minimum=0
 output doctor fix data.findings[].evidence.step integer? minimum=0
 output doctor fix data.findings[].evidence.target string?
 output doctor fix data.findings[].evidence.tx string?
+output doctor fix data.findings[].evidence.txs array?
+output doctor fix data.findings[].evidence.txs[] string
 output doctor fix data.findings[].evidence.unattributed_dirs array?
 output doctor fix data.findings[].evidence.unattributed_dirs[] string
 output doctor fix data.findings[].folder string?!
@@ -8595,6 +8614,12 @@ output status data.targets[].orphans integer! minimum=0
 output status data.targets[].product string?!
 output status data.targets[].registered boolean!
 output status data.targets[].running boolean?!
+output status data.targets[].undo_snapshots object?!
+output status data.targets[].undo_snapshots.bytes integer?! minimum=0
+output status data.targets[].undo_snapshots.count integer! minimum=0
+output status data.targets[].undo_snapshots.oldest_at string?!
+output status data.targets[].undo_snapshots.prunable integer! minimum=0
+output status data.targets[].undo_snapshots.truncated boolean!
 output status data.targets[].updates object!
 output status data.targets[].updates.available integer! minimum=0
 output status data.targets[].updates.blocked integer! minimum=0

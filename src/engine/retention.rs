@@ -171,6 +171,131 @@ pub fn select(txs: &[SnapshotTx], now: Timestamp, limits: &RetentionLimits) -> S
     selection
 }
 
+/// Whether [`judge`] measures each snapshot's apparent size, which only the size cap reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sizes {
+    /// Every snapshot tree walked, as a commit's retention does.
+    Measured,
+    /// No tree walked: each snapshot counts as empty, so the size cap never prunes and the
+    /// count and age rules alone decide (`status` and the doctor's quick check, which may
+    /// not walk trees).
+    Unmeasured,
+}
+
+/// One client's snapshots as retention judges them: its snapshot-bearing transactions in
+/// history order (oldest first), and the policy's verdict over them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Judgment {
+    pub txs: Vec<SnapshotTx>,
+    pub selection: Selection,
+}
+
+impl Judgment {
+    /// The transactions the policy prunes, in history order.
+    pub fn due(&self) -> Vec<&SnapshotTx> {
+        self.txs
+            .iter()
+            .filter(|t| self.selection.prune.contains(&t.tx))
+            .collect()
+    }
+}
+
+/// The transactions whose snapshots a deferred SavedVariables restore still needs, from
+/// the whole history `entries` (oldest first). Read once, it serves every client.
+pub fn pinned_by(entries: &[HistoryEntry]) -> BTreeSet<TxId> {
+    super::undo::pending_sv_restores(entries)
+}
+
+/// Retention's verdict over the target `key`'s snapshots at `now`: every transaction of
+/// the whole history `entries` (oldest first) that touched it and still has a snapshot
+/// half on disk, judged by [`select`]. The one rule both a commit's retention and the
+/// doctor's check apply, so the two never disagree. `pinned` is [`pinned_by`] of the same
+/// entries. A transaction whose journal is still there is never pruned: recovery may need
+/// its snapshots (a commit's retention runs after recovery, so it never meets one).
+#[allow(clippy::too_many_arguments)]
+pub fn judge(
+    paths: &Paths,
+    client: &ClientPaths,
+    key: TargetKey,
+    entries: &[HistoryEntry],
+    pinned: &BTreeSet<TxId>,
+    limits: &RetentionLimits,
+    now: Timestamp,
+    sizes: Sizes,
+) -> Judgment {
+    let entries: Vec<&HistoryEntry> = entries.iter().filter(|e| e.touches_target(key)).collect();
+    // A backup line has no snapshot: the most recent transaction is the last other one.
+    // Nor has a target-less line (a repair): it keeps its halves as `<tx>.repair`, which
+    // retention never prunes, so it has no `<tx>` snapshot to protect.
+    let latest = entries
+        .iter()
+        .rev()
+        .find(|e| e.kind != TxKind::Backup && e.target.is_some())
+        .map(|e| e.tx);
+    let txs: Vec<SnapshotTx> = entries
+        .iter()
+        .filter_map(|e| {
+            let halves = snapshot_dirs(paths, client, &e.tx);
+            if !halves.iter().any(|p| p.exists()) {
+                return None;
+            }
+            let bytes = match sizes {
+                // A restore's `WTF.previous` is undo data the size cap never counts, so a
+                // few large restores never evict AddOns snapshots (M3-D48).
+                Sizes::Measured => halves
+                    .iter()
+                    .map(|p| apparent_size(p))
+                    .sum::<u64>()
+                    .saturating_sub(apparent_size(
+                        &snapshot_of(client, &e.tx).join(WTF_PREVIOUS),
+                    )),
+                Sizes::Unmeasured => 0,
+            };
+            Some(SnapshotTx {
+                tx: e.tx,
+                at: e.at,
+                bytes,
+                most_recent: Some(e.tx) == latest,
+                pinned: pinned.contains(&e.tx) || super::journal::existing(paths, &e.tx).is_some(),
+            })
+        })
+        .collect();
+    let selection = select(&txs, now, limits);
+    Judgment { txs, selection }
+}
+
+/// The apparent size of `txs`' snapshots (both halves, under either name), visiting at
+/// most `max_entries` entries: the bytes counted, and whether every entry was visited (a
+/// cut-short walk's bytes are a lower bound). Symlinks are counted, never followed.
+pub fn snapshot_bytes(
+    paths: &Paths,
+    client: &ClientPaths,
+    txs: &[TxId],
+    max_entries: u64,
+) -> (u64, bool) {
+    let mut bytes = 0u64;
+    let mut visited = 0u64;
+    let mut stack: Vec<PathBuf> = txs
+        .iter()
+        .flat_map(|tx| snapshot_dirs(paths, client, tx))
+        .collect();
+    while let Some(path) = stack.pop() {
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if visited >= max_entries {
+            return (bytes, false);
+        }
+        visited += 1;
+        if meta.is_file() {
+            bytes = bytes.saturating_add(meta.len());
+        } else if meta.is_dir() {
+            stack.extend(listing(&path).into_iter().map(|(_, child)| child));
+        }
+    }
+    (bytes, true)
+}
+
 /// Retention for the target `key` (whose client dir `client` must be in `scopes`) at
 /// `now`, sparing the blobs `pins` names (read under the lock, when eviction needs it):
 /// the plan sweep, that client's part ([`prune_client`]), then the blob cache.
@@ -252,36 +377,17 @@ fn prune_client(
         entries: all,
         pinned,
     } = history;
-    let entries: Vec<&HistoryEntry> = all.iter().filter(|e| e.touches_target(key)).collect();
-    // A backup line has no snapshot: the most recent transaction is the last other one.
-    // Nor has a target-less line (a repair): it keeps its halves as `<tx>.repair`, which
-    // retention never prunes, so it has no `<tx>` snapshot to protect.
-    let latest = entries
-        .iter()
-        .rev()
-        .find(|e| e.kind != TxKind::Backup && e.target.is_some())
-        .map(|e| e.tx);
-    let txs: Vec<SnapshotTx> = entries
-        .iter()
-        .filter_map(|e| {
-            let halves = snapshot_dirs(paths, client, &e.tx);
-            // A restore's `WTF.previous` is undo data the size cap never counts, so a few
-            // large restores never evict AddOns snapshots (M3-D48).
-            let wtf_previous = apparent_size(&snapshot_of(client, &e.tx).join(WTF_PREVIOUS));
-            halves.iter().any(|p| p.exists()).then(|| SnapshotTx {
-                tx: e.tx,
-                at: e.at,
-                bytes: halves
-                    .iter()
-                    .map(|p| apparent_size(p))
-                    .sum::<u64>()
-                    .saturating_sub(wtf_previous),
-                most_recent: Some(e.tx) == latest,
-                pinned: pinned.contains(&e.tx),
-            })
-        })
-        .collect();
-    let selection = select(&txs, now, limits);
+    let selection = judge(
+        paths,
+        client,
+        key,
+        all,
+        pinned,
+        limits,
+        now,
+        Sizes::Measured,
+    )
+    .selection;
     report.pruned_tx = selection.prune.len();
     report.kept_tx = selection.kept;
     report.cap_exceeded = selection.cap_exceeded.is_some();
@@ -948,6 +1054,99 @@ mod tests {
             .filter(|(_, tx)| client.snapshots(tx).exists() && f.paths.state_snapshot(tx).exists())
             .map(|(age, _)| *age)
             .collect()
+    }
+
+    /// The whole history, as a judgment reads it.
+    fn entries(f: &Fixture) -> Vec<HistoryEntry> {
+        history::read(&f.paths, &HistoryFilter::default())
+            .unwrap()
+            .entries
+    }
+
+    fn judged(f: &Fixture, limits: &RetentionLimits, sizes: Sizes) -> Judgment {
+        let entries = entries(f);
+        let pinned = pinned_by(&entries);
+        judge(
+            &f.paths, &f.client, f.key, &entries, &pinned, limits, f.clock, sizes,
+        )
+    }
+
+    #[test]
+    fn a_judgment_names_exactly_what_a_commits_retention_prunes() {
+        for sizes in [Sizes::Measured, Sizes::Unmeasured] {
+            let f = fixture();
+            let made = burst(&f, &f.client, f.key, &burst_ages());
+            let judgment = judged(&f, &RetentionLimits::default(), sizes);
+            assert_eq!(judgment.txs.len(), 12, "{sizes:?}");
+            let due: Vec<TxId> = judgment.due().iter().map(|t| t.tx).collect();
+            f.run(&RetentionLimits::default(), &BTreeSet::new());
+            let gone: Vec<TxId> = made
+                .iter()
+                .map(|(_, tx)| *tx)
+                .filter(|tx| f.has_snapshot(tx) == (false, false))
+                .collect();
+            assert_eq!(due.len(), 2, "{sizes:?}: the two oldest");
+            let mut due_sorted = due.clone();
+            due_sorted.sort();
+            let mut gone_sorted = gone.clone();
+            gone_sorted.sort();
+            assert_eq!(due_sorted, gone_sorted, "{sizes:?}");
+        }
+    }
+
+    #[test]
+    fn an_unmeasured_judgment_never_applies_the_size_cap() {
+        let f = fixture();
+        // Three day-old commits, each 1,000 bytes a half, against a 2,500-byte cap.
+        for age in [3 * DAY, 2 * DAY, 26 * HOUR] {
+            f.commit(age, 1_000);
+        }
+        let measured = judged(&f, &limits(2_500), Sizes::Measured);
+        assert_eq!(measured.selection.prune.len(), 2, "{measured:?}");
+        assert!(
+            measured.txs.iter().all(|t| t.bytes == 2_000),
+            "{measured:?}"
+        );
+        let unmeasured = judged(&f, &limits(2_500), Sizes::Unmeasured);
+        assert!(unmeasured.selection.prune.is_empty(), "{unmeasured:?}");
+        assert!(
+            unmeasured.txs.iter().all(|t| t.bytes == 0),
+            "{unmeasured:?}"
+        );
+    }
+
+    #[test]
+    fn a_transaction_whose_journal_is_there_is_never_due() {
+        let f = fixture();
+        let made = burst(&f, &f.client, f.key, &burst_ages());
+        let oldest = made.last().unwrap().1;
+        std::fs::create_dir_all(f.paths.journal(&oldest).parent().unwrap()).unwrap();
+        std::fs::write(f.paths.journal(&oldest), b"").unwrap();
+        let judgment = judged(&f, &RetentionLimits::default(), Sizes::Unmeasured);
+        let due: Vec<TxId> = judgment.due().iter().map(|t| t.tx).collect();
+        assert_eq!(due.len(), 1, "{due:?}");
+        assert!(!due.contains(&oldest), "{due:?}");
+    }
+
+    #[test]
+    fn snapshot_bytes_counts_both_halves_and_stops_at_its_bound() {
+        let f = fixture();
+        let a = f.commit(DAY, 300);
+        let b = f.commit(HOUR, 700);
+        // Each tx: its client half (the snapshot, `AddOns/`, `Foo/` and a file) and its
+        // state half (the snapshot and a file), six entries.
+        assert_eq!(
+            snapshot_bytes(&f.paths, &f.client, &[a, b], u64::MAX),
+            (2_000, true)
+        );
+        assert_eq!(
+            snapshot_bytes(&f.paths, &f.client, &[a], u64::MAX),
+            (600, true)
+        );
+        let (bytes, complete) = snapshot_bytes(&f.paths, &f.client, &[a, b], 3);
+        assert!(!complete);
+        assert!(bytes < 2_000, "{bytes}");
+        assert_eq!(snapshot_bytes(&f.paths, &f.client, &[], 0), (0, true));
     }
 
     #[test]

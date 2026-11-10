@@ -168,6 +168,14 @@ pub struct Evidence {
     /// A count. Omitted when nothing is counted.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub count: Option<u64>,
+    /// Several transactions concerned, oldest first. Omitted when the finding names none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub txs: Option<Vec<TxId>>,
+    /// When the oldest of what the finding counts happened. Omitted when no time is
+    /// concerned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
+    pub oldest_at: Option<jiff::Timestamp>,
     /// A snake_case code saying why, never formatted text. Omitted when the failure mode
     /// says it all.
     #[serde(skip_serializing_if = "Option::is_none")]
