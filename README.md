@@ -3631,7 +3631,7 @@ An interrupted `WTF/` restore adds three cases. While its game runs, it waits (`
 
 The README describes the intended behaviour. A place where the code at HEAD does not match it yet is listed here with its bead (`br show <id>`), and the README changes only if a fix decides otherwise.
 
-- **`search` picks a client for its suggestion without knowing compatibility** (`omad-launch-week-fixes-bmcx.6`). When a result's hint is `unknown` on every selected client (every GitHub result is), the `-t` in its suggested `omaddons install` command comes from the tie-breaks alone (the default target, then a live client, the client with the most managed addons, retail), not from anything known about the addon. The install itself still verifies every TOC.
+- **A command that commits forgets the journals its recovery finished before a journal no client owns stopped it** (`omad-h590`). Commands that commit a change (`install`, `update`, `undo`, `backup restore` and the others) recover interrupted journals first. When that recovery rolls some journals back or forward and then meets one that names no client, the command fails with that journal's error, as it should, but its `warnings` hold no `journal_recovered` for the journals it finished, although a failure's warnings hold what the run found before it failed ([Fields](#fields)). Settings commands, and change commands with nothing to commit, do report them (see [Transactions](#transactions)).
 
 ---
 
