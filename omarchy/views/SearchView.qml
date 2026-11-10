@@ -58,6 +58,9 @@ Item {
   readonly property var viewState: Model.viewState("search", { "service": svc, "filter": filter,
     "query": shownQuery, "rows": rows.length, "nowMs": frame ? frame.nowMs : Date.now() })
   readonly property int rowCount: chooserOpen ? 0 : rows.length
+  // Past LONG_LIST_ROWS (the catalog browse, a long search) the rows are a VirtualList
+  // that builds only those in view and scrolls itself (1n2p.38).
+  readonly property bool scrollsItself: !chooserOpen && rows.length > Model.LONG_LIST_ROWS
   // The field, or the chooser, has the keyboard.
   readonly property bool typing: field.activeFocus || chooserOpen
   property bool chooserOpen: false
@@ -78,7 +81,9 @@ Item {
   implicitHeight: column.implicitHeight
 
   function focusSearch() { field.forceActiveFocus() }
-  function rowItem(i) { return rowRepeater.itemAt(i) }
+  function rowItem(i) { return scrollsItself ? rowList.rowItem(i) : rowRepeater.itemAt(i) }
+
+  function positionCursor() { rowList.positionCursor() }
 
   onFilterChanged: followScope()
   onCurrentChanged: followScope()
@@ -375,9 +380,33 @@ Item {
       onAction: function(name) { if (root.frame) root.frame.stateAction(name) }
     }
 
+    // Short lists: every row built, in the content the frame scrolls.
     Repeater {
       id: rowRepeater
-      model: root.chooserOpen ? [] : root.rows
+      model: root.chooserOpen || root.scrollsItself ? [] : root.rows
+      delegate: rowDelegate
+    }
+
+    // Long lists: only the rows in view, in a list that fills the room left and scrolls
+    // itself (the frame's content then fits, 1n2p.38).
+    VirtualList {
+      id: rowList
+      objectName: "rowList"
+      visible: root.scrollsItself
+      width: column.width
+      height: root.scrollsItself
+        ? Math.max(Style.space(200), (root.frame ? root.frame.contentRoom - root.frame.viewTop : Style.space(480)) - y - column.spacing)
+        : 0
+      spacing: column.spacing
+      model: root.scrollsItself ? root.rows : []
+      delegate: rowDelegate
+      cursor: root.frame && root.frame.cursorActive ? root.frame.cursor : -1
+    }
+  }
+
+  // One result, as both lists build it.
+  Component {
+    id: rowDelegate
 
       Item {
         id: entry
@@ -413,6 +442,5 @@ Item {
           }
         }
       }
-    }
   }
 }

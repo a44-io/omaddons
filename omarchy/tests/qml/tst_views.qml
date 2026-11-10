@@ -291,6 +291,34 @@ TestCase {
     compare(installed.rowItem(0) !== null, true)
   }
 
+  // 150 updates (1n2p.38; the cost baseline: Updates built 786 ms at 150 rows): only the
+  // rows in view are built, the view is shown within a generous budget, and the cursor's
+  // row is kept in view.
+  function test_a_hundred_and_fifty_updates_build_only_the_rows_in_view() {
+    var addons = []
+    for (var i = 0; i < 150; i++) addons.push(addon("Addon" + (1000 + i), "v1", "v2", "update_available"))
+    keyClick("2")
+    svc.lists = Model.reduceList(listEnvelope([{ "id": "retail", "key": "k-retail", "label": "retail", "counts": { "unmanaged": 0 },
+      "addons": addons }]))
+    var started = Date.now()
+    keyClick("1")
+    var updates = view.currentView
+    compare(updates.rowCount, 150)
+    var list = findChild(updates, "rowList")
+    tryVerify(function() { return builtRows(list, "updateRow_") > 0 }, 3000, "the list built its first rows")
+    var elapsed = Date.now() - started
+    verify(updates.scrollsItself)
+    verify(builtRows(list, "updateRow_") < 60, builtRows(list, "updateRow_") + " rows built for 150")
+    verify(elapsed < 1500, "Updates shown in " + elapsed + " ms")
+    keyClick("G")
+    compare(view.cursor, 149)
+    tryVerify(function() {
+      var last = updates.rowItem(149)
+      var y = last ? last.mapToItem(list, 0, 0).y : -1
+      return !!last && y >= 0 && y + last.height <= list.height + 1
+    }, 2000, "the cursor's row is in view")
+  }
+
   function test_updates_are_grouped_by_client_with_the_count_U_runs() {
     var updates = content()
     compare(json(updates.rows.map(function(r) { return [r.group, r.groupCount, r.name, r.kind] })),

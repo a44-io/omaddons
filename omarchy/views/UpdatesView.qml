@@ -46,6 +46,9 @@ Item {
     "nowMs": nowMs })
   readonly property int count: Model.updateCount(scopeRows)
   readonly property int rowCount: rows.length
+  // Past LONG_LIST_ROWS the rows are a VirtualList that builds only those in view and
+  // scrolls itself (1n2p.38): the frame asks it to position the cursor's row.
+  readonly property bool scrollsItself: rows.length > Model.LONG_LIST_ROWS
   // The filter box has the keyboard: the frame's key catcher lets it type.
   readonly property bool typing: filterField.activeFocus
   readonly property bool filterShown: query !== "" || filterField.activeFocus
@@ -61,7 +64,9 @@ Item {
 
   implicitHeight: column.implicitHeight
 
-  function rowItem(i) { return rowRepeater.itemAt(i) }
+  function rowItem(i) { return scrollsItself ? rowList.rowItem(i) : rowRepeater.itemAt(i) }
+
+  function positionCursor() { rowList.positionCursor() }
 
   function handleKey(name, cursor) {
     var row = cursor >= 0 && cursor < rows.length ? rows[cursor] : null
@@ -262,9 +267,34 @@ Item {
       onAction: function(name) { if (root.frame) root.frame.stateAction(name) }
     }
 
+    // Short lists: every row built, in the content the frame scrolls.
     Repeater {
       id: rowRepeater
-      model: root.rows
+      model: root.scrollsItself ? [] : root.rows
+      delegate: rowDelegate
+    }
+
+    // Long lists: only the rows in view, in a list that fills the room left and scrolls
+    // itself (the frame's content then fits, 1n2p.38).
+    VirtualList {
+      id: rowList
+      objectName: "rowList"
+      visible: root.scrollsItself
+      width: column.width
+      height: root.scrollsItself
+        ? Math.max(Style.space(200), (root.frame ? root.frame.contentRoom - root.frame.viewTop : Style.space(480)) - y - column.spacing)
+        : 0
+      spacing: column.spacing
+      model: root.scrollsItself ? root.rows : []
+      delegate: rowDelegate
+      cursor: root.frame && root.frame.cursorActive ? root.frame.cursor : -1
+    }
+  }
+
+  // One row, as both lists build it: under All, its client's header above the client's
+  // first row; the AddonRow; its release notes when opened.
+  Component {
+    id: rowDelegate
 
       Column {
         id: entry
@@ -413,6 +443,5 @@ Item {
           }
         }
       }
-    }
   }
 }

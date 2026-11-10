@@ -65,6 +65,8 @@ TestCase {
         y: testCase.cardPadding
         width: testCase.panelWidth
         height: Math.min(contentImplicitHeight, testCase.panelMaxHeight)
+        // As BarWidget hands down the bar's cap (1n2p.38: a long list fills it).
+        heightCap: testCase.panelMaxHeight
       }
     }
   }
