@@ -19,10 +19,12 @@ import "../Model.js" as Model
 // buttons, a line saying how it closes, and KEYMAP's help rows (`?` and Esc close it,
 // j/k scroll it, every other key is inert). It opens at the top every time.
 //
-// With `choosing`, it is a list to choose from (the restore chooser, 1n2p.29): no
-// buttons, `keysText` under the body, and the dialog rows read as a list's: j/k move
-// `choice` among `choiceCount` choices (the body scrolls to show it), Enter and Space
-// choose it (`chosen`, never from auto-repeat), Esc and n cancel, and `y` is inert.
+// With `choosing`, it is a list to choose from (the restore chooser, 1n2p.29; the
+// settings sheet, 1n2p.31): no buttons, `keysText` under the body, and the dialog rows
+// read as a list's: j/k move `choice` among `choiceCount` choices (the body scrolls to
+// show it), Enter and Space choose it (`chosen`, never from auto-repeat), h/l and
+// Tab/Shift+Tab step it back or on (`stepped`: a setting's value), Esc and n cancel,
+// and `y` is inert.
 Item {
   id: root
 
@@ -57,6 +59,7 @@ Item {
   signal confirmed()
   signal canceled()
   signal chosen(int index)
+  signal stepped(int index, int step)
 
   // A list that shrinks under the cursor keeps it on its last choice.
   onChoiceCountChanged: if (choice >= choiceCount) choice = Math.max(0, choiceCount - 1)
@@ -104,6 +107,7 @@ Item {
       if (action === "cancel") cancel()
       else if (action === "line") moveChoice(Model.keyStep(name))
       else if (action === "press") choose(choice)
+      else if (action === "switch" && choice < choiceCount) stepped(choice, Model.keyStep(name))
       return true
     }
     if (action === "cancel") cancel()

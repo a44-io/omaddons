@@ -57,6 +57,8 @@ Item {
   property string keyNote: ""
   // The key reference (`?`) is open over everything but a dialog.
   property bool helpOpen: false
+  // The settings sheet (`,`, 1n2p.31) is open over the views, under a dialog.
+  property bool settingsOpen: false
   // The views opened once: each is created on its first visit and kept.
   property var visitedViews: []
   // The navigation stack (§2.4): pages pushed on the view, each `{title, component,
@@ -150,13 +152,13 @@ Item {
   // Where a key is looked up in KEYMAP: the card's rows, a page's, or the view's.
   readonly property string keyContext: cardMode ? "card" : (topPage ? "page" : view)
   // Where the keyboard goes: the dialog's own keys while it is open, then the chooser's,
-  // then the key reference's.
+  // then the key reference's, then the settings sheet's (its path box while typing).
   readonly property Item focusItem: confirming ? planSheet.keyItem
-    : (chooser.opened ? chooser.keyItem : (helpOpen ? help.keyItem : keyCatcher))
+    : (chooser.opened ? chooser.keyItem : (helpOpen ? help.keyItem : (settingsOpen ? settingsSheet.focusItem : keyCatcher)))
   // The frame's own shortcuts (Ctrl+Z, PgUp, PgDn) fire only where the catcher would
-  // take keys: never under a dialog, the reference, or a field that is typing. The text
-  // zoom works everywhere while the panel is open (design doc §3.2).
-  readonly property bool shortcutsOn: opened && !typing && !confirming && !chooser.opened && !helpOpen
+  // take keys: never under a dialog, the reference, the settings, or a field that is
+  // typing. The text zoom works everywhere while the panel is open (design doc §3.2).
+  readonly property bool shortcutsOn: opened && !typing && !confirming && !chooser.opened && !helpOpen && !settingsOpen
 
   // Below 480 px the tabs are glyphs, the meta line one part, and the detail goes
   // (design doc §2.1).
@@ -177,9 +179,10 @@ Item {
     + gap * 2
   // The plan sheet asks for its whole plan, the restore chooser for its choices (the bar
   // caps the panel; past that they scroll).
-  readonly property real contentImplicitHeight: (confirming || chooser.opened || helpOpen
+  readonly property real contentImplicitHeight: (confirming || chooser.opened || helpOpen || settingsOpen
     ? Math.max(frameImplicitHeight, confirming ? Math.max(Style.space(220), planSheet.wantedHeight)
-      : chooser.opened ? Math.max(Style.space(220), chooser.wantedHeight) : Style.space(560))
+      : chooser.opened ? Math.max(Style.space(220), chooser.wantedHeight)
+      : helpOpen ? Style.space(560) : Math.max(Style.space(220), settingsSheet.wantedHeight))
     : frameImplicitHeight) * uiScale
   readonly property real gap: Style.space(12)
   // The most height the panel may take (the bar's cap, which BarWidget hands down), and
@@ -205,6 +208,7 @@ Item {
 
   onOpenedChanged: {
     helpOpen = false
+    settingsOpen = false
     if (!opened) return
     nowMs = Date.now()
     // The scope it opens on (§2.2): the one running client, else the scope the panel
@@ -238,6 +242,7 @@ Item {
   onServiceActivityChanged: activityNowMs = Date.now()
   onTypingChanged: if (!typing) Qt.callLater(root.focusNow)
   onHelpOpenChanged: Qt.callLater(root.focusNow)
+  onSettingsOpenChanged: Qt.callLater(root.focusNow)
   onPanelStateChanged: publishState()
 
   function focusNow() {
@@ -472,6 +477,10 @@ Item {
     }
     if (action === "help") {
       helpOpen = true
+      return true
+    }
+    if (action === "settings") {
+      settingsOpen = true
       return true
     }
     if (action === "zoom") {
@@ -870,6 +879,17 @@ Item {
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 onClicked: root.openAddOns()
+              }
+
+              // The settings sheet (1n2p.31), last as the design doc's hero has it.
+              PanelActionButton {
+                objectName: "settingsButton"
+                // U+F0493 nf-md-cog (design doc §5.4).
+                iconText: String.fromCodePoint(0xF0493)
+                tooltipText: Model.withKey("Settings", "settings")
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: root.settingsOpen = true
               }
             }
           }
@@ -1437,6 +1457,18 @@ Item {
       anchors.fill: parent
       z: 8
       frame: root
+    }
+
+    // ---------- The settings sheet (`,`, 1n2p.31): over the views, under a dialog ----------
+    SettingsSheet {
+      id: settingsSheet
+      objectName: "settings"
+      anchors.fill: parent
+      z: 7
+      frame: root
+      opened: root.settingsOpen
+      onCanceled: root.settingsOpen = false
+      onSettingRequested: function(key, value) { root.settingRequested(key, value) }
     }
 
     // ---------- The key reference (`?`): KEYMAP's rows where the panel stands ----------

@@ -20,6 +20,10 @@ pub const ASSETS: &[(&str, &str)] = &[
         include_str!("../../omarchy/RestoreChooser.qml"),
     ),
     ("Service.qml", include_str!("../../omarchy/Service.qml")),
+    (
+        "SettingsSheet.qml",
+        include_str!("../../omarchy/SettingsSheet.qml"),
+    ),
     ("Store.js", include_str!("../../omarchy/Store.js")),
     (MANIFEST, include_str!("../../omarchy/manifest.json")),
     (

@@ -30,12 +30,12 @@ var DEFAULT_SETTINGS = {
 // What each setting accepts; anything else falls back to its default.
 var SETTING_RULES = {
   "binary": { "type": "path" },
-  "panelWidth": { "type": "integer", "min": 400, "max": 800 },
+  "panelWidth": { "type": "integer", "min": 400, "max": 800, "step": 20 },
   "autoCheck": { "type": "switch" },
   "notifyUpdates": { "type": "switch" },
   "notifyErrors": { "type": "switch" },
   "notifyWhilePlaying": { "type": "switch" },
-  "refreshIntervalSec": { "type": "integer", "min": 30, "max": 3600 },
+  "refreshIntervalSec": { "type": "integer", "min": 30, "max": 3600, "step": 30 },
   "keyHint": { "type": "switch" }
 }
 
@@ -77,6 +77,75 @@ function boolSetting(settings, key, def) {
   if (value === "On" || value === true) return true
   if (value === "Off" || value === false) return false
   return def
+}
+
+// ------------------------------------------------------------- the settings sheet (1n2p.31)
+
+// The panel's own settings, in the sheet's order (design doc §2.7). `keyHint` is the
+// first run's tip, which seeing it turns off: never a setting a player picks.
+var PANEL_SETTING_KEYS = ["panelWidth", "refreshIntervalSec", "autoCheck", "notifyErrors", "notifyUpdates", "notifyWhilePlaying", "binary"]
+
+// "30 s", "5 min", "1 min 30 s".
+function secondsText(n) {
+  var s = num(n)
+  if (s < 60) return copy("settings.value.seconds", { "n": s })
+  var minutes = Math.floor(s / 60)
+  var rest = s % 60
+  return rest === 0 ? copy("settings.value.minutes", { "n": minutes }) : copy("settings.value.minutes_seconds", { "n": minutes, "s": rest })
+}
+
+// A panel setting's value in words: "On", "Off", "540 px", "5 min", the binary's path.
+function settingText(key, value) {
+  var rule = SETTING_RULES[key]
+  if (!rule) return str(value)
+  if (rule.type === "switch") return copy(value === "On" ? "settings.value.on" : "settings.value.off")
+  if (key === "panelWidth") return copy("settings.value.px", { "n": value })
+  if (key === "refreshIntervalSec") return secondsText(value)
+  return value === "" ? copy("settings.value.binary_stamped") : str(value)
+}
+
+// The Panel section's rows (design doc §2.7): each setting's label, what it does, its
+// value (`setting`'s, so never an invalid one) in words, and its kind: "switch",
+// "integer" (stepped) or "path" (typed).
+function panelSettingRows(settings) {
+  return PANEL_SETTING_KEYS.map(function(key) {
+    var value = setting(settings, key)
+    return { "section": "panel", "key": key, "kind": SETTING_RULES[key].type, "label": copy("settings.panel." + key),
+      "about": copy("settings.panel." + key + ".about"), "value": value, "text": settingText(key, value) }
+  })
+}
+
+// The value a step gives a panel setting: a switch flips; a number moves by its step
+// within its bounds, past the end back to the start when `wrap` (Enter, a click), never
+// past them otherwise (h and l). A path is typed, never stepped.
+function steppedSetting(settings, key, step, wrap) {
+  var rule = SETTING_RULES[key]
+  var value = setting(settings, key)
+  if (!rule) return value
+  if (rule.type === "switch") return value === "On" ? "Off" : "On"
+  if (rule.type !== "integer") return value
+  var next = value + (step < 0 ? -rule.step : rule.step)
+  if (next > rule.max) return wrap ? rule.min : rule.max
+  if (next < rule.min) return wrap ? rule.max : rule.min
+  return next
+}
+
+// A typed binary path: "" (the stamped binary) or an absolute path, trimmed; null for
+// anything else, which `setting` would turn back into the default anyway.
+function typedPath(text) {
+  var s = str(text).trim()
+  return s === "" || s.charAt(0) === "/" ? s : null
+}
+
+// The settings sheet's sections (design doc §2.7): each `{key, title, rows}`, every row
+// with its index for the sheet's one cursor. `input`: {settings} (the panel's, as the
+// shell applied them).
+function settingsSections(input) {
+  var i = input || {}
+  var sections = [{ "key": "panel", "title": copy("settings.section.panel"), "rows": panelSettingRows(i.settings) }]
+  var index = 0
+  sections.forEach(function(s) { s.rows.forEach(function(r) { r.index = index++ }) })
+  return sections
 }
 
 // ------------------------------------------------------------- constants (§7.11)
@@ -3036,6 +3105,7 @@ var KEYMAP = [
   { "keys": ["h", "l", "Left", "Right"], "context": "panel", "action": "view_step", "label": "previous or next view (on a page, h goes back)", "hint": "h l" },
   { "keys": ["1", "2", "3", "4", "5", "6", "7"], "context": "panel", "action": "view", "label": "view 1 to 7: Updates, Addons, Search, Errors, Issues, Backups, History", "hint": "1–7" },
   { "keys": ["?"], "context": "panel", "action": "help", "label": "this key reference", "hint": "?" },
+  { "keys": [","], "context": "panel", "action": "settings", "label": "settings: the panel's own", "hint": "," },
   { "keys": ["z"], "context": "panel", "action": "zoom", "label": "fill the screen, and back", "hint": "z" },
   { "keys": ["Ctrl+=", "Ctrl+-", "Ctrl+0"], "context": "panel", "action": "text_zoom", "label": "bigger or smaller text, and back to normal (or Ctrl+wheel)", "hint": "Ctrl+= Ctrl+-" },
   { "keys": ["Esc"], "context": "panel", "action": "close", "label": "back out one layer: a page, then a filter or a search, then the panel closes", "hint": "Esc" },
@@ -3097,9 +3167,9 @@ var KEYMAP = [
   { "keys": ["Enter", "Space"], "context": "card", "action": "press", "label": "press the button", "hint": "Enter" },
   { "keys": ["Esc", "n", "N"], "context": "sheet", "action": "cancel", "label": "cancel, or go back a step", "hint": "Esc n" },
   { "keys": ["j", "k", "Down", "Up"], "context": "sheet", "action": "line", "label": "scroll a plan sheet, or move between a chooser's choices", "hint": "j k" },
-  { "keys": ["h", "l", "Left", "Right", "Tab", "Shift+Tab"], "context": "sheet", "action": "switch", "label": "move between Cancel and the confirm button", "hint": "h l" },
+  { "keys": ["h", "l", "Left", "Right", "Tab", "Shift+Tab"], "context": "sheet", "action": "switch", "label": "move between Cancel and the confirm button, or change the setting under the cursor", "hint": "h l" },
   { "keys": ["y", "Y"], "context": "sheet", "action": "confirm", "label": "confirm a plan sheet", "hint": "y", "confirms": true },
-  { "keys": ["Enter", "Space"], "context": "sheet", "action": "press", "label": "the button or choice under the cursor (a plan sheet starts on Cancel)", "hint": "Enter", "confirms": true },
+  { "keys": ["Enter", "Space"], "context": "sheet", "action": "press", "label": "the button, choice or setting under the cursor (a plan sheet starts on Cancel)", "hint": "Enter", "confirms": true },
   { "keys": ["?", "Esc"], "context": "help", "action": "close", "label": "close the reference", "hint": "? Esc" },
   { "keys": ["j", "k", "Down", "Up"], "context": "help", "action": "scroll", "label": "scroll", "hint": "j k" }
 ]
@@ -5970,6 +6040,34 @@ var COPY = {
   "backups.page.gone": "This backup is gone.",
   "backups.page.restore_one": "Restore its settings",
 
+  // The settings sheet (1n2p.31, design doc §2.7).
+  "settings.title": "Settings",
+  "settings.keys": "j/k to move · Enter or l to change, h back · Esc to close",
+  "settings.section.panel": "Panel",
+  "settings.panel.panelWidth": "Width",
+  "settings.panel.panelWidth.about": "How wide the panel opens, from 400 to 800 px. z fills the screen.",
+  "settings.panel.refreshIntervalSec": "Refresh when nothing changed",
+  "settings.panel.refreshIntervalSec.about": "omaddons tells the panel about every change; this is the safety net. Every 15 s while the panel is open.",
+  "settings.panel.autoCheck": "Check for updates when due",
+  "settings.panel.autoCheck.about": "In the background, when a client's last check is older than omaddons' check interval.",
+  "settings.panel.notifyErrors": "Notify about Lua errors after a session",
+  "settings.panel.notifyErrors.about": "Once you quit, if the session left new Lua errors.",
+  "settings.panel.notifyUpdates": "Notify about new updates",
+  "settings.panel.notifyUpdates.about": "When a check finds updates that weren't there before.",
+  "settings.panel.notifyWhilePlaying": "Notify while a game runs",
+  "settings.panel.notifyWhilePlaying.about": "Off holds them while a game runs, and says what came up in one notification when it stops.",
+  "settings.panel.binary": "omaddons binary",
+  "settings.panel.binary.about": "Empty runs the omaddons that installed the panel. A full path runs another build.",
+  "settings.panel.binary.edit": "Type a full path, then Enter. Esc keeps the one before.",
+  "settings.panel.binary.invalid": "A full path starts with /. Empty runs the one that installed the panel.",
+  "settings.value.on": "On",
+  "settings.value.off": "Off",
+  "settings.value.px": "{n} px",
+  "settings.value.seconds": "{n} s",
+  "settings.value.minutes": "{n} min",
+  "settings.value.minutes_seconds": "{n} min {s} s",
+  "settings.value.binary_stamped": "the one that installed the panel",
+
   // The restore chooser (1n2p.29, design doc §2.4).
   "restore.title.owner": "Restore {owner} settings on {client}",
   "restore.title.client": "Restore on {client}",
@@ -7542,6 +7640,13 @@ if (typeof module !== "undefined") {
     setting: setting,
     intSetting: intSetting,
     boolSetting: boolSetting,
+    PANEL_SETTING_KEYS: PANEL_SETTING_KEYS,
+    secondsText: secondsText,
+    settingText: settingText,
+    panelSettingRows: panelSettingRows,
+    steppedSetting: steppedSetting,
+    typedPath: typedPath,
+    settingsSections: settingsSections,
     WIDGET_LOCAL_DEADLINE_SEC: WIDGET_LOCAL_DEADLINE_SEC,
     WIDGET_NETWORK_DEADLINE_SEC: WIDGET_NETWORK_DEADLINE_SEC,
     WIDGET_KILL_GRACE_SEC: WIDGET_KILL_GRACE_SEC,

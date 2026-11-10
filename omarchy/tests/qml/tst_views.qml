@@ -108,6 +108,8 @@ TestCase {
       property var detailReads: []
       property int detailClears: 0
       property var folders: []
+      // The panel's settings as the shell applied them (the settings sheet reads them).
+      property var settings: ({})
 
       function readBackupsDetail(target) { detailReads = detailReads.concat([target]) }
       function clearBackupsDetail() { detailClears++; backupsDetail = null }
@@ -1790,6 +1792,54 @@ TestCase {
     view.nowMs = Date.parse("2100-01-01T00:00:00Z")
     keyClick("6")
     compare(view.view, "backups")
+  }
+
+  // 1n2p.31: `,` opens the settings sheet over the view; its keys change the setting under
+  // the cursor, and each change goes out to the shell (BarWidget saves it), which hands
+  // the settings back through the service.
+  function test_comma_opens_the_settings_and_its_keys_change_them() {
+    var requested = []
+    view.settingRequested.connect(function(key, value) {
+      requested.push([key, value])
+      var next = Object.assign({}, svc.settings)
+      next[key] = value
+      svc.settings = next
+    })
+    keyClick(",")
+    verify(view.settingsOpen)
+    var sheet = findChild(view, "settings")
+    tryVerify(function() { return findChild(sheet, "sheetKeys").activeFocus })
+    compare(sheet.choice, 0)
+    // Behind it the frame does nothing.
+    keyClick("2")
+    compare(view.view, "updates")
+    keyClick(Qt.Key_Return)
+    keyClick("l")
+    keyClick("h")
+    compare(json(requested), json([["panelWidth", 560], ["panelWidth", 580], ["panelWidth", 560]]))
+    compare(findChild(findChild(sheet, "setting_panelWidth"), "settingValue").text, "‹ 560 px ›")
+    keyClick("j")
+    keyClick("j")
+    verify(findChild(findChild(sheet, "setting_autoCheck"), "settingAbout").visible)
+    keyClick(Qt.Key_Space)
+    compare(json(requested[requested.length - 1]), json(["autoCheck", "Off"]))
+    // The binary: Enter opens its box, Enter there saves, the sheet keeps the keys after.
+    for (var i = 0; i < 4; i++) keyClick("j")
+    compare(sheet.choice, 6)
+    keyClick(Qt.Key_Return)
+    var field = findChild(sheet, "settingEdit")
+    tryVerify(function() { return field.activeFocus })
+    field.text = ""
+    keyClick("/")
+    keyClick("x")
+    keyClick(Qt.Key_Return)
+    compare(json(requested[requested.length - 1]), json(["binary", "/x"]))
+    tryVerify(function() { return findChild(sheet, "sheetKeys").activeFocus })
+    compare(findChild(findChild(sheet, "setting_binary"), "settingValue").text, "/x")
+    // Esc closes it; the frame has the keys again.
+    keyClick(Qt.Key_Escape)
+    verify(!view.settingsOpen)
+    tryVerify(function() { return findChild(view, "keyCatcher").activeFocus })
   }
 
   // The items under `item` named `name`, in the order they are drawn.

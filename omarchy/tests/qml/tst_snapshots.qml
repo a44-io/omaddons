@@ -1093,6 +1093,15 @@ TestCase {
     shoot("backup-page")
   }
 
+  // The settings sheet (1n2p.31), the cursor on a switch with what it does.
+  function test_settings_sheet() {
+    open(everyday(), "updates")
+    frame.settingsOpen = true
+    var sheet = findChild(frame, "settings")
+    sheet.choice = 2
+    shoot("settings")
+  }
+
   // The chooser over a backup's page: one addon's settings or all of them.
   function test_restore_chooser_over_a_backup_page() {
     var scene = everyday()

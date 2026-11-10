@@ -54,7 +54,12 @@ TestCase {
       // What the middle click reads to pick the most urgent view (design doc §2.5).
       property var summary: ({ "errors": { "new": 0 }, "issuesUrgent": 1 })
 
-      function applySettings(settings) { pushed = pushed.concat([settings]) }
+      // The settings applied, as the real service keeps them (the settings sheet reads them).
+      property var settings: ({})
+      function applySettings(next) {
+        pushed = pushed.concat([next])
+        settings = next
+      }
       function setPanelOpen(key, open) {
         var next = {}
         for (var k in panels) if (k !== key) next[k] = panels[k]
@@ -320,6 +325,46 @@ TestCase {
     compare(saved.length, 1)
     compare(saved[0][0], Build.PLUGIN_ID)
     compare([saved[0][1].id, saved[0][1].keyHint, saved[0][1].panelWidth], [Build.PLUGIN_ID, "Off", 600])
+    api.destroy()
+  }
+
+  // 1n2p.31: the settings sheet changes the panel's own settings without a terminal. Each
+  // change goes through the shell's facade (`updateEntryInline`, which writes shell.json),
+  // reaches the service, and the sheet shows what was applied; the widget writes nothing.
+  function test_the_settings_sheet_saves_each_change_through_the_shell() {
+    var api = barApiComponent.createObject(testCase)
+    var saved = []
+    api.shell = { "serviceFor": function(id) { return svc }, "updateEntryInline": function(id, entry) { saved.push([id, entry]) } }
+    var widget = make({ "settings": { "panelWidth": 540, "autoCheck": "On", "keyHint": "Off" } })
+    widget.bar = api
+    part(widget, "button").pressed(Qt.LeftButton)
+    var view = part(widget, "view")
+    view.settingsOpen = true
+    var sheet = part(widget, "settings")
+    verify(sheet.opened)
+    compare(JSON.stringify(sheet.rows.map(function(r) { return r.key })), JSON.stringify(Model.PANEL_SETTING_KEYS))
+    // Width: Enter steps it on; l on again; h back.
+    sheet.choose(0)
+    compare([saved[saved.length - 1][1].panelWidth, widget.settings.panelWidth, sheet.rows[0].text], [560, 560, "560 px"])
+    sheet.stepped(0, 1)
+    sheet.stepped(0, -1)
+    compare(JSON.stringify(saved.map(function(s) { return s[1].panelWidth })), JSON.stringify([560, 580, 560]))
+    // A switch flips, and the other settings stay as they were.
+    sheet.choose(2)
+    compare([saved[saved.length - 1][1].autoCheck, saved[saved.length - 1][1].keyHint, svc.settings.autoCheck], ["Off", "Off", "Off"])
+    compare(sheet.rows[2].text, "Off")
+    // The binary's path is typed: a full path or nothing; anything else says what a path is.
+    var count = saved.length
+    sheet.choose(6)
+    compare(sheet.editing, "binary")
+    var field = part(widget, "settingEdit")
+    field.text = "omaddons"
+    sheet.commit()
+    compare([saved.length, sheet.editing, sheet.editError], [count, "binary", Model.copy("settings.panel.binary.invalid")])
+    field.text = " /opt/omaddons-dev/omaddons "
+    sheet.commit()
+    compare([saved.length, saved[saved.length - 1][1].binary, sheet.editing], [count + 1, "/opt/omaddons-dev/omaddons", ""])
+    compare(saved.every(function(s) { return s[0] === Build.PLUGIN_ID }), true)
     api.destroy()
   }
 

@@ -79,6 +79,37 @@ describe("settings", () => {
     expect(schema).toEqual(M.DEFAULT_SETTINGS)
   })
 
+  // 1n2p.31: the settings sheet's Panel section is the manifest's, a player's words on it.
+  test("every manifest setting is described, and the sheet shows each one a player picks", () => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest.json"), "utf8"))
+    const schema = manifest.barWidget.schema
+    for (const s of schema) expect([s.key, typeof s.description === "string" && s.description.length > 0]).toEqual([s.key, true])
+    expect(M.PANEL_SETTING_KEYS.slice().sort()).toEqual(schema.map((s) => s.key).filter((k) => k !== "keyHint").sort())
+    for (const s of schema.filter((x) => x.type === "integer")) {
+      const rule = M.SETTING_RULES[s.key]
+      expect([rule.min, rule.max, rule.step]).toEqual([s.min, s.max, s.step])
+    }
+    const rows = M.panelSettingRows({ panelWidth: 600, refreshIntervalSec: 90, autoCheck: "Off", binary: "relative/x" })
+    expect(rows.map((r) => [r.key, r.kind, r.text])).toEqual([
+      ["panelWidth", "integer", "600 px"], ["refreshIntervalSec", "integer", "1 min 30 s"], ["autoCheck", "switch", "Off"],
+      ["notifyErrors", "switch", "On"], ["notifyUpdates", "switch", "Off"], ["notifyWhilePlaying", "switch", "Off"],
+      ["binary", "path", "the one that installed the panel"]])
+    expect(rows.every((r) => r.label !== "" && r.about !== "" && !r.label.startsWith("settings."))).toBe(true)
+    expect([30, 60, 300, 3600].map(M.secondsText)).toEqual(["30 s", "1 min", "5 min", "60 min"])
+    expect(M.settingsSections({ settings: {} }).map((s) => [s.title, s.rows.map((r) => r.index)])).toEqual([["Panel", [0, 1, 2, 3, 4, 5, 6]]])
+  })
+
+  test("a step changes one setting within its bounds; a path is typed", () => {
+    expect(M.steppedSetting({}, "panelWidth", 1, true)).toBe(560)
+    expect(M.steppedSetting({ panelWidth: 800 }, "panelWidth", 1, false)).toBe(800)
+    expect(M.steppedSetting({ panelWidth: 800 }, "panelWidth", 1, true)).toBe(400)
+    expect(M.steppedSetting({ panelWidth: 400 }, "panelWidth", -1, false)).toBe(400)
+    expect(M.steppedSetting({ refreshIntervalSec: 30 }, "refreshIntervalSec", -1, true)).toBe(3600)
+    expect(M.steppedSetting({ autoCheck: "On" }, "autoCheck", -1, false)).toBe("Off")
+    expect(M.steppedSetting({ binary: "/x" }, "binary", 1, true)).toBe("/x")
+    expect(["", " /opt/x ", "x", "~/x", "./x", null].map(M.typedPath)).toEqual(["", "/opt/x", null, null, null, ""])
+  })
+
   test("a valid value is kept", () => {
     const s = { binary: "/usr/bin/omaddons", panelWidth: 600, autoCheck: "Off", refreshIntervalSec: 3600 }
     expect(M.setting(s, "binary")).toBe("/usr/bin/omaddons")
@@ -1360,7 +1391,8 @@ describe("the key map", () => {
     expect(M.keyHint("search", "field")).toBe("Enter")
     expect(M.keyHint("search", "view")).toBe("s")
     expect(M.keyHint("zoom")).toBe("z")
-    expect(M.keyHint("settings")).toBe("", "no key before its action exists (.31)")
+    // The settings sheet's key, now that it exists (.31).
+    expect(M.keyHint("settings")).toBe(",")
     expect(M.withKey("Check now", "check")).toBe("Check now (c)")
     expect(M.withKey("Undo update on era", "undo")).toBe("Undo update on era (Ctrl+Z)")
     expect(M.withKey("Nothing", "no_such_action")).toBe("Nothing")
