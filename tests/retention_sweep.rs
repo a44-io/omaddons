@@ -18,7 +18,9 @@ use std::path::{Path, PathBuf};
 use common::addons::toc;
 use common::archives::zip_text;
 use common::home::Home;
-use common::state::{history, key_of};
+#[cfg(debug_assertions)]
+use common::state::history;
+use common::state::key_of;
 use common::tlog::{Ran, TestLog, tlog};
 use jiff::{SignedDuration, Timestamp};
 use omaddons::model::TargetKey;

@@ -4944,6 +4944,7 @@ mod tests {
         }
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn a_failed_inverse_rolls_the_undo_back() {
         let home = plain_home();

@@ -3616,6 +3616,7 @@ mod tests {
         }
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn the_bound_checks_run_after_the_generation_and_around_the_rejudge() {
         let (scene, changes, kind, default_kind) = update_to_v2();
@@ -3690,6 +3691,7 @@ mod tests {
         }
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn a_bound_run_left_with_nothing_to_do_is_refused_not_unchanged() {
         let (scene, changes, kind, default_kind) = forget_foo();
@@ -3822,6 +3824,7 @@ mod tests {
 
     /// `changes` run unbound, paused once everything was re-judged (after the identities
     /// were taken), while `meanwhile` runs.
+    #[cfg(debug_assertions)]
     fn paused_after_revalidation(
         scene: &TxScene,
         changes: Vec<RequestedChange>,
@@ -3846,6 +3849,7 @@ mod tests {
         })
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn an_unbound_runs_refused_rename_stays_retryable() {
         let (scene, changes, _, _) = update_to_v2();
@@ -3870,6 +3874,7 @@ mod tests {
         assert!(scene.addons() == tree, "rolled back");
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn a_refused_rename_whose_rollback_failed_stays_a_recovery_failure() {
         let (scene, changes, _, _) = update_to_v2();

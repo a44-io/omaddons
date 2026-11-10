@@ -649,7 +649,9 @@ mod tests {
         Attribution, Fix, JournalSet, Mode, QuarantineRoot, Sha256, Stamp, SuspendedArtifact,
     };
     use crate::engine::testing::{RepairHome, repair_home, repair_prepared};
-    use crate::fsx::{self, GlobalLock, with_spec};
+    #[cfg(debug_assertions)]
+    use crate::fsx::with_spec;
+    use crate::fsx::{self, GlobalLock};
     use crate::model::Actor;
 
     const FILE_MODE: &str = "fm-secrets-credential-file-mode";
@@ -1044,7 +1046,9 @@ mod tests {
     }
 
     /// `fixes` committed on `home` with `spec` armed: a `panic` stands in for a crash,
-    /// leaving the journal as it was and its writer gone.
+    /// leaving the journal as it was and its writer gone. Debug builds: it arms a
+    /// failpoint, as every test that calls it does through it.
+    #[cfg(debug_assertions)]
     fn crashed(home: &RepairHome, fixes: &[PlannedFix], spec: &str) -> TxId {
         let rtx = RepairTx::begin(&home.paths).unwrap();
         let tx = rtx.tx();
@@ -1073,6 +1077,7 @@ mod tests {
 
     /// A chmod of the credential that ran, then the file changed by hand: its step is in
     /// neither state, and recovery stops at it (`step_unrecognized`).
+    #[cfg(debug_assertions)]
     fn stuck(home: &RepairHome) -> TxId {
         let tx = crashed(home, &[chmod(home)], "fsx.mutate.executed=panic@1");
         set_mode(&home.credential(), 0o640);
@@ -1126,6 +1131,7 @@ mod tests {
         }
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn load_maps_each_verdict() {
         type Plant = fn(&RepairHome) -> (Option<TxId>, Option<std::fs::File>);
@@ -1292,6 +1298,7 @@ mod tests {
         }
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn a_fence_refusal_validates_against_its_codes_details() {
         // Every stop a fence can carry: a readable repair's (internal, step_unrecognized)
@@ -1368,6 +1375,7 @@ mod tests {
         target
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn under_lock_refuses_a_newly_stuck_repair() {
         let home = repair_home();
@@ -1471,6 +1479,7 @@ mod tests {
         named[0].clone()
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn the_reader_and_recovery_warnings_are_equal() {
         type Plant = fn(&RepairHome) -> TxId;
@@ -1685,6 +1694,7 @@ mod tests {
         }
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn pending_warnings_titles_stuck_and_closed_repairs() {
         let home = repair_home();
@@ -1725,6 +1735,7 @@ mod tests {
         );
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn pending_warnings_costs_one_listing_without_repairs() {
         let diagnosed = || REPAIR_DIAGNOSES.with(std::cell::Cell::get);

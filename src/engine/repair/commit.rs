@@ -583,7 +583,9 @@ mod tests {
     use crate::engine::repair::{LowerCtx, PlannedFix, lower};
     use crate::engine::repair_action::{Fix, Mode, QuarantineRoot};
     use crate::engine::testing::{RepairHome, repair_home, tree_hash, tree_hash_except};
-    use crate::fsx::{GlobalLock, InflightLock, with_spec};
+    #[cfg(debug_assertions)]
+    use crate::fsx::with_spec;
+    use crate::fsx::{GlobalLock, InflightLock};
     use crate::state::history::HistoryFilter;
 
     thread_local! {
@@ -1105,6 +1107,7 @@ mod tests {
         assert!(rollback.starts_with(home.run.dir.join("quarantine/skill/rolled_back")));
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn an_error_after_execute_is_rolled_back_by_its_predicates() {
         let home = repair_home();
@@ -1127,6 +1130,7 @@ mod tests {
         assert_eq!(mode_of(&home.credential()), 0o644, "its old mode");
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn a_rollback_that_meets_an_unrecognized_step_stops_and_keeps_the_journal() {
         let home = repair_home();
@@ -1165,6 +1169,7 @@ mod tests {
         );
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn a_failure_after_done_rolls_forward_in_process() {
         for (case, spec) in [
@@ -1248,6 +1253,7 @@ mod tests {
         }
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn the_roots_exist_before_prepared() {
         let home = repair_home();

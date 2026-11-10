@@ -454,7 +454,11 @@ pub(crate) fn unrecoverable_warning(tx: &TxId, why: Unrecoverable) -> Warning {
     .with_fix(why.fix())
 }
 
+// Every test here crashes or fails a commit through a failpoint override, which only
+// debug builds have (`fsx::with_spec`). Two attributes, so clippy still sees a
+// `cfg(test)` module (`allow-unwrap-in-tests`).
 #[cfg(test)]
+#[cfg(debug_assertions)]
 mod tests {
     use std::borrow::Cow;
     use std::collections::BTreeMap;

@@ -5008,6 +5008,7 @@ mod tests {
     /// preservation lines on lines of their own: the fragment is dropped first, so the
     /// intent reads back, a stopped preservation resumes with the same id, and no line is
     /// ever unreadable.
+    #[cfg(debug_assertions)]
     #[test]
     fn preservation_after_a_torn_line_resumes_and_leaves_no_unreadable_line() {
         let w = WtfScene::new(TxKind::Restore, true, true);

@@ -2968,6 +2968,7 @@ mod tests {
         rows.iter().map(|row| row.id).collect()
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn test_rows_only_with_the_switch() {
         let catalog = ids_of(FAILURE_MODES);
@@ -2994,6 +2995,7 @@ mod tests {
         assert_eq!(ids_of(failure_modes()), catalog);
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn test_rows_obey_the_invariants() {
         let both = failure_modes_with(true);

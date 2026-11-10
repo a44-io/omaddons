@@ -1952,6 +1952,7 @@ mod tests {
         );
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn real_flow_rolls_back_on_a_step_error() {
         let (_dir, paths) = home();
