@@ -37,8 +37,8 @@ use omaddons::sources::wowi::index::{IndexPolicy, StoredIndex, WowiEntry, WowiIn
 use omaddons::sources::{SourceConfigView, SourceRegistry, Wanted, fetch_once};
 use omaddons::state::memo::{self, MemoEntry, ReleaseMemo};
 use support::{
-    addon_release, drift_report, history_line, lua_workload, measured, median_of_21, peak_rss,
-    restore_lock_hold, sampled_peak_rss,
+    addon_release, current_rss, drift_report, history_line, lua_workload, measured, median_of_21,
+    peak_rss, restore_lock_hold, sampled_peak_rss,
 };
 
 /// Held by each 500 MiB test, so two never share the disk.
@@ -154,11 +154,18 @@ mod support {
 
     /// This process's peak resident memory (`VmHWM`), in bytes.
     pub fn peak_rss() -> u64 {
+        own_status_bytes("VmHWM:")
+    }
+
+    /// This process's resident memory now (`VmRSS`), in bytes.
+    pub fn current_rss() -> u64 {
+        own_status_bytes("VmRSS:")
+    }
+
+    /// One `kB` field of `/proc/self/status`, in bytes.
+    fn own_status_bytes(field: &str) -> u64 {
         let status = std::fs::read_to_string("/proc/self/status").unwrap();
-        let line = status
-            .lines()
-            .find_map(|l| l.strip_prefix("VmHWM:"))
-            .unwrap();
+        let line = status.lines().find_map(|l| l.strip_prefix(field)).unwrap();
         let kib: u64 = line.trim().trim_end_matches("kB").trim().parse().unwrap();
         kib * 1024
     }
@@ -1257,8 +1264,10 @@ const LUA_WORKLOADS: &[&str] = &[
     "sixty_four_candidates",
 ];
 
-/// Each workload in a child process, so the harness's own memory does not count: peak
-/// RSS at most 3 × the input plus 16 MiB, and at most 1 s per 64 MiB parsed.
+/// Each workload in a child process, so the harness's own memory does not count: what the
+/// workload adds to the child's resident memory (its peak less what the child held before
+/// the workload began, which is the test binary and its list of every test, and grows
+/// with the suite) at most 3 × the input plus 16 MiB, and at most 1 s per 64 MiB parsed.
 #[test]
 #[ignore = "a release-build budget: cargo test --release --test integration perf:: -- --ignored"]
 fn the_savedvariables_parser_stays_within_its_memory_and_time_budgets() {
@@ -1288,17 +1297,28 @@ fn the_savedvariables_parser_stays_within_its_memory_and_time_budgets() {
                 .and_then(|v| v.parse().ok())
                 .unwrap()
         };
-        let (input, parsed, peak, ms) =
-            (field("input"), field("parsed"), field("peak"), field("ms"));
+        let (input, parsed, start, peak, ms) = (
+            field("input"),
+            field("parsed"),
+            field("start"),
+            field("peak"),
+            field("ms"),
+        );
+        // What the workload added to the child: its peak less what the child held before
+        // it began (the test binary and its harness, which grow with the suite).
+        let added = peak.saturating_sub(start);
         measured(format_args!(
-            "savedvariables {workload}: input {:.1} MiB ({:.0} MiB parsed), peak RSS {:.1} MiB, {ms} ms",
+            "savedvariables {workload}: input {:.1} MiB ({:.0} MiB parsed), peak RSS {:.1} MiB \
+             ({:.1} MiB at start, {:.1} MiB added), {ms} ms",
             input as f64 / MIB as f64,
             parsed as f64 / MIB as f64,
             peak as f64 / MIB as f64,
+            start as f64 / MIB as f64,
+            added as f64 / MIB as f64,
         ));
         assert!(
-            peak <= 3 * input + 16 * MIB,
-            "{workload}: peak {peak} bytes for {input}"
+            added <= 3 * input + 16 * MIB,
+            "{workload}: {added} bytes added (peak {peak}, start {start}) for {input}"
         );
         assert!(
             ms <= 1000 * parsed.div_ceil(64 * MIB),
@@ -1316,13 +1336,18 @@ fn lua_resource_child() {
     let Ok(workload) = std::env::var("OMADDONS_LUA_WORKLOAD") else {
         return;
     };
+    // This process before the workload: the test binary itself and the harness's list of
+    // every test in it, which grows with the suite and is not the parser's.
+    let start_rss = current_rss();
     let (input, parsed, ms) = if workload == "sixty_four_candidates" {
         // One BugGrabber file of about 1 MiB, read and parsed once per candidate: what
-        // one read holds is dropped before the next.
+        // one read holds is dropped before the next. The database that wrote the file is
+        // the test's, so it is gone before the first read.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("!BugGrabber.lua");
         let db = common::buggrabber::flood(common::buggrabber::Writer::Modern, 9_000);
         fs::write(&path, db.render()).unwrap();
+        drop(db);
         let size = fs::metadata(&path).unwrap().len();
         let start = Instant::now();
         for _ in 0..64 {
@@ -1347,7 +1372,7 @@ fn lua_resource_child() {
         (bytes.len() as u64, bytes.len() as u64, ms)
     };
     measured(format_args!(
-        "lua-resource input={input} parsed={parsed} peak={} ms={}",
+        "lua-resource input={input} parsed={parsed} start={start_rss} peak={} ms={}",
         peak_rss(),
         ms.as_millis()
     ));
