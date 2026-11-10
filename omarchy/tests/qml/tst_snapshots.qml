@@ -310,6 +310,8 @@ TestCase {
     if (w[0] === "search" && w.indexOf("--catalog") !== -1) return scene.catalog
     if (w[0] === "search") return scene.search
     if (w[0] === "info") return scene.changelog
+    // omaddons' settings, for the settings sheet (1n2p.31).
+    if (w[0] === "config" && w.length === 1) return scene.config
     if (w[0] === "outdated") return scene.check
     return scene[w[0]]
   }
@@ -1093,13 +1095,29 @@ TestCase {
     shoot("backup-page")
   }
 
-  // The settings sheet (1n2p.31), the cursor on a switch with what it does.
+  // The settings sheet (1n2p.31), the cursor on a switch with what it does, and
+  // omaddons' settings as the binary printed them.
   function test_settings_sheet() {
-    open(everyday(), "updates")
+    var scene = everyday()
+    scene.config = the("config")
+    open(scene, "updates")
     frame.settingsOpen = true
+    settle(scene)
     var sheet = findChild(frame, "settings")
     sheet.choice = 2
     shoot("settings")
+  }
+
+  // The cursor on an omaddons setting.
+  function test_settings_sheet_omaddons() {
+    var scene = everyday()
+    scene.config = the("config")
+    open(scene, "updates")
+    frame.settingsOpen = true
+    settle(scene)
+    var sheet = findChild(frame, "settings")
+    sheet.choice = 9
+    shoot("settings-omaddons")
   }
 
   // The chooser over a backup's page: one addon's settings or all of them.

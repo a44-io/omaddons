@@ -137,12 +137,72 @@ function typedPath(text) {
   return s === "" || s.charAt(0) === "/" ? s : null
 }
 
-// The settings sheet's sections (design doc §2.7): each `{key, title, rows}`, every row
-// with its index for the sheet's one cursor. `input`: {settings} (the panel's, as the
-// shell applied them).
+// omaddons' own settings in the sheet (design doc §2.7): each key, the template that sets
+// it, and the values offered, in the order Enter steps through them. `config.toml`
+// stays the one source: the panel reads it with `config` and keeps no copy.
+var OMADDONS_SETTINGS = [
+  { "key": "default_channel", "template": "config_channel", "values": ["stable", "beta", "alpha"] },
+  { "key": "running_policy", "template": "config_running", "values": ["safe", "refuse", "allow"] },
+  { "key": "auto_backup", "template": "config_backups", "values": ["daily", "daily-copy", "off"] },
+  { "key": "check_interval_hours", "template": "config_interval", "values": [1, 2, 3, 4, 6, 8, 12, 24, 48] }
+]
+
+// `config --json`: each setting's value and whether it is the default.
+function reduceConfig(env) {
+  if (!envelopeOk(env) || !env.ok || !env.data || !Array.isArray(env.data.settings)) return null
+  var settings = {}
+  env.data.settings.forEach(function(s) {
+    if (s && typeof s.name === "string") settings[s.name] = { "value": s.value, "source": str(s.source) }
+  })
+  return { "settings": settings }
+}
+
+// An omaddons setting's value in words ("Stable", "Safe ones", "6 h").
+function configText(key, value) {
+  if (key === "check_interval_hours") return copy("settings.value.hours", { "n": value })
+  var id = "settings.omaddons." + key + "." + str(value)
+  return COPY.hasOwnProperty(id) ? copy(id) : str(value)
+}
+
+// The omaddons section's rows, from `config` (reduced): each key's label, what it does,
+// its value in words and the values Enter and h/l step through. A value the sheet does
+// not offer (set by hand) shows as it is; a step from it goes to the first offered.
+function omaddonsSettingRows(config) {
+  var settings = config && config.settings ? config.settings : {}
+  return OMADDONS_SETTINGS.map(function(s) {
+    var held = settings.hasOwnProperty(s.key) ? settings[s.key] : null
+    var value = held ? held.value : null
+    return { "section": "omaddons", "key": s.key, "kind": "choice", "label": copy("settings.omaddons." + s.key),
+      "about": copy("settings.omaddons." + s.key + ".about"), "value": value, "text": value === null ? "" : configText(s.key, value),
+      "template": s.template, "values": s.values }
+  })
+}
+
+// The `config set` a step on an omaddons row runs: the next offered value (Enter and l
+// on, h back, past the end round again when `wrap`), applied directly with the result
+// shown; null when there is nothing to change.
+function configRequest(row, step, wrap) {
+  if (!row || !Array.isArray(row.values) || row.values.length === 0) return null
+  var at = -1
+  for (var i = 0; i < row.values.length; i++) if (String(row.values[i]) === String(row.value)) at = i
+  var next = at === -1 ? 0 : at + (step < 0 ? -1 : 1)
+  if (next >= row.values.length) next = wrap ? 0 : row.values.length - 1
+  if (next < 0) next = wrap ? row.values.length - 1 : 0
+  if (next === at) return null
+  var value = row.values[next]
+  return { "template": row.template, "slots": { "value": String(value) },
+    "label": copy("settings.omaddons.change", { "setting": row.label, "value": configText(row.key, value) }) }
+}
+
+// The settings sheet's sections (design doc §2.7): each `{key, title, rows, note}`, every
+// row with its index for the sheet's one cursor; `note` says what a section waits for.
+// `input`: {settings} (the panel's, as the shell applied them), {config} (`config`,
+// reduced; null until read) and {configFailed} (the read's failure, or "").
 function settingsSections(input) {
   var i = input || {}
-  var sections = [{ "key": "panel", "title": copy("settings.section.panel"), "rows": panelSettingRows(i.settings) }]
+  var sections = [{ "key": "panel", "title": copy("settings.section.panel"), "rows": panelSettingRows(i.settings), "note": "" }]
+  sections.push({ "key": "omaddons", "title": copy("settings.section.omaddons"), "rows": i.config ? omaddonsSettingRows(i.config) : [],
+    "note": i.config ? "" : (i.configFailed ? copy("settings.omaddons.failed") : copy("settings.omaddons.reading")) })
   var index = 0
   sections.forEach(function(s) { s.rows.forEach(function(r) { r.index = index++ }) })
   return sections
@@ -171,6 +231,9 @@ var WIDGET_EXPLAIN_EVIDENCE_MAX = 12
 
 // ------------------------------------------------------ the templates (M3-D2)
 
+// The settings sheet's (1n2p.31): `config` reads omaddons' settings whole, and each
+// `config_*` sets one key named in its own argv, so no other key is reachable from the
+// panel; its value is a `{value}` CONFIG_VALUE_PATTERN admits.
 // BEGIN COMMANDS: checked by tests/omarchy_widget.rs; every entry must parse as an omaddons command line
 // F1 ships the entries for commands that exist at F1 time; F8 adds errors_target and backup_auto (B6, D3);
 // F6 adds errors, errors_raw and dismiss_errors (B6, B8); F9 adds backups, backup_target, backup_all,
@@ -216,7 +279,12 @@ var COMMANDS = {
   "adopt_target":      { "argv": ["adopt", "--apply", "-t", "{target}"],           "mutates": true, "preview": "confirm" },
   "history":           { "argv": ["history", "-v", "--limit", "100"],              "mutates": false, "lane": "local", "actor": false },
   "undo_run":          { "argv": ["undo", "--run={run}"],                          "mutates": true, "preview": "confirm" },
-  "undo_run_target":   { "argv": ["undo", "-t", "{target}", "--run={run}"],        "mutates": true, "preview": "confirm" }
+  "undo_run_target":   { "argv": ["undo", "-t", "{target}", "--run={run}"],        "mutates": true, "preview": "confirm" },
+  "config":            { "argv": ["config"],                                       "mutates": false, "lane": "local" },
+  "config_channel":    { "argv": ["config", "set", "default_channel", "--", "{value}"], "mutates": true },
+  "config_running":    { "argv": ["config", "set", "running_policy", "--", "{value}"], "mutates": true },
+  "config_backups":    { "argv": ["config", "set", "auto_backup", "--", "{value}"], "mutates": true },
+  "config_interval":   { "argv": ["config", "set", "check_interval_hours", "--", "{value}"], "mutates": true }
 }
 // END COMMANDS
 
@@ -297,7 +365,11 @@ var WIDGET_FLAGS = ["--json", "--robot", "--format", "--actor", "--reason", "--p
 var IRREVERSIBLE_FLAGS = ["--purge"]
 // What a row that shows an irreversible command says about it.
 var IRREVERSIBLE_NOTE = "It deletes omaddons' backups and undo snapshots for good, so it runs only from a terminal, after its preview."
-var SLOTS = { "target": true, "addon": true, "ref": true, "backup": true, "query": true, "fm": true, "path": true, "run": true }
+var SLOTS = { "target": true, "addon": true, "ref": true, "backup": true, "query": true, "fm": true, "path": true, "run": true, "value": true }
+// A setting's value for `config set` (the settings sheet, 1n2p.31): one of the words or
+// numbers the sheet offers, never free text: lower case, digits and dashes, at most 16
+// characters. Each template names its own key; the CLI judges the value against it.
+var CONFIG_VALUE_PATTERN = /^[a-z0-9][a-z0-9-]{0,15}$/
 // A run's id as `history` writes it, whole: a ULID in Crockford's upper case. History's
 // undo names the run it read (1n2p.30), never a prefix the CLI could match twice.
 var RUN_PATTERN = /^[0-9A-HJKMNP-TV-Z]{26}$/
@@ -417,6 +489,9 @@ function checkSlot(name, slot, value, template) {
   }
   if (slot === "run" && !RUN_PATTERN.test(value)) {
     throw refuse("bad_run", name + ": " + JSON.stringify(value) + " is no run id")
+  }
+  if (slot === "value" && !CONFIG_VALUE_PATTERN.test(value)) {
+    throw refuse("bad_setting", name + ": " + JSON.stringify(value) + " is no setting value the panel offers")
   }
   if (slot === "query" && template.mutates) throw refuse("query_in_mutation", name)
 }
@@ -2410,6 +2485,14 @@ function isChange(item) {
 // names the change it reverted and where; a dismissal counts the errors that stopped
 // being new. "" for any other command.
 function commandResultLine(command, data) {
+  // A setting the settings sheet changed (1n2p.31): in the sheet's words.
+  if (command === "config set") {
+    var key = str(data.name)
+    var known = OMADDONS_SETTINGS.some(function(s) { return s.key === key })
+    var setting = known ? copy("settings.omaddons." + key) : key
+    var value = known ? configText(key, data.value) : str(data.value)
+    return copy(data.changed === false ? "settings.result.unchanged" : "settings.result", { "setting": setting, "value": value })
+  }
   // A client added by its folder (1n2p.32): its player name, as `targets add` gives it.
   if (command === "targets add") {
     if (data.changed === false) return copy("addclient.result.none")
@@ -3105,7 +3188,7 @@ var KEYMAP = [
   { "keys": ["h", "l", "Left", "Right"], "context": "panel", "action": "view_step", "label": "previous or next view (on a page, h goes back)", "hint": "h l" },
   { "keys": ["1", "2", "3", "4", "5", "6", "7"], "context": "panel", "action": "view", "label": "view 1 to 7: Updates, Addons, Search, Errors, Issues, Backups, History", "hint": "1–7" },
   { "keys": ["?"], "context": "panel", "action": "help", "label": "this key reference", "hint": "?" },
-  { "keys": [","], "context": "panel", "action": "settings", "label": "settings: the panel's own", "hint": "," },
+  { "keys": [","], "context": "panel", "action": "settings", "label": "settings: the panel's and omaddons'", "hint": "," },
   { "keys": ["z"], "context": "panel", "action": "zoom", "label": "fill the screen, and back", "hint": "z" },
   { "keys": ["Ctrl+=", "Ctrl+-", "Ctrl+0"], "context": "panel", "action": "text_zoom", "label": "bigger or smaller text, and back to normal (or Ctrl+wheel)", "hint": "Ctrl+= Ctrl+-" },
   { "keys": ["Esc"], "context": "panel", "action": "close", "label": "back out one layer: a page, then a filter or a search, then the panel closes", "hint": "Esc" },
@@ -6067,6 +6150,30 @@ var COPY = {
   "settings.value.minutes": "{n} min",
   "settings.value.minutes_seconds": "{n} min {s} s",
   "settings.value.binary_stamped": "the one that installed the panel",
+  "settings.value.hours": "{n} h",
+  "settings.section.omaddons": "omaddons",
+  "settings.omaddons.reading": "Reading omaddons' settings…",
+  "settings.omaddons.failed": "Couldn't read omaddons' settings.",
+  "settings.omaddons.change": "{setting}: {value}",
+  "settings.result": "{setting}: {value}",
+  "settings.result.unchanged": "{setting}: already {value}",
+  "settings.omaddons.default_channel": "Channel for new installs",
+  "settings.omaddons.default_channel.about": "Which releases a new install follows. Each addon can follow its own.",
+  "settings.omaddons.default_channel.stable": "Stable",
+  "settings.omaddons.default_channel.beta": "Beta",
+  "settings.omaddons.default_channel.alpha": "Alpha",
+  "settings.omaddons.running_policy": "Changes while a game runs",
+  "settings.omaddons.running_policy.about": "Safe ones go through and take effect after a /reload or a restart. Settings are never written while a game runs.",
+  "settings.omaddons.running_policy.safe": "Safe ones",
+  "settings.omaddons.running_policy.refuse": "None",
+  "settings.omaddons.running_policy.allow": "All",
+  "settings.omaddons.auto_backup": "Automatic backups",
+  "settings.omaddons.auto_backup.about": "A copy of a client's settings before a change and after you play, once a day. Free copies need a btrfs or xfs drive.",
+  "settings.omaddons.auto_backup.daily": "Daily, free copies only",
+  "settings.omaddons.auto_backup.daily-copy": "Daily, full copies where needed",
+  "settings.omaddons.auto_backup.off": "Off",
+  "settings.omaddons.check_interval_hours": "Check for updates every",
+  "settings.omaddons.check_interval_hours.about": "After this long a client's update check is due again; the panel checks then when its own check is on.",
 
   // The restore chooser (1n2p.29, design doc §2.4).
   "restore.title.owner": "Restore {owner} settings on {client}",
@@ -7647,6 +7754,12 @@ if (typeof module !== "undefined") {
     steppedSetting: steppedSetting,
     typedPath: typedPath,
     settingsSections: settingsSections,
+    OMADDONS_SETTINGS: OMADDONS_SETTINGS,
+    CONFIG_VALUE_PATTERN: CONFIG_VALUE_PATTERN,
+    reduceConfig: reduceConfig,
+    configText: configText,
+    omaddonsSettingRows: omaddonsSettingRows,
+    configRequest: configRequest,
     WIDGET_LOCAL_DEADLINE_SEC: WIDGET_LOCAL_DEADLINE_SEC,
     WIDGET_NETWORK_DEADLINE_SEC: WIDGET_NETWORK_DEADLINE_SEC,
     WIDGET_KILL_GRACE_SEC: WIDGET_KILL_GRACE_SEC,

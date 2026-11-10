@@ -70,6 +70,10 @@ Item {
   // History's `history -v` (Model.reduceHistory), read locally when its view opens and
   // after every change (1n2p.30).
   property var history: null
+  // omaddons' own settings (`config`, Model.reduceConfig), read when the settings sheet
+  // opens and after each change it makes (1n2p.31); the read's failure, or "".
+  property var config: null
+  property string configFailed: ""
   property var search: null
   // The built-in catalog per client scope ("" for All), reduced as a search's answer
   // (`search --catalog`, local and offline: Search's empty box, 1n2p.26), kept for the
@@ -402,6 +406,11 @@ Item {
   // History's changes (1n2p.30): local, never the network.
   function readHistory() {
     return request({ "resource": "history", "template": "history", "label": "History" })
+  }
+
+  // omaddons' own settings, for the settings sheet (1n2p.31): local, never the network.
+  function readConfig() {
+    return request({ "resource": "config", "template": "config", "label": "Settings" })
   }
 
   // The restore chooser opened for `target`: each backup's addon versions, view-bound.
@@ -990,6 +999,8 @@ Item {
         if (r.resource === "explain") explanation = { "selection": r.selection, "lines": null, "failed": lastError.message }
         // A backup's page waiting for its addons says they could not be read.
         if (r.resource === "backups_detail") backupsDetail = { "selection": r.selection, "data": null, "failed": lastError.message }
+        // The settings sheet's omaddons section says so too.
+        if (r.resource === "config") configFailed = lastError.message
       }
     } else if (r.resource === "list") {
       lists = Model.reduceList(env)
@@ -1007,6 +1018,9 @@ Item {
       historyAt = Date.now()
     } else if (r.resource === "backups_detail") {
       backupsDetail = { "selection": r.selection, "data": Model.reduceBackups(env) }
+    } else if (r.resource === "config") {
+      config = Model.reduceConfig(env)
+      configFailed = config ? "" : Model.copy("settings.omaddons.failed")
     } else if (r.resource === "search") {
       var found = Model.reduceSearch(env)
       found.selection = r.selection
@@ -1123,6 +1137,9 @@ Item {
         // A client added by its folder (1n2p.32): the clients read with their scan, which
         // also puts the new client into the discovery cache the cached reads start from.
         if (r.template === "targets_add" && outcome === "ok") rescan()
+        // A setting the settings sheet changed (1n2p.31): omaddons' settings read again,
+        // whatever came of it, so the sheet shows what config.toml holds.
+        if (String(r.template).indexOf("config_") === 0) readConfig()
         // A plan gone stale or gone, or a client's part gone stale: the action is previewed
         // again (first in line), never applied again (M4-D28).
         if (r.purpose === "planned" && r.spec && Model.needsPreviewAgain(env)) previewOf(r.spec, Model.staleText(env, targets), true)

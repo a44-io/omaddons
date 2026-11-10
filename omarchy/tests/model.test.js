@@ -96,7 +96,49 @@ describe("settings", () => {
       ["binary", "path", "the one that installed the panel"]])
     expect(rows.every((r) => r.label !== "" && r.about !== "" && !r.label.startsWith("settings."))).toBe(true)
     expect([30, 60, 300, 3600].map(M.secondsText)).toEqual(["30 s", "1 min", "5 min", "60 min"])
-    expect(M.settingsSections({ settings: {} }).map((s) => [s.title, s.rows.map((r) => r.index)])).toEqual([["Panel", [0, 1, 2, 3, 4, 5, 6]]])
+    expect(M.settingsSections({ settings: {} }).map((s) => [s.title, s.rows.map((r) => r.index)])).toEqual([["Panel", [0, 1, 2, 3, 4, 5, 6]],
+      ["omaddons", []]])
+  })
+
+  // 1n2p.31: omaddons' own settings, from `config` as the binary prints it; a step is one
+  // `config set` through the key's own template.
+  test("omaddons' settings: read whole, each changed by its own template", () => {
+    const config = M.reduceConfig(fixture("config"))
+    const rows = M.omaddonsSettingRows(config)
+    expect(rows.map((r) => [r.key, r.text])).toEqual([["default_channel", "Stable"], ["running_policy", "Safe ones"],
+      ["auto_backup", "Daily, free copies only"], ["check_interval_hours", "6 h"]])
+    expect(rows.every((r) => r.label !== "" && r.about !== "" && !r.label.startsWith("settings."))).toBe(true)
+    // Enter on, h back, l on; wrapping only on Enter.
+    const backups = rows[2]
+    expect(M.configRequest(backups, 1, true)).toEqual({ template: "config_backups", slots: { value: "daily-copy" },
+      label: "Automatic backups: Daily, full copies where needed" })
+    expect(M.configRequest(backups, -1, false)).toBe(null)
+    expect(M.configRequest(Object.assign({}, backups, { value: "off" }), 1, true).slots.value).toBe("daily")
+    expect(M.configRequest(Object.assign({}, rows[3], { value: 6 }), 1, false).slots.value).toBe("8")
+    // A value set by hand that the sheet doesn't offer: shown as it is; a step goes to the first.
+    const hand = Object.assign({}, rows[3], { value: 5, text: M.configText("check_interval_hours", 5) })
+    expect([hand.text, M.configRequest(hand, 1, true).slots.value]).toEqual(["5 h", "1"])
+    // Each request builds, its value one element after -- of the key's own `config set`.
+    for (const s of M.OMADDONS_SETTINGS) {
+      for (const value of s.values) {
+        expect(M.CONFIG_VALUE_PATTERN.test(String(value))).toBe(true)
+        const argv = M.buildArgv(s.template, { value: String(value) }, opts({ label: "Set" })).argv
+        expect(argv.slice(argv.indexOf("config"))).toEqual(["config", "set", s.key, "--", String(value)])
+      }
+    }
+    // The binary's answer after a change, and before the read answers.
+    const after = M.omaddonsSettingRows(M.reduceConfig(fixture("config-after")))
+    expect(after[2].text).toBe("Daily, full copies where needed")
+    expect(M.settingsSections({ settings: {}, config: null }).map((s) => [s.title, s.rows.length, s.note])).toEqual([
+      ["Panel", 7, ""], ["omaddons", 0, "Reading omaddons' settings…"]])
+    expect(M.settingsSections({ settings: {}, config: null, configFailed: "x" })[1].note).toBe("Couldn't read omaddons' settings.")
+    expect(M.settingsSections({ settings: {}, config }).flatMap((s) => s.rows.map((r) => r.index))).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    expect([M.reduceConfig(fixture("config-set-refused")), fixture("config-set").data.changed]).toEqual([null, true])
+    // The result line, in the sheet's words.
+    expect(M.resultLine(fixture("config-set"), CONTEXT, [])).toBe("Automatic backups: Daily, full copies where needed")
+    const same = JSON.parse(JSON.stringify(fixture("config-set")))
+    same.data.changed = false
+    expect(M.resultLine(same, CONTEXT, [])).toBe("Automatic backups: already Daily, full copies where needed")
   })
 
   test("a step changes one setting within its bounds; a path is typed", () => {
@@ -178,6 +220,7 @@ const BENIGN = {
   fm: "fm-secrets-credential-file-mode",
   path: "/home/fixture/Games/World of Warcraft",
   run: "01M8Q2VA7K3N5P8R1T4W6X9Y0Z",
+  value: "daily-copy",
 }
 
 // What a template needs beyond its slots to build: a planned template builds as its
@@ -297,6 +340,15 @@ describe("buildArgv", () => {
           for (const value of HOSTILE) {
             const slots = Object.assign(benignSlots(name), { fm: value })
             expect([name, value, reasonOf(() => M.buildArgv(name, slots, runOpts(name)))]).toEqual([name, value, "bad_fm"])
+          }
+          continue
+        }
+        // A setting's value has its own grammar (a word or number the settings sheet
+        // offers, 1n2p.31): every hostile value is refused.
+        if (slot === "value") {
+          for (const value of HOSTILE) {
+            const slots = Object.assign(benignSlots(name), { value })
+            expect([name, value, reasonOf(() => M.buildArgv(name, slots, runOpts(name)))]).toEqual([name, value, "bad_setting"])
           }
           continue
         }
@@ -4250,9 +4302,9 @@ test("writes every built argv and the classifier's verdicts for the Rust check",
     if (M.COMMANDS[name].preview) realForms.push([name, reasonOf(() => M.buildArgv(name, base, opts()))])
     for (const slot of M.templateShape(name).slots) {
       // A hostile failure-mode id is refused (`bad_fm`, buildArgv's table above), and so
-      // is a hostile run id (`bad_run`); a hostile client folder too, unless it is
-      // absolute: those are parsed by clap.
-      if (slot === "target" || slot === "fm" || slot === "run") continue
+      // are a hostile run id (`bad_run`) and setting value (`bad_setting`); a hostile
+      // client folder too, unless it is absolute: those are parsed by clap.
+      if (slot === "target" || slot === "fm" || slot === "run" || slot === "value") continue
       if (slot === "path") {
         for (const value of HOSTILE) record(name, Object.assign({}, base, { path: "/" + value }), extra)
         continue

@@ -1253,6 +1253,33 @@ TestCase {
     compare(service.pendingDismissals.length, 0)
   }
 
+  // 1n2p.31: the settings sheet's omaddons section. `config` read on the local lane; one
+  // key set through its own template, applied directly; `config` read again after, and a
+  // read that failed is said, never shown as settings.
+  function test_omaddons_settings_are_read_set_through_their_template_and_read_again() {
+    ready(0)
+    service.readConfig()
+    var read = lastRun("config")
+    compare(words(read.command), ["config"])
+    answer(read, envelope("config", { "path": "/c/config.toml", "exists": true, "settings": [
+      { "name": "default_channel", "value": "stable", "source": "default" },
+      { "name": "check_interval_hours", "value": 6, "source": "default" }] }))
+    compare([service.config.settings.default_channel.value, service.configFailed], ["stable", ""])
+    compare(service.run("config_channel", { "value": "beta" }, "Channel for new installs: Beta"), "")
+    var set = lastRun("config")
+    compare(words(set.command), ["config", "set", "default_channel", "--", "beta"])
+    answer(set, envelope("config set", { "name": "default_channel", "value": "beta", "previous": "stable", "changed": true, "dry_run": false }))
+    verify(service.lastResult.ok)
+    var again = lastRun("config")
+    verify(again !== set, "read again after the change")
+    compare(words(again.command), ["config"])
+    again.process.finish(1, JSON.stringify({ "ok": false, "schema_version": "1.0", "tool_version": Build.TOOL_VERSION, "command": "config",
+      "exit_code": 1, "partial": false, "warnings": [], "commands": [],
+      "error": { "code": "state_corrupt", "message": "config.toml line 3: not TOML", "fix": null, "fix_argv": null, "retryable": false, "details": {} } }))
+    verify(service.configFailed !== "")
+    compare(service.config.settings.default_channel.value, "stable", "the last settings read stay")
+  }
+
   function test_the_backups_are_read_with_their_view_and_their_detail_is_view_bound() {
     ready(0)
     service.readView("backups")

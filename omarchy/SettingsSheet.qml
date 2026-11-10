@@ -5,13 +5,17 @@ import qs.Ui
 import "ui"
 import "Model.js" as Model
 
-// The settings sheet (1n2p.31, design doc §2.7), `,` or the hero's cog: the panel's own
-// settings (Model.settingsSections), one row each with its value in words; the cursored
+// The settings sheet (1n2p.31, design doc §2.7), `,` or the hero's cog, in sections
+// (Model.settingsSections), one row per setting with its value in words; the cursored
 // row says what it does. Enter (or a click) changes the row's value, the next one past
 // the last; h and l step it back or on; a path is typed: Enter opens its box, Enter
-// there saves, Esc keeps the one before. Each change goes out as `settingRequested`:
-// BarWidget saves it through the shell's facade (`updateEntryInline`), which writes
-// shell.json and hands the widget its new settings; the widget writes no file (M3-D3).
+// there saves, Esc keeps the one before.
+// - Panel: the widget's own settings. Each change goes out as `settingRequested`:
+//   BarWidget saves it through the shell's facade (`updateEntryInline`), which writes
+//   shell.json and hands the widget its new settings; the widget writes no file (M3-D3).
+// - omaddons: its own settings, read with `config` when the sheet opens and changed one
+//   key at a time with `config set` (a template per key), applied directly, the result
+//   shown, then read again: config.toml stays the one source.
 // What the sheet shows comes back from the service, so it shows what was applied.
 Sheet {
   id: root
@@ -19,7 +23,9 @@ Sheet {
   property var frame: null
   readonly property var svc: frame ? frame.svc : null
   readonly property var settings: svc && svc.settings ? svc.settings : ({})
-  readonly property var sections: Model.settingsSections({ "settings": settings })
+  readonly property var sections: Model.settingsSections({ "settings": settings, "config": svc ? svc.config : null,
+    "configFailed": svc && svc.configFailed ? svc.configFailed : "" })
+  readonly property bool canChange: !!frame && frame.canAct && !frame.busy
   readonly property var rows: {
     var out = []
     for (var i = 0; i < sections.length; i++) out = out.concat(sections[i].rows)
@@ -46,13 +52,25 @@ Sheet {
 
   onChosen: function(index) { root.change(index, 1, true) }
   onStepped: function(index, step) { root.change(index, step, false) }
-  onOpenedChanged: if (!opened) stopEditing()
+  onOpenedChanged: {
+    if (!opened) {
+      stopEditing()
+      return
+    }
+    // omaddons' settings as config.toml holds them now.
+    if (svc && typeof svc.readConfig === "function") svc.readConfig()
+  }
 
   // Row `index` changed by one step: a switch flips, a number moves, a path opens its
-  // box.
+  // box, an omaddons setting runs its `config set`.
   function change(index, step, wrap) {
     var row = rows[index]
     if (!row) return
+    if (row.section === "omaddons") {
+      var request = Model.configRequest(row, step, wrap)
+      if (request && canChange) frame.report(svc.run(request.template, request.slots, request.label))
+      return
+    }
     if (row.kind === "path") {
       if (step > 0 || wrap) startEditing(row)
       return
@@ -104,6 +122,19 @@ Sheet {
         foreground: root.foreground
         dim: root.dim
         fontFamily: root.fontFamily
+      }
+
+      // What the section waits for (omaddons' settings being read, or why they weren't).
+      PlainLabel {
+        objectName: "sectionNote"
+        visible: section.modelData.note !== ""
+        width: parent.width
+        wrapMode: Text.WordWrap
+        elide: Text.ElideNone
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        text: section.modelData.note
       }
 
       Repeater {

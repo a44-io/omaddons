@@ -344,11 +344,25 @@ fn every_template_is_a_registry_command_with_safe_slots() {
             assert!(part.ends_with('}'), "{name}: malformed slot {part}");
             assert!(
                 [
-                    "target", "addon", "ref", "backup", "query", "fm", "path", "run"
+                    "target", "addon", "ref", "backup", "query", "fm", "path", "run", "value"
                 ]
                 .contains(&slot),
                 "{name}: unknown slot {part}"
             );
+            // A setting's value (the settings sheet, 1n2p.31) is the one positional of
+            // `config set`, after -- and after the key its template names: never a key,
+            // never anything else's.
+            if slot == "value" {
+                assert!(
+                    part == "{value}"
+                        && path == "config set"
+                        && after
+                        && i == argv.len() - 1
+                        && argv.len() == 5
+                        && !argv[2].contains('{'),
+                    "{name}: {{value}} outside config set's value ({part} on {path})"
+                );
+            }
             // A run's id is History's undo of one run (1n2p.30): `undo --run=`, nothing else.
             if slot == "run" {
                 assert!(
@@ -777,6 +791,14 @@ fn the_output_cap_bounds_every_template() {
         } else if name == "dismiss_errors" {
             // Counts per client, never a list of errors.
             Some(CLIENTS * ROW + ANSWER)
+        } else if name == "config" {
+            // Every setting omaddons knows (a fixed table of a few dozen) and each
+            // client's overrides, a name, a value and its source each (1n2p.31): never a
+            // list that grows with addons.
+            Some((64 + CLIENTS * 3) * ROW + ANSWER)
+        } else if name.starts_with("config_") {
+            // One setting: its name, its value and the one before it.
+            Some(ROW + ANSWER)
         } else if name == "history" {
             Some(limit_of(template) * (ROW + ADDONS * history_slope) + ANSWER)
         } else if name == "undo_run" {
@@ -2478,6 +2500,56 @@ fn adopt_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
     assert!(loose.join("Loose.toc").is_file(), "Loose stays as it was");
 }
 
+/// The settings sheet (1n2p.31), in a home of its own: omaddons' settings read whole
+/// (`config`), one changed through its template, read again, and a value the key refuses.
+#[cfg(test)]
+fn settings_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
+    let home = Home::new(&["wow"]);
+    let config = write_fixture(dir, "config", &home.exec(&fill(t, "config", &[])), 0);
+    let named = |env: &Value, key: &str| {
+        env["data"]["settings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["name"] == key)
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+    assert_eq!(
+        named(&config, "auto_backup")["source"],
+        "default",
+        "{config}"
+    );
+    let set = write_fixture(
+        dir,
+        "config-set",
+        &home.exec(&fill(t, "config_backups", &[("value", "daily-copy")])),
+        0,
+    );
+    assert_eq!(
+        (&set["data"]["name"], &set["data"]["value"]),
+        (&Value::from("auto_backup"), &Value::from("daily-copy")),
+        "{set}"
+    );
+    let after = write_fixture(dir, "config-after", &home.exec(&fill(t, "config", &[])), 0);
+    assert_eq!(
+        (
+            &named(&after, "auto_backup")["value"],
+            &named(&after, "auto_backup")["source"]
+        ),
+        (&Value::from("daily-copy"), &Value::from("file")),
+        "{after}"
+    );
+    // A value the key refuses is the CLI's to judge: a usage error, nothing written.
+    let refused = write_fixture(
+        dir,
+        "config-set-refused",
+        &home.exec(&fill(t, "config_interval", &[("value", "99")])),
+        2,
+    );
+    assert_eq!(refused["error"]["code"], "usage", "{refused}");
+}
+
 /// The first run (1n2p.32): a home where discovery finds no client, `targets add` refused
 /// for a folder that holds none, then accepted for a 3.3.5a private server discovery does
 /// not reach, and `status` with its scan once it is added.
@@ -3123,6 +3195,7 @@ fn write_widget_fixtures() {
     clients_fixtures(&dir, &t);
     first_run_fixtures(&dir, &t);
     adopt_fixtures(&dir, &t);
+    settings_fixtures(&dir, &t);
 
     // Idle: Baz current on retail, checked just now.
     let home = Home::new(&["wow"]);
