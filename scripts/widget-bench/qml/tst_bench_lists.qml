@@ -15,10 +15,12 @@ import "BenchConfig.js" as BenchConfig
 // stubs' mock Process, answered with the envelopes the real binary wrote in pipeline step
 // 1 (Fixtures.js) and scaled to 20, 150 and 500 rows as tst_snapshots.qml scales them.
 //
-// Item 3: for Installed, Updates, Backups and Search's catalog browse, the time from
-// showView to the panel's next render on the first visit (the view is built), on a
-// second visit (the view is kept), and after its data is read again with nothing changed
-// (every delegate rebuilt), with the delegates the view built. Item 5: the runner's RSS
+// Item 3: for Installed, Updates, Backups, Search's catalog browse and History, the time
+// from showView to the panel's next render on the first visit (the view is built, its
+// data already read), on a second visit (the view is kept), and after its data is read
+// again with nothing changed (every delegate rebuilt), with the delegates the view built.
+// The widget reads at most 100 changes for History; its 500 is the view's stress only.
+// Item 5: the runner's RSS
 // before and after opening and closing the panel 50 times, every view visited each time.
 // Prints `WIDGET_BENCH {json}` lines.
 TestCase {
@@ -34,8 +36,10 @@ TestCase {
   property var frame: null
 
   readonly property var rowPrefix: ({
-    "installed": "installedRow_", "updates": "updateRow_", "backups": "backupRow_", "search": "searchRow_"
+    "installed": "installedRow_", "updates": "updateRow_", "backups": "backupRow_", "search": "searchRow_",
+    "history": "historyRow_"
   })
+  readonly property var listViews: ["installed", "updates", "backups", "search", "history"]
 
   Component {
     id: serviceComponent
@@ -67,11 +71,13 @@ TestCase {
   // ---------------------------------------------------------------- the mock binary
   // (tst_snapshots.qml's, trimmed to the reads these views make)
 
+  // The command's own words, after the widget's flags (by name: a read such as `history`
+  // carries no `--actor`).
   function words(command) {
-    var i = 6
+    var i = 1
     while (i < command.length) {
-      if (command[i] === "--progress" || command[i] === "--if-match") i += 2
-      else if (command[i] === "--dry-run") i += 1
+      if (command[i] === "--json" || command[i] === "--dry-run") i += 1
+      else if (["--actor", "--reason", "--progress", "--if-match"].indexOf(command[i]) !== -1) i += 2
       else break
     }
     return command.slice(i)
@@ -103,6 +109,7 @@ TestCase {
       return { "text": text({ "ok": true, "schema_version": "1.1", "tool_version": Build.TOOL_VERSION, "command": "backup create",
         "exit_code": 0, "partial": false, "data": { "dry_run": false, "run": null, "targets": [] }, "warnings": [], "commands": [] }) }
     if (w[0] === "search" && w.indexOf("--catalog") !== -1) return scene.catalog
+    if (w[0] === "history") return scene.history
     return null
   }
 
@@ -176,9 +183,28 @@ TestCase {
     return { "text": text(env) }
   }
 
+  // `count` changes from the fixture's own (each kind it recorded, in turn), each its own
+  // run with its own ids, an hour apart: a day's heading every 24 rows.
+  function historyWith(count) {
+    var env = fixture("history")
+    var templates = env.data.entries
+    var newest = Model.instantMs(templates[0].at)
+    var list = []
+    for (var i = 0; i < count; i++) {
+      var e = JSON.parse(JSON.stringify(templates[i % templates.length]))
+      e.tx = e.tx.slice(0, 20) + ("00000" + i).slice(-6)
+      e.run = e.run.slice(0, 20) + ("00000" + i).slice(-6)
+      e.at = new Date(newest - i * 3600000).toISOString()
+      list.push(e)
+    }
+    env.data.entries = list
+    return { "text": text(env) }
+  }
+
   function scene(count, allBehind) {
     return { "status": the("status-updates"), "list": listWith(count, allBehind), "errors": the("errors"),
-      "backups": backupsWith(count), "backupsDetail": the("backups-detail"), "catalog": catalogWith(count) }
+      "backups": backupsWith(count), "backupsDetail": the("backups-detail"), "catalog": catalogWith(count),
+      "history": historyWith(count) }
   }
 
   // ---------------------------------------------------------------- the panel
@@ -211,6 +237,11 @@ TestCase {
     frame.showView("issues")
     settle(sceneNow)
     service.readCatalog("")
+    // Backups and History are read on their view's first visit since 1n2p.38 (the open
+    // reads the list and the errors): read here, so each first visit below times the
+    // view built with its data, as the others are, never an empty one.
+    service.readBackups()
+    service.readHistory()
     settle(sceneNow)
     wait(20)
   }
@@ -317,9 +348,9 @@ TestCase {
   function test_1_list_costs() {
     var floor = frameFloor()
     // Every view built once first, so component compilation is not counted below.
-    for (var w of ["installed", "updates", "backups", "search"]) measure(w, 20)
+    for (var w of listViews) measure(w, 20)
     var results = []
-    for (var view of ["installed", "updates", "backups", "search"]) {
+    for (var view of listViews) {
       for (var count of BenchConfig.COUNTS) {
         var runs = []
         for (var r = 0; r < BenchConfig.REPEATS; r++) runs.push(measure(view, count))

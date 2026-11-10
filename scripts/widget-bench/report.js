@@ -93,7 +93,7 @@ const lines = []
 const say = (s = "") => lines.push(s)
 const mark = (value, budget) => (value === null || value === undefined ? "" : value <= budget ? " ✓" : " ✗")
 
-say(`# Widget costs, baseline`)
+say(`# Widget costs`)
 say()
 say(`Commit ${meta.commit || "?"}${meta.dirty_files ? ` (+${meta.dirty_files} uncommitted files under omarchy/, src/, Cargo.*)` : ""}, omaddons ${meta.version || "?"}, measured ${meta.measured_at || "?"}${meta.quick ? " (--quick: a smoke test, not a baseline)" : ""}.`)
 say(`${meta.cpu || ""}, Linux ${meta.kernel || ""}.`)
@@ -114,8 +114,9 @@ for (const [home, table] of Object.entries(cli)) {
     say(`| \`${row.words}\` | ${w.p50_ms ?? ""} | ${w.p95_ms ?? ""}${budget} | ${c.p50_ms ?? ""} | ${c.p95_ms ?? ""} | ${Math.max(w.peak_rss_mib || 0, c.peak_rss_mib || 0) || ""} | ${[...new Set([...(w.exit_codes || []), ...(c.exit_codes || [])])].join(",")} |`)
   }
   const panelReads = ["status_full", "list", "errors", "backups"].map((n) => (table[n] && table[n].warm ? table[n].warm.p50_ms : 0))
+  const cached = table.status_cached && table.status_cached.warm ? table.status_cached.warm.p50_ms : null
   say()
-  say(`The four reads a panel open queues, one after another on the local lane: ${r2(panelReads.reduce((a, b) => a + b, 0))} ms of warm p50 binary time.`)
+  say(`A later panel open reads \`status --cached -v\` (${cached ?? "?"} ms warm p50), then the shown view's data only when it is old or a doorbell rang (1n2p.38). The four reads every open queued before, one after another on the local lane: ${r2(panelReads.reduce((a, b) => a + b, 0))} ms of warm p50 binary time.`)
   say()
 }
 
@@ -167,7 +168,7 @@ if (leak) {
 if (windows) {
   say(`## 4. Window events (${Math.round(windows.elapsed_s / 60)} min from ${windows.started_at}, ${windows.ended})`)
   say()
-  say(`- ${windows.window_events} openwindow/closewindow events → ${windows.status_runs} \`status --cached -v\` runs after the ${windows.debounce_ms} ms debounce (${windows.status_runs_per_hour} an hour); busiest minute ${windows.busiest_minute.window_events} events.`)
+  say(`- ${windows.window_events} openwindow/closewindow events, ${windows.maybe_wow_events ?? "?"} of them from windows that may be WoW's → ${windows.status_runs} \`status --cached -v\` runs after the ${windows.debounce_ms} ms debounce (${windows.status_runs_per_hour} an hour) with no client running; ${windows.status_runs_unfiltered ?? "?"} (${windows.status_runs_unfiltered_per_hour ?? "?"} an hour) without 1n2p.38's filter. Busiest minute: ${windows.busiest_minute.window_events} events.`)
   say(`- Every event, by name: ${Object.entries(windows.events_by_name).map(([n, c]) => `${n} ${c}`).join(", ") || "none"}.`)
   say()
 }

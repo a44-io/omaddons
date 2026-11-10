@@ -72,7 +72,7 @@ need bun
 need jq
 
 if [[ -n $window_minutes ]]; then
-    step "Hyprland's window events for $window_minutes min (names only) → $out/window-events.json"
+    step "Hyprland's window events for $window_minutes min (counts only) → $out/window-events.json"
     exec bun "$here/window-events.js" --minutes "$window_minutes" --out "$out/window-events.json"
 fi
 
