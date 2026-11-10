@@ -300,8 +300,16 @@ pub fn run(ctx: &Context, args: &RemoveArgs) -> Result<RemoveOutcome> {
     )?;
     let precondition = ctx.dry_run.then(|| precondition::of_remove(&done.plan));
     let token = precondition.as_ref().map(|value| value.token());
-    let built: Vec<(RemoveItem, Option<Error>)> =
-        requests.iter().map(|r| item(r, target_id, &done)).collect();
+    // The record as the run left it: an addon still in it was not removed by someone
+    // else.
+    let after = match target.target.key {
+        Some(key) => Some(crate::state::records::load_record(&world.paths, &key)?.value),
+        None => None,
+    };
+    let built: Vec<(RemoveItem, Option<Error>)> = requests
+        .iter()
+        .map(|r| item(r, target_id, &done, after.as_ref()))
+        .collect();
     let errors: Vec<(String, Error)> = built
         .iter()
         .filter_map(|(i, e)| e.clone().map(|e| (i.request.clone(), e)))
@@ -569,8 +577,14 @@ fn spans(ctx: &Context, ids: &BTreeSet<&str>) -> Error {
     error
 }
 
-/// One positional's result on `target_id`.
-fn item(r: &Request, target_id: &str, done: &TxOutcomes) -> (RemoveItem, Option<Error>) {
+/// One positional's result on `target_id`; `after` is the client's record once the run
+/// ended.
+fn item(
+    r: &Request,
+    target_id: &str,
+    done: &TxOutcomes,
+    after: Option<&TargetRecord>,
+) -> (RemoveItem, Option<Error>) {
     let failed = |name: Option<String>, error: &Error| {
         (
             RemoveItem {
@@ -613,6 +627,21 @@ fn item(r: &Request, target_id: &str, done: &TxOutcomes) -> (RemoveItem, Option<
         .first()
         .and_then(|o| o.changes.iter().find(|c| same(&c.addon)));
     let Some(change) = change else {
+        let recorded =
+            after.is_some_and(|record| record.addons.contains_key(&TargetRecord::addon_key(name)));
+        // Still managed, yet nothing of it changed: the target changed while this run
+        // planned, and running it again removes it (omad-z60g). Never "no longer managed".
+        if recorded {
+            let unchanged = Error::plan_stale(
+                crate::error::PlanStaleSource::Replan,
+                &[crate::error::StalePart::Targets],
+                format!(
+                    "{name} is still managed in {target_id}, but nothing of it was removed: the target changed while this command planned"
+                ),
+                Suggestion::text("run the command again; it re-plans against the current state"),
+            );
+            return failed(Some(name.clone()), &unchanged);
+        }
         // Removed by someone else between planning and the lock.
         let gone = Error::new(
             ErrorCode::NotManaged,
@@ -724,5 +753,48 @@ mod tests {
                 "omaddons remove Bar -t retail"
             ]
         );
+    }
+
+    /// omad-z60g: a request the run changed nothing of is "no longer managed" only when
+    /// the record no longer holds the addon; one it still holds is a retryable
+    /// `plan_stale` that says it is still managed.
+    #[test]
+    fn an_item_with_no_change_says_whether_the_addon_is_still_managed() {
+        let request = Request {
+            request: "Foo".into(),
+            found: Ok(BTreeMap::from([("retail".to_owned(), "Foo".to_owned())])),
+        };
+        let done = TxOutcomes {
+            plan: crate::engine::plan::Plan::idle(&[], &[], crate::model::Actor::Agent),
+            outcomes: Vec::new(),
+            failures: Vec::new(),
+            warnings: Vec::new(),
+        };
+        let still = record(&[("Foo", "gh:o/foo", &["Foo"])]);
+        let gone = record(&[]);
+        let cases = [
+            ("still recorded", Some(&still), ErrorCode::PlanStale, true),
+            (
+                "gone from the record",
+                Some(&gone),
+                ErrorCode::NotManaged,
+                false,
+            ),
+            ("no record", None, ErrorCode::NotManaged, false),
+        ];
+        for (case, after, code, retryable) in cases {
+            let (item, error) = item(&request, "retail", &done, after);
+            let error = error.unwrap_or_else(|| panic!("case {case}: no error"));
+            assert_eq!(item.status, RemoveStatus::Failed, "case {case}");
+            assert_eq!(error.code, code, "case {case}: {}", error.message);
+            assert_eq!(error.retryable, retryable, "case {case}");
+            let still_managed = code == ErrorCode::PlanStale;
+            assert_eq!(
+                error.message.contains("no longer managed"),
+                !still_managed,
+                "case {case}: {}",
+                error.message
+            );
+        }
     }
 }

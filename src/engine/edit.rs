@@ -259,6 +259,10 @@ pub struct RecordGuard {
 #[derive(Debug, Clone)]
 pub struct GuardFailure {
     pub adopt: bool,
+    /// A forget's folder is in AddOns again: the forget no longer applies, and the same
+    /// command run again would remove that folder (omad-z60g). Not "someone else already
+    /// did it", so it is never dropped silently from an unbound run.
+    pub back: bool,
     /// The underlying reason, an existing code (`details.cause` of `plan_stale`).
     pub cause: Error,
 }
@@ -291,6 +295,7 @@ impl RecordGuard {
     ) -> std::result::Result<(), GuardFailure> {
         let fail = |cause: Error| GuardFailure {
             adopt: self.adopt,
+            back: false,
             cause,
         };
         if self.adopt {
@@ -327,14 +332,17 @@ impl RecordGuard {
             .chain(now)
             .find(|f| live.folders.iter().any(|e| e.key == f.key()))
         {
-            return Err(fail(Error::new(
-                ErrorCode::UnmanagedFolder,
-                format!(
-                    "{} is in AddOns again, so {addon} is not forgotten",
-                    back.as_str()
-                ),
-                Suggestion::command(["omaddons", "list", "-t", target]),
-            )));
+            return Err(GuardFailure {
+                back: true,
+                ..fail(Error::new(
+                    ErrorCode::UnmanagedFolder,
+                    format!(
+                        "{} is in AddOns again, so {addon} is not forgotten",
+                        back.as_str()
+                    ),
+                    Suggestion::command(["omaddons", "list", "-t", target]),
+                ))
+            });
         }
         Ok(())
     }
@@ -665,19 +673,19 @@ mod tests {
         let check = |guard: &RecordGuard, r: Option<&AddonRecord>, live: &Inventory| {
             guard
                 .check("Foo", "retail", r, live, dir.path(), &[])
-                .map_err(|f| (f.adopt, f.cause.code))
+                .map_err(|f| (f.adopt, f.back, f.cause.code))
         };
         let pin = RecordEdit::SetPinned(true).guard(Some(&foo));
         assert_eq!(check(&pin, Some(&foo), &empty), Ok(()));
         assert_eq!(
             check(&pin, None, &empty),
-            Err((false, ErrorCode::NotManaged))
+            Err((false, false, ErrorCode::NotManaged))
         );
         let mut moved = foo.clone();
         moved.release_id = Some("gh:o/foo@2.0".into());
         assert_eq!(
             check(&pin, Some(&moved), &empty),
-            Err((false, ErrorCode::NotFound)),
+            Err((false, false, ErrorCode::NotFound)),
             "planned against another release"
         );
         let required = RecordEdit::AddRequiredBy("Bar".into()).guard(Some(&foo));
@@ -705,7 +713,7 @@ mod tests {
         });
         assert_eq!(
             check(&forget, Some(&foo), &live),
-            Err((false, ErrorCode::UnmanagedFolder)),
+            Err((false, true, ErrorCode::UnmanagedFolder)),
             "a forgotten folder put back by hand"
         );
         // An update meanwhile moved it to a folder that is there: nothing to forget.
@@ -713,7 +721,7 @@ mod tests {
         let forget = RecordEdit::Forget.guard(Some(&record("Foo", &["FooOld"])));
         assert_eq!(
             check(&forget, Some(&renamed), &live),
-            Err((false, ErrorCode::UnmanagedFolder)),
+            Err((false, true, ErrorCode::UnmanagedFolder)),
             "the record's folders as they are now"
         );
     }

@@ -2873,6 +2873,17 @@ pub fn check_release(
     result
 }
 
+/// What [`rejudge`] holds a records-only work's failed guard against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Against {
+    /// The target's record generation when the run planned.
+    pub generation: u64,
+    /// The run is bound to its preview (`--if-match`): its binding compares the
+    /// operations re-judged with the approved ones, so a work that no longer applies is
+    /// dropped for it to refuse (`selection`), never failed here.
+    pub bound: bool,
+}
+
 /// Re-checks one planned addon under the lock against the target's current record,
 /// files index, inventory and running state (`ctx.running`), without network: the
 /// archive is already inspected and staged. The install's intent and folded edits are
@@ -2883,8 +2894,11 @@ pub fn check_release(
 ///
 /// A records-only work re-checks its [`RecordGuard`]. When it fails, an adoption is
 /// `plan_stale` whatever the generation; another edit is the caller's `plan_stale` when
-/// the record's generation moved since `generation` (planning's), and is dropped as no
-/// longer needed when it did not (a forgotten addon's folder put back by hand).
+/// the record's generation moved since `against.generation` (planning's). When it did
+/// not, a forget whose folder was put back by hand no longer applies: a retryable
+/// `plan_stale` naming the folder, since running the command again would remove it, or,
+/// in a run bound to its preview, dropped, so the binding refuses the operations that
+/// differ (omad-z60g). Any other edit is dropped as no longer needed.
 ///
 /// The works of a target are replayed in planning order over one [`TargetState`], read
 /// once under the lock, and one `view` of what the earlier works claim and release, so a
@@ -2895,7 +2909,7 @@ pub fn rejudge(
     target: &Target,
     state: &TargetState,
     work: &AddonWork,
-    generation: u64,
+    against: Against,
     view: &WorkingView,
 ) -> Result<Planned> {
     let record = &state.record;
@@ -2917,8 +2931,8 @@ pub fn rejudge(
         WorkMode::Folders(folders) => folders,
         WorkMode::Records(records) => {
             // ubs:ignore — comparing record generations, not secrets
-            let changed = record.generation != generation;
-            return planner.rejudge_records(&work.addon, records, changed);
+            let changed = record.generation != against.generation;
+            return planner.rejudge_records(&work.addon, records, changed, against.bound);
         }
     };
     match (&folders.record, &folders.inspected) {
@@ -4313,7 +4327,13 @@ impl TargetPlanner<'_> {
 
     /// Re-checks a records-only work under the lock (see [`rejudge`]), then applies its
     /// edits to the record as it is now.
-    fn rejudge_records(&self, addon: &str, work: &RecordsWork, changed: bool) -> Result<Planned> {
+    fn rejudge_records(
+        &self,
+        addon: &str,
+        work: &RecordsWork,
+        changed: bool,
+        bound: bool,
+    ) -> Result<Planned> {
         let target = &self.target.id;
         let current = self.record.addons.get(&TargetRecord::addon_key(addon));
         let checked = work.guard.check(
@@ -4327,6 +4347,9 @@ impl TargetPlanner<'_> {
         match checked {
             Err(failure) if failure.adopt => Err(super::tx::stale(&failure.cause)),
             Err(failure) if changed => Err(failure.cause),
+            // A forget whose folder is back no longer applies, and running the command
+            // again would remove that folder (omad-z60g): never "someone else did it".
+            Err(failure) if failure.back && !bound => Err(super::tx::stale(&failure.cause)),
             Err(_) => Ok(Planned::nothing()),
             Ok(()) => {
                 // Only what still changes the record as it is now: an edit another
@@ -6903,7 +6926,11 @@ mod tests {
                 let generation = plan.targets[0].generation;
                 let state = TargetState::now(ctx, &target).unwrap();
                 let view = released_view(std::slice::from_ref(work));
-                let rejudged = rejudge(req, ctx, &target, &state, work, generation, &view).unwrap();
+                let against = Against {
+                    generation,
+                    bound: false,
+                };
+                let rejudged = rejudge(req, ctx, &target, &state, work, against, &view).unwrap();
                 assert!(
                     matches!(rejudged, Planned::Unchanged { .. }),
                     "the update survived the pin: {rejudged:?}"
@@ -6916,6 +6943,64 @@ mod tests {
                 }
             },
         );
+    }
+
+    /// omad-z60g: a forget re-judged under the lock. With every folder still gone it
+    /// commits. With a folder put back on an unchanged generation it no longer applies:
+    /// unbound, a retryable `plan_stale` naming the folder (running the command again
+    /// removes it); bound, dropped, for the binding to refuse. On a moved generation the
+    /// guard's own error stands, which the caller makes `plan_stale`.
+    #[test]
+    fn a_forget_whose_folder_is_back_no_longer_applies() {
+        let scene = crate::engine::testing::TxScene::new();
+        let v1 = scene.zip("v1.zip", &[("Foo/Foo.toc", "## Interface: 120105\n")]);
+        let done = scene.run(vec![scene.install("gh:o/foo", &v1)]).unwrap();
+        assert!(done.failures.is_empty(), "{:?}", done.failures);
+        let foo = scene.client.addons().join("Foo");
+        std::fs::remove_dir_all(&foo).unwrap();
+
+        with_plan(&scene, vec![scene.remove("Foo")], |req, ctx, plan| {
+            let work = &plan.targets[0].work[0];
+            assert!(
+                matches!(work.mode, WorkMode::Records(_)),
+                "Foo is forgotten"
+            );
+            let target = scene.current_target().target;
+            let generation = plan.targets[0].generation;
+            let view = released_view(std::slice::from_ref(work));
+            let judge = |generation, bound| {
+                let state = TargetState::now(ctx, &target).unwrap();
+                let against = Against { generation, bound };
+                rejudge(req, ctx, &target, &state, work, against, &view)
+            };
+            let still_gone = judge(generation, false);
+            assert!(
+                matches!(still_gone, Ok(Planned::Change(_))),
+                "case still gone: {still_gone:?}"
+            );
+
+            std::fs::create_dir_all(&foo).unwrap();
+            std::fs::write(foo.join("Foo.toc"), "## Interface: 120105\n").unwrap();
+            let unbound = judge(generation, false).unwrap_err();
+            assert_eq!(unbound.code, ErrorCode::PlanStale, "case unbound");
+            assert!(unbound.retryable, "case unbound: {unbound:?}");
+            assert!(
+                unbound.message.contains("Foo is in AddOns again"),
+                "case unbound: {}",
+                unbound.message
+            );
+            let bound = judge(generation, true);
+            assert!(
+                matches!(bound, Ok(Planned::Unchanged { .. })),
+                "case bound: {bound:?}"
+            );
+            let moved = judge(generation + 1, false).unwrap_err();
+            assert_eq!(
+                moved.code,
+                ErrorCode::UnmanagedFolder,
+                "case moved: {moved:?}"
+            );
+        });
     }
 
     #[test]

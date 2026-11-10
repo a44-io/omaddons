@@ -29,9 +29,9 @@ use super::journal::{
     recover_all, recover_tx,
 };
 use super::plan::{
-    self, AddonWork, Change, Plan, PlanCtx, PlanFailure, PlanRequest, Planned, RequestedChange,
-    TargetPlan, TargetRequest, TargetState, WorkMode, claim, one_addons_dir, push_new, rejudge,
-    released_view, target_kind,
+    self, AddonWork, Against, Change, Plan, PlanCtx, PlanFailure, PlanRequest, Planned,
+    RequestedChange, TargetPlan, TargetRequest, TargetState, WorkMode, claim, one_addons_dir,
+    push_new, rejudge, released_view, target_kind,
 };
 use super::stage::{Staged, stage};
 use super::swap::{
@@ -1094,12 +1094,14 @@ struct Rejudged {
 /// The planned work of `tp` judged again offline, over one fresh look at the target and
 /// with running state as it is now: what still commits, handovers settled. `changed`: a
 /// commit moved the target's records since planning, so a failure is `plan_stale`.
+/// `bound`: the run's binding compares what is left with its preview afterwards.
 fn rejudge_target(
     plan_req: &PlanRequest,
     plan_ctx: &PlanCtx<'_>,
     target: &Target,
     tp: &TargetPlan,
     changed: bool,
+    bound: bool,
 ) -> Result<Rejudged> {
     let mut works = Vec::new();
     let mut changes = Vec::new();
@@ -1124,15 +1126,11 @@ fn rejudge_target(
         if requesters_dropped(&requesters_of(planned), &planned_addons, &kept) {
             continue;
         }
-        match rejudge(
-            plan_req,
-            plan_ctx,
-            target,
-            &state,
-            planned,
-            tp.generation,
-            &view,
-        ) {
+        let against = Against {
+            generation: tp.generation,
+            bound,
+        };
+        match rejudge(plan_req, plan_ctx, target, &state, planned, against, &view) {
             Ok(Planned::Change(p)) => {
                 let p = *p;
                 claim(&mut view, &p.work);
@@ -1328,7 +1326,14 @@ fn locked(
         mut warnings,
         mut notes,
         reload_required,
-    } = rejudge_target(plan_req, &plan_ctx, &target, tp, changed)?;
+    } = rejudge_target(
+        plan_req,
+        &plan_ctx,
+        &target,
+        tp,
+        changed,
+        ctx.binding.is_some(),
+    )?;
     if let Some(binding) = ctx.binding {
         // Exactly the approved operations, or none: a run left with nothing to do while
         // its preview approved something is refused here, not reported unchanged.
@@ -3080,9 +3085,13 @@ mod tests {
         assert!(!scene.record().addons.contains_key("baz"));
     }
 
+    /// omad-z60g: a forget whose folder came back by hand between its plan and its lock
+    /// no longer applies at an unchanged generation. Unbound, that is a retryable
+    /// `plan_stale` naming the folder (running it again removes it), never a silent drop
+    /// the caller would read as "removed by someone else"; nothing commits.
     #[cfg(debug_assertions)]
     #[test]
-    fn a_forget_whose_folder_came_back_by_hand_is_dropped() {
+    fn a_forget_whose_folder_came_back_by_hand_no_longer_applies() {
         let scene = with_v1();
         for folder in ["Foo", "FooOld"] {
             std::fs::remove_dir_all(scene.client.addons().join(folder)).unwrap();
@@ -3098,11 +3107,23 @@ mod tests {
             crate::engine::testing::folder(&scene.client.addons().join("FooOld"), "back");
             pause.resume("engine.plan.done");
             let slow = slow.join().unwrap().unwrap();
-            assert!(slow.failures.is_empty(), "{:?}", slow.failures);
+            let failures: Vec<(ErrorCode, bool)> = slow
+                .failures
+                .iter()
+                .map(|f| (f.error.code, f.error.retryable))
+                .collect();
             assert_eq!(
-                (slow.outcomes[0].tx, slow.outcomes[0].kind),
-                (None, None),
-                "no longer needed at an unchanged generation"
+                failures,
+                [(ErrorCode::PlanStale, true)],
+                "{:?}",
+                slow.failures
+            );
+            let message = &slow.failures[0].error.message;
+            assert!(message.contains("FooOld is in AddOns again"), "{message}");
+            assert!(
+                slow.outcomes.iter().all(|o| o.tx.is_none()),
+                "nothing committed: {:?}",
+                slow.outcomes
             );
         });
         assert!(scene.record().addons.contains_key("foo"));

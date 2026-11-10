@@ -3240,7 +3240,8 @@ fn put_foo_back(scene: &Scene) {
 /// A forget whose folder is put back after the bound run's own check no longer applies:
 /// the operations re-judged under the lock are not the approved ones (`selection`). A
 /// forget moves no folder, so the witness has nothing to refuse first. Unbound, the same
-/// race changes nothing either; what it reports is `omad-z60g`.
+/// race changes nothing either, and is a retryable `plan_stale` naming the folder that
+/// is back, whose fix removes it (omad-z60g).
 #[test]
 fn a_bound_remove_whose_forget_no_longer_applies_changes_nothing() {
     let log = common::tlog::tlog!();
@@ -3288,6 +3289,20 @@ fn a_bound_remove_whose_forget_no_longer_applies_changes_nothing() {
         guard = Some(b::guard(&log, &scene.home, "unbound, after the edit"));
     });
     log.json("the unbound run's envelope", ran.envelope());
+    log.step("unbound: plan_stale naming the folder that is back, retryable");
+    ran.fails(1, "plan_stale");
+    let error = &ran.envelope()["error"];
+    log.assert_eq(
+        "(retryable, fix_argv)",
+        &(&error["retryable"], &error["fix_argv"]),
+        &(
+            &json!(true),
+            &json!(["omaddons", "remove", "Foo", "-t", "retail"]),
+        ),
+    );
+    let message = error["message"].as_str().unwrap_or_default();
+    assert!(message.contains("Foo is in AddOns again"), "{message}");
+    assert!(!message.contains("no longer managed"), "{message}");
     log.step("nothing changed: Foo still recorded, its folder as put back");
     guard.unwrap().unchanged(&log);
     log.assert_eq(
@@ -3295,6 +3310,52 @@ fn a_bound_remove_whose_forget_no_longer_applies_changes_nothing() {
         &(scene.record("foo").is_object(), scene.generation()),
         &(true, generation),
     );
+
+    log.step("its fix removes the folder that is back, undoably");
+    let fixed = log.run(&scene, &["remove", "Foo", "-t", "retail", "--json"]);
+    fixed.ok();
+    log.assert_eq(
+        "(status, folders)",
+        &(
+            &fixed.data()["items"][0]["status"],
+            &fixed.data()["items"][0]["folders"],
+        ),
+        &(&json!("removed"), &json!(["Foo"])),
+    );
+    assert!(!scene.addons().join("Foo").exists());
+    assert!(
+        !scene.record("foo").is_object(),
+        "Foo is no longer recorded"
+    );
+    log.run(&scene, &["undo", "--json"]).ok();
+    assert!(
+        scene.addons().join("Foo/Foo.toc").is_file(),
+        "undo puts it back"
+    );
+}
+
+/// omad-z60g: a remove whose addon another run removed between its plan and its lock
+/// still reports `not_managed`, "no longer managed": that addon is gone from the record.
+#[test]
+fn a_remove_whose_addon_another_run_removed_meanwhile_is_not_managed() {
+    let log = common::tlog::tlog!();
+    let scene = foo_installed(&log);
+    let mut run = argv(REMOVE);
+    run.push("--json".to_owned());
+    let ran = paused_at(&log, &scene, &run, "engine.snapshot.prestaged", || {
+        log.step("another remove of Foo commits first");
+        log.run(&scene, &["remove", "Foo", "-t", "retail", "--json"])
+            .ok();
+    });
+    ran.fails(3, "not_managed");
+    let message = ran.envelope()["error"]["message"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        message.contains("Foo is no longer managed in retail"),
+        "{message}"
+    );
+    assert!(!scene.record("foo").is_object());
 }
 
 /// Foo's last folder (in the swap's folder-key order, after Bar's and Foo's) replaced by
