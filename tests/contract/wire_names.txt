@@ -995,6 +995,7 @@ enum file:target_record addons{}.version_confidence release,toc
 enum help data<untagged=commands,discovery,exit_codes,global_flags,name,usage,version>.commands[].group change,look,setup
 enum history data.entries[].actor agent,human,widget
 enum history data.entries[].backup.kind auto,before_restore,imported,manual,recovered
+enum history data.entries[].items[].change adopted,edited,installed,pinned,reinstalled,removed,reverted,settings_restored,unpinned,updated
 enum history data.entries[].kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,sync,target,undo,update,widget
 enum history data.entries[].ops[].from backup,snapshot
 enum history data.entries[].ops[].op add,record,remove,replace,saved_variables,wtf
@@ -7499,6 +7500,13 @@ output history data.entries[].dismissed object?
 output history data.entries[].dismissed.databases integer! minimum=0
 output history data.entries[].dismissed.errors integer! minimum=0
 output history data.entries[].doctor_run_id string?
+output history data.entries[].items array?
+output history data.entries[].items[] object
+output history data.entries[].items[].addon string?!
+output history data.entries[].items[].change string!
+output history data.entries[].items[].folders integer! minimum=0
+output history data.entries[].items[].from_version string?!
+output history data.entries[].items[].to_version string?!
 output history data.entries[].kind string!
 output history data.entries[].ops array?
 output history data.entries[].ops[] object

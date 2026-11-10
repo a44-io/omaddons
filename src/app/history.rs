@@ -13,6 +13,7 @@ use jiff::{SignedDuration, Timestamp};
 use schemars::JsonSchema;
 use serde::Serialize;
 
+use super::history_items::{self, HistoryItem};
 use super::world::World;
 use crate::cli::Context;
 use crate::contract::values::{DurationUnit, ValueSet};
@@ -80,6 +81,11 @@ pub struct HistoryLine {
     /// `-v`: every folder the transaction touched.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ops: Option<Vec<HistoryOp>>,
+    /// `-v`: what it did to each addon, `ops` grouped by addon in their order, with the
+    /// addon's version before and after; empty on a line without ops (a settings change,
+    /// a backup, a repair).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub items: Option<Vec<HistoryItem>>,
     /// The transaction an undo reverted. Omitted on every line but an undo.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reverts: Option<TxId>,
@@ -272,7 +278,13 @@ impl Outcome for HistoryOutcome {
                 row
             })
             .collect();
-        write!(w, "{}", table(&rows))?;
+        // Each row, then (`-v`) what it did to each addon, one line each under it.
+        for (row, entry) in table(&rows).lines().zip(&self.data.entries) {
+            writeln!(w, "{row}")?;
+            for item in entry.items.iter().flatten() {
+                writeln!(w, "    {}", item.human())?;
+            }
+        }
         if self.data.truncated {
             writeln!(w, "(older entries: --limit N)")?;
         }
@@ -344,9 +356,17 @@ pub fn run(ctx: &Context, args: &HistoryArgs, actor: Option<&str>) -> Result<His
         })
         .transpose()?;
     let world = World::load(ctx)?;
+    let verbose = ctx.output.style.detail();
+    let text = history::text(&world.paths)?;
+    // Every readable line, for `--run`'s prefix and for the neighbours `-v`'s items read
+    // their versions from, whatever the filters keep.
+    let all = if args.run.is_some() || verbose {
+        history::parse(&text, &HistoryFilter::default())
+    } else {
+        history::HistoryRead::default()
+    };
     let run = match &args.run {
         Some(prefix) => {
-            let all = history::read(&world.paths, &HistoryFilter::default())?;
             let runs = all
                 .entries
                 .iter()
@@ -360,8 +380,8 @@ pub fn run(ctx: &Context, args: &HistoryArgs, actor: Option<&str>) -> Result<His
     let read = match target {
         // A target that was never registered has no history.
         Some(None) => history::HistoryRead::default(),
-        Some(Some(key)) => history::read(
-            &world.paths,
+        Some(Some(key)) => history::parse(
+            &text,
             &HistoryFilter {
                 target: Some(key),
                 actor,
@@ -369,18 +389,17 @@ pub fn run(ctx: &Context, args: &HistoryArgs, actor: Option<&str>) -> Result<His
                 run,
                 ..HistoryFilter::default()
             },
-        )?,
-        None => history::read(
-            &world.paths,
+        ),
+        None => history::parse(
+            &text,
             &HistoryFilter {
                 actor,
                 since,
                 run,
                 ..HistoryFilter::default()
             },
-        )?,
+        ),
     };
-    let verbose = ctx.output.style.detail();
     // Transactions and settings changes, in the order they were recorded.
     let mut lines: Vec<HistoryLine> = read
         .entries
@@ -395,7 +414,21 @@ pub fn run(ctx: &Context, args: &HistoryArgs, actor: Option<&str>) -> Result<His
     lines.sort_by_key(|l| (l.at, l.tx));
     let truncated = lines.len() > limit;
     let shared_runs = shared_runs(&lines);
-    let entries = lines.into_iter().rev().take(limit).collect();
+    let mut entries: Vec<HistoryLine> = lines.into_iter().rev().take(limit).collect();
+    if verbose {
+        // Only the lines shown read their records: a settings change has no ops.
+        let by_tx: std::collections::BTreeMap<TxId, &HistoryEntry> =
+            read.entries.iter().map(|e| (e.tx, e)).collect();
+        let mut reader = history_items::Reader::new(&world.paths, &all.entries);
+        for line in &mut entries {
+            line.items = Some(
+                by_tx
+                    .get(&line.tx)
+                    .map(|e| reader.items(e))
+                    .unwrap_or_default(),
+            );
+        }
+    }
     let mut warnings = world.warnings.clone();
     warnings.extend(read.skipped_warning());
     Ok(HistoryOutcome {
@@ -444,6 +477,7 @@ fn setting_line_with(
         argv: e.argv.clone(),
         changes: (!verbose).then(ChangeCounts::default),
         ops: verbose.then(Vec::new),
+        items: verbose.then(Vec::new),
         reverts: None,
         result: e.result,
         backup: None,
@@ -485,6 +519,8 @@ fn line_with(e: &HistoryEntry, verbose: bool, id_of: &dyn Fn(TargetKey) -> Strin
         argv: e.argv.clone(),
         changes: (!verbose).then(|| ChangeCounts::of(&e.ops)),
         ops: verbose.then(|| e.ops.clone()),
+        // `run` reads them for the lines it shows (`history_items::Reader`).
+        items: verbose.then(Vec::new),
         reverts: e.reverts,
         result: e.result,
         backup: e.backup.clone(),

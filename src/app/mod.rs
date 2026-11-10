@@ -23,6 +23,7 @@ pub mod export;
 pub mod help;
 pub mod help_extras;
 pub mod history;
+pub mod history_items;
 pub mod info;
 pub mod install;
 pub mod install_skill;

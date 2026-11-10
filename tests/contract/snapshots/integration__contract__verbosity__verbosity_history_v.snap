@@ -18,6 +18,22 @@ expression: s.stable(&checked.envelope)
           "--json"
         ],
         "at": "<time>",
+        "items": [
+          {
+            "addon": "LittleWigs",
+            "change": "installed",
+            "folders": 1,
+            "from_version": null,
+            "to_version": "v1"
+          },
+          {
+            "addon": "BigWigs",
+            "change": "installed",
+            "folders": 1,
+            "from_version": null,
+            "to_version": "v1"
+          }
+        ],
         "kind": "install",
         "ops": [
           {
@@ -52,6 +68,15 @@ expression: s.stable(&checked.envelope)
           "--json"
         ],
         "at": "<time>",
+        "items": [
+          {
+            "addon": "WeakAuras",
+            "change": "installed",
+            "folders": 1,
+            "from_version": null,
+            "to_version": "5.19.2"
+          }
+        ],
         "kind": "install",
         "ops": [
           {
@@ -83,6 +108,15 @@ expression: s.stable(&checked.envelope)
           "--json"
         ],
         "at": "<time>",
+        "items": [
+          {
+            "addon": "Foo",
+            "change": "installed",
+            "folders": 1,
+            "from_version": null,
+            "to_version": "1"
+          }
+        ],
         "kind": "install",
         "ops": [
           {

@@ -75,6 +75,13 @@ fn verbose_only_fields_are_optional_and_validate() {
             with_verbose: true,
         },
         Case {
+            name: "history items",
+            argv: words(&["history"]),
+            holders: install_line,
+            key: "items",
+            with_verbose: true,
+        },
+        Case {
             name: "history changes",
             argv: words(&["history"]),
             holders: install_line,

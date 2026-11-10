@@ -3,5 +3,9 @@ source: tests/contract/verbosity.rs
 expression: text
 ---
 <id>…  <date> <clock>  agent  install  retail  +2 ~0 -0
+    LittleWigs: installed v1 (1 folder)
+    BigWigs: installed v1 (1 folder)
 <id>…  <date> <clock>  agent  install  retail  +1 ~0 -0
+    WeakAuras: installed 5.19.2 (1 folder)
 <id>…  <date> <clock>  agent  install  retail  +1 ~0 -0
+    Foo: installed 1 (1 folder)
