@@ -1985,9 +1985,21 @@ fn plans_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
     // plan stays good after another client's apply.
     log.step("scene F: an install on two clients");
     let home = Home::new(&["wow", "wow_classic_era"]);
-    let qux = CustomRel::new("Qux.zip", "v1", &[("Qux", &[])]);
+    // Qux needs LibFoo, which the catalog names: each client's install adds it (the
+    // journeys' J3 sheet names it, .41).
+    let catalog = home.env.config().join("omaddons/catalog.d");
+    fs::create_dir_all(&catalog).unwrap();
+    fs::write(
+        catalog.join("libs.toml"),
+        "schema_version = \"1.0\"\n\n[[addon]]\nname = \"LibFoo\"\nref = \"gh:o/libfoo\"\nfolders = [\"LibFoo\"]\n",
+    )
+    .unwrap();
+    let qux = CustomRel::new("Qux.zip", "v1", &[("Qux", &["## Dependencies: LibFoo"])]);
     gh_release_v(&home.http, support::QUX, "v1", &qux.assets());
     gh_latest(&home.http, support::QUX, "v1");
+    let lib = CustomRel::new("LibFoo.zip", "1.0", &[("LibFoo", &[])]);
+    gh_release_v(&home.http, support::LIBFOO, "1.0", &lib.assets());
+    gh_latest(&home.http, support::LIBFOO, "1.0");
     let previews: Vec<(String, String)> = ["retail", "era"]
         .iter()
         .map(|client| {
