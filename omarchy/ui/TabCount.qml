@@ -28,7 +28,7 @@ Rectangle {
   border.color: urgent ? urgentColor : muted
 
   Accessible.role: Accessible.StaticText
-  Accessible.name: String(count) + (urgent ? ", needs attention" : "")
+  Accessible.name: urgent ? Model.copy("tab.count.urgent", { "count": count }) : String(count)
 
   PlainLabel {
     id: label

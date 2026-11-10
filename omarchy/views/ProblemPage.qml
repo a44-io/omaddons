@@ -88,15 +88,19 @@ Item {
     width: root.width
     spacing: Style.spacing.md
 
-    // "Needs attention", the problem, and its client.
-    PlainLabel {
+    // "Needs attention", the problem, and its client. An urgent severity is its row's
+    // glyph in the urgent colour beside the word in the foreground (1n2p.40).
+    AlertLine {
       objectName: "pageSeverity"
       visible: !!root.row && root.row.severityWord !== ""
       width: parent.width
-      color: root.row && root.row.urgent ? root.urgent : root.dim
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
-      font.bold: true
+      marked: !!root.row && root.row.urgent === true
+      glyph: root.row && root.row.glyph ? root.row.glyph : 0xF0026
+      bold: true
+      foreground: root.foreground
+      dim: root.dim
+      urgent: root.urgent
+      fontFamily: root.fontFamily
       text: root.row ? root.row.severityWord : ""
     }
 
@@ -121,27 +125,28 @@ Item {
       text: root.row ? root.row.client : ""
     }
 
-    // Fixed meanwhile (a repair, a change elsewhere): said, and nothing more to run.
+    // Fixed meanwhile (a repair, a change elsewhere): said, and nothing more to run. In
+    // the foreground: accent is never text's colour (§5.1, 1n2p.40).
     PlainLabel {
       objectName: "pageGone"
       visible: root.gone
       width: parent.width
       wrapMode: Text.WordWrap
-      color: root.accent
+      color: root.foreground
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption
       text: Model.copy("issues.page.gone")
     }
 
     // Why a command is no button, the command, and the row's fix and Copy command.
-    PlainLabel {
+    AlertLine {
       objectName: "pageNote"
       visible: !root.gone && !!root.row && root.row.note !== ""
       width: parent.width
-      wrapMode: Text.WordWrap
-      color: root.urgent
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
+      glyph: 0xF0026
+      foreground: root.foreground
+      urgent: root.urgent
+      fontFamily: root.fontFamily
       text: root.row ? root.row.note : ""
     }
 
@@ -171,6 +176,10 @@ Item {
           text: modelData.name === "copy" && !!root.owner && !!root.row && root.owner.copied === root.row.key
             ? Model.copy("issues.copied") : Model.withKey(modelData.text, modelData.name === "fix" ? "enter" : "copy", "page")
           tooltipText: modelData.tooltip
+          Accessible.role: Accessible.Button
+          Accessible.name: text
+          // Never wider than the page: a long fix shrinks, then elides (1n2p.40).
+          width: Math.min(implicitWidth, column.width)
           enabled: modelData.name !== "fix" || root.canChange
           opacity: enabled ? 1.0 : 0.4
           bordered: true
@@ -214,14 +223,13 @@ Item {
         text: Model.copy("issues.page.reading")
       }
 
-      PlainLabel {
+      AlertLine {
         objectName: "explanationFailed"
         visible: root.explainFailed !== ""
         width: column.width
-        wrapMode: Text.WordWrap
-        color: root.urgent
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
+        foreground: root.foreground
+        urgent: root.urgent
+        fontFamily: root.fontFamily
         text: Model.copy("issues.page.failed", { "why": root.explainFailed })
       }
     }

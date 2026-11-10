@@ -226,6 +226,10 @@ Sheet {
           implicitHeight: lines.implicitHeight + Style.spacing.sm * 2
           hasCursor: cursored
           foreground: root.foreground
+          // "Width, 540 px", and what it does (1n2p.40).
+          Accessible.role: Accessible.ListItem
+          Accessible.name: modelData.label + ", " + modelData.text
+          Accessible.description: String(modelData.about || "")
 
           Component.onCompleted: root.rowItems[modelData.index] = entry
           Component.onDestruction: if (root.rowItems[modelData.index] === entry) delete root.rowItems[modelData.index]
@@ -301,15 +305,13 @@ Sheet {
               text: entry.modelData.about
             }
 
-            PlainLabel {
+            AlertLine {
               objectName: "settingError"
               visible: entry.editingHere && root.editError !== ""
               width: parent.width
-              wrapMode: Text.WordWrap
-              elide: Text.ElideNone
-              color: root.urgent
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
+              foreground: root.foreground
+              urgent: root.urgent
+              fontFamily: root.fontFamily
               text: root.editError
             }
           }
@@ -338,6 +340,9 @@ Sheet {
     visible: root.editing !== ""
     width: root.bodyWidth
     foreground: root.foreground
+    // Named by the setting it edits.
+    Accessible.role: Accessible.EditableText
+    Accessible.name: root.editRow ? String(root.editRow.label) : ""
     Keys.onPressed: function(event) {
       if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
         root.commit()

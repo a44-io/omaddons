@@ -271,12 +271,14 @@ Item {
               width: entry.width - x - Style.spacing.lg
               spacing: Style.spacing.xs
 
-              // "Broken", "Needs attention", "Worth fixing", "Minor" (§6.3).
+              // "Broken", "Needs attention", "Worth fixing", "Minor" (§6.3). An urgent
+              // one is foreground beside the urgent glyph, which carries the colour
+              // (§5.1: urgent is a mark's colour, never text's; 1n2p.40).
               PlainLabel {
                 objectName: "severity"
                 visible: entry.modelData.severityWord !== ""
                 width: parent.width
-                color: entry.modelData.urgent ? root.urgent : root.dim
+                color: entry.modelData.urgent ? root.foreground : root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
                 font.bold: true
@@ -307,14 +309,14 @@ Item {
               }
 
               // Why a command is no button (§6.5.4), then the command, code-styled.
-              PlainLabel {
+              AlertLine {
                 objectName: "terminalNote"
                 visible: entry.modelData.note !== ""
                 width: parent.width
-                wrapMode: Text.WordWrap
-                color: root.urgent
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
+                glyph: 0xF0026
+                foreground: root.foreground
+                urgent: root.urgent
+                fontFamily: root.fontFamily
                 text: entry.modelData.note
               }
 
@@ -344,6 +346,11 @@ Item {
                     objectName: "issueButton_" + modelData.name
                     text: modelData.name === "copy" && root.copied === entry.modelData.key ? Model.copy("issues.copied") : modelData.text
                     tooltipText: modelData.tooltip
+                    Accessible.role: Accessible.Button
+                    Accessible.name: text
+                    // Never wider than the row: at 2x text on 400 px a long fix
+                    // ("Take over Retail's addons…") shrinks, then elides (1n2p.40).
+                    width: Math.min(implicitWidth, body.width)
                     // A fix waits for a compatible answer and no change running; reading
                     // why and copying a command never do.
                     enabled: modelData.name !== "fix" || root.canChange

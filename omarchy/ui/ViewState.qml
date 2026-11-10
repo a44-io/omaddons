@@ -45,12 +45,15 @@ Column {
       font.pixelSize: Style.font.caption
       text: String.fromCodePoint(0xF04E6)
 
+      // One turn per 1.2 s; static under reduced motion, "Updating…" beside it saying
+      // what it would (§5.7, 1n2p.40).
       RotationAnimation on rotation {
-        running: root.refreshing
+        running: root.refreshing && Style.duration(1200) > 0
         loops: Animation.Infinite
         from: 0
         to: 360
         duration: 1200
+        onRunningChanged: if (!running) spinner.rotation = 0
       }
     }
 

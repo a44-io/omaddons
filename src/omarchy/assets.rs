@@ -34,6 +34,10 @@ pub const ASSETS: &[(&str, &str)] = &[
         "ui/AddonRow.qml",
         include_str!("../../omarchy/ui/AddonRow.qml"),
     ),
+    (
+        "ui/AlertLine.qml",
+        include_str!("../../omarchy/ui/AlertLine.qml"),
+    ),
     ("ui/Badge.qml", include_str!("../../omarchy/ui/Badge.qml")),
     ("ui/Chip.qml", include_str!("../../omarchy/ui/Chip.qml")),
     (

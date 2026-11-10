@@ -137,6 +137,8 @@ Item {
       visible: root.plan.length > 0
       text: Model.withKey("Mark as seen", "dismiss")
       tooltipText: Model.keyTip("dismiss", "errors")
+      Accessible.role: Accessible.Button
+      Accessible.name: text
       enabled: root.canChange
       opacity: enabled ? 1.0 : 0.4
       bordered: true
@@ -151,7 +153,8 @@ Item {
       objectName: "copyFlash"
       visible: root.copied !== ""
       width: parent.width
-      color: root.accent
+      // Accent is never text's colour (§5.1, 1n2p.40).
+      color: root.foreground
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption
       text: root.copied

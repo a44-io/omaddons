@@ -164,6 +164,9 @@ describe("each rule catches a planted violation", () => {
     expect(added(heading).sort()).toEqual(['qml-literal\tPanelView.qml\t"Planted"', 'qml-literal\tPanelView.qml\t"also planted"'])
     const ids = plant(REAL, "PanelView.qml", "\n", item('text: Model.copy("planted.id", { "key": "x" }) + String.fromCodePoint(0xF0026)'))
     expect(added(ids)).toEqual([])
+    // What a screen reader says is read too (1n2p.40).
+    const spoken = plant(REAL, "PanelView.qml", "\n", item('Accessible.name: "Planted name"\n    Accessible.description: root.planted ? "Planted" : ""'))
+    expect(added(spoken).sort()).toEqual(['qml-literal\tPanelView.qml\t"Planted name"', 'qml-literal\tPanelView.qml\t"Planted"'])
   })
 
   test("model-literal: two words outside COPY, but not a command path or a diagnostic", () => {

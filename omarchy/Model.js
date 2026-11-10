@@ -1768,6 +1768,15 @@ function barState(status, ctx) {
   return bar
 }
 
+// The bar button's name for a screen reader (1n2p.40): the widget, then its tooltip's
+// first line, what the count counts or what keeps the bar from saying ("WoW addons: 2
+// new Lua errors · 1 update"). The rest of the tooltip is its description.
+function barAccessibleName(bar) {
+  var tip = listOf(bar && typeof bar === "object" ? bar.tooltip : null)
+  var head = tip.length ? str(tip[0]) : ""
+  return head === "" ? copy("bar.accessible") : copy("bar.accessible.summary", { "summary": head })
+}
+
 // ---------------------------------------------- failures and recovery (1n2p.34)
 //
 // What a player sees when omaddons cannot be used, or stopped in the middle (design
@@ -3981,21 +3990,50 @@ function mixColor(fg, bg, alpha) {
 
 var DIM_ALPHA_FLOOR = 0.55
 var DIM_MIN_CONTRAST = 4.5
+// The cursor row's tint: the kit's CursorSurface lays the foreground over the surface
+// at its `hover-cursor-fill-alpha`, 0.08 by default. Dim text sits on it in every
+// cursored row (the meta line), so it must stay readable there too (1n2p.40).
+var CURSOR_TINT_ALPHA = 0.08
 
 // The alpha `dimColor` lays the foreground at: the smallest from 0.55 up, in steps of
-// 0.01, at which it reaches 4.5:1 on `bg`; 1 when even the foreground does not.
+// 0.01, at which it reaches 4.5:1 on `bg` and on `bg` under the cursor's tint; 1 when
+// even the foreground does not.
 function dimAlpha(fg, bg) {
+  var cursor = mixColor(fg, bg, CURSOR_TINT_ALPHA)
   for (var step = Math.round(DIM_ALPHA_FLOOR * 100); step <= 100; step++) {
-    if (contrastRatio(mixColor(fg, bg, step / 100), bg) >= DIM_MIN_CONTRAST) return step / 100
+    var dim = mixColor(fg, bg, step / 100)
+    if (contrastRatio(dim, bg) >= DIM_MIN_CONTRAST && contrastRatio(dim, cursor) >= DIM_MIN_CONTRAST) return step / 100
   }
   return 1
 }
 
-// Secondary text (§5.1): the foreground over the popup background, dimmed as far as
-// 4.5:1 allows. Unlike Qt.darker it dims on a light theme too, where darker would
+// Secondary text (§5.1): the foreground over the surface it sits on (the popup
+// background, or a card's tint: tintedSurface), dimmed as far as 4.5:1 allows there and
+// under the cursor. Unlike Qt.darker it dims on a light theme too, where darker would
 // stand out more than the foreground (UX-44).
 function dimColor(fg, bg) {
   return mixColor(fg, bg, dimAlpha(fg, bg))
+}
+
+// A card's surface: `tint` laid over `bg` at `alpha`, opaque, as the card draws it (a
+// failure's urgent at 0.10, a success's accent at 0.08, §5.1), for the dim text on it.
+function tintedSurface(tint, bg, alpha) {
+  return mixColor(tint, bg, alpha)
+}
+
+// The bar badge's fill and figures (§5.5, 1n2p.40): `{fill, text}`. The figures are in
+// `bg` (the theme's background), or in `fg` where that reads better on the fill; when
+// neither reaches 4.5:1 (catppuccin-latte's accent: 4.34), the fill moves toward the
+// other colour in steps of 0.05 until the figures do, so the badge keeps the theme's
+// accent or urgent as nearly as it can.
+function badgeColors(fill, bg, fg) {
+  var text = contrastRatio(bg, fill) >= contrastRatio(fg, fill) ? bg : fg
+  var away = text === bg ? fg : bg
+  var shown = rgbOf(fill) ? mixColor(fill, fill, 1) : fill
+  for (var step = 1; step <= 20 && contrastRatio(text, shown) < DIM_MIN_CONTRAST; step++) {
+    shown = mixColor(away, fill, step * 0.05)
+  }
+  return { "fill": shown, "text": text }
 }
 
 // `list` sorted by `compare`, items it calls equal kept in their input order. Qt's V4
@@ -6958,6 +6996,18 @@ var COPY = {
   "bar.unchecked": "Not checked for updates yet",
   "bar.hints": "Left: open · Middle: {view} · Right: check for updates",
   "bar.hints.broken": "Left: open to see what to do",
+  // The bar button and its badge as a screen reader names them (1n2p.40).
+  "bar.accessible": "WoW addons",
+  "bar.accessible.summary": "WoW addons: {summary}",
+  "badge.urgent": "{count} needing attention",
+  "badge.updates": "{count} updates",
+  // The shared components' words for a screen reader (1n2p.40).
+  "tab.count.urgent": "{count}, needs attention",
+  "keyhint.accessible": "key {key}",
+  "progress.working": "working",
+  "progress.percent": "{n} percent",
+  "row.versions": "{from} to {to}",
+  "row.version": "{to}",
 
   // The cards shown when omaddons cannot be used (1n2p.34, design doc §6.4).
   "card.missing.title": "Can't find omaddons",
@@ -8364,9 +8414,12 @@ if (typeof module !== "undefined") {
     BAR_STATES: BAR_STATES,
     BAR_TICK_MS: BAR_TICK_MS,
     BAR_MARK_GLYPHS: BAR_MARK_GLYPHS,
+    UPDATE_GLYPHS: UPDATE_GLYPHS,
+    UPDATE_BANDS: UPDATE_BANDS,
     barStaleAfterMs: barStaleAfterMs,
     barState: barState,
     barTooltip: barTooltip,
+    barAccessibleName: barAccessibleName,
     RETRY_BACKOFF_MS: RETRY_BACKOFF_MS,
     retryDelayMs: retryDelayMs,
     incompatibleOf: incompatibleOf,
@@ -8464,8 +8517,11 @@ if (typeof module !== "undefined") {
     mixColor: mixColor,
     dimAlpha: dimAlpha,
     dimColor: dimColor,
+    tintedSurface: tintedSurface,
+    badgeColors: badgeColors,
     DIM_ALPHA_FLOOR: DIM_ALPHA_FLOOR,
     DIM_MIN_CONTRAST: DIM_MIN_CONTRAST,
+    CURSOR_TINT_ALPHA: CURSOR_TINT_ALPHA,
     stableSort: stableSort,
     updateRows: updateRows,
     updateCount: updateCount,

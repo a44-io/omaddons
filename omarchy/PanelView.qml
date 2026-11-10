@@ -42,6 +42,9 @@ Item {
 
   // Secondary text that reads on every theme, light ones included (§5.1, UX-44).
   readonly property color dim: Model.dimColor(foreground, Commons.Color.popups.background)
+  // The same on a failure card's urgent tint, where the plain dim falls below 4.5:1
+  // (1n2p.40): the phase card's and the error card's secondary lines.
+  readonly property color cardDim: Model.dimColor(foreground, Model.tintedSurface(urgent, Commons.Color.popups.background, 0.10))
 
   // ---- view state, in memory only (M3-D3)
   property string view: "updates"
@@ -845,6 +848,9 @@ Item {
                 // U+F0625 nf-md-help_circle_outline.
                 iconText: String.fromCodePoint(0xF0625)
                 tooltipText: Model.withKey("Keys", "help")
+                // An icon button is named by its tooltip, key included (1n2p.40).
+                Accessible.role: Accessible.Button
+                Accessible.name: tooltipText
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 onClicked: root.helpOpen = true
@@ -855,6 +861,8 @@ Item {
                 // U+F0293 / U+F0294 nf-md-fullscreen / fullscreen_exit.
                 iconText: String.fromCodePoint(root.zoomed ? 0xF0294 : 0xF0293)
                 tooltipText: Model.withKey(root.zoomed ? "Back to panel size" : "Fill the screen", "zoom")
+                Accessible.role: Accessible.Button
+                Accessible.name: tooltipText
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 onClicked: root.zoomed = !root.zoomed
@@ -866,6 +874,8 @@ Item {
                 // U+F04E6 nf-md-sync: it spins while a check runs (UX-01).
                 iconText: String.fromCodePoint(0xF04E6)
                 tooltipText: Model.withKey(spinning ? "Checking…" : "Check now", "check")
+                Accessible.role: Accessible.Button
+                Accessible.name: tooltipText
                 readonly property bool spinning: !!root.svc && root.svc.checking === true
                 enabled: root.canAct
                 opacity: enabled ? 1.0 : 0.4
@@ -873,8 +883,10 @@ Item {
                 fontFamily: root.fontFamily
                 onClicked: root.checkNow()
 
+                // Static under reduced motion (Style.reduceMotion: Hyprland's
+                // animations off), the tooltip saying "Checking…" (§5.7, 1n2p.40).
                 RotationAnimation on rotation {
-                  running: checkButton.spinning
+                  running: checkButton.spinning && Style.duration(1000) > 0
                   from: 0
                   to: 360
                   duration: 1000
@@ -888,6 +900,8 @@ Item {
                 // U+F054C nf-md-undo.
                 iconText: String.fromCodePoint(0xF054C)
                 tooltipText: Model.withKey(root.undo.label, "undo")
+                Accessible.role: Accessible.Button
+                Accessible.name: tooltipText
                 enabled: root.canAct && (root.undo.history === true || (!root.busy && root.undo.argv !== null))
                 opacity: enabled ? 1.0 : 0.4
                 foreground: root.foreground
@@ -901,6 +915,8 @@ Item {
                 // U+F0770 nf-md-folder_open.
                 iconText: String.fromCodePoint(0xF0770)
                 tooltipText: Model.withKey("Open AddOns", "open")
+                Accessible.role: Accessible.Button
+                Accessible.name: tooltipText
                 enabled: root.canAct && root.openArgv !== null
                 opacity: enabled ? 1.0 : 0.4
                 foreground: root.foreground
@@ -914,6 +930,8 @@ Item {
                 // U+F0493 nf-md-cog (design doc §5.4).
                 iconText: String.fromCodePoint(0xF0493)
                 tooltipText: Model.withKey("Settings", "settings")
+                Accessible.role: Accessible.Button
+                Accessible.name: tooltipText
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 onClicked: root.settingsOpen = true
@@ -933,6 +951,9 @@ Item {
           label: "Client"
           value: root.filter
           options: Model.scopeOptions(root.targets)
+          // Its label and the scope it shows, which a screen reader announces as one.
+          Accessible.role: Accessible.ComboBox
+          Accessible.name: label + ": " + currentLabel()
           foreground: root.foreground
           fontFamily: root.fontFamily
           onChanged: function(value) { root.setFilter(value) }
@@ -1036,7 +1057,7 @@ Item {
                 visible: text !== ""
                 width: parent.width
                 wrapMode: Text.WordWrap
-                color: root.dim
+                color: root.cardDim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
                 text: root.card ? root.card.sentence : ""
@@ -1051,7 +1072,7 @@ Item {
                   required property string modelData
                   width: cardColumn.width
                   wrapMode: Text.WordWrap
-                  color: root.dim
+                  color: root.cardDim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
                   text: modelData
@@ -1070,6 +1091,8 @@ Item {
                     required property int index
                     objectName: "card_" + modelData
                     text: Model.copy("card.action." + modelData)
+                    Accessible.role: Accessible.Button
+                    Accessible.name: text
                     hasCursor: root.cursorActive && index === root.cursor
                     bordered: true
                     foreground: root.foreground
@@ -1083,7 +1106,7 @@ Item {
                   objectName: "cardCopied"
                   visible: text !== ""
                   anchors.verticalCenter: parent.verticalCenter
-                  color: root.dim
+                  color: root.cardDim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
                   text: root.cardNote
@@ -1146,6 +1169,9 @@ Item {
             iconText: String.fromCodePoint(0xF0141)
             text: root.backText()
             tooltipText: Model.withKey("Back", "close")
+            // "Back (h), Updates › DBM": what it does, then where it goes.
+            Accessible.role: Accessible.Button
+            Accessible.name: tooltipText + ", " + text
             foreground: root.foreground
             fontFamily: root.fontFamily
             fontSize: Style.font.bodySmall
@@ -1274,6 +1300,8 @@ Item {
                   enabled: root.canAct && !root.busy
                   opacity: enabled ? 1.0 : 0.4
                   text: index === 0 ? "Fix: " + modelData.command : modelData.command
+                  Accessible.role: Accessible.Button
+                  Accessible.name: text
                   bordered: index === 0
                   foreground: root.foreground
                   fontFamily: root.fontFamily
@@ -1288,6 +1316,8 @@ Item {
                 objectName: "copyDetails"
                 visible: !!root.lastError && typeof root.lastError.details === "string" && root.lastError.details !== ""
                 text: Model.copy("card.action.copy_details")
+                Accessible.role: Accessible.Button
+                Accessible.name: text
                 bordered: true
                 foreground: root.foreground
                 fontFamily: root.fontFamily
@@ -1298,7 +1328,7 @@ Item {
               PlainLabel {
                 objectName: "errorCopied"
                 visible: text !== ""
-                color: root.dim
+                color: root.cardDim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
                 text: root.cardNote
@@ -1311,7 +1341,7 @@ Item {
               visible: text !== ""
               width: parent.width
               wrapMode: Text.WordWrap
-              color: root.dim
+              color: root.cardDim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               text: root.lastError && root.lastError.fixText ? String(root.lastError.fixText) : ""
@@ -1333,6 +1363,8 @@ Item {
                   enabled: root.canAct && !root.busy
                   opacity: enabled ? 1.0 : 0.4
                   text: "Restore " + modelData.label
+                  Accessible.role: Accessible.Button
+                  Accessible.name: text
                   bordered: true
                   foreground: root.foreground
                   fontFamily: root.fontFamily
@@ -1348,7 +1380,7 @@ Item {
               visible: text !== ""
               width: parent.width
               wrapMode: Text.WrapAnywhere
-              color: root.dim
+              color: root.cardDim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               text: root.lastError && root.lastError.folder ? "The backup's own folder: " + root.lastError.folder : ""
@@ -1377,13 +1409,18 @@ Item {
           width: parent.width
           spacing: Style.spacing.md
 
-          PlainLabel {
+          // A failed result carries the alert glyph; its words stay in the foreground
+          // either way (1n2p.40).
+          AlertLine {
             objectName: "resultLine"
             anchors.verticalCenter: parent.verticalCenter
             width: Math.min(implicitWidth, parent.width - (resultUndoButton.visible ? resultUndoButton.width + parent.spacing : 0))
-            color: root.lastResult && !root.lastResult.ok ? root.urgent : root.foreground
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
+            marked: !!root.lastResult && !root.lastResult.ok
+            wrapMode: Text.NoWrap
+            foreground: root.foreground
+            dim: root.foreground
+            urgent: root.urgent
+            fontFamily: root.fontFamily
             text: root.lastResult ? String(root.lastResult.line || "") : ""
           }
 
@@ -1394,6 +1431,8 @@ Item {
             enabled: root.canAct && !root.busy
             opacity: enabled ? 1.0 : 0.4
             text: "Undo"
+            Accessible.role: Accessible.Button
+            Accessible.name: text
             bordered: true
             foreground: root.foreground
             fontFamily: root.fontFamily
@@ -1418,6 +1457,8 @@ Item {
               enabled: root.canAct && !root.busy
               opacity: enabled ? 1.0 : 0.4
               text: "Fix: " + modelData.command
+              Accessible.role: Accessible.Button
+              Accessible.name: text
               bordered: true
               foreground: root.foreground
               fontFamily: root.fontFamily
@@ -1427,14 +1468,15 @@ Item {
           }
         }
 
-        PlainLabel {
+        // A refusal or a full lane: its words beside the alert glyph (1n2p.40).
+        AlertLine {
           objectName: "notice"
           visible: text !== ""
           width: parent.width
-          wrapMode: Text.WordWrap
-          color: root.urgent
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
+          foreground: root.foreground
+          dim: root.dim
+          urgent: root.urgent
+          fontFamily: root.fontFamily
           text: root.notice
         }
 

@@ -1,6 +1,7 @@
 import QtQuick
 import qs.Commons
 import qs.Commons as Commons
+import "../Model.js" as Model
 
 // Progress (design doc §5.5): a 4 px track (the foreground at 0.15) and an accent fill.
 // `fraction` below 0 is indeterminate: a fixed 15 % fill, no sliding animation (§5.7);
@@ -22,7 +23,7 @@ Rectangle {
   color: Qt.rgba(foreground.r, foreground.g, foreground.b, 0.15)
 
   Accessible.role: Accessible.ProgressBar
-  Accessible.name: indeterminate ? "working" : Math.round(shown * 100) + " percent"
+  Accessible.name: indeterminate ? Model.copy("progress.working") : Model.copy("progress.percent", { "n": Math.round(shown * 100) })
 
   Rectangle {
     objectName: "progressFill"

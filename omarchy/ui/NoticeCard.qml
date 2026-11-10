@@ -19,11 +19,15 @@ BorderSurface {
   property bool dismissible: false
 
   property color foreground: Commons.Color.foreground
-  property color dim: Model.dimColor(foreground, Commons.Color.popups.background)
   property color urgent: Commons.Color.urgent
   property color accent: Commons.Color.accent
   property color muted: Commons.Color.muted
   property string fontFamily: Style.font.family
+  // The card as drawn over the popup: its tint laid on, so the body's dim text reaches
+  // 4.5:1 on the tint it sits on, not only on the popup (§5.1, 1n2p.40).
+  readonly property color surface: kind === "failure" ? Model.tintedSurface(urgent, Commons.Color.popups.background, 0.10)
+    : kind === "success" ? Model.tintedSurface(accent, Commons.Color.popups.background, 0.08) : Commons.Color.popups.background
+  property color dim: Model.dimColor(foreground, surface)
 
   signal clicked(string name)
   signal dismissed()
@@ -120,11 +124,11 @@ BorderSurface {
     anchors.margins: Style.spacing.sm
     // U+F0156 nf-md-close.
     iconText: String.fromCodePoint(0xF0156)
-    tooltipText: "Dismiss"
+    tooltipText: Model.copy("activity.dismiss")
     foreground: root.foreground
     fontFamily: root.fontFamily
     Accessible.role: Accessible.Button
-    Accessible.name: "Dismiss"
+    Accessible.name: tooltipText
     onClicked: root.dismissed()
   }
 }

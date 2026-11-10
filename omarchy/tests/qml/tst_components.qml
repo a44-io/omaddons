@@ -44,6 +44,8 @@ TestCase {
   Component { id: badgeComponent; Badge {} }
   Component { id: hintComponent; KeyHint {} }
   Component { id: separatorComponent; Separator {} }
+  Component { id: viewStateComponent; ViewState { width: 540 } }
+  Component { id: alertComponent; AlertLine {} }
 
   Component {
     id: sheetComponent
@@ -231,6 +233,39 @@ TestCase {
     verify(hint.implicitWidth >= hint.implicitHeight)
     var line = make(separatorComponent, { "width": 300 })
     compare(line.height, 1)
+  }
+
+  // ---- ViewState's spinner, AlertLine (1n2p.40)
+
+  function test_the_refreshing_spinner_turns_and_stands_still_with_reduced_motion() {
+    var state = make(viewStateComponent, { "viewState": { "view": "updates", "state": "rows", "refreshing": true, "notices": [] } })
+    var spinner = child(state, "stateRefreshing").children[0]
+    tryVerify(function() { return spinner.rotation !== 0 }, 1000, "it turns")
+    // Hyprland's animations off: it stands still, "Updating…" beside it (§5.7).
+    Commons.Style.reduceMotion = true
+    try {
+      tryCompare(spinner, "rotation", 0)
+      wait(150)
+      compare(spinner.rotation, 0)
+      verify(child(state, "refreshingText").text !== "")
+    } finally {
+      Commons.Style.reduceMotion = false
+    }
+  }
+
+  function test_an_alert_line_is_words_beside_the_urgent_glyph_or_dim_words() {
+    var line = make(alertComponent, { "text": "Couldn't read the release notes", "width": 300 })
+    var glyph = child(line, "alertGlyph")
+    verify(glyph.visible)
+    compare(glyph.color, line.urgent)
+    compare(child(line, "alertText").color, line.foreground, "its words in the foreground, never urgent")
+    compare(line.Accessible.role, Accessible.AlertMessage)
+    compare(line.Accessible.name, "Couldn't read the release notes")
+    line.marked = false
+    verify(!glyph.visible)
+    compare(child(line, "alertText").color, line.dim)
+    compare(child(line, "alertText").x, 0, "no room kept for a glyph")
+    compare(line.Accessible.role, Accessible.StaticText)
   }
 
   // ---- EmptyState, NoticeCard

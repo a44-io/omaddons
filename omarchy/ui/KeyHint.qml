@@ -24,7 +24,7 @@ Rectangle {
   border.color: muted
 
   Accessible.role: Accessible.StaticText
-  Accessible.name: "key " + key
+  Accessible.name: Model.copy("keyhint.accessible", { "key": key })
 
   PlainLabel {
     id: label

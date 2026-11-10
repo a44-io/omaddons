@@ -424,11 +424,13 @@ TestCase {
   }
 
   // `blank` allows a render with nothing drawn: the stub kit's bar button has no glyph.
+  // Every render is also held to the accessibility walk (1n2p.40).
   function save(item, name, blank) {
     wait(60)
     var image = grabImage(item)
     verify(image.width > 0 && image.height > 0, name + ": an empty grab")
     if (!blank) verify(drawn(image), name + ": nothing drawn")
+    compare(unnamedControls(item).join("; "), "", name + ": a control a screen reader cannot name")
     if (Fixtures.SNAPSHOT_DIR === "") return image
     var path = Fixtures.SNAPSHOT_DIR + "/" + name + ".png"
     image.save(path)
@@ -466,6 +468,58 @@ TestCase {
       }
     }
     walk(root, 0, root.width)
+    return out
+  }
+
+  // The roles a control a player acts on takes: what a screen reader announces as
+  // something to press, pick, type into or open (1n2p.40).
+  readonly property var controlRoles: [Accessible.Button, Accessible.CheckBox, Accessible.RadioButton,
+    Accessible.ComboBox, Accessible.EditableText, Accessible.ListItem, Accessible.PageTab, Accessible.MenuItem,
+    Accessible.Link, Accessible.Slider, Accessible.SpinBox, Accessible.ButtonMenu, Accessible.ButtonDropDown]
+
+  // A pointer target: a MouseArea that takes a button (a hover-only one takes none).
+  function clickable(item) {
+    return item.pressAndHoldInterval !== undefined && item.acceptedButtons !== undefined
+      && item.acceptedButtons !== Qt.NoButton
+  }
+
+  // A box a player types into.
+  function typable(item) {
+    return item.cursorPosition !== undefined && item.selectByMouse !== undefined && item.readOnly === false
+  }
+
+  // The visible controls of `root` a screen reader cannot announce (1n2p.40). A control
+  // is a pointer target or a text box; it is named by the nearest item at or above it
+  // that sets an Accessible role, which must be a control's role with a name. An item
+  // marked `Accessible.ignored` (a sheet's backdrop, whose way out is Esc) is skipped.
+  function unnamedControls(root) {
+    var out = []
+    var describe = function(item, why) {
+      var path = []
+      for (var p = item; p && p !== root && path.length < 4; p = p.parent)
+        if (p.objectName) path.unshift(p.objectName)
+      return (path.join(" > ") || "(unnamed)") + " " + String(item).split("(")[0] + ": " + why
+    }
+    var check = function(item) {
+      for (var p = item; p; p = p.parent) {
+        var a = p.Accessible
+        if (a.ignored === true) return
+        if (a.role === Accessible.NoRole) continue
+        if (controlRoles.indexOf(a.role) === -1) out.push(describe(item, "inside a " + a.role + " role, none of its own"))
+        else if (String(a.name || "") === "") out.push(describe(item, "role " + a.role + " has no name"))
+        return
+      }
+      out.push(describe(item, "no role"))
+    }
+    var walk = function(item) {
+      for (var i = 0; i < item.children.length; i++) {
+        var c = item.children[i]
+        if (!c.visible || c.opacity === 0) continue
+        if (clickable(c) || typable(c)) check(c)
+        walk(c)
+      }
+    }
+    walk(root)
     return out
   }
 
@@ -1162,13 +1216,80 @@ TestCase {
     shoot("backup-page")
   }
 
-  // 1n2p.39: every view and the settings sheet at both widths and three text zooms,
+  // 1n2p.40: no keyboard trap. Esc leaves every sheet and every page the panel opens on
+  // the real service: in at most two presses (a box with the keys gives them back
+  // first), never closing the panel while a layer is still open, and the keys come back
+  // to the panel's own catcher.
+  function test_esc_leaves_every_sheet_and_page() {
+    var pagesGone = function() { return frame.pages.length === 0 }
+    var layers = [
+      { "name": "key reference", "view": "updates", "open": function() { frame.textKey("?") },
+        "gone": function() { return !frame.helpOpen } },
+      { "name": "settings", "view": "updates", "open": function() { frame.settingsOpen = true },
+        "gone": function() { return !frame.settingsOpen } },
+      { "name": "restore chooser", "view": "installed",
+        "open": function() { verify(frame.openChooser({ "target": "retail", "addon": "Foo" })) },
+        "gone": function() { return !findChild(frame, "chooser").opened } },
+      { "name": "addon page", "view": "installed", "open": function() { frame.openAddon("Foo", "gh:o/foo") }, "gone": pagesGone },
+      { "name": "backup page", "view": "backups",
+        "open": function() { verify(frame.openBackup("retail", fixture("backups").data.targets[0].backups[0].id, "backup")) },
+        "gone": pagesGone },
+      { "name": "change page", "view": "history", "open": function() {
+          var rows = frame.currentView.rows.filter(function(r) { return r.kind === "update" })
+          frame.openChange(rows[0].key, rows[0].title)
+        }, "gone": pagesGone },
+      { "name": "errors page", "view": "errors", "status": "status-errors",
+        "open": function() { frame.currentView.openPage(frame.currentView.rows[0]) }, "gone": pagesGone },
+      { "name": "problem page", "view": "issues", "status": "setaside-status",
+        "open": function() { frame.currentView.openPage(frame.currentView.rows[0]) }, "gone": pagesGone },
+      // No client yet (with one, the page goes back as the scan lists it). Its path box
+      // has the keys: the first Esc leaves the box, the second the page.
+      { "name": "add a client", "view": "updates", "first": true, "open": function() { verify(frame.stateAction("add")) },
+        "gone": pagesGone },
+      { "name": "plan sheet", "view": "installed", "list": "plan-list", "open": function(scene) {
+          scene.remove = the("plan-remove")
+          compare(service.run("remove", { "target": "retail", "addon": "Bar" }, "Remove Bar"), "")
+        }, "gone": function() { return service.confirm === null } }
+    ]
+    for (var i = 0; i < layers.length; i++) {
+      var layer = layers[i]
+      cleanup()
+      var scene = everyday()
+      scene.config = the("config")
+      scene.doctor = the("setaside-explain")
+      if (layer.status) scene.status = the(layer.status)
+      if (layer.list) scene.list = the(layer.list)
+      if (layer.first) {
+        scene = { "status": the("status-none"), "list": { "text": ok("list", { "targets": [] }) },
+          "errors": { "text": ok("errors", { "targets": [] }) }, "backups": { "text": ok("backup list", { "targets": [] }) } }
+      }
+      open(scene, layer.view)
+      var closed = 0
+      frame.closeRequested.connect(function() { closed++ })
+      layer.open(scene)
+      settle(scene)
+      verify(!layer.gone(), layer.name + ": open")
+      var presses = 0
+      while (!layer.gone() && presses < 2) {
+        frame.focusItem.forceActiveFocus()
+        keyClick(Qt.Key_Escape)
+        settle(scene)
+        presses++
+      }
+      verify(layer.gone(), layer.name + ": Esc leaves it")
+      compare(closed, 0, layer.name + ": the panel stays open")
+      tryVerify(function() { return frame.focusItem.activeFocus }, 1000, layer.name + ": the keys come back")
+    }
+  }
+
+  // 1n2p.39: every view and the settings sheet at both widths and the text zooms,
   // nothing drawn past the panel's edge or a clip (shoot's check), on whichever kit and
-  // theme the run draws with.
+  // theme the run draws with; 1n2p.40 adds the range's ends, 0.6 and 2 (§5.6), where
+  // every control must still be reachable (and named: save's walk).
   function test_matrix_widths_and_text_zooms() {
     var states = ["updates", "installed", "search", "errors", "issues", "backups", "history", "settings"]
     for (var w of [540, 400]) {
-      for (var z of [0.8, 1.0, 1.5]) {
+      for (var z of [0.6, 0.8, 1.0, 1.5, 2.0]) {
         for (var s of states) {
           cleanup()
           panelWidth = w

@@ -1,6 +1,7 @@
 import QtQuick
 import QtTest
 import Quickshell
+import qs.Commons
 import "../.."
 import "../../Model.js" as Model
 import "../../Build.js" as Build
@@ -1308,6 +1309,19 @@ TestCase {
     tryVerify(function() { return button.rotation !== 0 })
     svc.checking = false
     tryCompare(button, "rotation", 0)
+    // Hyprland's animations off (Style.reduceMotion): it stands still, its tooltip
+    // saying it checks (design doc §5.7, 1n2p.40).
+    Style.reduceMotion = true
+    try {
+      svc.checking = true
+      verify(button.spinning)
+      compare(button.tooltipText, "Checking… (c)")
+      wait(150)
+      compare(button.rotation, 0)
+    } finally {
+      svc.checking = false
+      Style.reduceMotion = false
+    }
   }
 
   function test_a_narrow_panel_shows_glyph_tabs_and_names_its_view() {

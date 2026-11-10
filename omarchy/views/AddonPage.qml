@@ -254,14 +254,16 @@ Item {
       }
 
       // Reading about it, why that failed, or why its source says nothing more.
-      PlainLabel {
+      // A failed read beside the alert glyph; reading, or why nothing more, dim.
+      AlertLine {
         objectName: "pageState"
         visible: text !== ""
         width: parent.width
-        wrapMode: Text.WordWrap
-        color: root.page.state === "failed" ? root.urgent : root.dim
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
+        marked: root.page.state === "failed"
+        foreground: root.foreground
+        dim: root.dim
+        urgent: root.urgent
+        fontFamily: root.fontFamily
         text: root.page.state === "reading" ? Model.copy("page.reading")
           : (root.page.state === "failed" ? Model.copy("page.failed", { "why": root.page.failed }) : root.page.why)
       }
@@ -276,6 +278,8 @@ Item {
         objectName: "pageWeb"
         visible: root.page.homepage !== ""
         text: Model.withKey(Model.copy("page.web"), "web", "page")
+        Accessible.role: Accessible.Link
+        Accessible.name: text
         bordered: true
         foreground: root.foreground
         fontFamily: root.fontFamily
@@ -287,6 +291,8 @@ Item {
         objectName: "pageCopy"
         visible: root.page.ref !== ""
         text: root.copied !== "" ? root.copied : Model.withKey(Model.copy("page.copy_ref"), "copy", "page")
+        Accessible.role: Accessible.Button
+        Accessible.name: text
         bordered: true
         foreground: root.foreground
         fontFamily: root.fontFamily
@@ -356,15 +362,16 @@ Item {
     }
 
     // Listing them, why that failed, or why its source lists none.
-    PlainLabel {
+    AlertLine {
       id: versionsState
       objectName: "versionsState"
       visible: root.page.versions.open && text !== ""
       width: parent.width
-      wrapMode: Text.WordWrap
-      color: root.page.versions.state === "failed" ? root.urgent : root.dim
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
+      marked: root.page.versions.state === "failed"
+      foreground: root.foreground
+      dim: root.dim
+      urgent: root.urgent
+      fontFamily: root.fontFamily
       text: root.page.versions.state === "reading" ? Model.copy("page.versions.reading")
         : (root.page.versions.state === "failed" ? Model.copy("page.versions.failed", { "why": root.page.versions.failed })
           : root.page.versions.why)
@@ -528,11 +535,27 @@ Item {
               required property var modelData
               objectName: "link_" + modelData.name
               text: modelData.installed ? modelData.name : Model.copy("page.needs.missing", { "name": modelData.name })
-              foreground: modelData.installed ? root.foreground : root.urgent
+              // Each opens its own page. A missing one says so in words, beside the
+              // alert glyph, in an urgent border: urgent is a mark's colour, never
+              // text's (§5.1, 1n2p.40).
+              iconText: modelData.installed ? "" : String.fromCodePoint(0xF0028)
+              Accessible.role: Accessible.Link
+              Accessible.name: text
+              foreground: root.foreground
               bordered: true
               fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
               onClicked: root.frame.openAddon(modelData.name, "")
+
+              Rectangle {
+                objectName: "missingBorder"
+                visible: !parent.modelData.installed
+                anchors.fill: parent
+                color: "transparent"
+                radius: Style.cornerRadius
+                border.width: 1
+                border.color: root.urgent
+              }
             }
           }
         }
@@ -562,11 +585,25 @@ Item {
           required property var modelData
           objectName: "errorsOn_" + modelData.target
           text: modelData.text
-          foreground: root.urgent
+          // U+F00E4 nf-md-bug (§5.4), its words in the foreground, in an urgent border
+          // (§5.1, 1n2p.40).
+          iconText: String.fromCodePoint(0xF00E4)
+          Accessible.role: Accessible.Link
+          Accessible.name: text
+          foreground: root.foreground
           bordered: true
           fontFamily: root.fontFamily
           fontSize: Style.font.bodySmall
           onClicked: root.openErrors(modelData)
+
+          Rectangle {
+            objectName: "errorsBorder"
+            anchors.fill: parent
+            color: "transparent"
+            radius: Style.cornerRadius
+            border.width: 1
+            border.color: root.urgent
+          }
         }
       }
     }
@@ -597,6 +634,8 @@ Item {
           required property int index
           objectName: "change_" + index
           text: modelData.text
+          Accessible.role: Accessible.Link
+          Accessible.name: text
           foreground: modelData.state === "undone" ? root.dim : root.foreground
           bordered: true
           fontFamily: root.fontFamily

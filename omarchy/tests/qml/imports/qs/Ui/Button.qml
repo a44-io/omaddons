@@ -1,6 +1,7 @@
 import QtQuick
 
-// Omarchy's qs.Ui Button: its properties, `clicked`, and a plain-text label.
+// Omarchy's qs.Ui Button: its properties, `clicked`, and a plain-text label that, as
+// the kit's does, elides when the button is held narrower than its text.
 Rectangle {
   id: root
 
@@ -33,6 +34,8 @@ Rectangle {
   Text {
     id: label
     anchors.centerIn: parent
+    width: Math.max(0, Math.min(implicitWidth, root.width - root.horizontalPadding * 2))
+    elide: Text.ElideRight
     textFormat: Text.PlainText
     text: root.text
   }

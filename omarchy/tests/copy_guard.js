@@ -2,9 +2,11 @@
 // of runtime file name to text, so tests/copy.test.js runs each over the real source and
 // over a copy holding one planted violation. Four rules:
 //
-// - qml-literal: a QML `text:`, `tooltipText:`, `placeholderText:` or `heading:` binding
-//   holding a string literal a player reads: two or more words, or a capital letter
-//   (copy ids, keys and slot names are lowercase single words; glyphs are code points).
+// - qml-literal: a QML `text:`, `tooltipText:`, `placeholderText:` or `heading:` binding,
+//   or the `Accessible.name:` or `Accessible.description:` a screen reader says
+//   (1n2p.40), holding a string literal a player reads: two or more words, or a capital
+//   letter (copy ids, keys and slot names are lowercase single words; glyphs are code
+//   points).
 // - model-literal: a Model.js string literal of two or more words outside COPY,
 //   ERROR_WORDS, WARNING_WORDS and comments. Not counted: a command path (a CLI_PATHS
 //   key), and the message of a `refuse(…)` or `Error(…)`, a diagnostic the widget keys
@@ -17,7 +19,7 @@
 // A finding is `{rule, file, line, value}`; its key, `rule \t file \t JSON(value)`, is
 // what the allowlist (tests/copy_allowlist.txt) holds.
 
-const WORD_PROPERTIES = ["text", "tooltipText", "placeholderText", "heading"]
+const WORD_PROPERTIES = ["text", "tooltipText", "placeholderText", "heading", "Accessible\\.name", "Accessible\\.description"]
 const DIAGNOSTIC_CALLS = ["refuse", "Error"]
 const WORD_TABLES = ["COPY", "ERROR_WORDS", "WARNING_WORDS"]
 

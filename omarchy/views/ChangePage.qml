@@ -156,6 +156,9 @@ Item {
           implicitHeight: itemText.implicitHeight + Style.spacing.sm * 2
           hasCursor: line.item && !!root.frame && root.frame.cursorActive && root.frame.cursor === line.modelData.index
           foreground: root.foreground
+          // What the change did to one addon; Enter opens its page (1n2p.40).
+          Accessible.role: Accessible.ListItem
+          Accessible.name: String(line.modelData.text || "")
 
           Component.onCompleted: if (line.item) root.lineItems[line.modelData.index] = itemSurface
           Component.onDestruction: if (line.item && root.lineItems[line.modelData.index] === itemSurface) delete root.lineItems[line.modelData.index]
@@ -200,6 +203,8 @@ Item {
       implicitHeight: backupText.implicitHeight + Style.spacing.sm * 2
       hasCursor: !!root.frame && root.frame.cursorActive && root.frame.cursor === root.rows.length - 1 && visible
       foreground: root.foreground
+      Accessible.role: Accessible.Link
+      Accessible.name: Model.copy("history.page.backup")
 
       PlainLabel {
         id: backupText
@@ -253,6 +258,8 @@ Item {
           objectName: "pageUndo_" + index
           // The first is all of it, the frame's Ctrl+Z here.
           text: index === 0 ? Model.withKey(modelData.text, "undo") : modelData.text
+          Accessible.role: Accessible.Button
+          Accessible.name: text
           enabled: root.canChange
           opacity: enabled ? 1.0 : 0.4
           bordered: true

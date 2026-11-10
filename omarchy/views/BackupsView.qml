@@ -154,6 +154,9 @@ Item {
             y: head.stacked ? clientHeader.implicitHeight + Style.spacing.sm : (head.height - implicitHeight) / 2
             text: section.scoped ? Model.withKey(Model.copy("backups.back_up"), "backup", "backups") : Model.copy("backups.back_up")
             tooltipText: section.modelData.backUp.label
+            // "Back up Retail": the tooltip names the client the label leaves out.
+            Accessible.role: Accessible.Button
+            Accessible.name: tooltipText !== "" ? tooltipText : text
             enabled: root.canChange
             opacity: enabled ? 1.0 : 0.4
             bordered: true
@@ -189,6 +192,9 @@ Item {
           visible: section.modelData.cleanUp
           text: Model.copy("backups.clean_up")
           tooltipText: Model.copy("backups.clean_up.tip")
+          Accessible.role: Accessible.Button
+          Accessible.name: text
+          Accessible.description: tooltipText
           bordered: true
           foreground: root.foreground
           fontFamily: root.fontFamily

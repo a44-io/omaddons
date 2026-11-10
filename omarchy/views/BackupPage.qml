@@ -175,14 +175,13 @@ Item {
     }
 
     // Restores are off while the client runs (M3-D29).
-    PlainLabel {
+    AlertLine {
       objectName: "blocked"
       visible: !!root.page && root.page.blocked !== ""
       width: parent.width
-      wrapMode: Text.WordWrap
-      color: root.urgent
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
+      foreground: root.foreground
+      urgent: root.urgent
+      fontFamily: root.fontFamily
       text: root.page ? root.page.blocked : ""
     }
 
@@ -225,6 +224,10 @@ Item {
         implicitHeight: Math.max(addonName.implicitHeight, hint.implicitHeight) + Style.spacing.sm * 2
         hasCursor: cursored
         foreground: root.foreground
+        // One addon's settings in the backup; Enter restores them (1n2p.40).
+        Accessible.role: Accessible.ListItem
+        Accessible.name: String(modelData.text || "")
+        Accessible.description: Model.withKey(Model.copy("backups.page.restore_one"), "enter", "page")
 
         PlainLabel {
           id: addonName
@@ -281,6 +284,8 @@ Item {
       Button {
         objectName: "restore"
         text: Model.withKey(Model.copy("backups.action.restore"), "restore", "page")
+        Accessible.role: Accessible.Button
+        Accessible.name: text
         enabled: root.canChange && !!root.page && root.page.restorable && root.page.blocked === ""
         opacity: enabled ? 1.0 : 0.4
         bordered: true
@@ -293,6 +298,8 @@ Item {
       Button {
         objectName: "delete"
         text: Model.withKey(Model.copy("backups.action.delete"), "remove", "page")
+        Accessible.role: Accessible.Button
+        Accessible.name: text
         enabled: root.canChange && !!root.page && !root.page.busy
         opacity: enabled ? 1.0 : 0.4
         bordered: true

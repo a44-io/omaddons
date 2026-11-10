@@ -124,6 +124,8 @@ Item {
         objectName: "pageUpdate"
         visible: !!root.row && root.row.updateAvailable === true
         text: Model.withKey(Model.copy("errors.action.update", { "addon": root.row ? root.row.addon : "" }), "update", "page")
+        Accessible.role: Accessible.Button
+        Accessible.name: text
         enabled: root.canChange
         opacity: enabled ? 1.0 : 0.4
         bordered: true
@@ -136,6 +138,8 @@ Item {
       Button {
         objectName: "pageCopy"
         text: Model.withKey(Model.copy("errors.action.copy"), "copy", "page")
+        Accessible.role: Accessible.Button
+        Accessible.name: text
         bordered: true
         foreground: root.foreground
         fontFamily: root.fontFamily
@@ -146,6 +150,8 @@ Item {
       Button {
         objectName: "pageRestore"
         text: Model.withKey(Model.copy("installed.action.restore"), "restore", "page")
+        Accessible.role: Accessible.Button
+        Accessible.name: text
         enabled: root.canChange
         opacity: enabled ? 1.0 : 0.4
         bordered: true
@@ -159,6 +165,10 @@ Item {
         objectName: "rawButton"
         text: Model.copy(root.rawShown ? "errors.raw.hide" : "errors.raw.show")
         tooltipText: Model.copy("errors.raw.warning")
+        // The warning a sighted player reads in its tooltip, said with it.
+        Accessible.role: Accessible.Button
+        Accessible.name: text
+        Accessible.description: tooltipText
         bordered: true
         foreground: root.foreground
         fontFamily: root.fontFamily
@@ -171,7 +181,8 @@ Item {
       objectName: "copyFlash"
       visible: root.copied !== ""
       width: parent.width
-      color: root.accent
+      // Accent is never text's colour (§5.1, 1n2p.40).
+      color: root.foreground
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption
       text: root.copied
@@ -235,14 +246,15 @@ Item {
       width: parent.width
       spacing: Style.spacing.sm
 
-      PlainLabel {
+      // The warning beside the alert glyph, its words in the foreground (1n2p.40).
+      AlertLine {
         objectName: "rawLabel"
         width: parent.width
-        wrapMode: Text.WordWrap
-        color: root.urgent
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
-        font.bold: true
+        glyph: 0xF0026
+        bold: true
+        foreground: root.foreground
+        urgent: root.urgent
+        fontFamily: root.fontFamily
         text: Model.copy("errors.raw.warning")
       }
 

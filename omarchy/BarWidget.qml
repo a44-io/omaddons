@@ -129,6 +129,11 @@ Panel {
     active: root.model.urgent === true
     dimmed: root.model.dimmed === true
     tooltipText: Array.isArray(root.model.tooltip) ? root.model.tooltip.join("\n") : ""
+    // Said, not only seen (1n2p.40): the tooltip's first line (what the count counts)
+    // names it, the rest (each client, the clicks) describes it.
+    Accessible.role: Accessible.Button
+    Accessible.name: Model.barAccessibleName(root.model)
+    Accessible.description: Array.isArray(root.model.tooltip) ? root.model.tooltip.slice(1).join(". ") : ""
     onPressed: function(which) { root.press(which) }
   }
 

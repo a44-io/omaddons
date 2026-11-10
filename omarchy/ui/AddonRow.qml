@@ -63,7 +63,8 @@ Item {
   opacity: inert ? 0.45 : 1.0
 
   Accessible.role: Accessible.ListItem
-  Accessible.name: title + (toVersion !== "" ? ", " + fromVersion + " to " + toVersion : "") + (meta !== "" ? ", " + meta : "")
+  Accessible.name: title + (toVersion !== "" ? ", " + Model.copy(fromVersion !== "" ? "row.versions" : "row.version",
+    { "from": fromVersion, "to": toVersion }) : "") + (meta !== "" ? ", " + meta : "")
 
   CursorSurface {
     anchors.fill: parent

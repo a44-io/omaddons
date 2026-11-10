@@ -149,6 +149,8 @@ Item {
         width: root.filterShown ? parent.width - countLabel.width - Style.spacing.lg : 0
         opacity: root.filterShown ? 1.0 : 0.0
         placeholderText: Model.copy("history.filter")
+        Accessible.role: Accessible.EditableText
+        Accessible.name: placeholderText
         foreground: root.foreground
         onTextChanged: if (text !== root.query) root.keepCursor(function() { root.query = filterField.text })
         Keys.onPressed: function(event) { event.accepted = root.filterKey(event.key, event.text, event.modifiers) }
@@ -162,7 +164,8 @@ Item {
         anchors.verticalCenter: parent.verticalCenter
         width: visible ? implicitWidth : 0
         elide: Text.ElideNone
-        color: root.count.none ? root.urgent : root.dim
+        // "0 of 42" stands out in bold foreground, never urgent text (§5.1, 1n2p.40).
+        color: root.count.none ? root.foreground : root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
         font.bold: root.count.none

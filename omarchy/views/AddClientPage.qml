@@ -95,6 +95,8 @@ Item {
       objectName: "pathField"
       width: parent.width
       placeholderText: Model.copy("addclient.placeholder")
+      Accessible.role: Accessible.EditableText
+      Accessible.name: placeholderText
       foreground: root.foreground
       onTextChanged: if (root.note !== Model.copy("addclient.adding")) root.note = ""
       Keys.onPressed: function(event) { event.accepted = root.fieldKey(event.key, event.text, event.modifiers) }
@@ -108,6 +110,8 @@ Item {
         enabled: root.canChange
         opacity: enabled ? 1.0 : 0.4
         text: Model.copy("addclient.add")
+        Accessible.role: Accessible.Button
+        Accessible.name: text
         bordered: true
         foreground: root.foreground
         fontFamily: root.fontFamily

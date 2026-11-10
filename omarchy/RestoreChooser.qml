@@ -131,15 +131,15 @@ Sheet {
     text: root.model.from
   }
 
-  PlainLabel {
+  // "Quit Retail first.": its words beside the alert glyph (1n2p.40).
+  AlertLine {
     objectName: "chooserBlocked"
     visible: root.blocked !== "" && root.step !== "backup"
     width: root.bodyWidth
-    wrapMode: Text.WordWrap
-    color: root.urgent
-    font.family: root.fontFamily
-    font.pixelSize: Style.font.caption
-    font.bold: true
+    bold: true
+    foreground: root.foreground
+    urgent: root.urgent
+    fontFamily: root.fontFamily
     text: root.blocked
   }
 
@@ -169,6 +169,10 @@ Sheet {
       hasCursor: root.choice === index
       opacity: modelData.enabled ? 1.0 : 0.4
       foreground: root.foreground
+      // The choice in its words, and what else it changes (1n2p.40).
+      Accessible.role: Accessible.ListItem
+      Accessible.name: String(modelData.text || "")
+      Accessible.description: String(modelData.note || "")
 
       Column {
         id: lines

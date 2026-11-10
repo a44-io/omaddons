@@ -1958,17 +1958,21 @@ describe("the Updates and Installed views", () => {
     "tokyo-night": ["#a9b1d6", "#1a1b26"], "everforest": ["#d3c6aa", "#2d353b"], "vantablack": ["#ffffff", "#000000"],
   }
 
-  test("the dim colour reaches 4.5:1 and dims on light themes too", () => {
+  test("the dim colour reaches 4.5:1, under the cursor's tint too, and dims on light themes", () => {
     const alphas = {}
     for (const [name, [fg, bg]] of Object.entries(THEMES)) {
       const dim = M.dimColor(fg, bg)
       expect(M.contrastRatio(dim, bg), name).toBeGreaterThanOrEqual(M.DIM_MIN_CONTRAST)
+      // A cursored row's meta line sits on the kit's cursor tint (1n2p.40).
+      const cursor = M.mixColor(fg, bg, M.CURSOR_TINT_ALPHA)
+      expect(M.contrastRatio(dim, cursor), name + ": under the cursor").toBeGreaterThanOrEqual(M.DIM_MIN_CONTRAST)
       expect(M.contrastRatio(dim, bg), name + ": dimmer than the foreground").toBeLessThan(M.contrastRatio(fg, bg))
       alphas[name] = M.dimAlpha(fg, bg)
     }
-    // The values the design doc's §5.1 table quotes.
-    expect(alphas).toEqual({ "rose-pine": 0.84, "catppuccin-latte": 0.82, "white": 0.55, "tokyo-night": 0.69,
-      "everforest": 0.71, "vantablack": 0.55 })
+    // The values the design doc's §5.1 quotes, raised by the cursor's tint (1n2p.40;
+    // on the popup alone they were 0.84, 0.82, 0.55, 0.69, 0.71 and 0.55).
+    expect(alphas).toEqual({ "rose-pine": 0.89, "catppuccin-latte": 0.87, "white": 0.59, "tokyo-night": 0.76,
+      "everforest": 0.81, "vantablack": 0.55 })
   })
 
   test("colours read from QML values, objects and hex strings; contrast is WCAG's", () => {

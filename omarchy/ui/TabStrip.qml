@@ -54,6 +54,9 @@ Flow {
       fontSize: root.fontSize
       Accessible.role: Accessible.PageTab
       Accessible.name: modelData.title + (modelData.count > 0 ? ", " + modelData.count : "")
+      // The tab whose view shows, said as well as filled (1n2p.40).
+      Accessible.selectable: true
+      Accessible.selected: selected
       onClicked: root.changed(modelData.id)
 
       TabCount {
@@ -64,6 +67,9 @@ Flow {
         count: tab.modelData.count
         urgent: tab.modelData.urgent
         foreground: root.foreground
+        // The selected tab's fill (the kit's foreground at 0.18) takes the dim below
+        // 4.5:1: its figures are in the foreground there (§5.1, 1n2p.40).
+        dim: tab.selected ? root.foreground : Model.dimColor(root.foreground, Commons.Color.popups.background)
         fontFamily: root.fontFamily
       }
     }

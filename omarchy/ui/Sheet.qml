@@ -196,8 +196,11 @@ Item {
     anchors.fill: parent
     color: Qt.rgba(root.background.r, root.background.g, root.background.b, 0.7)
 
+    // A click outside the card cancels. No control of its own for a screen reader:
+    // Cancel and Esc are the way out (1n2p.40).
     MouseArea {
       anchors.fill: parent
+      Accessible.ignored: true
       onClicked: root.cancel()
     }
   }
@@ -212,8 +215,8 @@ Item {
     color: root.surface
     borderSpec: Border.flat(root.border, Math.max(1, Style.space(2)))
 
-    // Clicks on the card stay on the card.
-    MouseArea { anchors.fill: parent }
+    // Clicks on the card stay on the card: it absorbs them, and is no control.
+    MouseArea { anchors.fill: parent; Accessible.ignored: true }
 
     Column {
       id: column

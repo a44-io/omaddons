@@ -312,6 +312,8 @@ Item {
       objectName: "searchField"
       width: parent.width
       placeholderText: Model.copy("search.box")
+      Accessible.role: Accessible.EditableText
+      Accessible.name: placeholderText
       foreground: root.foreground
       onTextChanged: root.typed()
       Keys.onPressed: function(event) { event.accepted = root.fieldKey(event.key, event.text, event.modifiers) }
@@ -347,6 +349,9 @@ Item {
           hasCursor: root.chooserCursor === index
           opacity: modelData.eligible ? 1.0 : 0.4
           foreground: root.foreground
+          // The client and its verdict in words, which say why one is not offered.
+          Accessible.role: Accessible.ListItem
+          Accessible.name: String(modelData.words || "")
 
           PlainLabel {
             id: choice

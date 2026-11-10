@@ -183,6 +183,8 @@ Item {
         anchors.verticalCenter: parent.verticalCenter
         text: (root.filter ? "Update " + Model.heroTitle(root.statusTargets, root.filter) : "Update all") + " (" + root.count + ")"
         tooltipText: Model.keyTip("update_all", "updates")
+        Accessible.role: Accessible.Button
+        Accessible.name: text
         enabled: root.canChange
         opacity: enabled ? 1.0 : 0.4
         bordered: true
@@ -212,6 +214,8 @@ Item {
         anchors.verticalCenter: parent.verticalCenter
         text: Model.copy("updates.check_now")
         tooltipText: Model.keyTip("check", "updates")
+        Accessible.role: Accessible.Button
+        Accessible.name: text
         enabled: !!root.frame && root.frame.canAct && !(root.svc && root.svc.checking === true)
         opacity: enabled ? 1.0 : 0.4
         bordered: true
@@ -237,6 +241,8 @@ Item {
         width: root.filterShown ? parent.width - countLabel.width - Style.spacing.lg : 0
         opacity: root.filterShown ? 1.0 : 0.0
         placeholderText: Model.copy("updates.filter")
+        Accessible.role: Accessible.EditableText
+        Accessible.name: placeholderText
         foreground: root.foreground
         onTextChanged: if (text !== root.query) root.keepCursor(function() { root.query = filterField.text })
         Keys.onPressed: function(event) { event.accepted = root.filterKey(event.key, event.text, event.modifiers) }
@@ -250,7 +256,8 @@ Item {
         anchors.verticalCenter: parent.verticalCenter
         width: visible ? implicitWidth : 0
         elide: Text.ElideNone
-        color: root.rows.length === 0 && root.scopeRows.length > 0 ? root.urgent : root.dim
+        // "0 of 5" stands out in bold foreground, never urgent text (§5.1, 1n2p.40).
+        color: root.rows.length === 0 && root.scopeRows.length > 0 ? root.foreground : root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
         font.bold: root.rows.length === 0 && root.scopeRows.length > 0
@@ -337,6 +344,8 @@ Item {
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             text: Model.copy("updates.update_client", { "client": entry.modelData.group })
+            Accessible.role: Accessible.Button
+            Accessible.name: text
             enabled: root.canChange
             opacity: enabled ? 1.0 : 0.4
             bordered: true
@@ -391,13 +400,15 @@ Item {
           leftPadding: Style.spacing.xl
           spacing: Style.spacing.sm
 
-          PlainLabel {
+          // A failed read beside the alert glyph; otherwise dim (1n2p.40).
+          AlertLine {
             objectName: "notesStatus"
             width: parent.width - Style.spacing.xl
-            wrapMode: Text.WordWrap
-            color: entry.notes && entry.notes.state === "failed" ? root.urgent : root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
+            marked: !!entry.notes && entry.notes.state === "failed"
+            foreground: root.foreground
+            dim: root.dim
+            urgent: root.urgent
+            fontFamily: root.fontFamily
             text: !entry.notes || entry.notes.state === "reading" ? Model.copy("updates.notes.reading")
               : (entry.notes.state === "failed" ? entry.notes.failed
                 : (entry.notes.entries.length === 0 ? Model.copy("updates.notes.none") : entry.notes.behind))
@@ -441,6 +452,8 @@ Item {
             objectName: "notesLink"
             visible: !!entry.notes && entry.notes.url !== ""
             text: entry.notes ? entry.notes.link : ""
+            Accessible.role: Accessible.Link
+            Accessible.name: text
             bordered: true
             foreground: root.foreground
             fontFamily: root.fontFamily
