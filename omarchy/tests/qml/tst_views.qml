@@ -405,22 +405,30 @@ TestCase {
     verify(clientUpdate.visible)
     compare(clientUpdate.text, "Update Retail")
     verify(!findChild(row("updateRow", 3), "updateClient").visible)
+    // Update all sits at the right, above the clients' buttons; its tooltip names `U`.
+    var updateAll = findChild(updates, "updateAll")
+    compare(updateAll.mapToItem(updates, updateAll.width, 0).x, clientUpdate.mapToItem(updates, clientUpdate.width, 0).x)
+    compare(updateAll.tooltipText, Model.keyTip("update_all", "updates"))
+    verify(updateAll.tooltipText.endsWith("(U)"))
+    var underAll = clientUpdate.mapToItem(updates, 0, 0).x
     keyClick("t")
     keyClick("t")
     compare(view.filter, "retail")
-    // The client by its player name, never its id (UX-38).
-    // Under one client no header shows, so the view's own button updates it.
-    verify(findChild(content(), "updateAll").visible)
-    compare(findChild(content(), "updateAll").text, "Update Retail (1)")
-    findChild(content(), "updateAll").clicked()
+    // Under one client its header shows as under All (omad-224l): Update Retail by its
+    // player name, never its id (UX-38), where it was; no Update all.
+    verify(!findChild(content(), "updateAll").visible)
+    verify(findChild(row("updateRow", 0), "clientHeader").visible)
+    var lone = findChild(row("updateRow", 0), "updateClient")
+    verify(lone.visible)
+    compare(lone.text, "Update Retail")
+    compare(lone.mapToItem(content(), 0, 0).x, underAll, "the button keeps its place")
+    lone.clicked()
     // The update previews with what the rows showed: retail's one update.
     compare(json(svc.runs[0]), json(["update_target", { "target": "retail" }, "Update Retail",
       [shownRow("k-retail", "retail", "DBM", "12.1.14", "12.1.15")]]))
-    // `U` is the same button, and its tooltip says so (from KEYMAP).
+    // `U` under one client does the same.
     keyClick("U")
     compare(json(svc.runs[1]), json(svc.runs[0]))
-    compare(findChild(content(), "updateAll").tooltipText, Model.keyTip("update_all", "updates"))
-    verify(findChild(content(), "updateAll").tooltipText.endsWith("(U)"))
   }
 
   function test_u_updates_the_cursored_addon_and_says_so_where_nothing_waits() {

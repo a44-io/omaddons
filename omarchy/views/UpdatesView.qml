@@ -12,11 +12,12 @@ import "../Model.js" as Model
 // new version, a chip for a channel other than stable, and a meta line in words (how old
 // the release is, the game running, why it is pinned, blocked or not checked). Updates
 // come first, then pinned addons with a newer release, blocked releases and failed
-// checks, by name within each; under All each client's header names it and updates it.
-// Each action shows once, at the level it acts on (omad-sj3y): the header's Update all
-// (`U`) shows under All only when two or more clients have updates (one client's header
-// already updates it), and under one client as Update {client}; checking is the hero's
-// (`c`) and the footer says when. `e` shows every release note since the installed
+// checks, by name within each; each client's header names it and updates it, under All
+// and under that client alike, so its button never moves (omad-224l). Each action shows
+// once, at the level it acts on (omad-sj3y): Update all (`U`) shows only under All when
+// two or more clients have updates, at the right above the clients' buttons; `U` under
+// one client updates that client. Checking is the hero's (`c`) and the footer says when.
+// `e` shows every release note since the installed
 // version (a network read, on demand, kept only for the row that asked); `/` filters the
 // rows. Enter and `u` update the row's addon, `p` pins or unpins it. A row a change runs
 // on shows its phase, and says "Updated" a moment after (the activity bar, 1n2p.18).
@@ -49,10 +50,11 @@ Item {
   readonly property int count: Model.updateCount(scopeRows)
   // How many clients in the scope have an update: Update all shows under All only past one.
   readonly property int clientsWithUpdates: Model.updateClients(scopeRows)
-  // The header's Update all: under one client, or under All past one client with updates.
-  // The header and its button both read it (a child's `visible` is false while its
-  // parent's is, so the header can't follow the button's).
-  readonly property bool showsUpdateAll: count > 0 && (filter !== "" || clientsWithUpdates > 1)
+  // The header's Update all: under All past one client with updates (under one client
+  // its header's Update {client} is that). The header and its button both read it (a
+  // child's `visible` is false while its parent's is, so the header can't follow the
+  // button's).
+  readonly property bool showsUpdateAll: filter === "" && clientsWithUpdates > 1
   readonly property int rowCount: rows.length
   // Past LONG_LIST_ROWS the rows are a VirtualList that builds only those in view and
   // scrolls itself (1n2p.38): the frame asks it to position the cursor's row.
@@ -176,8 +178,8 @@ Item {
     width: root.width
     spacing: Style.spacing.sm
 
-    // The header: update everything in the filter (U), when no client header already
-    // does exactly that. It takes no room when its button doesn't show.
+    // The header: update every client (U), when no client header already does exactly
+    // that; at the right, above the clients' own buttons. It takes no room when hidden.
     Item {
       objectName: "updatesHeader"
       visible: root.showsUpdateAll
@@ -188,9 +190,12 @@ Item {
         id: updateAllButton
         objectName: "updateAll"
         visible: root.showsUpdateAll
-        anchors.left: parent.left
+        // A whole-pixel width: right-anchored at a fractional x, its right border rounds
+        // past the content's edge and is clipped.
+        width: Math.ceil(implicitWidth)
+        anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
-        text: (root.filter ? "Update " + Model.heroTitle(root.statusTargets, root.filter) : "Update all") + " (" + root.count + ")"
+        text: Model.copy("updates.update_all", { "n": root.count })
         tooltipText: Model.keyTip("update_all", "updates")
         Accessible.role: Accessible.Button
         Accessible.name: text
@@ -319,6 +324,8 @@ Item {
             id: clientUpdate
             objectName: "updateClient"
             visible: entry.modelData.groupUpdates > 0
+            // Whole pixels, as Update all's (its right border is never clipped).
+            width: Math.ceil(implicitWidth)
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             text: Model.copy("updates.update_client", { "client": entry.modelData.group })

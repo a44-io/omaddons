@@ -171,8 +171,7 @@ Item {
   // typing. The text zoom works everywhere while the panel is open (design doc §3.2).
   readonly property bool shortcutsOn: opened && !typing && !confirming && !chooser.opened && !helpOpen && !settingsOpen
 
-  // Below 480 px the tabs are glyphs, the meta line one part, and the detail goes
-  // (design doc §2.1).
+  // Below 480 px the tabs are glyphs and the content names its view (design doc §2.1).
   readonly property bool narrow: canvas.width < Style.space(480)
   readonly property string heroState: Model.heroState(summary, targets, filter, machineIssues, busy)
   readonly property var tabCounts: Model.viewCounts(targets, filter, svc && Array.isArray(svc.commands) ? svc.commands : [],
@@ -826,19 +825,15 @@ Item {
         width: parent.width
         spacing: root.gap
 
+        // The hero is the panel's name on every screen, with no line under it and no
+        // detail (owner's call, omad-224l): the scope is the Dropdown's, each count its
+        // tab's, who runs the footer's, and a stale answer is the read-only card's. Its
+        // glyph still turns urgent or busy.
         PanelHero {
           id: hero
           objectName: "hero"
           width: parent.width
-          title: Model.heroTitle(root.targets, root.filter)
-          // Narrow: the meta line keeps its first part (§2.1).
-          meta: {
-            var full = Model.heroMeta(root.summary, root.targets, root.filter, root.machineIssues)
-            return root.narrow ? full.split(" · ")[0] : full
-          }
-          // Read-only keeps the last numbers, marked stale.
-          detail: root.readOnly ? "stale" : (root.narrow ? "" : Model.heroDetail(root.summary, root.targets, root.filter))
-          metaOpacity: root.readOnly ? 0.5 : 1.0
+          title: Model.copy("panel.title")
           foreground: root.foreground
           fontFamily: root.fontFamily
 

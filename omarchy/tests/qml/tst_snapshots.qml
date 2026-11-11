@@ -814,10 +814,12 @@ TestCase {
     shoot("frame-400-issues")
   }
 
-  // One client in scope: its name as the title, its version and family, its counts.
+  // One client in scope: its name in the scope Dropdown, its own header with Update
+  // Retail where All shows it; the hero says "omaddons" alone (omad-224l).
   function test_frame_one_client() {
     open(everyday(), "updates", "retail")
-    compare(findChild(frame, "hero").title, "Retail")
+    compare(findChild(frame, "hero").title, "omaddons")
+    compare(findChild(frame, "scope").currentLabel(), "Retail")
     shoot("frame-540-one-client")
   }
 

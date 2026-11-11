@@ -629,7 +629,8 @@ TestCase {
     verify(!child("checkButton").enabled)
     verify(!child("undoButton").enabled)
     verify(!child("openButton").enabled)
-    compare(child("hero").detail, "stale")
+    // The card says the answer is stale; the hero stays "omaddons" alone (omad-224l).
+    compare([child("hero").title, child("hero").detail], ["omaddons", ""])
     compare(child("cardTitle").text, "The panel is from another omaddons version")
     compare(child("cardDetail").text, "Panel 0.0.0-fixture, omaddons 9.0.0. Update the panel to match; until then it only shows what it read last.")
     // The card's buttons take the cursor and Enter: Update the panel first, then Retry.
@@ -1008,21 +1009,21 @@ TestCase {
 
   // ------------------------------------------------------------- the frame (design doc §2.1)
 
-  function test_the_hero_names_the_scope_and_says_what_needs_you_urgent_first() {
+  // The hero says "omaddons" on every screen with nothing under it (omad-224l): the
+  // scope is the Dropdown's, the counts the tabs', who runs and how many clients the
+  // footer's. Its glyph still says what needs you.
+  function test_the_hero_says_omaddons_alone_and_its_glyph_what_needs_you() {
     var hero = child("hero")
-    compare(hero.title, "All clients")
-    compare(hero.meta, "3 UPDATES · RETAIL RUNNING")
-    // The footer counts the clients; the hero doesn't say it again (omad-sj3y).
-    compare(hero.detail, "")
-    verify(child("freshness").text.indexOf("2 clients · ") === 0, child("freshness").text)
+    compare([hero.title, hero.meta, hero.detail], ["omaddons", "", ""])
+    compare(child("freshness").text, "2 clients · checked just now · retail running")
     keyClick("t")
-    compare(hero.title, "era")
-    compare(hero.meta, "1 UPDATE")
-    // A new Lua error goes first, and the glyph turns urgent.
+    compare(view.filter, "era")
+    compare([hero.title, hero.meta, hero.detail], ["omaddons", "", ""])
+    // A new Lua error turns the glyph urgent; the hero still says nothing more.
     var targets = JSON.parse(JSON.stringify(svc.targets))
     targets[0].errors = { "new": 2 }
     svc.targets = targets
-    compare(hero.meta, "2 NEW ERRORS · 1 UPDATE")
+    compare(hero.meta, "")
     compare(view.heroState, "urgent")
     var glyph = findChild(hero, "heroGlyph")
     verify(glyph !== null)
@@ -1054,7 +1055,7 @@ TestCase {
     compare(scope.value, "")
     scope.choose("retail")
     compare(view.filter, "retail")
-    compare(child("hero").title, "retail")
+    compare(child("hero").title, "omaddons")
     compare(scope.currentLabel(), "retail")
     // No compatible answer: no scope, no tabs (§2.1).
     svc.phase = "missing"
@@ -1077,7 +1078,7 @@ TestCase {
     var seen = []
     for (var i = 0; i < 4; i++) {
       keyClick("t")
-      seen.push([view.filter, scope.value, child("hero").title])
+      seen.push([view.filter, scope.value, scope.currentLabel()])
     }
     compare(json(seen), json([["era", "era", "Classic Era"], ["forever", "forever", "WoW: Forever"],
       ["retail", "retail", "Retail"], ["", "", "All clients"]]))
@@ -1085,7 +1086,7 @@ TestCase {
     compare(scope.value, "retail")
     // The missing client is chosen in the Dropdown; from it, t goes back to All.
     scope.choose("anniversary")
-    compare(child("hero").title, "Burning Crusade Anniversary")
+    compare(scope.currentLabel(), "Burning Crusade Anniversary")
     keyClick("t")
     compare(view.filter, "")
     // The footer's "N clients" counts the clients on this computer.
@@ -1133,7 +1134,7 @@ TestCase {
     svc.summary = summary
     svc.targets = svc.targets.slice()
     compare(view.filter, "")
-    compare(child("hero").title, "All clients")
+    compare(child("scope").currentLabel(), "All clients")
     // A client that went missing stays the scope: it says what happened to it.
     view.setFilter("retail")
     svc.targets = [Object.assign({}, svc.targets[0], { "missing": true })]
@@ -1365,10 +1366,9 @@ TestCase {
     verify(tab.iconText !== "")
     verify(child("viewTitle", narrow).visible)
     compare(child("viewTitle", narrow).text, "Updates")
-    compare(child("hero", narrow).detail, "")
-    // It opened on Retail, the one client that runs (§2.2): its 2 updates.
+    // It opened on Retail, the one client that runs (§2.2); the hero is the same as wide.
     compare(narrow.filter, "retail")
-    compare(child("hero", narrow).meta, "2 UPDATES", "one part of the meta line")
+    compare([child("hero", narrow).title, child("hero", narrow).meta, child("hero", narrow).detail], ["omaddons", "", ""])
     verify(!view.narrow, "540 is not narrow")
     verify(!child("viewTitle").visible)
   }

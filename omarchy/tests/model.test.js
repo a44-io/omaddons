@@ -1012,8 +1012,6 @@ describe("first run", () => {
       expect([view, s.state, s.sentence, s.notices.map((n) => [n.kind, n.sentence, n.actions.map((a) => a.name)])])
         .toEqual([view, "welcome", "", [["welcome", "No World of Warcraft here yet", ["rescan", "add"]]]])
     }
-    // The hero says there is none yet, never "all good".
-    expect(M.heroMeta(model.summary, model.targets, "", [])).toBe("NO CLIENTS YET")
     // A client here, or no answer yet: no welcome card.
     const some = M.reduceStatus(fixture("status-idle"))
     expect(M.welcomeCard(some.summary, some.targets)).toBeNull()
@@ -1670,52 +1668,27 @@ describe("the panel frame", () => {
     expect(M.stepView("nonsense", 1)).toBe("installed")
   })
 
-  test("the hero speaks the scope, urgent first", () => {
+  // The hero says only "omaddons" (omad-224l); what is left of it is its glyph's state,
+  // and the scope's name the Dropdown shows closed.
+  test("the scope's name, and the hero glyph turns urgent for errors and P0/P1 problems", () => {
     const model = M.reduceStatus(fixture("status-updates"), NOW)
     expect(model.targets.map((t) => [t.id, t.displayName, t.version, t.family])).toEqual([
       ["era", "Classic Era", "1.15.9.64520", "vanilla"], ["retail", "Retail", "12.1.5.70391", "mainline"]])
+    expect(M.COPY["panel.title"]).toBe("omaddons")
     expect(M.heroTitle(model.targets, "")).toBe("All clients")
     expect(M.heroTitle(model.targets, "era")).toBe("Classic Era")
     expect(M.heroTitle(model.targets, "gone")).toBe("gone")
-    expect(M.heroMeta(model.summary, model.targets, "", [])).toBe("4 UPDATES")
-    expect(M.heroMeta(model.summary, model.targets, "era", [])).toBe("2 UPDATES")
-    expect(M.heroMeta(null, model.targets, "", [])).toBe("")
-    // Under All the footer counts the clients, never the hero too (omad-sj3y).
-    expect(M.heroDetail(model.summary, model.targets, "")).toBe("")
-    expect(M.heroDetail(model.summary, model.targets, "retail")).toBe("12.1.5.70391 · mainline")
-    expect(M.heroDetail(null, model.targets, "")).toBe("")
     expect(M.heroState(model.summary, model.targets, "", [], false)).toBe("quiet")
     expect(M.heroState(model.summary, model.targets, "", [], true)).toBe("busy")
-    // Running: by name under All, a word under the client.
-    const running = fixture("status-running")
-    const at = Date.parse(running.data.targets[0].updates.checked_at) + 25 * 60000
-    const r = M.reduceStatus(running, at)
-    expect(M.heroMeta(r.summary, r.targets, "", [])).toBe("4 UPDATES · RETAIL RUNNING")
-    expect(M.heroMeta(r.summary, r.targets, "retail", [])).toBe("2 UPDATES · RUNNING")
-    expect(M.heroMeta(r.summary, r.targets, "era", [])).toBe("2 UPDATES")
-    const unknown = JSON.parse(JSON.stringify(running))
-    unknown.data.summary.running = []
-    for (const t of unknown.data.targets) t.running = null
-    const u = M.reduceStatus(unknown, at)
-    expect(M.heroMeta(u.summary, u.targets, "", [])).toBe("4 UPDATES · CAN'T TELL IF THE GAME IS RUNNING")
-    // A P0 or P1 problem goes first, and makes the glyph urgent; new errors before it.
+    // A P0 or P1 problem makes the glyph urgent, busy or not.
     const a = M.reduceStatus(fixture("status-attention"), NOW)
-    expect(M.heroMeta(a.summary, a.targets, "", [])).toBe("1 PROBLEM")
     expect(M.heroState(a.summary, a.targets, "", [], true)).toBe("urgent")
+    // New errors too, in the scope that has them.
     const erroring = JSON.parse(JSON.stringify(model.targets))
     erroring[1].errors = { "new": 2 }
     erroring[1].issues = [{ "urgent": false }]
-    expect(M.heroMeta(model.summary, erroring, "", [])).toBe("2 NEW ERRORS · 4 UPDATES · 1 PROBLEM")
-    expect(M.heroMeta(model.summary, erroring, "", [{ "urgent": true }])).toBe("2 NEW ERRORS · 2 PROBLEMS · 4 UPDATES")
-    expect(M.heroMeta(model.summary, erroring, "era", [{ "urgent": true }])).toBe("2 UPDATES",
-      "the machine's problems are All's")
     expect(M.heroState(model.summary, erroring, "retail", [], false)).toBe("urgent")
     expect(M.heroState(model.summary, erroring, "era", [], false)).toBe("quiet")
-    // Nothing to say: all good.
-    const quiet = model.targets.map((t) => Object.assign({}, t, { "updates": null }))
-    expect(M.heroMeta(model.summary, quiet, "", [])).toBe("ALL GOOD")
-    // A client that is gone.
-    expect(M.heroDetail(model.summary, [{ "id": "x", "missing": true }], "x")).toBe("not on this computer any more")
   })
 
   test("the freshness footer says how many clients, when checked, and who runs", () => {
@@ -2018,7 +1991,7 @@ describe("the Updates and Installed views", () => {
       .map(M.sourceKind)).toEqual(["gh", "wowi", "tukui", "git", "wowace", "file", "file", "file", "file"])
   })
 
-  test("updates per client: updates first, grouped in All, filtered otherwise", () => {
+  test("updates per client: updates first, each client's header on its first row, in every scope", () => {
     const lists = M.reduceList(fixture("list"))
     const all = M.updateRows(lists, "", STATUS())
     // Each client's header is its player name and its updates, on its first row only.
@@ -2032,8 +2005,9 @@ describe("the Updates and Installed views", () => {
       .toEqual([["Classic Era", "2 updates"], ["Retail", "running · 2 updates"]])
     // Without `status`'s clients, the header falls back to the id.
     expect(M.updateRows(lists, "", [])[0].group).toBe("era")
+    // Under one client its header shows too, so Update {client} keeps its place (omad-224l).
     const retail = M.updateRows(lists, "retail", STATUS())
-    expect(retail.map((r) => [r.group, r.name])).toEqual([["", "Bar"], ["", "Foo"]])
+    expect(retail.map((r) => [r.group, r.groupTarget, r.groupUpdates, r.name])).toEqual([["Retail", "retail", 2, "Bar"], ["", "", 0, "Foo"]])
     expect(M.updateCount(retail)).toBe(2)
     expect(M.updateRows(null, "", [])).toEqual([])
     // Update all shows under All only past one client with updates (omad-sj3y).

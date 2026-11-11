@@ -257,8 +257,9 @@ TestCase {
     settle(answers)
     var updates = frame.currentView
     compare(updates.rowCount, 3)
-    var hero = child("hero")
-    compare(hero.meta.indexOf("UPDATES") > 0, true, hero.meta)
+    // Two clients behind: the Updates tab counts them (from `status`), and Update all is
+    // the one click.
+    verify(child("tab_updates").modelData.count > 0)
     var button = child("updateAll", updates)
     compare(button.text, "Update all (3)")
     if (mouse) click(button)

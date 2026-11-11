@@ -4024,30 +4024,13 @@ function scopeFacts(targets, filter, machineIssues) {
   return facts
 }
 
-// The hero's title: the scope (§2.1), "All clients" or the client's player name.
+// The scope's name (§2.1), "All clients" or the client's player name: the Dropdown's
+// closed text and the labels that name the client (Update, Forget, Search). The hero
+// itself says only "omaddons" (omad-224l).
 function heroTitle(targets, filter) {
   if (!filter) return copy("client.all")
   var t = targetById(targets, filter)
   return t ? (t.displayName || t.id) : filter
-}
-
-// The hero's meta line, urgent first, quiet parts left out, in capitals (§2.1, §5.2):
-// "2 NEW ERRORS · 1 PROBLEM · 3 UPDATES · RETAIL RUNNING", "ALL GOOD"; "" before the
-// first answer.
-function heroMeta(summary, targets, filter, machineIssues) {
-  if (!summary) return ""
-  // No client on this computer (1n2p.32): nothing is "good" yet.
-  if (!filter && liveTargets(targets).length === 0) return copy("welcome.hero").toUpperCase()
-  var facts = scopeFacts(targets, filter, machineIssues)
-  var parts = []
-  if (facts.errors > 0) parts.push(plural(facts.errors, "new error"))
-  if (facts.urgent > 0) parts.push(plural(facts.problems, "problem"))
-  if (facts.updates > 0) parts.push(plural(facts.updates, "update"))
-  if (facts.urgent === 0 && facts.problems > 0) parts.push(plural(facts.problems, "problem"))
-  if (parts.length === 0) parts.push("all good")
-  if (facts.running.length > 0) parts.push(filter ? "running" : joinNames(facts.running) + " running")
-  else if (facts.unknown) parts.push("can't tell if the game is running")
-  return parts.join(" · ").toUpperCase()
 }
 
 // The hero glyph's state (§2.1): "urgent" for new Lua errors or a P0 or P1 problem,
@@ -4058,17 +4041,6 @@ function heroState(summary, targets, filter, machineIssues, busy) {
     if (facts.errors > 0 || facts.urgent > 0) return "urgent"
   }
   return busy ? "busy" : "quiet"
-}
-
-// The hero's detail (§2.1): the client's version and family under one client
-// ("12.1.5.70391 · mainline"); nothing under All, where the footer counts the clients
-// (omad-sj3y: each number once).
-function heroDetail(summary, targets, filter) {
-  if (!summary || !filter) return ""
-  var t = targetById(targets, filter)
-  if (!t) return ""
-  if (t.missing) return "not on this computer any more"
-  return [t.version || "", t.family].filter(function(p) { return !!p }).join(" · ")
 }
 
 // The freshness footer (§2.1, §6.4): "6 clients · checked 25 min ago · Retail
@@ -4405,8 +4377,8 @@ function updateRow(t, a, kind, status, client, nowMs, doneWord) {
 
 // The Updates view's rows, in the filter (1n2p.21, design doc §2.3): per client, its
 // updates, then pinned addons with a newer release, blocked releases and failed checks,
-// by name within each; under All, each client's header (its player name, whether it
-// runs, its updates) above its first row, with what "Update {client}" updates there.
+// by name within each; each client's header (its player name, whether it runs, its
+// updates) above its first row, with what "Update {client}" updates there.
 // `view`: `nowMs` (release ages), `done` (the service's `{<key>: word}` of rows a change
 // just changed: such a row stays, in its update's place, until it expires) and `query`
 // (`/`, as the Addons view filters: each word a subsequence of the name, the source or
@@ -4443,9 +4415,10 @@ function updateRows(lists, filter, statusTargets, view) {
       var ny = asciiLower(y.name)
       return nx < ny ? -1 : (nx > ny ? 1 : 0)
     })
-    // Under All, the client's header above its first row: its player name, whether it
-    // runs, and its updates (design doc §2.3).
-    if (!filter && rows.length > 0) {
+    // The client's header above its first row: its player name, whether it runs, and its
+    // updates (design doc §2.3). Under one client too, so its Update {client} stays where
+    // it is under All when that client is chosen (omad-224l).
+    if (rows.length > 0) {
       var updates = updateCount(rows)
       var group = clientGroup(statusTargets, t.id, updates > 0 ? plural(updates, "update") : "")
       rows[0].group = group.title
@@ -7486,6 +7459,9 @@ var COPY = {
   "errors.report.head": "{addon} {version} on {client}{client_version}",
   "errors.report.where": "at {location} · {times}",
 
+  // The panel's hero, the same on every screen (omad-224l).
+  "panel.title": "omaddons",
+
   // The clients (design doc §2.1, §2.2): the scope's words, and a group's header.
   "client.all": "All clients",
   "client.running": "running",
@@ -7582,7 +7558,6 @@ var COPY = {
 
   // The first run (1n2p.32, design doc §6.4).
   "welcome.title": "No World of Warcraft here yet",
-  "welcome.hero": "No clients yet",
   "welcome.sentence": "omaddons looked where Battle.net, Steam, Lutris, Heroic and Bottles keep their games, in ~/Games and in ~/.wine. Install the game with one of them and scan again, or add the folder where it is.",
   "welcome.rescan": "Scan again",
   "welcome.add": "Add a client folder…",
@@ -7903,6 +7878,7 @@ var COPY = {
   "updates.action.check": "Check again",
   "updates.update_scope": { "one": "Update 1", "other": "Update {n}" },
   "updates.update_client": "Update {client}",
+  "updates.update_all": "Update all ({n})",
   "updates.filter": "Filter updates",
   "updates.count": "{shown} of {total}",
   "updates.notes.reading": "Reading the release notes…",
@@ -9230,9 +9206,7 @@ if (typeof module !== "undefined") {
     forgetAction: forgetAction,
     scopeFacts: scopeFacts,
     heroTitle: heroTitle,
-    heroMeta: heroMeta,
     heroState: heroState,
-    heroDetail: heroDetail,
     footerText: footerText,
     scopeOptions: scopeOptions,
     viewCounts: viewCounts,
