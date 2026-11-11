@@ -7,20 +7,149 @@ use std::collections::BTreeMap;
 
 use schemars::generate::SchemaSettings;
 use schemars::{Schema, SchemaGenerator};
+use serde::ser::{SerializeMap, SerializeSeq};
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Value, json};
 
 use crate::app::{self, CommandEntry};
 use crate::engine::journal::JournalLine;
-use crate::error::{ErrorBody, ErrorCode, Suggestion, error_variant_value};
+use crate::error::{Error, ErrorBody, ErrorCode, Result, Suggestion, error_variant_value};
 use crate::output::Envelope;
 use crate::state::{desired::DesiredStateSchema, store};
 
-/// One published JSON Schema (draft 2020-12) or schema fragment, as this module generated
-/// it: JSON Schema's own vocabulary, described by the draft 2020-12 meta-schema, not by
-/// omaddons' wire names. Its own schema is structurally open (`contract::OPAQUE`).
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+/// One published JSON Schema (draft 2020-12) or schema fragment: JSON Schema's own
+/// vocabulary, described by the draft 2020-12 meta-schema, not by omaddons' wire names.
+/// Its own schema is structurally open (`contract::OPAQUE`).
+///
+/// It prints as schemars 1.x prints a `Schema` (omad-ho1p), so the binary can print
+/// schemas it embedded without schemars: in a schema object, the keywords `$id`,
+/// `$schema`, `title`, `description`, `type`, `format` and `properties` first, in that
+/// order, `$defs` and `definitions` last, and the others between in the map's own order
+/// (sorted: serde_json is built without `preserve_order`). Every subschema prints the same
+/// way: the values of `properties`, `patternProperties`, `dependentSchemas`, `$defs` and
+/// `definitions` (whose own keys keep their order), array items, and any other keyword's
+/// object value. `examples`, `default` and `x-…` values print as plain JSON. A test holds
+/// this to schemars's own output for every schema omaddons publishes.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(transparent)]
-pub struct SchemaDoc(pub Schema);
+pub struct SchemaDoc(Value);
+
+impl SchemaDoc {
+    /// `value` as a schema, or `None` unless it is an object or a boolean, the two forms a
+    /// JSON Schema takes.
+    pub fn new(value: Value) -> Option<Self> {
+        (value.is_object() || value.is_boolean()).then_some(Self(value))
+    }
+
+    pub fn as_value(&self) -> &Value {
+        &self.0
+    }
+
+    pub fn into_value(self) -> Value {
+        self.0
+    }
+
+    /// `code`'s typed `details`, as the fragment `robot-docs errors` and `capabilities`
+    /// publish. Its one failure is `internal`: a specification that renders to no schema.
+    pub fn details(code: ErrorCode) -> Result<Self> {
+        Self::new(code.details_schema())
+            .ok_or_else(|| Error::internal(format!("{code}: its details schema is no schema")))
+    }
+}
+
+impl From<Schema> for SchemaDoc {
+    fn from(schema: Schema) -> Self {
+        Self(schema.to_value())
+    }
+}
+
+impl Serialize for SchemaDoc {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        Keywords::schema(&self.0).serialize(serializer)
+    }
+}
+
+/// The keywords a schema object prints first, in this order, and last (schemars 1.x).
+const KEYWORDS_FIRST: [&str; 7] = [
+    "$id",
+    "$schema",
+    "title",
+    "description",
+    "type",
+    "format",
+    "properties",
+];
+const KEYWORDS_LAST: [&str; 2] = ["$defs", "definitions"];
+/// The keywords whose value names subschemas: its keys keep their order.
+const SCHEMA_MAPS: [&str; 5] = [
+    "properties",
+    "patternProperties",
+    "dependentSchemas",
+    "$defs",
+    "definitions",
+];
+
+/// A value at a schema position, printed in [`SchemaDoc`]'s keyword order.
+struct Keywords<'a> {
+    value: &'a Value,
+    /// An object of named subschemas (`properties`, `$defs`, …), not a schema.
+    named: bool,
+}
+
+impl<'a> Keywords<'a> {
+    fn schema(value: &'a Value) -> Self {
+        Self {
+            value,
+            named: false,
+        }
+    }
+}
+
+impl Serialize for Keywords<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        match self.value {
+            Value::Array(items) => {
+                let mut seq = serializer.serialize_seq(Some(items.len()))?;
+                for item in items {
+                    seq.serialize_element(&Keywords::schema(item))?;
+                }
+                seq.end()
+            }
+            Value::Object(object) if self.named => {
+                let mut map = serializer.serialize_map(Some(object.len()))?;
+                for (name, schema) in object {
+                    map.serialize_entry(name, &Keywords::schema(schema))?;
+                }
+                map.end()
+            }
+            Value::Object(object) => {
+                let entries = object.iter().map(|(key, value)| (key.as_str(), value));
+                let first = KEYWORDS_FIRST
+                    .iter()
+                    .filter_map(|key| object.get(*key).map(|value| (*key, value)));
+                let middle = entries.filter(|(key, _)| {
+                    !KEYWORDS_FIRST.contains(key) && !KEYWORDS_LAST.contains(key)
+                });
+                let last = KEYWORDS_LAST
+                    .iter()
+                    .filter_map(|key| object.get(*key).map(|value| (*key, value)));
+                let mut map = serializer.serialize_map(Some(object.len()))?;
+                for (key, value) in first.chain(middle).chain(last) {
+                    if matches!(key, "examples" | "default") || key.starts_with("x-") {
+                        map.serialize_entry(key, value)?;
+                    } else {
+                        let named = SCHEMA_MAPS.contains(&key);
+                        map.serialize_entry(key, &Keywords { value, named })?;
+                    }
+                }
+                map.end()
+            }
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
+                self.value.serialize(serializer)
+            }
+        }
+    }
+}
 
 impl schemars::JsonSchema for SchemaDoc {
     fn schema_name() -> std::borrow::Cow<'static, str> {
@@ -176,6 +305,63 @@ pub fn file_schemas() -> BTreeMap<&'static str, Schema> {
         schema.insert("title".into(), json!(kind));
     }
     schemas
+}
+
+/// The published schemas as the binary carries them (omad-ho1p): the bytes of
+/// [`Published::generated`], zstd-compressed. `robot-docs schema` prints them, so the
+/// binary needs no schema generator. The contract suite regenerates them from the types
+/// and fails when this file differs ([`EMBEDDED_PATH`], [`REGENERATE`]).
+const EMBEDDED: &[u8] = include_bytes!("schemas.json.zst");
+
+/// [`EMBEDDED`]'s path from the crate root.
+pub const EMBEDDED_PATH: &str = "src/contract/schemas.json.zst";
+
+/// The command that rewrites [`EMBEDDED_PATH`] from the types.
+pub const REGENERATE: &str =
+    "OMADDONS_UPDATE_SCHEMAS=1 cargo test --test integration contract::embedded_schemas";
+
+/// The zstd level [`EMBEDDED_PATH`] is written at: about 70 KB for 1.5 MB of schemas.
+pub const EMBEDDED_LEVEL: i32 = 19;
+
+/// Every published schema, as `robot-docs schema` lists them: its `data`, keys in the
+/// same order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Published {
+    pub envelope: SchemaDoc,
+    pub events: BTreeMap<String, SchemaDoc>,
+    pub commands: BTreeMap<String, SchemaDoc>,
+    pub files: BTreeMap<String, SchemaDoc>,
+}
+
+impl Published {
+    /// The schemas this binary embedded. Its one failure is `internal`: the file is
+    /// compiled in, and the contract suite reads it back on every gate.
+    pub fn embedded() -> Result<Self> {
+        let bytes = Self::embedded_bytes()?;
+        serde_json::from_slice(&bytes)
+            .map_err(|e| Error::internal(format!("the embedded schemas do not read: {e}")))
+    }
+
+    /// [`EMBEDDED`] decompressed: the JSON [`Published::generated`] printed.
+    pub fn embedded_bytes() -> Result<Vec<u8>> {
+        zstd::stream::decode_all(EMBEDDED)
+            .map_err(|e| Error::internal(format!("the embedded schemas do not decompress: {e}")))
+    }
+
+    /// Every schema generated from the types, as [`EMBEDDED`] must hold it.
+    pub fn generated() -> Self {
+        let keyed = |map: BTreeMap<&'static str, Schema>| {
+            map.into_iter()
+                .map(|(key, schema)| (key.to_owned(), SchemaDoc::from(schema)))
+                .collect()
+        };
+        Self {
+            envelope: SchemaDoc::from(envelope_schema()),
+            events: keyed(event_schemas()),
+            commands: keyed(command_schemas()),
+            files: keyed(file_schemas()),
+        }
+    }
 }
 
 /// What [`walk`] reports.
@@ -396,6 +582,111 @@ mod tests {
             .keys()
             .map(String::as_str)
             .collect()
+    }
+
+    /// `value` printed by schemars and by [`SchemaDoc`], compact and pretty.
+    fn both_ways(value: &Value) -> [(String, String); 2] {
+        let schema = Schema::try_from(value.clone()).unwrap();
+        let doc = SchemaDoc::new(value.clone()).unwrap();
+        [
+            (
+                serde_json::to_string(&schema).unwrap(),
+                serde_json::to_string(&doc).unwrap(),
+            ),
+            (
+                serde_json::to_string_pretty(&schema).unwrap(),
+                serde_json::to_string_pretty(&doc).unwrap(),
+            ),
+        ]
+    }
+
+    /// [`SchemaDoc`] prints every keyword position as schemars 1.x does (omad-ho1p): the
+    /// binary prints embedded schemas without schemars, byte for byte as generated.
+    #[test]
+    fn schema_doc_prints_as_schemars_does() {
+        let cases: Vec<(&str, Value)> = vec![
+            ("boolean", json!(true)),
+            (
+                "first_middle_last",
+                json!({"$defs": {"b": {"type": "string", "title": "B"}}, "required": ["x"],
+                       "additionalProperties": false, "properties": {"x": {"type": "integer"}},
+                       "type": "object", "description": "d", "title": "t", "$schema": "s",
+                       "$id": "i", "format": "f", "definitions": {"z": {"description": "z"}}}),
+            ),
+            (
+                "named_maps_keep_their_keys",
+                json!({"patternProperties": {"^b": {"type": "string", "description": "p"}},
+                       "dependentSchemas": {"type": {"required": ["title"]}},
+                       "properties": {"type": {"title": "named type", "type": "string"}}}),
+            ),
+            (
+                "plain_values",
+                json!({"examples": [{"type": 1, "title": 2}], "default": {"z": 1, "a": 2},
+                       "x-extra": {"type": "t", "description": "d"}, "type": "object"}),
+            ),
+            (
+                "subschemas_in_arrays_and_keywords",
+                json!({"oneOf": [{"type": "null", "description": "n"}, {"properties": {}, "type": "object"}],
+                       "items": {"format": "date-time", "type": "string"},
+                       "additionalProperties": {"type": "integer", "description": "v"},
+                       "const": {"type": "c", "description": "quirk: reordered like a schema"}}),
+            ),
+        ];
+        for (case, value) in cases {
+            for (schemars, ours) in both_ways(&value) {
+                assert_eq!(ours, schemars, "case {case}");
+            }
+        }
+    }
+
+    /// Every schema omaddons publishes prints the same through [`SchemaDoc`]: the
+    /// listing, the error union and each variant, and every code's `details` fragment.
+    #[test]
+    fn every_published_schema_prints_as_schemars_does() {
+        let mut values: Vec<(String, Value)> = vec![
+            ("envelope".into(), envelope_schema().to_value()),
+            ("error union".into(), error_schema().to_value()),
+        ];
+        values.extend(
+            command_schemas()
+                .into_iter()
+                .map(|(name, s)| (format!("command {name}"), s.to_value())),
+        );
+        values.extend(
+            event_schemas()
+                .into_iter()
+                .map(|(name, s)| (format!("event {name}"), s.to_value())),
+        );
+        values.extend(
+            file_schemas()
+                .into_iter()
+                .map(|(kind, s)| (format!("file {kind}"), s.to_value())),
+        );
+        for code in ErrorCode::ALL {
+            values.push((format!("{code} error"), error_variant(*code).to_value()));
+            values.push((format!("{code} details"), code.details_schema()));
+        }
+        for (label, value) in &values {
+            for (schemars, ours) in both_ways(value) {
+                assert!(ours == schemars, "{label}: SchemaDoc prints it differently");
+            }
+        }
+    }
+
+    #[test]
+    fn schema_doc_is_an_object_or_a_boolean() {
+        for (case, value, accepted) in [
+            ("object", json!({"type": "string"}), true),
+            ("boolean", json!(false), true),
+            ("string", json!("schema"), false),
+            ("array", json!([]), false),
+            ("null", Value::Null, false),
+        ] {
+            assert_eq!(SchemaDoc::new(value).is_some(), accepted, "case {case}");
+        }
+        for code in ErrorCode::ALL {
+            assert!(SchemaDoc::details(*code).is_ok(), "{code}");
+        }
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! `omaddons robot-docs`: documentation for programs and agents, generated from the code
 //! (M4-D2). `guide` (and bare `robot-docs`) prints the agent guide, `schema [<command>]`
-//! publishes `contract::schema`'s JSON Schemas unchanged, and `errors` the error and
+//! publishes `contract::schema`'s JSON Schemas unchanged (the copy the binary embedded,
+//! which the contract suite holds equal to the generators), and `errors` the error and
 //! warning catalog. None of these reads a file, needs `HOME`, sends a request or writes
 //! anything. `install-skill` (`super::install_skill`) writes the guide where coding
 //! agents load skills.
@@ -9,12 +10,12 @@ use std::collections::BTreeMap;
 use std::io::Write;
 
 use clap::CommandFactory;
-use schemars::{JsonSchema, Schema};
+use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::{COMMANDS, CommandEntry, command_entry};
 use crate::cli::{Cli, levenshtein};
-use crate::contract::schema::{self, SchemaDoc};
+use crate::contract::schema::{Published, SchemaDoc};
 use crate::error::{Error, ErrorCode, Result, Retryability, Suggestion, WarningCode};
 use crate::output::{Outcome, Style, table};
 
@@ -171,29 +172,29 @@ impl Outcome for SchemaOutcome {
     }
 }
 
-/// `omaddons robot-docs schema [<command>]`.
+/// `omaddons robot-docs schema [<command>]`: the schemas the binary embedded, which the
+/// contract suite holds equal to what the types generate (omad-ho1p).
 pub fn schema(words: &[String]) -> Result<SchemaOutcome> {
-    let keyed = |map: BTreeMap<&'static str, Schema>| -> BTreeMap<String, SchemaDoc> {
-        map.into_iter()
-            .map(|(key, schema)| (key.to_owned(), SchemaDoc(schema)))
-            .collect()
-    };
-    let data = match resolve(words)? {
+    let entry = resolve(words)?;
+    let mut published = Published::embedded()?;
+    let data = match entry {
         None => SchemaData {
-            envelope: Some(SchemaDoc(schema::envelope_schema())),
-            events: Some(keyed(schema::event_schemas())),
-            commands: keyed(schema::command_schemas()),
-            files: Some(keyed(schema::file_schemas())),
+            envelope: Some(published.envelope),
+            events: Some(published.events),
+            commands: published.commands,
+            files: Some(published.files),
         },
-        Some(entry) => SchemaData {
-            envelope: None,
-            events: None,
-            commands: BTreeMap::from([(
-                entry.name.to_owned(),
-                SchemaDoc(schema::command_schema(entry)),
-            )]),
-            files: None,
-        },
+        Some(entry) => {
+            let doc = published.commands.remove(entry.name).ok_or_else(|| {
+                Error::internal(format!("the embedded schemas have no `{}`", entry.name))
+            })?;
+            SchemaData {
+                envelope: None,
+                events: None,
+                commands: BTreeMap::from([(entry.name.to_owned(), doc)]),
+                files: None,
+            }
+        }
     };
     Ok(SchemaOutcome { data })
 }
@@ -431,16 +432,13 @@ fn section(
 pub fn errors() -> Result<ErrorsOutcome> {
     let mut error_codes = Vec::with_capacity(ErrorCode::ALL.len());
     for code in ErrorCode::ALL {
-        let details = Schema::try_from(code.details_schema()).map_err(|e| {
-            Error::internal(format!("{code}: its details schema is no schema: {e}"))
-        })?;
         error_codes.push(ErrorCodeDoc {
             code: *code,
             exit: code.exit().code(),
             doctor_exit: crate::doctor::exit::exit_for(*code).code(),
             retryable: code.retryability(),
             meaning: code.meaning(),
-            details_schema: SchemaDoc(details),
+            details_schema: SchemaDoc::details(*code)?,
             fix_pattern: code.fix_pattern(),
         });
     }
@@ -465,10 +463,12 @@ mod tests {
     use std::collections::BTreeSet;
 
     use clap::Parser as _;
+    use schemars::Schema;
     use serde_json::Value;
 
     use super::*;
     use crate::contract::events::EventName;
+    use crate::contract::schema;
 
     fn words(text: &[&str]) -> Vec<String> {
         text.iter().map(|w| (*w).to_owned()).collect()
@@ -509,14 +509,16 @@ mod tests {
         assert!(data.envelope.is_some());
     }
 
+    /// The listing prints each schema as its generator does, byte for byte: the embedded
+    /// copy is current, and [`SchemaDoc`] keeps schemars's keyword order.
     #[test]
     fn schema_listing_entries_equal_the_generators() {
         let data = schema(&[]).unwrap().data;
         let same = |label: String, got: &SchemaDoc, expected: Schema| {
-            assert_eq!(
-                serde_json::to_value(got).unwrap(),
-                serde_json::to_value(expected).unwrap(),
-                "{label}"
+            assert!(
+                serde_json::to_string(got).unwrap() == serde_json::to_string(&expected).unwrap(),
+                "{label}: the listing's schema differs from its generator's; run {}",
+                schema::REGENERATE
             );
         };
         same(

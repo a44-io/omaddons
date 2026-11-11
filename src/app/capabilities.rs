@@ -21,7 +21,7 @@ use crate::contract::effective::{
 use crate::contract::schema::SchemaDoc;
 use crate::doctor::finding::Subsystem;
 use crate::doctor::registry::FAILURE_MODES;
-use crate::error::{Error, ErrorCode, Exit, Result, Retryability, Warning, WarningCode};
+use crate::error::{ErrorCode, Exit, Result, Retryability, Warning, WarningCode};
 use crate::limits::LimitValue;
 use crate::net::allowlist::hosts_for;
 use crate::output::{Outcome, Style};
@@ -377,16 +377,13 @@ pub fn run() -> Result<CapabilitiesOutcome> {
 pub fn data_of(registry: &Registry) -> Result<CapabilitiesData> {
     let mut error_codes = Vec::with_capacity(ErrorCode::ALL.len());
     for code in ErrorCode::ALL {
-        let details = schemars::Schema::try_from(code.details_schema()).map_err(|e| {
-            Error::internal(format!("{code}: its details schema is no schema: {e}"))
-        })?;
         error_codes.push(ErrorCodeDescription {
             code: *code,
             exit: code.exit().code(),
             doctor_exit: crate::doctor::exit::exit_for(*code).code(),
             retryable: code.retryability(),
             meaning: code.meaning(),
-            details_schema: SchemaDoc(details),
+            details_schema: SchemaDoc::details(*code)?,
         });
     }
     let effective = &registry.effective;

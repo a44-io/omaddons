@@ -13,6 +13,8 @@ mod canonical_names;
 #[cfg(test)]
 mod details_coverage;
 mod doctor_fix_binding;
+#[cfg(test)]
+mod embedded_schemas;
 mod exit_sites;
 mod intent_corpus;
 mod manifest_report;

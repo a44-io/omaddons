@@ -259,6 +259,12 @@ pub const ENV_VARS: &[EnvVar] = &[
         None,
     ),
     var(
+        "OMADDONS_UPDATE_SCHEMAS",
+        EnvKind::Harness,
+        "1 makes tests/contract/embedded_schemas.rs rewrite src/contract/schemas.json.zst from the types",
+        None,
+    ),
+    var(
         "OMADDONS_ADVANCE_RELEASED_BASELINE",
         EnvKind::Harness,
         "A contract version: the release step writes tests/contract/released/<version>.json",
