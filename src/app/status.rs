@@ -58,12 +58,15 @@ use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning, W
 use crate::errors::observe::{Observe, read_target};
 use crate::errors::{ack, memo};
 use crate::fsx::{LockState, probe_global};
-use crate::inventory::{Counts, Depth, FolderClass, Inventory, inventory_shared};
+use crate::inventory::{Counts, Depth, FolderClass, Inventory, folder_toc, inventory_shared};
 use crate::limits::{DOCTOR_SCAN_MAX_ENTRIES, ERRORS_MAX_TOTAL_BYTES};
 use crate::model::{Actor, AddonState, FolderName, Ref, RunId, Target, TargetKey, TxKind};
 use crate::omarchy::status::{self as omarchy_status, WidgetInfo};
 use crate::output::{Outcome, Style, table};
 use crate::politeness::DEFAULT_CHECK_INTERVAL;
+use crate::resolve::adopt::{
+    AdoptLookups, CandidateFolder, NoCatalog, Tier as AdoptTier, identify,
+};
 use crate::resolve::catalog::{Catalog, FolderRefs};
 use crate::resolve::updates::{StatusKind, UncheckedReason, UpdateStatus};
 use crate::rules::{ClientVersion, Family, InstallKind, ModeName, RulesTable, TargetKind};
@@ -263,7 +266,10 @@ pub struct StatusTarget {
     /// Managed addons whose files changed on disk, whose folders are gone, or that are
     /// not indexed, by name ignoring case (`--cached`: missing folders only).
     pub drift: Vec<DriftItem>,
-    /// Unmanaged folders a catalog entry not installed here names.
+    /// Unmanaged folders `adopt --apply` would take over, as far as is known offline: those
+    /// a catalog entry not installed here names, and those whose own TOC identifies them
+    /// (a Tukui id, an `X-Website` naming a source, a WoWInterface id) as an addon not
+    /// installed here.
     pub adoptable: usize,
     /// Addons installed as dependencies that nothing requires any more (from the
     /// record, `--cached` too). Reported and recommended, never removed by themselves.
@@ -895,7 +901,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
                     FolderRefs::Builtin
                 }
             });
-            adoptable(&inv, record.as_ref().map(|l| &l.value), catalog)
+            adoptable(&inv, t, record.as_ref().map(|l| &l.value), catalog)
         } else {
             0
         };
@@ -1286,17 +1292,23 @@ pub(crate) fn adopt_hints(
             continue;
         }
         let catalog = catalog.get_or_insert_with(|| FolderRefs::load(&world.paths).0);
-        if adoptable(&inv, record, catalog) > 0 {
+        if adoptable(&inv, &d.target, record, catalog) > 0 {
             hints.push(adopt_hint(&d.target.id));
         }
     }
     hints
 }
 
-/// The unmanaged folders of `inv` that a catalog entry not installed here names: offline,
-/// no TOC read, a managed addon's leftovers excluded.
+/// The unmanaged folders of `inv` that `adopt --apply` would take over, as far as is
+/// known offline: those a catalog entry not installed here names, and those adoption's
+/// own [`identify`] calls `identified` from their TOCs alone (a Tukui id, an
+/// `X-Website` naming a source, a WoWInterface id) as an addon not installed here
+/// (omad-3oru). A managed addon's leftovers never count. No network and no source list:
+/// a folder only the WoWInterface index or the Tukui list knows is not counted. The TOCs
+/// are read for the unmanaged folders alone, also at [`Depth::Classes`].
 pub(crate) fn adoptable(
     inv: &Inventory,
+    target: &Target,
     record: Option<&TargetRecord>,
     catalog: &FolderRefs,
 ) -> usize {
@@ -1307,14 +1319,48 @@ pub(crate) fn adoptable(
                 .any(|a| a.r#ref.identity() == r.identity())
         })
     };
-    inv.folders
+    let mut keys: BTreeSet<String> = inv
+        .folders
         .iter()
         .filter(|e| e.class == FolderClass::Unmanaged)
         .filter(|e| {
             FolderName::try_from(e.name.clone())
                 .is_ok_and(|name| catalog.naming(&name).iter().any(|r| !installed(r)))
         })
-        .count()
+        .map(|e| e.key.clone())
+        .collect();
+    let candidates: Vec<CandidateFolder> = inv
+        .folders
+        .iter()
+        .filter_map(|e| {
+            CandidateFolder::from_entry(e).map(|mut c| {
+                if c.toc.is_none() && !e.unreadable {
+                    c.toc = folder_toc(target, &c.folder);
+                }
+                c
+            })
+        })
+        .filter(|c| c.toc.is_some())
+        .collect();
+    if !candidates.is_empty() {
+        let lookups = AdoptLookups {
+            family: target.family,
+            legacy: match target.family {
+                Family::Unknown => target.rules.legacy,
+                family => family.is_legacy(),
+            },
+            catalog: &NoCatalog,
+            tukui: None,
+            wowi: None,
+        };
+        for group in identify(&candidates, &lookups) {
+            let claimed = group.claim.as_ref().and_then(|c| c.r#ref.as_ref());
+            if group.tier == AdoptTier::Identified && claimed.is_some_and(|r| !installed(r)) {
+                keys.extend(group.folders.iter().map(|f| f.key().to_owned()));
+            }
+        }
+    }
+    keys.len()
 }
 
 /// Every target at a glance, from the targets, the machine's own issues and the

@@ -419,7 +419,9 @@ fn summary(l: &LoadedToc, rules: &ClientRules) -> TocSummary {
 /// The TOC `target`'s client loads from its AddOns folder `folder` (both found ignoring
 /// case, as Wine does), as [`inventory`] lists it: `None` when the folder is missing, is
 /// a symlink (never read or followed) or cannot be read, or holds no TOC the client
-/// loads. `info` reads an installed addon's own folder this way.
+/// loads. `info` reads an installed addon's own folder this way, and `status` each
+/// unmanaged folder's at [`Depth::Classes`], to count what adoption identifies
+/// (omad-3oru).
 pub fn folder_toc(target: &Target, folder: &FolderName) -> Option<TocSummary> {
     let path = find_path(
         &target.client_dir,

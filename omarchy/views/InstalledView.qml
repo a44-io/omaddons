@@ -18,8 +18,8 @@ import "../Model.js" as Model
 // files or updates when a release waits (the addon page, .23, will open instead); `u`
 // updates; `p` pins or unpins; `x` removes, through the plan sheet; `r` restores its
 // settings (the restore chooser). The keys are Model.KEYMAP's installed and filter rows.
-// Folders omaddons does not manage are one line per client, in words; their Take over…
-// leads to the take-over flow, which the first-run bead (.32) registers.
+// Folders omaddons does not manage are not listed here: Issues suggests taking over
+// those a take-over would adopt (omad-3oru).
 // Last, the share line (1n2p.37): Copy addon list (`y`) puts the chosen client's set, or
 // every client's, on the clipboard as `export` prints it; Paste addon list… (Ctrl+V)
 // previews a list someone shared as `sync -`, and the plan sheet says what it would
@@ -43,7 +43,6 @@ Item {
   readonly property var viewState: Model.viewState("installed", { "service": svc, "filter": filter,
     "rows": query.trim() !== "" ? count.total : rows.length,
     "allRows": filter ? Model.installedRows(svc ? svc.lists : null, "").length : rows.length, "nowMs": frame ? frame.nowMs : Date.now() })
-  readonly property var unmanaged: Model.unmanagedRows(svc ? svc.lists : null, filter, statusTargets)
   readonly property int rowCount: rows.length
   // Past LONG_LIST_ROWS the rows are a VirtualList that builds only those in view and
   // scrolls itself (1n2p.38): the frame asks it to position the cursor's row.
@@ -51,8 +50,6 @@ Item {
   // The filter box has the keyboard: the frame's key catcher lets it type.
   readonly property bool typing: filterField.activeFocus
   readonly property bool filterShown: query !== "" || filterField.activeFocus
-  // The take-over flow, once the first-run bead registers it (`frame.keyHandlers.adopt`).
-  readonly property bool canTakeOver: !!frame && !!frame.keyHandlers && typeof frame.keyHandlers["adopt"] === "function"
   // The share line, once the list was read: a copy needs a managed addon in the scope.
   readonly property bool canShare: !!svc && !!svc.lists
   readonly property bool hasAddons: canShare && Model.installedRows(svc.lists, filter).length > 0
@@ -193,13 +190,6 @@ Item {
     return true
   }
 
-  // A client's Take over…: the flow the first-run bead registers; nothing before it.
-  function takeOver(target) {
-    if (!canTakeOver || !canChange) return false
-    frame.keyHandlers["adopt"](frame, target)
-    return true
-  }
-
   Column {
     id: column
     width: root.width
@@ -285,60 +275,12 @@ Item {
       width: column.width
       height: root.scrollsItself
         ? Math.max(Style.space(200), (root.frame ? root.frame.contentRoom - root.frame.viewTop : Style.space(480))
-          - y - unmanagedLines.height - shareLine.height - column.spacing * 3)
+          - y - shareLine.height - column.spacing * 2)
         : 0
       spacing: column.spacing
       model: root.scrollsItself ? root.rows : []
       delegate: rowDelegate
       cursor: root.frame && root.frame.cursorActive ? root.frame.cursor : -1
-    }
-
-    // The folders omaddons does not manage, in words, never a command line (UX-13).
-    Column {
-      id: unmanagedLines
-      width: column.width
-      spacing: column.spacing
-
-      Repeater {
-        objectName: "unmanaged"
-        model: root.unmanaged
-
-        Item {
-          required property var modelData
-          objectName: "unmanaged_" + modelData.target
-          width: column.width
-          height: Math.max(unmanagedText.implicitHeight, takeOverButton.visible ? takeOverButton.implicitHeight : 0)
-
-          PlainLabel {
-            id: unmanagedText
-            objectName: "unmanagedText"
-            anchors.verticalCenter: parent.verticalCenter
-            width: parent.width - (takeOverButton.visible ? takeOverButton.width + Style.spacing.lg : 0)
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            text: modelData.text
-          }
-
-          Button {
-            id: takeOverButton
-            objectName: "takeOver"
-            visible: root.canTakeOver
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            text: Model.copy("installed.take_over")
-            Accessible.role: Accessible.Button
-            Accessible.name: text
-            enabled: root.canChange
-            opacity: enabled ? 1.0 : 0.4
-            bordered: true
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            fontSize: Style.font.caption
-            onClicked: root.takeOver(modelData.target)
-          }
-        }
-      }
     }
 
     // Sharing (1n2p.37): the line in words, its two buttons with their keys, and what the

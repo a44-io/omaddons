@@ -1074,6 +1074,10 @@ describe("first run", () => {
     expect([adopt.kind, adopt.target, adopt.title, adopt.buttons.map((b) => b.name)])
       .toEqual(["adopt", "retail", "Take over the addons already on Retail?", ["take_over", "not_now"]])
     expect(adopt.sentence).toBe("4 folders there came by hand or from another addon manager. omaddons can keep track of them as they are: nothing is reinstalled or moved.")
+    // Folders nothing identifies: no take-over card, whose Take over… would find nothing
+    // (omad-3oru); the next card instead.
+    const unidentified = Object.assign({}, adoptable, { targets: adoptable.targets.map((t) => Object.assign({}, t, { adoptable: 0 })) })
+    expect(M.onboardingCard(input(unidentified)).kind).toBe("keyhint")
     // Not now: the next card (here the key tip; no client records nothing).
     const keyhint = M.onboardingCard(input(adoptable, { dismissed: { adopt: ["retail"] } }))
     expect([keyhint.kind, keyhint.buttons.map((b) => b.text)]).toEqual(["keyhint", ["Copy the line", "Got it"]])
@@ -2209,11 +2213,8 @@ describe("the Updates and Installed views", () => {
     const plain = M.installedRows(M.reduceList(fixture("list")), "retail")
     // Waiting updates before the rest.
     expect(plain.map((r) => [r.name, r.primary, r.band])).toEqual([["Bar", "update", "accent"], ["Foo", "update", "accent"], ["Baz", "", ""]])
-    // No command line: the folders omaddons does not manage, in words.
-    const loose = M.unmanagedRows(M.reduceList(fixture("list")), "", M.reduceStatus(fixture("status-updates"), NOW).targets)
-    expect(loose).toEqual([{ target: "retail", client: "Retail", count: 1, text: "1 folder on Retail omaddons doesn't manage" }])
-    expect(M.unmanagedRows(M.reduceList(fixture("list")), "retail", [])[0].text).toBe("1 folder omaddons doesn't manage")
-    expect(M.unmanagedRows(M.reduceList(fixture("list")), "era", [])).toEqual([])
+    // The folders omaddons does not manage are no row of Addons' (omad-3oru).
+    expect(M.unmanagedRows).toBeUndefined()
   })
 
   // The Addons view's order, nesting, filter and sort (1n2p.22), over a list the binary
@@ -2522,10 +2523,22 @@ describe("the Issues and Search views", () => {
     expect(listed[1].fix).toEqual({ template: "update_all", slots: {}, label: "Update all" })
   })
 
+  // omad-3oru: a look at unmanaged folders is what `status` says when none of them can be
+  // taken over; the panel says nothing of them. The take-over is `adopt`'s suggestion.
+  test("a look at unmanaged folders is never suggested; the take-over is", () => {
+    const command = (action, argv) => ({ action, argv, command: argv.join(" "), runnable: true, terminal: false })
+    const targets = [{ id: "retail", displayName: "Retail", issues: [] }]
+    const look = M.issueSections(targets, [], "", [], [command("list_unmanaged", ["omaddons", "list", "-t", "retail", "--unmanaged"])])
+    expect(look.map((s) => s.key)).toEqual([])
+    const adopt = M.issueRows(M.issueSections(targets, [], "", [], [command("adopt", ["omaddons", "adopt", "-t", "retail"])]))
+    expect(adopt.map((r) => [r.kind, r.buttons.map((b) => b.text)])).toEqual([["suggestion", ["Take over Retail's addons…"]]])
+  })
+
   test("every recommendation the CLI makes has its own words", () => {
     // ubs:ignore — action names, not secrets
+    // (list_unmanaged is never suggested, so it has none.)
     const actions = ["reinstall", "update", "adopt", "check_updates", "check_errors", "backup_create", "refresh_backups", "reinstall_widget",
-      "remove_orphans", "forget_target", "inspect", "list_unmanaged", "status"]
+      "remove_orphans", "forget_target", "inspect", "status"]
     for (const action of actions) {
       expect([action, M.suggestionText(action, M.argvParts(["omaddons", "status"]), [])]).not.toEqual([action, "omaddons suggests this next step."])
     }

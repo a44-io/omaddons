@@ -2671,10 +2671,22 @@ fn adopt_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
     let retail = &status["data"]["targets"][0];
     assert_eq!(
         (&retail["adoptable"], &retail["addons"]["total"]),
-        (&serde_json::json!(0), &serde_json::json!(0)),
-        "no catalog entry names these folders, and nothing is managed yet: {status}"
+        (&serde_json::json!(2), &serde_json::json!(0)),
+        "Foo and Bar name their repositories in their TOCs (omad-3oru), and nothing is \
+         managed yet: {status}"
     );
-    // The Installed view's take-over row reads them here.
+    // The take-over is what `status` recommends for them, never the plain look.
+    let actions: Vec<&str> = status["commands"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c["action"].as_str())
+        .collect();
+    assert!(
+        actions.contains(&"adopt") && !actions.contains(&"list_unmanaged"),
+        "{status}"
+    );
+    // The first run's card reads the list too.
     let list = write_fixture(dir, "list-adoptable", &home.exec(&fill(t, "list", &[])), 0);
     assert_eq!(
         list["data"]["targets"][0]["counts"]["unmanaged"],

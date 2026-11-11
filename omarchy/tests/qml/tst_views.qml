@@ -889,20 +889,12 @@ TestCase {
     verify(!findChild(content(), "shareLine").visible)
   }
 
-  function test_unmanaged_folders_are_a_hint_and_an_empty_client_says_how_to_add() {
+  // Folders omaddons does not manage are not Addons' to list (omad-3oru): Issues suggests
+  // the take-over where there is something to take over.
+  function test_unmanaged_folders_are_not_listed_and_an_empty_client_says_how_to_add() {
     keyClick("2")
-    var lines = findChild(content(), "unmanaged")
-    compare(lines.count, 1)
-    // In words, never a command line; Take over… runs the frame's take-over flow (.32).
-    compare(findChild(lines.itemAt(0), "unmanagedText").text, "2 folders on Retail omaddons doesn't manage")
-    verify(findChild(lines.itemAt(0), "takeOver").visible)
-    findChild(lines.itemAt(0), "takeOver").clicked()
-    compare(json(svc.runs[svc.runs.length - 1]), json(["adopt_target", { "target": "retail" }, "Take over the addons on Retail"]))
-    var asked = []
-    view.keyHandlers = Object.assign({}, view.keyHandlers, { "adopt": function(frame, target) { asked.push(target) } })
-    verify(findChild(lines.itemAt(0), "takeOver").visible)
-    findChild(lines.itemAt(0), "takeOver").clicked()
-    compare(json(asked), json(["retail"]))
+    compare(findChild(content(), "unmanaged"), null, "no line for Retail's 2 unmanaged folders")
+    compare(findChild(content(), "takeOver"), null, "no Take over… in Addons")
     // No text in the view reads as a command line.
     var texts = []
     var collect = function(item) {

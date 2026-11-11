@@ -225,16 +225,20 @@ TestCase {
   }
 
   // Take over the folders already on a client (1n2p.32), over the binary's envelopes:
-  // Installed's Take over… previews `adopt --apply`, the plan sheet lists what it would
-  // adopt and says nothing moves, and Yes applies exactly that plan.
+  // `status` counts Foo and Bar as adoptable from their TOCs (omad-3oru), so Issues
+  // suggests the take-over; it previews `adopt --apply`, the plan sheet lists what it
+  // would adopt and says nothing moves, and Yes applies exactly that plan.
   function test_take_over_previews_lists_and_applies_through_the_plan_sheet() {
     var answers = scene("status-adoptable")
     answers.list = the("list-adoptable")
     settle(answers)
-    frame.showView("installed")
+    frame.showView("issues")
     settle(answers)
-    var button = child("takeOver", frame.currentView)
-    verify(button.visible, "Installed offers the take-over")
+    var rows = frame.currentView.rows.filter(function(r) { return r.kind === "suggestion" })
+    var at = rows.findIndex(function(r) { return r.buttons.some(function(b) { return b.text === "Take over Retail's addons…" }) })
+    verify(at >= 0, "Issues suggests the take-over: " + JSON.stringify(rows.map(function(r) { return r.title })))
+    var button = child("issueButton_fix", child("issueRow_" + rows[at].index, frame.currentView))
+    compare(button.text, "Take over Retail's addons…")
     button.clicked()
     var preview = runningOf("adopt")
     verify(preview !== null, "the take-over runs as its preview")

@@ -930,6 +930,59 @@ mod updates {
         }
     }
 
+    /// omad-3oru: a folder whose own TOC identifies it as adoption would (an `X-Website`
+    /// naming a source, a WoWInterface id, a built-in Tukui id) counts, offline and in
+    /// `--cached` too; one naming an addon installed here, a CurseForge id alone or no
+    /// id at all never does. So `status` recommends the take-over exactly when there is
+    /// something to take over.
+    #[test]
+    fn adoptable_counts_folders_their_own_toc_identifies() {
+        let home = behind();
+        let addons = home.addons("_retail_");
+        for (name, line) in [
+            ("Baz", "## X-Website: https://github.com/o/baz"),
+            ("Qux", "## X-WoWI-ID: 4242"),
+            ("ElvUI", "## X-Tukui-ProjectID: -2"),
+            ("FooCopy", "## X-Website: https://github.com/o/foo"),
+            ("Curse", "## X-Curse-Project-ID: 12345"),
+            ("Random", "## Title: Random"),
+        ] {
+            let file = format!("{name}.toc");
+            addon_folder(&addons, name, &[(&file, &toc("120105", &[line]))], &[]);
+        }
+        for envelope in [cached(&home), home.run(&["status", "--json"]).expect(0)] {
+            let retail = target(&envelope, "retail");
+            // Baz, Qux and ElvUI: FooCopy is Foo's, which is installed here.
+            assert_eq!(
+                (&retail["adoptable"], &retail["folders"]["unmanaged"]),
+                (&json!(3), &json!(6)),
+                "{envelope}"
+            );
+            assert!(
+                actions(&envelope).contains(&"adopt".to_owned()),
+                "{envelope}"
+            );
+            assert!(
+                !actions(&envelope).contains(&"list_unmanaged".to_owned()),
+                "{envelope}"
+            );
+        }
+        // Only what nothing identifies: the plain look, no take-over.
+        for name in ["Baz", "Qux", "ElvUI"] {
+            fs::remove_dir_all(addons.join(name)).unwrap();
+        }
+        let envelope = cached(&home);
+        assert_eq!(target(&envelope, "retail")["adoptable"], 0, "{envelope}");
+        assert!(
+            actions(&envelope).contains(&"list_unmanaged".to_owned()),
+            "{envelope}"
+        );
+        assert!(
+            !actions(&envelope).contains(&"adopt".to_owned()),
+            "{envelope}"
+        );
+    }
+
     #[test]
     fn list_shows_the_latest_known_release_from_the_memo() {
         let home = behind();

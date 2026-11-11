@@ -1585,8 +1585,9 @@ function targetOf(target) {
     "clientDir": str(target.client_dir),
     "missing": target.missing === true,
     "addons": target.addons && typeof target.addons === "object" ? num(target.addons.total) : null,
-    // Unmanaged folders a catalog entry names, and dependencies nothing needs: what the
-    // Issues view's suggestions count (1n2p.28).
+    // Unmanaged folders a take-over would adopt (the catalog's, and those their TOCs
+    // identify, omad-3oru), and dependencies nothing needs: what the Issues view's
+    // suggestions and the first run's card count (1n2p.28).
     "adoptable": num(target.adoptable),
     "orphans": num(target.orphans),
     "updates": updates ? {
@@ -2259,7 +2260,9 @@ function onboardingCard(input) {
   var name = function(t) { return t.displayName || t.id }
   for (var a = 0; a < live.length; a++) {
     var t = live[a]
-    if (num(t.addons) === 0 && num(t.unmanaged) > 0 && !skipped("adopt", t.id)) {
+    // Only folders a take-over would adopt (`status`'s `adoptable`, omad-3oru): a card
+    // whose Take over… finds nothing is never shown.
+    if (num(t.addons) === 0 && num(t.adoptable) > 0 && !skipped("adopt", t.id)) {
       return { "kind": "adopt", "target": t.id, "title": copy("onboard.adopt.title", { "client": name(t) }),
         "sentence": copy("onboard.adopt.sentence", { "n": num(t.unmanaged) }), "line": "", "action": null,
         "buttons": [{ "name": "take_over", "text": copy("installed.take_over") }, notNow] }
@@ -4958,19 +4961,6 @@ function installedCount(lists, filter, query) {
   return { "shown": shown, "total": total, "text": copy("installed.count", { "shown": shown, "total": total }), "none": total > 0 && shown === 0 }
 }
 
-// The folders omaddons does not manage, one row per client in the filter (design doc
-// §2.3, UX-13): "3 folders omaddons doesn't manage", never a command line; their Take
-// over… leads to the take-over flow (first run, .32).
-function unmanagedRows(lists, filter, statusTargets) {
-  return listTargets(lists, filter)
-    .filter(function(t) { return t.unmanaged > 0 })
-    .map(function(t) {
-      return { "target": t.id, "client": sheetClient(statusTargets, t.id, ""), "count": t.unmanaged,
-        "text": filter ? copy("installed.unmanaged", { "n": t.unmanaged })
-          : copy("installed.unmanaged.client", { "n": t.unmanaged, "client": sheetClient(statusTargets, t.id, "") }) }
-    })
-}
-
 // A row's action, as a template run: Enter's, and `p`'s pin or unpin.
 function rowAction(row, which) {
   var slots = { "target": row.target, "addon": row.name }
@@ -5015,9 +5005,11 @@ var SEVERITY_ORDER = ["P0", "P1", "P2", "P3"]
 var SEVERITY_GLYPHS = { "P0": 0xF0029, "P1": 0xF0026, "P2": 0xF0026, "P3": 0xF02FD }
 var SUGGESTION_GLYPH = 0xF02FD
 // `commands[]` actions the Issues view never lists (design doc §6.5.1): installing the
-// agent skill is for agents. (A plan's apply, which runs only from its own preview, is
+// agent skill is for agents, and a look at unmanaged folders is what `status` says when
+// none of them can be taken over, which the panel leaves unsaid (omad-3oru: the take-over
+// is `adopt`'s suggestion). (A plan's apply, which runs only from its own preview, is
 // neither runnable nor a command to copy, so it is never listed either.)
-var SUGGESTION_SILENT = ["install_skill"]
+var SUGGESTION_SILENT = ["install_skill", "list_unmanaged"]
 // Warning codes the Issues view leaves to another place (design doc §6.5.3): the hero
 // (`running_unknown`), the phase card (`widget_outdated`), the activity bar
 // (`tx_in_progress`), nowhere (`state_version_older`, `atomic_swap_unavailable`), or
@@ -7369,8 +7361,6 @@ var COPY = {
   "installed.sort.name": "Sorted by name",
   "installed.sort.recent": "Sorted by recently updated",
   "installed.sort.source": "Sorted by source",
-  "installed.unmanaged": { "one": "1 folder omaddons doesn't manage", "other": "{n} folders omaddons doesn't manage" },
-  "installed.unmanaged.client": { "one": "1 folder on {client} omaddons doesn't manage", "other": "{n} folders on {client} omaddons doesn't manage" },
   "installed.take_over": "Take over…",
   "installed.take_over.label": "Take over the addons on {client}",
   // Sharing an addon set (1n2p.37): the Addons view's share line, the copy's and the
@@ -7639,7 +7629,6 @@ var COPY = {
   "issues.suggest.remove_orphans": "Nothing on {client} needs {addons} any more.",
   "issues.suggest.forget_target": "{client} isn't on this computer any more.",
   "issues.suggest.inspect": "Some addons on {client} need a look.",
-  "issues.suggest.list_unmanaged": "{client} has folders omaddons doesn't manage.",
   "issues.suggest.reinstall": "{addon} on {client} isn't as it was installed: files changed, or a folder is gone.",
   "issues.suggest.status": "omaddons hasn't looked for your clients yet.",
   "issues.suggest.other": "omaddons suggests this next step.",
@@ -9238,7 +9227,6 @@ if (typeof module !== "undefined") {
     VIEW_RESOURCES: VIEW_RESOURCES,
     SOURCE_TROUBLE: SOURCE_TROUBLE,
     installedRows: installedRows,
-    unmanagedRows: unmanagedRows,
     installedCount: installedCount,
     filterMatches: filterMatches,
     nextSort: nextSort,

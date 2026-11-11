@@ -87,6 +87,21 @@ impl AdoptCatalog for Catalog {
     }
 }
 
+/// A catalog that names nothing: with no Tukui list and no WoWInterface index, what
+/// [`identify`] finds is what the folders' own TOCs say (rows 2–4, the built-in Tukui
+/// ids only). `status` counts these offline, with no catalog parsed (omad-3oru).
+pub struct NoCatalog;
+
+impl AdoptCatalog for NoCatalog {
+    fn by_folder(&self, _folder: &FolderName) -> Vec<&Entry> {
+        Vec::new()
+    }
+
+    fn resolve(&self, _name: &str, _family: Family) -> Option<&Entry> {
+        None
+    }
+}
+
 /// The Tukui list as adoption reads it.
 pub trait AdoptTukui {
     fn by_id(&self, id: i64) -> Option<TukuiProject>;
