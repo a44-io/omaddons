@@ -173,6 +173,7 @@ pub struct DiffItem<'s, 'r> {
 /// | pinned at another `version` | install that version, pinned | the same |
 /// | at another `version` | nothing | install that version, its pin as the entry says |
 /// | another `channel` | install from that channel (a records-only switch when its newest release is installed) | at its `version` |
+/// | another `channel`, pinned here and in the file, no `version` | a records-only switch that keeps the release and the pin | the same |
 /// | only the pin differs | records-only `SetPinned` | the same |
 /// | otherwise | nothing | nothing |
 ///
@@ -264,7 +265,16 @@ pub fn diff<'s, 'r>(
                         install(r, name, e.version.clone(), pin)
                     } else if e.channel != a.channel {
                         let (r, name) = again();
-                        install(r, name, pinned_version(), pin)
+                        let version = pinned_version();
+                        // Pinned both here and in the file, with no version to move it:
+                        // the switch keeps the release and the pin and records the
+                        // channel. `Keep` would be the engine's pinned no-op instead.
+                        let pin = if a.pinned && e.pinned && version.is_none() {
+                            PinIntent::Pin
+                        } else {
+                            pin
+                        };
+                        install(r, name, version, pin)
                     } else if e.pinned != a.pinned && any_flavor != AnyFlavorIntent::Keep {
                         // Both settings at once: an install that keeps its release.
                         let (r, name) = again();
@@ -1473,6 +1483,19 @@ mod tests {
                 entry("Pinned", Beta, None, false),
                 "gh:o/pinned",
                 ("install", None, "Unpin", "Beta"),
+            ),
+            // Pinned here and in the file, no version: a switch that keeps its release
+            // and its pin (omad-4h0d.17), never the engine's pinned no-op (`Keep`).
+            (
+                entry("Pinned", Beta, None, true),
+                "gh:o/pinned",
+                ("install", None, "Pin", "Beta"),
+            ),
+            // Pinned at its own version on another channel: that version, pinned.
+            (
+                entry("Pinned", Beta, Some("v1"), true),
+                "gh:o/pinned",
+                ("install", Some("v1"), "Keep", "Beta"),
             ),
             // A pinned version on another channel: the version row wins.
             (

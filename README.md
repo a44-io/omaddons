@@ -1079,7 +1079,7 @@ addons = ["DBM"]
 
 - It installs what is missing.
 - A pinned entry at another version installs that version, pinned.
-- An entry on another channel switches the addon to it: a records-only change when that channel's newest release is the installed one.
+- An entry on another channel switches the addon to it: a records-only change when that channel's newest release is the installed one, or when the addon is pinned and so is its entry (with no `version`), which keeps the release it is pinned at.
 - A pin that differs from the file is set or cleared without touching a folder.
 - It never moves an installed addon to a newer release; that is `omaddons update`'s job.
 

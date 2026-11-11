@@ -462,6 +462,61 @@ fn a_channel_change_installs_that_channels_release_when_another_is_installed() {
     assert_eq!((foo.channel, foo.version.as_str()), (Channel::Stable, "v2"));
 }
 
+/// A pinned addon whose pinned entry names another channel switches to it (omad-4h0d.17):
+/// a records-only change that keeps its release and its pin, with no `addon_pinned`
+/// warning, and a second sync has nothing to do. It was the engine's pinned no-op, run
+/// after run, while sync said the client matched the file.
+#[test]
+fn a_pinned_addon_switches_channel_when_its_pinned_entry_names_another() {
+    let home = Home::new(&["wow"]);
+    release_graph(
+        &home.http,
+        &[Node {
+            base: "https://github.com/o/foo",
+            tag: "v1",
+            folders: &[support::folder("Foo", &[])],
+        }],
+    );
+    home.run(&["install", "gh:o/foo", "-t", "retail"]).expect(0);
+    home.run(&["pin", "Foo", "-t", "retail"]).expect(0);
+    let addons = home.addons("_retail_");
+    let tree = tree_hash(&addons);
+    home.write_desired(
+        "[[family.mainline.addon]]\nref = \"gh:o/foo\"\nchannel = \"beta\"\npinned = true\n",
+    );
+
+    let r = home.run(&["sync"]);
+    let envelope = r.expect(0);
+    let item = &items(&envelope, "retail")[0];
+    assert_eq!(
+        (&item["status"], &envelope["data"]["summary"]["changed"]),
+        (&Value::from("edited"), &Value::from(1)),
+        "{}",
+        r.context()
+    );
+    assert_eq!(warned(&envelope, "addon_pinned"), 0, "{}", r.context());
+    let foo = record_of(&home, "retail", "Foo").unwrap();
+    assert_eq!(
+        (foo.channel, foo.version.as_str(), foo.pinned),
+        (Channel::Beta, "v1", true)
+    );
+    assert_eq!(tree_hash(&addons), tree, "no folder touched");
+
+    let again = home.run(&["sync"]);
+    let envelope = again.expect(0);
+    assert_eq!(
+        envelope["data"]["summary"]["changed"],
+        0,
+        "{}",
+        again.context()
+    );
+    assert_eq!(warned(&envelope, "addon_pinned"), 0, "{}", again.context());
+    assert_eq!(
+        record_of(&home, "retail", "Foo").unwrap().channel,
+        Channel::Beta
+    );
+}
+
 #[test]
 fn a_target_entry_overrides_the_family_entry_for_the_same_addon() {
     let home = foo_behind();
