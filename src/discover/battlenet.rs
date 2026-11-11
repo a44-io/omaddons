@@ -152,6 +152,12 @@ pub fn discover_root(
     (targets, Vec::new())
 }
 
+/// Whether `name` is a flavor folder's: `_<x>_`. Only these, inside a Battle.net root, are
+/// its clients; any other folder there is judged on its own (omad-4h0d.19).
+pub(crate) fn is_flavor_name(name: &str) -> bool {
+    name.len() > 2 && name.starts_with('_') && name.ends_with('_')
+}
+
 /// Directories of `root` named `_<x>_`, sorted.
 fn flavor_folders(root: &Path) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(root) else {
@@ -161,7 +167,7 @@ fn flavor_folders(root: &Path) -> Vec<String> {
         .filter_map(Result::ok)
         .filter(|entry| entry.path().is_dir())
         .filter_map(|entry| entry.file_name().into_string().ok())
-        .filter(|name| name.len() > 2 && name.starts_with('_') && name.ends_with('_'))
+        .filter(|name| is_flavor_name(name))
         .collect();
     folders.sort();
     folders

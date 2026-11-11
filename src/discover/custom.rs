@@ -13,14 +13,22 @@ use crate::rules::{ClientVersion, Family, InstallKind, RulesTable, TargetKind};
 
 /// Whether `dir` is a custom client root: no `.build.info`, a client exe and an
 /// `Interface/` directory (names ignore ASCII case), and not a Battle.net flavor folder,
-/// which looks the same but whose parent holds `.build.info` (the target's parent, for
-/// a flavor folder reached through a link).
+/// which looks the same but is named `_<x>_` and whose parent holds `.build.info` (the
+/// target's, for a flavor folder reached through a link). Any other folder inside a
+/// Battle.net root is judged as a custom root (omad-4h0d.19).
 pub fn is_custom_root(dir: &Path) -> bool {
     let real = std::fs::canonicalize(dir).ok();
-    let flavor = [dir.parent(), real.as_deref().and_then(Path::parent)]
+    let flavor = [Some(dir), real.as_deref()]
         .into_iter()
         .flatten()
-        .any(super::battlenet::is_battlenet_root);
+        .any(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(super::battlenet::is_flavor_name)
+                && path
+                    .parent()
+                    .is_some_and(super::battlenet::is_battlenet_root)
+        });
     find_child(dir, ".build.info").is_none()
         && !flavor
         && client_exe(dir).is_some()

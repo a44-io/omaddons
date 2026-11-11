@@ -529,9 +529,12 @@ fn manual_root(path: &Path) -> Result<(PathBuf, Option<String>)> {
     if battlenet::is_battlenet_root(&dir) {
         return Ok((dir, None));
     }
+    // A flavor folder (`_<x>_`) of a Battle.net root is that root's client; any other
+    // folder there is judged on its own, as a custom client (omad-4h0d.19).
     if let Some(parent) = dir.parent()
         && battlenet::is_battlenet_root(parent)
         && let Some(folder) = dir.file_name().map(|n| n.to_string_lossy().into_owned())
+        && battlenet::is_flavor_name(&folder)
     {
         return Ok((parent.to_path_buf(), Some(folder)));
     }

@@ -515,6 +515,34 @@ fn add_manual_names_one_target_only() {
     });
 }
 
+/// A custom client inside a Battle.net root, beside its flavor folders (omad-4h0d.19):
+/// `targets add` takes it as the custom client it is, its family from its executable;
+/// only `_<x>_` folders there are the root's clients, and they still are.
+#[test]
+fn a_custom_client_inside_a_battlenet_root_is_added_as_one() {
+    let world = World::new();
+    let root = BattlenetRoot::at(world.env.root().join("bnet"))
+        .product("wow")
+        .build();
+    let custom = CustomRoot::at(root.join("WotLK 3.3.5a"))
+        .version(3, 3, 5, 12_340)
+        .build();
+    let dirs = vec![root.join("_retail_"), custom.clone()];
+    world.locked(&dirs, |reg, s| {
+        let (found, _) = reg.add_manual(s, &world.table, &custom, None).unwrap();
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].target.client_dir, custom);
+        assert_eq!(found[0].target.family.as_str(), "wrath-legacy");
+        let (found, _) = reg
+            .add_manual(s, &world.table, &root.join("_retail_"), None)
+            .unwrap();
+        assert_eq!(
+            found[0].target.id, "retail",
+            "the flavor folder is the root's"
+        );
+    });
+}
+
 #[test]
 fn every_selector_form() {
     let world = World::new();
