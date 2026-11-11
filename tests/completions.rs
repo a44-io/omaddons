@@ -1393,6 +1393,14 @@ fn zsh_completes_values_from_omaddons_files() {
         iprefix: String::new(),
         fell_back: true,
     };
+    // omad-6t56: a comma-separated list completes its last item; zsh keeps the rest (and
+    // an `--option=`) in IPREFIX, and matches the ids against what follows.
+    let only_comma = format!("{},fm-caches-", fms[0]);
+    let only_kept = format!("{},", fms[0]);
+    let skip_comma = format!("--skip={},fm-caches-", fms[0]);
+    let skip_kept = format!("--skip={},", fms[0]);
+    let only_words = ["doctor", "--only", only_comma.as_str()];
+    let skip_words = ["doctor", skip_comma.as_str()];
     let table: Vec<(&[&str], shells::ZshOffer)> = vec![
         (&["status", "-t", ""], offer(&clients, "")),
         (&["-t", "r"], offer(&clients, "")),
@@ -1417,6 +1425,8 @@ fn zsh_completes_values_from_omaddons_files() {
         ),
         (&["doctor", "explain", ""], offer(&fms, "")),
         (&["doctor", "--only", ""], offer(&fms, "")),
+        (&only_words, offer(&fms, &only_kept)),
+        (&skip_words, offer(&fms, &skip_kept)),
         (&["doctor", "diff", ""], offer(&latest, "")),
         (&["targets", "rm", ""], offer(&clients, "")),
         // No slot, a path, or a word after `--`: clap's static part.
@@ -1483,6 +1493,19 @@ fn fish_completes_values_from_omaddons_files() {
     );
     let addons = ["Bar", "Baz", "Foo"];
     let clients = ["era", "retail"];
+    // omad-6t56: a comma-separated list completes its last item, the rest kept, and fish
+    // puts an `--option=` back in front.
+    let only_comma = format!("{},fm-caches-", fms[0]);
+    let skip_comma = format!("--skip={only_comma}");
+    let caches: Vec<String> = fms
+        .iter()
+        .filter(|id| id.starts_with("fm-caches-"))
+        .map(|id| format!("{},{id}", fms[0]))
+        .collect();
+    let skip_caches: Vec<String> = caches.iter().map(|c| format!("--skip={c}")).collect();
+    let (caches, skip_caches) = (strs(&caches), strs(&skip_caches));
+    let only_words = ["doctor", "--only", only_comma.as_str()];
+    let skip_words = ["doctor", skip_comma.as_str()];
     let table: Vec<(&[&str], &[&str])> = vec![
         (&["status", "-t", ""], &clients),
         (&["-t", "r"], &["retail"]),
@@ -1505,6 +1528,8 @@ fn fish_completes_values_from_omaddons_files() {
         (&["backup", "restore", "-t", "retail", ""], &backups),
         (&["doctor", "explain", ""], &fms),
         (&["doctor", "--only", ""], &fms),
+        (&only_words, caches.as_slice()),
+        (&skip_words, skip_caches.as_slice()),
         (&["doctor", "diff", ""], &latest),
         (&["targets", "rm", ""], &clients),
         // No slot, a path: the static part, which finds nothing in the empty directory.

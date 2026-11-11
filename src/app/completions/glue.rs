@@ -465,6 +465,7 @@ fn zsh(tree: &Tree) -> String {
         found=(${{(f)\"$(omaddons {WORD} $kind ${{client:+--target=$client}} 2>/dev/null)\"}})
         if (( ${{#found}} )); then
             [[ -n $eq ]] && compset -P '*='
+            [[ $kind == fm ]] && compset -P '*,'
             compadd -a found
             return 0
         fi
@@ -631,10 +632,18 @@ end
 
 function __fish_omaddons_values --description 'The values omaddons offers at the cursor'
     set -l slot (__fish_omaddons_slot); or return
+    # A comma-separated list of failure-mode ids completes its last item, the rest kept:
+    # the reader is given the word, an --option= part aside (fish puts that back).
+    set -l prefix
+    if test \"$slot[1]\" = fm
+        set -l word (commandline -ct)
+        set word (string replace -r -- '^--[^=]*=' '' \"$word\")
+        string match -qr ',' -- \"$word\"; and set prefix \"--prefix=$word\"
+    end
     if set -q slot[3]
-        omaddons {WORD} $slot[1] --target=$slot[3] 2>/dev/null
+        omaddons {WORD} $slot[1] --target=$slot[3] $prefix 2>/dev/null
     else
-        omaddons {WORD} $slot[1] 2>/dev/null
+        omaddons {WORD} $slot[1] $prefix 2>/dev/null
     end
 end
 

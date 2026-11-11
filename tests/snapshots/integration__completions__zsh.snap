@@ -2658,6 +2658,7 @@ _omaddons() {
         found=(${(f)"$(omaddons __complete $kind ${client:+--target=$client} 2>/dev/null)"})
         if (( ${#found} )); then
             [[ -n $eq ]] && compset -P '*='
+            [[ $kind == fm ]] && compset -P '*,'
             compadd -a found
             return 0
         fi
