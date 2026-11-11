@@ -3301,6 +3301,11 @@ fn backups_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
 /// the panel would make them and newest first (so each is the newest change on what it
 /// puts back), the preview and the apply of the undo of the restore, of that removal and
 /// of the update, and the preview of the update's undo on one client.
+///
+/// `history` is written with its lines' times moved so its newest change is at
+/// [`HISTORY_NEWEST_AT`] ([`pin_history_times`]): the bun and QML tests read the scene's
+/// day and ages half an hour after it, under `TZ=UTC` (`scripts/widget-test.sh`), so
+/// "Today" and "30 min ago" hold whenever the gate runs (omad-jsa0).
 #[cfg(test)]
 fn history_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
     use common::wtf::Wtf;
@@ -3368,7 +3373,9 @@ fn history_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
         "backup", "restore", &backup, "-t", "retail", "--actor", "human",
     ])
     .expect(0);
-    let history = write_fixture(dir, "history", &home.exec(&fill(t, "history", &[])), 0);
+    let read = home.exec(&fill(t, "history", &[]));
+    let history = write_fixture(dir, "history", &read, 0);
+    pin_history_times(dir, "history", &read.stdout, HISTORY_NEWEST_AT);
     let entries = history["data"]["entries"].as_array().unwrap();
     let kinds: BTreeSet<&str> = entries
         .iter()
@@ -3439,6 +3446,43 @@ fn history_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
         .map(|o| &o["status"])
         .collect();
     assert_eq!(committed, ["committed", "committed"], "{applied}");
+}
+
+/// Where the `history` fixture's newest change sits: midday UTC, far from any midnight
+/// its tests' clock (half an hour later, in UTC) could cross.
+#[cfg(test)]
+const HISTORY_NEWEST_AT: &str = "2026-10-15T12:00:00Z";
+
+/// Rewrites the fixture `<dir>/<name>.json` from `stdout`, a `history` envelope, with
+/// every line's `at` moved by one shift that puts the newest at `newest`. The engine
+/// stamps history lines with the wall clock, which `OMADDONS_NOW` does not freeze
+/// (`src/clock.rs` covers M3's time rules), so a scene recorded in the half hour before
+/// midnight read its newest change as "Yesterday" half an hour later. Each line keeps its
+/// distance from the newest to the nanosecond, and every other byte stays as the binary
+/// wrote it: the rewrite is checked against the envelope it started from.
+#[cfg(test)]
+fn pin_history_times(dir: &std::path::Path, name: &str, stdout: &str, newest: &str) {
+    let mut expected: Value = serde_json::from_str(stdout).unwrap();
+    let entries = expected["data"]["entries"].as_array_mut().unwrap();
+    let at = |entry: &Value| -> jiff::Timestamp { entry["at"].as_str().unwrap().parse().unwrap() };
+    let newest: jiff::Timestamp = newest.parse().unwrap();
+    let shift = newest.duration_since(at(&entries[0]));
+    let mut text = stdout.to_owned();
+    for entry in entries.iter_mut() {
+        let old = entry["at"].as_str().unwrap().to_owned();
+        let moved = (at(entry) + shift).to_string();
+        // Lines of one instant share their text, so the first replaces them all.
+        text = text.replace(&format!("\"at\":\"{old}\""), &format!("\"at\":\"{moved}\""));
+        entry["at"] = Value::String(moved);
+    }
+    let rewritten: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(rewritten, expected, "only the lines' times moved in {name}");
+    assert_eq!(
+        rewritten["data"]["entries"][0]["at"].as_str(),
+        Some(newest.to_string().as_str()),
+        "{name}'s newest line"
+    );
+    fs::write(dir.join(format!("{name}.json")), text).unwrap();
 }
 
 /// The Issues view's envelopes: on retail, Foo (one release behind) with a Lua runtime

@@ -138,11 +138,19 @@ TestCase {
     }
   }
 
-  // History open, its rows read.
+  // Half an hour after the scene's newest change, as model.test.js's `soon()`. The
+  // fixture's times are moved to a fixed midday (history_fixtures), so the panel's own
+  // clock would read its day as a date weeks ago.
+  function soon() {
+    return Date.parse(JSON.parse(Fixtures.text("history")).data.entries[0].at) + 30 * 60000
+  }
+
+  // History open, its rows read, the panel's clock half an hour after the scene.
   function openHistory() {
     keyClick("7")
     compare(frame.view, "history")
     settle(answers())
+    frame.nowMs = soon()
     tryVerify(function() { return frame.currentView && frame.currentView.rowCount > 0 }, 2000, "History lists the scene's changes")
     return frame.currentView
   }

@@ -133,8 +133,11 @@ if [[ -n $snapshots ]]; then
 else
     step "widget 2/4: bun test omarchy/tests"
     # From inside omarchy/: bun's test discovery walks its working directory first, and
-    # target/ can hold hundreds of gigabytes.
-    (cd omarchy && bun test tests)
+    # target/ can hold hundreds of gigabytes. In UTC, as the QML step below: the History
+    # fixture's newest change is moved to 12:00 UTC (history_fixtures), and its tests read
+    # its day half an hour later, so no midnight falls between them, whatever the hour or
+    # the machine's zone.
+    (cd omarchy && TZ=UTC bun test tests)
 
     step "widget 3/4: the argv bun built, parsed by clap"
     cargo test --locked --test integration -- --ignored --exact omarchy_widget::validate_built_argv
@@ -167,7 +170,8 @@ if ((qml)); then
     else
         step "widget 4/4: qmltestrunner omarchy/tests/qml"
     fi
-    QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software QML_XHR_ALLOW_FILE_READ=1 \
+    # In UTC, as the bun step: days and times read the same in every zone.
+    TZ=UTC QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software QML_XHR_ALLOW_FILE_READ=1 \
         "$runner" -input "$input" "${imports[@]}" -o -,txt
     if [[ -n $snapshots ]]; then
         count=$(find "$renders" -maxdepth 1 -name '*.png' -type f | wc -l)
