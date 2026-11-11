@@ -1032,7 +1032,7 @@ pub static FAILURE_MODES: &[FailureMode] = &[
         subsystem: Subsystem::StateFiles,
         severity: Severity::P3,
         title: "a check could not finish within its limit",
-        description: "A detector stopped at its deadline or its entry limit during this run, or an online check's request got no answer it could judge, so what it checks was only partly checked.",
+        description: "A detector stopped at its deadline or its entry limit during this run, or an online check's request got no answer it could judge, so what it checks was only partly checked; or what a check reads could not be read (a cache or a client's AddOns folder that cannot be listed), so it never ran.",
         why: "Incomplete coverage must never read as a pass.",
         tier: Tier::Runtime,
         online: false,
@@ -1426,6 +1426,17 @@ fn unreachable_manual(f: &Finding) -> Remediation {
 /// narrowed. An online check runs only with `--online`, whichever way it was cut short:
 /// without it the command is refused (`online_required`).
 fn incomplete_manual(f: &Finding) -> Remediation {
+    // Its input could not be read: make it readable, then check again (omad-4h0d.12).
+    if let (Some(_), Some("unreadable")) = (f.evidence.detector, f.evidence.reason) {
+        let what = f
+            .evidence
+            .path
+            .as_ref()
+            .map_or_else(|| "what it reads".to_owned(), |p| p.display().to_string());
+        return prose(&format!(
+            "make {what} readable by you (check its permissions), then run the check again"
+        ));
+    }
     if let (Some(fm), Some("unanswered")) = (f.evidence.detector, f.evidence.reason) {
         let argv = argv_of(&["omaddons", "doctor", "--online", "--only", fm]);
         return Remediation {

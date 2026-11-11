@@ -33,7 +33,7 @@ use super::finding::{
     InstanceKey, Observation, ParsedScope, Severity, Subject,
 };
 use super::fix::{estimated_actions, remediation_of};
-use super::registry::{self, DetectFn, FailureMode, FixerSpec, Tier, ids};
+use super::registry::{self, DetectFn, FailureMode, FixerSpec, Layer, Tier, ids};
 use super::selection::{Scope, Selection, Skipped, partition, target_skips, visible_failures};
 use super::view::{DoctorView, merge_findings};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
@@ -550,6 +550,17 @@ pub fn detect(
     }
     let mut skipped = part.skipped.clone();
     skipped.extend(target_skips(view, &part));
+    // A check skipped for an input no failure describes (a cache or a client's AddOns
+    // that cannot be listed) is never reported clean: it is incomplete, naming what it
+    // could not read (omad-4h0d.12). A layer whose failure is a finding of its own (a
+    // config, a state file) stands for its skips, as before.
+    let explained: BTreeSet<_> = view.failures().iter().map(|f| f.layer).collect();
+    for skip in &skipped {
+        if skip.reason.layer().is_some_and(|l| !explained.contains(&l)) {
+            incomplete += 1;
+            detected.extend(unreadable(view, skip));
+        }
+    }
     let failures = visible_failures(view, selection, &part, &skipped);
     let mut findings: Vec<Finding> = merge_findings(failures, detected)
         .into_iter()
@@ -706,11 +717,67 @@ fn crashed(row: &FailureMode, location: Option<String>) -> Option<Finding> {
 
 /// `check-incomplete` for `row`, cut short by `cut`: the limit and the value it was set
 /// to, nothing that varies between two runs of one state.
+/// `check-incomplete` for `skip`, a check its input kept from running with no failure
+/// to say why: on its client when it has one, naming the folder it could not read (the
+/// download cache, or the client's AddOns) when that is known.
+fn unreadable(view: &DoctorView, skip: &Skipped) -> Option<Finding> {
+    let layer = skip.reason.layer()?;
+    let client = skip.target.as_ref().and_then(|t| {
+        let world = view.world()?;
+        let d = world.resolved.targets.iter().find(|d| match t.key {
+            Some(key) => d.target.key == Some(key),
+            None => d.target.id == t.id,
+        })?;
+        Some(d.target.client_dir.join("Interface").join("AddOns"))
+    });
+    let path = match layer {
+        Layer::Caches => Some(view.paths().blobs_dir()),
+        Layer::Inventory => client,
+        _ => None,
+    };
+    let what = match layer {
+        Layer::Caches => "the download cache".to_owned(),
+        Layer::Inventory => match &skip.target {
+            Some(t) => format!("{}'s AddOns folder", t.id),
+            None => "a client's AddOns folder".to_owned(),
+        },
+        _ => "what it reads".to_owned(),
+    };
+    let row = registry::row(ids::CHECK_INCOMPLETE)?;
+    let subject = match skip
+        .target
+        .as_ref()
+        .and_then(|t| Some((t.id.as_str(), t.key?)))
+    {
+        Some((id, key)) => Subject::target(id, key),
+        None => Subject::machine(),
+    };
+    Some(row.finding(Observation {
+        subject: subject.detector(skip.id),
+        title: format!(
+            "The check {} did not run: {what} could not be read",
+            skip.id
+        ),
+        confidence: Confidence::High,
+        addon: None,
+        folder: None,
+        evidence: Evidence {
+            detector: Some(skip.id),
+            reason: Some(IncompleteLimit::Unreadable.as_str()),
+            path,
+            ..Evidence::default()
+        },
+    }))
+}
+
 fn incomplete_observation(subject: Subject, row: &FailureMode, cut: Incomplete) -> Observation {
     let limit = cut.limit.as_str();
     let title = match cut.limit {
         IncompleteLimit::Unanswered => {
             format!("The check {} got no answer it could judge", row.id)
+        }
+        IncompleteLimit::Unreadable => {
+            format!("The check {} could not read what it checks", row.id)
         }
         IncompleteLimit::Deadline | IncompleteLimit::Entries | IncompleteLimit::OnlineRequests => {
             format!("The check {} stopped at its {limit} limit", row.id)

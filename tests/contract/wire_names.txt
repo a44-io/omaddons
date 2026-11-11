@@ -717,7 +717,7 @@ enum doctor explain data.failure_mode.fixer.scopes[] addons,cache,client_meta,co
 enum doctor explain data.failure_mode.severity P0,P1,P2,P3
 enum doctor explain data.failure_mode.subsystem caches,concurrency_primitives,configs,external_artifacts,hooks,network,permissions,plugins,schemas,secrets,sockets,state_files,userland_state
 enum doctor explain data.failure_mode.tier cached,deep,default,quick,runtime
-enum doctor explain data.incomplete.limit deadline,entries,online_requests,unanswered
+enum doctor explain data.incomplete.limit deadline,entries,online_requests,unanswered,unreadable
 enum doctor explain data.instances[].confidence high,low,medium
 enum doctor explain data.instances[].evidence.attribution complete,partial
 enum doctor explain data.instances[].evidence.cause liveness_unknown,read_failed,too_new,unreadable

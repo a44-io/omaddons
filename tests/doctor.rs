@@ -464,6 +464,85 @@ fn a_detector_past_its_deadline_is_incomplete_never_healthy() {
     }
 }
 
+/// A check whose input could not be read, with no failure mode to say why (a download
+/// cache that cannot be listed), never ends a run healthy (omad-4h0d.12): it is
+/// `check-incomplete` with the limit `unreadable`, naming the check and the folder, and
+/// the run is `DONE_FINDINGS`, exit 1. Readable again, the same run is healthy. Online
+/// checks a run was not asked for stay skipped as before.
+#[test]
+fn a_check_whose_input_cannot_be_read_is_incomplete_never_healthy() {
+    let log = tlog!();
+    if common::procfs::running_as_root() {
+        log.note("skipped: root lists a 0000 directory");
+        return;
+    }
+    let home = home(&log);
+    let blobs = home.env.cache().join("omaddons/blobs");
+    fs::create_dir_all(&blobs).unwrap();
+    let args = [
+        "doctor",
+        "--json",
+        "--only",
+        ids::BLOB_HASH_MISMATCH,
+        "--include-deep",
+    ];
+    log.step("an unlistable cache");
+    fs::set_permissions(&blobs, fs::Permissions::from_mode(0o000)).unwrap();
+    let ran = run(&log, &home, &args);
+    fs::set_permissions(&blobs, fs::Permissions::from_mode(0o755)).unwrap();
+    ran.exit(1);
+    let envelope = ran.envelope();
+    assert_eq!(
+        (&envelope["state"], &envelope["summary"]["incomplete"]),
+        (&json!("DONE_FINDINGS"), &json!(1)),
+        "{envelope:#}"
+    );
+    let cut = findings(envelope, ids::CHECK_INCOMPLETE);
+    assert_eq!(cut.len(), 1, "{:?}", ids_of(envelope));
+    let evidence = &cut[0]["evidence"];
+    assert_eq!(
+        (
+            &evidence["detector"],
+            &evidence["reason"],
+            &evidence["path"]
+        ),
+        (
+            &json!(ids::BLOB_HASH_MISMATCH),
+            &json!("unreadable"),
+            &json!(blobs.display().to_string())
+        )
+    );
+    assert_eq!(cut[0]["remediation"]["argv"], Value::Null, "advice");
+    assert!(
+        cut[0]["remediation"]["command"]
+            .as_str()
+            .is_some_and(|c| c.contains(&blobs.display().to_string())),
+        "{:#}",
+        cut[0]
+    );
+
+    log.step("readable again: healthy");
+    let ran = run(&log, &home, &args);
+    ran.exit(0);
+    assert_eq!(ran.envelope()["state"], "DONE_OK");
+
+    log.step("online checks a run was not asked for: skipped, as before");
+    let ran = run(&log, &home, &["doctor", "--json"]);
+    let envelope = ran.envelope();
+    assert!(
+        findings(envelope, ids::CHECK_INCOMPLETE).is_empty(),
+        "{envelope:#}"
+    );
+    assert!(
+        envelope["skipped"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["reason"] == "online_required"),
+        "{envelope:#}"
+    );
+}
+
 /// The declared cost of a plain diagnose's selection: every row of the default tiers.
 fn default_cost() -> u32 {
     FAILURE_MODES

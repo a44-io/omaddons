@@ -339,7 +339,9 @@ pub(crate) mod tests {
     }
 
     /// A row whose required layer is unavailable is skipped with that layer's cause, never
-    /// run on defaults or reported clean.
+    /// run on defaults or reported clean: with no failure of the layer to say why (an
+    /// unlistable cache), the skip is a `check-incomplete` naming the check and what it
+    /// could not read (omad-4h0d.12).
     #[test]
     fn a_row_with_an_unavailable_layer_is_skipped_not_clean() {
         let view = DoctorView::preloaded(
@@ -356,7 +358,28 @@ pub(crate) mod tests {
         rows.retain(|row| row.id == ids::LOCK_HELD_LONG);
         rows[0].requires = &[Layer::Caches];
         let found = detect_rows(&view, &Selection::all(), &rows, &[Tier::Cached]).unwrap();
-        assert_eq!(found.findings, Vec::new(), "never run");
+        let got: Vec<_> = found
+            .findings
+            .iter()
+            .map(|f| {
+                (
+                    f.id,
+                    f.evidence.detector,
+                    f.evidence.reason,
+                    f.evidence.path.clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [(
+                ids::CHECK_INCOMPLETE,
+                Some(ids::LOCK_HELD_LONG),
+                Some("unreadable"),
+                Some(fixture_paths().blobs_dir())
+            )],
+            "never run, and said so"
+        );
         assert_eq!(
             found
                 .skipped

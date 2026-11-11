@@ -7382,7 +7382,7 @@
     "output doctor explain data.failure_mode.why": {"kind":"output_position","nullable":false,"required":true,"types":["string"]},
     "output doctor explain data.incomplete": {"kind":"output_position","nullable":true,"required":true,"types":["object"]},
     "output doctor explain data.incomplete.deadline_ms": {"kind":"output_position","minimum":0,"nullable":true,"required":true,"types":["integer"]},
-    "output doctor explain data.incomplete.limit": {"enum":["deadline","entries","online_requests","unanswered"],"kind":"output_position","nullable":false,"required":true,"types":["string"]},
+    "output doctor explain data.incomplete.limit": {"enum":["deadline","entries","online_requests","unanswered","unreadable"],"kind":"output_position","nullable":false,"required":true,"types":["string"]},
     "output doctor explain data.incomplete.max_entries": {"kind":"output_position","minimum":0,"nullable":true,"required":true,"types":["integer"]},
     "output doctor explain data.instances": {"kind":"output_position","nullable":false,"required":true,"types":["array"]},
     "output doctor explain data.instances[]": {"kind":"output_position","nullable":false,"types":["object"]},

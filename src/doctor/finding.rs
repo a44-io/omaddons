@@ -970,14 +970,18 @@ pub enum IncompleteLimit {
     OnlineRequests,
     /// An online check's request got no answer it could judge.
     Unanswered,
+    /// What the check reads could not be read, and no failure mode describes it (a cache
+    /// or a client's `AddOns/` that cannot be listed): it never ran (omad-4h0d.12).
+    Unreadable,
 }
 
 impl IncompleteLimit {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Deadline,
         Self::Entries,
         Self::OnlineRequests,
         Self::Unanswered,
+        Self::Unreadable,
     ];
 
     /// The wire name, as a `check-incomplete` finding's `evidence.reason` gives it.
@@ -987,6 +991,7 @@ impl IncompleteLimit {
             Self::Entries => "entries",
             Self::OnlineRequests => "online_requests",
             Self::Unanswered => "unanswered",
+            Self::Unreadable => "unreadable",
         }
     }
 }
@@ -1286,7 +1291,13 @@ mod tests {
             .map(|r| r.as_str())
             .collect();
         expected.extend(crate::engine::journal::StopReason::ALL.map(|r| r.as_str()));
-        expected.extend(["deadline", "entries", "online_requests", "unanswered"]);
+        expected.extend([
+            "deadline",
+            "entries",
+            "online_requests",
+            "unanswered",
+            "unreadable",
+        ]);
         expected.extend([
             "no_answer",
             "rejected",
