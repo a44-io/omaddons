@@ -820,14 +820,44 @@ fn plan(
         argv: ctx.argv,
         running_unknown: running_now.unknown.as_deref(),
     };
-    let judged = running::evaluate(
+    let policy_ops = std::mem::take(&mut folders.policy);
+    let mut judged = running::evaluate(
         &policy_ctx,
         ctx.policy,
         running,
         &target.rules,
-        &std::mem::take(&mut folders.policy),
+        &policy_ops,
         req.while_running,
     )?;
+    // Every running client that shares this AddOns directory (a symlink between Classic
+    // clients) sees the same folders move, and judges them by the TOCs it loads itself,
+    // as it judges an install's, an update's or a removal's: an undo is no way around
+    // `game_running`, and what it requires of that client is reported.
+    for sibling in crate::discover::shared::siblings(target, ctx.known_targets)
+        .into_iter()
+        .filter(|t| running_now.contains(&t.client_dir))
+    {
+        let theirs = sibling_policy_ops(&policy_ops, &client.addons(), sibling);
+        let theirs_ctx = PolicyContext {
+            target_id: &sibling.id,
+            argv: ctx.argv,
+            running_unknown: running_now.unknown.as_deref(),
+        };
+        let more = running::evaluate(
+            &theirs_ctx,
+            ctx.policy,
+            true,
+            &sibling.rules,
+            &theirs,
+            req.while_running,
+        )?;
+        judged.reload_required = judged.reload_required.max(more.reload_required);
+        for warning in more.warnings {
+            if !judged.warnings.contains(&warning) {
+                judged.warnings.push(warning);
+            }
+        }
+    }
     let mut warnings: Vec<Warning> = running_now.warning().into_iter().collect();
     warnings.extend(judged.warnings);
     let sv = plan_saved_variables(
@@ -1736,6 +1766,38 @@ impl FolderPlan {
         }
         Ok(plan)
     }
+}
+
+/// An undo's folder changes (`ops`, judged for its own client) as `sibling` sees them: a
+/// client sharing the AddOns directory `addons`, which loads its own TOC from each
+/// folder, by its own rules. A SavedVariables restore is the undone client's alone (each
+/// client keeps its own `WTF/`), so the sibling judges none.
+fn sibling_policy_ops(ops: &[PolicyOp], addons: &Path, sibling: &Target) -> Vec<PolicyOp> {
+    let loaded = |folder: &FolderName| {
+        DiskFolder::new(addons.join(folder.as_str()))
+            .ok()
+            .and_then(|view| loaded_toc(&view, &sibling.rules).ok().flatten())
+            .map(|l| l.file)
+    };
+    ops.iter()
+        .filter_map(|op| match op {
+            PolicyOp::AddFolder { .. } => Some(op.clone()),
+            PolicyOp::ReplaceFolder {
+                folder,
+                toc_names_after,
+                ..
+            } => Some(PolicyOp::ReplaceFolder {
+                folder: folder.clone(),
+                loaded_toc_before: loaded(folder),
+                toc_names_after: toc_names_after.clone(),
+            }),
+            PolicyOp::RemoveFolder { folder, .. } => Some(PolicyOp::RemoveFolder {
+                folder: folder.clone(),
+                loaded_toc_before: loaded(folder),
+            }),
+            PolicyOp::RestoreSavedVariables { .. } => None,
+        })
+        .collect()
 }
 
 /// The on-disk spelling of `folder` in AddOns, matched case-insensitively.

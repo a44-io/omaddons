@@ -240,9 +240,17 @@ fn add(
 /// is neither believed nor overwritten).
 pub fn load(paths: &Paths) -> (ErrorsMemo, bool) {
     match store::load::<ErrorsMemo>(&paths.errors_memo()) {
-        Ok(Some(loaded)) if loaded.status == VersionStatus::Newer => (ErrorsMemo::default(), false),
-        Ok(Some(loaded)) => (loaded.value, true),
-        _ => (ErrorsMemo::default(), true),
+        Ok(Some(loaded)) if loaded.status != VersionStatus::Newer => (loaded.value, true),
+        Ok(None) => (ErrorsMemo::default(), true),
+        // Newer, and this build still decodes it.
+        Ok(Some(_)) => (ErrorsMemo::default(), false),
+        // Newer in a shape this build no longer decodes (`state_too_new`) is newer all the
+        // same; only a corrupt file is replaced.
+        // ubs:ignore — comparing an error code, not a secret
+        Err(err) => (
+            ErrorsMemo::default(),
+            err.code != crate::error::ErrorCode::StateTooNew,
+        ),
     }
 }
 
@@ -272,4 +280,37 @@ fn write(paths: &Paths, json: &[u8]) -> Result<()> {
     };
     mutate(&mut s, &paths.errors_memo(), op)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The memo is writable unless a newer omaddons wrote it, whether this build still
+    /// decodes that file or not (a newer major may reshape a field): then it is neither
+    /// believed nor overwritten. A corrupt or missing one is replaced.
+    #[test]
+    fn a_newer_memo_is_neither_believed_nor_writable_decoded_or_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let paths = Paths::with_roots(root, root.join("c"), root.join("s"), root.join("k"));
+        assert_eq!(load(&paths), (ErrorsMemo::default(), true), "missing");
+        std::fs::create_dir_all(paths.cache_dir()).unwrap();
+        for (case, bytes, writable) in [
+            ("corrupt", "{ not json", true),
+            ("newer", r#"{"schema_version":"9.0","targets":{}}"#, false),
+            (
+                "newer, reshaped",
+                r#"{"schema_version":"9.0","targets":"a shape this build cannot decode"}"#,
+                false,
+            ),
+        ] {
+            std::fs::write(paths.errors_memo(), bytes).unwrap();
+            assert_eq!(
+                load(&paths),
+                (ErrorsMemo::default(), writable),
+                "case {case}"
+            );
+        }
+    }
 }

@@ -1665,6 +1665,99 @@ fn prune_removes_only_unlisted_managed_addons() {
     assert_eq!(common::state::history(&home).len(), txs);
 }
 
+/// `--prune` keeps every addon a kept one requires, also when the kept one is new: a
+/// listed addon installed by this very run has no record yet to read its requirements
+/// from, so they come from its archive. BigWigs, installed by hand and not listed, stays
+/// as it is (never removed, never installed again) once the listed LittleWigs requires
+/// it; Bar, which nothing requires, goes.
+#[test]
+fn prune_keeps_what_an_addon_installed_by_the_same_run_requires() {
+    let home = prune_home();
+    for r in ["gh:o/bigwigs", "gh:o/bar"] {
+        home.run(&["install", r, "-t", "retail"]).expect(0);
+    }
+    let before = record_of(&home, "retail", "BigWigs").unwrap();
+    assert!(before.required_by.is_empty());
+    home.write_desired("[family.mainline]\naddons = [\"gh:o/littlewigs\"]\n");
+
+    let r = home.run(&["sync", "--prune"]);
+    let envelope = r.expect(0);
+    let statuses = statuses(&envelope, "retail");
+    assert!(
+        statuses.contains(&pair("gh:o/littlewigs", "installed"))
+            && statuses.contains(&pair("Bar", "removed")),
+        "{statuses:?}"
+    );
+    assert!(
+        !statuses
+            .iter()
+            .any(|(request, status)| request == "BigWigs" && status == "removed"),
+        "{statuses:?}"
+    );
+    let after = record_of(&home, "retail", "BigWigs").expect("BigWigs stays installed");
+    assert_eq!(
+        (&after.version, after.installed_at, after.reason),
+        (&before.version, before.installed_at, before.reason),
+        "as it was: not removed and installed again"
+    );
+    assert_eq!(after.required_by, ["LittleWigs"]);
+    assert!(home.addons("_retail_").join("BigWigs").is_dir());
+    assert!(record_of(&home, "retail", "Bar").is_none());
+
+    // Idempotent: the record now says what LittleWigs requires.
+    let r = home.run(&["sync", "--prune"]);
+    assert_eq!(r.expect(0)["data"]["summary"]["changed"], 0);
+}
+
+/// `--prune` never removes what an entry names, also when the entry fails: a local
+/// archive that is no longer where the file says fails its entry (`not_found`), and the
+/// addon installed from it stays.
+#[test]
+fn prune_keeps_the_addon_of_an_entry_whose_local_archive_is_gone() {
+    let home = prune_home();
+    let zip = home.env.config().join("omaddons/Alpha-1.0.zip");
+    fs::create_dir_all(zip.parent().unwrap()).unwrap();
+    fs::write(
+        &zip,
+        zip_text(&[("Alpha/Alpha.toc", &toc("120105", &["## Version: 1.0"]))]),
+    )
+    .unwrap();
+    home.write_desired("[family.mainline]\naddons = [\"gh:o/foo\", \"./Alpha-1.0.zip\"]\n");
+    home.run(&["sync", "-t", "retail"]).expect(0);
+    assert!(record_of(&home, "retail", "Alpha").is_some());
+
+    fs::remove_file(&zip).unwrap();
+    for args in [
+        &["sync", "--prune", "-t", "retail", "--dry-run"][..],
+        &["sync", "--prune", "-t", "retail"][..],
+    ] {
+        let r = home.run(args);
+        let envelope = r.expect(0);
+        let statuses = statuses(&envelope, "retail");
+        assert!(
+            statuses.contains(&pair("./Alpha-1.0.zip", "failed"))
+                && statuses.iter().all(|(_, status)| status != "removed"),
+            "{}",
+            r.context()
+        );
+        assert_eq!(
+            (
+                &envelope["partial"],
+                &envelope["data"]["summary"]["changed"]
+            ),
+            (&json!(true), &json!(0)),
+            "{}",
+            r.context()
+        );
+        assert_eq!(
+            item(&envelope, "retail", "./Alpha-1.0.zip")["error"]["code"],
+            "not_found"
+        );
+    }
+    assert!(record_of(&home, "retail", "Alpha").is_some());
+    assert!(home.addons("_retail_").join("Alpha").is_dir());
+}
+
 #[test]
 fn prune_refuses_a_file_with_a_section_for_no_known_client() {
     let home = prune_home();

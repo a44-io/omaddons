@@ -357,15 +357,16 @@ TestCase {
     compare(t.length, 1)
     compare(t[0].slice(0, 7), ["omarchy-notification-send", "--app-name", "omaddons", "-g", t[0][4], "-u", "normal"])
     compare(t[0].slice(7, 9), ["Lua errors in your last session on retail", "DBM 3 · WeakAuras 1"])
-    // A click opens the panel at Errors, through the widget's own IPC (1n2p.33).
-    compare(t[0].slice(-5), ["--exec", "omarchy-shell", Build.PLUGIN_ID, "show", "errors"])
+    // A click opens the panel at Errors, through the widget's own IPC (1n2p.33): one
+    // command string after --exec, as omarchy-notification-send takes it.
+    compare(t[0].slice(-2), ["--exec", "omarchy-shell " + Build.PLUGIN_ID + " show errors"])
     settle()
     refreshWith({ "retail": { "updates": 3, "errors": { "new": 4, "top": [
       { "addon": "DBM", "folder": "DBM-Core", "new": 3, "count": 9 }, { "addon": "WeakAuras", "folder": "WeakAuras", "new": 1, "count": 1 }] } } })
     t = toasts()
     compare(t.length, 2)
     compare(t[1].slice(6, 9), ["low", "Addon updates", "3 updates on retail"])
-    compare(t[1].slice(-2), ["show", "updates"])
+    compare(t[1].slice(-2), ["--exec", "omarchy-shell " + Build.PLUGIN_ID + " show updates"])
     settle()
     refreshWith(world)
     compare(toasts().length, 2, "the same counts again: nothing")
@@ -395,7 +396,7 @@ TestCase {
     var t = toasts()
     compare(t.length, 1, "one digest when the last client stops")
     compare(t[0].slice(6, 9), ["normal", "After your session", "3 new Lua errors in DBM · 2 updates"])
-    compare(t[0].slice(-5), ["--exec", "omarchy-shell", Build.PLUGIN_ID, "show", "errors"])
+    compare(t[0].slice(-2), ["--exec", "omarchy-shell " + Build.PLUGIN_ID + " show errors"])
     settle()
     refreshWith(world)
     compare(toasts().length, 1, "said once")

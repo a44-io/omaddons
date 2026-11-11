@@ -10,7 +10,9 @@
 
 use serde_json::Value;
 
+use crate::limits::SOURCE_TEXT_MAX_CHARS;
 use crate::model::{AssetFlavor, FlavorSource};
+use crate::text::{Entities, source_line};
 
 /// One zip described by a `release.json`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,12 +65,15 @@ fn entry(raw: &Value) -> Option<Entry> {
     if !safe_filename(filename) {
         return None;
     }
+    // A name and a version are shown as they are (`info`, `outdated`, records), so each
+    // is one safe line, as every source's text is: no control character (a terminal
+    // escape sequence in a publisher's file would reach the terminal), nothing that
+    // hides or reorders text, cut at the source-text cap.
     let string = |key: &str| {
         raw.get(key)
             .and_then(Value::as_str)
-            .map(str::trim)
+            .map(|s| source_line(s, SOURCE_TEXT_MAX_CHARS, Entities::Keep))
             .filter(|s| !s.is_empty())
-            .map(str::to_owned)
     };
     let flavors = raw
         .get("metadata")
@@ -145,6 +150,30 @@ mod tests {
             !flavors(e).iter().any(|(f, _)| *f == "mainline"),
             "no invented mainline"
         );
+    }
+
+    /// A name and a version are shown, so each is one safe line: a terminal escape
+    /// sequence, a line break or a character that reorders text in a publisher's file
+    /// never reaches output; plain text is kept as written, an entity undecoded.
+    #[test]
+    fn a_name_and_a_version_are_one_safe_line() {
+        let json = "{\"releases\":[{\"name\":\"Foo\\u001b]0;owned\\u0007\\nBar\",\"version\":\" 1.0\\u001b[2J\\u202e &amp; \",\"filename\":\"Foo.zip\"},{\"name\":\"\\u001b\",\"version\":\"\\t\",\"filename\":\"Bar.zip\"}]}";
+        let m = parse(json.as_bytes()).unwrap();
+        assert_eq!(m.entries.len(), 2);
+        assert_eq!(
+            (
+                m.entries[0].name.as_deref(),
+                m.entries[0].version.as_deref()
+            ),
+            (Some("Foo]0;owned Bar"), Some("1.0[2J &amp;"))
+        );
+        for e in &m.entries {
+            for text in [&e.name, &e.version].into_iter().flatten() {
+                assert!(!text.chars().any(char::is_control), "{text:?}");
+            }
+        }
+        // Nothing but control characters is no name and no version.
+        assert_eq!((&m.entries[1].name, &m.entries[1].version), (&None, &None));
     }
 
     #[test]

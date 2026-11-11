@@ -105,7 +105,8 @@ pub fn record(paths: &Paths, key: &str, entry: AboutEntry, max: usize) -> Option
         .as_deref()
         .map(|bytes| store::load_bytes::<AboutMemo>(&path, bytes));
     let mut memo = match loaded {
-        Some(Ok(loaded)) if loaded.status == VersionStatus::Newer => {
+        // Newer, decoded or not: read, never overwritten.
+        Some(loaded) if store::written_by_newer(&loaded) => {
             return Some(format!(
                 "about memo: {} was written by a newer omaddons; not updated",
                 path.display()
@@ -200,5 +201,12 @@ mod tests {
         assert!(record(&paths, "wowi:1", entry("2026-11-08T00:00:00Z"), 8).is_some());
         assert_eq!(std::fs::read(paths.about_memo()).unwrap(), newer);
         assert!(load(&paths).1.is_some(), "a newer file is not used");
+
+        // A newer major's file in a shape this build cannot decode is newer all the same.
+        let reshaped = br#"{"schema_version":"9.0","entries":"reshaped"}"#;
+        std::fs::write(paths.about_memo(), reshaped).unwrap();
+        let note = record(&paths, "wowi:1", entry("2026-11-08T00:00:00Z"), 8);
+        assert!(note.is_some_and(|n| n.contains("newer")));
+        assert_eq!(std::fs::read(paths.about_memo()).unwrap(), reshaped);
     }
 }

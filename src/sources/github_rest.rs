@@ -468,12 +468,12 @@ impl GithubRestFallback for GithubRest {
     }
 }
 
-/// `OMADDONS_GITHUB_TOKEN` when set, not blank and free of control characters (a CR or
-/// LF would split the request header); nothing else is ever read.
-pub fn token_from(lookup: impl Fn(&str) -> Option<String>) -> Option<String> {
-    lookup(TOKEN_VAR)
-        .map(|t| t.trim().to_owned())
-        .filter(|t| !t.is_empty() && !t.chars().any(char::is_control))
+/// `OMADDONS_GITHUB_TOKEN` as set, when it is not blank: the token the user meant, valid
+/// or not. Nothing else is ever read. Whether a header can carry it (a CR or LF would
+/// split the request header) is `github_token::valid`'s to say, so a malformed variable
+/// is an error naming it, never read as unset with another token in its place.
+pub fn token_var(lookup: impl Fn(&str) -> Option<String>) -> Option<String> {
+    lookup(TOKEN_VAR).filter(|t| !t.trim().is_empty())
 }
 
 /// A release as the API lists it; unknown fields are ignored and missing ones default.
@@ -1032,13 +1032,16 @@ mod tests {
                     .map(|(_, v)| (*v).to_owned())
             }
         };
-        assert_eq!(token_from(env(&[("GITHUB_TOKEN", "ghp_x")])), None);
-        assert_eq!(token_from(env(&[(TOKEN_VAR, "  ")])), None);
-        assert_eq!(token_from(env(&[(TOKEN_VAR, "a\r\nX-Evil: 1")])), None);
+        assert_eq!(token_var(env(&[("GITHUB_TOKEN", "ghp_x")])), None);
+        assert_eq!(token_var(env(&[(TOKEN_VAR, "  ")])), None);
         assert_eq!(
-            token_from(env(&[(TOKEN_VAR, "ghp_y")])).as_deref(),
+            token_var(env(&[(TOKEN_VAR, "ghp_y")])).as_deref(),
             Some("ghp_y")
         );
+        // One that would split the request header is read, to be refused by name: never
+        // sent, and never read as unset.
+        let splitting = token_var(env(&[(TOKEN_VAR, "a\r\nX-Evil: 1")])).unwrap();
+        assert!(!crate::sources::github_token::valid(splitting.trim()));
 
         let auth = |rest: &GithubRest| {
             let bare = rest.api_request("/repos/o/r/releases");
@@ -1056,7 +1059,7 @@ mod tests {
                 .find(|(k, _)| k.eq_ignore_ascii_case("authorization"))
                 .map(|(_, v)| v.clone())
         };
-        let anonymous = GithubRest::with_token(token_from(env(&[("GITHUB_TOKEN", "ghp_x")])));
+        let anonymous = GithubRest::with_token(token_var(env(&[("GITHUB_TOKEN", "ghp_x")])));
         assert_eq!(auth(&anonymous), None);
         let authed = GithubRest::with_token(Some("ghp_y".into()));
         assert_eq!(auth(&authed).as_deref(), Some("Bearer ghp_y"));

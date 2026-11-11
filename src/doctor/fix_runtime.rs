@@ -998,6 +998,9 @@ pub fn run_fix_at(
     diagnosis
         .skipped
         .sort_by(|a, b| (a.id, &a.target).cmp(&(b.id, &b.target)));
+    // `--severity` reports here as `doctor` does: a view's failure past it (a broken
+    // config that kept a selected check from running, say) is no finding of this run.
+    diagnosis.at_most(req.checks.max_severity);
     let running = detect_running(&targets);
     let rtx = if req.dry_run {
         None
@@ -1069,7 +1072,12 @@ pub fn run_diff_at(
                 prunes_planned: None,
                 bytes_to_back_up: None,
                 precondition: None,
-                since: Some(report::since(run.clone(), old, &diagnosis.findings)),
+                since: Some(report::since(
+                    run.clone(),
+                    old,
+                    &diagnosis.findings,
+                    &diagnosis.looked,
+                )),
             },
             exit,
             warnings,

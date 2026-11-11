@@ -455,8 +455,8 @@ TestCase {
     // One notification: counts and clients, a click opening History.
     var names = Model.sheetClient(service.targets, "era", "") + " and " + Model.sheetClient(service.targets, "retail", "")
     compare(toasts().length, 1, JSON.stringify(Quickshell.detachedCommands))
-    compare(toasts()[0].slice(-9), ["-u", "low", "Addons updated", "Updated 3 addons on " + names + " · Undo is in History",
-      "--exec", "omarchy-shell", Build.PLUGIN_ID, "show", "history"])
+    compare(toasts()[0].slice(-6), ["-u", "low", "Addons updated", "Updated 3 addons on " + names + " · Undo is in History",
+      "--exec", "omarchy-shell " + Build.PLUGIN_ID + " show history"])
     compare([service.autoUpdateStage, service.autoUpdatePending, service.confirm], ["", false, null])
     compare(runs("apply").length, 1, "applied once")
   }
@@ -516,7 +516,7 @@ TestCase {
     compare([spy.signalArguments[0][0], spy.signalArguments[0][1]], ["autoUpdate", "Off"])
     compare([service.autoUpdateHeld, service.autoUpdateStopped, service.lastError.message], [true, true, failed.error.message])
     compare(toasts().length, 1, JSON.stringify(Quickshell.detachedCommands))
-    compare(toasts()[0].slice(-9, -5), ["-u", "normal", "Automatic updates are off",
+    compare(toasts()[0].slice(-6, -2), ["-u", "normal", "Automatic updates are off",
       "An automatic update on " + updateClients() + " failed. Turn them on again in Settings."])
     // Still On here (no bar saved it): held off all the same.
     var previews = runs("update").length

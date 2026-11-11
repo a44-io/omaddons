@@ -12,8 +12,8 @@ use serde::Serialize;
 use super::delegate::DelegatedOutcome;
 use super::exit::Exit;
 use super::finding::{Finding, Severity};
-use super::registry::ids;
-use super::runtime::{Diagnosis, DoctorRunId};
+use super::registry::{ids, registered_id};
+use super::runtime::{Diagnosis, DoctorRunId, Looked};
 use super::selection::{SkipReason, Skipped};
 use crate::engine::journal::JournalFamily;
 use crate::engine::repair_action::{Direction, JournalPhase, Step};
@@ -182,7 +182,8 @@ pub struct Since {
     pub run: DoctorRunId,
     /// Instances found now and not then, sorted.
     pub new_instances: Vec<String>,
-    /// Instances found then and not now, sorted.
+    /// Instances found then, looked for now and not found, sorted. One this run did not
+    /// look for (outside its checks or its clients) is in neither list.
     pub resolved_instances: Vec<String>,
     /// Instances found both times.
     pub unchanged: u32,
@@ -237,20 +238,30 @@ pub fn summary(findings: &[Finding], skipped: &[Skipped], duration_ms: u64) -> S
     }
 }
 
-/// `--since`: `new` against the instance keys of the run `run` reported, `old`.
-pub fn since(run: DoctorRunId, old: &[String], new: &[Finding]) -> Since {
+/// `--since`: `new` against the instance keys of the run `run` reported, `old`. An
+/// earlier instance is resolved when this run `looked` for it and did not find it; one
+/// it did not look for (outside its tiers, selection or `-t`, or its check skipped or cut
+/// short) is in neither list: its absence says nothing.
+pub fn since(run: DoctorRunId, old: &[String], new: &[Finding], looked: &Looked) -> Since {
     let old: BTreeSet<&str> = old.iter().map(String::as_str).collect();
     let now: BTreeSet<&str> = new.iter().map(|f| f.instance.as_str()).collect();
     Since {
         run,
         new_instances: now.difference(&old).map(|key| (*key).to_owned()).collect(),
-        resolved_instances: old.difference(&now).map(|key| (*key).to_owned()).collect(),
+        resolved_instances: old
+            .difference(&now)
+            .filter(|key| looked.covers(key))
+            .map(|key| (*key).to_owned())
+            .collect(),
         unchanged: u32::try_from(now.intersection(&old).count()).unwrap_or(u32::MAX),
     }
 }
 
 /// One `doctor explain` argv per failure mode in `findings`, in their order, with
-/// `-t <client>` when every instance of it is on that one client.
+/// `-t <client>` when every instance of it is on that one client and `-t` resolves it: a
+/// registered client's own id, never the key string an unregistered one reads as (a
+/// journal of a client no longer registered), which `-t` refuses as `target_not_found`.
+/// The findings' own remediations follow the same rule.
 pub fn explain_argvs(findings: &[Finding]) -> Vec<Vec<String>> {
     let mut seen = BTreeSet::new();
     let mut out = Vec::new();
@@ -261,7 +272,7 @@ pub fn explain_argvs(findings: &[Finding]) -> Vec<Vec<String>> {
         let targets: BTreeSet<Option<&str>> = findings
             .iter()
             .filter(|f| f.id == finding.id)
-            .map(|f| f.target.as_ref().map(|t| t.id.as_str()))
+            .map(registered_id)
             .collect();
         let mut argv: Vec<String> = ["omaddons", "doctor", "explain", finding.id]
             .map(str::to_owned)
@@ -560,6 +571,15 @@ mod tests {
         DoctorRunId::parse(RUN).unwrap()
     }
 
+    /// A run over every client whose checks `ran` to their end.
+    fn looked(ran: &[&'static str]) -> Looked {
+        Looked::new(
+            ran.iter().copied(),
+            crate::doctor::selection::Scope::All,
+            [],
+        )
+    }
+
     #[test]
     fn since_cases() {
         let (a, b) = (journal(TX_A), journal(TX_B));
@@ -598,8 +618,9 @@ mod tests {
                 0,
             ),
         ];
+        let everything = looked(&[registry::ids::JOURNAL_PENDING, registry::ids::STATE_CORRUPT]);
         for (case, old, new, added, resolved, unchanged) in cases {
-            let got = since(run(), &old, &new);
+            let got = since(run(), &old, &new, &everything);
             assert_eq!(
                 (
                     got.new_instances.len(),
@@ -613,12 +634,115 @@ mod tests {
             sorted.sort();
             assert_eq!(got.new_instances, sorted, "{case}: sorted");
         }
-        let got = since(run(), &keys(&[a.clone(), b.clone()]), &[b]);
+        let got = since(run(), &keys(&[a.clone(), b.clone()]), &[b], &everything);
         assert_eq!(
             got.resolved_instances,
             keys(&[a]),
             "by instance key, never by label"
         );
+    }
+
+    /// An earlier instance is resolved only when this run looked for it: its check ran to
+    /// its end, for its client, and `--severity` shows it. Otherwise its absence is no
+    /// news, and it is in neither list.
+    #[test]
+    fn since_calls_resolved_only_what_the_run_looked_for() {
+        use crate::doctor::selection::{Scope, TargetSel};
+        let key = |k: &str| k.parse::<TargetKey>().unwrap();
+        let journal_id = registry::ids::JOURNAL_PENDING;
+        let corrupt_id = registry::ids::STATE_CORRUPT;
+        let (a, x) = (journal(TX_A), skill("/x/a/SKILL.md"));
+        let incomplete = finding(
+            registry::ids::CHECK_INCOMPLETE,
+            Subject::machine().detector(corrupt_id),
+        );
+        let crashed = finding(
+            registry::ids::DETECTOR_CRASHED,
+            Subject::machine().detector(corrupt_id),
+        );
+        let old = keys(&[a.clone(), x.clone(), incomplete.clone(), crashed.clone()]);
+        let resolved = |looked: &Looked| since(run(), &old, &[], looked).resolved_instances;
+        let all = [journal_id, corrupt_id];
+        let journal_severity = registry::row(journal_id).unwrap().severity;
+        let cases: Vec<(&str, Looked, Vec<Finding>)> = vec![
+            (
+                "every check ran: all of them",
+                looked(&all),
+                vec![a.clone(), x.clone(), incomplete.clone(), crashed.clone()],
+            ),
+            (
+                "the journals' check alone (a tier, --only, --skip): the journal",
+                looked(&[journal_id]),
+                vec![a.clone()],
+            ),
+            (
+                "the other check alone: its finding and the runtime's own about it",
+                looked(&[corrupt_id]),
+                vec![x.clone(), incomplete.clone(), crashed.clone()],
+            ),
+            ("no check ran to its end: nothing", looked(&[]), Vec::new()),
+            (
+                "-t another client: the machine's, never retail's",
+                Looked::new(
+                    all,
+                    Scope::Targets(BTreeSet::from([TargetSel::Key(key(K2))])),
+                    [],
+                ),
+                vec![x.clone(), incomplete.clone(), crashed.clone()],
+            ),
+            (
+                "-t that client: retail's too",
+                Looked::new(
+                    all,
+                    Scope::Targets(BTreeSet::from([TargetSel::Key(key(K))])),
+                    [],
+                ),
+                vec![a.clone(), x.clone(), incomplete.clone(), crashed.clone()],
+            ),
+            (
+                "the check skipped for that client: not its journal",
+                Looked::new(all, Scope::All, [(journal_id, key(K))]),
+                vec![x.clone(), incomplete.clone(), crashed.clone()],
+            ),
+            (
+                "the check skipped for another client: its journal too",
+                Looked::new(all, Scope::All, [(journal_id, key(K2))]),
+                vec![a.clone(), x.clone(), incomplete.clone(), crashed.clone()],
+            ),
+            (
+                "--severity hides the other check's findings, never the runtime's own",
+                looked(&all).at_most(Some(journal_severity)),
+                [
+                    vec![a.clone()],
+                    if registry::row(corrupt_id).unwrap().severity <= journal_severity {
+                        vec![x.clone()]
+                    } else {
+                        Vec::new()
+                    },
+                    vec![incomplete.clone(), crashed.clone()],
+                ]
+                .concat(),
+            ),
+        ];
+        for (case, looked, want) in cases {
+            let mut want = keys(&want);
+            want.sort();
+            assert_eq!(resolved(&looked), want, "case {case}");
+        }
+        // Found again, an instance is unchanged whatever the run looked at.
+        let got = since(run(), &old, std::slice::from_ref(&a), &looked(&[]));
+        assert_eq!(
+            (got.unchanged, got.resolved_instances, got.new_instances),
+            (1, Vec::new(), Vec::new())
+        );
+        // A key this omaddons cannot read was not looked for.
+        let got = since(
+            run(),
+            &["not an instance key".to_owned()],
+            &[],
+            &looked(&all),
+        );
+        assert_eq!(got.resolved_instances, Vec::<String>::new());
     }
 
     #[test]
@@ -722,6 +846,26 @@ mod tests {
             ],
             "one per failure mode, in findings order; a machine finding names no client"
         );
+        // A client that is not registered reads as its key, which `-t` does not resolve
+        // (`target_not_found`): its explain names no client, as its remediation's.
+        let unregistered = [finding(
+            registry::ids::JOURNAL_PENDING,
+            on(K, K).tx(TX_A.parse::<TxId>().unwrap()),
+        )];
+        assert_eq!(
+            explain_argvs(&unregistered),
+            [argv(&[
+                "omaddons",
+                "doctor",
+                "explain",
+                registry::ids::JOURNAL_PENDING
+            ])]
+        );
+        assert!(
+            !unregistered[0].remediation.explain_command.contains(" -t "),
+            "{:?}",
+            unregistered[0].remediation
+        );
     }
 
     fn report(findings: Vec<Finding>) -> FullReport {
@@ -736,6 +880,7 @@ mod tests {
                 started_at: "2026-10-30T18:03:40Z".parse().unwrap(),
                 finished_at: "2026-10-30T18:03:41Z".parse().unwrap(),
                 duration_ms: 3,
+                looked: looked(&[]),
             },
             None,
         )

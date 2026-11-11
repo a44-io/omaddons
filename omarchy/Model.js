@@ -3500,11 +3500,14 @@ function historyRuns(history, statusTargets) {
   })
 }
 
-// Local midnight of an instant, as a day number for comparing days; NaN when it does not
-// parse.
+// The local calendar day of an instant, as a day number for comparing days; NaN when it
+// does not parse. Counted from the local date's own year, month and day, so two days in a
+// row are always one apart: local midnight as an instant, divided and rounded, lands on
+// either side of a half day wherever the zone is 12 hours or more from UTC, and a clock
+// change across that line (New Zealand's, twice a year) made a day repeat or skip.
 function localDay(ms) {
   var d = new Date(ms)
-  return Math.round(new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() / 86400000)
+  return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86400000
 }
 
 function wordAt(id, index) {
@@ -6488,13 +6491,30 @@ var TOAST_GLYPH = String.fromCodePoint(0xF0297)
 // One toast of a kind at most this often (1n2p.33): what rises meanwhile waits for it.
 var TOAST_MIN_GAP_MS = 10 * 60 * 1000
 
+// One word of a command line a shell will run (never `shellWord`, which quotes for
+// display): as it is when it holds only characters no shell reads, else in single
+// quotes, inside which a shell expands nothing ('' for the empty word).
+function shellQuoted(text) {
+  var s = String(text)
+  return /^[A-Za-z0-9_.\/:=@%+-]+$/.test(s) ? s : "'" + s.split("'").join("'\\''") + "'"
+}
+
+// The command a click on a toast runs: the panel of `pluginId` opened at `view` through
+// its IPC (`show`, which opens, never toggles; "" opens it where it would open anyway).
+// `omarchy-notification-send --exec` takes the command as one string, which the Omarchy
+// shell runs when the card is clicked; it holds the plugin's own id and a view's name
+// only, each one shell word.
+function toastClickCommand(pluginId, view) {
+  return ["omarchy-shell", shellQuoted(pluginId), "show", shellQuoted(view || "")].join(" ")
+}
+
 // A toast as an argv for `omarchy-notification-send`, under the widget's own app name
-// (never one that passes Do Not Disturb). A click opens the panel of `pluginId` at
-// `view` through its IPC (`show`, which opens, never toggles; "" opens it where it
-// would open anyway): a fixed argv, never a shell.
+// (never one that passes Do Not Disturb), its click command the one argument after
+// `--exec`: the tool reads every word after that as an option of `notify-send`, which
+// refuses the toast, so the command is never spread over several.
 function toastArgv(title, body, urgency, pluginId, view) {
   return ["omarchy-notification-send", "--app-name", "omaddons", "-g", TOAST_GLYPH, "-u", urgency, title, body,
-    "--exec", "omarchy-shell", String(pluginId), "show", String(view || "")]
+    "--exec", toastClickCommand(pluginId, view)]
 }
 
 // The errors part of a toast: "DBM 3 · WeakAuras 1".

@@ -203,7 +203,9 @@ pub fn name_evidence(hints: &[FlavorHint], family: Family) -> NameEvidence {
 }
 
 /// Whether a file-name flavor guess fits `family`; `ClassicAny` fits every modern
-/// classic family, a legacy version hint only its legacy family, and `unknown` no hint.
+/// classic family (never mainline or Forever, which a bare `classic` counts against:
+/// [`name_evidence`]), a legacy version hint only its legacy family, and `unknown` no
+/// hint.
 fn hint_matches(hint: FlavorHint, family: Family) -> bool {
     let legacy = match hint {
         FlavorHint::VanillaLegacy => Some(Family::VanillaLegacy),
@@ -228,7 +230,7 @@ fn hint_matches(hint: FlavorHint, family: Family) -> bool {
         FlavorHint::Mists => "mists",
         FlavorHint::Titan => "titan",
         FlavorHint::Forever => "forever",
-        FlavorHint::ClassicAny => return flavor != "mainline",
+        FlavorHint::ClassicAny => return !matches!(flavor, "mainline" | "forever"),
         FlavorHint::VanillaLegacy
         | FlavorHint::TbcLegacy
         | FlavorHint::WrathLegacy
@@ -554,6 +556,28 @@ mod tests {
             None,
         );
         assert_eq!(order(&era)[0], "Foo-classic.zip");
+        // Forever is no Classic client: a bare `classic` names another client there, as
+        // `mainline` does (and as `name_evidence` judges it), so the unannotated file is
+        // tried first.
+        let forever = select(
+            &rest,
+            &target("1.60.1.70245", InstallKind::Battlenet),
+            Channel::Stable,
+            None,
+        );
+        assert_eq!(order(&forever)[0], "Foo-3.3.5.zip");
+        assert_eq!(
+            forever
+                .candidates
+                .iter()
+                .map(|c| c.rank)
+                .collect::<Vec<_>>(),
+            [
+                RankReason::Unannotated,
+                RankReason::NameHintMismatch,
+                RankReason::NameHintMismatch
+            ]
+        );
         let wotlk = select(
             &rest,
             &target("3.3.5.12340", InstallKind::Custom),

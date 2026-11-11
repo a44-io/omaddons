@@ -47,7 +47,8 @@ pub enum SourceKind {
 #[serde(rename_all = "snake_case")]
 pub enum ReadState {
     Complete,
-    /// The input ended inside a value (a file being written): what came before is kept.
+    /// The input ended inside a value (a file being written), or damage cut the database
+    /// short: what came before is kept.
     Partial,
     /// Over `SAVEDVARIABLES_MAX_BYTES`, or past the run's byte budget: not read.
     OverBudget,
@@ -369,7 +370,10 @@ fn read_db(path: &Path, stamp: FileStamp, budget: &mut u64) -> (ReadState, BugDb
     };
     *budget = budget.saturating_sub(bytes.len() as u64);
     let parsed = parse_saved_variables(&bytes, &[GLOBAL]);
-    let state = if parsed.complete {
+    // Cut short two ways: the input ended inside a value (`complete` is false), or damage
+    // inside the database's own value stopped it there while the file went on (`partial`
+    // names it, `complete` stays true). Either way errors after the cut were not read.
+    let state = if parsed.complete && !parsed.partial.contains(GLOBAL) {
         ReadState::Complete
     } else {
         ReadState::Partial
@@ -380,7 +384,7 @@ fn read_db(path: &Path, stamp: FileStamp, budget: &mut u64) -> (ReadState, BugDb
 
 fn partial_warning(target: &str, account: usize, state: ReadState) -> Warning {
     let why = match state {
-        ReadState::Partial => "it ends early (the game may be writing it)",
+        ReadState::Partial => "it ends early or is damaged (the game may be writing it)",
         ReadState::OverBudget => "it is over the size this run may read",
         ReadState::Unreadable => "it could not be read",
         ReadState::Complete => "",
@@ -721,6 +725,66 @@ mod tests {
         fn a_baseline_above_the_session_is_void_too() {
             let now = at(NOW);
             assert!(session_is_new(&db(2, 30), 2, None, None, now));
+        }
+    }
+
+    /// A database is read whole only when the input reached its end and nothing cut the
+    /// database's own value short. Damage inside it (a line break inside a string, bytes
+    /// that are no Lua) stops the read there while the file goes on: the errors after it
+    /// were not read, so the read is partial, as one that ends early is. Damage in another
+    /// global of the same file takes nothing from the database.
+    #[test]
+    fn a_database_cut_short_by_damage_is_read_partially() {
+        let entry = |n: u32| {
+            format!(
+                "{{\n[\"message\"] = \"Foo\\\\core.lua:{n}: boom\",\n[\"session\"] = 10,\n[\"counter\"] = 1,\n}},\n"
+            )
+        };
+        let whole = format!(
+            "\nBugGrabberDB = {{\n[\"session\"] = 10,\n[\"errors\"] = {{\n{}{}{}}},\n}}\n",
+            entry(1),
+            entry(2),
+            entry(3)
+        );
+        // The second entry's key is cut by bytes that are no Lua, to the end of the file.
+        let nul = format!(
+            "\nBugGrabberDB = {{\n[\"session\"] = 10,\n[\"errors\"] = {{\n{}{{\n[\"mess{}",
+            entry(1),
+            "\0".repeat(64)
+        );
+        // A structural error partway: the database's value is cut, and the file goes on
+        // to another global, so the input does not end inside a value.
+        let cut = format!(
+            "\nBugGrabberDB = {{\n[\"session\"] = 10,\n[\"errors\"] = {{\n{}{{ = oops\n{}}},\n}}\nOther = 1\n",
+            entry(1),
+            entry(3)
+        );
+        // The file ends inside the database: the game is writing it.
+        let early = whole[..whole.len() / 2].to_owned();
+        // Damage in another global only.
+        let elsewhere = format!("{whole}Other = {{ = oops\nMore = 2\n");
+
+        let dir = tempfile::tempdir().unwrap();
+        let cases = [
+            ("whole", &whole, ReadState::Complete, 3),
+            ("bytes that are no Lua", &nul, ReadState::Partial, 1),
+            ("a structural error partway", &cut, ReadState::Partial, 1),
+            ("it ends early", &early, ReadState::Partial, 1),
+            (
+                "damage in another global",
+                &elsewhere,
+                ReadState::Complete,
+                3,
+            ),
+        ];
+        for (case, text, want, entries) in cases {
+            let path = dir.path().join("!BugGrabber.lua");
+            std::fs::write(&path, text).unwrap();
+            let stamp = FileStamp::read(&path).unwrap().unwrap();
+            let mut budget = u64::MAX;
+            let (state, db) = read_db(&path, stamp, &mut budget);
+            assert_eq!(state, want, "case {case}");
+            assert_eq!(db.entries.len(), entries, "case {case}");
         }
     }
 }

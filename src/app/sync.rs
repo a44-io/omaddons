@@ -42,6 +42,7 @@ use crate::resolve::cache::Freshness;
 use crate::resolve::catalog::Catalog;
 use crate::rules::TargetKind;
 use crate::sources::changelog::same_version;
+use crate::sources::refs::local_path_ref;
 use crate::state::desired::{self, DesiredState, Entry};
 use crate::state::records::TargetRecord;
 
@@ -433,10 +434,15 @@ fn file_path(world: &World, args: &SyncArgs) -> PathBuf {
     }
 }
 
-/// The file's text; a missing file is `not_found`.
+/// The file's text; a missing file is `not_found`, and one that was read but is not
+/// UTF-8 text `desired_state_invalid` at its first such line, as a file that does not
+/// parse (TOML is UTF-8).
 fn read(path: &Path, given: bool) -> Result<String> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => Ok(text),
+    match std::fs::read(path) {
+        Ok(bytes) => String::from_utf8(bytes).map_err(|err| {
+            let valid_up_to = err.utf8_error().valid_up_to();
+            crate::state::desired::not_utf8(path, err.as_bytes(), valid_up_to)
+        }),
         // ubs:ignore — an io::ErrorKind, not a secret
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             let fix = if given {
@@ -588,7 +594,12 @@ fn target_work(
         work.order.push(label(d.entry));
         match &d.resolved {
             Ok(r) => named.push(r.clone()),
-            Err(error) => named.extend(ambiguous_refs(error)),
+            Err(error) => {
+                named.extend(ambiguous_refs(error));
+                // A path that is no longer there still names the addon installed from it:
+                // the entry fails, and that addon stays.
+                named.extend(local_path_ref(d.entry.request(), &base));
+            }
         }
         match d.resolved {
             Ok(r) => wants.push(Want {
@@ -707,7 +718,9 @@ fn target_work(
             .collect();
         gone.sort_by_key(|a| a.name.to_ascii_lowercase());
         for a in gone {
-            work.changes.push(RequestedChange::Remove {
+            // A prune, never a plain removal: the engine keeps it when an addon this run
+            // installs requires it, which no record says yet.
+            work.changes.push(RequestedChange::Prune {
                 addon: a.name.clone(),
             });
             work.requested.push(ItemRequest {
@@ -1111,6 +1124,46 @@ mod tests {
             desired_digest(text),
             "a comment changes it"
         );
+    }
+
+    /// A file that was read but is not UTF-8 text (a Latin-1 comment, say) is not TOML:
+    /// `desired_state_invalid` naming the line of its first such byte, as a file that
+    /// does not parse, never `io` ("check that it can be read"). A missing file stays
+    /// `not_found`, and a readable one is its text.
+    #[test]
+    fn a_file_that_is_not_utf8_is_invalid_desired_state_at_its_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("addons.toml");
+        std::fs::write(
+            &path,
+            b"schema_version = \"1.0\"\n[family.mainline]\n# caf\xe9\naddons = []\n",
+        )
+        .unwrap();
+        let refused = read(&path, true).unwrap_err();
+        assert_eq!(refused.code, ErrorCode::DesiredStateInvalid, "{refused:?}");
+        assert_eq!(
+            (
+                &refused.details["line"],
+                &refused.details["reason"],
+                &refused.details["path"],
+            ),
+            (
+                &json!(3),
+                &json!("bad_value"),
+                &json!(path.display().to_string())
+            )
+        );
+        assert!(
+            refused.message.contains("line 3") && refused.message.contains("UTF-8"),
+            "{}",
+            refused.message
+        );
+
+        let text = "schema_version = \"1.0\"\n# caf\u{e9}\n";
+        std::fs::write(&path, text).unwrap();
+        assert_eq!(read(&path, true).unwrap(), text);
+        let missing = read(&dir.path().join("none.toml"), true).unwrap_err();
+        assert_eq!(missing.code, ErrorCode::NotFound);
     }
 
     // 1n2p.8: `sync -` reads standard input whole up to its cap, never a terminal.

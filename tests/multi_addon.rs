@@ -115,6 +115,58 @@ fn two_releases_shipping_one_folder_conflict_within_the_transaction() {
     }
 }
 
+/// Two refs of one command that would be one addon (two repositories shipping the same
+/// folder, so both take its name): the second is refused within the transaction, as a
+/// preview says and with or without `--force`, and the first installs. Never both
+/// "installed" in the preview and both failed, or one's record replacing the other's, in
+/// the run.
+#[test]
+fn two_refs_that_would_be_one_addon_conflict_within_the_transaction() {
+    for force in [false, true] {
+        let home = Home::new(&["wow"]);
+        let (x1, x2) = (
+            Rel::new("X1", "v1", &["Same"]),
+            Rel::new("X2", "v2", &["Same"]),
+        );
+        gh_release(&home.http, "https://github.com/o/x1", "v1", &x1.assets());
+        gh_release(&home.http, "https://github.com/o/x2", "v2", &x2.assets());
+        let mut args = vec!["install", "gh:o/x1", "gh:o/x2", "-t", "retail"];
+        if force {
+            args.push("--force");
+        }
+        let mut preview = args.clone();
+        preview.push("--dry-run");
+        for (run, args) in [("preview", preview), ("run", args)] {
+            let r = home.run(&args);
+            let envelope = r.expect(0);
+            assert_eq!(
+                items(&envelope),
+                [pair("gh:o/x1", "installed"), pair("gh:o/x2", "failed")],
+                "{run}: {}",
+                r.context()
+            );
+            assert_eq!(envelope["partial"], true, "{run}");
+            let error = &envelope["data"]["items"][1]["error"];
+            assert_eq!(error["code"], "ownership_conflict", "{run}");
+            assert_eq!(error["details"]["within_transaction"], true, "{run}");
+            let message = error["message"].as_str().unwrap();
+            assert!(
+                message.contains("gh:o/x1") && message.contains("gh:o/x2"),
+                "{run}: {message}"
+            );
+            assert_eq!(error["fix_argv"], Value::Null, "no command settles it");
+        }
+        let record = common::state::record(&home, "retail");
+        assert_eq!(record.addons.len(), 1);
+        let same = &record.addons["same"];
+        assert_eq!(
+            (same.r#ref.to_string().as_str(), same.version.as_str()),
+            ("gh:o/x1", "v1")
+        );
+        assert!(home.addons("_retail_").join("Same").is_dir());
+    }
+}
+
 /// A at v1 (folders A and Old) while v2 ships only A, and B (B and Old) published.
 fn handover_home() -> Home {
     let mut home = Home::new(&["wow"]);
@@ -272,6 +324,31 @@ fn a_ref_asked_for_twice_installs_once() {
     );
     assert_eq!(envelope["partial"], false);
     assert_eq!(common::state::history(&home).len(), 1);
+}
+
+/// Asked for twice, an addon that fails is still every addon failing: the command fails
+/// with that addon's error, as it does asked for once, never as a partial success whose
+/// second item was "skipped".
+#[test]
+fn a_ref_asked_for_twice_that_fails_fails_the_command() {
+    // A retail-only release on a Classic Era client: nothing in it loads there.
+    let home = Home::new(&["wow_classic_era"]);
+    let a = Rel::new("A", "v1", &["A"]);
+    gh_release(&home.http, A, "v1", &a.assets());
+    let once = home.run(&["install", "gh:o/a", "-t", "era"]);
+    let failed = once.envelope();
+    assert_eq!(failed["ok"], false, "{}", once.context());
+    assert_ne!(once.code, 0, "{}", once.context());
+
+    let twice = home.run(&["install", "gh:o/a", "gh:O/A", "-t", "era"]);
+    let envelope = twice.expect(once.code);
+    assert_eq!(
+        (&envelope["ok"], &envelope["error"]["code"]),
+        (&json!(false), &failed["error"]["code"]),
+        "{}",
+        twice.context()
+    );
+    assert_eq!(common::state::history(&home).len(), 0);
 }
 
 /// Starts the handover install paused after planning, lets `meanwhile` run to

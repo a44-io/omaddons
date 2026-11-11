@@ -294,6 +294,32 @@ pub fn parse(text: &str, path: &Path) -> Result<(DesiredState, Vec<Warning>)> {
     Ok((state, p.warnings))
 }
 
+/// `desired_state_invalid` for a file that is not UTF-8 text, which TOML always is, at
+/// the line of its first byte that is not: `bytes` is the file's contents and
+/// `valid_up_to` how much of it reads as text. The file was read; it is its content that
+/// is wrong, as a file that does not parse.
+pub fn not_utf8(path: &Path, bytes: &[u8], valid_up_to: usize) -> Error {
+    let line = bytes
+        .get(..valid_up_to)
+        .unwrap_or(bytes)
+        .iter()
+        .filter(|b| **b == b'\n')
+        .count()
+        + 1;
+    Parser {
+        text: "",
+        path,
+        warnings: Vec::new(),
+    }
+    .invalid_at(
+        line,
+        None,
+        "",
+        Reason::BadValue,
+        "it is not TOML: it holds bytes that are not UTF-8 text".to_owned(),
+    )
+}
+
 fn key_str<'k>(key: &'k Spanned<DeString<'_>>) -> &'k str {
     key.get_ref().as_ref()
 }

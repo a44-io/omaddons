@@ -16,6 +16,7 @@ pub use super::fix_runtime::{
     DiffOutcome, DiffRequest, FixOutcome, FixRequest, run_diff, run_diff_at, run_fix, run_fix_at,
 };
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -28,15 +29,17 @@ use ulid::Ulid;
 
 use super::budget::{self, Budget};
 use super::finding::{
-    Confidence, Detected, Evidence, Finding, Incomplete, IncompleteLimit, Observation, Subject,
+    Confidence, Detected, DiscriminatorKind, Evidence, Finding, Incomplete, IncompleteLimit,
+    InstanceKey, Observation, ParsedScope, Severity, Subject,
 };
 use super::fix::{estimated_actions, remediation_of};
 use super::registry::{self, DetectFn, FailureMode, FixerSpec, Tier, ids};
-use super::selection::{Selection, Skipped, partition, target_skips, visible_failures};
+use super::selection::{Scope, Selection, Skipped, partition, target_skips, visible_failures};
 use super::view::{DoctorView, merge_findings};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::fsx::{self, FsxError, Op, RenameMode, ScopeTable, WriteSession, Writer};
 use crate::limits::{DOCTOR_SCAN_MAX_ENTRIES, RUN_ID_RETRY};
+use crate::model::TargetKey;
 use crate::output::DoctorFailure;
 use crate::state::paths::Paths;
 
@@ -113,6 +116,99 @@ pub struct Diagnosis {
     pub started_at: Timestamp,
     pub finished_at: Timestamp,
     pub duration_ms: u64,
+    /// What the run looked at, for `--since`.
+    pub looked: Looked,
+}
+
+impl Diagnosis {
+    /// `--severity`: the findings less severe than `max` are left out of the report,
+    /// those of a view's failure included (a row past `max` never ran). The runtime's own
+    /// findings stay whatever they say: incomplete coverage must not read as healthy.
+    /// `doctor` and `doctor fix` report alike.
+    pub fn at_most(&mut self, max: Option<Severity>) {
+        if let Some(max) = max {
+            self.findings.retain(|f| {
+                f.severity <= max || f.id == ids::CHECK_INCOMPLETE || f.id == ids::DETECTOR_CRASHED
+            });
+        }
+        self.looked.max_severity = max;
+    }
+}
+
+/// What a run looked at: the checks that ran to their end and the clients they covered.
+/// `--since` calls an earlier instance resolved only when the run looked for it and did
+/// not find it; one outside its tiers, `--only`, `--skip`, `--severity` or `-t`, or whose
+/// check was skipped, cut short or crashed, was not looked for, so its absence says
+/// nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Looked {
+    /// The failure modes whose check ran to its end.
+    ran: BTreeSet<&'static str>,
+    scope: Scope,
+    /// The checks that ran but were skipped for one client, by its key.
+    skipped_for: BTreeSet<(&'static str, TargetKey)>,
+    /// `--severity`: findings past it are left out of the report.
+    max_severity: Option<Severity>,
+}
+
+impl Looked {
+    /// A run whose checks `ran` to their end over `scope`, `skipped_for` the clients a
+    /// check was skipped for.
+    pub(crate) fn new(
+        ran: impl IntoIterator<Item = &'static str>,
+        scope: Scope,
+        skipped_for: impl IntoIterator<Item = (&'static str, TargetKey)>,
+    ) -> Self {
+        Self {
+            ran: ran.into_iter().collect(),
+            scope,
+            skipped_for: skipped_for.into_iter().collect(),
+            max_severity: None,
+        }
+    }
+
+    /// These, with `--severity`'s cut ([`Diagnosis::at_most`]): what the report hides it
+    /// did not look for either.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn at_most(mut self, max: Option<Severity>) -> Self {
+        self.max_severity = max;
+        self
+    }
+
+    /// Whether the run looked for the finding `instance` names (an instance key): its
+    /// check ran to its end, for its client, and the report would show it. One of the
+    /// runtime's own findings is about the check its key names. A key that does not
+    /// parse was not looked for.
+    pub fn covers(&self, instance: &str) -> bool {
+        let Ok(parsed) = InstanceKey::parse(instance) else {
+            return false;
+        };
+        let own = parsed.fm == ids::CHECK_INCOMPLETE || parsed.fm == ids::DETECTOR_CRASHED;
+        let check = match &parsed.discriminator {
+            Some((DiscriminatorKind::Detector, of)) if own => of.as_str(),
+            _ if own => return false,
+            _ => parsed.fm.as_str(),
+        };
+        if !self.ran.contains(check) {
+            return false;
+        }
+        // The runtime's own findings are never hidden by `--severity`.
+        let hidden = !own
+            && self
+                .max_severity
+                .is_some_and(|max| registry::row(check).is_none_or(|row| row.severity > max));
+        if hidden {
+            return false;
+        }
+        match parsed.scope {
+            ParsedScope::Machine => true,
+            ParsedScope::Target(key) => {
+                self.scope.includes_client(Some(key), "")
+                    && !self.skipped_for.contains(&(check, key))
+            }
+        }
+    }
 }
 
 /// What became of `latest` when a run finished.
@@ -409,6 +505,7 @@ pub fn detect(
     let mut detected = Vec::new();
     let mut incomplete = 0;
     let mut checks_run = 0;
+    let mut ran = BTreeSet::new();
     for (at, row) in part.run.iter().enumerate() {
         let Some(detect) = row.detect else {
             continue;
@@ -432,6 +529,9 @@ pub fn detect(
         match run_check(row, detect, view, selection, &mut budget) {
             Checked::Ran { findings, cut } => {
                 detected.extend(findings);
+                if cut.is_none() {
+                    ran.insert(row.id);
+                }
                 if let Some(mut cut) = cut {
                     // The share, never what was left of it when the check started:
                     // two runs over one state record the same deadline.
@@ -456,6 +556,13 @@ pub fn detect(
         .filter(|f| part.scope.includes(f.target.as_ref()))
         .collect();
     with_fixer_remediations(registry, selection, &mut findings);
+    let looked = Looked::new(
+        ran,
+        part.scope.clone(),
+        skipped
+            .iter()
+            .filter_map(|s| Some((s.id, s.target.as_ref()?.key?))),
+    );
     Ok(Diagnosis {
         findings,
         skipped,
@@ -464,6 +571,7 @@ pub fn detect(
         started_at,
         finished_at: crate::clock::now(),
         duration_ms: u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX),
+        looked,
     })
 }
 

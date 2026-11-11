@@ -33,13 +33,27 @@ BENCH_HOME="$home" cargo test --locked --quiet --test integration perf::bench_ho
     -- --ignored --exact >/dev/null
 cp -a "$home" "$pristine"
 
-envs="$(tr '\n' ' ' < "$home/bench.env")"
-restore="rm -rf $home && cp -a $pristine $home"
+# hyperfine runs these strings through a shell (or splits them as one would), so every
+# path in them is quoted as one word: a checkout under a path with a space in it would
+# otherwise have `rm -rf` take the path's pieces, the first of them a directory above
+# the repository.
+quoted() {
+    printf '%q' "$1"
+}
+envs=""
+while IFS= read -r line; do
+    [[ -n $line ]] && envs+="$(quoted "$line") "
+done < "$home/bench.env"
+restore="rm -rf $(quoted "$home") && cp -a $(quoted "$pristine") $(quoted "$home")"
 netlog="$home/state/omaddons/net.log"
 
 # The command line hyperfine runs: the binary in the home's environment alone.
 run() {
-    echo "env -i PATH=$PATH $envs $*"
+    local words=() word
+    for word in "$@"; do
+        words+=("$(quoted "$word")")
+    done
+    echo "env -i PATH=$(quoted "$PATH") $envs${words[*]}"
 }
 
 lines() {

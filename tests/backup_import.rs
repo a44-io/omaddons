@@ -294,6 +294,58 @@ fn an_export_imports_and_restores_exactly() {
     );
 }
 
+/// A symlink's target travels in an export exactly as it reads on disk: one a path
+/// rebuilt from its components would spell differently (a doubled `/`, a `.` inside it)
+/// and one too long for a tar header alike. The archive's own manifest records the target
+/// as read, so an export that respelled it would be refused by import (`unsafe_archive`,
+/// `manifest_mismatch`): a backup that cannot be brought back. Restored, each link reads
+/// as it did.
+#[test]
+fn a_symlink_target_round_trips_exactly_as_it_reads() {
+    let home = Home::new(&["wow"]);
+    let wtf = Wtf::at(home.client("_retail_"))
+        .config_wtf("SET locale \"enUS\"\n")
+        .saved_variables("Foo", 300)
+        .build();
+    let long = format!("{}SavedVariables/Foo.lua", "./".repeat(60));
+    let links = [
+        ("Doubled.lua", "SavedVariables//Foo.lua"),
+        ("Dotted.lua", "./SavedVariables/./Foo.lua"),
+        ("Plain.lua", "SavedVariables/Foo.lua"),
+        ("Long.lua", long.as_str()),
+    ];
+    for (name, target) in links {
+        std::os::unix::fs::symlink(target, wtf.join("Account/FAKEACCT").join(name)).unwrap();
+    }
+    let original = tree_hash(&wtf);
+    let created = run(&home, &["backup", "create", "-t", "retail", "--verify"]).expect(0);
+    let source = created["data"]["targets"][0]["backup"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let dir = home.env.root().join("usb");
+    fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("links.tar.zst");
+    run(
+        &home,
+        &["backup", "export", &source, &file.display().to_string()],
+    )
+    .expect(0);
+
+    let backup = imported(&home, &file);
+    let id = backup["id"].as_str().unwrap().to_owned();
+    for (name, _) in links {
+        fs::remove_file(wtf.join("Account/FAKEACCT").join(name)).unwrap();
+    }
+    let r = run(&home, &["backup", "restore", &id, "-t", "retail"]);
+    r.expect(0);
+    for (name, target) in links {
+        let read = fs::read_link(wtf.join("Account/FAKEACCT").join(name)).unwrap();
+        assert_eq!(read.to_str(), Some(target), "{name}: {}", r.context());
+    }
+    assert_eq!(tree_hash(&wtf), original, "{}", r.context());
+}
+
 /// On another machine whose only backup is the imported one, the day's automatic
 /// checkpoint is still due: an import says nothing about today's settings.
 #[test]

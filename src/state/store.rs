@@ -234,6 +234,27 @@ pub fn load<T: Versioned>(path: &Path) -> Result<Option<Loaded<T>>> {
     load_bytes(path, &bytes).map(Some)
 }
 
+/// Whether a load's result is a file a newer omaddons wrote, which is read, never
+/// overwritten (D8): one this build still decodes ([`VersionStatus::Newer`]), and one it
+/// no longer does (`state_too_new`: a newer major may change a field's shape). A writer
+/// of derived data skips either; only a corrupt or absent file is replaced.
+pub fn written_by_newer<T>(loaded: &Result<Loaded<T>>) -> bool {
+    match loaded {
+        Ok(loaded) => loaded.status == VersionStatus::Newer,
+        // ubs:ignore — comparing an error code, not a secret
+        Err(err) => err.code == ErrorCode::StateTooNew,
+    }
+}
+
+/// [`written_by_newer`] of the file at `path` (absent: no).
+pub fn newer_on_disk<T: Versioned>(path: &Path) -> bool {
+    match load::<T>(path) {
+        Ok(None) => false,
+        Ok(Some(loaded)) => written_by_newer(&Ok(loaded)),
+        Err(err) => written_by_newer::<T>(&Err(err)),
+    }
+}
+
 /// [`load`] of `bytes` already read from `path`: for a caller that keeps the bytes too
 /// (the release memo compares them with what it would write).
 pub fn load_bytes<T: Versioned>(path: &Path, bytes: &[u8]) -> Result<Loaded<T>> {

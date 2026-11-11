@@ -153,7 +153,14 @@ pub fn changelog(
         entries.push(ChangelogEntry {
             version: sha.chars().take(7).collect(),
             published_at: e.updated.and_then(|u| u.parse().ok()),
-            text: e.title,
+            // A commit's title is one line of a source's text: the feed's entities are
+            // decoded already (`&#27;` is an escape character by now), so it is made safe
+            // as every such line is.
+            text: crate::text::source_line(
+                &e.title,
+                crate::limits::CHANGELOG_MAX_CHARS,
+                crate::text::Entities::Keep,
+            ),
         });
     }
     let page = rev.map_or_else(

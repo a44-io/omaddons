@@ -479,9 +479,11 @@ impl TargetScope {
             }
         }
         targets.sort_by(|a, b| a.target_id.cmp(&b.target_id));
-        // A target named `all` wins over the keyword (`target_id_reserved`).
+        // A target named `all` wins over the keyword (`target_id_reserved`), in any case:
+        // the registry resolves `-t ALL` to that client, never to every client.
         let keyword = selector.is_some_and(|s| {
-            s.eq_ignore_ascii_case("all") && !targets.iter().any(|t| t.target_id == s)
+            s.eq_ignore_ascii_case("all")
+                && !targets.iter().any(|t| t.target_id.eq_ignore_ascii_case(s))
         });
         let selector = selector.filter(|_| !keyword).map(normal_selector);
         Self {
@@ -3444,12 +3446,16 @@ mod tests {
             assert_eq!(scope.flag(), None);
         }
         let named_all = target("all", Some(ERA));
-        let scope = TargetScope::of(Some("all"), &[&named_all]);
-        assert_eq!(
-            (scope.all, scope.flag()),
-            (false, Some("all")),
-            "a client named all wins over the keyword"
-        );
+        // In any case, as the registry resolves it: `-t ALL` is that one client, and a
+        // stored plan of it must never read as every client.
+        for selector in ["all", "ALL", "All"] {
+            let scope = TargetScope::of(Some(selector), &[&named_all]);
+            assert_eq!(
+                (scope.all, scope.flag()),
+                (false, Some("all")),
+                "{selector}: a client named all wins over the keyword"
+            );
+        }
         assert_eq!(
             TargetScope::of(Some("vanilla"), &[&retail]).flag(),
             Some("retail")

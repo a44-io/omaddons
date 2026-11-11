@@ -284,13 +284,20 @@ pub fn human_lines(
     lines
 }
 
-/// Notes as plain text: HTML when it has tags, else text with CRLF made LF; capped.
+/// Notes as plain text: HTML when it has tags, else text with CRLF made LF; capped. Either
+/// way no control character but a line break and a tab is left, so notes cannot send a
+/// terminal escape sequence (as [`crate::text`] promises of every changelog).
 pub fn notes_text(body: &str) -> String {
     let looks_html = body.contains('<') && body.contains('>');
     if looks_html {
         crate::text::html_to_text(body, CHANGELOG_MAX_CHARS)
     } else {
-        let text = body.replace("\r\n", "\n").replace('\r', "\n");
+        let text: String = body
+            .replace("\r\n", "\n")
+            .replace('\r', "\n")
+            .chars()
+            .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+            .collect();
         let text = text.trim();
         if text.chars().count() <= CHANGELOG_MAX_CHARS {
             text.to_owned()
@@ -524,6 +531,12 @@ mod tests {
         let html = notes_text("<ul><li>alpha</li><li>beta</li></ul>");
         assert!(html.contains("alpha") && html.contains("beta") && !html.contains('<'));
         assert_eq!(notes_text("line one\r\nline two\r\n"), "line one\nline two");
+        // Plain notes keep their lines and tabs and lose every other control character:
+        // an escape sequence in them never reaches a terminal.
+        assert_eq!(
+            notes_text("\u{1b}[31mred\u{1b}[0m\n\tfixed\u{1b}]0;title\u{7} a bug\u{0}"),
+            "[31mred[0m\n\tfixed]0;title a bug"
+        );
         let long = "x".repeat(CHANGELOG_MAX_CHARS + 10);
         assert_eq!(notes_text(&long).chars().count(), CHANGELOG_MAX_CHARS);
     }

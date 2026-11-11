@@ -40,7 +40,7 @@ expression: s.stable(&c.envelope)
         "-t",
         "retail"
       ],
-      "message": "A BugGrabber file of account 1 on retail could not be read completely: it ends early (the game may be writing it). Counts are from what was read",
+      "message": "A BugGrabber file of account 1 on retail could not be read completely: it ends early or is damaged (the game may be writing it). Counts are from what was read",
       "targets": []
     }
   ]

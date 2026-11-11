@@ -186,6 +186,60 @@ fn hashes(home: &Home) -> [String; 3] {
     ["_retail_", "_classic_", "_classic_era_"].map(|c| tree_hash(&home.addons(c)))
 }
 
+/// A run over several clients downloads every client's archive first, then commits the
+/// clients one after another, and each commit's retention evicts cached archives past the
+/// cap that no record names. The archives the run's later clients have yet to stage from
+/// are named by no record until their own commit: they are pinned for the run, so with a
+/// cache over its cap (here a cap below any archive) every client still updates.
+#[test]
+fn an_update_of_several_clients_keeps_the_archives_its_later_clients_stage_from() {
+    let mut home = Home::new(&["wow", "wow_classic"]);
+    let (foo1, foo2) = (
+        Rel::new("Foo", "v1", EVERY, ALL),
+        Rel::new("Foo", "v2", EVERY, ALL),
+    );
+    home.installed_behind(
+        FOO,
+        ("v1", &foo1.assets()),
+        ("v2", &foo2.assets()),
+        &["retail"],
+    );
+    let (bar1, bar2) = (
+        Rel::new("Bar", "v1", EVERY, ALL),
+        Rel::new("Bar", "v2", EVERY, ALL),
+    );
+    home.installed_behind(
+        BAR,
+        ("v1", &bar1.assets()),
+        ("v2", &bar2.assets()),
+        &["classic"],
+    );
+    let config = home.env.config().join("omaddons");
+    fs::create_dir_all(&config).unwrap();
+    fs::write(
+        config.join("config.toml"),
+        "[limits]\nblob_cache_max_bytes = 1\n",
+    )
+    .unwrap();
+
+    let r = home.run(&["update"]);
+    let envelope = r.expect(0);
+    assert_eq!(
+        items(&envelope),
+        [
+            row("classic", "Bar", "updated", "-"),
+            row("retail", "Foo", "updated", "-"),
+        ],
+        "{}",
+        r.context()
+    );
+    assert_eq!(envelope["partial"], false, "{}", r.context());
+    for (client, addon) in [("_retail_", "Foo"), ("_classic_", "Bar")] {
+        let core = fs::read_to_string(home.addons(client).join(addon).join("core.lua")).unwrap();
+        assert_eq!(core, format!("-- {addon} v2"));
+    }
+}
+
 #[test]
 fn updates_every_client_in_one_run_and_one_undo_reverts_it() {
     let home = three_clients();

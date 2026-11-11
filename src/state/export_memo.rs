@@ -52,9 +52,7 @@ impl ExportMemo {
         file: &Path,
         sha256: &str,
     ) -> Result<()> {
-        if let Ok(Some(loaded)) = store::load::<Self>(&paths.export_memo())
-            && loaded.status == VersionStatus::Newer
-        {
+        if store::newer_on_disk::<Self>(&paths.export_memo()) {
             return Ok(());
         }
         self.written

@@ -1423,7 +1423,8 @@ fn unreachable_manual(f: &Finding) -> Remediation {
 
 /// A check past its deadline runs again alone with ten times as long (a read); an online
 /// check that got no answer it could judge asks again; one past its entry cap can only be
-/// narrowed.
+/// narrowed. An online check runs only with `--online`, whichever way it was cut short:
+/// without it the command is refused (`online_required`).
 fn incomplete_manual(f: &Finding) -> Remediation {
     if let (Some(fm), Some("unanswered")) = (f.evidence.detector, f.evidence.reason) {
         let argv = argv_of(&["omaddons", "doctor", "--online", "--only", fm]);
@@ -1436,7 +1437,11 @@ fn incomplete_manual(f: &Finding) -> Remediation {
     match (f.evidence.detector, f.evidence.deadline_ms) {
         (Some(fm), Some(ms)) => {
             let budget = format!("{}ms", ms.saturating_mul(10));
-            let argv = argv_of(&["omaddons", "doctor", "--only", fm, "--budget", &budget]);
+            let mut argv = argv_of(&["omaddons", "doctor"]);
+            if row(fm).is_some_and(|row| row.online) {
+                argv.push("--online".to_owned());
+            }
+            argv.extend(argv_of(&["--only", fm, "--budget", &budget]));
             Remediation {
                 command: shell_words::join(&argv),
                 argv: Some(argv),
@@ -1470,7 +1475,7 @@ fn target_id(f: &Finding) -> &str {
 
 /// The finding's target id when `-t` resolves it: a registered target's own id, never
 /// the key string an unregistered one reads as (`DoctorView::target_ref`).
-fn registered_id(f: &Finding) -> Option<&str> {
+pub(crate) fn registered_id(f: &Finding) -> Option<&str> {
     f.target
         .as_ref()
         .filter(|target| target.id != target.key.to_string())
@@ -2534,6 +2539,55 @@ mod tests {
                 "omaddons doctor --online --only fm-network-source-unreachable",
                 Some(&argv)
             )
+        );
+    }
+
+    /// A check cut short by its deadline runs again alone with ten times as long. An
+    /// online check runs only with `--online`: its command carries it, or the suggested
+    /// run is refused (`online_required`); an offline check's never does.
+    #[test]
+    fn a_deadline_cut_runs_again_with_more_time_and_online_when_the_check_is() {
+        let again = |detector: &'static str| {
+            let f = row(ids::CHECK_INCOMPLETE).unwrap().finding(Observation {
+                subject: Subject::machine().detector(detector),
+                title: "t".to_owned(),
+                confidence: Confidence::High,
+                addon: None,
+                folder: None,
+                evidence: Evidence {
+                    detector: Some(detector),
+                    reason: Some("deadline"),
+                    deadline_ms: Some(50),
+                    ..Evidence::default()
+                },
+            });
+            f.remediation.argv.unwrap()
+        };
+        for online in [
+            ids::NETWORK_SOURCE_UNREACHABLE,
+            ids::NETWORK_GITHUB_RATE_LIMITED,
+            ids::NETWORK_CREDENTIAL_REJECTED,
+        ] {
+            assert!(row(online).unwrap().online, "{online}");
+            assert_eq!(
+                again(online),
+                argv_of(&[
+                    "omaddons", "doctor", "--online", "--only", online, "--budget", "500ms"
+                ]),
+                "{online}"
+            );
+        }
+        assert!(!row(ids::JOURNAL_PENDING).unwrap().online);
+        assert_eq!(
+            again(ids::JOURNAL_PENDING),
+            argv_of(&[
+                "omaddons",
+                "doctor",
+                "--only",
+                ids::JOURNAL_PENDING,
+                "--budget",
+                "500ms"
+            ])
         );
     }
 

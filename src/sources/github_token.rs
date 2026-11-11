@@ -17,7 +17,7 @@ use std::sync::{Arc, OnceLock};
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use super::github_rest::{TOKEN_VAR, token_from};
+use super::github_rest::{TOKEN_VAR, token_var};
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning};
 use crate::state::config::{CredentialRef, SourceConfig, resolve_credential};
 use crate::state::paths::Paths;
@@ -94,7 +94,8 @@ impl GithubToken {
         paths: &Paths,
         sources: &BTreeMap<String, SourceConfig>,
     ) -> bool {
-        if token_from(env).is_some() {
+        // Set and not blank, valid or not: it is the token `resolve_with` takes.
+        if token_var(env).is_some() {
             return true;
         }
         if let Some(credential) = sources.get("github").and_then(|s| s.credential.as_ref()) {
@@ -112,8 +113,10 @@ impl GithubToken {
         sources: &BTreeMap<String, SourceConfig>,
     ) -> Arc<Self> {
         // A malformed variable is an error the first REST request raises, as a malformed
-        // configured credential is: never a silent run without the token.
-        if let Some(token) = token_from(env) {
+        // configured credential is: never a silent run without the token, nor with the
+        // configured or stored one in its place. So the variable as set decides, whatever
+        // it holds (a space, a tab, a line break).
+        if let Some(token) = token_var(env) {
             return Self::resolved(
                 TokenSource::Env,
                 checked(&token, TokenSource::Env),
@@ -372,6 +375,34 @@ mod tests {
         let err = t.value().unwrap_err();
         assert_eq!(err.code, ErrorCode::AuthRequired);
         assert!(err.message.contains(TOKEN_VAR), "{}", err.message);
+        // A control character inside it is the same error: the stored token (or a
+        // configured one) never stands in for a variable that is set.
+        store(&p, "ghp_stored\n");
+        for malformed in ["ghp_abc\tdef", "ghp_abc\r\nX-Evil: 1", "ghp_abc\u{7}"] {
+            // ubs:ignore — comparing an environment variable's name, not a secret
+            let set = |name: &str| (name == TOKEN_VAR).then(|| malformed.to_owned());
+            let t = GithubToken::resolve_with(&set, &p, &BTreeMap::new());
+            assert_eq!(t.source(), TokenSource::Env, "{malformed:?}");
+            let err = t.value().unwrap_err();
+            assert_eq!(err.code, ErrorCode::AuthRequired, "{malformed:?}");
+            assert!(err.message.contains(TOKEN_VAR), "{}", err.message);
+            assert!(
+                GithubToken::present_with(&set, &p, &BTreeMap::new()),
+                "{malformed:?}: set, so present"
+            );
+        }
+        // Surrounding whitespace (a trailing newline from `$(cat file)`) is no part of it,
+        // and a blank variable is unset: the stored token is read.
+        let t = GithubToken::resolve_with(&env(&[(TOKEN_VAR, " ghp_x\n")]), &p, &BTreeMap::new());
+        assert_eq!(
+            (t.source(), t.value().unwrap()),
+            (TokenSource::Env, Some("ghp_x"))
+        );
+        let t = GithubToken::resolve_with(&env(&[(TOKEN_VAR, " \n")]), &p, &BTreeMap::new());
+        assert_eq!(
+            (t.source(), t.value().unwrap()),
+            (TokenSource::File, Some("ghp_stored"))
+        );
     }
 
     #[test]

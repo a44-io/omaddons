@@ -77,6 +77,10 @@ pub fn parse_user_ref(input: &str, ctx: &RefContext<'_>) -> Result<ParsedRef> {
     if input.is_empty() {
         return Err(invalid(input, "it is empty"));
     }
+    // A pasted link's scheme reads in any case (`Https://github.com/…`, as a keyboard
+    // that capitalizes writes it): never a local path.
+    let lowered = lowercase_scheme(input);
+    let input = lowered.as_ref();
     // `http://`, bare or as a `url:` or `git:` ref, is refused: omaddons fetches over
     // https only.
     for http in ["http://", "url:http://", "git:http://"] {
@@ -93,6 +97,20 @@ pub fn parse_user_ref(input: &str, ctx: &RefContext<'_>) -> Result<ParsedRef> {
         return url(input, rest, ctx);
     }
     local_or_name(input, ctx)
+}
+
+/// `input` with a bare link's scheme in lowercase (`HTTPS://…` and `Http://…` are
+/// `https://…` and `http://…`: a URL's scheme ignores case); any other input as it is.
+fn lowercase_scheme(input: &str) -> std::borrow::Cow<'_, str> {
+    for scheme in ["https://", "http://"] {
+        if let (Some(head), Some(rest)) = (input.get(..scheme.len()), input.get(scheme.len()..))
+            && head != scheme
+            && head.eq_ignore_ascii_case(scheme)
+        {
+            return std::borrow::Cow::Owned(format!("{scheme}{rest}"));
+        }
+    }
+    std::borrow::Cow::Borrowed(input)
 }
 
 /// `ref_invalid` for an `http://` input. Its https form is the fix only when omaddons
@@ -514,6 +532,27 @@ fn wowace_link(input: &str, host: &str, segments: &[&str]) -> Result<Ref> {
 // ---------------------------------------------------------------------------------------
 // Paths, shorthand and names.
 
+/// The `file:` ref the request `input` would be were its path there: for a request that
+/// reads as a local path (it starts with `/`, `./` or `../`, or holds a `/`, and names no
+/// source or link), the ref [`parse_user_ref`] gives the same path once it exists, relative
+/// to `cwd`. `None` for a bare name, a canonical ref or a link. A request that failed
+/// because its path is gone still names the addon installed from that path (`sync
+/// --prune` keeps it).
+pub fn local_path_ref(input: &str, cwd: &Path) -> Option<Ref> {
+    let input = input.trim();
+    let sourced = input
+        .split_once(':')
+        .is_some_and(|(prefix, _)| RefKind::ALL.iter().any(|k| k.prefix() == prefix))
+        || ["https://", "http://"].iter().any(|scheme| {
+            input
+                .get(..scheme.len())
+                .is_some_and(|head| head.eq_ignore_ascii_case(scheme))
+        });
+    (!sourced && input.contains('/')).then(|| Ref::File {
+        path: absolute(cwd, Path::new(input)),
+    })
+}
+
 fn local_or_name(input: &str, ctx: &RefContext<'_>) -> Result<ParsedRef> {
     let explicit = input.starts_with('/') || input.starts_with("./") || input.starts_with("../");
     let path = absolute(&ctx.cwd, Path::new(input));
@@ -884,6 +923,12 @@ mod tests {
         ("https://www.curseforge.com/wow/addons/details", "source_disabled", None, None, None),
         ("https://addons.wago.io/addons/plater", "source_disabled", None, None, None),
         ("http://github.com/a/b", "ref_invalid", None, None, None),
+        // A link's scheme reads in any case: a link, never a local path.
+        ("Https://github.com/WeakAuras/WeakAuras2", "gh:WeakAuras/WeakAuras2", Some(MatchKind::Url), None, None),
+        ("HTTPS://www.wowinterface.com/downloads/info5108-Clique.html", "wowi:5108", Some(MatchKind::Url), None, None),
+        ("HTTPS://example.org/files/Addon-1.0.zip", "url:https://example.org/files/Addon-1.0.zip", Some(MatchKind::Url), None, None),
+        ("HTTP://github.com/a/b", "ref_invalid", None, None, None),
+        ("Http://example.org/a.zip", "ref_invalid", None, None, None),
         ("https://codeberg.org/a/b", "git:https://codeberg.org/a/b", Some(MatchKind::Url), None, None),
         // `git_hosts` names hosts exactly: `www.` is not stripped for them.
         ("https://www.codeberg.org/a/b", "url:https://www.codeberg.org/a/b", Some(MatchKind::Url), None, None),

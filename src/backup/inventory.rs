@@ -332,9 +332,7 @@ fn load(paths: &Paths) -> InventoryFile {
 /// Writes the projection unless a newer omaddons wrote it.
 fn write(paths: &Paths, file: &InventoryFile) -> Result<()> {
     let path = paths.backup_inventory();
-    if let Ok(Some(loaded)) = store::load::<InventoryFile>(&path)
-        && loaded.status == VersionStatus::Newer
-    {
+    if store::newer_on_disk::<InventoryFile>(&path) {
         return Ok(());
     }
     let json = store::encode(file)?;

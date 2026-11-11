@@ -1134,12 +1134,66 @@ const DOCTOR_SELECTION: &[(&str, bool)] = &[
     ("--online", false),
 ];
 
+/// The short flags that take no value (`-v`, `-h`, `-V`): the ones a word of short flags
+/// may hold before `-t`, the only short flag that takes one.
+const VALUELESS_SHORTS: [char; 3] = ['v', 'h', 'V'];
+
+/// The `-t` in a word of short flags, as clap reads it.
+#[derive(Debug, PartialEq, Eq)]
+enum ShortTarget<'a> {
+    /// Its value is the rest of the word (`-tretail`, `-t=retail`, `-vtretail`).
+    Attached(&'a str),
+    /// The word ends with it: its value is the next word (`-t retail`, `-vt retail`).
+    Next,
+}
+
+/// The `-t` of `word`, when `word` is short flags holding it: after any flags that take
+/// no value, `t` takes the rest of the word as its value (a leading `=` aside), or the
+/// next word when nothing follows it. A `t` after another letter is no flag: it is part
+/// of a word clap refuses.
+fn short_target(word: &str) -> Option<ShortTarget<'_>> {
+    let flags = word.strip_prefix('-').filter(|w| !w.starts_with('-'))?;
+    let rest = flags
+        .trim_start_matches(VALUELESS_SHORTS)
+        .strip_prefix('t')?;
+    Some(if rest.is_empty() {
+        ShortTarget::Next
+    } else {
+        ShortTarget::Attached(rest.strip_prefix('=').unwrap_or(rest))
+    })
+}
+
 /// The arguments of `argv` that are one of `flags` (`--only X` or `--only=X`), with their
-/// values, in order.
+/// values, in order. `-t` is kept however it is written, when `flags` holds it: with its
+/// value attached (`-tretail`), and after other short flags in one word (`-vt retail` and
+/// `-vtretail`, both kept as `-t retail`), as clap reads each; else the selection would
+/// silently widen to every client.
 fn kept_flags(argv: &[String], flags: &[(&str, bool)]) -> Vec<String> {
+    // ubs:ignore — comparing flag names, not secrets
+    let target = flags.iter().any(|(flag, _)| *flag == "-t");
     let mut out = Vec::new();
     let mut args = argv.iter().skip(1);
     while let Some(arg) = args.next() {
+        // Positionals from here on: none is a flag.
+        // ubs:ignore — comparing command-line words, not secrets
+        if arg == "--" {
+            break;
+        }
+        if target && let Some(short) = short_target(arg) {
+            match short {
+                // `-tretail` and `-t=retail`: the word as it was written.
+                ShortTarget::Attached(_) if arg.starts_with("-t") => out.push(arg.clone()),
+                // `-vtretail`: without the flags written before it.
+                ShortTarget::Attached(value) => out.extend(["-t".to_owned(), value.to_owned()]),
+                // `-t retail` and `-vt retail`: the next word is its value.
+                ShortTarget::Next => {
+                    if let Some(value) = args.next() {
+                        out.extend(["-t".to_owned(), value.clone()]);
+                    }
+                }
+            }
+            continue;
+        }
         let name = flag_name(arg);
         // ubs:ignore — comparing flag names, not secrets
         let Some((_, takes_value)) = flags.iter().find(|(flag, _)| *flag == name) else {
@@ -1482,12 +1536,15 @@ fn subcommand_fix(
 }
 
 /// What the guessed subcommand `name` (for `bad`, mistyped under `path`) suggests: the
-/// corrected argv when the command it reaches only reads, else that guess's help (M4-D12:
-/// a guess never hands over a command that changes something), with the guessed path for
-/// the message. A guessed path with a `COMMANDS` row is judged by that row. A path
-/// without one (a parent that cannot run bare, such as `plans`) is judged by the command
-/// the corrected argv reaches, which must have a row that changes nothing, and parse.
-/// Under a service parent the user's verb follows, so the correction always stands.
+/// corrected argv when the command it reaches only reads, else that command's help
+/// (M4-D12: a guess never hands over a command that changes something), with the guessed
+/// path for the message. The command the corrected argv reaches is the guess itself, or,
+/// when the words after the typo name one, a subcommand below it: `targts rm classic
+/// --purge --yes` reaches `targets rm`, which is judged, never `targets` (which only
+/// lists). A reached command is judged by its `COMMANDS` row; a guess without one (a
+/// parent that cannot run bare, such as `plans`) stands only when the argv reaches a
+/// command below it that changes nothing, and parses. Under a service parent the user's
+/// verb follows, so the correction always stands.
 fn guess_suggestion(
     argv: &[String],
     path: &[String],
@@ -1502,16 +1559,21 @@ fn guess_suggestion(
     // ubs:ignore — comparing command paths, not secrets
     let has_row = |path: &str| crate::app::COMMANDS.iter().any(|c| c.name == path);
     let reads = |path: &str| has_row(path) && !crate::app::mutates(path);
-    let corrected = if service || has_row(&joined) {
-        service || reads(&joined)
-    } else {
-        let reached = command_path(&fixed);
-        reached.len() > full.len()
-            && reads(&reached.join(" "))
-            && parses(&Suggestion::command(fixed.clone()))
-    };
+    let reached = command_path(&fixed);
+    let below = reached.len() > full.len() && reached.starts_with(&full);
+    let corrected = service
+        || if below {
+            reads(&reached.join(" "))
+                && (has_row(&joined) || parses(&Suggestion::command(fixed.clone())))
+        } else {
+            reads(&joined)
+        };
     if corrected {
         (Suggestion::command(fixed), None)
+    } else if below && has_row(&joined) {
+        // The guess itself only reads, and the command being typed below it changes
+        // something: that command's help, not its parent's.
+        (help_for(&reached), Some(joined))
     } else {
         (help_for(&full), Some(joined))
     }
@@ -2439,17 +2501,22 @@ mod tests {
         }
     }
 
-    /// For every row under a parent with no row, a one-letter typo of the parent is help
-    /// or reaches a row that changes nothing.
+    /// For every row under a parent, with a row of its own or without, a one-letter typo
+    /// of the parent is help or reaches a row that changes nothing: the command the
+    /// corrected argv reaches is judged, never the parent it passes through. A service
+    /// parent aside (`auth`), where the verb after the service is the user's own.
     #[test]
     fn guess_suggestion_never_suggests_a_mutating_command() {
-        let rowless: std::collections::BTreeSet<&str> = crate::app::COMMANDS
+        let parents: std::collections::BTreeSet<&str> = crate::app::COMMANDS
             .iter()
             .filter_map(|c| c.name.split_once(' ').map(|(parent, _)| parent))
-            // ubs:ignore — comparing command paths, not secrets
-            .filter(|parent| !crate::app::COMMANDS.iter().any(|c| c.name == *parent))
+            .filter(|parent| !SERVICE_PARENTS.contains(parent))
             .collect();
-        for parent in rowless {
+        assert!(
+            parents.contains("targets") && parents.contains("plans"),
+            "parents with a row and without: {parents:?}"
+        );
+        for parent in parents {
             let typo: String = parent.chars().skip(1).collect();
             for row in crate::app::COMMANDS
                 .iter()
@@ -2475,6 +2542,205 @@ mod tests {
                         row.name
                     );
                 }
+            }
+        }
+    }
+
+    /// The doctor's `--fix` and `--explain` hints keep the selection, `-t` however it was
+    /// written: apart, attached, with `=`, by its long names, or last in a cluster of
+    /// short flags. A hint that dropped it would run on every client.
+    #[test]
+    fn kept_flags_keep_the_client_however_it_is_written() {
+        for (case, args, kept) in [
+            (
+                "apart",
+                &["doctor", "--fix", "-t", "retail"][..],
+                &["-t", "retail"][..],
+            ),
+            ("attached", &["doctor", "--fix", "-tretail"], &["-tretail"]),
+            ("with =", &["doctor", "--fix", "-t=retail"], &["-t=retail"]),
+            (
+                "long",
+                &["doctor", "--fix", "--target", "retail"],
+                &["--target", "retail"],
+            ),
+            (
+                "long =",
+                &["doctor", "--fix", "--flavor=retail"],
+                &["--flavor=retail"],
+            ),
+            (
+                "a cluster",
+                &["doctor", "--fix", "-vt", "retail"],
+                &["-t", "retail"],
+            ),
+            (
+                "a cluster, attached",
+                &["doctor", "--fix", "-vtretail"],
+                &["-t", "retail"],
+            ),
+            (
+                "a cluster, with =",
+                &["doctor", "--fix", "-vvt=retail"],
+                &["-t", "retail"],
+            ),
+            // The value is whatever follows `t`, a `t` at its end included: the next
+            // word is not its value.
+            (
+                "a cluster, a client ending in t",
+                &["doctor", "--fix", "-vtest", "--quick"],
+                &["-t", "est"],
+            ),
+            ("another flag", &["doctor", "--fix", "-v", "--json"], &[]),
+            ("after --", &["doctor", "--fix", "--", "-t", "retail"], &[]),
+        ] {
+            assert_eq!(
+                kept_flags(&argv(args), DOCTOR_TARGET),
+                kept.iter().map(|k| (*k).to_owned()).collect::<Vec<_>>(),
+                "case {case}"
+            );
+        }
+        assert_eq!(
+            kept_flags(
+                &argv(&["doctor", "--fix", "-tretail", "--only", "fm-x", "--quick"]),
+                DOCTOR_SELECTION
+            ),
+            ["-tretail", "--only", "fm-x", "--quick"]
+        );
+        // Where `-t` is not kept, a word starting with it is nothing special.
+        assert_eq!(
+            kept_flags(
+                &argv(&["x", "-tretail", "--only", "a"]),
+                &[("--only", true)]
+            ),
+            ["--only", "a"]
+        );
+        // The hints themselves: the client stays.
+        for (args, fix) in [
+            (
+                &["doctor", "--explain", "fm-x", "-tretail"][..],
+                &["doctor", "explain", "fm-x", "-tretail"][..],
+            ),
+            (
+                &["doctor", "--fix", "-vt", "retail", "--only", "fm-x"],
+                &[
+                    "doctor",
+                    "fix",
+                    "--dry-run",
+                    "-t",
+                    "retail",
+                    "--only",
+                    "fm-x",
+                ],
+            ),
+        ] {
+            let raw = argv(args);
+            let err = usage_error(&Cli::try_parse_from(&raw).unwrap_err(), &raw);
+            assert_eq!(err.fix.argv(), Some(argv(fix).as_slice()), "{raw:?}");
+        }
+    }
+
+    /// `short_target` reads a word of short flags as clap does, which rests on the short
+    /// flags there are: `-t` is the only one that takes a value, and the others are
+    /// `VALUELESS_SHORTS`, at every command.
+    #[test]
+    fn the_short_flags_are_the_ones_short_target_knows() {
+        fn shorts(cmd: &clap::Command, out: &mut std::collections::BTreeSet<(char, bool)>) {
+            for arg in cmd.get_arguments() {
+                if let Some(short) = arg.get_short() {
+                    out.insert((short, arg.get_action().takes_values()));
+                }
+            }
+            for sub in cmd.get_subcommands() {
+                shorts(sub, out);
+            }
+        }
+        let mut root = Cli::command();
+        root.build();
+        let mut found = std::collections::BTreeSet::new();
+        shorts(&root, &mut found);
+        let mut expected: std::collections::BTreeSet<(char, bool)> =
+            VALUELESS_SHORTS.iter().map(|c| (*c, false)).collect();
+        expected.insert(('t', true));
+        assert_eq!(found, expected);
+
+        for (word, read) in [
+            ("-t", Some(ShortTarget::Next)),
+            ("-vt", Some(ShortTarget::Next)),
+            ("-tretail", Some(ShortTarget::Attached("retail"))),
+            ("-t=retail", Some(ShortTarget::Attached("retail"))),
+            ("-vvtretail", Some(ShortTarget::Attached("retail"))),
+            ("-vtest", Some(ShortTarget::Attached("est"))),
+            ("-v", None),
+            ("-", None),
+            ("--target", None),
+            ("--to", None),
+            ("retail", None),
+            // No flag `x`: clap refuses the word, and its `t` is no flag.
+            ("-xt", None),
+        ] {
+            assert_eq!(short_target(word), read, "{word}");
+        }
+    }
+
+    /// A typo in the word before a subcommand that changes something, with the rest of
+    /// the command typed out: the fix is that subcommand's help, never the command itself
+    /// with its `--yes` (README: "a typo never hands you a different command that changes
+    /// addons"). Before a subcommand that only reads, the corrected command stands.
+    #[test]
+    fn a_typo_before_a_mutating_subcommand_gets_its_help() {
+        for (case, args, fix) in [
+            (
+                "targets rm --purge --yes",
+                &["targts", "rm", "classic", "--purge", "--yes"][..],
+                &["help", "targets", "rm"][..],
+            ),
+            (
+                "doctor gc --yes",
+                &["doctr", "gc", "--before", "1d", "--yes"],
+                &["help", "doctor", "gc"],
+            ),
+            (
+                "doctor fix --force --yes",
+                &["doctr", "fix", "--only", "fm-x", "--force", "--yes"],
+                &["help", "doctor", "fix"],
+            ),
+            (
+                "backup prune",
+                &["backp", "prune", "--keep", "1"],
+                &["help", "backup", "prune"],
+            ),
+            (
+                "config set",
+                &["confg", "set", "default_channel", "beta"],
+                &["help", "config", "set"],
+            ),
+            (
+                "a reading subcommand stands",
+                &["doctr", "explain", "fm-caches-blob-hash-mismatch"],
+                &["doctor", "explain", "fm-caches-blob-hash-mismatch"],
+            ),
+            (
+                "the bare parent stands",
+                &["targts", "--rescan"],
+                &["targets", "--rescan"],
+            ),
+        ] {
+            let raw = argv(args);
+            let err = usage_error(&Cli::try_parse_from(&raw).unwrap_err(), &raw);
+            assert_eq!(
+                (err.code, err.fix.argv().map(<[String]>::to_vec)),
+                (ErrorCode::Usage, Some(argv(fix))),
+                "{case}: {raw:?}, {}",
+                err.message
+            );
+            for alternative in err.alternatives.iter().filter_map(|a| a.argv()) {
+                // ubs:ignore — comparing a command word, not a secret
+                let help = alternative.get(1).map(String::as_str) == Some("help");
+                assert!(
+                    help || !crate::app::mutates(&command_path(alternative).join(" ")),
+                    "{case}: {raw:?} offers {alternative:?}"
+                );
             }
         }
     }

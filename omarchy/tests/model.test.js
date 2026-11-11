@@ -2724,6 +2724,33 @@ describe("the Backups view and the restore chooser", () => {
     }
   })
 
+  // Days are counted by the local calendar. In a zone 12 or more hours from UTC whose
+  // clock changes across that line (New Zealand, UTC+12 and +13), local midnight as an
+  // instant rounds to a different day number on each side: the day after a change read
+  // as the same day ("Today" for yesterday) or two days on ("Monday" for yesterday).
+  test("yesterday is yesterday across a clock change twelve hours from UTC", () => {
+    const zone = process.env.TZ
+    process.env.TZ = "Pacific/Auckland"
+    try {
+      // 2026-09-27 02:00 NZST → 03:00 NZDT (+12 → +13); 2027-04-04 03:00 NZDT → 02:00 NZST.
+      for (const [then, now] of [
+        ["2026-09-26T22:00:00Z", "2026-09-27T22:00:00Z"], // Sun 27th 11:00 → Mon 28th 11:00
+        ["2026-09-25T22:00:00Z", "2026-09-26T22:00:00Z"], // Sat 26th 10:00 → Sun 27th 11:00
+        ["2027-04-02T22:00:00Z", "2027-04-03T22:00:00Z"], // Sat 3rd 11:00 → Sun 4th 10:00
+        ["2027-04-03T22:00:00Z", "2027-04-04T22:00:00Z"], // Sun 4th 10:00 → Mon 5th 10:00
+        ["2026-06-10T22:00:00Z", "2026-06-11T22:00:00Z"], // no change near
+      ]) {
+        const at = Date.parse(now)
+        expect([then, M.dayText(then, at)]).toEqual([then, "Yesterday"])
+        expect([now, M.dayText(now, at)]).toEqual([now, "Today"])
+        expect(M.whenText(then, at).startsWith("yesterday")).toBe(true)
+      }
+    } finally {
+      if (zone === undefined) delete process.env.TZ
+      else process.env.TZ = zone
+    }
+  })
+
   // 1n2p.38: Qt's engine spends about a millisecond on a text Date.parse cannot read, so
   // only an RFC 3339 instant or a date reaches it; the CLI's nanoseconds parse.
   test("times are read from RFC 3339 text only", () => {
@@ -2933,17 +2960,23 @@ describe("the Backups view and the restore chooser", () => {
     const whole = M.confirmSheet("restore", fixture("restore-preview"), CONTEXT, targets)
     expect(whole.title).toMatch(/^Restore all of Retail's settings from \d{4}-\d\d-\d\d \d\d:\d\d\?$/)
     expect(whole.items.map((i) => i.text)).toEqual(["5 files back, 2 differ now, 0 added since (moved aside)"])
-    // What else a whole restore changes is urgent, so it comes first.
+    // What else a whole restore changes is urgent, so it comes first. The preview says
+    // itself whether the run keeps a backup first: the fixture's home cannot clone files,
+    // so the binary's dry run warns it would keep none, and the sheet never promises one.
+    expect(fixture("restore-preview").warnings.map((w) => w.code)).toEqual(["before_restore_skipped"])
     expect(whole.effects.map((e) => [e.kind, e.severity, e.text])).toEqual([
+      ["restore_scope", "urgent", "Also restores keybindings, macros, chat and every other addon's settings."],
+      ["note", "normal", "Today's settings won't be backed up first (this drive can't share files); undo still brings them back."],
+      ["note", "normal", "Then restart the game."]])
+    // The warning's code decides the line, never its text.
+    expect(M.dialogText(whole)).not.toContain("undo snapshot")
+    // Where the filesystem clones, the preview carries no such warning: a backup is kept.
+    const kept = JSON.parse(JSON.stringify(fixture("restore-preview")))
+    kept.warnings = []
+    expect(M.confirmSheet("restore", kept, CONTEXT, targets).effects.map((e) => [e.kind, e.severity, e.text])).toEqual([
       ["restore_scope", "urgent", "Also restores keybindings, macros, chat and every other addon's settings."],
       ["kept_backup", "normal", "Your current settings are kept as a backup first."],
       ["note", "normal", "Then restart the game."]])
-    const skipped = JSON.parse(JSON.stringify(fixture("restore-preview")))
-    skipped.warnings = [{ code: "before_restore_skipped", message: "this filesystem cannot clone, so the current WTF/ is kept only in the undo snapshot", fix: null }]
-    const skippedText = M.dialogText(M.confirmSheet("restore", skipped))
-    expect(skippedText).toContain("Today's settings won't be backed up first (this drive can't share files); undo still brings them back.")
-    // The warning's code decides the line, never its text.
-    expect(skippedText).not.toContain("undo snapshot")
     const verified = JSON.parse(JSON.stringify(fixture("restore-preview")))
     verified.data.backup.integrity = "verified"
     expect(M.dialogText(M.confirmSheet("restore", verified))).toContain("Checked against the backup's checksums.")
@@ -3015,8 +3048,10 @@ describe("the service's desktop triggers", () => {
     const argv = M.errorToastArgv(facts, "a44.omaddons-fixture")
     expect(argv.slice(0, 7)).toEqual(["omarchy-notification-send", "--app-name", "omaddons", "-g", "\u{F0297}", "-u", "normal"])
     expect(argv.slice(7, 9)).toEqual(["Lua errors in your last session on " + retail, "Foo 2"])
-    // A click opens the panel at Errors, through the widget's own IPC (1n2p.33).
-    expect(argv.slice(-5)).toEqual(["--exec", "omarchy-shell", "a44.omaddons-fixture", "show", "errors"])
+    // A click opens the panel at Errors, through the widget's own IPC (1n2p.33): the
+    // command is the one argument after --exec, as omarchy-notification-send takes it.
+    expect(argv.slice(-2)).toEqual(["--exec", "omarchy-shell a44.omaddons-fixture show errors"])
+    expect(argv.length).toBe(11)
     // Whatever the errors held, none of it reaches the toast.
     const texts = []
     for (const t of fixture("errors-raw").data.targets) for (const a of t.addons) for (const e of a.errors) {
@@ -3037,11 +3072,12 @@ describe("the service's desktop triggers", () => {
     expect(facts).toEqual({ count: 3, targets: ["Classic Era", "Retail"] })
     const update = M.updateToastArgv(facts, "id")
     expect(update.slice(5, 9)).toEqual(["-u", "low", "Addon updates", "3 updates on Classic Era and Retail"])
-    expect(update.slice(-4)).toEqual(["omarchy-shell", "id", "show", "updates"])
+    expect(update.slice(-2)).toEqual(["--exec", "omarchy-shell id show updates"])
     expect(M.updateToastArgv({ count: 1, targets: ["Retail"] }, "id")[8]).toBe("1 update on Retail")
     const done = M.resultToastArgv("Updated 3 addons", true, "id")
     expect(done.slice(5, 9)).toEqual(["-u", "low", "omaddons", "Updated 3 addons"])
-    expect(done.slice(-4)).toEqual(["omarchy-shell", "id", "show", ""])
+    // No view: the empty word, quoted so the shell passes it.
+    expect(done.slice(-2)).toEqual(["--exec", "omarchy-shell id show ''"])
     // A change the player asked for that failed is worth more than a low toast.
     expect(M.resultToastArgv("Couldn't update DBM", false, "id")[6]).toBe("normal")
     // Nothing is ever critical: a game is never more urgent than Do Not Disturb.
@@ -3055,11 +3091,11 @@ describe("the service's desktop triggers", () => {
     const facts = { names: ["DBM", "WeakAuras"], counts: [2, 1], targets: ["Retail"], message: "secret" }
     const both = M.digestToastArgv(facts, { count: 2, targets: ["Retail"] }, { errors: true, updates: true }, "id")
     expect(both.slice(5, 9)).toEqual(["-u", "normal", "After your session", "3 new Lua errors in DBM and WeakAuras · 2 updates"])
-    expect(both.slice(-2)).toEqual(["show", "errors"])
+    expect(both.slice(-2)).toEqual(["--exec", "omarchy-shell id show errors"])
     expect(both.join(" ")).not.toContain("secret")
     const updates = M.digestToastArgv(facts, { count: 1, targets: ["Retail"] }, { errors: false, updates: true, session: true }, "id")
     expect(updates.slice(5, 9)).toEqual(["-u", "low", "After your session", "1 update"])
-    expect(updates.slice(-2)).toEqual(["show", "updates"])
+    expect(updates.slice(-2)).toEqual(["--exec", "omarchy-shell id show updates"])
     // Both kinds at once with no session behind them: one toast, not titled for a session.
     const now = M.digestToastArgv(facts, { count: 2 }, { errors: true, updates: true, session: false }, "id")
     expect(now[7]).toBe("Lua errors and addon updates")
@@ -4264,22 +4300,25 @@ describe("plans from the binary", () => {
     const facts = M.autoUpdateFacts(fixture("plan-update-all-apply"), targets)
     expect(facts).toEqual({ count: 3, targets: [name("era"), name("retail")] })
     expect(M.autoUpdateFacts(fixture("failure"), targets)).toEqual({ count: 0, targets: [] })
-    // "-u", urgency, title, body, then the click: this widget's panel at a view.
-    const tail = (argv) => argv.slice(-9)
+    // "-u", urgency, title, body, then the click: this widget's panel at a view, as the
+    // one command string --exec takes.
+    const tail = (argv) => argv.slice(-6)
     table([
       ["several on two clients", { count: 3, targets: ["Classic Era", "Retail"] },
-        ["-u", "low", "Addons updated", "Updated 3 addons on Classic Era and Retail · Undo is in History", "--exec", "omarchy-shell", "x.id", "show", "history"]],
+        ["-u", "low", "Addons updated", "Updated 3 addons on Classic Era and Retail · Undo is in History", "--exec", "omarchy-shell x.id show history"]],
       ["one", { count: 1, targets: ["Retail"] },
-        ["-u", "low", "Addons updated", "Updated 1 addon on Retail · Undo is in History", "--exec", "omarchy-shell", "x.id", "show", "history"]],
+        ["-u", "low", "Addons updated", "Updated 1 addon on Retail · Undo is in History", "--exec", "omarchy-shell x.id show history"]],
       ["no client named", { count: 2, targets: [] },
-        ["-u", "low", "Addons updated", "Updated 2 addons · Undo is in History", "--exec", "omarchy-shell", "x.id", "show", "history"]],
+        ["-u", "low", "Addons updated", "Updated 2 addons · Undo is in History", "--exec", "omarchy-shell x.id show history"]],
     ], (f) => tail(M.autoUpdateToastArgv(f, "x.id")))
     table([
       ["where it failed", { count: 2, targets: ["Retail"], message: "a secret" },
-        ["-u", "normal", "Automatic updates are off", "An automatic update on Retail failed. Turn them on again in Settings.", "--exec", "omarchy-shell", "x.id", "show", ""]],
+        ["-u", "normal", "Automatic updates are off", "An automatic update on Retail failed. Turn them on again in Settings.", "--exec", "omarchy-shell x.id show ''"]],
       ["nowhere named", {},
-        ["-u", "normal", "Automatic updates are off", "An automatic update failed. Turn them on again in Settings.", "--exec", "omarchy-shell", "x.id", "show", ""]],
+        ["-u", "normal", "Automatic updates are off", "An automatic update failed. Turn them on again in Settings.", "--exec", "omarchy-shell x.id show ''"]],
     ], (f) => tail(M.autoUpdateStoppedToastArgv(f, "x.id")))
+    // The click command is run by a shell: a word a shell would read is one quoted word.
+    expect(M.resultToastArgv("x", true, "it's; echo $HOME").slice(-1)).toEqual(["omarchy-shell 'it'\\''s; echo $HOME' show ''"])
   })
 })
 

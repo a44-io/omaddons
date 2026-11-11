@@ -494,6 +494,19 @@ pub fn run(req: &TxRequest, ctx: &EngineCtx<'_>) -> Result<TxOutcomes> {
             )
         });
         let with_work = plan.targets.iter().filter(|t| !t.work.is_empty()).count() as u64;
+        // The cached archives this run's clients stage from, by name: pinned until the
+        // run ends. Each commit runs retention, whose eviction otherwise knows only the
+        // archives records and stored plans name, so with the cache over its cap a
+        // client's commit would evict what the next client's staging is about to open.
+        let blobs_dir = ctx.paths.blobs_dir();
+        let run_blobs: BTreeSet<String> = plan
+            .targets
+            .iter()
+            .flat_map(|t| &t.work)
+            .filter_map(AddonWork::blob)
+            .filter(|blob| blob.parent() == Some(blobs_dir.as_path()))
+            .filter_map(|blob| blob.file_name()?.to_str().map(str::to_owned))
+            .collect();
         for i in order {
             let tp = &plan.targets[i];
             let Some(tt) = req.targets.get(i) else {
@@ -510,6 +523,7 @@ pub fn run(req: &TxRequest, ctx: &EngineCtx<'_>) -> Result<TxOutcomes> {
             let witness = plan.witnesses.iter().find(|w| w.target == planned);
             match commit_target(
                 req, ctx, &scopes, &plan_req, &blobs, discovered, tp, witness, with_work,
+                &run_blobs,
             ) {
                 Ok((outcome, recovered)) => {
                     if outcome.tx.is_some() {
@@ -917,6 +931,7 @@ fn commit_target(
     tp: &TargetPlan,
     witness: Option<&ApprovalWitness>,
     with_work: u64,
+    run_blobs: &BTreeSet<String>,
 ) -> Result<(TxOutcome, Vec<Warning>)> {
     let target = &discovered.target;
     refuse_newer_state(ctx.paths, target)?;
@@ -982,7 +997,9 @@ fn commit_target(
     failpoint::hit("engine.cleanup.done").map_err(fail)?;
     let (mut outcome, recovered) = result?;
     if let (Some(key), Some(_)) = (outcome.key, outcome.tx) {
-        outcome.warnings.extend(retain(ctx, scopes, key, target));
+        outcome
+            .warnings
+            .extend(retain_keeping(ctx, scopes, key, target, run_blobs));
     }
     Ok((outcome, recovered))
 }
@@ -1010,8 +1027,21 @@ pub(super) fn retain(
     key: TargetKey,
     target: &Target,
 ) -> Vec<Warning> {
+    retain_keeping(ctx, scopes, key, target, &BTreeSet::new())
+}
+
+/// [`retain`], also pinning the cached archives `keep` names (by cache name): those a
+/// run of several clients has yet to stage from, which no record or stored plan names
+/// before their own commit.
+fn retain_keeping(
+    ctx: &EngineCtx<'_>,
+    scopes: &ScopeTable,
+    key: TargetKey,
+    target: &Target,
+    keep: &BTreeSet<String>,
+) -> Vec<Warning> {
     // The client it pruned is what its cap and its failure are about (omad-5cg5).
-    let mut warnings: Vec<Warning> = retain_own(ctx, scopes, key, &target.client_dir)
+    let mut warnings: Vec<Warning> = retain_own(ctx, scopes, key, &target.client_dir, keep)
         .into_iter()
         .map(|w| match w.code {
             WarningCode::SnapshotCapExceeded | WarningCode::RetentionFailed => {
@@ -1032,12 +1062,13 @@ pub(super) fn retain(
     warnings
 }
 
-/// The committed client's own retention.
+/// The committed client's own retention; `keep` is pinned beside what records name.
 fn retain_own(
     ctx: &EngineCtx<'_>,
     scopes: &ScopeTable,
     key: TargetKey,
     client_dir: &std::path::Path,
+    keep: &BTreeSet<String>,
 ) -> Vec<Warning> {
     let run = || -> Result<Vec<Warning>> {
         failpoint::hit("engine.retention").map_err(|e| {
@@ -1054,7 +1085,11 @@ fn retain_own(
             &ClientPaths::new(client_dir),
             &ctx.retention,
             super::retention::RetentionClock::current(),
-            &|| super::retention::pinned_blobs(ctx.paths),
+            &|| {
+                let mut pins = super::retention::pinned_blobs(ctx.paths)?;
+                pins.extend(keep.iter().cloned());
+                Ok(pins)
+            },
         )?;
         Ok(report.warnings)
     };

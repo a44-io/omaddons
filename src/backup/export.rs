@@ -294,8 +294,7 @@ fn produce(
                 header.set_entry_type(tar::EntryType::Symlink);
                 header.set_size(0);
                 let link = entry.link.clone().unwrap_or_default();
-                tar.append_link(&mut header, &path, &link)
-                    .map_err(abandoned)?;
+                append_symlink(&mut tar, &mut header, &path, &link).map_err(abandoned)?;
             }
             EntryKind::File => {
                 let source = wtf.join(&entry.path);
@@ -355,6 +354,42 @@ fn append_bytes<W: Write>(
     header.set_gid(0);
     header.set_size(bytes.len() as u64);
     tar.append_data(&mut header, name, bytes)
+}
+
+/// The symlink `path` → `link`, its target exactly as it reads on disk: what the
+/// archive's own manifest records and `backup import` compares the entry with.
+/// `tar::Builder::append_link` rebuilds a target from its path components whenever the
+/// result fits the header, dropping a doubled `/` and a `.` inside it (`..//Shared`
+/// becomes `../Shared`), and import would then refuse the archive this export wrote
+/// (`manifest_mismatch`). So the header's field is set literally, and a target longer
+/// than the field goes whole into a GNU long-link record before the entry, as GNU tar
+/// writes one (the field then keeps the target's head).
+fn append_symlink<W: Write>(
+    tar: &mut tar::Builder<W>,
+    header: &mut tar::Header,
+    path: &str,
+    link: &str,
+) -> io::Result<()> {
+    let target = link.as_bytes();
+    if header.set_link_name_literal(target).is_err() {
+        let mut long = tar::Header::new_gnu();
+        let name = b"././@LongLink";
+        if let Some(field) = long.as_old_mut().name.get_mut(..name.len()) {
+            field.copy_from_slice(name);
+        }
+        long.set_mode(0o644);
+        long.set_uid(0);
+        long.set_gid(0);
+        long.set_mtime(0);
+        // The target and its terminating NUL.
+        long.set_size(target.len() as u64 + 1);
+        long.set_entry_type(tar::EntryType::GNULongLink);
+        long.set_cksum();
+        tar.append(&long, target.chain(&[0u8][..]))?;
+        let field = header.as_old().linkname.len();
+        header.set_link_name_literal(target.get(..field).unwrap_or(target))?;
+    }
+    tar.append_data(header, path, io::empty())
 }
 
 /// A file of the backup vanished or changed size while it was exported.

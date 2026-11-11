@@ -329,21 +329,80 @@ fn run_id(run: RunKey) -> Option<String> {
 
 /// The projection built from the whole history (its complete lines).
 pub fn build(paths: &Paths) -> Result<HistoryTail> {
-    Ok(HistoryTail::from_text(&history::text(paths)?))
+    Ok(HistoryTail::from_bytes(&history::bytes(paths)?))
 }
 
 impl HistoryTail {
-    /// The projection of a whole history's `text`, its skill folders read from every
-    /// complete line before the trim drops any.
+    /// [`HistoryTail::from_bytes`] of a history that is text.
+    #[cfg(test)]
     fn from_text(text: &str) -> Self {
+        Self::from_bytes(text.as_bytes())
+    }
+
+    /// The projection of a whole history's `bytes`, its skill folders read from every
+    /// complete line before any is dropped.
+    ///
+    /// The offsets (`covers`, [`HistoryTail::end`]) count the file's own bytes, so each
+    /// line is held exactly as written: split at `\n` alone (a `\r` before it stays in
+    /// its line). A line that is not UTF-8 (one a crash cut inside a character, closed
+    /// off by the next append) cannot be held as text: decoded with replacement
+    /// characters it would be longer than it is on disk, and the projection would never
+    /// again match the history's length. No reader takes such a line anyway, so the
+    /// projection starts after the last one, as if [`trim`] had dropped what came before.
+    fn from_bytes(bytes: &[u8]) -> Self {
         // A last line without its newline is not covered: the next append closes it off.
-        let complete = text.rfind('\n').map_or(0, |at| at + 1);
-        let lines: Vec<String> = text[..complete].lines().map(str::to_owned).collect();
+        let complete = bytes
+            .iter()
+            .rposition(|b| *b == b'\n')
+            .map_or(0, |at| at + 1);
+        let mut raw: Vec<&[u8]> = bytes
+            .get(..complete)
+            .unwrap_or_default()
+            .split(|b| *b == b'\n')
+            .collect();
+        // What follows the last newline: nothing.
+        raw.pop();
+        let cut = raw
+            .iter()
+            .rposition(|line| std::str::from_utf8(line).is_err())
+            .map_or(0, |at| at + 1);
+        let (before, held) = raw.split_at(cut);
+        let text = |line: &&[u8]| String::from_utf8_lossy(line).into_owned();
+        let before: Vec<String> = before.iter().map(text).collect();
+        let lines: Vec<String> = held.iter().map(text).collect();
+        let every: Vec<String> = before.iter().chain(&lines).cloned().collect();
         let mut tail = Self {
-            skill_dirs: Some(skill_dirs_of(&lines)),
+            skill_dirs: Some(skill_dirs_of(&every)),
             lines,
             ..Self::default()
         };
+        if cut > 0 {
+            // What `trim` records of the lines it drops: where the projection starts,
+            // the runs with lines on both sides, and when the newest dropped line was
+            // written.
+            let dropped = facts_of(&before);
+            let kept: BTreeSet<RunKey> = facts_of(&tail.lines)
+                .iter()
+                .flatten()
+                .map(|f| f.run)
+                .collect();
+            tail.covers.from = raw
+                .get(..cut)
+                .unwrap_or_default()
+                .iter()
+                .map(|line| line.len() as u64 + 1)
+                .sum();
+            tail.partial = dropped
+                .iter()
+                .flatten()
+                .map(|f| f.run)
+                .filter(|run| kept.contains(run))
+                .filter_map(run_id)
+                .collect::<BTreeSet<String>>()
+                .into_iter()
+                .collect();
+            tail.dropped_at = dropped.iter().flatten().map(|f| f.at).max();
+        }
         let facts = facts_of(&tail.lines);
         trim(&mut tail, &facts);
         tail.covers.bytes = Some(tail.end());
@@ -382,9 +441,7 @@ fn load(paths: &Paths) -> Option<HistoryTail> {
 /// Writes the projection unless a newer omaddons wrote it; whether it wrote.
 fn write(paths: &Paths, tail: &HistoryTail) -> Result<bool> {
     let path = paths.history_tail();
-    if let Ok(Some(loaded)) = store::load::<HistoryTail>(&path)
-        && loaded.status == VersionStatus::Newer
-    {
+    if store::newer_on_disk::<HistoryTail>(&path) {
         return Ok(false);
     }
     let json = store::encode(tail)?;
@@ -751,6 +808,91 @@ mod tests {
         std::fs::remove_file(&bell).unwrap();
         f.rebuild();
         assert!(!bell.exists(), "a fresh projection is left alone");
+    }
+
+    /// The projection counts the history's own bytes. A line that is not UTF-8 (a crash
+    /// cut it inside a character, and the next append closed it off) and a line ending in
+    /// CRLF (a hand edit) are both longer or shorter as decoded text than on disk: built
+    /// from text, the projection would never match the history's length again, and every
+    /// command would rebuild it to the same wrong numbers. Built from bytes it is fresh
+    /// after one rebuild, answers as the whole history does, and follows later appends.
+    #[test]
+    fn a_projection_matches_a_history_holding_bytes_that_are_not_its_text() {
+        use std::io::Write as _;
+        let raw_append = |f: &Fixture, bytes: &[u8]| {
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(f.paths.history_file())
+                .unwrap()
+                .write_all(bytes)
+                .unwrap();
+        };
+        let len = |f: &Fixture| std::fs::metadata(f.paths.history_file()).unwrap().len();
+
+        // A line cut inside a two-byte character, closed off by the next append.
+        let f = fixture();
+        f.append(&entry(TxKind::Install, RunId::new(), 1));
+        raw_append(
+            &f,
+            b"{\"tx\":\"01M7A1B2C3D4E5F6G7H8J9K0MN\",\"reason\":\"caf\xc3",
+        );
+        f.append(&entry(TxKind::Install, RunId::new(), 2));
+        assert_eq!(fresh(&f.paths), None, "an append it could not follow");
+        f.rebuild();
+        let tail = fresh(&f.paths).expect("fresh after one rebuild");
+        assert_eq!(tail.covers.bytes, Some(len(&f)));
+        assert!(
+            tail.covers.from > 0,
+            "it starts after the line it cannot hold"
+        );
+        assert_eq!(found(&tail), f.full());
+        f.append(&entry(TxKind::Install, RunId::new(), 3));
+        let tail = fresh(&f.paths).expect("it follows the next append");
+        assert_eq!((tail.covers.bytes, found(&tail)), (Some(len(&f)), f.full()));
+
+        // A line ending in CRLF.
+        let f = fixture();
+        f.append(&entry(TxKind::Install, RunId::new(), 1));
+        let mut line = serde_json::to_vec(&entry(TxKind::Install, RunId::new(), 2)).unwrap();
+        line.extend_from_slice(b"\r\n");
+        raw_append(&f, &line);
+        f.rebuild();
+        let tail = fresh(&f.paths).expect("fresh after one rebuild");
+        assert_eq!(
+            (tail.covers, found(&tail)),
+            (
+                Covers {
+                    from: 0,
+                    bytes: Some(len(&f))
+                },
+                f.full()
+            )
+        );
+        f.append(&entry(TxKind::Install, RunId::new(), 3));
+        assert!(fresh(&f.paths).is_some());
+    }
+
+    /// A projection a newer omaddons wrote is never overwritten, whether this build still
+    /// decodes it or not (a newer major may reshape a field): a rebuild and an append
+    /// both leave its bytes alone.
+    #[test]
+    fn a_newer_projection_is_never_overwritten_decoded_or_not() {
+        for newer in [
+            r#"{"schema_version":"9.0","covers":{"from":0,"bytes":null}}"#,
+            r#"{"schema_version":"9.0","covers":"a shape this build cannot decode","lines":[]}"#,
+        ] {
+            let f = fixture();
+            f.append(&entry(TxKind::Install, RunId::new(), 1));
+            std::fs::create_dir_all(f.paths.cache_dir()).unwrap();
+            std::fs::write(f.paths.history_tail(), newer).unwrap();
+            f.rebuild();
+            f.append(&entry(TxKind::Install, RunId::new(), 2));
+            f.rebuild();
+            assert_eq!(
+                std::fs::read_to_string(f.paths.history_tail()).unwrap(),
+                newer
+            );
+        }
     }
 
     #[test]

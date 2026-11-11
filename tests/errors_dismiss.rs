@@ -569,6 +569,29 @@ fn a_dry_run_writes_nothing_and_returns_its_token() {
     .expect(0);
 }
 
+/// A dismissal resolves `-t` like every command that takes one: a client that is not
+/// there is `target_not_found` (exit 3, which the command's published exits list), with
+/// and without `--dry-run`, and nothing is acknowledged.
+#[test]
+fn a_dismissal_of_an_unknown_client_is_not_found() {
+    let home = Home::new(&["wow"]);
+    retail(&home).write(&db(10, &[(10, NOW - 60)]));
+    for args in [
+        &["errors", "dismiss", "-t", "nowhere"][..],
+        &["errors", "dismiss", "-t", "nowhere", "--dry-run"][..],
+    ] {
+        let refused = support::run(&home, args).expect(3);
+        assert_eq!(refused["error"]["code"], "target_not_found", "{args:?}");
+    }
+    assert!(!ack_file(&home).exists());
+    let exits = omaddons::app::COMMANDS
+        .iter()
+        .find(|c| c.name == "errors dismiss")
+        .unwrap()
+        .exits;
+    assert!(exits.contains(&3), "{exits:?}");
+}
+
 #[test]
 fn a_corrupt_acknowledgement_file_stops_only_the_dismissal() {
     let home = Home::new(&["wow"]);

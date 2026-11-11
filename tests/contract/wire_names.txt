@@ -53,7 +53,7 @@ command doctor explain exits=0,64,66,74 dictionary=doctor mutates=false binds=fa
 command doctor fix exits=0,1,2,3,4,5,6,64,66,73,74 dictionary=doctor mutates=true binds=true stores_plan=false network=optional
 command doctor gc exits=0,4,5,64,74 dictionary=doctor mutates=true binds=true stores_plan=false network=none
 command doctor undo exits=0,3,4,5,64,66,73,74 dictionary=doctor mutates=true binds=false stores_plan=false network=none
-command errors dismiss exits=0,1,2,4,5 dictionary=general mutates=true binds=true stores_plan=false network=none
+command errors dismiss exits=0,1,2,3,4,5 dictionary=general mutates=true binds=true stores_plan=false network=none
 command errors exits=0,1,2,3,4,6 dictionary=general mutates=false binds=false stores_plan=false network=none args_conflict_with_subcommands
 command export exits=0,1,2,3,4,5 dictionary=general mutates=true binds=false stores_plan=false network=none
 command help exits=0,1,2 dictionary=general mutates=false binds=false stores_plan=false network=none

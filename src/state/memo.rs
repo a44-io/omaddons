@@ -542,7 +542,8 @@ pub fn write(
         .as_deref()
         .map(|bytes| store::load_bytes::<ReleaseMemo>(&path, bytes));
     let mut memo = match loaded {
-        Some(Ok(loaded)) if loaded.status == VersionStatus::Newer => {
+        // Newer, decoded or not: read, never overwritten.
+        Some(loaded) if store::written_by_newer(&loaded) => {
             return Some(format!(
                 "release memo: {} was written by a newer omaddons; not updated",
                 path.display()
@@ -1100,6 +1101,22 @@ mod tests {
             std::fs::read_to_string(paths.release_memo()).unwrap(),
             newer,
             "a newer memo is never overwritten"
+        );
+        // Nor one a newer major wrote in a shape this build cannot decode: newer all the
+        // same (`state_too_new`), never "corrupt, so replaced".
+        let reshaped =
+            r#"{"schema_version": "9.0", "entries": "a shape this build cannot decode"}"#;
+        std::fs::write(paths.release_memo(), reshaped).unwrap();
+        let mut update = ReleaseMemo::default();
+        update
+            .entries
+            .insert("d".into(), entry("2026-10-15T12:00:00Z"));
+        let note = write(&paths, update, 10, "outdated", Actor::Human);
+        assert!(note.is_some_and(|n| n.contains("newer")));
+        assert_eq!(
+            std::fs::read_to_string(paths.release_memo()).unwrap(),
+            reshaped,
+            "a newer memo this build cannot decode is never overwritten either"
         );
     }
 

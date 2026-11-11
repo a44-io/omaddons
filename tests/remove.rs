@@ -93,6 +93,40 @@ fn a_running_client_sharing_the_addons_directory_holds_its_loaded_folders() {
         r.context()
     );
     assert!(era.join("Both").is_dir(), "nothing removed");
+
+    // Undoing the install is the same removal, so it is refused the same way, by its
+    // preview too: an undo is no way around the running policy.
+    for args in [&["undo", "--dry-run"][..], &["undo"][..]] {
+        let r = home.run(args);
+        let envelope = r.expect(4);
+        assert_eq!(
+            (
+                &envelope["error"]["code"],
+                &envelope["error"]["details"]["reason"]
+            ),
+            (&Value::from("game_running"), &Value::from("loaded_toc")),
+            "{}",
+            r.context()
+        );
+        assert!(
+            envelope["error"]["message"]
+                .as_str()
+                .is_some_and(|m| m.starts_with("anniversary's game client is running")),
+            "{}",
+            r.context()
+        );
+        assert!(era.join("Both").is_dir(), "{args:?}: nothing removed");
+    }
+    // The player's word settles it, and the outcome says what the running client needs.
+    let r = home.run(&["undo", "--while-running"]);
+    let envelope = r.expect(0);
+    assert_ne!(
+        envelope["data"]["reload_required"],
+        "none",
+        "{}",
+        r.context()
+    );
+    assert!(!era.join("Both").exists());
 }
 
 #[test]

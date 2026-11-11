@@ -142,6 +142,15 @@ pub enum RequestedChange {
     Remove {
         addon: String,
     },
+    /// `sync --prune`: remove an installed addon the desired state no longer lists,
+    /// unless an addon this transaction installs or updates requires one of its folders,
+    /// or one kept that way requires it through the record: then it stays as it is
+    /// ([`kept_prunes`]). A listed addon that is new has no record yet for the command to
+    /// read its requirements from, so what it requires is decided here, from its archive,
+    /// before anything is removed.
+    Prune {
+        addon: String,
+    },
     /// The newest compatible release of an installed addon, keeping its pin, channel
     /// and reason: a pinned addon stays where it is (`addon_pinned`).
     Update {
@@ -1267,6 +1276,9 @@ enum Want {
     },
     Remove {
         addon: String,
+        /// A prune ([`RequestedChange::Prune`]): it yields to what the transaction's
+        /// installs require.
+        prune: bool,
     },
     Edit {
         addon: String,
@@ -1277,6 +1289,88 @@ enum Want {
         addon: Option<String>,
         error: Error,
     },
+}
+
+/// The record an earlier work of this transaction plans under the name `template` would
+/// take, from another ref: two refs that would be one addon. The folder claims alone miss
+/// it, since a work's claims are its addon's own (an update with a records change is one
+/// addon twice): the second archive would be staged over the first, or its record would
+/// replace the first's and leave that one's folders unmanaged.
+fn namesake_in_transaction<'w>(
+    work: &'w [AddonWork],
+    template: &AddonRecord,
+) -> Option<&'w AddonRecord> {
+    let key = TargetRecord::addon_key(&template.name);
+    work.iter()
+        // ubs:ignore — comparing addon keys, not secrets
+        .filter(|w| TargetRecord::addon_key(&w.addon) == key)
+        .filter_map(AddonWork::record)
+        .find(|planned| planned.r#ref.identity() != template.r#ref.identity())
+}
+
+/// `ownership_conflict` within the transaction for `build`, whose addon `first` (another
+/// ref's, planned earlier in it) is already to be installed as.
+fn same_name_in_transaction(first: &AddonRecord, build: &PendingBuild) -> Error {
+    let (a, b, name) = (&first.r#ref, &build.template.r#ref, &first.name);
+    let folders: Vec<serde_json::Value> = build
+        .loadable
+        .inspected
+        .folders
+        .iter()
+        .map(|f| json!({ "folder": f.name.as_str(), "owner": name }))
+        .collect();
+    Error::new(
+        ErrorCode::OwnershipConflict,
+        format!(
+            "{a} and {b} would both be installed as {name} in this transaction: an addon is installed from one ref at a time"
+        ),
+        Suggestion::text(format!("choose one of {a} and {b}: both are {name}")),
+    )
+    .details(json!({ "within_transaction": true, "folders": folders }))
+}
+
+/// The prunes that stay installed, by addon key: `--prune` never removes what an addon
+/// that stays requires. Each pruned addon owning a folder that one of the transaction's
+/// verified installs or updates (`steps`' builds) requires, also under a condition this
+/// build cannot read, and then, to a fixpoint, each pruned addon the record says a kept
+/// one requires. The command keeps what installed addons require from their records
+/// (`sync`'s keep set); this adds what the addons installed now require, known only once
+/// their archives are read.
+fn kept_prunes(prunes: &[String], steps: &[Step], record: &TargetRecord) -> BTreeSet<String> {
+    let pruned: Vec<&AddonRecord> = prunes
+        .iter()
+        .filter_map(|addon| record.addons.get(&TargetRecord::addon_key(addon)))
+        .collect();
+    let required: Vec<&FolderName> = steps
+        .iter()
+        .filter_map(|step| match step {
+            Step::Build(_, _, build) => Some(&build.deps),
+            _ => None,
+        })
+        .flat_map(|deps| deps.requires.iter().chain(&deps.unknown_condition))
+        .collect();
+    let key = |a: &AddonRecord| TargetRecord::addon_key(&a.name);
+    let mut kept: BTreeSet<String> = pruned
+        .iter()
+        .filter(|a| a.folders.iter().any(|f| required.contains(&f)))
+        .map(|a| key(a))
+        .collect();
+    loop {
+        let more: Vec<String> = pruned
+            .iter()
+            .filter(|a| !kept.contains(&key(a)))
+            .filter(|a| {
+                a.required_by
+                    .iter()
+                    .any(|by| kept.contains(&TargetRecord::addon_key(by)))
+            })
+            .map(|a| key(a))
+            .collect();
+        if more.is_empty() {
+            return kept;
+        }
+        kept.extend(more);
+    }
 }
 
 /// Plans `req`. Fails as a whole only for errors that apply to every change.
@@ -1454,7 +1548,7 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
                         Want::Install { name, wanted, .. } => {
                             (Some(wanted.r#ref), name, error.clone())
                         }
-                        Want::Remove { addon } | Want::Edit { addon, .. } => {
+                        Want::Remove { addon, .. } | Want::Edit { addon, .. } => {
                             (None, Some(addon), error.clone())
                         }
                     };
@@ -1484,6 +1578,8 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
         // ref collapses into the first (the command reports it as a duplicate).
         let mut seen: Vec<String> = Vec::new();
         let mut steps = Vec::with_capacity(wants.len());
+        // The removals that are prunes, which yield to what the installs require.
+        let mut prunes: Vec<String> = Vec::new();
         for w in wants {
             steps.push(match w {
                 Want::Failed {
@@ -1530,9 +1626,27 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
                         Err(error) => Step::Ready(r, name, Err(error)),
                     }
                 }
-                Want::Remove { addon } => Step::Remove(addon),
+                Want::Remove { addon, prune } => {
+                    if prune {
+                        prunes.push(addon.clone());
+                    }
+                    Step::Remove(addon)
+                }
                 Want::Edit { addon, edit } => Step::Edit(addon, edit),
             });
+        }
+        // A prune of what an install here requires changes nothing: the addon stays, and
+        // the dependency rounds find it installed.
+        if !prunes.is_empty() {
+            let kept = kept_prunes(&prunes, &steps, &record);
+            for step in &mut steps {
+                if let Step::Remove(addon) = step
+                    && prunes.contains(addon)
+                    && kept.contains(&TargetRecord::addon_key(addon))
+                {
+                    *step = Step::Ready(None, Some(addon.clone()), Ok(Planned::nothing()));
+                }
+            }
         }
         // Before any claim is judged: the folders an owner's own work stops shipping.
         for step in &steps {
@@ -1581,7 +1695,14 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
             let (r, addon, result) = match step {
                 Step::Ready(r, addon, result) => (r, addon, result),
                 Step::Build(r, addon, build) => {
-                    (r, addon, planner.build(*build).map(Planned::change))
+                    // An addon is installed from one ref at a time: a second ref of this
+                    // transaction that would be recorded under an earlier one's name is
+                    // refused before it is judged, which `--force` never settles.
+                    let result = match namesake_in_transaction(&tp.work, &build.template) {
+                        Some(first) => Err(same_name_in_transaction(first, &build)),
+                        None => planner.build(*build).map(Planned::change),
+                    };
+                    (r, addon, result)
                 }
                 Step::Remove(addon) => {
                     let result = planner.remove(&addon).map(Planned::change);
@@ -3022,6 +3143,7 @@ fn unreadable_want(change: &RequestedChange, error: &Error) -> Want {
     let (r#ref, addon) = match change {
         RequestedChange::Install { r#ref, name, .. } => (Some(r#ref.clone()), name.clone()),
         RequestedChange::Remove { addon }
+        | RequestedChange::Prune { addon }
         | RequestedChange::Update { addon, .. }
         | RequestedChange::Edit { addon, .. } => (None, Some(addon.clone())),
     };
@@ -3085,6 +3207,11 @@ fn want(change: &RequestedChange, record: &TargetRecord) -> Want {
         }
         RequestedChange::Remove { addon } => Want::Remove {
             addon: addon.clone(),
+            prune: false,
+        },
+        RequestedChange::Prune { addon } => Want::Remove {
+            addon: addon.clone(),
+            prune: true,
         },
         RequestedChange::Edit { addon, edit } => Want::Edit {
             addon: addon.clone(),
@@ -5691,11 +5818,20 @@ fn missing_git_rev(err: Error, candidate: &Candidate, url: &str) -> Error {
     .details(json!({ "repository": repo, "rev": rev }))
 }
 
-/// The tag of a GitHub `release_id` (`gh:o/r@<tag>`).
+/// The tag of a GitHub `release_id` (`gh:o/r@<tag>`) of `wanted`'s ref. An id keeps the
+/// spelling of whichever request fetched it, while the run's cache and the release memo
+/// are shared by identity (a GitHub owner and repo read in any case): the ref spelled
+/// another way is the same ref, as [`crate::resolve::updates::same_release`] reads it.
 fn tag_of(wanted: &Wanted, release_id: &str) -> Option<String> {
-    release_id
-        .strip_prefix(&format!("{}@", wanted.r#ref))
-        .map(str::to_owned)
+    if let Some(tag) = release_id.strip_prefix(&format!("{}@", wanted.r#ref)) {
+        return Some(tag.to_owned());
+    }
+    // No GitHub owner or repository holds an `@`: the first one ends the ref.
+    let (spelled, tag) = release_id.split_once('@')?;
+    spelled
+        .parse::<Ref>()
+        .is_ok_and(|r| r.identity() == wanted.r#ref.identity())
+        .then(|| tag.to_owned())
 }
 
 /// Whether a release's flavor entry names a client of `family` (whose interfaces lie in
@@ -5957,6 +6093,31 @@ pub fn primary_by_shape(folders: &[FolderName]) -> Option<&FolderName> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A release id keeps the spelling of the request that fetched it, and one fetch
+    /// answers every client: a client whose record spells the repository in another case
+    /// still reads the tag (or its look-back is skipped), another repository's id never.
+    #[test]
+    fn the_tag_of_a_release_id_ignores_how_its_ref_is_spelled() {
+        let wanted = |r: &str| Wanted {
+            r#ref: r.parse().unwrap(),
+            channel: Channel::Stable,
+            version: None,
+        };
+        let cases = [
+            ("gh:Vuhdo-IO/VuhDo", "gh:Vuhdo-IO/VuhDo@v1.2", Some("v1.2")),
+            ("gh:vuhdo-io/vuhdo", "gh:Vuhdo-IO/VuhDo@v1.2", Some("v1.2")),
+            ("gh:Vuhdo-IO/VuhDo", "gh:vuhdo-io/vuhdo@v1.2", Some("v1.2")),
+            // A tag may hold an `@` of its own.
+            ("gh:o/mono", "gh:O/Mono@addon@2.0", Some("addon@2.0")),
+            ("gh:o/r", "gh:o/other@v1.2", None),
+            ("gh:o/r", "gh:o/r", None),
+            ("gh:o/r", "not a release id@v1", None),
+        ];
+        for (r, id, tag) in cases {
+            assert_eq!(tag_of(&wanted(r), id).as_deref(), tag, "{r} · {id}");
+        }
+    }
 
     #[test]
     fn a_cached_blob_is_the_recorded_release_while_it_hashes_to_it() {

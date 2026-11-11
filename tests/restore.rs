@@ -149,6 +149,18 @@ fn a_restore_puts_the_whole_backup_back_and_undo_returns_each_state() {
         (&data["dry_run"], &data["tx"], &data["before_restore"]),
         (&json!(true), &Value::Null, &Value::Null)
     );
+    // tmpfs cannot clone, so the run keeps no backup of the current settings first: the
+    // preview says so as the run does (below), in what it would do. A preview without
+    // the warning promises a backup (the widget's plan sheet reads it).
+    let skipped: Vec<&str> = envelope["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|w| w["code"] == "before_restore_skipped")
+        .map(|w| w["message"].as_str().unwrap())
+        .collect();
+    assert_eq!(skipped.len(), 1, "{envelope}");
+    assert!(skipped[0].contains("would not be kept"), "{}", skipped[0]);
     assert_eq!(
         (&data["kind"], &data["mode"], &data["exchange"]),
         (&json!("restore"), &json!("whole"), &json!("unverified"))

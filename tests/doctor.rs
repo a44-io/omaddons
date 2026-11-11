@@ -604,6 +604,151 @@ fn since_reports_new_resolved_and_unchanged_instances() {
     assert!(message.contains("interrupted"), "{message}");
 }
 
+/// An earlier instance is resolved only when this run looked for it and did not find it.
+/// A run that checks something else (`--only`), another client (`-t`) or only more severe
+/// failure modes (`--severity`) did not look: the instance is in neither list, while the
+/// files on disk are as damaged as before. The same run without the narrowing still calls
+/// it unchanged.
+#[test]
+fn since_never_calls_resolved_what_the_run_did_not_look_for() {
+    let log = tlog!();
+    let home = home(&log);
+    log.step("plant");
+    plant::managed_files_modified(&home, "retail", "foo");
+    log.step("diagnose");
+    let first = run(&log, &home, &["doctor", "--json"]);
+    first.exit(1);
+    let a = first.envelope()["run_id"].as_str().unwrap().to_owned();
+    let found = findings(first.envelope(), ids::MANAGED_FILES_MODIFIED);
+    assert_eq!(found.len(), 1);
+    let severity = found[0]["severity"].as_str().unwrap().to_owned();
+    assert_ne!(
+        severity, "P0",
+        "the case needs a more severe level to ask for"
+    );
+
+    for (case, narrowing) in [
+        ("another check", &["--only", ids::JOURNAL_PENDING][..]),
+        ("another client", &["-t", "classic"][..]),
+        ("more severe findings only", &["--severity", "P0"][..]),
+    ] {
+        log.step(case);
+        let mut args = vec!["doctor", "--json", "--since", &a];
+        args.extend(narrowing);
+        let ran = run(&log, &home, &args);
+        assert_eq!(
+            ran.envelope()["since"],
+            json!({"run": a, "new_instances": [], "resolved_instances": [], "unchanged": 0}),
+            "case {case}"
+        );
+    }
+    log.step("the same checks again");
+    let ran = run(&log, &home, &["doctor", "--json", "--since", &a]);
+    ran.exit(1);
+    assert_eq!(
+        ran.envelope()["since"],
+        json!({"run": a, "new_instances": [], "resolved_instances": [], "unchanged": 1})
+    );
+}
+
+/// `doctor undo` makes a run of its own, which `latest` then names, and its report lists
+/// no findings. `--since latest` and `doctor diff latest` compare with the newest run
+/// that did; the undo run by its id is `not_found`, never `state_corrupt`.
+#[test]
+fn since_latest_passes_over_an_undo_run() {
+    let log = tlog!();
+    let home = home(&log);
+    log.step("plant");
+    plant::damaged_blob(&home, "retail");
+    log.step("fix");
+    let fixed = run(
+        &log,
+        &home,
+        &[
+            "doctor",
+            "fix",
+            "--only",
+            ids::BLOB_HASH_MISMATCH,
+            "--include-deep",
+            "--json",
+        ],
+    );
+    fixed.exit(0);
+    let fix_run = fixed.envelope()["run_id"].as_str().unwrap().to_owned();
+    log.step("undo");
+    let undone = run(&log, &home, &["doctor", "undo", "--json"]);
+    undone.exit(0);
+    let undo_run = undone.envelope()["run_id"].as_str().unwrap().to_owned();
+    assert_eq!(plant::latest(&home).as_deref(), Some(undo_run.as_str()));
+
+    log.step("since latest");
+    let ran = run(&log, &home, &["doctor", "--json", "--since", "latest"]);
+    assert_eq!(ran.envelope()["since"]["run"], fix_run.as_str());
+    log.step("diff latest");
+    // The comparison above made a run of its own, the newest with findings now.
+    let newest = plant::latest(&home).unwrap();
+    let ran = run(&log, &home, &["doctor", "diff", "latest", "--json"]);
+    assert_eq!(ran.envelope()["since"]["run"], newest.as_str());
+
+    log.step("the undo run by its id");
+    for args in [
+        &["doctor", "--json", "--since", undo_run.as_str()][..],
+        &["doctor", "diff", undo_run.as_str(), "--json"][..],
+    ] {
+        let ran = run(&log, &home, args);
+        ran.fails(66, "not_found");
+        let error = &ran.envelope()["error"];
+        let message = error["message"].as_str().unwrap();
+        assert!(message.contains("is an undo"), "{message}");
+        assert!(
+            !words(&error["fix_argv"]).contains(&undo_run),
+            "the fix never offers the undo run: {error}"
+        );
+    }
+}
+
+/// `doctor fix --severity` reports as `doctor --severity` does: a finding less severe
+/// than asked for is in neither report, so the two end in the same state and exit.
+#[test]
+fn fix_reports_under_severity_as_diagnose_does() {
+    let log = tlog!();
+    let home = home(&log);
+    log.step("plant");
+    let config = plant::config_toml(&home);
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(&config, "a = [\n").unwrap();
+    log.step("diagnose");
+    let all = run(&log, &home, &["doctor", "--json"]);
+    all.exit(1);
+    let broken = findings(all.envelope(), ids::CONFIG_PARSE_ERROR);
+    assert_eq!(broken.len(), 1);
+    assert_ne!(broken[0]["severity"], "P0");
+    let diagnosed = run(&log, &home, &["doctor", "--severity", "P0", "--json"]);
+    log.step("fix");
+    let fixed = run(
+        &log,
+        &home,
+        &["doctor", "fix", "--severity", "P0", "--dry-run", "--json"],
+    );
+    assert_eq!(
+        (
+            fixed.run.code,
+            &fixed.envelope()["state"],
+            ids_of(fixed.envelope())
+        ),
+        (
+            diagnosed.run.code,
+            &diagnosed.envelope()["state"],
+            ids_of(diagnosed.envelope())
+        )
+    );
+    assert!(
+        !ids_of(fixed.envelope()).contains(&ids::CONFIG_PARSE_ERROR.to_owned()),
+        "{}",
+        fixed.envelope()
+    );
+}
+
 #[test]
 fn a_crash_while_staging_or_after_publishing_leaves_no_report() {
     let log = tlog!();

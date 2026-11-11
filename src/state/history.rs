@@ -830,11 +830,18 @@ pub fn read(paths: &Paths, filter: &HistoryFilter) -> Result<HistoryRead> {
 /// The history as it is on disk, torn and merged lines included; empty before the first
 /// transaction.
 pub fn text(paths: &Paths) -> Result<String> {
+    Ok(String::from_utf8_lossy(&bytes(paths)?).into_owned())
+}
+
+/// The history's own bytes, for what counts them (the projection's offsets): [`text`]
+/// replaces each byte that is not UTF-8 with a longer character. Empty before the first
+/// transaction.
+pub fn bytes(paths: &Paths) -> Result<Vec<u8>> {
     let path = paths.history_file();
     match std::fs::read(&path) {
-        Ok(bytes) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
+        Ok(bytes) => Ok(bytes),
         // ubs:ignore — an io::ErrorKind, not a secret
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(err) => Err(Error::io(
             &path,
             &err,

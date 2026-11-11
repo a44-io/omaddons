@@ -185,6 +185,100 @@ fn a_moved_install_relinks_by_marker() {
     );
 }
 
+/// A client is uninstalled and installed again elsewhere with its `Interface/` copied
+/// over: no client is at the registered directory any more, but that directory's leftover
+/// still holds the marker. Read, the new client is the registered one (its key, its id,
+/// its record); its first registration must say the same and re-link the key, never give
+/// it a new key and id because the old marker is still there, which would detach its
+/// addon records.
+#[test]
+fn a_client_read_as_moved_keeps_its_key_though_the_old_directory_keeps_a_marker() {
+    let world = World::new();
+    let games = world.env.home().join("Games");
+    let old = CustomRoot::at(games.join("wotlk")).build();
+    let key = world.register(&world.targets().targets[0]);
+
+    // The new install, with the old one's `Interface/` (and so its marker).
+    let new = CustomRoot::at(games.join("wotlk-new")).build();
+    fs::copy(marker_path(&old), {
+        let to = marker_path(&new);
+        fs::create_dir_all(to.parent().unwrap()).unwrap();
+        to
+    })
+    .unwrap();
+    // The old one is no client any more: its executable is gone, its folders stay.
+    for entry in fs::read_dir(&old).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_file() {
+            fs::remove_file(path).unwrap();
+        }
+    }
+    assert_eq!(
+        read_marker(&old),
+        Some(key),
+        "the leftover keeps its marker"
+    );
+
+    let read = world.targets();
+    assert_eq!(ids(&read.targets), [("wotlk".into(), true)]);
+    assert_eq!(read.targets[0].target.key, Some(key));
+    assert_eq!(read.targets[0].target.client_dir, new);
+
+    assert_eq!(world.register(&read.targets[0]), key, "the same key");
+    let registry = load_registry(&world.paths).unwrap().value;
+    assert_eq!(registry.targets.len(), 1);
+    assert_eq!(
+        (
+            registry.entry(&key).unwrap().id.as_str(),
+            &registry.entry(&key).unwrap().client_dir
+        ),
+        ("wotlk", &new)
+    );
+    assert_eq!(ids(&world.targets().targets), [("wotlk".into(), true)]);
+}
+
+/// A copy of a registered client carries its marker, but it is another client: adding
+/// it by hand under the original's id is refused, as renaming to a taken id is. Never
+/// two targets under one id, which `-t` could then not tell apart.
+#[test]
+fn a_copy_cannot_be_added_under_the_originals_id() {
+    let world = World::new();
+    let games = world.env.home().join("Games");
+    let original = CustomRoot::at(games.join("a-wotlk")).build();
+    let key = world.register(&world.targets().targets[0]);
+    // Outside what discovery scans, as a client added by hand is.
+    let copy = world.env.root().join("elsewhere/b-wotlk");
+    fs::create_dir_all(copy.parent().unwrap()).unwrap();
+    let status = std::process::Command::new("cp")
+        .arg("-a")
+        .arg(&original)
+        .arg(&copy)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert_eq!(read_marker(&copy), Some(key));
+
+    world.locked(std::slice::from_ref(&copy), |reg, s| {
+        let refused = reg
+            .add_manual(s, &world.table, &copy, Some("wotlk"))
+            .unwrap_err();
+        assert_eq!(refused.code, ErrorCode::Usage, "{refused:?}");
+        // Without the name it is added as the copy it is: its own key and id.
+        let (found, _) = reg.add_manual(s, &world.table, &copy, None).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_ne!(found[0].target.key, Some(key));
+        assert_ne!(found[0].target.id, "wotlk");
+    });
+    let registry = load_registry(&world.paths).unwrap().value;
+    let named: Vec<&str> = registry.targets.iter().map(|e| e.id.as_str()).collect();
+    assert_eq!(
+        named.iter().filter(|id| **id == "wotlk").count(),
+        1,
+        "{named:?}"
+    );
+    assert_eq!(read_marker(&original), Some(key));
+}
+
 #[test]
 fn a_copied_install_gets_a_new_key() {
     let world = World::new();

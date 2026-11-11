@@ -56,7 +56,7 @@
     "command doctor gc": {"binds":true,"dictionary":"doctor","exits":[0,4,5,64,74],"kind":"command","mutates":true,"network":"none","stores_plan":false},
     "command doctor undo": {"binds":false,"dictionary":"doctor","exits":[0,3,4,5,64,66,73,74],"kind":"command","mutates":true,"network":"none","stores_plan":false},
     "command errors": {"args_conflict_with_subcommands":true,"binds":false,"dictionary":"general","exits":[0,1,2,3,4,6],"kind":"command","mutates":false,"network":"none","stores_plan":false},
-    "command errors dismiss": {"binds":true,"dictionary":"general","exits":[0,1,2,4,5],"kind":"command","mutates":true,"network":"none","stores_plan":false},
+    "command errors dismiss": {"binds":true,"dictionary":"general","exits":[0,1,2,3,4,5],"kind":"command","mutates":true,"network":"none","stores_plan":false},
     "command export": {"binds":false,"dictionary":"general","exits":[0,1,2,3,4,5],"kind":"command","mutates":true,"network":"none","stores_plan":false},
     "command help": {"binds":false,"dictionary":"general","exits":[0,1,2],"kind":"command","mutates":false,"network":"none","stores_plan":false},
     "command history": {"aliases":["log"],"binds":false,"dictionary":"general","exits":[0,1,2,3,4],"kind":"command","mutates":false,"network":"none","stores_plan":false},

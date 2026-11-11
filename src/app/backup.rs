@@ -2076,6 +2076,13 @@ pub fn restore_backup(ctx: &Context, args: &BackupRestoreArgs) -> Result<BackupR
             backup::fs::clone_hint(&client.meta_dir()),
             CloneHint::Capable
         );
+        // What the run will do about the current `WTF/`, by the rule `keep_current`
+        // follows: said here as the run says it, so a preview (the widget's plan sheet
+        // reads this warning) never promises a backup the run then does not make.
+        let would_keep = topology.wtf.is_some() && clones;
+        if !would_keep {
+            warnings.push(before_restore_skipped(&d.target.id, true));
+        }
         data.precondition = Some(bound.token());
         let approval = Approval::of_restore(d.target.key, &d.target.id, backup.id, &[]);
         data.approval = Some(approval.clone());
@@ -2097,7 +2104,7 @@ pub fn restore_backup(ctx: &Context, args: &BackupRestoreArgs) -> Result<BackupR
             commands: Vec::new(),
             trigger: meta.trigger,
             baseline: meta.baseline,
-            would_keep: topology.wtf.is_some() && clones,
+            would_keep,
             lock_held_ms: None,
         });
     }
@@ -2118,7 +2125,7 @@ pub fn restore_backup(ctx: &Context, args: &BackupRestoreArgs) -> Result<BackupR
             Some(backup_line(ctx, created, run))
         }
         None => {
-            warnings.push(before_restore_skipped(&d.target.id));
+            warnings.push(before_restore_skipped(&d.target.id, false));
             None
         }
     };
@@ -2358,12 +2365,18 @@ fn keep_current(
     }
 }
 
-/// `before_restore_skipped`: no copy of the current `WTF/` but the transaction's own.
-fn before_restore_skipped(target: &str) -> Warning {
+/// `before_restore_skipped`: no copy of the current `WTF/` but the transaction's own. A
+/// preview (`dry_run`) says what the run will do, in the same words.
+fn before_restore_skipped(target: &str, dry_run: bool) -> Warning {
+    let (kept, was, keeps) = if dry_run {
+        ("would not be kept", "is", "would keep")
+    } else {
+        ("was not kept", "was", "keeps")
+    };
     Warning::new(
         WarningCode::BeforeRestoreSkipped,
         format!(
-            "{target}: the current WTF/ was not kept as a backup (the filesystem cannot clone files, or there was no WTF/); the restore's undo snapshot keeps it until retention"
+            "{target}: the current WTF/ {kept} as a backup (the filesystem cannot clone files, or there {was} no WTF/); the restore's undo snapshot {keeps} it until retention"
         ),
     )
 }

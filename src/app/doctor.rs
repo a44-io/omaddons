@@ -18,7 +18,7 @@ use crate::doctor::explain::{self, ExplainReport};
 use crate::doctor::finding::{Finding, Severity};
 use crate::doctor::fix_runtime::{DiffOutcome, DiffRequest, FixOutcome, FixRequest};
 use crate::doctor::plan::{Asked, DiagnosePlan, plan_diagnose};
-use crate::doctor::registry::{Layer, failure_modes, ids};
+use crate::doctor::registry::{Layer, failure_modes};
 use crate::doctor::report::{self, DiagnoseReport, DiffReport, FixReport, FullReport, RunState};
 use crate::doctor::runtime::{self, DoctorRunId, Latest, REPORT_FILE, Runtime};
 use crate::doctor::selection::{Selection, SkipReason};
@@ -610,14 +610,11 @@ pub fn run_diagnose(
     diagnosis
         .skipped
         .sort_by(|a, b| (a.id, &a.target).cmp(&(b.id, &b.target)));
-    if let Some(max) = plan.max_severity {
-        // The runtime's own findings are never hidden: incomplete coverage must not
-        // read as healthy.
-        diagnosis.findings.retain(|f| {
-            f.severity <= max || f.id == ids::CHECK_INCOMPLETE || f.id == ids::DETECTOR_CRASHED
-        });
-    }
-    let since = since_run.map(|(run, old)| report::since(run, &old, &diagnosis.findings));
+    // `--severity`: what it hides was not looked for either, so `--since` never calls it
+    // resolved for being left out.
+    diagnosis.at_most(plan.max_severity);
+    let since = since_run
+        .map(|(run, old)| report::since(run, &old, &diagnosis.findings, &diagnosis.looked));
     let checks_run = diagnosis.checks_run;
     // One `doctor explain` per failure mode found, as `next_steps` shows them.
     let commands = report::explain_argvs(&diagnosis.findings)
@@ -1352,11 +1349,12 @@ fn without_since(argv: &[String]) -> Vec<String> {
 // `--since`.
 
 /// The parts of an earlier `report.json` `--since` compares: its version and its findings'
-/// instance keys; every other key is ignored.
+/// instance keys; every other key is ignored. A run that looked for no findings (an undo
+/// run, whose report names the run it reverted instead) has none to compare with.
 #[derive(Deserialize)]
 struct EarlierReport {
     schema_version: String,
-    findings: Vec<EarlierFinding>,
+    findings: Option<Vec<EarlierFinding>>,
 }
 
 #[derive(Deserialize)]
@@ -1364,16 +1362,34 @@ struct EarlierFinding {
     instance: String,
 }
 
+/// The report at `path`, read whole within [`API_RESPONSE_MAX_BYTES`]; else why not, as
+/// the words after "the report of doctor run <id>".
+fn read_report(path: &Path) -> std::result::Result<EarlierReport, String> {
+    let mut bytes = Vec::new();
+    fs::File::open(path)
+        .and_then(|file| {
+            file.take(API_RESPONSE_MAX_BYTES + 1)
+                .read_to_end(&mut bytes)
+        })
+        .map_err(|e| format!("cannot be read: {e}"))?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > API_RESPONSE_MAX_BYTES {
+        return Err(format!("is larger than {API_RESPONSE_MAX_BYTES} bytes"));
+    }
+    serde_json::from_slice(&bytes).map_err(|e| format!("does not decode: {e}"))
+}
+
 /// The run `--since` names (`latest`, or an exact run id) and its findings' instance keys.
-/// A run that is not there, or that has no `report.json` (interrupted), is `not_found`
-/// with the newest finished runs to choose from.
+/// A run that is not there, that has no `report.json` (interrupted), or that looked for no
+/// findings (an undo run) is `not_found` with the newest runs that reported findings to
+/// choose from. `latest` is the newest of those: `doctor/latest` also moves to an undo
+/// run, which is passed over.
 fn read_since(
     paths: &Paths,
     given: &str,
     argv: &[String],
     how: SinceArg,
 ) -> crate::error::Result<(DoctorRunId, Vec<String>)> {
-    let run = if given == "latest" {
+    let named = if given == "latest" {
         fs::read_link(paths.doctor_latest()).ok().and_then(|link| {
             link.strip_prefix("runs")
                 .ok()
@@ -1383,35 +1399,32 @@ fn read_since(
     } else {
         DoctorRunId::parse(given)
     };
-    let report = run
-        .as_ref()
-        .map(|run| paths.doctor_run(run).join(REPORT_FILE));
-    let (Some(run), Some(report)) = (run, report.filter(|path| path.is_file())) else {
+    let report_of = |run: &DoctorRunId| paths.doctor_run(run).join(REPORT_FILE);
+    let Some(mut run) = named.filter(|run| report_of(run).is_file()) else {
         return Err(since_not_found(paths, given, argv, how));
     };
-    let path_text = report.display().to_string();
-    let corrupt = |why: String| {
+    let corrupt = |run: &DoctorRunId, why: String| {
         Error::new(
             ErrorCode::StateCorrupt,
             format!("the report of doctor run {} {why}", run.as_str()),
             Suggestion::command(how.retarget(argv, given, None)),
         )
-        .details(serde_json::json!({ "path": path_text }))
+        .details(serde_json::json!({ "path": report_of(run).display().to_string() }))
     };
-    let mut bytes = Vec::new();
-    fs::File::open(&report)
-        .and_then(|file| {
-            file.take(API_RESPONSE_MAX_BYTES + 1)
-                .read_to_end(&mut bytes)
-        })
-        .map_err(|e| corrupt(format!("cannot be read: {e}")))?;
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > API_RESPONSE_MAX_BYTES {
-        return Err(corrupt(format!(
-            "is larger than {API_RESPONSE_MAX_BYTES} bytes"
-        )));
+    let mut earlier = read_report(&report_of(&run)).map_err(|why| corrupt(&run, why))?;
+    if earlier.findings.is_none() {
+        // An undo run. Named by its id, there is nothing to compare with; as `latest`, the
+        // newest run that reported findings is meant.
+        let newest = (given == "latest")
+            .then(|| comparable_runs(paths, 1).into_iter().next())
+            .flatten();
+        let Some(newest) = newest else {
+            return Err(since_not_found(paths, given, argv, how));
+        };
+        run = newest;
+        earlier = read_report(&report_of(&run)).map_err(|why| corrupt(&run, why))?;
     }
-    let earlier: EarlierReport =
-        serde_json::from_slice(&bytes).map_err(|e| corrupt(format!("does not decode: {e}")))?;
+    let path_text = report_of(&run).display().to_string();
     let major = earlier.schema_version.split('.').next().unwrap_or_default();
     if major != "1" {
         return Err(Error::new(
@@ -1428,10 +1441,13 @@ fn read_since(
             "schema_version": earlier.schema_version,
         })));
     }
-    Ok((
-        run,
-        earlier.findings.into_iter().map(|f| f.instance).collect(),
-    ))
+    let instances = earlier
+        .findings
+        .unwrap_or_default()
+        .into_iter()
+        .map(|f| f.instance)
+        .collect();
+    Ok((run, instances))
 }
 
 /// How a command line names the run it compares with.
@@ -1475,22 +1491,24 @@ impl SinceArg {
     }
 }
 
-/// `not_found` for the run `given`: the newest finished run is the fix, the next two the
-/// alternatives; with none, the fix names no run.
+/// `not_found` for the run `given`: the newest finished run that reported findings is the
+/// fix, the next two the alternatives; with none, the fix names no run.
 fn since_not_found(paths: &Paths, given: &str, argv: &[String], how: SinceArg) -> Error {
-    let newest = finished_runs(paths);
+    let newest = comparable_runs(paths, 3);
     let why = match DoctorRunId::parse(given) {
+        Some(run) if paths.doctor_run(&run).join(REPORT_FILE).is_file() => {
+            format!("doctor run {given} is an undo: it reported no findings to compare with")
+        }
         Some(run) if paths.doctor_run(&run).is_dir() => {
             format!("doctor run {given} was interrupted: it has no report")
+        }
+        _ if given == "latest" && fs::read_link(paths.doctor_latest()).is_ok() => {
+            "no doctor run that reports findings has finished yet: only undo runs have".to_owned()
         }
         _ if given == "latest" => "no doctor run has finished yet".to_owned(),
         _ => format!("no doctor run {given}"),
     };
-    let named: Vec<String> = newest
-        .iter()
-        .take(3)
-        .map(|run| run.as_str().to_owned())
-        .collect();
+    let named: Vec<String> = newest.iter().map(|run| run.as_str().to_owned()).collect();
     let fix = how.retarget(argv, given, named.first().map(String::as_str));
     let mut error = Error::new(ErrorCode::NotFound, why, Suggestion::command(fix));
     for other in named.iter().skip(1) {
@@ -1502,8 +1520,11 @@ fn since_not_found(paths: &Paths, given: &str, argv: &[String], how: SinceArg) -
     }))
 }
 
-/// The finished runs (those with a report), newest first, within the doctor's scan bound.
-fn finished_runs(paths: &Paths) -> Vec<DoctorRunId> {
+/// The newest `limit` finished runs `--since` can compare with: those whose report lists
+/// findings (a diagnose or a fix; an undo's lists none, and one that does not decode
+/// cannot be compared), newest first, within the doctor's scan bound. Reports are read
+/// newest first, only until `limit` are found.
+fn comparable_runs(paths: &Paths, limit: usize) -> Vec<DoctorRunId> {
     let mut budget = Budget::new(Duration::from_secs(1), DOCTOR_SCAN_MAX_ENTRIES);
     let Ok(listing) = budget::list_dir(&paths.doctor_runs_dir(), &mut budget) else {
         return Vec::new();
@@ -1512,11 +1533,16 @@ fn finished_runs(paths: &Paths) -> Vec<DoctorRunId> {
         .entries
         .iter()
         .filter_map(|(name, _)| name.to_str().and_then(DoctorRunId::parse))
-        .filter(|run| paths.doctor_run(run).join(REPORT_FILE).is_file())
         .collect();
     runs.sort();
     runs.reverse();
-    runs
+    runs.into_iter()
+        .filter(|run| {
+            let report = paths.doctor_run(run).join(REPORT_FILE);
+            report.is_file() && read_report(&report).is_ok_and(|r| r.findings.is_some())
+        })
+        .take(limit)
+        .collect()
 }
 
 #[cfg(test)]
@@ -1533,6 +1559,7 @@ mod tests {
         use std::path::PathBuf;
 
         use crate::doctor::fix::Suspended;
+        use crate::doctor::registry::ids;
         use crate::engine::repair_action::{Endpoint, Endpoints};
         let tx: crate::model::TxId = "01JB8Q2VA00000000000000009".parse().unwrap();
         let rename = |seq: u32, from: &str, to: &str| Step {
@@ -1861,6 +1888,89 @@ mod tests {
             (refused.code, refused.fix.argv()),
             (ErrorCode::NotFound, Some(argv(&["doctor"]).as_slice())),
             "no run at all: the fix drops --since"
+        );
+    }
+
+    /// `doctor undo` makes a run of its own and moves `latest` to it, and its report names
+    /// the run it reverted instead of findings. `--since latest` and `doctor diff latest`
+    /// then mean the newest run that reported findings; the undo run named by its id is
+    /// `not_found` (never `state_corrupt`), and no fix or alternative offers it.
+    #[test]
+    fn since_passes_over_an_undo_run() {
+        const UNDO: &str = "2026-10-30T21-00-00Z__01M8S7XQKZ0000000000000DDD";
+        let (_dir, paths) = runs();
+        let undo = paths.doctor_run(&DoctorRunId::parse(UNDO).unwrap());
+        fs::create_dir_all(&undo).unwrap();
+        fs::write(
+            undo.join(REPORT_FILE),
+            format!(
+                r#"{{"schema_version":"1.1","kind":"undo","state":"DONE_OK","reverted_run":"{NEW}"}}"#
+            ),
+        )
+        .unwrap();
+        fs::remove_file(paths.doctor_latest()).unwrap();
+        std::os::unix::fs::symlink(format!("runs/{UNDO}"), paths.doctor_latest()).unwrap();
+
+        for how in [SinceArg::Flag, SinceArg::Positional] {
+            let line = |given: &str| match how {
+                SinceArg::Flag => argv(&["doctor", "--since", given]),
+                SinceArg::Positional => argv(&["doctor", "diff", given]),
+            };
+            let (run, old) = read_since(&paths, "latest", &line("latest"), how).unwrap();
+            assert_eq!(
+                (run.as_str(), old),
+                (NEW, Vec::<String>::new()),
+                "{how:?}: latest is the newest run with findings"
+            );
+
+            let refused = read_since(&paths, UNDO, &line(UNDO), how).unwrap_err();
+            assert_eq!(refused.code, ErrorCode::NotFound, "{how:?}");
+            assert!(
+                refused.message.contains("is an undo"),
+                "{how:?}: {}",
+                refused.message
+            );
+            assert_eq!(refused.fix.argv(), Some(line(NEW).as_slice()), "{how:?}");
+            let alternatives: Vec<_> = refused
+                .alternatives
+                .iter()
+                .filter_map(|a| a.argv())
+                .collect();
+            assert_eq!(alternatives, [line(OLD).as_slice()], "{how:?}");
+            assert_eq!(
+                refused.details["newest_ids"],
+                serde_json::json!([NEW, OLD]),
+                "{how:?}: the undo run is never offered"
+            );
+        }
+
+        // Only undo runs have finished: nothing to compare with, and the fix names no run.
+        let only = tempfile::tempdir().unwrap();
+        let home = only.path().join("home");
+        let lone = Paths::with_roots(
+            &home,
+            home.join(".config"),
+            home.join(".local/state"),
+            home.join(".cache"),
+        );
+        let undo = lone.doctor_run(&DoctorRunId::parse(UNDO).unwrap());
+        fs::create_dir_all(&undo).unwrap();
+        fs::write(
+            undo.join(REPORT_FILE),
+            r#"{"schema_version":"1.1","kind":"undo"}"#,
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(format!("runs/{UNDO}"), lone.doctor_latest()).unwrap();
+        let line = argv(&["doctor", "--since", "latest"]);
+        let refused = read_since(&lone, "latest", &line, SinceArg::Flag).unwrap_err();
+        assert_eq!(
+            (refused.code, refused.fix.argv()),
+            (ErrorCode::NotFound, Some(argv(&["doctor"]).as_slice()))
+        );
+        assert!(
+            refused.message.contains("only undo runs"),
+            "{}",
+            refused.message
         );
     }
 

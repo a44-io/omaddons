@@ -463,7 +463,12 @@ fn git_on_github_lists_commit_titles_since_the_installed_commit() {
     serve(&[(&a, "First")]);
     let git = "git:https://github.com/o/r#main";
     home.run(&["install", git, "-t", "retail"]).expect(0);
-    serve(&[(&c, "Third &amp; last"), (&b, "Second"), (&a, "First")]);
+    // The second title carries a terminal escape sequence as the feed would escape it.
+    serve(&[
+        (&c, "Third &amp; last"),
+        (&b, "Second &#27;[31mred&#27;[0m"),
+        (&a, "First"),
+    ]);
     age_memo(&home);
     let r = home.run(&["outdated", "--changelog"]);
     let envelope = r.expect(0);
@@ -476,6 +481,9 @@ fn git_on_github_lists_commit_titles_since_the_installed_commit() {
     );
     assert_eq!(changelog["source"], "git");
     assert_eq!(changelog["entries"][0]["text"], "Third & last");
+    // A title is one safe line: the escape character its entity decodes to is dropped,
+    // so no commit title can send a terminal escape sequence.
+    assert_eq!(changelog["entries"][1]["text"], "Second [31mred[0m");
     assert_eq!(changelog["truncated"], false);
     assert_no_github_rest(&net_log(&home).entries);
 }

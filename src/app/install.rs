@@ -739,7 +739,13 @@ pub fn run(ctx: &Context, args: &InstallArgs) -> Result<InstallOutcome> {
         .iter()
         .filter_map(|(item, e)| e.clone().map(|e| (item.request.clone(), e)))
         .collect();
-    if errors.len() == built.len() {
+    // Every addon asked for failed. A request naming an addon a second time is no addon
+    // of its own: it is skipped as a duplicate whatever became of the first.
+    let asked = built
+        .iter()
+        .filter(|(item, _)| item.skip_reason != Some(SkipReason::Duplicate))
+        .count();
+    if errors.len() == asked {
         let id = outcome.map_or_else(|| target.target.id.clone(), |o| o.target.clone());
         return Err(all_failed(&errors, Some(&id)));
     }

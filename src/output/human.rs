@@ -83,7 +83,25 @@ pub fn thousands(n: u64) -> String {
 
 /// Rows as left-aligned columns separated by two spaces, without trailing spaces.
 /// Widths count visible characters, so a colored cell aligns like a plain one.
+///
+/// Every row is exactly one line, which callers that pair the lines with their rows rely
+/// on (`status`, `history`): a line break or any other control character inside a cell (a
+/// client's label or an argument given with one) reads as a space. A color sequence's
+/// own escape character stays.
 pub fn table(rows: &[Vec<String>]) -> String {
+    let one_line = |cell: &String| -> String {
+        let breaks = |c: char| c.is_control() && c != '\u{1b}';
+        if cell.contains(breaks) {
+            cell.replace(breaks, " ")
+        } else {
+            cell.clone()
+        }
+    };
+    let rows: Vec<Vec<String>> = rows
+        .iter()
+        .map(|row| row.iter().map(one_line).collect())
+        .collect();
+    let rows = &rows;
     let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
     let widths: Vec<usize> = (0..columns)
         .map(|c| {
@@ -299,6 +317,33 @@ mod tests {
             "retail  mainline      12.1.5\nwotlk   wrath-legacy  3.3.5\n"
         );
         assert_eq!(table(&[]), "");
+    }
+
+    /// A row is one line whatever its cells hold: a label or an argument given with a
+    /// line break (or a tab, or a carriage return) would otherwise add lines, and a
+    /// caller pairing lines with rows would print each row's details under the wrong
+    /// row and drop the last. A color sequence is no break.
+    #[test]
+    fn a_row_is_one_line_whatever_its_cells_hold() {
+        let color = Style {
+            color: true,
+            ..Style::default()
+        };
+        let rows = vec![
+            vec!["retail".to_owned(), "my\nlabel".to_owned(), "x".to_owned()],
+            vec![
+                "era".to_owned(),
+                "a\r\nb\tc\u{7}d".to_owned(),
+                "y".to_owned(),
+            ],
+            vec!["wotlk".to_owned(), color.warn("plain"), "z".to_owned()],
+        ];
+        let out = table(&rows);
+        assert_eq!(out.lines().count(), rows.len(), "{out:?}");
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines[0], "retail  my label  x");
+        assert_eq!(lines[1], "era     a  b c d  y");
+        assert!(lines[2].contains('\u{1b}') && lines[2].ends_with('z'));
     }
 
     /// Both units named, singular and plural right for 0, 1 and 2 of each; no folder

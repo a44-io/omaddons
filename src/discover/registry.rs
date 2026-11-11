@@ -318,7 +318,14 @@ impl<'l> LockedRegistry<'l> {
             && let Some(index) = registry.targets.iter().position(|e| e.key == key)
         {
             let original = &registry.targets[index].client_dir;
-            if read_marker(original) != Some(key) {
+            // Moved, by either sign. The key the target was given when it was read
+            // ([`reconcile`]: no client is at the registered directory any more, and this
+            // one carries its marker) is the one every command showed for it, with its
+            // record: the first change must not take a new key instead because the old
+            // directory still holds a marker (an uninstalled client's leftover
+            // `Interface/`), which would detach the record and rename the client. Or the
+            // original no longer carries the marker.
+            if t.key == Some(key) || read_marker(original) != Some(key) {
                 // Moved: re-link the key to the new paths.
                 let entry = &mut registry.targets[index];
                 entry.install_root = t.install_root.clone();
@@ -375,11 +382,16 @@ impl<'l> LockedRegistry<'l> {
                 let root = found[0].target.install_root.clone();
                 return Err(name_needs_one_target(&root, &found, name));
             }
-            // Free, unless this client holds it already (by its directory or marker).
+            // Free, unless this client holds it already: by its directory, or by its
+            // marker when the holder moved here (its registered directory no longer
+            // carries the marker, which is when `register` re-links the key). A copy of
+            // the holder carries the marker too but gets a key of its own, so for it the
+            // name is taken, as it is for `rename`: never two targets under one id.
             let held = self.loaded.value.entry_by_id(name).is_some_and(|e| {
                 found.iter().any(|d| {
                     same_dir(&e.client_dir, &d.target.client_dir)
-                        || read_marker(&d.target.client_dir) == Some(e.key)
+                        || (read_marker(&d.target.client_dir) == Some(e.key)
+                            && read_marker(&e.client_dir) != Some(e.key))
                 })
             });
             if !held {

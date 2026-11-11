@@ -15,7 +15,7 @@ use jiff::Timestamp;
 use jiff::tz::TimeZone;
 
 use super::create::{self, CreateError, CreateRequest, Created, DIR_MODE};
-use super::inventory::{self, AutoLast, Capability, Change, Ring};
+use super::inventory::{self, AutoLast, AutoState, Capability, Change, Ring};
 use super::prune::{self, SpaceNeed};
 use super::tree::walk;
 use super::{BackupKind, BackupRef, EntryKind, Manifest, ManifestEntry, Reflinked, Trigger};
@@ -380,19 +380,10 @@ pub fn due(req: &AutoRun<'_>, client: &ClientPaths) -> Decision {
     // day is tried again, as what stopped a clone (a `WTF/` linked onto another
     // filesystem, a byte copy made under `daily-copy`) may be gone. Within its day it
     // stands, so a clone that keeps failing is tried once a day.
-    let midnight = now
-        .to_zoned(tz.clone())
-        .start_of_day()
-        .map(|z| z.timestamp())
-        .ok();
     let capability = req.target.target.key.map_or(Capability::Unknown, |key| {
         let auto = inventory::auto_state(req.paths, &key);
-        let stale = auto
-            .last
-            .as_ref()
-            .is_none_or(|last| midnight.is_none_or(|m| last.at < m));
         match auto.capability {
-            Capability::Unsupported if stale => Capability::Unknown,
+            Capability::Unsupported if before_today(&auto, now, &tz) => Capability::Unknown,
             observed => observed,
         }
     });
@@ -413,6 +404,40 @@ pub fn due(req: &AutoRun<'_>, client: &ClientPaths) -> Decision {
     decide(&facts, &|| unchanged(client, &backups))
 }
 
+/// Whether `auto`'s last attempt was made before today's local midnight, or never: what
+/// it observed of the filesystem then is no longer taken as known.
+fn before_today(auto: &AutoState, now: Timestamp, tz: &TimeZone) -> bool {
+    let midnight = now
+        .to_zoned(tz.clone())
+        .start_of_day()
+        .map(|z| z.timestamp())
+        .ok();
+    auto.last
+        .as_ref()
+        .is_none_or(|last| midnight.is_none_or(|m| last.at < m))
+}
+
+/// The capability to record with an attempt made `now` that observed `observed` (`None`:
+/// it never reached the clone, being skipped before it or failing). An attempt that
+/// observed nothing keeps what is known, except an `unsupported` from an earlier local
+/// day, which is due to be tried again ([`due`]) and so is unknown again: recorded as it
+/// was beside this attempt's time, it would read as observed today, and one skip in the
+/// morning (`unchanged`, `running`) would cancel the day's retry, every day.
+fn capability_after(
+    auto: &AutoState,
+    observed: Option<Capability>,
+    now: Timestamp,
+    tz: &TimeZone,
+) -> Capability {
+    match observed {
+        Some(observed) => observed,
+        None if auto.capability == Capability::Unsupported && before_today(auto, now, tz) => {
+            Capability::Unknown
+        }
+        None => auto.capability,
+    }
+}
+
 /// A skip decided before anything else: recorded only where `req` records them, never
 /// for `no_reflink` (its whole point is to write nothing) or for a target without a key.
 fn skipped(req: &AutoRun<'_>, target: &Target, skip: Skip) -> AutoResult {
@@ -430,9 +455,10 @@ fn note(req: &AutoRun<'_>, target: &Target, result: &str, capability: Option<Cap
     };
     let client = ClientPaths::new(&target.client_dir);
     let mut auto = inventory::auto_state(req.paths, &key);
-    auto.capability = capability.unwrap_or(auto.capability);
+    let now = crate::clock::now();
+    auto.capability = capability_after(&auto, capability, now, &TimeZone::system());
     auto.last = Some(AutoLast {
-        at: crate::clock::now(),
+        at: now,
         result: result.to_owned(),
     });
     let ring = Ring {
@@ -895,6 +921,69 @@ mod tests {
         assert!(
             !done_today(&backups, now, &berlin),
             "23:30 yesterday in Berlin"
+        );
+    }
+
+    /// An `unsupported` observed on an earlier local day is tried again, also after an
+    /// attempt today that never reached the clone: a skip records no capability of its
+    /// own, and must not make yesterday's read as today's. Within its day it stands, and
+    /// what an attempt did observe always replaces it.
+    #[test]
+    fn a_skip_never_renews_an_unsupported_from_an_earlier_day() {
+        let utc = TimeZone::UTC;
+        let observed = |capability, last: &str| AutoState {
+            capability,
+            last: Some(AutoLast {
+                at: at(last),
+                result: "no_reflink".to_owned(),
+            }),
+        };
+        let yesterday = observed(Capability::Unsupported, "2026-10-19T20:00:00Z");
+        let morning = at("2026-10-20T08:00:00Z");
+        assert!(before_today(&yesterday, morning, &utc));
+        // The morning's attempt is skipped (`unchanged`): what it records.
+        let after_skip = AutoState {
+            capability: capability_after(&yesterday, None, morning, &utc),
+            last: Some(AutoLast {
+                at: morning,
+                result: "unchanged".to_owned(),
+            }),
+        };
+        assert_eq!(after_skip.capability, Capability::Unknown);
+        // Later that day the clone is tried: nothing says it cannot.
+        let evening = at("2026-10-20T19:00:00Z");
+        assert!(!before_today(&after_skip, evening, &utc));
+        assert_ne!(after_skip.capability, Capability::Unsupported);
+
+        // Observed today, it stands for the day, skips included.
+        let today = observed(Capability::Unsupported, "2026-10-20T07:00:00Z");
+        assert_eq!(
+            capability_after(&today, None, morning, &utc),
+            Capability::Unsupported
+        );
+        // What works is never forgotten by a skip, whenever it was seen.
+        let works = observed(Capability::Supported, "2026-10-01T07:00:00Z");
+        assert_eq!(
+            capability_after(&works, None, morning, &utc),
+            Capability::Supported
+        );
+        // An attempt that reached the clone says what it saw.
+        for seen in [Capability::Supported, Capability::Unsupported] {
+            assert_eq!(
+                capability_after(&yesterday, Some(seen), morning, &utc),
+                seen
+            );
+        }
+        // The local day decides: 23:30 yesterday in Berlin is today in UTC.
+        let berlin = TimeZone::get("Europe/Berlin").unwrap();
+        let late = observed(Capability::Unsupported, "2026-10-20T21:30:00Z");
+        let now = at("2026-10-20T22:30:00Z");
+        assert_eq!(
+            (
+                capability_after(&late, None, now, &utc),
+                capability_after(&late, None, now, &berlin)
+            ),
+            (Capability::Unsupported, Capability::Unknown)
         );
     }
 }

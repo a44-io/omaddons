@@ -260,7 +260,7 @@ pub const COMMANDS: &[CommandEntry] = &[
     entry("info", Look, false, &[0, 1, 2, 3, 4], data_schema::<info::InfoOutcome>, Network::Optional),
     entry("search", Look, false, &[0, 1, 2, 3, 4], data_schema::<search::SearchOutcome>, Network::Required),
     entry("errors", Look, false, &[0, 1, 2, 3, 4, 6], data_schema::<errors::ErrorsOutcome>, Network::None),
-    entry("errors dismiss", Look, true, &[0, 1, 2, 4, 5], data_schema::<errors::DismissOutcome>, Network::None),
+    entry("errors dismiss", Look, true, &[0, 1, 2, 3, 4, 5], data_schema::<errors::DismissOutcome>, Network::None),
     entry("export", Look, true, &[0, 1, 2, 3, 4, 5], data_schema::<export::ExportOutcome>, Network::None),
     entry("history", Look, false, &[0, 1, 2, 3, 4], data_schema::<history::HistoryOutcome>, Network::None),
     entry("plans show", Look, false, &[0, 1, 2, 3], data_schema::<plans::PlansShowOutcome>, Network::None),
