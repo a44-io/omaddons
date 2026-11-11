@@ -34,7 +34,7 @@ pub use mutate::{
 };
 pub use op::Op;
 pub(crate) use prune::canonical_lenient;
-pub use prune::{LockUse, PruneReason, PruneReport, prune, remove_purged_meta};
+pub use prune::{LockUse, PruneReason, PruneReport, Skip, SkipReason, prune, remove_purged_meta};
 pub use scope::{Access, OwnedFolders, Refusal, Scope, ScopeMatch, ScopeTable, Side, Writer};
 pub use session::{RepairPaths, SnapshotRoots, WriteSession};
 pub use stamp::{FileStamp, TreeStamp, WalkError};

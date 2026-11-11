@@ -51,5 +51,14 @@ expression: value
   },
   "lost_undos": [],
   "precondition": null,
-  "remaining": 0
+  "remaining": 0,
+  "skipped": [
+    {
+      "kind": "run",
+      "message": "left in trash: Device or resource busy (os error 16)",
+      "path": "/s/doctor/runs/R2",
+      "reason": "left_in_trash",
+      "run_id": "R2"
+    }
+  ]
 }

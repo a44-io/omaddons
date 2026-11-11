@@ -12,7 +12,7 @@ use jiff::Timestamp;
 use super::history::{parse_since, short_tx};
 use crate::cli::Context;
 use crate::doctor::exit::Exit;
-use crate::doctor::gc::{self, DeletionKind, Disk, GcReport, GcRequest};
+use crate::doctor::gc::{self, DeletionKind, Disk, GcReport, GcRequest, GcSkipReason, GcSkipped};
 use crate::error::{Error, ErrorCode, Suggestion};
 use crate::limits::{DOCTOR_GC_SUGGESTED_AGE, DOCTOR_SCAN_MAX_ENTRIES};
 use crate::output::{DoctorFailure, DoctorOutcome, Style};
@@ -38,6 +38,8 @@ pub const GC_HELP: &str = "Examples:\n  omaddons doctor gc --before 30d --dry-ru
 pub struct GcRun {
     report: GcReport,
     verbose: bool,
+    /// What a real run left of its plan, beside the report (exit 74).
+    error: Option<Error>,
 }
 
 /// `--before`'s suggested value, [`DOCTOR_GC_SUGGESTED_AGE`] in whole days: `30d`.
@@ -63,9 +65,43 @@ pub fn run(ctx: &Context, args: &GcArgs) -> Result<GcRun, DoctorFailure> {
         },
     )?;
     Ok(GcRun {
+        error: left_behind(&report),
         report,
         verbose: ctx.output.style.detail(),
     })
+}
+
+/// The failure of a real run that left planned deletions where they were or in trash:
+/// an `io` error beside the report, whose `skipped` names each with why; `None` when
+/// nothing was left (a deletion already gone left nothing).
+fn left_behind(r: &GcReport) -> Option<Error> {
+    let left: Vec<&GcSkipped> = r
+        .skipped
+        .iter()
+        .filter(|s| s.reason != GcSkipReason::Gone)
+        .collect();
+    let first = left.first()?;
+    let more = match left.len() {
+        1 => String::new(),
+        n => format!(" and {} more", n - 1),
+    };
+    Some(
+        Error::new(
+            ErrorCode::Io,
+            format!(
+                "doctor gc deleted {} of its {} planned deletions, not {}{more}: {}",
+                r.deletions.len(),
+                r.deletions.len() + r.skipped.len(),
+                first.path,
+                first.message
+            ),
+            Suggestion::text(format!(
+                "skipped lists {} and the rest left with why: what waits in trash goes with a later prune that sweeps it, and what stays where it was is planned again by the next doctor gc",
+                first.path
+            )),
+        )
+        .details(serde_json::json!({ "path": first.path })),
+    )
 }
 
 /// The cutoff `--before` names, once every argument is checked: each refusal a usage
@@ -155,7 +191,15 @@ impl DoctorOutcome for GcRun {
     }
 
     fn exit(&self) -> Exit {
-        Exit::Healthy
+        if self.error.is_some() {
+            Exit::IoError
+        } else {
+            Exit::Healthy
+        }
+    }
+
+    fn error(&self) -> Option<&Error> {
+        self.error.as_ref()
     }
 
     fn render_human(&self, w: &mut dyn Write, _style: &Style) -> std::io::Result<()> {
@@ -168,16 +212,23 @@ impl DoctorOutcome for GcRun {
 fn render(r: &GcReport, verbose: bool, w: &mut dyn Write) -> std::io::Result<()> {
     let before = r.before_at.strftime("%Y-%m-%d %H:%M UTC");
     let kept = r.exclusions.len();
-    if r.deletions.is_empty() {
+    if r.deletions.is_empty() && r.skipped.is_empty() {
         writeln!(w, "nothing to delete before {before} (kept {kept})")?;
     } else {
         let verb = if r.dry_run { "would delete" } else { "deleted" };
-        writeln!(
-            w,
-            "{verb} {} ({}), all started before {before}",
-            what(r),
-            size(r)
-        )?;
+        if r.deletions.is_empty() {
+            writeln!(w, "{verb} nothing, all started before {before}")?;
+        } else {
+            writeln!(
+                w,
+                "{verb} {} ({}), all started before {before}",
+                what(r),
+                size(r)
+            )?;
+        }
+        for s in &r.skipped {
+            writeln!(w, "  not deleted: {} ({})", s.path, s.message)?;
+        }
         let only = r.deletions.iter().filter(|d| d.may_hold_only_copy).count();
         if only > 0 {
             writeln!(
@@ -578,6 +629,7 @@ mod tests {
                 deletion(DeletionKind::Run, "/s/runs/R1", Some(419_430), true),
                 deletion(DeletionKind::Run, "/s/runs/R0", Some(0), false),
             ],
+            skipped: Vec::new(),
             exclusions: vec![
                 exclusion("/s/runs/R3/backups/1", Pin::ActiveUndo),
                 exclusion("/s/runs/R4", Pin::UnfinishedJournal),
@@ -589,6 +641,85 @@ mod tests {
             }),
             remaining: Some(0),
             precondition: Some("pc1:abc".to_owned()),
+        }
+    }
+
+    fn skipped(path: &str, reason: GcSkipReason, message: &str) -> GcSkipped {
+        GcSkipped {
+            kind: DeletionKind::Run,
+            run_id: Some("R2".to_owned()),
+            path: path.to_owned(),
+            reason,
+            message: message.to_owned(),
+        }
+    }
+
+    /// A real run that left planned deletions fails beside its report: exit 74, an `io`
+    /// error naming the first one left and how many more; one already gone left nothing
+    /// (omad-4h0d.13).
+    #[test]
+    fn a_run_that_left_deletions_exits_74_beside_its_report() {
+        let gone = skipped("/s/runs/R5", GcSkipReason::Gone, "already gone");
+        let held = skipped(
+            "/s/runs/R6",
+            GcSkipReason::Held,
+            "held by a live transaction",
+        );
+        let busy = skipped(
+            "/s/runs/R2",
+            GcSkipReason::LeftInTrash,
+            "left in trash: Device or resource busy (os error 16)",
+        );
+        let real = GcReport {
+            dry_run: false,
+            precondition: None,
+            ..report()
+        };
+        for (case, skipped, error) in [
+            ("nothing_skipped", Vec::new(), None),
+            ("only_gone", vec![gone.clone()], None),
+            (
+                "one_left",
+                vec![gone.clone(), busy.clone()],
+                Some((
+                    "doctor gc deleted 4 of its 6 planned deletions, not /s/runs/R2: left in trash: Device or resource busy (os error 16)",
+                    "/s/runs/R2",
+                )),
+            ),
+            (
+                "two_left",
+                vec![busy, gone, held],
+                Some((
+                    "doctor gc deleted 4 of its 7 planned deletions, not /s/runs/R2 and 1 more: left in trash: Device or resource busy (os error 16)",
+                    "/s/runs/R2",
+                )),
+            ),
+        ] {
+            let run = GcRun {
+                error: left_behind(&GcReport {
+                    skipped,
+                    ..real.clone()
+                }),
+                report: real.clone(),
+                verbose: false,
+            };
+            match error {
+                None => {
+                    assert!(run.error().is_none(), "{case}: {:?}", run.error());
+                    assert_eq!(run.exit(), Exit::Healthy, "{case}");
+                }
+                Some((message, path)) => {
+                    let err = run.error().unwrap_or_else(|| panic!("{case}: no error"));
+                    assert_eq!(err.code, ErrorCode::Io, "{case}");
+                    assert_eq!(err.message, message, "{case}");
+                    assert_eq!(err.details["path"], path, "{case}");
+                    assert_eq!(err.fix.argv(), None, "{case}: a prose fix");
+                    let fix = err.fix.display();
+                    assert!(fix.contains(path), "{case}: {fix}");
+                    assert_eq!(run.exit(), Exit::IoError, "{case}");
+                    assert_eq!(run.exit().code(), 74, "{case}");
+                }
+            }
         }
     }
 
@@ -619,7 +750,35 @@ mod tests {
             precondition: Some("pc1:abc".to_owned()),
             ..report()
         };
-        let cases: [(&str, GcReport, bool, String); 7] = [
+        let busy = skipped(
+            "/s/runs/R2",
+            GcSkipReason::LeftInTrash,
+            "left in trash: Device or resource busy (os error 16)",
+        );
+        let cases: [(&str, GcReport, bool, String); 9] = [
+            (
+                "a_real_run_that_left_one",
+                GcReport {
+                    skipped: vec![busy.clone()],
+                    ..real.clone()
+                },
+                false,
+                format!(
+                    "deleted 1 run directory (7 B), all started before {before}\n  not deleted: /s/runs/R2 (left in trash: Device or resource busy (os error 16))\n"
+                ),
+            ),
+            (
+                "a_real_run_that_deleted_nothing",
+                GcReport {
+                    deletions: Vec::new(),
+                    skipped: vec![busy],
+                    ..real.clone()
+                },
+                false,
+                format!(
+                    "deleted nothing, all started before {before}\n  not deleted: /s/runs/R2 (left in trash: Device or resource busy (os error 16))\n"
+                ),
+            ),
             (
                 "a_dry_run",
                 report(),

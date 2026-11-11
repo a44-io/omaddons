@@ -49,8 +49,12 @@ pub struct GcReport {
     /// command started. Pass it back as `--before` to bind a run exactly to a preview.
     #[schemars(schema_with = "crate::contract::schema::timestamp")]
     pub before_at: Timestamp,
-    /// What is deleted (or, in a preview, would be), in deletion order.
+    /// What is deleted (or, in a preview, would be), in deletion order. A real run lists
+    /// only what it deleted; what it planned and did not delete is in `skipped`.
     pub deletions: Vec<GcDeletion>,
+    /// The planned deletions a real run did not make, each with why, in deletion order;
+    /// empty in a preview. Anything but `gone` is still there, and the run exits 74.
+    pub skipped: Vec<GcSkipped>,
     /// What is kept although it is old enough, and why, sorted by path.
     pub exclusions: Vec<GcExclusion>,
     /// The repairs and undos of repairs whose own undo reads what is deleted: they can no
@@ -82,6 +86,46 @@ pub struct GcDeletion {
     /// It holds what a repair kept (a backup, or something set aside), which may exist
     /// nowhere else.
     pub may_hold_only_copy: bool,
+}
+
+/// A planned deletion a real run did not make.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct GcSkipped {
+    pub kind: DeletionKind,
+    /// The run it belongs to; `null` for a repair half no run claims.
+    pub run_id: Option<String>,
+    /// Absolute, where it was planned.
+    pub path: String,
+    pub reason: GcSkipReason,
+    /// What happened, in words: the fence, the holder, or the delete's error.
+    pub message: String,
+}
+
+/// Why a planned deletion was not made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum GcSkipReason {
+    /// It was gone before gc reached it: nothing is left.
+    Gone,
+    /// A stuck repair journal's fence covers it: it stays where it is.
+    Fenced,
+    /// A live transaction holds it: it stays where it is.
+    Held,
+    /// It was moved into trash and deleting it there failed: it waits in that trash
+    /// (`trash/` beside it) for a later prune that sweeps it.
+    LeftInTrash,
+}
+
+impl From<crate::fsx::SkipReason> for GcSkipReason {
+    fn from(reason: crate::fsx::SkipReason) -> Self {
+        use crate::fsx::SkipReason;
+        match reason {
+            SkipReason::Gone => Self::Gone,
+            SkipReason::Fenced => Self::Fenced,
+            SkipReason::Held => Self::Held,
+            SkipReason::LeftInTrash => Self::LeftInTrash,
+        }
+    }
 }
 
 /// One kept candidate.
@@ -260,6 +304,7 @@ pub fn plan(view: &GcView, cap: usize) -> GcPlan {
         dry_run: false,
         before_at: view.before,
         deletions: deleted.iter().map(|d| deletion(d)).collect(),
+        skipped: Vec::new(),
         exclusions,
         lost_undos,
         latest,
@@ -1570,7 +1615,16 @@ mod tests {
             &[&format!("{}/backups/2", run_path(&run_id(days(41), 2)))],
         )];
         view.latest = latest_names(&view.groups[0], false);
-        let value = serde_json::to_value(plan(&view, 10).report).unwrap();
+        let mut report = plan(&view, 10).report;
+        // What a real run's delete step did not make (the plan never fills it).
+        report.skipped.push(GcSkipped {
+            kind: DeletionKind::Run,
+            run_id: Some("R2".to_owned()),
+            path: "/s/doctor/runs/R2".to_owned(),
+            reason: GcSkipReason::LeftInTrash,
+            message: "left in trash: Device or resource busy (os error 16)".to_owned(),
+        });
+        let value = serde_json::to_value(report).unwrap();
         insta::assert_json_snapshot!(value);
     }
 }

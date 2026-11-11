@@ -774,6 +774,8 @@ enum doctor fix data.state DONE_FAILED,DONE_FINDINGS,DONE_OK,DONE_PARTIAL,LOCK_L
 enum doctor gc data.deletions[].kind cache_quarantine,client_repair,run
 enum doctor gc data.exclusions[].kind backup,cache_quarantine,client_repair,quarantine,run
 enum doctor gc data.exclusions[].pin active_run,active_undo,recovery_dependency,unfinished_journal
+enum doctor gc data.skipped[].kind cache_quarantine,client_repair,run
+enum doctor gc data.skipped[].reason fenced,gone,held,left_in_trash
 enum doctor undo data.actions_planned[].post<untagged=kind>.kind absent
 enum doctor undo data.actions_planned[].post<untagged=kind|identity,link_target>.kind symlink
 enum doctor undo data.actions_planned[].post<untagged=kind|identity,mode,sha256>.kind file
@@ -7361,6 +7363,13 @@ output doctor gc data.lost_undos array!
 output doctor gc data.lost_undos[] string
 output doctor gc data.precondition string?!
 output doctor gc data.remaining integer?! minimum=0
+output doctor gc data.skipped array!
+output doctor gc data.skipped[] object
+output doctor gc data.skipped[].kind string!
+output doctor gc data.skipped[].message string!
+output doctor gc data.skipped[].path string!
+output doctor gc data.skipped[].reason string!
+output doctor gc data.skipped[].run_id string?!
 output doctor undo data object
 output doctor undo data.actions_planned array?
 output doctor undo data.actions_planned[] object tag=op

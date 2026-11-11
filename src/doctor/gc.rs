@@ -26,8 +26,8 @@ use std::path::{Path, PathBuf};
 use jiff::Timestamp;
 
 pub use plan::{
-    DeletionKind, ExcludedKind, GcDeletion, GcExclusion, GcPlan, GcReport, LatestChange, Pin,
-    Victim, invariant_violations, plan,
+    DeletionKind, ExcludedKind, GcDeletion, GcExclusion, GcPlan, GcReport, GcSkipReason, GcSkipped,
+    LatestChange, Pin, Victim, invariant_violations, plan,
 };
 pub use view::{
     Anchor, Candidate, Client, GcInputs, GcView, Group, GuardState, JournalView, LatestState,
@@ -42,8 +42,8 @@ use crate::engine::repair::PreparedRead;
 use crate::engine::repair::journal as repair_journal;
 use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::fsx::{
-    self, FenceStop, GlobalLock, GlobalLockGuard, LockUse, Op, PruneReason, ScopeTable,
-    WriteSession, Writer,
+    self, FenceStop, GlobalLock, GlobalLockGuard, LockUse, Op, PruneReason, PruneReport,
+    ScopeTable, WriteSession, Writer,
 };
 use crate::limits::{DOCTOR_GC_MAX_DELETIONS, DOCTOR_SCAN_MAX_ENTRIES};
 use crate::model::{Actor, TxId};
@@ -85,14 +85,14 @@ pub trait GcWorld {
     /// Points `latest` at `runs/<to>`, under the lock.
     fn retarget(&self, clients: &[Client], to: &str) -> Result<()>;
     /// Renames `latest` first when `remove_latest`, then `victims`, into trash under the
-    /// lock, releases it, and deletes them; how many were deleted.
+    /// lock, releases it, and deletes them: what was deleted, and what was not and why.
     fn delete(
         &self,
         clients: &[Client],
         remove_latest: bool,
         victims: &[PathBuf],
         guard: Self::Guard,
-    ) -> Result<usize>;
+    ) -> Result<PruneReport>;
     /// Rings the widget's doorbell.
     fn ring(&self);
 }
@@ -133,17 +133,38 @@ pub fn gc<W: GcWorld>(world: &W, req: &GcRequest<'_>) -> Result<GcReport> {
         }
     }
     let victims: Vec<PathBuf> = fresh.victims.iter().map(|v| v.path.clone()).collect();
+    let mut report = fresh.report;
     if remove_latest || !victims.is_empty() {
-        let deleted = world.delete(&clients, remove_latest, &victims, guard)?;
-        if deleted > 0 {
+        let pruned = world.delete(&clients, remove_latest, &victims, guard)?;
+        if !pruned.removed.is_empty() {
             world.ring();
         }
+        settle(&mut report, &fresh.victims, &pruned);
     }
     Ok(GcReport {
         dry_run: false,
         precondition: None,
-        ..fresh.report
+        ..report
     })
+}
+
+/// `report`'s planned deletions as the delete step made them: each one it did not make
+/// moves from `deletions` to `skipped`, with why. `victims` are the deletions' own paths,
+/// in the same order; `latest`, no deletion, is left out.
+fn settle(report: &mut GcReport, victims: &[Victim], pruned: &PruneReport) {
+    let planned = std::mem::take(&mut report.deletions);
+    for (deletion, victim) in planned.into_iter().zip(victims) {
+        match pruned.skipped.iter().find(|s| s.victim == victim.path) {
+            None => report.deletions.push(deletion),
+            Some(skip) => report.skipped.push(GcSkipped {
+                kind: deletion.kind,
+                run_id: deletion.run_id,
+                path: deletion.path,
+                reason: skip.reason.into(),
+                message: skip.why.clone(),
+            }),
+        }
+    }
 }
 
 /// The plan's token.
@@ -250,17 +271,16 @@ impl GcWorld for Disk<'_> {
         remove_latest: bool,
         victims: &[PathBuf],
         guard: GlobalLockGuard,
-    ) -> Result<usize> {
+    ) -> Result<PruneReport> {
         let scopes = self.scopes(clients)?;
         let latest = remove_latest.then(|| self.paths.doctor_latest());
         let victims: Vec<PathBuf> = latest.into_iter().chain(victims.iter().cloned()).collect();
-        let report = fsx::prune(
+        fsx::prune(
             &scopes,
             PruneReason::DoctorGc,
             &victims,
             LockUse::HandOff(guard),
-        )?;
-        Ok(report.removed.len())
+        )
     }
 
     fn ring(&self) {
@@ -369,11 +389,13 @@ mod tests {
         }
     }
 
-    /// A world that hands out `views` in turn and records every call.
+    /// A world that hands out `views` in turn and records every call. Its delete step
+    /// skips `skips` and deletes every other victim.
     struct Recording {
         views: RefCell<VecDeque<GcView>>,
         calls: RefCell<Vec<String>>,
         fenced: Option<Error>,
+        skips: RefCell<Vec<fsx::Skip>>,
     }
 
     impl Recording {
@@ -382,6 +404,7 @@ mod tests {
                 views: RefCell::new(views.into()),
                 calls: RefCell::new(Vec::new()),
                 fenced: None,
+                skips: RefCell::new(Vec::new()),
             }
         }
 
@@ -441,9 +464,18 @@ mod tests {
             remove_latest: bool,
             victims: &[PathBuf],
             (): (),
-        ) -> Result<usize> {
+        ) -> Result<PruneReport> {
             self.note(format!("delete latest={remove_latest} {}", victims.len()));
-            Ok(victims.len() + usize::from(remove_latest))
+            let skipped = self.skips.borrow().clone();
+            Ok(PruneReport {
+                removed: victims
+                    .iter()
+                    .filter(|v| !skipped.iter().any(|s| &s.victim == *v))
+                    .cloned()
+                    .collect(),
+                bytes: 0,
+                skipped,
+            })
         }
 
         fn ring(&self) {
@@ -639,6 +671,58 @@ mod tests {
             world.calls()
         );
         assert!(world.calls().contains(&"delete latest=true 1".to_owned()));
+    }
+
+    /// A deletion the delete step did not make is no deletion: it moves to `skipped` with
+    /// its reason and words, and the others stay listed, in order (omad-4h0d.13).
+    #[test]
+    fn a_deletion_the_delete_step_skipped_is_reported_skipped() {
+        let (first, first_group) = run(42, 1);
+        let (second, second_group) = run(41, 2);
+        let (third, third_group) = run(40, 3);
+        let groups = vec![first_group, second_group, third_group];
+        let world = Recording::new(vec![view(groups.clone()), view(groups)]);
+        let left = PathBuf::from(format!("/s/doctor/runs/{}", second.as_str()));
+        *world.skips.borrow_mut() = vec![fsx::Skip {
+            victim: left.clone(),
+            reason: fsx::SkipReason::LeftInTrash,
+            why: "left in trash: Device or resource busy (os error 16)".to_owned(),
+        }];
+        let line = argv(&["omaddons", "doctor", "gc", "--before", "30d", "--yes"]);
+        let report = gc(&world, &request(&line, false, None)).unwrap();
+        assert_eq!(
+            report
+                .deletions
+                .iter()
+                .map(|d| d.run_id.as_deref())
+                .collect::<Vec<_>>(),
+            [Some(first.as_str()), Some(third.as_str())]
+        );
+        assert_eq!(
+            report.skipped,
+            [GcSkipped {
+                kind: DeletionKind::Run,
+                run_id: Some(second.as_str().to_owned()),
+                path: left.display().to_string(),
+                reason: GcSkipReason::LeftInTrash,
+                message: "left in trash: Device or resource busy (os error 16)".to_owned(),
+            }]
+        );
+        assert!(world.calls().contains(&"ring".to_owned()));
+
+        // Every deletion skipped: nothing was deleted, so the doorbell stays quiet.
+        let groups = vec![run(42, 1).1];
+        let world = Recording::new(vec![view(groups.clone()), view(groups)]);
+        *world.skips.borrow_mut() = vec![fsx::Skip {
+            victim: PathBuf::from(format!("/s/doctor/runs/{}", run(42, 1).0.as_str())),
+            reason: fsx::SkipReason::Gone,
+            why: "already gone".to_owned(),
+        }];
+        let report = gc(&world, &request(&line, false, None)).unwrap();
+        assert!(report.deletions.is_empty(), "{report:?}");
+        assert_eq!(report.skipped.len(), 1);
+        assert_eq!(report.skipped[0].reason, GcSkipReason::Gone);
+        assert!(!world.calls().contains(&"ring".to_owned()));
     }
 
     #[test]

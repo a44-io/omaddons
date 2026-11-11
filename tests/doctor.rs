@@ -2654,6 +2654,114 @@ fn gc_deletes_exactly_what_its_preview_listed() {
     drop(inflight);
 }
 
+/// A delete that fails once its victim is in trash (omad-4h0d.13). A lasting failure
+/// (`fsx.prune.delete=error`, the sweep's deletes too) leaves every planned deletion in
+/// trash: none is listed in `deletions`, each is in `skipped` as `left_in_trash` with the
+/// error, and the run exits 74 with an `io` error beside its report. A passing one
+/// (`@1`, the first delete only) is finished by the same prune's sweep: every deletion
+/// is listed, nothing is skipped, exit 0.
+#[test]
+fn gc_reports_a_deletion_it_could_not_make_as_skipped() {
+    let log = tlog!();
+    let (home, seed) = gc_home(&log);
+    log.step("preview");
+    let preview = gc(&log, &home, &["--before", "30d", "--dry-run"]);
+    preview.exit(0);
+    let planned: Vec<String> = preview.envelope()["deletions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["path"].as_str().unwrap().to_owned())
+        .collect();
+    // No transaction is live, so the held run is eligible too.
+    assert_eq!(planned.len(), 5, "{}", preview.envelope());
+    let trash_entries_in = |home: &Home| -> usize {
+        [
+            home.state().join("trash"),
+            home.env.cache().join("omaddons/trash"),
+            home.client("_retail_").join("Interface/.omaddons/trash"),
+        ]
+        .iter()
+        .map(|t| fs::read_dir(t).map(|d| d.count()).unwrap_or(0))
+        .sum()
+    };
+
+    log.step("every delete fails");
+    let ran = run_with(
+        &log,
+        &home,
+        &["doctor", "gc", "--before", "30d", "--yes", "--json"],
+        &[GC_NOW, ("OMADDONS_FAILPOINTS", "fsx.prune.delete=error")],
+    );
+    ran.exit(74);
+    let report = ran.envelope().clone();
+    log.json("report", &report);
+    assert_eq!(report["ok"], false, "{report}");
+    assert_eq!(report["deletions"], json!([]), "{report}");
+    let skipped = report["skipped"].as_array().unwrap();
+    assert_eq!(
+        skipped
+            .iter()
+            .map(|s| s["path"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>(),
+        planned,
+        "every planned deletion is skipped, in order"
+    );
+    for s in skipped {
+        assert_eq!(s["reason"], "left_in_trash", "{s}");
+        assert!(
+            s["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("left in trash: "),
+            "{s}"
+        );
+    }
+    assert_eq!(report["error"]["code"], "io", "{report}");
+    assert_eq!(report["error"]["details"]["path"], planned[0].as_str());
+    assert!(
+        report["error"]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("doctor gc deleted 0 of its 5 planned deletions"),
+        "{report}"
+    );
+    assert!(planned.iter().all(|p| !Path::new(p).exists()));
+    assert_eq!(trash_entries_in(&home), 5, "each waits in trash");
+    assert_eq!(
+        fs::read_link(home.state().join("doctor/latest")).unwrap(),
+        Path::new("runs").join(&seed.young),
+        "latest moved before the deletes"
+    );
+
+    log.step("a passing failure, finished by the sweep");
+    let (home, _) = gc_home(&log);
+    let ran = run_with(
+        &log,
+        &home,
+        &["doctor", "gc", "--before", "30d", "--yes", "--json"],
+        &[GC_NOW, ("OMADDONS_FAILPOINTS", "fsx.prune.delete=error@1")],
+    );
+    ran.exit(0);
+    let report = ran.envelope().clone();
+    log.json("report", &report);
+    assert_eq!(report["skipped"], json!([]), "{report}");
+    let deleted: Vec<&str> = report["deletions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(deleted.len(), planned.len(), "{report}");
+    assert!(deleted.iter().all(|p| !Path::new(p).exists()));
+    assert_eq!(
+        trash_entries_in(&home),
+        0,
+        "the sweep finished the failed one"
+    );
+    assert_eq!(report.get("error"), None, "{report}");
+}
+
 #[test]
 fn gc_binds_a_dry_run_too() {
     let log = tlog!();

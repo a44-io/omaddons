@@ -99,9 +99,43 @@ pub struct PruneReport {
     pub removed: Vec<PathBuf>,
     /// Bytes of regular files deleted.
     pub bytes: u64,
-    /// Victims left alone, with the reason (already gone, held, or a delete error;
-    /// failed deletes stay in trash for the next prune).
-    pub skipped: Vec<(PathBuf, String)>,
+    /// Victims not deleted, each with why (failed deletes stay in trash for the next
+    /// prune that sweeps it).
+    pub skipped: Vec<Skip>,
+}
+
+/// A victim a prune did not delete.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Skip {
+    /// Its original path.
+    pub victim: PathBuf,
+    pub reason: SkipReason,
+    /// The reason in words: the fence, the holder, or the delete's error.
+    pub why: String,
+}
+
+impl Skip {
+    fn new(victim: PathBuf, reason: SkipReason, why: impl Into<String>) -> Self {
+        Self {
+            victim,
+            reason,
+            why: why.into(),
+        }
+    }
+}
+
+/// Why a prune did not delete a victim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkipReason {
+    /// It was gone before the prune reached it: nothing is left.
+    Gone,
+    /// A stuck repair journal's fence covers it, or every change is refused: left in place.
+    Fenced,
+    /// A live transaction holds its in-flight lock: left in place.
+    Held,
+    /// It was moved into trash and deleting it there failed (`fsx.prune.delete` injects
+    /// that): it waits in trash for the next prune that sweeps it.
+    LeftInTrash,
 }
 
 /// A validated victim.
@@ -143,10 +177,16 @@ pub fn prune(
     for victim in victims {
         match classify(scopes, reason, victim, own.as_deref())? {
             Classified::Planned(plan) => planned.push(plan),
-            Classified::Gone => report
-                .skipped
-                .push((victim.clone(), "already gone".to_owned())),
-            Classified::Fenced(why) => report.skipped.push((victim.clone(), why)),
+            Classified::Gone => {
+                report
+                    .skipped
+                    .push(Skip::new(victim.clone(), SkipReason::Gone, "already gone"));
+            }
+            Classified::Fenced(why) => {
+                report
+                    .skipped
+                    .push(Skip::new(victim.clone(), SkipReason::Fenced, why));
+            }
         }
     }
     // Held until every victim is in trash, so an applier never holds a deleted lease.
@@ -209,9 +249,11 @@ pub fn prune(
     for (n, plan) in planned.into_iter().enumerate() {
         // Under `Own` the caller holds the victim's lock itself.
         if plan.inflight && own.is_none() && held(&plan.victim) {
-            report
-                .skipped
-                .push((plan.victim, "held by a live transaction".to_owned()));
+            report.skipped.push(Skip::new(
+                plan.victim,
+                SkipReason::Held,
+                "held by a live transaction",
+            ));
             continue;
         }
         ensure_dir_all(&mut session, &plan.trash)?;
@@ -256,15 +298,14 @@ pub fn prune(
     failpoint::hit("fsx.prune.deleting").map_err(fail)?;
 
     let mut trash_dirs = BTreeSet::new();
+    let mut failed = Vec::new();
     for (victim, entry, trash) in trashed {
         match delete_entry(&entry) {
             Ok(bytes) => {
                 report.removed.push(victim);
                 report.bytes = report.bytes.saturating_add(bytes);
             }
-            Err(err) => report
-                .skipped
-                .push((victim, format!("left in trash: {err}"))),
+            Err(err) => failed.push((victim, entry, err)),
         }
         trash_dirs.insert(trash);
     }
@@ -273,6 +314,19 @@ pub fn prune(
             sweep(dir);
         }
         drop_foreign_trash(scopes, &trash_dirs, lock_held);
+    }
+    // The sweep tries a failed delete once more: what it finished is deleted after all
+    // (its bytes uncounted), and only what is still in trash is left.
+    for (victim, entry, err) in failed {
+        match fs::symlink_metadata(&entry) {
+            // ubs:ignore — an io::ErrorKind, not a secret
+            Err(gone) if gone.kind() == io::ErrorKind::NotFound => report.removed.push(victim),
+            _ => report.skipped.push(Skip::new(
+                victim,
+                SkipReason::LeftInTrash,
+                format!("left in trash: {err}"),
+            )),
+        }
     }
     Ok(report)
 }
@@ -892,6 +946,9 @@ fn held(path: &Path) -> bool {
 
 /// Deletes one trash entry; returns the bytes of regular files it held.
 fn delete_entry(entry: &Path) -> io::Result<u64> {
+    // `fsx.prune.delete` fails a delete as an I/O error would: `=error` every one (the
+    // sweep's too, a lasting error), `@N` the Nth only (a passing one).
+    failpoint::hit("fsx.prune.delete")?;
     let meta = match fs::symlink_metadata(entry) {
         Ok(meta) => meta,
         // ubs:ignore — an io::ErrorKind, not a secret
@@ -1373,7 +1430,7 @@ mod tests {
                     let report = result.expect(case);
                     assert_eq!(
                         report.skipped,
-                        vec![(victim.clone(), "already gone".to_owned())],
+                        vec![Skip::new(victim.clone(), SkipReason::Gone, "already gone")],
                         "{case}"
                     );
                 }
@@ -1568,7 +1625,10 @@ mod tests {
             LockUse::Acquire,
         )
         .unwrap();
-        assert_eq!(again.skipped, [(snapshot, "already gone".to_owned())]);
+        assert_eq!(
+            again.skipped,
+            [Skip::new(snapshot, SkipReason::Gone, "already gone")]
+        );
     }
 
     /// A stop for the fence tests.
@@ -1596,6 +1656,83 @@ mod tests {
         .collect()
     }
 
+    /// A delete that fails once its victim is in trash. A passing failure (`@2`, the
+    /// second delete only) is finished by the same prune's sweep, so the victim is removed
+    /// after all, last. A lasting one (every delete, the sweep's too) leaves every victim
+    /// in trash, skipped and never listed as removed, until a later prune's sweep.
+    #[test]
+    fn a_failed_delete_is_removed_by_the_sweep_or_skipped_as_left_in_trash() {
+        let trash_entries = |f: &Fixture| {
+            fs::read_dir(f.client.join("Interface/.omaddons/trash")).map_or(0, Iterator::count)
+        };
+
+        let f = fixture();
+        let victims = three_snapshots(&f);
+        let report = failpoint::with_spec("fsx.prune.delete=error@2", || {
+            prune(
+                &f.scopes,
+                PruneReason::Retention,
+                &victims,
+                LockUse::Acquire,
+            )
+        })
+        .unwrap();
+        assert_eq!(
+            report.removed,
+            [victims[0].clone(), victims[2].clone(), victims[1].clone()],
+            "{report:?}"
+        );
+        assert_eq!(report.skipped, [], "{report:?}");
+        assert_eq!(trash_entries(&f), 0, "swept");
+
+        let f = fixture();
+        let victims = three_snapshots(&f);
+        let report = failpoint::with_spec("fsx.prune.delete=error", || {
+            prune(
+                &f.scopes,
+                PruneReason::Retention,
+                &victims,
+                LockUse::Acquire,
+            )
+        })
+        .unwrap();
+        assert_eq!(report.removed, [] as [PathBuf; 0], "{report:?}");
+        assert_eq!(
+            report
+                .skipped
+                .iter()
+                .map(|s| (&s.victim, s.reason))
+                .collect::<Vec<_>>(),
+            victims
+                .iter()
+                .map(|v| (v, SkipReason::LeftInTrash))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            report
+                .skipped
+                .iter()
+                .all(|s| s.why.starts_with("left in trash: ")),
+            "{report:?}"
+        );
+        assert!(victims.iter().all(|v| !v.exists()));
+        assert_eq!(trash_entries(&f), 3, "every entry waits in trash");
+        // The next prune into that trash sweeps them.
+        let next = make(
+            &f.client
+                .join("Interface/.omaddons/snapshots/01JB8Q2VA00000000000000004"),
+            true,
+        );
+        prune(
+            &f.scopes,
+            PruneReason::Retention,
+            std::slice::from_ref(&next),
+            LockUse::Acquire,
+        )
+        .unwrap();
+        assert_eq!(trash_entries(&f), 0, "swept");
+    }
+
     /// Three victims, the second fenced: the other two are pruned, the fenced one stays,
     /// listed with its reason, and the prune succeeds.
     #[test]
@@ -1618,7 +1755,11 @@ mod tests {
         );
         assert_eq!(
             report.skipped,
-            [(victims[1].clone(), format!("fenced by transaction {by}"))]
+            [Skip::new(
+                victims[1].clone(),
+                SkipReason::Fenced,
+                format!("fenced by transaction {by}")
+            )]
         );
         assert!(victims[1].exists() && !victims[0].exists() && !victims[2].exists());
     }
@@ -1644,8 +1785,10 @@ mod tests {
             let report =
                 prune(&scopes, PruneReason::Retention, &victims, LockUse::Acquire).unwrap();
             let why = format!("every change is refused ({shown})");
-            let expected: Vec<(PathBuf, String)> =
-                victims.iter().map(|v| (v.clone(), why.clone())).collect();
+            let expected: Vec<Skip> = victims
+                .iter()
+                .map(|v| Skip::new(v.clone(), SkipReason::Fenced, why.clone()))
+                .collect();
             assert_eq!(report.skipped, expected, "{reason:?}");
             assert!(report.removed.is_empty(), "{reason:?}: {report:?}");
             assert!(victims.iter().all(|v| v.exists()), "{reason:?}");
@@ -2060,7 +2203,14 @@ mod tests {
             LockUse::Acquire,
         )
         .unwrap();
-        assert_eq!(report.skipped.len(), 1);
+        assert_eq!(
+            report.skipped,
+            [Skip::new(
+                victim.clone(),
+                SkipReason::Held,
+                "held by a live transaction"
+            )]
+        );
         assert!(victim.exists());
         drop(lock);
         let report = prune(
