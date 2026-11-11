@@ -1680,7 +1680,8 @@ describe("the panel frame", () => {
     expect(M.heroMeta(model.summary, model.targets, "", [])).toBe("4 UPDATES")
     expect(M.heroMeta(model.summary, model.targets, "era", [])).toBe("2 UPDATES")
     expect(M.heroMeta(null, model.targets, "", [])).toBe("")
-    expect(M.heroDetail(model.summary, model.targets, "")).toBe("2 clients")
+    // Under All the footer counts the clients, never the hero too (omad-sj3y).
+    expect(M.heroDetail(model.summary, model.targets, "")).toBe("")
     expect(M.heroDetail(model.summary, model.targets, "retail")).toBe("12.1.5.70391 · mainline")
     expect(M.heroDetail(null, model.targets, "")).toBe("")
     expect(M.heroState(model.summary, model.targets, "", [], false)).toBe("quiet")
@@ -1816,7 +1817,6 @@ describe("the panel frame", () => {
     test("the clients counted are the ones on this computer", () => {
       const r = M.reduceStatus(fixture("status-clients"), NOW)
       expect(M.liveTargets(r.targets).length).toBe(5)
-      expect(M.heroDetail(r.summary, r.targets, "")).toBe("5 clients")
       expect(M.footerText(r.summary, r.targets, "", NOW)).toMatch(/^5 clients · /)
       expect(M.liveTargets(null)).toEqual([])
     })
@@ -2036,6 +2036,12 @@ describe("the Updates and Installed views", () => {
     expect(retail.map((r) => [r.group, r.name])).toEqual([["", "Bar"], ["", "Foo"]])
     expect(M.updateCount(retail)).toBe(2)
     expect(M.updateRows(null, "", [])).toEqual([])
+    // Update all shows under All only past one client with updates (omad-sj3y).
+    expect(M.updateClients(all)).toBe(2)
+    expect(M.updateClients(retail)).toBe(1)
+    expect(M.updateClients(all.map((r) => (r.target === "era" ? { ...r, kind: "failed" } : r)))).toBe(1)
+    expect(M.updateClients([])).toBe(0)
+    expect(M.updateClients(null)).toBe(0)
   })
 
   // The foreground and background of six Omarchy themes (their colors.toml, 2026-11-08),

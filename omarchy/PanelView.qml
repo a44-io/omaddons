@@ -965,7 +965,11 @@ Item {
           showLabel: false
           label: "Client"
           value: root.filter
+          // The open list says each client's counts and whether it runs, which help choose;
+          // closed, it names the scope only, its counts being the hero's and the tabs'
+          // (omad-sj3y: each number once). The kit's trigger text calls currentLabel().
           options: Model.scopeOptions(root.targets)
+          function currentLabel() { return Model.heroTitle(root.targets, root.filter) }
           // Its label and the scope it shows, which a screen reader announces as one.
           Accessible.role: Accessible.ComboBox
           Accessible.name: label + ": " + currentLabel()

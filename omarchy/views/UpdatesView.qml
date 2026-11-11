@@ -13,13 +13,15 @@ import "../Model.js" as Model
 // the release is, the game running, why it is pinned, blocked or not checked). Updates
 // come first, then pinned addons with a newer release, blocked releases and failed
 // checks, by name within each; under All each client's header names it and updates it.
-// The header updates everything in the filter (`U`) and says when it was checked, with
-// Check now (`c`). `e` shows every release note since the installed version (a network
-// read, on demand, kept only for the row that asked); `/` filters the rows. Enter and
-// `u` update the row's addon, `p` pins or unpins it. A row a change runs on shows its
-// phase, and says "Updated" a moment after (the activity bar, 1n2p.18). Updates preview
-// first and apply a routine plan that matches the rows (M4-D28); pins run directly. The
-// keys are Model.KEYMAP's updates rows.
+// Each action shows once, at the level it acts on (omad-sj3y): the header's Update all
+// (`U`) shows under All only when two or more clients have updates (one client's header
+// already updates it), and under one client as Update {client}; checking is the hero's
+// (`c`) and the footer says when. `e` shows every release note since the installed
+// version (a network read, on demand, kept only for the row that asked); `/` filters the
+// rows. Enter and `u` update the row's addon, `p` pins or unpins it. A row a change runs
+// on shows its phase, and says "Updated" a moment after (the activity bar, 1n2p.18).
+// Updates preview first and apply a routine plan that matches the rows (M4-D28); pins
+// run directly. The keys are Model.KEYMAP's updates rows.
 Item {
   id: root
 
@@ -45,6 +47,12 @@ Item {
       : scopeRows.length,
     "nowMs": nowMs })
   readonly property int count: Model.updateCount(scopeRows)
+  // How many clients in the scope have an update: Update all shows under All only past one.
+  readonly property int clientsWithUpdates: Model.updateClients(scopeRows)
+  // The header's Update all: under one client, or under All past one client with updates.
+  // The header and its button both read it (a child's `visible` is false while its
+  // parent's is, so the header can't follow the button's).
+  readonly property bool showsUpdateAll: count > 0 && (filter !== "" || clientsWithUpdates > 1)
   readonly property int rowCount: rows.length
   // Past LONG_LIST_ROWS the rows are a VirtualList that builds only those in view and
   // scrolls itself (1n2p.38): the frame asks it to position the cursor's row.
@@ -168,17 +176,18 @@ Item {
     width: root.width
     spacing: Style.spacing.sm
 
-    // The header: update everything in the filter (U), and how fresh the check is, with
-    // Check now (c).
+    // The header: update everything in the filter (U), when no client header already
+    // does exactly that. It takes no room when its button doesn't show.
     Item {
       objectName: "updatesHeader"
+      visible: root.showsUpdateAll
       width: parent.width
-      height: Math.max(updateAllButton.visible ? updateAllButton.implicitHeight : 0, checkNowButton.implicitHeight)
+      height: visible ? updateAllButton.implicitHeight : 0
 
       Button {
         id: updateAllButton
         objectName: "updateAll"
-        visible: root.count > 0
+        visible: root.showsUpdateAll
         anchors.left: parent.left
         anchors.verticalCenter: parent.verticalCenter
         text: (root.filter ? "Update " + Model.heroTitle(root.statusTargets, root.filter) : "Update all") + " (" + root.count + ")"
@@ -192,37 +201,6 @@ Item {
         fontFamily: root.fontFamily
         fontSize: Style.font.bodySmall
         onClicked: root.frame.updateAll()
-      }
-
-      PlainLabel {
-        objectName: "checkedLabel"
-        anchors.right: checkNowButton.left
-        anchors.rightMargin: Style.spacing.md
-        anchors.verticalCenter: parent.verticalCenter
-        width: Math.min(implicitWidth, parent.width - checkNowButton.width - Style.spacing.md
-          - (updateAllButton.visible ? updateAllButton.width + Style.spacing.md : 0))
-        color: root.dim
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
-        text: Model.updatesChecked(root.statusTargets, root.filter, root.nowMs)
-      }
-
-      Button {
-        id: checkNowButton
-        objectName: "checkNow"
-        anchors.right: parent.right
-        anchors.verticalCenter: parent.verticalCenter
-        text: Model.copy("updates.check_now")
-        tooltipText: Model.keyTip("check", "updates")
-        Accessible.role: Accessible.Button
-        Accessible.name: text
-        enabled: !!root.frame && root.frame.canAct && !(root.svc && root.svc.checking === true)
-        opacity: enabled ? 1.0 : 0.4
-        bordered: true
-        foreground: root.foreground
-        fontFamily: root.fontFamily
-        fontSize: Style.font.caption
-        onClicked: root.frame.checkNow()
       }
     }
 

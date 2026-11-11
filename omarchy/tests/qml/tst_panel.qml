@@ -1012,7 +1012,9 @@ TestCase {
     var hero = child("hero")
     compare(hero.title, "All clients")
     compare(hero.meta, "3 UPDATES · RETAIL RUNNING")
-    compare(hero.detail, "2 clients")
+    // The footer counts the clients; the hero doesn't say it again (omad-sj3y).
+    compare(hero.detail, "")
+    verify(child("freshness").text.indexOf("2 clients · ") === 0, child("freshness").text)
     keyClick("t")
     compare(hero.title, "era")
     compare(hero.meta, "1 UPDATE")
@@ -1039,13 +1041,21 @@ TestCase {
     compare(json(scope.options.map(function(o) { return o.value })), json(["", "era", "retail"]))
     compare(scope.options[2].label, "retail · 2 updates · running")
     compare(scope.value, "")
+    // Closed, it names the scope only; the list keeps the counts (omad-sj3y).
+    compare(scope.options[0].label, "All clients · 3 updates")
+    compare(scope.currentLabel(), "All clients")
+    // The kit's own trigger text calls the override.
+    compare(findChild(scope, "dropdownText").text, "All clients")
     keyClick("t")
     compare(scope.value, "era", "the trigger follows t")
+    compare(scope.currentLabel(), "era")
+    compare(findChild(scope, "dropdownText").text, "era")
     keyClick("T")
     compare(scope.value, "")
     scope.choose("retail")
     compare(view.filter, "retail")
     compare(child("hero").title, "retail")
+    compare(scope.currentLabel(), "retail")
     // No compatible answer: no scope, no tabs (§2.1).
     svc.phase = "missing"
     verify(!scope.visible)
@@ -1078,8 +1088,8 @@ TestCase {
     compare(child("hero").title, "Burning Crusade Anniversary")
     keyClick("t")
     compare(view.filter, "")
-    // "N clients" counts the clients on this computer.
-    compare(child("hero").detail, "3 clients")
+    // The footer's "N clients" counts the clients on this computer.
+    verify(child("freshness").text.indexOf("3 clients") === 0, child("freshness").text)
   }
 
   // §2.2: a panel opens on the one running client; else on the scope a panel showed

@@ -4061,10 +4061,10 @@ function heroState(summary, targets, filter, machineIssues, busy) {
 }
 
 // The hero's detail (§2.1): the client's version and family under one client
-// ("12.1.5.70391 · mainline"), else how many clients there are.
+// ("12.1.5.70391 · mainline"); nothing under All, where the footer counts the clients
+// (omad-sj3y: each number once).
 function heroDetail(summary, targets, filter) {
-  if (!summary) return ""
-  if (!filter) return plural(liveTargets(targets).length, "client")
+  if (!summary || !filter) return ""
   var t = targetById(targets, filter)
   if (!t) return ""
   if (t.missing) return "not on this computer any more"
@@ -4500,16 +4500,22 @@ function releaseNotes(changelog, row, nowMs) {
   return out
 }
 
-// The Updates header's freshness (1n2p.21): "Checked 25 min ago", the oldest check of
-// the clients in the filter; "Not checked yet" before any.
-function updatesChecked(statusTargets, filter, nowMs) {
-  var oldest = oldestCheck(Array.isArray(statusTargets) ? statusTargets : [], filter)
-  return oldest ? copy("updates.checked", { "age": sinceText(oldest, nowMs) }) : copy("updates.unchecked")
-}
-
 // What `u` would update in the filter: the "Update all (N)" header's N.
 function updateCount(rows) {
   return rows.filter(function(r) { return r.kind === "update" }).length
+}
+
+// How many clients have an update among `rows` (omad-sj3y): under All, Update all shows
+// only past one, since a single client's header already updates exactly that.
+function updateClients(rows) {
+  var seen = {}
+  var n = 0
+  ;(Array.isArray(rows) ? rows : []).forEach(function(r) {
+    if (!r || r.kind !== "update" || seen.hasOwnProperty(r.target)) return
+    seen[r.target] = true
+    n++
+  })
+  return n
 }
 
 // The Updates view with nothing to update: "Everything is current · checked 25 min
@@ -7897,9 +7903,6 @@ var COPY = {
   "updates.action.check": "Check again",
   "updates.update_scope": { "one": "Update 1", "other": "Update {n}" },
   "updates.update_client": "Update {client}",
-  "updates.checked": "Checked {age}",
-  "updates.unchecked": "Not checked yet",
-  "updates.check_now": "Check now",
   "updates.filter": "Filter updates",
   "updates.count": "{shown} of {total}",
   "updates.notes.reading": "Reading the release notes…",
@@ -9256,10 +9259,10 @@ if (typeof module !== "undefined") {
     stableSort: stableSort,
     updateRows: updateRows,
     updateCount: updateCount,
+    updateClients: updateClients,
     releaseAge: releaseAge,
     groupUpdateRequest: groupUpdateRequest,
     releaseNotes: releaseNotes,
-    updatesChecked: updatesChecked,
     oldestCheck: oldestCheck,
     reduceCheck: reduceCheck,
     readingResources: readingResources,

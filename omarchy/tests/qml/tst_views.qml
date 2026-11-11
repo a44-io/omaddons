@@ -391,6 +391,9 @@ TestCase {
     verify(header.visible)
     compare([header.title, header.count], ["Retail", "running · 1 update"])
     verify(!findChild(row("updateRow", 3), "clientHeader").visible)
+    // Two clients have updates: Update all does what no client header does.
+    compare(updates.clientsWithUpdates, 2)
+    verify(findChild(updates, "updateAll").visible)
     compare(findChild(updates, "updateAll").text, "Update all (2)")
     // A running client's rows say so in words (the reload words come from the CLI's
     // own preview, bmcx.5); each row is an AddonRow with its versions.
@@ -406,6 +409,8 @@ TestCase {
     keyClick("t")
     compare(view.filter, "retail")
     // The client by its player name, never its id (UX-38).
+    // Under one client no header shows, so the view's own button updates it.
+    verify(findChild(content(), "updateAll").visible)
     compare(findChild(content(), "updateAll").text, "Update Retail (1)")
     findChild(content(), "updateAll").clicked()
     // The update previews with what the rows showed: retail's one update.
@@ -509,12 +514,43 @@ TestCase {
     verify(!findChild(entry, "notes").visible)
   }
 
-  // The header (1n2p.21): how fresh the check is, and Check now beside it.
-  function test_the_header_says_when_it_was_checked_and_check_now_checks() {
+  // One client behind under All (omad-sj3y): its header's Update {client} is the one bulk
+  // button; an Update all beside it would do exactly the same, so the view's header and
+  // its room go. The other client's failed check still offers Check again.
+  function test_one_client_behind_under_all_has_only_its_headers_update() {
+    svc.lists = Model.reduceList(listEnvelope([
+      { "id": "era", "key": "k-era", "label": "era", "counts": { "managed": 1, "unmanaged": 0 }, "addons": [
+        addon("Plater", "1.0", "1.1", "failed")
+      ] },
+      { "id": "retail", "key": "k-retail", "label": "retail", "counts": { "managed": 2, "unmanaged": 0 }, "addons": [
+        addon("DBM", "12.1.14", "12.1.15", "update_available"),
+        addon("Details", "v1", "v2", "update_available")
+      ] }
+    ]))
     var updates = content()
-    verify(findChild(updates, "checkedLabel").text.indexOf("Checked ") === 0, findChild(updates, "checkedLabel").text)
-    verify(findChild(updates, "checkNow").tooltipText.endsWith("(c)"))
-    findChild(updates, "checkNow").clicked()
+    compare(updates.count, 2)
+    compare(updates.clientsWithUpdates, 1)
+    verify(!findChild(updates, "updateAll").visible)
+    verify(!findChild(updates, "updatesHeader").visible)
+    compare(findChild(updates, "updatesHeader").height, 0)
+    var clientUpdate = findChild(row("updateRow", 1), "updateClient")
+    verify(clientUpdate.visible)
+    compare(clientUpdate.text, "Update Retail")
+    verify(!findChild(row("updateRow", 0), "updateClient").visible, "era has nothing to update")
+    // `U` still updates the whole scope, previewed with Retail's two rows.
+    keyClick("U")
+    compare(svc.runs.length, 1)
+    compare(svc.runs[0][0], "update_all")
+    compare(svc.runs[0][3].length, 2)
+  }
+
+  // Checking is the hero's (omad-sj3y): the view has no Check now and no "Checked …" of
+  // its own (the footer says when), and `c` still checks from it.
+  function test_the_view_leaves_checking_to_the_hero_and_c_still_checks() {
+    var updates = content()
+    compare(findChild(updates, "checkNow"), null)
+    compare(findChild(updates, "checkedLabel"), null)
+    keyClick("c")
     compare(svc.checks, 1)
     // A failed check's row offers Check again, never an update.
     var failed = findChild(row("updateRow", 1), "addonRow")
