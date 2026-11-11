@@ -2842,6 +2842,35 @@ describe("the Backups view and the restore chooser", () => {
     }
   })
 
+  // omad-4h0d.20: before `backup list` answers, or when it never did, each card counts
+  // what `status` counts: "none yet" only for a client that has none, and no "0 shown".
+  // A failed read claims what was read earlier only when something was.
+  test("before the list answers, a card counts status's backups, and a failed read says so", () => {
+    const auto = { mode: "daily", capability: "supported", last: null }
+    const client = (id, displayName, count) => ({ id, displayName, issues: [], undoSnapshots: null,
+      backups: { count, stale: false, latest: null, auto, freeBytes: 2 * 10 ** 9, bytes: count ? 31875072 : null } })
+    const targets = [client("retail", "Retail", 5), client("era", "Classic Era", 0)]
+    const unread = M.backupSections(null, "", NOW, targets)
+    expect(unread.map((s) => [s.target, s.lines])).toEqual([
+      ["era", ["Automatic backups: on · 2.0 GB free", "No backups of Classic Era yet."]],
+      ["retail", ["Automatic backups: on · 2.0 GB free", "5 backups · 31.9 MB"]]])
+    expect(unread.every((s) => s.rows.length === 0)).toBe(true)
+    // Read: the list names retail's, and era (which it omits) has none.
+    const listed = LISTED()
+    expect(M.backupSections(listed, "", NOW, targets).find((s) => s.target === "era").lines).toContain("No backups of Classic Era yet.")
+
+    const state = (service) => M.viewState("backups", { service: Object.assign({ targets, reading: [], outcomes: {} }, service),
+      filter: "", rows: unread.length, allRows: unread.length, nowMs: NOW })
+    // In flight: the cards stay, and the view says it is reading again.
+    expect(state({ backups: null, reading: ["backups"] }).refreshing).toBe(true)
+    // Failed with nothing read before: said as such, with Try again, never "earlier".
+    const failed = state({ backups: null, outcomes: { backups: "failed" } })
+    expect(failed.notices.map((n) => [n.sentence, n.action && n.action.name])).toEqual([["Couldn't read your backups.", "retry"]])
+    // Failed after a read: what is shown is that read, and how old it is.
+    const again = state({ backups: listed, backupsAt: NOW - 10 * 60000, outcomes: { backups: "failed" } })
+    expect(again.notices[0].sentence).toBe("Couldn't read your backups again; showing what was read 10 min ago.")
+  })
+
   // bmcx.4: the full read's undo data, from the binary after a change; `--cached` has none.
   test("a client's undo data comes from the full status read only", () => {
     const full = M.reduceStatus(fixture("status-full"), NOW).targets

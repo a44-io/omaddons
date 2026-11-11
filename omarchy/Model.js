@@ -4741,9 +4741,12 @@ function viewState(view, input) {
     else set("firstLoad", copy("state.loading." + view))
     return out
   }
+  // A failed read over rows says what is shown: an earlier read's, or, when the rows come
+  // from elsewhere (Backups' cards from `status`, Issues'), that nothing could be read.
   if (failed) {
-    out.notices.push(stateNotice("failed", copy("state.notice.failed", { "what": copy("state.what." + view), "age": readAge(view, s, nowMs) }),
-      stateAction("retry")))
+    out.notices.push(stateNotice("failed", viewHas(view, s, query, filter)
+      ? copy("state.notice.failed", { "what": copy("state.what." + view), "age": readAge(view, s, nowMs) })
+      : copy("state.failed." + view), stateAction("retry")))
   }
   var scoped = scopeTargets(targets, filter)
   // A stale check over rows is a notice; an empty view says its age already, and takes
@@ -6177,9 +6180,10 @@ function backupCardLines(t, status, client, nowMs) {
   if (t.total === 0) {
     lines.push(copy("state.empty.backups.client", { "client": client }))
   } else {
+    // A card from `status` alone (the list unread) shows none, so it says no "0 shown".
     lines.push(dotted([copy("backups.count", { "n": t.total }), typeof t.bytes === "number" ? bytesText(t.bytes) : "",
       t.backups.length ? copy("backups.newest", { "when": backupWhen(t.backups[0], nowMs) }) : "",
-      t.shown < t.total ? copy("backups.shown", { "shown": t.shown, "total": t.total }) : ""]))
+      t.shown < t.total && !t.unlisted ? copy("backups.shown", { "shown": t.shown, "total": t.total }) : ""]))
   }
   var undo = status ? status.undoSnapshots : null
   if (undo && undo.count > 0) {
@@ -6202,13 +6206,14 @@ function backupSections(backups, filter, nowMs, statusTargets) {
   var known = Array.isArray(statusTargets) ? statusTargets : []
   // `backup list` names only clients with backups: every other client `status` knows
   // gets its card, so "this drive can't make them for free" shows exactly where none is
-  // ever made.
+  // ever made. Before the list answers (or when it never did), a card counts what
+  // `status` counts, never "none yet" for a client that has some (omad-4h0d.20).
   var targets = listed.slice()
   for (var s = 0; s < known.length; s++) {
     var st = known[s]
     if (!st.backups || targetById(listed, st.id)) continue
-    targets.push({ "id": st.id, "total": 0, "shown": 0, "bytes": st.backups.bytes, "freeBytes": st.backups.freeBytes,
-      "auto": st.backups.auto, "backups": [] })
+    targets.push({ "id": st.id, "total": backups ? 0 : num(st.backups.count), "shown": 0, "unlisted": !backups,
+      "bytes": st.backups.bytes, "freeBytes": st.backups.freeBytes, "auto": st.backups.auto, "backups": [] })
   }
   targets = stableSort(targets, function(a, b) { return a.id < b.id ? -1 : a.id > b.id ? 1 : 0 })
   var sections = []

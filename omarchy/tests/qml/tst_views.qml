@@ -2279,6 +2279,25 @@ TestCase {
     compare(json(row("backupRow", 2).shownActions.map(function(a) { return a.name })), json(["restore"]))
   }
 
+  // omad-4h0d.20: before `backup list` answers, each card counts what `status` counts,
+  // never "none yet" for a client that has some; a list that never answered says so,
+  // never "showing what was read earlier".
+  function test_backups_before_the_list_answers_count_statuss_and_a_failed_read_says_so() {
+    var auto = { "mode": "daily", "capability": "supported", "last": null }
+    svc.targets = [{ "id": "retail", "displayName": "Retail", "issues": [], "undoSnapshots": null,
+      "backups": { "count": 5, "stale": false, "latest": null, "auto": auto, "freeBytes": 2000000000, "bytes": 31875072 } }]
+    svc.backups = null
+    keyClick("6")
+    compare(view.view, "backups")
+    var lines = function() { return named(content(), "cardLine").map(function(l) { return l.text }) }
+    compare(json(lines()), json(["Automatic backups: on · 2.0 GB free", "5 backups · 31.9 MB"]))
+    svc.outcomes = { "backups": "failed" }
+    var notices = findChild(findChild(content(), "viewState"), "stateNotices")
+    compare(notices.count, 1)
+    compare(notices.itemAt(0).title, "Couldn't read your backups.")
+    compare(json(lines()), json(["Automatic backups: on · 2.0 GB free", "5 backups · 31.9 MB"]), "the cards stay, still counted")
+  }
+
   function test_b_backs_up_the_filtered_client_or_all_and_each_card_its_own() {
     backupsReady()
     keyClick("b")
