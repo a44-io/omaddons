@@ -1307,6 +1307,243 @@ fn bash_completes_values_from_omaddons_files() {
     log.assert_eq("failing cases", &failing, &Vec::<String>::new());
 }
 
+/// A shell's `--version`, for the log.
+fn version_of(shell: &Path) -> String {
+    std::process::Command::new(shell) // ubs:ignore — zsh or fish, found on PATH
+        .arg("--version")
+        .env_clear()
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+        .unwrap_or_default()
+}
+
+/// The fixture's script for `shell`, written to a folder of its own, and the empty
+/// working directory its file-name fallbacks list.
+fn script_file(
+    log: &TestLog,
+    home: &Home,
+    shell: &str,
+) -> (std::path::PathBuf, std::path::PathBuf) {
+    log.step("generate");
+    let script = script_of(log, &home.env, shell);
+    let dir = home.env.root().join(format!("{shell}-completion"));
+    let cwd = home.env.root().join(format!("{shell}-completion-cwd"));
+    for folder in [&dir, &cwd] {
+        let made = fs::create_dir_all(folder);
+        assert!(made.is_ok(), "{}: {made:?}", folder.display());
+    }
+    let file = dir.join(format!("omaddons.{shell}"));
+    let written = fs::write(&file, &script);
+    assert!(written.is_ok(), "{}: {written:?}", file.display());
+    (file, cwd)
+}
+
+/// One case of another shell than bash: its words after `omaddons`, what it must give,
+/// and what it gave.
+#[derive(serde::Serialize)]
+struct ShellCase<T> {
+    words: Vec<String>,
+    expected: T,
+    got: Option<T>,
+}
+
+fn owned(words: &[&str]) -> Vec<String> {
+    words.iter().map(|w| (*w).to_owned()).collect()
+}
+
+/// omad-pede: zsh's `_omaddons` over the home bash completes from. At each slot it hands
+/// `compadd` the values unfiltered (zsh filters them by the word itself), a
+/// `--target=…` word keeps its option through `compset -P`, and where no slot is, or the
+/// word is a path, it falls back to clap's static part. Checkpoint only: it skips by name
+/// where zsh is missing; a container with zsh 5.8 or newer counts.
+#[test]
+#[ignore = "checkpoint: zsh completes values from omaddons' files"]
+fn zsh_completes_values_from_omaddons_files() {
+    let log = tlog!();
+    let Some(zsh) = shells::find("zsh") else {
+        checkpoint::skip(
+            "zsh_completes_values_from_omaddons_files",
+            "zsh is not installed",
+        );
+        return;
+    };
+    log.note(format!("zsh --version: {}", version_of(&zsh)));
+    let f = fixture(&log);
+    let (file, cwd) = script_file(&log, &f.home, "zsh");
+    let fms = failure_modes();
+    let mut latest = vec!["latest".to_owned()];
+    latest.extend(f.doctor_runs.iter().cloned());
+    let (plans, txs, backups, latest, runs, fms) = (
+        strs(&f.plans),
+        strs(&f.txs),
+        strs(&f.backups),
+        strs(&latest),
+        strs(&f.runs),
+        strs(&fms),
+    );
+    let addons = ["Bar", "Baz", "Foo"];
+    let clients = ["era", "retail"];
+    let offer = |values: &[&str], iprefix: &str| shells::ZshOffer {
+        offered: owned(values),
+        iprefix: iprefix.to_owned(),
+        fell_back: false,
+    };
+    let fallback = shells::ZshOffer {
+        offered: Vec::new(),
+        iprefix: String::new(),
+        fell_back: true,
+    };
+    let table: Vec<(&[&str], shells::ZshOffer)> = vec![
+        (&["status", "-t", ""], offer(&clients, "")),
+        (&["-t", "r"], offer(&clients, "")),
+        (&["--target", ""], offer(&clients, "")),
+        (&["status", "--target="], offer(&clients, "--target=")),
+        (&["remove", "-t", "retail", ""], offer(&addons, "")),
+        (&["remove", "-tretail", ""], offer(&addons, "")),
+        (&["update", "--target=retail", ""], offer(&addons, "")),
+        (&["pin", ""], offer(&addons, "")),
+        (
+            &["copy", "--from", "retail", "--to", "era", ""],
+            offer(&addons, ""),
+        ),
+        (&["copy", "--from", ""], offer(&clients, "")),
+        (&["errors", "--addon", ""], offer(&addons, "")),
+        (&["apply", ""], offer(&plans, "")),
+        (&["undo", ""], offer(&txs, "")),
+        (&["undo", "--run", ""], offer(&runs, "")),
+        (
+            &["backup", "restore", "-t", "retail", ""],
+            offer(&backups, ""),
+        ),
+        (&["doctor", "explain", ""], offer(&fms, "")),
+        (&["doctor", "--only", ""], offer(&fms, "")),
+        (&["doctor", "diff", ""], offer(&latest, "")),
+        (&["targets", "rm", ""], offer(&clients, "")),
+        // No slot, a path, or a word after `--`: clap's static part.
+        (&["list", "B"], fallback.clone()),
+        (&["targets", "rename", "retail", "r"], fallback.clone()),
+        (&["-t", "./"], fallback.clone()),
+        (&["--", "-t", ""], fallback.clone()),
+    ];
+    let mut cases: Vec<ShellCase<shells::ZshOffer>> = table
+        .into_iter()
+        .map(|(words, expected)| ShellCase {
+            words: owned(words),
+            expected,
+            got: None,
+        })
+        .collect();
+    log.step("complete");
+    let words: Vec<Vec<String>> = cases.iter().map(|c| c.words.clone()).collect();
+    let (run, offers) = shells::zsh_complete(&zsh, &file, &words, &cwd, Some(&f.home.env));
+    log.json("zsh completion", &run);
+    let mut failing = Vec::new();
+    for (case, got) in cases.iter_mut().zip(offers) {
+        if got != case.expected {
+            failing.push(format!(
+                "{:?}: expected {:?}, got {got:?}",
+                case.words, case.expected
+            ));
+        }
+        case.got = Some(got);
+    }
+    log.json("cases", &cases);
+    log.assert_eq("failing cases", &failing, &Vec::<String>::new());
+}
+
+/// omad-pede: fish's rules over the home bash completes from, as `complete -C` completes
+/// each command line. fish filters by the word itself and keeps an `--option=` in front
+/// of each value; where no slot is, or the word is a path, the empty working directory
+/// leaves the static part nothing to offer. Checkpoint only: it skips by name where fish
+/// is missing; a container with fish 3.6 or newer counts.
+#[test]
+#[ignore = "checkpoint: fish completes values from omaddons' files"]
+fn fish_completes_values_from_omaddons_files() {
+    let log = tlog!();
+    let Some(fish) = shells::find("fish") else {
+        checkpoint::skip(
+            "fish_completes_values_from_omaddons_files",
+            "fish is not installed",
+        );
+        return;
+    };
+    log.note(format!("fish --version: {}", version_of(&fish)));
+    let f = fixture(&log);
+    let (file, cwd) = script_file(&log, &f.home, "fish");
+    let fms = failure_modes();
+    let mut latest = vec!["latest".to_owned()];
+    latest.extend(f.doctor_runs.iter().cloned());
+    let (plans, txs, backups, latest, runs, fms) = (
+        strs(&f.plans),
+        strs(&f.txs),
+        strs(&f.backups),
+        strs(&latest),
+        strs(&f.runs),
+        strs(&fms),
+    );
+    let addons = ["Bar", "Baz", "Foo"];
+    let clients = ["era", "retail"];
+    let table: Vec<(&[&str], &[&str])> = vec![
+        (&["status", "-t", ""], &clients),
+        (&["-t", "r"], &["retail"]),
+        (&["--target", ""], &clients),
+        (
+            &["status", "--target="],
+            &["--target=era", "--target=retail"],
+        ),
+        (&["remove", "-t", "retail", ""], &addons),
+        (&["remove", "-tretail", ""], &addons),
+        (&["remove", "-t", "retail", "Foo", "B"], &["Bar", "Baz"]),
+        (&["update", "--target=retail", ""], &addons),
+        (&["pin", ""], &addons),
+        (&["copy", "--from", "retail", "--to", "era", ""], &addons),
+        (&["copy", "--from", ""], &clients),
+        (&["errors", "--addon", ""], &addons),
+        (&["apply", ""], &plans),
+        (&["undo", ""], &txs),
+        (&["undo", "--run", ""], &runs),
+        (&["backup", "restore", "-t", "retail", ""], &backups),
+        (&["doctor", "explain", ""], &fms),
+        (&["doctor", "--only", ""], &fms),
+        (&["doctor", "diff", ""], &latest),
+        (&["targets", "rm", ""], &clients),
+        // No slot, a path: the static part, which finds nothing in the empty directory.
+        (&["list", "B"], &[]),
+        (&["targets", "rename", "retail", "r"], &[]),
+        (&["-t", "./"], &[]),
+    ];
+    let sorted = |values: &[String]| -> Vec<String> {
+        let mut values = values.to_vec();
+        values.sort();
+        values
+    };
+    let mut cases: Vec<ShellCase<Vec<String>>> = table
+        .into_iter()
+        .map(|(words, expected)| ShellCase {
+            words: owned(words),
+            expected: sorted(&owned(expected)),
+            got: None,
+        })
+        .collect();
+    log.step("complete");
+    let words: Vec<Vec<String>> = cases.iter().map(|c| c.words.clone()).collect();
+    let (run, offers) = shells::fish_complete(&fish, &file, &words, &cwd, Some(&f.home.env));
+    log.json("fish completion", &run);
+    let mut failing = Vec::new();
+    for (case, got) in cases.iter_mut().zip(offers) {
+        let got = sorted(&got);
+        if got != case.expected {
+            failing.push(format!(
+                "{:?}: expected {:?}, got {got:?}",
+                case.words, case.expected
+            ));
+        }
+        case.got = Some(got);
+    }
+    log.json("cases", &cases);
+    log.assert_eq("failing cases", &failing, &Vec::<String>::new());
+}
+
 /// omad-ivbj: on a fresh install, before any change registers a client, `-t` completes
 /// the clients the last plain `status` discovered, by the ids `-t` resolves for them, and
 /// each of those ids works. `targets rm`, which removes a registration, offers none; `targets

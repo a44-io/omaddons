@@ -1,5 +1,6 @@
 //! Shell checks for generated completion scripts (A7): find a shell on PATH, check a
-//! script's syntax without running it, and drive bash's completion function. Every child
+//! script's syntax without running it, and drive bash's completion function, zsh's
+//! `_omaddons` and fish's `complete -C` (omad-pede) over a case list. Every child
 //! gets HOME, ZDOTDIR and XDG_CONFIG_HOME inside the test's own directory, so no rc file
 //! of the developer is read, and the real home is never touched. The binary under test
 //! comes first on PATH, so a script's `omaddons __complete` runs it, never an installed
@@ -189,6 +190,215 @@ pub fn bash_complete(
         run.stderr
     );
     (run, offers)
+}
+
+/// The driver `zsh_complete` runs under `zsh -f` (omad-pede). `compadd`, `compset` and
+/// `compdef` work only inside a completion widget, so they are shadowed by functions
+/// before and after the script is sourced, and so is the static fallback the glue calls,
+/// `_omaddons_static`. Each line of the cases file is one command line's words separated
+/// by `\x1f`, ending in `\x1fEND` (as for bash). For each case it sets `words`, `CURRENT`
+/// and `PREFIX` as zsh would, calls `_omaddons`, and prints one line: the values handed to
+/// `compadd -a`, separated by `\x1f`, then `\x1e`, the `IPREFIX` a `compset -P` left, then
+/// `\x1e` and `static` when the glue fell back to the static part. Exits 90 when the
+/// script does not source and 91 when it defines no `_omaddons`. The driver never names
+/// `path`, which zsh ties to `PATH`.
+const ZSH_DRIVER: &str = r#"compdef() { : }
+source "$1" || exit 90
+(( $+functions[_omaddons] )) || exit 91
+typeset -g __offers __static
+compadd() {
+    [[ $1 == -a ]] || return 1
+    __offers=${(pj:\x1f:)${(P@)2}}
+}
+compset() {
+    [[ $1 == -P ]] || return 1
+    local pattern=$2
+    [[ $PREFIX == ${~pattern}* ]] || return 1
+    local kept=${(M)PREFIX##${~pattern}}
+    IPREFIX=$IPREFIX$kept
+    PREFIX=${PREFIX#$kept}
+}
+_omaddons_static() { __static=static }
+while IFS=$'\x1f' read -r -A words; do
+    words=("${(@)words[1,-2]}")
+    CURRENT=${#words}
+    PREFIX=${words[CURRENT]}
+    IPREFIX=
+    __offers= __static=
+    _omaddons
+    print -r -- "$__offers"$'\x1e'"$IPREFIX"$'\x1e'"$__static"
+done < "$2"
+"#;
+
+/// What zsh's `_omaddons` did for one case (omad-pede).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ZshOffer {
+    /// The values it handed `compadd -a`, as given: zsh filters them by the word itself.
+    pub offered: Vec<String>,
+    /// What a `compset -P` moved into `IPREFIX` (`--target=` for `--target=…`).
+    pub iprefix: String,
+    /// It fell back to clap's static part (`_omaddons_static`).
+    pub fell_back: bool,
+}
+
+/// What the glue's `_omaddons` offers for each case (its words after `omaddons`, the last
+/// being the word being completed, possibly empty): one `zsh -f` process at `zsh` sources
+/// `script` and runs every case, in the empty directory `cwd`, with `env`'s home when given
+/// (else an empty one). Panics if the script does not source, defines no `_omaddons`, or a
+/// case gives no line.
+pub fn zsh_complete(
+    zsh: &Path,
+    script: &Path,
+    cases: &[Vec<String>],
+    cwd: &Path,
+    env: Option<&TestEnv>,
+) -> (ShellRun, Vec<ZshOffer>) {
+    let beside = script.parent().unwrap();
+    let driver = beside.join("complete-driver.zsh");
+    fs::write(&driver, ZSH_DRIVER).unwrap();
+    let cases_file = beside.join("complete-cases.zsh.txt");
+    fs::write(&cases_file, case_lines(cases)).unwrap();
+    let args: Vec<OsString> = vec![
+        "-f".into(),
+        driver.into_os_string(),
+        script.as_os_str().to_owned(),
+        cases_file.into_os_string(),
+    ];
+    let run = run(zsh, &args, cwd, &beside.join("shell-home"), env);
+    sourced(&run, "_omaddons");
+    let offers: Vec<ZshOffer> = run
+        .stdout
+        .lines()
+        .map(|line| {
+            let mut fields = line.split('\x1e');
+            let offered = fields
+                .next()
+                .unwrap_or_default()
+                .split('\x1f')
+                .filter(|v| !v.is_empty())
+                .map(str::to_owned)
+                .collect();
+            let iprefix = fields.next().unwrap_or_default().to_owned();
+            let fell_back = fields.next() == Some("static");
+            ZshOffer {
+                offered,
+                iprefix,
+                fell_back,
+            }
+        })
+        .collect();
+    one_line_per_case(&run, cases.len(), offers.len());
+    (run, offers)
+}
+
+/// The driver `fish_complete` runs under `fish --no-config` (omad-pede): each line of the
+/// cases file is a command line after `omaddons `, and `complete -C` completes it as fish
+/// would at its end. One output line per case: the candidates, descriptions stripped,
+/// separated by `\x1f`. Exits 90 when the script does not source and 91 when it defines
+/// no `__fish_omaddons_values`. Patterns are regexes: fish 4 no longer globs `?`.
+const FISH_DRIVER: &str = r#"source $argv[1]; or exit 90
+functions -q __fish_omaddons_values; or exit 91
+while read -l line
+    set -l offers (complete -C"omaddons $line" | string replace -r '\t.*$' '')
+    # `string join` fails on a single string, so the list itself says whether it is empty.
+    if set -q offers[1]
+        string join \x1f -- $offers
+    else
+        echo
+    end
+end < $argv[2]
+"#;
+
+/// What fish completes for each case (its words after `omaddons`, the last being the word
+/// being completed, possibly empty, joined by spaces), in the empty directory `cwd`, with
+/// `env`'s home when given: one `fish --no-config` process at `fish` sources `script` and
+/// runs `complete -C` for every case. fish filters the candidates by the word itself.
+/// Panics if a word holds whitespace, the script does not source or defines no
+/// `__fish_omaddons_values`, or a case gives no line.
+pub fn fish_complete(
+    fish: &Path,
+    script: &Path,
+    cases: &[Vec<String>],
+    cwd: &Path,
+    env: Option<&TestEnv>,
+) -> (ShellRun, Vec<Vec<String>>) {
+    let beside = script.parent().unwrap();
+    let driver = beside.join("complete-driver.fish");
+    fs::write(&driver, FISH_DRIVER).unwrap();
+    let cases_file = beside.join("complete-cases.fish.txt");
+    let mut lines = String::new();
+    for case in cases {
+        assert!(
+            case.iter().all(|w| !w.contains(char::is_whitespace)),
+            "{case:?}: a word holds whitespace"
+        );
+        lines.push_str(&case.join(" "));
+        lines.push('\n');
+    }
+    fs::write(&cases_file, lines).unwrap();
+    let args: Vec<OsString> = vec![
+        "--no-config".into(),
+        driver.into_os_string(),
+        script.as_os_str().to_owned(),
+        cases_file.into_os_string(),
+    ];
+    let run = run(fish, &args, cwd, &beside.join("shell-home"), env);
+    sourced(&run, "__fish_omaddons_values");
+    let offers: Vec<Vec<String>> = run
+        .stdout
+        .lines()
+        .map(|line| {
+            line.split('\x1f')
+                .filter(|v| !v.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .collect();
+    one_line_per_case(&run, cases.len(), offers.len());
+    (run, offers)
+}
+
+/// The cases file the bash and zsh drivers read: each case's words after `omaddons`,
+/// separated by `\x1f`, ending in `END`.
+fn case_lines(cases: &[Vec<String>]) -> String {
+    let mut lines = String::new();
+    for case in cases {
+        assert!(
+            case.iter().all(|w| !w.contains(['\x1f', '\x1e', '\n'])),
+            "{case:?}: a word holds a separator"
+        );
+        let words: Vec<&str> = std::iter::once("omaddons")
+            .chain(case.iter().map(String::as_str))
+            .chain(std::iter::once("END"))
+            .collect();
+        lines.push_str(&words.join("\x1f"));
+        lines.push('\n');
+    }
+    lines
+}
+
+/// The script sourced (driver exit 90 otherwise) and defined `function` (91).
+fn sourced(run: &ShellRun, function: &str) {
+    assert_ne!(
+        run.code,
+        Some(90),
+        "the completion script did not source: {}",
+        run.stderr
+    );
+    assert_ne!(
+        run.code,
+        Some(91),
+        "the completion script defined no {function}: {}",
+        run.stderr
+    );
+}
+
+fn one_line_per_case(run: &ShellRun, cases: usize, lines: usize) {
+    assert_eq!(
+        lines, cases,
+        "one line per case: {cases} cases, {lines} lines; exit {:?}, stdout: {:?}, stderr: {}",
+        run.code, run.stdout, run.stderr
+    );
 }
 
 /// PATH for a shell child: the directory of the binary under test, then this process's.
