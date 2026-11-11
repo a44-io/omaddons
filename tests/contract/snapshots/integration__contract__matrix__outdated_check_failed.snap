@@ -24,6 +24,7 @@ expression: s.stable(&c.envelope)
       "probed": 0,
       "reused": 0
     },
+    "stale_answers": [],
     "summary": {
       "ahead": 0,
       "blocked": 0,
@@ -62,6 +63,7 @@ expression: s.stable(&c.envelope)
             "name": "WeakAuras",
             "pinned": false,
             "ref": "gh:WeakAuras/WeakAuras2",
+            "stale_answer": null,
             "status": "update_available",
             "unchecked_reason": null
           }

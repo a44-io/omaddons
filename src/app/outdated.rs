@@ -77,6 +77,11 @@ pub struct OutdatedData {
     #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
     pub checked_at: Option<Timestamp>,
     pub requests: Requests,
+    /// Each ref and channel whose source did not answer this check, so its items show
+    /// what the release memo remembered (the run is `partial`), sorted by ref and channel.
+    /// Listed or not, every item of one carries the same `stale_answer`. Empty when every
+    /// source asked answered; `--offline` asks none, and its answers are `stale_check`.
+    pub stale_answers: Vec<StaleAnswer>,
     /// Every selected target, sorted by id.
     pub targets: Vec<OutdatedTarget>,
     /// Every item's status, listed or not.
@@ -92,6 +97,29 @@ pub struct Requests {
     pub probed: usize,
     /// Answered from the release memo without a request.
     pub reused: usize,
+}
+
+/// A ref and channel whose source did not answer, and the remembered answer shown.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct StaleAnswer {
+    #[serde(rename = "ref")]
+    pub r#ref: Ref,
+    pub channel: Channel,
+    /// What the fetch failed with: `network`, `http_status`, `rate_limited`, …
+    pub error_code: ErrorCode,
+    /// When the remembered answer was fetched.
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
+    pub fetched_at: Timestamp,
+}
+
+/// An item's status judged on a remembered answer, because its source did not answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct Stale {
+    /// What the fetch failed with.
+    pub error_code: ErrorCode,
+    /// When the remembered answer was fetched.
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
+    pub fetched_at: Timestamp,
 }
 
 /// One target's items.
@@ -119,6 +147,10 @@ pub struct OutdatedItem {
     pub blocked_reason: Option<BlockedReason>,
     pub unchecked_reason: Option<UncheckedReason>,
     pub error: Option<ErrorBody>,
+    /// Its source did not answer this check, so its status is judged on the release
+    /// memo's answer: what the fetch failed with and when that answer was fetched (as in
+    /// `stale_answers`). `null` when its source answered or was not asked.
+    pub stale_answer: Option<Stale>,
 }
 
 /// The newest release an item is judged against; with `--changelog`, an
@@ -440,6 +472,7 @@ pub fn run(ctx: &Context, args: &OutdatedArgs) -> Result<OutdatedOutcome> {
     // used, said, and makes the run partial; nothing remembered fails the item.
     let mut partial = false;
     let mut unanswered: BTreeMap<(Ref, Channel), ErrorBody> = BTreeMap::new();
+    let mut stale: BTreeMap<(Ref, Channel), Stale> = BTreeMap::new();
     for (w, fetched) in &answers {
         let Err(error) = &fetched.set else { continue };
         match cache.entry(&w.r#ref, w.channel) {
@@ -452,6 +485,13 @@ pub fn run(ctx: &Context, args: &OutdatedArgs) -> Result<OutdatedOutcome> {
                 );
                 warnings.push(warning);
                 partial = true;
+                stale.insert(
+                    (w.r#ref.clone(), w.channel),
+                    Stale {
+                        error_code: error.code,
+                        fetched_at: entry.fetched_at,
+                    },
+                );
             }
             None => {
                 unanswered.insert((w.r#ref.clone(), w.channel), ErrorBody::from(error.clone()));
@@ -534,10 +574,11 @@ pub fn run(ctx: &Context, args: &OutdatedArgs) -> Result<OutdatedOutcome> {
             warnings.push(failure_warning(&row.target, &record.name, error));
         }
         if verbose || worth_listing(status.kind()) {
+            let remembered = stale.get(&(record.r#ref.clone(), record.channel)).copied();
             listed
                 .entry(row.target)
                 .or_default()
-                .push(item(record, status));
+                .push(item(record, status, remembered));
         }
     }
     if args.changelog {
@@ -581,6 +622,15 @@ pub fn run(ctx: &Context, args: &OutdatedArgs) -> Result<OutdatedOutcome> {
         data: OutdatedData {
             checked_at,
             requests,
+            stale_answers: stale
+                .into_iter()
+                .map(|((r#ref, channel), since)| StaleAnswer {
+                    r#ref,
+                    channel,
+                    error_code: since.error_code,
+                    fetched_at: since.fetched_at,
+                })
+                .collect(),
             targets: out_targets,
             summary,
         },
@@ -778,7 +828,11 @@ const fn worth_listing(kind: StatusKind) -> bool {
     )
 }
 
-fn item(record: &crate::model::AddonRecord, status: UpdateStatus) -> OutdatedItem {
+fn item(
+    record: &crate::model::AddonRecord,
+    status: UpdateStatus,
+    stale_answer: Option<Stale>,
+) -> OutdatedItem {
     let latest = status.latest().cloned().map(|release| LatestRelease {
         release,
         changelog: None,
@@ -810,6 +864,7 @@ fn item(record: &crate::model::AddonRecord, status: UpdateStatus) -> OutdatedIte
         blocked_reason,
         unchecked_reason,
         error,
+        stale_answer,
     }
 }
 

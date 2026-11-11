@@ -5433,21 +5433,30 @@ describe("resultUndo", () => {
 
 describe("reduceCheck and readingResources", () => {
   test("the table", () => {
-    const pick = (c) => [c.trouble, c.failed, c.at !== ""]
+    const pick = (c) => [c.trouble, c.failed, c.at !== "", c.sources]
     const failedItem = JSON.parse(JSON.stringify(fixture("check")))
     failedItem.data.targets[0].items[0].status = "failed"
     failedItem.data.targets[0].items[1].status = "failed"
     failedItem.partial = true
     const refused = { ok: false, schema_version: "1.1", tool_version: "0.1.0", command: "outdated", exit_code: 1,
       error: { code: "network", message: "x" }, warnings: [], commands: [] }
+    // An omaddons from before `stale_answers`: the trouble, with no source to name.
+    const older = JSON.parse(JSON.stringify(fixture("check-unreachable")))
+    delete older.data.stale_answers
     table([
-      ["every_source_answered", [fixture("check"), "ok"], [false, 0, true]],
-      // GitHub answered 503 for Foo: the check showed what it remembered, and says so by code.
-      ["a_source_did_not_answer", [fixture("check-unreachable"), "ok"], [true, 0, true]],
-      ["items_that_failed", [failedItem, "ok"], [true, 2, true]],
-      ["the_check_failed_on_the_network", [refused, "failed"], [true, 0, false]],
-      ["no_answer", [null, "timeout"], [true, 0, false]],
+      ["every_source_answered", [fixture("check"), "ok"], [false, 0, true, []]],
+      // GitHub answered 503 for Foo: the check showed what it remembered, and says so by
+      // code, and by its typed stale answers, which name the source (omad-vsi8).
+      ["a_source_did_not_answer", [fixture("check-unreachable"), "ok"], [true, 0, true, ["gh"]]],
+      ["an_older_omaddons", [older, "ok"], [true, 0, true, []]],
+      ["items_that_failed", [failedItem, "ok"], [true, 2, true, []]],
+      ["the_check_failed_on_the_network", [refused, "failed"], [true, 0, false, []]],
+      ["no_answer", [null, "timeout"], [true, 0, false, []]],
     ], ([env, outcome]) => pick(M.reduceCheck(env, outcome)))
+    // The oldest answer shown is the stale answer's own fetch time.
+    const unreachable = fixture("check-unreachable")
+    expect(M.reduceCheck(unreachable, "ok").staleAt).toBe(unreachable.data.stale_answers[0].fetched_at)
+    expect(M.reduceCheck(older, "ok").staleAt).toBe("")
     // Another code never counts as a source not answering.
     const other = JSON.parse(JSON.stringify(fixture("check")))
     other.warnings = [{ code: "reload_required", message: "x", fix: null }]
@@ -5556,8 +5565,17 @@ describe("viewState", () => {
     const limited = { rows: [], selection: { query: "x", target: "" }, skipped: [
       { source: "github", reason: "rate_limited", reset_at: "2100-01-01T18:02:00Z" }, { source: "tukui", reason: "disabled" },
       { source: "wowi", reason: "no_index" }] }
+    // Two hours after the answer the unreachable check showed was fetched.
+    const unreachable = M.reduceCheck(fixture("check-unreachable"), "ok")
+    const later = Date.parse(unreachable.staleAt) + 2 * 3600000
     const cases = [
-      ["check_unreachable", state("updates", service({ lists: lists(), lastCheck: M.reduceCheck(fixture("check-unreachable"), "ok") }), { rows: 4, allRows: 4 }),
+      ["check_unreachable", state("updates", service({ lists: lists(), lastCheck: unreachable }), { rows: 4, allRows: 4, nowMs: later }),
+        ["rows", "", null, false, [["offline", "Couldn't reach GitHub; showing what it said 2 hours ago.", "check"]]]],
+      ["check_unreachable_two_sources", state("updates", service({ lists: lists(),
+        lastCheck: Object.assign({}, unreachable, { sources: ["gh", "wowi", "gh"] }) }), { rows: 4, allRows: 4, nowMs: later }),
+        ["rows", "", null, false, [["offline", "Couldn't reach GitHub and WoWInterface; showing what they said 2 hours ago.", "check"]]]],
+      // No typed source (an older omaddons): which sources is not said.
+      ["check_unreachable_unnamed", state("updates", service({ lists: lists(), lastCheck: { trouble: true, failed: 0 } }), { rows: 4, allRows: 4 }),
         ["rows", "", null, false, [["offline", "Some sources didn't answer the last check; what they said before is shown.", "check"]]]],
       ["check_failed_items", state("updates", service({ lists: lists(), lastCheck: { trouble: true, failed: 2 } }), { rows: 4, allRows: 4 }),
         ["rows", "", null, false, [["offline", "2 addons couldn't be checked: their sources didn't answer.", "check"]]]],

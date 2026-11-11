@@ -4526,9 +4526,12 @@ var EMPTY_GLYPHS = { "updates": 0xF05E0, "installed": 0xF0431, "search": 0xF0349
 
 // The last `outdated` run (Check now, or the background check), as the Updates view
 // qualifies its rows: when it ran, and whether a source did not answer, from the codes
-// of its warnings, its failed items and its error.
+// of its warnings, its failed items and its error. `sources` are the source kinds
+// (`sourceKind`) whose answers it showed from memory because they did not answer, and
+// `staleAt` the oldest of those answers' fetch times, from its typed `stale_answers`
+// (omad-vsi8); an older omaddons gives none, and the notice then names no source.
 function reduceCheck(env, outcome) {
-  var out = { "at": "", "trouble": false, "failed": 0, "outcome": str(outcome) }
+  var out = { "at": "", "trouble": false, "failed": 0, "outcome": str(outcome), "sources": [], "staleAt": "" }
   if (!envelopeOk(env)) {
     out.trouble = outcome !== "ok"
     return out
@@ -4541,11 +4544,36 @@ function reduceCheck(env, outcome) {
       var items = targets[i] && Array.isArray(targets[i].items) ? targets[i].items : []
       for (var j = 0; j < items.length; j++) if (items[j] && items[j].status === "failed") out.failed++
     }
+    var stale = Array.isArray(env.data.stale_answers) ? env.data.stale_answers : []
+    for (var k = 0; k < stale.length; k++) {
+      var answer = stale[k] && typeof stale[k] === "object" ? stale[k] : {}
+      var kind = sourceKind(answer.ref)
+      if (out.sources.indexOf(kind) === -1) out.sources.push(kind)
+      var at = str(answer.fetched_at)
+      if (!isNaN(instantMs(at)) && (!out.staleAt || instantMs(at) < instantMs(out.staleAt))) out.staleAt = at
+    }
   } else if (env.error && typeof env.error === "object") {
     codes.push(str(env.error.code))
   }
   out.trouble = out.failed > 0 || codes.some(function(c) { return SOURCE_TROUBLE.indexOf(c) !== -1 })
   return out
+}
+
+// The Updates view's offline notice for a check with trouble: how many addons could not
+// be checked; else which sources did not answer and how old the answer shown is
+// ("Couldn't reach GitHub; showing what it said 2 hours ago."); else, without typed
+// sources (an older omaddons, or the check itself failed), that some did not answer.
+function checkTroubleText(check, nowMs) {
+  if (num(check.failed) > 0) return copy("state.notice.check_failed", { "n": num(check.failed) })
+  var sources = Array.isArray(check.sources) ? check.sources : []
+  var age = sinceText(str(check.staleAt), nowMs)
+  if (sources.length === 0 || !age) return copy("state.notice.check_unreachable")
+  var names = []
+  sources.forEach(function(kind) {
+    var name = sourceWords(kind)
+    if (names.indexOf(name) === -1) names.push(name)
+  })
+  return copy("state.notice.check_unreachable_named", { "n": names.length, "sources": joinNames(names), "age": age })
 }
 
 // The resources the lanes read now or will next (`running`, the local and network lanes'
@@ -4713,8 +4741,7 @@ function viewState(view, input) {
     var oldest = oldestCheck(targets, filter)
     checkStale = !!oldest && scoped.some(function(t) { return !!t.updates && t.updates.stale === true })
     if (check && check.trouble) {
-      out.notices.push(stateNotice("offline", num(check.failed) > 0 ? copy("state.notice.check_failed", { "n": num(check.failed) })
-        : copy("state.notice.check_unreachable"), stateAction("check")))
+      out.notices.push(stateNotice("offline", checkTroubleText(check, nowMs), stateAction("check")))
     } else if (checkStale && num(i.rows) > 0) {
       out.notices.push(stateNotice("stale", copy("state.notice.check_stale", { "age": sinceText(oldest, nowMs) }), stateAction("check")))
     }
@@ -7161,6 +7188,10 @@ var COPY = {
   "time.months.short": "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec",
   "state.notice.failed": "Couldn't read {what} again; showing what was read {age}.",
   "state.notice.check_unreachable": "Some sources didn't answer the last check; what they said before is shown.",
+  "state.notice.check_unreachable_named": {
+    "one": "Couldn't reach {sources}; showing what it said {age}.",
+    "other": "Couldn't reach {sources}; showing what they said {age}."
+  },
   "state.notice.check_failed": {
     "one": "1 addon couldn't be checked: its source didn't answer.",
     "other": "{n} addons couldn't be checked: their sources didn't answer."

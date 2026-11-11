@@ -370,6 +370,14 @@ fn offline_answers_from_the_memo_or_says_unchecked() {
         .filter_map(|w| w["code"].as_str())
         .collect();
     assert!(codes.contains(&"stale_check"), "{}", r.context());
+    // Offline asks no source, so none failed to answer: `stale_check` says it, and no
+    // answer is a stale one (omad-vsi8).
+    assert_eq!(
+        offline["data"]["stale_answers"],
+        json!([]),
+        "{}",
+        r.context()
+    );
 
     fs::remove_file(home.memo()).unwrap();
     let r = home.run(&["outdated", "--offline", "-v"]);
@@ -510,6 +518,12 @@ fn a_failed_fetch_uses_remembered_metadata_or_fails_the_item() {
     gh_release(&home.http, BAR, "v1", &bar.assets());
     home.run(&["install", "gh:o/foo", "gh:o/bar", "-t", "retail"])
         .expect(0);
+    // Every source answering: no answer is a remembered one.
+    let clean = home.run(&["outdated", "-v"]).expect(0);
+    assert_eq!(clean["data"]["stale_answers"], json!([]), "{clean}");
+    for item in clean["data"]["targets"][0]["items"].as_array().unwrap() {
+        assert_eq!(item["stale_answer"], Value::Null, "{item}");
+    }
     // Foo's check is a day old; Bar's was never remembered.
     let paths = common::http::paths(&home.env);
     let (mut memo, _) = omaddons::state::memo::load(&paths);
@@ -518,6 +532,7 @@ fn a_failed_fetch_uses_remembered_metadata_or_fails_the_item() {
         entry.fetched_at -= jiff::SignedDuration::from_hours(24);
     }
     assert_eq!(memo.entries.len(), 1);
+    let remembered_at = json!(memo.entries.values().next().unwrap().fetched_at);
     home.seed_memo(&memo);
     let broken = home.scenario("broken");
     for base in [FOO, BAR] {
@@ -540,6 +555,25 @@ fn a_failed_fetch_uses_remembered_metadata_or_fails_the_item() {
         (&bar_error["code"], &bar_error["retryable"]),
         (&Value::from("http_status"), &Value::Bool(true))
     );
+    // Typed (omad-vsi8): Foo's status is the memo's day-old answer, said by ref and on
+    // its item; Bar had nothing remembered, so it failed and is no stale answer.
+    assert_eq!(
+        envelope["data"]["stale_answers"],
+        json!([{"ref": "gh:o/foo", "channel": "stable", "error_code": "http_status",
+                "fetched_at": remembered_at}]),
+        "{}",
+        r.context()
+    );
+    let (bar, foo) = (
+        &envelope["data"]["targets"][0]["items"][0],
+        &envelope["data"]["targets"][0]["items"][1],
+    );
+    assert_eq!(bar["stale_answer"], Value::Null, "Bar: {bar}");
+    assert_eq!(
+        foo["stale_answer"],
+        json!({"error_code": "http_status", "fetched_at": remembered_at}),
+        "Foo: {foo}"
+    );
     let messages: Vec<&str> = envelope["warnings"]
         .as_array()
         .unwrap()
@@ -557,6 +591,37 @@ fn a_failed_fetch_uses_remembered_metadata_or_fails_the_item() {
     // Nothing retryable is remembered: the memo still has Foo's day-old entry only.
     let (memo, _) = omaddons::state::memo::load(&paths);
     assert_eq!(memo.entries.len(), 1);
+}
+
+/// A 404 is an answer (omad-vsi8): a repository gone fails its item, and is no stale
+/// answer even with an older answer remembered.
+#[test]
+fn a_repository_gone_is_an_answer_not_a_stale_one() {
+    let mut home = Home::new(&["wow"]);
+    let foo = Rel::new("Foo", "v1", "120105", MAINLINE);
+    gh_release(&home.http, FOO, "v1", &foo.assets());
+    home.run(&["install", "gh:o/foo", "-t", "retail"]).expect(0);
+    let gone = home.scenario("gone");
+    let url = format!("{FOO}/releases/latest");
+    fixture(&gone, "latest-404-foo", &url, 404, &[], None);
+
+    let r = home.run(&["outdated", "-v", "--refresh"]);
+    let envelope = r.expect(0);
+    assert_eq!(
+        items(&envelope),
+        triples(&[("retail", "Foo", "failed")]),
+        "{}",
+        r.context()
+    );
+    let foo = &envelope["data"]["targets"][0]["items"][0];
+    assert_eq!(foo["error"]["code"], "not_found", "{foo}");
+    assert_eq!(foo["stale_answer"], Value::Null, "{foo}");
+    assert_eq!(
+        envelope["data"]["stale_answers"],
+        json!([]),
+        "{}",
+        r.context()
+    );
 }
 
 #[test]

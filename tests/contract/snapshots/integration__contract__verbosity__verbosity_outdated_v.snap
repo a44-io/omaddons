@@ -12,6 +12,7 @@ expression: s.stable(&checked.envelope)
       "probed": 0,
       "reused": 3
     },
+    "stale_answers": [],
     "summary": {
       "ahead": 0,
       "blocked": 0,
@@ -50,6 +51,7 @@ expression: s.stable(&checked.envelope)
             "name": "BigWigs",
             "pinned": false,
             "ref": "gh:o/bigwigs",
+            "stale_answer": null,
             "status": "current",
             "unchecked_reason": null
           },
@@ -66,6 +68,7 @@ expression: s.stable(&checked.envelope)
             "name": "Foo",
             "pinned": false,
             "ref": "gh:o/foo",
+            "stale_answer": null,
             "status": "static",
             "unchecked_reason": null
           },
@@ -87,6 +90,7 @@ expression: s.stable(&checked.envelope)
             "name": "LittleWigs",
             "pinned": false,
             "ref": "gh:o/littlewigs",
+            "stale_answer": null,
             "status": "current",
             "unchecked_reason": null
           },
@@ -108,6 +112,7 @@ expression: s.stable(&checked.envelope)
             "name": "WeakAuras",
             "pinned": false,
             "ref": "gh:WeakAuras/WeakAuras2",
+            "stale_answer": null,
             "status": "current",
             "unchecked_reason": null
           }

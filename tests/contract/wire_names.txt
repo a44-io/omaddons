@@ -1066,12 +1066,15 @@ enum omarchy install data.installed fresh,replaced,unchanged
 enum omarchy install data.plugin.section center,left,right
 enum omarchy install data.section center,left,right
 enum omarchy status data.plugin.section center,left,right
+enum outdated data.stale_answers[].channel alpha,beta,stable
+enum outdated data.stale_answers[].error_code archive_too_large,auth_rejected,auth_required,bad_archive,case_collision,check_failed,desired_state_invalid,distribution_disabled,doctor_refused,download_failed,file_exists,filesystem_unsupported,game_running,hash_mismatch,host_blocked,http_status,internal,io,locked,network,no_compatible_release,not_found,not_managed,offline,online_required,ownership_conflict,plan_not_found,plan_stale,protected_folder,rate_limited,ref_ambiguous,ref_invalid,scope_denied,source_disabled,state_corrupt,state_too_new,target_ambiguous,target_not_found,undo_conflict,unmanaged_folder,unsafe_archive,usage,wrong_flavor
 enum outdated data.targets[].items[].blocked_reason older_than_installed,verified_not_loading
 enum outdated data.targets[].items[].channel alpha,beta,stable
 enum outdated data.targets[].items[].confidence declared,likely,unlikely,verified
 enum outdated data.targets[].items[].latest.changelog.source curseforge,git,github,local,tukui,url,wago,wowace,wowi
 enum outdated data.targets[].items[].latest.changelog_unavailable fetch_failed,no_releases,not_supported,offline
 enum outdated data.targets[].items[].latest.channel alpha,beta,stable
+enum outdated data.targets[].items[].stale_answer.error_code archive_too_large,auth_rejected,auth_required,bad_archive,case_collision,check_failed,desired_state_invalid,distribution_disabled,doctor_refused,download_failed,file_exists,filesystem_unsupported,game_running,hash_mismatch,host_blocked,http_status,internal,io,locked,network,no_compatible_release,not_found,not_managed,offline,online_required,ownership_conflict,plan_not_found,plan_stale,protected_folder,rate_limited,ref_ambiguous,ref_invalid,scope_denied,source_disabled,state_corrupt,state_too_new,target_ambiguous,target_not_found,undo_conflict,unmanaged_folder,unsafe_archive,usage,wrong_flavor
 enum outdated data.targets[].items[].status ahead,blocked,current,failed,pinned,static,unchecked,update_available
 enum outdated data.targets[].items[].unchecked_reason never_checked,no_eligible_release,offline,source_disabled
 enum pin data.approval.reasons[] channel_changed,dependency_added,destructive,downgrade,folders_removed,force,local_changes_replaced,reinstall,source_changed,while_running
@@ -8158,6 +8161,12 @@ output outdated data.requests object!
 output outdated data.requests.fetched integer! minimum=0
 output outdated data.requests.probed integer! minimum=0
 output outdated data.requests.reused integer! minimum=0
+output outdated data.stale_answers array!
+output outdated data.stale_answers[] object
+output outdated data.stale_answers[].channel string!
+output outdated data.stale_answers[].error_code string!
+output outdated data.stale_answers[].fetched_at string!
+output outdated data.stale_answers[].ref string!
 output outdated data.summary object!
 output outdated data.summary.ahead integer! minimum=0
 output outdated data.summary.blocked integer! minimum=0
@@ -8198,6 +8207,9 @@ output outdated data.targets[].items[].latest.version string!
 output outdated data.targets[].items[].name string!
 output outdated data.targets[].items[].pinned boolean!
 output outdated data.targets[].items[].ref string!
+output outdated data.targets[].items[].stale_answer object?!
+output outdated data.targets[].items[].stale_answer.error_code string!
+output outdated data.targets[].items[].stale_answer.fetched_at string!
 output outdated data.targets[].items[].status string!
 output outdated data.targets[].items[].unchecked_reason string?!
 output outdated data.targets[].target object!

@@ -12,6 +12,7 @@ expression: s.stable(&c.envelope)
       "probed": 0,
       "reused": 1
     },
+    "stale_answers": [],
     "summary": {
       "ahead": 0,
       "blocked": 0,
