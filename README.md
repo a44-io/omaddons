@@ -2177,7 +2177,7 @@ precondition pc1:… (delete exactly this: --yes --if-match pc1:…)
 
 ### `config`
 
-Show or change `config.toml`. `set` edits the one value in place with `toml_edit`, keeping the file's comments and order, and validates the whole file before writing it.
+Show or change `config.toml`. `set` edits the one value in place with `toml_edit`, keeping the file's comments and order, and validates the whole file before writing it, including that the key reads back as the value set. TOML puts top-level keys above every table, so a new top-level key goes above the first table: the comments that open the file stay above it when a blank line ends them, while comments directly above a table header stay with that table. A file of comments only keeps them on top whatever is set first. Line endings are written as `\n`.
 
 ```bash
 omaddons config                                  # every key, its value, and "# default" where unset
@@ -3797,7 +3797,7 @@ An interrupted `WTF/` restore adds three cases. While its game runs, it waits (`
 
 The README describes the intended behaviour. A place where the code at HEAD does not match it yet is listed here with its bead (`br show <id>`), and the README changes only if a fix decides otherwise.
 
-- **`config set` can push the file's header comment below a new key.** In a `config.toml` that opens with a comment over a table, setting a top-level key writes that key above the comment, so the comment stops being the file's first line. That includes the header `config set` keeps on top of a comments-only file, once a nested key has been set. Nothing is lost, and what was already in the file keeps its order. TOML writes top-level keys before every table, and the comment is read as belonging to the table below it (`omad-4h0d.23`).
+None at HEAD.
 
 ---
 

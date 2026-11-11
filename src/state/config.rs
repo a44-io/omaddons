@@ -1084,6 +1084,16 @@ pub fn set_value(text: &str, path: &Path, key: &str, raw: &str) -> Result<String
     let Some((leaf, tables)) = segments.split_last() else {
         return Err(bad_value("empty key"));
     };
+    // Where the file's comments sit is decided by what the file was before the edit: a
+    // file of comments only (omad-4h0d.25), or one with no top-level key yet.
+    let comments_only = doc.is_empty()
+        && !doc
+            .trailing()
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .is_empty();
+    let had_top_level_keys = !doc.as_table().get_values().is_empty();
     let mut item = doc.as_item_mut();
     for segment in tables {
         let table = item
@@ -1114,17 +1124,153 @@ pub fn set_value(text: &str, path: &Path, key: &str, raw: &str) -> Result<String
             table.insert(leaf, toml_edit::Item::Value(value));
         }
     }
-    // A file of only comments keeps them in the document's trailing text; keep them on
-    // top, as the document's own header, rather than letting them slide below what is
-    // written first: a key, or a nested key's table (omad-4h0d.15).
-    let trailing = doc.trailing().as_str().unwrap_or_default().to_owned();
-    if doc.len() == 1 && !trailing.trim().is_empty() {
-        doc.as_table_mut().decor_mut().set_prefix(trailing);
-        doc.set_trailing("");
+    if comments_only {
+        keep_comments_as_header(&mut doc);
+    } else if !had_top_level_keys && !doc.as_table().get_values().is_empty() {
+        lift_file_header(&mut doc);
     }
     let updated = doc.to_string();
     Config::parse(&updated, path).map_err(|e| bad_value(&e.message))?;
+    // The text must say what was set: a key that a comment swallowed would otherwise be
+    // reported set while the file leaves it unset (omad-4h0d.24).
+    let written = toml::from_str::<toml::Table>(&updated).ok();
+    let expected = toml::from_str::<toml::Table>(&format!("v = {}", toml_value(raw))).ok();
+    let reads_back = written
+        .as_ref()
+        .and_then(|t| lookup(t, key))
+        .zip(expected.as_ref().and_then(|t| t.get("v")))
+        .is_some_and(|(written, expected)| written == expected);
+    if !reads_back {
+        return Err(Error::internal(format!(
+            "config set would write {} without {key} reading back as {raw:?}",
+            path.display()
+        )));
+    }
     Ok(updated)
+}
+
+/// A comments-only file keeps its comments in the document's trailing text. They become
+/// the document's own header, so they stay on top whatever is written first: a key, or a
+/// nested key's table (omad-4h0d.15). The header ends with a line ending, or the first key
+/// would join its last comment (omad-4h0d.24). When a table header comes first, the header
+/// also ends with a blank line, which tells it from that table's own comment the next time
+/// the file is edited (`lift_file_header`).
+fn keep_comments_as_header(doc: &mut toml_edit::DocumentMut) {
+    // toml_edit writes every line ending as `\n`, a CRLF header's included.
+    let mut header = doc.trailing().as_str().unwrap_or_default().to_owned();
+    if !header.ends_with('\n') {
+        header.push('\n');
+    }
+    if doc.as_table().get_values().is_empty() && !ends_with_blank_line(&header) {
+        header.push('\n');
+    }
+    doc.as_table_mut().decor_mut().set_prefix(header);
+    doc.set_trailing("");
+}
+
+/// Whether `text`'s last line is blank: whitespace only, ended by a line ending.
+fn ends_with_blank_line(text: &str) -> bool {
+    text.strip_suffix('\n').is_some_and(|rest| {
+        rest.rsplit('\n')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+    })
+}
+
+/// The first top-level key of a file that opens with a table header: TOML writes it above
+/// every table, and so above the comments the parser attached to that first header. The
+/// comments up to their last blank line are the file's header and move to the document's
+/// own header, above the key. The lines below that blank line document the table and stay
+/// with it, after a blank line of their own (omad-4h0d.23). Comments with no blank line
+/// below them cannot be told from the table's own and stay where they are, under the key.
+fn lift_file_header(doc: &mut toml_edit::DocumentMut) {
+    let Some(position) = first_header_position(doc.as_table()) else {
+        return;
+    };
+    let Some(table) = header_at(doc.as_table_mut(), position) else {
+        return;
+    };
+    let prefix = table
+        .decor()
+        .prefix()
+        .and_then(|p| p.as_str())
+        .unwrap_or_default();
+    let Some((header, blank, below)) = split_file_header(prefix) else {
+        return;
+    };
+    let (header, below) = (header.to_owned(), format!("{blank}{below}"));
+    table.decor_mut().set_prefix(below);
+    let root = doc.as_table_mut().decor_mut();
+    let above = root
+        .prefix()
+        .and_then(|p| p.as_str())
+        .unwrap_or_default()
+        .to_owned();
+    root.set_prefix(format!("{above}{header}"));
+}
+
+/// `prefix` split at its last blank line: the header through that line, the blank line,
+/// and what follows it. `None` when it has no blank line, or nothing but whitespace above
+/// one.
+fn split_file_header(prefix: &str) -> Option<(&str, &str, &str)> {
+    let mut start = 0;
+    let mut last_blank = None;
+    for line in prefix.split_inclusive('\n') {
+        if line.ends_with('\n') && line.trim().is_empty() {
+            last_blank = Some((start, start + line.len()));
+        }
+        start += line.len();
+    }
+    let (from, to) = last_blank?;
+    let header = prefix.get(..to)?;
+    if header.trim().is_empty() {
+        return None;
+    }
+    Some((header, prefix.get(from..to)?, prefix.get(to..)?))
+}
+
+/// The document position of a table that prints its own header line: not dotted, and not
+/// an implicit parent with no keys of its own. A table this edit created has none.
+fn header_position(table: &toml_edit::Table) -> Option<isize> {
+    let prints = !table.is_dotted() && !(table.is_implicit() && table.get_values().is_empty());
+    prints.then(|| table.position()).flatten()
+}
+
+/// The smallest header position among `table`'s nested tables, at any depth: the header
+/// the parser met first.
+fn first_header_position(table: &toml_edit::Table) -> Option<isize> {
+    let own_or_nested = |t: &toml_edit::Table| {
+        [header_position(t), first_header_position(t)]
+            .into_iter()
+            .flatten()
+            .min()
+    };
+    table
+        .iter()
+        .filter_map(|(_, item)| match item {
+            toml_edit::Item::Table(t) => own_or_nested(t),
+            toml_edit::Item::ArrayOfTables(a) => a.iter().filter_map(own_or_nested).min(),
+            _ => None,
+        })
+        .min()
+}
+
+/// The nested table whose header is at `position`.
+fn header_at(table: &mut toml_edit::Table, position: isize) -> Option<&mut toml_edit::Table> {
+    fn own_or_nested(t: &mut toml_edit::Table, position: isize) -> Option<&mut toml_edit::Table> {
+        if header_position(t) == Some(position) {
+            Some(t)
+        } else {
+            header_at(t, position)
+        }
+    }
+    table.iter_mut().find_map(|(_, item)| match item {
+        toml_edit::Item::Table(t) => own_or_nested(t, position),
+        toml_edit::Item::ArrayOfTables(a) => a.iter_mut().find_map(|t| own_or_nested(t, position)),
+        _ => None,
+    })
 }
 
 /// The TOML value `raw` denotes: a TOML literal when it parses as one, else a string.
@@ -1890,29 +2036,34 @@ max = 11_599
     }
 
     /// A file of only comments keeps them on top whatever is set first: a top-level key,
-    /// a nested key, or a key in a nested table (omad-4h0d.15).
+    /// a nested key, or a key in a nested table (omad-4h0d.15). Before a table header they
+    /// end with a blank line, so a top-level key set next still lands below them
+    /// (omad-4h0d.23).
     #[test]
     fn set_keeps_a_comment_only_files_header_on_top() {
         let path = Path::new("/c/omaddons/config.toml");
         let header = "# My omaddons settings\n# keep this header\n";
-        for (key, value, expected, next) in [
+        for (key, value, expected, next, then_top_level) in [
             (
                 "default_target",
                 "retail",
                 "default_target = \"retail\"\n",
                 "era",
+                "default_target = \"era\"\ndefault_channel = \"beta\"\n",
             ),
             (
                 "limits.archive_max_ratio",
                 "50",
-                "[limits]\narchive_max_ratio = 50\n",
+                "\n[limits]\narchive_max_ratio = 50\n",
                 "60",
+                "\ndefault_channel = \"beta\"\n\n[limits]\narchive_max_ratio = 60\n",
             ),
             (
                 "targets.retail.name",
                 "Main",
-                "[targets.retail]\nname = \"Main\"\n",
+                "\n[targets.retail]\nname = \"Main\"\n",
                 "Alt",
+                "\ndefault_channel = \"beta\"\n\n[targets.retail]\nname = \"Alt\"\n",
             ),
         ] {
             let updated = set_value(header, path, key, value).unwrap();
@@ -1920,6 +2071,172 @@ max = 11_599
             // Set again, they stay where they are.
             let again = set_value(&updated, path, key, next).unwrap();
             assert!(again.starts_with(header), "{key}: {again}");
+            // A top-level key set next lands below them too.
+            let top = set_value(&again, path, "default_channel", "beta").unwrap();
+            assert_eq!(top, format!("{header}{then_top_level}"), "{key}");
+        }
+    }
+
+    /// A comments-only file whose last line has no line ending: the first key set goes on
+    /// a line of its own, never onto the comment's line, where the comment would swallow it
+    /// and `config set` would report a value the file does not hold (omad-4h0d.24).
+    #[test]
+    fn set_ends_a_header_without_a_final_newline() {
+        let path = Path::new("/c/omaddons/config.toml");
+        for (text, key, value, expected) in [
+            (
+                "# header",
+                "default_target",
+                "retail",
+                "# header\ndefault_target = \"retail\"\n",
+            ),
+            (
+                "# header",
+                "limits.archive_max_ratio",
+                "50",
+                "# header\n\n[limits]\narchive_max_ratio = 50\n",
+            ),
+            // toml_edit writes every line ending as `\n`, as for any file it edits.
+            (
+                "# header\r\n# second line",
+                "default_target",
+                "retail",
+                "# header\n# second line\ndefault_target = \"retail\"\n",
+            ),
+            (
+                "# header\n\n",
+                "limits.archive_max_ratio",
+                "50",
+                "# header\n\n[limits]\narchive_max_ratio = 50\n",
+            ),
+        ] {
+            let updated = set_value(text, path, key, value).unwrap();
+            assert_eq!(updated, expected, "{text:?} {key}");
+            let raw: toml::Table = toml::from_str(&updated).unwrap();
+            assert_eq!(
+                lookup(&raw, key).map(ToString::to_string),
+                Some(toml_value(value).to_string()),
+                "{text:?} {key}"
+            );
+        }
+    }
+
+    /// A top-level key set in a file that opens with a table header: the comments above
+    /// that header up to their last blank line are the file's header and stay first, above
+    /// the key; the comments directly above the header stay with their table
+    /// (omad-4h0d.23). Each case is a sequence of sets, compared whole after the last one.
+    #[test]
+    fn set_keeps_a_files_header_above_its_first_top_level_key() {
+        let path = Path::new("/c/omaddons/config.toml");
+        let header = "# My omaddons settings\n# keep this header\n";
+        let limits = "[limits]\narchive_max_ratio = 50\n";
+        for (name, text, sets, expected) in [
+            (
+                "comments only, then a nested key, then a top-level key",
+                header.to_owned(),
+                &[("limits.archive_max_ratio", "50"), ("default_channel", "beta")][..],
+                format!("{header}\ndefault_channel = \"beta\"\n\n{limits}"),
+            ),
+            (
+                "comments only, then a nested table's key, then a top-level key",
+                header.to_owned(),
+                &[("targets.retail.name", "Main"), ("default_target", "retail")][..],
+                format!(
+                    "{header}\ndefault_target = \"retail\"\n\n[targets.retail]\nname = \"Main\"\n"
+                ),
+            ),
+            (
+                "a header, a blank line and a table",
+                format!("# omaddons, my settings\n\n{limits}"),
+                &[("default_channel", "beta")][..],
+                format!("# omaddons, my settings\n\ndefault_channel = \"beta\"\n\n{limits}"),
+            ),
+            (
+                "a header, a blank line, the table's comment and the table",
+                format!("# header\n\n# the limits\n{limits}"),
+                &[("default_channel", "beta")][..],
+                format!("# header\n\ndefault_channel = \"beta\"\n\n# the limits\n{limits}"),
+            ),
+            (
+                "a header with blank lines inside it",
+                format!("# header\n\n# more header\n\n{limits}"),
+                &[("default_channel", "beta")][..],
+                format!("# header\n\n# more header\n\ndefault_channel = \"beta\"\n\n{limits}"),
+            ),
+            (
+                "a second top-level key goes below the first",
+                format!("# omaddons, my settings\n\n{limits}"),
+                &[("default_channel", "beta"), ("running_policy", "refuse")][..],
+                format!(
+                    "# omaddons, my settings\n\ndefault_channel = \"beta\"\nrunning_policy = \"refuse\"\n\n{limits}"
+                ),
+            ),
+            (
+                "a comment directly above the table stays there",
+                format!("# the limits\n{limits}"),
+                &[("default_channel", "beta")][..],
+                format!("default_channel = \"beta\"\n# the limits\n{limits}"),
+            ),
+            (
+                "blank lines alone are no header",
+                format!("\n\n{limits}"),
+                &[("default_channel", "beta")][..],
+                format!("default_channel = \"beta\"\n\n\n{limits}"),
+            ),
+            (
+                "the first header is a nested table's",
+                "# header\n\n[targets.retail]\nname = \"Main\"\n\n[limits]\narchive_max_ratio = 50\n"
+                    .to_owned(),
+                &[("default_target", "retail")][..],
+                format!(
+                    "# header\n\ndefault_target = \"retail\"\n\n[targets.retail]\nname = \"Main\"\n\n{limits}"
+                ),
+            ),
+            (
+                "CRLF line endings (toml_edit writes every one as `\\n`, as for any file)",
+                "# header\r\n\r\n[limits]\r\narchive_max_ratio = 50\r\n".to_owned(),
+                &[("default_channel", "beta")][..],
+                format!("# header\n\ndefault_channel = \"beta\"\n\n{limits}"),
+            ),
+            (
+                "a file without a final newline",
+                "# header\n\n[limits]\narchive_max_ratio = 50".to_owned(),
+                &[("default_channel", "beta")][..],
+                "# header\n\ndefault_channel = \"beta\"\n\n[limits]\narchive_max_ratio = 50\n"
+                    .to_owned(),
+            ),
+        ] {
+            let updated = sets.iter().fold(text.clone(), |text, (key, value)| {
+                set_value(&text, path, key, value)
+                    .unwrap_or_else(|e| panic!("{name}: set {key} {value} on {text:?}: {e:?}"))
+            });
+            assert_eq!(updated, expected, "{name}: from {text:?}");
+        }
+    }
+
+    /// A file of one table and a closing comment is no comments-only file: setting a key
+    /// leaves the comment last (omad-4h0d.25).
+    #[test]
+    fn set_keeps_a_closing_comment_last() {
+        let path = Path::new("/c/omaddons/config.toml");
+        let text = "[limits]\narchive_max_ratio = 50\n# end of file\n";
+        for (key, value, expected) in [
+            (
+                "limits.tx_retention_count",
+                "9",
+                "[limits]\narchive_max_ratio = 50\ntx_retention_count = 9\n# end of file\n",
+            ),
+            (
+                "targets.retail.name",
+                "Main",
+                "[limits]\narchive_max_ratio = 50\n\n[targets.retail]\nname = \"Main\"\n# end of file\n",
+            ),
+        ] {
+            assert_eq!(
+                set_value(text, path, key, value).unwrap(),
+                expected,
+                "{key}"
+            );
         }
     }
 
