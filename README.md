@@ -275,7 +275,7 @@ cargo build --locked --release
 ./target/release/omaddons status
 ```
 
-The release profile uses thin LTO, a single codegen unit and stripped symbols; the binary is about 25 MB, with the catalog, the agent guide and the bar widget embedded. Milestone 5 brings it under 18 MB with a release profile built for size (`omad-ylko`, measured at 16.1 MB). Moving schema generation out of the binary (`omad-ho1p`, about 1.5 MB more) is needed only if that profile proves too slow and a milder one (measured at 17.7 MB) is used instead.
+The release profile is built for size: `opt-level = "s"`, fat LTO, a single codegen unit and stripped symbols. The binary is about 17.7 MB, with the catalog, the agent guide and the bar widget embedded, and it keeps every speed budget the default optimization level did. Rebuilding the crate in release takes about two and a half minutes on the development machine (fat LTO; about one and a half with thin). Milestone 5 brings the binary under 18 MB with its new sources included, by moving schema generation out of it (`omad-ho1p`, about 1.5 MB).
 
 For Claude Code: `omaddons robot-docs install-skill` installs the agent guide as a skill (see [`robot-docs install-skill`](#robot-docs-install-skill)).
 

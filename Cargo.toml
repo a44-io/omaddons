@@ -88,8 +88,13 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 debug = false
 
+# Built for size (omad-ylko): opt-level "s" with fat LTO is 17.7 MB, against 24.9 MB at
+# opt-level 3 with thin LTO, and keeps every tests/perf.rs budget and argc bench target
+# (status --cached +1%, capabilities +16%). "z" is 16.1 MB but misses status --cached's
+# 5 ms budget (+20%) and puts the large-TOC and 64 MiB parse budgets at their edge.
 [profile.release]
-lto = "thin"
+opt-level = "s"
+lto = "fat"
 codegen-units = 1
 strip = true
 
