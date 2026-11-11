@@ -2316,6 +2316,11 @@ TestCase {
     compare(button.text, "Back up")
     compare(button.tooltipText, "Back up Retail (b)")
     compare(button.Accessible.name, "Back up Retail")
+    // Right-anchored and bordered: a whole-pixel width, even when its label measures a
+    // fraction, so its right border is never clipped (omad-kldz).
+    button.horizontalPadding = 10.25
+    verify(button.implicitWidth !== Math.ceil(button.implicitWidth), "a fractional label")
+    compare(button.width, Math.ceil(button.implicitWidth))
   }
 
   // Never one in use (M3-D48); the label names it by date, never its id (UX-29).

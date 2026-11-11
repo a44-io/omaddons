@@ -63,6 +63,9 @@ Item {
     id: button
     objectName: "sectionButton"
     visible: root.buttonText !== ""
+    // A whole-pixel width: right-anchored at a fractional x, its right border rounds
+    // past the content's edge and is clipped (omad-kldz).
+    width: Math.ceil(implicitWidth)
     anchors.right: parent.right
     anchors.verticalCenter: parent.verticalCenter
     text: root.buttonText

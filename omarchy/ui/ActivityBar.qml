@@ -95,6 +95,9 @@ Column {
       id: cancelButton
       objectName: "activityCancel"
       visible: root.running && root.view.cancellable === true
+      // A whole-pixel width: right-anchored at a fractional x, its right border rounds
+      // past the content's edge and is clipped (omad-kldz).
+      width: Math.ceil(implicitWidth)
       anchors.right: parent.right
       anchors.verticalCenter: parent.verticalCenter
       text: Model.copy("activity.cancel")

@@ -150,6 +150,9 @@ Item {
           Button {
             id: backUp
             objectName: "backUp"
+            // A whole-pixel width: right-anchored at a fractional x, its right border
+            // rounds past the content's edge and is clipped (omad-kldz).
+            width: Math.ceil(implicitWidth)
             anchors.right: parent.right
             y: head.stacked ? clientHeader.implicitHeight + Style.spacing.sm : (head.height - implicitHeight) / 2
             // The same label in every scope (omad-xdwy): the tooltip names the client the

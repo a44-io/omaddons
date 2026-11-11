@@ -38,6 +38,7 @@ TestCase {
   Component { id: rowComponent; AddonRow { width: 540 } }
   Component { id: chipComponent; Chip {} }
   Component { id: headerComponent; SectionHeader { width: 540 } }
+  Component { id: activityComponent; ActivityBar { width: 540 } }
   Component { id: emptyComponent; EmptyState { width: 540 } }
   Component { id: cardComponent; NoticeCard { width: 540 } }
   Component { id: progressComponent; ProgressBar { width: 400 } }
@@ -225,6 +226,31 @@ TestCase {
     header.title = "Wrath 3.3.5a private server on the old drive"
     waitForRendering(header)
     verify(header.titleTruncated, "a long title elides before the button")
+  }
+
+  // A bordered button anchored to the right edge takes a whole-pixel width, so its right
+  // border ends on the content's last pixel and is never clipped, whatever its label
+  // measures (omad-kldz). The padding makes the label's width fractional, as some
+  // labels and fonts do.
+  function test_right_anchored_buttons_take_whole_pixel_widths() {
+    var header = make(headerComponent, { "title": "Retail", "buttonText": "Update Retail (3)" })
+    var bar = make(activityComponent, { "view": { "kind": "check", "text": "Checking for updates",
+      "fraction": 0.3, "elapsed": "", "stalled": false, "cancellable": true } })
+    var cases = [
+      ["sectionButton", header, child(header, "sectionButton")],
+      ["activityCancel", bar, child(bar, "activityCancel")]
+    ]
+    for (var i = 0; i < cases.length; i++) {
+      var name = cases[i][0], button = cases[i][2]
+      verify(button.visible, name)
+      button.horizontalPadding = 10.25
+      waitForRendering(cases[i][1])
+      verify(button.implicitWidth !== Math.ceil(button.implicitWidth), name + ": a fractional label")
+      compare(button.width, Math.ceil(button.implicitWidth), name)
+      var right = button.mapToItem(cases[i][1], button.width, 0).x
+      compare(right, cases[i][1].width, name + ": the right edge is the content's")
+      compare(button.mapToItem(cases[i][1], 0, 0).x % 1, 0, name + ": a whole-pixel x")
+    }
   }
 
   function test_a_key_hint_and_a_separator_render() {
