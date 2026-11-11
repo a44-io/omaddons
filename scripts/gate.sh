@@ -23,6 +23,30 @@ while IFS= read -r f; do
     [[ -n $f && -f $f && $f != .beads/* ]] && changed+=("$f")
 done < <({ git diff --name-only HEAD 2>/dev/null || git diff --name-only --cached; git ls-files --others --exclude-standard; } | sort -u)
 
+# TOML spacing (omad-bujy): an agent Edit whose old string ends in `name = ` loses the
+# trailing space and leaves `name ={`. Cargo reads it the same, so only this catches it
+# (ubs skips Cargo.toml, and rustfmt reads no TOML). The pattern is a key at the start of
+# a line with its `=` against a `{` or `[`, so a comment or a quoted value never matches.
+# grep's own failure (exit 2) fails the gate too, never reads as a clean tree.
+step "TOML: '=' spaced from an inline table or array"
+toml=()
+while IFS= read -r -d '' f; do
+    [[ -f $f ]] && toml+=("$f")
+done < <(git ls-files -z --cached --others --exclude-standard -- '*.toml')
+if ((${#toml[@]})); then
+    toml_exit=0
+    unspaced=$(grep -nHE "^[[:space:]]*[A-Za-z0-9_.\"'-]+[[:space:]]*=[{[]" -- "${toml[@]}") || toml_exit=$?
+    case $toml_exit in
+        0)
+            printf '%s\n' "$unspaced" >&2
+            echo "gate: write 'name = {' and 'name = [' in TOML (anchor an Edit on the whole line)" >&2
+            exit 1
+            ;;
+        1) ;;
+        *) echo "gate: the TOML spacing check failed (grep exit $toml_exit)" >&2; exit "$toml_exit" ;;
+    esac
+fi
+
 step "cargo fmt --check"
 cargo fmt --check
 

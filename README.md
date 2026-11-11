@@ -3826,10 +3826,11 @@ br ready                     # work that is ready now
 There is no CI (decision D16). Every commit that changes code (`*.rs`, `Cargo.*`, `rust-toolchain.toml`, `deny.toml`, lint config, the catalog, the bar widget under `omarchy/`, the agent guide (`src/contract/guide/*.md`, `skills/omaddons/SKILL.md`), test fixtures and snapshots) passes the gate first:
 
 ```bash
-argc gate          # cargo fmt --check, clippy --all-targets -D warnings, clippy on the library and
-                   # binary as release builds them (without schemars), cargo test, the widget
-                   # pipeline, ubs on changed files (Cargo.toml and Cargo.lock aside), cargo deny
-                   # when Cargo.toml/Cargo.lock/deny.toml changed
+argc gate          # TOML spacing (`name = {`, never `name ={`), cargo fmt --check, clippy
+                   # --all-targets -D warnings, clippy on the library and binary as release
+                   # builds them (without schemars), cargo test, the widget pipeline, ubs on
+                   # changed files (Cargo.toml and Cargo.lock aside), cargo deny when
+                   # Cargo.toml/Cargo.lock/deny.toml changed
 argc gate --all    # also run cargo deny, and the widget's QML step, unconditionally
 argc widget-test   # the widget pipeline alone, QML step included
 argc widget-snapshots   # every widget state rendered offscreen into target/widget-snapshots/

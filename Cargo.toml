@@ -32,7 +32,7 @@ clap = { version = "4.6.7", features = ["derive", "env", "wrap_help"] }
 # features (none) only, never unstable-dynamic.
 clap_complete = "4.6.11"
 flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }
-jiff ={ version = "0.2.38", features = ["serde"] }
+jiff = { version = "0.2.38", features = ["serde"] }
 md-5 = "0.11"
 # TOC line ends (omad-btel): a QuestieDB TOC is 13 to 57 MB of lines. Already built in
 # through serde_json and zip.
@@ -67,7 +67,7 @@ assert_cmd = "2.2.2"
 # The XDG oracle for src/state/paths.rs, which mirrors its rules but never falls back
 # to the passwd entry when HOME is unset.
 etcetera = "0.11.0"
-insta ={ version = "1.49.0", features = ["json"] }
+insta = { version = "1.49.0", features = ["json"] }
 # The contract suite's JSON Schema validator (M4-D9): default features off, so no
 # reqwest or TLS backend (deny.toml); pinned so a release cannot change what passes.
 jsonschema = { version = "=0.60.2", default-features = false }
