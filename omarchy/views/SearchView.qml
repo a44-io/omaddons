@@ -394,18 +394,6 @@ Item {
       }
     }
 
-    // An empty box: what the list is (1n2p.26).
-    PlainLabel {
-      objectName: "browseHeader"
-      visible: root.browsing && root.rows.length > 0 && !root.chooserOpen
-      width: parent.width
-      color: root.dim
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
-      text: root.filter ? Model.copy("search.browse.client", { "client": Model.heroTitle(root.statusTargets, root.filter) })
-        : Model.copy("search.browse.all")
-    }
-
     ViewState {
       objectName: "viewState"
       visible: !root.chooserOpen

@@ -369,7 +369,8 @@ Item {
         Button {
           objectName: "copyList"
           width: Math.min(implicitWidth, shareLine.width)
-          text: Model.withKey(Model.copy("share.copy"), "copy", "installed")
+          // The key is the tooltip's, never the label's (omad-xdwy).
+          text: Model.copy("share.copy")
           tooltipText: Model.keyTip("copy", "installed")
           Accessible.role: Accessible.Button
           Accessible.name: text
@@ -385,7 +386,7 @@ Item {
         Button {
           objectName: "pasteList"
           width: Math.min(implicitWidth, shareLine.width)
-          text: Model.withKey(Model.copy("share.paste"), "paste", "installed")
+          text: Model.copy("share.paste")
           tooltipText: Model.keyTip("paste", "installed")
           Accessible.role: Accessible.Button
           Accessible.name: text

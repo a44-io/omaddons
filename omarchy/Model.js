@@ -7782,8 +7782,6 @@ var COPY = {
   "search.link.source.wowace": "WowAce",
   "search.link.source.url": "a download link",
   "search.chooser.title": "Install {addon} on:",
-  "search.browse.client": "Addons omaddons has checked for {client}. Type to search everywhere.",
-  "search.browse.all": "Addons omaddons has checked for your clients. Type to search everywhere.",
 
   "channel.stable": "stable",
   "channel.beta": "beta",

@@ -834,8 +834,11 @@ TestCase {
     compare(findChild(line, "shareText").text, "Share your addon list, or use one someone shared")
     var copyButton = findChild(line, "copyList")
     var pasteButton = findChild(line, "pasteList")
-    compare(copyButton.text, "Copy addon list (y)")
-    compare(pasteButton.text, "Paste addon list… (Ctrl+V)")
+    // The keys are the tooltips', never the labels' (omad-xdwy).
+    compare(copyButton.text, "Copy addon list")
+    compare(pasteButton.text, "Paste addon list…")
+    verify(/\(y\)$/.test(copyButton.tooltipText), copyButton.tooltipText)
+    verify(/\(Ctrl\+V\)$/.test(pasteButton.tooltipText), pasteButton.tooltipText)
     compare(copyButton.Accessible.name, copyButton.text)
     verify(copyButton.enabled && pasteButton.enabled)
     // `y` under All: every client's list; the flash says what went on the clipboard.
@@ -1987,7 +1990,8 @@ TestCase {
   }
 
   // An empty Search box browses the built-in catalog for the scope (1n2p.26): one read
-  // per scope, the rows in their words, what the list is, the installed ones last.
+  // per scope, the rows in their words, the installed ones last, and no caption above
+  // them (omad-xdwy).
   function test_an_empty_search_box_browses_the_catalog_for_the_scope() {
     keyClick("3")
     var search = content()
@@ -1995,12 +1999,11 @@ TestCase {
     var state = findChild(search, "viewState")
     compare(findChild(state, "stateEmpty").sentence, "Type a name, or paste a link from GitHub, WoWInterface, Tukui or WowAce.",
       "what to type until the catalog answers")
-    verify(!findChild(search, "browseHeader").visible)
     svc.catalogs = { "": catalogAnswer("") }
     compare(json(search.rows.map(function(r) { return [r.name, r.meta.split(" · ")[0]] })), json([
       ["Bartender4", "Works on 2 of 2 clients"], ["Questie", "Works on 1 of 2 clients"], ["WeakAuras", "Works on 1 of 2 clients"]]))
     verify(!findChild(state, "stateEmpty").visible)
-    compare(findChild(search, "browseHeader").text, "Addons omaddons has checked for your clients. Type to search everywhere.")
+    compare(findChild(search, "browseHeader"), null, "no caption over the catalog")
     // Retail: its own read; WeakAuras, installed there, comes last.
     keyClick("t")
     keyClick("t")
@@ -2009,7 +2012,6 @@ TestCase {
     svc.catalogs = { "": catalogAnswer(""), "retail": catalogAnswer("retail") }
     compare(json(search.rows.map(function(r) { return [r.name, r.chips.map(function(c) { return c.text })] })), json([
       ["Bartender4", []], ["WeakAuras", ["installed 5.19.2"]]]))
-    compare(findChild(search, "browseHeader").text, "Addons omaddons has checked for Retail. Type to search everywhere.")
     compare(svc.searches.length, 0, "browsing asks no search")
   }
 
@@ -2024,7 +2026,6 @@ TestCase {
     keyClick(Qt.Key_Down)
     compare(view.cursor, 1)
     field.text = "damage meter"
-    verify(!findChild(search, "browseHeader").visible)
     compare(search.rowCount, 0)
     tryVerify(function() { return svc.searches.length === 1 })
     svc.search = { "selection": { "query": "damage meter", "target": "" }, "query": "damage meter", "skipped": [],
@@ -2033,7 +2034,6 @@ TestCase {
     field.text = ""
     compare(search.rowCount, 3)
     compare(view.cursor, 0)
-    verify(findChild(search, "browseHeader").visible)
   }
 
   // A catalog row installs and opens its page exactly as a result does.
@@ -2295,8 +2295,12 @@ TestCase {
     keyClick("b")
     compare(json(svc.runs[2]), json(["backup_target", { "target": "retail" }, "Back up Retail"]))
     compare(json(words(svc.runs[2])), json(["backup", "create", "-t", "retail"]))
-    // In the client's scope, the card's button is `b`'s.
-    compare(named(content(), "backUp")[0].text, "Back up (b)")
+    // In the client's scope, the card's button is `b`'s: its tooltip says so, and its
+    // label is the one it has under All (omad-xdwy).
+    var button = named(content(), "backUp")[0]
+    compare(button.text, "Back up")
+    compare(button.tooltipText, "Back up Retail (b)")
+    compare(button.Accessible.name, "Back up Retail")
   }
 
   // Never one in use (M3-D48); the label names it by date, never its id (UX-29).

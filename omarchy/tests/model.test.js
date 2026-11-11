@@ -5112,8 +5112,11 @@ describe("sharing an addon set", () => {
     expect(M.panelKey("y", "installed")).toEqual({ action: "copy", step: 0 })
     expect(M.panelKey("Ctrl+V", "installed")).toEqual({ action: "paste", step: 0 })
     expect(M.panelKey("Ctrl+V", "updates")).toEqual({ action: null, note: "Addon lists paste in Addons (2)" })
-    expect(M.withKey(M.copy("share.copy"), "copy", "installed")).toBe("Copy addon list (y)")
-    expect(M.withKey(M.copy("share.paste"), "paste", "installed")).toBe("Paste addon list… (Ctrl+V)")
+    // The share buttons' labels carry no key; their tooltips name it (omad-xdwy).
+    expect(M.copy("share.copy")).toBe("Copy addon list")
+    expect(M.copy("share.paste")).toBe("Paste addon list…")
+    expect(M.keyTip("copy", "installed")).toMatch(/ \(y\)$/)
+    expect(M.keyTip("paste", "installed")).toMatch(/ \(Ctrl\+V\)$/)
   })
 })
 

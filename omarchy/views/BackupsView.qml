@@ -152,11 +152,13 @@ Item {
             objectName: "backUp"
             anchors.right: parent.right
             y: head.stacked ? clientHeader.implicitHeight + Style.spacing.sm : (head.height - implicitHeight) / 2
-            text: section.scoped ? Model.withKey(Model.copy("backups.back_up"), "backup", "backups") : Model.copy("backups.back_up")
-            tooltipText: section.modelData.backUp.label
-            // "Back up Retail": the tooltip names the client the label leaves out.
+            // The same label in every scope (omad-xdwy): the tooltip names the client the
+            // label leaves out ("Back up Retail"), and under one client, where `b` is
+            // this button, its key ("Back up Retail (b)").
+            text: Model.copy("backups.back_up")
+            tooltipText: section.scoped ? Model.withKey(section.modelData.backUp.label, "backup", "backups") : section.modelData.backUp.label
             Accessible.role: Accessible.Button
-            Accessible.name: tooltipText !== "" ? tooltipText : text
+            Accessible.name: section.modelData.backUp.label !== "" ? section.modelData.backUp.label : text
             enabled: root.canChange
             opacity: enabled ? 1.0 : 0.4
             bordered: true
