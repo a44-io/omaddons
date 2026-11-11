@@ -289,8 +289,9 @@ mod support {
             .collect()
     }
 
-    /// The Forever stress-test set's guard: `forever`'s record generation, its AddOns
-    /// tree hash, and its managed addons and folders (5 and 12 while the set stays).
+    /// The Forever client's guard: `forever`'s record generation, its AddOns tree hash,
+    /// and its managed addons and folders. Since the 2026-11-04 launch they are the
+    /// owner's own setup, which no test changes (omad-wez).
     pub fn forever_guard() -> Value {
         let Some((_, key, addons, _)) = clients().into_iter().find(|(id, ..)| id == "forever")
         else {
@@ -931,11 +932,11 @@ fn keyless_installs_classic() {
     );
 }
 
-/// The real WoW: Forever stress-test client (`wowf`, `_forever_`). Each keyless publisher
-/// installs exactly when its release.json declares `forever`; DBM and BigWigs skip their
-/// retail-only modules (game type `standard`, Forever's is `camelot`); a client never
-/// launched gets its AddOns folder inside the transaction. Everything is undone: AddOns
-/// ends as found, except that a folder this test created stays, empty.
+/// The real WoW: Forever client (`wowf`, `_forever_`), while it manages no addons. Each
+/// keyless publisher installs exactly when its release.json declares `forever`; DBM and
+/// BigWigs skip their retail-only modules (game type `standard`, Forever's is `camelot`);
+/// a client never launched gets its AddOns folder inside the transaction. Everything is
+/// undone: AddOns ends as found, except that a folder this test created stays, empty.
 #[test]
 #[ignore = "real machine and live network: OMADDONS_REAL_MACHINE=1 OMADDONS_LIVE=1"]
 fn keyless_installs_forever() {
@@ -948,14 +949,15 @@ fn keyless_installs_forever() {
         return;
     }
     // Installing what is already installed is a no-op with nothing to undo, so the test
-    // needs a client whose addons it puts there itself (the stress-test set stays
-    // installed for the owner's sessions; omad-classic-forever-gaps-xud.6).
+    // needs a client whose addons it puts there itself. Since the 2026-11-04 launch the
+    // forever client holds the owner's own setup, which is never cleared to run this
+    // test (omad-wez); the synthetic Forever probe covers the publishers instead.
     let managed = forever["addons"]["total"].as_u64().unwrap_or(0);
     if managed > 0 {
         checkpoint::skip(
             "keyless_installs_forever",
             &format!(
-                "the forever client manages {managed} addons (the stress-test set of omad-classic-forever-gaps-xud.6); undo or remove them to run this test"
+                "the forever client manages {managed} addons, the owner's own setup, which no test clears; live_probes::keyless_installs_into_a_synthetic_forever_target covers Forever installs"
             ),
         );
         return;
@@ -1066,7 +1068,7 @@ fn legacy_installs_335_from_git_and_from_a_release() {
 // explicit `-t` on retail or a Classic client, never forever; no bare `update`, no
 // non-dry-run `sync`, no `adopt --apply`, no `pin`/`unpin` without `-t`; every
 // transaction undone by id, newest first, before anything is asserted; every client's
-// AddOns and WTF/ hash as before, and the Forever stress-test set stays untouched.
+// AddOns and WTF/ hash as before, and the Forever client's addons stay untouched.
 
 /// `outdated`, `adopt --no-verify` (a report), `status` and `export` on every client.
 #[test]
