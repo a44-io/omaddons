@@ -443,13 +443,30 @@ pub(crate) fn chmod(path: &Path, mode: u32) -> io::Result<()> {
 
 /// [`chmod`] made durable: the mode is set through a descriptor opened before the change
 /// (so a mode without read permission still syncs), then that inode is fsynced (one
-/// counted `fsync`). For transaction sessions only; staging keeps its no-fsync contract.
+/// counted `fsync`). A file its owner cannot read now (`0044`, omad-4h0d.16) cannot be
+/// opened: its mode is set by path, then fsynced through the new mode, or, when that one
+/// is unreadable too, its filesystem is synced (one counted `syncfs`). For transaction
+/// sessions only; staging keeps its no-fsync contract.
 pub(crate) fn chmod_durable(path: &Path, mode: u32) -> io::Result<()> {
     failpoint::hit("fsx.chmod.before")?;
     refuse_symlink(path)?;
-    let file = File::open(path)?;
-    file.set_permissions(Permissions::from_mode(mode))?;
-    fsync(&file)
+    match File::open(path) {
+        Ok(file) => {
+            file.set_permissions(Permissions::from_mode(mode))?;
+            fsync(&file)
+        }
+        Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
+            fs::set_permissions(path, Permissions::from_mode(mode))?;
+            match File::open(path) {
+                Ok(file) => fsync(&file),
+                Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
+                    sync_filesystem(parent_dir(path)?)
+                }
+                Err(err) => Err(err),
+            }
+        }
+        Err(err) => Err(err),
+    }
 }
 
 fn refuse_symlink(path: &Path) -> io::Result<()> {

@@ -615,6 +615,39 @@ fn credential_fixture_is_found_fixed_and_verified() {
     assert_eq!(facts(&log, "credential", &file), fixed);
 }
 
+/// A credential at `0044`, which its owner cannot read (omad-4h0d.16): the fixer repairs
+/// it in place to 0600, and `doctor undo` puts `0044` back on the same inode. The
+/// tracked chmod opened the file first, which its owner may not, and failed `io`.
+#[test]
+fn a_credential_its_owner_cannot_read_is_repaired_and_undone() {
+    let log = tlog!();
+    if common::procfs::running_as_root() {
+        log.note("skipped: root reads a 0044 file");
+        return;
+    }
+    let home = home(&log);
+    log.step("plant at 0044");
+    let file = plant::credential_file_mode(&home);
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o044)).unwrap();
+    let inode = fs::metadata(&file).unwrap().ino();
+
+    log.step("fix");
+    let ran = run(&log, &home, &["doctor", "fix", "--only", MODE, "--json"]);
+    ran.ok();
+    assert_eq!(ran.envelope()["summary"]["actions_taken"], 1);
+    assert_eq!(mode_of(&file), 0o600);
+
+    log.step("undo");
+    let ran = run(&log, &home, &["doctor", "undo", "--json"]);
+    ran.ok();
+    assert_eq!(ran.envelope()["state"], "DONE_OK");
+    assert_eq!(
+        (mode_of(&file), fs::metadata(&file).unwrap().ino()),
+        (0o044, inode),
+        "the mode back, in place"
+    );
+}
+
 #[test]
 fn explain_warns_that_undo_restores_the_exposure() {
     let log = tlog!();

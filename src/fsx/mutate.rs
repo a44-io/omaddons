@@ -1994,6 +1994,39 @@ mod tests {
         );
     }
 
+    /// From a mode its owner cannot read (`0044`, a credential the doctor repairs) to one
+    /// it can (omad-4h0d.16): set by path, then fsynced through the new mode. Between two
+    /// such modes, the filesystem is synced instead.
+    #[test]
+    fn a_tracked_chmod_from_a_mode_its_owner_cannot_read_is_durable() {
+        if crate::doctor::view::tests::is_root() {
+            return;
+        }
+        let f = Fixture::new();
+        let file = f.paths.state_dir().join("x");
+        let mut s = f.tx_session(Writer::Mutating);
+        ensure_dir_all(&mut s, f.paths.state_dir()).unwrap();
+        mutate(&mut s, &file, write(b"x")).unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o044)).unwrap();
+        let before = sys::sync_counts();
+        mutate(&mut s, &file, Op::Chmod { mode: 0o600 }).unwrap();
+        assert_eq!(mode_of(&file), 0o600);
+        assert_eq!(
+            sys::sync_counts().fsync - before.fsync,
+            2,
+            "the mode's, and the line's"
+        );
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o044)).unwrap();
+        let before = sys::sync_counts();
+        mutate(&mut s, &file, Op::Chmod { mode: 0o040 }).unwrap();
+        assert_eq!(mode_of(&file), 0o040);
+        assert_eq!(
+            sys::sync_counts().syncfs - before.syncfs,
+            1,
+            "neither mode readable"
+        );
+    }
+
     #[test]
     fn an_untracked_chmod_adds_no_fsync() {
         let f = Fixture::new();
