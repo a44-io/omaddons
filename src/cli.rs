@@ -855,7 +855,7 @@ pub fn usage_error_with(
         // The verb, wherever global flags put it; `pin` takes one addon, so the
         // alternative is offered only when it parses.
         let mut as_pin = as_install(argv);
-        if let Some(slot) = as_pin.iter_mut().skip(1).find(|a| *a == "install") {
+        if let Some(slot) = command_word_at(&as_pin).and_then(|i| as_pin.get_mut(i)) {
             "pin".clone_into(slot);
         }
         // The install parses only with an addon and a version given: else the help.
@@ -1366,6 +1366,39 @@ fn rejected_subcommand_at(argv: &[String]) -> Option<usize> {
     walk_command_path(argv).1
 }
 
+/// Where `bad`, the word clap rejected as a subcommand, stands in `argv`: the index the
+/// command-path walk stopped at when that word is `bad`, never a flag's value that
+/// spells it too (`-t ls targets ls`, omad-4h0d.22); else its first appearance.
+fn rejected_word_at(argv: &[String], bad: &str) -> Option<usize> {
+    rejected_subcommand_at(argv)
+        .filter(|&at| argv.get(at).is_some_and(|word| word == bad))
+        .or_else(|| argv.iter().skip(1).position(|a| a == bad).map(|i| i + 1))
+}
+
+/// The index in `argv` of the word naming its command (`update` in
+/// `omaddons -t update update`), walking as [`command_path`] does: never a flag's
+/// value, nothing after `--`.
+fn command_word_at(argv: &[String]) -> Option<usize> {
+    let mut root = Cli::command();
+    root.build();
+    let mut args = argv.iter().enumerate().skip(1);
+    while let Some((i, arg)) = args.next() {
+        // ubs:ignore — comparing command-line words, not secrets
+        if arg == "--" {
+            return None;
+        }
+        // ubs:ignore — comparing command-line words, not secrets
+        if arg.starts_with('-') && arg != "-" {
+            if takes_value(&root, arg) {
+                args.next();
+            }
+            continue;
+        }
+        return root.find_subcommand(arg).is_some().then_some(i);
+    }
+    None
+}
+
 /// The index in `argv` of the last positional argument equal to `word`: not a flag, not
 /// a flag's value (at the command `argv` names, globals included), not after `--`.
 fn last_positional_at(argv: &[String], word: &str) -> Option<usize> {
@@ -1472,11 +1505,10 @@ fn actor_fix(argv: &[String], bad: &str) -> Suggestion {
 fn synonym(argv: &[String], path: &[String], bad: &str) -> Option<Suggestion> {
     let level: Vec<&str> = path.iter().map(String::as_str).collect();
     match (level.as_slice(), bad) {
-        (["targets"], "remove" | "delete" | "uninstall") => {
-            fix_argv_replacing(argv, bad, "rm").map(Suggestion::command)
-        }
+        (["targets"], "remove" | "delete" | "uninstall") => rejected_word_at(argv, bad)
+            .map(|at| Suggestion::command(fix_argv_replacing_at(argv, at, "rm"))),
         (["targets"] | ["config"], "ls" | "list" | "show") => {
-            let at = argv.iter().skip(1).position(|a| a == bad)? + 1;
+            let at = rejected_word_at(argv, bad)?;
             let mut without = argv.to_vec();
             without.remove(at);
             Some(Suggestion::command(fix_argv(&without)))
@@ -1555,7 +1587,10 @@ fn guess_suggestion(
     let mut full = path.to_vec();
     full.push(name.to_owned());
     let joined = full.join(" ");
-    let fixed = fix_argv_replacing(argv, bad, name).unwrap_or_else(|| fix_argv(argv));
+    let fixed = rejected_word_at(argv, bad).map_or_else(
+        || fix_argv(argv),
+        |at| fix_argv_replacing_at(argv, at, name),
+    );
     // ubs:ignore — comparing command paths, not secrets
     let has_row = |path: &str| crate::app::COMMANDS.iter().any(|c| c.name == path);
     let reads = |path: &str| has_row(path) && !crate::app::mutates(path);
@@ -1640,11 +1675,7 @@ fn value_fix(
 /// `omaddons reinstall X …` as `omaddons install X … --reinstall`, every other argument
 /// kept.
 fn reinstall_fix(argv: &[String]) -> Suggestion {
-    let position = argv
-        .iter()
-        .skip(1)
-        .position(|a| a == "reinstall")
-        .map(|i| i + 1);
+    let position = rejected_word_at(argv, "reinstall");
     let mut argv = argv.to_vec();
     if let Some(slot) = position.and_then(|i| argv.get_mut(i)) {
         "install".clone_into(slot);
@@ -1796,11 +1827,17 @@ pub fn fix_argv(argv: &[String]) -> Vec<String> {
 /// name replaced by `new`, every other argument kept; `None` when no argument is `old`.
 pub fn fix_argv_replacing(argv: &[String], old: &str, new: &str) -> Option<Vec<String>> {
     let position = argv.iter().skip(1).position(|a| a == old)? + 1;
+    Some(fix_argv_replacing_at(argv, position, new))
+}
+
+/// `argv` (without presentation flags) with its argument at `at` replaced by `new`,
+/// every other argument kept.
+fn fix_argv_replacing_at(argv: &[String], at: usize, new: &str) -> Vec<String> {
     let mut argv = argv.to_vec();
-    if let Some(slot) = argv.get_mut(position) {
+    if let Some(slot) = argv.get_mut(at) {
         new.clone_into(slot);
     }
-    Some(fix_argv_keeping(&argv, Some(position)))
+    fix_argv_keeping(&argv, Some(at))
 }
 
 /// `argv` (without presentation flags) with the value of its option `flag` (`--ref X` or
@@ -1850,15 +1887,13 @@ fn fix_argv_keeping(argv: &[String], keep: Option<usize>) -> Vec<String> {
 /// `argv` (without presentation flags) with its `update` (or `upgrade`) subcommand
 /// replaced by `install`.
 fn as_install(argv: &[String]) -> Vec<String> {
-    let mut argv = fix_argv(argv);
-    if let Some(slot) = argv
-        .iter_mut()
-        .skip(1)
-        .find(|a| *a == "update" || *a == "upgrade")
-    {
+    let mut argv = argv.to_vec();
+    let at = command_word_at(&argv)
+        .filter(|&i| argv.get(i).is_some_and(|w| w == "update" || w == "upgrade"));
+    if let Some(slot) = at.and_then(|i| argv.get_mut(i)) {
         "install".clone_into(slot);
     }
-    argv
+    fix_argv(&argv)
 }
 
 /// `argv` without `flag` (and its value).
@@ -2974,6 +3009,57 @@ mod tests {
         assert_eq!(
             err.fix.argv().unwrap(),
             argv(&["-v", "install", "Foo", "--reinstall"])
+        );
+    }
+
+    /// A fix edits the word clap rejected, never an earlier flag's value that spells it
+    /// too (omad-4h0d.22): `-t ls`, `--reason list`, `--reason remove`, `--reason
+    /// reinstall`, and `update --version`'s install and pin after `--reason install`.
+    #[test]
+    fn fixes_edit_the_rejected_word_never_a_flags_value() {
+        let error = |args: &[&str]| {
+            let raw = argv(args);
+            usage_error(&Cli::try_parse_from(&raw).unwrap_err(), &raw)
+        };
+        let fix = |args: &[&str]| error(args).fix.argv().unwrap().to_vec();
+        for (args, expected) in [
+            (
+                &["--json", "-t", "ls", "targets", "ls"][..],
+                &["-t", "ls", "targets"][..],
+            ),
+            (
+                &["--json", "--reason", "list", "targets", "list"],
+                &["--reason", "list", "targets"],
+            ),
+            (
+                &["--reason", "remove", "targets", "remove", "x"],
+                &["--reason", "remove", "targets", "rm", "x"],
+            ),
+            (
+                &["--reason", "reinstall", "reinstall", "Foo"],
+                &["--reason", "reinstall", "install", "Foo", "--reinstall"],
+            ),
+            (
+                &["--reason", "update", "update", "Foo", "--version", "1"],
+                &["--reason", "update", "install", "Foo", "--version", "1"],
+            ),
+        ] {
+            assert_eq!(fix(args), argv(expected), "{args:?}");
+        }
+        let pin = error(&["--reason", "install", "update", "Foo", "--version", "1"]);
+        assert_eq!(
+            pin.alternatives
+                .iter()
+                .map(|a| a.argv().unwrap().to_vec())
+                .collect::<Vec<_>>(),
+            [argv(&[
+                "--reason",
+                "install",
+                "pin",
+                "Foo",
+                "--version",
+                "1"
+            ])]
         );
     }
 
