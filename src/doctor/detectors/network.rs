@@ -23,7 +23,9 @@ use crate::sources::SourceId;
 use crate::sources::github_rest::{RateLimit, parse_rate_limit, rate_limit_request};
 
 /// Every `evidence.reason` these checks give: the credential's (`rejected`,
-/// `unresolvable`) and a source's (`no_answer`, `server_error`, `too_many_requests`).
+/// `unresolvable`) and a source's (`no_answer`, `server_error`, `too_many_requests`), as
+/// the evidence's schema lists them.
+#[cfg(feature = "schemas")]
 pub(crate) const REASONS: [&str; 5] = [
     "no_answer",
     "rejected",

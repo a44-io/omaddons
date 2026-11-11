@@ -10,13 +10,16 @@
 //! [`StoredIntent::validate`] checks the rules decoding cannot express. `display_argv`
 //! is derived from the intent, for people and history; nothing parses or dispatches it.
 
+#[cfg(feature = "schemas")]
 use std::borrow::Cow;
 use std::fmt;
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 
 use jiff::Timestamp;
-use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
+use schemars::JsonSchema;
+#[cfg(feature = "schemas")]
+use schemars::{Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
 use crate::app::adopt::AdoptArgs;
@@ -316,6 +319,7 @@ impl fmt::Display for AbsPath {
     }
 }
 
+#[cfg(feature = "schemas")]
 impl JsonSchema for AbsPath {
     fn schema_name() -> Cow<'static, str> {
         "AbsPath".into()
@@ -422,6 +426,7 @@ impl fmt::Display for NormalizedRef {
     }
 }
 
+#[cfg(feature = "schemas")]
 impl JsonSchema for NormalizedRef {
     fn schema_name() -> Cow<'static, str> {
         "NormalizedRef".into()

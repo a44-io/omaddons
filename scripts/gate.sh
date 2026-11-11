@@ -29,6 +29,13 @@ cargo fmt --check
 step "cargo clippy --locked --all-targets -- -D warnings"
 cargo clippy --locked --all-targets -- -D warnings
 
+# The release configuration (omad-ho1p): `--all-targets` builds the tests, whose
+# dev-dependency on this package turns on its `schemas` feature, so it never compiles the
+# library and binary without schemars. This step does, on every gate, not only when a
+# release is built.
+step "cargo clippy --locked -- -D warnings (library and binary without schemas)"
+cargo clippy --locked -- -D warnings
+
 step "cargo test --locked"
 cargo test --locked
 

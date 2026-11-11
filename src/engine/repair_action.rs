@@ -24,7 +24,9 @@ use std::fmt;
 use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
 
-use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
+use schemars::JsonSchema;
+#[cfg(feature = "schemas")]
+use schemars::{Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 use crate::fsx::sha256_from_hex;
@@ -60,6 +62,7 @@ macro_rules! string_wire {
             }
         }
 
+        #[cfg(feature = "schemas")]
         impl JsonSchema for $name {
             fn schema_name() -> Cow<'static, str> {
                 stringify!($name).into()
@@ -183,6 +186,7 @@ fn decimal<T: FromStr>(text: &str, signed: bool) -> Option<T> {
         .flatten()
 }
 
+#[cfg(feature = "schemas")]
 impl JsonSchema for Identity {
     fn schema_name() -> Cow<'static, str> {
         "Identity".into()

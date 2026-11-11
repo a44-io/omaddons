@@ -53,9 +53,10 @@ fmt() {
     cargo fmt
 }
 
-# @cmd Run clippy with warnings denied, as the gate does
+# @cmd Run clippy with warnings denied, as the gate does: every target (with schemas), then the library and binary without them
 lint() {
     cargo clippy --locked --all-targets -- -D warnings
+    cargo clippy --locked -- -D warnings
 }
 
 # @cmd Run the test suite

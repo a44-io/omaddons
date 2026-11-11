@@ -2,19 +2,34 @@
 //! M4-D9 uses the serialize contract, so omitted fields are optional. Each root gets
 //! a fresh generator, so its definitions depend only on its own type. Published
 //! schemas stay open; strictness belongs to the contract suite's test transform.
+//!
+//! Generating them needs schemars, which only builds with the `schemas` feature (every
+//! test build): the release binary prints the copy it embedded ([`Published::embedded`],
+//! omad-ho1p), and the items that generate are behind the feature.
 
 use std::collections::BTreeMap;
 
+#[cfg(feature = "schemas")]
 use schemars::generate::SchemaSettings;
+#[cfg(feature = "schemas")]
 use schemars::{Schema, SchemaGenerator};
+use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, Visitor};
 use serde::ser::{SerializeMap, SerializeSeq};
-use serde::{Deserialize, Serialize, Serializer};
-use serde_json::{Value, json};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::Value;
+#[cfg(feature = "schemas")]
+use serde_json::json;
 
+#[cfg(feature = "schemas")]
 use crate::app::{self, CommandEntry};
+#[cfg(feature = "schemas")]
 use crate::engine::journal::JournalLine;
-use crate::error::{Error, ErrorBody, ErrorCode, Result, Suggestion, error_variant_value};
+use crate::error::{Error, ErrorCode, Result};
+#[cfg(feature = "schemas")]
+use crate::error::{ErrorBody, Suggestion, error_variant_value};
+#[cfg(feature = "schemas")]
 use crate::output::Envelope;
+#[cfg(feature = "schemas")]
 use crate::state::{desired::DesiredStateSchema, store};
 
 /// One published JSON Schema (draft 2020-12) or schema fragment: JSON Schema's own
@@ -57,6 +72,7 @@ impl SchemaDoc {
     }
 }
 
+#[cfg(feature = "schemas")]
 impl From<Schema> for SchemaDoc {
     fn from(schema: Schema) -> Self {
         Self(schema.to_value())
@@ -151,6 +167,7 @@ impl Serialize for Keywords<'_> {
     }
 }
 
+#[cfg(feature = "schemas")]
 impl schemars::JsonSchema for SchemaDoc {
     fn schema_name() -> std::borrow::Cow<'static, str> {
         "SchemaDoc".into()
@@ -166,11 +183,13 @@ impl schemars::JsonSchema for SchemaDoc {
 }
 
 /// The settings every published schema is generated with (M4-D9).
+#[cfg(feature = "schemas")]
 pub fn settings() -> SchemaSettings {
     SchemaSettings::draft2020_12().for_serialize()
 }
 
 /// One fresh generator per root; never reuse it for another schema.
+#[cfg(feature = "schemas")]
 pub fn generator() -> SchemaGenerator {
     settings().into_generator()
 }
@@ -180,11 +199,13 @@ pub fn generator() -> SchemaGenerator {
 /// whatever key it sits (`tests/contract/rules.rs`, `r1-instant-type`). Used as
 /// `#[schemars(schema_with = "crate::contract::schema::timestamp")]` on every
 /// `Timestamp` field; `format` is an annotation, so the schema stays as open as before.
+#[cfg(feature = "schemas")]
 pub fn timestamp(_: &mut SchemaGenerator) -> Schema {
     schemars::json_schema!({"type": "string", "format": "date-time"})
 }
 
 /// [`timestamp`] for an `Option<Timestamp>`: the instant, or `null`.
+#[cfg(feature = "schemas")]
 pub fn timestamp_opt(_: &mut SchemaGenerator) -> Schema {
     schemars::json_schema!({"type": ["string", "null"], "format": "date-time"})
 }
@@ -195,6 +216,7 @@ pub fn timestamp_opt(_: &mut SchemaGenerator) -> Schema {
 /// was given. Its `maxLength` says it is no vocabulary (`tests/contract/rules.rs`,
 /// `r4-open-enum`). Used as
 /// `#[schemars(schema_with = "crate::contract::schema::reason_text")]`.
+#[cfg(feature = "schemas")]
 pub fn reason_text(_: &mut SchemaGenerator) -> Schema {
     schemars::json_schema!({
         "type": ["string", "null"],
@@ -203,6 +225,7 @@ pub fn reason_text(_: &mut SchemaGenerator) -> Schema {
 }
 
 /// One command's data schema, titled with its canonical command path.
+#[cfg(feature = "schemas")]
 pub fn command_schema(entry: &CommandEntry) -> Schema {
     let mut schema = (entry.data)(&mut generator());
     schema.insert("title".into(), json!(entry.name));
@@ -210,6 +233,7 @@ pub fn command_schema(entry: &CommandEntry) -> Schema {
 }
 
 /// Every command row's data schema, keyed by its canonical path.
+#[cfg(feature = "schemas")]
 pub fn command_schemas() -> BTreeMap<&'static str, Schema> {
     app::COMMANDS
         .iter()
@@ -218,6 +242,7 @@ pub fn command_schemas() -> BTreeMap<&'static str, Schema> {
 }
 
 /// The data schema for any envelope command, including the two envelope-only names.
+#[cfg(feature = "schemas")]
 pub fn data_schema_for(command: &str) -> Option<Schema> {
     if let Some(entry) = app::command_entry(command) {
         return Some(command_schema(entry));
@@ -231,11 +256,13 @@ pub fn data_schema_for(command: &str) -> Option<Schema> {
 }
 
 /// The common frame; data stays open because each command supplies its own schema.
+#[cfg(feature = "schemas")]
 pub fn envelope_schema() -> Schema {
     generator().root_schema_for::<Envelope<'static, serde_json::Value>>()
 }
 
 /// The error union (M4-D10): one variant per code, discriminated by `code`.
+#[cfg(feature = "schemas")]
 pub fn error_schema() -> Schema {
     let mut schema = generator().root_schema_for::<ErrorBody>();
     schema.insert("title".into(), json!("ErrorBody"));
@@ -244,6 +271,7 @@ pub fn error_schema() -> Schema {
 
 /// One code's variant of the union as a root of its own, so a failure can be checked
 /// against its code alone.
+#[cfg(feature = "schemas")]
 pub fn error_variant(code: ErrorCode) -> Schema {
     let mut generator = generator();
     let alternatives = generator.subschema_for::<Vec<Suggestion>>();
@@ -263,6 +291,7 @@ pub fn error_variant(code: ErrorCode) -> Schema {
 }
 
 /// Each stderr event, with its discriminator pinned to the event's wire name.
+#[cfg(feature = "schemas")]
 pub fn event_schemas() -> BTreeMap<&'static str, Schema> {
     super::events::EventName::ALL
         .iter()
@@ -285,6 +314,7 @@ pub fn event_schemas() -> BTreeMap<&'static str, Schema> {
 
 /// Every saved format, plus one line of each journal family (whose version is in its
 /// `prepared` line, not a leading `schema_version`) and `addons.toml` represented as JSON.
+#[cfg(feature = "schemas")]
 pub fn file_schemas() -> BTreeMap<&'static str, Schema> {
     let mut schemas: BTreeMap<_, _> = store::KINDS
         .iter()
@@ -342,6 +372,18 @@ impl Published {
             .map_err(|e| Error::internal(format!("the embedded schemas do not read: {e}")))
     }
 
+    /// The embedded schema of the command at `path`, `None` when it has none. The other
+    /// schemas are skipped as they are read, never built, so one path costs about what
+    /// decompressing the file does.
+    pub fn embedded_command(path: &str) -> Result<Option<SchemaDoc>> {
+        let bytes = Self::embedded_bytes()?;
+        let mut reader = serde_json::Deserializer::from_slice(&bytes);
+        let found = OneCommand { path, top: true }
+            .deserialize(&mut reader)
+            .and_then(|found| reader.end().map(|()| found));
+        found.map_err(|e| Error::internal(format!("the embedded schemas do not read: {e}")))
+    }
+
     /// [`EMBEDDED`] decompressed: the JSON [`Published::generated`] printed.
     pub fn embedded_bytes() -> Result<Vec<u8>> {
         zstd::stream::decode_all(EMBEDDED)
@@ -349,6 +391,7 @@ impl Published {
     }
 
     /// Every schema generated from the types, as [`EMBEDDED`] must hold it.
+    #[cfg(feature = "schemas")]
     pub fn generated() -> Self {
         let keyed = |map: BTreeMap<&'static str, Schema>| {
             map.into_iter()
@@ -361,6 +404,57 @@ impl Published {
             commands: keyed(command_schemas()),
             files: keyed(file_schemas()),
         }
+    }
+}
+
+/// Reads [`Published`]'s JSON keeping one command's schema: at the top, the `commands`
+/// map (every other key skipped), and in it, `path`'s value (every other one skipped).
+struct OneCommand<'a> {
+    path: &'a str,
+    /// Reading the listing itself, not yet its `commands`.
+    top: bool,
+}
+
+impl<'de> DeserializeSeed<'de> for OneCommand<'_> {
+    type Value = Option<SchemaDoc>;
+
+    fn deserialize<D: Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> std::result::Result<Self::Value, D::Error> {
+        deserializer.deserialize_map(self)
+    }
+}
+
+impl<'de> Visitor<'de> for OneCommand<'_> {
+    type Value = Option<SchemaDoc>;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.top {
+            "the published schemas"
+        } else {
+            "the commands' schemas"
+        })
+    }
+
+    fn visit_map<A: MapAccess<'de>>(
+        self,
+        mut map: A,
+    ) -> std::result::Result<Self::Value, A::Error> {
+        let mut found = None;
+        while let Some(key) = map.next_key::<String>()? {
+            if self.top && key == "commands" {
+                found = map.next_value_seed(OneCommand {
+                    path: self.path,
+                    top: false,
+                })?;
+            } else if !self.top && key == self.path {
+                found = Some(map.next_value::<SchemaDoc>()?);
+            } else {
+                map.next_value::<IgnoredAny>()?;
+            }
+        }
+        Ok(found)
     }
 }
 
@@ -670,6 +764,26 @@ mod tests {
             for (schemars, ours) in both_ways(value) {
                 assert!(ours == schemars, "{label}: SchemaDoc prints it differently");
             }
+        }
+    }
+
+    /// One path's read keeps exactly the listing's entry, and finds nothing else.
+    #[test]
+    fn one_command_is_its_listing_entry() {
+        let listing = Published::embedded().unwrap();
+        for (path, doc) in &listing.commands {
+            let one = Published::embedded_command(path).unwrap();
+            assert_eq!(one.as_ref(), Some(doc), "{path}");
+        }
+        // Keys of the listing and of its other sections (an event, a file kind) are no path.
+        for path in [
+            "no such command",
+            "envelope",
+            "events",
+            "progress",
+            "journal",
+        ] {
+            assert_eq!(Published::embedded_command(path).unwrap(), None, "{path}");
         }
     }
 

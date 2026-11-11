@@ -90,6 +90,7 @@ pub const LAST_FAILED: &str = "failed";
 /// The schema of `auto.last.result`: [`LAST_CREATED`], a [`Skip`]'s wire name, or
 /// [`LAST_FAILED`], the only values [`note`] records. The inventory keeps it a string, so
 /// a value a newer build records still reads.
+#[cfg(feature = "schemas")]
 pub fn last_result_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     let values: Vec<&str> = std::iter::once(LAST_CREATED)
         .chain(Skip::ALL.iter().map(|skip| skip.wire()))

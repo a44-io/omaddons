@@ -5,13 +5,16 @@
 //! intent becomes its command's arguments by conversion (`From<&XIntent> for XArgs`, in
 //! `intent.rs`), and an intent can name no command but a storable one.
 
+#[cfg(feature = "schemas")]
 use std::borrow::Cow;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use jiff::Timestamp;
-use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
+use schemars::JsonSchema;
+#[cfg(feature = "schemas")]
+use schemars::{Schema, SchemaGenerator, json_schema};
 use serde::Serialize;
 use serde_json::json;
 
@@ -145,8 +148,10 @@ macro_rules! storable_commands {
 
         /// `applied.command`'s values: one single-value string per storable command.
         pub mod tag {
+            #[cfg(feature = "schemas")]
             use std::borrow::Cow;
 
+            #[cfg(feature = "schemas")]
             use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
             use serde::Serialize;
 
@@ -159,6 +164,7 @@ macro_rules! storable_commands {
                 }
 
                 /// Inline, so it adds no definition; its name only names its wrapper's.
+                #[cfg(feature = "schemas")]
                 impl JsonSchema for $variant {
                     fn inline_schema() -> bool {
                         true
@@ -184,6 +190,7 @@ macro_rules! storable_commands {
             $($variant(Wrapper<tag::$variant, $data>),)+
         }
 
+        #[cfg(feature = "schemas")]
         impl JsonSchema for ApplyData {
             fn schema_name() -> Cow<'static, str> {
                 "ApplyData".into()

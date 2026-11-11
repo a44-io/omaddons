@@ -283,6 +283,7 @@ pub enum WrongFlavorReason {
 /// The schema of a [`WrongFlavorReason`]'s wire name alone (a record's
 /// `left_out[].reason`): every reason's tag, taken from this type's own schema, which
 /// `folders.skipped[].reason` publishes, so the two sets never differ (rule 4).
+#[cfg(feature = "schemas")]
 pub fn reason_names_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     let derived = serde_json::to_value(schemars::schema_for!(WrongFlavorReason))
         .unwrap_or(serde_json::Value::Null);

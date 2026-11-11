@@ -7,7 +7,9 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
+use schemars::JsonSchema;
+#[cfg(feature = "schemas")]
+use schemars::{Schema, SchemaGenerator, json_schema};
 use serde::Serialize;
 
 use super::fix::{PlannedPrune, PlannedRecovery};
@@ -91,6 +93,7 @@ pub fn delegated_reasons() -> Vec<String> {
     out
 }
 
+#[cfg(feature = "schemas")]
 fn delegated_reason_schema(_: &mut SchemaGenerator) -> Schema {
     json_schema!({ "type": "string", "enum": delegated_reasons() })
 }

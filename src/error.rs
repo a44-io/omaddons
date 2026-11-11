@@ -7,12 +7,15 @@
 //! never parsed back. The process exit status is only ever derived from a
 //! [`ProcessExit`]: an [`Exit`], or the doctor tree's own.
 
+#[cfg(feature = "schemas")]
 use std::borrow::Cow;
 use std::fmt;
 use std::path::Path;
 use std::process::ExitCode;
 
-use schemars::{JsonSchema, Schema, SchemaGenerator};
+use schemars::JsonSchema;
+#[cfg(feature = "schemas")]
+use schemars::{Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
 
 use crate::contract::actions::Action;
@@ -1022,6 +1025,7 @@ impl From<Error> for ErrorBody {
 /// typed `details` (M4-D10). Every `ErrorBody` (the envelope's `error`, a
 /// `TargetResult.error` inside `data`) and every `Error` (through its impl below) carries
 /// it.
+#[cfg(feature = "schemas")]
 impl JsonSchema for ErrorBody {
     fn schema_name() -> Cow<'static, str> {
         "ErrorBody".into()
@@ -1039,6 +1043,7 @@ impl JsonSchema for ErrorBody {
 
 /// One code's variant of the error union; `alternatives` is the schema of the
 /// suggestions list, as the generator that holds `Suggestion` renders it.
+#[cfg(feature = "schemas")]
 pub fn error_variant_value(code: ErrorCode, alternatives: &Schema) -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -1058,6 +1063,7 @@ pub fn error_variant_value(code: ErrorCode, alternatives: &Schema) -> serde_json
 
 /// An `Error`'s schema is its wire body's. Written by hand because schemars derives the
 /// deserialize contract by default, which `#[serde(into)]` does not affect.
+#[cfg(feature = "schemas")]
 impl JsonSchema for Error {
     fn schema_name() -> Cow<'static, str> {
         "Error".into()

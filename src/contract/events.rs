@@ -1,6 +1,8 @@
 //! The enumerable stderr vocabulary and the event shapes the reporter writes.
 
-use schemars::{JsonSchema, Schema, SchemaGenerator};
+use schemars::JsonSchema;
+#[cfg(feature = "schemas")]
+use schemars::{Schema, SchemaGenerator};
 use serde::Serialize;
 
 use crate::error::{Error, Warning};
@@ -31,6 +33,7 @@ wire_enum! {
 
 impl EventName {
     /// This event's schema. Use a fresh serialize-contract generator for each event.
+    #[cfg(feature = "schemas")]
     pub fn schema(self, g: &mut SchemaGenerator) -> Schema {
         match self {
             Self::Progress => g.root_schema_for::<ProgressEvent<'static>>(),

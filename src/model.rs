@@ -9,6 +9,7 @@
 //! `Family`, `InstallKind`, `TargetKind`, `ClientVersion` and `ClientRules` live in
 //! [`crate::rules`] (DEC-13).
 
+#[cfg(feature = "schemas")]
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::fmt;
@@ -17,7 +18,9 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use jiff::Timestamp;
-use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
+use schemars::JsonSchema;
+#[cfg(feature = "schemas")]
+use schemars::{Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
@@ -266,6 +269,7 @@ macro_rules! ulid_id {
             }
         }
 
+        #[cfg(feature = "schemas")]
         impl JsonSchema for $name {
             fn schema_name() -> Cow<'static, str> {
                 stringify!($name).into()
@@ -355,6 +359,7 @@ impl<'de> Deserialize<'de> for TargetRef {
     }
 }
 
+#[cfg(feature = "schemas")]
 impl JsonSchema for TargetRef {
     fn schema_name() -> Cow<'static, str> {
         "TargetRef".into()

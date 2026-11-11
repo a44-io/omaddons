@@ -275,7 +275,7 @@ cargo build --locked --release
 ./target/release/omaddons status
 ```
 
-The release profile is built for size: `opt-level = "s"`, fat LTO, a single codegen unit and stripped symbols. The binary is about 17.7 MB, with the catalog, the agent guide and the bar widget embedded, and it keeps every speed budget the default optimization level did. Rebuilding the crate in release takes about two and a half minutes on the development machine (fat LTO; about one and a half with thin). Milestone 5 brings the binary under 18 MB with its new sources included, by moving schema generation out of it (`omad-ho1p`, about 1.5 MB).
+The release profile is built for size: `opt-level = "s"`, fat LTO, a single codegen unit and stripped symbols. The binary is about 15.5 MB, with the catalog, the agent guide, the bar widget and every published JSON Schema embedded, and it keeps every speed budget the default optimization level did. It links no schema generator: it prints the schemas a test generated (see [The embedded schemas](#the-embedded-schemas)), which took 2.1 MB off it. Rebuilding the crate in release takes about two and a half minutes on the development machine (fat LTO; about one and a half with thin). Milestone 5 keeps the binary under 18 MB with its new sources included.
 
 For Claude Code: `omaddons robot-docs install-skill` installs the agent guide as a skill (see [`robot-docs install-skill`](#robot-docs-install-skill)).
 
@@ -3544,6 +3544,7 @@ The state directory honors `XDG_STATE_HOME`, the cache `XDG_CACHE_HOME`, and the
 | `catalog/catalog.toml` | The built-in catalog, embedded with `include_str!` |
 | `omarchy/` | The bar widget's QML and JavaScript, embedded by `src/omarchy/assets.rs`: `Model.js` turns envelopes into what the views show and builds every argv the widget may run, `Service.qml` is its one service (the processes, the doorbell, the triggers), `views/` holds the panel's views and `ui/` the components they share (the addon row, section header, chip, empty state, notice card, sheet, key hint, progress bar, badge and the virtualized list); its tests are under `omarchy/tests/` (bun and `qmltestrunner`) |
 | `build.rs` | The digest of the widget's files, so `status` compares an installed widget with this build without hashing them on every call; the build id; and the agent guide's digest |
+| `crates/` | The `schemars` facade and its no-op derive: schemars itself with the `schemas` feature (every test build), nothing without it (the release binary; see [The embedded schemas](#the-embedded-schemas)) |
 | `tests/`, `fuzz/` | Integration, contract, crash, concurrency and live tests; cargo-fuzz targets |
 
 **One doorbell.** Every write that can change what `status --cached` reports rings `~/.cache/omaddons/doorbell.json` once, after the write: each commit window (undo's too, after its lock is released), a recovery that rolled a journal back or forward, a release memo write that changed the memo (`outdated` and the other fetching commands), an errors memo write that changed it (`errors`), a backup inventory write that changed it (a backup made, or a stale summary rebuilt by `backup list`), each backup's history line, and every settings command. `status` never rings it (its one write is the discovery cache a plain scan refreshes), so the bar widget can watch the cache directory for the doorbell instead of polling. The widget never takes state from the file: it reads `status --cached` again when it rings.
@@ -3825,7 +3826,8 @@ br ready                     # work that is ready now
 There is no CI (decision D16). Every commit that changes code (`*.rs`, `Cargo.*`, `rust-toolchain.toml`, `deny.toml`, lint config, the catalog, the bar widget under `omarchy/`, the agent guide (`src/contract/guide/*.md`, `skills/omaddons/SKILL.md`), test fixtures and snapshots) passes the gate first:
 
 ```bash
-argc gate          # cargo fmt --check, clippy --all-targets -D warnings, cargo test, the widget
+argc gate          # cargo fmt --check, clippy --all-targets -D warnings, clippy on the library and
+                   # binary as release builds them (without schemars), cargo test, the widget
                    # pipeline, ubs on changed files (Cargo.toml and Cargo.lock aside), cargo deny
                    # when Cargo.toml/Cargo.lock/deny.toml changed
 argc gate --all    # also run cargo deny, and the widget's QML step, unconditionally
@@ -3850,6 +3852,8 @@ Other tasks: `argc fmt`, `argc lint`, `argc test [filter]`, `argc e2e [filter]` 
 ### The embedded schemas
 
 `src/contract/schemas.json.zst` is generated too: every JSON Schema `robot-docs schema` prints, generated from the types and zstd-compressed, which the binary embeds and prints instead of generating them. A change to any type whose schema is published (a command's data, the envelope, an event, a saved file, even a doc comment that becomes a `description`) changes it. Run `OMADDONS_UPDATE_SCHEMAS=1 cargo test --test integration contract::embedded_schemas`, then the suite again (the test binary that wrote the file embedded the old one), and commit the file with the change. `contract::embedded_schemas` compares the decompressed bytes with what the types generate and names the first schema that differs. Never edit the file by hand; after a rebase, regenerate it.
+
+Generating schemas needs schemars, and only the package's `schemas` feature builds it. Every test build has the feature, through a dev-dependency on the package itself; the release binary does not, so it links no schema generator. The dependency key `schemars` names a facade (`crates/schema-facade`): with the feature it is schemars, and without it a `JsonSchema` trait every type implements and a derive that emits nothing (`crates/schema-stub-derive`), so the types' derives and `#[schemars(…)]` attributes stay as they are. What calls schemars (the generators in `src/contract/schema.rs`, the `schema_with` helpers, the hand-written `JsonSchema` impls, the semantic manifest) is behind `#[cfg(feature = "schemas")]`, and the gate's second clippy step, without `--all-targets`, builds the library and binary without it.
 
 ### Tests
 

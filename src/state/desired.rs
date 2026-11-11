@@ -123,8 +123,10 @@ pub struct DesiredEntrySchema {
 }
 
 /// A schema-only map key: `unknown` is a discovery fallback, never a desired family.
+#[cfg(feature = "schemas")]
 struct DesiredFamilyKey;
 
+#[cfg(feature = "schemas")]
 impl JsonSchema for DesiredFamilyKey {
     fn schema_name() -> std::borrow::Cow<'static, str> {
         "DesiredFamily".into()

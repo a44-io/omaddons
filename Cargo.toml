@@ -40,9 +40,10 @@ memchr = "2.8.3"
 pelite = "0.10.0"
 reflink-copy = "0.1.30"
 rustix = { version = "1.1.5", features = ["fs", "process", "termios"] }
-# schemars through a facade under its own name (omad-ho1p): `real` is schemars itself,
-# and without it a `JsonSchema` every type has and a derive that emits nothing.
-schemars = { package = "omaddons-schema-facade", version = "0.1.0", path = "crates/schema-facade", features = ["real"] }
+# schemars through a facade under its own name (omad-ho1p): with the `schemas` feature
+# schemars itself, and without it (the release binary) a `JsonSchema` every type has and a
+# derive that emits nothing. The binary prints schemas it embedded, never generates one.
+schemars = { package = "omaddons-schema-facade", version = "0.1.0", path = "crates/schema-facade" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"

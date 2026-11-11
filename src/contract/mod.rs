@@ -7,11 +7,15 @@ pub mod env;
 pub mod events;
 pub mod features;
 pub mod guide;
+// The semantic manifest and its readable projection are built from the generated
+// schemas, for the contract suite only: not in a build without them (omad-ho1p).
+#[cfg(feature = "schemas")]
 pub mod manifest;
 pub mod opaque;
 pub mod schema;
 pub mod values;
 pub mod volatile;
+#[cfg(feature = "schemas")]
 pub mod wire;
 
 use std::collections::BTreeMap;

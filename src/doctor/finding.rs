@@ -8,12 +8,15 @@
 //! [`Subject`] through one function, so no detector can spell them differently. Pure: no
 //! I/O and no clock.
 
+#[cfg(feature = "schemas")]
 use std::borrow::Cow;
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
 
-use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
+use schemars::JsonSchema;
+#[cfg(feature = "schemas")]
+use schemars::{Schema, SchemaGenerator, json_schema};
 use serde::{Serialize, Serializer};
 
 use super::budget::Budget;
@@ -343,6 +346,7 @@ impl SecretOrigin {
 pub const UNATTRIBUTED_CAUSES: [&str; 4] =
     ["liveness_unknown", "read_failed", "too_new", "unreadable"];
 
+#[cfg(feature = "schemas")]
 fn unattributed_cause_schema(_: &mut SchemaGenerator) -> Schema {
     json_schema!({ "type": "string", "enum": UNATTRIBUTED_CAUSES })
 }
@@ -379,6 +383,7 @@ pub const FOLDER_REASONS: [&str; 5] = [
     "no_loadable_toc",
 ];
 
+#[cfg(feature = "schemas")]
 fn folder_reason_schema(_: &mut SchemaGenerator) -> Schema {
     json_schema!({ "type": "string", "enum": FOLDER_REASONS })
 }
@@ -638,6 +643,7 @@ impl Serialize for InstanceKey {
     }
 }
 
+#[cfg(feature = "schemas")]
 impl JsonSchema for InstanceKey {
     fn schema_name() -> Cow<'static, str> {
         "InstanceKey".into()
@@ -987,6 +993,7 @@ impl IncompleteLimit {
 
 /// `Evidence.reason`'s closed set: every reason a layer the view could not read, a stuck
 /// journal, the runtime's limits and the online checks give.
+#[cfg(feature = "schemas")]
 fn evidence_reasons() -> Vec<&'static str> {
     let mut reasons: Vec<&'static str> = super::view::FailureReason::ALL
         .iter()
@@ -1002,6 +1009,7 @@ fn evidence_reasons() -> Vec<&'static str> {
     reasons
 }
 
+#[cfg(feature = "schemas")]
 fn evidence_reason_schema(_: &mut SchemaGenerator) -> Schema {
     json_schema!({ "type": "string", "enum": evidence_reasons() })
 }

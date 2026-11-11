@@ -20,10 +20,12 @@ mod loaded;
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, Read as _};
 
+#[cfg(feature = "schemas")]
+pub use loaded::reason_names_schema;
 pub use loaded::{
     DiskFolder, FolderView, JUDGE_VERSION, LoadedToc, LoadedTocSummary, TocLevel, Verdict,
     VerdictReport, WrongFlavorReason, best_in_family, effective_interfaces, judge, judge_digest,
-    loaded_toc, primary_interface, reason_names_schema, verdict, verify_target,
+    loaded_toc, primary_interface, verdict, verify_target,
 };
 
 use schemars::JsonSchema;

@@ -4,7 +4,9 @@
 use std::collections::BTreeSet;
 
 use jiff::Timestamp;
-use schemars::{JsonSchema, Schema, SchemaGenerator};
+use schemars::JsonSchema;
+#[cfg(feature = "schemas")]
+use schemars::{Schema, SchemaGenerator};
 use serde::Serialize;
 
 use super::delegate::DelegatedOutcome;
@@ -15,8 +17,10 @@ use super::runtime::{Diagnosis, DoctorRunId};
 use super::selection::{SkipReason, Skipped};
 use crate::engine::journal::JournalFamily;
 use crate::engine::repair_action::{Direction, JournalPhase, Step};
+#[cfg(feature = "schemas")]
 use crate::error::{CommandHint, ErrorBody, Warning};
 use crate::model::{TargetKey, TxId};
+#[cfg(feature = "schemas")]
 use crate::output::RunKind;
 
 /// The version of the doctor contract the report follows (M4-D3).
@@ -395,6 +399,7 @@ pub struct PruneDone {
     pub reason: Option<String>,
 }
 
+#[cfg(feature = "schemas")]
 fn prune_reason_schema(_: &mut SchemaGenerator) -> Schema {
     let codes: Vec<&'static str> = crate::error::ErrorCode::ALL
         .iter()
@@ -426,6 +431,7 @@ pub struct DiffReport {
 /// A run's `report.json`: the doctor envelope's record form (its `kind`, no `meta`) with
 /// a diagnose or a fix report. Only its schema is used: the runtime writes the bytes the
 /// command built.
+#[cfg(feature = "schemas")]
 #[derive(Serialize, JsonSchema)]
 struct ReportRecord {
     ok: bool,
@@ -491,6 +497,7 @@ pub struct UndoReport {
 }
 
 /// The schema of a run's `report.json` (`store::KINDS`' `doctor_report`).
+#[cfg(feature = "schemas")]
 pub fn record_schema(g: &mut SchemaGenerator) -> Schema {
     g.root_schema_for::<ReportRecord>()
 }

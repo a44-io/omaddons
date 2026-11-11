@@ -16,7 +16,9 @@ use std::fmt;
 use std::path::Path;
 use std::str::FromStr;
 
-use schemars::{JsonSchema, Schema, SchemaGenerator};
+use schemars::JsonSchema;
+#[cfg(feature = "schemas")]
+use schemars::{Schema, SchemaGenerator};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -93,6 +95,7 @@ pub trait Versioned: Serialize + DeserializeOwned + JsonSchema {
     const CURRENT: SchemaVersion;
 
     /// The schema of the document `save` writes: `schema_version`, then this type's fields.
+    #[cfg(feature = "schemas")]
     fn schema(g: &mut SchemaGenerator) -> Schema
     where
         Self: Sized + 'static,
@@ -109,11 +112,13 @@ pub trait Versioned: Serialize + DeserializeOwned + JsonSchema {
     }
 }
 
-/// One saved format: its name, written version and the schema of what it writes.
+/// One saved format: its name, written version and the schema of what it writes (with
+/// the `schemas` feature: the binary prints the schemas it embedded).
 #[derive(Debug, Clone, Copy)]
 pub struct KindRow {
     pub kind: &'static str,
     pub current: SchemaVersion,
+    #[cfg(feature = "schemas")]
     pub schema: fn(&mut SchemaGenerator) -> Schema,
 }
 
@@ -122,6 +127,7 @@ impl KindRow {
         Self {
             kind: T::KIND,
             current: T::CURRENT,
+            #[cfg(feature = "schemas")]
             schema: T::schema,
         }
     }
@@ -153,6 +159,7 @@ pub const KINDS: &[KindRow] = &[
     KindRow {
         kind: "history",
         current: super::history::CURRENT,
+        #[cfg(feature = "schemas")]
         schema: super::history::line_schema,
     },
     // A doctor run's `report.json`: the envelope's bytes, written through fsx and not
@@ -161,6 +168,7 @@ pub const KINDS: &[KindRow] = &[
     KindRow {
         kind: "doctor_report",
         current: SchemaVersion::new(1, 1),
+        #[cfg(feature = "schemas")]
         schema: crate::doctor::report::record_schema,
     },
 ];

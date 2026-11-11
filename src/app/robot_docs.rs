@@ -175,17 +175,18 @@ impl Outcome for SchemaOutcome {
 /// `omaddons robot-docs schema [<command>]`: the schemas the binary embedded, which the
 /// contract suite holds equal to what the types generate (omad-ho1p).
 pub fn schema(words: &[String]) -> Result<SchemaOutcome> {
-    let entry = resolve(words)?;
-    let mut published = Published::embedded()?;
-    let data = match entry {
-        None => SchemaData {
-            envelope: Some(published.envelope),
-            events: Some(published.events),
-            commands: published.commands,
-            files: Some(published.files),
-        },
+    let data = match resolve(words)? {
+        None => {
+            let published = Published::embedded()?;
+            SchemaData {
+                envelope: Some(published.envelope),
+                events: Some(published.events),
+                commands: published.commands,
+                files: Some(published.files),
+            }
+        }
         Some(entry) => {
-            let doc = published.commands.remove(entry.name).ok_or_else(|| {
+            let doc = Published::embedded_command(entry.name)?.ok_or_else(|| {
                 Error::internal(format!("the embedded schemas have no `{}`", entry.name))
             })?;
             SchemaData {

@@ -34,6 +34,7 @@ pub(crate) enum Unfixable {
 }
 
 impl Unfixable {
+    #[cfg(feature = "schemas")]
     pub(crate) const ALL: [Self; 3] = [Self::OtherOwner, Self::OutsideConfig, Self::Symlink];
 
     pub(crate) const fn reason(self) -> &'static str {
@@ -45,7 +46,8 @@ impl Unfixable {
     }
 }
 
-/// Every `evidence.reason` this check gives.
+/// Every `evidence.reason` this check gives, as the evidence's schema lists them.
+#[cfg(feature = "schemas")]
 pub(crate) const REASONS: [&str; 3] = [
     Unfixable::ALL[0].reason(),
     Unfixable::ALL[1].reason(),

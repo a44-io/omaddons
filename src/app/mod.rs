@@ -161,25 +161,44 @@ pub struct CommandEntry {
     /// what the contract suite observes.
     pub exits: &'static [u8],
     /// The schema of its envelope's `data` (the `Outcome` its dispatch arm returns).
-    pub data: fn(&mut schemars::SchemaGenerator) -> schemars::Schema,
+    pub data: DataSchema,
     /// Whether its dry run stores a plan (M4-D22): set by the plan store (D4).
     pub stores_plan: bool,
     pub network: Network,
 }
 
+/// What a row's `data` points at: the generator of its envelope's `data` schema, with the
+/// `schemas` feature (every test build). Without it (the release binary, which prints the
+/// schemas it embedded, omad-ho1p) there is no generator, and the row points at a
+/// function that does nothing, so every row reads the same in both builds.
+#[cfg(feature = "schemas")]
+pub type DataSchema = fn(&mut schemars::SchemaGenerator) -> schemars::Schema;
+#[cfg(not(feature = "schemas"))]
+pub type DataSchema = fn();
+
 /// The schema of `O`'s data: what a row's `data` points at, naming the outcome its
 /// dispatch arm returns.
+#[cfg(feature = "schemas")]
 pub fn data_schema<O: output::Outcome>(g: &mut schemars::SchemaGenerator) -> schemars::Schema {
     g.root_schema_for::<O::Data>()
 }
 
+/// Without schemas: names the outcome, generates nothing ([`DataSchema`]).
+#[cfg(not(feature = "schemas"))]
+pub fn data_schema<O: output::Outcome>() {}
+
 /// A doctor path's `data` schema: its report's, whose keys its envelope carries at the
 /// top level (M4-D34).
+#[cfg(feature = "schemas")]
 pub fn report_schema<O: output::DoctorOutcome>(
     g: &mut schemars::SchemaGenerator,
 ) -> schemars::Schema {
     g.root_schema_for::<O::Report>()
 }
+
+/// Without schemas: names the report, generates nothing ([`DataSchema`]).
+#[cfg(not(feature = "schemas"))]
+pub fn report_schema<O: output::DoctorOutcome>() {}
 
 /// A general-dictionary row that stores no plan; [`CommandEntry::doctor`] and
 /// [`CommandEntry::storing_plan`] change either.
@@ -188,7 +207,7 @@ const fn entry(
     group: Group,
     mutates: bool,
     exits: &'static [u8],
-    data: fn(&mut schemars::SchemaGenerator) -> schemars::Schema,
+    data: DataSchema,
     network: Network,
 ) -> CommandEntry {
     CommandEntry {
@@ -305,7 +324,7 @@ pub const COMMANDS: &[CommandEntry] = &[
 pub struct EnvelopeOnly {
     pub name: &'static str,
     pub exits: &'static [u8],
-    pub data: fn(&mut schemars::SchemaGenerator) -> schemars::Schema,
+    pub data: DataSchema,
     pub why: &'static str,
 }
 

@@ -43,7 +43,8 @@ pub(crate) const SKILL_NOT_A_FILE: &str = "not_a_file";
 /// `skill-version-drift`'s `evidence.reason`: a `SKILL.md` that cannot be read.
 pub(crate) const SKILL_UNREADABLE: &str = "unreadable";
 
-/// Every `evidence.reason` these checks give.
+/// Every `evidence.reason` these checks give, as the evidence's schema lists them.
+#[cfg(feature = "schemas")]
 pub(crate) const REASONS: [&str; 10] = [
     CODE_DIFFERS,
     CONTEXT_UNKNOWN,

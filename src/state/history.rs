@@ -34,6 +34,7 @@ pub const CURRENT: SchemaVersion = SchemaVersion::new(1, 0);
 
 /// The schema of one line of `history.jsonl`: either shape the reader decodes, with the
 /// `schema_version` every line starts with.
+#[cfg(feature = "schemas")]
 pub fn line_schema(g: &mut schemars::SchemaGenerator) -> schemars::Schema {
     let version = g.subschema_for::<SchemaVersion>();
     let mut schema = g.root_schema_for::<HistoryLineSchema>();
