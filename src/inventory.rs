@@ -44,8 +44,9 @@ pub struct Inventory {
     /// Record folders with no entry on disk.
     pub missing: Vec<MissingFolder>,
     pub counts: Counts,
-    /// Regular files (and other non-folders) directly in `AddOns/`.
-    pub stray_files: u32,
+    /// Regular files (and other non-folders) directly in `AddOns/`, by name as on disk
+    /// (lossy for non-UTF-8 names), sorted.
+    pub stray_files: Vec<String>,
 }
 
 /// One entry of `AddOns/`.
@@ -178,14 +179,14 @@ pub fn inventory_shared(
     })?;
 
     let owners = ownership(record);
-    let mut stray_files = 0u32;
+    let mut stray_files = Vec::new();
     let mut folders = Vec::new();
     for entry in listing.filter_map(std::result::Result::ok) {
         let Ok(kind) = entry.file_type() else {
             continue;
         };
         if !kind.is_dir() && !kind.is_symlink() {
-            stray_files = stray_files.saturating_add(1);
+            stray_files.push(entry.file_name().to_string_lossy().into_owned());
             continue;
         }
         let raw = entry.file_name();
@@ -250,6 +251,7 @@ pub fn inventory_shared(
         .collect();
     missing.sort();
     missing.dedup();
+    stray_files.sort();
 
     Ok(Inventory {
         addons_dir_missing: false,
@@ -267,8 +269,18 @@ impl Inventory {
             folders: Vec::new(),
             missing: Vec::new(),
             counts: Counts::default(),
-            stray_files: 0,
+            stray_files: Vec::new(),
         }
+    }
+
+    /// The non-folder directly in `AddOns/` that holds `folder`'s name, ignoring ASCII
+    /// case as the commit's own check for a free name does: an install of `folder` would
+    /// find its name taken.
+    pub fn stray_named(&self, folder: &str) -> Option<&str> {
+        self.stray_files
+            .iter()
+            .map(String::as_str)
+            .find(|name| name.eq_ignore_ascii_case(folder))
     }
 }
 

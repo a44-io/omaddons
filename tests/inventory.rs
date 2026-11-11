@@ -246,7 +246,9 @@ fn classes_ownership_and_duplicates() {
             folder: "Gone".into()
         }]
     );
-    assert_eq!(inv.stray_files, 1);
+    assert_eq!(inv.stray_files, ["foo.zip"]);
+    assert_eq!(inv.stray_named("FOO.ZIP"), Some("foo.zip"), "any case");
+    assert_eq!(inv.stray_named("foo"), None);
     assert_eq!(
         (
             inv.counts.protected,

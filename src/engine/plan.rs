@@ -2921,7 +2921,7 @@ pub fn check_release(
         folders: Vec::new(),
         missing: Vec::new(),
         counts: crate::inventory::Counts::default(),
-        stray_files: 0,
+        stray_files: Vec::new(),
     };
     let planner = TargetPlanner {
         req: &req,

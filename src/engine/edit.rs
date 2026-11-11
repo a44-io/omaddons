@@ -667,7 +667,7 @@ mod tests {
             folders: Vec::new(),
             missing: Vec::new(),
             counts: Default::default(),
-            stray_files: 0,
+            stray_files: Vec::new(),
         };
         let foo = record("Foo", &["Foo"]);
         let check = |guard: &RecordGuard, r: Option<&AddonRecord>, live: &Inventory| {

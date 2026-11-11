@@ -27,18 +27,20 @@ const FOLDER_CLASSES: DetailSpec = DetailSpec::Enum(&[
 
 /// One refused folder of `engine/ownership.rs::refusal`: every violation of the change,
 /// under the code of the most serious one, so a code's `folders[]` holds its own rank's
-/// entries and every lower rank's (protected, then linked, then case, then ownership,
-/// then unmanaged). Each code's shape below declares exactly the keys those entries
-/// carry. The evidence keys:
-/// - `existing`: the live folder the change meets (for two live spellings, the first);
+/// entries and every lower rank's (protected, then linked or not a folder, then case,
+/// then ownership, then unmanaged). Each code's shape below declares exactly the keys
+/// those entries carry. The evidence keys:
+/// - `existing`: the live folder the change meets (for two live spellings, the first), or
+///   for `not_a_folder` the file (or other non-folder) that holds its name;
 /// - `owner`: the addon that owns it (`owner_target` too when it is another client's,
 ///   in an AddOns directory the two share);
 /// - `spellings` (`case_duplicates`): every live spelling of the folder, two or more;
-/// - `class` (`linked`): the live folder is a symlink.
+/// - `class`: `linked`, the live folder is a symlink; `invalid` (`not_a_folder`), the
+///   name is held by something that is not a folder.
 ///
 /// `protected_folder`'s entries: every rank.
 const PROTECTED_REFUSAL: DetailSpec = DetailSpec::Object(&[
-    Field::opt("class", &DetailSpec::Enum(&["linked"])),
+    Field::opt("class", &DetailSpec::Enum(&["linked", "invalid"])),
     Field::req("code", &STR),
     Field::opt("existing", &STR),
     Field::req("folder", &STR),
@@ -49,6 +51,7 @@ const PROTECTED_REFUSAL: DetailSpec = DetailSpec::Object(&[
         &DetailSpec::Enum(&[
             "protected",
             "linked",
+            "not_a_folder",
             "case_duplicates",
             "owned_on_shared_target",
             "case_collision",
@@ -59,9 +62,10 @@ const PROTECTED_REFUSAL: DetailSpec = DetailSpec::Object(&[
     Field::opt("spellings", &STRINGS),
 ]);
 
-/// `unmanaged_folder`'s entries: a symlink's rank and every one below it.
+/// `unmanaged_folder`'s entries: a symlink's or a non-folder's rank and every one below
+/// it.
 const UNMANAGED_REFUSAL: DetailSpec = DetailSpec::Object(&[
-    Field::opt("class", &DetailSpec::Enum(&["linked"])),
+    Field::opt("class", &DetailSpec::Enum(&["linked", "invalid"])),
     Field::req("code", &STR),
     Field::opt("existing", &STR),
     Field::req("folder", &STR),
@@ -71,6 +75,7 @@ const UNMANAGED_REFUSAL: DetailSpec = DetailSpec::Object(&[
         "reason",
         &DetailSpec::Enum(&[
             "linked",
+            "not_a_folder",
             "case_duplicates",
             "owned_on_shared_target",
             "case_collision",
@@ -980,8 +985,8 @@ mod tests {
             expected,
             "not_managed"
         );
-        // A refusal's `class` names only a symlink; `unmanaged_folder`'s own, what adopt
-        // refused. Each is one of the inventory's classes.
+        // A refusal's `class` names only a symlink or a non-folder; `unmanaged_folder`'s
+        // own, what adopt refused. Each is one of the inventory's classes.
         for (name, spec) in [
             ("unmanaged_folder", &UNMANAGED_FOLDER),
             ("protected entry", &PROTECTED_REFUSAL),

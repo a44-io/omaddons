@@ -154,7 +154,7 @@ struct Violation {
 fn rank(code: ErrorCode, reason: &str) -> u8 {
     match (code, reason) {
         (ErrorCode::ProtectedFolder, _) => 5,
-        (ErrorCode::UnmanagedFolder, "linked") => 4,
+        (ErrorCode::UnmanagedFolder, "linked" | "not_a_folder") => 4,
         (ErrorCode::CaseCollision, _) => 3,
         (ErrorCode::OwnershipConflict, _) => 2,
         _ => 1,
@@ -284,6 +284,18 @@ pub fn check_in(
         }
         let Some(entry) = live.first() else {
             if let FolderChange::Install(_) = change {
+                // A file (or another non-folder) holds the name, in any case: the commit
+                // would find it taken, so refuse it now, as for a symlink and whatever
+                // `--force` says, since omaddons never replaces what is not a folder.
+                if let Some(stray) = inventory.stray_named(name.as_str()) {
+                    refuse(
+                        name.as_str(),
+                        ErrorCode::UnmanagedFolder,
+                        "not_a_folder",
+                        json!({ "class": "invalid", "existing": stray }),
+                    );
+                    continue;
+                }
                 outcome.allowed.push(AllowedOp::Add { name: name.clone() });
             }
             continue;
@@ -499,6 +511,19 @@ fn refusal(violations: &[Violation], argv: &[String], adopt: Option<AdoptFix<'_>
             Suggestion::text("remove or rename the symlink yourself"),
             Vec::new(),
         ),
+        (ErrorCode::UnmanagedFolder, "not_a_folder") => {
+            let existing = top.extra["existing"].as_str().unwrap_or(&top.folder);
+            (
+                format!(
+                    "{existing} in AddOns is not a folder, and {} needs its name",
+                    top.folder
+                ),
+                Suggestion::text(format!(
+                    "move {existing} out of AddOns, then run the command again"
+                )),
+                Vec::new(),
+            )
+        }
         (ErrorCode::CaseCollision, "case_duplicates") => (
             format!(
                 "AddOns holds folders that differ only in case ({}); the client sees one of them",
@@ -640,7 +665,7 @@ mod tests {
             folders: entries,
             missing: Vec::new(),
             counts: Counts::default(),
-            stray_files: 0,
+            stray_files: Vec::new(),
         }
     }
 
@@ -705,6 +730,65 @@ mod tests {
                 assert_eq!(e.exit().code(), 4, "{name}");
             }
         }
+    }
+
+    /// A file in AddOns named like an incoming folder (omad-4h0d.14): refused at plan
+    /// time, in any case and even forced, naming the file and what to do, where the
+    /// commit would otherwise find the name taken and call it a race forever.
+    #[test]
+    fn a_file_holding_the_name_is_refused_at_plan_time_even_forced() {
+        let mut live = live();
+        live.stray_files = vec!["readme.txt".into(), "stray".into()];
+        for (name, force) in [("stray", false), ("Stray", true), ("STRAY", false)] {
+            let change = FolderChange::Install(FolderName::new(name).unwrap());
+            let err = check(&[change], &live, "Me", force, &argv(), None).unwrap_err();
+            assert_eq!(err.code, ErrorCode::UnmanagedFolder, "{name} force={force}");
+            assert_eq!(err.exit().code(), 4);
+            let folder = &err.details["folders"][0];
+            assert_eq!(
+                (
+                    folder["reason"].as_str(),
+                    folder["class"].as_str(),
+                    folder["existing"].as_str()
+                ),
+                (Some("not_a_folder"), Some("invalid"), Some("stray")),
+                "{name}: {}",
+                err.details
+            );
+            assert_eq!(
+                err.message,
+                format!("stray in AddOns is not a folder, and {name} needs its name")
+            );
+            assert_eq!(
+                (err.fix.display(), err.fix.argv()),
+                ("move stray out of AddOns, then run the command again", None),
+                "prose: nothing omaddons runs moves it"
+            );
+            assert!(err.alternatives.is_empty(), "never --force: {err:?}");
+        }
+        // Another file's name, and a removal, are not in its way.
+        let other = FolderChange::Install(FolderName::new("Readme").unwrap());
+        let outcome = check(&[other], &live, "Me", false, &argv(), None).unwrap();
+        assert_eq!(
+            outcome.allowed,
+            [AllowedOp::Add {
+                name: FolderName::new("Readme").unwrap().into_mutable().unwrap()
+            }]
+        );
+        let removal = FolderChange::Remove(FolderName::new("Stray").unwrap());
+        let outcome = check(&[removal], &live, "Me", false, &argv(), None).unwrap();
+        assert!(outcome.allowed.is_empty(), "{:?}", outcome.allowed);
+        // It outranks what --force or adopt would settle, whose fix would only fail again.
+        let changes =
+            ["Loose", "Stray"].map(|n| FolderChange::Install(FolderName::new(n).unwrap()));
+        let err = check(&changes, &live, "Me", false, &argv(), None).unwrap_err();
+        assert_eq!(
+            err.details["folders"][0]["reason"].as_str(),
+            Some("not_a_folder"),
+            "{}",
+            err.details
+        );
+        assert!(err.fix.argv().is_none(), "{:?}", err.fix);
     }
 
     /// A folder of another client sharing this AddOns directory.

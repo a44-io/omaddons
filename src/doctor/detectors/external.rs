@@ -621,7 +621,7 @@ mod tests {
             folders,
             missing: Vec::new(),
             counts: Counts::default(),
-            stray_files: 0,
+            stray_files: Vec::new(),
         }
     }
 

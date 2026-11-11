@@ -179,5 +179,5 @@ expression: inv
     "unmanaged": 2,
     "invalid": 0
   },
-  "stray_files": 0
+  "stray_files": []
 }

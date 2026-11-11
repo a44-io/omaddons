@@ -710,6 +710,88 @@ fn refusals_exit_4_and_force_resolves_only_ownership_and_unmanaged() {
     );
 }
 
+/// A file in AddOns named like a folder the release ships, in any case, is refused at
+/// plan time, the dry run as the run and even forced, naming the file and what to do,
+/// with nothing staged; moved away, the same install goes through (omad-4h0d.14). It
+/// was planned as a new folder, and the commit found the name taken and called it a
+/// retryable `plan_stale`, every time. A symlink to a file is a linked entry, refused
+/// at plan time too.
+#[test]
+fn a_file_named_like_an_incoming_folder_is_refused_at_plan_time() {
+    let home = Home::new(&["wow"]);
+    foo_release(&home.http, "v1.0.0", mainline(), "120105");
+    let addons = home.addons("_retail_");
+    fs::write(addons.join("foo"), "not an addon").unwrap();
+    let before = tree_hash(&addons);
+    let stage = home.client("_retail_").join("Interface/.omaddons/stage");
+    for extra in [&["--dry-run"][..], &[], &["--force"]] {
+        let mut args = vec!["install", "gh:o/foo", "-t", "retail"];
+        args.extend_from_slice(extra);
+        let r = home.run(&args);
+        let envelope = r.expect(4);
+        let error = &envelope["error"];
+        assert_eq!(
+            (&error["code"], &error["retryable"]),
+            (&Value::from("unmanaged_folder"), &Value::Bool(false)),
+            "{extra:?}: {}",
+            r.context()
+        );
+        assert_eq!(
+            error["message"],
+            "foo in AddOns is not a folder, and Foo needs its name"
+        );
+        assert_eq!(
+            (&error["fix"], &error["fix_argv"]),
+            (
+                &Value::from("move foo out of AddOns, then run the command again"),
+                &Value::Null
+            )
+        );
+        let folder = &error["details"]["folders"][0];
+        assert_eq!(
+            (&folder["reason"], &folder["class"], &folder["existing"]),
+            (
+                &Value::from("not_a_folder"),
+                &Value::from("invalid"),
+                &Value::from("foo")
+            ),
+            "{}",
+            error["details"]
+        );
+        assert_eq!(tree_hash(&addons), before, "{extra:?}: AddOns untouched");
+        assert!(
+            fs::read_dir(&stage).map_or(true, |mut d| d.next().is_none()),
+            "{extra:?}: nothing staged"
+        );
+    }
+    fs::rename(addons.join("foo"), home.env.root().join("foo")).unwrap();
+    home.run(&["install", "gh:o/foo", "-t", "retail"]).expect(0);
+    assert!(addons.join("Foo/Foo.toc").is_file());
+
+    // A symlink to a file: linked, at plan time, also forced.
+    let home = Home::new(&["wow"]);
+    foo_release(&home.http, "v1.0.0", mainline(), "120105");
+    let addons = home.addons("_retail_");
+    let file = home.env.root().join("a-file");
+    fs::write(&file, "x").unwrap();
+    std::os::unix::fs::symlink(&file, addons.join("FooOptions")).unwrap();
+    for extra in [&["--dry-run"][..], &[], &["--force"]] {
+        let mut args = vec!["install", "gh:o/foo", "-t", "retail"];
+        args.extend_from_slice(extra);
+        let r = home.run(&args);
+        let envelope = r.expect(4);
+        assert_eq!(
+            (
+                &envelope["error"]["code"],
+                &envelope["error"]["details"]["folders"][0]["reason"]
+            ),
+            (&Value::from("unmanaged_folder"), &Value::from("linked")),
+            "{extra:?}: {}",
+            r.context()
+        );
+    }
+}
+
 #[test]
 fn installing_over_an_unmanaged_folder_offers_adopt_which_records_it_as_it_is() {
     let home = Home::new(&["wow"]);

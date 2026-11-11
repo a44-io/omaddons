@@ -3144,7 +3144,8 @@ expression: schemas
           "properties": {
             "class": {
               "enum": [
-                "linked"
+                "linked",
+                "invalid"
               ]
             },
             "code": {
@@ -3166,6 +3167,7 @@ expression: schemas
               "enum": [
                 "protected",
                 "linked",
+                "not_a_folder",
                 "case_duplicates",
                 "owned_on_shared_target",
                 "case_collision",
@@ -4460,7 +4462,8 @@ expression: schemas
           "properties": {
             "class": {
               "enum": [
-                "linked"
+                "linked",
+                "invalid"
               ]
             },
             "code": {
@@ -4481,6 +4484,7 @@ expression: schemas
             "reason": {
               "enum": [
                 "linked",
+                "not_a_folder",
                 "case_duplicates",
                 "owned_on_shared_target",
                 "case_collision",
