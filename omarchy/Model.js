@@ -4525,8 +4525,10 @@ var VIEW_RESOURCES = { "updates": "list", "installed": "list", "search": "search
 // then showed what it remembered) or its failed items.
 var SOURCE_TROUBLE = ["network", "http_status", "rate_limited", "offline", "stale_check"]
 // A state's glyph (design doc §5.4): loading spins, a failure alerts, an empty view shows
-// its own (all good is a check).
-var STATE_GLYPHS = { "firstLoad": 0xF04E6, "failed": 0xF0028, "filteredEmpty": 0xF0236 }
+// its own (all good is a check), and so does one client's empty view while another
+// client has rows (`filteredEmpty`): its sentence is the same good news, naming the
+// client (omad-prpj).
+var STATE_GLYPHS = { "firstLoad": 0xF04E6, "failed": 0xF0028 }
 var EMPTY_GLYPHS = { "updates": 0xF05E0, "installed": 0xF0431, "search": 0xF0349, "errors": 0xF05E0, "issues": 0xF05E0, "backups": 0xF003C,
   "history": 0xF02DA }
 

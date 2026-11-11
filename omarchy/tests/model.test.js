@@ -5732,11 +5732,14 @@ describe("viewState", () => {
         ["firstLoad", "Searching…", null, false, []]],
     ]
     for (const [name, got, expected] of cases) expect([name, got]).toEqual([name, expected])
-    // Each state has its glyph: loading, failed, a view's own when empty, a filter.
+    // Each state has its glyph: loading, failed, and a view's own when empty, one client's
+    // empty view too, never the filter glyph (omad-prpj).
     expect(M.viewState("updates", { service: service() }).glyph).toBe(0xF04E6)
     expect(M.viewState("updates", { service: service({ outcomes: { list: "failed" } }) }).glyph).toBe(0xF0028)
     expect(M.viewState("backups", { service: service({ backups: { targets: [] } }) }).glyph).toBe(0xF003C)
-    expect(M.viewState("updates", { service: service({ lists: lists() }), filter: "retail", allRows: 1 }).glyph).toBe(0xF0236)
+    expect(M.viewState("updates", { service: service({ lists: lists() }), filter: "retail", allRows: 1 }).glyph).toBe(0xF05E0)
+    expect(M.viewState("issues", { service: service({ summary: {} }), filter: "retail", allRows: 1 }).glyph).toBe(0xF05E0)
+    expect(M.viewState("backups", { service: service({ backups: { targets: [] } }), filter: "era", allRows: 1 }).glyph).toBe(0xF003C)
   })
 
   test("offline, partial and stale qualify the rows they keep", () => {
