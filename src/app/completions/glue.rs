@@ -35,13 +35,17 @@ const fn slot(path: &'static str, arg: &'static str, kind: Kind) -> Slot {
 }
 
 /// Every place a value completes from omaddons' files.
+/// A client id is a `client` (the discovery cache's unregistered clients too) wherever a
+/// provisional id works: `-t`, `copy --to`, and `targets rename` and `default`, which
+/// register it. `copy --from` needs a record to copy from and `targets rm` a registration
+/// to remove, so they offer registered ids only.
 const SLOTS: &[Slot] = &[
-    slot("", "target", Kind::Target),
+    slot("", "target", Kind::Client),
     slot("copy", "from", Kind::Target),
-    slot("copy", "to", Kind::Target),
+    slot("copy", "to", Kind::Client),
     slot("targets rm", "id", Kind::Target),
-    slot("targets rename", "id", Kind::Target),
-    slot("targets default", "id", Kind::Target),
+    slot("targets rename", "id", Kind::Client),
+    slot("targets default", "id", Kind::Client),
     slot("update", "addons", Kind::Addon),
     slot("remove", "addons", Kind::Addon),
     slot("pin", "addon", Kind::Addon),
@@ -646,7 +650,7 @@ complete -c omaddons -n '__fish_omaddons_at positional' -f -a '(__fish_omaddons_
             .map(|(_, words, kind)| (words.clone(), *kind)),
     ) {
         let files = rules.entry(words).or_insert(true);
-        *files &= kind == Kind::Target;
+        *files &= matches!(kind, Kind::Target | Kind::Client);
     }
     for (words, files) in rules {
         let flags: Vec<String> = words

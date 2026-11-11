@@ -270,8 +270,9 @@ fn completion_cases() -> Vec<Case> {
             false,
         ),
         case(&["install", "--dry"], &["--dry-run"], false),
-        // No client is registered yet: no id, then file names, and the directory is empty.
-        case(&["status", "-t", ""], &[], true),
+        // No client is registered yet: the one the discovery cache holds, by the id `-t`
+        // resolves for it (omad-ivbj), then file names, and the directory is empty.
+        case(&["status", "-t", ""], &["retail"], true),
         // The reader is no command: nothing offers it.
         case(&["__"], &[], true),
     ];
@@ -1132,7 +1133,7 @@ fn the_reader_reads_only_takes_no_lock_and_fails_silently() {
     log.step("what it cannot read or parse: nothing, exit 0");
     for args in [
         &[][..],
-        &["client"],
+        &["game"],
         &["target", "addon"],
         &["target", "--json"],
         &["target", "--help"],
@@ -1304,6 +1305,82 @@ fn bash_completes_values_from_omaddons_files() {
     }
     log.json("cases", &cases);
     log.assert_eq("failing cases", &failing, &Vec::<String>::new());
+}
+
+/// omad-ivbj: on a fresh install, before any change registers a client, `-t` completes
+/// the clients the last plain `status` discovered, by the ids `-t` resolves for them, and
+/// each of those ids works. `targets rm`, which removes a registration, offers none; `targets
+/// default`, which registers, offers them. Once a first change registers one, it comes
+/// first and the other still follows.
+#[test]
+fn a_fresh_install_completes_the_clients_status_discovered() {
+    let log = tlog!();
+    let home = Home::new(&["wow", "wow_classic_era"]);
+    log.env(&home);
+
+    log.step("before any status: no cache, no registry, nothing to offer");
+    let (values, _) = complete(&log, &home, &["client"]);
+    log.assert_eq("client", &values, &Vec::<String>::new());
+
+    log.step("a plain status discovers both clients and registers neither");
+    log.run(&home, &["status", "--json"]).ok();
+    let (registered, _) = complete(&log, &home, &["target"]);
+    log.assert_eq(
+        "target: nothing registered",
+        &registered,
+        &Vec::<String>::new(),
+    );
+    let (clients, _) = complete(&log, &home, &["client"]);
+    let mut sorted = clients.clone();
+    sorted.sort();
+    log.assert_eq(
+        "client: the discovered ones",
+        &sorted,
+        &strings(&["era", "retail"]),
+    );
+    for id in &clients {
+        log.run(&home, &["status", "-t", id, "--json"]).ok();
+    }
+
+    log.step("bash");
+    let script = script_of(&log, &home.env, "bash");
+    let dir = home.env.root().join("bash-completion");
+    let cwd = home.env.root().join("bash-completion-cwd");
+    fs::create_dir_all(&dir).unwrap();
+    fs::create_dir_all(&cwd).unwrap();
+    let file = dir.join("omaddons.bash");
+    fs::write(&file, &script).unwrap();
+    let words: Vec<Vec<String>> = [
+        &["status", "-t", ""][..],
+        &["targets", "rm", ""],
+        &["targets", "default", ""],
+    ]
+    .iter()
+    .map(|w| strings(w))
+    .collect();
+    let (run, offers) = shells::bash_complete(&file, &words, &cwd, Some(&home.env));
+    log.json("bash completion", &run);
+    log.assert_eq("status -t", &offers[0], &clients);
+    // Registered ones only, and there are none: the script falls back to clap's own
+    // offers (its flags), never a discovered client's id.
+    log.assert_eq(
+        "targets rm: no client id",
+        &offers[1].iter().any(|offer| clients.contains(offer)),
+        &false,
+    );
+    log.assert_eq("targets default", &offers[2], &clients);
+
+    log.step("a first change registers one");
+    log.run(&home, &["targets", "default", "retail", "--json"])
+        .ok();
+    let (after, _) = complete(&log, &home, &["client"]);
+    log.assert_eq(
+        "client: the registered one first",
+        &after,
+        &strings(&["retail", "era"]),
+    );
+    let (registered, _) = complete(&log, &home, &["target"]);
+    log.assert_eq("target", &registered, &strings(&["retail"]));
 }
 
 #[test]

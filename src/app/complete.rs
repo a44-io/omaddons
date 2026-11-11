@@ -9,8 +9,11 @@
 //! generated scripts' command lists name it, and no `Context` is built for it.
 //!
 //! It reads only omaddons' own small files: `registry.json` (bounded), the registered
-//! targets' records, the plan store's listing, the backup inventory, the history
-//! projection, the doctor's run directories' listing, and the compiled failure-mode table.
+//! targets' records, the discovery cache a plain `status` writes (bounded) and each cached
+//! client's identity marker (`client`, through the registry's own reconciliation), the plan
+//! store's listing, the backup inventory, the history projection, the doctor's run
+//! directories' listing, and the compiled failure-mode table. Reading the cache is not
+//! discovery: no root is scanned or parsed.
 //! It never runs discovery, takes no lock, recovers nothing, makes no request and writes
 //! nothing. Whatever goes wrong (an argument it cannot parse, no usable `HOME`, a file that
 //! is missing, damaged or written by a newer omaddons) it offers nothing, and still exits
@@ -25,6 +28,9 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::backup::inventory;
+use crate::discover::DiscoveredTarget;
+use crate::discover::cache::DiscoveryCache;
+use crate::discover::registry::reconcile;
 use crate::doctor::budget::Budget;
 use crate::doctor::registry::FAILURE_MODES;
 use crate::doctor::runs;
@@ -47,8 +53,11 @@ const LATEST_RUN: &str = "latest";
 /// What a completion offers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
 pub enum Kind {
-    /// Registered client ids, sorted.
+    /// Registered client ids, sorted: where only a registered client will do.
     Target,
+    /// The client ids `-t` takes: the registered ones, sorted, then those of the clients
+    /// the discovery cache holds that are not registered yet, as `-t` resolves them.
+    Client,
     /// Installed addon names: one client's (`--target`), else every registered client's.
     Addon,
     /// Stored plan ids, newest first.
@@ -67,8 +76,9 @@ pub enum Kind {
 
 impl Kind {
     /// Every kind, in the order the shell glue declares them.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Target,
+        Self::Client,
         Self::Addon,
         Self::Plan,
         Self::Backup,
@@ -82,6 +92,7 @@ impl Kind {
     pub const fn word(self) -> &'static str {
         match self {
             Self::Target => "target",
+            Self::Client => "client",
             Self::Addon => "addon",
             Self::Plan => "plan",
             Self::Backup => "backup",
@@ -184,6 +195,7 @@ fn values(paths: &Paths, args: &Args) -> Vec<String> {
     let target = args.target.as_deref();
     let candidates = match args.kind {
         Kind::Target => targets(paths),
+        Kind::Client => clients(paths),
         Kind::Addon => addons(paths, target),
         Kind::Plan => plan_ids(paths),
         Kind::Backup => backup_ids(paths, target),
@@ -214,14 +226,26 @@ fn starts_with_ignoring_case(value: &str, prefix: &str) -> bool {
         .is_some_and(|head| head.eq_ignore_ascii_case(prefix.as_bytes()))
 }
 
-/// The registry's targets, read bounded as the vocabulary reads it; none when it is
-/// missing, unreadable, oversized, undecodable or from a newer omaddons.
-fn registry(paths: &Paths) -> Vec<RegistryEntry> {
+/// The registry, read bounded as the vocabulary reads it: empty when there is none yet (a
+/// fresh install); `None` when it is unreadable, oversized, undecodable or from a newer
+/// omaddons.
+fn registry_file(paths: &Paths) -> Option<Registry> {
     let path = paths.registry_file();
+    let missing = std::fs::symlink_metadata(&path)
+        .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound);
+    if missing {
+        return Some(Registry::default());
+    }
     crate::discover::read_bytes(&path)
         .and_then(|bytes| store::load_bytes::<Registry>(&path, &bytes).ok())
         .filter(|loaded| loaded.status != VersionStatus::Newer)
-        .map(|loaded| loaded.value.targets)
+        .map(|loaded| loaded.value)
+}
+
+/// The registry's targets; none when it is missing or cannot be read.
+fn registry(paths: &Paths) -> Vec<RegistryEntry> {
+    registry_file(paths)
+        .map(|registry| registry.targets)
         .unwrap_or_default()
 }
 
@@ -243,6 +267,43 @@ fn selected(entries: Vec<RegistryEntry>, target: Option<&str>) -> Vec<RegistryEn
 fn targets(paths: &Paths) -> Vec<String> {
     let mut ids: Vec<String> = registry(paths).into_iter().map(|entry| entry.id).collect();
     ids.sort_by_key(|id| id.to_ascii_lowercase());
+    ids
+}
+
+/// The registered ids, sorted, then the ids of the clients the discovery cache holds
+/// that are not registered yet (a fresh install's, before its first change), in discovery's
+/// route order: the provisional ids `reconcile` gives them, as every command that resolves
+/// `-t` does, so each offered id resolves while the cache is current. The cache, which a
+/// plain `status` writes, is read as the registry is (bounded, never one a newer omaddons
+/// wrote), and only its targets' ids leave it, never a path. An unreadable registry offers
+/// nothing, as for [`Kind::Target`]: provisional ids could not be told from registered
+/// ones. A client uninstalled since the cache was written can still be offered; naming it
+/// fails as `target_not_found`, whose fix lists the clients there are.
+fn clients(paths: &Paths) -> Vec<String> {
+    let Some(registry) = registry_file(paths) else {
+        return Vec::new();
+    };
+    let mut ids: Vec<String> = registry.targets.iter().map(|e| e.id.clone()).collect();
+    ids.sort_by_key(|id| id.to_ascii_lowercase());
+    let path = paths.discovery_cache();
+    let cache = crate::discover::read_bytes(&path)
+        .and_then(|bytes| store::load_bytes::<DiscoveryCache>(&path, &bytes).ok())
+        .filter(|loaded| loaded.status != VersionStatus::Newer);
+    if let Some(cache) = cache {
+        let found: Vec<DiscoveredTarget> = cache
+            .value
+            .roots
+            .into_iter()
+            .flat_map(|root| root.targets)
+            .collect();
+        ids.extend(
+            reconcile(&registry, &found)
+                .targets
+                .into_iter()
+                .filter(|d| d.target.key.is_none())
+                .map(|d| d.target.id),
+        );
+    }
     ids
 }
 

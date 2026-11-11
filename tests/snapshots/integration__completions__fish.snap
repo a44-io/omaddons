@@ -2001,7 +2001,7 @@ function __fish_omaddons_slot --description 'What omaddons completes at the curs
             case 'copy --from'
                 set kind target
             case 'copy --to'
-                set kind target
+                set kind client
             case 'errors --addon'
                 set kind addon
             case 'backup restore --addon'
@@ -2028,7 +2028,7 @@ function __fish_omaddons_slot --description 'What omaddons completes at the curs
                 set kind fm
             case '*'
                 if contains -- $value_of -t --target --flavor
-                    set kind target
+                    set kind client
                 end
         end
     else if not string match -q -- '-*' $cur
@@ -2087,11 +2087,11 @@ function __fish_omaddons_slot --description 'What omaddons completes at the curs
                 end
             case 'targets default'
                 if test $n -eq 0
-                    set kind target
+                    set kind client
                 end
             case 'targets rename'
                 if test $n -eq 0
-                    set kind target
+                    set kind client
                 end
             case 'targets rm'
                 if test $n -eq 0

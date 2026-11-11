@@ -3395,7 +3395,7 @@ _omaddons_dynamic() {
     if [[ -n $value_of ]]; then
         case "$cmdpath $value_of" in
             "copy --from") kind=target ;;
-            "copy --to") kind=target ;;
+            "copy --to") kind=client ;;
             "errors --addon") kind=addon ;;
             "backup restore --addon") kind=addon ;;
             "undo --run") kind=run ;;
@@ -3410,7 +3410,7 @@ _omaddons_dynamic() {
             "doctor fix --skip") kind=fm ;;
             *)
                 case $value_of in
-                    -t|--target|--flavor) kind=target ;;
+                    -t|--target|--flavor) kind=client ;;
                 esac ;;
         esac
     elif [[ $cur != -* ]]; then
@@ -3428,8 +3428,8 @@ _omaddons_dynamic() {
             "pin") if (( n == 0 )); then kind=addon; fi ;;
             "plans show") if (( n == 0 )); then kind=plan; fi ;;
             "remove") if (( n >= 0 )); then kind=addon; fi ;;
-            "targets default") if (( n == 0 )); then kind=target; fi ;;
-            "targets rename") if (( n == 0 )); then kind=target; fi ;;
+            "targets default") if (( n == 0 )); then kind=client; fi ;;
+            "targets rename") if (( n == 0 )); then kind=client; fi ;;
             "targets rm") if (( n == 0 )); then kind=target; fi ;;
             "undo") if (( n == 0 )); then kind=tx; fi ;;
             "unpin") if (( n == 0 )); then kind=addon; fi ;;

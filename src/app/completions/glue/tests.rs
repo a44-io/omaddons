@@ -137,7 +137,8 @@ fn positional_slots_take_their_place_and_arity_from_clap() {
         ("undo", vec![(0, false, Kind::Tx)]),
         ("backup prune", vec![(0, true, Kind::Backup)]),
         ("backup export", vec![(0, false, Kind::Backup)]),
-        ("targets rename", vec![(0, false, Kind::Target)]),
+        ("targets rename", vec![(0, false, Kind::Client)]),
+        ("targets rm", vec![(0, false, Kind::Target)]),
         ("doctor explain", vec![(0, false, Kind::Fm)]),
     ] {
         assert_eq!(of(path), expected, "{path}");

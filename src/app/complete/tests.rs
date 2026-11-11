@@ -17,6 +17,7 @@ use crate::model::{
 };
 use crate::state::records::TargetRecord;
 use crate::state::registry::Origin;
+use crate::state::store::Versioned as _;
 
 struct Fixture {
     _dir: tempfile::TempDir,
@@ -61,6 +62,39 @@ impl Fixture {
         self.write(
             &self.paths.target_record(&key),
             &store::encode(&record).unwrap(),
+        );
+    }
+
+    /// A discovery cache of one root holding `found` (`(default id, client dir name)`), in
+    /// that order, as a plain `status` writes it.
+    fn cache(&self, found: &[(&str, &str)]) {
+        let targets = found
+            .iter()
+            .map(|(id, dir)| {
+                let mut d = crate::doctor::view::tests::client(id, Path::new(dir), None);
+                d.qualifier = format!("q-{id}");
+                d
+            })
+            .collect();
+        let cache = DiscoveryCache {
+            basis: "test".to_owned(),
+            roots: vec![crate::discover::cache::CachedRoot {
+                path: "/games".into(),
+                canonical: "/games".into(),
+                kind: crate::discover::scan::RootKind::Battlenet,
+                source: crate::discover::DiscoverySource::Scan,
+                qualifier: "test".to_owned(),
+                hints: crate::discover::battlenet::BattlenetHints::default(),
+                hint_files: Vec::new(),
+                stamps: Vec::new(),
+                listing_sha256: String::new(),
+                targets,
+                warnings: Vec::new(),
+            }],
+        };
+        self.write(
+            &self.paths.discovery_cache(),
+            &store::encode(&cache).unwrap(),
         );
     }
 
@@ -129,6 +163,7 @@ fn kind_words_are_the_parsers_values_in_order() {
         ours,
         [
             "target",
+            "client",
             "addon",
             "plan",
             "backup",
@@ -171,7 +206,7 @@ fn arguments_that_do_not_parse_or_no_paths_offer_nothing() {
     fixture.register(&["retail"]);
     for (case, args) in [
         ("no kind", &[][..]),
-        ("an unknown kind", &["client"]),
+        ("an unknown kind", &["game"]),
         ("two kinds", &["target", "addon"]),
         ("an unknown flag", &["target", "--json"]),
         ("help", &["target", "--help"]),
@@ -256,6 +291,85 @@ fn a_registry_that_cannot_be_read_offers_no_target_and_no_addon() {
             "{case}"
         );
         assert_eq!(fixture.complete(&["addon"]), Vec::<String>::new(), "{case}");
+        // Nor a client: the cache's provisional ids could not be told from registered ones.
+        fixture.cache(&[("era", "/games/era/_classic_era_")]);
+        assert_eq!(
+            fixture.complete(&["client"]),
+            Vec::<String>::new(),
+            "{case}"
+        );
+    }
+}
+
+/// `client` is what `-t` takes: the registered ids, sorted, then the ids the discovery
+/// cache's unregistered clients resolve to, in its order, as `reconcile` gives them (a
+/// second client with the same default id is qualified, as `-t` names it). A cached
+/// client that is registered is offered once, by its registered id. `target` stays the
+/// registered ids alone. A fresh install, with no registry yet, offers the cache's.
+#[test]
+fn clients_are_the_registered_ids_then_the_cached_ones_as_minus_t_names_them() {
+    let fixture = Fixture::new();
+    fixture.cache(&[
+        ("retail", "/games/retail/_retail_"),
+        ("retail", "/games/steam/_retail_"),
+        ("era", "/games/era/_classic_era_"),
+    ]);
+    assert_eq!(
+        fixture.complete(&["client"]),
+        strings(&["retail", "retail@q-retail", "era"]),
+        "a fresh install: no registry yet"
+    );
+    assert_eq!(fixture.complete(&["target"]), Vec::<String>::new());
+
+    // `era` registered (its client dir is the cached one's), `wotlk` registered elsewhere.
+    let mut era = entry("era");
+    era.client_dir = "/games/era/_classic_era_".into();
+    let registry = Registry {
+        targets: vec![entry("wotlk"), era],
+        default: None,
+    };
+    fixture.write(
+        &fixture.paths.registry_file(),
+        &store::encode(&registry).unwrap(),
+    );
+    assert_eq!(
+        fixture.complete(&["client"]),
+        strings(&["era", "wotlk", "retail", "retail@q-retail"])
+    );
+    assert_eq!(fixture.complete(&["target"]), strings(&["era", "wotlk"]));
+    assert_eq!(
+        fixture.complete(&["client", "--prefix", "RETAIL@"]),
+        strings(&["retail@q-retail"])
+    );
+}
+
+/// A discovery cache that is missing, cannot be read, is oversized or a newer omaddons
+/// wrote adds nothing to the registered ids.
+#[test]
+fn a_cache_that_cannot_be_read_adds_no_client() {
+    let fixture = Fixture::new();
+    fixture.register(&["wotlk"]);
+    assert_eq!(
+        fixture.complete(&["client"]),
+        strings(&["wotlk"]),
+        "no cache"
+    );
+    fixture.cache(&[("retail", "/games/retail/_retail_")]);
+    let path = fixture.paths.discovery_cache();
+    let valid = std::fs::read(&path).unwrap();
+    let text = String::from_utf8(valid.clone()).unwrap();
+    let current = format!("\"schema_version\": \"{}\"", DiscoveryCache::CURRENT);
+    let newer = text.replacen(&current, "\"schema_version\": \"99.0\"", 1);
+    assert_ne!(newer, text, "the cache names its version");
+    let mut oversized = valid;
+    oversized.resize(crate::limits::DISCOVERY_FILE_MAX_BYTES as usize + 1, b' ');
+    for (case, bytes) in [
+        ("unparsable", b"{ not json".to_vec()),
+        ("newer", newer.into_bytes()),
+        ("oversized", oversized),
+    ] {
+        fixture.write(&path, &bytes);
+        assert_eq!(fixture.complete(&["client"]), strings(&["wotlk"]), "{case}");
     }
 }
 
