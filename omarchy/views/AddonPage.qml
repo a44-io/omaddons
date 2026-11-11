@@ -20,8 +20,11 @@ import "../Model.js" as Model
 // `x`, `p`, `r`, `o`; `w` opens its web page, `y` copies its source. `v` opens the
 // line's client's Versions (1n2p.24, its own `info --releases` read): the undo of its
 // last update, the channel to follow and each release listed, lines the cursor walks
-// after the client lines, each previewed in the plan sheet on Enter. The keys are
-// Model.KEYMAP's page rows.
+// after the client lines, each previewed in the plan sheet on Enter. Its release notes
+// are lines too, after those (omad-z3ur): each folded to its first line but the newest,
+// Enter or a click shows all of it. A dependency no client has offers Install it, on the
+// cursored client line's client; its Folders say which are gone from disk and which
+// clients share them. The keys are Model.KEYMAP's page rows.
 Item {
   id: root
 
@@ -43,18 +46,24 @@ Item {
     ? svc.addonInfo : null
   // The client whose Versions `v` opened (1n2p.24), "" when they are closed.
   property string versionsFor: ""
+  // The release notes Enter or a click folded or unfolded, by version (omad-z3ur): the
+  // newest starts unfolded, every other folded to its first line.
+  property var notesOpen: ({})
   readonly property var page: Model.addonPage({ "name": name, "ref": ref, "link": link, "lists": svc ? svc.lists : null,
     "info": info ? info.data : null, "reading": !!info && !info.data && !info.failed, "failed": info ? info.failed : "",
     "errors": svc ? svc.errors : null, "history": svc ? svc.history : null, "statusTargets": statusTargets, "nowMs": nowMs,
-    "versionsFor": versionsFor, "releasesRead": svc ? svc.addonReleases : null })
+    "versionsFor": versionsFor, "releasesRead": svc ? svc.addonReleases : null, "notesOpen": notesOpen,
+    "statusWarnings": svc && Array.isArray(svc.statusWarnings) ? svc.statusWarnings : [] })
   // The lines the cursor walks: the client lines (the frame's `o` opens the one under
-  // it), then the open Versions' lines.
+  // it), then the open Versions' lines, then the release notes.
   readonly property var rows: page.lines
   readonly property int rowCount: rows.length
   readonly property bool typing: false
   // What `y` copied, said for a moment.
   property string copied: ""
   property string askedFor: ""
+  // The line under the cursor, null when the cursor is off: what Install it acts on.
+  readonly property var cursoredLine: !!frame && frame.cursorActive ? lineAt(frame.cursor) : null
 
   readonly property color foreground: frame ? frame.foreground : Commons.Color.foreground
   readonly property color dim: frame ? frame.dim : Qt.darker(foreground, 1.55)
@@ -67,7 +76,9 @@ Item {
 
   function rowItem(i) {
     var clients = page.clients.length
-    return i < clients ? lineRepeater.itemAt(i) : versionRepeater.itemAt(i - clients)
+    var versions = page.versions.lines.length
+    if (i < clients) return lineRepeater.itemAt(i)
+    return i < clients + versions ? versionRepeater.itemAt(i - clients) : noteRepeater.itemAt(i - clients - versions)
   }
 
   // The read, once the frame has handed the page its addon (its props come after the
@@ -91,6 +102,9 @@ Item {
 
   function handleKey(name, cursor) {
     var line = lineAt(cursor)
+    // A release note (omad-z3ur): Enter shows all of it or folds it. The line keys below
+    // find no client on it and do nothing; `w` and `y` act on the page as anywhere.
+    if (name === "enter" && line && line.kind === "note") return toggleNote(line)
     if (name === "enter") {
       // A Versions line: its undo, channel or version, previewed in the plan sheet.
       if (line && line.kind) run(line.request)
@@ -139,7 +153,7 @@ Item {
   // the page is open; `v` again on that client's line or one of its Versions' lines
   // closes them, the cursor back on the client's line.
   function toggleVersions(line) {
-    if (!line || !svc || page.ref === "" || page.name === "") return false
+    if (!line || line.kind === "note" || !svc || page.ref === "" || page.name === "") return false
     if (versionsFor !== "" && (line.kind || line.target === versionsFor)) {
       var at = page.clients.map(function(c) { return c.target }).indexOf(versionsFor)
       versionsFor = ""
@@ -162,6 +176,27 @@ Item {
   function install(line) {
     if (!canChange || page.ref === "") return false
     return frame.report(svc.run("install", { "target": line.target, "ref": page.ref }, "Install " + page.name, []))
+  }
+
+  // Install it, beside a missing dependency (omad-z3ur): on the cursored client line's
+  // client only, previewed in the plan sheet; with no such line nothing runs, and the
+  // panel says to choose one.
+  function installDependency(dependency) {
+    var request = Model.dependencyInstall(cursoredLine, dependency)
+    if (!request.action) {
+      if (frame) frame.keyNote = request.note
+      return false
+    }
+    return run(request.action)
+  }
+
+  // A release note folded to its first line, or shown whole (omad-z3ur).
+  function toggleNote(line) {
+    if (!line.foldable) return false
+    var open = Object.assign({}, notesOpen)
+    open[line.version] = line.folded
+    notesOpen = open
+    return true
   }
 
   function openWeb(url) {
@@ -437,31 +472,92 @@ Item {
       text: Model.copy("page.notes.none")
     }
 
+    // Each release a line the cursor walks (omad-z3ur): folded to its first line but the
+    // newest; Enter or a click shows all of it, or folds it again.
     Repeater {
+      id: noteRepeater
       objectName: "notes"
       model: root.page.notes
 
-      Column {
+      CursorSurface {
+        id: note
         required property var modelData
+        readonly property bool cursored: !!root.frame && root.frame.cursorActive && root.frame.cursor === modelData.index
+        objectName: "note_" + modelData.key
         width: column.width
-        spacing: Style.spacing.xs
+        implicitHeight: noteColumn.implicitHeight + Style.spacing.sm * 2
+        hasCursor: cursored
+        foreground: root.foreground
+        accent: root.accent
+        Accessible.role: Accessible.ListItem
+        Accessible.name: modelData.title + ", " + modelData.shown
+        Accessible.description: modelData.hint
 
-        PlainLabel {
-          width: parent.width
-          color: root.foreground
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          font.bold: true
-          text: [modelData.version, modelData.when].filter(function(p) { return p !== "" }).join(" · ")
+        Column {
+          id: noteColumn
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.leftMargin: Style.spacing.lg
+          anchors.rightMargin: Style.spacing.lg
+          anchors.verticalCenter: parent.verticalCenter
+          spacing: Style.spacing.xs
+
+          Item {
+            width: parent.width
+            implicitHeight: Math.max(noteTitle.implicitHeight, noteHint.implicitHeight)
+
+            PlainLabel {
+              id: noteTitle
+              objectName: "noteTitle"
+              anchors.left: parent.left
+              anchors.right: noteHint.visible ? noteHint.left : parent.right
+              anchors.rightMargin: Style.spacing.md
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              text: note.modelData.title
+            }
+
+            // Its fold, on the cursored line only: what Enter does to it.
+            PlainLabel {
+              id: noteHint
+              objectName: "noteHint"
+              visible: note.cursored && note.modelData.hint !== ""
+              anchors.right: parent.right
+              width: visible ? implicitWidth : 0
+              elide: Text.ElideNone
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              text: note.modelData.hint
+            }
+          }
+
+          PlainLabel {
+            objectName: "noteText"
+            width: parent.width
+            wrapMode: Text.WordWrap
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            text: note.modelData.shown
+          }
         }
 
-        PlainLabel {
-          width: parent.width
-          wrapMode: Text.WordWrap
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          text: modelData.text
+        // Hover moves the cursor (through the frame's PointerMoveGate); one click folds or
+        // unfolds it, as Enter does.
+        MouseArea {
+          id: noteArea
+          anchors.fill: parent
+          hoverEnabled: true
+          onPositionChanged: function(mouse) {
+            if (!root.frame || root.frame.pointerGate.moved(noteArea, mouse)) root.select(note.modelData.index)
+          }
+          onClicked: {
+            root.select(note.modelData.index)
+            root.handleKey("enter", note.modelData.index)
+          }
         }
       }
     }
@@ -504,6 +600,32 @@ Item {
           font.pixelSize: Style.font.caption
           text: Model.copy("page.folders.left_out", { "client": modelData.client, "folders": modelData.leftOut.join(", ") })
         }
+
+        // Its folders gone from disk (omad-z3ur): words in the foreground beside the
+        // alert glyph, never in the urgent colour (§5.1).
+        AlertLine {
+          objectName: "foldersMissing"
+          visible: modelData.missingText !== ""
+          width: parent.width
+          marked: true
+          foreground: root.foreground
+          dim: root.dim
+          urgent: root.urgent
+          fontFamily: root.fontFamily
+          text: modelData.missingText
+        }
+
+        // The clients that see these folders too: they share this client's AddOns folder.
+        PlainLabel {
+          objectName: "foldersShared"
+          visible: modelData.sharedText !== ""
+          width: parent.width
+          wrapMode: Text.WordWrap
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          text: modelData.sharedText
+        }
       }
     }
 
@@ -513,6 +635,7 @@ Item {
       model: [{ "id": "needs", "names": root.page.needs }, { "id": "needed_by", "names": root.page.neededBy.map(function(n) { return { "name": n, "installed": true } }) }]
 
       Column {
+        id: linkGroup
         required property var modelData
         visible: modelData.names.length > 0
         width: column.width
@@ -520,44 +643,68 @@ Item {
 
         SectionHeader {
           width: parent.width
-          title: Model.copy("page.section." + modelData.id)
+          title: Model.copy("page.section." + linkGroup.modelData.id)
           foreground: root.foreground
           dim: root.dim
           fontFamily: root.fontFamily
         }
 
         Flow {
-          objectName: "links_" + modelData.id
+          objectName: "links_" + linkGroup.modelData.id
           width: parent.width
           spacing: Style.spacing.sm
 
           Repeater {
-            model: modelData.names
+            model: linkGroup.modelData.names
 
-            Button {
+            Row {
+              id: entry
               required property var modelData
-              objectName: "link_" + modelData.name
-              text: modelData.installed ? modelData.name : Model.copy("page.needs.missing", { "name": modelData.name })
-              // Each opens its own page. A missing one says so in words, beside the
-              // alert glyph, in an urgent border: urgent is a mark's colour, never
-              // text's (§5.1, 1n2p.40).
-              iconText: modelData.installed ? "" : String.fromCodePoint(0xF0028)
-              Accessible.role: Accessible.Link
-              Accessible.name: text
-              foreground: root.foreground
-              bordered: true
-              fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
-              onClicked: root.frame.openAddon(modelData.name, "")
+              // A dependency no client has (omad-z3ur): Install it beside its link.
+              readonly property bool installable: linkGroup.modelData.id === "needs" && !modelData.installed
+              spacing: Style.spacing.xs
 
-              Rectangle {
-                objectName: "missingBorder"
-                visible: !parent.modelData.installed
-                anchors.fill: parent
-                color: "transparent"
-                radius: Style.cornerRadius
-                border.width: 1
-                border.color: root.urgent
+              Button {
+                objectName: "link_" + entry.modelData.name
+                text: entry.modelData.installed ? entry.modelData.name : Model.copy("page.needs.missing", { "name": entry.modelData.name })
+                // Each opens its own page. A missing one says so in words, beside the
+                // alert glyph, in an urgent border: urgent is a mark's colour, never
+                // text's (§5.1, 1n2p.40).
+                iconText: entry.modelData.installed ? "" : String.fromCodePoint(0xF0028)
+                Accessible.role: Accessible.Link
+                Accessible.name: text
+                foreground: root.foreground
+                bordered: true
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: root.frame.openAddon(entry.modelData.name, "")
+
+                Rectangle {
+                  objectName: "missingBorder"
+                  visible: !entry.modelData.installed
+                  anchors.fill: parent
+                  color: "transparent"
+                  radius: Style.cornerRadius
+                  border.width: 1
+                  border.color: root.urgent
+                }
+              }
+
+              // On the cursored client line's client, named on the button; with no such
+              // line the panel says to choose one, and nothing runs.
+              Button {
+                objectName: "installDependency_" + entry.modelData.name
+                visible: entry.installable
+                readonly property var request: Model.dependencyInstall(root.cursoredLine, entry.modelData.name)
+                text: request.text
+                opacity: request.action && root.canChange ? 1.0 : 0.45
+                Accessible.role: Accessible.Button
+                Accessible.name: text
+                foreground: root.foreground
+                bordered: true
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: root.installDependency(entry.modelData.name)
               }
             }
           }

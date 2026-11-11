@@ -1631,6 +1631,83 @@ TestCase {
     compare(view.pages.length, 0)
   }
 
+  // omad-z3ur: a dependency no client has offers Install it, on the cursored client
+  // line's client only, previewed through the plan sheet (nothing shown, so it asks);
+  // with no line, or a line where the addon is not installed, nothing runs.
+  function test_a_missing_dependency_installs_on_the_cursored_client_line_only() {
+    keyClick("2")
+    keyClick(Qt.Key_Return)
+    var page = findChild(view, "page").item
+    compare(page.name, "Bar")
+    svc.addonInfo = { "selection": { "ref": "gh:o/bar" }, "failed": "", "data": { "name": "Bar", "ref": "gh:o/bar", "about": null,
+      "aboutWhy": "", "latest": null, "installed": [{ "target": "era", "version": "v1", "folders": ["Bar"], "leftOut": [],
+        "toc": { "title": "Bar", "notes": "", "author": "", "dependencies": ["LibNowhere", "BigWigs"] } }],
+      "changelog": null, "changelogWhy": "" } }
+    // BigWigs is installed (on Retail): no Install it beside it.
+    verify(!findChild(page, "installDependency_BigWigs").visible)
+    var install = findChild(page, "installDependency_LibNowhere")
+    verify(install !== null && install.visible)
+    // No line under the cursor: nothing runs, and the panel says to choose one.
+    view.cursorActive = false
+    compare(install.text, "Install it")
+    install.clicked()
+    compare(svc.runs.length, 0)
+    compare(findChild(view, "keyNote").text, Model.copy("page.needs.choose"))
+    // Retail's line, where Bar is not installed: still nothing.
+    var targets = page.rows.map(function(l) { return l.target })
+    view.cursor = targets.indexOf("retail")
+    view.cursorActive = true
+    compare(install.text, "Install it")
+    install.clicked()
+    compare(svc.runs.length, 0)
+    // Classic Era's line: Install it there, by the name its TOC requires.
+    view.cursor = targets.indexOf("era")
+    compare(install.text, "Install it on Classic Era")
+    install.clicked()
+    compare(json(svc.runs), json([["install", { "target": "era", "ref": "LibNowhere" }, "Install LibNowhere", []]]))
+  }
+
+  // omad-z3ur: each release note is a line after the client lines, folded to its first
+  // line but the newest; Enter or a click shows all of it, or folds it again, and runs
+  // nothing.
+  function test_release_notes_fold_and_unfold_by_enter_and_click() {
+    keyClick("2")
+    keyClick(Qt.Key_Return)
+    var page = findChild(view, "page").item
+    svc.addonInfo = { "selection": { "ref": "gh:o/bar" }, "failed": "", "data": { "name": "Bar", "ref": "gh:o/bar", "about": null,
+      "aboutWhy": "", "latest": null, "installed": [], "changelog": { "entries": [
+        { "version": "v3", "publishedAt": "", "text": "Third\n- faster" },
+        { "version": "v2", "publishedAt": "", "text": "Second\n- more" }], "truncated": false, "moreUrl": "" },
+      "changelogWhy": "" } }
+    var clients = page.page.clients.length
+    compare(page.rowCount, clients + 2)
+    // Each fold makes the page anew: a note's line is found again after every change.
+    var note = function(n) { return findChild(page, "note_n/" + n) }
+    var shown = function(n) { return findChild(note(n), "noteText").text }
+    compare(shown(0), "Third\n- faster")
+    compare(shown(1), "Second …")
+    // The cursor on the older note: its fold says what Enter does; Enter shows it all.
+    view.moveCursor(clients + 1)
+    compare(view.cursor, clients + 1)
+    compare(page.rowItem(view.cursor), note(1))
+    verify(findChild(note(1), "noteHint").visible)
+    compare(findChild(note(1), "noteHint").text, "Show all (Enter)")
+    verify(!findChild(note(0), "noteHint").visible, "the hint is the cursored line's")
+    keyClick(Qt.Key_Return)
+    compare(shown(1), "Second\n- more")
+    compare(findChild(note(1), "noteHint").text, "Fold (Enter)")
+    // A click folds the newest, the cursor on it; Enter shows it all again.
+    // The page laid out again after the fold, so the click lands where the line now is.
+    view.showItem(note(0))
+    verify(waitForPolish(testCase.Window.window), "the page is laid out")
+    mouseClick(note(0), 40, Math.min(12, note(0).height / 2))
+    compare(view.cursor, clients)
+    compare(shown(0), "Third …")
+    keyClick(Qt.Key_Return)
+    compare(shown(0), "Third\n- faster")
+    compare(svc.runs.length, 0, "a note runs nothing")
+  }
+
   // A hint of no installs nothing, and `i` says why instead of doing nothing (1n2p.25).
   function test_a_hint_of_no_offers_no_install() {
     keyClick("t")

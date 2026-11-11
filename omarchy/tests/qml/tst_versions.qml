@@ -203,8 +203,10 @@ TestCase {
     var answers = scene("versions-list-beta")
     var page = openFoo(answers)
     openVersions(page, answers)
-    compare(page.rows.map(function(r) { return r.title || r.client }),
+    // The release notes' lines come last (omad-z3ur).
+    compare(page.rows.filter(function(r) { return r.kind !== "note" }).map(function(r) { return r.title || r.client }),
       ["Retail", "Follow stable releases", "Follow betas", "Follow alphas", "v3", "v2", "v1"])
+    compare(page.rows.slice(7).map(function(r) { return r.kind }), page.page.notes.map(function() { return "note" }))
     for (var i = 0; i < 5; i++) keyClick("j")
     compare(frame.cursor, 6)
     compare(page.rows[6].title, "v1")
@@ -267,7 +269,9 @@ TestCase {
     var reads = ran("info").length
     keyClick("v")
     compare(page.page.versions.open, false)
-    compare(page.rows.length, 1)
+    // The client line, then the release notes' lines (omad-z3ur).
+    compare(page.rows.length, 1 + page.page.notes.length)
+    compare(page.rows[0].client, "Retail")
     compare(frame.cursor, 0)
     // Open again: the releases are not read twice.
     keyClick("v")

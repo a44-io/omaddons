@@ -2408,6 +2408,8 @@ function reduceList(env) {
             "orphan": a.orphan === true,
             "requiredBy": stringList(a.required_by),
             "folders": stringList(a.folders),
+            // Its folders gone from disk (an addon page's Folders marks them, omad-z3ur).
+            "missingFolders": stringList(a.missing_folders),
             // The release `latest` names, as an update preview's approval names it: what
             // the plan runner compares with the plan (M4-D28).
             "channel": str(a.channel),
@@ -3738,7 +3740,7 @@ var KEYMAP = [
   { "keys": ["x"], "context": "backups", "action": "remove", "label": "delete this backup, after a confirmation", "hint": "x", "nothing": "Nothing to remove here" },
   { "keys": ["Enter", "Space"], "context": "history", "action": "enter", "label": "open the change's page: what it did on each client, and its undo", "hint": "Enter" },
   { "keys": ["/"], "context": "history", "action": "filter", "label": "filter the changes by addon, client, who or reason", "hint": "/", "nothing": "Nothing to filter here" },
-  { "keys": ["Enter", "Space"], "context": "page", "action": "enter", "label": "run the page's main action: a problem's fix, on an addon page the client line's repair, update or install, on a change's page the cursored addon's page, or on a backup's page the cursored addon's settings back", "hint": "Enter" },
+  { "keys": ["Enter", "Space"], "context": "page", "action": "enter", "label": "run the page's main action: a problem's fix, on an addon page the client line's repair, update or install (on a release note, show all of it or fold it), on a change's page the cursored addon's page, or on a backup's page the cursored addon's settings back", "hint": "Enter" },
   { "keys": ["u"], "context": "page", "action": "update", "label": "update the addon, when one is waiting (on an addon page, on the client line)", "hint": "u", "nothing": "Nothing to update here" },
   { "keys": ["i"], "context": "page", "action": "install", "label": "an addon page: install it on the client line's client", "hint": "i", "nothing": "Nothing to install here" },
   { "keys": ["x"], "context": "page", "action": "remove", "label": "remove the addon from the client line's client, or delete a backup's page's backup, after a confirmation", "hint": "x", "nothing": "Nothing to remove here" },
@@ -5250,9 +5252,16 @@ var COMPAT_WORDS = { "verified": "page.compat.works", "declared": "page.compat.w
 //     likely the newest release loads there; each line's `actions` (named, with their
 //     key: the cursored line's) and `primary` (Enter);
 //   - `versions` (addonVersions) and `lines`, what the cursor walks: `clients`, then the
-//     Versions' lines;
-//   - `notes`: the release notes newer than the oldest installed version, newest first;
-//   - `folders`: what it owns on each client, and what that client leaves out;
+//     Versions' lines, then `notes`;
+//   - `notes`: the release notes newer than the oldest installed version, newest first,
+//     each a line (`kind: "note"`) folded to its first line but the newest, unless
+//     `notesOpen` (`{version: bool}`, what Enter or a click changed) says otherwise
+//     (omad-z3ur);
+//   - `folders`: what it owns on each client, what that client leaves out, which of
+//     its folders are gone from disk (`missing`, `missingText`), and the clients that
+//     share that client's AddOns folder (`sharedText`), from `statusWarnings` (status's
+//     `target_addons_shared` and its typed `targets`, omad-5cg5): a shared directory
+//     shares every folder in it, so the client is marked, never a folder guessed;
 //   - `needs` (its TOCs' dependencies, each `{name, installed}`) and `neededBy`;
 //   - `errors`: its Lua errors on each client (`{target, client, key, text}`);
 //   - `state`: "reading", "failed" (with `failed`) or "" as the read stands, and `why`,
@@ -5332,31 +5341,55 @@ function addonPage(input) {
     })
   })
 
-  // The release notes the page's read brought: each version, its age, its text cut.
-  var notes = info && info.changelog ? info.changelog.entries.map(function(e) {
-    var age = e.publishedAt ? (sinceText(e.publishedAt, nowMs) || dateText(e.publishedAt)) : ""
-    var text = e.text.length > NOTES_MAX_CHARS ? e.text.slice(0, NOTES_MAX_CHARS - 1) + "…" : e.text
-    return { "version": e.version, "when": age, "text": text }
-  }) : []
   var moreUrl = info && info.changelog ? info.changelog.moreUrl : ""
 
+  // The clients sharing `id`'s AddOns folder, by their names: status's warning about
+  // each group names its clients typed (`targets`), never in its message.
+  var warnings = Array.isArray(i.statusWarnings) ? i.statusWarnings : []
+  var sharingWith = function(id) {
+    var others = []
+    warnings.forEach(function(w) {
+      var ids = w && w.code === "target_addons_shared" && Array.isArray(w.targets) ? w.targets : []
+      if (ids.indexOf(id) === -1) return
+      ids.forEach(function(t) { if (t !== id && others.indexOf(t) === -1) others.push(t) })
+    })
+    return others.map(function(t) { return sheetClient(statusTargets, t, "") })
+  }
   var folders = records.map(function(rec) {
     var record = installedOn(rec.t.id)
-    return { "target": rec.t.id, "client": sheetClient(statusTargets, rec.t.id, rec.t.key), "folders": rec.a.folders,
-      "leftOut": record ? record.leftOut : [] }
+    var client = sheetClient(statusTargets, rec.t.id, rec.t.key)
+    var missing = rec.a.missingFolders || []
+    var others = sharingWith(rec.t.id)
+    return { "target": rec.t.id, "client": client, "folders": rec.a.folders,
+      "leftOut": record ? record.leftOut : [],
+      "missing": missing,
+      "missingText": missing.length ? copy("page.folders.missing", { "n": missing.length, "folders": missing.join(", "), "client": client }) : "",
+      "sharedText": others.length ? copy("page.folders.shared", { "client": client, "others": joinNames(others) }) : "" }
   })
 
   // What its TOCs need, and what needs it (`required_by`), each a page of its own.
+  // A TOC requires folders: one an installed addon owns is that addon (DBM-Core is
+  // DBM's, omad-z3ur), so it is neither listed as missing nor offered Install it. An
+  // addon's own name wins over another's folder of the same name.
   var installedNames = {}
   listTargets.forEach(function(t) { t.addons.forEach(function(a) { installedNames[a.name.toLowerCase()] = a.name }) })
+  listTargets.forEach(function(t) {
+    t.addons.forEach(function(a) {
+      (a.folders || []).forEach(function(f) {
+        if (!installedNames.hasOwnProperty(f.toLowerCase())) installedNames[f.toLowerCase()] = a.name
+      })
+    })
+  })
   var needNames = []
   var tocs = info ? info.installed.map(function(r) { return r.toc }).filter(function(t) { return !!t }) : []
   tocs.forEach(function(toc) {
     toc.dependencies.forEach(function(d) { if (needNames.indexOf(d) === -1) needNames.push(d) })
   })
-  var needs = needNames.map(function(d) {
-    var known = installedNames[d.toLowerCase()]
-    return { "name": known || d, "installed": !!known }
+  var needs = []
+  needNames.forEach(function(d) {
+    var known = installedNames.hasOwnProperty(d.toLowerCase()) ? installedNames[d.toLowerCase()] : ""
+    var entry = { "name": known || d, "installed": !!known }
+    if (!needs.some(function(n) { return n.name === entry.name })) needs.push(entry)
   })
   var neededBy = []
   records.forEach(function(rec) { rec.a.requiredBy.forEach(function(n) { if (neededBy.indexOf(n) === -1) neededBy.push(n) }) })
@@ -5386,6 +5419,23 @@ function addonPage(input) {
   // Its Versions on one client, when `v` opened them: lines after the client lines.
   var versions = addonVersions(i, name, ref, records, statusTargets, nowMs, clients.length)
 
+  // The release notes the page's read brought, newest first, lines after the Versions'
+  // (omad-z3ur): each version, its age, its text cut, and folded to its first line but
+  // the newest, unless Enter or a click changed it (`notesOpen`, by version).
+  var notesOpen = i.notesOpen && typeof i.notesOpen === "object" ? i.notesOpen : {}
+  var notesFirst = clients.length + versions.lines.length
+  var notes = info && info.changelog ? info.changelog.entries.map(function(e, n) {
+    var age = e.publishedAt ? (sinceText(e.publishedAt, nowMs) || dateText(e.publishedAt)) : ""
+    var text = e.text.length > NOTES_MAX_CHARS ? e.text.slice(0, NOTES_MAX_CHARS - 1) + "…" : e.text
+    var first = noteFirstLine(text)
+    var foldable = first !== text.trim()
+    var open = notesOpen.hasOwnProperty(e.version) ? notesOpen[e.version] === true : n === 0
+    return { "kind": "note", "key": "n/" + n, "index": notesFirst + n, "version": e.version, "when": age, "text": text,
+      "title": [e.version, age].filter(function(p) { return p !== "" }).join(" · "),
+      "foldable": foldable, "folded": foldable && !open, "shown": foldable && !open ? first + " …" : text,
+      "hint": foldable ? withKey(copy(open ? "page.notes.fold" : "page.notes.unfold"), "enter", "page") : "" }
+  }) : []
+
   var state = i.reading === true ? "reading" : (str(i.failed) !== "" ? "failed" : "")
   var why = ""
   if (state === "" && info && info.aboutWhy) {
@@ -5402,8 +5452,8 @@ function addonPage(input) {
     "homepage": about ? about.homepage : "",
     "clients": clients,
     "versions": versions,
-    // What the cursor walks: the client lines, then the Versions' lines.
-    "lines": clients.concat(versions.lines),
+    // What the cursor walks: the client lines, then the Versions' lines, then the notes.
+    "lines": clients.concat(versions.lines).concat(notes),
     "notes": notes,
     "moreUrl": moreUrl,
     "folders": folders,
@@ -5419,6 +5469,29 @@ function addonPage(input) {
 
 // How many of an addon's changes its page lists (the comment .23 left for 1n2p.30).
 var ADDON_PAGE_CHANGES = 5
+
+// A release note folded (omad-z3ur): its first line that says anything, trimmed.
+function noteFirstLine(text) {
+  var lines = str(text).split("\n")
+  for (var i = 0; i < lines.length; i++) if (lines[i].trim() !== "") return lines[i].trim()
+  return ""
+}
+
+// Install it, beside a dependency an addon page lists as not installed (omad-z3ur): on
+// the cursored client line's client, and only a line where the addon itself is
+// installed, never a guessed one. The name is what its TOC requires, and `install`
+// resolves it as it resolves any name (the catalog, Tukui, WoWInterface). The view showed
+// no release, so its preview always asks. `{text, action, note}`: the button's words
+// (naming the client it would act on), the template run, or null and the note that
+// says why nothing runs.
+function dependencyInstall(line, name) {
+  var dep = str(name)
+  var ok = !!line && typeof line === "object" && line.installed === true && !line.kind && str(line.target) !== "" && dep !== ""
+  if (!ok) return { "text": copy("page.needs.install.any"), "action": null, "note": copy("page.needs.choose") }
+  return { "text": copy("page.needs.install", { "client": str(line.client) }),
+    "action": { "template": "install", "slots": { "target": line.target, "ref": dep }, "label": "Install " + dep, "shown": [] },
+    "note": "" }
+}
 
 // An addon page's Versions on one client (1n2p.24): `v` on a client line opens them,
 // from the page's own `info --releases` read, asked for only then (GitHub's anonymous
@@ -7592,7 +7665,15 @@ var COPY = {
   "page.notes.none": "No newer release notes.",
   "page.notes.more": "More on {host}",
   "page.needs.missing": "{name} (not installed)",
+  // Install it, beside a missing dependency (omad-z3ur): on the cursored client line's client.
+  "page.needs.install": "Install it on {client}",
+  "page.needs.install.any": "Install it",
+  "page.needs.choose": "Choose a client line where it's installed first: Install it acts on that client",
+  "page.notes.fold": "Fold",
+  "page.notes.unfold": "Show all",
   "page.folders.left_out": "{client} leaves out {folders}",
+  "page.folders.missing": { "one": "{folders} is gone from {client}", "other": "{folders} are gone from {client}" },
+  "page.folders.shared": "{client} shares its AddOns folder with {others}",
   "page.errors.count": { "one": "1 error on {client}", "other": "{n} errors on {client}" },
   "page.reading": "Reading about it…",
   "page.failed": "Couldn't read more about it: {why}",
@@ -9097,6 +9178,8 @@ if (typeof module !== "undefined") {
     problemCount: problemCount,
     reduceInfo: reduceInfo,
     addonPage: addonPage,
+    dependencyInstall: dependencyInstall,
+    noteFirstLine: noteFirstLine,
     COMPAT_WORDS: COMPAT_WORDS,
     SEVERITY_GLYPHS: SEVERITY_GLYPHS,
     NOTE_ELSEWHERE: NOTE_ELSEWHERE,

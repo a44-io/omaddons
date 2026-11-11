@@ -4333,6 +4333,18 @@ describe("an addon page's Versions", () => {
     releasesRead: read(fixture("versions-releases")) }, extra || {}))
   const lines = (p) => p.versions.lines.map((l) => [l.kind, l.title, l.meta, l.chips.map((c) => c.text), l.request ? l.request.template : ""])
 
+  // omad-z3ur: the release notes are lines after the open Versions' lines, each indexed
+  // where the cursor finds it.
+  test("with Versions open, the release notes come after their lines", () => {
+    const info = M.reduceInfo(fixture("changelog"))
+    const p = versions("versions-list-beta", { info })
+    const count = p.clients.length + p.versions.lines.length
+    expect(p.versions.lines.length).toBeGreaterThan(0)
+    expect(p.notes.map((n) => n.index)).toEqual(p.notes.map((_, i) => count + i))
+    expect(p.lines.slice(count).map((l) => l.kind)).toEqual(p.notes.map(() => "note"))
+    p.lines.forEach((l, i) => { if (l.index !== undefined) expect(l.index).toBe(i) })
+  })
+
   test("the releases reduce newest first, each with its channel and a hint per client", () => {
     const info = M.reduceInfo(fixture("versions-releases"))
     expect(info.releases.map((r) => [r.version, r.channel, r.compat.retail])).toEqual([["v3", "beta", "likely"],
@@ -4521,6 +4533,78 @@ describe("the addon page", () => {
     info.installed[0].toc.dependencies = ["baz", "LibNowhere"]
     const p = page({ lists: lists, info: info })
     expect([p.needs, p.neededBy]).toEqual([[{ name: "Baz", installed: true }, { name: "LibNowhere", installed: false }], ["Bar"]])
+  })
+
+  // omad-z3ur: a TOC requires folders; one an installed addon owns is that addon, never
+  // "not installed", and two folders of one addon are one need.
+  test("a required folder an installed addon owns is that addon", () => {
+    const lists = M.reduceList(fixture("list"))
+    lists.targets.forEach((t) => t.addons.filter((a) => a.name === "Baz").forEach((a) => { a.folders = ["Baz", "Baz_Core"] }))
+    const info = M.reduceInfo(fixture("changelog"))
+    info.installed[0].toc.dependencies = ["baz_core", "Baz", "constructor"]
+    expect(page({ lists: lists, info: info }).needs).toEqual([{ name: "Baz", installed: true }, { name: "constructor", installed: false }])
+  })
+
+  // omad-z3ur: Install it acts on the cursored client line's client, a line where the
+  // addon is installed, and on no line it runs nothing and says why.
+  test("Install it beside a missing dependency: the cursored client line's client, never a guess", () => {
+    const p = page()
+    const retail = p.clients.find((c) => c.target === "retail")
+    expect(M.dependencyInstall(retail, "LibNowhere")).toEqual({ text: "Install it on Retail",
+      action: { template: "install", slots: { target: "retail", ref: "LibNowhere" }, label: "Install LibNowhere", shown: [] }, note: "" })
+    const none = { text: "Install it", action: null, note: "Choose a client line where it's installed first: Install it acts on that client" }
+    table([
+      ["no_line", [null], none],
+      ["a_line_where_it_is_not_installed", [{ installed: false, target: "era", client: "Classic Era" }], none],
+      ["a_release_note", [p.notes[0]], none],
+      ["no_name", [retail, ""], none],
+    ], ([line, name]) => M.dependencyInstall(line, name === undefined ? "LibNowhere" : name))
+    // The template it runs, previewed: nothing shown, so the plan sheet always asks.
+    const built = M.buildArgv("install", { target: "retail", ref: "LibNowhere" }, opts({ preview: true, label: "Install LibNowhere" })).argv
+    expect(built.slice(built.indexOf("install"), built.indexOf("install") + 5)).toEqual(["install", "-t", "retail", "--", "LibNowhere"])
+  })
+
+  test("its Folders say which are gone from disk and which clients share them", () => {
+    // The binary's own list -v, Bar's folder deleted on retail (list-markers).
+    const markers = M.reduceList(fixture("list-markers"))
+    expect(markers.targets[0].addons.find((a) => a.name === "Bar").missingFolders).toEqual(["Bar"])
+    expect(markers.targets[0].addons.find((a) => a.name === "Foo").missingFolders).toEqual([])
+    const gone = page({ name: "Bar", lists: markers, info: null })
+    expect(gone.folders.map((f) => [f.client, f.folders, f.missing, f.missingText, f.sharedText]))
+      .toEqual([["Retail", ["Bar"], ["Bar"], "Bar is gone from Retail", ""]])
+    // status's typed warning about a shared AddOns folder names the clients that see them.
+    const env = JSON.parse(JSON.stringify(fixture("status-updates")))
+    env.warnings = [{ code: "target_addons_shared", message: "words never read", fix: "advice", fix_argv: null, targets: ["era", "retail"] }]
+    const shared = page({ statusWarnings: M.reduceStatus(env, NOW).warnings })
+    expect(shared.folders.map((f) => [f.client, f.sharedText])).toEqual([
+      ["Classic Era", "Classic Era shares its AddOns folder with Retail"], ["Retail", "Retail shares its AddOns folder with Classic Era"]])
+    // Only that code and its typed clients decide: another code, or the same one about
+    // other clients, marks nothing.
+    table([
+      ["another_code", [{ code: "target_key_duplicate", targets: ["era", "retail"] }], ["", ""]],
+      ["other_clients", [{ code: "target_addons_shared", targets: ["ptr", "beta"] }], ["", ""]],
+      ["no_targets", [{ code: "target_addons_shared", targets: [] }], ["", ""]],
+    ], (warnings) => page({ statusWarnings: warnings }).folders.map((f) => f.sharedText))
+  })
+
+  test("release notes are lines after the clients': the newest whole, each other folded to its first line", () => {
+    const info = M.reduceInfo(fixture("changelog"))
+    info.changelog.entries = [
+      { version: "v3", publishedAt: "", text: "Third\n- faster" },
+      { version: "v2", publishedAt: "", text: "Second\n- more" },
+      { version: "v1", publishedAt: "", text: "One line" }]
+    const p = page({ info })
+    expect(p.notes.map((n) => [n.kind, n.index, n.title, n.folded, n.shown, n.hint])).toEqual([
+      ["note", 2, "v3", false, "Third\n- faster", "Fold (Enter)"],
+      ["note", 3, "v2", true, "Second …", "Show all (Enter)"],
+      ["note", 4, "v1", false, "One line", ""]])
+    // What the cursor walks: the two client lines, then the notes.
+    expect(p.lines.map((l) => l.key)).toEqual(["c/era", "c/retail", "n/0", "n/1", "n/2"])
+    // Enter's changes, by version, win over the default.
+    const turned = page({ info, notesOpen: { v3: false, v2: true } })
+    expect(turned.notes.map((n) => [n.folded, n.shown])).toEqual([[true, "Third …"], [false, "Second\n- more"], [false, "One line"]])
+    expect(M.noteFirstLine("\n  \n  Hello  \nworld")).toBe("Hello")
+    expect(M.noteFirstLine("")).toBe("")
   })
 
   test("the page's read is info of its ref, on the network lane", () => {

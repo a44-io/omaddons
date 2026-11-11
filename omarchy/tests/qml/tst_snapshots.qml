@@ -1124,6 +1124,44 @@ TestCase {
     shoot("addon-page")
   }
 
+  // Its Folders (omad-z3ur): Foo_Config gone from Retail's disk, beside the alert glyph,
+  // and the two clients sharing one AddOns folder, as status's typed warning names them;
+  // the older release note folded under the newest; and LibNowhere, which no client has,
+  // with Install it on the cursored Retail line's client.
+  function test_addon_page_folders() {
+    var scene = everyday()
+    var list = fixture("list")
+    list.data.targets.forEach(function(t) {
+      t.addons.forEach(function(a) {
+        if (a.name !== "Foo" || t.id !== "retail") return
+        a.folders = ["Foo", "Foo_Config"]
+        a.missing_folders = ["Foo_Config"]
+      })
+    })
+    scene.list = { "text": text(list), "code": 0 }
+    var status = fixture("status-updates")
+    status.warnings = [{ "code": "target_addons_shared", "message": "era and retail share one AddOns directory",
+      "fix": "manage these addons from one client", "fix_argv": null, "targets": ["era", "retail"] }]
+    scene.status = { "text": text(status), "code": 0 }
+    var changelog = fixture("changelog")
+    changelog.data.changelog.entries.push({ "version": "v1.1", "published_at": changelog.data.changelog.entries[0].published_at,
+      "text": "Settings\n- a panel for the pull timer\n- fewer chat messages" })
+    changelog.data.installed.forEach(function(r) { if (r.toc) r.toc.dependencies = ["LibNowhere"] })
+    scene.changelog = { "text": text(changelog), "code": 0 }
+    open(scene, "installed")
+    frame.openAddon("Foo", "gh:o/foo")
+    settle(scene)
+    var page = findChild(frame, "page").item
+    verify(page.page.folders.some(function(f) { return f.missingText !== "" }), "a folder gone from disk")
+    verify(page.page.folders.some(function(f) { return f.sharedText !== "" }), "a shared AddOns folder")
+    compare(JSON.stringify(page.page.notes.map(function(n) { return n.folded })), JSON.stringify([false, true]))
+    frame.cursor = page.rows.map(function(l) { return l.target }).indexOf("retail")
+    frame.cursorActive = true
+    compare(findChild(page, "installDependency_LibNowhere").text, "Install it on Retail")
+    frame.showItem(findChild(page, "installDependency_LibNowhere"))
+    shoot("addon-page-folders")
+  }
+
   // Its Versions on Retail (1n2p.24), over the binary's Versions scene: following beta,
   // the channels with their newest, and each release with its date, channel and how
   // likely it loads, the installed one marked; the cursor on the older stable release.
