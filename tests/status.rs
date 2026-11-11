@@ -908,6 +908,28 @@ mod updates {
         );
     }
 
+    /// omad-7mw6: with no `catalog.d` file, the built-in catalog's index counts them, as
+    /// the parsed catalog would: each folder of a built-in entry, whatever its case, and
+    /// never a folder no entry names; `status` and `status --cached` agree.
+    #[test]
+    fn adoptable_counts_builtin_folders_without_an_override() {
+        let home = behind();
+        assert!(!home.env.config().join("omaddons/catalog.d").exists());
+        let addons = home.addons("_retail_");
+        for name in ["WeakAuras", "weakaurasoptions", "Random"] {
+            let file = format!("{name}.toc");
+            addon_folder(&addons, name, &[(&file, &toc("120105", &[]))], &[]);
+        }
+        for envelope in [cached(&home), home.run(&["status", "--json"]).expect(0)] {
+            let retail = target(&envelope, "retail");
+            assert_eq!(
+                (&retail["adoptable"], &retail["folders"]["unmanaged"]),
+                (&json!(2), &json!(3)),
+                "{envelope}"
+            );
+        }
+    }
+
     #[test]
     fn list_shows_the_latest_known_release_from_the_memo() {
         let home = behind();

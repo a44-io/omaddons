@@ -3543,7 +3543,7 @@ The state directory honors `XDG_STATE_HOME`, the cache `XDG_CACHE_HOME`, and the
 | `src/politeness.rs`, `src/limits.rs` | Every network-politeness constant and every safety limit, each in one place |
 | `catalog/catalog.toml` | The built-in catalog, embedded with `include_str!` |
 | `omarchy/` | The bar widget's QML and JavaScript, embedded by `src/omarchy/assets.rs`: `Model.js` turns envelopes into what the views show and builds every argv the widget may run, `Service.qml` is its one service (the processes, the doorbell, the triggers), `views/` holds the panel's views and `ui/` the components they share (the addon row, section header, chip, empty state, notice card, sheet, key hint, progress bar, badge and the virtualized list); its tests are under `omarchy/tests/` (bun and `qmltestrunner`) |
-| `build.rs` | The digest of the widget's files, so `status` compares an installed widget with this build without hashing them on every call; the build id; and the agent guide's digest |
+| `build.rs` | The digest of the widget's files, so `status` compares an installed widget with this build without hashing them on every call; the build id; the agent guide's digest; and the built-in catalog's folder index, so `status` counts adoptable folders without parsing the catalog when `catalog.d` holds no file |
 | `crates/` | The `schemars` facade and its no-op derive: schemars itself with the `schemas` feature (every test build), nothing without it (the release binary; see [The embedded schemas](#the-embedded-schemas)) |
 | `tests/`, `fuzz/` | Integration, contract, crash, concurrency and live tests; cargo-fuzz targets |
 

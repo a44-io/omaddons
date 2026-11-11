@@ -36,6 +36,54 @@ use crate::text::{Entities, source_line};
 /// The embedded catalog.
 pub const BUILTIN: &str = include_str!("../../catalog/catalog.toml");
 
+include!(concat!(env!("OUT_DIR"), "/catalog_folders.rs"));
+
+/// The refs of the built-in entries naming `folder`, from the index `build.rs` makes of
+/// the embedded catalog: what `Catalog::builtin().by_folder` answers, without parsing the
+/// catalog (omad-7mw6). A unit test holds the two equal.
+pub fn builtin_refs_naming(folder: &FolderName) -> Vec<Ref> {
+    BUILTIN_FOLDERS
+        .binary_search_by(|(key, _)| (*key).cmp(folder.key()))
+        .ok()
+        .and_then(|at| BUILTIN_FOLDERS.get(at))
+        .map(|(_, refs)| refs.iter().filter_map(|r| r.parse().ok()).collect())
+        .unwrap_or_default()
+}
+
+/// Which catalog entries name a folder, for counting adoptable folders (omad-7mw6): with
+/// no `catalog.d` file, the built-in index, so no TOML is parsed; else the catalog with
+/// its overrides, as `adopt` would find them.
+#[derive(Debug)]
+pub enum FolderRefs {
+    Builtin,
+    Loaded(Catalog),
+}
+
+impl FolderRefs {
+    /// The built-in index when `catalog.d` holds no file [`Catalog::load`] would apply,
+    /// else the loaded catalog with its warnings.
+    pub fn load(paths: &Paths) -> (Self, Vec<Warning>) {
+        if Catalog::has_overrides(paths) {
+            let (catalog, warnings) = Catalog::load(paths);
+            (Self::Loaded(catalog), warnings)
+        } else {
+            (Self::Builtin, Vec::new())
+        }
+    }
+
+    /// The refs of the entries naming `folder`.
+    pub fn naming(&self, folder: &FolderName) -> Vec<Ref> {
+        match self {
+            Self::Builtin => builtin_refs_naming(folder),
+            Self::Loaded(catalog) => catalog
+                .by_folder(folder)
+                .into_iter()
+                .map(|e| e.r#ref.clone())
+                .collect(),
+        }
+    }
+}
+
 /// One addon the catalog knows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct Entry {
@@ -149,6 +197,27 @@ impl Catalog {
         Ok(catalog)
     }
 
+    /// The `catalog.d` files [`Catalog::load`] applies, in its order: every `*.toml`
+    /// regular file, by name.
+    fn override_files(paths: &Paths) -> Vec<std::path::PathBuf> {
+        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(paths.catalog_d())
+            .map(|listing| {
+                listing
+                    .filter_map(std::result::Result::ok)
+                    .map(|e| e.path())
+                    .filter(|p| p.extension().is_some_and(|e| e == "toml") && p.is_file())
+                    .collect()
+            })
+            .unwrap_or_default();
+        files.sort();
+        files
+    }
+
+    /// Whether `catalog.d` holds a file [`Catalog::load`] would apply (or warn about).
+    pub fn has_overrides(paths: &Paths) -> bool {
+        !Self::override_files(paths).is_empty()
+    }
+
     /// The embedded catalog with `catalog.d` overrides. Never fails: a broken file is
     /// a warning.
     pub fn load(paths: &Paths) -> (Self, Vec<Warning>) {
@@ -163,18 +232,7 @@ impl Catalog {
                 Self::default()
             }
         };
-        let dir = paths.catalog_d();
-        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
-            .map(|listing| {
-                listing
-                    .filter_map(std::result::Result::ok)
-                    .map(|e| e.path())
-                    .filter(|p| p.extension().is_some_and(|e| e == "toml") && p.is_file())
-                    .collect()
-            })
-            .unwrap_or_default();
-        files.sort();
-        for file in files {
+        for file in Self::override_files(paths) {
             let applied = std::fs::read_to_string(&file)
                 .map_err(|e| e.to_string())
                 .and_then(|text| parse(&text, true))
@@ -540,6 +598,73 @@ mod tests {
     }
 
     const HEADER: &str = "schema_version = \"1.0\"\n";
+
+    /// omad-7mw6: the index `build.rs` makes answers every folder of every built-in entry
+    /// as the parsed catalog does, in any case, and nothing for a folder no entry names.
+    #[test]
+    fn the_builtin_index_answers_as_the_parsed_catalog() {
+        let catalog = Catalog::builtin().unwrap();
+        let mut folders: Vec<&FolderName> =
+            catalog.entries().iter().flat_map(|e| &e.folders).collect();
+        folders.sort();
+        folders.dedup();
+        assert_eq!(
+            folders.len(),
+            BUILTIN_FOLDERS.len(),
+            "one index row per folder"
+        );
+        for folder in folders {
+            let parsed: Vec<Ref> = catalog
+                .by_folder(folder)
+                .into_iter()
+                .map(|e| e.r#ref.clone())
+                .collect();
+            assert_eq!(builtin_refs_naming(folder), parsed, "{folder}");
+            let shouted = FolderName::try_from(folder.as_str().to_ascii_uppercase()).unwrap();
+            assert_eq!(builtin_refs_naming(&shouted), parsed, "{shouted}");
+        }
+        let nobody = FolderName::try_from("NoCatalogEntryNamesThis".to_owned()).unwrap();
+        assert_eq!(builtin_refs_naming(&nobody), Vec::<Ref>::new());
+    }
+
+    /// omad-7mw6: with no `catalog.d` file the lookup is the built-in index (nothing
+    /// parsed); with one, even a broken one, it is the loaded catalog, overrides and
+    /// warnings included.
+    #[test]
+    fn folder_refs_parse_only_with_an_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let (refs, warnings) = FolderRefs::load(&paths);
+        assert!(matches!(refs, FolderRefs::Builtin), "{refs:?}");
+        assert!(warnings.is_empty());
+        // A folder that is no `*.toml` is no override.
+        write(&paths, "notes.txt", "not a catalog");
+        assert!(matches!(FolderRefs::load(&paths).0, FolderRefs::Builtin));
+
+        let mine = FolderName::try_from("MyBars".to_owned()).unwrap();
+        assert_eq!(builtin_refs_naming(&mine), Vec::<Ref>::new());
+        write(
+            &paths,
+            "50-mine.toml",
+            &format!(
+                "{HEADER}[[addon]]\nname = \"MyBars\"\nref = \"gh:example/MyBars\"\nfolders = [\"MyBars\"]\n"
+            ),
+        );
+        let (refs, warnings) = FolderRefs::load(&paths);
+        assert!(matches!(refs, FolderRefs::Loaded(_)), "{refs:?}");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(
+            refs.naming(&mine),
+            vec!["gh:example/MyBars".parse::<Ref>().unwrap()]
+        );
+        write(&paths, "60-broken.toml", "not = [toml");
+        let (refs, warnings) = FolderRefs::load(&paths);
+        assert!(matches!(refs, FolderRefs::Loaded(_)));
+        assert_eq!(
+            warnings.iter().map(|w| w.code).collect::<Vec<_>>(),
+            [WarningCode::CatalogOverrideInvalid]
+        );
+    }
 
     #[test]
     fn overrides_apply_in_lexical_order() {

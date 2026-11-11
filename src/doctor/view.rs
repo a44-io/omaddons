@@ -101,6 +101,8 @@ pub struct DoctorView {
     /// The projection's skill folders as the seed gave them ([`Seed::skill_dirs`]); `None`
     /// when the Skill layer reads the projection itself.
     skill_dirs: Option<Option<Vec<PathBuf>>>,
+    /// The records the seed gave ([`Seed::records`]), taken by the Records layer's load.
+    seeded_records: RefCell<BTreeMap<TargetKey, Loaded<TargetRecord>>>,
     credentials: OnceCell<LayerState<Credentials>>,
     /// The online checks' client, built at the first ask (not a layer: it reads nothing).
     online: OnceCell<std::result::Result<Online, OnlineUnavailable>>,
@@ -136,6 +138,7 @@ impl DoctorView {
             widget: OnceCell::new(),
             skill: OnceCell::new(),
             skill_dirs: None,
+            seeded_records: RefCell::new(BTreeMap::new()),
             credentials: OnceCell::new(),
             online: OnceCell::new(),
             drift: RefCell::default(),
@@ -190,6 +193,7 @@ impl DoctorView {
             widget: OnceCell::from(LayerState::Available(WidgetLayer { info: seed.widget })),
             history,
             skill_dirs: seed.skill_dirs,
+            seeded_records: RefCell::new(seed.records),
             drift: RefCell::new(drift),
             loaded: RefCell::new(loaded),
             ..view
@@ -681,9 +685,13 @@ impl DoctorView {
         if let Some(registry) = self.registry() {
             keys.extend(registry.value.targets.iter().map(|entry| entry.key));
         }
+        let mut seeded = self.seeded_records.take();
         let by_key = keys
             .into_iter()
             .map(|key| {
+                if let Some(loaded) = seeded.remove(&key) {
+                    return (key, LayerState::Available(loaded));
+                }
                 let path = self.paths.target_record(&key);
                 let file = format!("targets/{key}.json");
                 let failed = Failed {
@@ -1109,6 +1117,10 @@ pub struct Seed {
     /// fresh projection lists them. `None`: the Skill layer reads the projection itself,
     /// when a check asks. A projection is decoded once per run, not once per reader.
     pub skill_dirs: Option<Option<Vec<PathBuf>>>,
+    /// Records the command read as the Records layer reads them ([`read_record`]: the
+    /// same bounded bytes, decoded the same way), by key; the layer reads every other one
+    /// itself. A record is decoded once per run (omad-7mw6).
+    pub records: BTreeMap<TargetKey, Loaded<TargetRecord>>,
 }
 
 /// Whether a layer could be read; when not, the layer whose failure made it so.
@@ -1680,6 +1692,24 @@ fn record_keys(
         keys.extend(key);
     }
     Ok(keys)
+}
+
+/// `key`'s record as the Records layer reads it, for a command to seed the layer with
+/// (omad-7mw6): an absent file is an empty record, and a file within the layer's bound
+/// that decodes is what it decodes to, a newer one with its status. `None` for anything
+/// the layer would report instead (too large, not a file, unreadable, not decodable):
+/// the caller loads it its own way, and the layer reads it itself.
+pub fn read_record(paths: &Paths, key: &TargetKey) -> Option<Loaded<TargetRecord>> {
+    let path = paths.target_record(key);
+    match read_bounded(&path, DISCOVERY_FILE_MAX_BYTES) {
+        BoundedRead::Missing => Some(Loaded {
+            value: TargetRecord::empty(*key),
+            version: TargetRecord::CURRENT,
+            status: VersionStatus::Current,
+        }),
+        BoundedRead::Bytes(bytes) => store::load_bytes::<TargetRecord>(&path, &bytes).ok(),
+        _ => None,
+    }
 }
 
 /// What a bounded read of one file found.
@@ -2472,6 +2502,85 @@ pub(crate) mod tests {
             }
             assert_content_free(name, &view);
         }
+    }
+
+    /// omad-7mw6: `read_record` gives what the Records layer would read, or `None` for
+    /// what the layer reports instead.
+    #[test]
+    fn read_record_reads_as_the_records_layer_does() {
+        let cases: Vec<(&str, Plant, Option<u64>)> = vec![
+            ("absent", Plant::Absent, Some(0)),
+            ("a_record", Plant::Bytes(record_bytes(K, 3)), Some(3)),
+            ("too_large", Plant::TooLarge, None),
+            (
+                "corrupt",
+                Plant::Bytes(format!("{MARKER} {{").into_bytes()),
+                None,
+            ),
+            (
+                "newer_that_does_not_decode",
+                Plant::Bytes(br#"{"schema_version":"7.0","key":3}"#.to_vec()),
+                None,
+            ),
+            ("a_directory", Plant::Dir, None),
+        ];
+        for (name, how, expected) in cases {
+            let (_dir, paths) = home();
+            // The registry names K, so the layer looks for its record (absent too).
+            plant(
+                &paths.registry_file(),
+                &Plant::Bytes(registry_bytes(&[(K, "retail")])),
+            );
+            plant(&paths.target_record(&key(K)), &how);
+            let read = read_record(&paths, &key(K));
+            assert_eq!(
+                read.as_ref().map(|l| l.value.generation),
+                expected,
+                "case {name}"
+            );
+            // What it read is what the layer loads itself.
+            let view = view_at(paths.clone());
+            let layer = view.records().and_then(|r| r.get(&key(K)).cloned());
+            assert_eq!(read, layer, "case {name}");
+        }
+    }
+
+    /// omad-7mw6: a seeded record answers the Records layer without its file being read
+    /// (the file on disk is corrupt), while a record nobody seeded, too large, is still the
+    /// layer's own finding.
+    #[test]
+    fn a_seeded_record_answers_and_an_unseeded_one_is_read() {
+        let (_dir, paths) = home();
+        plant(
+            &paths.target_record(&key(K)),
+            &Plant::Bytes(format!("{MARKER} {{").into_bytes()),
+        );
+        plant(&paths.target_record(&key(K2)), &Plant::TooLarge);
+        let (_seed_dir, seed_paths) = home();
+        plant(
+            &seed_paths.target_record(&key(K)),
+            &Plant::Bytes(record_bytes(K, 5)),
+        );
+        let seeded = read_record(&seed_paths, &key(K)).unwrap();
+        let view = view_at(paths.clone());
+        *view.seeded_records.borrow_mut() = BTreeMap::from([(key(K), seeded)]);
+        let records = view.records().unwrap();
+        let available: Vec<(String, u64)> = records
+            .available()
+            .map(|(k, r)| (k.to_string(), r.value.generation))
+            .collect();
+        assert_eq!(available, [(K.to_owned(), 5)]);
+        let scoped: Vec<(String, &str)> = view
+            .failures()
+            .iter()
+            .filter(|f| f.layer == Layer::Records)
+            .map(|f| {
+                let target = f.target.map(|k| k.to_string()).unwrap_or_default();
+                (target, f.evidence.reason.unwrap_or_default())
+            })
+            .collect();
+        assert_eq!(scoped, [(K2.to_owned(), "too_large")]);
+        assert!(view.seeded_records.borrow().is_empty(), "the seed is taken");
     }
 
     #[test]
@@ -3966,6 +4075,7 @@ pub(crate) mod tests {
             drift: BTreeMap::new(),
             history: None,
             skill_dirs: None,
+            records: BTreeMap::new(),
         }
     }
 

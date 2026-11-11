@@ -1,4 +1,4 @@
-//! Three outputs, computed separately:
+//! Four outputs, computed separately:
 //!
 //! - The digest of the widget's runtime files under `omarchy/` (its tests, a generated
 //!   `Build.js` and the manifest aside: the same set as `src/omarchy/assets.rs`), so
@@ -10,6 +10,8 @@
 //!   (M4-D7).
 //! - `OMADDONS_GUIDE_SHA256`, the committed skill's digest with its stamp line omitted
 //!   (M4-D7), so the binary knows which guide it prints without rendering it.
+//! - The built-in catalog's folder index (`catalog_folders`), so `status` counts adoptable
+//!   folders without parsing the catalog (omad-7mw6).
 
 // Cargo reads its directives from the build script's stdout.
 #![allow(clippy::print_stdout)]
@@ -43,6 +45,54 @@ fn main() -> Result<(), Box<dyn Error>> {
     widget_digest()?;
     build_id()?;
     guide_digest();
+    catalog_folders()?;
+    Ok(())
+}
+
+/// `OUT_DIR/catalog_folders.rs`: each folder the built-in catalog's entries name, by its
+/// ASCII case-folded key (as `FolderName` compares), sorted, with the refs of the entries
+/// naming it in entry order (omad-7mw6). `status` counts adoptable folders from it, so a
+/// run with no `catalog.d` file parses no catalog TOML; `src/resolve/catalog.rs` holds it
+/// equal to the parsed catalog in a unit test. The build id covers `catalog/` already.
+fn catalog_folders() -> Result<(), Box<dyn Error>> {
+    const CATALOG: &str = "catalog/catalog.toml";
+    println!("cargo::rerun-if-changed={CATALOG}");
+    let table: toml::Table = fs::read_to_string(CATALOG)?.parse()?;
+    let mut index: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    let entries = table
+        .get("addon")
+        .and_then(toml::Value::as_array)
+        .ok_or("the catalog has no [[addon]] entries")?;
+    for entry in entries {
+        let r#ref = entry
+            .get("ref")
+            .and_then(toml::Value::as_str)
+            .ok_or("a catalog entry without a ref")?;
+        let folders = entry.get("folders").and_then(toml::Value::as_array);
+        for folder in folders.into_iter().flatten() {
+            let folder = folder
+                .as_str()
+                .ok_or("a catalog folder that is no string")?;
+            index
+                .entry(folder.to_ascii_lowercase())
+                .or_default()
+                .push(r#ref.to_owned());
+        }
+    }
+    let mut out = String::from(
+        "/// Each folder the built-in catalog names, by its ASCII case-folded key, with the\n\
+         /// refs of the entries naming it (`build.rs`, from `catalog/catalog.toml`).\n\
+         pub static BUILTIN_FOLDERS: &[(&str, &[&str])] = &[\n",
+    );
+    for (folder, refs) in &index {
+        out.push_str(&format!("    ({folder:?}, &{refs:?}),\n"));
+    }
+    out.push_str("];\n");
+    fs::write(
+        Path::new(&std::env::var("OUT_DIR")?).join("catalog_folders.rs"),
+        out,
+    )?;
     Ok(())
 }
 

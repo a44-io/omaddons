@@ -58,9 +58,12 @@ ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
 zip = { version = "9.0.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 zstd = { version = "0.14.3", default-features = false }
 
-# build.rs: the widget assets' digest, which `status` compares on every call (E4).
+# build.rs: the widget assets' digest, which `status` compares on every call (E4), and
+# the built-in catalog's folder index, which `status` reads instead of parsing the
+# catalog (omad-7mw6).
 [build-dependencies]
 sha2 = "0.11.1"
+toml = "1.1.8"
 
 [dev-dependencies]
 assert_cmd = "2.2.2"

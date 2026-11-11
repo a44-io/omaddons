@@ -50,7 +50,7 @@ use crate::discover::shared::{SharedAddons, shared_addons};
 use crate::doctor;
 use crate::doctor::registry::Tier;
 use crate::doctor::selection::{Selection, Skipped};
-use crate::doctor::view::{DoctorView, Journals, Seed, ViewDiscovery, ViewOptions};
+use crate::doctor::view::{DoctorView, Journals, Seed, ViewDiscovery, ViewOptions, read_record};
 use crate::drift::{AddonDrift, DriftMode, DriftReport, DriftState};
 use crate::engine::journal;
 use crate::engine::retention::{self, RetentionLimits};
@@ -64,16 +64,16 @@ use crate::model::{Actor, AddonState, FolderName, Ref, RunId, Target, TargetKey,
 use crate::omarchy::status::{self as omarchy_status, WidgetInfo};
 use crate::output::{Outcome, Style, table};
 use crate::politeness::DEFAULT_CHECK_INTERVAL;
-use crate::resolve::catalog::Catalog;
+use crate::resolve::catalog::{Catalog, FolderRefs};
 use crate::resolve::updates::{StatusKind, UncheckedReason, UpdateStatus};
 use crate::rules::{ClientVersion, Family, InstallKind, ModeName, RulesTable, TargetKind};
 use crate::sources::github_token::{GithubToken, TokenSource};
 use crate::state::history::{self, HistoryEntry, HistoryFilter, HistoryRead, Reach};
 use crate::state::history_tail::{self, Answer, HistoryTail};
-use crate::state::paths::ClientPaths;
+use crate::state::paths::{ClientPaths, Paths};
 use crate::state::records::{TargetRecord, load_record};
 use crate::state::registry::RegistryEntry;
-use crate::state::store::VersionStatus;
+use crate::state::store::{Loaded, VersionStatus};
 
 /// `status`'s own flags.
 #[derive(Debug, Clone, Copy, Default, clap::Args)]
@@ -666,7 +666,24 @@ fn widget_line(widget: Option<&WidgetInfo>) -> Option<String> {
     None
 }
 
-/// Runs `status`.
+/// `key`'s record, read once (omad-7mw6): as the doctor's Records layer reads it, kept in
+/// `seed` for that layer; else (too large for the layer's bound, unreadable, not
+/// decodable) as `status` always read it, failing with its own error, and left for the
+/// layer to read and report itself.
+fn record_of(
+    paths: &Paths,
+    key: &TargetKey,
+    seed: &mut BTreeMap<TargetKey, Loaded<TargetRecord>>,
+) -> Result<Loaded<TargetRecord>> {
+    match read_record(paths, key) {
+        Some(loaded) => {
+            seed.insert(*key, loaded.clone());
+            Ok(loaded)
+        }
+        None => load_record(paths, key),
+    }
+}
+
 /// `target_addons_shared` for one group of targets sharing an AddOns directory.
 fn shared_warning(group: &SharedAddons) -> Warning {
     let names = match group.targets.split_last() {
@@ -689,6 +706,7 @@ fn shared_warning(group: &SharedAddons) -> Warning {
     .about(group.targets.iter().map(String::as_str))
 }
 
+/// Runs `status`.
 pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
     let mode = if args.cached {
         DiscoveryMode::NoScan
@@ -770,7 +788,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
         |_| RetentionLimits::default(),
         |l| RetentionLimits::from(&l),
     );
-    let mut catalog: Option<Catalog> = None;
+    let mut catalog: Option<FolderRefs> = None;
     let mut check_due = false;
     // `--cached` stays a presence check (M2-D15); plain `status` checks stat-first.
     let drift_mode = if args.cached {
@@ -798,11 +816,13 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
     // Each registered client's drift report, for the doctor's view to answer from: its
     // drift rows then check no file again, and `drift[]` and the issues agree.
     let mut drift_seed: BTreeMap<TargetKey, DriftReport> = BTreeMap::new();
+    // Each record read here, for the view's Records layer: decoded once (omad-7mw6).
+    let mut records_seed: BTreeMap<TargetKey, Loaded<TargetRecord>> = BTreeMap::new();
     for d in &selected {
         let t = &d.target;
         let record = match t.key {
             Some(key) => {
-                let loaded = load_record(&world.paths, &key)?;
+                let loaded = record_of(&world.paths, &key, &mut records_seed)?;
                 let warning = loaded.warning(&world.paths.target_record(&key));
                 ctx.notes.warn_all(warning.as_slice());
                 warnings.extend(warning);
@@ -864,10 +884,16 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             });
         check_due |= due;
         let adoptable = if inv.counts.unmanaged > 0 {
+            // With no `catalog.d` file, the built-in index answers, and no catalog TOML is
+            // parsed (omad-7mw6); else the catalog with its overrides, warnings and all.
             let catalog = catalog.get_or_insert_with(|| {
-                let (catalog, loaded) = world.catalog(ctx);
-                warnings.extend(loaded);
-                catalog
+                if Catalog::has_overrides(&world.paths) {
+                    let (catalog, loaded) = world.catalog(ctx);
+                    warnings.extend(loaded);
+                    FolderRefs::Loaded(catalog)
+                } else {
+                    FolderRefs::Builtin
+                }
             });
             adoptable(&inv, record.as_ref().map(|l| &l.value), catalog)
         } else {
@@ -999,7 +1025,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
         targets.push(target);
     }
     for e in &missing {
-        let record = load_record(&world.paths, &e.key)?.value;
+        let record = record_of(&world.paths, &e.key, &mut records_seed)?.value;
         let attention = vec![Attention::TargetMissing];
         let install_kind = if e.flavor_dir.is_some() {
             InstallKind::Battlenet
@@ -1108,6 +1134,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             skill_dirs: tail
                 .as_ref()
                 .map(|tail| tail.as_ref().and_then(|t| t.skill_dirs.clone())),
+            records: records_seed,
         },
     );
     let scope = if world.selects_all(ctx) {
@@ -1243,7 +1270,7 @@ pub(crate) fn adopt_hints(
     targets: &[&DiscoveredTarget],
     records: &BTreeMap<String, TargetRecord>,
 ) -> Vec<CommandHint> {
-    let mut catalog: Option<Catalog> = None;
+    let mut catalog: Option<FolderRefs> = None;
     let mut hints = Vec::new();
     for d in targets {
         let record = records.get(&d.target.id);
@@ -1258,7 +1285,7 @@ pub(crate) fn adopt_hints(
         if inv.counts.unmanaged == 0 {
             continue;
         }
-        let catalog = catalog.get_or_insert_with(|| Catalog::load(&world.paths).0);
+        let catalog = catalog.get_or_insert_with(|| FolderRefs::load(&world.paths).0);
         if adoptable(&inv, record, catalog) > 0 {
             hints.push(adopt_hint(&d.target.id));
         }
@@ -1271,7 +1298,7 @@ pub(crate) fn adopt_hints(
 pub(crate) fn adoptable(
     inv: &Inventory,
     record: Option<&TargetRecord>,
-    catalog: &Catalog,
+    catalog: &FolderRefs,
 ) -> usize {
     let installed = |r: &Ref| {
         record.is_some_and(|rec| {
@@ -1284,12 +1311,8 @@ pub(crate) fn adoptable(
         .iter()
         .filter(|e| e.class == FolderClass::Unmanaged)
         .filter(|e| {
-            FolderName::try_from(e.name.clone()).is_ok_and(|name| {
-                catalog
-                    .by_folder(&name)
-                    .iter()
-                    .any(|entry| !installed(&entry.r#ref))
-            })
+            FolderName::try_from(e.name.clone())
+                .is_ok_and(|name| catalog.naming(&name).iter().any(|r| !installed(r)))
         })
         .count()
 }
