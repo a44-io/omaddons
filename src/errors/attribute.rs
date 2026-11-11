@@ -10,6 +10,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::frames::{FrameKind, frames, strip_prefix_ci};
+use super::sanitize::taint_folder;
 
 /// What an error is attributed to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +30,9 @@ pub enum Attributed {
 pub enum Method {
     /// The folder a blocked or forbidden call names.
     ProtectedCall,
+    /// The folder the client's own taint report names: tainted code read a secret value
+    /// (omad-8u49).
+    Taint,
     FirstAddonFrame,
     LibraryFrame,
     BlizzardOnly,
@@ -369,6 +373,23 @@ fn protected_call(message: &str, is_event: bool) -> Option<&str> {
     }
 }
 
+/// The folder a secret-value taint report names on its first line (after `LUA_WARNING: `,
+/// [`taint_folder`]), and whether a `Lua Taint: <folder>` line of the same message names
+/// another one. The quoted name wins a disagreement: it is the one the message's own
+/// text attributes, and the one strict output shows.
+fn tainted_by(message: &str) -> Option<(&str, bool)> {
+    let message = strip_prefix_ci(message, "LUA_WARNING: ").unwrap_or(message);
+    let message = message
+        .split_once("|cffffd200Stack:|r")
+        .map_or(message, |(m, _)| m);
+    let mut lines = message.lines();
+    let folder = taint_folder(lines.next()?.trim())?;
+    let disagrees = lines
+        .filter_map(|line| strip_prefix_ci(line.trim(), "Lua Taint: "))
+        .any(|named| !named.trim().eq_ignore_ascii_case(folder));
+    Some((folder, disagrees))
+}
+
 /// The first non-empty `'…'` in `text`.
 fn first_quoted(text: &str) -> Option<&str> {
     let (_, rest) = text.split_once('\'')?;
@@ -377,7 +398,8 @@ fn first_quoted(text: &str) -> Option<&str> {
 }
 
 /// The most likely source of an error (M3-D18 rules 1, 2, 3, 7 and 9): the folder of a
-/// protected call; else the first addon frame's folder; else the first library frame's;
+/// protected call; else the folder the client's taint report names (omad-8u49); else
+/// the first addon frame's folder; else the first library frame's;
 /// else Blizzard when any frame is the game's; else unknown. `is_event` is r152's
 /// `type == "event"`.
 pub fn attribute(
@@ -400,6 +422,27 @@ pub fn attribute(
                 Confidence::High,
             ),
             None => decided(Attributed::Unknown, Method::ProtectedCall, Confidence::Low),
+        };
+    }
+    // The client's taint report names the addon whose taint reached the secret value;
+    // the stack under it is usually the game's own frames, where tainted code surfaced.
+    // Taint spreads, so the named addon may itself be a victim: high, as a protected call
+    // is, and medium when the report's own `Lua Taint:` line names another folder. A
+    // `Blizzard_*` folder named there is the game's: the frames decide, as before.
+    if let Some((folder, disagrees)) = tainted_by(message)
+        && strip_prefix_ci(folder, "Blizzard_").is_none()
+    {
+        return match installed.get(folder) {
+            Some(folder) => decided(
+                Attributed::Addon(folder.to_owned()),
+                Method::Taint,
+                if disagrees {
+                    Confidence::Medium
+                } else {
+                    Confidence::High
+                },
+            ),
+            None => decided(Attributed::Unknown, Method::Taint, Confidence::Low),
         };
     }
     let mut library = None;
@@ -567,6 +610,109 @@ mod tests {
                 true,
             ),
             addon("Recount"),
+            Method::ProtectedCall,
+            Confidence::High,
+        );
+    }
+
+    /// The client's secret-value taint report (omad-8u49): the folder it names, whatever
+    /// the stack says, never over a protected call; low and unknown when that folder is
+    /// not installed; medium when its `Lua Taint:` line names another; a `Blizzard_*`
+    /// folder left to the frames.
+    #[test]
+    fn a_taint_report_names_its_folder_over_the_frames() {
+        let installed = FolderSet::new(["OneForAll", "Questie", "Blizzard_MawBuffs"]);
+        let report = |folder: &str, taint: &str| {
+            format!(
+                "GetAuraDataByIndex(): Auras cannot be accessed when secret while tainted by '{folder}'\nLua Taint: {taint}"
+            )
+        };
+        let blizzard = "[Interface/AddOns/Blizzard_MawBuffs/Blizzard_MawBuffs.lua]:4: in function 'ShouldShowMawBuffs'\n[Interface/AddOns/Blizzard_ObjectiveTracker/Blizzard_ScenarioObjectiveTracker.lua]:187: in function 'LayoutContents'";
+        let plain = report("OneForAll", "OneForAll");
+        check(
+            &attribute(&plain, Some(blizzard), false, &installed, false),
+            addon("OneForAll"),
+            Method::Taint,
+            Confidence::High,
+        );
+        // Its `LUA_WARNING:` form, with the stack embedded after the message.
+        let warning = format!(
+            "LUA_WARNING: {plain}\n|cffffd200Stack:|r\n[C]: in function 'secureexecuterange'\n[Interface/AddOns/Blizzard_EditMode/Shared/EditModeManager.lua]:1054: in function 'X'"
+        );
+        check(
+            &attribute(&warning, None, false, &installed, false),
+            addon("OneForAll"),
+            Method::Taint,
+            Confidence::High,
+        );
+        // An addon frame on the stack does not outrank the report.
+        let questie = "[Interface/AddOns/Questie/Questie.lua]:9: in function 'X'";
+        check(
+            &attribute(&plain, Some(questie), false, &installed, false),
+            addon("OneForAll"),
+            Method::Taint,
+            Confidence::High,
+        );
+        check(
+            &attribute(
+                &report("Gone", "Gone"),
+                Some(blizzard),
+                false,
+                &installed,
+                false,
+            ),
+            Attributed::Unknown,
+            Method::Taint,
+            Confidence::Low,
+        );
+        check(
+            &attribute(
+                &report("OneForAll", "Questie"),
+                Some(blizzard),
+                false,
+                &installed,
+                false,
+            ),
+            addon("OneForAll"),
+            Method::Taint,
+            Confidence::Medium,
+        );
+        // The game's own folder named as the taint: the frames decide, as before.
+        check(
+            &attribute(
+                &report("Blizzard_MawBuffs", "Blizzard_MawBuffs"),
+                Some(blizzard),
+                false,
+                &installed,
+                false,
+            ),
+            Attributed::Blizzard,
+            Method::BlizzardOnly,
+            Confidence::Low,
+        );
+        // A look-alike is an addon's own text: the frames decide.
+        check(
+            &attribute(
+                "GetAuraDataByIndex(): Auras cannot be accessed when secret while tainted by 'OneForAll' again",
+                Some(questie),
+                false,
+                &installed,
+                false,
+            ),
+            addon("Questie"),
+            Method::FirstAddonFrame,
+            Confidence::High,
+        );
+        // A protected call still wins.
+        check(
+            &attribute(
+                "[ADDON_ACTION_BLOCKED] AddOn 'Questie' tried to call the protected function 'X()'.\nLua Taint: OneForAll",
+                Some(blizzard),
+                false,
+                &installed,
+                false,
+            ),
+            addon("Questie"),
             Method::ProtectedCall,
             Confidence::High,
         );

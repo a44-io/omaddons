@@ -11,6 +11,7 @@ use common::privacy::assert_private;
 use omaddons::errors::buggrabber::BugEntry;
 use omaddons::errors::sanitize::{
     MessageKind, fingerprint, normalized, raw_details, strict_frames, strict_message,
+    strict_message_on,
 };
 use omaddons::privacy::WtfPathRedactor;
 use support::entries;
@@ -120,6 +121,43 @@ fn personal_data_never_shows_not_even_raw() {
             MessageKind::Custom
         );
     }
+}
+
+/// A secret-value taint report (omad-8u49) is the client's own text, shown in strict
+/// output where the folder it names is installed; in that shape with a player's
+/// `Name-Realm`, or not exactly that shape, it is an addon's own message, counted. Raw
+/// output replaces the names it knows. Its two forms are one error.
+#[test]
+fn a_taint_report_shows_only_as_the_clients_own_text() {
+    let installed = |folder: &str| folder == "OneForAll";
+    for writer in Writer::ALL {
+        let report = entries(|w| buggrabber::tainted(w, "OneForAll"), writer);
+        let line = buggrabber::taint_line("OneForAll");
+        for entry in &report {
+            let shown = strict_message_on(&entry.message, false, &installed);
+            assert_eq!(shown.text.as_deref(), Some(line.as_str()), "{writer:?}");
+            assert_private(&strict(entry));
+        }
+        let prints: Vec<String> = report
+            .iter()
+            .map(|e| fingerprint(&normalized(&e.message), None))
+            .collect();
+        assert_eq!(prints[0], prints[1], "{writer:?}: one event in both forms");
+
+        let player = entries(|w| buggrabber::tainted(w, "FakeChar-FakeRealm"), writer);
+        for entry in &player {
+            let shown = strict_message_on(&entry.message, false, &installed);
+            assert_eq!(
+                (shown.kind, shown.text),
+                (MessageKind::Custom, None),
+                "{writer:?}"
+            );
+            assert_private(&format!("{:?}", raw_details(entry, false, &names())));
+        }
+    }
+    let look_alike = format!("{} FakeChar", buggrabber::taint_line("OneForAll"));
+    let shown = strict_message_on(&look_alike, false, &installed);
+    assert_eq!((shown.kind, shown.text), (MessageKind::Custom, None));
 }
 
 #[test]

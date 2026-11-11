@@ -5609,8 +5609,11 @@ function addonVersions(input, name, ref, records, statusTargets, nowMs, first) {
 // Who most likely threw an addon's errors, in words (design doc §6.6), from its kind,
 // its strongest error's confidence and whether a blocked call named it.
 function errorSourceText(a) {
-  var blocked = (Array.isArray(a.errors) ? a.errors : []).some(function(e) { return e.method === "protected_call" })
+  var errors = Array.isArray(a.errors) ? a.errors : []
+  var blocked = errors.some(function(e) { return e.method === "protected_call" })
   if (blocked) return copy("errors.source.blocked", { "addon": a.addon })
+  // The game's own taint report named it (omad-8u49); taint spreads, so a likelihood.
+  if (a.kind === "addon" && errors.some(function(e) { return e.method === "taint" })) return copy("errors.source.taint")
   if (a.kind === "library") return copy("errors.source.library", { "addon": a.addon })
   if (a.kind === "blizzard") return copy("errors.source.blizzard")
   if (a.kind === "unknown") return copy("errors.source.unknown")
@@ -7446,6 +7449,7 @@ var COPY = {
   "errors.source.blizzard": "in the game's own code",
   "errors.source.unknown": "source unknown",
   "errors.source.blocked": "blocked call from {addon}",
+  "errors.source.taint": "probably caused by its taint",
   "errors.message.custom": { "one": "a message from the addon (1 character)", "other": "a message from the addon ({chars} characters)" },
   "errors.new": "{n} new",
   "errors.new_one": "new",

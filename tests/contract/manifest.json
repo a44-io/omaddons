@@ -8148,7 +8148,7 @@
     "output errors data.targets[].addons[].errors[]": {"kind":"output_position","nullable":false,"types":["object"]},
     "output errors data.targets[].addons[].errors[].attribution": {"kind":"output_position","nullable":false,"required":true,"types":["object"]},
     "output errors data.targets[].addons[].errors[].attribution.confidence": {"enum":["high","low","medium"],"kind":"output_position","nullable":false,"required":true,"types":["string"]},
-    "output errors data.targets[].addons[].errors[].attribution.method": {"enum":["blizzard_only","first_addon_frame","library_frame","none","protected_call"],"kind":"output_position","nullable":false,"required":true,"types":["string"]},
+    "output errors data.targets[].addons[].errors[].attribution.method": {"enum":["blizzard_only","first_addon_frame","library_frame","none","protected_call","taint"],"kind":"output_position","nullable":false,"required":true,"types":["string"]},
     "output errors data.targets[].addons[].errors[].count": {"kind":"output_position","minimum":0,"nullable":false,"required":true,"types":["integer"]},
     "output errors data.targets[].addons[].errors[].database": {"kind":"output_position","nullable":false,"required":true,"types":["string"]},
     "output errors data.targets[].addons[].errors[].fingerprint": {"kind":"output_position","nullable":false,"required":true,"types":["string"]},

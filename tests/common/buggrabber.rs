@@ -603,6 +603,53 @@ pub fn forbidden(writer: Writer) -> BugDb {
     )
 }
 
+/// The client's secret-value taint report's first line (omad-8u49), naming `folder`.
+pub fn taint_line(folder: &str) -> String {
+    format!(
+        "GetAuraDataByIndex(): Auras cannot be accessed when secret while tainted by '{folder}'"
+    )
+}
+
+/// A secret-value taint report as a WoW: Forever client wrote it (omad-8u49): one event,
+/// kept twice in session 9 at one moment, its `LUA_WARNING:` form with the stack embedded
+/// after the message and its plain form with a stack of its own, both of the game's
+/// frames alone. The report names `folder` twice: in its quotes and on its
+/// `Lua Taint:` line. No locals: real ones can hold player data.
+pub fn tainted(writer: Writer, folder: &str) -> BugDb {
+    let line = taint_line(folder);
+    let warning = BugEntry::new(
+        &format!(
+            "LUA_WARNING: {line}\nLua Taint: {folder}\n|cffffd200Stack:|r\n[C]: in function 'secureexecuterange'\n{}",
+            frame(
+                stack_era_c("Blizzard_EditMode", "Shared/EditModeManager.lua", 1054),
+                "'UpdateLayoutInfo'"
+            )
+        ),
+        9,
+        (TimeKind::Unix, NOW - 10 * 60),
+    );
+    let error = BugEntry::new(
+        &format!("{line}\nLua Taint: {folder}"),
+        9,
+        (TimeKind::Unix, NOW - 10 * 60),
+    )
+    .stack(&[
+        frame(
+            stack_era_c("Blizzard_MawBuffs", "Blizzard_MawBuffs.lua", 4),
+            "'ShouldShowMawBuffs'",
+        ),
+        frame(
+            stack_era_c(
+                "Blizzard_ObjectiveTracker",
+                "Blizzard_ScenarioObjectiveTracker.lua",
+                187,
+            ),
+            "'LayoutContents'",
+        ),
+    ]);
+    BugDb::new(writer, 9).entry(warning).entry(error)
+}
+
 /// Personal data where real files hold it: a player GUID and a player link in the
 /// message, a character's name in the locals, and `source` (a received report).
 pub fn personal(writer: Writer) -> BugDb {

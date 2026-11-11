@@ -2353,6 +2353,11 @@ describe("the Issues and Search views", () => {
     expect(words({ kind: "blizzard" })).toBe("in the game's own code")
     expect(words({ kind: "unknown" })).toBe("source unknown")
     expect(words({ errors: [{ method: "protected_call" }] })).toBe("blocked call from DBM")
+    // The game's taint report named it (omad-8u49): still a likelihood. A report naming
+    // a folder not installed here leaves the source unknown; a blocked call still wins.
+    expect(words({ errors: [{ method: "taint" }] })).toBe("probably caused by its taint")
+    expect(words({ kind: "unknown", errors: [{ method: "taint" }] })).toBe("source unknown")
+    expect(words({ errors: [{ method: "taint" }, { method: "protected_call" }] })).toBe("blocked call from DBM")
     expect(M.errorMessageText({ messageKind: "custom", message: null, messageChars: 1 })).toBe("a message from the addon (1 character)")
     expect(M.errorMessageText({ messageKind: "lua_runtime", message: null, messageChars: null })).toBe("a message from the addon (? characters)")
   })
@@ -2385,6 +2390,23 @@ describe("the Issues and Search views", () => {
     expect(JSON.stringify(raw)).toContain("FakeChar")
     for (const planted of ["FakeChar", "FakeSender", "FAKEACCT"]) expect(report).not.toContain(planted)
     expect(M.errorReport(null, [])).toBe("")
+  })
+
+  // omad-8u49: the client's taint report, as `errors` publishes it for a folder installed
+  // there: the row names the addon and its version, never "Blizzard ?", and the report
+  // carries the client's own text, never "a message from the addon".
+  test("a taint report's row and report name the addon it blames, with the client's text", () => {
+    const status = M.reduceStatus(fixture("status-errors"), NOW)
+    const env = JSON.parse(JSON.stringify(fixture("errors")))
+    const foo = env.data.targets.find((t) => t.target.id === "retail").addons.find((a) => a.addon === "Foo")
+    const line = "GetAuraDataByIndex(): Auras cannot be accessed when secret while tainted by 'Foo'"
+    foo.errors = [Object.assign({}, foo.errors[0], { message: line, message_kind: "blizzard", message_chars: null, location: null,
+      attribution: { method: "taint", confidence: "high" } })]
+    const row = M.errorRows(M.errorSections(M.reduceErrors(env), status.targets, "retail", NOW)).find((r) => r.addon === "Foo")
+    expect(row.source).toBe("probably caused by its taint")
+    const report = M.errorReport(row, status.targets).split("\n")
+    expect(report[0]).toBe("Foo v1 on Retail " + M.targetById(status.targets, "retail").version)
+    expect(report.slice(1, 4)).toEqual(["", line, "  at ? · " + foo.errors[0].count + (foo.errors[0].count === 1 ? " time" : " times")])
   })
 
   test("the bar's middle click opens the most urgent view", () => {

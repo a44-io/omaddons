@@ -29,7 +29,7 @@ use crate::engine::fence;
 use crate::engine::journal::{no_saved_variables, recover_under};
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning};
 use crate::errors::ack::{self, Ack, ErrorsAck, db_key};
-use crate::errors::attribute::{Confidence, Method};
+use crate::errors::attribute::{Attributed, Confidence, Method};
 use crate::errors::buggrabber::{DbShape, EntryType, Origin, TimeEvidence, TimeMeaning, Tri};
 use crate::errors::locate::{Capture, Coverage};
 use crate::errors::memo::{self, ErrorsMemo, target_memo};
@@ -37,7 +37,7 @@ use crate::errors::observe::{
     AddonErrors, Observation, Observe, Observed, ReadState, SourceKind, group, read_target,
     shown_time,
 };
-use crate::errors::sanitize::{MessageKind, raw_details, strict_frames, strict_message_for};
+use crate::errors::sanitize::{MessageKind, raw_details, strict_frames, strict_message_on};
 use crate::fsx::{FileStamp, GlobalLock, WriteSession, Writer, ensure_dir_all};
 use crate::inventory::{Depth, inventory_shared};
 use crate::limits::{ERRORS_MAX_TOTAL_BYTES, ERRORS_SHOWN_PER_ADDON};
@@ -791,6 +791,8 @@ fn source_text(a: &AddonInfo) -> &'static str {
     let top = a.errors.first();
     match top.map(|e| e.attribution.method) {
         Some(Method::ProtectedCall) => "blocked call from",
+        // The client's taint report named it; taint spreads, so still a likelihood.
+        Some(Method::Taint) if a.kind == SourceKind::Addon => "likely source (taint)",
         // Where the error surfaced, never a caller further down: an addon's own frame
         // there is the source even when custom code called it.
         _ if top.is_some_and(|e| {
@@ -1300,7 +1302,18 @@ impl View<'_> {
                 .map(|e| {
                     let entry = &e.shown.entry;
                     let db = &observation.databases[e.shown.database];
-                    let strict = strict_message_for(&entry.message, db.shape == DbShape::Legacy);
+                    // A taint report's text shows only when it named a folder installed
+                    // here: attribution looked it up, and blamed it by that report.
+                    let attribution = &e.shown.attribution;
+                    let tainted_here = |_: &str| {
+                        attribution.method == Method::Taint
+                            && matches!(attribution.target, Attributed::Addon(_))
+                    };
+                    let strict = strict_message_on(
+                        &entry.message,
+                        db.shape == DbShape::Legacy,
+                        &tainted_here,
+                    );
                     // r152 keeps its frames in the message, after the first line; a
                     // warning embeds them after `Stack:`, as attribution reads them.
                     let own = entry.stack.as_deref().filter(|s| !s.trim().is_empty());

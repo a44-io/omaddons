@@ -81,6 +81,25 @@ pub fn strict_message_for(raw: &str, legacy: bool) -> StrictMessage {
     }
 }
 
+/// [`strict_message_for`] on one client: a secret-value taint report ([`taint_folder`])
+/// shows its text only when `installed` says the folder it names is installed there, and
+/// is otherwise an addon's own message, counted. Any addon can write text in that shape,
+/// and a folder's name may hold a `-` as a player's `Name-Realm` does, so its grammar
+/// alone proves nothing (omad-8u49).
+pub fn strict_message_on(
+    raw: &str,
+    legacy: bool,
+    installed: &dyn Fn(&str) -> bool,
+) -> StrictMessage {
+    let mut message = strict_message_for(raw, legacy);
+    let named = message.text.as_deref().and_then(taint_folder);
+    if named.is_some_and(|folder| !installed(folder)) {
+        message.kind = MessageKind::Custom;
+        message.text = None;
+    }
+    message
+}
+
 /// A message's first line, its `LUA_WARNING: ` prefix and embedded stack left out.
 fn first_line(raw: &str) -> &str {
     let raw = strip_prefix_ci(raw, "LUA_WARNING: ").unwrap_or(raw);
@@ -228,7 +247,14 @@ fn template(body: &str) -> Option<MessageKind> {
             c.quoted('\'', is_token)
         },
     ];
-    let blizzard: [fn(&mut Cursor<'_>) -> Option<()>; 3] = [
+    let blizzard: [fn(&mut Cursor<'_>) -> Option<()>; 4] = [
+        // `<fn>(): <what> cannot be accessed when secret while tainted by '<folder>'`
+        // ([`taint_folder`]).
+        |c| {
+            taint_folder(c.0)?;
+            c.0 = "";
+            Some(())
+        },
         // `[ADDON_ACTION_(BLOCKED|FORBIDDEN)] AddOn '<id>' tried to call the protected
         // function '<id>()'.`
         |c| {
@@ -344,6 +370,38 @@ impl Cursor<'_> {
         }
         matched
     }
+}
+
+/// What a secret-value taint report says cannot be read, as captures show it: a closed
+/// list, so a message naming anything else stays an addon's own (omad-8u49).
+const SECRET_SUBJECTS: &[&str] = &["Auras"];
+
+/// The folder the client's own secret-value taint report names, when `body` (a
+/// message's first line, without `LUA_WARNING: `) is exactly
+/// `<fn>(): <what> cannot be accessed when secret while tainted by '<folder>'`: what
+/// Midnight-era engines (retail 12, WoW: Forever) write when code an addon tainted reads
+/// a secret value. `<fn>` is an identifier (`C_UnitAuras.GetAuraDataByIndex`), `<what>`
+/// one of [`SECRET_SUBJECTS`] and `<folder>` an AddOns folder's name. As for the
+/// `ADDON_ACTION` template, the name's grammar is the check: whether it is installed is
+/// attribution's question.
+pub(crate) fn taint_folder(body: &str) -> Option<&str> {
+    let mut c = Cursor(body);
+    c.word(|w| w.strip_suffix("():").is_some_and(is_identifier))?;
+    c.lit(" ")?;
+    c.one(SECRET_SUBJECTS)?;
+    c.lit(" cannot be accessed when secret while tainted by '")?;
+    let (folder, rest) = c.0.split_once('\'')?;
+    (rest.is_empty() && is_folder_name(folder)).then_some(folder)
+}
+
+/// A hole that holds an AddOns folder's name: ASCII letters, digits, `_`, `-`, `.` and
+/// `!`, with at least one letter or digit (`DBM-Core`, `!BugGrabber`). A space, a quote
+/// or a `|` is never one.
+fn is_folder_name(text: &str) -> bool {
+    text.bytes().any(|b| b.is_ascii_alphanumeric())
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b'!'))
 }
 
 /// A hole that holds an identifier from source code: `^[A-Za-z_][A-Za-z0-9_.:]*$`, or
@@ -763,11 +821,97 @@ mod tests {
                 "Deferred XML Node object named FooFrame already exists",
                 Blizzard,
             ),
+            // The secret-value taint report (omad-8u49), with qualified functions and
+            // folder names an identifier would not take.
+            (
+                "GetAuraDataByIndex(): Auras cannot be accessed when secret while tainted by 'OneForAll'",
+                Blizzard,
+            ),
+            (
+                "C_UnitAuras.GetAuraDataByIndex(): Auras cannot be accessed when secret while tainted by 'DBM-Core'",
+                Blizzard,
+            ),
+            (
+                "GetAuraDataByIndex(): Auras cannot be accessed when secret while tainted by '!Foo'",
+                Blizzard,
+            ),
         ] {
             let m = strict_message(body);
             assert_eq!(
                 (m.kind, m.text.as_deref()),
                 (expected, Some(body)),
+                "{body}"
+            );
+        }
+    }
+
+    /// The taint report as BugGrabber keeps it: its second line and the `LUA_WARNING:`
+    /// form's embedded stack never show, and the first line is the client's message.
+    #[test]
+    fn a_taint_report_shows_its_first_line_and_names_its_folder() {
+        let line = "GetAuraDataByIndex(): Auras cannot be accessed when secret while tainted by 'OneForAll'";
+        let plain = format!("{line}\nLua Taint: OneForAll");
+        let warning = format!(
+            "LUA_WARNING: {line}\nLua Taint: OneForAll\n|cffffd200Stack:|r\n[C]: in function 'secureexecuterange'"
+        );
+        for raw in [plain.as_str(), warning.as_str()] {
+            let m = strict_message(raw);
+            assert_eq!(
+                (m.kind, m.text.as_deref(), m.location),
+                (MessageKind::Blizzard, Some(line), None),
+                "{raw}"
+            );
+        }
+        assert_eq!(taint_folder(line), Some("OneForAll"));
+        // On a client, only a folder installed there makes the text the client's own.
+        let installed = |folder: &str| folder == "OneForAll";
+        let shown = strict_message_on(&plain, false, &installed);
+        assert_eq!(
+            (shown.kind, shown.text.as_deref()),
+            (MessageKind::Blizzard, Some(line))
+        );
+        let player = "GetAuraDataByIndex(): Auras cannot be accessed when secret while tainted by 'FakeChar-FakeRealm'";
+        let hidden = strict_message_on(player, false, &installed);
+        assert_eq!(
+            (hidden.kind, hidden.text, hidden.chars),
+            (MessageKind::Custom, None, player.chars().count())
+        );
+        let other = strict_message_on("stack overflow", false, &|_| false);
+        assert_eq!(
+            other.text.as_deref(),
+            Some("stack overflow"),
+            "other templates as before"
+        );
+        assert_eq!(
+            normalized(&plain),
+            normalized(&warning),
+            "one event in either form: one fingerprint"
+        );
+    }
+
+    #[test]
+    fn a_taint_look_alike_is_an_addons_own_message() {
+        let head = "GetAuraDataByIndex(): Auras cannot be accessed when secret while tainted by";
+        for body in [
+            format!("{head} 'OneForAll' again"),
+            format!("{head} 'Fake Char'"),
+            format!("{head} 'Fake|cffff0000Char'"),
+            format!("{head} \"OneForAll\""),
+            format!("{head} ''"),
+            format!("{head} '...'"),
+            "GetAuraDataByIndex: Auras cannot be accessed when secret while tainted by 'OneForAll'"
+                .to_owned(),
+            "GetAuraDataByIndex(): Spells cannot be accessed when secret while tainted by 'OneForAll'"
+                .to_owned(),
+            "GetAuraDataByIndex(): Auras can be accessed when secret while tainted by 'OneForAll'"
+                .to_owned(),
+            "Fake Char(): Auras cannot be accessed when secret while tainted by 'OneForAll'"
+                .to_owned(),
+        ] {
+            let m = strict_message(&body);
+            assert_eq!(
+                (m.kind, m.text, taint_folder(&body)),
+                (MessageKind::Custom, None, None),
                 "{body}"
             );
         }

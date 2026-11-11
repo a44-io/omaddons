@@ -226,6 +226,36 @@ fn cached_status_counts_what_errors_read_and_plain_status_reads_it_live() {
     }
 }
 
+/// A secret-value taint report blames the addon it names (omad-8u49): `status` names
+/// that addon in `top_addons`, live and from what `errors` read, never Blizzard.
+#[test]
+fn a_taint_report_counts_for_the_addon_it_names() {
+    let home = Home::new(&["wow"]);
+    install(&home);
+    let toc = common::addons::toc("120105", &[]);
+    common::addons::addon_folder(
+        &home.addons("_retail_"),
+        "OneForAll",
+        &[("OneForAll.toc", &toc)],
+        &[],
+    );
+    write(
+        &home,
+        &common::buggrabber::tainted(common::buggrabber::Writer::Modern, "OneForAll"),
+    );
+    let live_before = plain(&home);
+    read(&home);
+    for status in [cached(&home), plain(&home), live_before] {
+        let top: Vec<Value> = block(&status)["top_addons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| json!([a["addon"], a["folder"], a["count"]]))
+            .collect();
+        assert_eq!(top, [json!(["OneForAll", "OneForAll", 2])], "{status:#}");
+    }
+}
+
 #[test]
 fn a_logout_makes_cached_stale_until_errors_reads_again() {
     let home = Home::new(&["wow"]);

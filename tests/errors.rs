@@ -325,6 +325,88 @@ fn attribution_names_the_likely_source_with_its_evidence() {
     );
 }
 
+/// The client's secret-value taint report (omad-8u49), as WoW: Forever kept it: one
+/// event in both its forms, with the game's frames alone. It is the addon's that the
+/// report names, by the report's own evidence (`taint`, high), and its text is the
+/// client's own, so it shows; with that folder not installed, it is unknown (`taint`,
+/// low). Both writer formats read alike.
+#[test]
+fn a_taint_report_blames_the_folder_it_names_and_shows_its_text() {
+    let line = buggrabber::taint_line("OneForAll");
+    for writer in Writer::ALL {
+        let r = Retail::new(&["OneForAll"]);
+        r.write(&[file(&buggrabber::tainted(writer, "OneForAll"))]);
+        let envelope = r.errors(&[]).expect(0);
+        let addons = support::retail(&envelope)["addons"].as_array().unwrap();
+        assert_eq!(addons.len(), 1, "{writer:?}: {envelope:#}");
+        let addon = &addons[0];
+        assert_eq!(
+            (&addon["addon"], &addon["kind"], &addon["managed"]),
+            (&json!("OneForAll"), &json!("addon"), &json!(false)),
+            "{writer:?}"
+        );
+        let errors = addon["errors"].as_array().unwrap();
+        assert_eq!(errors.len(), 1, "one event in either form: {envelope:#}");
+        let error = &errors[0];
+        assert_eq!(
+            (
+                &error["attribution"],
+                &error["message_kind"],
+                &error["message"],
+                &error["message_chars"],
+                &error["count"]
+            ),
+            (
+                &json!({"method": "taint", "confidence": "high"}),
+                &json!("blizzard"),
+                &json!(line),
+                &Value::Null,
+                &json!(2)
+            ),
+            "{writer:?}: {error:#}"
+        );
+        let human = r.human(&["-t", "retail"]).stdout;
+        assert!(
+            human.contains("OneForAll") && human.contains("likely source (taint)"),
+            "{human}"
+        );
+        assert!(human.contains(&line), "{human}");
+        assert!(
+            !human.contains("custom error message") && !human.contains("Blizzard "),
+            "{human}"
+        );
+    }
+
+    // The folder it names is not installed here: unknown, by the same report, and its
+    // text no proof of anything, so it is counted as an addon's own message. Nor does
+    // a player's `Name-Realm` in that shape ever show (`errors` checks both streams).
+    for named in ["OneForAll", "FakeChar-FakeRealm"] {
+        let r = Retail::new(&[]);
+        r.write(&[file(&buggrabber::tainted(Writer::Modern, named))]);
+        let envelope = r.errors(&[]).expect(0);
+        let addon = &support::retail(&envelope)["addons"][0];
+        let error = &addon["errors"][0];
+        assert_eq!(
+            (
+                &addon["kind"],
+                &error["attribution"],
+                &error["message_kind"],
+                &error["message"],
+                &error["message_chars"]
+            ),
+            (
+                &json!("unknown"),
+                &json!({"method": "taint", "confidence": "low"}),
+                &json!("custom"),
+                &Value::Null,
+                &json!(buggrabber::taint_line(named).chars().count())
+            ),
+            "{envelope:#}"
+        );
+        r.human(&["-v"]);
+    }
+}
+
 #[test]
 fn strict_output_never_shows_names_and_raw_output_replaces_them() {
     for writer in Writer::ALL {
