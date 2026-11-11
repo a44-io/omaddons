@@ -114,13 +114,27 @@ e2e() {
             done
         fi
     done
+    # libtest filters are substrings, so `list::` also matches `backup_list::`: every
+    # module of the binary that is not selected and whose name ends with a selected
+    # suite's is skipped by its own prefix (omad-4h0d.21).
+    local modules=() module skips=()
+    while IFS= read -r module; do
+        modules+=("$module")
+    done < <(sed -nE 's/^[[:space:]]*(pub )?mod ([a-z0-9_]+);.*/\2/p' tests/main.rs)
+    for name in "${selected[@]}"; do
+        for module in ${modules[@]+"${modules[@]}"}; do
+            if [[ $module != "$name" && $module == *"$name" && " ${selected[*]} " != *" $module "* ]]; then
+                skips+=(--skip "$module::")
+            fi
+        done
+    done
 
     target=$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')
     root="$target/tmp/test-logs"
     # Fractional, so a log an earlier run wrote within this second is not counted.
     start=$(date +%s.%N)
     printf '==> e2e: %d suite(s): %s (OMADDONS_TEST_LOG=verbose)\n' "${#selected[@]}" "${selected[*]}" >&2
-    OMADDONS_TEST_LOG=verbose cargo test --locked --test integration -- "${filters[@]}" ${flags[@]+"${flags[@]}"} || status=$?
+    OMADDONS_TEST_LOG=verbose cargo test --locked --test integration -- "${filters[@]}" ${skips[@]+"${skips[@]}"} ${flags[@]+"${flags[@]}"} || status=$?
 
     _e2e_summary "$root" "$start" "${selected[@]}"
     exit "$status"
