@@ -21,6 +21,11 @@ path = "src/main.rs"
 name = "integration"
 path = "tests/main.rs"
 
+[features]
+# The JSON Schema generator (omad-ho1p): every test build turns it on (the dev-dependency
+# on this package below), and the release binary leaves it off.
+schemas = ["schemars/real"]
+
 [dependencies]
 clap = { version = "4.6.7", features = ["derive", "env", "wrap_help"] }
 # omaddons completions (M4-D16): static scripts generated from the clap tree; default
@@ -35,7 +40,9 @@ memchr = "2.8.3"
 pelite = "0.10.0"
 reflink-copy = "0.1.30"
 rustix = { version = "1.1.5", features = ["fs", "process", "termios"] }
-schemars = "1.2.3"
+# schemars through a facade under its own name (omad-ho1p): `real` is schemars itself,
+# and without it a `JsonSchema` every type has and a derive that emits nothing.
+schemars = { package = "omaddons-schema-facade", version = "0.1.0", path = "crates/schema-facade", features = ["real"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"
@@ -63,6 +70,9 @@ insta ={ version = "1.49.0", features = ["json"] }
 # The contract suite's JSON Schema validator (M4-D9): default features off, so no
 # reqwest or TLS backend (deny.toml); pinned so a release cannot change what passes.
 jsonschema = { version = "=0.60.2", default-features = false }
+# This package with `schemas` (omad-ho1p): tests, the library they test and the binary
+# they run all generate schemas. Normal builds never see a dev-dependency's features.
+omaddons = { version = "0.1.0", path = ".", features = ["schemas"] }
 predicates = "3.1.4"
 proptest = "1.12.0"
 # tests/terminal.rs: a pseudo-terminal for the binary's stderr, so human progress draws

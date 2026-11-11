@@ -111,6 +111,7 @@ mod tests {
             ("src/lib.rs", "pub mod x;\n"),
             ("src/x.rs", "pub fn x() {}\n"),
             ("src/nested/y.rs", "pub fn y() {}\n"),
+            ("crates/facade/src/lib.rs", "pub trait T {}\n"),
             ("catalog/catalog.toml", "schema_version = \"1.0\"\n"),
             ("omarchy/Model.js", "export {}\n"),
             ("skills/omaddons/SKILL.md", "# omaddons\n"),
@@ -135,7 +136,7 @@ mod tests {
     #[test]
     fn the_input_digest_is_content_and_order_free() {
         type Change = fn(&Path);
-        let cases: [(&str, Change, bool); 10] = [
+        let cases: [(&str, Change, bool); 11] = [
             ("unchanged", |_| {}, false),
             (
                 "touch src/x.rs",
@@ -152,6 +153,13 @@ mod tests {
             (
                 "one byte of src/x.rs",
                 |root| fs::write(root.join("src/x.rs"), "pub fn x() {}\r").unwrap(),
+                true,
+            ),
+            (
+                "edit under crates/",
+                |root| {
+                    fs::write(root.join("crates/facade/src/lib.rs"), "pub trait U {}\n").unwrap()
+                },
                 true,
             ),
             (

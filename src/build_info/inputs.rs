@@ -47,6 +47,8 @@ pub const BUILD_ID_INPUTS: &[Input] = &[
     Input::File("rust-toolchain.toml"),
     Input::OptionalFile(".cargo/config.toml"),
     Input::Tree("src"),
+    // The schemars facade and its no-op derive (omad-ho1p), path dependencies of the build.
+    Input::Tree("crates"),
     Input::Tree("catalog"),
     Input::Tree("omarchy"),
 ];

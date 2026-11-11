@@ -995,12 +995,13 @@ dependencies = [
  "jsonschema",
  "md-5",
  "memchr",
+ "omaddons",
+ "omaddons-schema-facade",
  "pelite",
  "predicates",
  "proptest",
  "reflink-copy",
  "rustix",
- "schemars",
  "serde",
  "serde_json",
  "sha2",
@@ -1015,6 +1016,18 @@ dependencies = [
  "zip",
  "zstd",
 ]
+
+[[package]]
+name = "omaddons-schema-facade"
+version = "0.1.0"
+dependencies = [
+ "omaddons-schema-stub-derive",
+ "schemars",
+]
+
+[[package]]
+name = "omaddons-schema-stub-derive"
+version = "0.1.0"
 
 [[package]]
 name = "once_cell"

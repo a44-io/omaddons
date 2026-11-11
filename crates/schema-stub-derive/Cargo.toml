@@ -1,0 +1,17 @@
+# The `JsonSchema` derive of a build without JSON Schemas (omad-ho1p): it accepts what
+# schemars's derive accepts and emits nothing. `omaddons-schema-facade` exports it when
+# its `real` feature is off. No dependencies, so it costs the build nothing.
+[package]
+name = "omaddons-schema-stub-derive"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+description = "A JsonSchema derive that emits nothing, for omaddons builds without JSON Schemas"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+proc-macro = true
+
+[lints.rust]
+unsafe_code = "forbid"

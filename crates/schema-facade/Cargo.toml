@@ -1,0 +1,29 @@
+# What omaddons calls `schemars` (omad-ho1p): its `Cargo.toml` names this package under
+# that dependency key, so every `schemars::…` path and `#[derive(JsonSchema)]` in the
+# crate compiles unchanged in both builds.
+#
+# - With `real` (omaddons' `schemas` feature, which every test build turns on), it is
+#   schemars itself.
+# - Without it (the release binary), it is a `JsonSchema` trait every type implements and
+#   a derive that emits nothing: the binary prints the schemas it embedded, and schemars
+#   is not linked.
+[package]
+name = "omaddons-schema-facade"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+description = "schemars for omaddons' tests, and a no-op stand-in for its release binary"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+real = ["dep:schemars"]
+
+[dependencies]
+omaddons-schema-stub-derive = { version = "0.1.0", path = "../schema-stub-derive" }
+schemars = { version = "1.2.3", optional = true }
+
+[lints.rust]
+unsafe_code = "forbid"
