@@ -220,6 +220,25 @@ TestCase {
     verify(line.indexOf("retail failed: ") === 0 && line.indexOf("; not run on era") > 0, line)
   }
 
+  // A client whose preview plans nothing has the addon already: the sheet says so for
+  // it, and with nothing to do anywhere the view refreshes, saying nothing (omad-vqkd).
+  function test_an_install_on_two_clients_notes_one_that_has_it_and_says_nothing_when_both_do() {
+    compare(service.installEach("gh:o/qux", "Qux", ["retail", "era"]), "")
+    answer(lastRun("install"), "plan-install-two-retail")
+    answer(lastRun("install"), "plan-update-noop")
+    compare(runs("apply").length, 0, launchLog())
+    verify(sheet().effects.map(function(e) { return e.text }).indexOf("era: Qux is already installed") !== -1,
+      JSON.stringify(sheet().effects))
+    service.confirmNo()
+    var statuses = runs("status").length
+    compare(service.installEach("gh:o/qux", "Qux", ["retail", "era"]), "")
+    answer(lastRun("install"), "plan-update-noop")
+    answer(lastRun("install"), "plan-update-noop")
+    compare(service.confirm, null)
+    compare(service.lastResult, null)
+    verify(runs("status").length > statuses, "the view is refreshed")
+  }
+
   // A plan gone stale on one client: that client alone is previewed again.
   function test_an_install_on_two_clients_whose_plan_went_stale_previews_that_client_again() {
     installTwo()
@@ -315,7 +334,8 @@ TestCase {
     compare(runs("apply").length, 0, launchLog())
     compare(service.confirm, null)
     compare(runs("status").length, statuses + 1, "the view is refreshed")
-    compare(service.lastResult.line, "Already up to date; the view is refreshed")
+    // Nothing to do says nothing (omad-vqkd).
+    compare(service.lastResult, null)
   }
 
   function test_update_all_applies_when_every_row_matches() {

@@ -297,13 +297,15 @@ TestCase {
     compare(service.confirm, null)
   }
 
-  function test_a_list_everything_matches_says_so_and_runs_nothing() {
+  // Nothing to change: the view refreshes and nothing is said (omad-vqkd).
+  function test_a_list_everything_matches_refreshes_and_runs_nothing() {
     service.pasteAddonList("retail", function(refusal) {})
     clipboard(list)
     started(lastRun("sync"))
+    var statuses = runs("status").length
     answer(lastRun("sync"), "share-sync-nothing")
-    tryVerify(function() { return service.lastResult !== null }, 1000)
-    compare(service.lastResult.line, "Your addons already match the pasted list; the view is refreshed")
+    tryVerify(function() { return runs("status").length > statuses }, 1000, "the view is refreshed")
+    compare(service.lastResult, null)
     compare(service.confirm, null)
     compare(runs("apply").length, 0)
   }

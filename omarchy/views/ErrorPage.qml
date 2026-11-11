@@ -126,7 +126,9 @@ Item {
       Button {
         objectName: "pageUpdate"
         visible: !!root.row && root.row.updateAvailable === true
-        text: Model.withKey(Model.copy("errors.action.update", { "addon": root.row ? root.row.addon : "" }), "update", "page")
+        // A button's label is its words; its tooltip names the key (omad-vqkd).
+        text: Model.copy("errors.action.update", { "addon": root.row ? root.row.addon : "" })
+        tooltipText: Model.withKey(text, "update", "page")
         Accessible.role: Accessible.Button
         Accessible.name: text
         enabled: root.canChange
@@ -140,7 +142,8 @@ Item {
 
       Button {
         objectName: "pageCopy"
-        text: Model.withKey(Model.copy("errors.action.copy"), "copy", "page")
+        text: Model.copy("errors.action.copy")
+        tooltipText: Model.withKey(text, "copy", "page")
         Accessible.role: Accessible.Button
         Accessible.name: text
         bordered: true
@@ -152,7 +155,8 @@ Item {
 
       Button {
         objectName: "pageRestore"
-        text: Model.withKey(Model.copy("installed.action.restore"), "restore", "page")
+        text: Model.copy("installed.action.restore")
+        tooltipText: Model.withKey(text, "restore", "page")
         Accessible.role: Accessible.Button
         Accessible.name: text
         enabled: root.canChange

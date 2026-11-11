@@ -256,8 +256,10 @@ Item {
           required property var modelData
           required property int index
           objectName: "pageUndo_" + index
-          // The first is all of it, the frame's Ctrl+Z here.
-          text: index === 0 ? Model.withKey(modelData.text, "undo") : modelData.text
+          // The first is all of it, the frame's Ctrl+Z here: its tooltip names the key,
+          // never its label (omad-vqkd).
+          text: modelData.text
+          tooltipText: index === 0 ? Model.withKey(modelData.text, "undo") : ""
           Accessible.role: Accessible.Button
           Accessible.name: text
           enabled: root.canChange

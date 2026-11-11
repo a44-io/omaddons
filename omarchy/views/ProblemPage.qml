@@ -173,9 +173,11 @@ Item {
         Button {
           required property var modelData
           objectName: "pageButton_" + modelData.name
+          // The label is its words: the fix says what it does and has no tooltip; Copy
+          // command's tooltip names its key (omad-vqkd).
           text: modelData.name === "copy" && !!root.owner && !!root.row && root.owner.copied === root.row.key
-            ? root.owner.copiedText : Model.withKey(modelData.text, modelData.name === "fix" ? "enter" : "copy", "page")
-          tooltipText: modelData.tooltip
+            ? root.owner.copiedText : modelData.text
+          tooltipText: modelData.name === "copy" ? Model.withKey(modelData.text, "copy", "page") : modelData.tooltip
           Accessible.role: Accessible.Button
           Accessible.name: text
           // Never wider than the page: a long fix shrinks, then elides (1n2p.40).

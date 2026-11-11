@@ -120,7 +120,8 @@ describe("the words guard over the real source", () => {
 describe("what nothing ran says (previewDecision, doctorPreviewDecision)", () => {
   test("in the glossary's words: never plan, preview, token or precondition", () => {
     const ids = Object.keys(M.COPY).filter((id) => id.startsWith("decision."))
-    expect(ids.length).toBe(8)
+    // Five: finding nothing to do says nothing (omad-vqkd).
+    expect(ids.length).toBe(5)
     for (const id of ids) {
       expect([id, /\b(plans?|previews?|tokens?|preconditions?)\b/i.test(M.copy(id))]).toEqual([id, false])
     }

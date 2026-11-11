@@ -138,7 +138,8 @@ Item {
     Button {
       objectName: "dismiss"
       visible: root.plan.length > 0
-      text: Model.withKey("Mark as seen", "dismiss")
+      // The key is the tooltip's, never the label's (omad-vqkd).
+      text: "Mark as seen"
       tooltipText: Model.keyTip("dismiss", "errors")
       Accessible.role: Accessible.Button
       Accessible.name: text

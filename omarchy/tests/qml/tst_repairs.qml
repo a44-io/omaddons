@@ -208,7 +208,7 @@ TestCase {
     frame.cursor = at
     frame.cursorActive = true
     var fixButton = findChild(content(), "issueRow_" + at) && findChild(findChild(content(), "issueRow_" + at), "issueButton_fix")
-    compare(fixButton && [fixButton.text, fixButton.tooltipText], ["Repair", "Enter shows what the repair will do"])
+    compare(fixButton && [fixButton.text, fixButton.tooltipText], ["Repair", ""])
     keyClick(Qt.Key_Return)
     var preview = lastRun("doctor")
     compare(words(preview.command), ["doctor", "fix", "--only=" + credentialFm], "Enter previews the repair")

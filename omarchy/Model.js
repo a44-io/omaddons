@@ -1412,9 +1412,8 @@ function fixFields(way, explain, r, forced, repair) {
     "buttons": [],
     "primary": way ? "fix" : (explain ? "explain" : "")
   }
-  var key = keyHint("enter", "issues")
-  out.hint = out.primary === "" ? "" : copy(out.repair ? "issues.hint.repair" : out.primary === "fix" ? "issues.hint.fix" : "issues.hint.explain", { "key": key })
-  if (way) out.buttons.push({ "name": "fix", "text": way.label, "tooltip": out.hint })
+  // The fix button says what it does in its label, and has no tooltip (omad-vqkd).
+  if (way) out.buttons.push({ "name": "fix", "text": way.label, "tooltip": "" })
   if (out.explain) out.buttons.push({ "name": "explain", "text": copy("issues.explain"), "tooltip": keyTip("explain", "issues") })
   if (out.text) out.buttons.push({ "name": "copy", "text": copy("issues.copy"), "tooltip": keyTip("copy", "issues") })
   return out
@@ -6851,6 +6850,7 @@ var COPY = {
   "each.result.none": "Installed {addon} nowhere",
   "each.result.undo": "Undo takes back {owner} install; History has each",
   "each.skipped": "{client}: {why}",
+  "each.nothing": "{addon} is already installed",
   "each.stale": "changed since you looked, so it is shown again",
   "search.chooser.every": { "one": "Every client it works on (1)", "other": "Every client it works on ({n})" },
   "sheet.title.reinstall.one": "Repair {addon} on {client}?",
@@ -7393,7 +7393,6 @@ var COPY = {
   "share.paste.too_large": "The clipboard holds more than an addon list can ({kb} KB at most)",
   "share.paste.not_text": "The clipboard doesn't hold plain text",
   "share.paste.not_a_list": "The clipboard doesn't hold an addon list. Ask for one copied with Copy addon list.",
-  "share.paste.nothing": "Your addons already match the pasted list; the view is refreshed",
   "share.paste.invalid": "The pasted addon list has a mistake on line {line}; nothing ran",
   "share.paste.invalid.nowhere": "The pasted addon list has a mistake; nothing ran",
   "share.paste.invalid.unknown_family": "The pasted addon list names a game omaddons doesn't know on line {line}; nothing ran",
@@ -7621,9 +7620,6 @@ var COPY = {
   "issues.explain": "Explain",
   "issues.copy": "Copy command",
   "issues.copied": "Copied",
-  "issues.hint.repair": "{key} shows what the repair will do",
-  "issues.hint.fix": "{key} runs the fix",
-  "issues.hint.explain": "{key} explains it",
   "issues.terminal.forced": "This needs your go-ahead, which the panel never gives: read the explanation, then run it in a terminal.",
   "issues.terminal.forced.unexplained": "This needs your go-ahead, which the panel never gives: run it in a terminal.",
   "issues.terminal.other": "The panel never runs this one: run it in a terminal.",
@@ -7907,14 +7903,12 @@ var COPY = {
   "toast.auto_update.stopped.title": "Automatic updates are off",
   "toast.auto_update.stopped": "An automatic update failed. Turn them on again in Settings.",
   "toast.auto_update.stopped.on": "An automatic update on {clients} failed. Turn them on again in Settings.",
-  // A confirmation that ran nothing, or found nothing to do (previewDecision,
-  // doctorPreviewDecision): the glossary's "what will happen", never its CLI words.
+  // A confirmation that ran nothing (previewDecision, doctorPreviewDecision): the
+  // glossary's "what will happen", never its CLI words. Finding nothing to do says
+  // nothing (omad-vqkd).
   "decision.unknown": "omaddons didn't say what this would change; nothing ran",
-  "decision.refresh.match": "Already up to date; the view is refreshed",
-  "decision.refresh": "Nothing to do; the view is refreshed",
   "decision.not_kept": "omaddons couldn't keep this change for you to confirm; nothing ran",
   "decision.no_offer": "omaddons couldn't offer to run exactly this; nothing ran",
-  "decision.repair.refresh": "Nothing to repair now; the view is refreshed",
   "decision.repair.more": "omaddons would change more than this repair; nothing ran",
   "decision.repair.unbound": "omaddons couldn't promise to run only what it showed; nothing ran"
 }
@@ -8705,7 +8699,7 @@ function warningFix(env, code) {
 // change pins what it installs (`install --version`, 1n2p.24), which the plan does not
 // name: the sheet says so. The decision
 // is `{kind, plan, heading, sheet, line, fixText}`, its kind one of "failed", "refuse"
-// (nothing ran, `line` says why), "refresh" (nothing to do), "dialog" (ask, with the
+// (nothing ran, `line` says why), "refresh" (nothing to do: no line), "dialog" (ask, with the
 // plan `sheet`) and "direct" (apply `plan` with no sheet: a routine plan that is exactly
 // what the view showed).
 function previewDecision(spec, env) {
@@ -8720,9 +8714,9 @@ function previewDecision(spec, env) {
     return decision
   }
   if (data.plan_id === null && approval.selection.length === 0) {
+    // Nothing to do: the view refreshes and nothing is said (omad-vqkd); the refreshed
+    // view shows the state.
     decision.kind = "refresh"
-    // A pasted list everything here already matches (1n2p.37) says so in its words.
-    decision.line = copy(s.mode === "match" ? "decision.refresh.match" : s.path === "sync" ? "share.paste.nothing" : "decision.refresh")
     return decision
   }
   if (data.plan_id === null) {
@@ -8924,8 +8918,8 @@ function doctorPreviewDecision(spec, env, context, targets) {
   var result = doctorResult(env)
   if (!result || result.error) return decision
   if (result.actions.length === 0 && result.delegated.length === 0 && result.prunes.length === 0) {
+    // Nothing left to repair: the view refreshes, saying nothing (omad-vqkd).
     decision.kind = "refresh"
-    decision.line = copy("decision.repair.refresh")
     return decision
   }
   decision.kind = "refuse"

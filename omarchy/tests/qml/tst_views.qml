@@ -1027,7 +1027,7 @@ TestCase {
     compare(svc.runs.length + svc.cliRuns.length, 0)
     // The reinstall is a named fix that previews through its template, as Addons' Repair.
     compare(findChild(row("issueRow", 1), "issueButton_fix").text, "Repair Plater")
-    compare(findChild(row("issueRow", 1), "issueButton_fix").tooltipText, "Enter runs the fix")
+    compare(findChild(row("issueRow", 1), "issueButton_fix").tooltipText, "", "a fix has no tooltip (omad-vqkd)")
     keyClick("j")
     keyClick("j")
     compare(view.cursor, 1)
@@ -1261,7 +1261,7 @@ TestCase {
     for (var i = 0; i < 2; i++) {
       var r = row("issueRow", i)
       compare(findChild(r, "issueButton_fix").text, "Repair", "row " + i)
-      compare(findChild(r, "issueButton_fix").tooltipText, "Enter shows what the repair will do", "row " + i)
+      compare(findChild(r, "issueButton_fix").tooltipText, "", "row " + i)
       compare(findChild(r, "issueButton_explain").text, "Explain", "row " + i)
       verify(!findChild(r, "commandText").visible, "row " + i + ": the preview lists what a repair does")
       compare(findChild(r, "issueButton_copy"), null, "row " + i)
@@ -1315,7 +1315,9 @@ TestCase {
     compare(findChild(page, "pageClient").text, "retail")
     compare(findChild(page, "pageCommand").text, forced.join(" "))
     compare(findChild(page, "pageButton_fix"), null)
-    compare(findChild(page, "pageButton_copy").text, "Copy command (y)")
+    // The label is its words, the key its tooltip's (omad-vqkd).
+    compare(findChild(page, "pageButton_copy").text, "Copy command")
+    compare(findChild(page, "pageButton_copy").tooltipText, "Copy command (y)")
     compare(json(svc.explains), json([[key, explain]]))
     compare(svc.runs.length, 0, "no repair from a forced row")
     compare(svc.cliRuns.length, 0)
@@ -1375,7 +1377,8 @@ TestCase {
     keyClick("e")
     compare(view.pages.length, 1)
     var page = findChild(view, "page").item
-    compare(findChild(page, "pageButton_fix").text, "Repair (Enter)")
+    compare(findChild(page, "pageButton_fix").text, "Repair")
+    compare(findChild(page, "pageButton_fix").tooltipText, "")
     keyClick(Qt.Key_Return)
     compare(json(svc.runs), json([["doctor_fix_target", { "target": "retail", "fm": credentialFm }, "Repair: the GitHub token file is readable by other users"]]))
     verify(!findChild(page, "pageGone").visible)
@@ -1630,7 +1633,8 @@ TestCase {
     compare(json(svc.copies), json([["wl-copy", "--", "wowi:23056"]]))
     compare(findChild(page, "pageCopy").text, "Copied wowi:23056")
     // wl-copy missing (omad-phcg): the button says so, then reads as before.
-    tryCompare(findChild(page, "pageCopy"), "text", Model.withKey(Model.copy("page.copy_ref"), "copy", "page"), 3000)
+    tryCompare(findChild(page, "pageCopy"), "text", Model.copy("page.copy_ref"), 3000)
+    compare(findChild(page, "pageCopy").tooltipText, Model.withKey(Model.copy("page.copy_ref"), "copy", "page"))
     svc.copyOk = false
     keyClick("y")
     compare(svc.copies.length, 2)

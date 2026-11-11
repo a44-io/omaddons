@@ -622,7 +622,8 @@ TestCase {
     answer(previewFoo(), noopPreview("update"))
     compare(runs("apply").length, 0, launchLog())
     compare(service.confirm, null)
-    compare(service.lastResult.line, "Already up to date; the view is refreshed")
+    // Nothing to do says nothing (omad-vqkd).
+    compare(service.lastResult, null)
     compare(runs("status").length, statuses + 1, "the view is refreshed")
   }
 
@@ -901,7 +902,7 @@ TestCase {
     var statuses = runs("status").length
     answer(previewRepair(), fixReport({ "dryRun": true, "state": "DONE_OK", "actions": [] }))
     compare(service.confirm, null)
-    compare(service.lastResult.line, "Nothing to repair now; the view is refreshed")
+    compare(service.lastResult, null, "nothing left to repair says nothing (omad-vqkd)")
     compare(runs("status").length, statuses + 1, "the view is refreshed")
     compare(boundRepairs().length, 0, launchLog())
     compare(JSON.parse(service.stateJson()).lastPreview.decision, "refresh")

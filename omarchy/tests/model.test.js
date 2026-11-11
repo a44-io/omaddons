@@ -3606,8 +3606,9 @@ describe("previewDecision", () => {
     const cases = [
       ["failed_envelope", match([shownItem()]), Object.assign(previewOf([item()]), { ok: false }), decision({ kind: "failed", planId: null })],
       ["no_approval", match([shownItem()]), noApproval, refused(M.copy("decision.unknown"))],
-      ["nothing_to_do_match", match([shownItem()]), nothing, decision({ kind: "refresh", line: "Already up to date; the view is refreshed", planId: null })],
-      ["nothing_to_do_confirm", { mode: "confirm", path: "remove" }, nothing, decision({ kind: "refresh", line: "Nothing to do; the view is refreshed", planId: null })],
+      // Nothing to do says nothing (omad-vqkd): the view refreshes.
+      ["nothing_to_do_match", match([shownItem()]), nothing, decision({ kind: "refresh", line: "", planId: null })],
+      ["nothing_to_do_confirm", { mode: "confirm", path: "remove" }, nothing, decision({ kind: "refresh", line: "", planId: null })],
       ["not_stored", match([shownItem()]), notStored, refused(M.copy("decision.not_kept"), "previews are kept again as plans expire")],
       ["offer_mismatch", match([shownItem()]), previewOf([item()], {}, [offer("01M8Q2YYYYYYYYYYYYYYYYYYYY")]), refused(M.copy("decision.no_offer"))],
       ["confirm", { mode: "confirm", path: "remove" }, removal, decision({
@@ -4073,7 +4074,7 @@ describe("plans from the binary", () => {
 
   test("nothing to do refreshes", () => {
     const d = match("plan-list-after", "plan-update-noop")
-    expect(["plan-update-noop", d.kind, d.line]).toEqual(["plan-update-noop", "refresh", "Already up to date; the view is refreshed"])
+    expect(["plan-update-noop", d.kind, d.line]).toEqual(["plan-update-noop", "refresh", ""])
   })
 
   test("update all applies when every row matches", () => {
@@ -4291,9 +4292,10 @@ describe("repairs from the binary", () => {
 
   test("the credential issue reduces to a Fix", () => {
     const row = credentialRow()
-    expect(row && { fix: row.fix, action: row.action, hint: row.hint, forced: row.forced })
+    // The fix button has no tooltip (omad-vqkd).
+    expect(row && { fix: row.fix, action: row.action, hint: row.hint, forced: row.forced, tip: row.buttons[0].tooltip })
       .toEqual({ fix: { template: "doctor_fix", slots: { fm: CREDENTIAL }, label: "Repair: " + rawIssue().title }, action: null,
-        hint: "Enter shows what the repair will do", forced: false })
+        hint: undefined, forced: false, tip: "" })
     expect(M.classifyCliArgv(rawIssue().remediation.argv).reason).toBe("own_flow_only")
     expect(row.explain.runnable).toBe(true)
   })
@@ -4357,8 +4359,8 @@ describe("repairs from the binary", () => {
     const status = M.reduceStatus(fixture("setaside-status"))
     const row = M.issueRows(M.issueSections(status.targets, [], "", status.issues))
       .find((r) => r.kind === "problem" && r.severity === "P0")
-    expect(row && { fix: row.fix, action: row.action, forced: row.forced, text: row.text, hint: row.hint })
-      .toEqual({ fix: null, action: null, forced: true, text: setAsideIssue().remediation.command, hint: "Enter explains it" })
+    expect(row && { fix: row.fix, action: row.action, forced: row.forced, text: row.text })
+      .toEqual({ fix: null, action: null, forced: true, text: setAsideIssue().remediation.command })
     expect(M.classifyCliArgv(setAsideIssue().remediation.argv).reason).toBe("consent_flag")
     const explain = fixture("setaside-explain")
     const lines = M.explainLines(explain, context, M.reduceStatus(fixture("setaside-status")).targets)
@@ -5060,9 +5062,9 @@ describe("sharing an addon set", () => {
     expect(retail.sheet.title).toBe("Use the pasted addon list on Retail?")
     expect(retail.sheet.items.map((i) => i.header).filter((h) => h !== "")).toEqual(["Conflicts", "New", "Unchanged"])
     expect(retail.sheet.confirmLabel).toBe("Make 2 changes")
-    // Nothing to change: no plan, and the paste says so.
+    // Nothing to change: no plan, and nothing said (omad-vqkd).
     expect(decide("share-sync-nothing")).toEqual({ kind: "refresh", plan: null, heading: "", sheet: null,
-      line: "Your addons already match the pasted list; the view is refreshed", fixText: "" })
+      line: "", fixText: "" })
   })
 
   test("what a list leaves out says why, and other changes say what they do", () => {
@@ -5345,21 +5347,23 @@ describe("issue rows", () => {
     const gc = issueJson({ auto_fixable: false,
       remediation: { command: "omaddons doctor gc --before 30d --dry-run", argv: ["omaddons", "doctor", "gc", "--before", "30d", "--dry-run"], destructive: true } })
     const pick = (r) => ({ fix: r.fix ? r.fix.template : null, action: r.action ? r.action.argv : null,
-      explain: r.explain ? r.explain.argv : null, forced: r.forced, text: r.text, hint: r.hint,
-      buttons: r.buttons.map((b) => b.text).join(", "), primary: r.primary })
+      explain: r.explain ? r.explain.argv : null, forced: r.forced, text: r.text,
+      buttons: r.buttons.map((b) => b.text).join(", "), primary: r.primary,
+      // No button's tooltip says what Enter does (omad-vqkd): a fix's is empty.
+      fixTips: r.buttons.filter((b) => b.name === "fix").map((b) => b.tooltip) })
     table([
       // A repair's remediation argv is never shown: its preview lists what it does.
       ["an_auto_fixable_row", [issueJson()], { fix: "doctor_fix_target", action: null, explain: ["omaddons", "doctor", "explain", CREDENTIAL_FM],
-        forced: false, text: "", hint: "Enter shows what the repair will do", buttons: "Repair, Explain", primary: "fix" }],
+        forced: false, text: "", buttons: "Repair, Explain", primary: "fix", fixTips: [""] }],
       ["a_set_aside_row", [setAside], { fix: null, action: null, explain: ["omaddons", "doctor", "explain", CREDENTIAL_FM],
-        forced: true, text: forcedArgv.join(" "), hint: "Enter explains it", buttons: "Explain, Copy command", primary: "explain" }],
+        forced: true, text: forcedArgv.join(" "), buttons: "Explain, Copy command", primary: "explain", fixTips: [] }],
       ["a_doctor_explain_remediation", [explainOnly], { fix: null, action: null, explain: ["omaddons", "doctor", "explain", "fm-x", "-t", "retail"],
-        forced: false, text: "", hint: "Enter explains it", buttons: "Explain", primary: "explain" }],
+        forced: false, text: "", buttons: "Explain", primary: "explain", fixTips: [] }],
       // A reinstall previews through its template, as the Addons view's Repair does.
       ["a_runnable_reinstall", [reinstall], { fix: "reinstall", action: null,
-        explain: null, forced: false, text: "", hint: "Enter runs the fix", buttons: "Repair Plater", primary: "fix" }],
+        explain: null, forced: false, text: "", buttons: "Repair Plater", primary: "fix", fixTips: [""] }],
       ["a_doctor_gc_remediation", [gc], { fix: null, action: null, explain: ["omaddons", "doctor", "explain", CREDENTIAL_FM],
-        forced: false, text: "omaddons doctor gc --before 30d --dry-run", hint: "Enter explains it", buttons: "Explain, Copy command", primary: "explain" }],
+        forced: false, text: "omaddons doctor gc --before 30d --dry-run", buttons: "Explain, Copy command", primary: "explain", fixTips: [] }],
     ], (issues) => pick(rowsOf(issues)[0]))
     // A machine issue's repair takes no -t.
     const machine = M.reduceStatus(statusWithIssues([], [issueJson()])).issues
@@ -5463,7 +5467,7 @@ describe("doctorPreviewDecision", () => {
         lines: ["chmod 0600 <config>/credentials/github (was 0644)", "Keeps a copy of 7 B first, for undo.", "Undo last reverts it."] }],
       ["a_delegated_recovery_only", fixEnvelope({ dryRun: true, actions: [], delegated: [{ tx: "01TX", family: "folder", phase: "prepared", direction: "roll_back" }] }),
         { kind: "dialog", token: TOKEN, line: "", lines: ["Also finishes the interrupted change 01TX (roll back).", "Undo last reverts it."] }],
-      ["nothing_planned", fixEnvelope({ dryRun: true, actions: [] }), { kind: "refresh", token: "", line: "Nothing to repair now; the view is refreshed", lines: [] }],
+      ["nothing_planned", fixEnvelope({ dryRun: true, actions: [] }), { kind: "refresh", token: "", line: "", lines: [] }],
       ["a_prune_only", fixEnvelope({ dryRun: true, actions: [], prunes: [{ fm: CREDENTIAL_FM, target: "era", key: "01KEY", txs: ["01A", "01B"] }] }),
         { kind: "dialog", token: TOKEN, line: "", lines: ["Delete 2 undo snapshots on era",
           "Those changes can no longer be undone; omaddons would delete these snapshots after its next change anyway."] }],

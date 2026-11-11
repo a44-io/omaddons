@@ -681,8 +681,11 @@ Item {
     var decision = Model.previewDecision({ "mode": "match", "shown": [], "again": false, "path": "install",
       "context": Build.CONTEXT, "targets": targets }, env)
     // Each client's plan is exactly its own preview's (M4-D28): applied later, in turn.
-    var entry = { "spec": r.spec, "client": client, "plan": decision.plan, "sheet": decision.sheet || null,
-      "why": decision.plan && decision.sheet ? "" : String(decision.line || "") }
+    // A client with nothing to do has it installed already: the sheet says so there,
+    // and with nothing to do anywhere the view refreshes, saying nothing (omad-vqkd).
+    var nothing = decision.kind === "refresh"
+    var entry = { "spec": r.spec, "client": client, "plan": decision.plan, "sheet": decision.sheet || null, "nothing": nothing,
+      "why": decision.plan && decision.sheet ? "" : nothing ? Model.copy("each.nothing", { "addon": each.addon }) : String(decision.line || "") }
     var done = each.done.concat([entry])
     if (done.length < each.specs.length) {
       eachInstall = { "addon": each.addon, "specs": each.specs, "done": done }
@@ -694,7 +697,8 @@ Item {
     var notes = done.filter(function(e) { return !e.plan || !e.sheet })
       .map(function(e) { return Model.copy("each.skipped", { "client": e.client, "why": e.why }) })
     if (withPlans.length === 0) {
-      lastResult = { "ok": true, "line": notes.join("; "), "partial": false, "commands": [], "fixes": [] }
+      if (done.some(function(e) { return !e.nothing }))
+        lastResult = { "ok": true, "line": notes.join("; "), "partial": false, "commands": [], "fixes": [] }
       changed()
       return
     }
@@ -834,7 +838,7 @@ Item {
         confirm = { "sheet": Model.withStale(repair.sheet, r.stale), "heading": "", "stale": r.stale }
         pendingConfirm = { "spec": r.spec, "token": repair.token, "binds": true, "plan": null, "contextGeneration": r.contextGeneration }
       } else if (repair.kind === "refresh") {
-        lastResult = { "ok": true, "line": repair.line, "partial": false, "commands": [], "fixes": [] }
+        // Nothing left to repair: the view refreshes, saying nothing (omad-vqkd).
         changed()
       } else if (repair.kind === "refuse") {
         lastError = { "message": repair.line, "code": "not_previewed", "fixes": [], "fixText": repair.fixText || "" }
@@ -871,7 +875,7 @@ Item {
       confirm = { "sheet": Model.withStale(decision.sheet, r.stale), "heading": decision.heading, "stale": r.stale }
       pendingConfirm = { "spec": r.spec, "plan": decision.plan, "contextGeneration": r.contextGeneration }
     } else if (decision.kind === "refresh") {
-      lastResult = { "ok": true, "line": decision.line, "partial": false, "commands": [], "fixes": [] }
+      // Nothing to do: the view refreshes, saying nothing (omad-vqkd).
       changed()
     } else {
       lastError = { "message": decision.line || r.label + ": no answer to preview", "code": "not_previewed", "fixes": [], "fixText": decision.fixText || "" }

@@ -283,7 +283,9 @@ Item {
 
       Button {
         objectName: "restore"
-        text: Model.withKey(Model.copy("backups.action.restore"), "restore", "page")
+        // A button's label is its words; its tooltip names the key (omad-vqkd).
+        text: Model.copy("backups.action.restore")
+        tooltipText: Model.withKey(text, "restore", "page")
         Accessible.role: Accessible.Button
         Accessible.name: text
         enabled: root.canChange && !!root.page && root.page.restorable && root.page.blocked === ""
@@ -297,7 +299,8 @@ Item {
 
       Button {
         objectName: "delete"
-        text: Model.withKey(Model.copy("backups.action.delete"), "remove", "page")
+        text: Model.copy("backups.action.delete")
+        tooltipText: Model.withKey(text, "remove", "page")
         Accessible.role: Accessible.Button
         Accessible.name: text
         enabled: root.canChange && !!root.page && !root.page.busy

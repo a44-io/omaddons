@@ -315,7 +315,9 @@ Item {
       Button {
         objectName: "pageWeb"
         visible: root.page.homepage !== ""
-        text: Model.withKey(Model.copy("page.web"), "web", "page")
+        // A button's label is its words; its tooltip names the key (omad-vqkd).
+        text: Model.copy("page.web")
+        tooltipText: Model.withKey(text, "web", "page")
         Accessible.role: Accessible.Link
         Accessible.name: text
         bordered: true
@@ -328,7 +330,8 @@ Item {
       Button {
         objectName: "pageCopy"
         visible: root.page.ref !== ""
-        text: root.copied !== "" ? root.copied : Model.withKey(Model.copy("page.copy_ref"), "copy", "page")
+        text: root.copied !== "" ? root.copied : Model.copy("page.copy_ref")
+        tooltipText: Model.withKey(Model.copy("page.copy_ref"), "copy", "page")
         Accessible.role: Accessible.Button
         Accessible.name: text
         bordered: true
