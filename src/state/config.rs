@@ -1114,13 +1114,12 @@ pub fn set_value(text: &str, path: &Path, key: &str, raw: &str) -> Result<String
             table.insert(leaf, toml_edit::Item::Value(value));
         }
     }
-    // A file of only comments keeps them in the document's trailing text; keep them
-    // above the first key rather than letting them slide below it.
+    // A file of only comments keeps them in the document's trailing text; keep them on
+    // top, as the document's own header, rather than letting them slide below what is
+    // written first: a key, or a nested key's table (omad-4h0d.15).
     let trailing = doc.trailing().as_str().unwrap_or_default().to_owned();
-    if doc.len() == 1 && tables.is_empty() && !trailing.trim().is_empty() {
-        if let Some(mut key) = doc.as_table_mut().key_mut(leaf) {
-            key.leaf_decor_mut().set_prefix(trailing);
-        }
+    if doc.len() == 1 && !trailing.trim().is_empty() {
+        doc.as_table_mut().decor_mut().set_prefix(trailing);
         doc.set_trailing("");
     }
     let updated = doc.to_string();
@@ -1888,6 +1887,40 @@ max = 11_599
             "config_set_new_tables",
             set_value(FULL, path, "targets.era.label", "Era").unwrap()
         );
+    }
+
+    /// A file of only comments keeps them on top whatever is set first: a top-level key,
+    /// a nested key, or a key in a nested table (omad-4h0d.15).
+    #[test]
+    fn set_keeps_a_comment_only_files_header_on_top() {
+        let path = Path::new("/c/omaddons/config.toml");
+        let header = "# My omaddons settings\n# keep this header\n";
+        for (key, value, expected, next) in [
+            (
+                "default_target",
+                "retail",
+                "default_target = \"retail\"\n",
+                "era",
+            ),
+            (
+                "limits.archive_max_ratio",
+                "50",
+                "[limits]\narchive_max_ratio = 50\n",
+                "60",
+            ),
+            (
+                "targets.retail.name",
+                "Main",
+                "[targets.retail]\nname = \"Main\"\n",
+                "Alt",
+            ),
+        ] {
+            let updated = set_value(header, path, key, value).unwrap();
+            assert_eq!(updated, format!("{header}{expected}"), "{key}");
+            // Set again, they stay where they are.
+            let again = set_value(&updated, path, key, next).unwrap();
+            assert!(again.starts_with(header), "{key}: {again}");
+        }
     }
 
     #[test]
