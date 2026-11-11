@@ -3797,7 +3797,7 @@ An interrupted `WTF/` restore adds three cases. While its game runs, it waits (`
 
 The README describes the intended behaviour. A place where the code at HEAD does not match it yet is listed here with its bead (`br show <id>`), and the README changes only if a fix decides otherwise.
 
-None at HEAD.
+- **`config set` can push the file's header comment below a new key.** In a `config.toml` that opens with a comment over a table, setting a top-level key writes that key above the comment, so the comment stops being the file's first line. That includes the header `config set` keeps on top of a comments-only file, once a nested key has been set. Nothing is lost, and what was already in the file keeps its order. TOML writes top-level keys before every table, and the comment is read as belonging to the table below it (`omad-4h0d.23`).
 
 ---
 
