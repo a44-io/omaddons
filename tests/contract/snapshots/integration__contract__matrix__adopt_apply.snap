@@ -35,6 +35,14 @@ expression: s.stable(&c.envelope)
         "atomic_swap": true,
         "creates_addons_dir": false,
         "error": null,
+        "identifications": [
+          {
+            "addon": "Foo",
+            "primary": "Foo",
+            "reason": null,
+            "tier": "exact"
+          }
+        ],
         "items": [
           {
             "bridge_dependencies": [],
@@ -61,6 +69,15 @@ expression: s.stable(&c.envelope)
           }
         ],
         "kind": "adopt",
+        "left_unmanaged": [
+          {
+            "folders": [
+              "Mystery"
+            ],
+            "primary": "Mystery",
+            "reason": "unknown"
+          }
+        ],
         "no_section": false,
         "reload_required": "none",
         "target": {

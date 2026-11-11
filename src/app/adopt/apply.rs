@@ -13,7 +13,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::json;
 
-use super::{AdoptArgs, GroupWork, TargetWork, index_group, toc_version};
+use super::{
+    AdoptArgs, GroupWork, Identification, LeftUnmanaged, TargetWork, UnmanagedReason, index_group,
+    toc_version,
+};
 use crate::app::approval::{Approval, ApprovalFlags};
 use crate::app::engine::Engine;
 use crate::app::intent::NormalizedRef;
@@ -632,13 +635,16 @@ impl Committed {
 }
 
 /// Builds each target's adoption (indexing what is not indexed yet) and commits them,
-/// one `adopt` transaction per target, under one run.
+/// one `adopt` transaction per target, under one run. Each target's result says how
+/// sure adoption is of each addon it adopts, and, for `--apply` (`apply_all`), which
+/// folders it leaves unmanaged and why (omad-kbtn).
 pub(super) fn commit(
     ctx: &Context,
     engine: &Engine,
     cache: &ReleaseCache<'_>,
     works: Vec<TargetWork<'_>>,
     records: &BTreeMap<String, TargetRecord>,
+    apply_all: bool,
 ) -> Result<Committed> {
     let mut out = Committed {
         data: TargetsData::assemble(&[], &[], &[], ctx.dry_run, RunId::new(), &[]),
@@ -654,6 +660,10 @@ pub(super) fn commit(
     let mut requested: Vec<ItemRequest> = Vec::new();
     let mut decided: Vec<(TargetRef, ItemResult)> = Vec::new();
     let mut tx_targets: Vec<TxTarget> = Vec::new();
+    // By target id: how sure adoption is of each addon it adopts, and what `--apply`
+    // leaves unmanaged.
+    let mut identified: BTreeMap<String, Vec<Identification>> = BTreeMap::new();
+    let mut left: BTreeMap<String, Vec<LeftUnmanaged>> = BTreeMap::new();
     let scope = noop_scope(&works, records);
     let flags = ApprovalFlags {
         while_running: ctx.while_running,
@@ -664,6 +674,7 @@ pub(super) fn commit(
             discovered,
             candidates,
             mut groups,
+            leftovers,
             acts,
             ..
         } = work;
@@ -726,6 +737,15 @@ pub(super) fn commit(
                         continue;
                     }
                     let name = record_name(gw, &id, &mut taken, &mut out.warnings);
+                    identified
+                        .entry(id.clone())
+                        .or_default()
+                        .push(Identification {
+                            addon: name.clone(),
+                            primary: gw.group.primary.clone(),
+                            tier: gw.group.tier,
+                            reason: gw.reason,
+                        });
                     let record = adopted_record(gw, &r, &name, &candidates, channel);
                     let folders = record
                         .folders
@@ -788,6 +808,29 @@ pub(super) fn commit(
                 )),
                 Act::Fail { request, error } => failures.push((request, error)),
             }
+        }
+        // What `--apply` leaves as it is: every group below `identified` (it adopts
+        // every other), then each leftover of an addon already managed here; by reason,
+        // then primary folder.
+        if apply_all {
+            let mut stays: Vec<LeftUnmanaged> = groups
+                .iter()
+                .filter(|gw| !gw.chosen)
+                .filter_map(|gw| {
+                    Some(LeftUnmanaged {
+                        folders: gw.group.folders.clone(),
+                        primary: gw.group.primary.clone(),
+                        reason: UnmanagedReason::of(gw.group.tier)?,
+                    })
+                })
+                .chain(leftovers.iter().map(|(group, _)| LeftUnmanaged {
+                    folders: group.folders.clone(),
+                    primary: group.primary.clone(),
+                    reason: UnmanagedReason::AlreadyManaged,
+                }))
+                .collect();
+            stays.sort_by(|a, b| (a.reason, a.primary.key()).cmp(&(b.reason, b.primary.key())));
+            left.insert(id.clone(), stays);
         }
         for (request, error) in failures {
             decided.push((target_ref.clone(), failed_item(request.clone(), &error)));
@@ -856,6 +899,12 @@ pub(super) fn commit(
     }
     for (target, item) in decided {
         out.data.push_item(target, item);
+    }
+    for t in &mut out.data.targets {
+        t.identifications = Some(identified.remove(&t.target.id).unwrap_or_default());
+        if apply_all {
+            t.left_unmanaged = Some(left.remove(&t.target.id).unwrap_or_default());
+        }
     }
     for t in &out.data.targets {
         for i in t.items.iter().filter(|i| i.status == ItemStatus::Failed) {

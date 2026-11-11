@@ -7145,6 +7145,24 @@ var COPY = {
   "sheet.effect.still_required": "Other addons still need {addon} and won't load without it.",
   "sheet.effect.adopt_in_place": "Nothing is reinstalled or moved: omaddons starts keeping track of these folders as they are, and can undo that.",
   "sheet.effect.adopt_unknown": "Folders nothing identifies stay as they are, unmanaged.",
+  // A take-over's words (omad-kbtn): how sure omaddons is of each addon, and why each
+  // folder it leaves stays.
+  "sheet.effect.adopt_stays": { "one": "Stays as it is, unmanaged: {folders}.", "other": "Stay as they are, unmanaged: {folders}." },
+  "sheet.effect.adopt_stays.client": { "one": "Stays as it is on {client}, unmanaged: {folders}.", "other": "Stay as they are on {client}, unmanaged: {folders}." },
+  "sheet.adopt.stays_one": "{folder} ({why})",
+  "sheet.adopt.why.guess": "only a guess at where it comes from",
+  "sheet.adopt.why.cf_only": "only CurseForge knows it",
+  "sheet.adopt.why.unknown": "nothing says where it comes from",
+  "sheet.adopt.why.already_managed": "left over from an addon omaddons manages",
+  "sheet.adopt.why.other": "not identified",
+  "sheet.adopt.exact": "exactly its newest release",
+  "sheet.adopt.identified": "likely",
+  "sheet.adopt.identified.files_differ": "likely: its files differ from the release",
+  "sheet.adopt.identified.folder_set_differs": "likely: its folders differ from the release",
+  "sheet.adopt.identified.not_verified": "likely: not compared with the release",
+  "sheet.adopt.identified.not_verified_offline": "likely: not compared with the release (offline)",
+  "sheet.adopt.identified.source_error": "likely: its release couldn't be checked",
+  "sheet.adopt.guess": "a guess",
   "sheet.effect.still_required.unnamed": "Other addons still need what this removes and won't load without it.",
   "sheet.effect.reload": "Then /reload in game.",
   "sheet.effect.restart": "Then restart the game.",
@@ -8143,6 +8161,65 @@ function commonEffects(env, items, effects) {
   return out
 }
 
+// What an adopting preview says of its addons and of the folders it leaves (omad-kbtn),
+// from its typed `identifications` and `left_unmanaged`: `sure`, each adopted addon's
+// `{tier, reason}` by "<client id>/<addon>", and `left`, each client's groups left
+// unmanaged (`{target, primary, reason}`), or null from an omaddons that does not say.
+function adoptionOf(data) {
+  var sure = {}
+  var left = null
+  var targets = Array.isArray(data.targets) ? data.targets : []
+  targets.forEach(function(t) {
+    if (!t || typeof t !== "object") return
+    var id = t.target && typeof t.target === "object" ? str(t.target.id) : ""
+    var identified = Array.isArray(t.identifications) ? t.identifications : []
+    identified.forEach(function(i) {
+      if (i && typeof i === "object") sure[id + "/" + str(i.addon)] = { "tier": str(i.tier), "reason": str(i.reason) }
+    })
+    if (!Array.isArray(t.left_unmanaged)) return
+    left = left || []
+    t.left_unmanaged.forEach(function(g) {
+      if (g && typeof g === "object") left.push({ "target": id, "primary": str(g.primary), "reason": str(g.reason) })
+    })
+  })
+  return { "sure": sure, "left": left }
+}
+
+// An adopted addon's line: its version, then how sure omaddons is of it, in words from
+// its typed tier and reason, never from a message.
+function adoptItem(item, sure) {
+  if (!sure) return item
+  var words = ""
+  if (sure.tier === "exact") words = copy("sheet.adopt.exact")
+  else if (sure.tier === "identified") {
+    words = COPY.hasOwnProperty("sheet.adopt.identified." + sure.reason) ? copy("sheet.adopt.identified." + sure.reason)
+      : copy("sheet.adopt.identified")
+  } else if (sure.tier === "guess") words = copy("sheet.adopt.guess")
+  if (!words) return item
+  return sheetItem(Object.assign({}, item, { "detail": item.detail ? item.detail + " · " + words : words }))
+}
+
+// The folders a take-over leaves as they are, each by name with why: one line, or one
+// per client when it spans several; none when it leaves nothing. From an omaddons that
+// does not say, the general sentence.
+function adoptStays(left, targets) {
+  if (left === null) return [sheetEffect("note", copy("sheet.effect.adopt_unknown"))]
+  var order = []
+  var named = {}
+  left.forEach(function(g) {
+    if (!named.hasOwnProperty(g.target)) {
+      named[g.target] = []
+      order.push(g.target)
+    }
+    var why = COPY.hasOwnProperty("sheet.adopt.why." + g.reason) ? copy("sheet.adopt.why." + g.reason) : copy("sheet.adopt.why.other")
+    named[g.target].push(copy("sheet.adopt.stays_one", { "folder": g.primary, "why": why }))
+  })
+  return order.map(function(id) {
+    var slots = { "n": named[id].length, "folders": joinNames(named[id]), "client": sheetClient(targets, id, "") }
+    return sheetEffect("note", copy(order.length > 1 ? "sheet.effect.adopt_stays.client" : "sheet.effect.adopt_stays", slots))
+  })
+}
+
 // The items, titled and labelled by kind, for a preview whose approval lists the
 // change: install, update, remove, adopt, pin, unpin, sync and copy. The dependencies it
 // adds are effects, never items (M4-D28).
@@ -8154,16 +8231,20 @@ function selectionSheet(path, env, approval, targets) {
     var r = removedItems[i]
     if (r && !r.error && Array.isArray(r.folders)) folders[asciiLower(str(r.name || r.request))] = r.folders.length
   }
-  var items = requestedItems(approval).map(function(it) { return selectionItem(it, targets, folders) })
+  var requested = requestedItems(approval)
+  var items = requested.map(function(it) { return selectionItem(it, targets, folders) })
   var reinstall = approval.reasons.indexOf("reinstall") !== -1
   var kinds = { "update": "update", "install": "install", "remove": "remove", "adopt": "adopt", "pin": "pin", "unpin": "unpin" }
   var kind = reinstall ? "reinstall" : (kinds.hasOwnProperty(path) ? kinds[path] : "change")
   var effects = reasonEffects(approval, items, targets, data)
-  // A take-over (1n2p.32): the player's main worry first. Nothing moves; what nothing
-  // identifies stays as it is.
+  // A take-over (1n2p.32): the player's main worry first. Nothing moves; each addon says
+  // how sure omaddons is of it, and the folders it leaves say why (omad-kbtn).
   if (kind === "adopt") {
-    effects = [sheetEffect("note", copy("sheet.effect.adopt_in_place")), sheetEffect("note", copy("sheet.effect.adopt_unknown"))]
-      .concat(effects)
+    var adoption = adoptionOf(data)
+    items = items.map(function(item, n) {
+      return adoptItem(item, adoption.sure[str(requested[n].target_id) + "/" + str(requested[n].addon)])
+    })
+    effects = [sheetEffect("note", copy("sheet.effect.adopt_in_place"))].concat(adoptStays(adoption.left, targets)).concat(effects)
   }
   return { "title": countedTitle(kind, items), "items": items, "effects": effects.concat(commonEffects(env, items, effects)),
     "confirmLabel": countedConfirm(kind, items), "glyph": kind === "remove" ? SHEET_VERB_GLYPHS.remove : 0 }

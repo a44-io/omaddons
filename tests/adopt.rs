@@ -379,6 +379,153 @@ fn an_uncorroborated_uidir_match_is_a_guess_and_a_curse_id_alone_cf_only() {
     assert!(!human.stdout.contains("Apply exact + identified"));
 }
 
+/// An `identifications` entry as `(addon, tier, reason)`.
+type Identified = (String, String, Value);
+/// A `left_unmanaged` entry as `(primary, reason)`.
+type Stays = (String, String);
+
+/// The first target's `identifications`, and its `left_unmanaged` when it has the key.
+fn adoption_of(envelope: &Value) -> (Vec<Identified>, Option<Vec<Stays>>) {
+    let t = &envelope["data"]["targets"][0];
+    let text = |v: &Value| v.as_str().unwrap_or_default().to_owned();
+    assert!(
+        t["identifications"].is_array(),
+        "no identifications: {envelope:#}"
+    );
+    let identified = t["identifications"]
+        .as_array()
+        .map_or(&[][..], Vec::as_slice)
+        .iter()
+        .map(|i| (text(&i["addon"]), text(&i["tier"]), i["reason"].clone()))
+        .collect();
+    let left = t.get("left_unmanaged").map(|l| {
+        assert!(l.is_array(), "left_unmanaged is no list: {envelope:#}");
+        l.as_array()
+            .map_or(&[][..], Vec::as_slice)
+            .iter()
+            .map(|g| (text(&g["primary"]), text(&g["reason"])))
+            .collect()
+    });
+    (identified, left)
+}
+
+/// omad-kbtn: an adopting run says, typed, how sure it is of each addon it adopts and,
+/// for `--apply`, which folders it leaves unmanaged and why: a guess, a CurseForge-only
+/// folder, one nothing identifies, and a leftover of an addon already managed.
+#[test]
+fn apply_says_how_sure_it_is_of_each_addon_and_why_the_rest_stay_unmanaged() {
+    let home = foo_home();
+    catalog(
+        &home,
+        &[
+            ("Foo", "gh:o/foo", &["Foo", "Foo_Options"]),
+            ("Bar", "gh:o/bar", &["Bar"]),
+        ],
+    );
+    wowi_filelist(
+        &home.http,
+        &[FileEntry::new(100, "Bagnon Bags", &["Bagnon", "__MACOSX"])],
+    );
+    let addons = home.addons("_retail_");
+    unpack(&addons, &borrowed(&foo("v2")));
+    unpack(
+        &addons,
+        &[
+            (
+                "Bagnon/Bagnon.toc",
+                &toc("120105", &["## Title: Other", "## Author: Nobody"]),
+            ),
+            (
+                "TSM/TSM.toc",
+                &toc("120105", &["## X-Curse-Project-ID: 12345"]),
+            ),
+            (
+                "Mystery/Mystery.toc",
+                &toc("120105", &["## Title: Mystery"]),
+            ),
+        ],
+    );
+
+    // The preview: Foo is exactly its release; the rest stay, each with why.
+    let r = home.run(&["adopt", "--apply", "--dry-run"]);
+    let (identified, left) = adoption_of(&r.expect(0));
+    assert_eq!(
+        identified,
+        [("Foo".to_owned(), "exact".to_owned(), Value::Null)],
+        "{}",
+        r.context()
+    );
+    let stays = |pairs: &[(&str, &str)]| -> Option<Vec<(String, String)>> {
+        Some(
+            pairs
+                .iter()
+                .map(|(f, w)| ((*f).to_owned(), (*w).to_owned()))
+                .collect(),
+        )
+    };
+    assert_eq!(
+        left,
+        stays(&[
+            ("Bagnon", "guess"),
+            ("TSM", "cf_only"),
+            ("Mystery", "unknown")
+        ]),
+        "{}",
+        r.context()
+    );
+
+    // Foo adopted, then Bar beside a folder whose TOC names Foo's repository: Bar is
+    // identified (not checked, --no-verify), and FooPlus is Foo's leftover.
+    home.run(&["adopt", "--apply"]).expect(0);
+    unpack(
+        &addons,
+        &[
+            ("Bar/Bar.toc", &toc("120105", &["## Title: Bar"])),
+            (
+                "FooPlus/FooPlus.toc",
+                &toc("120105", &["## X-Website: https://github.com/o/foo"]),
+            ),
+        ],
+    );
+    let r = home.run(&["adopt", "--apply", "--no-verify", "--dry-run"]);
+    let (identified, left) = adoption_of(&r.expect(0));
+    assert_eq!(
+        identified,
+        [(
+            "Bar".to_owned(),
+            "identified".to_owned(),
+            json!("not_verified")
+        )],
+        "{}",
+        r.context()
+    );
+    assert_eq!(
+        left,
+        stays(&[
+            ("Bagnon", "guess"),
+            ("TSM", "cf_only"),
+            ("Mystery", "unknown"),
+            ("FooPlus", "already_managed"),
+        ]),
+        "{}",
+        r.context()
+    );
+
+    // Named folders say how sure they are, and leave the rest unlisted: the player chose.
+    let r = home.run(&["adopt", "Bar", "--no-verify", "--dry-run"]);
+    let (identified, left) = adoption_of(&r.expect(0));
+    assert_eq!(identified.len(), 1, "{}", r.context());
+    assert_eq!(left, None, "{}", r.context());
+    // Another command's targets carry neither key.
+    let r = home.run(&["pin", "Foo", "--dry-run"]);
+    let t = &r.expect(0)["data"]["targets"][0];
+    assert!(
+        t.get("identifications").is_none() && t.get("left_unmanaged").is_none(),
+        "{}",
+        r.context()
+    );
+}
+
 #[test]
 fn a_retail_only_module_on_classic_is_unloaded_and_still_exact() {
     let home = Home::new(&["wow_classic"]);

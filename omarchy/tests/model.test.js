@@ -1075,7 +1075,7 @@ describe("first run", () => {
     const adopt = M.onboardingCard(input(adoptable))
     expect([adopt.kind, adopt.target, adopt.title, adopt.buttons.map((b) => b.name)])
       .toEqual(["adopt", "retail", "Take over the addons already on Retail?", ["take_over", "not_now"]])
-    expect(adopt.sentence).toBe("3 folders there came by hand or from another addon manager. omaddons can keep track of them as they are: nothing is reinstalled or moved.")
+    expect(adopt.sentence).toBe("4 folders there came by hand or from another addon manager. omaddons can keep track of them as they are: nothing is reinstalled or moved.")
     // Not now: the next card (here the key tip; no client records nothing).
     const keyhint = M.onboardingCard(input(adoptable, { dismissed: { adopt: ["retail"] } }))
     expect([keyhint.kind, keyhint.buttons.map((b) => b.text)]).toEqual(["keyhint", ["Copy the line", "Got it"]])
@@ -3641,16 +3641,57 @@ describe("previewDecision", () => {
     expect(decision.kind).toBe("dialog")
     const sheet = decision.sheet
     expect([sheet.title, sheet.confirmLabel, sheet.destructive]).toEqual(["Take over 2 addons on Retail?", "Take over 2", false])
-    expect(sheet.items.map((i) => [i.op, i.addon])).toEqual([["adopt", "Bar"], ["adopt", "Foo"]])
+    // omad-kbtn: each addon says how sure omaddons is of it, from its typed tier and
+    // reason, and the folders it leaves say why, from theirs.
+    expect(sheet.items.map((i) => [i.op, i.addon, i.text])).toEqual([
+      ["adopt", "Bar", "Bar v1 · likely: its files differ from the release"],
+      ["adopt", "Foo", "Foo v1 · exactly its newest release"]])
     expect(sheet.effects.slice(0, 2).map((e) => e.text)).toEqual([
       "Nothing is reinstalled or moved: omaddons starts keeping track of these folders as they are, and can undo that.",
-      "Folders nothing identifies stay as they are, unmanaged."])
+      "Stay as they are, unmanaged: Curse (only CurseForge knows it) and Loose (nothing says where it comes from)."])
     // Its Yes is the stored plan's apply.
     expect(decision.plan.argv).toEqual(["omaddons", "apply", env.data.plan_id])
     // The take-over is a confirmed preview, never run without its sheet.
     expect(reasonOf(() => M.buildArgv("adopt_target", { target: "retail" }, opts()))).toBe("preview_required")
     expect(M.buildArgv("adopt_target", { target: "retail" }, opts({ preview: true })).argv.slice(-5))
       .toEqual(["--dry-run", "adopt", "--apply", "-t", "retail"])
+  })
+
+  // omad-kbtn: only the typed fields decide. An omaddons that names nothing gets the
+  // general sentence; nothing left says nothing; several clients get a line each; a
+  // reason or tier this build has no words for still reads.
+  test("a take-over's words come from the typed tiers and reasons alone", () => {
+    const targets = M.reduceStatus(fixture("status-adoptable")).targets
+    const sheetOf = (edit) => {
+      const env = JSON.parse(JSON.stringify(fixture("adopt-preview")))
+      edit(env.data.targets[0])
+      return M.previewDecision({ mode: "confirm", path: "adopt", shown: [], targets }, env).sheet
+    }
+    const older = sheetOf((t) => { delete t.identifications; delete t.left_unmanaged })
+    expect([older.items.map((i) => i.text), older.effects[1].text]).toEqual([["Bar v1", "Foo v1"],
+      "Folders nothing identifies stay as they are, unmanaged."])
+    const nothingLeft = sheetOf((t) => { t.left_unmanaged = [] })
+    expect(nothingLeft.effects.map((e) => e.text)).not.toContain("Folders nothing identifies stay as they are, unmanaged.")
+    expect(nothingLeft.effects.some((e) => /unmanaged:/.test(e.text))).toBe(false)
+    const one = sheetOf((t) => { t.left_unmanaged = [{ folders: ["Old"], primary: "Old", reason: "already_managed" }] })
+    expect(one.effects[1].text).toBe("Stays as it is, unmanaged: Old (left over from an addon omaddons manages).")
+    const newer = sheetOf((t) => {
+      t.identifications = [{ addon: "Bar", primary: "Bar", tier: "identified", reason: "some_new_reason" },
+        { addon: "Foo", primary: "Foo", tier: "some_new_tier", reason: null }]
+      t.left_unmanaged = [{ folders: ["X"], primary: "X", reason: "some_new_reason" }]
+    })
+    expect([newer.items.map((i) => i.text), newer.effects[1].text]).toEqual([["Bar v1 · likely", "Foo v1"],
+      "Stays as it is, unmanaged: X (not identified)."])
+    // Two clients: a line each, by the client's name. The message text never decides.
+    const env = JSON.parse(JSON.stringify(fixture("adopt-preview")))
+    const era = JSON.parse(JSON.stringify(env.data.targets[0]))
+    era.target = { id: "era", key: null }
+    era.left_unmanaged = [{ folders: ["Guessed"], primary: "Guessed", reason: "guess" }]
+    env.data.targets.push(era)
+    const two = M.previewDecision({ mode: "confirm", path: "adopt", shown: [], targets }, env).sheet
+    expect(two.effects.slice(1, 3).map((e) => e.text)).toEqual([
+      "Stay as they are on Retail, unmanaged: Curse (only CurseForge knows it) and Loose (nothing says where it comes from).",
+      "Stays as it is on era, unmanaged: Guessed (only a guess at where it comes from)."])
   })
 
   test("a removal another addon needs says so, by the warning's code alone", () => {

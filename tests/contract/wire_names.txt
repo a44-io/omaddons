@@ -321,6 +321,8 @@ enum adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,r
 enum adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.approval.selection[].channel alpha,beta,stable
 enum adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.approval.selection[].op adopt,edit,install,prune,remove,restore,undo,update
 enum adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.approval.selection[].source curseforge,git,github,local,tukui,url,wago,wowace,wowi
+enum adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].identifications[].reason files_differ,folder_set_differs,not_verified,not_verified_offline,source_error
+enum adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].identifications[].tier cf_only,exact,guess,identified,unknown
 enum adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].error.code archive_too_large,auth_rejected,auth_required,bad_archive,case_collision,check_failed,desired_state_invalid,distribution_disabled,doctor_refused,download_failed,file_exists,filesystem_unsupported,game_running,hash_mismatch,host_blocked,http_status,internal,io,locked,network,no_compatible_release,not_found,not_managed,offline,online_required,ownership_conflict,plan_not_found,plan_stale,protected_folder,rate_limited,ref_ambiguous,ref_invalid,scope_denied,source_disabled,state_corrupt,state_too_new,target_ambiguous,target_not_found,undo_conflict,unmanaged_folder,unsafe_archive,usage,wrong_flavor
 enum adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].folders.skipped[]<reason=interface_not_in_family>.family cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].reason dependency,explicit
@@ -328,6 +330,7 @@ enum adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,r
 enum adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].status adopted,edited,failed,installed,pinned,removed,skipped,unchanged,unpinned,updated
 enum adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].unresolved[].reason limit_reached,managed_folder_missing,no_source,not_requested,not_shipped,out_of_date,several_catalog_entries,unknown_condition,wowi_abandoned,wowi_ambiguous
 enum adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,sync,target,undo,update,widget
+enum adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].left_unmanaged[].reason already_managed,cf_only,guess,unknown
 enum adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].reload_required none,reload,restart
 enum adopt data<untagged=sources_skipped,targets,verify>.sources_skipped[].reason disabled,no_index,offline,rate_limited
 enum adopt data<untagged=sources_skipped,targets,verify>.sources_skipped[].source curseforge,git,github,local,tukui,url,wago,wowace,wowi
@@ -376,6 +379,8 @@ enum apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_exp
 enum apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.approval.selection[].channel alpha,beta,stable
 enum apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.approval.selection[].op adopt,edit,install,prune,remove,restore,undo,update
 enum apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.approval.selection[].source curseforge,git,github,local,tukui,url,wago,wowace,wowi
+enum apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].identifications[].reason files_differ,folder_set_differs,not_verified,not_verified_offline,source_error
+enum apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].identifications[].tier cf_only,exact,guess,identified,unknown
 enum apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].error.code archive_too_large,auth_rejected,auth_required,bad_archive,case_collision,check_failed,desired_state_invalid,distribution_disabled,doctor_refused,download_failed,file_exists,filesystem_unsupported,game_running,hash_mismatch,host_blocked,http_status,internal,io,locked,network,no_compatible_release,not_found,not_managed,offline,online_required,ownership_conflict,plan_not_found,plan_stale,protected_folder,rate_limited,ref_ambiguous,ref_invalid,scope_denied,source_disabled,state_corrupt,state_too_new,target_ambiguous,target_not_found,undo_conflict,unmanaged_folder,unsafe_archive,usage,wrong_flavor
 enum apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].folders.skipped[]<reason=interface_not_in_family>.family cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].reason dependency,explicit
@@ -383,6 +388,7 @@ enum apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_exp
 enum apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].status adopted,edited,failed,installed,pinned,removed,skipped,unchanged,unpinned,updated
 enum apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].unresolved[].reason limit_reached,managed_folder_missing,no_source,not_requested,not_shipped,out_of_date,several_catalog_entries,unknown_condition,wowi_abandoned,wowi_ambiguous
 enum apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,sync,target,undo,update,widget
+enum apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].left_unmanaged[].reason already_managed,cf_only,guess,unknown
 enum apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].reload_required none,reload,restart
 enum apply data<applied.command=adopt>.result<untagged=sources_skipped,targets,verify>.sources_skipped[].reason disabled,no_index,offline,rate_limited
 enum apply data<applied.command=adopt>.result<untagged=sources_skipped,targets,verify>.sources_skipped[].source curseforge,git,github,local,tukui,url,wago,wowace,wowi
@@ -402,6 +408,8 @@ enum apply data<applied.command=copy>.result.approval.reasons[] channel_changed,
 enum apply data<applied.command=copy>.result.approval.selection[].channel alpha,beta,stable
 enum apply data<applied.command=copy>.result.approval.selection[].op adopt,edit,install,prune,remove,restore,undo,update
 enum apply data<applied.command=copy>.result.approval.selection[].source curseforge,git,github,local,tukui,url,wago,wowace,wowi
+enum apply data<applied.command=copy>.result.targets[].identifications[].reason files_differ,folder_set_differs,not_verified,not_verified_offline,source_error
+enum apply data<applied.command=copy>.result.targets[].identifications[].tier cf_only,exact,guess,identified,unknown
 enum apply data<applied.command=copy>.result.targets[].items[].error.code archive_too_large,auth_rejected,auth_required,bad_archive,case_collision,check_failed,desired_state_invalid,distribution_disabled,doctor_refused,download_failed,file_exists,filesystem_unsupported,game_running,hash_mismatch,host_blocked,http_status,internal,io,locked,network,no_compatible_release,not_found,not_managed,offline,online_required,ownership_conflict,plan_not_found,plan_stale,protected_folder,rate_limited,ref_ambiguous,ref_invalid,scope_denied,source_disabled,state_corrupt,state_too_new,target_ambiguous,target_not_found,undo_conflict,unmanaged_folder,unsafe_archive,usage,wrong_flavor
 enum apply data<applied.command=copy>.result.targets[].items[].folders.skipped[]<reason=interface_not_in_family>.family cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum apply data<applied.command=copy>.result.targets[].items[].reason dependency,explicit
@@ -409,6 +417,7 @@ enum apply data<applied.command=copy>.result.targets[].items[].skip_reason ahead
 enum apply data<applied.command=copy>.result.targets[].items[].status adopted,edited,failed,installed,pinned,removed,skipped,unchanged,unpinned,updated
 enum apply data<applied.command=copy>.result.targets[].items[].unresolved[].reason limit_reached,managed_folder_missing,no_source,not_requested,not_shipped,out_of_date,several_catalog_entries,unknown_condition,wowi_abandoned,wowi_ambiguous
 enum apply data<applied.command=copy>.result.targets[].kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,sync,target,undo,update,widget
+enum apply data<applied.command=copy>.result.targets[].left_unmanaged[].reason already_managed,cf_only,guess,unknown
 enum apply data<applied.command=copy>.result.targets[].reload_required none,reload,restart
 enum apply data<applied.command=install>.approved.reasons[] channel_changed,dependency_added,destructive,downgrade,folders_removed,force,local_changes_replaced,reinstall,source_changed,while_running
 enum apply data<applied.command=install>.approved.selection[].channel alpha,beta,stable
@@ -441,6 +450,8 @@ enum apply data<applied.command=pin>.result.approval.reasons[] channel_changed,d
 enum apply data<applied.command=pin>.result.approval.selection[].channel alpha,beta,stable
 enum apply data<applied.command=pin>.result.approval.selection[].op adopt,edit,install,prune,remove,restore,undo,update
 enum apply data<applied.command=pin>.result.approval.selection[].source curseforge,git,github,local,tukui,url,wago,wowace,wowi
+enum apply data<applied.command=pin>.result.targets[].identifications[].reason files_differ,folder_set_differs,not_verified,not_verified_offline,source_error
+enum apply data<applied.command=pin>.result.targets[].identifications[].tier cf_only,exact,guess,identified,unknown
 enum apply data<applied.command=pin>.result.targets[].items[].error.code archive_too_large,auth_rejected,auth_required,bad_archive,case_collision,check_failed,desired_state_invalid,distribution_disabled,doctor_refused,download_failed,file_exists,filesystem_unsupported,game_running,hash_mismatch,host_blocked,http_status,internal,io,locked,network,no_compatible_release,not_found,not_managed,offline,online_required,ownership_conflict,plan_not_found,plan_stale,protected_folder,rate_limited,ref_ambiguous,ref_invalid,scope_denied,source_disabled,state_corrupt,state_too_new,target_ambiguous,target_not_found,undo_conflict,unmanaged_folder,unsafe_archive,usage,wrong_flavor
 enum apply data<applied.command=pin>.result.targets[].items[].folders.skipped[]<reason=interface_not_in_family>.family cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum apply data<applied.command=pin>.result.targets[].items[].reason dependency,explicit
@@ -448,6 +459,7 @@ enum apply data<applied.command=pin>.result.targets[].items[].skip_reason ahead,
 enum apply data<applied.command=pin>.result.targets[].items[].status adopted,edited,failed,installed,pinned,removed,skipped,unchanged,unpinned,updated
 enum apply data<applied.command=pin>.result.targets[].items[].unresolved[].reason limit_reached,managed_folder_missing,no_source,not_requested,not_shipped,out_of_date,several_catalog_entries,unknown_condition,wowi_abandoned,wowi_ambiguous
 enum apply data<applied.command=pin>.result.targets[].kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,sync,target,undo,update,widget
+enum apply data<applied.command=pin>.result.targets[].left_unmanaged[].reason already_managed,cf_only,guess,unknown
 enum apply data<applied.command=pin>.result.targets[].reload_required none,reload,restart
 enum apply data<applied.command=remove>.approved.reasons[] channel_changed,dependency_added,destructive,downgrade,folders_removed,force,local_changes_replaced,reinstall,source_changed,while_running
 enum apply data<applied.command=remove>.approved.selection[].channel alpha,beta,stable
@@ -472,6 +484,8 @@ enum apply data<applied.command=sync>.result.approval.reasons[] channel_changed,
 enum apply data<applied.command=sync>.result.approval.selection[].channel alpha,beta,stable
 enum apply data<applied.command=sync>.result.approval.selection[].op adopt,edit,install,prune,remove,restore,undo,update
 enum apply data<applied.command=sync>.result.approval.selection[].source curseforge,git,github,local,tukui,url,wago,wowace,wowi
+enum apply data<applied.command=sync>.result.targets[].identifications[].reason files_differ,folder_set_differs,not_verified,not_verified_offline,source_error
+enum apply data<applied.command=sync>.result.targets[].identifications[].tier cf_only,exact,guess,identified,unknown
 enum apply data<applied.command=sync>.result.targets[].items[].error.code archive_too_large,auth_rejected,auth_required,bad_archive,case_collision,check_failed,desired_state_invalid,distribution_disabled,doctor_refused,download_failed,file_exists,filesystem_unsupported,game_running,hash_mismatch,host_blocked,http_status,internal,io,locked,network,no_compatible_release,not_found,not_managed,offline,online_required,ownership_conflict,plan_not_found,plan_stale,protected_folder,rate_limited,ref_ambiguous,ref_invalid,scope_denied,source_disabled,state_corrupt,state_too_new,target_ambiguous,target_not_found,undo_conflict,unmanaged_folder,unsafe_archive,usage,wrong_flavor
 enum apply data<applied.command=sync>.result.targets[].items[].folders.skipped[]<reason=interface_not_in_family>.family cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum apply data<applied.command=sync>.result.targets[].items[].reason dependency,explicit
@@ -479,6 +493,7 @@ enum apply data<applied.command=sync>.result.targets[].items[].skip_reason ahead
 enum apply data<applied.command=sync>.result.targets[].items[].status adopted,edited,failed,installed,pinned,removed,skipped,unchanged,unpinned,updated
 enum apply data<applied.command=sync>.result.targets[].items[].unresolved[].reason limit_reached,managed_folder_missing,no_source,not_requested,not_shipped,out_of_date,several_catalog_entries,unknown_condition,wowi_abandoned,wowi_ambiguous
 enum apply data<applied.command=sync>.result.targets[].kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,sync,target,undo,update,widget
+enum apply data<applied.command=sync>.result.targets[].left_unmanaged[].reason already_managed,cf_only,guess,unknown
 enum apply data<applied.command=sync>.result.targets[].reload_required none,reload,restart
 enum apply data<applied.command=undo>.approved.reasons[] channel_changed,dependency_added,destructive,downgrade,folders_removed,force,local_changes_replaced,reinstall,source_changed,while_running
 enum apply data<applied.command=undo>.approved.selection[].channel alpha,beta,stable
@@ -508,6 +523,8 @@ enum apply data<applied.command=unpin>.result.approval.reasons[] channel_changed
 enum apply data<applied.command=unpin>.result.approval.selection[].channel alpha,beta,stable
 enum apply data<applied.command=unpin>.result.approval.selection[].op adopt,edit,install,prune,remove,restore,undo,update
 enum apply data<applied.command=unpin>.result.approval.selection[].source curseforge,git,github,local,tukui,url,wago,wowace,wowi
+enum apply data<applied.command=unpin>.result.targets[].identifications[].reason files_differ,folder_set_differs,not_verified,not_verified_offline,source_error
+enum apply data<applied.command=unpin>.result.targets[].identifications[].tier cf_only,exact,guess,identified,unknown
 enum apply data<applied.command=unpin>.result.targets[].items[].error.code archive_too_large,auth_rejected,auth_required,bad_archive,case_collision,check_failed,desired_state_invalid,distribution_disabled,doctor_refused,download_failed,file_exists,filesystem_unsupported,game_running,hash_mismatch,host_blocked,http_status,internal,io,locked,network,no_compatible_release,not_found,not_managed,offline,online_required,ownership_conflict,plan_not_found,plan_stale,protected_folder,rate_limited,ref_ambiguous,ref_invalid,scope_denied,source_disabled,state_corrupt,state_too_new,target_ambiguous,target_not_found,undo_conflict,unmanaged_folder,unsafe_archive,usage,wrong_flavor
 enum apply data<applied.command=unpin>.result.targets[].items[].folders.skipped[]<reason=interface_not_in_family>.family cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum apply data<applied.command=unpin>.result.targets[].items[].reason dependency,explicit
@@ -515,6 +532,7 @@ enum apply data<applied.command=unpin>.result.targets[].items[].skip_reason ahea
 enum apply data<applied.command=unpin>.result.targets[].items[].status adopted,edited,failed,installed,pinned,removed,skipped,unchanged,unpinned,updated
 enum apply data<applied.command=unpin>.result.targets[].items[].unresolved[].reason limit_reached,managed_folder_missing,no_source,not_requested,not_shipped,out_of_date,several_catalog_entries,unknown_condition,wowi_abandoned,wowi_ambiguous
 enum apply data<applied.command=unpin>.result.targets[].kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,sync,target,undo,update,widget
+enum apply data<applied.command=unpin>.result.targets[].left_unmanaged[].reason already_managed,cf_only,guess,unknown
 enum apply data<applied.command=unpin>.result.targets[].reload_required none,reload,restart
 enum apply data<applied.command=update>.approved.reasons[] channel_changed,dependency_added,destructive,downgrade,folders_removed,force,local_changes_replaced,reinstall,source_changed,while_running
 enum apply data<applied.command=update>.approved.selection[].channel alpha,beta,stable
@@ -526,6 +544,8 @@ enum apply data<applied.command=update>.result.approval.reasons[] channel_change
 enum apply data<applied.command=update>.result.approval.selection[].channel alpha,beta,stable
 enum apply data<applied.command=update>.result.approval.selection[].op adopt,edit,install,prune,remove,restore,undo,update
 enum apply data<applied.command=update>.result.approval.selection[].source curseforge,git,github,local,tukui,url,wago,wowace,wowi
+enum apply data<applied.command=update>.result.targets[].identifications[].reason files_differ,folder_set_differs,not_verified,not_verified_offline,source_error
+enum apply data<applied.command=update>.result.targets[].identifications[].tier cf_only,exact,guess,identified,unknown
 enum apply data<applied.command=update>.result.targets[].items[].error.code archive_too_large,auth_rejected,auth_required,bad_archive,case_collision,check_failed,desired_state_invalid,distribution_disabled,doctor_refused,download_failed,file_exists,filesystem_unsupported,game_running,hash_mismatch,host_blocked,http_status,internal,io,locked,network,no_compatible_release,not_found,not_managed,offline,online_required,ownership_conflict,plan_not_found,plan_stale,protected_folder,rate_limited,ref_ambiguous,ref_invalid,scope_denied,source_disabled,state_corrupt,state_too_new,target_ambiguous,target_not_found,undo_conflict,unmanaged_folder,unsafe_archive,usage,wrong_flavor
 enum apply data<applied.command=update>.result.targets[].items[].folders.skipped[]<reason=interface_not_in_family>.family cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum apply data<applied.command=update>.result.targets[].items[].reason dependency,explicit
@@ -533,6 +553,7 @@ enum apply data<applied.command=update>.result.targets[].items[].skip_reason ahe
 enum apply data<applied.command=update>.result.targets[].items[].status adopted,edited,failed,installed,pinned,removed,skipped,unchanged,unpinned,updated
 enum apply data<applied.command=update>.result.targets[].items[].unresolved[].reason limit_reached,managed_folder_missing,no_source,not_requested,not_shipped,out_of_date,several_catalog_entries,unknown_condition,wowi_abandoned,wowi_ambiguous
 enum apply data<applied.command=update>.result.targets[].kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,sync,target,undo,update,widget
+enum apply data<applied.command=update>.result.targets[].left_unmanaged[].reason already_managed,cf_only,guess,unknown
 enum apply data<applied.command=update>.result.targets[].reload_required none,reload,restart
 enum auth github data.source config,env,file,none
 enum backup create data.targets[].backup.actor agent,human,widget
@@ -623,6 +644,8 @@ enum copy data.approval.reasons[] channel_changed,dependency_added,destructive,d
 enum copy data.approval.selection[].channel alpha,beta,stable
 enum copy data.approval.selection[].op adopt,edit,install,prune,remove,restore,undo,update
 enum copy data.approval.selection[].source curseforge,git,github,local,tukui,url,wago,wowace,wowi
+enum copy data.targets[].identifications[].reason files_differ,folder_set_differs,not_verified,not_verified_offline,source_error
+enum copy data.targets[].identifications[].tier cf_only,exact,guess,identified,unknown
 enum copy data.targets[].items[].error.code archive_too_large,auth_rejected,auth_required,bad_archive,case_collision,check_failed,desired_state_invalid,distribution_disabled,doctor_refused,download_failed,file_exists,filesystem_unsupported,game_running,hash_mismatch,host_blocked,http_status,internal,io,locked,network,no_compatible_release,not_found,not_managed,offline,online_required,ownership_conflict,plan_not_found,plan_stale,protected_folder,rate_limited,ref_ambiguous,ref_invalid,scope_denied,source_disabled,state_corrupt,state_too_new,target_ambiguous,target_not_found,undo_conflict,unmanaged_folder,unsafe_archive,usage,wrong_flavor
 enum copy data.targets[].items[].folders.skipped[]<reason=interface_not_in_family>.family cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum copy data.targets[].items[].reason dependency,explicit
@@ -630,6 +653,7 @@ enum copy data.targets[].items[].skip_reason ahead,already_installed,blocked,dup
 enum copy data.targets[].items[].status adopted,edited,failed,installed,pinned,removed,skipped,unchanged,unpinned,updated
 enum copy data.targets[].items[].unresolved[].reason limit_reached,managed_folder_missing,no_source,not_requested,not_shipped,out_of_date,several_catalog_entries,unknown_condition,wowi_abandoned,wowi_ambiguous
 enum copy data.targets[].kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,sync,target,undo,update,widget
+enum copy data.targets[].left_unmanaged[].reason already_managed,cf_only,guess,unknown
 enum copy data.targets[].reload_required none,reload,restart
 enum desired family.cata-legacy.addon[].channel alpha,beta,stable
 enum desired family.cata.addon[].channel alpha,beta,stable
@@ -1081,6 +1105,8 @@ enum pin data.approval.reasons[] channel_changed,dependency_added,destructive,do
 enum pin data.approval.selection[].channel alpha,beta,stable
 enum pin data.approval.selection[].op adopt,edit,install,prune,remove,restore,undo,update
 enum pin data.approval.selection[].source curseforge,git,github,local,tukui,url,wago,wowace,wowi
+enum pin data.targets[].identifications[].reason files_differ,folder_set_differs,not_verified,not_verified_offline,source_error
+enum pin data.targets[].identifications[].tier cf_only,exact,guess,identified,unknown
 enum pin data.targets[].items[].error.code archive_too_large,auth_rejected,auth_required,bad_archive,case_collision,check_failed,desired_state_invalid,distribution_disabled,doctor_refused,download_failed,file_exists,filesystem_unsupported,game_running,hash_mismatch,host_blocked,http_status,internal,io,locked,network,no_compatible_release,not_found,not_managed,offline,online_required,ownership_conflict,plan_not_found,plan_stale,protected_folder,rate_limited,ref_ambiguous,ref_invalid,scope_denied,source_disabled,state_corrupt,state_too_new,target_ambiguous,target_not_found,undo_conflict,unmanaged_folder,unsafe_archive,usage,wrong_flavor
 enum pin data.targets[].items[].folders.skipped[]<reason=interface_not_in_family>.family cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum pin data.targets[].items[].reason dependency,explicit
@@ -1088,6 +1114,7 @@ enum pin data.targets[].items[].skip_reason ahead,already_installed,blocked,dupl
 enum pin data.targets[].items[].status adopted,edited,failed,installed,pinned,removed,skipped,unchanged,unpinned,updated
 enum pin data.targets[].items[].unresolved[].reason limit_reached,managed_folder_missing,no_source,not_requested,not_shipped,out_of_date,several_catalog_entries,unknown_condition,wowi_abandoned,wowi_ambiguous
 enum pin data.targets[].kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,sync,target,undo,update,widget
+enum pin data.targets[].left_unmanaged[].reason already_managed,cf_only,guess,unknown
 enum pin data.targets[].reload_required none,reload,restart
 enum plans show data.approval.reasons[] channel_changed,dependency_added,destructive,downgrade,folders_removed,force,local_changes_replaced,reinstall,source_changed,while_running
 enum plans show data.approval.selection[].channel alpha,beta,stable
@@ -1135,6 +1162,8 @@ enum sync data.approval.reasons[] channel_changed,dependency_added,destructive,d
 enum sync data.approval.selection[].channel alpha,beta,stable
 enum sync data.approval.selection[].op adopt,edit,install,prune,remove,restore,undo,update
 enum sync data.approval.selection[].source curseforge,git,github,local,tukui,url,wago,wowace,wowi
+enum sync data.targets[].identifications[].reason files_differ,folder_set_differs,not_verified,not_verified_offline,source_error
+enum sync data.targets[].identifications[].tier cf_only,exact,guess,identified,unknown
 enum sync data.targets[].items[].error.code archive_too_large,auth_rejected,auth_required,bad_archive,case_collision,check_failed,desired_state_invalid,distribution_disabled,doctor_refused,download_failed,file_exists,filesystem_unsupported,game_running,hash_mismatch,host_blocked,http_status,internal,io,locked,network,no_compatible_release,not_found,not_managed,offline,online_required,ownership_conflict,plan_not_found,plan_stale,protected_folder,rate_limited,ref_ambiguous,ref_invalid,scope_denied,source_disabled,state_corrupt,state_too_new,target_ambiguous,target_not_found,undo_conflict,unmanaged_folder,unsafe_archive,usage,wrong_flavor
 enum sync data.targets[].items[].folders.skipped[]<reason=interface_not_in_family>.family cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum sync data.targets[].items[].reason dependency,explicit
@@ -1142,6 +1171,7 @@ enum sync data.targets[].items[].skip_reason ahead,already_installed,blocked,dup
 enum sync data.targets[].items[].status adopted,edited,failed,installed,pinned,removed,skipped,unchanged,unpinned,updated
 enum sync data.targets[].items[].unresolved[].reason limit_reached,managed_folder_missing,no_source,not_requested,not_shipped,out_of_date,several_catalog_entries,unknown_condition,wowi_abandoned,wowi_ambiguous
 enum sync data.targets[].kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,sync,target,undo,update,widget
+enum sync data.targets[].left_unmanaged[].reason already_managed,cf_only,guess,unknown
 enum sync data.targets[].reload_required none,reload,restart
 enum targets add data.targets[].family cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum targets add data.targets[].install_kind battlenet,custom
@@ -1167,6 +1197,8 @@ enum unpin data.approval.reasons[] channel_changed,dependency_added,destructive,
 enum unpin data.approval.selection[].channel alpha,beta,stable
 enum unpin data.approval.selection[].op adopt,edit,install,prune,remove,restore,undo,update
 enum unpin data.approval.selection[].source curseforge,git,github,local,tukui,url,wago,wowace,wowi
+enum unpin data.targets[].identifications[].reason files_differ,folder_set_differs,not_verified,not_verified_offline,source_error
+enum unpin data.targets[].identifications[].tier cf_only,exact,guess,identified,unknown
 enum unpin data.targets[].items[].error.code archive_too_large,auth_rejected,auth_required,bad_archive,case_collision,check_failed,desired_state_invalid,distribution_disabled,doctor_refused,download_failed,file_exists,filesystem_unsupported,game_running,hash_mismatch,host_blocked,http_status,internal,io,locked,network,no_compatible_release,not_found,not_managed,offline,online_required,ownership_conflict,plan_not_found,plan_stale,protected_folder,rate_limited,ref_ambiguous,ref_invalid,scope_denied,source_disabled,state_corrupt,state_too_new,target_ambiguous,target_not_found,undo_conflict,unmanaged_folder,unsafe_archive,usage,wrong_flavor
 enum unpin data.targets[].items[].folders.skipped[]<reason=interface_not_in_family>.family cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum unpin data.targets[].items[].reason dependency,explicit
@@ -1174,11 +1206,14 @@ enum unpin data.targets[].items[].skip_reason ahead,already_installed,blocked,du
 enum unpin data.targets[].items[].status adopted,edited,failed,installed,pinned,removed,skipped,unchanged,unpinned,updated
 enum unpin data.targets[].items[].unresolved[].reason limit_reached,managed_folder_missing,no_source,not_requested,not_shipped,out_of_date,several_catalog_entries,unknown_condition,wowi_abandoned,wowi_ambiguous
 enum unpin data.targets[].kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,sync,target,undo,update,widget
+enum unpin data.targets[].left_unmanaged[].reason already_managed,cf_only,guess,unknown
 enum unpin data.targets[].reload_required none,reload,restart
 enum update data.approval.reasons[] channel_changed,dependency_added,destructive,downgrade,folders_removed,force,local_changes_replaced,reinstall,source_changed,while_running
 enum update data.approval.selection[].channel alpha,beta,stable
 enum update data.approval.selection[].op adopt,edit,install,prune,remove,restore,undo,update
 enum update data.approval.selection[].source curseforge,git,github,local,tukui,url,wago,wowace,wowi
+enum update data.targets[].identifications[].reason files_differ,folder_set_differs,not_verified,not_verified_offline,source_error
+enum update data.targets[].identifications[].tier cf_only,exact,guess,identified,unknown
 enum update data.targets[].items[].error.code archive_too_large,auth_rejected,auth_required,bad_archive,case_collision,check_failed,desired_state_invalid,distribution_disabled,doctor_refused,download_failed,file_exists,filesystem_unsupported,game_running,hash_mismatch,host_blocked,http_status,internal,io,locked,network,no_compatible_release,not_found,not_managed,offline,online_required,ownership_conflict,plan_not_found,plan_stale,protected_folder,rate_limited,ref_ambiguous,ref_invalid,scope_denied,source_disabled,state_corrupt,state_too_new,target_ambiguous,target_not_found,undo_conflict,unmanaged_folder,unsafe_archive,usage,wrong_flavor
 enum update data.targets[].items[].folders.skipped[]<reason=interface_not_in_family>.family cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum update data.targets[].items[].reason dependency,explicit
@@ -1186,6 +1221,7 @@ enum update data.targets[].items[].skip_reason ahead,already_installed,blocked,d
 enum update data.targets[].items[].status adopted,edited,failed,installed,pinned,removed,skipped,unchanged,unpinned,updated
 enum update data.targets[].items[].unresolved[].reason limit_reached,managed_folder_missing,no_source,not_requested,not_shipped,out_of_date,several_catalog_entries,unknown_condition,wowi_abandoned,wowi_ambiguous
 enum update data.targets[].kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,sync,target,undo,update,widget
+enum update data.targets[].left_unmanaged[].reason already_managed,cf_only,guess,unknown
 enum update data.targets[].reload_required none,reload,restart
 enum version data<untagged=commands,discovery,exit_codes,global_flags,name,usage,version>.commands[].group change,look,setup
 env CI
@@ -3728,6 +3764,12 @@ output adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition
 output adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].atomic_swap boolean?!
 output adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].creates_addons_dir boolean!
 output adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].error object?! ref=error
+output adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].identifications array?
+output adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].identifications[] object
+output adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].identifications[].addon string!
+output adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].identifications[].primary string!
+output adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].identifications[].reason string?!
+output adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].identifications[].tier string!
 output adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items array!
 output adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[] object
 output adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].bridge_dependencies array?
@@ -3787,6 +3829,12 @@ output adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition
 output adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].unresolved[].folder string!
 output adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].unresolved[].reason string!
 output adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].kind string?!
+output adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].left_unmanaged array?
+output adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].left_unmanaged[] object
+output adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].left_unmanaged[].folders array!
+output adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].left_unmanaged[].folders[] string
+output adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].left_unmanaged[].primary string!
+output adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].left_unmanaged[].reason string!
 output adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].no_section boolean!
 output adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].reload_required string!
 output adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].target object!
@@ -4165,6 +4213,12 @@ output apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_e
 output apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].atomic_swap boolean?!
 output apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].creates_addons_dir boolean!
 output apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].error object?! ref=error
+output apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].identifications array?
+output apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].identifications[] object
+output apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].identifications[].addon string!
+output apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].identifications[].primary string!
+output apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].identifications[].reason string?!
+output apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].identifications[].tier string!
 output apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items array!
 output apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[] object
 output apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].bridge_dependencies array?
@@ -4224,6 +4278,12 @@ output apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_e
 output apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].unresolved[].folder string!
 output apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].unresolved[].reason string!
 output apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].kind string?!
+output apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].left_unmanaged array?
+output apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].left_unmanaged[] object
+output apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].left_unmanaged[].folders array!
+output apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].left_unmanaged[].folders[] string
+output apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].left_unmanaged[].primary string!
+output apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].left_unmanaged[].reason string!
 output apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].no_section boolean!
 output apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].reload_required string!
 output apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].target object!
@@ -4372,6 +4432,12 @@ output apply data<applied.command=copy>.result.targets[] object
 output apply data<applied.command=copy>.result.targets[].atomic_swap boolean?!
 output apply data<applied.command=copy>.result.targets[].creates_addons_dir boolean!
 output apply data<applied.command=copy>.result.targets[].error object?! ref=error
+output apply data<applied.command=copy>.result.targets[].identifications array?
+output apply data<applied.command=copy>.result.targets[].identifications[] object
+output apply data<applied.command=copy>.result.targets[].identifications[].addon string!
+output apply data<applied.command=copy>.result.targets[].identifications[].primary string!
+output apply data<applied.command=copy>.result.targets[].identifications[].reason string?!
+output apply data<applied.command=copy>.result.targets[].identifications[].tier string!
 output apply data<applied.command=copy>.result.targets[].items array!
 output apply data<applied.command=copy>.result.targets[].items[] object
 output apply data<applied.command=copy>.result.targets[].items[].bridge_dependencies array?
@@ -4431,6 +4497,12 @@ output apply data<applied.command=copy>.result.targets[].items[].unresolved[].ca
 output apply data<applied.command=copy>.result.targets[].items[].unresolved[].folder string!
 output apply data<applied.command=copy>.result.targets[].items[].unresolved[].reason string!
 output apply data<applied.command=copy>.result.targets[].kind string?!
+output apply data<applied.command=copy>.result.targets[].left_unmanaged array?
+output apply data<applied.command=copy>.result.targets[].left_unmanaged[] object
+output apply data<applied.command=copy>.result.targets[].left_unmanaged[].folders array!
+output apply data<applied.command=copy>.result.targets[].left_unmanaged[].folders[] string
+output apply data<applied.command=copy>.result.targets[].left_unmanaged[].primary string!
+output apply data<applied.command=copy>.result.targets[].left_unmanaged[].reason string!
 output apply data<applied.command=copy>.result.targets[].no_section boolean!
 output apply data<applied.command=copy>.result.targets[].reload_required string!
 output apply data<applied.command=copy>.result.targets[].target object!
@@ -4693,6 +4765,12 @@ output apply data<applied.command=pin>.result.targets[] object
 output apply data<applied.command=pin>.result.targets[].atomic_swap boolean?!
 output apply data<applied.command=pin>.result.targets[].creates_addons_dir boolean!
 output apply data<applied.command=pin>.result.targets[].error object?! ref=error
+output apply data<applied.command=pin>.result.targets[].identifications array?
+output apply data<applied.command=pin>.result.targets[].identifications[] object
+output apply data<applied.command=pin>.result.targets[].identifications[].addon string!
+output apply data<applied.command=pin>.result.targets[].identifications[].primary string!
+output apply data<applied.command=pin>.result.targets[].identifications[].reason string?!
+output apply data<applied.command=pin>.result.targets[].identifications[].tier string!
 output apply data<applied.command=pin>.result.targets[].items array!
 output apply data<applied.command=pin>.result.targets[].items[] object
 output apply data<applied.command=pin>.result.targets[].items[].bridge_dependencies array?
@@ -4752,6 +4830,12 @@ output apply data<applied.command=pin>.result.targets[].items[].unresolved[].can
 output apply data<applied.command=pin>.result.targets[].items[].unresolved[].folder string!
 output apply data<applied.command=pin>.result.targets[].items[].unresolved[].reason string!
 output apply data<applied.command=pin>.result.targets[].kind string?!
+output apply data<applied.command=pin>.result.targets[].left_unmanaged array?
+output apply data<applied.command=pin>.result.targets[].left_unmanaged[] object
+output apply data<applied.command=pin>.result.targets[].left_unmanaged[].folders array!
+output apply data<applied.command=pin>.result.targets[].left_unmanaged[].folders[] string
+output apply data<applied.command=pin>.result.targets[].left_unmanaged[].primary string!
+output apply data<applied.command=pin>.result.targets[].left_unmanaged[].reason string!
 output apply data<applied.command=pin>.result.targets[].no_section boolean!
 output apply data<applied.command=pin>.result.targets[].reload_required string!
 output apply data<applied.command=pin>.result.targets[].target object!
@@ -4959,6 +5043,12 @@ output apply data<applied.command=sync>.result.targets[] object
 output apply data<applied.command=sync>.result.targets[].atomic_swap boolean?!
 output apply data<applied.command=sync>.result.targets[].creates_addons_dir boolean!
 output apply data<applied.command=sync>.result.targets[].error object?! ref=error
+output apply data<applied.command=sync>.result.targets[].identifications array?
+output apply data<applied.command=sync>.result.targets[].identifications[] object
+output apply data<applied.command=sync>.result.targets[].identifications[].addon string!
+output apply data<applied.command=sync>.result.targets[].identifications[].primary string!
+output apply data<applied.command=sync>.result.targets[].identifications[].reason string?!
+output apply data<applied.command=sync>.result.targets[].identifications[].tier string!
 output apply data<applied.command=sync>.result.targets[].items array!
 output apply data<applied.command=sync>.result.targets[].items[] object
 output apply data<applied.command=sync>.result.targets[].items[].bridge_dependencies array?
@@ -5018,6 +5108,12 @@ output apply data<applied.command=sync>.result.targets[].items[].unresolved[].ca
 output apply data<applied.command=sync>.result.targets[].items[].unresolved[].folder string!
 output apply data<applied.command=sync>.result.targets[].items[].unresolved[].reason string!
 output apply data<applied.command=sync>.result.targets[].kind string?!
+output apply data<applied.command=sync>.result.targets[].left_unmanaged array?
+output apply data<applied.command=sync>.result.targets[].left_unmanaged[] object
+output apply data<applied.command=sync>.result.targets[].left_unmanaged[].folders array!
+output apply data<applied.command=sync>.result.targets[].left_unmanaged[].folders[] string
+output apply data<applied.command=sync>.result.targets[].left_unmanaged[].primary string!
+output apply data<applied.command=sync>.result.targets[].left_unmanaged[].reason string!
 output apply data<applied.command=sync>.result.targets[].no_section boolean!
 output apply data<applied.command=sync>.result.targets[].reload_required string!
 output apply data<applied.command=sync>.result.targets[].target object!
@@ -5263,6 +5359,12 @@ output apply data<applied.command=unpin>.result.targets[] object
 output apply data<applied.command=unpin>.result.targets[].atomic_swap boolean?!
 output apply data<applied.command=unpin>.result.targets[].creates_addons_dir boolean!
 output apply data<applied.command=unpin>.result.targets[].error object?! ref=error
+output apply data<applied.command=unpin>.result.targets[].identifications array?
+output apply data<applied.command=unpin>.result.targets[].identifications[] object
+output apply data<applied.command=unpin>.result.targets[].identifications[].addon string!
+output apply data<applied.command=unpin>.result.targets[].identifications[].primary string!
+output apply data<applied.command=unpin>.result.targets[].identifications[].reason string?!
+output apply data<applied.command=unpin>.result.targets[].identifications[].tier string!
 output apply data<applied.command=unpin>.result.targets[].items array!
 output apply data<applied.command=unpin>.result.targets[].items[] object
 output apply data<applied.command=unpin>.result.targets[].items[].bridge_dependencies array?
@@ -5322,6 +5424,12 @@ output apply data<applied.command=unpin>.result.targets[].items[].unresolved[].c
 output apply data<applied.command=unpin>.result.targets[].items[].unresolved[].folder string!
 output apply data<applied.command=unpin>.result.targets[].items[].unresolved[].reason string!
 output apply data<applied.command=unpin>.result.targets[].kind string?!
+output apply data<applied.command=unpin>.result.targets[].left_unmanaged array?
+output apply data<applied.command=unpin>.result.targets[].left_unmanaged[] object
+output apply data<applied.command=unpin>.result.targets[].left_unmanaged[].folders array!
+output apply data<applied.command=unpin>.result.targets[].left_unmanaged[].folders[] string
+output apply data<applied.command=unpin>.result.targets[].left_unmanaged[].primary string!
+output apply data<applied.command=unpin>.result.targets[].left_unmanaged[].reason string!
 output apply data<applied.command=unpin>.result.targets[].no_section boolean!
 output apply data<applied.command=unpin>.result.targets[].reload_required string!
 output apply data<applied.command=unpin>.result.targets[].target object!
@@ -5426,6 +5534,12 @@ output apply data<applied.command=update>.result.targets[] object
 output apply data<applied.command=update>.result.targets[].atomic_swap boolean?!
 output apply data<applied.command=update>.result.targets[].creates_addons_dir boolean!
 output apply data<applied.command=update>.result.targets[].error object?! ref=error
+output apply data<applied.command=update>.result.targets[].identifications array?
+output apply data<applied.command=update>.result.targets[].identifications[] object
+output apply data<applied.command=update>.result.targets[].identifications[].addon string!
+output apply data<applied.command=update>.result.targets[].identifications[].primary string!
+output apply data<applied.command=update>.result.targets[].identifications[].reason string?!
+output apply data<applied.command=update>.result.targets[].identifications[].tier string!
 output apply data<applied.command=update>.result.targets[].items array!
 output apply data<applied.command=update>.result.targets[].items[] object
 output apply data<applied.command=update>.result.targets[].items[].bridge_dependencies array?
@@ -5485,6 +5599,12 @@ output apply data<applied.command=update>.result.targets[].items[].unresolved[].
 output apply data<applied.command=update>.result.targets[].items[].unresolved[].folder string!
 output apply data<applied.command=update>.result.targets[].items[].unresolved[].reason string!
 output apply data<applied.command=update>.result.targets[].kind string?!
+output apply data<applied.command=update>.result.targets[].left_unmanaged array?
+output apply data<applied.command=update>.result.targets[].left_unmanaged[] object
+output apply data<applied.command=update>.result.targets[].left_unmanaged[].folders array!
+output apply data<applied.command=update>.result.targets[].left_unmanaged[].folders[] string
+output apply data<applied.command=update>.result.targets[].left_unmanaged[].primary string!
+output apply data<applied.command=update>.result.targets[].left_unmanaged[].reason string!
 output apply data<applied.command=update>.result.targets[].no_section boolean!
 output apply data<applied.command=update>.result.targets[].reload_required string!
 output apply data<applied.command=update>.result.targets[].target object!
@@ -6126,6 +6246,12 @@ output copy data.targets[] object
 output copy data.targets[].atomic_swap boolean?!
 output copy data.targets[].creates_addons_dir boolean!
 output copy data.targets[].error object?! ref=error
+output copy data.targets[].identifications array?
+output copy data.targets[].identifications[] object
+output copy data.targets[].identifications[].addon string!
+output copy data.targets[].identifications[].primary string!
+output copy data.targets[].identifications[].reason string?!
+output copy data.targets[].identifications[].tier string!
 output copy data.targets[].items array!
 output copy data.targets[].items[] object
 output copy data.targets[].items[].bridge_dependencies array?
@@ -6185,6 +6311,12 @@ output copy data.targets[].items[].unresolved[].candidates[] string
 output copy data.targets[].items[].unresolved[].folder string!
 output copy data.targets[].items[].unresolved[].reason string!
 output copy data.targets[].kind string?!
+output copy data.targets[].left_unmanaged array?
+output copy data.targets[].left_unmanaged[] object
+output copy data.targets[].left_unmanaged[].folders array!
+output copy data.targets[].left_unmanaged[].folders[] string
+output copy data.targets[].left_unmanaged[].primary string!
+output copy data.targets[].left_unmanaged[].reason string!
 output copy data.targets[].no_section boolean!
 output copy data.targets[].reload_required string!
 output copy data.targets[].target object!
@@ -8276,6 +8408,12 @@ output pin data.targets[] object
 output pin data.targets[].atomic_swap boolean?!
 output pin data.targets[].creates_addons_dir boolean!
 output pin data.targets[].error object?! ref=error
+output pin data.targets[].identifications array?
+output pin data.targets[].identifications[] object
+output pin data.targets[].identifications[].addon string!
+output pin data.targets[].identifications[].primary string!
+output pin data.targets[].identifications[].reason string?!
+output pin data.targets[].identifications[].tier string!
 output pin data.targets[].items array!
 output pin data.targets[].items[] object
 output pin data.targets[].items[].bridge_dependencies array?
@@ -8335,6 +8473,12 @@ output pin data.targets[].items[].unresolved[].candidates[] string
 output pin data.targets[].items[].unresolved[].folder string!
 output pin data.targets[].items[].unresolved[].reason string!
 output pin data.targets[].kind string?!
+output pin data.targets[].left_unmanaged array?
+output pin data.targets[].left_unmanaged[] object
+output pin data.targets[].left_unmanaged[].folders array!
+output pin data.targets[].left_unmanaged[].folders[] string
+output pin data.targets[].left_unmanaged[].primary string!
+output pin data.targets[].left_unmanaged[].reason string!
 output pin data.targets[].no_section boolean!
 output pin data.targets[].reload_required string!
 output pin data.targets[].target object!
@@ -8764,6 +8908,12 @@ output sync data.targets[] object
 output sync data.targets[].atomic_swap boolean?!
 output sync data.targets[].creates_addons_dir boolean!
 output sync data.targets[].error object?! ref=error
+output sync data.targets[].identifications array?
+output sync data.targets[].identifications[] object
+output sync data.targets[].identifications[].addon string!
+output sync data.targets[].identifications[].primary string!
+output sync data.targets[].identifications[].reason string?!
+output sync data.targets[].identifications[].tier string!
 output sync data.targets[].items array!
 output sync data.targets[].items[] object
 output sync data.targets[].items[].bridge_dependencies array?
@@ -8823,6 +8973,12 @@ output sync data.targets[].items[].unresolved[].candidates[] string
 output sync data.targets[].items[].unresolved[].folder string!
 output sync data.targets[].items[].unresolved[].reason string!
 output sync data.targets[].kind string?!
+output sync data.targets[].left_unmanaged array?
+output sync data.targets[].left_unmanaged[] object
+output sync data.targets[].left_unmanaged[].folders array!
+output sync data.targets[].left_unmanaged[].folders[] string
+output sync data.targets[].left_unmanaged[].primary string!
+output sync data.targets[].left_unmanaged[].reason string!
 output sync data.targets[].no_section boolean!
 output sync data.targets[].reload_required string!
 output sync data.targets[].target object!
@@ -9076,6 +9232,12 @@ output unpin data.targets[] object
 output unpin data.targets[].atomic_swap boolean?!
 output unpin data.targets[].creates_addons_dir boolean!
 output unpin data.targets[].error object?! ref=error
+output unpin data.targets[].identifications array?
+output unpin data.targets[].identifications[] object
+output unpin data.targets[].identifications[].addon string!
+output unpin data.targets[].identifications[].primary string!
+output unpin data.targets[].identifications[].reason string?!
+output unpin data.targets[].identifications[].tier string!
 output unpin data.targets[].items array!
 output unpin data.targets[].items[] object
 output unpin data.targets[].items[].bridge_dependencies array?
@@ -9135,6 +9297,12 @@ output unpin data.targets[].items[].unresolved[].candidates[] string
 output unpin data.targets[].items[].unresolved[].folder string!
 output unpin data.targets[].items[].unresolved[].reason string!
 output unpin data.targets[].kind string?!
+output unpin data.targets[].left_unmanaged array?
+output unpin data.targets[].left_unmanaged[] object
+output unpin data.targets[].left_unmanaged[].folders array!
+output unpin data.targets[].left_unmanaged[].folders[] string
+output unpin data.targets[].left_unmanaged[].primary string!
+output unpin data.targets[].left_unmanaged[].reason string!
 output unpin data.targets[].no_section boolean!
 output unpin data.targets[].reload_required string!
 output unpin data.targets[].target object!
@@ -9195,6 +9363,12 @@ output update data.targets[] object
 output update data.targets[].atomic_swap boolean?!
 output update data.targets[].creates_addons_dir boolean!
 output update data.targets[].error object?! ref=error
+output update data.targets[].identifications array?
+output update data.targets[].identifications[] object
+output update data.targets[].identifications[].addon string!
+output update data.targets[].identifications[].primary string!
+output update data.targets[].identifications[].reason string?!
+output update data.targets[].identifications[].tier string!
 output update data.targets[].items array!
 output update data.targets[].items[] object
 output update data.targets[].items[].bridge_dependencies array?
@@ -9254,6 +9428,12 @@ output update data.targets[].items[].unresolved[].candidates[] string
 output update data.targets[].items[].unresolved[].folder string!
 output update data.targets[].items[].unresolved[].reason string!
 output update data.targets[].kind string?!
+output update data.targets[].left_unmanaged array?
+output update data.targets[].left_unmanaged[] object
+output update data.targets[].left_unmanaged[].folders array!
+output update data.targets[].left_unmanaged[].folders[] string
+output update data.targets[].left_unmanaged[].primary string!
+output update data.targets[].left_unmanaged[].reason string!
 output update data.targets[].no_section boolean!
 output update data.targets[].reload_required string!
 output update data.targets[].target object!

@@ -349,6 +349,15 @@ pub struct TargetResult {
     pub creates_addons_dir: bool,
     /// Nothing of this target committed (its items say `failed` with this error).
     pub error: Option<ErrorBody>,
+    /// `adopt` only: how sure adoption is of each addon it adopts here (or, in a dry
+    /// run, would adopt), in item order (omad-kbtn). Omitted on every other command.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identifications: Option<Vec<crate::app::adopt::Identification>>,
+    /// `adopt --apply` only: the folders it leaves unmanaged here, a group each, and why
+    /// (omad-kbtn). Omitted on every other command, and on `adopt` naming folders or
+    /// `--ref`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub left_unmanaged: Option<Vec<crate::app::adopt::LeftUnmanaged>>,
 }
 
 /// One addon's result on one target.
@@ -795,6 +804,8 @@ impl TargetResult {
             atomic_swap: None,
             creates_addons_dir: false,
             error: None,
+            identifications: None,
+            left_unmanaged: None,
         }
     }
 }
@@ -1014,6 +1025,8 @@ fn target_result(
         atomic_swap: outcome.and_then(|o| o.tx.map(|_| o.atomic_swap)),
         creates_addons_dir: outcome.is_some_and(|o| o.creates_addons_dir),
         error: target_error,
+        identifications: None,
+        left_unmanaged: None,
     }
 }
 
@@ -2306,6 +2319,8 @@ mod tests {
             atomic_swap: None,
             creates_addons_dir: false,
             error: None,
+            identifications: None,
+            left_unmanaged: None,
         };
         let one = target(vec![item_with("Foo", Installed)]);
         assert_eq!(header("sync", true, &one), "retail: would install 1 addon");

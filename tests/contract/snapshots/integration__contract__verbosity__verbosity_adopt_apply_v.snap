@@ -35,6 +35,14 @@ expression: s.stable(&checked.envelope)
         "atomic_swap": true,
         "creates_addons_dir": false,
         "error": null,
+        "identifications": [
+          {
+            "addon": "BugGrabber",
+            "primary": "!BugGrabber",
+            "reason": "not_verified",
+            "tier": "identified"
+          }
+        ],
         "items": [
           {
             "bridge_dependencies": [],
@@ -62,6 +70,7 @@ expression: s.stable(&checked.envelope)
           }
         ],
         "kind": "adopt",
+        "left_unmanaged": [],
         "no_section": false,
         "reload_required": "none",
         "target": {

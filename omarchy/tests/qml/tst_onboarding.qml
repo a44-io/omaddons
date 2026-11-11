@@ -246,6 +246,12 @@ TestCase {
     compare(sheet.title, "Take over 2 addons on Retail?")
     compare(sheet.items.map(function(i) { return i.addon }), ["Bar", "Foo"])
     compare(sheet.effects[0].text, Model.copy("sheet.effect.adopt_in_place"))
+    // How sure omaddons is of each, and why the rest stay (omad-kbtn), from the
+    // binary's typed tiers and reasons.
+    compare(sheet.items.map(function(i) { return i.text }), ["Bar v1 · likely: its files differ from the release",
+      "Foo v1 · exactly its newest release"])
+    compare(sheet.effects[1].text,
+      "Stay as they are, unmanaged: Curse (only CurseForge knows it) and Loose (nothing says where it comes from).")
     // Yes: exactly the stored plan.
     service.confirmYes()
     var apply = runningOf("apply")

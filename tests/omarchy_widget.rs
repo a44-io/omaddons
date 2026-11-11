@@ -2653,6 +2653,14 @@ fn adopt_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
         "## Interface: 120105\n## Title: Loose\n",
     )
     .unwrap();
+    // Known only to CurseForge (omad-kbtn): the take-over leaves it, and says why.
+    let curse = addons.join("Curse");
+    fs::create_dir_all(&curse).unwrap();
+    fs::write(
+        curse.join("Curse.toc"),
+        "## Interface: 120105\n## Title: Curse\n## X-Curse-Project-ID: 12345\n",
+    )
+    .unwrap();
     home.run(&["status"]).expect(0);
     let status = write_fixture(
         dir,
@@ -2670,7 +2678,7 @@ fn adopt_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
     let list = write_fixture(dir, "list-adoptable", &home.exec(&fill(t, "list", &[])), 0);
     assert_eq!(
         list["data"]["targets"][0]["counts"]["unmanaged"],
-        serde_json::json!(3),
+        serde_json::json!(4),
         "{list}"
     );
     let preview = plan_fixture(
@@ -2688,6 +2696,44 @@ fn adopt_fixtures(dir: &std::path::Path, t: &BTreeMap<String, Value>) {
         .map(|s| (s["addon"].as_str().unwrap(), s["op"].as_str().unwrap()))
         .collect();
     assert_eq!(selection, [("Bar", "adopt"), ("Foo", "adopt")], "{preview}");
+    // How sure it is of each, and what it leaves (omad-kbtn): the take-over sheet's words.
+    let target = &preview["data"]["targets"][0];
+    let identified: Vec<(&str, &str, &Value)> = target["identifications"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            (
+                i["addon"].as_str().unwrap(),
+                i["tier"].as_str().unwrap(),
+                &i["reason"],
+            )
+        })
+        .collect();
+    assert_eq!(
+        identified,
+        [
+            ("Bar", "identified", &serde_json::json!("files_differ")),
+            ("Foo", "exact", &Value::Null)
+        ],
+        "{preview}"
+    );
+    let left: Vec<(&str, &str)> = target["left_unmanaged"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| {
+            (
+                g["primary"].as_str().unwrap(),
+                g["reason"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        left,
+        [("Curse", "cf_only"), ("Loose", "unknown")],
+        "{preview}"
+    );
     let id = planned(&preview);
     plan_fixture(&log, &home, dir, "adopt-apply", &apply_of(&id), 0);
     let after = write_fixture(

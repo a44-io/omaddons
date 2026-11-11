@@ -188,6 +188,55 @@ pub enum FailReason {
     LimitExceeded,
 }
 
+/// How sure adoption is of an addon it adopts (omad-kbtn): what a take-over's preview
+/// says of each, beside its item.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct Identification {
+    /// The addon, as its item names it.
+    pub addon: String,
+    /// Its primary folder: the item's request.
+    pub primary: FolderName,
+    pub tier: Tier,
+    /// Why an `identified` addon is not `exact`; `null` otherwise.
+    pub reason: Option<AdoptReason>,
+}
+
+/// Folders `adopt --apply` leaves unmanaged on a target, one group each (omad-kbtn).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct LeftUnmanaged {
+    /// Sorted by key.
+    pub folders: Vec<FolderName>,
+    pub primary: FolderName,
+    pub reason: UnmanagedReason,
+}
+
+/// Why `adopt --apply` leaves a group of folders unmanaged, in the order it lists them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UnmanagedReason {
+    /// A name-only, contested or borrowed match: adopted only when its folder is named.
+    Guess,
+    /// Only a CurseForge or Wago id names it (those sources arrive in M5).
+    CfOnly,
+    /// Nothing identifies it.
+    Unknown,
+    /// Its source's ref is already recorded on the target: a leftover of a managed
+    /// addon.
+    AlreadyManaged,
+}
+
+impl UnmanagedReason {
+    /// Why a group `--apply` does not adopt stays: its tier, below `identified`.
+    pub(crate) const fn of(tier: Tier) -> Option<Self> {
+        match tier {
+            Tier::Guess => Some(Self::Guess),
+            Tier::CfOnly => Some(Self::CfOnly),
+            Tier::Unknown => Some(Self::Unknown),
+            Tier::Exact | Tier::Identified => None,
+        }
+    }
+}
+
 /// `adopt`'s outcome.
 #[derive(Debug)]
 pub struct AdoptOutcome {
@@ -666,7 +715,8 @@ pub fn run(ctx: &Context, args: &AdoptArgs) -> Result<AdoptOutcome> {
     let announcement = verified.plan.as_ref().map(|(_, line)| line.clone());
 
     if !matches!(mode, Mode::Report) {
-        let committed = apply::commit(ctx, &engine, &cache, works, &records);
+        let apply_all = matches!(mode, Mode::Apply);
+        let committed = apply::commit(ctx, &engine, &cache, works, &records, apply_all);
         let mut facts = verified.facts;
         if let Ok(c) = &committed {
             facts.extend(c.facts.iter().cloned());

@@ -1134,6 +1134,8 @@ mod tests {
             atomic_swap: None,
             creates_addons_dir: false,
             error: failed.map(|code| ErrorBody::from(error(code))),
+            identifications: None,
+            left_unmanaged: None,
         }
     }
 
