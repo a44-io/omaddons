@@ -318,14 +318,20 @@ impl<'l> LockedRegistry<'l> {
             && let Some(index) = registry.targets.iter().position(|e| e.key == key)
         {
             let original = &registry.targets[index].client_dir;
-            // Moved, by either sign. The key the target was given when it was read
-            // ([`reconcile`]: no client is at the registered directory any more, and this
-            // one carries its marker) is the one every command showed for it, with its
-            // record: the first change must not take a new key instead because the old
-            // directory still holds a marker (an uninstalled client's leftover
-            // `Interface/`), which would detach the record and rename the client. Or the
-            // original no longer carries the marker.
-            if t.key == Some(key) || read_marker(original) != Some(key) {
+            // Moved. A discovered target was read through [`reconcile`], whose decision
+            // every command showed and the first change keeps: the key it gave the target
+            // (no client is at the registered directory any more, and this one carries its
+            // marker) re-links even while the old directory still holds a marker (an
+            // uninstalled client's leftover `Interface/`), which would otherwise detach
+            // the record and rename the client; and one it left without the key, while
+            // its marker names a registered client, is the copy it reported
+            // (`target_key_duplicate`: another target keeps the key), which gets a new
+            // key even when the registered directory is gone (omad-4h0d.18). `targets
+            // add` registers what it found alone, unreconciled: for it, the original no
+            // longer carrying the marker says moved.
+            let moved = t.key == Some(key)
+                || (origin == Origin::Manual && read_marker(original) != Some(key));
+            if moved {
                 // Moved: re-link the key to the new paths.
                 let entry = &mut registry.targets[index];
                 entry.install_root = t.install_root.clone();

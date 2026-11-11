@@ -327,6 +327,66 @@ fn a_copied_install_gets_a_new_key() {
     );
 }
 
+/// Registered at a, copied to b, then a moved to c (omad-4h0d.18): two clients carry the
+/// key and neither is at the registered directory. Reading gives the key to the first
+/// found (b) and reports c as the copy; the first change on either side agrees with that
+/// read, in both orders: c gets a new key, and b re-links the key, keeping `wotlk`.
+#[test]
+fn a_copy_read_as_such_gets_a_new_key_when_the_original_moved_away() {
+    for c_first in [true, false] {
+        let world = World::new();
+        let games = world.env.home().join("Games");
+        let original = CustomRoot::at(games.join("a-wotlk")).build();
+        let key = world.register(&world.targets().targets[0]);
+        let (copy, moved) = (games.join("b-wotlk"), games.join("c-wotlk"));
+        let status = std::process::Command::new("cp")
+            .arg("-a")
+            .arg(&original)
+            .arg(&copy)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        fs::rename(&original, &moved).unwrap();
+
+        let read = world.targets();
+        assert_eq!(
+            ids(&read.targets),
+            [("wotlk".into(), true), ("wotlk@c-wotlk".into(), false)],
+            "c_first={c_first}"
+        );
+        assert_eq!(read.targets[0].target.client_dir, copy);
+        assert_eq!(read.warnings[0].code, WarningCode::TargetKeyDuplicate);
+
+        let (b, c) = if c_first {
+            let c = world.register(&read.targets[1]);
+            (world.register(&world.targets().targets[0]), c)
+        } else {
+            let b = world.register(&read.targets[0]);
+            let again = world.targets();
+            assert_eq!(again.targets[1].target.client_dir, moved);
+            (b, world.register(&again.targets[1]))
+        };
+        assert_eq!(
+            b, key,
+            "c_first={c_first}: b keeps the key it was shown with"
+        );
+        assert_ne!(c, key, "c_first={c_first}: the copy gets its own");
+        assert_eq!(
+            (read_marker(&copy), read_marker(&moved)),
+            (Some(key), Some(c))
+        );
+        let registry = load_registry(&world.paths).unwrap().value;
+        let entry = registry.entry(&key).unwrap();
+        assert_eq!(
+            (entry.id.as_str(), &entry.client_dir),
+            ("wotlk", &copy),
+            "c_first={c_first}"
+        );
+        let after = world.targets();
+        assert!(after.warnings.is_empty(), "{:?}", after.warnings);
+    }
+}
+
 #[test]
 fn registered_targets_keep_their_ids() {
     let world = World::new();

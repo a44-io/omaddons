@@ -470,7 +470,7 @@ A **target** is one WoW client: one flavor folder such as `_retail_`, with its o
 - a **family** derived from the client's version, which picks its load rules;
 - zero or more **game modes**: Classic Era, Hardcore and Season of Discovery all run in the Classic Era client and share its addons.
 
-A target is **registered** on its first change (or with `targets add`, `rename` or `default`). Registration writes `<client>/Interface/.omaddons/target.json`, so a moved or renamed install is recognized as the same target. A second install of the same flavor gets a qualified id such as `retail@steam`, `retail@lutris` or `retail@wine`. The first registered install keeps the bare id, and further collisions get `retail@steam-2`, `-3` and so on.
+A target is **registered** on its first change (or with `targets add`, `rename` or `default`). Registration writes `<client>/Interface/.omaddons/target.json`, so a moved or renamed install is recognized as the same target. A copied install carries the same marker: the client at the registered directory keeps the key, or, when that directory is gone, the first one discovery finds, and the other is reported as a copy (`target_key_duplicate`) and gets a new key on its first change, as every command showed. A second install of the same flavor gets a qualified id such as `retail@steam`, `retail@lutris` or `retail@wine`. The first registered install keeps the bare id, and further collisions get `retail@steam-2`, `-3` and so on.
 
 ### Where discovery looks
 
