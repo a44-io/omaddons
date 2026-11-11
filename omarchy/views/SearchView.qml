@@ -141,6 +141,14 @@ Item {
     }
   }
 
+  // `text` in the box and searched at once, as typing it and Enter would (omad-z5il: a
+  // failure's Search for it). The box keeps the keys, as after `s`.
+  function searchFor(text) {
+    field.text = String(text || "")
+    focusSearch()
+    return searchQuery(field.text)
+  }
+
   // `query` searched now, unless it is the one the shown answer (or the running search)
   // is for already.
   function searchQuery(query) {

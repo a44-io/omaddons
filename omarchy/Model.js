@@ -3188,6 +3188,29 @@ function fixButtons(env) {
   return out
 }
 
+// The word a failure says to search for (omad-z5il): when the CLI answered `not_found`
+// with `omaddons search <word>` as its fix (an addon page's Install it of a name no source
+// is known for), that word, which Search for it puts in Search's box; "" for any other
+// failure. Typed fields only, never the message; the word is TOC text, shown as text.
+function searchFixOf(env) {
+  var error = env && env.error && typeof env.error === "object" ? env.error : null
+  if (!error || error.code !== "not_found" || !Array.isArray(error.fix_argv)) return ""
+  var argv = error.fix_argv
+  var word = argv.length === 3 && argv[0] === "omaddons" && argv[1] === "search" ? argv[2] : ""
+  return typeof word === "string" && word.trim() !== "" && !/[\u0000-\u001f]/.test(word) ? word : ""
+}
+
+// A failure's fix buttons, but the one Search for it stands for (omad-z5il): Search for it
+// is the fix then, so what is left is marked an alternative (never labelled "Fix").
+function fixButtonsBesideSearch(env) {
+  var word = searchFixOf(env)
+  var fixes = fixButtons(env)
+  if (word === "") return fixes
+  return fixes.filter(function(fix) {
+    return !(fix.argv && fix.argv.length === 3 && fix.argv[1] === "search" && fix.argv[2] === word)
+  }).map(function(fix) { return Object.assign({}, fix, { "alternative": true }) })
+}
+
 function warningMessages(env, code) {
   var out = []
   if (env && Array.isArray(env.warnings)) {
@@ -7518,6 +7541,8 @@ var COPY = {
   "card.action.reinstall": "Update the panel",
   "card.action.copy_command": "Copy command",
   "card.action.copy_details": "Copy details",
+  // A failure's fix that searches for a name nothing is known for (omad-z5il).
+  "card.action.search_for": "Search for it",
   "card.copied": "Copied",
 
   // A failure's details, for a bug report (Copy details).
@@ -9173,6 +9198,8 @@ if (typeof module !== "undefined") {
     itemFixes: itemFixes,
     isSafeUrl: isSafeUrl,
     fixButtons: fixButtons,
+    searchFixOf: searchFixOf,
+    fixButtonsBesideSearch: fixButtonsBesideSearch,
     staleText: staleText,
     fixText: fixText,
     VIEWS: VIEWS,

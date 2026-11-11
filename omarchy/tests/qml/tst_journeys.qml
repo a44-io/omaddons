@@ -404,6 +404,42 @@ TestCase {
   function test_j3_find_and_install_by_mouse_540() { journeyFindAndInstall(540, true) }
   function test_j3_find_and_install_by_mouse_400() { journeyFindAndInstall(400, true) }
 
+  // ---- J3 from an addon page (omad-z5il): a dependency nothing is known for
+
+  // An addon page's Install it of the name a TOC requires (tst_views proves its click runs
+  // exactly this) previews `install`; the binary answers not_found, whose fix searches.
+  // The failure card offers Search for it as the fix and its other fix as an alternative,
+  // never "Fix: omaddons search …"; Search for it opens Search on that name, the box
+  // holding it and the keys, and searches it at once, the card gone.
+  function searchForAnUnknownName(width) {
+    var answers = quiet("status-updates")
+    begin(width, answers)
+    compare(service.run("install", { "target": "retail", "ref": "LibNowhere" }, "Install LibNowhere", []), "")
+    answerChange("install", "install-unknown-name", 3)
+    tryVerify(function() { return !!service.lastError }, 2000, "the preview fails: " + launchLog())
+    compare([service.lastError.code, service.lastError.search, service.lastError.fixText], ["not_found", "LibNowhere", ""])
+    var offer = child("searchForIt")
+    laidOut()
+    verify(offer.visible)
+    compare(offer.text, "Search for it")
+    compare(child("fix_0").text, "omaddons help install", "an alternative, not the Fix")
+    verify(findChild(frame, "fix_1") === null, "the search command is no button of its own")
+    compare(ran("search").length, 0, "nothing searched before the click")
+    click(offer)
+    tryCompare(frame, "view", "search")
+    var field = child("searchField", frame.currentView)
+    compare(field.text, "LibNowhere")
+    tryVerify(function() { return field.activeFocus })
+    tryVerify(function() { return ran("search").some(function(l) { return words(l.command).indexOf("LibNowhere") !== -1 }) }, 2000,
+      "the search runs: " + launchLog())
+    compare(ran("search").filter(function(l) { return words(l.command).indexOf("LibNowhere") !== -1 }).length, 1, "searched once")
+    compare(service.lastError, null, "the card goes")
+    compare(ran("install").length, 1, "only the preview ran")
+  }
+
+  function test_j3_search_for_an_unknown_dependency_540() { searchForAnUnknownName(540) }
+  function test_j3_search_for_an_unknown_dependency_400() { searchForAnUnknownName(400) }
+
   // ---- J4 undo yesterday
 
   function journeyUndoYesterday(width, mouse) {

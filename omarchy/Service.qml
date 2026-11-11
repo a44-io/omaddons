@@ -1143,11 +1143,13 @@ Item {
   function errorOf(env, fallback) {
     if (env && env.error) {
       return { "message": String(env.error.message || fallback), "code": String(env.error.code || ""),
-        "fixes": Model.fixButtons(env), "fixText": Model.fixText(env),
+        "fixes": Model.fixButtonsBesideSearch(env), "fixText": Model.searchFixOf(env) !== "" ? "" : Model.fixText(env),
         // A restore's ownership choices, and the backup's folder for a copy by hand.
-        "choices": Model.ambiguityChoices(env), "folder": Model.backupFolderOf(env) }
+        "choices": Model.ambiguityChoices(env), "folder": Model.backupFolderOf(env),
+        // A name nothing is known for: Search for it, in place of its command (omad-z5il).
+        "search": Model.searchFixOf(env) }
     }
-    return { "message": fallback, "code": "", "fixes": [], "fixText": "", "choices": [], "folder": "" }
+    return { "message": fallback, "code": "", "fixes": [], "fixText": "", "choices": [], "folder": "", "search": "" }
   }
 
   // Called by a lane (directly, so the values stay JavaScript) when a request ends.

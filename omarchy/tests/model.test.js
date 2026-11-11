@@ -1965,6 +1965,51 @@ describe("the panel frame", () => {
   })
 })
 
+// omad-z5il: an addon page's Install it of a name no source is known for fails not_found,
+// its fix a search; the failure card offers Search for it on that name instead.
+describe("a not_found whose fix searches", () => {
+  const unknown = () => fixture("install-unknown-name")
+
+  test("the binary's answer names the word, and Search for it stands for its fix", () => {
+    const env = unknown()
+    expect([env.error.code, env.error.fix_argv]).toEqual(["not_found", ["omaddons", "search", "LibNowhere"]])
+    expect(M.searchFixOf(env)).toBe("LibNowhere")
+    // The search is no button of its own; the help that is left is an alternative.
+    expect(M.fixButtons(env).map((f) => f.argv)).toEqual([["omaddons", "search", "LibNowhere"], ["omaddons", "help", "install"]])
+    const left = M.fixButtonsBesideSearch(env)
+    expect(left.map((f) => [f.argv, f.runnable, f.alternative])).toEqual([[["omaddons", "help", "install"], true, true]])
+  })
+
+  test("the shape is the code and the fix argv, never the message", () => {
+    const env = unknown()
+    expect(M.searchFixOf(Object.assign({}, env, { error: Object.assign({}, env.error, { message: "", fix: "" }) }))).toBe("LibNowhere")
+    const as = (error) => ({ ok: false, error: Object.assign({}, unknown().error, error) })
+    // Another code with the same fix, or the words without the argv: no Search for it.
+    expect(M.searchFixOf(as({ code: "invalid_args" }))).toBe("")
+    expect(M.searchFixOf(as({ fix_argv: null, fix: "omaddons search LibNowhere" }))).toBe("")
+    // A search fix with flags, or not a single word after `search`, keeps today's card.
+    for (const argv of [["omaddons", "search", "--catalog", "LibNowhere"], ["omaddons", "search", "--", "LibNowhere"],
+      ["omaddons", "search"], ["omaddons", "search", ""], ["omaddons", "search", " "], ["omaddons", "search", "Lib\u001bNowhere"],
+      ["omaddons", "search", 7], ["omaddons", "targets"], ["omaddons-x", "search", "LibNowhere"]]) {
+      expect([argv, M.searchFixOf(as({ fix_argv: argv }))]).toEqual([argv, ""])
+    }
+    expect(M.searchFixOf(null)).toBe("")
+    expect(M.searchFixOf({ ok: true, data: {} })).toBe("")
+  })
+
+  test("other failures keep their fixes as they were", () => {
+    const failure = fixture("failure")
+    expect(M.searchFixOf(failure)).toBe("")
+    expect(M.fixButtonsBesideSearch(failure)).toEqual(M.fixButtons(failure))
+    expect(M.fixButtonsBesideSearch(failure).some((f) => "alternative" in f)).toBe(false)
+    const other = { ok: false, error: { code: "not_found", message: "no target named era", fix: "omaddons targets",
+      fix_argv: ["omaddons", "targets"], alternatives: [{ display: "omaddons help install", argv: ["omaddons", "help", "install"] }] } }
+    expect(M.searchFixOf(other)).toBe("")
+    expect(M.fixButtonsBesideSearch(other)).toEqual(M.fixButtons(other))
+    expect(M.fixButtonsBesideSearch(other).map((f) => f.argv)).toEqual([["omaddons", "targets"], ["omaddons", "help", "install"]])
+  })
+})
+
 describe("the Updates and Installed views", () => {
   const STATUS = () => M.reduceStatus(fixture("status-updates"), NOW).targets
 

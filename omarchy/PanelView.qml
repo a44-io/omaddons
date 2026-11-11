@@ -301,6 +301,16 @@ Item {
 
   // A view (a tab): the stack is cleared, and the view is created on its first visit
   // and kept (the one it leaves too, which may be the one the panel opened on).
+  // A failure's Search for it (omad-z5il): Search, with `text` in its box and searched;
+  // the failure is answered, so its card goes.
+  function searchFor(text) {
+    var query = String(text || "")
+    if (query === "" || !svc) return false
+    if (typeof svc.dismissError === "function") svc.dismissError()
+    showView("search")
+    return !!current && typeof current.searchFor === "function" && current.searchFor(query)
+  }
+
   function showView(name) {
     pointerGate.reset()
     var visited = visitedViews.slice()
@@ -1295,23 +1305,41 @@ Item {
               width: parent.width
               spacing: Style.spacing.sm
 
+              // A name nothing is known for (an addon page's Install it of what a TOC
+              // requires): Search for it is the fix, in place of its search command line
+              // (omad-z5il); the buttons after it are alternatives.
+              Button {
+                objectName: "searchForIt"
+                visible: !!root.lastError && typeof root.lastError.search === "string" && root.lastError.search !== ""
+                enabled: !!root.svc
+                text: Model.copy("card.action.search_for")
+                Accessible.role: Accessible.Button
+                Accessible.name: text
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                onClicked: root.searchFor(root.lastError.search)
+              }
+
               Repeater {
                 model: root.lastError && Array.isArray(root.lastError.fixes) ? root.lastError.fixes : []
 
                 Button {
                   required property var modelData
                   required property int index
+                  readonly property bool isFix: index === 0 && modelData.alternative !== true
                   objectName: "fix_" + index
                   enabled: root.canAct && !root.busy
                   opacity: enabled ? 1.0 : 0.4
-                  text: index === 0 ? "Fix: " + modelData.command : modelData.command
+                  text: isFix ? "Fix: " + modelData.command : modelData.command
                   Accessible.role: Accessible.Button
                   Accessible.name: text
-                  bordered: index === 0
+                  bordered: isFix
                   foreground: root.foreground
                   fontFamily: root.fontFamily
                   fontSize: Style.font.caption
-                  onClicked: root.runCli(modelData, index === 0 ? "Fix" : "Fix (alternative)")
+                  onClicked: root.runCli(modelData, isFix ? "Fix" : "Fix (alternative)")
                 }
               }
 

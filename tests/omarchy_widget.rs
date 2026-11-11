@@ -3758,6 +3758,26 @@ fn write_widget_fixtures() {
     )
     .unwrap();
     write_fixture(&dir, "check", &home.exec(&fill(&t, "check", &[])), 0);
+    // An addon page's Install it of a name no source is known for (omad-z5il): `install`
+    // reads it as it reads any name, finds none, sends no request, and its fix searches.
+    let unknown = write_fixture(
+        &dir,
+        "install-unknown-name",
+        &home.exec(&support::preview_of(fill(
+            &t,
+            "install",
+            &[("target", "retail"), ("ref", "LibNowhere")],
+        ))),
+        3,
+    );
+    assert_eq!(
+        (&unknown["error"]["code"], &unknown["error"]["fix_argv"]),
+        (
+            &serde_json::json!("not_found"),
+            &serde_json::json!(["omaddons", "search", "LibNowhere"])
+        ),
+        "{unknown}"
+    );
     let status = write_fixture(
         &dir,
         "status-updates",
