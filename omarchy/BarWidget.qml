@@ -209,7 +209,7 @@ Panel {
     open: root.opened
     focusTarget: view.focusItem
     contentWidth: view.zoomed ? panel.fittedContentWidth(999999)
-      : panel.fittedContentWidth(Style.space(Model.intSetting(Model.migrateSettings(root.settings), "panelWidth", 540, 400, 800)))
+      : panel.fittedContentWidth(Style.space(Model.intSetting(Model.migrateSettings(root.settings), "panelWidth", 600, 400, 800)))
     contentHeight: view.zoomed ? panel.fittedContentHeight(999999)
       : panel.fittedContentHeight(view.contentImplicitHeight, Style.space(720))
 

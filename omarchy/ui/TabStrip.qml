@@ -7,10 +7,11 @@ import "../Model.js" as Model
 
 // The panel's tab strip (design doc §2.1, §5.5): one kit Button per view, drawn as
 // qs.Ui ButtonGroup draws its chips (bordered, the selected one in the selected
-// state), each with its key and title and its count as a pill (TabCount). A thin
-// wrapper, decided: ButtonGroup has no place for a count per chip. Below 480 px
-// (`narrow`) a tab is its view's glyph and count; the content's first line names the
-// view. The strip decides nothing: `views` comes from the frame, `{id, title, key,
+// state), each with its title and its count as a pill (TabCount); its digit key is in
+// the tooltip and the key reference, not on the chip, which keeps the strip on one
+// line. A thin wrapper, decided: ButtonGroup has no place for a count per chip. Below
+// 480 px (`narrow`) a tab is its view's glyph and count; the content's first line names
+// the view. The strip decides nothing: `views` comes from the frame, `{id, title, key,
 // glyph, count, urgent}` each.
 Flow {
   id: root
@@ -40,7 +41,7 @@ Flow {
       required property var modelData
       required property int index
       objectName: "tab_" + modelData.id
-      text: root.narrow ? "" : modelData.key + " " + modelData.title
+      text: root.narrow ? "" : modelData.title
       iconText: root.narrow ? String.fromCodePoint(modelData.glyph) : ""
       tooltipText: modelData.title + " (" + modelData.key + ")"
       leftAlign: true

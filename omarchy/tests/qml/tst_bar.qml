@@ -318,15 +318,15 @@ TestCase {
     var api = barApiComponent.createObject(testCase)
     var saved = []
     api.shell = { "serviceFor": function(id) { return svc }, "updateEntryInline": function(id, entry) { saved.push([id, entry]) } }
-    var widget = make({ "settings": { "panelWidth": 600 } })
+    var widget = make({ "settings": { "panelWidth": 640 } })
     widget.bar = api
     part(widget, "view").settingRequested("keyHint", "Off")
     compare(widget.settings.keyHint, "Off")
-    compare(widget.settings.panelWidth, 600, "the other settings stay")
+    compare(widget.settings.panelWidth, 640, "the other settings stay")
     compare(svc.pushed[svc.pushed.length - 1].keyHint, "Off")
     compare(saved.length, 1)
     compare(saved[0][0], Build.PLUGIN_ID)
-    compare([saved[0][1].id, saved[0][1].keyHint, saved[0][1].panelWidth], [Build.PLUGIN_ID, "Off", 600])
+    compare([saved[0][1].id, saved[0][1].keyHint, saved[0][1].panelWidth], [Build.PLUGIN_ID, "Off", 640])
     api.destroy()
   }
 

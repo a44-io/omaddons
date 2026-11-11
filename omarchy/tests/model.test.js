@@ -309,7 +309,7 @@ describe("settings", () => {
   })
 
   test("a step changes one setting within its bounds; a path is typed", () => {
-    expect(M.steppedSetting({}, "panelWidth", 1, true)).toBe(560)
+    expect(M.steppedSetting({}, "panelWidth", 1, true)).toBe(620)
     expect(M.steppedSetting({ panelWidth: 800 }, "panelWidth", 1, false)).toBe(800)
     expect(M.steppedSetting({ panelWidth: 800 }, "panelWidth", 1, true)).toBe(400)
     expect(M.steppedSetting({ panelWidth: 400 }, "panelWidth", -1, false)).toBe(400)
@@ -330,12 +330,12 @@ describe("settings", () => {
 
   test("missing, wrong-typed and out-of-range values fall back to the default", () => {
     for (const settings of [undefined, null, {}, { panelWidth: null }]) {
-      expect(M.setting(settings, "panelWidth")).toBe(540)
+      expect(M.setting(settings, "panelWidth")).toBe(600)
     }
-    expect(M.setting({ panelWidth: "600" }, "panelWidth")).toBe(540)
-    expect(M.setting({ panelWidth: 399 }, "panelWidth")).toBe(540)
-    expect(M.setting({ panelWidth: 801 }, "panelWidth")).toBe(540)
-    expect(M.setting({ panelWidth: 540.5 }, "panelWidth")).toBe(540)
+    expect(M.setting({ panelWidth: "640" }, "panelWidth")).toBe(600)
+    expect(M.setting({ panelWidth: 399 }, "panelWidth")).toBe(600)
+    expect(M.setting({ panelWidth: 801 }, "panelWidth")).toBe(600)
+    expect(M.setting({ panelWidth: 540.5 }, "panelWidth")).toBe(600)
     expect(M.setting({ refreshIntervalSec: 29 }, "refreshIntervalSec")).toBe(300)
     expect(M.setting({ autoCheck: "yes" }, "autoCheck")).toBe("On")
     expect(M.setting({ autoCheck: 1 }, "autoCheck")).toBe("On")

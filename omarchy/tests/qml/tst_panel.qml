@@ -320,7 +320,9 @@ TestCase {
     child("tab_installed").clicked()
     compare(view.view, "installed")
     // The tabs are in design doc §2.1's order, Installed titled Addons.
-    compare(child("tab_installed").text, "2 Addons")
+    compare(child("tab_installed").text, "Addons")
+    // Its key is in the tooltip, not on the chip.
+    compare(child("tab_installed").tooltipText, "Addons (2)")
     verify(child("tab_installed").selected)
     verify(child("content").item !== null)
     // Every view of the switcher has its component; one without would leave the slot empty.
@@ -1365,12 +1367,12 @@ TestCase {
 
   function test_the_bar_widget_holds_the_frame_in_its_keyboard_panel() {
     Store.set(svc)
-    var bar = barComponent.createObject(testCase, { "settings": { "panelWidth": 600 } })
+    var bar = barComponent.createObject(testCase, { "settings": { "panelWidth": 640 } })
     made = made.concat([bar])
     tryVerify(function() { return bar.svc === svc })
     var panel = child("panel", bar)
     var inner = child("view", bar)
-    compare(panel.contentWidth, 600)
+    compare(panel.contentWidth, 640)
     compare(inner.svc, svc)
     verify(!panel.open)
     bar.open()
@@ -1383,6 +1385,6 @@ TestCase {
     verify(!bar.opened)
     // An out-of-range width falls back to the default.
     bar.settings = { "panelWidth": 2000 }
-    compare(panel.contentWidth, 540)
+    compare(panel.contentWidth, 600)
   }
 }

@@ -10,8 +10,8 @@ TestCase {
   name: "Smoke"
 
   function test_model_loads_in_qt() {
-    compare(Model.DEFAULT_SETTINGS.panelWidth, 540)
-    compare(Model.setting({ "panelWidth": 900 }, "panelWidth"), 540)
+    compare(Model.DEFAULT_SETTINGS.panelWidth, 600)
+    compare(Model.setting({ "panelWidth": 900 }, "panelWidth"), 600)
     compare(Model.classifyCliArgv(["omaddons", "status", "--json"]).reason, "widget_flag")
   }
 

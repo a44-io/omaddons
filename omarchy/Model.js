@@ -16,7 +16,7 @@
 // manifest.json's `barWidget.defaults`.
 var DEFAULT_SETTINGS = {
   "binary": "",
-  "panelWidth": 540,
+  "panelWidth": 600,
   "autoCheck": "On",
   "notifyUpdates": "Off",
   "notifyErrors": "On",
@@ -102,7 +102,7 @@ function secondsText(n) {
   return rest === 0 ? copy("settings.value.minutes", { "n": minutes }) : copy("settings.value.minutes_seconds", { "n": minutes, "s": rest })
 }
 
-// A panel setting's value in words: "On", "Off", "540 px", "5 min", the binary's path.
+// A panel setting's value in words: "On", "Off", "600 px", "5 min", the binary's path.
 function settingText(key, value) {
   var rule = SETTING_RULES[key]
   if (!rule) return str(value)

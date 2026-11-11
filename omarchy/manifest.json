@@ -14,10 +14,10 @@
     "aliases": ["omaddons", "wow", "warcraft", "addons"],
     "allowMultiple": false,
     "defaultSection": "right",
-    "defaults": { "binary": "", "panelWidth": 540, "autoCheck": "On", "notifyUpdates": "Off", "notifyErrors": "On", "notifyWhilePlaying": "Off", "refreshIntervalSec": 300, "keyHint": "On", "autoUpdateWidget": "On", "autoUpdate": "Off" },
+    "defaults": { "binary": "", "panelWidth": 600, "autoCheck": "On", "notifyUpdates": "Off", "notifyErrors": "On", "notifyWhilePlaying": "Off", "refreshIntervalSec": 300, "keyHint": "On", "autoUpdateWidget": "On", "autoUpdate": "Off" },
     "schema": [
       { "key": "binary", "type": "path", "label": "omaddons binary", "defaultValue": "", "description": "Empty runs the binary that installed the widget (omaddons omarchy install stamps its path). Set a path to run another build." },
-      { "key": "panelWidth", "type": "integer", "label": "Panel width", "min": 400, "max": 800, "step": 20, "defaultValue": 540, "description": "How wide the panel opens, from 400 to 800 px; z in the panel fills the screen." },
+      { "key": "panelWidth", "type": "integer", "label": "Panel width", "min": 400, "max": 800, "step": 20, "defaultValue": 600, "description": "How wide the panel opens, from 400 to 800 px; z in the panel fills the screen." },
       { "key": "autoCheck", "type": "enum", "label": "Check for updates when due", "options": ["On", "Off"], "defaultValue": "On", "description": "Run omaddons outdated in the background when a client's last check is older than check_interval_hours in omaddons' config.toml." },
       { "key": "autoUpdate", "type": "enum", "label": "Update addons by themselves", "options": ["On", "Off"], "defaultValue": "Off", "description": "After a background check, while no game runs, routine updates (exactly what the Updates view shows: nothing new, replaced or moved) install by themselves, and a notification offers Undo in History. A failure turns this Off. Off: updates wait for you." },
       { "key": "notifyUpdates", "type": "enum", "label": "Notify about new updates", "options": ["On", "Off"], "defaultValue": "Off", "description": "A notification when a check finds updates that weren't there before." },

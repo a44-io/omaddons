@@ -24,13 +24,13 @@ TestCase {
   name: "Snapshots"
   when: windowShown
   visible: true
-  width: 620
+  width: 680
   height: 1100
 
-  // The panel as the bar's KeyboardPanel sizes it (BarWidget.qml): 540 wide by default
+  // The panel as the bar's KeyboardPanel sizes it (BarWidget.qml): 600 wide by default
   // (a scene may set the minimum, 400, before it opens), at most 720 tall, inside the
   // popup card.
-  property int panelWidth: 540
+  property int panelWidth: 600
   readonly property int panelMaxHeight: 720
   readonly property int cardPadding: 12
 
@@ -392,7 +392,7 @@ TestCase {
 
   function cleanup() {
     closePanel()
-    panelWidth = 540
+    panelWidth = 600
     if (service) service.destroy()
     service = null
     ProcessRegistry.reset()
@@ -1326,7 +1326,7 @@ TestCase {
   // every control must still be reachable (and named: save's walk).
   function test_matrix_widths_and_text_zooms() {
     var states = ["updates", "installed", "search", "errors", "issues", "backups", "history", "settings"]
-    for (var w of [540, 400]) {
+    for (var w of [600, 400]) {
       for (var z of [0.6, 0.8, 1.0, 1.5, 2.0]) {
         for (var s of states) {
           cleanup()

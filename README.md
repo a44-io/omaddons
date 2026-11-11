@@ -2362,7 +2362,7 @@ The panel's Settings sheet (`,`, or the cog at the top of the panel) changes eac
 
 | Setting | In the sheet | Values, and the default | What it does |
 |---|---|---|---|
-| `panelWidth` | Width | 400 to 800 pixels; 540 | the panel's width |
+| `panelWidth` | Width | 400 to 800 pixels; 600 | the panel's width |
 | `refreshIntervalSec` | Refresh when nothing changed | 30 to 3600 seconds; 300 | the refresh behind the doorbell; an answer older than it and 20 seconds more shows on the button as stale |
 | `autoCheck` | Check for updates when due | `On` or `Off`; `On` | the background update check |
 | `autoUpdate` | Update addons by themselves | `On` or `Off`; `Off` | after a background check, while no game runs, installs a routine **Update all** that is exactly what the Updates view shows, with a notification and its Undo in History (see [Play sessions and notifications](#play-sessions-and-notifications)); a failure turns it `Off`, and the sheet says why |
