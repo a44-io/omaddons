@@ -2835,6 +2835,7 @@ pub(crate) mod tests {
             default_id: id.to_owned(),
             qualifier: "test".to_owned(),
             source: crate::discover::DiscoverySource::Scan,
+            not_launched_since: None,
         }
     }
 

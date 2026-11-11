@@ -216,6 +216,12 @@ fn doubled_records_change_with_a_warning() {
         argv_of(&warning["fix_argv"]),
         ["omaddons", "status", "-t", "anniversary"]
     );
+    // This client and the one that also recorded it (omad-5cg5).
+    assert_eq!(
+        warning["targets"],
+        serde_json::json!(["anniversary", "era"]),
+        "{warning}"
+    );
 }
 
 /// A client that records the folder while the other is planning, registering itself

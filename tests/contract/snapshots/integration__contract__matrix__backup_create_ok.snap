@@ -51,13 +51,15 @@ expression: s.stable(&c.envelope)
       "code": "backup_space_low",
       "fix": "free some space, or lower limits.backup_min_free_mb in config.toml",
       "fix_argv": null,
-      "message": "retail: only 1.1 GB is free beside its backups, below limits.backup_min_free_mb (2048 MiB)"
+      "message": "retail: only 1.1 GB is free beside its backups, below limits.backup_min_free_mb (2048 MiB)",
+      "targets": []
     },
     {
       "code": "backup_copied",
       "fix": null,
       "fix_argv": null,
-      "message": "retail: the filesystem could not clone every file of WTF/, so 218 bytes were copied and take their full size on disk"
+      "message": "retail: the filesystem could not clone every file of WTF/, so 218 bytes were copied and take their full size on disk",
+      "targets": []
     }
   ]
 }

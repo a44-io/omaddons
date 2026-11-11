@@ -87,6 +87,7 @@ mod support {
                         target,
                         qualifier: "battlenet".into(),
                         source: DiscoverySource::Scan,
+                        not_launched_since: None,
                     }
                 })
                 .collect::<Vec<_>>();

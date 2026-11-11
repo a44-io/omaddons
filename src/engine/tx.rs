@@ -818,7 +818,8 @@ fn retain_backups(
             "prune",
             "-t",
             target.id.as_str(),
-        ])),
+        ]))
+        .about([target.id.as_str()]),
     )
 }
 
@@ -981,9 +982,7 @@ fn commit_target(
     failpoint::hit("engine.cleanup.done").map_err(fail)?;
     let (mut outcome, recovered) = result?;
     if let (Some(key), Some(_)) = (outcome.key, outcome.tx) {
-        outcome
-            .warnings
-            .extend(retain(ctx, scopes, key, &target.client_dir));
+        outcome.warnings.extend(retain(ctx, scopes, key, target));
     }
     Ok((outcome, recovered))
 }
@@ -1009,9 +1008,18 @@ pub(super) fn retain(
     ctx: &EngineCtx<'_>,
     scopes: &ScopeTable,
     key: TargetKey,
-    client_dir: &std::path::Path,
+    target: &Target,
 ) -> Vec<Warning> {
-    let mut warnings = retain_own(ctx, scopes, key, client_dir);
+    // The client it pruned is what its cap and its failure are about (omad-5cg5).
+    let mut warnings: Vec<Warning> = retain_own(ctx, scopes, key, &target.client_dir)
+        .into_iter()
+        .map(|w| match w.code {
+            WarningCode::SnapshotCapExceeded | WarningCode::RetentionFailed => {
+                w.about([target.id.as_str()])
+            }
+            _ => w,
+        })
+        .collect();
     let swept = super::retention::sweep(
         ctx.paths,
         Writer::Mutating,

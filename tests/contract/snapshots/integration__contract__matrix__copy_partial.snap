@@ -82,7 +82,8 @@ expression: s.stable(&c.envelope)
         "-t",
         "retail"
       ],
-      "message": "classic: nosuch: nosuch is not installed on retail"
+      "message": "classic: nosuch: nosuch is not installed on retail",
+      "targets": []
     }
   ]
 }

@@ -37,7 +37,8 @@ expression: s.stable(&c.envelope)
       "code": "backup_space_low",
       "fix": "free some space, or lower limits.backup_min_free_mb in config.toml",
       "fix_argv": null,
-      "message": "retail: only 1.1 GB is free beside its backups, below limits.backup_min_free_mb (2048 MiB)"
+      "message": "retail: only 1.1 GB is free beside its backups, below limits.backup_min_free_mb (2048 MiB)",
+      "targets": []
     }
   ]
 }

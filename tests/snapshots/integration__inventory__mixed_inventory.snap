@@ -146,7 +146,8 @@ expression: inv
             "code": "out_of_date",
             "message": "OldThing: OldThing.toc targets interface 120000, older than the client's 120105; it loads only with out-of-date addons enabled",
             "fix": "update the addon, or enable \"Load out of date AddOns\" in the client",
-            "fix_argv": null
+            "fix_argv": null,
+            "targets": []
           }
         ]
       }

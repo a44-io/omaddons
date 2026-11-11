@@ -121,7 +121,8 @@ expression: "support::stable(&envelope)"
         "-t",
         "retail"
       ],
-      "message": "LittleWigs on retail requires Ace, which was not installed: several projects ship it (gh:o/acea, gh:o/aceb, gh:o/acec)"
+      "message": "LittleWigs on retail requires Ace, which was not installed: several projects ship it (gh:o/acea, gh:o/aceb, gh:o/acec)",
+      "targets": []
     }
   ]
 }

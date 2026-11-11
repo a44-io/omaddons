@@ -61,7 +61,8 @@ expression: s.stable(&c.envelope)
         "-t",
         "retail"
       ],
-      "message": "Foo is pinned at 1.0 on retail; nothing was installed. Pass --version to move it"
+      "message": "Foo is pinned at 1.0 on retail; nothing was installed. Pass --version to move it",
+      "targets": []
     }
   ]
 }

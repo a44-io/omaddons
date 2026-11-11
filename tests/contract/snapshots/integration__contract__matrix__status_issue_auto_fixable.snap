@@ -246,7 +246,8 @@ expression: s.stable(&status.envelope)
       "code": "credential_file_mode",
       "fix": "chmod 600 <root>/config/omaddons/credentials/github",
       "fix_argv": null,
-      "message": "<root>/config/omaddons/credentials/github is readable by other users"
+      "message": "<root>/config/omaddons/credentials/github is readable by other users",
+      "targets": []
     }
   ]
 }

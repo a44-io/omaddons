@@ -87,7 +87,8 @@ expression: s.stable(&c.envelope)
       "code": "plan_not_stored",
       "fix": "stored plans are kept in omaddons' cache directory, which is safe to empty",
       "fix_argv": null,
-      "message": "the plan store is full (512 plans, 1101824 bytes): this preview was not stored; expired plans are cleared as they age, within 24 hours; the preview and its token stand"
+      "message": "the plan store is full (512 plans, 1101824 bytes): this preview was not stored; expired plans are cleared as they age, within 24 hours; the preview and its token stand",
+      "targets": []
     }
   ]
 }

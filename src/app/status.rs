@@ -686,6 +686,7 @@ fn shared_warning(group: &SharedAddons) -> Warning {
         "manage these addons from one client (-t {first}) and do not adopt them on the \
          others, or stop sharing the directory"
     )))
+    .about(group.targets.iter().map(String::as_str))
 }
 
 pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {

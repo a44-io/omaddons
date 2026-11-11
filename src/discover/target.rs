@@ -17,6 +17,13 @@ pub struct DiscoveredTarget {
     /// What the registry appends on an id collision, e.g. `battlenet` or `steam`.
     pub qualifier: String,
     pub source: DiscoverySource,
+    /// The interface its `WTF/Config.wtf` last loaded addons at, when that predates the
+    /// client's own: it has not started since its last patch (Battle.net clients). Said as
+    /// `client_not_launched_since_patch` once the registry has named it
+    /// ([`super::not_launched_since_patch`]), so the warning carries its final id. `null`
+    /// otherwise, and in a cache an older omaddons wrote.
+    #[serde(default)]
+    pub not_launched_since: Option<u32>,
 }
 
 /// Where discovery learned of a client.

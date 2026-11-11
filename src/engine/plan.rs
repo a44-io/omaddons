@@ -4640,7 +4640,15 @@ impl TargetPlanner<'_> {
                 .filter(|t| ctx.running.contains(&t.client_dir)),
         );
         let mut reload_required = ReloadRequired::None;
-        let mut warnings = owned.warnings;
+        // A folder both sharing clients recorded is about this client too (omad-5cg5).
+        let mut warnings: Vec<Warning> = owned
+            .warnings
+            .into_iter()
+            .map(|w| match w.code {
+                WarningCode::TargetAddonsShared => w.about([self.target.id.as_str()]),
+                _ => w,
+            })
+            .collect();
         for client in clients {
             let loaded = |live: &MutableFolderName| {
                 DiskFolder::new(addons_dir.join(live.as_str()))

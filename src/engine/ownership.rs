@@ -466,6 +466,8 @@ fn doubled(folder: &MutableFolderName, owned: &OwnedOn) -> Warning {
         "-t",
         owned.target.as_str(),
     ]))
+    // The client changed here is added by the plan, which knows it.
+    .about([owned.target.as_str()])
 }
 
 /// The one error for every violation, with the most serious one's code and fix.

@@ -1739,6 +1739,8 @@ function warningsOf(env) {
     var fix = Array.isArray(w.fix_argv) ? cliAction(w.fix, w.fix_argv, false) : null
     out.push({
       "code": str(w.code), "message": str(w.message),
+      // The ids of the clients it is about (omad-5cg5); empty from an older omaddons.
+      "targets": Array.isArray(w.targets) ? w.targets.filter(function(t) { return typeof t === "string" && t !== "" }) : [],
       "fix": fix && fix.runnable ? fix : null,
       "fixText": fix && fix.runnable ? "" : str(w.fix),
       // The fix as the classifier judged it, a command it refuses included (the Issues
@@ -5032,6 +5034,19 @@ var NOTE_ELSEWHERE = ["running_unknown", "widget_outdated", "tx_in_progress", "s
 // (problem, suggestion, note), a stable `key`, `target`, `client`, `severity` with its
 // word (`severityWord`), `urgent`, `band`, `glyph` (a code point) and `title`, one
 // sentence. Lua errors have their own view since 1n2p.27 (errorSections).
+// A warning's words in the Issues view: `issues.note.<code>.named` with the clients it
+// is about by their player names (`{client}` the first, `{clients}` all of them joined),
+// when it names any and this build has such words; else `issues.note.<code>`; else, a
+// code from a newer omaddons, its message.
+function noteWords(warning, about, targets) {
+  var code = str(warning.code)
+  var names = about.map(function(id) { return sheetClient(targets, id, "") })
+  if (names.length > 0 && COPY.hasOwnProperty("issues.note." + code + ".named")) {
+    return copy("issues.note." + code + ".named", { "client": names[0], "clients": joinNames(names) })
+  }
+  return COPY.hasOwnProperty("issues.note." + code) ? copy("issues.note." + code) : str(warning.message)
+}
+
 function issueSections(statusTargets, warnings, filter, machineIssues, commands) {
   var targets = Array.isArray(statusTargets) ? statusTargets : []
   var sections = []
@@ -5094,22 +5109,27 @@ function issueSections(statusTargets, warnings, filter, machineIssues, commands)
   }
   if (suggested.length) sections.push({ "key": "suggested", "title": copy("issues.section.suggested"), "count": "", "rows": suggested })
 
-  // The warnings this view shows, by code: a code this build has words for gets them
-  // (warnings carry no typed client, so the words name none); a code from a newer
-  // omaddons shows its message. A prose fix is not shown (it names commands and config
-  // keys); a fix the classifier accepts is a named button, one it refuses a command to
-  // copy.
+  // The warnings this view shows, by code: a code this build has words for gets them,
+  // naming the clients its typed `targets` gives by their player names (omad-5cg5), or
+  // none when it gives none; a code from a newer omaddons shows its message. Under one
+  // client, only the notes about that client show. A prose fix is not shown (it names
+  // commands and config keys); a fix the classifier accepts is a named button, one it
+  // refuses a command to copy.
   var notes = []
-  var shown = !filter && Array.isArray(warnings) ? warnings : []
+  var shown = Array.isArray(warnings) ? warnings : []
   for (var w = 0; w < shown.length; w++) {
     var warning = shown[w]
     if (!warning || typeof warning !== "object" || NOTE_ELSEWHERE.indexOf(warning.code) !== -1) continue
-    var words = COPY.hasOwnProperty("issues.note." + warning.code) ? copy("issues.note." + warning.code) : str(warning.message)
+    var about = Array.isArray(warning.targets) ? warning.targets : []
+    if (filter && about.indexOf(filter) === -1) continue
+    var words = noteWords(warning, about, targets)
     if (words === "") continue
     var note = fixFields(issueFix(warning.cli, targets), null, warning.cli, false, false)
     note.prose = ""
+    var single = about.length === 1 ? about[0] : ""
     notes.push(Object.assign({
-      "kind": "note", "key": keyOf("n/" + str(warning.code)), "target": "", "client": "", "severity": "", "severityWord": "",
+      "kind": "note", "key": keyOf("n/" + str(warning.code) + "/" + about.join(",")), "target": single,
+      "client": single ? sheetClient(targets, single, "") : "", "severity": "", "severityWord": "",
       "urgent": false, "band": "", "glyph": SUGGESTION_GLYPH, "title": words
     }, note))
   }
@@ -7533,6 +7553,11 @@ var COPY = {
   "issues.note.target_key_duplicate": "Two clients claim to be the same install (a copied folder?).",
   "issues.note.target_addons_shared": "Two clients share one AddOns folder. Manage those addons from one of them.",
   "issues.note.snapshot_cap_exceeded": "A client's undo data is over its size limit.",
+  "issues.note.unknown_flavor.named": "{client}'s game version isn't recognised, so omaddons treats it carefully.",
+  "issues.note.client_not_launched_since_patch.named": "{client} hasn't started since its last patch. Start it once.",
+  "issues.note.target_key_duplicate.named": "{clients} claim to be the same install (a copied folder?).",
+  "issues.note.target_addons_shared.named": "{clients} share one AddOns folder. Manage those addons from one of them.",
+  "issues.note.snapshot_cap_exceeded.named": "Undo data for {client} is over its size limit.",
   "issues.note.restore_rolled_back": "An interrupted restore was undone; the settings it replaced are kept as a backup.",
   "issues.note.config_unknown_key": "config.toml has a setting omaddons doesn't know.",
   "issues.note.discovery_truncated": "Not every folder was searched for clients. Add a missing client by its folder.",

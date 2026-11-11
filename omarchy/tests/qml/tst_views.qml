@@ -1000,6 +1000,21 @@ TestCase {
     }
   }
 
+  // omad-5cg5: a warning that names its client (`targets`) says it by name, and shows under
+  // that client's scope; under another client's it does not.
+  function test_a_note_about_a_client_names_it_and_follows_its_scope() {
+    svc.statusWarnings = statusWarnings([
+      { "code": "unknown_flavor", "message": "era: an unknown version", "fix": null, "fix_argv": null, "targets": ["era"] }])
+    issuesReady(false)
+    view.setFilter("era")
+    var notes = content().rows.filter(function(r) { return r.kind === "note" })
+    compare(json(notes.map(function(r) { return [r.title, r.target] })),
+      json([["era's game version isn't recognised, so omaddons treats it carefully.", "era"]]))
+    view.setFilter("retail")
+    compare(content().rows.filter(function(r) { return r.kind === "note" }).length, 0)
+    view.setFilter("")
+  }
+
   // `status`'s recommendations (1n2p.28): suggestions in words with a named fix, each run
   // through its template, the frame's own action, or the view that does it.
   function test_suggestions_run_through_their_templates_and_views() {

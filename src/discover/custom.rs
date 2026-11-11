@@ -115,6 +115,7 @@ pub fn discover_custom_root(
         default_id,
         qualifier: qualifier.to_owned(),
         source: source.clone(),
+        not_launched_since: None,
     };
     (Some(discovered), warnings)
 }

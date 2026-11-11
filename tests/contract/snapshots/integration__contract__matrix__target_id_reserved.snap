@@ -161,7 +161,8 @@ expression: s.stable(&c.envelope)
       "code": "target_id_reserved",
       "fix": "rename it, and -t all selects every client again: omaddons targets rename all <new id>",
       "fix_argv": null,
-      "message": "a client has the id \"all\", so -t all selected that client, not every client"
+      "message": "a client has the id \"all\", so -t all selected that client, not every client",
+      "targets": []
     }
   ]
 }

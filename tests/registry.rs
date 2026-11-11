@@ -218,6 +218,8 @@ fn a_copied_install_gets_a_new_key() {
         resolved.warnings[0].message.contains("wotlk@b-wotlk")
             && resolved.warnings[0].message.contains("wotlk")
     );
+    // Both clients claiming the key, sorted (omad-5cg5).
+    assert_eq!(resolved.warnings[0].targets, ["wotlk", "wotlk@b-wotlk"]);
 
     let new_key = world.register(&resolved.targets[1]);
     assert_ne!(new_key, key);

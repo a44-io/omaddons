@@ -43,7 +43,8 @@ expression: "stable(&f, refused.envelope(), &s.tx)"
         "explain",
         "fm-concurrency_primitives-journal-step-unrecognized"
       ],
-      "message": "repair transaction <tx> did not finish, and recovery could not settle it (step_unrecognized); writes to what it protects are refused, and everything else proceeds"
+      "message": "repair transaction <tx> did not finish, and recovery could not settle it (step_unrecognized); writes to what it protects are refused, and everything else proceeds",
+      "targets": []
     }
   ]
 }

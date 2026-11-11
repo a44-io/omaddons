@@ -67,7 +67,8 @@ expression: s.stable(&c.envelope)
       "code": "backup_copied",
       "fix": null,
       "fix_argv": null,
-      "message": "retail: the filesystem could not clone the files put back, so 100 bytes were copied"
+      "message": "retail: the filesystem could not clone the files put back, so 100 bytes were copied",
+      "targets": []
     }
   ]
 }

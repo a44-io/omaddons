@@ -364,8 +364,17 @@ fn output_is_deterministic() {
     let d = discover(&input(&env), &RulesTable::builtin());
     assert_eq!(d.targets.len(), 16);
     let codes: Vec<&str> = d.warnings.iter().map(|w| w.code.wire()).collect();
-    // `unknown_flavor` is the World's, once overrides applied.
-    assert_eq!(codes, ["client_not_launched_since_patch"]);
+    // `unknown_flavor` is the World's, once overrides applied, and so is
+    // `client_not_launched_since_patch`, from the target's `not_launched_since`, once the
+    // registry has named it (omad-5cg5).
+    assert!(codes.is_empty(), "{codes:?}");
+    let stale: Vec<(&str, Option<u32>)> = d
+        .targets
+        .iter()
+        .filter(|t| t.not_launched_since.is_some())
+        .map(|t| (t.default_id.as_str(), t.not_launched_since))
+        .collect();
+    assert_eq!(stale, [("retail", Some(120_100))]);
     let unknown = d
         .targets
         .iter()

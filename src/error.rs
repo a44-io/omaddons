@@ -1084,6 +1084,8 @@ pub struct Warning {
     pub code: WarningCode,
     pub message: String,
     pub fix: Option<Suggestion>,
+    /// The ids of the clients it is about, sorted and unique; empty when it names none.
+    pub targets: Vec<String>,
 }
 
 impl Warning {
@@ -1092,12 +1094,23 @@ impl Warning {
             code,
             message: message.into(),
             fix: None,
+            targets: Vec::new(),
         }
     }
 
     #[must_use]
     pub fn with_fix(mut self, fix: Suggestion) -> Self {
         self.fix = Some(fix);
+        self
+    }
+
+    /// The clients it is about, by id (omad-5cg5): what lets a reader place it without
+    /// reading its message. Sorted and unique.
+    #[must_use]
+    pub fn about<S: Into<String>>(mut self, ids: impl IntoIterator<Item = S>) -> Self {
+        self.targets.extend(ids.into_iter().map(Into::into));
+        self.targets.sort();
+        self.targets.dedup();
         self
     }
 
@@ -1108,6 +1121,7 @@ impl Warning {
             code: WarningCode::Item(error.code),
             message: error.message.clone(),
             fix: Some(error.fix.clone()),
+            targets: Vec::new(),
         }
     }
 }
@@ -1120,6 +1134,11 @@ pub struct WarningBody {
     pub message: String,
     pub fix: Option<String>,
     pub fix_argv: Option<Vec<String>>,
+    /// The ids of the clients it is about (`unknown_flavor`'s client, both clients of a
+    /// `target_key_duplicate`, every client sharing an AddOns folder, …), sorted; empty
+    /// when it names none. A file an older omaddons wrote reads as empty.
+    #[serde(default)]
+    pub targets: Vec<String>,
 }
 
 impl From<Warning> for WarningBody {
@@ -1133,6 +1152,7 @@ impl From<Warning> for WarningBody {
             message: warning.message,
             fix,
             fix_argv,
+            targets: warning.targets,
         }
     }
 }
@@ -1151,6 +1171,7 @@ impl From<WarningBody> for Warning {
             code: body.code,
             message: body.message,
             fix,
+            targets: body.targets,
         }
     }
 }
@@ -1786,7 +1807,7 @@ mod tests {
             .with_fix(Suggestion::text("/reload in game"));
         assert_eq!(
             top_level_keys(&serde_json::to_string(&warning).unwrap()),
-            ["code", "message", "fix", "fix_argv"]
+            ["code", "message", "fix", "fix_argv", "targets"]
         );
         let json = serde_json::to_value(&warning).unwrap();
         assert_eq!(json["fix_argv"], serde_json::Value::Null);
@@ -1795,6 +1816,26 @@ mod tests {
         let bare = serde_json::to_value(Warning::new(WarningCode::UnknownFlavor, "x")).unwrap();
         assert_eq!(bare["fix"], serde_json::Value::Null);
         assert_eq!(bare["fix_argv"], serde_json::Value::Null);
+        assert_eq!(bare["targets"], serde_json::json!([]));
+        // The clients it is about, sorted and unique (omad-5cg5).
+        let about = Warning::new(WarningCode::TargetKeyDuplicate, "x").about([
+            "retail@steam",
+            "retail",
+            "retail",
+        ]);
+        assert_eq!(
+            serde_json::to_value(&about).unwrap()["targets"],
+            serde_json::json!(["retail", "retail@steam"])
+        );
+    }
+
+    /// A warning an older omaddons wrote (a discovery cache, a doctor report) reads with
+    /// no clients.
+    #[test]
+    fn a_warning_without_targets_reads_as_about_none() {
+        let old = r#"{"code":"unknown_flavor","message":"x","fix":null,"fix_argv":null}"#;
+        let warning: Warning = serde_json::from_str(old).unwrap();
+        assert!(warning.targets.is_empty(), "{warning:?}");
     }
 
     #[test]

@@ -366,6 +366,7 @@ impl TxScene {
             default_id: "retail".into(),
             qualifier: "battlenet".into(),
             source: crate::discover::DiscoverySource::Scan,
+            not_launched_since: None,
         };
         Self {
             paths: Paths::with_roots(&base, base.join("c"), base.join("s"), base.join("k")),

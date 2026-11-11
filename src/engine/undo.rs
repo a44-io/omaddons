@@ -319,7 +319,7 @@ pub fn undo(req: &UndoRequest, ctx: &EngineCtx<'_>) -> Result<UndoOutcome> {
     let mut done = result?;
     done.outcome.warnings.extend(auto_warnings);
     if let (Some(key), Some(_)) = (done.outcome.key, done.outcome.tx) {
-        let retained = super::tx::retain(ctx, &scopes, key, &target.client_dir);
+        let retained = super::tx::retain(ctx, &scopes, key, target);
         done.outcome.warnings.extend(retained);
     }
     Ok(done)

@@ -218,7 +218,8 @@ expression: s.stable(&c.envelope)
       "code": "running_unknown",
       "fix": "every client counts as running until /proc can be read: quit the game and add --while-running to change folders; SavedVariables restores wait until then",
       "fix_argv": null,
-      "message": "/proc could not be listed: permission denied, so every client is treated as running"
+      "message": "/proc could not be listed: permission denied, so every client is treated as running",
+      "targets": []
     }
   ]
 }

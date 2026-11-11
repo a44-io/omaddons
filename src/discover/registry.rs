@@ -139,18 +139,15 @@ pub fn reconcile(registry: &Registry, discovered: &[DiscoveredTarget]) -> Resolv
     let warnings = duplicates
         .into_iter()
         .map(|(i, key)| {
-            let owner = targets
-                .iter()
-                .find(|t| t.target.key == Some(key))
-                .map_or("another target", |t| t.target.id.as_str());
+            let found = targets.iter().find(|t| t.target.key == Some(key));
+            let owner = found.map_or("another target", |t| t.target.id.as_str());
+            let copy = targets[i].target.id.as_str();
             Warning::new(
                 WarningCode::TargetKeyDuplicate,
-                format!(
-                    "{} carries the key of {owner} (a copied install); {owner} keeps it",
-                    targets[i].target.id
-                ),
+                format!("{copy} carries the key of {owner} (a copied install); {owner} keeps it"),
             )
             .with_fix(Suggestion::text("it gets a new key on its first mutation"))
+            .about(std::iter::once(copy).chain(found.map(|t| t.target.id.as_str())))
         })
         .collect();
     let missing = registry
@@ -1144,6 +1141,7 @@ mod tests {
             default_id: id.to_owned(),
             qualifier: "battlenet".to_owned(),
             source: DiscoverySource::Scan,
+            not_launched_since: None,
         }
     }
 

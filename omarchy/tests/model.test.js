@@ -2418,6 +2418,38 @@ describe("the Issues and Search views", () => {
     expect(M.issueSections(status.targets, status.warnings, "era", status.issues, status.commands)).toEqual([])
   })
 
+  // omad-5cg5: a warning naming its clients (`targets`) says them by their player names,
+  // and shows under each of their scopes; one naming none stays client-free (above).
+  test("a note about clients names them, and shows under each one's scope", () => {
+    const env = fixture("status-clients")
+    const warning = (code, targets) => ({ code: code, message: "x", fix: null, fix_argv: null, targets: targets })
+    env.warnings = [
+      warning("unknown_flavor", ["wotlk"]),
+      warning("target_addons_shared", ["anniversary", "classic"]),
+      warning("client_not_launched_since_patch", ["classic"]),
+      warning("target_key_duplicate", ["classic", "wotlk"]),
+      warning("snapshot_cap_exceeded", ["anniversary"]),
+    ]
+    const status = M.reduceStatus(env, NOW)
+    expect(status.warnings.map((w) => w.targets)).toEqual([["wotlk"], ["anniversary", "classic"], ["classic"], ["classic", "wotlk"], ["anniversary"]])
+    const notes = (filter) => M.issueRows(M.issueSections(status.targets, status.warnings, filter, status.issues, status.commands))
+      .filter((r) => r.kind === "note").map((r) => [r.title, r.target, r.client])
+    expect(notes("")).toEqual([
+      ["Wrath 3.3.5a private server's game version isn't recognised, so omaddons treats it carefully.", "wotlk", "Wrath 3.3.5a private server"],
+      ["Burning Crusade Anniversary and Mists of Pandaria Classic share one AddOns folder. Manage those addons from one of them.", "", ""],
+      ["Mists of Pandaria Classic hasn't started since its last patch. Start it once.", "classic", "Mists of Pandaria Classic"],
+      ["Mists of Pandaria Classic and Wrath 3.3.5a private server claim to be the same install (a copied folder?).", "", ""],
+      ["Undo data for Burning Crusade Anniversary is over its size limit.", "anniversary", "Burning Crusade Anniversary"],
+    ])
+    // Under one client: the notes about it, and no other.
+    expect(notes("classic").map((n) => n[0].split(" ")[0])).toEqual(["Burning", "Mists", "Mists"])
+    expect(notes("anniversary").map((n) => n[0])).toEqual([
+      "Burning Crusade Anniversary and Mists of Pandaria Classic share one AddOns folder. Manage those addons from one of them.",
+      "Undo data for Burning Crusade Anniversary is over its size limit.",
+    ])
+    expect(notes("era")).toEqual([])
+  })
+
   test("the clients with the most severe problems come first, the machine before them all", () => {
     const env = fixture("status-clients")
     const issue = env.data.targets.find((t) => t.id === "anniversary").issues[0]

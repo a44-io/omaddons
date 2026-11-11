@@ -555,7 +555,7 @@ pub fn restore(ctx: &EngineCtx<'_>, req: AddonsRequest<'_>) -> Result<AddonsOutc
     drop(reservation);
     cleanup(ctx.paths, &scopes, inflight, &tx, Some(&client), committed);
     let (key, held, mut warnings) = result?;
-    warnings.extend(retain(ctx, &scopes, key, &target.client_dir));
+    warnings.extend(retain(ctx, &scopes, key, target));
     warnings.extend(copied(&target.id, staged.copied_bytes));
     Ok(AddonsOutcome {
         tx,

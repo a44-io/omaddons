@@ -1550,7 +1550,8 @@ impl One<'_> {
                 "prune",
                 "-t",
                 target.id.as_str(),
-            ])),
+            ]))
+            .about([target.id.as_str()]),
         )
     }
 
@@ -2420,7 +2421,8 @@ pub(super) fn retain_source(
             "prune",
             "-t",
             d.target.id.as_str(),
-        ])),
+        ]))
+        .about([d.target.id.as_str()]),
     )
 }
 
@@ -3215,6 +3217,7 @@ mod tests {
             default_id: "retail".into(),
             qualifier: "test".into(),
             source: crate::discover::DiscoverySource::Scan,
+            not_launched_since: None,
         };
         let backup = BackupRef {
             id,

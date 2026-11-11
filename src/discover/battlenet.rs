@@ -11,7 +11,7 @@ use std::path::Path;
 
 use super::bpsv::{self, BuildInfoRow};
 use super::{DiscoveredTarget, DiscoverySource, config_wtf, read_text};
-use crate::error::{Suggestion, Warning, WarningCode};
+use crate::error::Warning;
 use crate::model::Target;
 use crate::rules::{ClientVersion, Family, InstallKind, RulesTable, TargetKind};
 
@@ -33,9 +33,11 @@ pub fn is_battlenet_root(dir: &Path) -> bool {
 
 /// Every flavor folder of `root` as a target, sorted by folder name, except those of
 /// other Blizzard games ([`RulesTable::is_wow_product`]) and the leftovers of clients
-/// Battle.net uninstalled ([`uninstalled`]), plus warnings
-/// (`client_not_launched_since_patch`; `unknown_flavor` is said once config overrides
-/// applied, [`super::unknown_flavor`]). Reads only.
+/// Battle.net uninstalled ([`uninstalled`]), with the root's warnings: none today, since
+/// a client's are said once the registry has named it, `unknown_flavor` once config
+/// overrides applied ([`super::unknown_flavor`]) and `client_not_launched_since_patch`
+/// from `DiscoveredTarget::not_launched_since` ([`super::not_launched_since_patch`]).
+/// Reads only.
 pub fn discover_root(
     root: &Path,
     table: &RulesTable,
@@ -53,7 +55,6 @@ pub fn discover_root(
         .and_then(|text| bpsv::build_info_rows(&text).ok())
         .unwrap_or_default();
     let mut targets = Vec::new();
-    let mut warnings = Vec::new();
     for folder in flavor_folders(root) {
         let client_dir = root.join(&folder);
         let product = read_text(&client_dir.join(".flavor.info"))
@@ -119,21 +120,10 @@ pub fn discover_root(
         let default_id = known.map_or_else(|| unknown_folder_id(&folder), |p| p.default_id.clone());
 
         // Only a `Config.wtf` that predates the client: launching it once clears that,
-        // never a newer one (a version read from a stale hint).
-        if let Some(last) = config_wtf::last_addon_version(&client_dir)
-            && interface != 0
-            && last < interface
-        {
-            warnings.push(
-                Warning::new(
-                    WarningCode::ClientNotLaunchedSincePatch,
-                    format!(
-                        "{default_id}: the client last loaded addons at interface {last}, but version {version} is interface {interface}"
-                    ),
-                )
-                .with_fix(Suggestion::text("launch the client once")),
-            );
-        }
+        // never a newer one (a version read from a stale hint). Recorded on the target and
+        // said once the registry has named it (`super::super::not_launched_since_patch`).
+        let not_launched_since = config_wtf::last_addon_version(&client_dir)
+            .filter(|last| interface != 0 && *last < interface);
 
         targets.push(DiscoveredTarget {
             target: Target {
@@ -156,9 +146,10 @@ pub fn discover_root(
             default_id,
             qualifier: qualifier.to_owned(),
             source: source.clone(),
+            not_launched_since,
         });
     }
-    (targets, warnings)
+    (targets, Vec::new())
 }
 
 /// Directories of `root` named `_<x>_`, sorted.
@@ -281,6 +272,7 @@ mod tests {
     use std::time::SystemTime;
 
     use super::*;
+    use crate::error::{Suggestion, WarningCode};
 
     const HEADER: &str = "Branch!STRING:0|Active!DEC:1|Build Key!HEX:16|Tags!STRING:0|Version!STRING:0|KeyRing!HEX:16|Product!STRING:0";
 
@@ -751,29 +743,44 @@ mod tests {
             root.join("_retail_").join("WTF").join("Config.wtf"),
             "SET lastAddonVersion \"120100\"\n",
         );
-        let (targets, warnings) = discover(root, &BattlenetHints::default());
+        let (mut targets, warnings) = discover(root, &BattlenetHints::default());
         let context = dump(&targets, &warnings);
         assert_eq!(targets[0].target.interface, 120_105, "{context}");
-        assert_eq!(warnings.len(), 1, "{context}");
-        assert_eq!(warnings[0].code, WarningCode::ClientNotLaunchedSincePatch);
+        // Recorded on the target, and said once the registry has named it (omad-5cg5).
+        assert!(warnings.is_empty(), "{context}");
+        assert_eq!(targets[0].not_launched_since, Some(120_100), "{context}");
+        let warning = super::super::not_launched_since_patch(&targets[0]).unwrap();
+        assert_eq!(warning.code, WarningCode::ClientNotLaunchedSincePatch);
         assert_eq!(
-            warnings[0].fix.as_ref().map(Suggestion::display),
+            warning.fix.as_ref().map(Suggestion::display),
             Some("launch the client once")
         );
-        assert_eq!(warnings[0].fix.as_ref().and_then(Suggestion::argv), None);
-        assert!(warnings[0].message.starts_with("retail:"), "{context}");
+        assert_eq!(warning.fix.as_ref().and_then(Suggestion::argv), None);
+        assert!(warning.message.starts_with("retail:"), "{context}");
+        assert_eq!(warning.targets, ["retail"], "{context}");
+        // Under the id the registry gave it, in the message and `targets` alike.
+        targets[0].target.id = "main".to_owned();
+        let renamed = super::super::not_launched_since_patch(&targets[0]).unwrap();
+        assert!(renamed.message.starts_with("main:"), "{}", renamed.message);
+        assert_eq!(renamed.targets, ["main"]);
 
         write(
             root.join("_retail_").join("WTF").join("Config.wtf"),
             "SET lastAddonVersion \"120105\"\n",
         );
-        assert!(discover(root, &BattlenetHints::default()).1.is_empty());
+        assert_eq!(
+            discover(root, &BattlenetHints::default()).0[0].not_launched_since,
+            None
+        );
         // Newer than the version read: launching cannot clear that, so no warning.
         write(
             root.join("_retail_").join("WTF").join("Config.wtf"),
             "SET lastAddonVersion \"120107\"\n",
         );
-        assert!(discover(root, &BattlenetHints::default()).1.is_empty());
+        assert_eq!(
+            discover(root, &BattlenetHints::default()).0[0].not_launched_since,
+            None
+        );
     }
 
     #[test]

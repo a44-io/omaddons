@@ -67,7 +67,8 @@ expression: "stable(&f, ran.envelope(), &tx)"
         "explain",
         "fm-concurrency_primitives-journal-unreadable"
       ],
-      "message": "repair transaction <tx> did not finish, and this omaddons cannot read what it changed (journal_unreadable); every change is refused until it is set aside"
+      "message": "repair transaction <tx> did not finish, and this omaddons cannot read what it changed (journal_unreadable); every change is refused until it is set aside",
+      "targets": []
     }
   ]
 }

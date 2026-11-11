@@ -206,6 +206,8 @@ pub struct WarningEvent<'a> {
     message: &'a str,
     fix: Option<&'a str>,
     fix_argv: Option<&'a [String]>,
+    /// The ids of the clients it is about, as the envelope's warning carries them.
+    targets: &'a [String],
 }
 
 impl<'a> WarningEvent<'a> {
@@ -216,6 +218,7 @@ impl<'a> WarningEvent<'a> {
             message: &warning.message,
             fix: warning.fix.as_ref().map(|f| f.display()),
             fix_argv: warning.fix.as_ref().and_then(|f| f.argv()),
+            targets: &warning.targets,
         }
     }
 }
@@ -328,12 +331,12 @@ mod tests {
                     &warning().with_fix(Suggestion::text("/reload in game")),
                 ))
                 .unwrap(),
-                r#"{"event":"warning","code":"reload_required","message":"retail needs a /reload","fix":"/reload in game","fix_argv":null}"#,
+                r#"{"event":"warning","code":"reload_required","message":"retail needs a /reload","fix":"/reload in game","fix_argv":null,"targets":[]}"#,
             ),
             (
                 "warning_without_fix",
                 serde_json::to_string(&WarningEvent::of(&warning())).unwrap(),
-                r#"{"event":"warning","code":"reload_required","message":"retail needs a /reload","fix":null,"fix_argv":null}"#,
+                r#"{"event":"warning","code":"reload_required","message":"retail needs a /reload","fix":null,"fix_argv":null,"targets":[]}"#,
             ),
             (
                 "warning_with_command_fix",
@@ -341,7 +344,12 @@ mod tests {
                     &warning().with_fix(Suggestion::command(["omaddons", "status"])),
                 ))
                 .unwrap(),
-                r#"{"event":"warning","code":"reload_required","message":"retail needs a /reload","fix":"omaddons status","fix_argv":["omaddons","status"]}"#,
+                r#"{"event":"warning","code":"reload_required","message":"retail needs a /reload","fix":"omaddons status","fix_argv":["omaddons","status"],"targets":[]}"#,
+            ),
+            (
+                "warning_about_clients",
+                serde_json::to_string(&WarningEvent::of(&warning().about(["retail"]))).unwrap(),
+                r#"{"event":"warning","code":"reload_required","message":"retail needs a /reload","fix":null,"fix_argv":null,"targets":["retail"]}"#,
             ),
             (
                 "error_with_command_fix",

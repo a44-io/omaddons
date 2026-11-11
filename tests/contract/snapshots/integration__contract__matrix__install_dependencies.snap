@@ -104,7 +104,8 @@ expression: s.stable(&c.envelope)
         "search",
         "Nowhere"
       ],
-      "message": "LittleWigs on retail requires Nowhere, which was not installed: no keyless source ships it; it may only be on CurseForge or Wago, which arrive in M5"
+      "message": "LittleWigs on retail requires Nowhere, which was not installed: no keyless source ships it; it may only be on CurseForge or Wago, which arrive in M5",
+      "targets": []
     }
   ]
 }

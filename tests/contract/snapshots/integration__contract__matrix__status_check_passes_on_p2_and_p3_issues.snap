@@ -314,7 +314,8 @@ expression: s.stable(&c.envelope)
       "code": "credential_file_mode",
       "fix": "chmod 600 <root>/config/omaddons/credentials/github",
       "fix_argv": null,
-      "message": "<root>/config/omaddons/credentials/github is readable by other users"
+      "message": "<root>/config/omaddons/credentials/github is readable by other users",
+      "targets": []
     },
     {
       "code": "widget_outdated",
@@ -324,7 +325,8 @@ expression: s.stable(&c.envelope)
         "omarchy",
         "install"
       ],
-      "message": "the bar widget is from another omaddons build, so it stays read-only"
+      "message": "the bar widget is from another omaddons build, so it stays read-only",
+      "targets": []
     }
   ]
 }

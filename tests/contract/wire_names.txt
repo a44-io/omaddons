@@ -1228,6 +1228,8 @@ envelope warnings[].fix string?!
 envelope warnings[].fix_argv array?!
 envelope warnings[].fix_argv[] string
 envelope warnings[].message string!
+envelope warnings[].targets array!
+envelope warnings[].targets[] string
 error archive_too_large exit=4 doctor_exit=4 retryable=false details=details:object!,details.config_key:string,details.constant:string,details.folder:string,details.items:array,details.items[]:object,details.items[].error:object?!,details.items[].error.code:string!,details.items[].error.details:object,details.items[].error.fix:string!,details.items[].error.fix_argv:array?!,details.items[].error.fix_argv[]:string,details.items[].error.message:string!,details.items[].request:string!,details.items[].target:string?!,details.journal_pending:string,details.limit:integer,details.measured:integer,details.reason:string,details.recovery_error:object,details.recovery_error.code:string!,details.recovery_error.message:string!,details.required_by:array,details.required_by[]:string
 error auth_rejected exit=1 doctor_exit=74 retryable=false details=details:object!,details.items:array,details.items[]:object,details.items[].error:object?!,details.items[].error.code:string!,details.items[].error.details:object,details.items[].error.fix:string!,details.items[].error.fix_argv:array?!,details.items[].error.fix_argv[]:string,details.items[].error.message:string!,details.items[].request:string!,details.items[].target:string?!,details.journal_pending:string,details.recovery_error:object,details.recovery_error.code:string!,details.recovery_error.message:string!,details.required_by:array,details.required_by[]:string
 error auth_required exit=1 doctor_exit=74 retryable=false details=details:object!,details.items:array,details.items[]:object,details.items[].error:object?!,details.items[].error.code:string!,details.items[].error.details:object,details.items[].error.fix:string!,details.items[].error.fix_argv:array?!,details.items[].error.fix_argv[]:string,details.items[].error.message:string!,details.items[].request:string!,details.items[].target:string?!,details.journal_pending:string,details.recovery_error:object,details.recovery_error.code:string!,details.recovery_error.message:string!,details.required_by:array,details.required_by[]:string
@@ -1274,7 +1276,7 @@ error wrong_flavor exit=4 doctor_exit=4 retryable=false details=details:object!,
 event error .:object,code:string!,event:string!,exit_code:integer!,fix:string!,fix_argv:array?!,fix_argv[]:string,message:string!,retryable:boolean!
 event log .:object,event:string!,level:string!,message:string!
 event progress .:object,current:integer?,event:string!,message:string!,phase:string!,ref:string?!,target:string?!,total:integer?
-event warning .:object,code:string!,event:string!,fix:string?!,fix_argv:array?!,fix_argv[]:string,message:string!
+event warning .:object,code:string!,event:string!,fix:string?!,fix_argv:array?!,fix_argv[]:string,message:string!,targets:array!,targets[]:string
 exit doctor 0 healthy
 exit doctor 1 findings_present
 exit doctor 2 fix_partial
@@ -1440,7 +1442,7 @@ file backup_manifest entries[].sha256 string?!
 file backup_manifest entries[].size integer! minimum=0
 file backup_manifest schema_version string!
 file discovery_cache . object
-file discovery_cache 1.2
+file discovery_cache 1.3
 file discovery_cache basis string!
 file discovery_cache roots array!
 file discovery_cache roots[] object
@@ -1474,6 +1476,7 @@ file discovery_cache roots[].stamps[].size integer! minimum=0
 file discovery_cache roots[].targets array!
 file discovery_cache roots[].targets[] object
 file discovery_cache roots[].targets[].default_id string!
+file discovery_cache roots[].targets[].not_launched_since integer?! minimum=0
 file discovery_cache roots[].targets[].qualifier string!
 file discovery_cache roots[].targets[].source object! tag=kind
 file discovery_cache roots[].targets[].source<kind=extra_root> variant
@@ -1506,6 +1509,8 @@ file discovery_cache roots[].warnings[].fix string?!
 file discovery_cache roots[].warnings[].fix_argv array?!
 file discovery_cache roots[].warnings[].fix_argv[] string
 file discovery_cache roots[].warnings[].message string!
+file discovery_cache roots[].warnings[].targets array!
+file discovery_cache roots[].warnings[].targets[] string
 file discovery_cache schema_version string!
 file doctor_report . object
 file doctor_report 1.1
@@ -2279,6 +2284,8 @@ file doctor_report warnings[].fix string?!
 file doctor_report warnings[].fix_argv array?!
 file doctor_report warnings[].fix_argv[] string
 file doctor_report warnings[].message string!
+file doctor_report warnings[].targets array!
+file doctor_report warnings[].targets[] string
 file doorbell . object
 file doorbell 1.0
 file doorbell actor string!

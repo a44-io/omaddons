@@ -261,7 +261,8 @@ expression: s.stable(&status.envelope)
         "-t",
         "retail"
       ],
-      "message": "transaction <ulid> on target <ulid> did not finish, and this omaddons cannot recover it (journal_too_new); it is left as it is"
+      "message": "transaction <ulid> on target <ulid> did not finish, and this omaddons cannot recover it (journal_too_new); it is left as it is",
+      "targets": []
     }
   ]
 }

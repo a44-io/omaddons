@@ -641,7 +641,7 @@ mod tests {
         assert_eq!(kinds, ["warning", "log", "progress", "error"]);
         assert_eq!(
             text.lines().next().unwrap(),
-            r#"{"event":"warning","code":"reload_required","message":"retail needs a /reload","fix":"/reload in game","fix_argv":null}"#
+            r#"{"event":"warning","code":"reload_required","message":"retail needs a /reload","fix":"/reload in game","fix_argv":null,"targets":[]}"#
         );
         assert_eq!(
             text.lines().nth(2).unwrap(),

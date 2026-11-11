@@ -93,7 +93,8 @@ expression: "support::stable(&envelope)"
         "-t",
         "retail"
       ],
-      "message": "Foo_Masque works with Masque, which is not installed on retail"
+      "message": "Foo_Masque works with Masque, which is not installed on retail",
+      "targets": []
     }
   ]
 }

@@ -100,7 +100,8 @@ expression: s.stable(&checked.envelope)
       "code": "snapshot_only_copy",
       "fix": "nothing is moved under --dry-run; after the run, its snapshot holds the only copy until retention prunes it",
       "fix_argv": null,
-      "message": "On retail, the transaction's snapshot will hold the only copy of Foo: undo brings them back until retention prunes it (kept at least 24 hours; then pruned once 10 newer transactions on this client exist, after 7 days, or past the 2 GiB snapshot cap)"
+      "message": "On retail, the transaction's snapshot will hold the only copy of Foo: undo brings them back until retention prunes it (kept at least 24 hours; then pruned once 10 newer transactions on this client exist, after 7 days, or past the 2 GiB snapshot cap)",
+      "targets": []
     }
   ]
 }

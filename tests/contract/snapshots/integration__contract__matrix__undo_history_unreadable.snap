@@ -27,7 +27,8 @@ expression: s.stable(&c.envelope)
       "code": "history_lines_skipped",
       "fix": "a line was damaged by a crash or a hand edit, or written by a newer omaddons; omaddons never rewrites history.jsonl",
       "fix_argv": null,
-      "message": "1 line of history.jsonl could not be read and was skipped; the transaction on it is not listed and cannot be undone"
+      "message": "1 line of history.jsonl could not be read and was skipped; the transaction on it is not listed and cannot be undone",
+      "targets": []
     }
   ]
 }

@@ -173,11 +173,18 @@ impl World {
         let mut resolved = reconcile(&registry, &discovered.targets);
         found(&resolved.warnings);
         apply_target_overrides(&mut resolved, &config, &table);
-        // A client whose family is still unknown, once its override (if any) applied.
+        // A client whose family is still unknown, once its override (if any) applied, and
+        // one that has not started since its patch, each under the id the registry gave it.
         let unknown: Vec<Warning> = resolved
             .targets
             .iter()
             .filter_map(|d| crate::discover::unknown_flavor(&d.target))
+            .chain(
+                resolved
+                    .targets
+                    .iter()
+                    .filter_map(crate::discover::not_launched_since_patch),
+            )
             .collect();
         found(&unknown);
         Ok(Self {
@@ -402,6 +409,7 @@ mod tests {
             default_id: id.into(),
             qualifier: "test".into(),
             source: DiscoverySource::Scan,
+            not_launched_since: None,
         }
     }
 

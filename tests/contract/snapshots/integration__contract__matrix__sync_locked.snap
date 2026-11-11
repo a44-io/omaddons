@@ -81,7 +81,8 @@ expression: s.stable(&c.envelope)
       "code": "not_locked",
       "fix": "add `version = \"…\"` to those entries, or regenerate the file with `omaddons export`",
       "fix_argv": null,
-      "message": "retail: gh:o/foo has no version in <root>/config/omaddons/addons.toml, so the newest release installs"
+      "message": "retail: gh:o/foo has no version in <root>/config/omaddons/addons.toml, so the newest release installs",
+      "targets": []
     }
   ]
 }

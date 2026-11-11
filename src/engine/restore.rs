@@ -583,7 +583,7 @@ pub fn restore(ctx: &EngineCtx<'_>, req: RestoreRequest<'_>) -> Result<RestoreOu
         append_alone(ctx, &scopes, before_restore.as_ref(), Writer::BackupRestore);
     }
     let (key, held, mut warnings) = result?;
-    warnings.extend(retain(ctx, &scopes, key, &target.client_dir));
+    warnings.extend(retain(ctx, &scopes, key, target));
     let ring = crate::backup::inventory::Ring {
         command: ctx.command,
         actor: ctx.actor,
@@ -1244,7 +1244,7 @@ pub(super) fn undo_whole(
     ring_after_window(ctx, &result);
     cleanup(ctx.paths, &scopes, inflight, &tx, Some(&client), committed);
     let (key, held, mut warnings) = result?;
-    warnings.extend(retain(ctx, &scopes, key, &target.client_dir));
+    warnings.extend(retain(ctx, &scopes, key, target));
     let ring = crate::backup::inventory::Ring {
         command: ctx.command,
         actor: ctx.actor,

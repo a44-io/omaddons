@@ -568,7 +568,9 @@ pub fn sweep(
             Err(error) => {
                 failed = true;
                 let what = format!("{}'s snapshots", target.id);
-                report.warnings.push(sweep_failed(&what, &error));
+                report
+                    .warnings
+                    .push(sweep_failed(&what, &error).about([target.id.as_str()]));
             }
         }
     }

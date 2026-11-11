@@ -68,16 +68,19 @@ pub struct DiscoveryCache {
 impl Versioned for DiscoveryCache {
     const KIND: &'static str = "discovery_cache";
     /// 1.2: a root's `source` may be `registered` or `remembered`, which a 1.1 reader
-    /// does not know (it ignores a newer cache).
-    const CURRENT: SchemaVersion = SchemaVersion::new(1, 2);
+    /// does not know (it ignores a newer cache). 1.3: a target's `not_launched_since`
+    /// and each warning's `targets` (omad-5cg5), additive: a 1.2 cache reads with neither.
+    const CURRENT: SchemaVersion = SchemaVersion::new(1, 3);
 }
 
 /// What a root's parse yields, beyond the rules: bumped when it changes while the
 /// package version does not. 2: `unknown_flavor` is no longer the parse's but the
 /// World's, said once config overrides applied. 3: other Blizzard games' flavor folders
 /// are no targets. 4: neither are the folders Battle.net leaves of a client it
-/// uninstalled (omad-launch-week-fixes-bmcx.1).
-const PARSE_REVISION: u8 = 4;
+/// uninstalled (omad-launch-week-fixes-bmcx.1). 5: `client_not_launched_since_patch` is
+/// no longer the parse's warning but its target's `not_launched_since`, said by the World
+/// under the client's final id (omad-5cg5).
+const PARSE_REVISION: u8 = 5;
 
 /// SHA-256 of this binary's version, [`PARSE_REVISION`] and the effective rules table
 /// (builtin plus `[rules]` and `[client_rules.*]`): a rules edit or an upgrade re-parses

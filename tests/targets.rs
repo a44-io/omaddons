@@ -503,6 +503,8 @@ fn a_family_override_on_an_unreadable_client_takes_the_familys_rules() {
 
     let (_, before) = run(&env, &["targets"]);
     assert_eq!(codes(&before), ["unknown_flavor"], "{before}");
+    // It names its client (omad-5cg5).
+    assert_eq!(before["warnings"][0]["targets"], json!(["era"]), "{before}");
 
     let config = env.config().join("omaddons/config.toml");
     fs::create_dir_all(config.parent().unwrap()).unwrap();

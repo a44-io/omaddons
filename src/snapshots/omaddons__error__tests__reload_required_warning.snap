@@ -6,5 +6,6 @@ expression: warning
   "code": "reload_required",
   "message": "retail needs a /reload",
   "fix": "/reload in game",
-  "fix_argv": null
+  "fix_argv": null,
+  "targets": []
 }

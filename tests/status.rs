@@ -648,13 +648,28 @@ fn clients_sharing_one_addons_directory_are_warned_once() {
     std::os::unix::fs::symlink(&era, &anniversary).unwrap();
 
     let r = home.run(&["status"]);
-    let shared = shared_warnings(&r.expect(0));
+    let envelope = r.expect(0);
+    let shared = shared_warnings(&envelope);
     assert_eq!(shared.len(), 1, "{}", r.context());
     let names = ["era and anniversary", "anniversary and era"];
     assert!(
         names.iter().any(|n| shared[0].contains(n)) && !shared[0].contains("retail"),
         "{}",
         shared[0]
+    );
+    // Every client of the group, typed (omad-5cg5).
+    let typed: Vec<&Value> = envelope["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|w| w["code"] == "target_addons_shared")
+        .map(|w| &w["targets"])
+        .collect();
+    assert_eq!(
+        typed,
+        [&serde_json::json!(["anniversary", "era"])],
+        "{}",
+        r.context()
     );
     // Narrowed to a client that shares nothing: no warning.
     let r = home.run(&["status", "-t", "retail"]);

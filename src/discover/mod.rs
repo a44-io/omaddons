@@ -111,10 +111,32 @@ pub fn unknown_flavor(target: &Target) -> Option<Warning> {
         }
     };
     Some(
-        Warning::new(WarningCode::UnknownFlavor, message).with_fix(Suggestion::text(format!(
-            "set its family: omaddons config set targets.{}.family <family>",
-            target.id
-        ))),
+        Warning::new(WarningCode::UnknownFlavor, message)
+            .with_fix(Suggestion::text(format!(
+                "set its family: omaddons config set targets.{}.family <family>",
+                target.id
+            )))
+            .about([target.id.as_str()]),
+    )
+}
+
+/// `client_not_launched_since_patch` for a client discovery found with a `Config.wtf`
+/// older than its version (`DiscoveredTarget::not_launched_since`), under the id the
+/// registry gave it: said after reconciliation, so the message and `targets` name the
+/// client as `-t` takes it, a qualified or renamed one included.
+pub fn not_launched_since_patch(d: &DiscoveredTarget) -> Option<Warning> {
+    let last = d.not_launched_since?;
+    let t = &d.target;
+    Some(
+        Warning::new(
+            WarningCode::ClientNotLaunchedSincePatch,
+            format!(
+                "{}: the client last loaded addons at interface {last}, but version {} is interface {}",
+                t.id, t.version, t.interface
+            ),
+        )
+        .with_fix(Suggestion::text("launch the client once"))
+        .about([t.id.as_str()]),
     )
 }
 

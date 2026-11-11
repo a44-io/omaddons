@@ -166,11 +166,27 @@ mod support {
     }
 
     impl Run {
-        pub fn warning_codes(&self) -> Vec<String> {
+        /// Discovery's and reconciliation's warnings, then what the World says of each
+        /// reconciled client (`client_not_launched_since_patch`; `unknown_flavor` waits
+        /// for config overrides, which this run has none of).
+        pub fn warnings(&self) -> Vec<omaddons::error::Warning> {
             self.discovery
                 .warnings
                 .iter()
                 .chain(&self.resolved.warnings)
+                .cloned()
+                .chain(
+                    self.resolved
+                        .targets
+                        .iter()
+                        .filter_map(omaddons::discover::not_launched_since_patch),
+                )
+                .collect()
+        }
+
+        pub fn warning_codes(&self) -> Vec<String> {
+            self.warnings()
+                .iter()
                 .map(|w| w.code.wire().to_owned())
                 .collect()
         }
@@ -689,6 +705,24 @@ fn a_last_addon_version_disagreement_is_a_warning_not_a_failure() {
         "{}",
         run.context()
     );
+    // It names its client, by the id `-t` takes, typed and in the message (omad-5cg5).
+    let warning = &run.warnings()[0];
+    assert_eq!(warning.targets, ["retail"], "{}", run.context());
+    assert!(
+        warning.message.starts_with("retail:"),
+        "{}",
+        warning.message
+    );
+    let output = env.command().args(["status", "--json"]).output().unwrap();
+    let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let said: Vec<&Value> = status["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|w| w["code"] == "client_not_launched_since_patch")
+        .collect();
+    assert_eq!(said.len(), 1, "{status:#}");
+    assert_eq!(said[0]["targets"], json!(["retail"]), "{status:#}");
 }
 
 #[test]

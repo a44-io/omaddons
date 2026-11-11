@@ -318,6 +318,19 @@ fn a_failed_pass_names_the_client_and_the_next_command_converges() {
         warnings[0].starts_with("pruning era's snapshots failed"),
         "names era: {warnings:?}"
     );
+    // The client it could not prune, typed (omad-5cg5).
+    let typed: Vec<&serde_json::Value> = ran.envelope()["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|w| w["code"] == "retention_failed")
+        .map(|w| &w["targets"])
+        .collect();
+    log.assert_eq(
+        "retention_failed names era",
+        &typed,
+        &vec![&serde_json::json!(["era"])],
+    );
     log.assert_eq(
         "the install committed",
         &ran.data()["items"][0]["status"],
@@ -665,4 +678,31 @@ fn the_doctor_says_nothing_within_policy_or_for_a_missing_client() {
     );
     let ran = json(&log, &home, &["status"]);
     log.assert_eq("null for it", &undo_of(&ran, "era"), &Value::Null);
+}
+
+/// `snapshot_cap_exceeded` names the client whose snapshots are over the cap
+/// (omad-5cg5): with a cap of one byte, a commit's own protected snapshot passes it.
+#[test]
+fn the_snapshot_cap_names_its_client() {
+    let log = tlog!();
+    let home = Home::new(&["wow"]);
+    let config = home.env.config().join("omaddons/config.toml");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(&config, "[limits]\nsnapshot_max_bytes = 1\n").unwrap();
+
+    log.step("an install over the cap");
+    let ran = install_on_retail(&log, &home, "Foo");
+    ran.ok();
+    let typed: Vec<&Value> = ran.envelope()["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|w| w["code"] == "snapshot_cap_exceeded")
+        .map(|w| &w["targets"])
+        .collect();
+    log.assert_eq(
+        "snapshot_cap_exceeded names retail",
+        &typed,
+        &vec![&serde_json::json!(["retail"])],
+    );
 }
