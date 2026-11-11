@@ -513,9 +513,10 @@ warning_codes! {
     /// restore them only until retention prunes it.
     SnapshotOnlyCopy            = "snapshot_only_copy",
         "A transaction snapshot holds the only remaining copy of replaced or removed folders until retention prunes it.";
-    /// `sync --locked`: entries without a version installed their newest release.
+    /// `sync --locked`: entries with neither a version nor an archive hash installed their
+    /// newest release.
     NotLocked                   = "not_locked",
-        "A locked synchronization installed the newest release for entries that did not record a version.";
+        "A locked synchronization installed the newest release for entries that recorded neither a version nor an archive hash.";
     /// A removed addon is still required by addons that stay; undo brings it back.
     StillRequired               = "still_required",
         "A removed or reverted addon is still required by addons that remain installed.";

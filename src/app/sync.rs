@@ -176,9 +176,10 @@ pub struct DiffItem<'s, 'r> {
 /// | otherwise | nothing | nothing |
 ///
 /// A lock never pins: an unpinned entry installs its version unpinned. A locked install
-/// carries the entry's `sha256`, so its archive may come from the blob cache, and its
-/// `revision` (WowAce), so it is that tree; the same version at another revision is
-/// "another `version`".
+/// carries the entry's `sha256`, so its archive may come from the blob cache and no other
+/// archive installs, and its `revision` (WowAce), so it is that tree; the same version at
+/// another revision is "another `version`". An entry with no version (a `url:` release is
+/// its URL) is locked by its `sha256` alone.
 pub fn diff<'s, 'r>(
     wants: &[Want<'s>],
     record: Option<&'r TargetRecord>,
@@ -201,7 +202,13 @@ pub fn diff<'s, 'r>(
                 None => AnyFlavorIntent::Keep,
             };
             let install = |r#ref: Ref, name: Option<String>, version: Option<String>, pin| {
-                let blob_sha256 = e.sha256.clone().filter(|_| locked && version.is_some());
+                // The lock: the recorded archive's hash, with the recorded version; for an
+                // entry with no version to record (a `url:` release is its URL), the hash
+                // alone is the lock, so the URL's content cannot change silently.
+                let blob_sha256 = e
+                    .sha256
+                    .clone()
+                    .filter(|_| locked && (version.is_some() || e.version.is_none()));
                 // The recorded revision goes with the recorded version.
                 let revision = e.revision.filter(|_| version.is_some());
                 Some(RequestedChange::Install {
@@ -527,9 +534,11 @@ struct TargetWork {
     /// `--locked`: the dependency locks (`dependency = true` entries with a version), by
     /// resolved ref.
     locks: BTreeMap<Ref, String>,
-    /// `--locked`: entries installed without a version (the newest release).
+    /// `--locked`: entries installed without a version or an archive hash (the newest
+    /// release, or what a URL serves now).
     unlocked: Vec<String>,
-    /// `--locked`: the requests that install a recorded version.
+    /// `--locked`: the requests that install a recorded version, or a recorded archive
+    /// (a `url:` entry's `sha256`).
     locked: Vec<String>,
 }
 
@@ -636,13 +645,18 @@ fn target_work(
     let record = records.get(&t.id);
     for (item, want) in diff(&wants, record, locked).into_iter().zip(&wants) {
         let request = label(item.entry);
-        if let Some(RequestedChange::Install { version, .. }) = &item.change
+        if let Some(RequestedChange::Install {
+            version,
+            blob_sha256,
+            ..
+        }) = &item.change
             && locked
         {
-            match version {
-                Some(_) => work.locked.push(request.clone()),
-                None if item.installed.is_none() => work.unlocked.push(request.clone()),
-                None => {}
+            // Locked by its version, or by its archive's hash alone (a `url:` entry).
+            if version.is_some() || blob_sha256.is_some() {
+                work.locked.push(request.clone());
+            } else if item.installed.is_none() {
+                work.unlocked.push(request.clone());
             }
         }
         match item.change {
@@ -1310,17 +1324,31 @@ mod tests {
                 );
             }
         }
-        // Only a locked install with a version carries the recorded archive.
-        let sha = |e: Entry, on: bool| {
-            let items = diff(&[want(&e, "gh:o/new")], None, on);
+        // Only a locked install carries the recorded archive: with its version, or alone
+        // when the entry has no version to record (a `url:` release is its URL).
+        let sha = |e: Entry, r: &str, on: bool| {
+            let items = diff(&[want(&e, r)], None, on);
             match &items[0].change {
                 Some(RequestedChange::Install { blob_sha256, .. }) => blob_sha256.clone(),
                 _ => None,
             }
         };
-        assert!(sha(with_sha(entry("New", Stable, Some("v3"), false)), true).is_some());
-        assert!(sha(with_sha(entry("New", Stable, Some("v3"), false)), false).is_none());
-        assert!(sha(with_sha(entry("New", Stable, None, false)), true).is_none());
+        let url = "url:https://example.com/new.zip";
+        let sha_cases = [
+            ("versioned, locked", Some("v3"), "gh:o/new", true, true),
+            ("versioned, plain", Some("v3"), "gh:o/new", false, false),
+            ("versionless url, locked", None, url, true, true),
+            ("versionless url, plain", None, url, false, false),
+            ("versionless gh, locked", None, "gh:o/new", true, true),
+        ];
+        for (case, version, r, on, carries) in sha_cases {
+            let e = with_sha(entry("New", Stable, version, false));
+            assert_eq!(sha(e, r, on).is_some(), carries, "case {case}");
+        }
+        assert!(
+            sha(entry("New", Stable, None, true), url, true).is_none(),
+            "no sha256, nothing to lock"
+        );
     }
 
     #[test]

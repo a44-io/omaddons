@@ -1350,36 +1350,116 @@ fn a_locked_sync_refuses_an_archive_other_than_the_locked_one() {
     );
 }
 
-/// omad-t8m3: a `url:` release is its URL and has no version (the TOC's stands in), so
-/// `export` locks no version for it and `--locked` cannot pin it: the entry installs what
-/// the URL serves now, its `sha256` unchecked, and `not_locked` says so.
+/// omad-tz8v: a `url:` release is its URL and has no version (the TOC's stands in), so
+/// `export` records its archive's `sha256` alone, and `--locked` holds to it. On a fresh
+/// machine the URL's same bytes install, with no `not_locked` warning; other bytes fail
+/// the entry `hash_mismatch` (`details.reason: "lock_mismatch"`), nothing of it installed,
+/// and its fix is the run without `--locked`. An entry without `sha256` (exported while
+/// its archive was not cached) installs what the URL serves now, with `not_locked`, as
+/// before.
 #[test]
-fn a_locked_url_entry_is_not_locked_and_says_so() {
+fn a_locked_url_entry_installs_only_its_recorded_bytes() {
+    use common::tlog::tlog;
+    let log = tlog!();
     let url = "https://cdn.wowinterface.com/downloads/foo.zip";
+    // Each archive built once, so every machine that serves it serves exactly its bytes.
     let zip = |lua: &str| {
         zip_text(&[
             ("Foo/Foo.toc", &toc(ON_BOTH, &["## Version: 1.0"])),
             ("Foo/core.lua", lua),
         ])
     };
-    let old = Home::new(&["wow"]);
-    common::http::fixture_bytes(&old.http, "foo", url, 200, &[], Some(&zip("-- one")));
-    old.run(&["install", &format!("url:{url}"), "-t", "retail"])
-        .expect(0);
+    let (one, two) = (zip("-- one"), zip("-- two"));
+    let serving = |bytes: &[u8]| {
+        let home = Home::new(&["wow"]);
+        common::http::fixture_bytes(&home.http, "foo", url, 200, &[], Some(bytes));
+        log.env(&home);
+        home
+    };
+
+    log.step("lock on the old machine");
+    let old = serving(&one);
+    log.run(
+        &old,
+        &["install", &format!("url:{url}"), "-t", "retail", "--json"],
+    )
+    .ok();
     let file = exported(&old, "dotfiles");
     let text = fs::read_to_string(&file).unwrap();
+    log.note(&text);
     assert!(
         text.contains("\nsha256 = ") && !text.contains("\nversion = "),
         "{text}"
     );
+    let lock = lock_file::locked_sha(&file);
 
-    let new = Home::new(&["wow"]);
-    common::http::fixture_bytes(&new.http, "foo", url, 200, &[], Some(&zip("-- two")));
-    let r = new.run(&["sync", &file, "--locked"]);
-    let envelope = r.expect(0);
-    assert_eq!(warned(&envelope, "not_locked"), 1, "{}", r.context());
-    let lua = fs::read_to_string(new.addons("_retail_").join("Foo/core.lua")).unwrap();
-    assert_eq!(lua, "-- two", "what the URL serves now: {}", r.context());
+    log.step("a fresh machine, the URL serving the same bytes");
+    let same = serving(&one);
+    let run = log.run(&same, &["sync", &file, "--locked", "--json"]);
+    run.ok();
+    log.assert_eq("partial", &run.envelope()["partial"], &json!(false));
+    log.assert_eq(
+        "locked: no not_locked",
+        &warned(run.envelope(), "not_locked"),
+        &0,
+    );
+    let lua = fs::read_to_string(same.addons("_retail_").join("Foo/core.lua")).unwrap();
+    log.assert_eq("the locked bytes", &lua, &"-- one".to_owned());
+
+    log.step("a fresh machine, the URL serving other bytes");
+    let moved = serving(&two);
+    let run = log.run(&moved, &["sync", &file, "--locked", "--json"]);
+    // The file's only entry failed, so the run fails with its error, the entry's own
+    // under `details.items`.
+    run.exit(1);
+    let envelope = run.envelope().clone();
+    let foo = &envelope["error"]["details"]["items"][0];
+    log.json("Foo", foo);
+    log.assert_eq("the entry", &foo["request"], &json!("Foo"));
+    let error = &foo["error"];
+    log.assert_eq("code", &error["code"], &json!("hash_mismatch"));
+    log.assert_eq(
+        "the run's error is the entry's",
+        &envelope["error"]["details"]["reason"],
+        &json!("lock_mismatch"),
+    );
+    log.assert_eq(
+        "reason",
+        &error["details"]["reason"],
+        &json!("lock_mismatch"),
+    );
+    log.assert_eq("the lock", &error["details"]["expected"], &json!(lock));
+    log.assert_eq(
+        "its fix: the run without --locked",
+        &error["fix_argv"],
+        &json!(["omaddons", "sync", file]),
+    );
+    log.assert_eq(
+        "locked: no not_locked",
+        &warned(&envelope, "not_locked"),
+        &0,
+    );
+    log.assert_eq(
+        "nothing of Foo installed, nothing committed",
+        &(!moved.addons("_retail_").join("Foo").exists()
+            && !moved.state().join("history.jsonl").exists()),
+        &true,
+    );
+
+    log.step("an entry without sha256 installs what the URL serves, as before");
+    let unlocked: String = text
+        .lines()
+        .filter(|l| !l.starts_with("sha256 = "))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    let unlocked_file = moved.env.root().join("unlocked.toml");
+    fs::write(&unlocked_file, &unlocked).unwrap();
+    let unlocked_file = unlocked_file.display().to_string();
+    let run = log.run(&moved, &["sync", &unlocked_file, "--locked", "--json"]);
+    run.ok();
+    log.assert_eq("not_locked", &warned(run.envelope(), "not_locked"), &1);
+    let lua = fs::read_to_string(moved.addons("_retail_").join("Foo/core.lua")).unwrap();
+    log.assert_eq("what the URL serves now", &lua, &"-- two".to_owned());
 }
 
 #[cfg(test)]
