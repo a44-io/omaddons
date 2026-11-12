@@ -1126,7 +1126,7 @@ TestCase {
     compare(svc.cliRuns.length, 0, "never the remediation argv run as is")
     // The note: the code's words, under Notes; its prose fix (it names a config key) is not
     // shown, and journal_pending is the problems' to say.
-    compare(findChild(row("issueRow", 2), "headline").text, "A client's game version isn't recognised, so omaddons treats it carefully.")
+    compare(findChild(row("issueRow", 2), "headline").text, "A client's game version isn't recognized, so omaddons treats it carefully.")
     verify(!findChild(row("issueRow", 2), "prose").visible)
     var shown = texts(issues)
     verify(shown.indexOf("unfinished transactions wait") < 0, json(shown))
@@ -1145,7 +1145,7 @@ TestCase {
     view.setFilter("era")
     var notes = content().rows.filter(function(r) { return r.kind === "note" })
     compare(json(notes.map(function(r) { return [r.title, r.target] })),
-      json([["era's game version isn't recognised, so omaddons treats it carefully.", "era"]]))
+      json([["era's game version isn't recognized, so omaddons treats it carefully.", "era"]]))
     view.setFilter("retail")
     compare(content().rows.filter(function(r) { return r.kind === "note" }).length, 0)
     view.setFilter("")

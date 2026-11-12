@@ -46,7 +46,7 @@ pub struct WowiEntry {
     pub monthly: u64,
     pub favorites: u64,
     pub cat: u64,
-    /// Its folders, sanitised (no junk, valid names, no case duplicates).
+    /// Its folders, sanitized (no junk, valid names, no case duplicates).
     pub dirs: Vec<FolderName>,
     /// What the author declares; lags behind, so only ever a search hint (M2-D11).
     pub compat: Vec<WowiCompat>,

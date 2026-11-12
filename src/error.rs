@@ -450,7 +450,7 @@ warning_codes! {
     /// whose addon is built for this client.
     FolderLeftOut               = "folder_left_out",
         "An install left out an archive folder built only for other clients while installing the addon itself.";
-    /// An addon installed under `--any-flavor` although its publisher labelled the file
+    /// An addon installed under `--any-flavor` although its publisher labeled the file
     /// for other clients, or its folders target other clients; the message names what.
     AnyFlavor                   = "any_flavor",
         "The install used `--any-flavor` to accept publisher metadata or interfaces that did not target this client.";

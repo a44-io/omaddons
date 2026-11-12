@@ -2458,7 +2458,7 @@ describe("the Issues and Search views", () => {
     // left out; a newer omaddons's code keeps its message; the hero's and the problems'
     // codes are not repeated.
     expect(rows.slice(1).map((r) => [r.title, r.prose, r.buttons.length, r.text])).toEqual([
-      ["A client's game version isn't recognised, so omaddons treats it carefully.", "", 0, ""],
+      ["A client's game version isn't recognized, so omaddons treats it carefully.", "", 0, ""],
       ["Something a newer omaddons says", "", 0, ""],
     ])
     // Narrowed to a client: its problems only; one with none has no section at all.
@@ -2483,7 +2483,7 @@ describe("the Issues and Search views", () => {
     const notes = (filter) => M.issueRows(M.issueSections(status.targets, status.warnings, filter, status.issues, status.commands))
       .filter((r) => r.kind === "note").map((r) => [r.title, r.target, r.client])
     expect(notes("")).toEqual([
-      ["Wrath 3.3.5a private server's game version isn't recognised, so omaddons treats it carefully.", "wotlk", "Wrath 3.3.5a private server"],
+      ["Wrath 3.3.5a private server's game version isn't recognized, so omaddons treats it carefully.", "wotlk", "Wrath 3.3.5a private server"],
       ["Burning Crusade Anniversary and Mists of Pandaria Classic share one AddOns folder. Manage those addons from one of them.", "", ""],
       ["Mists of Pandaria Classic hasn't started since its last patch. Start it once.", "classic", "Mists of Pandaria Classic"],
       ["Mists of Pandaria Classic and Wrath 3.3.5a private server claim to be the same install (a copied folder?).", "", ""],
