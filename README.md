@@ -13,6 +13,21 @@
 
 </div>
 
+<table>
+<tr>
+<td valign="top" width="50%">
+<img src="docs/widget-updates.png" alt="The omaddons bar widget's panel on its Updates view: DBM and DBM-Party-Forever updates waiting on WoW: Forever, with an Update WoW: Forever button">
+<img src="docs/widget-settings.png" alt="The widget's Settings sheet: panel width, refresh, update and notification options, omaddons' channel and automatic backups, the clients, and GitHub access">
+</td>
+<td valign="top" width="50%">
+<img src="docs/widget-search.png" alt="The Search view for WoW: Forever: the built-in catalog of well-known addons, each saying it works on WoW: Forever and where it comes from, with Install on the hovered row">
+<img src="docs/widget-backups.png" alt="The Backups view for WoW: Forever: automatic backups on, 14 WTF backups made after play sessions or by hand, each with its file count and size">
+</td>
+</tr>
+</table>
+
+<sub>The [Omarchy bar widget](#omarchy): updates, search, backups and settings.</sub>
+
 ```text
 $ omaddons status
 Nothing needs doing
@@ -91,7 +106,7 @@ There is no packaged release, installer or prebuilt binary yet; see [Installatio
 |---|---|
 | **Zero-config discovery** | Reads Battle.net's `product.db`, `.build.info` and `.flavor.info`, the Lutris, Heroic, Steam and Bottles configs, and scans `~/Games` and `~/.wine`. Knows all 12 Battle.net WoW products and identifies private-server clients 1.12.1 to 5.4.8 from their executable. |
 | **The game's rules decide** | TOC suffix precedence, `## Interface:` lists, `AllowLoadGameType`, family interface ranges, retail 12's floor and the legacy single-TOC rules, applied to what is inside the archive. A build the client never loads is never installed. |
-| **Multi-flavor archives** | DBM and BigWigs ship retail-only modules in the zip with their Classic ones; on Classic or Forever, folders the client would not load are skipped (`folders.skipped`), and a file labelled for other clients only is refused. |
+| **Multi-flavor archives** | DBM and BigWigs ship retail-only modules in the zip with their Classic ones; on Classic or Forever, folders the client would not load are skipped (`folders.skipped`), and a file labeled for other clients only is refused. |
 | **Atomic, journaled changes** | Folders are staged on the same filesystem, then swapped in with `renameat2(RENAME_EXCHANGE)` under a journal. A crash leaves each folder wholly old or wholly new, and the next change finishes or rolls it back. |
 | **Undo any change** | Each change snapshots what it replaces; `undo` restores folders exactly and SavedVariables only where they changed. An undo is itself undoable, and `undo --last-by agent` reverts the last thing an agent did. |
 | **Keyless** | Stable GitHub releases come from `release.json` without the REST API, git branches through GitHub's commits feed and codeload. No account, token or API key is needed for anything that works today. |
@@ -1200,7 +1215,7 @@ Copies each selected client's `WTF/` into a new backup. Without `-t` it backs up
 - **`--auto`** makes the after-play checkpoint of [Automatic backups](#automatic-backups) instead: only when one is due, following `auto_backup`, never hashed, over every live client without `-t`. A skip is a success with `skipped: {reason}`: `off`, `no_wtf`, `running`, `unchanged`, `no_reflink`, `space_low` or `in_progress`. With `--dry-run` it reports the decision and what a due one would copy.
 - **`--dry-run`** walks `WTF/` and reports `would: {files, bytes, copy, free_bytes}`, where `copy` (`copy_on_write` or `byte_copy`) is a hint from the filesystem's type.
 
-`data` is `{dry_run, run, targets: [{target, backup, tx, skipped, error}]}`: `backup` as `backup list` shows it, `tx` its history line (`null`, with `history_not_recorded`, when it could not be written), `skipped` `null` for a backup you asked for. A `WTF/` past 200,000 entries or 16 levels is `archive_too_large`; files that vanished while copied, on the second try too, are a retryable `io` error whose path names no account, realm or character. Progress is `copy` events labelled `WTF/ files` (and `verify` events with `--verify`): counts, never a path, one total over all clients.
+`data` is `{dry_run, run, targets: [{target, backup, tx, skipped, error}]}`: `backup` as `backup list` shows it, `tx` its history line (`null`, with `history_not_recorded`, when it could not be written), `skipped` `null` for a backup you asked for. A `WTF/` past 200,000 entries or 16 levels is `archive_too_large`; files that vanished while copied, on the second try too, are a retryable `io` error whose path names no account, realm or character. Progress is `copy` events labeled `WTF/ files` (and `verify` events with `--verify`): counts, never a path, one total over all clients.
 
 ```text
 $ omaddons backup create
@@ -2061,11 +2076,11 @@ omaddons net-log --since 1d --json
 
 The bar widget for [Omarchy](https://omarchy.org)'s desktop: one gamepad button on every monitor's bar says what needs you (new Lua errors, a problem, updates), and its panel, by keys or mouse, updates, installs, repairs, backs up, restores and undoes, on every client or one. It reads the envelopes the CLI prints and runs omaddons command lines for everything, recorded with `--actor widget`, so its changes to addons and settings files can be undone.
 
-![The panel on its Updates view under All clients: a card offering BugGrabber for Classic Era, three updates running on Classic Era and Retail with each row showing its own step, and the activity bar's progress at the bottom](docs/widget-panel.png)
+The [screenshots at the top](#omaddons) show its Updates, Search and Backups views and its Settings sheet.
 
 #### What it does
 
-- **See what needs you from the bar.** The button counts new Lua errors and urgent problems in the urgent colour, else waiting updates; the tooltip says it client by client. Left click opens the panel, middle click its most urgent view, right-click checks for updates.
+- **See what needs you from the bar.** The button counts new Lua errors and urgent problems in the urgent color, else waiting updates; the tooltip says it client by client. Left click opens the panel, middle click its most urgent view, right-click checks for updates.
 - **Update before a raid.** `u` updates one addon, a client's header that client, `U` everything in scope; `e` shows release notes. An update exactly as its row showed runs at once; one that would do more opens the plan sheet.
 - **Fix Lua errors after a session.** The widget reads a session's Lua errors when the game stops and notifies once; Errors says which addon most likely threw each, in words, with `u` to update it, `r` to restore its settings, `y` to copy a report, `d` to mark them seen.
 - **Fix what's broken.** Issues lists every problem with its fix named for what it does; a repair previews first, and a fix the panel never runs is a command `y` copies.
@@ -2250,13 +2265,13 @@ The widget answers on the shell's IPC under its id. `omarchy-shell a44.omaddons 
 
 The button and every part of the panel in full: what each one says, and how it behaves.
 
-**The button** keeps its width in every state, and no state is told by colour alone:
+**The button** keeps its width in every state, and no state is told by color alone:
 
 | The button shows | When |
 |---|---|
 | the gamepad, plain | nothing needs doing |
-| a count beside it, in the accent colour | updates wait: the count is theirs |
-| the gamepad and a count in the urgent colour, with a warning mark under the count | new Lua errors or a P0 or P1 problem: the count is those, never the updates that also wait |
+| a count beside it, in the accent color | updates wait: the count is theirs |
+| the gamepad and a count in the urgent color, with a warning mark under the count | new Lua errors or a P0 or P1 problem: the count is those, never the updates that also wait |
 | the sync glyph turning in place of the gamepad (still, with Omarchy's animations off) | a check or a change you are waiting on runs; right-click starts a check and it turns at once |
 | a play mark under the count | a game client runs |
 | the gamepad dimmed, its last count kept, with a clock mark | omaddons has not answered for longer than the refresh interval (`refreshIntervalSec`, see [Settings](#settings)) and a status read's 20 seconds |
@@ -2306,7 +2321,7 @@ While the binary is missing or silent, the widget asks again after 5 seconds, 15
 The panel is worked by keys first, and the rest follows from that:
 
 - **Names for a screen reader.** Every control (buttons, rows, tabs, boxes, the client dropdown and the bar button) has an accessible name and role: a button its label or tooltip, a row its title, versions and state, the bar button its tooltip's first line. Qt puts them on the accessibility bus; some setups need `QT_ACCESSIBILITY=1` in the shell's environment. Every state the snapshot harness renders is checked for a control with no name.
-- **Never colour alone.** Urgent and accent colour only marks (a band, a glyph, a border, the badge); every state they mark is also a glyph or a word, and warning text stays in the foreground colour beside the alert glyph. A test lists every colour picked by a state, with what else says that state.
+- **Never color alone.** Urgent and accent color only marks (a band, a glyph, a border, the badge); every state they mark is also a glyph or a word, and warning text stays in the foreground color beside the alert glyph. A test lists every color picked by a state, with what else says that state.
 - **Contrast.** On Catppuccin, Gruvbox, Catppuccin Latte and Hackerman, text reaches 4.5:1 and marks 3:1 against every surface they sit on, and the bar's badge shifts its fill until its figures read.
 - **Zoom.** The whole range, 0.6 to 2 times, keeps every control on the panel at both widths: a long label shrinks, then elides.
 - **No keyboard trap.** Esc leaves every sheet and page, one layer at a time, and the keys come back to the panel.
@@ -3572,7 +3587,7 @@ An interrupted `WTF/` restore adds three cases. While its game runs, it waits (`
 
 ### Known issues
 
-The README describes the intended behaviour. A place where the code at HEAD does not match it yet is listed here with its bead (`br show <id>`), and the README changes only if a fix decides otherwise.
+The README describes the intended behavior. A place where the code at HEAD does not match it yet is listed here with its bead (`br show <id>`), and the README changes only if a fix decides otherwise.
 
 None at HEAD.
 
@@ -3585,7 +3600,7 @@ None at HEAD.
 | **M1: working slice** | Discovery, the TOC engine, the transaction engine with undo, keyless sources, the core CLI contract | ✅ Done (2026-10-15) |
 | Follow-up: Classic and Forever gaps | Multi-flavor archives, never-launched clients, game modes, real-machine tests, the in-game check on Forever | ✅ Done (2026-10-21) |
 | **M2: updates and adoption** | Updates, pins, WoWInterface and Tukui, changelogs, dependencies, drift, `adopt`, `addons.toml` with `export`, `sync` and `copy`, `search`, `auth github` | ✅ Done (2026-10-16) |
-| Post-M2 audit | An independent audit of M1 and M2 and real-world checks on real clients: running detection under Proton, in-game loading on every client, legacy `/reload` behaviour | ✅ Done (2026-10-21) |
+| Post-M2 audit | An independent audit of M1 and M2 and real-world checks on real clients: running detection under Proton, in-game loading on every client, legacy `/reload` behavior | ✅ Done (2026-10-21) |
 | **M3: the widget** | The Omarchy bar widget, `errors` (BugGrabber, installed keyless from a new `wowace:` source), `backup` of `WTF/` (create, list, verify, restore, export, import, automatic backups) | ✅ Done (2026-10-23) |
 | **M4: the agent surface** | `capabilities`; `robot-docs`; `completions`; intent inference; stored plans, `apply`, `plans show` and `--if-match`; the doctor; `status` on the doctor's registry; the pre-freeze contract audit; verbosity levels; the contract's golden; and **the first tag, `v0.1.0`, which froze the contract at 1.0**. Dropped when it was re-scoped on 2026-11-04 (may return if real use asks): `doctor health`, `ls`, `capabilities`, `robot-docs` and `--robot-triage`, and further detector batches | ✅ Done (2026-11-08) |
 | Omarchy widget overhaul | A user-first rebuild of every view, a readable plan sheet for every confirmation, a `?` key reference and mouse support (`omad-widget-user-first-1n2p`) | ✅ Done (2026-11-10, after `v0.1.0`; its follow-up `omad-z5il` too) |
@@ -3759,7 +3774,7 @@ An addon can write anything into its own messages, a party member's name include
 
 ### Does it work with Turtle WoW, Warmane or other private servers?
 
-Yes. Any 1.12.1, 2.4.3, 3.3.5a, 4.3.4 or 5.4.8 client with an `Interface/` folder is a target, identified by its executable and labelled from `realmlist.wtf`. Turtle WoW is a `vanilla-legacy` client, whatever version its executable reports. Name it with `targets add <path> --name turtle` or `targets rename`.
+Yes. Any 1.12.1, 2.4.3, 3.3.5a, 4.3.4 or 5.4.8 client with an `Interface/` folder is a target, identified by its executable and labeled from `realmlist.wtf`. Turtle WoW is a `vanilla-legacy` client, whatever version its executable reports. Name it with `targets add <path> --name turtle` or `targets rename`.
 
 ### Can I use CurseForge addons?
 
