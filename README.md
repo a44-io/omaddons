@@ -4,7 +4,7 @@
 
 **One binary that finds every World of Warcraft client on a Linux machine, installs only the addons each client will actually load, and can undo every change it makes.**
 
-![status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-orange)
+![status: alpha](https://img.shields.io/badge/status-alpha-yellow)
 ![milestone: M4 done](https://img.shields.io/badge/milestone-M4%20done-brightgreen)
 ![platform: Linux](https://img.shields.io/badge/platform-Linux-blue)
 ![rust: 1.97.1](https://img.shields.io/badge/rust-1.97.1-dea584)
@@ -55,7 +55,7 @@ cargo install --locked --path .
 Each [release](https://github.com/a44-io/omaddons/releases) carries a prebuilt Linux x86_64 binary; see [Installation](#installation).
 
 > [!NOTE]
-> **Pre-alpha: milestones 1 to 4 are done, and the JSON contract is frozen at `v0.1.0`.** omaddons runs daily on the development machine, where every client it has managed (retail, Mists Classic, Classic Era, Anniversary, WoW: Forever and a 3.3.5a server) has been seen in game loading the addons it installed.
+> **Alpha: milestones 1 to 4 are done, and the JSON contract is frozen at `v0.1.0`.** omaddons runs daily on the development machine, where every client it has managed (retail, Mists Classic, Classic Era, Anniversary, WoW: Forever and a 3.3.5a server) has been seen in game loading the addons it installed.
 >
 > - **Done (M1 to M3):** discovery and the load rules, transactions and undo, keyless GitHub, git, WoWInterface, Tukui and WowAce sources, `outdated`, `update`, `pin`, `adopt`, dependencies, `sync`, `export`, `copy`, `search`, `errors` (Lua errors from BugGrabber), `backup` (`WTF/` settings, with automatic checkpoints and undoable restores) and the Omarchy bar widget.
 > - **Done (M4):** `capabilities`, `robot-docs guide`, `schema`, `errors` and `install-skill`, shell completions, intent inference (a client named in the wrong place or mistyped is corrected in the fix), stored plans with `apply`, `plans show` and `--if-match`, the doctor (`doctor`, `explain`, `fix`, `diff`, `undo`, `gc` and `--online`), `status`'s issues taken from the doctor's cheap checks, bare help's line naming the commands agents start from, the pre-freeze contract audit, verbosity levels (`-vv` traces the release memo, discovery and the global lock on stderr), and the contract's golden (the semantic manifest, compared with the code in every gate).
