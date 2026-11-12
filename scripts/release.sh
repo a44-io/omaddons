@@ -33,6 +33,15 @@ version=${tag#v}
 root=$(git rev-parse --show-toplevel)
 fail() { echo "release: $*" >&2; exit 1; }
 
+# stdin to stdout with < and > escaped as HTML entities outside `code spans`: the
+# backtick-separated fields at odd positions are prose.
+escape_outside_code() {
+    awk 'BEGIN { FS = OFS = "`" } {
+        for (i = 1; i <= NF; i += 2) { gsub(/</, "\\&lt;", $i); gsub(/>/, "\\&gt;", $i) }
+        print
+    }'
+}
+
 git -C "$root" rev-parse -q --verify "refs/tags/$tag^{commit}" >/dev/null || fail "no tag $tag in this checkout"
 git -C "$root" ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null || fail "push the tag first: git push origin $tag"
 if gh release view "$tag" -R "$repo" >/dev/null 2>&1; then fail "$tag already has a release"; fi
@@ -77,8 +86,10 @@ tar -C "$work/pack" --owner=0 --group=0 --numeric-owner -czf "$work/$name.tar.gz
         echo
         echo "From the project's issue tracker (\`br changelog --since-tag $previous\`)."
         echo
+        # A title's <word> outside backticks would be read as an HTML tag and vanish;
+        # inside a code span GitHub shows it as written, so only the rest is escaped.
         (cd "$root" && env -u BR_OUTPUT_FORMAT br changelog --since-tag "$previous" --no-color) |
-            sed -e '1d' -e 's/^\([A-Z][A-Za-z ]*\):$/### \1/'
+            sed -e '1d' -e 's/^\([A-Z][A-Za-z ]*\):$/### \1/' | escape_outside_code
     fi
 } >"$work/notes.md"
 
