@@ -202,6 +202,57 @@ TestCase {
     compare(row.shownActions.length, 1, "at 400 only the main action shows")
   }
 
+  // The right edge of `item` in `row`'s coordinates.
+  function rightIn(row, item) {
+    return item.mapToItem(row, item.width, 0).x
+  }
+
+  // omad-39he: a row as narrow as 400 wide with the text zoomed to 2 (a 200 px canvas).
+  function test_versions_that_leave_the_title_too_little_take_a_line_of_their_own() {
+    var row = make(rowComponent, { "width": 200, "title": "Plater", "fromVersion": "Plater-v661",
+      "toVersion": "Plater-v662", "chips": [{ "text": "Retail" }] })
+    waitForRendering(row)
+    var title = child(row, "title")
+    var versions = child(row, "versions")
+    verify(!row.titleTruncated, "the title keeps its room")
+    compare(versions.x, 0, "under the title, at its start")
+    verify(versions.y >= title.height, "on a line of its own: " + versions.y + " under " + title.height)
+    for (var name of ["fromVersion", "toVersion"]) {
+      var label = child(row, name)
+      verify(label.visible)
+      verify(!label.truncated, name + " in full")
+      verify(rightIn(row, label) <= row.width, name + " ends at " + rightIn(row, label) + " in " + row.width)
+    }
+    verify(rightIn(row, child(row, "chips")) <= row.width, "the chip stays on the title's line, inside the row")
+    var plain = make(rowComponent, { "width": 200, "title": "Plater", "chips": [{ "text": "Retail" }] })
+    verify(row.implicitHeight > plain.implicitHeight, "the row grows by the versions' line")
+  }
+
+  function test_a_version_wider_than_its_line_wraps_whole() {
+    var row = make(rowComponent, { "width": 160, "title": "Details", "fromVersion": "Details.20251102.13711.165",
+      "toVersion": "Details.20251109.13800.170" })
+    waitForRendering(row)
+    var title = child(row, "title")
+    for (var name of ["fromVersion", "toVersion"]) {
+      var label = child(row, name)
+      verify(!label.truncated, name + " in full")
+      verify(rightIn(row, label) <= row.width, name + " ends at " + rightIn(row, label) + " in " + row.width)
+      verify(label.height > title.height, name + " wraps: " + label.height + " for a line of " + title.height)
+    }
+  }
+
+  function test_short_versions_stay_beside_the_title() {
+    var row = make(rowComponent, { "title": "DBM", "fromVersion": "12.1.14", "toVersion": "12.1.15",
+      "chips": [{ "text": "Retail" }, { "text": "beta" }] })
+    var plain = make(rowComponent, { "title": "DBM", "chips": [{ "text": "Retail" }, { "text": "beta" }] })
+    waitForRendering(row)
+    var versions = child(row, "versions")
+    compare(versions.y, 0, "on the title's line")
+    compare(versions.x, child(row, "title").width + Commons.Style.spacing.lg)
+    fuzzyCompare(versions.width, versions.natural, 0.5, "on one line")
+    compare(row.implicitHeight, plain.implicitHeight, "no taller than a row without versions")
+  }
+
   // ---- Chip, SectionHeader, KeyHint, Separator
 
   function test_an_urgent_chip_carries_its_glyph() {
@@ -537,6 +588,26 @@ TestCase {
     verify(!detail.truncated, "the versions never do")
     compare(detail.text, "12.1.14-alpha → 12.1.15-beta")
     verify(detail.x + detail.width <= row.width + 1, "the versions fit in the row")
+    compare(detail.y, 0, "beside the name, which still has room")
+  }
+
+  // omad-39he: as an addon row's, a plan item's versions that leave its name too little
+  // take a line of their own, and wrap there when wider than it.
+  function test_a_plan_items_long_versions_take_a_line_of_their_own() {
+    var item = { "op": "update", "addon": "Plater", "client": "Retail", "clientKey": "Retail", "from": "Plater-v661",
+      "to": "Plater-v662", "name": "Plater", "detail": "Plater-v661 → Plater-v662", "text": "Plater Plater-v661 → Plater-v662",
+      "header": "" }
+    var sheet = makePlan(plan(1, { "items": [item] }), { "width": 200 })
+    sheet.opened = true
+    waitForRendering(sheet)
+    var row = child(sheet, "planItems").itemAt(0)
+    var name = findChild(row, "planItemName")
+    var detail = findChild(row, "planItemDetail")
+    verify(!name.truncated, "the name keeps its room")
+    compare(detail.x, 0, "under the name, at its start")
+    verify(detail.y >= name.height, "on a line of its own")
+    verify(!detail.truncated, "the versions in full")
+    verify(rightIn(row, detail) <= row.width, "the versions end at " + rightIn(row, detail) + " in " + row.width)
   }
 
   // ---- ProgressBar, Badge

@@ -64,16 +64,26 @@ Sheet {
       }
 
       // The name elides when the row is short; the detail (versions, counts) never does.
-      // A line with no detail is a sentence of its own, and wraps.
+      // When beside the name it would leave it less than an addon row's title keeps
+      // (AddonRow.titleFloor, or the name's own width when that is less), the detail
+      // takes a line of its own under the name, and wraps when wider (omad-39he). A line
+      // with no detail is a sentence of its own, and wraps.
       Item {
+        id: line
+        // The name's room with the detail beside it.
+        readonly property real inlineRoom: width - detailLabel.implicitWidth - Style.spacing.sm
+        readonly property bool stacked: detailLabel.text !== ""
+          && inlineRoom < Math.min(nameLabel.implicitWidth, Style.space(72))
+
         width: parent.width
-        height: Math.max(nameLabel.implicitHeight, detailLabel.implicitHeight)
+        height: stacked ? nameLabel.height + Style.spacing.xs + detailLabel.height
+          : Math.max(nameLabel.implicitHeight, detailLabel.implicitHeight)
 
         PlainLabel {
           id: nameLabel
           objectName: "planItemName"
-          width: detailLabel.text === "" ? parent.width
-            : Math.max(0, Math.min(implicitWidth, parent.width - detailLabel.implicitWidth - Style.spacing.sm))
+          width: detailLabel.text === "" || line.stacked ? parent.width
+            : Math.max(0, Math.min(implicitWidth, line.inlineRoom))
           wrapMode: detailLabel.text === "" ? Text.WordWrap : Text.NoWrap
           elide: detailLabel.text === "" ? Text.ElideNone : Text.ElideRight
           color: root.foreground
@@ -85,9 +95,11 @@ Sheet {
         PlainLabel {
           id: detailLabel
           objectName: "planItemDetail"
-          x: nameLabel.width + Style.spacing.sm
-          width: implicitWidth
+          x: line.stacked ? 0 : nameLabel.width + Style.spacing.sm
+          y: line.stacked ? nameLabel.height + Style.spacing.xs : 0
+          width: line.stacked ? Math.min(implicitWidth, parent.width) : implicitWidth
           elide: Text.ElideNone
+          wrapMode: line.stacked ? Text.WrapAtWordBoundaryOrAnywhere : Text.NoWrap
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.bodySmall

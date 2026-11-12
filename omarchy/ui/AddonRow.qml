@@ -6,7 +6,8 @@ import ".."
 import "../Model.js" as Model
 
 // One row of any list (design doc §5.3): a band mark, a state glyph, the title (it elides
-// first), a version transition (never elides), chips, a meta line, and the actions of
+// first), a version transition (never elides; on a line of its own when it leaves the
+// title too little), chips, a meta line, and the actions of
 // the cursored row only. While a change runs on it, the spinner replaces the glyph and a
 // verb replaces the meta line. It draws what the view hands it and decides nothing:
 // properties in, signals out. Every string it shows goes through PlainLabel.
@@ -36,6 +37,11 @@ Item {
   property bool inert: false
   // At 400 wide the chips but the first drop, and one action shows (§5.3).
   readonly property bool narrow: width < 480
+  // The least the title keeps beside the versions (about nine characters), else its own
+  // width when that is less: below it the versions take a line of their own (omad-39he).
+  readonly property real titleFloor: Style.space(72)
+  readonly property bool hasVersions: toVersion !== "" || fromVersion !== ""
+  readonly property bool transition: fromVersion !== "" && toVersion !== ""
 
   // ---- theme tokens (the frame passes them; §5.1)
   property color foreground: Commons.Color.foreground
@@ -111,15 +117,25 @@ Item {
     width: root.width - x - Style.spacing.rowPaddingX
     spacing: Style.spacing.xs
 
-    // The first line: the title takes what the versions and chips leave.
+    // The first line: the title takes what the versions and chips leave. The versions
+    // never elide: when beside the title they would leave it less than titleFloor (or
+    // its own width, when that is less), they take a line of their own under it, where
+    // a version wider than the line wraps (omad-39he). The chips stay on the title's line.
     Item {
+      id: head
+      // The title's room with the versions beside it.
+      readonly property real inlineRoom: width - versions.natural - chipRow.width - Style.spacing.lg * 2
+      readonly property bool stacked: root.hasVersions && inlineRoom < Math.min(titleLabel.implicitWidth, root.titleFloor)
+
       width: parent.width
-      height: Math.max(titleLabel.implicitHeight, versions.implicitHeight)
+      height: stacked ? titleLabel.height + Style.spacing.xs + versions.height
+        : Math.max(titleLabel.implicitHeight, versions.implicitHeight)
 
       PlainLabel {
         id: titleLabel
         objectName: "title"
-        width: Math.max(0, Math.min(implicitWidth, parent.width - versions.width - chipRow.width - Style.spacing.lg * 2))
+        width: Math.max(0, Math.min(implicitWidth, head.stacked
+          ? head.width - chipRow.width - (chipRow.width > 0 ? Style.spacing.lg : 0) : head.inlineRoom))
         color: root.foreground
         font.family: root.fontFamily
         font.pixelSize: Style.font.body
@@ -127,24 +143,38 @@ Item {
         text: root.title
       }
 
-      Row {
+      Flow {
         id: versions
         objectName: "versions"
-        x: titleLabel.width + Style.spacing.lg
+        // Its width on one line, from its parts' own widths (never from its laid-out
+        // width, which the decision to stack changes).
+        readonly property real natural: !root.hasVersions ? 0
+          : (root.transition ? fromLabel.implicitWidth + arrowLabel.implicitWidth + spacing * 2 : 0) + toLabel.implicitWidth
+
+        x: head.stacked ? 0 : titleLabel.width + Style.spacing.lg
+        y: head.stacked ? titleLabel.height + Style.spacing.xs : 0
+        // Stacked, the line's width, which the parts wrap within; beside the title,
+        // undefined resets it to the parts' one line, so nothing wraps.
+        width: head.stacked ? head.width : undefined
         spacing: Style.spacing.sm
-        visible: root.toVersion !== "" || root.fromVersion !== ""
+        visible: root.hasVersions
 
         PlainLabel {
-          visible: root.fromVersion !== "" && root.toVersion !== ""
+          id: fromLabel
+          objectName: "fromVersion"
+          visible: root.transition
+          width: head.stacked ? Math.min(implicitWidth, versions.width) : implicitWidth
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.body
           text: root.fromVersion
           elide: Text.ElideNone
+          wrapMode: head.stacked ? Text.WrapAtWordBoundaryOrAnywhere : Text.NoWrap
         }
 
         Text {
-          visible: root.fromVersion !== "" && root.toVersion !== ""
+          id: arrowLabel
+          visible: root.transition
           textFormat: Text.PlainText
           text: "→"
           color: root.dim
@@ -153,11 +183,15 @@ Item {
         }
 
         PlainLabel {
+          id: toLabel
+          objectName: "toVersion"
+          width: head.stacked ? Math.min(implicitWidth, versions.width) : implicitWidth
           color: root.foreground
           font.family: root.fontFamily
           font.pixelSize: Style.font.body
           text: root.toVersion !== "" ? root.toVersion : root.fromVersion
           elide: Text.ElideNone
+          wrapMode: head.stacked ? Text.WrapAtWordBoundaryOrAnywhere : Text.NoWrap
         }
       }
 

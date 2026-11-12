@@ -569,6 +569,25 @@ TestCase {
     return { "text": text(env) }
   }
 
+  // The `list` fixture with every waiting update's versions as long as real release tags
+  // (omad-39he), lengthened in place as longNameList lengthens a name: Plater's, and
+  // Details', wider than a row at 400 wide with the text zoomed to 2.
+  function longVersionsList() {
+    var env = fixture("list")
+    var tags = [["Plater-v661", "Plater-v662"], ["Details.20251102.13711.165", "Details.20251109.13800.170"]]
+    var n = 0
+    for (var t = 0; t < env.data.targets.length; t++)
+      for (var i = 0; i < env.data.targets[t].addons.length; i++) {
+        var a = env.data.targets[t].addons[i]
+        if (!a.latest || a.latest.status !== "update_available") continue
+        a.version = tags[n % tags.length][0]
+        a.latest.version = tags[n % tags.length][1]
+        n++
+      }
+    verify(n >= 2, "the list fixture has " + n + " waiting updates; the scene needs two")
+    return { "text": text(env) }
+  }
+
   function upToDate() {
     var env = fixture("list")
     for (var t = 0; t < env.data.targets.length; t++)
@@ -1337,9 +1356,13 @@ TestCase {
   // 1n2p.39: every view and the settings sheet at both widths and the text zooms,
   // nothing drawn past the panel's edge or a clip (shoot's check), on whichever kit and
   // theme the run draws with; 1n2p.40 adds the range's ends, 0.6 and 2 (§5.6), where
-  // every control must still be reachable (and named: save's walk).
+  // every control must still be reachable (and named: save's walk). The long-versions
+  // states are their view with release tags as long as real ones (omad-39he).
   function test_matrix_widths_and_text_zooms() {
-    var states = ["updates", "installed", "search", "errors", "issues", "backups", "history", "settings"]
+    var states = ["updates", "installed", "search", "errors", "issues", "backups", "history", "settings",
+      "updates-long-versions", "installed-long-versions"]
+    // A state's view, where its name is not one.
+    var viewOf = { "settings": "updates", "updates-long-versions": "updates", "installed-long-versions": "installed" }
     for (var w of [600, 400]) {
       for (var z of [0.6, 0.8, 1.0, 1.5, 2.0]) {
         for (var s of states) {
@@ -1347,7 +1370,8 @@ TestCase {
           panelWidth = w
           var scene = everyday()
           scene.config = the("config")
-          open(scene, s === "settings" ? "updates" : s)
+          if (s.endsWith("-long-versions")) scene.list = longVersionsList()
+          open(scene, viewOf[s] || s)
           frame.uiScale = z
           if (s === "settings") {
             frame.settingsOpen = true
