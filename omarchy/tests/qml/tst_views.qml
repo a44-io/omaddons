@@ -178,6 +178,29 @@ TestCase {
       function reinstallWidget() { return "ok" }
       function confirmYes() { confirm = null; return "" }
       function confirmNo() { confirm = null }
+      // What BarWidget tells its service (omad-zppa's tests host the frame in it).
+      function applySettings(next) {}
+      function setPanelOpen(key, open) {}
+    }
+  }
+
+  // The bar button, its keyboard panel sized as Omarchy's kit sizes it (the stub
+  // KeyboardPanel: the card's padding and border around the frame), the frame inside.
+  Component {
+    id: barComponent
+    BarWidget {}
+  }
+
+  // A view of `fractionalHeight`, as a view of text rows often measures.
+  property real fractionalHeight: 300
+  Component {
+    id: fractionalView
+    Item {
+      property var frame: null
+      property int rowCount: 0
+      property bool typing: false
+      implicitHeight: testCase.fractionalHeight
+      function handleKey(name, cursor) { return false }
     }
   }
 
@@ -222,6 +245,8 @@ TestCase {
   function cleanup() {
     for (var i = 0; i < made.length; i++) made[i].destroy()
     made = []
+    // A test that hosted the frame in BarWidget handed it the service through the store.
+    Store.clear(svc)
     if (svc) svc.destroy()
     svc = null
     view = null
@@ -334,6 +359,71 @@ TestCase {
     svc.lists = Model.reduceList(listing())
     verify(!installed.scrollsItself)
     compare(installed.rowItem(0) !== null, true)
+  }
+
+  // The frame in BarWidget's keyboard panel, opened under All, as make() opens one: the
+  // card sized as Omarchy's kit sizes it, its padding and border around the frame.
+  function openInBar() {
+    Store.set(svc)
+    var bar = barComponent.createObject(testCase)
+    verify(bar !== null)
+    made = made.concat([bar])
+    tryVerify(function() { return bar.svc === svc }, 2000, "the bar binds the service")
+    verify(findChild(bar, "panel").verticalContentInset > 0, "the card has the kit's padding and border")
+    bar.open()
+    var frame = findChild(bar, "view")
+    tryVerify(function() { return frame.opened })
+    frame.setFilter("")
+    return bar
+  }
+
+  // The frame's content at `zoom`, settled: whether it fits the frame's view, the
+  // overflow said in the message.
+  function frameFits(frame, zoom, what) {
+    frame.uiScale = zoom
+    verify(waitForPolish(testCase.Window.window), "the window's layout settles")
+    var flick = findChild(frame, "contentFlick")
+    verify(flick.contentHeight <= flick.height, what + " at zoom " + zoom + ": the frame's content fits ("
+      + flick.contentHeight + " in " + flick.height + ")")
+    verify(!flick.interactive, what + " at zoom " + zoom + ": the frame's content does not scroll")
+    return flick
+  }
+
+  // omad-zppa: in the bar's keyboard panel, a long list fills the frame's room and no
+  // more. The kit's sizes are the card's (padding and border included); read as the
+  // frame's, they made a long list 28 px too tall, so the frame scrolled too, its scroll
+  // bar showed over the list's on hover, and the list's end sat under the footer.
+  function test_a_long_list_in_the_bar_widgets_panel_leaves_the_frame_nothing_to_scroll() {
+    var addons = []
+    for (var i = 0; i < 500; i++) addons.push(addon("Addon" + (1000 + i), "v1", "v1", "current"))
+    svc.lists = Model.reduceList(listEnvelope([{ "id": "retail", "key": "k-retail", "label": "retail", "counts": { "unmanaged": 0 },
+      "addons": addons }]))
+    var bar = openInBar()
+    var frame = findChild(bar, "view")
+    frame.showView("installed")
+    var installed = frame.currentView
+    verify(installed.scrollsItself, "a long list scrolls itself")
+    var list = findChild(installed, "rowList")
+    for (var zoom of [1.0, 1.1, 1.3]) {
+      var flick = frameFits(frame, zoom, "500 addons")
+      var end = list.mapToItem(flick, 0, list.height).y
+      verify(end <= flick.height, "at zoom " + zoom + ": the list ends inside the frame's view (" + end + " of " + flick.height + ")")
+      verify(findChild(bar, "panel").contentHeight <= 720, "at zoom " + zoom + ": the card keeps its cap")
+    }
+  }
+
+  // omad-zppa: the kit rounds the card's height, and a frame a fraction of a pixel short
+  // scrolls its content by that fraction (and shows a scroll bar on hover). The panel
+  // asks for whole pixels up, so a view of any fractional height fits.
+  function test_a_view_of_fractional_height_fits_the_bar_widgets_panel() {
+    var bar = openInBar()
+    var frame = findChild(bar, "view")
+    frame.viewComponents = { "updates": fractionalView }
+    frame.showView("updates")
+    for (var eighth = 1; eighth < 8; eighth++) {
+      fractionalHeight = 300 + eighth / 8
+      for (var zoom of [1.0, 1.1]) frameFits(frame, zoom, "a view of " + fractionalHeight + " px")
+    }
   }
 
   // 1n2p.38: Qt's engine spent about a millisecond a row on Updates rows without a

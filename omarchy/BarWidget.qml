@@ -199,7 +199,9 @@ Panel {
   // The keyboard panel (the house pattern): `panelWidth` wide, at most 720 tall, the
   // frame inside. Zoomed (`z`, design doc §5.6), the fitted helpers get a size no
   // screen reaches and land on the screen less the bar and margins; it is the frame's
-  // state, in memory only.
+  // state, in memory only. The kit's sizes are the card's: fittedContentHeight adds the
+  // card's padding and border (`verticalContentInset`) and rounds, and the frame gets
+  // the card less that inset (omad-zppa).
   KeyboardPanel {
     id: panel
     objectName: "panel"
@@ -210,8 +212,10 @@ Panel {
     focusTarget: view.focusItem
     contentWidth: view.zoomed ? panel.fittedContentWidth(999999)
       : panel.fittedContentWidth(Style.space(Model.intSetting(Model.migrateSettings(root.settings), "panelWidth", 600, 400, 800)))
+    // Whole pixels up: the kit rounds, and a frame a fraction short would scroll its
+    // content by that fraction and show a scroll bar on hover.
     contentHeight: view.zoomed ? panel.fittedContentHeight(999999)
-      : panel.fittedContentHeight(view.contentImplicitHeight, Style.space(720))
+      : panel.fittedContentHeight(Math.ceil(view.contentImplicitHeight), Style.space(720))
 
     PanelView {
       id: view
@@ -219,8 +223,11 @@ Panel {
       anchors.fill: parent
       svc: root.svc
       opened: root.opened
-      // The most the panel may take, as contentHeight's cap: a long list fills it.
-      heightCap: view.zoomed ? panel.fittedContentHeight(999999) : panel.fittedContentHeight(999999, Style.space(720))
+      // The most the frame may take, the card's cap less its inset: a long list fills
+      // it, and the frame's own content then fits (1n2p.38). Read as the card's cap, the
+      // list would overflow the frame by the inset, and the frame would scroll too.
+      heightCap: (view.zoomed ? panel.fittedContentHeight(999999) : panel.fittedContentHeight(999999, Style.space(720)))
+        - (Number(panel.verticalContentInset) || 0)
       foreground: root.bar ? root.bar.foreground : Commons.Color.foreground
       urgent: root.bar ? root.bar.urgent : Commons.Color.urgent
       fontFamily: root.bar ? root.bar.fontFamily : Style.font.family

@@ -1,7 +1,10 @@
 import QtQuick
 
 // Omarchy's qs.Ui KeyboardPanel without the layer-shell window: the card as an item, its
-// size functions, and the focus it hands to `focusTarget` when it opens.
+// size functions, and the focus it hands to `focusTarget` when it opens. Its geometry is
+// the kit's (omad-zppa): `contentHeight` is the card's, padding and border included, the
+// content gets the card less that inset, and fittedContentHeight adds the inset to the
+// height it is given, then rounds. The kit's defaults: popupPadding 14, a 2 px border.
 Item {
   id: root
 
@@ -12,6 +15,11 @@ Item {
   property Item focusTarget: null
   property int contentWidth: 280
   property int contentHeight: 200
+  property int padding: 14
+  property int borderWidth: 2
+  // The screen's room for the card; 0 is no screen, as the kit reads it.
+  property real availableCardHeight: 0
+  readonly property real verticalContentInset: padding * 2 + borderWidth * 2
 
   default property alias contentItem: holder.children
 
@@ -21,8 +29,10 @@ Item {
   }
 
   function fittedContentHeight(implicitHeight, cap) {
-    var desired = Math.max(0, Number(implicitHeight) || 0)
-    return Math.round(cap !== undefined && Number(cap) > 0 ? Math.min(desired, Number(cap)) : desired)
+    var desired = Math.max(root.verticalContentInset, (Number(implicitHeight) || 0) + root.verticalContentInset)
+    var maxHeight = root.availableCardHeight > 0 ? root.availableCardHeight : desired
+    if (cap !== undefined && Number(cap) > 0) maxHeight = Math.min(maxHeight, Number(cap))
+    return Math.round(Math.min(desired, maxHeight))
   }
 
   function close() {
@@ -40,6 +50,9 @@ Item {
 
   Item {
     id: holder
-    anchors.fill: parent
+    x: root.padding + root.borderWidth
+    y: root.padding + root.borderWidth
+    width: root.contentWidth - 2 * (root.padding + root.borderWidth)
+    height: root.contentHeight - root.verticalContentInset
   }
 }
