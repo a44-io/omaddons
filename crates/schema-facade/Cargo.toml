@@ -13,6 +13,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"
 description = "schemars for omaddons' tests, and a no-op stand-in for its release binary"
+license = "MIT"
 publish = false
 
 [lib]

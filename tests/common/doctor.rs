@@ -431,7 +431,7 @@ pub mod plant {
     /// whole widget from another build instead (`code_differs`).
     pub fn widget_version_drift(home: &Home) {
         fs::create_dir_all(omarchy_path(home).join("shell")).unwrap();
-        let plugin = home.env.config().join("omarchy/plugins/omaddons");
+        let plugin = home.env.config().join("omarchy/plugins/a44.omaddons");
         fs::create_dir_all(&plugin).unwrap();
         fs::write(
             plugin.join("manifest.json"),
@@ -453,7 +453,7 @@ pub mod plant {
     /// `barWidget.defaultSection` set to `"top"` in `manifest.json` (parsed, set and
     /// written back) and the symlink `views/link → ../manifest.json` made inside the
     /// plugin folder. `Build.js` is untouched, so the widget is not outdated. The finding:
-    /// evidence `{path: <plugins>/omaddons, count: 2, rules: ["default_section",
+    /// evidence `{path: <plugins>/a44.omaddons, count: 2, rules: ["default_section",
     /// "symlink"]}`, remediation `omaddons omarchy install`; no drift finding.
     pub fn widget_invalid(home: &Home) -> StubDesk {
         let desk = widget_current(home);

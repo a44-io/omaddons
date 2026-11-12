@@ -19,7 +19,7 @@ use crate::model::{PlanId, TargetKey, TxId};
 
 const APP: &str = "omaddons";
 
-/// The Omarchy widget's plugin id (M3-D6); its folder is `<plugins>/omaddons`.
+/// The Omarchy widget's plugin id (M3-D6); its folder is `<plugins>/a44.omaddons`.
 pub const WIDGET_ID: &str = "a44.omaddons";
 
 /// What a journal, stage or snapshot name carries after its transaction id when the
@@ -70,7 +70,7 @@ pub struct Paths {
     state: PathBuf,
     cache: PathBuf,
     /// `OMADDONS_WIDGET_ID` (debug builds only): a separate checkpoint widget,
-    /// `a44.omaddons-<suffix>` in `<plugins>/omaddons-<suffix>`.
+    /// `a44.omaddons-<suffix>` in `<plugins>/a44.omaddons-<suffix>`.
     widget: Option<String>,
 }
 
@@ -221,11 +221,21 @@ impl Paths {
             .map_or_else(|| WIDGET_ID.to_owned(), |s| format!("{WIDGET_ID}-{s}"))
     }
 
-    /// The widget's folder name under `<plugins>`: `omaddons`, or `omaddons-<suffix>`.
+    /// The widget's folder name under `<plugins>`: its id, the folder Omarchy's own
+    /// `omarchy plugin add` and `omarchy plugin remove` use for it (omad-o8g4), so the
+    /// marketplace's setup plugin, which has the same id, is replaced in place.
     pub fn omarchy_plugin_name(&self) -> String {
-        self.widget
+        self.omarchy_plugin_id()
+    }
+
+    /// Where builds before omad-o8g4 installed the widget: `<plugins>/omaddons`, or
+    /// `omaddons-<suffix>`. The next install moves a widget out of it.
+    pub fn omarchy_legacy_plugin_dir(&self) -> PathBuf {
+        let name = self
+            .widget
             .as_ref()
-            .map_or_else(|| APP.to_owned(), |s| format!("{APP}-{s}"))
+            .map_or_else(|| APP.to_owned(), |s| format!("{APP}-{s}"));
+        self.omarchy_plugins_dir().join(name)
     }
 
     /// `<config-omarchy>`: Omarchy's own config dir (`<config>/omarchy`).
@@ -244,25 +254,26 @@ impl Paths {
         self.omarchy_config_dir().join("plugins")
     }
 
-    /// The installed Omarchy widget (M3): `<config>/omarchy/plugins/omaddons`.
+    /// The installed Omarchy widget (M3): `<config>/omarchy/plugins/a44.omaddons`.
     pub fn omarchy_plugin_dir(&self) -> PathBuf {
         self.omarchy_plugins_dir().join(self.omarchy_plugin_name())
     }
 
-    /// The hidden stage one `omarchy install` owns (M3-D38): `.omaddons.stage-<op>`,
+    /// The hidden stage one `omarchy install` owns (M3-D38): `.a44.omaddons.stage-<op>`,
     /// invisible to the plugin registry, which skips dot-directories.
     pub fn omarchy_stage(&self, op: &TxId) -> PathBuf {
         self.omarchy_plugins_dir()
             .join(format!(".{}.stage-{op}", self.omarchy_plugin_name()))
     }
 
-    /// Where a swap without `RENAME_EXCHANGE` parks the old widget: `.omaddons.old-<op>`.
+    /// Where a swap without `RENAME_EXCHANGE` parks the old widget, and where an install
+    /// parks a legacy one: `.a44.omaddons.old-<op>`.
     pub fn omarchy_old(&self, op: &TxId) -> PathBuf {
         self.omarchy_plugins_dir()
             .join(format!(".{}.old-{op}", self.omarchy_plugin_name()))
     }
 
-    /// The widget side's prune trash: `.omaddons.trash`.
+    /// The widget side's prune trash: `.a44.omaddons.trash`.
     pub fn omarchy_trash(&self) -> PathBuf {
         self.omarchy_plugins_dir()
             .join(format!(".{}.trash", self.omarchy_plugin_name()))
@@ -819,18 +830,25 @@ mod tests {
             (p.omarchy_config_dir(), "/c/omarchy".into()),
             (p.omarchy_shell_json(), "/c/omarchy/shell.json".into()),
             (p.omarchy_plugins_dir(), "/c/omarchy/plugins".into()),
-            (p.omarchy_plugin_dir(), "/c/omarchy/plugins/omaddons".into()),
+            (
+                p.omarchy_plugin_dir(),
+                "/c/omarchy/plugins/a44.omaddons".into(),
+            ),
+            (
+                p.omarchy_legacy_plugin_dir(),
+                "/c/omarchy/plugins/omaddons".into(),
+            ),
             (
                 p.omarchy_stage(&tx),
-                format!("/c/omarchy/plugins/.omaddons.stage-{TX}"),
+                format!("/c/omarchy/plugins/.a44.omaddons.stage-{TX}"),
             ),
             (
                 p.omarchy_old(&tx),
-                format!("/c/omarchy/plugins/.omaddons.old-{TX}"),
+                format!("/c/omarchy/plugins/.a44.omaddons.old-{TX}"),
             ),
             (
                 p.omarchy_trash(),
-                "/c/omarchy/plugins/.omaddons.trash".into(),
+                "/c/omarchy/plugins/.a44.omaddons.trash".into(),
             ),
             (p.skill_dir(), "/h/.claude/skills/omaddons".into()),
             (p.claude_dir(), "/h/.claude".into()),
@@ -1054,38 +1072,51 @@ mod tests {
             assert_eq!(p.omarchy_plugin_id(), "a44.omaddons-checkpoint");
             assert_eq!(
                 p.omarchy_plugin_dir(),
+                Path::new("/c/omarchy/plugins/a44.omaddons-checkpoint")
+            );
+            assert_eq!(
+                p.omarchy_legacy_plugin_dir(),
                 Path::new("/c/omarchy/plugins/omaddons-checkpoint")
             );
             let op: TxId = TX.parse().unwrap();
             assert_eq!(
                 p.omarchy_stage(&op),
                 PathBuf::from(format!(
-                    "/c/omarchy/plugins/.omaddons-checkpoint.stage-{TX}"
+                    "/c/omarchy/plugins/.a44.omaddons-checkpoint.stage-{TX}"
                 ))
             );
             assert_eq!(
                 p.omarchy_trash(),
-                Path::new("/c/omarchy/plugins/.omaddons-checkpoint.trash")
+                Path::new("/c/omarchy/plugins/.a44.omaddons-checkpoint.trash")
             );
             assert_eq!(
-                p.omarchy_stage_op(&format!(".omaddons-checkpoint.stage-{TX}")),
+                p.omarchy_stage_op(&format!(".a44.omaddons-checkpoint.stage-{TX}")),
                 Some(op)
             );
-            assert_eq!(p.omarchy_stage_op(&format!(".omaddons.stage-{TX}")), None);
+            assert_eq!(
+                p.omarchy_stage_op(&format!(".a44.omaddons.stage-{TX}")),
+                None
+            );
         }
         let p = at(None);
         let op: TxId = TX.parse().unwrap();
         assert_eq!(
-            p.omarchy_stage_op(&format!(".omaddons.stage-{TX}")),
+            p.omarchy_stage_op(&format!(".a44.omaddons.stage-{TX}")),
             Some(op)
         );
-        assert_eq!(p.omarchy_old_op(&format!(".omaddons.old-{TX}")), Some(op));
+        assert_eq!(
+            p.omarchy_old_op(&format!(".a44.omaddons.old-{TX}")),
+            Some(op)
+        );
         for name in [
-            ".omaddons.stage",
-            ".omaddons.stage-",
-            ".omaddons.stage-notaulid",
-            "omaddons.stage-01JB8Q2VA00000000000000000",
-            ".omaddons.old-01JB8Q2VA00000000000000000x",
+            ".a44.omaddons.stage",
+            ".a44.omaddons.stage-",
+            ".a44.omaddons.stage-notaulid",
+            "a44.omaddons.stage-01JB8Q2VA00000000000000000",
+            ".a44.omaddons.old-01JB8Q2VA00000000000000000x",
+            // The names builds before omad-o8g4 gave them are not this build's.
+            ".omaddons.stage-01JB8Q2VA00000000000000000",
+            ".omaddons.old-01JB8Q2VA00000000000000000",
         ] {
             assert_eq!(
                 p.omarchy_stage_op(name).or(p.omarchy_old_op(name)),
@@ -1104,7 +1135,7 @@ mod tests {
             assert_eq!(p.omarchy_plugin_id(), WIDGET_ID, "{id:?}");
             assert_eq!(
                 p.omarchy_plugin_dir(),
-                Path::new("/c/omarchy/plugins/omaddons"),
+                Path::new("/c/omarchy/plugins/a44.omaddons"),
                 "{id:?}"
             );
         }

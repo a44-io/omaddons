@@ -17,7 +17,7 @@ const DRIFT: &str = "fm-plugins-widget-version-drift";
 /// not outdated. A hand edit or an Omarchy update that changed its rules leaves this.
 ///
 /// The finding: P2, tier `quick`, about the machine (`fm-plugins-widget-invalid@machine`),
-/// evidence `{path: <config>/omarchy/plugins/omaddons, count: 2, rules: ["default_section",
+/// evidence `{path: <config>/omarchy/plugins/a44.omaddons, count: 2, rules: ["default_section",
 /// "symlink"]}` (never a validator message, which quotes the manifest), the remediation
 /// argv `omaddons omarchy install`, never auto-fixable (M4-D50). The diagnosing run needs
 /// `OMARCHY_PATH` set to `plant::omarchy_path(home)`, as every doctor suite's runs carry

@@ -57,7 +57,25 @@ impl Desk {
     }
 
     fn plugin(&self) -> PathBuf {
+        self.plugins().join(ID)
+    }
+
+    /// Where builds before omad-o8g4 installed the widget.
+    fn legacy(&self) -> PathBuf {
         self.plugins().join("omaddons")
+    }
+
+    /// A plugin folder of `name` holding a manifest with `id` and one more file.
+    fn planted(&self, name: &str, id: &str) -> PathBuf {
+        let dir = self.plugins().join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("manifest.json"),
+            format!(r#"{{"schemaVersion": 1, "id": "{id}", "version": "0.0.1"}}"#),
+        )
+        .unwrap();
+        fs::write(dir.join("Panel.qml"), "Item {}\n").unwrap();
+        dir
     }
 
     fn history(&self) -> PathBuf {
@@ -178,7 +196,7 @@ impl Desk {
         };
         let mut names: Vec<String> = entries
             .map(|e| e.unwrap().file_name().into_string().unwrap())
-            .filter(|n| n != "omaddons")
+            .filter(|n| n != ID)
             .collect();
         names.sort();
         names
@@ -254,14 +272,14 @@ fn a_fresh_install_validates_publishes_records_rings_and_places() {
     assert_eq!(calls.len(), 3, "{calls:?}");
     let staged = calls[0].strip_prefix("omarchy-plugin-validate ").unwrap();
     let stage_name = Path::new(staged).file_name().unwrap().to_str().unwrap();
-    assert!(stage_name.starts_with(".omaddons.stage-"), "{staged}");
+    assert!(stage_name.starts_with(".a44.omaddons.stage-"), "{staged}");
     assert_eq!(Path::new(staged).parent().unwrap(), desk.plugins());
     assert_eq!(calls[1], "omarchy-shell -q shell rescanPlugins");
     assert_eq!(calls[2], format!("omarchy-bar put {ID} --section right"));
 
     let lines = desk.widget_lines();
     assert_eq!(lines.len(), 1);
-    let op = stage_name.trim_start_matches(".omaddons.stage-");
+    let op = stage_name.trim_start_matches(".a44.omaddons.stage-");
     assert_eq!(lines[0]["tx"], op, "the operation that published");
     assert_eq!(lines[0]["target"], Value::Null);
     assert_eq!(lines[0]["ops"], serde_json::json!([]));
@@ -530,7 +548,7 @@ fn tampered(desk: &Desk) -> (BTreeMap<String, Vec<u8>>, BTreeMap<String, Vec<u8>
 fn stages(desk: &Desk) -> Vec<String> {
     desk.leftovers()
         .into_iter()
-        .filter(|n| n.starts_with(".omaddons.stage-"))
+        .filter(|n| n.starts_with(".a44.omaddons.stage-"))
         .collect()
 }
 
@@ -590,7 +608,7 @@ fn without_exchange_a_crash_between_the_renames_is_finished_by_the_next_install(
     let parked: Vec<String> = desk
         .leftovers()
         .into_iter()
-        .filter(|n| n.starts_with(".omaddons.old-"))
+        .filter(|n| n.starts_with(".a44.omaddons.old-"))
         .collect();
     assert_eq!(parked.len(), 1, "{:?}", desk.leftovers());
     assert_eq!(tree(&desk.plugins().join(&parked[0])), old);
@@ -641,7 +659,7 @@ fn two_installers_never_touch_each_others_stage() {
     assert_eq!(tree(&desk.plugin()), published);
     let lines = desk.widget_lines();
     assert_eq!(lines.len(), 1);
-    let first_op = theirs[0].trim_start_matches(".omaddons.stage-");
+    let first_op = theirs[0].trim_start_matches(".a44.omaddons.stage-");
     assert_ne!(lines[0]["tx"], first_op);
     assert_eq!(desk.leftovers(), Vec::<String>::new());
     assert_eq!(desk.inflight_locks(), 0);
@@ -686,6 +704,102 @@ fn an_abandoned_stage_is_reclaimed() {
     assert_eq!(d["data"]["installed"], "fresh");
     assert_eq!(desk.leftovers(), Vec::<String>::new());
     assert_eq!(desk.inflight_locks(), 0);
+}
+
+/// The marketplace's setup plugin (omad-zhiq): a git checkout with the widget's id in the
+/// widget's folder, already on the bar. The install replaces it whole, `.git` included,
+/// and the widget keeps the place the owner gave the setup plugin.
+#[test]
+fn the_setup_plugin_is_replaced_in_place() {
+    let desk = Desk::new();
+    let setup = desk.planted(ID, ID);
+    fs::create_dir_all(setup.join(".git/objects")).unwrap();
+    fs::write(setup.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    desk.placed("left");
+    let d = desk.install();
+    assert_eq!(d["data"]["installed"], "replaced", "{d}");
+    assert_eq!(d["data"]["enabled"], "already");
+    assert_eq!(d["data"]["plugin"]["outdated"], false);
+    assert_eq!(d["data"]["plugin"]["section"], "left");
+    let files = tree(&desk.plugin());
+    assert!(
+        !files
+            .keys()
+            .any(|rel| rel.starts_with(".git") || rel == "Panel.qml"),
+        "{:?}",
+        files.keys()
+    );
+    assert!(files.keys().any(|rel| rel.ends_with("/Build.js")));
+    assert!(!desk.calls().iter().any(|c| c.starts_with("omarchy-bar")));
+    assert_eq!(desk.leftovers(), Vec::<String>::new());
+    assert_eq!(desk.inflight_locks(), 0);
+}
+
+/// A widget a build before omad-o8g4 left in `<plugins>/omaddons` would claim the id
+/// beside the new folder: the install parks and prunes it, so exactly one is left, and
+/// an install beside one is never a no-op.
+#[test]
+fn an_install_moves_a_legacy_widget_out() {
+    let desk = Desk::new();
+    desk.planted("omaddons", ID);
+    let d = desk.install();
+    assert_eq!(d["data"]["installed"], "fresh", "{d}");
+    assert!(!desk.legacy().exists());
+    assert!(desk.plugin().join("manifest.json").is_file());
+    assert_eq!(desk.leftovers(), Vec::<String>::new());
+    assert_eq!(desk.inflight_locks(), 0);
+
+    desk.planted("omaddons", ID);
+    let d = desk.install();
+    assert_eq!(d["data"]["installed"], "replaced", "{d}");
+    assert!(!desk.legacy().exists());
+    assert_eq!(desk.leftovers(), Vec::<String>::new());
+    assert_eq!(desk.inflight_locks(), 0);
+}
+
+/// `<plugins>/omaddons` holding another plugin, or a developer's symlink, is not a
+/// legacy widget: the install leaves it alone.
+#[test]
+fn a_legacy_folder_that_is_not_the_widget_is_left_alone() {
+    let desk = Desk::new();
+    desk.planted("omaddons", "someone.else");
+    desk.install();
+    assert_eq!(desk.leftovers(), vec!["omaddons".to_owned()]);
+    assert!(desk.legacy().join("Panel.qml").is_file());
+
+    let desk = Desk::new();
+    let checkout = desk.root().join("checkout");
+    fs::create_dir_all(&checkout).unwrap();
+    fs::write(
+        checkout.join("manifest.json"),
+        format!(r#"{{"schemaVersion": 1, "id": "{ID}"}}"#),
+    )
+    .unwrap();
+    fs::create_dir_all(desk.plugins()).unwrap();
+    std::os::unix::fs::symlink(&checkout, desk.legacy()).unwrap();
+    desk.install();
+    assert!(desk.legacy().is_symlink());
+    assert!(checkout.join("manifest.json").is_file());
+}
+
+/// `omarchy remove` takes away a widget an older build left in `<plugins>/omaddons`,
+/// alone or beside the current one.
+#[test]
+fn remove_takes_a_legacy_widget_away() {
+    let desk = Desk::new();
+    desk.planted("omaddons", ID);
+    let d = desk.run(&["omarchy", "remove"]).expect(0);
+    assert_eq!(d["data"]["removed"], true, "{d}");
+    assert!(!desk.legacy().exists());
+    assert_eq!(desk.leftovers(), Vec::<String>::new());
+    assert_eq!(desk.inflight_locks(), 0);
+
+    desk.install();
+    desk.planted("omaddons", ID);
+    let d = desk.run(&["omarchy", "remove"]).expect(0);
+    assert_eq!(d["data"]["removed"], true, "{d}");
+    assert!(!desk.plugin().exists() && !desk.legacy().exists());
+    assert_eq!(desk.leftovers(), Vec::<String>::new());
 }
 
 #[test]

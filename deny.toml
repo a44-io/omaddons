@@ -22,7 +22,8 @@ confidence-threshold = 0.93
 exceptions = []
 
 [licenses.private]
-# omaddons itself is `publish = false` and carries no license field.
+# omaddons and its two path crates are `publish = false`: their own MIT license (LICENSE)
+# is declared in each Cargo.toml and needs no check here.
 ignore = true
 
 [bans]

@@ -3,12 +3,19 @@
 //! owns, validates it, publishes it with one atomic rename under the global lock, records
 //! the install in history, rings the doorbell and puts the widget on the bar.
 //!
-//! Each run owns `<plugins>/.omaddons.stage-<op>` under an in-flight lock, taken before
-//! the global lock and never waited on while holding it. A stage is reclaimed only when
-//! its lock is free (its process is gone), never by age. The swap is a
+//! The widget's folder is `<plugins>/a44.omaddons`, the one Omarchy's `omarchy plugin
+//! add` gives its id (omad-o8g4). Whatever is there is replaced as a whole, so the
+//! marketplace's setup plugin, which has the same id, becomes the real widget in place.
+//!
+//! Each run owns `<plugins>/.a44.omaddons.stage-<op>` under an in-flight lock, taken
+//! before the global lock and never waited on while holding it. A stage is reclaimed only
+//! when its lock is free (its process is gone), never by age. The swap is a
 //! `RENAME_EXCHANGE`, or a first install's `RENAME_NOREPLACE`; where the filesystem has
-//! neither, the live widget is parked as `.omaddons.old-<op>` first, so a crash between
-//! the two renames leaves the widget absent until the next install, which finishes.
+//! neither, the live widget is parked as `.a44.omaddons.old-<op>` first, so a crash
+//! between the two renames leaves the widget absent until the next install, which
+//! finishes. A widget an older build left in `<plugins>/omaddons` would claim the id
+//! beside the new one, so the publish parks it the same way, under the same lock, before
+//! the rescan.
 
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -131,11 +138,12 @@ const INVALID: &str = "omarchy.invalid";
 pub fn install(ctx: &Context, opts: Options) -> Result<Report> {
     let paths = Paths::from_env()?;
     require_omarchy(&paths)?;
-    let binary = current_binary()?;
+    let binary = widget_binary()?;
     let id = paths.omarchy_plugin_id();
     let rendered = render::render(&binary, &WidgetContext::of(&paths), &id)?;
     let plugin_dir = paths.omarchy_plugin_dir();
-    let same = matches_installed(&plugin_dir, &rendered);
+    // A legacy widget still has to go, so the install is never a no-op beside one.
+    let same = legacy_widget(&paths).is_none() && matches_installed(&plugin_dir, &rendered);
     let placed = placed_in(&paths, &id);
     let enabled_now = |placed: Option<Section>| match (opts.enable, placed) {
         (false, _) => Enabled::Skipped,
@@ -243,10 +251,11 @@ fn publish(
         ));
     }
     let plugin_dir = paths.omarchy_plugin_dir();
+    let legacy = legacy_widget(paths);
     // A competing install may have published since the render: the same bytes are
     // this run's work done; other bytes are replaced, this render being validated and
     // the newest request.
-    if matches_installed(&plugin_dir, rendered) {
+    if legacy.is_none() && matches_installed(&plugin_dir, rendered) {
         drop(guard);
         prune_own(&scopes, &[stage], &inflight, paths, &op);
         return Ok(Installed::Unchanged);
@@ -277,6 +286,13 @@ fn publish(
         rename_onto_absent(&mut s, &stage, &plugin_dir)?;
         (Installed::Fresh, stage.clone())
     };
+    let mut leftovers = vec![leftover];
+    if let Some(dir) = legacy {
+        // Its own parked name: `old(&op)` may already hold the replaced widget.
+        let parked = paths.omarchy_old(&TxId::new());
+        rename_onto_absent(&mut s, &dir, &parked)?;
+        leftovers.push(parked);
+    }
     let mut entry = SettingEntry::now(
         TxKind::Widget,
         None,
@@ -290,8 +306,22 @@ fn publish(
     }
     drop(s);
     drop(guard);
-    prune_own(&scopes, &[leftover], &inflight, paths, &op);
+    prune_own(&scopes, &leftovers, &inflight, paths, &op);
     Ok(installed)
+}
+
+/// The widget a build before omad-o8g4 installed in `<plugins>/omaddons`: that folder
+/// when it is a real directory whose manifest has this widget's id. A folder there with
+/// another id is another plugin's, and a symlink is a developer's own link: neither is
+/// touched.
+pub(super) fn legacy_widget(paths: &Paths) -> Option<PathBuf> {
+    let dir = paths.omarchy_legacy_plugin_dir();
+    if !std::fs::symlink_metadata(&dir).is_ok_and(|meta| meta.is_dir()) {
+        return None;
+    }
+    let manifest = render::installed_manifest(&dir)?;
+    let id = manifest.get("id")?.as_str()?;
+    (id == paths.omarchy_plugin_id()).then_some(dir)
 }
 
 /// Renames `from` to `to`, which must not exist: `RENAME_NOREPLACE`, or, on a filesystem
@@ -629,6 +659,39 @@ pub(crate) fn current_binary() -> Result<PathBuf> {
     })
 }
 
+/// The binary the widget runs, `Build.js`'s `BINARY` (omad-vd1z): [`current_binary`],
+/// unless mise installed it. mise keeps each version in `<installs>/<tool>/<version>/`
+/// and links `<installs>/<tool>/latest` to the newest, so the stamp is then this same
+/// file by its `latest` path. A version mise installs later is the one the widget runs,
+/// and its version change reinstalls the widget (M3-D42). Never the
+/// `omarchy-mise-install` wrapper on `PATH`, which asks mise for newer releases on every
+/// run and, offline, waits on the network for over a minute.
+pub(crate) fn widget_binary() -> Result<PathBuf> {
+    let binary = current_binary()?;
+    Ok(mise_latest(&binary).unwrap_or(binary))
+}
+
+/// `binary` (canonical) as `<…>/installs/<tool>/latest/<rest>`, when it is
+/// `<…>/installs/<tool>/<version>/<rest>` and that `latest` path leads to this very file.
+/// Structural: no environment is read, so a custom `MISE_DATA_DIR` works the same.
+fn mise_latest(binary: &Path) -> Option<PathBuf> {
+    for version in binary.ancestors().skip(1) {
+        let tool = version.parent()?;
+        let installs = tool.parent()?;
+        if installs.file_name()? != "installs" {
+            continue;
+        }
+        if version.file_name()? == "latest" {
+            return None;
+        }
+        let rest = binary.strip_prefix(version).ok()?;
+        let latest = tool.join("latest").join(rest);
+        let same = std::fs::canonicalize(&latest).ok()? == binary;
+        return same.then_some(latest);
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -720,6 +783,49 @@ mod tests {
         std::fs::remove_file(plugin.join("extra.qml")).unwrap();
         std::fs::remove_file(plugin.join(first)).unwrap();
         assert!(!matches_installed(&plugin, &rendered));
+    }
+
+    /// A binary file at `rel` under `root`, by its canonical path.
+    fn binary_at(root: &Path, rel: &str) -> PathBuf {
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"\x7fELF").unwrap();
+        std::fs::canonicalize(path).unwrap()
+    }
+
+    /// A mise-installed binary is stamped by mise's `latest` link to its tool (omad-vd1z),
+    /// whatever folder the release unpacked it in, so the widget runs the newest version
+    /// mise installs; anything else keeps its canonical path.
+    #[test]
+    fn a_mise_installed_binary_is_stamped_by_its_latest_link() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let tool = root.join("mise/installs/github-a44-io-omaddons");
+
+        // Flat, and nested in the release's own folder.
+        let flat = binary_at(&tool, "0.2.0/omaddons");
+        let nested = binary_at(&tool, "0.2.0/omaddons-x86_64/omaddons");
+        symlink("./0.2.0", tool.join("latest")).unwrap();
+        assert_eq!(mise_latest(&flat), Some(tool.join("latest/omaddons")));
+        assert_eq!(
+            mise_latest(&nested),
+            Some(tool.join("latest/omaddons-x86_64/omaddons"))
+        );
+
+        // An older version beside the newest that `latest` names is not it: a pin, or a
+        // version mise has not pruned, runs as itself.
+        let older = binary_at(&tool, "0.1.0/omaddons");
+        assert_eq!(mise_latest(&older), None);
+
+        // Under `latest` itself (never canonical, but still), outside any installs folder,
+        // a tool without a `latest` link, or a version folder with nothing below it.
+        assert_eq!(mise_latest(&tool.join("latest/omaddons")), None);
+        assert_eq!(mise_latest(&binary_at(&root, "usr/bin/omaddons")), None);
+        let unlinked = root.join("mise/installs/other");
+        assert_eq!(mise_latest(&binary_at(&unlinked, "1.0.0/omaddons")), None);
+        assert_eq!(mise_latest(&tool.join("0.2.0")), None);
+        assert_eq!(mise_latest(Path::new("/")), None);
     }
 
     const WIDGET: &str = crate::state::paths::WIDGET_ID;

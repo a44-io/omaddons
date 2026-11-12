@@ -94,10 +94,12 @@ pub enum Scope {
     SavedVariables,
     /// `<client dir>/WTF/` as a whole.
     Wtf,
-    /// The Omarchy widget's folder under `<plugins>`, and its hidden siblings: one stage
-    /// per `omarchy install` (`.omaddons.stage-<op>`), a parked old widget
-    /// (`.omaddons.old-<op>`) and the prune trash (`.omaddons.trash`). Each accepts a
-    /// rename as a whole, from `Omarchy`: the atomic swap (M3-D38).
+    /// The Omarchy widget's folder under `<plugins>` (`a44.omaddons`), and its hidden
+    /// siblings: one stage per `omarchy install` (`.a44.omaddons.stage-<op>`), a parked old
+    /// widget (`.a44.omaddons.old-<op>`) and the prune trash (`.a44.omaddons.trash`); also
+    /// the folder builds before omad-o8g4 installed it in (`omaddons`), so an install can
+    /// park a widget left there. Each accepts a rename as a whole, from `Omarchy`: the
+    /// atomic swap (M3-D38).
     Omarchy,
     /// The agent skill dir.
     Skill,
@@ -632,7 +634,9 @@ impl ScopeTable {
         };
         let first = first.to_str()?;
         let name = self.paths.omarchy_plugin_name();
+        let legacy = self.paths.omarchy_legacy_plugin_dir();
         let ours = first == name
+            || legacy.file_name().is_some_and(|legacy| legacy == first)
             || first == format!(".{name}.trash")
             || self.paths.omarchy_stage_op(first).is_some()
             || self.paths.omarchy_old_op(first).is_some();
@@ -1760,14 +1764,18 @@ mod tests {
             ),
             ("games/wow/_retail_/WTF/Config.wtf", vec![W::BackupRestore]),
             (
-                "home/.config/omarchy/plugins/omaddons/Panel.qml",
+                "home/.config/omarchy/plugins/a44.omaddons/Panel.qml",
                 vec![W::Omarchy, W::Doctor],
             ),
             (
-                "home/.config/omarchy/plugins/.omaddons.stage-01JB8Q2VA00000000000000000/x",
+                "home/.config/omarchy/plugins/.a44.omaddons.stage-01JB8Q2VA00000000000000000/x",
                 vec![W::Omarchy, W::Doctor],
             ),
-            ("home/.config/omarchy/plugins/.omaddons.stage/x", vec![]),
+            ("home/.config/omarchy/plugins/.a44.omaddons.stage/x", vec![]),
+            (
+                "home/.config/omarchy/plugins/.omaddons.stage-01JB8Q2VA00000000000000000/x",
+                vec![],
+            ),
             ("home/.config/omarchy/plugins/beads/Panel.qml", vec![]),
             (
                 "home/.claude/skills/omaddons/SKILL.md",
@@ -1793,11 +1801,13 @@ mod tests {
         use Writer as W;
         let none = OwnedFolders::default();
         let plugins = "home/.config/omarchy/plugins";
-        let stage = format!("{plugins}/.omaddons.stage-01JB8Q2VA00000000000000000");
-        let old = format!("{plugins}/.omaddons.old-01JB8Q2VA00000000000000000");
-        let trash = format!("{plugins}/.omaddons.trash");
-        let widget = format!("{plugins}/omaddons");
-        for root in [&widget, &stage, &old, &trash] {
+        let stage = format!("{plugins}/.a44.omaddons.stage-01JB8Q2VA00000000000000000");
+        let old = format!("{plugins}/.a44.omaddons.old-01JB8Q2VA00000000000000000");
+        let trash = format!("{plugins}/.a44.omaddons.trash");
+        let widget = format!("{plugins}/a44.omaddons");
+        // Where builds before omad-o8g4 installed it: an install parks a widget left there.
+        let legacy = format!("{plugins}/omaddons");
+        for root in [&widget, &legacy, &stage, &old, &trash] {
             assert_eq!(
                 allowed(root, Access::Rename, &none),
                 vec![W::Omarchy],
@@ -1823,11 +1833,13 @@ mod tests {
             assert_eq!(allowed(plugins, refused, &none), vec![], "{refused:?}");
         }
         for stranger in [
-            format!("{plugins}/.omaddons.stage"),
-            format!("{plugins}/.omaddons.stage-notaulid"),
-            format!("{plugins}/.omaddons.old-01JB8Q2VA00000000000000000x"),
+            format!("{plugins}/.a44.omaddons.stage"),
+            format!("{plugins}/.a44.omaddons.stage-notaulid"),
+            format!("{plugins}/.a44.omaddons.old-01JB8Q2VA00000000000000000x"),
             format!("{plugins}/beads"),
-            format!("{plugins}/.omaddons.trash2"),
+            format!("{plugins}/.a44.omaddons.trash2"),
+            format!("{plugins}/omaddons2"),
+            format!("{plugins}/.omaddons.trash"),
         ] {
             for access in [Access::Write, Access::Rename, Access::CreateDir] {
                 assert_eq!(

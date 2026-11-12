@@ -725,9 +725,9 @@ enum Kind {
     DoctorLatest,
     Blob,
     CacheTmp,
-    /// `<plugins>/.omaddons.stage-<op>`
+    /// `<plugins>/.a44.omaddons.stage-<op>`
     OmarchyStage,
-    /// `<plugins>/.omaddons.old-<op>`
+    /// `<plugins>/.a44.omaddons.old-<op>`
     OmarchyOld,
     /// `<client dir>/Interface/.omaddons/target.json`, the client's marker.
     ClientMarker,
@@ -1077,8 +1077,9 @@ mod tests {
         }
     }
 
-    /// A widget stage or parked old widget goes through `<plugins>/.omaddons.trash`, for
-    /// `WidgetStage` only; the widget itself, other plugins and malformed names are not
+    /// A widget stage or parked old widget goes through `<plugins>/.a44.omaddons.trash`, for
+    /// `WidgetStage` only; the widget itself (in its folder or the legacy one), other
+    /// plugins and malformed names are not
     /// prunable.
     #[test]
     fn widget_stages_and_old_trees_are_pruned_for_widget_stage_only() {
@@ -1110,9 +1111,10 @@ mod tests {
         let plugins = f.paths.omarchy_plugins_dir();
         for stranger in [
             make(&f.paths.omarchy_plugin_dir(), true),
+            make(&f.paths.omarchy_legacy_plugin_dir(), true),
             make(&plugins.join("beads"), true),
-            make(&plugins.join(".omaddons.stage"), true),
-            make(&plugins.join(".omaddons.stage-notaulid"), true),
+            make(&plugins.join(".a44.omaddons.stage"), true),
+            make(&plugins.join(".a44.omaddons.stage-notaulid"), true),
         ] {
             let err = prune(
                 &f.scopes,

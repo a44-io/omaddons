@@ -389,7 +389,7 @@ fn reinstall_widget_runs_and_clears_the_widget_issue() {
         fs::create_dir_all(s.home.env.config().join("omarchy")).unwrap();
         run(&s, &["omarchy", "install"]);
         // Another build's code hash in the installed Build.js.
-        let plugin = s.home.env.config().join("omarchy/plugins/omaddons");
+        let plugin = s.home.env.config().join("omarchy/plugins/a44.omaddons");
         let code = fs::read_dir(&plugin)
             .unwrap()
             .map(|e| e.unwrap().path())

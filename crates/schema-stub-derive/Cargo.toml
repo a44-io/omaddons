@@ -7,6 +7,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"
 description = "A JsonSchema derive that emits nothing, for omaddons builds without JSON Schemas"
+license = "MIT"
 publish = false
 
 [lib]

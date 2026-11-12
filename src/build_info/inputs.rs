@@ -73,6 +73,7 @@ pub const BUILD_ID_EXCLUDED: &[(&str, &str)] = &[
     ("scripts", "gate and widget scripts"),
     ("proptest-regressions", "test seeds"),
     ("README.md", "prose"),
+    ("LICENSE", "the license text; nothing compiles it in"),
     ("AGENTS.md", "prose"),
     ("CLAUDE.md", "prose"),
     ("Argcfile.sh", "the task runner"),

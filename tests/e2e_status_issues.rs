@@ -803,7 +803,7 @@ fn an_outdated_widget_is_widget_version_drift() {
     log.step("install the widget");
     run(&["omarchy", "install", "--json"]).ok();
     log.step("plant another build's widget");
-    let plugin = home.env.config().join("omarchy/plugins/omaddons");
+    let plugin = home.env.config().join("omarchy/plugins/a44.omaddons");
     let code = fs::read_dir(&plugin)
         .unwrap()
         .map(|e| e.unwrap().path())

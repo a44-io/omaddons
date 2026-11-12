@@ -95,7 +95,7 @@ fn argv(words: &[&str]) -> Value {
 }
 
 fn plugin(home: &Home) -> PathBuf {
-    home.env.config().join("omarchy/plugins/omaddons")
+    home.env.config().join("omarchy/plugins/a44.omaddons")
 }
 
 fn sha(bytes: &[u8]) -> String {

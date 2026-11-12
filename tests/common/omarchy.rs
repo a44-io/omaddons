@@ -113,9 +113,9 @@ impl StubDesk {
         self.root.join("omarchy")
     }
 
-    /// `<config>/omarchy/plugins/omaddons`, where `omarchy install` puts the widget.
+    /// `<config>/omarchy/plugins/a44.omaddons`, where `omarchy install` puts the widget.
     pub fn plugin(&self) -> PathBuf {
-        self.config.join("omarchy/plugins/omaddons")
+        self.config.join("omarchy/plugins/a44.omaddons")
     }
 
     /// The environment of a run that may start Omarchy's tools: `PATH` holding the stubs

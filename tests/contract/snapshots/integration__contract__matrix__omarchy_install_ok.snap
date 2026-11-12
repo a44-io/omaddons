@@ -16,7 +16,7 @@ expression: stable
       "id": "a44.omaddons",
       "installed": true,
       "outdated": false,
-      "path": "<root>/config/omarchy/plugins/omaddons",
+      "path": "<root>/config/omarchy/plugins/a44.omaddons",
       "section": null,
       "version": "<version>"
     },

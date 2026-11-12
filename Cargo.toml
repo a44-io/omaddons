@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"
 description = "World of Warcraft addon manager for Linux: every client, one journaled transaction engine, a machine-readable CLI"
+license = "MIT"
+repository = "https://github.com/a44-io/omaddons"
 publish = false
 # Every suite under tests/ is a module of the one `integration` test binary below, not a
 # binary of its own: each binary links the whole library, so ~130 of them wrote ~16 GB to

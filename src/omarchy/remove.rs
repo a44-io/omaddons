@@ -1,14 +1,15 @@
-//! `omaddons omarchy remove` (M3-D6, M3-D38): the supported way to take the widget
-//! away. Omarchy's own `omarchy plugin remove a44.omaddons` cannot, as it looks for a
-//! folder named after the id.
+//! `omaddons omarchy remove` (M3-D6, M3-D38): takes the widget away, recorded in
+//! history. Since the widget's folder is named after its id (omad-o8g4), Omarchy's own
+//! `omarchy plugin remove a44.omaddons` finds it too, but leaves no history line.
 //!
 //! It takes the widget off the bar first, best effort (Omarchy then splices its layout
 //! entry, inline settings included, out of `shell.json`; omaddons never writes it). Then,
-//! owning an operation under an in-flight lock, it parks `<plugins>/omaddons` as the
-//! hidden `<plugins>/.omaddons.old-<op>` with one rename under the global lock, so the
-//! shell sees the widget go at once and never half-deleted, and records the removal in
-//! history. Outside the lock it prunes the parked tree (and what dead installs left),
-//! and rings the doorbell.
+//! owning an operation under an in-flight lock, it parks `<plugins>/a44.omaddons` as the
+//! hidden `<plugins>/.a44.omaddons.old-<op>` with one rename under the global lock, so
+//! the shell sees the widget go at once and never half-deleted, and records the removal
+//! in history. A widget an older build left in `<plugins>/omaddons` is parked the same
+//! way. Outside the lock it prunes the parked trees (and what dead installs left), and
+//! rings the doorbell.
 
 use std::path::PathBuf;
 
@@ -43,10 +44,9 @@ const REMOVING: &str = "omarchy.removing";
 /// Removes the widget; see the module docs. Under `--dry-run`, what it would do.
 pub fn remove(ctx: &Context) -> Result<Removal> {
     let paths = Paths::from_env()?;
-    let plugin_dir = paths.omarchy_plugin_dir();
-    if std::fs::symlink_metadata(&plugin_dir).is_err() {
+    let Some(plugin_dir) = widget_dirs(&paths).into_iter().next() else {
         return Err(not_installed());
-    }
+    };
     let id = paths.omarchy_plugin_id();
     // Disabling splices the whole entry out (Omarchy's `setEnabled(id, false)`), so the
     // settings go exactly when it succeeds on an entry that carries any. Reading the
@@ -96,14 +96,24 @@ pub fn remove(ctx: &Context) -> Result<Removal> {
         ));
     }
     // Another remove may have won while this one waited.
-    if std::fs::symlink_metadata(&plugin_dir).is_err() {
+    let dirs = widget_dirs(&paths);
+    if dirs.is_empty() {
         drop(guard);
         install::prune_own(&scopes, &[], &inflight, &paths, &op);
         return Err(not_installed());
     }
-    let old = paths.omarchy_old(&op);
     let mut s = WriteSession::untracked(Writer::Omarchy, &scopes, ctx.command);
-    install::rename_onto_absent(&mut s, &plugin_dir, &old)?;
+    let mut parked = Vec::new();
+    for (i, dir) in dirs.iter().enumerate() {
+        // The second (a legacy widget beside the current one) gets its own parked name.
+        let old = if i == 0 {
+            paths.omarchy_old(&op)
+        } else {
+            paths.omarchy_old(&TxId::new())
+        };
+        install::rename_onto_absent(&mut s, dir, &old)?;
+        parked.push(old);
+    }
     let mut entry = SettingEntry::now(
         TxKind::Widget,
         None,
@@ -119,7 +129,7 @@ pub fn remove(ctx: &Context) -> Result<Removal> {
     drop(guard);
 
     install::reclaim(&paths, &scopes, &op);
-    install::prune_own(&scopes, &[old], &inflight, &paths, &op);
+    install::prune_own(&scopes, &parked, &inflight, &paths, &op);
     crate::state::doorbell::ring(&paths, ctx.command, ctx.actor);
     Ok(Removal {
         path: plugin_dir,
@@ -127,6 +137,16 @@ pub fn remove(ctx: &Context) -> Result<Removal> {
         settings_dropped: disabled && has_settings,
         warnings,
     })
+}
+
+/// The folders the widget is in: its own `<plugins>/a44.omaddons` when present, then a
+/// legacy `<plugins>/omaddons` widget an older build left.
+fn widget_dirs(paths: &Paths) -> Vec<PathBuf> {
+    let own = paths.omarchy_plugin_dir();
+    let own = std::fs::symlink_metadata(&own).is_ok().then_some(own);
+    own.into_iter()
+        .chain(install::legacy_widget(paths))
+        .collect()
 }
 
 /// `not_found`: there is no widget to remove.
