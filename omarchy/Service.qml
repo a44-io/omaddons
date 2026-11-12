@@ -106,9 +106,11 @@ Item {
   property string queuedText: ""
   // The rows a finished change changed, `{<key>: word}`, for rowDoneMs.
   property var doneRows: ({})
-  // Whether the last result still shows in the pinned area: resultHoldMs after it, or
-  // until the next one (design doc §2.1).
+  // Whether the last result still shows in the panel's corner toast: for resultHoldMs of
+  // a panel being open, or until the next one (omad-92d5, amending design doc §2.1).
   property bool resultShown: false
+  // The pointer is over the toast: its hold waits (holdResult).
+  property bool resultHovered: false
   // The last finished action: {ok, line, partial, commands}.
   property var lastResult: null
   // The last failure: {message, code, fixes}.
@@ -270,11 +272,28 @@ Item {
   }
   Component.onDestruction: Store.clear(root)
   onStatusApplied: afterStatus()
-  // A new result shows for resultHoldMs, then the pinned area keeps the footer only.
+  // A new result shows for resultHoldMs of a panel being open, then the corner keeps the
+  // footer only.
   onLastResultChanged: {
     resultShown = lastResult !== null
-    if (resultShown) resultTimer.restart()
-    else resultTimer.stop()
+    resultTimer.stop()
+    armResultHold()
+  }
+
+  // The result's hold runs only while a panel shows it and the pointer is not over it,
+  // and starts over each time a panel opens: a result that landed with every panel
+  // closed (its desktop notification said it) shows in full on the next open. A partial
+  // result with fixes stays until the next result (Model.resultTimed).
+  function armResultHold() {
+    if (resultShown && panelOpen && !resultHovered && Model.resultTimed(lastResult)) {
+      if (!resultTimer.running) resultTimer.restart()
+    } else resultTimer.stop()
+  }
+
+  // The pointer entered or left the corner toast; a closing panel lets go.
+  function holdResult(held) {
+    resultHovered = held === true
+    armResultHold()
   }
 
   // ------------------------------------------------------------- settings
@@ -309,6 +328,8 @@ Item {
     var any = Object.keys(next).length > 0
     var opened = any && !panelOpen
     panelOpen = any
+    if (!any) resultHovered = false
+    armResultHold()
     // The open (1n2p.38): the cached status first, in milliseconds; the shown view asks
     // its own read next (PanelView); once the status answers, quietly, what the frame
     // needs that was never read and a full scan when one is due (afterOpen). A view
@@ -385,6 +406,9 @@ Item {
 
   // A failure card's Dismiss: it stays until then, or until what failed succeeds.
   function dismissError() {
+    // A failure's own result line goes with its card, never shown after it (UX-28,
+    // omad-uuwz); a partial result keeps its line.
+    if (lastError && lastResult && lastResult.ok === false && lastResult.partial !== true) resultShown = false
     lastError = null
     lastErrorResource = ""
   }
@@ -1847,7 +1871,7 @@ Item {
     onTriggered: root.autoCheck()
   }
 
-  // The last result leaves the pinned area after resultHoldMs (design doc §2.1).
+  // The last result leaves the corner toast after resultHoldMs (armResultHold).
   Timer {
     id: resultTimer
     interval: root.resultHoldMs

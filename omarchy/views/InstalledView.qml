@@ -53,8 +53,6 @@ Item {
   // The share line, once the list was read: a copy needs a managed addon in the scope.
   readonly property bool canShare: !!svc && !!svc.lists
   readonly property bool hasAddons: canShare && Model.installedRows(svc.lists, filter).length > 0
-  // What the last copy put on the clipboard, said for a moment (the copy flash).
-  property string copied: ""
 
   readonly property color foreground: frame ? frame.foreground : Commons.Color.foreground
   readonly property color dim: frame ? frame.dim : Qt.darker(foreground, 1.55)
@@ -118,16 +116,15 @@ Item {
     return false
   }
 
-  // `y`: the scope's addon list on the clipboard. The flash says what went on it once
-  // wl-copy took it; why nothing did is the panel's notice.
+  // `y`: the scope's addon list on the clipboard. The corner toast's flash says what went
+  // on it once wl-copy took it, or why nothing did (omad-92d5).
   function copyList() {
     if (!canShare) return false
+    var shown = frame
     return svc.copyAddonList(filter, function(ok, line) {
-      if (ok) {
-        root.copied = line
-        copiedTimer.restart()
-        if (root.frame) root.frame.report("")
-      } else if (root.frame) root.frame.report(line)
+      if (!shown) return
+      if (ok) shown.report("")
+      shown.flash(line, ok)
     })
   }
 
@@ -341,25 +338,7 @@ Item {
           onClicked: root.pasteList()
         }
       }
-
-      // The copy flash (design doc §5.5): what went on the clipboard.
-      PlainLabel {
-        objectName: "copyFlash"
-        visible: root.copied !== ""
-        width: parent.width
-        // Accent is never text's colour (§5.1, 1n2p.40).
-        color: root.foreground
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
-        text: root.copied
-      }
     }
-  }
-
-  Timer {
-    id: copiedTimer
-    interval: 1500
-    onTriggered: root.copied = ""
   }
 
   // One row, as both lists build it: under All, its client's header above the client's

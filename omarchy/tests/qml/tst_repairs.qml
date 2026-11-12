@@ -230,13 +230,13 @@ TestCase {
     compare(bound.command[bound.command.indexOf("--if-match") + 1], fixture("repair-preview").precondition)
     verify(bound.command.indexOf("--dry-run") === -1)
     answer(bound, "repair-run")
-    verify(findChild(frame, "resultLine").text.indexOf("Repaired: chmod 0600 ") === 0, findChild(frame, "resultLine").text)
-    verify(!findChild(frame, "resultUndo").visible, "no Undo before status names the repair")
+    verify(findChild(frame, "toastLine").text.indexOf("Repaired: chmod 0600 ") === 0, findChild(frame, "toastLine").text)
+    verify(!findChild(frame, "toastUndo").visible, "no Undo before status names the repair")
     // The status the repair's change rang for names it as the last change.
     settle("repair-status-after")
-    tryVerify(function() { return findChild(frame, "resultUndo").visible }, 3000, "the result's Undo once status names the repair")
+    tryVerify(function() { return findChild(frame, "toastUndo").visible }, 3000, "the result's Undo once status names the repair")
     compare(repairRow(credentialFm), -1, "the credential row is gone")
-    findChild(frame, "resultUndo").clicked()
+    findChild(frame, "toastUndo").clicked()
     var undo = lastRun("undo")
     compare(words(undo.command), fixture("repair-status-after").data.last_change.undo.argv.slice(1))
     verify(undo.command.indexOf("--dry-run") !== -1, "the undo previews first")
@@ -250,7 +250,7 @@ TestCase {
     var apply = lastRun("apply")
     compare(words(apply.command), ["apply", fixture("repair-undo-preview").data.plan_id], "Yes applies the undo's plan")
     answer(apply, "repair-undo-apply")
-    compare(findChild(frame, "resultLine").text, "Undid repair (1 change)")
+    compare(findChild(frame, "toastLine").text, "Undid repair (1 change)")
     // Across the whole scenario: one of each, and never the doctor's own undo.
     compare([repairs("--dry-run").length, repairs("--if-match").length, runs("undo").length, runs("apply").length], [1, 1, 1, 1], launchLog())
     compare(runs("doctor").filter(function(l) { return words(l.command)[1] === "undo" }).length, 0, launchLog())
@@ -304,7 +304,7 @@ TestCase {
     var apply = lastRun("apply")
     compare(words(apply.command), ["apply", fixture("repair-undo-preview").data.plan_id])
     answer(apply, "repair-undo-apply")
-    compare(findChild(frame, "resultLine").text, "Undid repair (1 change)")
+    compare(findChild(frame, "toastLine").text, "Undid repair (1 change)")
     compare(runs("undo").length, 1, "the undo runs only through its plan")
   }
 

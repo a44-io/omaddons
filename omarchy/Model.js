@@ -2619,12 +2619,17 @@ function progressLine(event) {
 //   ref, phase, current, total}`, `phase` "" until an event reaches the row.
 
 // A run quiet this long says it is still working; one this long says how long it has
-// run; a row that changed says so this long; the last result stays this long, or until
-// the next change (design doc §2.1).
+// run; a row that changed says so this long (design doc §2.1).
 var ACTIVITY_STALL_MS = 30000
 var ACTIVITY_ELAPSED_MS = 5000
 var ACTIVITY_ROW_DONE_MS = 4000
-var RESULT_HOLD_MS = 600000
+// How long the corner toast holds each kind of message (omad-92d5, amending §2.1 and
+// §5.5), counted only while a panel is open and paused while the pointer is over it:
+// the last result with its Undo (or until the next change); a refusal or a key's note,
+// a sentence to read; a copy's flash ("Copied", UX-36).
+var RESULT_HOLD_MS = 8000
+var NOTE_HOLD_MS = 4000
+var FLASH_HOLD_MS = 1500
 
 var PROGRESS_PHASES = ["fetch", "download", "verify", "stage", "commit", "copy"]
 
@@ -6686,6 +6691,29 @@ function resultUndo(result, lastChange) {
   return single
 }
 
+// Whether the last result leaves the corner when its hold ends (omad-92d5): a partial
+// result whose failed items have Fix buttons stays until the next result, since its
+// fixes are offered nowhere else.
+function resultTimed(result) {
+  return !!result && !(Array.isArray(result.fixes) && result.fixes.length > 0)
+}
+
+// What the panel's corner toast shows (omad-92d5), `{kind, text, marked}` or null. A
+// passing note (`{kind, text, marked}`: a copy's flash, a refusal, a key's note) shows
+// while it lasts, over the last result. Otherwise the last result shows while the
+// service holds it (`held`) and no activity shows. A failure the card already states
+// is the card's alone (UX-28, omad-uuwz); a partial result keeps its line.
+function toastView(note, result, held, activity, failure) {
+  if (note && str(note.text) !== "") {
+    return { "kind": str(note.kind) || "note", "text": str(note.text), "marked": note.marked === true }
+  }
+  if (!result || held !== true || activity) return null
+  var line = str(result.line)
+  if (line === "") return null
+  if (result.ok === false && result.partial !== true && failure) return null
+  return { "kind": "result", "text": line, "marked": result.ok === false }
+}
+
 // -------------------------------------------------------------- the plan runner (G1)
 
 // A storable command's preview stores a plan (M4-D22, M4-D28): the widget compares its
@@ -7864,6 +7892,7 @@ var COPY = {
   "activity.cancelled": "Stopped: {label}",
   "activity.lane_full": "Too many checks and searches are waiting; try again in a moment.",
   "activity.dismiss": "Dismiss",
+  "activity.undo": "Undo",
   "activity.done.updated": "Updated",
   "activity.done.installed": "Installed",
   "activity.done.removed": "Removed",
@@ -9171,6 +9200,8 @@ if (typeof module !== "undefined") {
     ACTIVITY_ELAPSED_MS: ACTIVITY_ELAPSED_MS,
     ACTIVITY_ROW_DONE_MS: ACTIVITY_ROW_DONE_MS,
     RESULT_HOLD_MS: RESULT_HOLD_MS,
+    NOTE_HOLD_MS: NOTE_HOLD_MS,
+    FLASH_HOLD_MS: FLASH_HOLD_MS,
     PROGRESS_PHASES: PROGRESS_PHASES,
     activityKind: activityKind,
     activityStart: activityStart,
@@ -9231,6 +9262,8 @@ if (typeof module !== "undefined") {
     undoAction: undoAction,
     progressFraction: progressFraction,
     resultUndo: resultUndo,
+    resultTimed: resultTimed,
+    toastView: toastView,
     sourceKind: sourceKind,
     rgbOf: rgbOf,
     contrastRatio: contrastRatio,

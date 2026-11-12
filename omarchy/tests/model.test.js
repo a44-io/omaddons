@@ -5721,6 +5721,48 @@ describe("resultUndo", () => {
   })
 })
 
+// The corner toast (omad-92d5): what it shows, and which results its hold ends.
+describe("toastView and resultTimed", () => {
+  const success = { ok: true, line: "Pinned 1 addon", partial: false, commands: [], fixes: [] }
+  const partial = { ok: true, line: "Updated 2 of 3; Plater failed: the download stopped", partial: true, commands: [],
+    fixes: [{ command: "omaddons update -t era -- Plater", argv: ["omaddons", "update", "-t", "era", "--", "Plater"], runnable: true }] }
+  const noAnswer = { ok: false, line: "omaddons stopped answering during Update Foo", partial: false, commands: [] }
+  const failure = { message: noAnswer.line, code: "timeout", fixes: [] }
+  const copied = { kind: "copy", text: "Copied the report on Foo", marked: false }
+  const refused = { kind: "notice", text: "Quit Retail first.", marked: true }
+  const activity = { kind: "change" }
+  test("toastView: the table", () => {
+    table([
+      ["nothing", [null, null, false, false, null], null],
+      ["a_success_held", [null, success, true, false, null], { kind: "result", text: "Pinned 1 addon", marked: false }],
+      ["its_hold_ended", [null, success, false, false, null], null],
+      ["an_activity_shows_instead", [null, success, true, activity, null], null],
+      ["a_note_over_the_result", [copied, success, true, false, null], { kind: "copy", text: "Copied the report on Foo", marked: false }],
+      ["a_note_while_an_activity_runs", [refused, null, false, activity, null], { kind: "notice", text: "Quit Retail first.", marked: true }],
+      ["an_empty_note_is_none", [{ kind: "key", text: "" }, success, true, false, null], { kind: "result", text: "Pinned 1 addon", marked: false }],
+      ["a_note_without_a_kind", [{ text: "x" }, null, false, false, null], { kind: "note", text: "x", marked: false }],
+      // UX-28, omad-uuwz: the failure card says it, alone.
+      ["a_failure_the_card_states", [null, noAnswer, true, false, failure], null],
+      ["a_failed_result_with_no_card", [null, noAnswer, true, false, null], { kind: "result", text: noAnswer.line, marked: true }],
+      ["a_partial_result_keeps_its_line", [null, Object.assign({}, partial, { ok: false }), true, false, failure],
+        { kind: "result", text: partial.line, marked: true }],
+      ["an_empty_line", [null, { ok: true, line: "" }, true, false, null], null],
+    ], (args) => M.toastView.apply(null, args))
+  })
+  test("resultTimed: a partial result with fixes stays until the next", () => {
+    table([
+      ["none", null, false],
+      ["a_success", success, true],
+      ["a_failure_without_fixes", noAnswer, true],
+      ["a_partial_result_with_fixes", partial, false],
+      ["a_partial_result_without_fixes", Object.assign({}, partial, { fixes: [] }), true],
+    ], (result) => M.resultTimed(result))
+  })
+  test("the holds", () => {
+    expect([M.RESULT_HOLD_MS, M.NOTE_HOLD_MS, M.FLASH_HOLD_MS]).toEqual([8000, 4000, 1500])
+  })
+})
+
 // ------------------------------------------------------------- the views' states (1n2p.19)
 
 describe("reduceCheck and readingResources", () => {

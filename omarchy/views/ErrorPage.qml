@@ -37,7 +37,6 @@ Item {
   readonly property bool typing: false
   property bool rawShown: false
   readonly property var raw: rawShown && row ? Model.rawLines(svc ? svc.rawErrors : null, row) : null
-  property string copied: ""
 
   readonly property color foreground: frame ? frame.foreground : Commons.Color.foreground
   readonly property color dim: frame ? frame.dim : Qt.darker(foreground, 1.55)
@@ -68,13 +67,14 @@ Item {
     return false
   }
 
-  // Whether there was a report to copy; the flash follows once wl-copy answers.
+  // Whether there was a report to copy; the flash follows in the corner toast once
+  // wl-copy answers (omad-92d5).
   function copyReport() {
     if (!svc || !row) return false
     var addon = row.addon
+    var shown = frame
     return svc.copyCommand(Model.errorReport(row, statusTargets), function(ok) {
-      root.copied = Model.copyFlash(ok, Model.copy("errors.copied", { "addon": addon }))
-      copiedTimer.restart()
+      if (shown) shown.flash(Model.copyFlash(ok, Model.copy("errors.copied", { "addon": addon })), ok)
     })
   }
 
@@ -87,12 +87,6 @@ Item {
 
   // Leaving the page drops a raw read still on its way.
   Component.onDestruction: if (rawShown && svc) svc.clearRawErrors()
-
-  Timer {
-    id: copiedTimer
-    interval: 1500
-    onTriggered: root.copied = ""
-  }
 
   Column {
     id: column
@@ -182,17 +176,6 @@ Item {
         fontSize: Style.font.bodySmall
         onClicked: root.toggleRaw()
       }
-    }
-
-    PlainLabel {
-      objectName: "copyFlash"
-      visible: root.copied !== ""
-      width: parent.width
-      // Accent is never text's colour (§5.1, 1n2p.40).
-      color: root.foreground
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
-      text: root.copied
     }
 
     // Each distinct error, its stack in full.

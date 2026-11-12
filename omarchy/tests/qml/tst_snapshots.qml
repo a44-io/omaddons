@@ -1006,6 +1006,18 @@ TestCase {
     shoot("errors-lua-errors")
   }
 
+  // `y` on a row: the copy's flash in the corner toast, on the footer row (omad-92d5).
+  function test_errors_copy_flash() {
+    var scene = everyday()
+    scene.status = the("status-errors")
+    open(scene, "errors")
+    frame.cursor = 0
+    frame.cursorActive = true
+    verify(frame.flash("Copied the report on Foo", true))
+    tryCompare(findChild(frame, "toast"), "opacity", 1, 1000)
+    shoot("errors-copy-flash")
+  }
+
   function test_errors_partial_read() {
     var scene = everyday()
     scene.status = the("status-errors-partial")
@@ -1693,6 +1705,8 @@ TestCase {
     scene.list = { "text": text(after) }
     settle(scene)
     verify(service.lastResult !== null, "a result")
+    // The result in the corner toast, faded in (omad-92d5).
+    tryCompare(findChild(frame, "toast"), "opacity", 1, 1000)
     shoot("action-result-undo")
   }
 

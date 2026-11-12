@@ -35,8 +35,6 @@ Item {
   readonly property int rowCount: rows.length
   readonly property bool typing: false
   readonly property var plan: Model.dismissPlan(svc ? svc.errors : null, filter)
-  // What `y` copied last, said for a moment (the copy flash, design doc §5.5).
-  property string copied: ""
 
   readonly property color foreground: frame ? frame.foreground : Commons.Color.foreground
   readonly property color dim: frame ? frame.dim : Qt.darker(foreground, 1.55)
@@ -84,13 +82,14 @@ Item {
   }
 
   // `y`: the report on the addon's errors, strict text only (Model.errorReport). Whether
-  // there was a report to copy; the flash follows once wl-copy answers.
+  // there was a report to copy; the flash follows in the corner toast once wl-copy
+  // answers (omad-92d5).
   function copyReport(row) {
     if (!svc) return false
     var addon = row.addon
+    var shown = frame
     return svc.copyCommand(Model.errorReport(row, statusTargets), function(ok) {
-      root.copied = Model.copyFlash(ok, Model.copy("errors.copied", { "addon": addon }))
-      copiedTimer.restart()
+      if (shown) shown.flash(Model.copyFlash(ok, Model.copy("errors.copied", { "addon": addon })), ok)
     })
   }
 
@@ -108,12 +107,6 @@ Item {
   function select(index) {
     frame.cursor = index
     frame.cursorActive = true
-  }
-
-  Timer {
-    id: copiedTimer
-    interval: 1500
-    onTriggered: root.copied = ""
   }
 
   Component {
@@ -152,17 +145,6 @@ Item {
       onClicked: root.frame.dismissErrors()
     }
 
-    // The copy flash: what `y` copied, for a moment.
-    PlainLabel {
-      objectName: "copyFlash"
-      visible: root.copied !== ""
-      width: parent.width
-      // Accent is never text's colour (§5.1, 1n2p.40).
-      color: root.foreground
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
-      text: root.copied
-    }
 
     Repeater {
       id: sectionRepeater

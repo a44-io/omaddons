@@ -440,10 +440,11 @@ TestCase {
     keyClick("6")
     keyClick("u")
     compare(svc.runs.length, 1)
-    compare(findChild(view, "keyNote").text, "Nothing to update here")
+    compare(findChild(view, "toastLine").text, "Nothing to update here")
     // The next key clears it.
     keyClick("j")
-    compare(findChild(view, "keyNote").text, "")
+    compare(view.keyNote, "")
+    verify(!findChild(view, "toast").showing)
   }
 
   function test_u_updates_one_addon_and_p_pins_by_its_state() {
@@ -789,7 +790,7 @@ TestCase {
     // `/` where nothing filters (Backups) says why it does nothing.
     keyClick("6")
     keyClick("/")
-    compare(findChild(view, "keyNote").text, "Nothing to filter here")
+    compare(findChild(view, "toastLine").text, "Nothing to filter here")
   }
 
   // `S` (1n2p.22): by name, by recently updated, by source, and back; the cursor stays
@@ -841,27 +842,33 @@ TestCase {
     verify(/\(Ctrl\+V\)$/.test(pasteButton.tooltipText), pasteButton.tooltipText)
     compare(copyButton.Accessible.name, copyButton.text)
     verify(copyButton.enabled && pasteButton.enabled)
-    // `y` under All: every client's list; the flash says what went on the clipboard.
+    // `y` under All: every client's list; the corner toast's flash says what went on
+    // the clipboard (omad-92d5), and no view draws a flash of its own.
     keyClick("y")
     compare(json(svc.shareCopies), json([""]))
     svc.shareDone(true, "Copied the addon list of every client: 6 addons")
-    var flash = findChild(content(), "copyFlash")
-    verify(flash.visible)
-    compare(flash.text, "Copied the addon list of every client: 6 addons")
-    compare(findChild(view, "notice").text, "")
-    // A copy that did not happen is the notice, never a flash.
+    compare(findChild(content(), "copyFlash"), null)
+    var toast = findChild(view, "toast")
+    verify(toast.showing)
+    compare(findChild(view, "toastLine").text, "Copied the addon list of every client: 6 addons")
+    verify(!findChild(toast, "alertGlyph").visible)
+    compare(view.notice, "")
+    // A copy that did not happen says so there, with the alert glyph.
     copyButton.clicked()
     compare(json(svc.shareCopies), json(["", ""]))
     svc.shareDone(false, "Couldn't copy (wl-copy is missing)")
-    compare(findChild(view, "notice").text, "Couldn't copy (wl-copy is missing)")
+    compare(findChild(view, "toastLine").text, "Couldn't copy (wl-copy is missing)")
+    verify(findChild(toast, "alertGlyph").visible)
     // Ctrl+V: the paste, its refusal the notice; a preview asked clears it.
     keyClick(Qt.Key_V, Qt.ControlModifier)
     compare(json(svc.sharePastes), json([""]))
     svc.shareDone("The clipboard doesn't hold an addon list. Ask for one copied with Copy addon list.")
-    compare(findChild(view, "notice").text, "The clipboard doesn't hold an addon list. Ask for one copied with Copy addon list.")
+    compare(view.notice, "The clipboard doesn't hold an addon list. Ask for one copied with Copy addon list.")
+    compare(findChild(view, "toastLine").text, "The clipboard doesn't hold an addon list. Ask for one copied with Copy addon list.")
     pasteButton.clicked()
     svc.shareDone("")
-    compare(findChild(view, "notice").text, "")
+    compare(view.notice, "")
+    verify(!toast.showing)
     // On one client, that client's.
     view.setFilter("era")
     keyClick("y")
@@ -870,7 +877,7 @@ TestCase {
     // Elsewhere, Ctrl+V says where it works.
     keyClick("1")
     keyClick(Qt.Key_V, Qt.ControlModifier)
-    compare(findChild(view, "keyNote").text, "Addon lists paste in Addons (2)")
+    compare(findChild(view, "toastLine").text, "Addon lists paste in Addons (2)")
     compare(svc.sharePastes.length, 3)
   }
 
@@ -1432,13 +1439,18 @@ TestCase {
     verify(report.indexOf("Foo v1 on retail") === 0, report)
     verify(report.indexOf("attempt to index a nil value (field 'x')") > 0, report)
     verify(report.indexOf("a message from the addon (25 characters)") > 0, report)
-    compare(findChild(content(), "copyFlash").text, "Copied the report on Foo")
+    // The flash is the corner toast's (omad-92d5), never a line atop the list.
+    compare(findChild(content(), "copyFlash"), null)
+    var toast = findChild(view, "toast")
+    compare(findChild(view, "toastLine").text, "Copied the report on Foo")
+    verify(toast.showing)
     // wl-copy missing (omad-phcg): the flash says nothing was copied, then goes.
     svc.copyOk = false
     keyClick("y")
     compare(svc.copies.length, 2)
-    compare(findChild(content(), "copyFlash").text, "Couldn't copy (wl-copy is missing)")
-    tryCompare(findChild(content(), "copyFlash"), "visible", false, 3000)
+    compare(findChild(view, "toastLine").text, "Couldn't copy (wl-copy is missing)")
+    verify(findChild(toast, "alertGlyph").visible)
+    tryVerify(function() { return !toast.showing }, Model.NOTE_HOLD_MS + 1500, "the flash goes")
     svc.copyOk = true
     // Bar (no update waits): `u` does nothing.
     keyClick("j")
@@ -1463,12 +1475,14 @@ TestCase {
     compare(json(svc.runs[1].slice(0, 3)), json(["update_addon", { "target": "retail", "addon": "Foo" }, "Update Foo"]))
     keyClick("y")
     compare(svc.copies.length, 3)
-    compare(findChild(page, "copyFlash").text, "Copied the report on Foo")
-    // wl-copy missing (omad-phcg): the page's flash says so instead.
+    compare(findChild(page, "copyFlash"), null)
+    compare(findChild(view, "toastLine").text, "Copied the report on Foo")
+    verify(toast.showing)
+    // wl-copy missing (omad-phcg): the flash says so instead.
     svc.copyOk = false
     keyClick("y")
     compare(svc.copies.length, 4)
-    compare(findChild(page, "copyFlash").text, "Couldn't copy (wl-copy is missing)")
+    compare(findChild(view, "toastLine").text, "Couldn't copy (wl-copy is missing)")
     // Esc goes back to the view.
     keyClick(Qt.Key_Escape)
     compare(view.pages.length, 0)
@@ -1695,7 +1709,7 @@ TestCase {
     compare(install.text, "Install it")
     install.clicked()
     compare(svc.runs.length, 0)
-    compare(findChild(view, "keyNote").text, Model.copy("page.needs.choose"))
+    compare(findChild(view, "toastLine").text, Model.copy("page.needs.choose"))
     // Retail's line, where Bar is not installed: still nothing.
     var targets = page.rows.map(function(l) { return l.target })
     view.cursor = targets.indexOf("retail")
@@ -1759,7 +1773,7 @@ TestCase {
     compare(searchMeta(0), "Not made for Classic Era · WoWInterface · 515.9k downloads")
     keyClick("i")
     compare(svc.runs.length, 0)
-    compare(findChild(view, "keyNote").text, "Not made for Classic Era: nothing to install there.")
+    compare(findChild(view, "toastLine").text, "Not made for Classic Era: nothing to install there.")
   }
 
   // bmcx.6: a result no client has evidence for offers no install button and no install
@@ -1775,7 +1789,7 @@ TestCase {
     compare(searchMeta(0).split(" · ")[0], "Not known yet for Retail")
     keyClick("i")
     compare(svc.runs.length, 0)
-    compare(findChild(view, "keyNote").text, "Not known yet where it works: Enter opens its page, which checks.")
+    compare(findChild(view, "toastLine").text, "Not known yet where it works: Enter opens its page, which checks.")
     keyClick(Qt.Key_Return)
     compare(view.pages.length, 1)
     compare(json(svc.infoReads), json(["wowi:23056"]))
@@ -2332,7 +2346,7 @@ TestCase {
     compare(view.cursor, 2)
     keyClick("x")
     compare(svc.runs.length, 0)
-    compare(findChild(view, "notice").text, "This backup is in use. Try again when it's free.")
+    compare(findChild(view, "toastLine").text, "This backup is in use. Try again when it's free.")
     keyClick("k")
     keyClick("x")
     compare(json(svc.runs[0]), json(["prune_backup", { "target": "retail", "backup": "01RET00000000000000000000B" },
@@ -2419,7 +2433,7 @@ TestCase {
     compare([view.cursor, view.cursorActive], [0, true])
     keyClick(Qt.Key_Return)
     compare(svc.runs.length, 0)
-    compare(findChild(view, "notice").text, "Quit Retail first.")
+    compare(findChild(view, "toastLine").text, "Quit Retail first.")
   }
 
   function test_a_backup_page_deletes_it_or_opens_the_chooser_and_never_deletes_one_in_use() {
@@ -2448,7 +2462,7 @@ TestCase {
     verify(!findChild(page(), "delete").enabled)
     keyClick("x")
     compare(svc.runs.length, 1)
-    compare(findChild(view, "notice").text, "This backup is in use. Try again when it's free.")
+    compare(findChild(view, "toastLine").text, "This backup is in use. Try again when it's free.")
     // Deleted meanwhile: the page says so.
     var env = backupsEnvelope()
     env.data.targets[1].backups = [env.data.targets[1].backups[0]]

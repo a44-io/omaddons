@@ -13,9 +13,10 @@ import "Build.js" as Build
 // its glyph in the state colour, the meta line urgent first, and help, zoom, Check now,
 // Undo last and Open AddOns), the scope Dropdown, the tab strip with each view's
 // count, the content (the view, or the page on top of the navigation stack, alone in a
-// Flickable), and the pinned bottom area outside it (progress, the last result with
-// its Undo and Fix, the failure card, the freshness footer), which a long list never
-// scrolls away (UX-02). Over it: the plan sheet every previewed action goes through
+// Flickable), and the pinned bottom area outside it (the failure card, progress, a
+// partial result's Fix buttons, then the freshness footer with the corner toast on its
+// right: the last result and its Undo, a refusal, a key's note, a copy's flash), which
+// a long list never scrolls away (UX-02). Over it: the plan sheet every previewed action goes through
 // (ui/PlanSheet.qml), the restore chooser and the key reference (`?`). `z` zooms the panel to the
 // screen and back; Ctrl+±/0 and Ctrl+wheel scale the text (§5.6); both are kept in
 // memory only.
@@ -54,10 +55,14 @@ Item {
   property bool cursorActive: false
   property double nowMs: Date.now()
   // A refusal from the service ("omaddons is not ready", a template it would not
-  // build), until the next action.
+  // build), until the next action or the end of its hold in the corner toast.
   property string notice: ""
-  // Why the last key did nothing here ("Nothing to pin here"), until the next key.
+  // Why the last key did nothing here ("Nothing to pin here"), until the next key or
+  // the end of its hold in the corner toast.
   property string keyNote: ""
+  // The corner toast's passing note (omad-92d5): the newest of a refusal, a key's note
+  // and a copy's flash, `{kind, text, marked}`, or null. A new result takes its place.
+  property var toastNote: null
   // The key reference (`?`) is open over everything but a dialog.
   property bool helpOpen: false
   // The settings sheet (`,`, 1n2p.31) is open over the views, under a dialog.
@@ -135,6 +140,10 @@ Item {
   // The last result shows until the next activity, for the service's hold (§2.1).
   readonly property bool resultFresh: !!lastResult && !activityShown && !!svc && svc.resultShown !== false
   readonly property var lastError: svc ? svc.lastError : null
+  // What the corner toast shows (Model.toastView, omad-92d5): a passing note, else the
+  // last result while it is held, never a failure the card already states.
+  readonly property var toastView: Model.toastView(toastNote, lastResult, !!svc && svc.resultShown !== false,
+    activityShown, lastError)
   readonly property var confirm: svc ? svc.confirm : null
   readonly property bool confirming: !!confirm
   // Without a compatible answer there are no views to act in: the card's buttons take
@@ -219,6 +228,8 @@ Item {
   onOpenedChanged: {
     helpOpen = false
     settingsOpen = false
+    // A closing panel lets go of the toast's hold (Service.armResultHold).
+    if (!opened && svc && typeof svc.holdResult === "function") svc.holdResult(false)
     if (!opened) return
     nowMs = Date.now()
     // The scope it opens on (§2.2): the one running client, else the scope the panel
@@ -228,6 +239,7 @@ Item {
     cursorActive = false
     notice = ""
     keyNote = ""
+    toastNote = null
     flick.contentY = 0
     publishState()
     if (!takeRequestedView() && svc) svc.readView(view)
@@ -575,6 +587,54 @@ Item {
     return refusal === ""
   }
 
+  // ------------------------------------------------------------- the corner toast
+
+  // A refusal and a key's note show in the corner toast (omad-92d5) for NOTE_HOLD_MS and
+  // are cleared when it ends, so the same words said again show again; cleared sooner
+  // (the next action, the next key), they leave it.
+  onNoticeChanged: noteChanged("notice", notice, true)
+  onKeyNoteChanged: noteChanged("key", keyNote, false)
+  // A new result takes the note's place: the newest message shows.
+  onLastResultChanged: if (lastResult && toastNote) dropNote()
+
+  function noteChanged(kind, text, marked) {
+    if (text !== "") showNote({ "kind": kind, "text": text, "marked": marked }, Model.NOTE_HOLD_MS)
+    else if (toastNote && toastNote.kind === kind) dropNote()
+  }
+
+  // A copy's flash in the corner toast (UX-36): what went on the clipboard, for
+  // FLASH_HOLD_MS; or, with the alert glyph and for a note's hold, that nothing did.
+  function flash(text, ok) {
+    if (typeof text !== "string" || text === "") return false
+    showNote({ "kind": "copy", "text": text, "marked": ok !== true }, ok === true ? Model.FLASH_HOLD_MS : Model.NOTE_HOLD_MS)
+    return true
+  }
+
+  function showNote(note, holdMs) {
+    toastNote = note
+    noteTimer.interval = holdMs
+    if (toast.hovered) noteTimer.stop()
+    else noteTimer.restart()
+  }
+
+  function dropNote() {
+    noteTimer.stop()
+    var kind = toastNote ? toastNote.kind : ""
+    toastNote = null
+    if (kind === "notice") notice = ""
+    if (kind === "key") keyNote = ""
+  }
+
+  // The pointer over the toast holds what it shows: the note's timer here, the result's
+  // in the service (Service.holdResult).
+  function toastHovered(held) {
+    if (toastNote) {
+      if (held) noteTimer.stop()
+      else noteTimer.restart()
+    }
+    if (svc && typeof svc.holdResult === "function") svc.holdResult(held)
+  }
+
   function updateAll() {
     if (busy) return false
     var request = Model.updateRequest(filter, Model.updateRows(svc.lists, filter, targets), targets)
@@ -719,6 +779,13 @@ Item {
       root.cardNote = ""
       root.onboardingNote = ""
     }
+  }
+
+  // The corner toast's note leaves when its hold ends (showNote sets the interval).
+  Timer {
+    id: noteTimer
+    interval: Model.NOTE_HOLD_MS
+    onTriggered: root.dropNote()
   }
 
   // A view state's action (Model.viewState, design doc §7): Check now checks, Search opens
@@ -1242,7 +1309,7 @@ Item {
         }
       }
 
-      // ---------- The pinned bottom area: progress, the result, the failure, the footer ----------
+      // ---------- The pinned bottom area: the failure, progress, the footer and the toast ----------
       // Outside the Flickable, so it never scrolls away (UX-02).
       Column {
         id: bottom
@@ -1421,8 +1488,8 @@ Item {
         }
 
         // The activity bar (§2.1, 1n2p.18): a running change with its progress and the
-        // queue, else a check or a read the player waits on; else the last result with
-        // its Undo, for the service's hold.
+        // queue, else a check or a read the player waits on. What it ends with is the
+        // corner toast's (the footer row).
         ActivityBar {
           objectName: "activityBar"
           width: parent.width
@@ -1435,47 +1502,11 @@ Item {
           onCancelRequested: if (root.svc && typeof root.svc.cancelActivity === "function") root.svc.cancelActivity()
         }
 
-        Row {
-          objectName: "result"
-          visible: root.resultFresh
-          width: parent.width
-          spacing: Style.spacing.md
-
-          // A failed result carries the alert glyph; its words stay in the foreground
-          // either way (1n2p.40).
-          AlertLine {
-            objectName: "resultLine"
-            anchors.verticalCenter: parent.verticalCenter
-            width: Math.min(implicitWidth, parent.width - (resultUndoButton.visible ? resultUndoButton.width + parent.spacing : 0))
-            marked: !!root.lastResult && !root.lastResult.ok
-            wrapMode: Text.NoWrap
-            foreground: root.foreground
-            dim: root.foreground
-            urgent: root.urgent
-            fontFamily: root.fontFamily
-            text: root.lastResult ? String(root.lastResult.line || "") : ""
-          }
-
-          Button {
-            id: resultUndoButton
-            objectName: "resultUndo"
-            visible: root.resultUndo !== null
-            enabled: root.canAct && !root.busy
-            opacity: enabled ? 1.0 : 0.4
-            text: "Undo"
-            Accessible.role: Accessible.Button
-            Accessible.name: text
-            bordered: true
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            fontSize: Style.font.caption
-            onClicked: root.runCli(root.resultUndo, "Undo")
-          }
-        }
-
-        // A partial result: each failed item's fix the classifier accepts.
+        // A partial result: each failed item's fix the classifier accepts. Its line is
+        // the toast's, which stays until the next result (Model.resultTimed).
         Flow {
-          visible: root.resultFresh
+          objectName: "itemFixes"
+          visible: root.resultFresh && Array.isArray(root.lastResult.fixes) && root.lastResult.fixes.length > 0
           width: parent.width
           spacing: Style.spacing.sm
 
@@ -1500,40 +1531,51 @@ Item {
           }
         }
 
-        // A refusal or a full lane: its words beside the alert glyph (1n2p.40).
-        AlertLine {
-          objectName: "notice"
-          visible: text !== ""
+        // The footer row (omad-92d5): the freshness footer on the left, the corner toast
+        // on the right. It is as tall as the toast's Undo whether or not a toast shows,
+        // so the content above never moves when one comes or goes; a sentence too long
+        // for one line grows it.
+        Item {
+          id: footerRow
+          objectName: "footerRow"
           width: parent.width
-          foreground: root.foreground
-          dim: root.dim
-          urgent: root.urgent
-          fontFamily: root.fontFamily
-          text: root.notice
-        }
+          height: Math.max(freshness.implicitHeight, toast.slotHeight, toast.visible ? toast.height : 0)
 
-        // A key that does nothing here says so (design doc §3.3), until the next key.
-        PlainLabel {
-          objectName: "keyNote"
-          visible: text !== ""
-          width: parent.width
-          wrapMode: Text.WordWrap
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          text: root.keyNote
-        }
+          // The freshness footer (§2.1, UX-23): the clients, the scope's oldest check,
+          // who is running; it ticks while the panel is open. It gives the toast the
+          // room it needs, eliding, and steps aside when too little is left.
+          PlainLabel {
+            id: freshness
+            objectName: "freshness"
+            readonly property real room: parent.width - (toast.visible ? toast.width + Style.spacing.md : 0)
+            visible: text !== "" && room >= Style.space(48)
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            width: Math.max(0, room)
+            height: implicitHeight
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            text: Model.footerText(root.summary, root.targets, root.filter, root.nowMs)
+          }
 
-        // The freshness footer (§2.1, UX-23): the clients, the scope's oldest check,
-        // who is running; it ticks while the panel is open.
-        PlainLabel {
-          objectName: "freshness"
-          visible: text !== ""
-          width: parent.width
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          text: Model.footerText(root.summary, root.targets, root.filter, root.nowMs)
+          // What the last action said (Model.toastView): the result and its Undo, a
+          // refusal, a key's note, a copy's flash.
+          Toast {
+            id: toast
+            objectName: "toast"
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            maxWidth: parent.width
+            view: root.toastView
+            undoShown: root.resultUndo !== null
+            undoEnabled: root.canAct && !root.busy
+            foreground: root.foreground
+            urgent: root.urgent
+            fontFamily: root.fontFamily
+            onUndoRequested: root.runCli(root.resultUndo, "Undo")
+            onHoveredChanged: root.toastHovered(hovered)
+          }
         }
       }
     }

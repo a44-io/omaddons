@@ -1232,7 +1232,10 @@ TestCase {
     tryCompare(service, "doneRows", ({}), 1000)
   }
 
-  function test_the_last_result_shows_for_its_hold() {
+  // omad-92d5: the result's hold counts only while a panel is open and starts over on
+  // each open, so a result that landed with every panel closed shows in full on the
+  // next; it waits while the pointer is over the toast.
+  function test_the_last_result_shows_for_its_hold_while_a_panel_is_open() {
     make({ "resultHoldMs": 80 })
     ready(0)
     compare(service.resultShown, false)
@@ -1240,8 +1243,40 @@ TestCase {
     answer(lastRun("pin"), envelope("pin", { "targets": [{ "target": { "id": "retail" }, "items": [{ "name": "Foo", "status": "pinned" }] }] }))
     verify(service.lastResult !== null)
     verify(service.resultShown)
+    wait(250)
+    verify(service.resultShown, "no panel has shown it yet")
+    service.setPanelOpen("p", true)
     tryCompare(service, "resultShown", false, 1000)
     verify(service.lastResult !== null, "the result itself stays, for state()")
+    // The pointer over the toast holds it; let go, its hold runs again.
+    service.lastResult = { "ok": true, "line": "Unpinned 1 addon", "partial": false, "commands": [], "fixes": [] }
+    service.holdResult(true)
+    wait(250)
+    verify(service.resultShown, "held while the pointer is over it")
+    service.holdResult(false)
+    tryCompare(service, "resultShown", false, 1000)
+    // A panel closing stops the hold, and the next open runs it in full.
+    service.lastResult = { "ok": true, "line": "Pinned 1 addon", "partial": false, "commands": [], "fixes": [] }
+    service.holdResult(true)
+    service.setPanelOpen("p", false)
+    compare(service.resultHovered, false, "a closing panel lets go of the hover")
+    wait(250)
+    verify(service.resultShown, "no panel open: the hold waits")
+    service.setPanelOpen("p", true)
+    tryCompare(service, "resultShown", false, 1000)
+  }
+
+  // A partial result with Fix buttons stays until the next result (Model.resultTimed).
+  function test_a_partial_result_with_fixes_stays_until_the_next() {
+    make({ "resultHoldMs": 80 })
+    ready(0)
+    service.setPanelOpen("p", true)
+    service.lastResult = { "ok": true, "line": "Updated 2 of 3; Plater failed: the download stopped", "partial": true, "commands": [],
+      "fixes": [{ "command": "omaddons update -t era -- Plater", "argv": ["omaddons", "update", "-t", "era", "--", "Plater"], "runnable": true }] }
+    wait(250)
+    verify(service.resultShown, "its fixes are nowhere else")
+    service.lastResult = { "ok": true, "line": "Updated 1 addon", "partial": false, "commands": [], "fixes": [] }
+    tryCompare(service, "resultShown", false, 1000)
   }
 
   function test_a_failure_stays_until_it_is_dismissed() {
@@ -1249,6 +1284,21 @@ TestCase {
     service.lastError = { "message": "no", "code": "network", "fixes": [] }
     service.dismissError()
     compare(service.lastError, null)
+  }
+
+  // UX-28, omad-uuwz: a failure's own result line goes with its card; a partial result
+  // keeps its line.
+  function test_dismissing_a_failure_takes_its_result_line_too() {
+    ready(0)
+    service.lastResult = { "ok": false, "line": "omaddons stopped answering during Update Foo", "partial": false, "commands": [] }
+    service.lastError = { "message": "omaddons stopped answering during Update Foo", "code": "timeout", "fixes": [] }
+    verify(service.resultShown)
+    service.dismissError()
+    compare(service.resultShown, false)
+    service.lastResult = { "ok": false, "line": "Updated 2 of 3; Plater failed", "partial": true, "commands": [] }
+    service.lastError = { "message": "Plater failed", "code": "network", "fixes": [] }
+    service.dismissError()
+    compare(service.resultShown, true)
   }
 
   function test_user_mutations_go_before_background_ones() {

@@ -240,9 +240,11 @@ TestCase {
     }
   }
 
+  // The result in the corner toast (omad-92d5).
   function resultLine() {
-    tryVerify(function() { return child("result").visible }, 2000, "a result shows")
-    var line = child("resultLine").text
+    tryVerify(function() { return !!frame.toastView && frame.toastView.kind === "result" }, 2000, "a result shows")
+    verify(child("toast").showing)
+    var line = child("toastLine").text
     noCommandLine(line)
     return line
   }
@@ -273,7 +275,7 @@ TestCase {
     compare(resultLine(), "Updated 3 addons on 2 clients")
     settle(quiet("status-after-update"))
     // Its Undo: the change it just made, previewed when pressed.
-    verify(child("resultUndo").visible, "the result offers its Undo")
+    verify(child("toastUndo").visible, "the result offers its Undo")
   }
 
   function test_j1_before_a_raid_by_keys_540() { journeyBeforeRaid(540, false) }
@@ -313,7 +315,9 @@ TestCase {
     compare(copied[0].command.slice(0, 2), ["wl-copy", "--"])
     verify(copied[0].command[2].indexOf("Foo") !== -1, "the report names the addon")
     copied[0].process.exit(0)
-    tryCompare(child("copyFlash", page), "text", "Copied the report on Foo", 1000)
+    // The flash is the corner toast's (omad-92d5).
+    tryCompare(child("toastLine"), "text", "Copied the report on Foo", 1000)
+    verify(child("toast").showing)
     if (mouse) click(child("backButton"))
     else keyClick(Qt.Key_Escape)
     compare(frame.topPage, null)

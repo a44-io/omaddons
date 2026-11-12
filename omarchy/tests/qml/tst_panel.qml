@@ -54,6 +54,9 @@ TestCase {
       property string queuedText: ""
       property var doneRows: ({})
       property bool resultShown: true
+      // Whether the frame holds the result's hold (the pointer over the corner toast).
+      property bool held: false
+      function holdResult(h) { held = h === true }
       // Whether check() is taken (false: the network lane is full).
       property bool checkAccepted: true
       property int cancels: 0
@@ -420,11 +423,13 @@ TestCase {
     keyClick("k")
     keyClick("p")
     keyClick("x")
-    // Updates binds no `x`: it says why and reaches no view, until the next key.
-    compare(child("keyNote").text, "Nothing to remove here")
-    verify(child("keyNote").visible)
+    // Updates binds no `x`: it says why in the corner toast and reaches no view, until
+    // the next key.
+    compare(child("toastLine").text, "Nothing to remove here")
+    verify(child("toast").showing)
     keyClick(Qt.Key_Return)
-    compare(child("keyNote").text, "")
+    compare(view.keyNote, "")
+    verify(!child("toast").showing, "the next key takes the note away")
     keyClick(Qt.Key_Space)
     compare(json(loaded.keys), json([["pin", 1], ["enter", 1], ["enter", 1]]),
       "Enter acts once (activateRequested only)")
@@ -623,7 +628,8 @@ TestCase {
     for (var key of ["U", "u", "c", "o", "p", "x", "b", "d"]) keyClick(key)
     keyClick(Qt.Key_Z, Qt.ControlModifier)
     compare(svc.runs.length + svc.cliRuns.length + svc.checks, 0)
-    compare(child("keyNote").text, "", "a problem card explains no key")
+    compare(view.keyNote, "", "a problem card explains no key")
+    verify(!child("toast").showing)
     compare(child("content").item.keys.length, 0)
     verify(!child("content").enabled)
     verify(!child("checkButton").enabled)
@@ -891,8 +897,8 @@ TestCase {
     verify(!child("activityBar").visible)
     svc.lastResult = { "ok": true, "line": "Updated 3 addons on 2 clients · /reload in game", "partial": false,
       "commands": [{ "action": "undo", "command": "omaddons undo", "argv": ["omaddons", "undo"], "runnable": true }] }
-    compare(child("resultLine").text, "Updated 3 addons on 2 clients · /reload in game")
-    child("resultUndo").clicked()
+    compare(child("toastLine").text, "Updated 3 addons on 2 clients · /reload in game")
+    child("toastUndo").clicked()
     compare(json(svc.cliRuns[0]), json([["omaddons", "undo"], "Undo"]))
     svc.lastError = { "message": "no release of Foo loads on era", "code": "no_compatible_release",
       "fixes": [{ "command": "omaddons outdated --refresh", "argv": ["omaddons", "outdated", "--refresh"], "runnable": true }],
@@ -917,14 +923,14 @@ TestCase {
 
   function test_a_check_shows_in_the_activity_bar_and_can_be_cancelled() {
     svc.lastResult = { "ok": true, "line": "Updated 1 addon", "partial": false, "commands": [] }
-    verify(child("result").visible)
+    verify(child("toast").showing)
     svc.activity = checkActivity()
     verify(child("activityBar").visible)
     compare(child("progressLine").text, "Checking for updates…")
     // No count yet: the fixed 15 % fill.
     compare(child("progressFill").width, child("progressTrack").width * 0.15)
     verify(!child("busyNote").visible, "a check holds no change back")
-    verify(!child("result").visible, "the activity bar shows the check, not the last result")
+    verify(!child("toast").showing, "the activity bar shows the check, not the last result")
     verify(child("activityCancel").visible)
     child("activityCancel").clicked()
     compare(svc.cancels, 1)
@@ -932,22 +938,123 @@ TestCase {
       "current": 12, "total": 42, "target": null, "ref": "gh:o/foo" }, Date.now())
     compare(child("progressLine").text, "Checking for updates (12 of 42)")
     svc.activity = null
-    verify(child("result").visible, "the last result comes back while it is held")
+    verify(child("toast").showing, "the last result comes back while it is held")
+    compare(child("toastLine").text, "Updated 1 addon")
   }
 
   function test_the_last_result_leaves_when_its_hold_ends() {
     svc.lastResult = { "ok": true, "line": "Updated 1 addon", "partial": false, "commands": [] }
-    verify(child("result").visible)
+    verify(child("toast").showing)
     svc.resultShown = false
-    verify(!child("result").visible)
+    verify(!child("toast").showing)
+    // It fades out in 120 ms, then gives the footer its room back.
+    tryCompare(child("toast"), "visible", false, 1000)
     verify(child("freshness").visible, "the footer stays")
+    compare(child("freshness").width, child("footerRow").width)
   }
 
   function test_a_check_the_full_network_lane_drops_says_so() {
     svc.checkAccepted = false
     keyClick("c")
     compare(svc.checks, 1)
-    compare(child("notice").text, Model.copy("activity.lane_full"))
+    compare(child("toastLine").text, Model.copy("activity.lane_full"))
+    verify(findChild(child("toast"), "alertGlyph").visible, "a refusal carries the alert glyph")
+  }
+
+  // ------------------------------------------------------------- the corner toast (omad-92d5)
+
+  // The toast is on the footer row's right, its right edge the panel content's, below
+  // the activity bar; the freshness footer stays on the left.
+  function test_the_toast_sits_in_the_bottom_right_corner_below_the_activity_bar() {
+    var toast = child("toast")
+    var row = child("footerRow")
+    svc.activity = checkActivity()
+    view.flash("Copied the report on Foo", true)
+    verify(toast.showing)
+    tryCompare(toast, "opacity", 1, 1000)
+    var bar = child("activityBar")
+    verify(bar.visible)
+    var toastAt = toast.mapToItem(view, 0, 0)
+    var rowAt = row.mapToItem(view, 0, 0)
+    var barAt = bar.mapToItem(view, 0, 0)
+    compare(toastAt.x + toast.width, rowAt.x + row.width, "right-aligned on the footer row")
+    verify(toastAt.y >= barAt.y + bar.height, "below the activity bar")
+    verify(toastAt.y + toast.height <= rowAt.y + row.height)
+    compare(toast.width, Math.ceil(toast.width), "a whole-pixel width (omad-kldz)")
+    var freshness = child("freshness")
+    verify(freshness.visible)
+    compare(freshness.mapToItem(view, 0, 0).x, rowAt.x, "the footer on the left")
+    verify(freshness.width + toast.width <= row.width, "the footer gives the toast its room")
+    // The row is the panel's last: nothing under it.
+    var bottom = child("footer")
+    compare(rowAt.y + row.height, bottom.mapToItem(view, 0, 0).y + bottom.height)
+  }
+
+  // The content never moves as a toast comes and goes: the row is as tall either way.
+  function test_the_footer_row_keeps_its_height_with_a_toast_or_without() {
+    var row = child("footerRow")
+    verify(!child("toast").showing)
+    var empty = row.height
+    svc.lastResult = { "ok": true, "line": "Pinned 1 addon", "partial": false,
+      "commands": [{ "action": "undo", "command": "omaddons undo", "argv": ["omaddons", "undo"], "runnable": true }] }
+    verify(child("toastUndo").visible)
+    compare(row.height, empty)
+    svc.resultShown = false
+    tryCompare(child("toast"), "visible", false, 1000)
+    compare(row.height, empty)
+  }
+
+  // A note (a copy's flash, a refusal, a key's note) leaves when its hold ends, and the
+  // pointer over the toast holds it; the frame passes the hover to the service's result
+  // hold, and lets go when the panel closes.
+  function test_a_note_leaves_when_its_hold_ends_and_hover_holds_it() {
+    var toast = child("toast")
+    view.flash("Copied the report on Foo", true)
+    verify(toast.showing)
+    verify(!findChild(toast, "alertGlyph").visible, "a copy that happened carries no alert")
+    tryVerify(function() { return !toast.showing }, Model.FLASH_HOLD_MS + 1500, "the flash leaves")
+    view.flash("Copied the report on Foo", true)
+    view.toastHovered(true)
+    compare(svc.held, true)
+    wait(Model.FLASH_HOLD_MS + 300)
+    verify(toast.showing, "held while the pointer is over it")
+    view.toastHovered(false)
+    compare(svc.held, false)
+    tryVerify(function() { return !toast.showing }, Model.FLASH_HOLD_MS + 1500, "it leaves once let go")
+    // A copy that did not happen: the alert glyph, and a note's hold.
+    view.flash("Couldn't copy (wl-copy is missing)", false)
+    verify(findChild(toast, "alertGlyph").visible)
+    // Closing the panel lets go of the result's hold.
+    view.toastHovered(true)
+    view.opened = false
+    compare(svc.held, false)
+  }
+
+  // A newer message takes the toast: a result over a note, a note over a result; when
+  // the note goes, a result still held comes back.
+  function test_the_newest_message_shows() {
+    var toast = child("toast")
+    view.flash("Copied the report on Foo", true)
+    svc.lastResult = { "ok": true, "line": "Pinned 1 addon", "partial": false, "commands": [] }
+    compare(child("toastLine").text, "Pinned 1 addon")
+    compare(view.toastNote, null)
+    keyClick("x")
+    compare(child("toastLine").text, "Nothing to remove here")
+    // Any next key takes a key's note away.
+    keyClick("j")
+    compare(view.keyNote, "")
+    compare(child("toastLine").text, "Pinned 1 addon", "the held result comes back")
+  }
+
+  // UX-28, omad-uuwz: a change that ended with no answer is the failure card alone.
+  function test_a_failure_the_card_states_is_not_said_again_in_the_toast() {
+    svc.lastError = { "message": "omaddons stopped answering during Update Foo", "code": "timeout", "fixes": [], "fixText": "" }
+    svc.lastResult = { "ok": false, "line": "omaddons stopped answering during Update Foo", "partial": false, "commands": [] }
+    verify(child("errorCard").visible)
+    verify(!child("toast").showing)
+    // A partial result keeps its line beside the card.
+    svc.lastResult = { "ok": false, "line": "Updated 2 of 3; Plater failed: the download stopped", "partial": true, "commands": [], "fixes": [] }
+    verify(child("toast").showing)
   }
 
   function test_the_activity_bar_says_how_long_and_when_it_has_gone_quiet() {
@@ -976,18 +1083,18 @@ TestCase {
       "repair": true, "statusSeen": false, "fixes": [],
       "commands": [{ "action": "undo", "command": "omaddons doctor undo r", "argv": null, "runnable": false }] }
     svc.lastResult = result
-    compare(child("resultLine").text, "Repaired: chmod 0600 <config>/credentials/github (was 0644)")
-    verify(!child("resultUndo").visible, "no Undo before a status names the repair")
+    compare(child("toastLine").text, "Repaired: chmod 0600 <config>/credentials/github (was 0644)")
+    verify(!child("toastUndo").visible, "no Undo before a status names the repair")
     var seen = JSON.parse(JSON.stringify(result))
     seen.statusSeen = true
     svc.lastResult = seen
-    verify(child("resultUndo").visible)
-    child("resultUndo").clicked()
+    verify(child("toastUndo").visible)
+    child("toastUndo").clicked()
     compare(json(svc.cliRuns[0]), json([["omaddons", "undo", "--run", run], "Undo"]))
     // Another change since: the result's Undo would not revert the repair.
     svc.lastChange = { "unknown": false, "kind": "update", "label": "Undo update on era",
       "undo": { "command": "omaddons undo --run 01J", "argv": ["omaddons", "undo", "--run", "01J"], "destructive": true, "runnable": true } }
-    verify(!child("resultUndo").visible)
+    verify(!child("toastUndo").visible)
   }
 
   function test_undo_last_of_a_repair_reads_undo_repair() {
@@ -1001,7 +1108,8 @@ TestCase {
   function test_a_partial_result_offers_each_failed_items_fix() {
     svc.lastResult = { "ok": true, "line": "Updated 2 of 3; Plater failed: the download stopped", "partial": true, "commands": [],
       "fixes": [{ "command": "omaddons update -t era -- Plater", "argv": ["omaddons", "update", "-t", "era", "--", "Plater"], "runnable": true }] }
-    compare(child("resultLine").text, "Updated 2 of 3; Plater failed: the download stopped")
+    compare(child("toastLine").text, "Updated 2 of 3; Plater failed: the download stopped")
+    verify(child("itemFixes").visible)
     compare(child("itemFix_0").text, "Fix: omaddons update -t era -- Plater")
     child("itemFix_0").clicked()
     compare(json(svc.cliRuns[0]), json([["omaddons", "update", "-t", "era", "--", "Plater"], "Fix"]))
@@ -1148,7 +1256,7 @@ TestCase {
     compare(view.filter, "")
     keyClick("o")
     compare(Quickshell.detachedCommands.length, 0)
-    compare(child("keyNote").text, "Choose a client first: t, or a row of one")
+    compare(child("toastLine").text, "Choose a client first: t, or a row of one")
     verify(!child("openButton").enabled)
     // The first j highlights the era row, the second the retail row.
     keyClick("j")
