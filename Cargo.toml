@@ -57,7 +57,9 @@ toml = "1.1.8"
 toml_edit = "0.25.17"
 ulid = { version = "3.0.0", features = ["serde"] }
 ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
-zip = { version = "9.0.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+# 9.0.5 at least: GHSA-m665-v7pm-7grj (ZipArchive and ZipStreamReader read different
+# headers). omaddons inspects and stages with ZipArchive only, so the two never disagree.
+zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 zstd = { version = "0.14.3", default-features = false }
 
 # build.rs: the widget assets' digest, which `status` compares on every call (E4), and
