@@ -30,6 +30,15 @@ widget-snapshots() {
     scripts/widget-test.sh --snapshots "$argc_out" ${argc_stub_kit:+--stub-kit} ${argc_theme:+--theme "$argc_theme"}
 }
 
+# @cmd Publish a pushed tag on GitHub: built from a clean clone, packed for mise, with checksums and notes from br changelog
+# @arg tag!  The tag, e.g. v0.2.0 (its commit carries the version bump and the contract release step)
+# @option --notes  A file with a summary to put above the changelog
+# @flag --draft  Publish as a draft, which mise ignores
+# @meta require-tools cargo,git,gh,br
+release() {
+    scripts/release.sh "$argc_tag" ${argc_draft:+--draft} ${argc_notes:+--notes "$argc_notes"}
+}
+
 # @cmd Benchmark the checkpoint's timing targets with hyperfine on a synthetic home (never part of the gate)
 # @meta require-tools hyperfine,jq
 bench() {

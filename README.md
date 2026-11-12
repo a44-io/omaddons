@@ -52,7 +52,7 @@ cargo install --locked --path .
 
 </div>
 
-There is no packaged release, installer or prebuilt binary yet; see [Installation](#installation).
+Each [release](https://github.com/a44-io/omaddons/releases) carries a prebuilt Linux x86_64 binary; see [Installation](#installation).
 
 > [!NOTE]
 > **Pre-alpha: milestones 1 to 4 are done, and the JSON contract is frozen at `v0.1.0`.** omaddons runs daily on the development machine, where every client it has managed (retail, Mists Classic, Classic Era, Anniversary, WoW: Forever and a 3.3.5a server) has been seen in game loading the addons it installed.
@@ -60,6 +60,7 @@ There is no packaged release, installer or prebuilt binary yet; see [Installatio
 > - **Done (M1 to M3):** discovery and the load rules, transactions and undo, keyless GitHub, git, WoWInterface, Tukui and WowAce sources, `outdated`, `update`, `pin`, `adopt`, dependencies, `sync`, `export`, `copy`, `search`, `errors` (Lua errors from BugGrabber), `backup` (`WTF/` settings, with automatic checkpoints and undoable restores) and the Omarchy bar widget.
 > - **Done (M4):** `capabilities`, `robot-docs guide`, `schema`, `errors` and `install-skill`, shell completions, intent inference (a client named in the wrong place or mistyped is corrected in the fix), stored plans with `apply`, `plans show` and `--if-match`, the doctor (`doctor`, `explain`, `fix`, `diff`, `undo`, `gc` and `--online`), `status`'s issues taken from the doctor's cheap checks, bare help's line naming the commands agents start from, the pre-freeze contract audit, verbosity levels (`-vv` traces the release memo, discovery and the global lock on stderr), and the contract's golden (the semantic manifest, compared with the code in every gate).
 > - **The first tag, `v0.1.0` (2026-11-08):** contract 1.0 is frozen; a contract change now carries its `schema_version` bump ([Stability](#stability)).
+> - **`v0.2.0` (2026-11-12):** the first prebuilt release (mise installs it); the widget moved to `plugins/a44.omaddons`.
 >
 > M5 is next. See [What works today](#what-works-today), [Known issues](#known-issues) and the [Roadmap](#roadmap).
 
@@ -245,7 +246,18 @@ This comparison is from each project's own documentation as of October 2026. Cor
 
 ## Installation
 
-### From source (the only way today)
+### Prebuilt (Linux x86_64)
+
+Each [release](https://github.com/a44-io/omaddons/releases) has a stripped x86_64 binary (glibc 2.39+, as on Arch and Omarchy) and a `checksums.txt`. On Omarchy, install it as Omarchy installs CLI tools; the wrapper it writes in `~/.local/bin` installs the newest release and checks for newer ones:
+
+```bash
+omarchy-mise-install github:a44-io/omaddons omaddons   # or: mise use -g github:a44-io/omaddons
+omaddons --version
+```
+
+Or download `omaddons-<version>-x86_64-unknown-linux-gnu.tar.gz`, check it with `sha256sum -c checksums.txt --ignore-missing`, and put `omaddons` on your `PATH`.
+
+### From source
 
 #### Requirements
 
@@ -259,7 +271,7 @@ This comparison is from each project's own documentation as of October 2026. Cor
 git clone https://github.com/a44-io/omaddons.git
 cd omaddons
 cargo install --locked --path .
-omaddons --version          # omaddons 0.1.0
+omaddons --version          # omaddons 0.2.0
 ```
 
 **Or build without installing:**
@@ -303,9 +315,9 @@ Every shell completes commands, subcommands, aliases, flags and fixed values (`-
 
 At each Tab on one of those, the script runs `omaddons __complete`, a hidden reader of `registry.json`, the discovery cache a plain `status` writes, the records, the plan store, the backup inventory, the history projection and the doctor's run listing. It never scans, locks, writes or makes a request, so on a fresh install `-t` completes clients once a plain `status` has found them. With nothing to offer, or for a word starting with `/`, `.` or `~`, the script falls back to file names.
 
-### Why there is no installer or package
+### Packages and CI
 
-The source is public on GitHub under the MIT license, but there is no packaged release, installer, AUR package or prebuilt binary yet: build it from source with cargo, as above. There is no CI either; a local gate must pass before every code commit instead (vision decision D16, see [The local gate](#the-local-gate)). Shell completion scripts come from `omaddons completions`, and `omaddons install-completions` puts them in your own folders (see [Shell completions](#shell-completions)); packaged completions, a local `PKGBUILD`, a man page and a version scheme are planned for milestone 5.
+The source is on GitHub under the MIT license, and each release carries a prebuilt binary ([Prebuilt](#prebuilt-linux-x86_64)); there is no AUR package yet. There is no CI; a local gate must pass before every code commit instead (vision decision D16, see [The local gate](#the-local-gate)), and `argc release <tag>` builds and publishes a tag from a clean clone, with notes from `br changelog`. Shell completion scripts come from `omaddons completions`, and `omaddons install-completions` puts them in your own folders (see [Shell completions](#shell-completions)); packaged completions, a `PKGBUILD` and a man page are planned for milestone 5.
 
 ### Uninstall
 
@@ -2507,7 +2519,7 @@ The human form never prints the config's path or a credential. Here with a store
 
 ```text
 $ omaddons capabilities
-omaddons 0.1.0 · contract 1.1 · build e49d5dfe18e17d93
+omaddons 0.2.0 · contract 1.1 · build e49d5dfe18e17d93
 59 commands: look 18 · change 18 · setup 23 (omaddons help <command> for one)
 Exit codes:
   0  ok            Success, including partial success (partial: true)
@@ -2567,7 +2579,7 @@ With `--json`, bare help's `data` is `{name, version, usage, commands, global_fl
 ### Success
 
 ```json
-{"ok":true,"schema_version":"1.1","tool_version":"0.1.0","command":"install","exit_code":0,"partial":false,
+{"ok":true,"schema_version":"1.1","tool_version":"0.2.0","command":"install","exit_code":0,"partial":false,
  "data":{"dry_run":false,"target":{"id":"retail","key":"01M51EX04HHWM46XE9F2B9JXED"},"tx":"01M51EX645RCVFN6Z4ZV5GRWVS","kind":"install",
    "items":[{"request":"./Bar-2.1.0.zip","ref":"file:/home/me/src/Bar-2.1.0.zip","name":"Bar","status":"installed",
      "from_version":null,"to_version":"2.1.0","version_confidence":"toc","channel":"stable",
@@ -2584,7 +2596,7 @@ With `--json`, bare help's `data` is `{name, version, usage, commands, global_fl
 ### Failure
 
 ```json
-{"ok":false,"schema_version":"1.1","tool_version":"0.1.0","command":"install","exit_code":3,
+{"ok":false,"schema_version":"1.1","tool_version":"0.2.0","command":"install","exit_code":3,
  "error":{"code":"target_ambiguous","message":"./Bar-2.1.0.zip is compatible with 2 targets: era, retail",
    "fix":"omaddons install ./Bar-2.1.0.zip -t era","fix_argv":["omaddons","install","./Bar-2.1.0.zip","-t","era"],
    "alternatives":[{"display":"omaddons install ./Bar-2.1.0.zip -t retail","argv":["omaddons","install","./Bar-2.1.0.zip","-t","retail"]}],
@@ -2895,7 +2907,7 @@ The envelope's `schema_version` is the contract's version (`capabilities`' `cont
 
 The contract is pinned by a semantic manifest, `tests/contract/manifest.json`, generated from the code: every command path, flag and positional with its default, grammar, arity, conflicts and requirements; every output field with its type, presence, nullability, bounds, enum values and variants; every error code with its exit, retryability and typed `details`; every warning code, action, failure-mode id, event, phase, log level, exit code, repair operation, release environment variable, `config.toml` and `addons.toml` key; and every persisted file kind with its version. `tests/contract/wire_names.txt` prints the same one name per line. Both are regenerated with `OMADDONS_UPDATE_WIRE_NAMES=1 cargo test --test integration contract::wire_names`, and the gate fails when they differ from the code.
 
-Since `v0.1.0`, the gate also compares the contract with the released baseline, `tests/contract/released/<version>.json` (today `1.0.json`), which only the release step writes. A change that only adds (an output field, enum value or variant, a field now always present, a narrower bound; a flag, alias, value or optional positional) needs a higher minor `schema_version`. A change that removes or loosens anything (a field removed, made optional or nullable, or moved between variants, an integer that may now be a fraction, a wider bound; a flag or value removed, a new requirement or conflict, a required positional, a narrower grammar, a changed default), or one the comparison cannot place, needs a higher major. A persisted file's schema change needs that file kind's own version bump. An untagged variant is named by its keys, and one extended with a key compares as additive. Regenerating the golden never satisfies the comparison; only the version bump does, recorded in a comment on the vision bead.
+Since `v0.1.0`, the gate also compares the contract with the released baseline, `tests/contract/released/<version>.json` (today `1.1.json`), which only the release step writes. A change that only adds (an output field, enum value or variant, a field now always present, a narrower bound; a flag, alias, value or optional positional) needs a higher minor `schema_version`. A change that removes or loosens anything (a field removed, made optional or nullable, or moved between variants, an integer that may now be a fraction, a wider bound; a flag or value removed, a new requirement or conflict, a required positional, a narrower grammar, a changed default), or one the comparison cannot place, needs a higher major. A persisted file's schema change needs that file kind's own version bump. An untagged variant is named by its keys, and one extended with a key compares as additive. Regenerating the golden never satisfies the comparison; only the version bump does, recorded in a comment on the vision bead.
 
 JSON member order is deterministic (repeated runs print identical bytes) but is not part of the contract. Consumers should ignore fields and enum values they do not know; the bar widget accepts any 1.x envelope.
 
@@ -3723,7 +3735,7 @@ OMADDONS_REAL_MACHINE=1 OMADDONS_LIVE=1 OMADDONS_ALLOW_SKIP=keyless_installs_for
   cargo test --test integration real_machine:: -- --ignored --test-threads=1   # this machine's clients; every addon change is undone
 OMADDONS_ALLOW_SKIP=zsh_accepts_its_script,fish_accepts_its_script,zsh_completes_values_from_omaddons_files,fish_completes_values_from_omaddons_files \
   cargo test --test integration completions:: -- --ignored   # zsh -n and fish --no-execute over the generated scripts, and their values completed
-OMADDONS_ADVANCE_RELEASED_BASELINE=1.0 cargo test --test integration contract::wire_names   # the release step: writes tests/contract/released/1.0.json and flips the golden's header (the tag commit)
+OMADDONS_ADVANCE_RELEASED_BASELINE=1.1 cargo test --test integration contract::wire_names   # the release step: writes tests/contract/released/1.1.json, then argc release v0.2.0 (the tag commit)
 ```
 
 The release step refuses unless `output::SCHEMA_VERSION` is that version, the committed golden matches the code, the baseline does not exist yet, and the change since the previous baseline carries its bump; it is run once per release, in the tag commit.
