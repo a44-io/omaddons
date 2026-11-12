@@ -1,6 +1,6 @@
 [package]
 name = "omaddons"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.97"
 description = "World of Warcraft addon manager for Linux: every client, one journaled transaction engine, a machine-readable CLI"
@@ -80,7 +80,7 @@ insta = { version = "1.49.0", features = ["json"] }
 jsonschema = { version = "=0.60.2", default-features = false }
 # This package with `schemas` (omad-ho1p): tests, the library they test and the binary
 # they run all generate schemas. Normal builds never see a dev-dependency's features.
-omaddons = { version = "0.2.0", path = ".", features = ["schemas"] }
+omaddons = { version = "0.2.1", path = ".", features = ["schemas"] }
 predicates = "3.1.4"
 proptest = "1.12.0"
 # tests/terminal.rs: a pseudo-terminal for the binary's stderr, so human progress draws

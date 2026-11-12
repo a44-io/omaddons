@@ -57,7 +57,7 @@ Exit codes:
 
 omaddons --help lists every command with what it does
 ==> omaddons --help <==
-omaddons 0.2.0 · World of Warcraft addon manager for Linux
+omaddons 0.2.1 · World of Warcraft addon manager for Linux
 
 Usage: omaddons [OPTIONS] <COMMAND>
 

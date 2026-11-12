@@ -10,7 +10,7 @@ expression: "without_length(&s, &c.envelope)"
     "dir": "<root>/home/.claude/skills/omaddons",
     "dry_run": false,
     "file": "<root>/home/.claude/skills/omaddons/SKILL.md",
-    "tool_version": "0.2.0",
+    "tool_version": "0.2.1",
     "written": "fresh"
   },
   "exit_code": 0,

@@ -56,7 +56,7 @@ expression: "stable(&f, ran.envelope(), &tx)"
   },
   "ok": false,
   "schema_version": "1.1",
-  "tool_version": "0.2.0",
+  "tool_version": "0.2.1",
   "warnings": [
     {
       "code": "journal_pending",

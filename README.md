@@ -271,7 +271,7 @@ Or download `omaddons-<version>-x86_64-unknown-linux-gnu.tar.gz`, check it with 
 git clone https://github.com/a44-io/omaddons.git
 cd omaddons
 cargo install --locked --path .
-omaddons --version          # omaddons 0.2.0
+omaddons --version          # omaddons 0.2.1
 ```
 
 **Or build without installing:**
@@ -2519,7 +2519,7 @@ The human form never prints the config's path or a credential. Here with a store
 
 ```text
 $ omaddons capabilities
-omaddons 0.2.0 · contract 1.1 · build e49d5dfe18e17d93
+omaddons 0.2.1 · contract 1.1 · build e49d5dfe18e17d93
 59 commands: look 18 · change 18 · setup 23 (omaddons help <command> for one)
 Exit codes:
   0  ok            Success, including partial success (partial: true)
@@ -2579,7 +2579,7 @@ With `--json`, bare help's `data` is `{name, version, usage, commands, global_fl
 ### Success
 
 ```json
-{"ok":true,"schema_version":"1.1","tool_version":"0.2.0","command":"install","exit_code":0,"partial":false,
+{"ok":true,"schema_version":"1.1","tool_version":"0.2.1","command":"install","exit_code":0,"partial":false,
  "data":{"dry_run":false,"target":{"id":"retail","key":"01M51EX04HHWM46XE9F2B9JXED"},"tx":"01M51EX645RCVFN6Z4ZV5GRWVS","kind":"install",
    "items":[{"request":"./Bar-2.1.0.zip","ref":"file:/home/me/src/Bar-2.1.0.zip","name":"Bar","status":"installed",
      "from_version":null,"to_version":"2.1.0","version_confidence":"toc","channel":"stable",
@@ -2596,7 +2596,7 @@ With `--json`, bare help's `data` is `{name, version, usage, commands, global_fl
 ### Failure
 
 ```json
-{"ok":false,"schema_version":"1.1","tool_version":"0.2.0","command":"install","exit_code":3,
+{"ok":false,"schema_version":"1.1","tool_version":"0.2.1","command":"install","exit_code":3,
  "error":{"code":"target_ambiguous","message":"./Bar-2.1.0.zip is compatible with 2 targets: era, retail",
    "fix":"omaddons install ./Bar-2.1.0.zip -t era","fix_argv":["omaddons","install","./Bar-2.1.0.zip","-t","era"],
    "alternatives":[{"display":"omaddons install ./Bar-2.1.0.zip -t retail","argv":["omaddons","install","./Bar-2.1.0.zip","-t","retail"]}],
