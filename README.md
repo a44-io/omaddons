@@ -3565,7 +3565,7 @@ An interrupted `WTF/` restore adds three cases. While its game runs, it waits (`
 | Batched GitHub checks (GraphQL, one request for many repositories) | ❌ one `releases/latest` per repository instead | M5 |
 | `doctor health`, `doctor ls`, `doctor capabilities`, `doctor robot-docs`, `doctor --robot-triage`, and doctor checks beyond today's 32 failure modes | ❌ `doctor --quick` runs the cheap checks, the runs are folders under `~/.local/state/omaddons/doctor/runs/`, and `capabilities` and `robot-docs` describe the doctor too | Dropped from M4; may return if real use asks for them |
 | CurseForge, Wago | ❌ | M5, optional, bring your own key |
-| Packages, man page | ❌ build from source | M5 |
+| An AUR package, man page | ❌ [prebuilt releases](#prebuilt-linux-x86_64) or source | M5 |
 | Windows, macOS | ❌ | Never (non-goal) |
 | A GUI, TUI, daemon or MCP server | ❌ | Not in v1 (non-goal) |
 | Editing WeakAuras strings, ElvUI profiles or SavedVariables | ❌ | Never (non-goal) |
@@ -3615,7 +3615,7 @@ None at HEAD.
 | **M4: the agent surface** | `capabilities`; `robot-docs`; `completions`; intent inference; stored plans, `apply`, `plans show` and `--if-match`; the doctor; `status` on the doctor's registry; the pre-freeze contract audit; verbosity levels; the contract's golden; and **the first tag, `v0.1.0`, which froze the contract at 1.0**. Dropped when it was re-scoped on 2026-11-04 (may return if real use asks): `doctor health`, `ls`, `capabilities`, `robot-docs` and `--robot-triage`, and further detector batches | ✅ Done (2026-11-08) |
 | Omarchy widget overhaul | A user-first rebuild of every view, a readable plan sheet for every confirmation, a `?` key reference and mouse support (`omad-widget-user-first-1n2p`) | ✅ Done (2026-11-10, after `v0.1.0`; its follow-up `omad-z5il` too) |
 | Launch-week fixes | The [Known issues](#known-issues) of launch day, a `--help` overhaul, dynamic completion of values, `install-completions`, and the binary cut from 24.9 MB to about 15.5 MB (`omad-launch-week-fixes-bmcx`) | ✅ Done (2026-11-10) |
-| **M5: accounts and release** | Optional CurseForge and Wago (bring your own credential, never cached), fingerprint adoption; release engineering: versioning, CHANGELOG, a local PKGBUILD, packaged completions, a man page and a release binary under 18 MB. Not yet broken down into tasks | 🗓️ Planned |
+| **M5: accounts and release** | Optional CurseForge and Wago (bring your own credential, never cached), fingerprint adoption; release engineering: a local PKGBUILD, packaged completions, a man page (release binaries and changelog notes since `v0.2.0`). Not yet broken down into tasks | 🗓️ Planned |
 
 The authoritative design is the pinned vision bead. Its body is revision 2, and comments added after it supersede it.
 
