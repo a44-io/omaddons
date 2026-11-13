@@ -19,6 +19,7 @@ expression: s.stable(&c.envelope)
       "current": 1,
       "failed": 0,
       "pinned": 0,
+      "skipped_release": 0,
       "static": 1,
       "unchecked": 0,
       "update_available": 0

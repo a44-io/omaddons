@@ -215,8 +215,8 @@ fn lists_updates_across_three_clients_from_one_fetch_per_ref() {
     let summary = &envelope["data"]["summary"];
     assert_eq!(
         summary,
-        &json!({"update_available": 6, "current": 4, "pinned": 1, "ahead": 0, "blocked": 0,
-                "failed": 0, "unchecked": 0, "static": 0})
+        &json!({"update_available": 6, "current": 4, "pinned": 1, "skipped_release": 0,
+                "ahead": 0, "blocked": 0, "failed": 0, "unchecked": 0, "static": 0})
     );
     // The two refs whose tag did not move are confirmed by their probe alone (M2-D2).
     assert_eq!(

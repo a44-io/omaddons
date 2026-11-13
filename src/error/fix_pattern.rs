@@ -203,6 +203,12 @@ impl WarningCode {
             Self::AddonPinned => {
                 "`omaddons unpin <name> -t <id>`; the message adds that `--version` moves the pin"
             }
+            Self::ReleaseSkipped => {
+                "`omaddons unskip <name> --release <id> [--revision <n>] -t <id>`, which offers that one release again"
+            }
+            Self::SkipLifted => {
+                "`omaddons undo <tx>`, or under `--dry-run` prose: undoing the install puts the mark back"
+            }
             Self::StaleCheck => {
                 "the same command without `--offline` when that flag alone made it offline, else prose: run it again online"
             }

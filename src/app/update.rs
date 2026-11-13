@@ -6,7 +6,8 @@
 //! sees it: one fetch per distinct ref and channel, from the release memo when it is
 //! fresh. Each target with updates commits its own transaction, all under one run, so
 //! `omaddons undo` reverts the whole run. Pinned, ahead, blocked, static and unchecked
-//! addons are skipped and said so; a newer release that turns out not to load on a
+//! addons, and those whose newest release is skipped (a skip mark), are skipped and said
+//! so; a newer release that turns out not to load on a
 //! client is skipped as blocked, not failed (M2-D41). A fetch that fails is a failed
 //! item: a mutating command never installs from stale metadata.
 
@@ -24,7 +25,9 @@ use super::precondition::{self, Idle, PlanBinding, PlanExtras, Precondition};
 use super::world::{World, names_addon};
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
-use crate::engine::plan::{AnyFlavorIntent, PinIntent, RequestedChange, addon_pinned};
+use crate::engine::plan::{
+    AnyFlavorIntent, PinIntent, RequestedChange, addon_pinned, release_skipped,
+};
 use crate::engine::{Binding, TxOutcomes, TxRequest, TxTarget};
 use crate::error::{CommandHint, Error, ErrorBody, ErrorCode, Result, Suggestion, Warning};
 use crate::model::{AddonRecord, Channel, Ref, RunId, Target, TxId, TxKind};
@@ -329,6 +332,25 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
                         warnings.push(addon_pinned(a, id));
                     }
                     pushed.push((target_ref, skipped(s, SkipReason::Pinned)));
+                    None
+                }
+                // A skip mark holds the release: passed over, as a pin is, and said so
+                // when the addon was named (design 7.5.2).
+                Some(UpdateStatus::SkippedRelease { latest, .. }) => {
+                    if s.named {
+                        warnings.push(release_skipped(
+                            &a.name,
+                            &latest.version,
+                            &latest.release_id,
+                            latest.revision,
+                            id,
+                        ));
+                    }
+                    let item = ItemResult {
+                        to_version: Some(latest.version.clone()),
+                        ..skipped(s, SkipReason::SkippedRelease)
+                    };
+                    pushed.push((target_ref, item));
                     None
                 }
                 Some(UpdateStatus::Ahead { .. }) => {

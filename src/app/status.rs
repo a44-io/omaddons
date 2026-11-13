@@ -319,8 +319,12 @@ pub struct AddonCounts {
 /// `status`, and never attention (M2-D27).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct UpdateCounts {
+    /// Updates `update` would install; a skipped release is never counted here.
     pub available: usize,
     pub pinned: usize,
+    /// Addons whose newest release is skipped on this client (a skip mark): `update`
+    /// passes over them.
+    pub skipped: usize,
     pub blocked: usize,
     pub failed: usize,
     pub unchecked: usize,
@@ -465,6 +469,10 @@ impl Outcome for StatusOutcome {
                     let n = t.updates.available;
                     let s = if n == 1 { "" } else { "s" };
                     counts.push_str(&format!(" · {n} update{s}"));
+                }
+                // A skip mark is never out of sight (design 5.3).
+                if t.updates.skipped > 0 {
+                    counts.push_str(&format!(" · {} skipped", t.updates.skipped));
                 }
                 if t.adoptable > 0 {
                     counts.push_str(&format!(" · {} adoptable", t.adoptable));
@@ -1226,6 +1234,9 @@ fn update_counts(
         match row.status.kind() {
             StatusKind::UpdateAvailable => counts.available += 1,
             StatusKind::Pinned => counts.pinned += 1,
+            // Never `available`: a skipped release is the person's decision, so it keeps
+            // no badge lit (design 7.5.2).
+            StatusKind::SkippedRelease => counts.skipped += 1,
             StatusKind::Blocked => counts.blocked += 1,
             StatusKind::Failed => counts.failed += 1,
             StatusKind::Unchecked => counts.unchecked += 1,

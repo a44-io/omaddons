@@ -172,6 +172,7 @@ expression: s.stable(&checked.envelope)
           "checked_at": null,
           "failed": 0,
           "pinned": 0,
+          "skipped": 0,
           "stale": false,
           "unchecked": 0
         },
@@ -264,6 +265,7 @@ expression: s.stable(&checked.envelope)
           "checked_at": "<time>",
           "failed": 0,
           "pinned": 0,
+          "skipped": 0,
           "stale": false,
           "unchecked": 0
         },

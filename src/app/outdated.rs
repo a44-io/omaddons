@@ -34,7 +34,7 @@ use crate::engine::{TxRequest, TxTarget};
 use crate::error::{
     CommandHint, Error, ErrorBody, ErrorCode, Result, Suggestion, Warning, WarningCode,
 };
-use crate::model::{Channel, Ref, ReleaseSet, RunId, Target, TxKind};
+use crate::model::{Channel, Ref, ReleaseSet, RunId, SkipOrigin, SkippedRelease, Target, TxKind};
 use crate::output::{Outcome, Phase, Style, Subject};
 use crate::politeness::SOURCE_RECHECK_MIN_INTERVAL;
 use crate::resolve::cache::{Fetched, Freshness, Origin, ReleaseCache};
@@ -147,6 +147,9 @@ pub struct OutdatedItem {
     pub blocked_reason: Option<BlockedReason>,
     pub unchecked_reason: Option<UncheckedReason>,
     pub error: Option<ErrorBody>,
+    /// `skipped_release` only: the skip mark that holds `latest`, so `update` passes
+    /// over it. `null` for every other status.
+    pub skipped_release: Option<SkippedRelease>,
     /// Its source did not answer this check, so its status is judged on the release
     /// memo's answer: what the fetch failed with and when that answer was fetched (as in
     /// `stale_answers`). `null` when its source answered or was not asked.
@@ -181,6 +184,7 @@ pub struct Summary {
     pub update_available: usize,
     pub current: usize,
     pub pinned: usize,
+    pub skipped_release: usize,
     pub ahead: usize,
     pub blocked: usize,
     pub failed: usize,
@@ -195,6 +199,7 @@ impl Summary {
             StatusKind::UpdateAvailable => &mut self.update_available,
             StatusKind::Current => &mut self.current,
             StatusKind::Pinned => &mut self.pinned,
+            StatusKind::SkippedRelease => &mut self.skipped_release,
             StatusKind::Ahead => &mut self.ahead,
             StatusKind::Blocked => &mut self.blocked,
             StatusKind::Failed => &mut self.failed,
@@ -217,6 +222,9 @@ pub struct OutdatedOutcome {
     headings: Vec<String>,
     /// How old `checked_at` is, in words (`just now`, `5 min ago`).
     age: Option<String>,
+    /// When the run read the records: what a skip mark's time is said against
+    /// (`today 20:31`).
+    now: Timestamp,
     /// For `-v` log lines: the memo ignored or not written, verification refusals.
     pub notes: Vec<String>,
 }
@@ -283,7 +291,7 @@ impl Outcome for OutdatedOutcome {
             for i in &t.items {
                 let r = i.r#ref.to_string();
                 let first = i.status == StatusKind::UpdateAvailable && named.insert(r.clone());
-                let what = describe(i, latest_width, first.then_some(r.as_str()));
+                let what = describe(i, latest_width, first.then_some(r.as_str()), self.now);
                 let line = format!(
                     "  {:<name_width$}  {:<installed_width$}  {what}",
                     i.name, i.installed.version
@@ -344,6 +352,7 @@ impl OutdatedOutcome {
         }];
         for (n, what) in [
             (s.pinned, "pinned"),
+            (s.skipped_release, "skipped"),
             (s.blocked, "blocked"),
             (s.ahead, "ahead"),
             (s.failed, "failed"),
@@ -367,8 +376,9 @@ impl OutdatedOutcome {
     }
 }
 
-/// What an item's line says after its name and installed version.
-fn describe(i: &OutdatedItem, latest_width: usize, r: Option<&str>) -> String {
+/// What an item's line says after its name and installed version; `now` is when the run
+/// read the records.
+fn describe(i: &OutdatedItem, latest_width: usize, r: Option<&str>, now: Timestamp) -> String {
     let shown = i.latest.as_ref().map(|l| l.release.shown());
     let latest = shown.as_deref().unwrap_or("?");
     match i.status {
@@ -383,6 +393,19 @@ fn describe(i: &OutdatedItem, latest_width: usize, r: Option<&str>) -> String {
             )
         }
         StatusKind::Pinned => format!("pinned (latest {latest})"),
+        // `skipped 12.1.22 (went back today 20:31)`: the mark and where it came from.
+        StatusKind::SkippedRelease => match &i.skipped_release {
+            Some(mark) => {
+                let how = match mark.origin {
+                    SkipOrigin::Rollback => "went back",
+                    SkipOrigin::Undo => "undone",
+                    SkipOrigin::Manual => "marked",
+                };
+                let when = super::backup::when(mark.at, now);
+                format!("skipped {latest} ({how} {when})")
+            }
+            None => format!("skipped {latest}"),
+        },
         StatusKind::Ahead => format!("ahead of the newest release, {latest}"),
         StatusKind::Blocked => match i.blocked_reason {
             Some(BlockedReason::OlderThanInstalled) => {
@@ -640,6 +663,7 @@ pub fn run(ctx: &Context, args: &OutdatedArgs) -> Result<OutdatedOutcome> {
         check: args.check,
         headings,
         age: checked_at.map(age),
+        now: Timestamp::now(),
         notes,
     })
 }
@@ -822,6 +846,7 @@ const fn worth_listing(kind: StatusKind) -> bool {
         kind,
         StatusKind::UpdateAvailable
             | StatusKind::Pinned
+            | StatusKind::SkippedRelease
             | StatusKind::Blocked
             | StatusKind::Ahead
             | StatusKind::Failed
@@ -839,11 +864,19 @@ fn item(
         changelog_unavailable: None,
     });
     let kind = status.kind();
+    let mut skipped_release = None;
     let (confidence, blocked_reason, unchecked_reason, error) = match status {
         UpdateStatus::UpdateAvailable { confidence, .. } => (Some(confidence), None, None, None),
         UpdateStatus::Blocked { reason, .. } => (None, Some(reason), None, None),
         UpdateStatus::Unchecked { reason } => (None, None, Some(reason), None),
         UpdateStatus::Failed { error } => (None, None, None, Some(error)),
+        UpdateStatus::SkippedRelease {
+            skipped_release: mark,
+            ..
+        } => {
+            skipped_release = Some(mark);
+            (None, None, None, None)
+        }
         UpdateStatus::Current { .. }
         | UpdateStatus::Pinned { .. }
         | UpdateStatus::Ahead { .. }
@@ -864,6 +897,7 @@ fn item(
         blocked_reason,
         unchecked_reason,
         error,
+        skipped_release,
         stale_answer,
     }
 }

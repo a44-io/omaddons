@@ -27,8 +27,8 @@ use crate::drift::{DriftMode, DriftState};
 use crate::error::{Error, ErrorCode, Result, Suggestion, Warning};
 use crate::limits::{ABOUT_MEMO_MAX_ENTRIES, INFO_RELEASES_MAX, TOC_TEXT_MAX_CHARS};
 use crate::model::{
-    AddonReason, AddonState, Channel, FolderName, LeftOutFolder, Ref, Release, ReleaseSet, Target,
-    TxId, VersionConfidence,
+    AddonReason, AddonState, Channel, FolderName, LeftOutFolder, Ref, Release, ReleaseSet,
+    SkippedRelease, Target, TxId, VersionConfidence,
 };
 use crate::net::{Http, NetConfig, NetLog, stack};
 use crate::output::{Outcome, Style};
@@ -358,6 +358,9 @@ pub struct InstalledInfo {
     /// The release's folders this client does not load, left out of the install, with
     /// why (as `folders.skipped` showed them).
     pub left_out: Vec<LeftOutFolder>,
+    /// The releases `update` passes over here (its skip marks), oldest first; empty when
+    /// none is skipped.
+    pub skipped_releases: Vec<SkippedRelease>,
     /// Whether its files changed on disk (stat-first, local), with paths under `-v`.
     pub drift: DriftSummary,
     /// The TOC its own folder loads here; `null` when that folder is missing, is a
@@ -571,6 +574,22 @@ impl Outcome for InfoOutcome {
                 let left: Vec<String> = i.left_out.iter().map(LeftOutFolder::describe).collect();
                 writeln!(w, "    left out: {}", left.join(", "))?;
             }
+            // `    skipped: 6.2.5, every release labelled 7.0`: what update passes over.
+            if !i.skipped_releases.is_empty() {
+                let marks: Vec<String> = i
+                    .skipped_releases
+                    .iter()
+                    .map(|m| match &m.release {
+                        Some(_) => m.version.clone(),
+                        None => format!("every release labelled {}", m.version),
+                    })
+                    .collect();
+                writeln!(
+                    w,
+                    "    skipped: {} (update passes over them)",
+                    marks.join(", ")
+                )?;
+            }
         }
         match (&d.latest, d.offline) {
             (Some(l), _) => {
@@ -744,6 +763,7 @@ pub fn run(ctx: &Context, args: &InfoArgs) -> Result<InfoOutcome> {
                 any_flavor: a.any_flavor,
                 folders: a.folders.clone(),
                 left_out: a.left_out.clone(),
+                skipped_releases: a.skipped_releases.clone(),
                 drift,
                 toc: installed_toc(&d.target, &a.name, &a.folders),
                 installed_at: a.installed_at,

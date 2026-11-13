@@ -29,6 +29,7 @@ expression: s.stable(&c.envelope)
       "current": 0,
       "failed": 0,
       "pinned": 0,
+      "skipped_release": 0,
       "static": 0,
       "unchecked": 0,
       "update_available": 2
@@ -66,6 +67,7 @@ expression: s.stable(&c.envelope)
             "name": "WeakAuras",
             "pinned": false,
             "ref": "gh:WeakAuras/WeakAuras2",
+            "skipped_release": null,
             "stale_answer": null,
             "status": "update_available",
             "unchecked_reason": null
@@ -108,6 +110,7 @@ expression: s.stable(&c.envelope)
             "name": "WeakAuras",
             "pinned": false,
             "ref": "gh:WeakAuras/WeakAuras2",
+            "skipped_release": null,
             "stale_answer": null,
             "status": "update_available",
             "unchecked_reason": null

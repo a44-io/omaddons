@@ -29,6 +29,7 @@ expression: stable(&envelope)
       "current": 2,
       "failed": 0,
       "pinned": 0,
+      "skipped_release": 0,
       "static": 0,
       "unchecked": 0,
       "update_available": 2
@@ -66,6 +67,7 @@ expression: stable(&envelope)
             "name": "Foo",
             "pinned": false,
             "ref": "gh:o/foo",
+            "skipped_release": null,
             "stale_answer": null,
             "status": "update_available",
             "unchecked_reason": null
@@ -113,6 +115,7 @@ expression: stable(&envelope)
             "name": "Foo",
             "pinned": false,
             "ref": "gh:o/foo",
+            "skipped_release": null,
             "stale_answer": null,
             "status": "update_available",
             "unchecked_reason": null

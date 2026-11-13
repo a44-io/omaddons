@@ -7968,7 +7968,26 @@ var COPY = {
 // theirs as they are rebuilt; the words guard (tests/copy.test.js) lists the codes still
 // without words in its allowlist.
 var ERROR_WORDS = {}
-var WARNING_WORDS = {}
+var WARNING_WORDS = {
+  // RG-31: a skipped version was passed over (an update the panel ran for one addon); the
+  // CLI's fix offers that one version again.
+  "release_skipped": function (details) {
+    return {
+      "title": "Skipped version passed over",
+      "sentence": "This version is skipped on this client, so updates pass over it until a newer one comes out.",
+      "buttons": [{ "name": "fix", "text": "Offer it again", "tooltip": "" }]
+    }
+  },
+  // RG-31: a skipped version was installed because it was chosen by its number (the
+  // versions page); undoing that install skips it again.
+  "skip_lifted": function (details) {
+    return {
+      "title": "No longer skipped",
+      "sentence": "You chose this version by its number, so it is installed and no longer skipped.",
+      "buttons": [{ "name": "fix", "text": "Undo", "tooltip": "" }]
+    }
+  }
+}
 
 // COPY[id] with its {slots} filled; a pair by `slots.n` (1 is "one"). A missing slot is
 // empty, and an unknown id shows as itself, so a typo is seen, never thrown.

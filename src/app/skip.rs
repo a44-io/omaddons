@@ -830,8 +830,10 @@ fn decide(
                     .map(|row| row.status)
             });
             match status {
+                // The waiting release, held already when a mark covers it (`mark` says so).
                 Some(
                     UpdateStatus::UpdateAvailable { latest, .. }
+                    | UpdateStatus::SkippedRelease { latest, .. }
                     | UpdateStatus::Pinned {
                         latest: Some(latest),
                     },
@@ -904,6 +906,10 @@ fn nothing_waiting(status: &UpdateStatus, a: &AddonRecord, id: &str) -> String {
             latest.version
         ),
         UpdateStatus::Pinned { .. } => "pinned, and no newer release is known".to_owned(),
+        UpdateStatus::SkippedRelease { latest, .. } => format!(
+            "its waiting release, {}, is skipped already: none other is waiting",
+            latest.version
+        ),
         UpdateStatus::Failed { error } => format!(
             "its source could not answer ({}): run `omaddons outdated -t {id}`",
             error.code.wire()
@@ -953,7 +959,9 @@ fn target_ref(d: &DiscoveredTarget) -> TargetRef {
 }
 
 /// What `update` would do with each addon whose marks were just cleared, from the
-/// release memo and the shared evaluator: no request (as `unpin`'s last line).
+/// release memo and the shared evaluator: no request (as `unpin`'s last line). Judged on
+/// the record as the unskip leaves it, without the marks it cleared (under `--dry-run`,
+/// would clear), since the evaluator honors every mark still there.
 fn unskip_hints(
     world: &World,
     remembered: &Remembered,
@@ -975,8 +983,21 @@ fn unskip_hints(
             continue;
         };
         let (id, name) = (&d.target.id, &a.name);
+        let gone: Vec<&SkippedNote> = data
+            .targets
+            .iter()
+            .filter(|t| t.target.id == *id)
+            .flat_map(|t| t.skips_cleared.iter().flatten())
+            .collect();
+        let mut after = record.clone();
+        if let Some(addon) = after.addons.get_mut(&TargetRecord::addon_key(name)) {
+            let addon_name = addon.name.clone();
+            addon
+                .skipped_releases
+                .retain(|m| !gone.contains(&&SkippedNote::of(&addon_name, m)));
+        }
         let row = remembered
-            .statuses(&d.target, record, &world.table)
+            .statuses(&d.target, &after, &world.table)
             .into_iter()
             .find(|row| TargetRecord::addon_key(&row.addon) == TargetRecord::addon_key(name));
         hints.push(match row.map(|row| row.status) {
@@ -985,6 +1006,10 @@ fn unskip_hints(
                 latest.version
             ),
             Some(UpdateStatus::Current { .. }) => format!("{id}: {name} is current"),
+            Some(UpdateStatus::SkippedRelease { latest, .. }) => format!(
+                "{id}: {name} {} is still skipped by another mark, so update passes over it",
+                latest.version
+            ),
             _ => format!("{id}: `omaddons outdated -t {id}` checks {name} for updates"),
         });
     }

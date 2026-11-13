@@ -140,6 +140,7 @@ expression: s.stable(&c.envelope)
           "checked_at": null,
           "failed": 0,
           "pinned": 0,
+          "skipped": 0,
           "stale": false,
           "unchecked": 0
         },
@@ -222,6 +223,7 @@ expression: s.stable(&c.envelope)
           "checked_at": null,
           "failed": 0,
           "pinned": 0,
+          "skipped": 0,
           "stale": false,
           "unchecked": 0
         },

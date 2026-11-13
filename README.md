@@ -186,7 +186,7 @@ Milestones 1 (the working slice), 2 (updates, dependencies, adoption and desired
 | The first tag, `v0.1.0`: contract 1.0 frozen and its released baseline committed, after a checkpoint run on the real machine (WoW: Forever and the 3.3.5a client; the four clients uninstalled before it are checked again once they are back) | ✅ Done (milestone 4, 2026-11-08) |
 | The widget's [accessibility](#accessibility) pass, opt-in [automatic updates](#play-sessions-and-notifications), and sharing an addon set by clipboard ([What it does](#what-it-does)) | ✅ Done (after `v0.1.0`) |
 | Launch-week fixes: the [Known issues](#known-issues) of launch day, a `--help` overhaul, and the binary cut from 24.9 MB to about 15.5 MB | ✅ Done (2026-11-10) |
-| [`skip` and `unskip`](#skip-addon-and-unskip-addon): releases to pass over, marked by hand (the one waiting, one by id, or a label) and cleared again, records-only and undoable, with a preview bound to the release it marks (contract 1.2) | 🚧 Regression guard, slice 1: `update` does not honor the marks yet ([Known issues](#known-issues)) |
+| [`skip` and `unskip`](#skip-addon-and-unskip-addon): releases to pass over, marked by hand (the one waiting, one by id, or a label) and cleared again, records-only and undoable, with a preview bound to the release it marks; `update`, `install`, `outdated`, `list`, `info` and `status` honor the marks (contract 1.2) | 🚧 Regression guard, slice 1 |
 | Optional CurseForge and Wago (bring your own key), release packaging | 🗓️ Milestone 5 |
 
 ---
@@ -806,7 +806,7 @@ Each client also shows:
 
 - **`display_name`.** The name a player knows it by: `targets.<id>.name` from `config.toml` when set, else its game mode's name ("Retail", "Classic Era", "Mists of Pandaria Classic"), its family's with what it is for a Battle.net client without modes ("Retail PTR"), its family's and version for a custom client ("Wrath 3.3.5a private server"), else its product code or id. Two clients that would share a name are told apart by their id ("Retail (ptr)"). `-t` still takes the id; `targets` carries the same name.
 - **`running`.** Whether its game runs now, from `/proc`; `null` when `/proc` could not be read (with `running_unknown`; the human view shows `running?`).
-- **`updates`.** Pending update counts (`available`, `pinned`, `blocked`, `failed`, `unchecked`) and `checked_at`, the oldest check, from what earlier `outdated`, `update` and `install` runs remembered, so `status` stays offline. `stale` is true when that check is older than `check_interval_hours` (default 6).
+- **`updates`.** Pending update counts (`available`, `pinned`, `skipped`, `blocked`, `failed`, `unchecked`) and `checked_at`, the oldest check, from what earlier `outdated`, `update` and `install` runs remembered, so `status` stays offline. `skipped` counts addons whose newest release is [skipped](#skip-addon-and-unskip-addon) there, which `available` never counts; the human line adds `· N skipped`, so a mark is never out of sight. `stale` is true when that check is older than `check_interval_hours` (default 6).
 - **`drift`.** Each managed addon whose files changed on disk (`modified`), whose folder is gone or replaced by a symlink (`missing`), or that has no file index (`unindexed`), with its changed-file count (`files`; the paths with `-v`). A file whose size or time changed is re-hashed, so one merely touched is not reported; `--deep` re-hashes every file, and `--cached` checks only that the folders are there. Drift is never stored. `modified` raises the attention `addon_modified`, `missing` raises `addon_folder_missing`.
 - **`adoptable`.** How many unmanaged folders `adopt --apply` would take over, as far as is known offline: those a catalog entry names that is not installed on that client, and those whose own TOC identifies an addon not installed there (a Tukui or WoWInterface id, an `X-Website` naming GitHub, WoWInterface or Tukui). `--cached` reads only the unmanaged folders' TOCs for this. A folder only the WoWInterface index or the Tukui list knows is not counted: `adopt` may still identify it.
 - **`orphans`** and **`any_flavor_addons`.** How many dependencies nothing requires any more, and the names of addons installed under [`--any-flavor`](#a-build-not-made-for-this-client---any-flavor) (a standing choice, never attention), both from the record, `--cached` too.
@@ -842,7 +842,7 @@ Pending updates never count as attention: `status --check` is a health check, an
 
 ### `install <REF>...`
 
-Install or update addons in one target (`add` is an alias). Each ref is fetched once and verified against the target's TOC rules before anything is written, and all addons for a target go into one transaction. Re-running `install` on an installed addon updates it to the newest release its channel allows. `url:` refs are never re-checked, and pinned addons stay where they are (`addon_pinned`; see [Pinning](#sources-and-refs)).
+Install or update addons in one target (`add` is an alias). Each ref is fetched once and verified against the target's TOC rules before anything is written, and all addons for a target go into one transaction. Re-running `install` on an installed addon updates it to the newest release its channel allows. `url:` refs are never re-checked, pinned addons stay where they are (`addon_pinned`; see [Pinning](#sources-and-refs)), and a release [skipped](#skip-addon-and-unskip-addon) on that client is never installed without `--version` (the item is `unchanged`, with `release_skipped`); `--version` naming it installs it and lifts its marks (`skip_lifted`).
 
 | Flag | Meaning |
 |---|---|
@@ -950,7 +950,7 @@ When an addon's new release starts requiring another project, `update` installs 
 
 What to update comes from the same statuses `outdated` shows, fetched once per ref (free inside 15 minutes; `--refresh` asks again). `--all` with addon names, and `--channel` without names, are usage errors. A named addon installed nowhere is a failed `not_managed` item. Each client with updates commits its own transaction, all under one run, so `omaddons undo` reverts every client and `omaddons undo <tx>` one of them; a failure on one client does not roll back another.
 
-Some addons are left alone and say why (`skipped`, with `skip_reason`): `pinned` (by `pin` or `install --version`; naming it adds an `addon_pinned` warning, fix `omaddons unpin <addon> -t <target>`), `ahead`, `static` (a local file, a URL or an archive given with `--file`), `unchecked`, and `blocked` (a newer release that does not load on the client, remembered so `outdated` shows it too). A fetch that fails fails its addons (`update` never installs from stale metadata) and makes the run `partial`. When every addon fails, the command fails with the first item's error, whole (its own `details`), and `error.details.items` lists them all; so do `pin`, `unpin`, `sync`, `copy` and `adopt`. `unchanged` addons are counted in `summary` and listed with `-v`.
+Some addons are left alone and say why (`skipped`, with `skip_reason`): `pinned` (by `pin` or `install --version`; naming it adds an `addon_pinned` warning, fix `omaddons unpin <addon> -t <target>`), `skipped_release` (the release it would move to, named by the item's `to_version`, is [skipped](#skip-addon-and-unskip-addon) on that client; naming it adds a `release_skipped` warning whose fix, `omaddons unskip <addon> --release <id> -t <target>`, offers that one release again; the line reads `OneForAll  left at 6.1.3 · 6.2.5 is skipped`), `ahead`, `static` (a local file, a URL or an archive given with `--file`), `unchecked`, and `blocked` (a newer release that does not load on the client, remembered so `outdated` shows it too). `update X --channel C`, which switches channels without the shared statuses, never installs a skipped release either: its item is `unchanged`, with `release_skipped`. A fetch that fails fails its addons (`update` never installs from stale metadata) and makes the run `partial`. When every addon fails, the command fails with the first item's error, whole (its own `details`), and `error.details.items` lists them all; so do `pin`, `unpin`, `sync`, `copy` and `adopt`. `unchanged` addons are counted in `summary` and listed with `-v`.
 
 Files you changed in an addon's folders do not stop `update`, `install` or `sync`: they are replaced like the rest, and a `local_changes_replaced` warning names them, with `omaddons undo <tx>` as its fix, since the snapshot keeps them (at least 24 hours; `-v` names its folder).
 
@@ -987,7 +987,7 @@ A pin without `--version` changes only the record, never a game file, so it work
 
 ### `skip <ADDON>...` and `unskip <ADDON>...`
 
-Pass over one release, and offer it again. A mark is a decision about one addon on one client: `update` passes over the release it holds and installs the next one as usual (until RG-31 lands, see [Known issues](#known-issues)).
+Pass over one release, and offer it again. A mark is a decision about one addon on one client: `update` passes over the release it holds and installs the next one as usual.
 
 ```text
 $ omaddons skip plater -t retail
@@ -1012,7 +1012,8 @@ omaddons unskip --tx 01M9A2B3C4D5E6F7G8H9J0K1MN     # exactly the marks one tran
 - **`--version V`** (one addon) makes a label mark: every release whose version reads V, ignoring one leading `v`. The output says it is a label.
 - **`unskip`** clears every mark of the addons; with `--release ID [--revision N]` (one addon), the marks that hold that release (its exact mark, a mark on its tag made without a revision, a label mark reading its version, and without `--revision` a mark on any revision of its tag), never a mark about another release; with `--version V` (one addon), the marks whose label reads V; with `--tx TX`, exactly the marks that transaction made (on the named addons, else on every addon of the selected clients). With no matching mark it is `unchanged`. Its last line says what `update` would install now, from remembered metadata, as `unpin`'s does.
 - **Records only.** A transaction of kind `skip`, one per client under one run: no folder moves and no request, so it runs while the game runs, and `omaddons undo` reverts it. The client's record keeps each mark in its addon's `skipped_releases` (`release`, `version`, `at`, `origin`, `tx`), stamped with the time and transaction of the commit that made it. A mark that selects what one already there selects changes nothing. An addon keeps at most 256 marks (`SKIPS_PER_ADDON_MAX`): the 257th is `usage` before anything commits, its fix the scoped `unskip`; no mark is ever dropped to make room.
-- **What else clears a mark.** An install that names that version (`install --version`, `pin --version`, a version an `addons.toml` entry names), re-pointing the addon to another source (`adopt --ref`), and the `skip`'s own undo.
+- **What a mark does.** The release it holds is passed over, as a pin holds an addon: `outdated` shows it as `skipped_release` (`skipped 12.1.22 (went back today 20:31)`, with the mark in the item's `skipped_release`), `update` leaves the addon where it is (`skip_reason: "skipped_release"`; named, it warns `release_skipped`, whose fix is the `unskip --release` that offers that one release again), and `install X` without `--version` is `unchanged` with the same warning. That holds for the release finally chosen, a [look-back](#a-release-per-client-github-look-back)'s included, and is checked again under the commit lock. A pin is decided first, so a pinned addon with a mark reads `pinned`. `status` counts the addon in `updates.skipped`, never in `updates.available`, and its client line says `· N skipped`; `list` marks the release `(skipped)` and `-v` adds the addon's `skipped_releases`; `info` lists each client's marks. When the source publishes a newer release, it is an ordinary update, and the mark stays on the record. A mark is not copied to another client (`copy`) and not exported.
+- **What else clears a mark.** An install that names that version (`install --version`, `pin --version`, a version an `addons.toml` entry names, `sync --locked`), which warns `skip_lifted` per mark dropped (its fix, `omaddons undo <tx>`, puts the mark back with the release before); re-pointing the addon to another source (`adopt --ref`); and the `skip`'s own undo.
 - **The result.** Items are `skip_marked` or `skip_cleared` (never `skipped`, which says an addon was left alone). Each client lists the marks made in `skips_marked` (for `unskip`, `skips_cleared`), each `{addon, version, release}`, `release` `null` for a label mark. After a `skip`, `commands` offers `omaddons unskip --tx <tx> -t <id>` (action `unskip`), which clears exactly what that transaction marked and never an earlier decision about another release.
 - **A preview binds the release.** `--dry-run` returns `data.precondition` and stores a plan. Its token covers the marks the change adds and clears, each by what it selects, and the installed release they were decided against, never a mark's time or transaction. When the memo offers another release by the time of `omaddons apply <plan_id>` (or of the `--if-match` run), the run is `plan_stale` and marks nothing.
 
@@ -1507,7 +1508,7 @@ omaddons list -v                           # also each addon's drift (files chan
 omaddons list --deep                       # drift by content: every managed file re-hashed
 ```
 
-Each addon also carries `latest {version, status, source, release_id, asset, published_at}`: the newest release remembered from earlier checks, its status as `outdated` would judge it (`current`, `update_available`, `pinned`, `ahead`, `blocked`, `failed`, `unchecked` or `static`), its source (`github`, `wowi`, `tukui`, `git`, `wowace`, …), release id, the file `update` would try first and its date (`null` when the status names no release, or the source gave no date). `list` never asks a source. Its column shows `→ <version>` when a newer release is known (`blocked` adds `(blocked)`), or `check failed`. With `-v` or `--deep` each addon carries `drift {state, files}` (as in [`status`](#status)); a plain `list` checks no file. Each addon also carries `reason` (`explicit` or `dependency`), `required_by`, `orphan`, `any_flavor` (marked `dep`, `orphan` and `any-flavor` in the table) and `installed_at`, which the bar widget's "recently updated" order sorts by.
+Each addon also carries `latest {version, status, source, release_id, asset, published_at}`: the newest release remembered from earlier checks, its status as `outdated` would judge it (`current`, `update_available`, `pinned`, `skipped_release`, `ahead`, `blocked`, `failed`, `unchecked` or `static`), its source (`github`, `wowi`, `tukui`, `git`, `wowace`, …), release id, the file `update` would try first and its date (`null` when the status names no release, or the source gave no date). `list` never asks a source. Its column shows `→ <version>` when a newer release is known (`blocked` adds `(blocked)`, `skipped_release` `(skipped)`), or `check failed`. With `-v`, each addon also carries `skipped_releases`, its [skip marks](#skip-addon-and-unskip-addon) as the record keeps them. With `-v` or `--deep` each addon carries `drift {state, files}` (as in [`status`](#status)); a plain `list` checks no file. Each addon also carries `reason` (`explicit` or `dependency`), `required_by`, `orphan`, `any_flavor` (marked `dep`, `orphan` and `any-flavor` in the table) and `installed_at`, which the bar widget's "recently updated" order sorts by.
 
 Each client carries `counts` per folder class and `addons_dir_missing`, and each addon its `missing_folders`; the line under each table counts addons and the folders they own (`1 addon in 22 folders · 0 unmanaged · 39 protected · 0 linked folders`). Under `--unmanaged`, each folder's load verdict is `compatible`, `out_of_date`, `wrong_flavor` or `no_toc`, and folders whose names differ only in case are flagged `case_duplicate`. `-v` adds each addon's folder names, `folder_tocs`, `left_out` (as [`info`](#info-ref) shows it) and the `client_dir`.
 
@@ -1546,6 +1547,7 @@ The listing shows only what needs a decision; `-v` lists everything, and the sum
 |---|---|
 | `update_available` | A newer release exists; `confidence` is `verified` (a download proved it loads), `declared` (the publisher's metadata names this client), `likely` or `unlikely`. A WowAce tag moved upstream counts too (`latest.retagged: true`, with its new `latest.revision`) |
 | `pinned` | Pinned (by `pin` or `install --version`), and a newer release exists (`latest`) |
+| `skipped_release` | The release `update` would install (`latest`, a look-back's included) is [skipped](#skip-addon-and-unskip-addon) on this client; `skipped_release` is the mark that holds it (`release`, `version`, `at`, `origin`, `tx`), `null` for every other status. Decided after `pinned` and before `blocked`. `--check` never counts it |
 | `blocked` | The newest release is known not to load on this client (`blocked_reason: verified_not_loading`), or targets an older interface than the adopted build installed (`older_than_installed`) |
 | `ahead` | The installed release is newer than the newest one on its channel |
 | `failed` | The source cannot answer for it: a fetch error, or a deleted repository (fix `omaddons remove <name> -t <id>`; alternative `omaddons adopt <folder> --ref <new ref> -t <id>` if it moved) |
@@ -1798,7 +1800,7 @@ WeakAuras  gh:WeakAuras/WeakAuras2
 
 `catalog` is the entry the query names: for a name with variants, the selected client's build (one `-t`, else the default target's, else the modern one) with its `variant`, and the others' `variants` (`{variant, families}`). `latest` is `{version, release_id, channel, flavors, targets, compat}`. `compat` says, for each selected client: `verified` (a plan proved it loads) or `blocked` (proved it does not), `declared` (its release metadata names the client), `unlikely` (the metadata names other clients only, the catalog lists none of the client's families, or no asset is for the client), else `likely`. `targets` lists the clients that are `verified`, `declared` or `likely` (`-v` lists each client and adds `asset_urls` and `record_path`). A hint only: `install` verifies every TOC.
 
-The newest release comes through the [release memo](#files-and-state) (15 minutes; `--refresh` checks again; `--offline` answers from it whatever its age, with `stale_check`, or `null`). A missing repository is remembered too; a network or server error never is. Each installed record carries `drift {state, files}`, `reason`, `required_by`, `orphan`, `any_flavor`, and `left_out` (the folders of the installed release this client does not load, each `{name, reason, …}` as `folders.skipped` gave it; replaced by every install, restored by `undo`, never carried by `export` or `copy`).
+The newest release comes through the [release memo](#files-and-state) (15 minutes; `--refresh` checks again; `--offline` answers from it whatever its age, with `stale_check`, or `null`). A missing repository is remembered too; a network or server error never is. Each installed record carries `drift {state, files}`, `reason`, `required_by`, `orphan`, `any_flavor`, `skipped_releases` (its [skip marks](#skip-addon-and-unskip-addon) on that client, empty when none; the human view says `skipped: 12.1.22 (update passes over them)`), and `left_out` (the folders of the installed release this client does not load, each `{name, reason, …}` as `folders.skipped` gave it; replaced by every install, restored by `undo`, never carried by `export` or `copy`).
 
 Each installed record also carries `toc`, the TOC its own folder loads on that client, read as the client reads it: `{folder, title_plain, notes, author, version, interfaces, website, dependencies, optional_deps}`, sanitized and cut at `TOC_TEXT_MAX_CHARS` (400) per string (`website` is text, never a link omaddons follows). `toc` is `null` when that folder is missing, a symlink, unreadable, or holds no loadable TOC.
 
@@ -2569,7 +2571,7 @@ Sources:
   curseforge  off  needs a key (M5)
   wago        off  needs a key (M5)
   wowace      on
-43 error codes · 55 warning codes · 28 actions · 32 failure modes
+43 error codes · 57 warning codes · 28 actions · 32 failure modes
   125 limits (0 from config)
 --json for the full description
 ```
@@ -2752,7 +2754,7 @@ Every error code has its doctor exit, from its general exit: 2 → 64, 3 → 66,
 </details>
 
 <details>
-<summary><strong>Every warning code (55)</strong></summary>
+<summary><strong>Every warning code (57)</strong></summary>
 
 | Code | Meaning |
 |---|---|
@@ -2785,6 +2787,8 @@ Every error code has its doctor exit, from its general exit: 2 → 64, 3 → 66,
 | `ownership_transferred` | `--force` moved a folder from one addon to another |
 | `credential_file_mode` | a credential file (config.toml's `{ file = … }` credential, or the token `auth github set` stores) is readable by other users; the fix is `chmod 600 <file>` |
 | `addon_pinned` | a pinned addon was left at its release; the fix shows it with `info`, and `--version` moves it |
+| `release_skipped` | a release [skipped](#skip-addon-and-unskip-addon) on its client was passed over (`update` of a named addon, `install` without `--version`); the fix, `omaddons unskip <addon> --release <id> -t <id>` (with `--revision` where the release has one), offers that one release again and clears no other mark |
+| `skip_lifted` | a skipped release was installed because a request named its version (`install --version`, `pin --version`, `sync`), so the mark that covered it is gone; one per mark. The fix is `omaddons undo <tx>`, which puts the release before and its mark back |
 | `stale_check` | an answer came from stored data, not from the source now: offline from the release memo, or from the stored WoWInterface index (offline, or after a failed refresh); it names how old. When `--offline` alone made the run offline, its `fix_argv` reruns the command online |
 | `desired_unknown_key` | `addons.toml` has a key omaddons does not know (named, with its line); it is ignored |
 | `desired_unknown_target` | an `addons.toml` `[target.<id>]` section names no known client; its entries are skipped |
@@ -3634,7 +3638,7 @@ An interrupted `WTF/` restore adds three cases. While its game runs, it waits (`
 
 The README describes the intended behavior. A place where the code at HEAD does not match it yet is listed here with its bead (`br show <id>`), and the README changes only if a fix decides otherwise.
 
-- **Skip marks are not honored yet** (`omad-regression-guard-ia3r.1.5`, RG-31). `skip` and `unskip` make and clear marks, and the record keeps them, but `update`, `outdated`, `list`, `info`, `status` and `install` still offer and install a skipped release.
+None at HEAD.
 
 ---
 

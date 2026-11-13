@@ -147,6 +147,9 @@ impl ItemStatus {
 pub enum SkipReason {
     /// Pinned: left at its release.
     Pinned,
+    /// The release it would move to is skipped on this client (a skip mark), named by
+    /// the item's `to_version`: left at its release, and updates resume at the next one.
+    SkippedRelease,
     /// The installed release is newer than the newest on its channel.
     Ahead,
     /// The newest release is known not to load here.
@@ -167,6 +170,7 @@ impl SkipReason {
     pub const fn phrase(self) -> &'static str {
         match self {
             Self::Pinned => "is pinned",
+            Self::SkippedRelease => "has its newest release skipped",
             Self::Ahead => "is ahead of its newest release",
             Self::Blocked => "has no release that loads here",
             Self::Static => "has nothing upstream to check",
@@ -1292,9 +1296,14 @@ pub(crate) fn header(command: &str, dry_run: bool, t: &TargetResult) -> String {
         let skipped: Vec<String> = t
             .items
             .iter()
-            .filter_map(|i| {
-                i.skip_reason
-                    .map(|r| format!("{} {}", item_name(i), r.phrase()))
+            .filter_map(|i| match (i.skip_reason, &i.to_version) {
+                // `OneForAll left at 6.1.3 · 6.2.5 is skipped`, never "skipped (skipped)".
+                (Some(SkipReason::SkippedRelease), Some(to)) => Some(format!(
+                    "{} left at {} · {to} is skipped",
+                    item_name(i),
+                    i.from_version.as_deref().unwrap_or("?")
+                )),
+                (r, _) => r.map(|r| format!("{} {}", item_name(i), r.phrase())),
             })
             .collect();
         let why = if skipped.is_empty() {
@@ -1403,9 +1412,12 @@ fn status_detail(i: &ItemResult, dry_run: bool) -> String {
         }
         ItemStatus::SkipCleared => format!("skipped release offered again at {to}"),
         ItemStatus::Unchanged => format!("{to} (unchanged)"),
-        ItemStatus::Skipped => match i.skip_reason {
-            Some(reason) => format!("skipped: {}", reason.phrase()),
-            None => "skipped".to_owned(),
+        ItemStatus::Skipped => match (i.skip_reason, &i.to_version) {
+            (Some(SkipReason::SkippedRelease), Some(to)) => {
+                format!("left at {from} · {to} is skipped")
+            }
+            (Some(reason), _) => format!("skipped: {}", reason.phrase()),
+            (None, _) => "skipped".to_owned(),
         },
         ItemStatus::Failed => match &i.error {
             Some(e) => format!("failed: {}: {}", e.code.wire(), e.message),

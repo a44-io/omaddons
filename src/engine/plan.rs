@@ -300,6 +300,28 @@ impl InstallIntent {
     pub fn keeps_release(&self) -> bool {
         (self.pin != PinIntent::Keep && self.version.is_none()) || self.from_resolver()
     }
+
+    /// The skip mark of the installed `existing` that keeps this request from landing on
+    /// the release `key` (labelled `version`), if any (design 7.5.2): a request that names
+    /// no version never installs a skipped release, whichever release the planner finally
+    /// chose, the look-back's included. A named version lifts its marks instead
+    /// ([`skips_lifted`]); a reinstall asks for the recorded release; the resolver keeps
+    /// the record's release; and a local or URL install has no releases to pass over.
+    pub fn skip_holding<'r>(
+        &self,
+        existing: &'r AddonRecord,
+        key: Option<&ReleaseKey>,
+        version: &str,
+    ) -> Option<&'r SkippedRelease> {
+        if self.version.is_some()
+            || self.reinstall
+            || self.from_resolver()
+            || matches!(existing.r#ref, Ref::File { .. } | Ref::Url { .. })
+        {
+            return None;
+        }
+        crate::resolve::updates::skip_covering(existing, key, version)
+    }
 }
 
 /// The record an install leaves (M2-D29, M2-D33): the release from `chosen` (ref,
@@ -429,6 +451,92 @@ pub fn record_edits(existing: &AddonRecord, carried: &AddonRecord) -> Vec<Record
             EditField::Ref | EditField::RequiredBy | EditField::SkippedReleases => None,
         })
         .collect()
+}
+
+/// `release_skipped`: the release a request without a version would install, `version`
+/// as the release id `release_id` at `revision`, is skipped on `target`, so it was passed
+/// over (design 7.5.2). Its fix offers that one release again and no other mark
+/// (RG-D14): `unskip --release`, with `--revision` where the source numbers them.
+pub fn release_skipped(
+    addon: &str,
+    version: &str,
+    release_id: &str,
+    revision: Option<u32>,
+    target: &str,
+) -> Warning {
+    let mut argv = vec![
+        "omaddons".to_owned(),
+        "unskip".to_owned(),
+        addon.to_owned(),
+        "--release".to_owned(),
+        release_id.to_owned(),
+    ];
+    if let Some(revision) = revision {
+        argv.extend(["--revision".to_owned(), revision.to_string()]);
+    }
+    argv.extend(["-t".to_owned(), target.to_owned()]);
+    Warning::new(
+        WarningCode::ReleaseSkipped,
+        format!(
+            "{addon} {version} is skipped on {target}, so it was passed over; updates resume at the next release"
+        ),
+    )
+    .with_fix(Suggestion::command(argv))
+    .about([target])
+}
+
+/// `skip_lifted`: one skip mark of `addon` on `target` that an install dropped, because
+/// the release it covers was named and installed (`installed`, its version). The fix
+/// undoes that install, which puts the record back with its mark; before the commit
+/// (`tx` `None`) it says so in words.
+pub fn skip_lifted(
+    addon: &str,
+    mark: &SkippedRelease,
+    installed: &str,
+    target: &str,
+    tx: Option<TxId>,
+) -> Warning {
+    let what = match &mark.release {
+        Some(_) => mark.version.clone(),
+        None => format!("every release labelled {}", mark.version),
+    };
+    let fix = match tx {
+        Some(tx) => Suggestion::command(["omaddons".to_owned(), "undo".to_owned(), tx.to_string()]),
+        None => Suggestion::text("undoing this install, once it commits, puts the mark back"),
+    };
+    Warning::new(
+        WarningCode::SkipLifted,
+        format!(
+            "{addon} on {target}: the skip mark on {what} is gone, since {installed} was installed by name"
+        ),
+    )
+    .with_fix(fix)
+    .about([target])
+}
+
+/// One [`skip_lifted`] per mark the folder `works` drop from `record`, `target`'s record
+/// before them ([`skips_lifted`] against each work's intent): a dry run shows them, and
+/// a commit raises them again with its transaction.
+pub fn skip_lifted_warnings(
+    record: &TargetRecord,
+    works: &[AddonWork],
+    target: &str,
+    tx: Option<TxId>,
+) -> Vec<Warning> {
+    let mut warnings = Vec::new();
+    for work in works {
+        let WorkMode::Folders(f) = &work.mode else {
+            continue;
+        };
+        let (Some(after), Some(intent)) = (&f.record, &f.intent) else {
+            continue;
+        };
+        let before = record.addons.values().find(|a| a.r#ref == after.r#ref);
+        for mark in skips_lifted(before, intent, after) {
+            warnings.push(skip_lifted(&after.name, &mark, &after.version, target, tx));
+        }
+    }
+    warnings
 }
 
 /// `addon_pinned`: a pinned addon was left where it is. Its fix unpins it there.
@@ -1839,6 +1947,8 @@ pub fn plan(req: &PlanRequest, ctx: &PlanCtx<'_>) -> Result<Plan> {
         // A dry run shows them; a commit raises them again with its transaction.
         let bookkept = bookkeeping_warnings(&record, &tp.work, &target.id, None);
         push_new(&mut tp.warnings, bookkept);
+        let lifted = skip_lifted_warnings(&record, &tp.work, &target.id, None);
+        push_new(&mut tp.warnings, lifted);
         let only = only_copies(&record, &tp.work);
         let only = only_copy_warning(&target.id, &only, None, &ctx.retention);
         push_new(&mut tp.warnings, only.into_iter().collect());
@@ -3172,6 +3282,25 @@ pub fn rejudge(
                 if intent.pinned_noop(existing) {
                     return Ok(Planned::pinned(existing, &target.id));
                 }
+                // A mark committed since planning holds too: against the record as it is
+                // now, never installing a release it covers.
+                if let Some(release_id) = template.release_id.as_deref()
+                    && intent
+                        .skip_holding(
+                            existing,
+                            ReleaseKey::of_record(template).as_ref(),
+                            &template.version,
+                        )
+                        .is_some()
+                {
+                    return Ok(Planned::skipped_release(
+                        existing,
+                        &template.version,
+                        release_id,
+                        template.revision,
+                        &target.id,
+                    ));
+                }
                 // A reinstall planned against a release the record has left (a
                 // concurrent update): refused, never rolled back (`plan_stale` with the
                 // generation moved).
@@ -3579,6 +3708,30 @@ impl Planned {
         Self::Unchanged {
             warnings: vec![addon_pinned(existing, target)],
             notes: Vec::new(),
+        }
+    }
+
+    /// The installed `existing` left where it is because the release a request without a
+    /// version finally chose (`release_id` at `revision`, labelled `version`) is skipped.
+    fn skipped_release(
+        existing: &AddonRecord,
+        version: &str,
+        release_id: &str,
+        revision: Option<u32>,
+        target: &str,
+    ) -> Self {
+        Self::Unchanged {
+            warnings: vec![release_skipped(
+                &existing.name,
+                version,
+                release_id,
+                revision,
+                target,
+            )],
+            notes: vec![format!(
+                "{target}: {} unchanged: {version} is skipped here",
+                existing.name
+            )],
         }
     }
 
@@ -4320,6 +4473,25 @@ impl TargetPlanner<'_> {
             return Err(self.offer_any_flavor(error, wanted, overridable));
         };
 
+        // A request that names no version never installs a skipped release: the release
+        // finally chosen, a look-back's included, is passed over (design 7.5.2).
+        if let Some(existing) = existing
+            && intent
+                .skip_holding(
+                    existing,
+                    ReleaseKey::of_candidate(&winner.candidate).as_ref(),
+                    &winner.candidate.version,
+                )
+                .is_some()
+        {
+            return Ok(Prepared::Done(Planned::skipped_release(
+                existing,
+                &winner.candidate.version,
+                &winner.candidate.release_id,
+                winner.candidate.revision,
+                &self.target.id,
+            )));
+        }
         let mut winner = winner;
         if let Some(looked) = &intent.looked_back {
             let tag = tag_of(wanted, &winner.candidate.release_id)
@@ -6993,6 +7165,83 @@ mod tests {
             at: "2026-11-01T00:00:00Z".parse().unwrap(),
             origin: crate::model::SkipOrigin::Undo,
             tx: TxId::new(),
+        }
+    }
+
+    /// RG-31: a request that names no version never lands on a skipped release, a
+    /// channel switch's included; a named version, a reinstall, the resolver and a local
+    /// install are not held.
+    #[test]
+    fn skip_holding_holds_only_a_request_without_a_version() {
+        let mut existing = installed("1.0", false, Channel::Stable, AddonReason::Explicit);
+        existing.skipped_releases = vec![skip(Some("2.0"), "2.0"), skip(None, "3.0")];
+        let keep = user(PinIntent::Keep, Channel::Stable, AddonReason::Explicit);
+        let key = |tag: &str| ReleaseKey::parse(&format!("gh:o/foo@{tag}"), None);
+        let local = {
+            let mut local = existing.clone();
+            local.r#ref = "file:/home/me/Foo-2.0.zip".parse().unwrap();
+            local
+        };
+        // (case, the installed record, the intent, the release chosen, held)
+        let cases = [
+            (
+                "an update to the exact mark",
+                &existing,
+                keep.clone(),
+                "2.0",
+                true,
+            ),
+            (
+                "an update to a labelled release",
+                &existing,
+                keep.clone(),
+                "3.0",
+                true,
+            ),
+            (
+                "an update to an unmarked release",
+                &existing,
+                keep.clone(),
+                "4.0",
+                false,
+            ),
+            (
+                "a channel switch to the exact mark",
+                &existing,
+                InstallIntent {
+                    channel: Channel::Beta,
+                    channel_explicit: true,
+                    ..keep.clone()
+                },
+                "2.0",
+                true,
+            ),
+            (
+                "a named version",
+                &existing,
+                InstallIntent {
+                    version: Some("2.0".into()),
+                    ..keep.clone()
+                },
+                "2.0",
+                false,
+            ),
+            (
+                "a reinstall",
+                &existing,
+                InstallIntent {
+                    reinstall: true,
+                    ..keep.clone()
+                },
+                "2.0",
+                false,
+            ),
+            ("the resolver", &existing, resolver("Bar"), "2.0", false),
+            ("a local install", &local, keep.clone(), "2.0", false),
+        ];
+        for (case, installed, intent, tag, held) in cases {
+            let mark = intent.skip_holding(installed, key(tag).as_ref(), tag);
+            assert_eq!(mark.is_some(), held, "{case}: {mark:?}");
         }
     }
 

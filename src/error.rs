@@ -490,6 +490,14 @@ warning_codes! {
     /// A pinned addon was left at its pinned release; nothing was installed.
     AddonPinned                 = "addon_pinned",
         "A pinned addon was left at its recorded release instead of being updated.";
+    /// A skipped release (a skip mark on the addon's client) was passed over; the fix
+    /// offers that one release again.
+    ReleaseSkipped              = "release_skipped",
+        "A skipped release was passed over; the fix offers it again.";
+    /// A skipped release was installed because a request named its version, so the
+    /// marks that covered it are gone; undoing that install puts them back.
+    SkipLifted                  = "skip_lifted",
+        "A skipped release was installed because it was named, so its skip mark is gone.";
     /// An answer came from remembered release metadata, not from the source now.
     StaleCheck                  = "stale_check",
         "An answer came from stored metadata rather than a fresh source response.";
@@ -1403,7 +1411,7 @@ mod tests {
             assert!(is_wire_name(wire), "{wire}");
             assert!(seen.insert(wire), "duplicate wire name {wire}");
         }
-        assert_eq!(WarningCode::ALL.len(), 55);
+        assert_eq!(WarningCode::ALL.len(), 57);
         assert_eq!(WarningCode::TargetIdReserved.wire(), "target_id_reserved");
         for code in WarningCode::ALL {
             assert_eq!(serde_json::to_value(code).unwrap(), code.wire());

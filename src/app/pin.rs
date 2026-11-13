@@ -483,6 +483,10 @@ fn unpin_hints(
                     latest.version
                 ),
                 UpdateStatus::Current { .. } => format!("{id}: {name} is current"),
+                UpdateStatus::SkippedRelease { latest, .. } => format!(
+                    "{id}: {name} {} is skipped, so update passes over it",
+                    latest.version
+                ),
                 _ => format!("{id}: `omaddons outdated -t {id}` checks {name} for updates"),
             },
         );

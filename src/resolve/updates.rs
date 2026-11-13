@@ -8,7 +8,8 @@
 //! that is off, a missing entry or a remembered failure stop early; the installed
 //! release being the newest is `current` even when pinned; the downgrade guard runs
 //! next, so a pin ahead of the newest release is `ahead` (`pinned` says a newer release
-//! exists); a pin then holds before any fact is compared; and every confidence counts as
+//! exists); a pin then holds before any fact is compared; a skip mark then holds the
+//! release that would be offered, before it is judged blocked; and every confidence counts as
 //! an update, because trying it and recording the verdict corrects the badge after at
 //! most one attempt.
 
@@ -44,6 +45,12 @@ pub enum UpdateStatus {
     },
     /// Pinned: `update` leaves it where it is.
     Pinned { latest: Option<ReleaseBrief> },
+    /// The release that would be offered is skipped on this client: `update` passes
+    /// over it and resumes at the next one. `skipped_release` is the mark that holds it.
+    SkippedRelease {
+        latest: ReleaseBrief,
+        skipped_release: SkippedRelease,
+    },
     /// The installed release is newer than the newest one the channel admits.
     Ahead { latest: ReleaseBrief },
     /// The newest release is known not to suit this client.
@@ -138,6 +145,7 @@ pub enum StatusKind {
     Current,
     UpdateAvailable,
     Pinned,
+    SkippedRelease,
     Ahead,
     Blocked,
     Failed,
@@ -151,6 +159,7 @@ impl UpdateStatus {
             Self::Current { .. } => StatusKind::Current,
             Self::UpdateAvailable { .. } => StatusKind::UpdateAvailable,
             Self::Pinned { .. } => StatusKind::Pinned,
+            Self::SkippedRelease { .. } => StatusKind::SkippedRelease,
             Self::Ahead { .. } => StatusKind::Ahead,
             Self::Blocked { .. } => StatusKind::Blocked,
             Self::Failed { .. } => StatusKind::Failed,
@@ -164,6 +173,7 @@ impl UpdateStatus {
         match self {
             Self::Current { latest }
             | Self::UpdateAvailable { latest, .. }
+            | Self::SkippedRelease { latest, .. }
             | Self::Ahead { latest }
             | Self::Blocked { latest, .. } => Some(latest),
             Self::Pinned { latest } => latest.as_ref(),
@@ -270,7 +280,11 @@ pub fn evaluate(
             latest: Some(latest),
         };
     }
-    // 7. What plans learned, under the judge the client has now.
+    // 7. A skip mark holds the release that would be offered (design 7.5.2): the best
+    // candidate's, or the look-back's when it offers an older one instead. Decided after
+    // the pin, and before `blocked`: a skipped release that would not load reads
+    // `skipped_release`, the person's own decision being the more useful thing to show.
+    // 8. What plans learned, under the judge the client has now.
     let verdict = |c: &Candidate| facts.verdict(&c.release_id, &c.asset.filename, target);
     let verdicts: Vec<_> = candidates.iter().map(verdict).collect();
     // Facts judge by the client's own rules; `--any-flavor` installs what they refuse.
@@ -280,11 +294,20 @@ pub fn evaluate(
         if let Some(status) =
             look_back(&best.release_id).and_then(|found| looked_back_status(record, target, &found))
         {
-            return status;
+            return held(record, status);
         }
-        return UpdateStatus::Blocked {
+        return held(
+            record,
+            UpdateStatus::Blocked {
+                latest,
+                reason: BlockedReason::VerifiedNotLoading,
+            },
+        );
+    }
+    if let Some(mark) = covering(record, &latest) {
+        return UpdateStatus::SkippedRelease {
+            skipped_release: mark.clone(),
             latest,
-            reason: BlockedReason::VerifiedNotLoading,
         };
     }
     let loading = verdicts.iter().flatten().find(|v| v.loads);
@@ -302,7 +325,7 @@ pub fn evaluate(
             reason: BlockedReason::OlderThanInstalled,
         };
     }
-    // 8. An update, and how likely it is to load.
+    // 9. An update, and how likely it is to load.
     let confidence = match (loading, rank_confidence(best.rank)) {
         (Some(_), _) => Confidence::Verified,
         // Installed with only a TOC version: metadata is no more than likely.
@@ -310,6 +333,36 @@ pub fn evaluate(
         (None, confidence) => confidence,
     };
     UpdateStatus::UpdateAvailable { latest, confidence }
+}
+
+/// The mark on `record` that covers the release `latest` names, its revision included
+/// ([`skip_covering`] with the release's [`ReleaseKey`]).
+pub fn covering<'r>(record: &'r AddonRecord, latest: &ReleaseBrief) -> Option<&'r SkippedRelease> {
+    let key = ReleaseKey::parse(&latest.release_id, latest.revision);
+    skip_covering(record, key.as_ref(), &latest.version)
+}
+
+/// `status` as `record`'s skip marks leave it: a release it would offer (an update, the
+/// look-back's included) or reports blocked is `skipped_release` when a mark covers it.
+/// `current` offers nothing, so a look-back that finds this client's latest installed
+/// stays `current`.
+fn held(record: &AddonRecord, status: UpdateStatus) -> UpdateStatus {
+    let mark = match &status {
+        UpdateStatus::UpdateAvailable { latest, .. } | UpdateStatus::Blocked { latest, .. } => {
+            covering(record, latest).cloned()
+        }
+        _ => None,
+    };
+    match (mark, status) {
+        (
+            Some(skipped_release),
+            UpdateStatus::UpdateAvailable { latest, .. } | UpdateStatus::Blocked { latest, .. },
+        ) => UpdateStatus::SkippedRelease {
+            latest,
+            skipped_release,
+        },
+        (_, status) => status,
+    }
 }
 
 /// The status of `record` against a look-back's answer for its client: `current` when it
@@ -1362,6 +1415,19 @@ mod tests {
                     latest: Some(latest()),
                 },
             ),
+            (
+                "skipped_release",
+                UpdateStatus::SkippedRelease {
+                    latest: latest(),
+                    skipped_release: SkippedRelease {
+                        release: ReleaseKey::parse(&format!("{FOO}@2.0.0"), None),
+                        version: "2.0.0".into(),
+                        at: at("2026-11-01T00:00:00Z"),
+                        origin: crate::model::SkipOrigin::Undo,
+                        tx: "01JB8Q2VA00000000000000009".parse().unwrap(),
+                    },
+                },
+            ),
             ("ahead", UpdateStatus::Ahead { latest: latest() }),
             (
                 "blocked",
@@ -1398,6 +1464,249 @@ mod tests {
             at: at("2026-11-01T00:00:00Z"),
             origin: crate::model::SkipOrigin::Undo,
             tx: TxId::new(),
+        }
+    }
+
+    /// `evaluate`'s order with a mark beside each neighboring state (design 7.5.2): a
+    /// mark holds the release that would be offered, the look-back's included, after the
+    /// pin and before `blocked`; a release that is current or ahead offers nothing.
+    #[test]
+    fn a_mark_holds_the_release_that_would_be_offered() {
+        let foo = |tag: &str| format!("{FOO}@{tag}");
+        let newest_rev = |revision: u32| {
+            let mut e = newest();
+            if let Some(set) = e.set.as_mut() {
+                set.releases[0].revision = Some(revision);
+            }
+            e
+        };
+        let found = LookBack {
+            found: Some(ReleaseSet {
+                r#ref: FOO.parse().unwrap(),
+                releases: vec![release(
+                    "1.5.0",
+                    Channel::Stable,
+                    None,
+                    vec![asset("Foo.zip", Confidence::Declared)],
+                )],
+            }),
+            ruled_out: Vec::new(),
+            order: ["2.0.0", "1.5.0", "1.0.0"].map(String::from).to_vec(),
+        };
+        let refused = vec![fact("2.0.0", "Foo.zip", false, false, 11_509)];
+        let older = vec![fact("2.0.0", "Foo.zip", true, true, 120_105)];
+        let with_marks = |mut r: AddonRecord, marks: Vec<SkippedRelease>| {
+            r.skipped_releases = marks;
+            r
+        };
+        let pinned = |mut r: AddonRecord| {
+            r.pinned = true;
+            r
+        };
+        let at_revision = |mut r: AddonRecord, revision: u32| {
+            r.revision = Some(revision);
+            r
+        };
+        // Release 1 marked, then nine later ones each marked in turn: the first holds.
+        let ten: Vec<SkippedRelease> = std::iter::once(mark(Some(&foo("2.0.0")), None, "2.0.0"))
+            .chain((1..10).map(|n| mark(Some(&foo(&format!("2.0.{n}"))), None, "x")))
+            .collect();
+        let behind = || record(Some("1.0.0"), "1.0.0");
+        // (case, the record, the memo entry, the facts, the look-back's answer, the
+        // status, the version it names)
+        type Case<'a> = (
+            &'a str,
+            AddonRecord,
+            MemoEntry,
+            Vec<CandidateFact>,
+            Option<&'a LookBack>,
+            &'a str,
+            Option<&'a str>,
+        );
+        let cases: Vec<Case<'_>> = vec![
+            (
+                "a mark on the newest",
+                with_marks(behind(), vec![mark(Some(&foo("2.0.0")), None, "2.0.0")]),
+                newest(),
+                Vec::new(),
+                None,
+                "skipped_release",
+                Some("2.0.0"),
+            ),
+            (
+                "a label mark on the newest",
+                with_marks(behind(), vec![mark(None, None, "v2.0.0")]),
+                newest(),
+                Vec::new(),
+                None,
+                "skipped_release",
+                Some("2.0.0"),
+            ),
+            (
+                "a mark on another release",
+                with_marks(behind(), vec![mark(Some(&foo("1.5.0")), None, "1.5.0")]),
+                newest(),
+                Vec::new(),
+                None,
+                "update_available",
+                Some("2.0.0"),
+            ),
+            (
+                "a mark holds however many came after it",
+                with_marks(behind(), ten),
+                newest(),
+                Vec::new(),
+                None,
+                "skipped_release",
+                Some("2.0.0"),
+            ),
+            (
+                "pinned first",
+                pinned(with_marks(
+                    behind(),
+                    vec![mark(Some(&foo("2.0.0")), None, "2.0.0")],
+                )),
+                newest(),
+                Vec::new(),
+                None,
+                "pinned",
+                Some("2.0.0"),
+            ),
+            (
+                "the newest installed is current",
+                with_marks(
+                    record(Some("2.0.0"), "2.0.0"),
+                    vec![mark(None, None, "2.0.0")],
+                ),
+                newest(),
+                Vec::new(),
+                None,
+                "current",
+                Some("2.0.0"),
+            ),
+            (
+                "ahead offers nothing",
+                with_marks(
+                    record(Some("3.0.0-beta"), "3.0.0-beta"),
+                    vec![mark(Some(&foo("2.0.0")), None, "2.0.0")],
+                ),
+                newest(),
+                Vec::new(),
+                None,
+                "ahead",
+                Some("2.0.0"),
+            ),
+            (
+                "before blocked: not loading",
+                with_marks(behind(), vec![mark(Some(&foo("2.0.0")), None, "2.0.0")]),
+                newest(),
+                refused.clone(),
+                None,
+                "skipped_release",
+                Some("2.0.0"),
+            ),
+            (
+                "blocked without a mark",
+                behind(),
+                newest(),
+                refused.clone(),
+                None,
+                "blocked",
+                Some("2.0.0"),
+            ),
+            (
+                "before blocked: older than installed",
+                with_marks(adopted(), vec![mark(Some(&foo("2.0.0")), None, "2.0.0")]),
+                newest(),
+                older,
+                None,
+                "skipped_release",
+                Some("2.0.0"),
+            ),
+            (
+                "the look-back's release, marked",
+                with_marks(behind(), vec![mark(Some(&foo("1.5.0")), None, "1.5.0")]),
+                newest(),
+                refused.clone(),
+                Some(&found),
+                "skipped_release",
+                Some("1.5.0"),
+            ),
+            (
+                "the look-back offers its own, the newest's mark aside",
+                with_marks(behind(), vec![mark(Some(&foo("2.0.0")), None, "2.0.0")]),
+                newest(),
+                refused.clone(),
+                Some(&found),
+                "update_available",
+                Some("1.5.0"),
+            ),
+            (
+                "the look-back finds it current",
+                with_marks(
+                    record(Some("1.5.0"), "1.5.0"),
+                    vec![mark(Some(&foo("2.0.0")), None, "2.0.0")],
+                ),
+                newest(),
+                refused,
+                Some(&found),
+                "current",
+                Some("1.5.0"),
+            ),
+            (
+                "a re-tag at the marked revision",
+                with_marks(
+                    at_revision(record(Some("2.0.0"), "2.0.0"), 401),
+                    vec![mark(Some(&foo("2.0.0")), Some(403), "2.0.0")],
+                ),
+                newest_rev(403),
+                Vec::new(),
+                None,
+                "skipped_release",
+                Some("2.0.0"),
+            ),
+            (
+                "a re-tag past the marked revision is a new release",
+                with_marks(
+                    at_revision(record(Some("1.0.0"), "1.0.0"), 1),
+                    vec![mark(Some(&foo("2.0.0")), Some(1390), "2.0.0")],
+                ),
+                newest_rev(1402),
+                Vec::new(),
+                None,
+                "update_available",
+                Some("2.0.0"),
+            ),
+        ];
+        for (case, installed, entry, facts, look_back, expected, version) in cases {
+            let status = evaluate(
+                &installed,
+                Some(&entry),
+                &FactIndex::new(&facts),
+                &retail(),
+                Some(120_105),
+                true,
+                &|_| look_back.cloned(),
+            );
+            assert_eq!(
+                (
+                    name(&status).as_str(),
+                    status.latest().map(|l| l.version.as_str())
+                ),
+                (expected, version),
+                "{case}: {status:?}"
+            );
+            if let UpdateStatus::SkippedRelease {
+                latest,
+                skipped_release,
+            } = &status
+            {
+                assert_eq!(
+                    covering(&installed, latest),
+                    Some(skipped_release),
+                    "{case}: the mark named is the one covering the release"
+                );
+            }
         }
     }
 

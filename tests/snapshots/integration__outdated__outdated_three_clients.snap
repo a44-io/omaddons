@@ -29,6 +29,7 @@ expression: stable(&envelope)
       "current": 4,
       "failed": 0,
       "pinned": 1,
+      "skipped_release": 0,
       "static": 0,
       "unchecked": 0,
       "update_available": 6
@@ -54,6 +55,7 @@ expression: stable(&envelope)
             "name": "Bar",
             "pinned": false,
             "ref": "gh:o/bar",
+            "skipped_release": null,
             "stale_answer": null,
             "status": "update_available",
             "unchecked_reason": null
@@ -76,6 +78,7 @@ expression: stable(&envelope)
             "name": "Foo",
             "pinned": false,
             "ref": "gh:o/foo",
+            "skipped_release": null,
             "stale_answer": null,
             "status": "update_available",
             "unchecked_reason": null
@@ -106,6 +109,7 @@ expression: stable(&envelope)
             "name": "Bar",
             "pinned": false,
             "ref": "gh:o/bar",
+            "skipped_release": null,
             "stale_answer": null,
             "status": "update_available",
             "unchecked_reason": null
@@ -128,6 +132,7 @@ expression: stable(&envelope)
             "name": "Foo",
             "pinned": false,
             "ref": "gh:o/foo",
+            "skipped_release": null,
             "stale_answer": null,
             "status": "update_available",
             "unchecked_reason": null
@@ -158,6 +163,7 @@ expression: stable(&envelope)
             "name": "Bar",
             "pinned": false,
             "ref": "gh:o/bar",
+            "skipped_release": null,
             "stale_answer": null,
             "status": "update_available",
             "unchecked_reason": null
@@ -180,6 +186,7 @@ expression: stable(&envelope)
             "name": "Foo",
             "pinned": false,
             "ref": "gh:o/foo",
+            "skipped_release": null,
             "stale_answer": null,
             "status": "update_available",
             "unchecked_reason": null
@@ -202,6 +209,7 @@ expression: stable(&envelope)
             "name": "Pin",
             "pinned": true,
             "ref": "gh:o/pin",
+            "skipped_release": null,
             "stale_answer": null,
             "status": "pinned",
             "unchecked_reason": null

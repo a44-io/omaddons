@@ -19,6 +19,7 @@ expression: s.stable(&checked.envelope)
       "current": 3,
       "failed": 0,
       "pinned": 0,
+      "skipped_release": 0,
       "static": 1,
       "unchecked": 0,
       "update_available": 0
@@ -51,6 +52,7 @@ expression: s.stable(&checked.envelope)
             "name": "BigWigs",
             "pinned": false,
             "ref": "gh:o/bigwigs",
+            "skipped_release": null,
             "stale_answer": null,
             "status": "current",
             "unchecked_reason": null
@@ -68,6 +70,7 @@ expression: s.stable(&checked.envelope)
             "name": "Foo",
             "pinned": false,
             "ref": "gh:o/foo",
+            "skipped_release": null,
             "stale_answer": null,
             "status": "static",
             "unchecked_reason": null
@@ -90,6 +93,7 @@ expression: s.stable(&checked.envelope)
             "name": "LittleWigs",
             "pinned": false,
             "ref": "gh:o/littlewigs",
+            "skipped_release": null,
             "stale_answer": null,
             "status": "current",
             "unchecked_reason": null
@@ -112,6 +116,7 @@ expression: s.stable(&checked.envelope)
             "name": "WeakAuras",
             "pinned": false,
             "ref": "gh:WeakAuras/WeakAuras2",
+            "skipped_release": null,
             "stale_answer": null,
             "status": "current",
             "unchecked_reason": null

@@ -67,6 +67,7 @@ expression: s.stable(&c.envelope)
         "pinned": false,
         "reason": "explicit",
         "required_by": [],
+        "skipped_releases": [],
         "state": "ok",
         "target": {
           "id": "classic",
@@ -106,6 +107,7 @@ expression: s.stable(&c.envelope)
         "pinned": false,
         "reason": "explicit",
         "required_by": [],
+        "skipped_releases": [],
         "state": "ok",
         "target": {
           "id": "retail",

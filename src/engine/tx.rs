@@ -1580,6 +1580,12 @@ fn locked(
         &mut warnings,
         plan::bookkeeping_warnings(&current.value, &works, &target.id, Some(*tx)),
     );
+    // The skip marks a named version lifted, with this transaction's undo, which puts
+    // each back.
+    push_new(
+        &mut warnings,
+        plan::skip_lifted_warnings(&current.value, &works, &target.id, Some(*tx)),
+    );
     // Files changed by hand were replaced: undoing this transaction brings them back
     // (M2-D17); `-v` names where its snapshot keeps them.
     let snapshots = ClientPaths::new(&target.client_dir).snapshots(tx);

@@ -81,6 +81,7 @@ expression: s.stable(&checked.envelope)
             "required_by": [
               "LittleWigs"
             ],
+            "skipped_releases": [],
             "state": "ok",
             "version": "v1",
             "version_confidence": "release"
@@ -135,6 +136,7 @@ expression: s.stable(&checked.envelope)
             "reason": "explicit",
             "ref": "gh:o/foo",
             "required_by": [],
+            "skipped_releases": [],
             "state": "ok",
             "version": "1",
             "version_confidence": "toc"
@@ -189,6 +191,7 @@ expression: s.stable(&checked.envelope)
             "reason": "explicit",
             "ref": "gh:o/littlewigs",
             "required_by": [],
+            "skipped_releases": [],
             "state": "ok",
             "version": "v1",
             "version_confidence": "release"
@@ -243,6 +246,7 @@ expression: s.stable(&checked.envelope)
             "reason": "explicit",
             "ref": "gh:WeakAuras/WeakAuras2",
             "required_by": [],
+            "skipped_releases": [],
             "state": "ok",
             "version": "5.19.2",
             "version_confidence": "release"

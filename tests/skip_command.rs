@@ -583,6 +583,270 @@ fn a_stored_unskip_plan_is_stale_once_its_mark_is_gone() {
     log.assert_eq("the record as it was", &record_bytes(&home), &before);
 }
 
+/// What [`warning`] answers for a code the envelope does not carry.
+static NO_WARNING: Value = Value::Null;
+
+/// The warning of `code` in `ran`'s envelope; `null` when there is none, so a check of
+/// one of its fields fails naming that field.
+fn warning<'r>(ran: &'r Ran, code: &str) -> &'r Value {
+    ran.envelope()["warnings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|w| w["code"] == code)
+        .unwrap_or(&NO_WARNING)
+}
+
+/// Whether `ran` warns `code`.
+fn warns(ran: &Ran, code: &str) -> bool {
+    ran.warnings().iter().any(|w| w == code)
+}
+
+/// RG-31: a mark is honored. `outdated`, `status`, `list`, `info`, `update` and an
+/// `install` without a version all pass over the release it holds, and a newer release
+/// is an ordinary update, the mark staying on the record.
+#[test]
+fn a_mark_is_honored_until_a_newer_release() {
+    let log = tlog!();
+    let home = behind(&log);
+    json(&log, &home, &["skip", "foo", "-t", "retail"]).ok();
+    let addons = tree_hash(&home.addons("_retail_"));
+
+    log.step("outdated shows the release skipped, and --check passes");
+    let ran = json(&log, &home, &["outdated", "-t", "retail"]);
+    ran.ok();
+    let item = &ran.data()["targets"][0]["items"][0];
+    log.assert_eq("status", &item["status"], &json!("skipped_release"));
+    log.assert_eq("latest", &item["latest"]["version"], &json!("v2"));
+    log.assert_eq(
+        "the mark",
+        &item["skipped_release"]["release"],
+        &json!({"source": "gh:o/foo", "tag": "v2"}),
+    );
+    log.assert_eq(
+        "counted apart",
+        &(
+            &ran.data()["summary"]["update_available"],
+            &ran.data()["summary"]["skipped_release"],
+        ),
+        &(&json!(0), &json!(1)),
+    );
+    json(&log, &home, &["outdated", "-t", "retail", "--check"]).ok();
+
+    log.step("status counts it skipped, never available");
+    let ran = json(&log, &home, &["status", "-t", "retail"]);
+    ran.ok();
+    let updates = &ran.data()["targets"][0]["updates"];
+    log.assert_eq(
+        "available, skipped",
+        &(&updates["available"], &updates["skipped"]),
+        &(&json!(0), &json!(1)),
+    );
+
+    log.step("list -v and info name the mark");
+    let ran = json(&log, &home, &["list", "-t", "retail", "-v"]);
+    ran.ok();
+    let listed = &ran.data()["targets"][0]["addons"][0];
+    log.assert_eq(
+        "latest.status",
+        &listed["latest"]["status"],
+        &json!("skipped_release"),
+    );
+    log.assert_eq(
+        "skipped_releases",
+        &listed["skipped_releases"].as_array().map(Vec::len),
+        &Some(1),
+    );
+    let ran = json(&log, &home, &["info", "foo", "-t", "retail", "--offline"]);
+    ran.ok();
+    log.assert_eq(
+        "info's marks",
+        &ran.data()["installed"][0]["skipped_releases"][0]["version"],
+        &json!("v2"),
+    );
+
+    log.step("bare update passes over it, without a warning");
+    let ran = json(&log, &home, &["update"]);
+    ran.ok();
+    let target = &ran.data()["targets"][0];
+    log.assert_eq("no transaction", &target["tx"], &Value::Null);
+    log.assert_eq("skipped", &target["items"][0]["status"], &json!("skipped"));
+    log.assert_eq(
+        "why",
+        &target["items"][0]["skip_reason"],
+        &json!("skipped_release"),
+    );
+    log.assert_eq(
+        "the release passed over",
+        &target["items"][0]["to_version"],
+        &json!("v2"),
+    );
+    log.assert_eq(
+        "no release_skipped",
+        &warns(&ran, "release_skipped"),
+        &false,
+    );
+
+    log.step("update Foo warns, with the scoped unskip as its fix");
+    let ran = json(&log, &home, &["update", "foo", "-t", "retail"]);
+    ran.ok();
+    log.assert_eq(
+        "fix_argv",
+        &warning(&ran, "release_skipped")["fix_argv"],
+        &json!([
+            "omaddons",
+            "unskip",
+            "Foo",
+            "--release",
+            "gh:o/foo@v2",
+            "-t",
+            "retail"
+        ]),
+    );
+    log.assert_eq(
+        "about retail",
+        &warning(&ran, "release_skipped")["targets"],
+        &json!(["retail"]),
+    );
+
+    log.step("install Foo without a version is unchanged, with the warning");
+    let ran = json(&log, &home, &["install", "foo", "-t", "retail"]);
+    ran.ok();
+    log.assert_eq(
+        "unchanged",
+        &ran.data()["items"][0]["status"],
+        &json!("unchanged"),
+    );
+    log.assert_eq("release_skipped", &warns(&ran, "release_skipped"), &true);
+    log.assert_eq(
+        "no folder moved",
+        &tree_hash(&home.addons("_retail_")),
+        &addons,
+    );
+
+    log.step("the human lines say it");
+    for (args, says) in [
+        (&["outdated", "-t", "retail"][..], "skipped v2 (marked "),
+        (&["outdated", "-t", "retail"][..], " · 1 skipped"),
+        (
+            &["update", "-t", "retail"][..],
+            "Foo left at v1 · v2 is skipped",
+        ),
+        (&["status", "-t", "retail"][..], " · 1 skipped"),
+        (
+            &["info", "foo", "-t", "retail", "--offline"][..],
+            "skipped: v2",
+        ),
+    ] {
+        let human = log.run(&home, args);
+        human.ok();
+        log.assert_eq(
+            &format!("{} says {says:?}", args.join(" ")),
+            &human.stdout().contains(says),
+            &true,
+        );
+    }
+
+    log.step("v3 is out: an ordinary update, and the mark on v2 stays");
+    let v3 = Rel::new("v3");
+    common::http::gh_release_v(&home.http, FOO, "v3", &v3.assets());
+    common::http::gh_latest(&home.http, FOO, "v3");
+    let ran = json(&log, &home, &["outdated", "-t", "retail", "--refresh"]);
+    ran.ok();
+    log.assert_eq(
+        "v3 waits",
+        &(
+            &ran.data()["targets"][0]["items"][0]["status"],
+            &ran.data()["targets"][0]["items"][0]["latest"]["version"],
+        ),
+        &(&json!("update_available"), &json!("v3")),
+    );
+    json(&log, &home, &["update", "-t", "retail"]).ok();
+    let record = common::state::record(&home, "retail");
+    log.assert_eq("installed", &record.addons["foo"].version, &"v3".to_owned());
+    log.assert_eq(
+        "the mark on v2 is still there",
+        &selected(&marks(&home)),
+        &vec![json!({"release": {"source": "gh:o/foo", "tag": "v2"}})],
+    );
+}
+
+/// RG-31: naming a skipped release installs it and lifts its marks, each said with
+/// `skip_lifted` and taken back by the install's undo; `release_skipped`'s fix, run,
+/// clears that release's mark and no other.
+#[test]
+fn naming_a_skipped_release_lifts_its_mark_and_the_fix_clears_only_its_own() {
+    let log = tlog!();
+    let home = behind(&log);
+    json(&log, &home, &["skip", "foo", "-t", "retail"]).ok();
+    json(
+        &log,
+        &home,
+        &["skip", "foo", "--version", "9.9", "-t", "retail"],
+    )
+    .ok();
+
+    log.step("release_skipped's fix offers v2 again and keeps the label mark");
+    let ran = json(&log, &home, &["update", "foo", "-t", "retail"]);
+    ran.ok();
+    let argv: Vec<String> =
+        serde_json::from_value(warning(&ran, "release_skipped")["fix_argv"].clone()).unwrap();
+    let args: Vec<&str> = argv.iter().skip(1).map(String::as_str).collect();
+    json(&log, &home, &args).ok();
+    log.assert_eq(
+        "only the label mark is left",
+        &selected(&marks(&home)),
+        &vec![json!({"label": "9.9"})],
+    );
+
+    log.step("skip v2 again, then install it by name");
+    json(&log, &home, &["skip", "foo", "-t", "retail"]).ok();
+    let ran = json(
+        &log,
+        &home,
+        &["install", "foo", "--version", "v2", "-t", "retail"],
+    );
+    ran.ok();
+    log.assert_eq(
+        "installed v2",
+        &ran.data()["items"][0]["to_version"],
+        &json!("v2"),
+    );
+    let tx = ran.data()["tx"].as_str().unwrap().to_owned();
+    log.assert_eq(
+        "skip_lifted's fix undoes the install",
+        &warning(&ran, "skip_lifted")["fix_argv"],
+        &json!(["omaddons", "undo", tx]),
+    );
+    log.assert_eq(
+        "the v2 mark is gone, the label mark stays",
+        &selected(&marks(&home)),
+        &vec![json!({"label": "9.9"})],
+    );
+
+    log.step("the install's undo puts the mark back");
+    json(&log, &home, &["undo", &tx]).ok();
+    log.assert_eq("both marks again", &selected(&marks(&home)).len(), &2);
+
+    log.step("a lock file naming v2 lifts it the same way");
+    home.write_desired(
+        "schema_version = \"1.0\"\n\n[[target.\"retail\".addon]]\nref = \"gh:o/foo\"\nversion = \"v2\"\n",
+    );
+    let ran = json(&log, &home, &["sync", "--locked"]);
+    ran.ok();
+    log.assert_eq("skip_lifted", &warns(&ran, "skip_lifted"), &true);
+    log.assert_eq(
+        "installed v2",
+        &common::state::record(&home, "retail").addons["foo"].version,
+        &"v2".to_owned(),
+    );
+    log.assert_eq(
+        "the label mark stays",
+        &selected(&marks(&home)),
+        &vec![json!({"label": "9.9"})],
+    );
+}
+
 /// What happens between a preview and its `apply`.
 #[derive(Debug, Clone, Copy)]
 enum Between {

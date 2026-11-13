@@ -68,6 +68,7 @@ expression: s.stable(&checked.envelope)
         "reason": "explicit",
         "record_path": "<root>/state/omaddons/targets/<ulid>.json",
         "required_by": [],
+        "skipped_releases": [],
         "state": "ok",
         "target": {
           "id": "retail",

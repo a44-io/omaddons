@@ -70,7 +70,10 @@ impl Versioned for DiscoveryCache {
     /// 1.2: a root's `source` may be `registered` or `remembered`, which a 1.1 reader
     /// does not know (it ignores a newer cache). 1.3: a target's `not_launched_since`
     /// and each warning's `targets` (omad-5cg5), additive: a 1.2 cache reads with neither.
-    const CURRENT: SchemaVersion = SchemaVersion::new(1, 3);
+    /// 1.4: the warning codes `release_skipped` and `skip_lifted` (RG-31), which a root's
+    /// warnings never carry: a bump of the codes the schema lists, nothing a 1.3 reader
+    /// meets.
+    const CURRENT: SchemaVersion = SchemaVersion::new(1, 4);
 }
 
 /// What a root's parse yields, beyond the rules: bumped when it changes while the

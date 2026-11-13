@@ -18,7 +18,8 @@ use crate::drift::{DriftMode, DriftState};
 use crate::error::{Result, Warning};
 use crate::inventory::{Depth, FolderClass, FolderEntry, Inventory, OwnedOn, inventory_shared};
 use crate::model::{
-    AddonReason, AddonRecord, AddonState, Channel, LeftOutFolder, Ref, TargetKey, VersionConfidence,
+    AddonReason, AddonRecord, AddonState, Channel, LeftOutFolder, Ref, SkippedRelease, TargetKey,
+    VersionConfidence,
 };
 use crate::output::{Outcome, Style, table};
 use crate::resolve::updates::{StatusKind, StatusRow, UpdateStatus};
@@ -115,6 +116,10 @@ pub struct ListAddon {
     /// with why (as `folders.skipped` showed them).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub left_out: Option<Vec<LeftOutFolder>>,
+    /// `-v`: the releases `update` passes over on this client (its skip marks), as the
+    /// record keeps them, oldest first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skipped_releases: Option<Vec<SkippedRelease>>,
 }
 
 /// What the release memo says is newest for an addon, and which release that is.
@@ -361,6 +366,7 @@ fn list_target(
                 folder_tocs: verbose
                     .then(|| keys.iter().filter_map(|k| on_disk(k)).map(info).collect()),
                 left_out: verbose.then(|| a.left_out.clone()),
+                skipped_releases: verbose.then(|| a.skipped_releases.clone()),
             }
         })
         .collect();
@@ -575,6 +581,7 @@ fn latest_cell(latest: &Latest) -> String {
     let newer = || format!("→ {}", latest.version.as_deref().unwrap_or("?"));
     match latest.status {
         StatusKind::UpdateAvailable | StatusKind::Pinned => newer(),
+        StatusKind::SkippedRelease => format!("{} (skipped)", newer()),
         StatusKind::Blocked => format!("{} (blocked)", newer()),
         StatusKind::Failed => "check failed".to_owned(),
         StatusKind::Current | StatusKind::Ahead | StatusKind::Unchecked | StatusKind::Static => {
@@ -592,6 +599,7 @@ mod tests {
         for (status, cell) in [
             (StatusKind::UpdateAvailable, "→ 1.2"),
             (StatusKind::Pinned, "→ 1.2"),
+            (StatusKind::SkippedRelease, "→ 1.2 (skipped)"),
             (StatusKind::Blocked, "→ 1.2 (blocked)"),
             (StatusKind::Failed, "check failed"),
             (StatusKind::Current, ""),
