@@ -38,7 +38,7 @@ use omaddons::sources::{SourceConfigView, SourceRegistry, Wanted, fetch_once};
 use omaddons::state::memo::{self, MemoEntry, ReleaseMemo};
 use support::{
     addon_release, current_rss, drift_report, history_line, lua_workload, measured, median_of_21,
-    peak_rss, restore_lock_hold, sampled_peak_rss,
+    mib, peak_rss, reset_peak_rss, restore_lock_hold, sampled_peak_rss,
 };
 
 /// Held by each 500 MiB test, so two never share the disk.
@@ -160,6 +160,23 @@ mod support {
     /// This process's resident memory now (`VmRSS`), in bytes.
     pub fn current_rss() -> u64 {
         own_status_bytes("VmRSS:")
+    }
+
+    /// Lowers this process's peak resident memory (`VmHWM`) to what it holds now and
+    /// returns that, so `peak_rss()` less it is what one case added at its peak. The
+    /// stand-in for a heap peak: `getrusage`'s `ru_maxrss` is the same mark and cannot be
+    /// lowered, and a counting allocator would need `unsafe`, which the crate forbids.
+    /// Pages count, not allocations, so memory an earlier case freed and the allocator
+    /// kept goes unseen: a lower bound, which a case with a memory budget measures in a
+    /// child process instead.
+    pub fn reset_peak_rss() -> u64 {
+        std::fs::write("/proc/self/clear_refs", "5").unwrap();
+        current_rss()
+    }
+
+    /// `bytes` in MiB, for a measurement line.
+    pub fn mib(bytes: u64) -> f64 {
+        bytes as f64 / f64::from(1u32 << 20)
     }
 
     /// One `kB` field of `/proc/self/status`, in bytes.
@@ -1779,12 +1796,14 @@ mod ledger_shapes {
     use jiff::tz::TimeZone;
     use omaddons::errors::buggrabber::{TimeEvidence, TimeMeaning, TzEvidence, evidence};
     use omaddons::errors::ledger::{
-        ClientNow, DbRead, DbSighting, EntrySighting, SightMode, TargetLedger, load, open, sight,
+        ChangeMark, ClientNow, DbRead, DbSighting, EntrySighting, SightMode, TargetLedger, load,
+        open, sight,
     };
     use omaddons::errors::observe::{Coverage, read_stable};
     use omaddons::errors::sanitize::identities;
     use omaddons::fsx::{FileStamp, ScopeTable};
     use omaddons::limits::LEDGER_PRECHANGE_MAX_BYTES;
+    use omaddons::model::RunId;
     use omaddons::state::paths::Paths;
 
     use crate::common::buggrabber::{BugDb, BugEntry, NOW, TimeKind, Writer, stack_era_c};
@@ -2051,17 +2070,20 @@ mod ledger_shapes {
             fs::metadata(self.paths.errors_ledger()).map_or(0, |m| m.len())
         }
 
-        /// One half of the light read, in its order (design 7.9): a stamp of each
-        /// database, an unlocked load of the ledger, a bounded parse of each file the
-        /// ledger has not seen in this state, one session that records them, and a
-        /// second stamp of each. Returns the bytes the session wrote.
-        pub fn light_half(&self) -> u64 {
+        /// One light read around a change, both halves, as design 7.1.8 runs it, and the
+        /// bytes its one session wrote. The capture, before the change: a stamp of each
+        /// database, an unlocked load of the ledger, and a bounded parse of each file
+        /// whose stamp is neither its newest proved read's nor its unproved one. The
+        /// commit, after the change: a second stamp of each, then one session that sights
+        /// what the capture saw (`Light`), adds a change mark for each database whose
+        /// state is now its newest proved read, and stores the ledger. Every change that
+        /// reads leaves marks, so every light read writes the ledger once.
+        pub fn light_read(&self) -> u64 {
             let now = Timestamp::now();
-            let stamps: Vec<Option<String>> = self
-                .files
-                .iter()
-                .map(|(_, path)| FileStamp::read(path).unwrap().map(|s| s.fingerprint()))
-                .collect();
+            let run = RunId::new();
+            let stamp = |path: &Path| FileStamp::read(path).unwrap().map(|s| s.fingerprint());
+            let stamps: Vec<Option<String>> =
+                self.files.iter().map(|(_, path)| stamp(path)).collect();
             let known = load(&self.paths).unwrap_or_default();
             let target = known.targets.get(TARGET);
             let mut budget = LEDGER_PRECHANGE_MAX_BYTES;
@@ -2070,33 +2092,65 @@ mod ledger_shapes {
                 .iter()
                 .zip(&stamps)
                 .map(|((key, path), stamp)| {
-                    let newest = target
-                        .and_then(|t| t.databases.get(key))
-                        .and_then(|db| db.reads.last())
-                        .map(|r| &r.stamp);
+                    let db = target.and_then(|t| t.databases.get(key));
+                    let newest = db.and_then(|db| db.reads.last()).map(|r| &r.stamp);
+                    let unproved = db.and_then(|db| db.unproved_stamp.as_ref());
                     match stamp {
-                        Some(stamp) if newest == Some(stamp) => DbSighting {
-                            key: key.clone(),
-                            provider: "!BugGrabber".to_owned(),
-                            stamp: stamp.clone(),
-                            written_at: None,
-                            observed_at: now,
-                            session: None,
-                            read: None,
-                        },
+                        Some(stamp) if newest == Some(stamp) || unproved == Some(stamp) => {
+                            DbSighting {
+                                key: key.clone(),
+                                provider: "!BugGrabber".to_owned(),
+                                stamp: stamp.clone(),
+                                written_at: None,
+                                observed_at: now,
+                                session: None,
+                                read: None,
+                            }
+                        }
                         _ => capture(key, path, &mut budget, now),
                     }
                 })
+                .collect();
+            // The change runs here.
+            let settled: Vec<bool> = self
+                .files
+                .iter()
+                .zip(&stamps)
+                .map(|((_, path), before)| stamp(path) == *before)
                 .collect();
             let before = fs::metadata(self.paths.errors_ledger())
                 .map(|m| m.ino())
                 .ok();
             let mut session = open(&self.paths, &self.scopes, "light").unwrap();
             session.sight(TARGET, &dbs, &[], &client(now), true, SightMode::Light);
-            session.commit().unwrap();
-            for (_, path) in &self.files {
-                FileStamp::read(path).unwrap();
+            for (s, settled) in dbs.iter().zip(settled) {
+                let Some(db) = session
+                    .ledger
+                    .targets
+                    .get(TARGET)
+                    .and_then(|t| t.databases.get(&s.key))
+                else {
+                    continue;
+                };
+                let Some(newest) = db.reads.last().filter(|r| r.stamp == s.stamp) else {
+                    continue;
+                };
+                let mark = ChangeMark {
+                    run,
+                    at: now,
+                    generation: db.generation.clone(),
+                    stamp: s.stamp.clone(),
+                    session: newest.session,
+                    running: Some(false),
+                    settled,
+                };
+                assert!(
+                    session.add_mark(TARGET, &s.key, mark),
+                    "{} has no mark",
+                    s.key
+                );
             }
+            session.commit().unwrap();
             let after = fs::metadata(self.paths.errors_ledger()).ok();
             match after {
                 Some(m) if Some(m.ino()) != before => m.len(),
@@ -2128,6 +2182,7 @@ fn ledger_sight_over_5000_entries_and_families_under_10_ms() {
         shape.present(0).chain(5_000..5_001),
     )];
     let mut copies: Vec<_> = (0..21).map(|_| base.clone()).collect();
+    let start = reset_peak_rss();
     let (median, times) = median_of_21(|| {
         let mut ledger = copies.pop().unwrap();
         let sighted = sight(
@@ -2141,8 +2196,10 @@ fn ledger_sight_over_5000_entries_and_families_under_10_ms() {
         assert_eq!(sighted.appeared.len(), 1);
     });
     measured(format_args!(
-        "ledger sight: 5000 entries, 5000 families: median {median:?}, max {:?}",
-        times[times.len() - 1]
+        "ledger sight: 5000 entries, 5000 families: median {median:?}, max {:?}, 0 bytes \
+         written, peak RSS added {:.1} MiB",
+        times[times.len() - 1],
+        mib(peak_rss().saturating_sub(start))
     ));
     assert!(
         median < Duration::from_millis(10),
@@ -2150,7 +2207,8 @@ fn ledger_sight_over_5000_entries_and_families_under_10_ms() {
     );
 }
 
-/// Both halves of the light read over unchanged databases: under 2 ms together with 100
+/// The light read around a change, both halves together (its capture and its commit,
+/// with a change mark per database), over unchanged databases: under 2 ms with 100
 /// families, under 20 ms with 5,000, median of 21.
 #[test]
 #[ignore = "a release-build budget: cargo test --release --test integration perf:: -- --ignored"]
@@ -2163,12 +2221,14 @@ fn ledger_light_read_of_unchanged_databases_stays_within_its_budgets() {
             absent: 0,
         });
         let mut written = 0;
-        let (median, times) = median_of_21(|| written = disk.light_half() + disk.light_half());
+        let start = reset_peak_rss();
+        let (median, times) = median_of_21(|| written = disk.light_read());
         measured(format_args!(
             "ledger light read, unchanged, {families} families: median {median:?}, max {:?}, \
-             {written} bytes written, ledger {} bytes",
+             {written} bytes written, ledger {} bytes, peak RSS added {:.1} MiB",
             times[times.len() - 1],
-            disk.ledger_bytes()
+            disk.ledger_bytes(),
+            mib(peak_rss().saturating_sub(start))
         ));
         assert!(
             median < Duration::from_millis(budget),
@@ -2178,9 +2238,10 @@ fn ledger_light_read_of_unchanged_databases_stays_within_its_budgets() {
 }
 
 /// A typical multi-account client: 8 databases of 500 errors (BugGrabber's own cap), half
-/// the families gone. Both halves of the light read under 10 ms, unchanged, median of 21;
-/// the ledger under 1 MiB. The half after a play session, when the game wrote every file,
-/// is measured too (each file parsed; bounded by the capture's own case).
+/// the families gone, every error its own family (the most families that shape holds).
+/// The light read, both halves, under 10 ms, unchanged, median of 21; the ledger under
+/// 1 MiB. The light read after a play session, when the game wrote every file, is
+/// measured too (each file parsed; bounded by the capture's own case).
 #[test]
 #[ignore = "a release-build budget: cargo test --release --test integration perf:: -- --ignored"]
 fn ledger_light_read_of_a_multi_account_client_stays_within_its_budgets() {
@@ -2191,26 +2252,31 @@ fn ledger_light_read_of_a_multi_account_client_stays_within_its_budgets() {
         absent: 4_000,
     });
     let mut written = 0;
-    let (median, times) = median_of_21(|| written = disk.light_half() + disk.light_half());
+    let start = reset_peak_rss();
+    let (median, times) = median_of_21(|| written = disk.light_read());
     let ledger = disk.ledger_bytes();
     measured(format_args!(
         "ledger light read, 8 accounts of 500, 4000 gone, unchanged: median {median:?}, max \
-         {:?}, {written} bytes written, ledger {ledger} bytes",
-        times[times.len() - 1]
+         {:?}, {written} bytes written, ledger {ledger} bytes, peak RSS added {:.1} MiB",
+        times[times.len() - 1],
+        mib(peak_rss().saturating_sub(start))
     ));
+    let start = reset_peak_rss();
     let mut changed: Vec<Duration> = (0..21u32)
         .map(|run| {
             disk.write(3 + run, false);
             let start = Instant::now();
-            written = disk.light_half();
+            written = disk.light_read();
             start.elapsed()
         })
         .collect();
     changed.sort();
     measured(format_args!(
         "ledger light read, 8 accounts of 500, 4000 gone, every file written since: median \
-         {:?}, max {:?}, {written} bytes written",
-        changed[10], changed[20]
+         {:?}, max {:?}, {written} bytes written, peak RSS added {:.1} MiB",
+        changed[10],
+        changed[20],
+        mib(peak_rss().saturating_sub(start))
     ));
     assert!(
         median < Duration::from_millis(10),
@@ -2411,6 +2477,7 @@ fn ledger_capture_of_changed_files_up_to_its_cap_under_100_ms() {
         .sum();
     assert!(total <= LEDGER_PRECHANGE_MAX_BYTES);
     let mut read = 0;
+    let start = reset_peak_rss();
     let (median, times) = median_of_21(|| {
         let mut budget = LEDGER_PRECHANGE_MAX_BYTES;
         let now = jiff::Timestamp::now();
@@ -2425,8 +2492,9 @@ fn ledger_capture_of_changed_files_up_to_its_cap_under_100_ms() {
     });
     measured(format_args!(
         "ledger capture: {count} files, {total} bytes, {read} entries: median {median:?}, max \
-         {:?}",
-        times[times.len() - 1]
+         {:?}, 0 bytes written, peak RSS added {:.1} MiB",
+        times[times.len() - 1],
+        mib(peak_rss().saturating_sub(start))
     ));
     assert_eq!(read, entries, "every entry was read");
     assert!(
@@ -2456,13 +2524,16 @@ fn ledger_history_read_of_10000_lines_is_recorded() {
         ..HistoryFilter::default()
     };
     let mut entries = 0;
+    let start = reset_peak_rss();
     let (median, times) = median_of_21(|| {
         entries = history::read(&paths, &filter).unwrap().entries.len();
     });
     measured(format_args!(
-        "ledger history read: 10000 lines, {} bytes: median {median:?}, max {:?}",
+        "ledger history read: 10000 lines, {} bytes: median {median:?}, max {:?}, 0 bytes \
+         written, peak RSS added {:.1} MiB",
         text.len(),
-        times[times.len() - 1]
+        times[times.len() - 1],
+        mib(peak_rss().saturating_sub(start))
     ));
     assert_eq!(entries, 10_000);
 }

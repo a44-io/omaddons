@@ -74,8 +74,10 @@ pub struct TargetLedger {
     #[serde(default)]
     pub databases: BTreeMap<String, DbLedger>,
     /// Recurrence memory, by family key. A family known in any database of the client is
-    /// known.
-    #[serde(default)]
+    /// known. The file holds it grouped: one [`FamilyGroup`] for the families recorded
+    /// alike.
+    #[serde(default, with = "family_groups")]
+    #[schemars(with = "Vec<FamilyGroup>")]
     pub families: BTreeMap<String, Family>,
     /// The appearances omaddons watched, by cluster id. Only these are judged.
     #[serde(default)]
@@ -215,8 +217,93 @@ pub struct Family {
     pub last_present_at: Timestamp,
 }
 
-/// How a family first became known on its client.
+/// Families recorded alike, as the ledger file holds them: their one record, and their
+/// keys. The families one read baselines share `first`, and the families one read finds
+/// again share `last_present_at`, so a client's thousands of families take a handful of
+/// these. Written this way because the file is read and rewritten around every change: a
+/// record per family made a client of 8 accounts at BugGrabber's cap a 1.3 MB file that
+/// took 8 ms to read (design 7.9).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FamilyGroup {
+    /// How these families first became known.
+    pub first: FamilyFirst,
+    /// The last read that found a member of any of them.
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
+    pub last_present_at: Timestamp,
+    /// The family keys (`a:…`) this record describes, sorted. Never empty.
+    pub members: Vec<String>,
+}
+
+/// The encoding of [`TargetLedger::families`]: a list of [`FamilyGroup`], one per
+/// distinct record, in the record's order. Decoding gives every member its group's
+/// record. A key listed twice, or an empty group, does not decode, and a ledger that
+/// does not decode loads empty (every error baselines again), so a damaged file can
+/// never pair a family with the wrong record.
+mod family_groups {
+    use std::collections::BTreeMap;
+
+    use jiff::Timestamp;
+    use serde::de::Error as _;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use super::{Family, FamilyFirst, FamilyGroup};
+
+    /// [`FamilyGroup`] borrowing from the ledger, so a store copies no key.
+    #[derive(Serialize)]
+    struct GroupRef<'a> {
+        first: &'a FamilyFirst,
+        last_present_at: Timestamp,
+        members: Vec<&'a str>,
+    }
+
+    pub fn serialize<S: Serializer>(
+        families: &BTreeMap<String, Family>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let mut groups: BTreeMap<(&FamilyFirst, Timestamp), Vec<&str>> = BTreeMap::new();
+        for (key, family) in families {
+            groups
+                .entry((&family.first, family.last_present_at))
+                .or_default()
+                .push(key);
+        }
+        serializer.collect_seq(
+            groups
+                .into_iter()
+                .map(|((first, last_present_at), members)| GroupRef {
+                    first,
+                    last_present_at,
+                    members,
+                }),
+        )
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<BTreeMap<String, Family>, D::Error> {
+        let groups = Vec::<FamilyGroup>::deserialize(deserializer)?;
+        let mut families = BTreeMap::new();
+        for group in groups {
+            if group.members.is_empty() {
+                return Err(D::Error::custom("a family group has no members"));
+            }
+            for key in group.members {
+                let family = Family {
+                    first: group.first.clone(),
+                    last_present_at: group.last_present_at,
+                };
+                if families.insert(key, family).is_some() {
+                    return Err(D::Error::custom("a family is listed twice"));
+                }
+            }
+        }
+        Ok(families)
+    }
+}
+
+/// How a family first became known on its client. Its order only groups equal records
+/// in the file ([`FamilyGroup`]); it means nothing else.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "basis", rename_all = "snake_case")]
 pub enum FamilyFirst {
     /// Known, but never watched appear: its age is unknown.
@@ -234,7 +321,7 @@ pub enum FamilyFirst {
 }
 
 /// The first time a family was met, in a read that did not prove absence.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 pub struct PositiveSighting {
     pub database: String,
     pub generation: DbGeneration,
@@ -248,7 +335,9 @@ pub struct PositiveSighting {
 }
 
 /// Why a family is a baseline: known, with no watched appearance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum BaselineReason {
     /// In the database at its first proved read.
@@ -1631,16 +1720,30 @@ mod tests {
     fn the_wire_names_are_the_designs() {
         let json = serde_json::to_value(full()).unwrap();
         let target = &json["targets"]["01M51EX04HHWM46XE9F2B9JXED"];
+        // The file holds families grouped by record; `full` gives each its own.
+        let group = |key: &str| {
+            target["families"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|g| g["members"] == serde_json::json!([key]))
+                .unwrap_or_else(|| panic!("no group of {key} alone in {target}"))
+                .clone()
+        };
         assert_eq!(
-            target["families"]["a:1"]["first"],
-            serde_json::json!({"basis": "baseline", "at": "2027-01-15T08:00:03Z", "reason": "coverage_incomplete"})
+            group("a:1"),
+            serde_json::json!({
+                "first": {"basis": "baseline", "at": "2027-01-15T08:00:03Z", "reason": "coverage_incomplete"},
+                "last_present_at": "2027-01-15T08:00:50Z",
+                "members": ["a:1"],
+            })
         );
         assert_eq!(
-            target["families"]["a:2"]["first"],
+            group("a:2")["first"],
             serde_json::json!({"basis": "observed", "cluster": "c:1"})
         );
-        assert_eq!(target["families"]["a:3"]["first"]["basis"], "pending");
-        assert_eq!(target["families"]["a:3"]["first"]["entry_session"], 7);
+        assert_eq!(group("a:3")["first"]["basis"], "pending");
+        assert_eq!(group("a:3")["first"]["entry_session"], 7);
         let suspect = &target["clusters"]["c:1"]["judgment"]["suspect"];
         assert_eq!(suspect["relation"], "in_stack");
         assert_eq!(suspect["confidence"], "medium");
@@ -1649,6 +1752,158 @@ mod tests {
             serde_json::json!(["running", "client_version"])
         );
         assert_eq!(target["clusters"]["c:1"]["judgment"]["state"], "complete");
+    }
+
+    /// A family record of the encoding cases: a baseline at `at`, or an observed one.
+    fn alike(first_at: Option<i64>, last_present: i64) -> Family {
+        Family {
+            first: first_at.map_or_else(
+                || FamilyFirst::Observed {
+                    cluster: "c:1".to_owned(),
+                },
+                |seconds| FamilyFirst::Baseline {
+                    at: at(seconds),
+                    reason: BaselineReason::FirstRead,
+                },
+            ),
+            last_present_at: at(last_present),
+        }
+    }
+
+    #[test]
+    fn families_are_written_one_record_per_group_and_read_back_whole() {
+        struct Case {
+            name: &'static str,
+            families: Vec<(&'static str, Family)>,
+            /// The members of each group, in the file's order.
+            groups: Vec<Vec<&'static str>>,
+        }
+        let cases = [
+            Case {
+                name: "no family is an empty list",
+                families: vec![],
+                groups: vec![],
+            },
+            Case {
+                name: "families recorded alike share one record, keys sorted",
+                families: vec![
+                    ("a:3", alike(Some(1), 5)),
+                    ("a:1", alike(Some(1), 5)),
+                    ("a:2", alike(Some(1), 5)),
+                ],
+                groups: vec![vec!["a:1", "a:2", "a:3"]],
+            },
+            Case {
+                name: "another last presence is another record, in the record's order",
+                families: vec![
+                    ("a:1", alike(Some(1), 9)),
+                    ("a:2", alike(Some(1), 5)),
+                    ("a:3", alike(Some(1), 9)),
+                ],
+                groups: vec![vec!["a:2"], vec!["a:1", "a:3"]],
+            },
+            Case {
+                name: "another first is another record: baselines before observations",
+                families: vec![
+                    ("a:1", alike(None, 5)),
+                    ("a:2", alike(Some(2), 5)),
+                    ("a:3", alike(Some(1), 5)),
+                ],
+                groups: vec![vec!["a:3"], vec!["a:2"], vec!["a:1"]],
+            },
+        ];
+        for case in cases {
+            let target = TargetLedger {
+                families: case
+                    .families
+                    .iter()
+                    .map(|(key, family)| ((*key).to_owned(), family.clone()))
+                    .collect(),
+                ..TargetLedger::default()
+            };
+            let json = serde_json::to_value(&target).unwrap();
+            let groups: Vec<Vec<&str>> = json["families"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|g| {
+                    g["members"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|m| m.as_str().unwrap())
+                        .collect()
+                })
+                .collect();
+            assert_eq!(groups, case.groups, "{}: {json}", case.name);
+            assert_eq!(round_trip(&target), target, "{}: {json}", case.name);
+        }
+    }
+
+    proptest::proptest! {
+        /// Any families, from a few records (so groups form) or each its own, read back
+        /// exactly: every key, and each with its own record.
+        #[test]
+        fn any_families_read_back_exactly(
+            records in proptest::collection::btree_map(
+                "a:[0-9a-f]{1,3}",
+                (proptest::option::of(0i64..4), 0i64..4),
+                0..40,
+            )
+        ) {
+            let target = TargetLedger {
+                families: records
+                    .into_iter()
+                    .map(|(key, (first_at, last_present))| (key, alike(first_at, last_present)))
+                    .collect(),
+                ..TargetLedger::default()
+            };
+            proptest::prop_assert_eq!(round_trip(&target), target);
+        }
+    }
+
+    #[test]
+    fn a_family_group_that_could_mislead_does_not_decode() {
+        let group = |members: &str| {
+            format!(
+                r#"{{"first": {{"basis": "baseline", "at": "2027-01-15T08:00:01Z", "reason": "first_read"}},
+                    "last_present_at": "2027-01-15T08:00:05Z", "members": {members}}}"#
+            )
+        };
+        let cases = [
+            (
+                "a key in two groups",
+                format!(
+                    r#"[{}, {}]"#,
+                    group(r#"["a:1"]"#),
+                    group(r#"["a:1", "a:2"]"#)
+                ),
+            ),
+            (
+                "a key twice in one group",
+                format!("[{}]", group(r#"["a:1", "a:1"]"#)),
+            ),
+            ("a group without members", format!("[{}]", group("[]"))),
+            ("a map, as each family alone", r#"{"a:1": {}}"#.to_owned()),
+        ];
+        for (name, families) in cases {
+            let json = format!(r#"{{"families": {families}}}"#);
+            assert!(
+                serde_json::from_str::<TargetLedger>(&json).is_err(),
+                "{name} decoded: {json}"
+            );
+        }
+        // And a ledger whose file does not decode loads empty, so it baselines again.
+        let (_dir, paths, _) = store_home();
+        let bad = format!(
+            r#"{{"schema_version": "1.0", "identity": {LEDGER_IDENTITY}, "revision": 3,
+                 "targets": {{"k": {{"families": [{}, {}]}}}}}}"#,
+            group(r#"["a:1"]"#),
+            group(r#"["a:1"]"#)
+        );
+        std::fs::create_dir_all(paths.cache_dir()).unwrap();
+        std::fs::write(paths.errors_ledger(), bad).unwrap();
+        assert_eq!(load(&paths).unwrap().targets, BTreeMap::new());
     }
 
     #[test]
@@ -1754,6 +2009,7 @@ mod tests {
             "max_session",
             "max_written_at",
             "meaning",
+            "members",
             "observed_at",
             "other_changes",
             "overflowed",

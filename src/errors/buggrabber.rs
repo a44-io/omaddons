@@ -123,8 +123,12 @@ pub enum TzEvidence {
     Explicit,
 }
 
-/// An instant with what it means and how sure its zone is: the wire's `last_seen`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+/// An instant with what it means and how sure its zone is: the wire's `last_seen`. Its
+/// order is the fields' (the errors ledger groups records by it); it says nothing about
+/// which time is earlier in the game.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 pub struct TimeEvidence {
     #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
     pub at: Option<Timestamp>,
