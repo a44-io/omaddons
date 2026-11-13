@@ -19,14 +19,14 @@ use super::attribute::{Attributed, Attribution, FolderSet, attribute};
 use super::buggrabber::{
     BugDb, BugEntry, DbShape, EntryType, Origin, TimeEvidence, Tri, decode, evidence,
 };
-use super::locate::{Capture, Coverage, GLOBAL, Listing, Skipped, locate};
+use super::locate::{Capture, Coverage as WalkCoverage, GLOBAL, Listing, Skipped, locate};
 use super::memo::TargetMemo;
 use super::sanitize::{fingerprint, normalized, strict_message};
 use crate::error::{Suggestion, Warning, WarningCode};
 use crate::fsx::FileStamp;
 use crate::inventory::Inventory;
 use crate::limits::ERRORS_NEW_MAX_AGE;
-use crate::lua::{is_too_large, parse_saved_variables, read_bounded};
+use crate::lua::{is_too_large, parse_saved_variables, read_bounded_stamped};
 use crate::state::paths::ClientPaths;
 
 /// What an error group is attributed to (the wire's `kind`).
@@ -63,6 +63,36 @@ impl ReadState {
     }
 }
 
+/// What one read of one database can vouch for (regression guard, design 7.1.3): kept
+/// apart from [`ReadState`], which stays on the wire as it is. Internal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Coverage {
+    /// An error not in this read was absent when the game wrote the file.
+    Proved,
+    /// What it holds is real; an error not in it may still exist.
+    Degraded(Gap),
+}
+
+/// Why a read cannot vouch for an error's absence: the first of [`read_stable`]'s
+/// conditions it failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gap {
+    /// Not a regular file reached through the rules `locate` applies.
+    NotAFile,
+    /// It could not be read, or is over the size or the run's budget.
+    Unread,
+    /// The file changed while it was read, or was written too recently to trust its
+    /// stamp.
+    Unstable,
+    /// The input ended inside a value, damage cut the database short, or the parser hit
+    /// one of its own limits inside it.
+    Truncated,
+    /// No `BugGrabberDB` global, or it is not a table, or its `errors` is not a table.
+    Unrecognized,
+    /// At least one entry was skipped: malformed, or past the entry cap.
+    Dropped,
+}
+
 /// One BugGrabber database: one file of one account (or one embedding addon's).
 #[derive(Debug, Clone)]
 pub struct Database {
@@ -76,6 +106,8 @@ pub struct Database {
     /// The DB's current session, when read.
     pub session: Option<u32>,
     pub state: ReadState,
+    /// What this read can vouch for: only a `Proved` read may show an error absent.
+    pub coverage: Coverage,
     /// Sessions above it are new (M3-D19).
     pub baseline: u32,
     /// The user's dismissal, while it is valid (not above the current session).
@@ -109,7 +141,9 @@ pub struct Observed {
 #[derive(Debug, Clone)]
 pub struct Observation {
     pub capture: Capture,
-    pub coverage: Coverage,
+    /// How much of the client the walk saw (each database's own read is
+    /// [`Database::coverage`]).
+    pub coverage: WalkCoverage,
     pub skipped: Skipped,
     pub listings: Vec<Listing>,
     /// Account folders examined.
@@ -124,7 +158,7 @@ impl Observation {
     /// Whether everything that may hold errors was read whole: no database partial,
     /// over budget or unreadable, and no bound hit.
     pub fn complete(&self) -> bool {
-        self.coverage == Coverage::Complete && self.databases.iter().all(|d| d.state.complete())
+        self.coverage == WalkCoverage::Complete && self.databases.iter().all(|d| d.state.complete())
     }
 
     pub fn local(&self) -> impl Iterator<Item = &Observed> {
@@ -186,7 +220,9 @@ pub fn read_target(cx: &Observe<'_>, budget: &mut u64) -> Observation {
             .memo
             .and_then(|m| m.databases.iter().find(|d| d.path == path))
             .filter(|p| p.session.is_some());
-        let (state, db) = read_db(&file.path, file.stamp, budget);
+        // The wall clock, not `cx.now`: it is compared with the file's `ctime`.
+        let (state, coverage, db, _) =
+            read_stable(&file.path, budget, Timestamp::now().as_nanosecond());
         let session = db.session.or_else(|| {
             // Not read: what the last run saw stays.
             (!state.complete() && state != ReadState::Partial)
@@ -269,6 +305,7 @@ pub fn read_target(cx: &Observe<'_>, budget: &mut u64) -> Observation {
             shape: db.shape,
             session,
             state,
+            coverage,
             baseline,
             acknowledged: ack.filter(|a| session.is_none_or(|s| a.acked_session <= s)),
             path,
@@ -356,30 +393,108 @@ fn within(at: Timestamp, now: Timestamp, age: Duration) -> bool {
     at >= now || now.duration_since(at).unsigned_abs() <= age
 }
 
-/// One file's database and how it was read, within `budget`.
-fn read_db(path: &Path, stamp: FileStamp, budget: &mut u64) -> (ReadState, BugDb) {
+/// One file's database within `budget`: how it was read ([`ReadState`], as before), what
+/// the read can vouch for ([`Coverage`]), what it decoded, and the path's stamp before
+/// the read (`None` when nothing was there). `now_ns` is the wall clock when it is
+/// called, which the first stamp must be settled at.
+///
+/// A read is [`Coverage::Proved`] only when all of these hold, checked in this order,
+/// the first that fails naming the [`Gap`] (design 7.1.3):
+///
+/// 1. a regular file at the path (`locate` reached it by its rules), within the budget
+///    and readable;
+/// 2. stable bytes: the path's stamps before and after the read are equal, the handle
+///    that was read names the same device and inode, and the first stamp was settled;
+/// 3. the whole value: the parser finished and did not cut the database short, its own
+///    node and depth limits included;
+/// 4. a recognized database ([`BugDb::recognized`]);
+/// 5. every entry decoded (`BugDb::dropped` is 0).
+///
+/// It never waits or retries: a file the game is writing is read properly by the next
+/// read, and whatever a degraded read decoded is returned all the same.
+pub fn read_stable(
+    path: &Path,
+    budget: &mut u64,
+    now_ns: i128,
+) -> (ReadState, Coverage, BugDb, Option<FileStamp>) {
     // ubs:ignore — BugGrabber's SavedVariables, not a token
     let empty = || decode(&crate::lua::Value::Nil);
-    if stamp.size() > *budget {
-        return (ReadState::OverBudget, empty());
+    let degraded = Coverage::Degraded;
+    let first = match FileStamp::read(path) {
+        Ok(Some(stamp)) => stamp,
+        Ok(None) | Err(_) => {
+            return (ReadState::Unreadable, degraded(Gap::Unread), empty(), None);
+        }
+    };
+    // Not followed or read: `locate` admitted only a regular file here, so anything else
+    // is another file than the one it found.
+    if !first.is_file() {
+        return (
+            ReadState::Unreadable,
+            degraded(Gap::NotAFile),
+            empty(),
+            Some(first),
+        );
     }
-    let bytes = match read_bounded(path) {
-        Ok(bytes) => bytes,
-        Err(err) if is_too_large(&err) => return (ReadState::OverBudget, empty()),
-        Err(_) => return (ReadState::Unreadable, empty()),
+    if first.size() > *budget {
+        return (
+            ReadState::OverBudget,
+            degraded(Gap::Unread),
+            empty(),
+            Some(first),
+        );
+    }
+    let (bytes, handle) = match read_bounded_stamped(path) {
+        Ok(read) => read,
+        Err(err) if is_too_large(&err) => {
+            return (
+                ReadState::OverBudget,
+                degraded(Gap::Unread),
+                empty(),
+                Some(first),
+            );
+        }
+        Err(_) => {
+            return (
+                ReadState::Unreadable,
+                degraded(Gap::Unread),
+                empty(),
+                Some(first),
+            );
+        }
     };
     *budget = budget.saturating_sub(bytes.len() as u64);
+    // A test replaces the file here; an armed `error` counts as a change.
+    let unbroken = crate::fsx::failpoint::hit("errors.read.between").is_ok();
+    let second = FileStamp::read(path).ok().flatten();
+    let stable = unbroken
+        && second == Some(first)
+        && handle.dev() == first.dev()
+        && handle.ino() == first.ino()
+        && first.settled(now_ns);
     let parsed = parse_saved_variables(&bytes, &[GLOBAL]);
     // Cut short two ways: the input ended inside a value (`complete` is false), or damage
     // inside the database's own value stopped it there while the file went on (`partial`
     // names it, `complete` stays true). Either way errors after the cut were not read.
-    let state = if parsed.complete && !parsed.partial.contains(GLOBAL) {
+    let whole = parsed.complete && !parsed.partial.contains(GLOBAL);
+    let state = if whole {
         ReadState::Complete
     } else {
         ReadState::Partial
     };
     let db = parsed.globals.get(GLOBAL).map_or_else(empty, decode);
-    (state, db)
+    let coverage = if !stable {
+        degraded(Gap::Unstable)
+    } else if !whole {
+        degraded(Gap::Truncated)
+    } else if !db.recognized {
+        degraded(Gap::Unrecognized)
+    } else if db.dropped > 0 {
+        degraded(Gap::Dropped)
+    } else {
+        Coverage::Proved
+    };
+    (state, coverage, db, Some(first))
 }
 
 fn partial_warning(target: &str, account: usize, state: ReadState) -> Warning {
@@ -780,11 +895,286 @@ mod tests {
         for (case, text, want, entries) in cases {
             let path = dir.path().join("!BugGrabber.lua");
             std::fs::write(&path, text).unwrap();
-            let stamp = FileStamp::read(&path).unwrap().unwrap();
             let mut budget = u64::MAX;
-            let (state, db) = read_db(&path, stamp, &mut budget);
+            let (state, _, db, _) = read_stable(&path, &mut budget, settled_at(&path));
             assert_eq!(state, want, "case {case}");
             assert_eq!(db.entries.len(), entries, "case {case}");
         }
+    }
+
+    // ---- Proved reads (regression guard, 7.1.3) ---------------------------------------
+
+    /// A wall-clock moment at which `path`'s stamp is settled, on any clock.
+    fn settled_at(path: &Path) -> i128 {
+        FileStamp::read(path).unwrap().unwrap().ctime_ns() + crate::limits::RACY_SLACK_COARSE_NS + 1
+    }
+
+    /// One entry of session 10 at line `n`.
+    fn entry(n: usize) -> String {
+        format!(
+            "{{\n[\"message\"] = \"Foo\\\\core.lua:{n}: boom\",\n[\"session\"] = 10,\n[\"counter\"] = 1,\n}},\n"
+        )
+    }
+
+    /// A database of session 10 holding `entries` as its `errors`, then `extra` inside the
+    /// global.
+    fn database(entries: &str, extra: &str) -> String {
+        format!(
+            "\nBugGrabberDB = {{\n[\"session\"] = 10,\n[\"errors\"] = {{\n{entries}}},\n{extra}}}\n"
+        )
+    }
+
+    /// Writes `text` as `!BugGrabber.lua` in `dir`.
+    fn written(dir: &Path, text: &str) -> std::path::PathBuf {
+        let path = dir.join("!BugGrabber.lua");
+        std::fs::write(&path, text).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_read_proves_absence_only_when_whole_recognized_and_complete() {
+        let three = format!("{}{}{}", entry(1), entry(2), entry(3));
+        let whole = database(&three, "");
+        let malformed = database(
+            &format!(
+                "{}{{\n[\"session\"] = 10,\n}},\n\"not an entry\",\n{}",
+                entry(1),
+                entry(3)
+            ),
+            "",
+        );
+        let past_cap: String = (1..=crate::limits::BUGGRABBER_MAX_ENTRIES + 1)
+            .map(entry)
+            .collect();
+        let deep = format!(
+            "[\"deep\"] = {}{},\n",
+            "{".repeat(crate::limits::LUA_MAX_DEPTH + 1),
+            "}".repeat(crate::limits::LUA_MAX_DEPTH + 1)
+        );
+        let nodes = format!(
+            "[\"filler\"] = {{ {} }},\n",
+            "1, ".repeat(usize::try_from(crate::limits::LUA_MAX_NODES).unwrap() + 1)
+        );
+        // (case, the file, its read state, what it vouches for, entries returned)
+        let cases: Vec<(&str, String, ReadState, Coverage, usize)> = vec![
+            (
+                "a whole database",
+                whole.clone(),
+                ReadState::Complete,
+                Coverage::Proved,
+                3,
+            ),
+            (
+                "a complete file with no BugGrabberDB global",
+                "\nOther = {\n[\"errors\"] = {\n},\n}\n".to_owned(),
+                ReadState::Complete,
+                Coverage::Degraded(Gap::Unrecognized),
+                0,
+            ),
+            (
+                "a global that is a string",
+                "\nBugGrabberDB = \"errors\"\n".to_owned(),
+                ReadState::Complete,
+                Coverage::Degraded(Gap::Unrecognized),
+                0,
+            ),
+            (
+                "a global whose errors is a number",
+                "\nBugGrabberDB = {\n[\"session\"] = 10,\n[\"errors\"] = 5,\n}\n".to_owned(),
+                ReadState::Complete,
+                Coverage::Degraded(Gap::Unrecognized),
+                0,
+            ),
+            (
+                "a global whose errors is an empty table",
+                database("", ""),
+                ReadState::Complete,
+                Coverage::Proved,
+                0,
+            ),
+            (
+                "malformed entries among good ones",
+                malformed,
+                ReadState::Complete,
+                Coverage::Degraded(Gap::Dropped),
+                2,
+            ),
+            (
+                "more entries than BUGGRABBER_MAX_ENTRIES",
+                database(&past_cap, ""),
+                ReadState::Complete,
+                Coverage::Degraded(Gap::Dropped),
+                crate::limits::BUGGRABBER_MAX_ENTRIES,
+            ),
+            (
+                "input that ends inside a value",
+                whole[..whole.len() / 2].to_owned(),
+                ReadState::Partial,
+                Coverage::Degraded(Gap::Truncated),
+                1,
+            ),
+            (
+                "damage inside the global",
+                format!(
+                    "\nBugGrabberDB = {{\n[\"session\"] = 10,\n[\"errors\"] = {{\n{}{{ = oops\n{}}},\n}}\nOther = 1\n",
+                    entry(1),
+                    entry(3)
+                ),
+                ReadState::Partial,
+                Coverage::Degraded(Gap::Truncated),
+                1,
+            ),
+            (
+                "a global nested past the parser's depth limit",
+                database(&entry(1), &deep),
+                ReadState::Partial,
+                Coverage::Degraded(Gap::Truncated),
+                1,
+            ),
+            (
+                "a global with more values than the parser's node limit",
+                database(&entry(1), &nodes),
+                ReadState::Partial,
+                Coverage::Degraded(Gap::Truncated),
+                1,
+            ),
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        for (case, text, state, coverage, entries) in cases {
+            let path = written(dir.path(), &text);
+            let mut budget = u64::MAX;
+            let (read, covered, db, stamp) = read_stable(&path, &mut budget, settled_at(&path));
+            assert_eq!(
+                (read, covered, db.entries.len()),
+                (state, coverage, entries),
+                "{case}"
+            );
+            assert_eq!(stamp, FileStamp::read(&path).unwrap(), "{case}: the stamp");
+            assert_eq!(budget, u64::MAX - text.len() as u64, "{case}: the budget");
+        }
+    }
+
+    #[test]
+    fn a_file_over_the_budget_is_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = written(dir.path(), &database(&entry(1), ""));
+        let mut budget = 10;
+        let (state, coverage, db, _) = read_stable(&path, &mut budget, settled_at(&path));
+        assert_eq!(
+            (state, coverage, db.entries.len(), budget),
+            (
+                ReadState::OverBudget,
+                Coverage::Degraded(Gap::Unread),
+                0,
+                10
+            )
+        );
+        let gone = dir.path().join("gone.lua");
+        let mut budget = u64::MAX;
+        let (state, coverage, _, stamp) = read_stable(&gone, &mut budget, 0);
+        assert_eq!(
+            (state, coverage, stamp),
+            (ReadState::Unreadable, Coverage::Degraded(Gap::Unread), None),
+            "a file that vanished since the walk"
+        );
+    }
+
+    #[test]
+    fn a_symlink_or_a_directory_at_the_path_is_not_a_file_and_is_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real.lua");
+        std::fs::write(&real, database(&entry(1), "")).unwrap();
+        let link = dir.path().join("link.lua");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let folder = dir.path().join("folder.lua");
+        std::fs::create_dir(&folder).unwrap();
+        for (case, path) in [("a symlink", &link), ("a directory", &folder)] {
+            let mut budget = u64::MAX;
+            let (state, coverage, db, _) = read_stable(path, &mut budget, settled_at(&real));
+            assert_eq!(
+                (state, coverage, db.entries.len(), budget),
+                (
+                    ReadState::Unreadable,
+                    Coverage::Degraded(Gap::NotAFile),
+                    0,
+                    u64::MAX
+                ),
+                "{case}"
+            );
+        }
+    }
+
+    /// A file written a moment ago cannot vouch for its stamp: a write in the same tick
+    /// of the timestamp clock would not move it. The same file read again once its
+    /// `ctime` is past the slack proves absence. Nothing in the path waits: the fastest
+    /// of a few unstable reads takes well under a millisecond.
+    #[test]
+    fn a_file_written_a_moment_ago_is_unstable_until_its_stamp_settles() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = written(dir.path(), &database(&entry(1), ""));
+        let ctime = FileStamp::read(&path).unwrap().unwrap().ctime_ns();
+        let fastest = (0..5)
+            .map(|_| {
+                let mut budget = u64::MAX;
+                let started = std::time::Instant::now();
+                let (state, coverage, db, _) = read_stable(&path, &mut budget, ctime + 1_000_000);
+                let took = started.elapsed();
+                assert_eq!(
+                    (state, coverage, db.entries.len()),
+                    (ReadState::Complete, Coverage::Degraded(Gap::Unstable), 1),
+                    "1 ms after its write: what it read is returned, nothing vouched for"
+                );
+                took
+            })
+            .min()
+            .unwrap();
+        assert!(
+            fastest < std::time::Duration::from_millis(1),
+            "an unstable read returns at once: {fastest:?}"
+        );
+        let mut budget = u64::MAX;
+        let (_, coverage, _, _) = read_stable(&path, &mut budget, settled_at(&path));
+        assert_eq!(coverage, Coverage::Proved, "read again after the slack");
+    }
+
+    /// The file is replaced (renamed over) between the read and the second stamp: the
+    /// bytes read are returned, and the read vouches for nothing.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_file_replaced_during_the_read_is_unstable() {
+        const POINT: &str = "errors.read.between";
+        let dir = tempfile::tempdir().unwrap();
+        let marks = tempfile::tempdir().unwrap();
+        let three = format!("{}{}{}", entry(1), entry(2), entry(3));
+        let path = written(dir.path(), &database(&three, ""));
+        let now = settled_at(&path);
+        let reader = {
+            let (path, marks) = (path.clone(), marks.path().to_path_buf());
+            std::thread::spawn(move || {
+                crate::fsx::with_spec_in(&marks, &format!("{POINT}=pause"), || {
+                    let mut budget = u64::MAX;
+                    read_stable(&path, &mut budget, now)
+                })
+            })
+        };
+        let reached = marks.path().join(format!("{POINT}.reached"));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !reached.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the read never reached {POINT}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let replacement = dir.path().join("replacement.lua");
+        std::fs::write(&replacement, database(&entry(9), "")).unwrap();
+        std::fs::rename(&replacement, &path).unwrap();
+        std::fs::write(marks.path().join(format!("{POINT}.resume")), "").unwrap();
+        let (state, coverage, db, _) = reader.join().unwrap();
+        assert_eq!(
+            (state, coverage, db.entries.len()),
+            (ReadState::Complete, Coverage::Degraded(Gap::Unstable), 3),
+            "the replaced file's old bytes are returned, and vouch for nothing"
+        );
     }
 }

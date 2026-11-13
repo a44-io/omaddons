@@ -233,6 +233,12 @@ pub struct InputTooLarge {
 /// larger one is an error carrying [`InputTooLarge`] (see [`is_too_large`]), with
 /// nothing returned of what was read.
 pub fn read_bounded(path: &Path) -> io::Result<Vec<u8>> {
+    read_bounded_stamped(path).map(|(bytes, _)| bytes)
+}
+
+/// [`read_bounded`], with the stamp of the handle it read (`fstat`), so a caller can
+/// tell that the bytes came from the inode its path's stamps name. Still only reads.
+pub fn read_bounded_stamped(path: &Path) -> io::Result<(Vec<u8>, crate::fsx::FileStamp)> {
     let too_large = || {
         io::Error::new(
             io::ErrorKind::FileTooLarge,
@@ -242,7 +248,8 @@ pub fn read_bounded(path: &Path) -> io::Result<Vec<u8>> {
         )
     };
     let file = std::fs::File::open(path)?;
-    if file.metadata()?.len() > SAVEDVARIABLES_MAX_BYTES {
+    let stamp = crate::fsx::FileStamp::of_handle(&file)?;
+    if stamp.size() > SAVEDVARIABLES_MAX_BYTES {
         return Err(too_large());
     }
     let mut bytes = Vec::new();
@@ -252,7 +259,7 @@ pub fn read_bounded(path: &Path) -> io::Result<Vec<u8>> {
     if bytes.len() as u64 > SAVEDVARIABLES_MAX_BYTES {
         return Err(too_large());
     }
-    Ok(bytes)
+    Ok((bytes, stamp))
 }
 
 /// Whether `err` is [`read_bounded`]'s over-the-cap error, not a failed read.

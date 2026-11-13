@@ -35,6 +35,11 @@ pub struct BugDb {
     pub entries: Vec<BugEntry>,
     /// Entries skipped: malformed, or the oldest past the cap.
     pub dropped: usize,
+    /// The value is a database: a table whose `errors` is a table (an empty one is a
+    /// database with no errors). A missing global, a value of another type, or an
+    /// `errors` that is missing or not a table decodes as empty and is not recognized:
+    /// "empty" and "not a database" are never the same thing (regression guard, 7.1.3).
+    pub recognized: bool,
 }
 
 /// Which BugGrabber wrote a database.
@@ -195,6 +200,7 @@ pub fn decode(value: &Value) -> BugDb {
         shape: DbShape::Modern,
         entries: Vec::new(),
         dropped: 0,
+        recognized: false,
     };
     let Value::Table(t) = value else {
         return db;
@@ -203,6 +209,7 @@ pub fn decode(value: &Value) -> BugDb {
     let Some(Value::Table(errors)) = t.get("errors") else {
         return db;
     };
+    db.recognized = true;
     // Newest first, up to the cap: the oldest go first (repeats move to the end).
     let all: Vec<&Value> = errors.seq().collect();
     let mut newest_first = Vec::new();
@@ -361,6 +368,43 @@ mod tests {
             fields.push(("save", Value::Bool(true)));
         }
         t(fields)
+    }
+
+    /// "Empty" and "not a database" are never the same thing: only a table whose
+    /// `errors` is a table is recognized, an empty one included.
+    #[test]
+    fn only_a_table_with_an_errors_table_is_a_recognized_database() {
+        // (case, the global's value, recognized)
+        let cases = [
+            ("no global (nil)", Value::Nil, false),
+            ("a string", s("errors"), false),
+            (
+                "a table without errors",
+                t(vec![("session", Value::Int(9))]),
+                false,
+            ),
+            (
+                "errors that is a number",
+                t(vec![("session", Value::Int(9)), ("errors", Value::Int(5))]),
+                false,
+            ),
+            ("errors that is an empty table", db(Vec::new(), false), true),
+            (
+                "errors with a malformed entry",
+                db(vec![s("not an entry")], false),
+                true,
+            ),
+        ];
+        for (case, value, recognized) in cases {
+            let decoded = read(&value);
+            assert_eq!(decoded.recognized, recognized, "{case}");
+            assert!(decoded.entries.is_empty(), "{case}");
+        }
+        assert_eq!(
+            read(&db(vec![s("not an entry")], false)).dropped,
+            1,
+            "recognized, and the skipped entry counted"
+        );
     }
 
     #[test]

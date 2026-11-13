@@ -649,6 +649,7 @@ mod tests {
                 shape: DbShape::Modern,
                 session: g.session,
                 state: ReadState::Complete,
+                coverage: crate::errors::observe::Coverage::Proved,
                 baseline: g.baseline,
                 acknowledged: ack.filter(|a| g.session.is_none_or(|s| a.acked_session <= s)),
                 path,

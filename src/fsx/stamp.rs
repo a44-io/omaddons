@@ -41,6 +41,13 @@ impl FileStamp {
         }
     }
 
+    /// The stamp of an open file: what the handle names (`fstat`), whatever its path
+    /// names now. A read that compares it with its path's stamps knows the bytes came
+    /// from the inode it stamped.
+    pub fn of_handle(file: &fs::File) -> io::Result<Self> {
+        Ok(Self::of(&file.metadata()?))
+    }
+
     fn of(meta: &Metadata) -> Self {
         let ns = |secs: i64, nanos: i64| i128::from(secs) * 1_000_000_000 + i128::from(nanos);
         Self {
