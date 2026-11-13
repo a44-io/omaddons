@@ -124,6 +124,7 @@ mod plans_show_commands;
 mod preconditions;
 mod preconditions_matrix;
 mod purge;
+mod readme;
 mod real_machine;
 mod registry;
 mod release_cache;
