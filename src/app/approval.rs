@@ -450,6 +450,7 @@ mod tests {
             from_version: from.map(str::to_owned),
             to_version: to.map(str::to_owned),
             folders: FolderSummary::default(),
+            policy: crate::engine::plan::PolicyDelta::default(),
         }
     }
 

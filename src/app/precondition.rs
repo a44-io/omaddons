@@ -19,7 +19,7 @@ use crate::app::outcome::SkipReason;
 use crate::cli::Context;
 use crate::doctor::fix::{BoundRepair, FixPlan};
 use crate::doctor::gc::{LatestChange, Victim};
-use crate::engine::plan::{Change, Plan, PlannedOp, PlannedRelease, TargetPlan};
+use crate::engine::plan::{Change, Plan, PlannedOp, PlannedRelease, PolicyDelta, TargetPlan};
 use crate::engine::tx::UnderLock;
 use crate::engine::witness::{
     self, ApprovalWitness, Operations, RecheckAt, RecheckCost, WitnessScope,
@@ -27,7 +27,9 @@ use crate::engine::witness::{
 use crate::engine::{Binding, UndoOutcome as EngineUndo};
 use crate::error::{Error, PlanStaleSource, Result, Suggestion};
 pub use crate::model::TargetRef;
-use crate::model::{Actor, BackupId, FolderName, Target, TargetKey, TxId};
+use crate::model::{
+    Actor, BackupId, FolderName, SkipIdentity, SkippedRelease, Target, TargetKey, TxId,
+};
 
 /// The command paths whose runs bind to a preview; `--if-match` is a usage error on any
 /// other.
@@ -41,6 +43,8 @@ pub const BINDING_COMMANDS: &[&str] = &[
     "update",
     "pin",
     "unpin",
+    "skip",
+    "unskip",
     "adopt",
     "sync",
     "copy",
@@ -496,7 +500,7 @@ fn change_value(c: &Change) -> Value {
     fields.sort_unstable();
     let mut skipped: Vec<_> = c.folders.skipped.iter().collect();
     skipped.sort_by_key(|s| s.name.key());
-    json!({
+    let mut value = json!({
         "addon": c.addon,
         "ref": c.r#ref.to_string(),
         "kind": c.kind,
@@ -510,6 +514,31 @@ fn change_value(c: &Change) -> Value {
             "recorded": folder_names(&c.folders.recorded),
             "skipped": skipped,
         },
+    });
+    // A change that moves no policy hashes exactly as before, so no other command's
+    // token changes.
+    if !c.policy.is_empty()
+        && let Value::Object(map) = &mut value
+    {
+        map.insert("policy".to_owned(), policy_value(&c.policy));
+    }
+    value
+}
+
+/// The policy a change moves, canonical (design 7.5.6): each mark by what it selects,
+/// sorted, never its `at` or `tx` (a mark's are the commit's, not the preview's), and
+/// the release that must be installed.
+fn policy_value(p: &PolicyDelta) -> Value {
+    let selects = |marks: &[SkippedRelease]| {
+        let mut ids: Vec<SkipIdentity> = marks.iter().map(SkippedRelease::selects).collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    };
+    json!({
+        "skips_added": selects(&p.skips_added),
+        "skips_removed": selects(&p.skips_removed),
+        "expect_installed": p.expect_installed,
     })
 }
 
@@ -1500,7 +1529,116 @@ mod tests {
             from_version: None,
             to_version: None,
             folders,
+            policy: PolicyDelta::default(),
         }
+    }
+
+    #[test]
+    fn a_change_binds_the_marks_it_moves_and_never_their_time_or_transaction() {
+        use crate::model::{InstalledRelease, ReleaseKey, SkipOrigin, SkippedRelease, TxId};
+        let mark = |tag: &str, at: &str, tx: &str| SkippedRelease {
+            release: ReleaseKey::parse(&format!("gh:o/foo@{tag}"), None),
+            version: tag.into(),
+            at: at.parse().unwrap(),
+            origin: SkipOrigin::Manual,
+            tx: tx.parse::<TxId>().unwrap(),
+        };
+        let installed = InstalledRelease {
+            version: "v1".into(),
+            release: ReleaseKey::parse("gh:o/foo@v1", None),
+            witness: crate::model::ArtifactWitness::default(),
+        };
+        let skip = |marks: Vec<SkippedRelease>, installed: Option<InstalledRelease>| {
+            let mut c = change(
+                "Foo",
+                "gh:o/foo",
+                ChangeKind::Edit,
+                FolderSummary::default(),
+            );
+            c.fields = vec![crate::engine::edit::EditField::SkippedReleases];
+            c.policy = PolicyDelta {
+                skips_added: marks,
+                skips_removed: Vec::new(),
+                expect_installed: installed,
+            };
+            change_value(&c)
+        };
+        let v2 = skip(
+            vec![mark(
+                "v2",
+                "2026-11-01T00:00:00Z",
+                "01JB8Q2VA00000000000000001",
+            )],
+            Some(installed.clone()),
+        );
+        // (case, another change's value, the same token)
+        let cases = [
+            (
+                "the same mark made at another time by another transaction",
+                skip(
+                    vec![mark(
+                        "v2",
+                        "2026-11-02T00:00:00Z",
+                        "01JB8Q2VA00000000000000002",
+                    )],
+                    Some(installed.clone()),
+                ),
+                true,
+            ),
+            (
+                "another release to mark",
+                skip(
+                    vec![mark(
+                        "v3",
+                        "2026-11-01T00:00:00Z",
+                        "01JB8Q2VA00000000000000001",
+                    )],
+                    Some(installed.clone()),
+                ),
+                false,
+            ),
+            (
+                "the same mark against another installed release",
+                skip(
+                    vec![mark(
+                        "v2",
+                        "2026-11-01T00:00:00Z",
+                        "01JB8Q2VA00000000000000001",
+                    )],
+                    Some(InstalledRelease {
+                        version: "v1.1".into(),
+                        release: ReleaseKey::parse("gh:o/foo@v1.1", None),
+                        ..installed.clone()
+                    }),
+                ),
+                false,
+            ),
+        ];
+        for (case, other, same) in cases {
+            assert_eq!(other == v2, same, "{case}: {other} vs {v2}");
+        }
+        let plain = change_value(&change(
+            "Foo",
+            "gh:o/foo",
+            ChangeKind::Edit,
+            FolderSummary::default(),
+        ));
+        assert!(
+            plain.get("policy").is_none(),
+            "a change that moves no policy hashes as before: {plain}"
+        );
+        assert_eq!(
+            v2["policy"],
+            json!({
+                "skips_added": [{"release": {"source": "gh:o/foo", "tag": "v2"}}],
+                "skips_removed": [],
+                "expect_installed": {
+                    "version": "v1",
+                    "release": {"source": "gh:o/foo", "tag": "v1"},
+                    "witness": {},
+                },
+            })
+        );
     }
 
     fn plan_with(targets: Vec<TargetPlan>) -> Plan {
@@ -2782,6 +2920,8 @@ mod tests {
                 "update",
                 "pin",
                 "unpin",
+                "skip",
+                "unskip",
                 "adopt",
                 "sync",
                 "copy",

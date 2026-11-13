@@ -67,7 +67,7 @@ expression: redacted(&c.envelope)
   "ok": true,
   "precondition": null,
   "remaining": 0,
-  "schema_version": "1.1",
+  "schema_version": "1.2",
   "skipped": [],
   "tool_version": "<version>",
   "warnings": []

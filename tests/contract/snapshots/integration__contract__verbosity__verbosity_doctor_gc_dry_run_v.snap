@@ -15,7 +15,7 @@ expression: s.stable(&checked.envelope)
   "ok": true,
   "precondition": "<precondition>",
   "remaining": 0,
-  "schema_version": "1.1",
+  "schema_version": "1.2",
   "skipped": [],
   "tool_version": "<version>",
   "warnings": []

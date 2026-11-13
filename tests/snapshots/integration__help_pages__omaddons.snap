@@ -9,8 +9,8 @@ Usage: omaddons [OPTIONS] <COMMAND>
 
 Look      status  list  outdated  info  search  errors  export  history  plans
           net-log  doctor
-Change    install  update  pin  unpin  adopt  sync  copy  remove  undo  apply
-          backup
+Change    install  update  pin  unpin  skip  unskip  adopt  sync  copy  remove
+          undo  apply  backup
 Setup     targets  config  auth  omarchy  completions  install-completions
           robot-docs  capabilities  help
 
@@ -36,8 +36,8 @@ Usage: omaddons [OPTIONS] <COMMAND>
 
 Look      status  list  outdated  info  search  errors  export  history  plans
           net-log  doctor
-Change    install  update  pin  unpin  adopt  sync  copy  remove  undo  apply
-          backup
+Change    install  update  pin  unpin  skip  unskip  adopt  sync  copy  remove
+          undo  apply  backup
 Setup     targets  config  auth  omarchy  completions  install-completions
           robot-docs  capabilities  help
 
@@ -79,6 +79,8 @@ Change (preview any with --dry-run):
   update, upgrade                Update managed addons on every client
   pin                            Hold an addon at its release through updates
   unpin                          Let a pinned addon update again
+  skip                           Pass over one release; updates resume at the next
+  unskip                         Offer a skipped release again
   adopt                          Bring addons installed by hand under management
   sync                           Make every client match addons.toml
   copy                           Install one client's addons on another

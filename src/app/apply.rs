@@ -32,6 +32,7 @@ use super::outcome::{ItemStatus, TargetsData};
 use super::pin::{self, PinArgs, PinOutcome, UnpinArgs};
 use super::precondition;
 use super::remove::{self, RemoveArgs, RemoveData, RemoveOutcome, RemoveStatus};
+use super::skip::{self, SkipArgs, SkipOutcome, UnskipArgs};
 use super::sync::{self, SyncArgs, SyncOutcome};
 use super::undo::{self, UndoArgs, UndoData, UndoOutcome, UndoTxStatus};
 use super::update::{self, UpdateArgs, UpdateOutcome};
@@ -234,6 +235,8 @@ storable_commands! {
     Update,        "update",         UpdateArgs,        update::run,            UpdateOutcome,        TargetsData;
     Pin,           "pin",            PinArgs,           pin::pin,               PinOutcome,           TargetsData;
     Unpin,         "unpin",          UnpinArgs,         pin::unpin,             PinOutcome,           TargetsData;
+    Skip,          "skip",           SkipArgs,          skip::skip,             SkipOutcome,          TargetsData;
+    Unskip,        "unskip",         UnskipArgs,        skip::unskip,           SkipOutcome,          TargetsData;
     Adopt,         "adopt",          AdoptArgs,         adopt::run,             AdoptOutcome,         AdoptData;
     Sync,          "sync",           SyncArgs,          sync::run,              SyncOutcome,          TargetsData;
     Copy,          "copy",           CopyArgs,          copy::run,              CopyOutcome,          TargetsData;
@@ -1136,6 +1139,8 @@ mod tests {
             error: failed.map(|code| ErrorBody::from(error(code))),
             identifications: None,
             left_unmanaged: None,
+            skips_marked: None,
+            skips_cleared: None,
         }
     }
 
@@ -1797,7 +1802,7 @@ mod tests {
             STORABLE_PATHS, commands,
             "the COMMANDS rows that store a plan, in order"
         );
-        assert_eq!(STORABLE_PATHS.len(), 11);
+        assert_eq!(STORABLE_PATHS.len(), 13);
     }
 
     /// `node`, its `$ref` followed into `root`'s `$defs`.
@@ -1820,6 +1825,8 @@ mod tests {
             g.subschema_for::<TargetsData>(),
             g.subschema_for::<TargetsData>(),
             g.subschema_for::<TargetsData>(),
+            g.subschema_for::<TargetsData>(),
+            g.subschema_for::<TargetsData>(),
             g.subschema_for::<AdoptData>(),
             g.subschema_for::<TargetsData>(),
             g.subschema_for::<TargetsData>(),
@@ -1836,7 +1843,7 @@ mod tests {
         let variants = root["oneOf"]
             .as_array()
             .unwrap_or_else(|| unreachable!("{root:#}"));
-        assert_eq!(variants.len(), 11, "{root:#}");
+        assert_eq!(variants.len(), 13, "{root:#}");
         assert!(
             root.get("anyOf").is_none(),
             "a union is oneOf, never anyOf: {root:#}"

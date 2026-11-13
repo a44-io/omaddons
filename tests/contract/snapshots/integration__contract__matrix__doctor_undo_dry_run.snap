@@ -48,7 +48,7 @@ expression: s.stable(&c.envelope)
   "reverted_run": "<run>",
   "run_dir": null,
   "run_id": null,
-  "schema_version": "1.1",
+  "schema_version": "1.2",
   "started_at": "<time>",
   "state": "DONE_OK",
   "tool_version": "<version>",

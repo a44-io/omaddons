@@ -34,7 +34,7 @@ use super::journal::{
     self, CommitPayload, IndexChanges, Journal, Prepared, Recovered, RecoveryAction, RecoveryEnv,
     recover_tx,
 };
-use super::plan::{Change, ChangeKind, FolderSummary};
+use super::plan::{Change, ChangeKind, FolderSummary, PolicyDelta};
 use super::retention::{snapshot_of, state_snapshot_of};
 use super::running::{self, PolicyContext, PolicyOp};
 use super::stage::{Staged, stage_trees};
@@ -1948,6 +1948,8 @@ fn restored_state(
             from_version: now.map(|a| a.version.clone()),
             to_version: then.map(|a| a.version.clone()),
             folders: summary,
+            // An undo's preview binds its own facts (`UndoFacts`), not this.
+            policy: PolicyDelta::default(),
         });
         match then {
             Some(then) => {
@@ -2058,6 +2060,7 @@ fn reverse_edits(
                     recorded: folders,
                     ..FolderSummary::default()
                 },
+                policy: PolicyDelta::default(),
             });
         }
     }

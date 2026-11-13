@@ -1,0 +1,85 @@
+---
+source: tests/help_pages.rs
+description: "a command's -h and --help pages as this build renders them at 100 columns without color; any change to an about, a flag, a value, a heading or the layout changes them: review with cargo insta review, or re-accept with INSTA_UPDATE=always cargo test --test integration help_pages:: and review git diff tests/snapshots/"
+---
+==> omaddons unskip -h <==
+Offer a skipped release again
+
+Usage: omaddons unskip [OPTIONS] [ADDON]...
+
+Arguments:
+  [ADDON]...  The installed addons: each by its name, or a catalog name or alias
+
+Options:
+      --release <RELEASE-ID>  Offer exactly this release again: clear the marks that hold it
+      --revision <N>          With --release: the release's source revision (WowAce)
+      --version <VERSION>     Clear the marks whose version reads this
+      --tx <TX>               Clear exactly the marks this transaction made
+
+Examples:
+  omaddons unskip plater -t retail            offer its skipped releases again
+  omaddons unskip plater -t retail --dry-run  which marks it would clear
+
+Global: -t <TARGET>  --json  --dry-run  -v  --quiet  --no-color  --offline  (--help lists them all)
+==> omaddons unskip --help <==
+Offer a skipped release again
+
+Clears skip marks: every one of the addons, or those of one release, label or transaction. A
+records-only change, undoable.
+
+Usage: omaddons unskip [OPTIONS] [ADDON]...
+
+Arguments:
+  [ADDON]...
+          The installed addons: each by its name, or a catalog name or alias
+          
+          At least one, except with --tx: then every addon that transaction marked.
+
+Options:
+      --release <RELEASE-ID>
+          Offer exactly this release again: clear the marks that hold it
+          
+          Its exact mark and a label mark reading its version. Takes one addon.
+
+      --revision <N>
+          With --release: the release's source revision (WowAce)
+          
+          Without it, the marks on every revision of the tag are cleared.
+
+      --version <VERSION>
+          Clear the marks whose version reads this
+          
+          Exact marks and label marks alike, ignoring one leading v. Takes one addon.
+
+      --tx <TX>
+          Clear exactly the marks this transaction made
+          
+          Its full id, as history and the result of a skip or an undo give it.
+
+Examples:
+  omaddons unskip Plater -t retail                        clear every mark of Plater
+  omaddons unskip Plater --release gh:Tercioo/Plater-Nameplates@Plater-v662 -t retail
+                                                          offer exactly this release again
+  omaddons unskip --tx 01M8Q2VA7K3N5P8R1T4W6X9Y0Z         the marks one transaction made
+
+See also: skip, update
+
+Global options:
+      --json              One JSON envelope on stdout
+      --format <FORMAT>   Output format [possible values: json, human]
+  -t, --target <TARGET>   The client to act on: id, game mode, family, path, or all [alias:
+                          --flavor]
+      --dry-run           Show the plan without changing anything
+      --actor <ACTOR>     Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
+      --reason <TEXT>     Why, recorded verbatim in history
+      --offline           Fail any network access [env: OMADDONS_OFFLINE=1]
+      --while-running     Allow folder changes while the client runs (never SavedVariables)
+      --if-match <TOKEN>  Run only what the preview that returned this token showed
+      --no-color          No ANSI color
+      --no-progress       No progress output
+      --progress <MODE>   Progress events on stderr [possible values: json, human, none]
+      --quiet             Only errors on stderr
+  -v, --verbose...        More detail (repeatable)
+  -h, --help              Show help
+
+Learn more: omaddons robot-docs guide

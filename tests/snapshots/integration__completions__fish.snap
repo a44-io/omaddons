@@ -56,6 +56,8 @@ complete -c omaddons -n "__fish_omaddons_needs_command" -f -a "update" -d 'Updat
 complete -c omaddons -n "__fish_omaddons_needs_command" -f -a "upgrade" -d 'Update managed addons on every client'
 complete -c omaddons -n "__fish_omaddons_needs_command" -f -a "pin" -d 'Hold an addon at its release through updates'
 complete -c omaddons -n "__fish_omaddons_needs_command" -f -a "unpin" -d 'Let a pinned addon update again'
+complete -c omaddons -n "__fish_omaddons_needs_command" -f -a "skip" -d 'Pass over one release; updates resume at the next'
+complete -c omaddons -n "__fish_omaddons_needs_command" -f -a "unskip" -d 'Offer a skipped release again'
 complete -c omaddons -n "__fish_omaddons_needs_command" -f -a "adopt" -d 'Bring addons installed by hand under management'
 complete -c omaddons -n "__fish_omaddons_needs_command" -f -a "sync" -d 'Make every client match addons.toml'
 complete -c omaddons -n "__fish_omaddons_needs_command" -f -a "copy" -d 'Install one client\'s addons on another'
@@ -285,6 +287,51 @@ complete -c omaddons -n "__fish_omaddons_using_subcommand unpin" -l no-progress 
 complete -c omaddons -n "__fish_omaddons_using_subcommand unpin" -l quiet -d 'Only errors on stderr'
 complete -c omaddons -n "__fish_omaddons_using_subcommand unpin" -s v -l verbose -d 'More detail (repeatable)'
 complete -c omaddons -n "__fish_omaddons_using_subcommand unpin" -s h -l help -d 'Show help'
+complete -c omaddons -n "__fish_omaddons_using_subcommand skip" -l release -d 'Pass over exactly this release, by its id from outdated or list -v' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand skip" -l revision -d 'With --release: the release\'s source revision (WowAce)' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand skip" -l version -d 'Pass over every release whose version reads this (a label mark)' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand skip" -l format -d 'Output format' -r -f -a "json\t''
+human\t''"
+complete -c omaddons -n "__fish_omaddons_using_subcommand skip" -s t -l target -l flavor -d 'The client to act on: id, game mode, family, path, or all' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand skip" -l actor -d 'Who is acting: human, agent or widget [env: OMADDONS_ACTOR]' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand skip" -l reason -d 'Why, recorded verbatim in history' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand skip" -l if-match -d 'Run only what the preview that returned this token showed' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand skip" -l progress -d 'Progress events on stderr' -r -f -a "json\t''
+human\t''
+none\t''"
+complete -c omaddons -n "__fish_omaddons_using_subcommand skip" -l json -d 'One JSON envelope on stdout'
+complete -c omaddons -n "__fish_omaddons_using_subcommand skip" -l robot -d 'The same as --json'
+complete -c omaddons -n "__fish_omaddons_using_subcommand skip" -l dry-run -d 'Show the plan without changing anything'
+complete -c omaddons -n "__fish_omaddons_using_subcommand skip" -l offline -d 'Fail any network access [env: OMADDONS_OFFLINE=1]'
+complete -c omaddons -n "__fish_omaddons_using_subcommand skip" -l while-running -d 'Allow folder changes while the client runs (never SavedVariables)'
+complete -c omaddons -n "__fish_omaddons_using_subcommand skip" -l no-color -d 'No ANSI color'
+complete -c omaddons -n "__fish_omaddons_using_subcommand skip" -l no-progress -d 'No progress output'
+complete -c omaddons -n "__fish_omaddons_using_subcommand skip" -l quiet -d 'Only errors on stderr'
+complete -c omaddons -n "__fish_omaddons_using_subcommand skip" -s v -l verbose -d 'More detail (repeatable)'
+complete -c omaddons -n "__fish_omaddons_using_subcommand skip" -s h -l help -d 'Show help'
+complete -c omaddons -n "__fish_omaddons_using_subcommand unskip" -l release -d 'Offer exactly this release again: clear the marks that hold it' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand unskip" -l revision -d 'With --release: the release\'s source revision (WowAce)' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand unskip" -l version -d 'Clear the marks whose version reads this' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand unskip" -l tx -d 'Clear exactly the marks this transaction made' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand unskip" -l format -d 'Output format' -r -f -a "json\t''
+human\t''"
+complete -c omaddons -n "__fish_omaddons_using_subcommand unskip" -s t -l target -l flavor -d 'The client to act on: id, game mode, family, path, or all' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand unskip" -l actor -d 'Who is acting: human, agent or widget [env: OMADDONS_ACTOR]' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand unskip" -l reason -d 'Why, recorded verbatim in history' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand unskip" -l if-match -d 'Run only what the preview that returned this token showed' -r
+complete -c omaddons -n "__fish_omaddons_using_subcommand unskip" -l progress -d 'Progress events on stderr' -r -f -a "json\t''
+human\t''
+none\t''"
+complete -c omaddons -n "__fish_omaddons_using_subcommand unskip" -l json -d 'One JSON envelope on stdout'
+complete -c omaddons -n "__fish_omaddons_using_subcommand unskip" -l robot -d 'The same as --json'
+complete -c omaddons -n "__fish_omaddons_using_subcommand unskip" -l dry-run -d 'Show the plan without changing anything'
+complete -c omaddons -n "__fish_omaddons_using_subcommand unskip" -l offline -d 'Fail any network access [env: OMADDONS_OFFLINE=1]'
+complete -c omaddons -n "__fish_omaddons_using_subcommand unskip" -l while-running -d 'Allow folder changes while the client runs (never SavedVariables)'
+complete -c omaddons -n "__fish_omaddons_using_subcommand unskip" -l no-color -d 'No ANSI color'
+complete -c omaddons -n "__fish_omaddons_using_subcommand unskip" -l no-progress -d 'No progress output'
+complete -c omaddons -n "__fish_omaddons_using_subcommand unskip" -l quiet -d 'Only errors on stderr'
+complete -c omaddons -n "__fish_omaddons_using_subcommand unskip" -s v -l verbose -d 'More detail (repeatable)'
+complete -c omaddons -n "__fish_omaddons_using_subcommand unskip" -s h -l help -d 'Show help'
 complete -c omaddons -n "__fish_omaddons_using_subcommand adopt" -l ref -d 'Where the one folder named comes from: anything install accepts' -r
 complete -c omaddons -n "__fish_omaddons_using_subcommand adopt" -l format -d 'Output format' -r -f -a "json\t''
 human\t''"
@@ -1733,7 +1780,7 @@ function __fish_omaddons_slot --description 'What omaddons completes at the curs
                 set target (string sub -s 3 -- $word)
                 continue
             else if string match -q -- '-*' $word
-                if contains -- $word --actor --addon --before --budget --by --channel --dir --file --flavor --format --from --if-match --keep --last-by --limit --name --older-than --only --progress --reason --ref --run --saved-variables --section --severity --since --skip --source --target --to --version -t
+                if contains -- $word --actor --addon --before --budget --by --channel --dir --file --flavor --format --from --if-match --keep --last-by --limit --name --older-than --only --progress --reason --ref --release --revision --run --saved-variables --section --severity --since --skip --source --target --to --tx --version -t
                     set value_of $word
                 end
                 continue
@@ -1761,6 +1808,14 @@ function __fish_omaddons_slot --description 'What omaddons completes at the curs
                     continue
                 case ',unpin'
                     set cmdpath 'unpin'
+                    set n 0
+                    continue
+                case ',skip'
+                    set cmdpath 'skip'
+                    set n 0
+                    continue
+                case ',unskip'
+                    set cmdpath 'unskip'
                     set n 0
                     continue
                 case ',adopt'
@@ -2002,6 +2057,8 @@ function __fish_omaddons_slot --description 'What omaddons completes at the curs
                 set kind target
             case 'copy --to'
                 set kind client
+            case 'unskip --tx'
+                set kind tx
             case 'errors --addon'
                 set kind addon
             case 'backup restore --addon'
@@ -2085,6 +2142,10 @@ function __fish_omaddons_slot --description 'What omaddons completes at the curs
                 if test $n -ge 0
                     set kind addon
                 end
+            case 'skip'
+                if test $n -ge 0
+                    set kind addon
+                end
             case 'targets default'
                 if test $n -eq 0
                     set kind client
@@ -2103,6 +2164,10 @@ function __fish_omaddons_slot --description 'What omaddons completes at the curs
                 end
             case 'unpin'
                 if test $n -eq 0
+                    set kind addon
+                end
+            case 'unskip'
+                if test $n -ge 0
                     set kind addon
                 end
             case 'update'
@@ -2149,4 +2214,5 @@ complete -c omaddons -n '__fish_omaddons_at option' -l run -r -f -a '(__fish_oma
 complete -c omaddons -n '__fish_omaddons_at option' -l since -r -f -a '(__fish_omaddons_values)'
 complete -c omaddons -n '__fish_omaddons_at option' -l skip -r -f -a '(__fish_omaddons_values)'
 complete -c omaddons -n '__fish_omaddons_at option' -l to -r -a '(__fish_omaddons_values)'
+complete -c omaddons -n '__fish_omaddons_at option' -l tx -r -f -a '(__fish_omaddons_values)'
 complete -c omaddons -n '__fish_omaddons_at option' -s t -l target -l flavor -r -a '(__fish_omaddons_values)'

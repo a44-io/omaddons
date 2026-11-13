@@ -17,15 +17,18 @@
 //!   Its approval lists what the run was bound to do, addon by addon.
 //! - **Else** `null`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::app::approval::{Approval, ApprovedItem};
+use crate::engine::edit::{EditField, changed_fields};
 use crate::engine::retention::state_snapshot_of;
-use crate::model::{AddonRecord, PlanId, TargetKey, TxId, TxKind};
+use crate::model::{
+    AddonRecord, PlanId, SkipIdentity, SkippedNote, SkippedRelease, TargetKey, TxId, TxKind,
+};
 use crate::state::history::{FolderOp, HistoryEntry, HistoryOp};
 use crate::state::paths::Paths;
 use crate::state::plans;
@@ -48,6 +51,13 @@ pub struct HistoryItem {
     /// The addon's version after the change; `null` when it was removed, or not known as
     /// for `from_version`.
     pub to_version: Option<String>,
+    /// The skip marks the change added (a `skip`, or an undo that marked the release it
+    /// left), by what each selects. Empty when it added none, or when the record before
+    /// or after it is not known.
+    pub skips_marked: Vec<SkippedNote>,
+    /// The skip marks the change cleared (an `unskip`, an install of a named version
+    /// they held, the undo of a `skip`), as `skips_marked` decides them.
+    pub skips_cleared: Vec<SkippedNote>,
 }
 
 /// What a transaction did to an addon, from the transaction's kind, its ops on the
@@ -69,6 +79,12 @@ pub enum HistoryChange {
     Pinned,
     /// Its record alone changed: its pin cleared.
     Unpinned,
+    /// Its record alone changed: releases to pass over were marked (`skip`).
+    SkipMarked,
+    /// Its record alone changed: skip marks were cleared (`unskip`).
+    SkipCleared,
+    /// Its record alone changed: one edit both added and cleared skip marks.
+    SkipChanged,
     /// Its record alone changed otherwise: its channel, `--any-flavor`, its ref
     /// (`adopt --ref`), its reason, or what requires it.
     Edited,
@@ -89,6 +105,9 @@ impl HistoryChange {
             Self::Adopted => "adopted",
             Self::Pinned => "pinned",
             Self::Unpinned => "unpinned",
+            Self::SkipMarked => "skip marked",
+            Self::SkipCleared => "skip cleared",
+            Self::SkipChanged => "skips changed",
             Self::Edited => "record edited",
             Self::SettingsRestored => "settings restored",
             Self::Reverted => "reverted",
@@ -100,10 +119,31 @@ impl HistoryItem {
     /// The item as `history -v` prints it under its line: `DBM: updated 12.1.14 →
     /// 12.1.15 (22 folders)`.
     pub fn human(&self) -> String {
-        let versions = match (self.from_version.as_deref(), self.to_version.as_deref()) {
-            (Some(from), Some(to)) if from != to => format!(" {from} → {to}"),
-            (_, Some(version)) | (Some(version), None) => format!(" {version}"),
-            (None, None) => String::new(),
+        // A skip names the releases it marked or cleared, not the installed one.
+        let marks = |notes: &[SkippedNote]| {
+            notes
+                .iter()
+                .map(|n| n.version.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let versions = match self.change {
+            HistoryChange::SkipMarked if !self.skips_marked.is_empty() => {
+                format!(" {}", marks(&self.skips_marked))
+            }
+            HistoryChange::SkipCleared if !self.skips_cleared.is_empty() => {
+                format!(" {}", marks(&self.skips_cleared))
+            }
+            HistoryChange::SkipChanged => format!(
+                " {} (cleared {})",
+                marks(&self.skips_marked),
+                marks(&self.skips_cleared)
+            ),
+            _ => match (self.from_version.as_deref(), self.to_version.as_deref()) {
+                (Some(from), Some(to)) if from != to => format!(" {from} → {to}"),
+                (_, Some(version)) | (Some(version), None) => format!(" {version}"),
+                (None, None) => String::new(),
+            },
         };
         format!(
             "{}: {}{versions} ({})",
@@ -159,12 +199,18 @@ pub fn items(
             let mut folders: Vec<&str> = ops.iter().map(|o| o.folder.key()).collect();
             folders.sort_unstable();
             folders.dedup();
+            let (skips_marked, skips_cleared) = match (before, after) {
+                (Some(Some(b)), Some(Some(a))) => skip_notes(b, a),
+                _ => (Vec::new(), Vec::new()),
+            };
             Some(HistoryItem {
                 addon: key.as_ref().map(|_| first.addon.clone()),
                 change: change_of(entry.kind, &ops, before, after),
                 folders: folders.len(),
                 from_version,
                 to_version,
+                skips_marked,
+                skips_cleared,
             })
         })
         .collect()
@@ -253,10 +299,49 @@ fn change_of(
     }
     let pinned = |side: Option<Option<&AddonRecord>>| side.flatten().map(|a| a.pinned);
     match (pinned(before), pinned(after)) {
-        (Some(false), Some(true)) => Pinned,
-        (Some(true), Some(false)) => Unpinned,
-        _ => Edited,
+        (Some(false), Some(true)) => return Pinned,
+        (Some(true), Some(false)) => return Unpinned,
+        _ => {}
     }
+    // The skip marks, by the set difference of what they select (RG-D16): never the
+    // lengths, which one mark removed and another added in one edit leave as they were.
+    if let (Some(Some(b)), Some(Some(a))) = (before, after)
+        && changed_fields(Some(b), Some(a)) == [EditField::SkippedReleases]
+    {
+        let (marked, cleared) = skip_notes(b, a);
+        return match (marked.is_empty(), cleared.is_empty()) {
+            (false, true) => SkipMarked,
+            (true, false) => SkipCleared,
+            (false, false) => SkipChanged,
+            // The same selections, made again: no mark changed what it selects.
+            (true, true) => Edited,
+        };
+    }
+    Edited
+}
+
+/// The marks `after` adds to `before` and the marks it clears, each by what it selects
+/// (a set difference), as notes, sorted.
+pub fn skip_notes(
+    before: &AddonRecord,
+    after: &AddonRecord,
+) -> (Vec<SkippedNote>, Vec<SkippedNote>) {
+    let only = |of: &AddonRecord, other: &AddonRecord| {
+        let theirs: BTreeSet<SkipIdentity> = other
+            .skipped_releases
+            .iter()
+            .map(SkippedRelease::selects)
+            .collect();
+        let mut notes: Vec<SkippedNote> = of
+            .skipped_releases
+            .iter()
+            .filter(|m| !theirs.contains(&m.selects()))
+            .map(|m| SkippedNote::of(&of.name, m))
+            .collect();
+        notes.sort();
+        notes
+    };
+    (only(after, before), only(before, after))
 }
 
 /// Whether `before` and `after` are one release from one source: a reinstall, not an
@@ -483,6 +568,87 @@ mod tests {
             record.addons.insert(TargetRecord::addon_key(name), addon);
         }
         record
+    }
+
+    /// A mark on Foo: exact on `tag` when given, else a label mark reading `version`.
+    fn mark(tag: Option<&str>, version: &str, tx: &str) -> crate::model::SkippedRelease {
+        crate::model::SkippedRelease {
+            release: tag
+                .and_then(|t| crate::model::ReleaseKey::parse(&format!("gh:o/foo@{t}"), None)),
+            version: version.into(),
+            at: "2026-11-01T00:00:00Z".parse().unwrap(),
+            origin: crate::model::SkipOrigin::Manual,
+            tx: tx.parse().unwrap(),
+        }
+    }
+
+    #[test]
+    fn skip_changes_are_a_set_difference_of_what_the_marks_select() {
+        const TX_1: &str = "01JB8Q2VA00000000000000001";
+        const TX_2: &str = "01JB8Q2VA00000000000000002";
+        let base = record(1, &[("Foo", "v1", false)]);
+        let foo = |marks: Vec<crate::model::SkippedRelease>| {
+            let mut a = base.addons["foo"].clone();
+            a.skipped_releases = marks;
+            a
+        };
+        let ops = [op(FolderOp::Record, "foo", "Foo")];
+        let ops: Vec<&HistoryOp> = ops.iter().collect();
+        // (case, marks before, marks after, the change, how many marked, how many cleared)
+        let cases = [
+            (
+                "one mark added",
+                vec![],
+                vec![mark(Some("v2"), "v2", TX_1)],
+                HistoryChange::SkipMarked,
+                1,
+                0,
+            ),
+            (
+                "one mark removed",
+                vec![mark(Some("v2"), "v2", TX_1)],
+                vec![],
+                HistoryChange::SkipCleared,
+                0,
+                1,
+            ),
+            (
+                "one removed and another added in one edit: the lengths are equal",
+                vec![mark(Some("v2"), "v2", TX_1)],
+                vec![mark(Some("v3"), "v3", TX_2)],
+                HistoryChange::SkipChanged,
+                1,
+                1,
+            ),
+            (
+                "the same selection made again (another time and transaction): no skip change",
+                vec![mark(None, "v4", TX_1)],
+                vec![mark(None, "4", TX_2)],
+                HistoryChange::Edited,
+                0,
+                0,
+            ),
+            (
+                "a label mark and an exact one for one version are two selections",
+                vec![mark(Some("v4"), "v4", TX_1)],
+                vec![mark(Some("v4"), "v4", TX_1), mark(None, "v4", TX_2)],
+                HistoryChange::SkipMarked,
+                1,
+                0,
+            ),
+        ];
+        for (case, before, after, change, marked, cleared) in cases {
+            let (b, a) = (foo(before), foo(after));
+            assert_eq!(
+                change_of(TxKind::Skip, &ops, Some(Some(&b)), Some(Some(&a))),
+                change,
+                "{case}: before={:?} after={:?}",
+                b.skipped_releases,
+                a.skipped_releases
+            );
+            let (m, c) = skip_notes(&b, &a);
+            assert_eq!((m.len(), c.len()), (marked, cleared), "{case}: {m:?} {c:?}");
+        }
     }
 
     /// One item's `(addon, change, folders, from, to)`, for compact assertions.
@@ -830,6 +996,8 @@ mod tests {
                 folders,
                 from_version: from.map(str::to_owned),
                 to_version: to.map(str::to_owned),
+                skips_marked: Vec::new(),
+                skips_cleared: Vec::new(),
             }
         };
         let cases = [

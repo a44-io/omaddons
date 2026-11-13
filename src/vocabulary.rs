@@ -198,7 +198,8 @@ impl TargetVocabulary {
 /// before or after one of them is moved into -t (M4-D12).
 pub const SELECTS_CLIENT: &[&str] = &[
     "status", "list", "outdated", "info", "search", "errors", "export", "history", "install",
-    "update", "pin", "unpin", "adopt", "sync", "remove", "undo", "backup", "doctor",
+    "update", "pin", "unpin", "skip", "unskip", "adopt", "sync", "remove", "undo", "backup",
+    "doctor",
 ];
 
 /// First words of command paths whose run never reads -t (or refuses it: copy, and apply,

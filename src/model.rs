@@ -512,6 +512,9 @@ pub enum TxKind {
     Backup,
     /// Pins or unpins addons: a records-only change, undoable like any other.
     Pin,
+    /// `skip` or `unskip` marks or clears skipped releases: a records-only change,
+    /// undoable like any other (design 7.5.6).
+    Skip,
     /// `config set`: a settings change, recorded in history, never undone.
     Config,
     /// `targets add`, `rm`, `rename` and `default`: recorded, never undone.
@@ -814,6 +817,20 @@ pub struct SkippedRelease {
 }
 
 impl SkippedRelease {
+    /// A mark a change is about to make: `at` and `tx` are placeholders (the Unix epoch
+    /// and the nil id) until the transaction commits it, when the commit stamps every
+    /// mark it adds with its own id and time (`engine::tx`'s `next_record`). A preview's
+    /// mark never reaches a record, so neither does a placeholder.
+    pub fn pending(release: Option<ReleaseKey>, version: String, origin: SkipOrigin) -> Self {
+        Self {
+            release,
+            version,
+            at: Timestamp::UNIX_EPOCH,
+            origin,
+            tx: TxId::from_ulid(Ulid::nil()),
+        }
+    }
+
     /// What the mark selects: its exact release, else its label. Two marks that select
     /// the same are one.
     pub fn selects(&self) -> SkipIdentity {
@@ -847,6 +864,32 @@ pub enum SkipIdentity {
     Release(ReleaseKey),
     /// Every release with this version label, written without one leading `v`.
     Label(String),
+}
+
+/// A skip mark as a result names it: `skip`'s and `undo`'s `skips_marked`, `unskip`'s
+/// and `undo`'s `skips_cleared`, and `history -v`'s items under the same keys. The
+/// record's own field stays [`AddonRecord::skipped_releases`]; this is a note about one
+/// of its marks, without when or by which transaction it was made.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+pub struct SkippedNote {
+    /// The addon, by its record's name.
+    pub addon: String,
+    /// The mark's version label.
+    pub version: String,
+    /// The exact release the mark holds; `null` for a label mark, which holds every
+    /// release with that version label.
+    pub release: Option<ReleaseKey>,
+}
+
+impl SkippedNote {
+    /// The note for `mark` on `addon`.
+    pub fn of(addon: &str, mark: &SkippedRelease) -> Self {
+        Self {
+            addon: addon.to_owned(),
+            version: mark.version.clone(),
+            release: mark.release.clone(),
+        }
+    }
 }
 
 /// A version label as label marks compare it: without one leading `v` or `V`, as

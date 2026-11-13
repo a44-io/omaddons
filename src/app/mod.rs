@@ -46,6 +46,7 @@ pub mod resolve_args;
 pub mod restore_addons;
 pub mod robot_docs;
 pub mod search;
+pub mod skip;
 pub mod status;
 pub mod sync;
 pub mod targets;
@@ -277,6 +278,8 @@ pub const COMMANDS: &[CommandEntry] = &[
     entry("update", Change, true, &[0, 1, 2, 3, 4, 5, 6], data_schema::<update::UpdateOutcome>, Network::Optional).storing_plan(),
     entry("pin", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<pin::PinOutcome>, Network::Optional).storing_plan(),
     entry("unpin", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<pin::PinOutcome>, Network::Optional).storing_plan(),
+    entry("skip", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<skip::SkipOutcome>, Network::Optional).storing_plan(),
+    entry("unskip", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<skip::SkipOutcome>, Network::Optional).storing_plan(),
     entry("adopt", Change, true, &[0, 1, 2, 3, 4, 5], data_schema::<adopt::AdoptOutcome>, Network::Optional).storing_plan(),
     entry("sync", Change, true, &[0, 1, 2, 3, 4, 5, 6], data_schema::<sync::SyncOutcome>, Network::Optional).storing_plan(),
     entry("copy", Change, true, &[0, 1, 2, 3, 4, 5, 6], data_schema::<copy::CopyOutcome>, Network::Optional).storing_plan(),
@@ -416,6 +419,8 @@ pub fn canonical_path(command: &Command) -> &'static str {
         Command::Update(_) => "update",
         Command::Pin(_) => "pin",
         Command::Unpin(_) => "unpin",
+        Command::Skip(_) => "skip",
+        Command::Unskip(_) => "unskip",
         Command::Adopt(_) => "adopt",
         Command::Sync(_) => "sync",
         Command::Copy(_) => "copy",
@@ -654,6 +659,7 @@ macro_rules! side_events_of_runs {
 side_events_of_runs!(
     update::UpdateOutcome,
     pin::PinOutcome,
+    skip::SkipOutcome,
     sync::SyncOutcome,
     copy::CopyOutcome,
     adopt::AdoptOutcome
@@ -811,6 +817,8 @@ fn run_command(cli: &Cli, ctx: &Context, out: &Out<'_>) -> Exit {
         Some(Command::Update(args)) => out_storable(ctx, out, update::run(ctx, args)),
         Some(Command::Pin(args)) => out_storable(ctx, out, pin::pin(ctx, args)),
         Some(Command::Unpin(args)) => out_storable(ctx, out, pin::unpin(ctx, args)),
+        Some(Command::Skip(args)) => out_storable(ctx, out, skip::skip(ctx, args)),
+        Some(Command::Unskip(args)) => out_storable(ctx, out, skip::unskip(ctx, args)),
         Some(Command::Sync(args)) => out_storable(ctx, out, sync::run(ctx, args)),
         Some(Command::Copy(args)) => out_storable(ctx, out, copy::run(ctx, args)),
         Some(Command::Remove(args)) => out_storable(ctx, out, remove::run(ctx, args)),

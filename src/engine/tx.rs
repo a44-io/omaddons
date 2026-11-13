@@ -57,8 +57,8 @@ use crate::fsx::{
     SnapshotRoots, WriteSession, Writer, ensure_dir_all, failpoint,
 };
 use crate::model::{
-    Actor, AddonState, Channel, FolderName, MutableFolderName, PlanId, Ref, ReloadRequired, RunId,
-    Target, TargetKey, TargetRef, TxId, TxKind,
+    Actor, AddonRecord, AddonState, Channel, FolderName, MutableFolderName, PlanId, Ref,
+    ReloadRequired, RunId, Target, TargetKey, TargetRef, TxId, TxKind,
 };
 use crate::net::Http;
 use crate::output::{Phase, ProgressSink, Subject};
@@ -1715,6 +1715,8 @@ fn next_record(
             Some(new) => {
                 let mut new = new.clone();
                 new.tx_id = *tx;
+                let previous = current.addons.get(&TargetRecord::addon_key(&new.name));
+                stamp_new_marks(&mut new, previous, tx, now);
                 match &w.mode {
                     WorkMode::Records(r) if r.before.is_some() => {}
                     _ => new.installed_at = now,
@@ -1740,6 +1742,28 @@ fn next_record(
     }
     record.bump();
     record
+}
+
+/// Stamps the skip marks `new` adds to `previous` (the addon's record before the
+/// transaction): a mark that selects what none of `previous`'s does was made by this
+/// transaction, so it takes the transaction's id and the commit time (design 7.5.6). A
+/// planned mark carries placeholders ([`crate::model::SkippedRelease::pending`]), and a
+/// preview's never reaches a record. Marks carried over keep their own.
+fn stamp_new_marks(
+    new: &mut AddonRecord,
+    previous: Option<&AddonRecord>,
+    tx: &TxId,
+    now: Timestamp,
+) {
+    for mark in &mut new.skipped_releases {
+        let selects = mark.selects();
+        let carried =
+            previous.is_some_and(|p| p.skipped_releases.iter().any(|m| m.selects() == selects));
+        if !carried {
+            mark.tx = *tx;
+            mark.at = now;
+        }
+    }
 }
 
 /// Records-only works' index changes: an adoption's folders in, a forgotten addon's
@@ -2075,6 +2099,48 @@ mod tests {
         let done = scene.run(vec![scene.install("gh:o/foo", &v1)]).unwrap();
         assert!(done.failures.is_empty(), "{:?}", done.failures);
         scene
+    }
+
+    #[test]
+    fn a_mark_takes_the_transaction_and_time_of_the_commit_that_made_it() {
+        use crate::engine::edit::RecordEdit;
+        use crate::model::ReleaseKey;
+        let scene = with_v1();
+        let skip = |tag: &str| {
+            scene.edit(
+                "Foo",
+                RecordEdit::Skip {
+                    release: ReleaseKey::parse(&format!("gh:o/foo@{tag}"), None),
+                    version: tag.into(),
+                },
+            )
+        };
+        let before = Timestamp::now();
+        let first = scene
+            .run_as(vec![skip("v2")], Some(TxKind::Skip), TxKind::Skip)
+            .unwrap();
+        let first_tx = first.outcomes[0].tx.unwrap();
+        let marks = scene.record().addons["foo"].skipped_releases.clone();
+        assert_eq!(marks.len(), 1);
+        assert_eq!(
+            marks[0].tx, first_tx,
+            "the commit's transaction, never a placeholder"
+        );
+        assert!(marks[0].at >= before, "the commit's time: {}", marks[0].at);
+        assert_eq!(first.outcomes[0].kind, Some(TxKind::Skip));
+
+        let second = scene
+            .run_as(vec![skip("v3")], Some(TxKind::Skip), TxKind::Skip)
+            .unwrap();
+        let marks = scene.record().addons["foo"].skipped_releases.clone();
+        assert_eq!(marks.len(), 2);
+        assert_eq!(
+            (marks[0].tx, marks[0].at),
+            (first_tx, marks[0].at),
+            "a mark already there keeps its own"
+        );
+        assert_eq!(marks[1].tx, second.outcomes[0].tx.unwrap());
+        assert_ne!(marks[1].tx, first_tx);
     }
 
     /// A binding that counts its `plan` calls and refuses or accepts.

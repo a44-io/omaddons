@@ -1,0 +1,81 @@
+---
+source: tests/help_pages.rs
+description: "a command's -h and --help pages as this build renders them at 100 columns without color; any change to an about, a flag, a value, a heading or the layout changes them: review with cargo insta review, or re-accept with INSTA_UPDATE=always cargo test --test integration help_pages:: and review git diff tests/snapshots/"
+---
+==> omaddons skip -h <==
+Pass over one release; updates resume at the next
+
+Usage: omaddons skip [OPTIONS] <ADDON>...
+
+Arguments:
+  <ADDON>...  The installed addons: each by its name, or a catalog name or alias
+
+Options:
+      --release <RELEASE-ID>  Pass over exactly this release, by its id from outdated or list -v
+      --revision <N>          With --release: the release's source revision (WowAce)
+      --version <VERSION>     Pass over every release whose version reads this (a label mark)
+
+Examples:
+  omaddons skip plater -t retail                pass over the release waiting now
+  omaddons skip dbm --version 12.2.0 -t retail  every release labelled 12.2.0
+
+Global: -t <TARGET>  --json  --dry-run  -v  --quiet  --no-color  --offline  (--help lists them all)
+==> omaddons skip --help <==
+Pass over one release; updates resume at the next
+
+Marks the release waiting for each addon, from what earlier checks remembered: a records-only change
+that makes no request, undoable.
+
+Usage: omaddons skip [OPTIONS] <ADDON>...
+
+Arguments:
+  <ADDON>...
+          The installed addons: each by its name, or a catalog name or alias
+
+Options:
+      --release <RELEASE-ID>
+          Pass over exactly this release, by its id from outdated or list -v
+          
+          gh:Owner/Repo@v6.2.5, whatever the release memo offers now. Takes one addon.
+
+      --revision <N>
+          With --release: the release's source revision (WowAce)
+          
+          Without it, a source that numbers revisions takes the release memo's revision of that
+          release, else the mark holds every revision of the tag.
+
+      --version <VERSION>
+          Pass over every release whose version reads this (a label mark)
+          
+          For a release announced but not seen yet. Takes one addon.
+
+Examples:
+  omaddons skip Plater -t retail                          pass over the release waiting now
+  omaddons skip Plater --release gh:Tercioo/Plater-Nameplates@Plater-v662 -t retail
+                                                          pass over exactly this release
+  omaddons skip DBM --version 12.2.0 -t retail            every release labelled 12.2.0
+
+A mark holds until unskip clears it, an install names that version, or the addon
+moves to another source. update installs the next release as usual.
+
+See also: unskip, outdated, update
+
+Global options:
+      --json              One JSON envelope on stdout
+      --format <FORMAT>   Output format [possible values: json, human]
+  -t, --target <TARGET>   The client to act on: id, game mode, family, path, or all [alias:
+                          --flavor]
+      --dry-run           Show the plan without changing anything
+      --actor <ACTOR>     Who is acting: human, agent or widget [env: OMADDONS_ACTOR]
+      --reason <TEXT>     Why, recorded verbatim in history
+      --offline           Fail any network access [env: OMADDONS_OFFLINE=1]
+      --while-running     Allow folder changes while the client runs (never SavedVariables)
+      --if-match <TOKEN>  Run only what the preview that returned this token showed
+      --no-color          No ANSI color
+      --no-progress       No progress output
+      --progress <MODE>   Progress events on stderr [possible values: json, human, none]
+      --quiet             Only errors on stderr
+  -v, --verbose...        More detail (repeatable)
+  -h, --help              Show help
+
+Learn more: omaddons robot-docs guide

@@ -125,6 +125,9 @@ _omaddons() {
             omaddons,show)
                 cmd="omaddons__subcmd__info"
                 ;;
+            omaddons,skip)
+                cmd="omaddons__subcmd__skip"
+                ;;
             omaddons,status)
                 cmd="omaddons__subcmd__status"
                 ;;
@@ -142,6 +145,9 @@ _omaddons() {
                 ;;
             omaddons,unpin)
                 cmd="omaddons__subcmd__unpin"
+                ;;
+            omaddons,unskip)
+                cmd="omaddons__subcmd__unskip"
                 ;;
             omaddons,update)
                 cmd="omaddons__subcmd__update"
@@ -246,7 +252,7 @@ _omaddons() {
 
     case "${cmd}" in
         omaddons)
-            opts="-t -v -h -V --json --robot --format --flavor --target --dry-run --actor --reason --offline --while-running --if-match --no-color --no-progress --progress --quiet --verbose --help --version help status install add update upgrade pin unpin adopt sync copy remove uninstall rm delete undo revert rollback apply backup history log plans outdated check info show search find errors export net-log doctor list ls targets config auth omarchy completions install-completions robot-docs capabilities"
+            opts="-t -v -h -V --json --robot --format --flavor --target --dry-run --actor --reason --offline --while-running --if-match --no-color --no-progress --progress --quiet --verbose --help --version help status install add update upgrade pin unpin skip unskip adopt sync copy remove uninstall rm delete undo revert rollback apply backup history log plans outdated check info show search find errors export net-log doctor list ls targets config auth omarchy completions install-completions robot-docs capabilities"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 1 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -2797,6 +2803,64 @@ _omaddons() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
+        omaddons__subcmd__skip)
+            opts="-t -v -h --release --revision --version --json --robot --format --flavor --target --dry-run --actor --reason --offline --while-running --if-match --no-color --no-progress --progress --quiet --verbose --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --release)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --revision)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --version)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --format)
+                    COMPREPLY=($(compgen -W "json human" -- "${cur}"))
+                    return 0
+                    ;;
+                --target)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --flavor)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                -t)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --actor)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --reason)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --if-match)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --progress)
+                    COMPREPLY=($(compgen -W "json human none" -- "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
         omaddons__subcmd__status)
             opts="-t -v -h --cached --check --deep --json --robot --format --flavor --target --dry-run --actor --reason --offline --while-running --if-match --no-color --no-progress --progress --quiet --verbose --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
@@ -3227,6 +3291,68 @@ _omaddons() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
+        omaddons__subcmd__unskip)
+            opts="-t -v -h --release --revision --version --tx --json --robot --format --flavor --target --dry-run --actor --reason --offline --while-running --if-match --no-color --no-progress --progress --quiet --verbose --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --release)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --revision)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --version)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --tx)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --format)
+                    COMPREPLY=($(compgen -W "json human" -- "${cur}"))
+                    return 0
+                    ;;
+                --target)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --flavor)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                -t)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --actor)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --reason)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --if-match)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --progress)
+                    COMPREPLY=($(compgen -W "json human none" -- "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
         omaddons__subcmd__update)
             opts="-t -v -h --all --channel --refresh --strict --no-deps --json --robot --format --flavor --target --dry-run --actor --reason --offline --while-running --if-match --no-color --no-progress --progress --quiet --verbose --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
@@ -3316,7 +3442,7 @@ _omaddons_dynamic() {
                 -t?*) target=${word#-t}; continue ;;
                 -*)
                     case $word in
-                        --actor|--addon|--before|--budget|--by|--channel|--dir|--file|--flavor|--format|--from|--if-match|--keep|--last-by|--limit|--name|--older-than|--only|--progress|--reason|--ref|--run|--saved-variables|--section|--severity|--since|--skip|--source|--target|--to|--version|-t) value_of=$word ;;
+                        --actor|--addon|--before|--budget|--by|--channel|--dir|--file|--flavor|--format|--from|--if-match|--keep|--last-by|--limit|--name|--older-than|--only|--progress|--reason|--ref|--release|--revision|--run|--saved-variables|--section|--severity|--since|--skip|--source|--target|--to|--tx|--version|-t) value_of=$word ;;
                     esac
                     continue ;;
             esac
@@ -3327,6 +3453,8 @@ _omaddons_dynamic() {
                 ",update"|",upgrade") cmdpath="update"; n=0; continue ;;
                 ",pin") cmdpath="pin"; n=0; continue ;;
                 ",unpin") cmdpath="unpin"; n=0; continue ;;
+                ",skip") cmdpath="skip"; n=0; continue ;;
+                ",unskip") cmdpath="unskip"; n=0; continue ;;
                 ",adopt") cmdpath="adopt"; n=0; continue ;;
                 ",sync") cmdpath="sync"; n=0; continue ;;
                 ",copy") cmdpath="copy"; n=0; continue ;;
@@ -3396,6 +3524,7 @@ _omaddons_dynamic() {
         case "$cmdpath $value_of" in
             "copy --from") kind=target ;;
             "copy --to") kind=client ;;
+            "unskip --tx") kind=tx ;;
             "errors --addon") kind=addon ;;
             "backup restore --addon") kind=addon ;;
             "undo --run") kind=run ;;
@@ -3428,11 +3557,13 @@ _omaddons_dynamic() {
             "pin") if (( n == 0 )); then kind=addon; fi ;;
             "plans show") if (( n == 0 )); then kind=plan; fi ;;
             "remove") if (( n >= 0 )); then kind=addon; fi ;;
+            "skip") if (( n >= 0 )); then kind=addon; fi ;;
             "targets default") if (( n == 0 )); then kind=client; fi ;;
             "targets rename") if (( n == 0 )); then kind=client; fi ;;
             "targets rm") if (( n == 0 )); then kind=target; fi ;;
             "undo") if (( n == 0 )); then kind=tx; fi ;;
             "unpin") if (( n == 0 )); then kind=addon; fi ;;
+            "unskip") if (( n >= 0 )); then kind=addon; fi ;;
             "update") if (( n >= 0 )); then kind=addon; fi ;;
         esac
     fi

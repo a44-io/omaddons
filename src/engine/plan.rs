@@ -45,8 +45,9 @@ use crate::inventory::{Depth, FolderClass, Inventory, inventory_shared, sibling_
 use crate::limits::{DEPENDENCY_MAX_ADDONS, DEPENDENCY_MAX_DEPTH};
 use crate::model::{
     Actor, AddonReason, AddonRecord, AddonState, AssetLocation, Candidate, Channel, ExpectedHash,
-    FlavorHint, FolderName, MutableFolderName, RankReason, Ref, ReleaseKey, ReleaseSet,
-    ReloadRequired, SkippedRelease, Target, TargetKey, TxId, TxKind, VersionConfidence,
+    FlavorHint, FolderName, InstalledRelease, MutableFolderName, RankReason, Ref, ReleaseKey,
+    ReleaseSet, ReloadRequired, SkipIdentity, SkippedRelease, Target, TargetKey, TxId, TxKind,
+    VersionConfidence,
 };
 use crate::net::Http;
 use crate::output::{Phase, ProgressSink, Subject};
@@ -425,7 +426,7 @@ pub fn record_edits(existing: &AddonRecord, carried: &AddonRecord) -> Vec<Record
             EditField::Channel => Some(RecordEdit::SetChannel(carried.channel)),
             EditField::Reason => Some(RecordEdit::SetReason(carried.reason)),
             EditField::AnyFlavor => Some(RecordEdit::SetAnyFlavor(carried.any_flavor)),
-            EditField::Ref | EditField::RequiredBy => None,
+            EditField::Ref | EditField::RequiredBy | EditField::SkippedReleases => None,
         })
         .collect()
 }
@@ -733,6 +734,68 @@ pub struct Change {
     pub from_version: Option<String>,
     pub to_version: Option<String>,
     pub folders: FolderSummary,
+    /// What the change does to policy on the record. A preview's token binds it
+    /// (`precondition::change_value`); it is never on the wire.
+    #[serde(skip)]
+    pub policy: PolicyDelta,
+}
+
+/// What a change does to policy on the record, in canonical form (design 7.5.6). A
+/// records-only skip names no release and changes no version, so without this two
+/// previews that would mark different releases would have one token.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PolicyDelta {
+    /// The marks it adds, as the record will hold them, sorted by what each selects. Their
+    /// `at` and `tx` are the commit's, so they are never part of a token.
+    pub skips_added: Vec<SkippedRelease>,
+    /// The marks it removes, sorted by what each selects.
+    pub skips_removed: Vec<SkippedRelease>,
+    /// The release that must be installed for the change to mean what was shown: its
+    /// key, and its archive hash when one is known. Set when the change adds a mark,
+    /// which is decided against the installed release.
+    pub expect_installed: Option<InstalledRelease>,
+}
+
+impl PolicyDelta {
+    /// The delta between an addon's record `before` and `after` a records-only edit: the
+    /// marks only one side selects ([`SkippedRelease::selects`]), a set difference, so a
+    /// mark removed and another added in one edit are both there. Nothing when the record
+    /// appears or goes (an adoption, a forget): that change's kind says it.
+    pub fn between(before: Option<&AddonRecord>, after: Option<&AddonRecord>) -> Self {
+        let (Some(before), Some(after)) = (before, after) else {
+            return Self::default();
+        };
+        let only = |of: &AddonRecord, other: &AddonRecord| {
+            let theirs: BTreeSet<SkipIdentity> = other
+                .skipped_releases
+                .iter()
+                .map(SkippedRelease::selects)
+                .collect();
+            let mut marks: Vec<SkippedRelease> = of
+                .skipped_releases
+                .iter()
+                .filter(|m| !theirs.contains(&m.selects()))
+                .cloned()
+                .collect();
+            marks.sort_by_key(SkippedRelease::selects);
+            marks
+        };
+        let skips_added = only(after, before);
+        let skips_removed = only(before, after);
+        let expect_installed = (!skips_added.is_empty()).then(|| InstalledRelease::of(before));
+        Self {
+            skips_added,
+            skips_removed,
+            expect_installed,
+        }
+    }
+
+    /// Whether it changes no policy.
+    pub fn is_empty(&self) -> bool {
+        self.skips_added.is_empty()
+            && self.skips_removed.is_empty()
+            && self.expect_installed.is_none()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
@@ -3435,8 +3498,9 @@ fn fail(ctx: &PlanCtx<'_>, e: &std::io::Error) -> Error {
 
 /// The transaction kind for a target's changes, in order:
 /// 1. no changes, no transaction;
-/// 2. the command's override (`adopt`, `pin`, `sync`) wins;
-/// 3. edits that change only `pinned` are a `pin`;
+/// 2. the command's override (`adopt`, `pin`, `skip`, `sync`) wins;
+/// 3. edits that change only `pinned` are a `pin`, and edits that change only
+///    `skipped_releases` a `skip`;
 /// 4. edits and adoptions alone are what the command means (`default_kind`);
 /// 5. otherwise edits and adoptions are ignored, and the folder changes decide: all
 ///    removes are a `remove` (a remove plus a `RemoveRequiredBy` on another addon
@@ -3457,6 +3521,11 @@ pub fn target_kind(
         .all(|c| c.kind == ChangeKind::Edit && c.fields == [EditField::Pinned])
     {
         Some(TxKind::Pin)
+    } else if changes
+        .iter()
+        .all(|c| c.kind == ChangeKind::Edit && c.fields == [EditField::SkippedReleases])
+    {
+        Some(TxKind::Skip)
     } else if folders.is_empty() {
         Some(default_kind)
     } else if folders.iter().all(|c| c.kind == ChangeKind::Remove) {
@@ -3667,6 +3736,7 @@ pub fn records_change(
             recorded,
             ..FolderSummary::default()
         },
+        policy: PolicyDelta::between(before.as_ref(), after.as_ref()),
     };
     Some(PlannedAddon {
         change,
@@ -4675,6 +4745,9 @@ impl TargetPlanner<'_> {
                 from_version: existing.map(|e| e.version.clone()),
                 to_version: Some(template.version.clone()),
                 folders: summary,
+                // The marks an install keeps or lifts follow from the record (its
+                // generation) and the version asked for, which the token binds already.
+                policy: PolicyDelta::default(),
             },
             ops,
             release,
@@ -4745,6 +4818,7 @@ impl TargetPlanner<'_> {
                 from_version: Some(installed.version.clone()),
                 to_version: None,
                 folders: summary,
+                policy: PolicyDelta::default(),
             },
             ops,
             release: None,
@@ -7344,6 +7418,72 @@ mod tests {
     }
 
     #[test]
+    fn a_policy_delta_is_the_set_difference_of_what_the_marks_select() {
+        let mark = |tag: Option<&str>, version: &str| SkippedRelease {
+            release: tag.and_then(|t| ReleaseKey::parse(&format!("gh:o/foo@{t}"), None)),
+            version: version.into(),
+            at: "2026-11-01T00:00:00Z".parse().unwrap(),
+            origin: crate::model::SkipOrigin::Manual,
+            tx: TxId::new(),
+        };
+        let with = |marks: Vec<SkippedRelease>| AddonRecord {
+            skipped_releases: marks,
+            ..chosen()
+        };
+        let selects = |marks: &[SkippedRelease]| -> Vec<SkipIdentity> {
+            marks.iter().map(SkippedRelease::selects).collect()
+        };
+        let v2 = || mark(Some("v2"), "v2");
+        let v3 = || mark(Some("v3"), "v3");
+        // (case, before, after, added, removed, the installed release expected)
+        let cases = [
+            (
+                "nothing moves",
+                vec![v2()],
+                vec![v2()],
+                vec![],
+                vec![],
+                false,
+            ),
+            ("one added", vec![], vec![v2()], vec![v2()], vec![], true),
+            ("one removed", vec![v2()], vec![], vec![], vec![v2()], false),
+            (
+                "one removed and another added: both, whatever the lengths",
+                vec![v2()],
+                vec![v3()],
+                vec![v3()],
+                vec![v2()],
+                true,
+            ),
+            (
+                "the same selection made again",
+                vec![mark(None, "v4")],
+                vec![mark(None, "4")],
+                vec![],
+                vec![],
+                false,
+            ),
+        ];
+        for (case, before, after, added, removed, installed) in cases {
+            let (b, a) = (with(before), with(after));
+            let delta = PolicyDelta::between(Some(&b), Some(&a));
+            assert_eq!(selects(&delta.skips_added), selects(&added), "{case}");
+            assert_eq!(selects(&delta.skips_removed), selects(&removed), "{case}");
+            assert_eq!(
+                delta.expect_installed,
+                installed.then(|| InstalledRelease::of(&b)),
+                "{case}"
+            );
+        }
+        let b = with(vec![v2()]);
+        assert!(
+            PolicyDelta::between(None, Some(&b)).is_empty()
+                && PolicyDelta::between(Some(&b), None).is_empty(),
+            "a record that appears or goes moves no policy: its change kind says it"
+        );
+    }
+
+    #[test]
     fn target_kinds() {
         let change = |kind, fields: &[EditField]| Change {
             addon: "a".into(),
@@ -7353,6 +7493,7 @@ mod tests {
             from_version: None,
             to_version: None,
             folders: FolderSummary::default(),
+            policy: PolicyDelta::default(),
         };
         use ChangeKind::{Adopt, Edit, Install, Remove, Update};
         let kind = |changes: &[Change], over: Option<TxKind>, default: TxKind| {
@@ -7361,9 +7502,10 @@ mod tests {
         let pin = change(Edit, &[EditField::Pinned]);
         let required = change(Edit, &[EditField::RequiredBy]);
         let both = change(Edit, &[EditField::Channel, EditField::Pinned]);
+        let skip = change(Edit, &[EditField::SkippedReleases]);
         /// Changes, the override, the default kind, and the kind expected.
         type Case = (Vec<Change>, Option<TxKind>, TxKind, Option<TxKind>);
-        let cases: [Case; 13] = [
+        let cases: [Case; 16] = [
             // 1. nothing changes
             (vec![], Some(TxKind::Pin), TxKind::Install, None),
             // 2. an override wins
@@ -7379,13 +7521,32 @@ mod tests {
                 TxKind::Install,
                 Some(TxKind::Adopt),
             ),
-            // 3. pinned-only edits are a pin
+            // 3. pinned-only edits are a pin, marks-only edits a skip
             (vec![pin.clone()], None, TxKind::Install, Some(TxKind::Pin)),
             (
                 vec![pin.clone(), pin.clone()],
                 None,
                 TxKind::Update,
                 Some(TxKind::Pin),
+            ),
+            (
+                vec![skip.clone()],
+                None,
+                TxKind::Install,
+                Some(TxKind::Skip),
+            ),
+            (
+                vec![skip.clone(), skip.clone()],
+                None,
+                TxKind::Update,
+                Some(TxKind::Skip),
+            ),
+            // A pin and a skip in one transaction are the command's kind.
+            (
+                vec![pin.clone(), skip.clone()],
+                None,
+                TxKind::Update,
+                Some(TxKind::Update),
             ),
             // 4. edits and adoptions alone are the command's kind
             (

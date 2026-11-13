@@ -519,6 +519,12 @@ fn a_dry_run_leaves_the_state_directory_as_it_was() {
     run(&["pin", "Foo", "-t", "retail"]);
     dry_runs(&[(&["unpin", "Foo", "-t", "retail", "--dry-run"], true)]);
 
+    log.step("skip a label of Foo's, then mark it so unskip has a mark to preview clearing");
+    let skip = ["skip", "Foo", "--version", "9", "-t", "retail", "--dry-run"];
+    dry_runs(&[(&skip, true)]);
+    run(&["skip", "Foo", "--version", "9", "-t", "retail"]);
+    dry_runs(&[(&["unskip", "Foo", "-t", "retail", "--dry-run"], true)]);
+
     log.step("add a desired addon so sync has an install to preview");
     s.home
         .write_desired("[family.mainline]\naddons = [\"gh:o/foo\", \"weakauras\"]\n");
@@ -759,6 +765,19 @@ fn every_binding_path_carries_its_precondition() {
                     s.json(&["pin", "Foo", "-t", "retail"], 0);
                 }
                 (argv(&[path, "Foo", "-t", "retail", "--dry-run"]), &[])
+            }
+            // A label mark needs no remembered release; unskip clears one made first.
+            "skip" => {
+                s.install_foo();
+                (
+                    argv(&["skip", "Foo", "--version", "9", "-t", "retail", "--dry-run"]),
+                    &[],
+                )
+            }
+            "unskip" => {
+                s.install_foo();
+                s.json(&["skip", "Foo", "--version", "9", "-t", "retail"], 0);
+                (argv(&["unskip", "Foo", "-t", "retail", "--dry-run"]), &[])
             }
             "adopt" => {
                 s.install_foo();

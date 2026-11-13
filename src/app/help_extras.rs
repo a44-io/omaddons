@@ -337,6 +337,34 @@ pub const EXTRAS: &[Extras] = &[
         see_also: &["pin", "update"],
     },
     Extras {
+        path: "skip",
+        examples: &[
+            (
+                "omaddons skip plater -t retail",
+                "pass over the release waiting now",
+            ),
+            (
+                "omaddons skip dbm --version 12.2.0 -t retail",
+                "every release labelled 12.2.0",
+            ),
+        ],
+        see_also: &["unskip", "outdated", "update"],
+    },
+    Extras {
+        path: "unskip",
+        examples: &[
+            (
+                "omaddons unskip plater -t retail",
+                "offer its skipped releases again",
+            ),
+            (
+                "omaddons unskip plater -t retail --dry-run",
+                "which marks it would clear",
+            ),
+        ],
+        see_also: &["skip", "update"],
+    },
+    Extras {
         path: "adopt",
         examples: &[
             ("omaddons adopt", "where each unmanaged folder comes from"),

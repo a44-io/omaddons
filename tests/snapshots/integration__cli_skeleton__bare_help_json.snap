@@ -112,6 +112,18 @@ expression: envelope
         "name": "unpin"
       },
       {
+        "about": "Pass over one release; updates resume at the next",
+        "aliases": [],
+        "group": "change",
+        "name": "skip"
+      },
+      {
+        "about": "Offer a skipped release again",
+        "aliases": [],
+        "group": "change",
+        "name": "unskip"
+      },
+      {
         "about": "Bring addons installed by hand under management",
         "aliases": [],
         "group": "change",
@@ -403,7 +415,7 @@ expression: envelope
   },
   "ok": true,
   "partial": false,
-  "schema_version": "1.1",
+  "schema_version": "1.2",
   "tool_version": "<version>",
   "warnings": []
 }

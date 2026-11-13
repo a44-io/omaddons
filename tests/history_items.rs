@@ -64,7 +64,22 @@ fn item(
         "folders": folders,
         "from_version": from,
         "to_version": to,
+        "skips_marked": [],
+        "skips_cleared": [],
     })
+}
+
+/// [`item`] whose change marked (`marked`) or cleared (`cleared`) Foo's label mark `v9`.
+fn skip_item(change: &str, marked: bool, cleared: bool) -> Value {
+    let note = json!([{"addon": "Foo", "version": "v9", "release": null}]);
+    let mut item = item(Some("Foo"), change, 1, Some("v2"), Some("v2"));
+    if marked {
+        item["skips_marked"] = note.clone();
+    }
+    if cleared {
+        item["skips_cleared"] = note;
+    }
+    item
 }
 
 /// `history -v --json`'s items, by transaction.
@@ -92,6 +107,8 @@ struct Changes {
     reinstall: String,
     pin: String,
     unpin: String,
+    skip: String,
+    unskip: String,
     adopt: String,
     restore_addon: String,
     restore_whole: String,
@@ -139,6 +156,20 @@ fn every_change(log: &TestLog) -> (Home, Changes) {
         "unpin",
         &["unpin", "Foo", "-t", "retail"],
         "pin",
+    );
+    let skip = change(
+        log,
+        &home,
+        "skip",
+        &["skip", "Foo", "--version", "v9", "-t", "retail"],
+        "skip",
+    );
+    let unskip = change(
+        log,
+        &home,
+        "unskip",
+        &["unskip", "Foo", "-t", "retail"],
+        "skip",
     );
 
     log.step("an unmanaged folder");
@@ -224,6 +255,8 @@ fn every_change(log: &TestLog) -> (Home, Changes) {
         reinstall,
         pin,
         unpin,
+        skip,
+        unskip,
         adopt,
         restore_addon,
         restore_whole,
@@ -249,6 +282,8 @@ fn every_kind_of_change_and_its_undo_names_the_addon_the_change_and_both_version
         ("restore_whole", &c.restore_whole),
         ("restore_addon", &c.restore_addon),
         ("adopt", &c.adopt),
+        ("unskip", &c.unskip),
+        ("skip", &c.skip),
         ("unpin", &c.unpin),
         ("pin", &c.pin),
         ("reinstall", &c.reinstall),
@@ -280,6 +315,16 @@ fn every_kind_of_change_and_its_undo_names_the_addon_the_change_and_both_version
         ),
         ("pin", &c.pin, json!([item(foo, "pinned", 1, v2, v2)])),
         ("unpin", &c.unpin, json!([item(foo, "unpinned", 1, v2, v2)])),
+        (
+            "skip: the label mark it made",
+            &c.skip,
+            json!([skip_item("skip_marked", true, false)]),
+        ),
+        (
+            "unskip: the mark it cleared",
+            &c.unskip,
+            json!([skip_item("skip_cleared", false, true)]),
+        ),
         (
             "adopt",
             &c.adopt,
@@ -331,6 +376,16 @@ fn every_kind_of_change_and_its_undo_names_the_addon_the_change_and_both_version
             "undo adopt",
             &undos["adopt"],
             json!([item(Some("Baz"), "reverted", 1, Some("3"), None)]),
+        ),
+        (
+            "undo unskip: the mark is back",
+            &undos["unskip"],
+            json!([skip_item("reverted", true, false)]),
+        ),
+        (
+            "undo skip: the mark is gone",
+            &undos["skip"],
+            json!([skip_item("reverted", false, true)]),
         ),
         (
             "undo unpin",
@@ -385,6 +440,8 @@ fn every_kind_of_change_and_its_undo_names_the_addon_the_change_and_both_version
         "    Foo: updated v1 → v2 (1 folder)",
         "    Foo: reinstalled v2 (1 folder)",
         "    Foo: pinned v2 (1 folder)",
+        "    Foo: skip marked v9 (1 folder)",
+        "    Foo: skip cleared v9 (1 folder)",
         "    Baz: adopted 3 (1 folder)",
         "    WTF/: settings restored (1 folder)",
         "    Foo: removed v2 (1 folder)",

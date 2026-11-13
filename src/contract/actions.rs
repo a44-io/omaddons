@@ -90,6 +90,9 @@ actions! {
     DoctorFix = "doctor_fix", false, "Run exactly the repair a doctor fix dry run showed";
     /// Offered by robot-docs install-skill, once per other agent's skill root that exists.
     InstallSkill = "install_skill", false, "Install the omaddons skill into another agent's skill folder";
+    /// Offered after a change that marked releases to pass over (`skip`), scoped to that
+    /// transaction's marks, so it never clears an independent decision about another release.
+    Unskip = "unskip", false, "Offer again the releases one transaction marked skipped";
 }
 
 impl fmt::Display for Action {
@@ -113,7 +116,7 @@ mod tests {
     fn every_action_has_a_unique_snake_case_wire_name() {
         assert_eq!(
             Action::ALL.len(),
-            27,
+            28,
             "registered actions: {:?}",
             Action::ALL
         );
@@ -229,6 +232,7 @@ mod tests {
             (Action::DoctorExplain, false),
             (Action::DoctorFix, false),
             (Action::InstallSkill, false),
+            (Action::Unskip, false),
         ];
         for action in Action::ALL {
             assert!(

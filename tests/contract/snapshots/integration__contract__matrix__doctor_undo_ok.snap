@@ -25,7 +25,7 @@ expression: s.stable(&c.envelope)
   "reverted_run": "<run>",
   "run_dir": "<root>/state/omaddons/doctor/runs/<run>",
   "run_id": "<run>",
-  "schema_version": "1.1",
+  "schema_version": "1.2",
   "started_at": "<time>",
   "state": "DONE_OK",
   "tool_version": "<version>",

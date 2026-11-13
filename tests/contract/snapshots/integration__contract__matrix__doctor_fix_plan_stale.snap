@@ -44,7 +44,7 @@ expression: s.stable(&c.envelope)
   "prunes_planned": null,
   "run_dir": "<root>/state/omaddons/doctor/runs/<run>",
   "run_id": "<run>",
-  "schema_version": "1.1",
+  "schema_version": "1.2",
   "skipped": [
     {
       "id": "fm-network-credential-rejected",

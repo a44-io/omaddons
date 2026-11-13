@@ -29,8 +29,10 @@ use crate::fsx::{Op, WriteSession, ensure_dir_all, mutate};
 use crate::limits::{DISCOVERY_FILE_MAX_BYTES, REASON_MAX_CHARS};
 use crate::model::{Actor, BackupId, FolderName, PlanId, RunId, TargetKey, TxId, TxKind};
 
-/// The version of the line format.
-pub const CURRENT: SchemaVersion = SchemaVersion::new(1, 0);
+/// The version of the line format. 1.1: the kind `skip` (`skip` and `unskip`, RG-33). A
+/// 1.0 line reads as written; a build that knows only 1.0 skips a `skip` line it cannot
+/// decode (`history_lines_skipped`), as it skips any line it cannot read.
+pub const CURRENT: SchemaVersion = SchemaVersion::new(1, 1);
 
 /// The schema of one line of `history.jsonl`: either shape the reader decodes, with the
 /// `schema_version` every line starts with.
@@ -1766,7 +1768,7 @@ mod tests {
         e.reason = Some("keep raid addons current".into());
         let line = serde_json::to_string(&e).unwrap();
         assert!(
-            line.starts_with(r#"{"schema_version":"1.0","tx":"#),
+            line.starts_with(r#"{"schema_version":"1.1","tx":"#),
             "{line}"
         );
         assert!(line.contains(r#""ops":[{"op":"add","folder":"WeakAuras","addon":"WeakAuras"}],"result":"committed","reverts":null}"#), "{line}");
@@ -2226,14 +2228,26 @@ mod tests {
             };
             let name = serde_json::to_value(kind).unwrap();
             let name = name.as_str().unwrap();
-            let before = format!(
-                "{{\"schema_version\":\"1.0\",\"tx\":\"{tx}\",\"kind\":\"{name}\",\"at\":\"2026-10-24T18:02:11.123Z\",\"target\":null,\"actor\":\"human\",\"argv\":[\"omaddons\"],\"ops\":[],\"result\":\"committed\",\"run\":\"{run}\"}}"
+            // As before but for the version (1.1 added the kind `skip`); a 1.0 line reads.
+            let line = |version: &str| {
+                format!(
+                    "{{\"schema_version\":\"{version}\",\"tx\":\"{tx}\",\"kind\":\"{name}\",\"at\":\"2026-10-24T18:02:11.123Z\",\"target\":null,\"actor\":\"human\",\"argv\":[\"omaddons\"],\"ops\":[],\"result\":\"committed\",\"run\":\"{run}\"}}"
+                )
+            };
+            assert_eq!(
+                serde_json::to_string(&setting).unwrap(),
+                line("1.1"),
+                "{name}"
             );
-            assert_eq!(serde_json::to_string(&setting).unwrap(), before, "{name}");
-            let read = parse(&format!("{before}\n"), &HistoryFilter::default());
-            assert_eq!(read.settings, [setting], "{name}: {before}");
-            assert_eq!(read.settings[0].dir, None, "{name}");
-            assert_eq!(skill_dir_of(&before), None, "{name}: no skill folder");
+            for before in [line("1.0"), line("1.1")] {
+                let read = parse(&format!("{before}\n"), &HistoryFilter::default());
+                assert_eq!(read.settings.len(), 1, "{name}: {before}");
+                assert_eq!(read.settings[0].kind, kind, "{name}: {before}");
+                assert_eq!(read.settings[0].dir, None, "{name}");
+                assert_eq!(skill_dir_of(&before), None, "{name}: no skill folder");
+            }
+            let read = parse(&format!("{}\n", line("1.1")), &HistoryFilter::default());
+            assert_eq!(read.settings, [setting], "{name}");
         }
     }
 
@@ -2388,16 +2402,30 @@ mod tests {
         e.reason = Some("keep raid addons current".into());
         e.run = Some("01JB8Q2VB00000000000000000".parse().unwrap());
         let line = serde_json::to_string(&e).unwrap();
-        assert_eq!(
-            line,
-            concat!(
-                r#"{"schema_version":"1.0","tx":"01JB8Q2VA00000000000000001","kind":"install","#,
-                r#""at":"2026-10-14T21:00:00Z","target":"01JB8Q2V9W0000000000000000","#,
-                r#""actor":"agent","reason":"keep raid addons current","#,
-                r#""argv":["omaddons","install","weakauras"],"#,
-                r#""ops":[{"op":"add","folder":"WeakAuras","addon":"WeakAuras"}],"#,
-                r#""result":"committed","reverts":null,"run":"01JB8Q2VB00000000000000000"}"#
+        // Exactly as before but for the version (1.1 added the kind `skip`), and a line
+        // written as 1.0 still reads as the same transaction.
+        let written = |version: &str| {
+            format!(
+                "{{\"schema_version\":\"{version}\",{}",
+                concat!(
+                    r#""tx":"01JB8Q2VA00000000000000001","kind":"install","#,
+                    r#""at":"2026-10-14T21:00:00Z","target":"01JB8Q2V9W0000000000000000","#,
+                    r#""actor":"agent","reason":"keep raid addons current","#,
+                    r#""argv":["omaddons","install","weakauras"],"#,
+                    r#""ops":[{"op":"add","folder":"WeakAuras","addon":"WeakAuras"}],"#,
+                    r#""result":"committed","reverts":null,"run":"01JB8Q2VB00000000000000000"}"#
+                )
             )
+        };
+        assert_eq!(line, written("1.1"));
+        let before: HistoryEntry = serde_json::from_str(&written("1.0")).unwrap();
+        assert_eq!(
+            HistoryEntry {
+                schema_version: CURRENT,
+                ..before
+            },
+            e,
+            "a 1.0 line reads as the same transaction"
         );
         for absent in ["targets", "repairs", "doctor_run_id"] {
             assert!(!line.contains(absent), "{absent} in {line}");

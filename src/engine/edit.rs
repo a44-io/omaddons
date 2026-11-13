@@ -13,7 +13,10 @@ use serde::Serialize;
 
 use crate::error::{Error, ErrorCode, Suggestion};
 use crate::inventory::{FolderClass, Inventory};
-use crate::model::{AddonReason, AddonRecord, Channel, FolderName, Ref, VersionConfidence};
+use crate::model::{
+    AddonReason, AddonRecord, Channel, FolderName, Ref, ReleaseKey, SkipOrigin, SkippedRelease,
+    SkipsFull, TxId, VersionConfidence, skip_label,
+};
 use crate::state::files_index::FolderIndex;
 use crate::state::records::TargetRecord;
 
@@ -35,19 +38,66 @@ pub enum RecordEdit {
     Repoint(Ref),
     /// Brings unmanaged folders under management as they are.
     Adopt(Box<AdoptSpec>),
+    /// `skip`: a mark that `update` passes over a release (design 7.5.6), made by hand
+    /// (`origin: manual`). `release` is the exact release, `None` for a label mark that
+    /// holds every release whose version reads `version`. A mark selecting what one on
+    /// the record selects already changes nothing; one past
+    /// [`crate::limits::SKIPS_PER_ADDON_MAX`] is `usage`.
+    Skip {
+        release: Option<ReleaseKey>,
+        version: String,
+    },
+    /// `unskip`: clears the marks [`UnskipWhich`] selects.
+    Unskip(UnskipWhich),
+}
+
+/// Which skip marks `unskip` clears (design 7.5.5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnskipWhich {
+    /// Every mark of the addon.
+    All,
+    /// The marks that hold this one release: [`crate::resolve::updates::unskip_clears`].
+    /// `version` is the release's version label, which a label mark is compared with.
+    Release { key: ReleaseKey, version: String },
+    /// The marks whose version label reads this, ignoring one leading `v`.
+    Label(String),
+    /// The marks this transaction made.
+    Tx(TxId),
+}
+
+impl UnskipWhich {
+    /// Whether `mark` is one of those this selects.
+    pub fn clears(&self, mark: &SkippedRelease) -> bool {
+        match self {
+            Self::All => true,
+            Self::Release { key, version } => {
+                crate::resolve::updates::unskip_clears(mark, key, version)
+            }
+            Self::Label(label) => skip_label(&mark.version) == skip_label(label),
+            Self::Tx(tx) => mark.tx == *tx,
+        }
+    }
 }
 
 impl RecordEdit {
     /// The guard this edit needs (see [`RecordGuard`]).
     pub fn guard(&self, before: Option<&AddonRecord>) -> RecordGuard {
         match self {
+            // A skip is decided against the installed release (what is "waiting" depends
+            // on it): like a pin, it never lands on another one.
             Self::SetPinned(_)
             | Self::SetChannel(_)
             | Self::SetReason(_)
             | Self::SetAnyFlavor(_)
-            | Self::Repoint(_) => RecordGuard {
+            | Self::Repoint(_)
+            | Self::Skip { .. } => RecordGuard {
                 recorded: true,
                 release: Some(before.and_then(|r| r.release_id.clone())),
+                ..RecordGuard::default()
+            },
+            // Which marks go does not depend on the installed release.
+            Self::Unskip(_) => RecordGuard {
+                recorded: true,
                 ..RecordGuard::default()
             },
             Self::AddRequiredBy(_) | Self::RemoveRequiredBy(_) => RecordGuard {
@@ -89,6 +139,8 @@ pub enum EditField {
     Ref,
     RequiredBy,
     AnyFlavor,
+    /// The skip marks ([`AddonRecord::skipped_releases`]).
+    SkippedReleases,
 }
 
 impl EditField {
@@ -100,6 +152,7 @@ impl EditField {
             Self::Ref => "ref",
             Self::RequiredBy => "required_by",
             Self::AnyFlavor => "any_flavor",
+            Self::SkippedReleases => "skipped_releases",
         }
     }
 }
@@ -128,6 +181,9 @@ pub fn changed_fields(before: Option<&AddonRecord>, after: Option<&AddonRecord>)
     }
     if before.any_flavor != after.any_flavor {
         fields.push(EditField::AnyFlavor);
+    }
+    if before.skipped_releases != after.skipped_releases {
+        fields.push(EditField::SkippedReleases);
     }
     fields
 }
@@ -188,9 +244,32 @@ pub fn apply_edit(
             // record, marks included, back from its snapshot.
             record.skipped_releases.clear();
         }
+        RecordEdit::Skip { release, version } => {
+            let mark =
+                SkippedRelease::pending(release.clone(), version.clone(), SkipOrigin::Manual);
+            record
+                .add_skip(mark)
+                .map_err(|full| skips_full(&full, target))?;
+        }
+        RecordEdit::Unskip(which) => record.skipped_releases.retain(|mark| !which.clears(mark)),
         RecordEdit::Forget | RecordEdit::Adopt(_) => {}
     }
     Ok(Some(record))
+}
+
+/// `usage` for a mark past [`crate::limits::SKIPS_PER_ADDON_MAX`]: no mark is dropped to
+/// make room, so the change fails before it commits. The fix names `unskip` scoped to one
+/// release, never the form that clears every mark (design 7.5.5: every command omaddons
+/// suggests is scoped), so it has a placeholder.
+pub fn skips_full(full: &SkipsFull, target: &str) -> Error {
+    Error::new(
+        ErrorCode::Usage,
+        format!("{full}; offer some of them again with unskip first"),
+        Suggestion::text(format!(
+            "omaddons unskip {} --release <release-id> -t {target}",
+            shell_words::quote(&full.addon)
+        )),
+    )
 }
 
 /// `edits` applied in order.
@@ -596,6 +675,205 @@ mod tests {
         assert_eq!(adopted.name, "Baz");
         let taken = apply(Some(record("Baz", &["Baz"])), adopt("Baz")).unwrap_err();
         assert_eq!(taken.code, ErrorCode::OwnershipConflict);
+    }
+
+    /// A mark: exact on `gh:o/foo@<tag>` (at `revision`) when `tag` is given, else a label.
+    fn mark(tag: Option<&str>, revision: Option<u32>, version: &str, tx: &str) -> SkippedRelease {
+        SkippedRelease {
+            release: tag.and_then(|t| ReleaseKey::parse(&format!("gh:o/foo@{t}"), revision)),
+            version: version.into(),
+            at: "2026-11-01T00:00:00Z".parse().unwrap(),
+            origin: SkipOrigin::Manual,
+            tx: tx.parse().unwrap(),
+        }
+    }
+
+    const TX_1: &str = "01JB8Q2VA00000000000000001";
+    const TX_2: &str = "01JB8Q2VA00000000000000002";
+
+    #[test]
+    fn unskip_clears_what_it_selects_and_nothing_about_another_release() {
+        let key =
+            |tag: &str, revision| ReleaseKey::parse(&format!("gh:o/foo@{tag}"), revision).unwrap();
+        let release = |tag: &str, revision, version: &str| UnskipWhich::Release {
+            key: key(tag, revision),
+            version: version.into(),
+        };
+        // (case, which, the mark, cleared)
+        let cases = [
+            (
+                "all: an exact mark",
+                UnskipWhich::All,
+                mark(Some("v2"), None, "v2", TX_1),
+                true,
+            ),
+            (
+                "all: a label mark",
+                UnskipWhich::All,
+                mark(None, None, "v3", TX_1),
+                true,
+            ),
+            (
+                "a release: its exact mark",
+                release("v2", None, "v2"),
+                mark(Some("v2"), None, "v2", TX_1),
+                true,
+            ),
+            (
+                "a release: a label mark reading its version",
+                release("v2", None, "v2"),
+                mark(None, None, "2", TX_1),
+                true,
+            ),
+            (
+                "a release: another tag's mark stays",
+                release("v2", None, "v2"),
+                mark(Some("v3"), None, "v3", TX_1),
+                false,
+            ),
+            (
+                "a release without a revision: a mark on any revision of its tag",
+                release("v2", None, "v2"),
+                mark(Some("v2"), Some(1390), "v2", TX_1),
+                true,
+            ),
+            (
+                "a release at a revision: a mark on another revision stays",
+                release("v2", Some(1402), "v2"),
+                mark(Some("v2"), Some(1390), "v2", TX_1),
+                false,
+            ),
+            (
+                "a release at a revision: a mark on the tag without one holds it",
+                release("v2", Some(1402), "v2"),
+                mark(Some("v2"), None, "v2", TX_1),
+                true,
+            ),
+            (
+                "a label: an exact mark labelled so",
+                UnskipWhich::Label("v2".into()),
+                mark(Some("v2"), None, "v2", TX_1),
+                true,
+            ),
+            (
+                "a label: ignoring one leading v",
+                UnskipWhich::Label("2".into()),
+                mark(None, None, "v2", TX_1),
+                true,
+            ),
+            (
+                "a label: another label stays",
+                UnskipWhich::Label("2".into()),
+                mark(None, None, "v2.1", TX_1),
+                false,
+            ),
+            (
+                "a transaction: its mark",
+                UnskipWhich::Tx(TX_1.parse().unwrap()),
+                mark(None, None, "v2", TX_1),
+                true,
+            ),
+            (
+                "a transaction: another's mark stays",
+                UnskipWhich::Tx(TX_1.parse().unwrap()),
+                mark(None, None, "v2", TX_2),
+                false,
+            ),
+        ];
+        for (case, which, mark, cleared) in cases {
+            assert_eq!(
+                which.clears(&mark),
+                cleared,
+                "{case}: {which:?} on {mark:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_skip_adds_one_pending_mark_and_an_unskip_takes_marks_away() {
+        let skip = |release: Option<&str>, version: &str| RecordEdit::Skip {
+            release: release.and_then(|id| ReleaseKey::parse(id, None)),
+            version: version.into(),
+        };
+        let marked = apply(
+            Some(record("Foo", &["Foo"])),
+            skip(Some("gh:o/foo@v2"), "v2"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(marked.skipped_releases.len(), 1);
+        let made = &marked.skipped_releases[0];
+        assert_eq!(made.origin, SkipOrigin::Manual);
+        assert_eq!(
+            (made.at, made.tx.to_string()),
+            (
+                jiff::Timestamp::UNIX_EPOCH,
+                "00000000000000000000000000".to_owned()
+            ),
+            "the commit stamps them"
+        );
+        assert_eq!(
+            changed_fields(Some(&record("Foo", &["Foo"])), Some(&marked)),
+            [EditField::SkippedReleases]
+        );
+        let again = apply(Some(marked.clone()), skip(Some("gh:O/Foo@v2"), "v2"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(again, marked, "a mark selecting the same changes nothing");
+        let cleared = apply(Some(marked), RecordEdit::Unskip(UnskipWhich::All))
+            .unwrap()
+            .unwrap();
+        assert!(cleared.skipped_releases.is_empty());
+        assert_eq!(
+            apply(None, RecordEdit::Unskip(UnskipWhich::All))
+                .unwrap_err()
+                .code,
+            ErrorCode::NotManaged
+        );
+    }
+
+    #[test]
+    fn the_mark_past_the_limit_is_usage_naming_a_scoped_unskip() {
+        let mut full = record("Foo", &["Foo"]);
+        for n in 0..crate::limits::SKIPS_PER_ADDON_MAX {
+            full.add_skip(mark(None, None, &format!("1.{n}"), TX_1))
+                .unwrap();
+        }
+        let refused = apply(
+            Some(full),
+            RecordEdit::Skip {
+                release: None,
+                version: "9".into(),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(refused.code, ErrorCode::Usage);
+        assert_eq!(
+            refused.fix.display(),
+            "omaddons unskip Foo --release <release-id> -t retail"
+        );
+        assert!(
+            refused.fix.argv().is_none(),
+            "a placeholder is no command to run"
+        );
+    }
+
+    #[test]
+    fn a_skip_is_guarded_by_its_release_and_an_unskip_by_its_record() {
+        let before = record("Foo", &["Foo"]);
+        let skip = RecordEdit::Skip {
+            release: None,
+            version: "9".into(),
+        }
+        .guard(Some(&before));
+        assert_eq!(skip.release, Some(Some("gh:o/foo@1.0".to_owned())));
+        assert!(skip.recorded);
+        let unskip = RecordEdit::Unskip(UnskipWhich::All).guard(Some(&before));
+        assert_eq!(
+            unskip.release, None,
+            "which marks go does not depend on the release"
+        );
+        assert!(unskip.recorded);
     }
 
     #[test]

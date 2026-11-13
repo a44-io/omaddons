@@ -640,8 +640,9 @@ fn lines_with_a_target_read_and_print_exactly_as_before() {
     log.step("history.jsonl as written");
     let text = fs::read_to_string(paths(&c.home.env).history_file()).unwrap();
     for line in text.lines() {
+        // History 1.1 added the kind `skip`; a line is otherwise written as before.
         assert!(
-            line.starts_with(r#"{"schema_version":"1.0","tx":"#),
+            line.starts_with(r#"{"schema_version":"1.1","tx":"#),
             "{line}"
         );
         // No line here was applied from a stored plan, so none carries `plan` (M4-D25).

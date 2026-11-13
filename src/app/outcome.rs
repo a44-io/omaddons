@@ -67,6 +67,11 @@ pub enum ItemStatus {
     Pinned,
     /// The installed release is no longer pinned.
     Unpinned,
+    /// A release to pass over was marked (`skip`; only the record changed). Never
+    /// `skipped`, which says an item was left alone.
+    SkipMarked,
+    /// Skip marks were cleared (`unskip`; only the record changed).
+    SkipCleared,
     /// Other record fields changed (`fields` names them); the release stays.
     Edited,
     /// Planned, with nothing to do.
@@ -95,6 +100,8 @@ impl ItemStatus {
             Self::Adopted => Some("adopt"),
             Self::Pinned => Some("pin"),
             Self::Unpinned => Some("unpin"),
+            Self::SkipMarked => Some("skip"),
+            Self::SkipCleared => Some("unskip"),
             Self::Edited => Some("edit"),
             Self::Unchanged | Self::Skipped | Self::Failed => None,
         }
@@ -110,6 +117,8 @@ impl ItemStatus {
                 | Self::Adopted
                 | Self::Pinned
                 | Self::Unpinned
+                | Self::SkipMarked
+                | Self::SkipCleared
                 | Self::Edited
         )
     }
@@ -122,6 +131,8 @@ impl ItemStatus {
             Self::Adopted => "adopted",
             Self::Pinned => "pinned",
             Self::Unpinned => "unpinned",
+            Self::SkipMarked => "skip_marked",
+            Self::SkipCleared => "skip_cleared",
             Self::Edited => "edited",
             Self::Unchanged => "unchanged",
             Self::Skipped => "skipped",
@@ -358,6 +369,14 @@ pub struct TargetResult {
     /// `--ref`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub left_unmanaged: Option<Vec<crate::app::adopt::LeftUnmanaged>>,
+    /// `skip` only: the marks it made here (in a dry run, would make), each by what it
+    /// selects, sorted. Omitted on every other command.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skips_marked: Option<Vec<crate::model::SkippedNote>>,
+    /// `unskip` only: the marks it cleared here (in a dry run, would clear), sorted.
+    /// Omitted on every other command.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skips_cleared: Option<Vec<crate::model::SkippedNote>>,
 }
 
 /// One addon's result on one target.
@@ -806,6 +825,8 @@ impl TargetResult {
             error: None,
             identifications: None,
             left_unmanaged: None,
+            skips_marked: None,
+            skips_cleared: None,
         }
     }
 }
@@ -1027,6 +1048,8 @@ fn target_result(
         error: target_error,
         identifications: None,
         left_unmanaged: None,
+        skips_marked: None,
+        skips_cleared: None,
     }
 }
 
@@ -1093,6 +1116,17 @@ fn change_item(request: String, change: &Change, p: &Planned<'_>) -> ItemResult 
                 ItemStatus::Unpinned
             } else {
                 ItemStatus::Pinned
+            }
+        }
+        // Marks only added, or only cleared; an edit that does both is `edited`.
+        ChangeKind::Edit if change.fields == [EditField::SkippedReleases] => {
+            match (
+                change.policy.skips_added.is_empty(),
+                change.policy.skips_removed.is_empty(),
+            ) {
+                (false, true) => ItemStatus::SkipMarked,
+                (true, false) => ItemStatus::SkipCleared,
+                _ => ItemStatus::Edited,
             }
         }
         ChangeKind::Edit => ItemStatus::Edited,
@@ -1362,6 +1396,12 @@ fn status_detail(i: &ItemResult, dry_run: bool) -> String {
         }
         ItemStatus::Removed => format!("{from} ({verb})"),
         ItemStatus::Pinned | ItemStatus::Unpinned => format!("{verb} at {to}"),
+        ItemStatus::SkipMarked if dry_run => format!("would mark a release skipped at {to}"),
+        ItemStatus::SkipMarked => format!("release marked skipped at {to}"),
+        ItemStatus::SkipCleared if dry_run => {
+            format!("would offer a skipped release again at {to}")
+        }
+        ItemStatus::SkipCleared => format!("skipped release offered again at {to}"),
         ItemStatus::Unchanged => format!("{to} (unchanged)"),
         ItemStatus::Skipped => match i.skip_reason {
             Some(reason) => format!("skipped: {}", reason.phrase()),
@@ -1430,6 +1470,7 @@ mod tests {
                 replaced: vec![FolderName::new(addon).unwrap()],
                 ..FolderSummary::default()
             },
+            policy: crate::engine::plan::PolicyDelta::default(),
         }
     }
 
@@ -2321,6 +2362,8 @@ mod tests {
             error: None,
             identifications: None,
             left_unmanaged: None,
+            skips_marked: None,
+            skips_cleared: None,
         };
         let one = target(vec![item_with("Foo", Installed)]);
         assert_eq!(header("sync", true, &one), "retail: would install 1 addon");

@@ -256,6 +256,8 @@ fn records_history(intent: &StoredIntent) -> bool {
         | StoredIntent::Update(_)
         | StoredIntent::Pin(_)
         | StoredIntent::Unpin(_)
+        | StoredIntent::Skip(_)
+        | StoredIntent::Unskip(_)
         | StoredIntent::Adopt(_)
         | StoredIntent::Sync(_)
         | StoredIntent::Copy(_)

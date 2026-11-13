@@ -232,6 +232,167 @@ fn the_0_2_1_build_reads_a_1_1_client_and_refuses_every_change_to_it() {
     }
 }
 
+/// RG-33: this build's `skip` (transaction kind `skip`, history 1.1, plan 1.2) meets the
+/// 0.2.1 build three ways: a committed `skip` line in `history.jsonl`, a stored `skip`
+/// plan, and an interrupted `skip` transaction. 0.2.1 reads history or refuses cleanly,
+/// refuses to apply the plan and to undo the `skip`, and leaves the journal, the stage,
+/// the plan, the record and `history.jsonl` byte for byte; this build then recovers the
+/// interrupted `skip` and keeps every mark.
+#[test]
+#[ignore = "builds v0.2.1: cargo test --test integration compat_v021:: -- --ignored --nocapture"]
+fn the_0_2_1_build_leaves_this_build_s_skips_alone() {
+    let log = tlog!();
+    let build = v0_2_1();
+    announce(&log, build);
+    let home = marked_home(&log);
+    let state = common::http::paths(&home.env);
+
+    log.step("this build commits a skip");
+    let committed = log.run(
+        &home,
+        &["skip", "Foo", "--version", "9", "-t", "retail", "--json"],
+    );
+    committed.ok();
+    let skip_tx = committed.data()["targets"][0]["tx"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    log.assert_eq("three marks", &skip_marks(&home, "Foo"), &3);
+
+    log.step("this build stores a skip plan");
+    let preview = log.run(
+        &home,
+        &[
+            "skip",
+            "Foo",
+            "--version",
+            "10",
+            "-t",
+            "retail",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    preview.ok();
+    let plan_id: omaddons::model::PlanId =
+        preview.data()["plan_id"].as_str().unwrap().parse().unwrap();
+    let plan = state.plan(&plan_id);
+
+    log.step("this build's skip is killed before it commits");
+    log.cmd(
+        &home,
+        &["skip", "Foo", "--version", "11", "-t", "retail", "--json"],
+    )
+    .failpoints("engine.journal.prepared=abort")
+    .run()
+    .aborted();
+    let journals: Vec<PathBuf> = fs::read_dir(home.state().join("journal"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(journals.len(), 1, "one journal: {journals:?}");
+    let journal = journals[0].clone();
+    let tx = journal
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .trim_end_matches(".jsonl")
+        .to_owned();
+    let stage = home
+        .client(RETAIL)
+        .join("Interface/.omaddons/stage")
+        .join(&tx);
+    let bytes = || {
+        (
+            fs::read(&journal).unwrap_or_default(),
+            fs::read(record_path(&home)).unwrap(),
+            if stage.exists() {
+                tree_hash(&stage)
+            } else {
+                "absent".to_owned()
+            },
+            fs::read(&plan).unwrap(),
+            fs::read(state.history_file()).unwrap(),
+        )
+    };
+    let before = bytes();
+    log.assert_eq(
+        "the journal is this build's skip",
+        &String::from_utf8_lossy(&before.0).contains("\"kind\":\"skip\""),
+        &true,
+    );
+
+    let runner = OldRunner { home: &home, build };
+    let plan_text = plan_id.to_string();
+    let probes: [(&str, Vec<&str>, bool); 6] = [
+        ("status", vec!["status", "--json"], false),
+        ("history", vec!["history", "--json"], false),
+        ("list", vec!["list", "--json"], false),
+        (
+            "apply the skip plan",
+            vec!["apply", &plan_text, "--json"],
+            true,
+        ),
+        ("undo the skip", vec!["undo", &skip_tx, "--json"], true),
+        ("undo", vec!["undo", "--json"], true),
+    ];
+    for (name, argv, refused) in probes {
+        log.step(&format!("0.2.1: {name}"));
+        let ran = log.run(&runner, &argv);
+        log.note(format!(
+            "exit {:?}, error {:?}, warnings {:?}",
+            ran.envelope()["exit_code"],
+            ran.error_code(),
+            ran.warnings()
+        ));
+        if refused {
+            log.assert_eq(
+                &format!("{name}: refused"),
+                &(ran.envelope()["exit_code"] != 0),
+                &true,
+            );
+        } else {
+            log.assert_eq(
+                &format!("{name}: one envelope, read or refused cleanly"),
+                &ran.envelope()["exit_code"].is_i64(),
+                &true,
+            );
+        }
+        let after = bytes();
+        log.assert_eq(
+            &format!("{name}: the journal"),
+            &(after.0 == before.0),
+            &true,
+        );
+        log.assert_eq(
+            &format!("{name}: the record"),
+            &(after.1 == before.1),
+            &true,
+        );
+        log.assert_eq(&format!("{name}: the stage"), &after.2, &before.2);
+        log.assert_eq(&format!("{name}: the plan"), &(after.3 == before.3), &true);
+        log.assert_eq(
+            &format!("{name}: history.jsonl"),
+            &(after.4 == before.4),
+            &true,
+        );
+    }
+
+    log.step("this build recovers its skip and keeps every mark");
+    let bar = local(&home, "Bar", "1.0");
+    let recovered = log.run(&home, &["install", &bar, "-t", "retail", "--json"]);
+    recovered.ok();
+    log.assert_eq(
+        "recovered",
+        &recovered
+            .warnings()
+            .contains(&"journal_recovered".to_owned()),
+        &true,
+    );
+    log.assert_eq("no journal left", &journal.exists(), &false);
+    log.assert_eq("the marks are kept", &skip_marks(&home, "Foo"), &3);
+}
+
 /// An interrupted change of this build, at each position, is left byte for byte by every
 /// command of the 0.2.1 build, at once and two hours on; this build then recovers it and
 /// keeps the marks.

@@ -186,6 +186,7 @@ Milestones 1 (the working slice), 2 (updates, dependencies, adoption and desired
 | The first tag, `v0.1.0`: contract 1.0 frozen and its released baseline committed, after a checkpoint run on the real machine (WoW: Forever and the 3.3.5a client; the four clients uninstalled before it are checked again once they are back) | ✅ Done (milestone 4, 2026-11-08) |
 | The widget's [accessibility](#accessibility) pass, opt-in [automatic updates](#play-sessions-and-notifications), and sharing an addon set by clipboard ([What it does](#what-it-does)) | ✅ Done (after `v0.1.0`) |
 | Launch-week fixes: the [Known issues](#known-issues) of launch day, a `--help` overhaul, and the binary cut from 24.9 MB to about 15.5 MB | ✅ Done (2026-11-10) |
+| [`skip` and `unskip`](#skip-addon-and-unskip-addon): releases to pass over, marked by hand (the one waiting, one by id, or a label) and cleared again, records-only and undoable, with a preview bound to the release it marks (contract 1.2) | 🚧 Regression guard, slice 1: `update` does not honor the marks yet ([Known issues](#known-issues)) |
 | Optional CurseForge and Wago (bring your own key), release packaging | 🗓️ Milestone 5 |
 
 ---
@@ -306,10 +307,10 @@ Every shell completes commands, subcommands, aliases, flags and fixed values (`-
 |---|---|
 | `-t`, `copy --to`, `targets rename` and `default` | Client ids: the registered ones, then each client the last plain `status` discovered that is not registered yet, by the id `-t` resolves for it |
 | `copy --from`, `targets rm` | Registered client ids |
-| `update`, `remove`, `pin`, `unpin`, `copy`, `errors --addon`, `backup restore --addon` | Managed addon names: the `-t` client's (for `copy`, the `--from` client's), else every registered client's |
+| `update`, `remove`, `pin`, `unpin`, `skip`, `unskip`, `copy`, `errors --addon`, `backup restore --addon` | Managed addon names: the `-t` client's (for `copy`, the `--from` client's), else every registered client's |
 | `apply`, `plans show` | Stored plan ids, newest first |
 | `backup list`, `restore`, `prune`, `export`, `verify` | Backup ids: the `-t` client's, else every client's, newest first |
-| `undo`; `undo --run`, `history --run` | Transactions undo can revert; run ids. Newest first, from the recent history |
+| `undo`, `unskip --tx`; `undo --run`, `history --run` | Transactions undo can revert; run ids. Newest first, from the recent history |
 | `doctor --since`, `doctor diff`, `doctor undo` | `latest`, then the doctor's run ids, newest first |
 | `doctor explain`, `--only`, `--skip` | Failure-mode ids; in a comma-separated `--only` or `--skip`, the next one |
 
@@ -774,7 +775,7 @@ Every global option works before or after the command, except `-V`/`--version`, 
 | `--json`, `--robot` | One JSON envelope on stdout (see [The JSON contract](#the-json-contract)) |
 | `--format json\|human` | Overrides `--json`; default `human`, or `OMADDONS_FORMAT=json` |
 | `-t, --target <TARGET>` (alias `--flavor`) | The client to act on: [any selector](#choosing-a-target-with--t), or `all` |
-| `--dry-run` | Show the plan without changing addons or settings. Every command accepts it; one that changes nothing ignores it. When `install`, `update`, `pin`, `unpin`, `adopt` (adopting), `sync`, `copy`, `remove`, `undo`, `backup restore` or `backup prune` would change something, its dry run also stores the preview for 24 hours: `data.plan_id`, `data.plan_expires_at` and `data.approval` (see [Stored plans](#stored-plans)) |
+| `--dry-run` | Show the plan without changing addons or settings. Every command accepts it; one that changes nothing ignores it. When `install`, `update`, `pin`, `unpin`, `skip`, `unskip`, `adopt` (adopting), `sync`, `copy`, `remove`, `undo`, `backup restore` or `backup prune` would change something, its dry run also stores the preview for 24 hours: `data.plan_id`, `data.plan_expires_at` and `data.approval` (see [Stored plans](#stored-plans)) |
 | `--actor human\|agent\|widget` | Who is acting, recorded in history by every command that changes something. Default `OMADDONS_ACTOR`, else `human` when stdin is a terminal, else `agent`. In `history` it filters |
 | `--reason <TEXT>` | Why, recorded verbatim in history by every command that changes something (at most 200 characters); others accept and ignore it |
 | `--offline` | Fail any network access (`OMADDONS_OFFLINE=1`) |
@@ -983,6 +984,37 @@ omaddons unpin dbm
 A pin without `--version` changes only the record, never a game file, so it works while the game runs; it is a transaction (kind `pin`), one per client under one run, so `omaddons undo` reverts it. `pin --version` installs that release first, as `install --version` does (a tag for `gh:`, a rev for `git:`; refused for `url:` and local installs), in an `update` (or `install`) transaction. An addon installed nowhere is `not_managed` (fix `omaddons install <addon>`); one already pinned (or unpinned) is left as it is, with no transaction. A pin keeps the addon's channel and reason. After `unpin`, the last line says what `update` would install, from remembered metadata.
 
 `--dry-run` returns `data.precondition`, and `--if-match <it>` pins (or unpins) exactly what that preview showed, or nothing (`plan_stale`; see [Previews, plans and `--if-match`](#previews-plans-and---if-match)): a pin made by someone else in between is `plan_stale`, not `unchanged`. With `--version`, the token also covers the release and every file of each folder it replaces.
+
+### `skip <ADDON>...` and `unskip <ADDON>...`
+
+Pass over one release, and offer it again. A mark is a decision about one addon on one client: `update` passes over the release it holds and installs the next one as usual (until RG-31 lands, see [Known issues](#known-issues)).
+
+```text
+$ omaddons skip plater -t retail
+retail: Plater Plater-v662 is skipped (installed: Plater-v661): update resumes at the next release (tx 01M9A2…)
+undo: omaddons undo 01M9A2B3C4D5E6F7G8H9J0K1MN
+$ omaddons unskip plater -t retail
+retail: Plater Plater-v662 is offered again (tx 01M9A2…)
+undo: omaddons undo 01M9A2C3D4E5F6G7H8J9K0M1NP
+retail: `omaddons update Plater -t retail` installs Plater-v662
+```
+
+```bash
+omaddons skip plater -t retail                      # the release waiting now
+omaddons skip plater --release gh:Tercioo/Plater-Nameplates@Plater-v662 -t retail
+omaddons skip dbm --version 12.2.0 -t retail        # every release labelled 12.2.0
+omaddons unskip plater -t retail                    # every mark of Plater
+omaddons unskip --tx 01M9A2B3C4D5E6F7G8H9J0K1MN     # exactly the marks one transaction made
+```
+
+- **Plain `skip`.** For each addon on each selected client (without `-t`, every client where it is installed): when the status `outdated` remembers is `update_available`, or `pinned` with a newer release, it marks that release by its exact key, its revision included where the source numbers revisions. It makes no request: it answers from the release memo whatever its age, as `outdated --offline` would. Anything else is `unchanged`, and the output says why (with `-v`, also a `debug` note): the newest release is installed, ahead, blocked, unchecked ("run `omaddons outdated -t <id>` first"), or the addon comes from a local file, folder or URL.
+- **`--release ID`** (one addon) marks exactly that release, by its id as `outdated` and `list -v` print it (`gh:Owner/Repo@v6.2.5`), whatever the memo offers now; an id of another source, or one that is no `<ref>@<tag>`, is `usage`. `--revision N` names the revision; without it, on a source that numbers revisions (WowAce), the memo's revision of that release when the memo holds it, else the mark holds every revision of the tag, and the output says so.
+- **`--version V`** (one addon) makes a label mark: every release whose version reads V, ignoring one leading `v`. The output says it is a label.
+- **`unskip`** clears every mark of the addons; with `--release ID [--revision N]` (one addon), the marks that hold that release (its exact mark, a mark on its tag made without a revision, a label mark reading its version, and without `--revision` a mark on any revision of its tag), never a mark about another release; with `--version V` (one addon), the marks whose label reads V; with `--tx TX`, exactly the marks that transaction made (on the named addons, else on every addon of the selected clients). With no matching mark it is `unchanged`. Its last line says what `update` would install now, from remembered metadata, as `unpin`'s does.
+- **Records only.** A transaction of kind `skip`, one per client under one run: no folder moves and no request, so it runs while the game runs, and `omaddons undo` reverts it. The client's record keeps each mark in its addon's `skipped_releases` (`release`, `version`, `at`, `origin`, `tx`), stamped with the time and transaction of the commit that made it. A mark that selects what one already there selects changes nothing. An addon keeps at most 256 marks (`SKIPS_PER_ADDON_MAX`): the 257th is `usage` before anything commits, its fix the scoped `unskip`; no mark is ever dropped to make room.
+- **What else clears a mark.** An install that names that version (`install --version`, `pin --version`, a version an `addons.toml` entry names), re-pointing the addon to another source (`adopt --ref`), and the `skip`'s own undo.
+- **The result.** Items are `skip_marked` or `skip_cleared` (never `skipped`, which says an addon was left alone). Each client lists the marks made in `skips_marked` (for `unskip`, `skips_cleared`), each `{addon, version, release}`, `release` `null` for a label mark. After a `skip`, `commands` offers `omaddons unskip --tx <tx> -t <id>` (action `unskip`), which clears exactly what that transaction marked and never an earlier decision about another release.
+- **A preview binds the release.** `--dry-run` returns `data.precondition` and stores a plan. Its token covers the marks the change adds and clears, each by what it selects, and the installed release they were decided against, never a mark's time or transaction. When the memo offers another release by the time of `omaddons apply <plan_id>` (or of the `--if-match` run), the run is `plan_stale` and marks nothing.
 
 ### `sync [FILE]`
 
@@ -1428,9 +1460,10 @@ omaddons history -t retail -v --json       # each folder operation (ops) instead
 
 Each line counts the folders added (`+`), replaced (`~`) and removed (`-`), and `=N` for folders recorded without moving (`changes.recorded`), such as forgetting an addon whose folders were gone. A `backup restore` is a transaction of kind `restore`: `changes.restored` counts the settings files it put back, and its ops are `wtf` for a whole `WTF/` (`{"op":"wtf","folder":"WTF","addon":"","backup":…,"from":"backup","files":N}`) or `saved_variables` for one addon's files.
 
-**What each change did (`-v`).** With `-v`, every line also carries `items`: its `ops` grouped by addon, each `{addon, change, folders, from_version, to_version}`, printed under each row (`Foo: updated v1 → v2 (1 folder)`).
+**What each change did (`-v`).** With `-v`, every line also carries `items`: its `ops` grouped by addon, each `{addon, change, folders, from_version, to_version, skips_marked, skips_cleared}`, printed under each row (`Foo: updated v1 → v2 (1 folder)`, `Plater: skip marked Plater-v662 (1 folder)`).
 
-- `change` is `installed`, `updated` (another release or source), `reinstalled`, `removed` (also an addon forgotten, or whose every folder another addon took over), `adopted`, `pinned`, `unpinned`, `edited` (only its record changed otherwise), `settings_restored` or `reverted` (any undo).
+- `change` is `installed`, `updated` (another release or source), `reinstalled`, `removed` (also an addon forgotten, or whose every folder another addon took over), `adopted`, `pinned`, `unpinned`, `skip_marked`, `skip_cleared` or `skip_changed` (its skip marks, by the set difference of what they select: one mark cleared and another made in one edit is `skip_changed`), `edited` (only its record changed otherwise), `settings_restored` or `reverted` (any undo).
+- `skips_marked` and `skips_cleared` list the skip marks the change made and cleared (`{addon, version, release}`, as [`skip`](#skip-addon-and-unskip-addon) gives them), whatever the change: an undo of a `skip` clears its marks. Both are empty when the record before or after the change is not known.
 - `addon` is `null` for a whole `WTF/` restore and its undo; `folders` counts the folders its ops name.
 - `from_version` and `to_version` come from the undo snapshots, with no request: before is the record the transaction found; after is the record the next change on that client found, or the live record for the client's newest line when exactly one commit newer. Where a snapshot is gone, the line's [stored plan](#stored-plans) gives them while kept; otherwise they are `null`, as for an addon not installed before or removed.
 - A line without ops (a settings change, a backup, a repair or its undo) has `items: []`.
@@ -2496,7 +2529,7 @@ It reads the binary, `config.toml`, and whether a credential is present (never i
 
 `data`, in this order:
 
-- `version`, `contract_version` (every envelope's `schema_version`, `"1.1"`), `build_id` (the build's 16 hex digits, which a stored plan records) and `guide_digest` (`sha256:` and the agent guide's 64 hex digits, as its stamp line writes them);
+- `version`, `contract_version` (every envelope's `schema_version`, `"1.2"`), `build_id` (the build's 16 hex digits, which a stored plan records) and `guide_digest` (`sha256:` and the agent guide's 64 hex digits, as its stamp line writes them);
 - `features`: one word per surface this build has (`json_envelope`, `stored_plans`, `doctor`, …);
 - `commands`: every command path in help's order, each `{path, description, group, mutates, json, dictionary, exit_codes, stores_plan, binds, network, aliases, args, flags, data_schema}`. `json` is always `true`; `dictionary` is `general` or `doctor`; `binds` says whether a run binds to its preview with `--if-match`; `network` is `none`, `optional` or `required`. `args` lists positionals as `{name, value_name, required, multiple, default, possible_values}`, and `flags` its own flags, then the global ones, as `{long, short, aliases, value_name, takes_value, required, multiple, default, possible_values, conflicts_with, requires, global, description}` (`possible_values` `null` for any text). `data_schema` is the command that prints its data's schema;
 - `exit_codes`: `{general, doctor}`, the two exit dictionaries, each code with its `name` and `meaning` (and, for `general`, `retryable`: `null` for `ok` and `failed`);
@@ -2519,8 +2552,8 @@ The human form never prints the config's path or a credential. Here with a store
 
 ```text
 $ omaddons capabilities
-omaddons 0.2.1 · contract 1.1 · build e49d5dfe18e17d93
-59 commands: look 18 · change 18 · setup 23 (omaddons help <command> for one)
+omaddons 0.2.1 · contract 1.2 · build e49d5dfe18e17d93
+61 commands: look 18 · change 20 · setup 23 (omaddons help <command> for one)
 Exit codes:
   0  ok            Success, including partial success (partial: true)
   …
@@ -2536,7 +2569,7 @@ Sources:
   curseforge  off  needs a key (M5)
   wago        off  needs a key (M5)
   wowace      on
-43 error codes · 55 warning codes · 27 actions · 32 failure modes
+43 error codes · 55 warning codes · 28 actions · 32 failure modes
   125 limits (0 from config)
 --json for the full description
 ```
@@ -2579,7 +2612,7 @@ With `--json`, bare help's `data` is `{name, version, usage, commands, global_fl
 ### Success
 
 ```json
-{"ok":true,"schema_version":"1.1","tool_version":"0.2.1","command":"install","exit_code":0,"partial":false,
+{"ok":true,"schema_version":"1.2","tool_version":"0.2.1","command":"install","exit_code":0,"partial":false,
  "data":{"dry_run":false,"target":{"id":"retail","key":"01M51EX04HHWM46XE9F2B9JXED"},"tx":"01M51EX645RCVFN6Z4ZV5GRWVS","kind":"install",
    "items":[{"request":"./Bar-2.1.0.zip","ref":"file:/home/me/src/Bar-2.1.0.zip","name":"Bar","status":"installed",
      "from_version":null,"to_version":"2.1.0","version_confidence":"toc","channel":"stable",
@@ -2596,7 +2629,7 @@ With `--json`, bare help's `data` is `{name, version, usage, commands, global_fl
 ### Failure
 
 ```json
-{"ok":false,"schema_version":"1.1","tool_version":"0.2.1","command":"install","exit_code":3,
+{"ok":false,"schema_version":"1.2","tool_version":"0.2.1","command":"install","exit_code":3,
  "error":{"code":"target_ambiguous","message":"./Bar-2.1.0.zip is compatible with 2 targets: era, retail",
    "fix":"omaddons install ./Bar-2.1.0.zip -t era","fix_argv":["omaddons","install","./Bar-2.1.0.zip","-t","era"],
    "alternatives":[{"display":"omaddons install ./Bar-2.1.0.zip -t retail","argv":["omaddons","install","./Bar-2.1.0.zip","-t","retail"]}],
@@ -2609,7 +2642,7 @@ With `--json`, bare help's `data` is `{name, version, usage, commands, global_fl
 | Field | Type | Meaning |
 |---|---|---|
 | `ok` | bool | `true` exactly when `exit_code` is 0 |
-| `schema_version` | string | `"1.1"` (contract 1.0 at the first tag, `v0.1.0`; see [Stability](#stability)) |
+| `schema_version` | string | `"1.2"` (contract 1.0 at the first tag, `v0.1.0`, 1.1 at `v0.2.0`; see [Stability](#stability)) |
 | `tool_version` | string | the binary's version |
 | `command` | string | the command's canonical path: `install`, `targets add`, `auth github`; a bare command that runs its default action names that action (`backup` is `backup list`, `omarchy` is `omarchy status`); `help` for help, `version` for `--version`, and `omaddons` when no command could be read from the arguments |
 | `exit_code` | int | the process exit code |
@@ -2617,7 +2650,7 @@ With `--json`, bare help's `data` is `{name, version, usage, commands, global_fl
 | `data` | object | the command's result (success, and `check_failed`) |
 | `error` | object | `code`, `message`, `fix` (display string), `fix_argv` (argv array, or `null` when the fix is prose or needs a value only you can supply; such a fix shows the command with each missing value as a `<placeholder>`, as in `omaddons targets add <path>`), `alternatives` (`[{display, argv}]`), `retryable`, `details` (always an object) |
 | `warnings` | array | `{code, message, fix, fix_argv, targets}`. `targets` lists the sorted ids of the clients a warning is about (empty when it names none). On a partial run, each failed item is mirrored here. On a failure, it holds what the run found before it failed (a `journal_pending`, a `config_unknown_key`), and stderr carries each as a `warning` event before the `error` event |
-| `commands` | array | suggested next steps: `{action, command, argv, destructive}`, where `destructive` says whether this step removes addons, undoes a change, restores settings or prunes backups (confirm before running one that does). The actions: `undo` and `undo_run` (after a change; destructive), `update`, `check_updates`, `adopt`, `adopt_folder` and `adopt_with_ref` (`adopt`'s guesses), `install` (search results, missing or bridge dependencies), `search` (a bridge dependency nothing resolves), `info` (a search result with no evidence), `reinstall`, `inspect` (`list -v` for degraded addons), `status` (after `status --cached` with no cache), `remove_orphans` (destructive), `list_unmanaged`, `forget_target` (destructive), `backup_create`, `refresh_backups`, `check_errors`, `dismiss_errors`, `install_buggrabber`, `reinstall_widget`, `enable_widget`, `apply` (`apply <plan_id>`, first in every dry run that stored a plan; as destructive as the plan's command), `doctor_explain` (once per failure mode a `doctor` run found), `doctor_fix` (`doctor fix --if-match <token>`) and `install_skill` (once per other agent's skill folder) |
+| `commands` | array | suggested next steps: `{action, command, argv, destructive}`, where `destructive` says whether this step removes addons, undoes a change, restores settings or prunes backups (confirm before running one that does). The actions: `undo` and `undo_run` (after a change; destructive), `update`, `check_updates`, `adopt`, `adopt_folder` and `adopt_with_ref` (`adopt`'s guesses), `install` (search results, missing or bridge dependencies), `search` (a bridge dependency nothing resolves), `info` (a search result with no evidence), `reinstall`, `inspect` (`list -v` for degraded addons), `status` (after `status --cached` with no cache), `remove_orphans` (destructive), `list_unmanaged`, `forget_target` (destructive), `backup_create`, `refresh_backups`, `check_errors`, `dismiss_errors`, `install_buggrabber`, `reinstall_widget`, `enable_widget`, `apply` (`apply <plan_id>`, first in every dry run that stored a plan; as destructive as the plan's command), `doctor_explain` (once per failure mode a `doctor` run found), `doctor_fix` (`doctor fix --if-match <token>`), `install_skill` (once per other agent's skill folder) and `unskip` (after a `skip`: `unskip --tx <tx>`, which clears only the marks that transaction made) |
 | `meta` | object | `elapsed_ms`, `offline` (`--offline` or `OMADDONS_OFFLINE=1`, usage errors included) |
 
 `check_failed` (exit 6) is the one failure that also carries `data` and `partial`, so `status --check --json` still returns the full status. On every other failure `commands` is empty, except a panic's, which can offer `undo` (below). Long commands also stream NDJSON `progress` events on stderr with `--progress json` (see [stderr events](#stderr-events)); stdout stays one envelope.
@@ -2783,7 +2816,7 @@ Every error code has its doctor exit, from its general exit: 2 → 64, 3 → 66,
 
 ### Previews, plans and `--if-match`
 
-A confirm dialog, or an agent that previews before it acts, must not run something other than what it showed. A `--dry-run` of a command that changes addons, or of a destructive command, returns `data.precondition`, a token describing exactly what the run would do and what it saw, and the real run with `--if-match <token>` does that, client by client, or nothing. `install`, `update`, `pin`, `unpin`, `adopt` (when it adopts), `sync`, `copy`, `remove`, `undo`, `backup restore`, `backup prune`, `errors dismiss`, `doctor fix`, `doctor gc` and `targets rm` bind (the last three store no plan, and the doctor's token is the report's top-level `precondition`). An `errors` read carries its own token per client (`dismiss.precondition`), so a dismissal binds to the read the user saw.
+A confirm dialog, or an agent that previews before it acts, must not run something other than what it showed. A `--dry-run` of a command that changes addons, or of a destructive command, returns `data.precondition`, a token describing exactly what the run would do and what it saw, and the real run with `--if-match <token>` does that, client by client, or nothing. `install`, `update`, `pin`, `unpin`, `skip`, `unskip`, `adopt` (when it adopts), `sync`, `copy`, `remove`, `undo`, `backup restore`, `backup prune`, `errors dismiss`, `doctor fix`, `doctor gc` and `targets rm` bind (the last three store no plan, and the doctor's token is the report's top-level `precondition`). An `errors` read carries its own token per client (`dismiss.precondition`), so a dismissal binds to the read the user saw.
 
 The storable commands' previews also store a plan ([Stored plans](#stored-plans)), which [`omaddons apply <plan_id>`](#apply-plan_id) runs exactly, with no command typed again. If an `apply`'s output is lost, run [`omaddons plans show <plan_id>`](#plans-show-plan_id) before you preview again or change anything: it says from history alone whether the plan committed on every client, some or none.
 
@@ -2811,7 +2844,7 @@ omaddons update -t retail --if-match pc1:…         # exactly that update, or p
 
 ### Stored plans
 
-The dry runs of `install`, `update`, `pin`, `unpin`, `adopt` (when adopting), `sync`, `copy`, `remove`, `undo`, `backup restore` and `backup prune` keep the preview in the cache when it would change something: `data.plan_id` names it, `data.plan_expires_at` gives its RFC 3339 expiry, and `data.approval` describes what it covers (all three `null` on real runs; a no-op dry run has a `null` plan id and an empty selection). The human output ends with `Plan <id> stored for 24 hours. Run exactly this: omaddons apply <id>`, and `commands[]` starts with that `omaddons apply <id>` (action `apply`, as destructive as the plan's command), so an agent that takes `commands[0]` after a preview runs exactly that preview. Restore and prune still print their binding-token line by default.
+The dry runs of `install`, `update`, `pin`, `unpin`, `skip`, `unskip`, `adopt` (when adopting), `sync`, `copy`, `remove`, `undo`, `backup restore` and `backup prune` keep the preview in the cache when it would change something: `data.plan_id` names it, `data.plan_expires_at` gives its RFC 3339 expiry, and `data.approval` describes what it covers (all three `null` on real runs; a no-op dry run has a `null` plan id and an empty selection). The human output ends with `Plan <id> stored for 24 hours. Run exactly this: omaddons apply <id>`, and `commands[]` starts with that `omaddons apply <id>` (action `apply`, as destructive as the plan's command), so an agent that takes `commands[0]` after a preview runs exactly that preview. Restore and prune still print their binding-token line by default.
 
 A repeated preview of the same intent and token reuses the same plan and its original expiry. Each plan lasts 24 hours; the store holds at most 512 plans and 32 MiB, each plan at most 256 KiB. Admission clears expired plans, never evicts a live one, and declines a plan over a quota; then `plan_id` stays `null`, one `plan_not_stored` warning says why, and the preview and its token stand. Clearing this cache is safe. `apply` never edits or deletes a plan file, and plan writes do not ring the widget's doorbell.
 
@@ -2903,7 +2936,7 @@ Three kinds of vocabulary keep their own spelling, and only these:
 
 ### Stability
 
-The envelope's `schema_version` is the contract's version (`capabilities`' `contract_version`): 1.0 at the first tag, and 1.1 since, adding `display_name` and the `targets.<id>.name` setting; the `info` action; `progress` events' `target` and `ref`; `list -v`'s `latest.published_at`; `info`'s `about`, `about_unavailable`, `installed[].toc` and `--releases`; `search --catalog`; `history -v`'s `items`; `status`'s `undo_snapshots`; `fm-state_files-snapshots-past-retention` with `prunes_planned` and `prunes`; the reasons `special_mode` and `not_a_folder` (`class` `invalid`); the attribution method `taint`; the limit `unreadable`; `stale_answers` and `stale_answer`; every warning's `targets`; `adopt`'s `identifications` and `left_unmanaged`; and `doctor gc`'s `skipped`.
+The envelope's `schema_version` is the contract's version (`capabilities`' `contract_version`): 1.0 at the first tag, 1.1 at `v0.2.0`, adding `display_name` and the `targets.<id>.name` setting; the `info` action; `progress` events' `target` and `ref`; `list -v`'s `latest.published_at`; `info`'s `about`, `about_unavailable`, `installed[].toc` and `--releases`; `search --catalog`; `history -v`'s `items`; `status`'s `undo_snapshots`; `fm-state_files-snapshots-past-retention` with `prunes_planned` and `prunes`; the reasons `special_mode` and `not_a_folder` (`class` `invalid`); the attribution method `taint`; the limit `unreadable`; `stale_answers` and `stale_answer`; every warning's `targets`; `adopt`'s `identifications` and `left_unmanaged`; and `doctor gc`'s `skipped`. 1.2, the regression guard's first slice, adds the commands `skip` and `unskip` (storable and binding), the transaction kind `skip`, the item statuses and history changes `skip_marked` and `skip_cleared` (and `skip_changed`), the edit field `skipped_releases`, each client's `skips_marked` and `skips_cleared` on `skip` and `unskip`, `history -v` items' `skips_marked` and `skips_cleared`, and the action `unskip`.
 
 The contract is pinned by a semantic manifest, `tests/contract/manifest.json`, generated from the code: every command path, flag and positional with its default, grammar, arity, conflicts and requirements; every output field with its type, presence, nullability, bounds, enum values and variants; every error code with its exit, retryability and typed `details`; every warning code, action, failure-mode id, event, phase, log level, exit code, repair operation, release environment variable, `config.toml` and `addons.toml` key; and every persisted file kind with its version. `tests/contract/wire_names.txt` prints the same one name per line. Both are regenerated with `OMADDONS_UPDATE_WIRE_NAMES=1 cargo test --test integration contract::wire_names`, and the gate fails when they differ from the code.
 
@@ -2949,7 +2982,7 @@ The contract suite (`tests/contract/`) validates every envelope and envelope sna
                                                               then: status.json, cleanup, doorbell, retention
 ```
 
-- **Interrupted runs.** The next command that changes something recovers every client's journals under the global lock first: install, update, sync, pin, unpin, adopting `adopt`, copy, remove and undo (even with nothing to change), `config set`, the `targets` changes, `auth github set` and `clear`, `export --write`, and `backup create`. Dry runs and read commands never recover: they report `journal_pending` (or `tx_in_progress` while another process holds the lock). A journal is written back only into its own client, once its marker names the journal's target. A journal that reached `swapped` rolls forward; anything earlier rolls back, keeping a snapshot that still holds an addon folder (named in `journal_recovered`). Each step records both paths' inode (and birth time), so rollback reverses only renames that happened, even after a reboot renumbered the device. An interrupted undo's SavedVariables restore runs during recovery only for a client found not running; otherwise `saved_variables_deferred`. A command whose recovery stops at a journal naming no client reports what it recovered before, then the stop as `journal_pending`, or fails with it when it commits.
+- **Interrupted runs.** The next command that changes something recovers every client's journals under the global lock first: install, update, sync, pin, unpin, skip, unskip, adopting `adopt`, copy, remove and undo (even with nothing to change), `config set`, the `targets` changes, `auth github set` and `clear`, `export --write`, and `backup create`. Dry runs and read commands never recover: they report `journal_pending` (or `tx_in_progress` while another process holds the lock). A journal is written back only into its own client, once its marker names the journal's target. A journal that reached `swapped` rolls forward; anything earlier rolls back, keeping a snapshot that still holds an addon folder (named in `journal_recovered`). Each step records both paths' inode (and birth time), so rollback reverses only renames that happened, even after a reboot renumbered the device. An interrupted undo's SavedVariables restore runs during recovery only for a client found not running; otherwise `saved_variables_deferred`. A command whose recovery stops at a journal naming no client reports what it recovered before, then the stop as `journal_pending`, or fails with it when it commits.
 - **Repair journals.** The doctor's repair transactions (`<state>/journal/<tx>.repair.jsonl`), and their undos, are recovered by the same commands: rolled back by inverse operations before their `done` line, forward from it. One that cannot be read, names a changed marker or a foreign skill directory, or has a step in neither state is left as one `journal_pending` warning, and what it protects is fenced. Recovery runs in three passes: set-asides and their undos (and unreadable repairs), then folder journals, then other repairs; a journal behind an unsettled repair waits, and a command on its client fails with the repair's error. An undo of a set-aside renames each journal back from `<tx>.reactivating.jsonl` last, so a crash rolls back whole. `doctor fix` never recovers on taking the lock: it finishes only the changes its preview listed (`delegated[]`) and refuses to touch an unfinished change's files (`fixer_conflict`).
 - **Stuck repairs fence what they protect.** A repair journal recovery cannot settle refuses only writes that overlap what it protects (the files it wrote, the backups its rollback reads, and for a set-aside the client's record and the suspended journal's folders), with its own error, `details.tx`, `details.resource` and the fix `omaddons doctor explain …`; everything else proceeds. An unreadable repair journal or an unlistable journal directory refuses every change until set aside. A commit checks the fences again under the lock. A fenced download fails with the journal's error, never `no_compatible_release`. Read commands and recovery are never fenced.
 - **Cached archives are checked before use.** Every archive from the download cache is re-hashed against its name first; one that differs is never staged: online it is downloaded again, offline the command fails with `hash_mismatch`. Nothing on this path deletes; `doctor --include-deep` finds such archives and `doctor fix` quarantines them.
@@ -2963,7 +2996,7 @@ The contract suite (`tests/contract/`) validates every envelope and envelope sna
 - **A failed recovery.** If a commit fails and recovering it in the same process fails too (a disk turned read-only), the journal and staged folders, possibly the only copy of the old version, are kept. The command fails with its own error, `error.details.journal_pending` and `error.details.recovery_error` (`{code, message}`); the next change finishes it.
 - **Crash testing.** All 35 engine failpoints are armed as a real `abort` in a child process across every transaction shape, SavedVariables included, and restores are also crashed at each rename and during recovery, fail on injected I/O errors, and race a launching game (see `tests/engine_crash.rs` under [Tests](#tests)). The state afterwards must be wholly old or wholly new, every displaced version must end in exactly one `recovered` backup, recovery crashed in turn must be finished by the next command, and a torn last line never stops recovery.
 - **Journals and state this omaddons cannot read.** Journals carry their format's version (1.1 since milestone 3). One from a newer major version (`journal_too_new`) or with a complete line this omaddons cannot decode (`journal_unreadable`) is never taken for "nothing ran": it is left with its lock, stage and snapshots, its client's changes fail with its `journal_pending` details, and other clients go on. A newer minor version and unknown fields recover as usual; a torn last line is a crash mid-append, ignored. A change is refused with `state_too_new` before anything is staged when its client's record or files index, or the registry, was written by a newer omaddons, and checked again under the lock. Unreadable history lines are skipped, and undo assumes a newer one touched whatever it may have (see [`undo`](#undo-tx)).
-- **Records-only changes.** `adopt`, `pin` without `--version`, `unpin`, forgetting an addon whose folders are gone, and `required_by` bookkeeping touch no folder, commit while the client runs, and are undoable.
+- **Records-only changes.** `adopt`, `pin` without `--version`, `unpin`, `skip`, `unskip`, forgetting an addon whose folders are gone, and `required_by` bookkeeping touch no folder, commit while the client runs, and are undoable.
 - **Your local changes** in a managed addon are replaced by an update or reinstall with a `local_changes_replaced` warning; the snapshot keeps them for `omaddons undo`.
 - **Your `addons.toml`.** `export --write` keeps the previous file as `addons.toml.bak`, refuses a hand-edited file without `--overwrite`, and never writes an empty export.
 - **Backups** say what they prove (`stable`, `best_effort`, `metadata_only`, `verified`; see [`backup list`](#backup-list)). A backup is staged under `.omaddons/stage/` and renamed into `backups/` only once described, so a crash leaves no half backup. Backups are owner-only (`0700`), and their manifests, which name the account, realm and character, never leave the machine.
@@ -3256,7 +3289,7 @@ A test fails when the binary reads a variable this section does not list.
 | `~/.local/state/omaddons/net.log`, `net.log.1` | The request log | Yes |
 | `~/.cache/omaddons/blobs/`, `http/`, `discovery.json`, `tmp/`, `inflight/`, `trash/`, `git-home/` | Downloads, HTTP validators, the discovery cache, temporary downloads and git checkouts, the in-flight locks of planning and dry runs, staged deletions, git's empty home directory | Yes when no command is running; reinstalls then download again |
 | `~/.cache/omaddons/releases.json` | The release memo: the newest release each fetch saw (at most 4,096 entries), non-retryable failures, and what downloads taught (each archive's hash, and whether it loads on a client) | Yes; commands fetch again |
-| `~/.cache/omaddons/plans/` (`<plan_id>.json`, `<plan_id>.lease`, `.lock`) | [Stored previews](#stored-plans) (`plan` 1.0, mode 0600): typed intent, binding token, approval summary and the dry run's lines. A `.lease` is the lock `apply` holds on a plan, naming its pid | Yes when no command is running |
+| `~/.cache/omaddons/plans/` (`<plan_id>.json`, `<plan_id>.lease`, `.lock`) | [Stored previews](#stored-plans) (`plan` 1.2 since `skip` and `unskip`, mode 0600): typed intent, binding token, approval summary and the dry run's lines. A `.lease` is the lock `apply` holds on a plan, naming its pid | Yes when no command is running |
 | `~/.cache/omaddons/quarantine/<run id>/` | What a doctor repair set aside from the cache (a damaged archive under `blobs/<sha256>`). Only `doctor gc` deletes it | Yes; the repair's undo can then no longer put it back |
 | `~/.cache/omaddons/wowi/index.json` | WoWInterface's file list, slim and sanitized (format 1.1), refreshed after its hour | Yes |
 | `~/.cache/omaddons/doorbell.json` | A signal for the bar widget (`{at, command, actor}`), rewritten by every write that can alter what `status --cached` reports, never by `status` | Yes |
@@ -3278,7 +3311,7 @@ A test fails when the binary reads a variable this section does not list.
 
 The state directory honors `XDG_STATE_HOME`, the cache `XDG_CACHE_HOME`, and the config `XDG_CONFIG_HOME`. State files carry a `schema_version`. A file written by a newer omaddons is read, never overwritten (`state_too_new`).
 
-A client's record (`targets/<key>.json`) is format 1.1 from the first change this build makes to that client: each addon may carry `skipped_releases`, releases `update` is to pass over, which are decisions and never dropped to make room (at most 256 per addon, `SKIPS_PER_ADDON_MAX`). omaddons 0.2.1 and older still read such a client, but refuse every change to it with `state_too_new`, so going back to an older build leaves that client read-only until you upgrade again.
+A client's record (`targets/<key>.json`) is format 1.1 from the first change this build makes to that client: each addon may carry `skipped_releases`, releases `update` is to pass over, which are decisions and never dropped to make room (at most 256 per addon, `SKIPS_PER_ADDON_MAX`). omaddons 0.2.1 and older still read such a client, but refuse every change to it with `state_too_new`, so going back to an older build leaves that client read-only until you upgrade again. History lines are format 1.1 from the same build: a line of kind `skip` is one 0.2.1 cannot decode, so its `history` skips it (`history_lines_skipped`) and its `undo` refuses what such a line may have touched; a stored `skip` or `unskip` plan (plan 1.2) is `plan_not_found` to it.
 
 ---
 
@@ -3601,7 +3634,7 @@ An interrupted `WTF/` restore adds three cases. While its game runs, it waits (`
 
 The README describes the intended behavior. A place where the code at HEAD does not match it yet is listed here with its bead (`br show <id>`), and the README changes only if a fix decides otherwise.
 
-None at HEAD.
+- **Skip marks are not honored yet** (`omad-regression-guard-ia3r.1.5`, RG-31). `skip` and `unskip` make and clear marks, and the record keeps them, but `update`, `outdated`, `list`, `info`, `status` and `install` still offer and install a skipped release.
 
 ---
 

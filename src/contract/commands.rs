@@ -442,11 +442,22 @@ pub const REQUIRES: &[Requirement] = &[
         long: "limit",
         requires: &["releases"],
     },
+    // A revision names one revision of the release `--release` names (RG-33).
+    Requirement {
+        path: "skip",
+        long: "revision",
+        requires: &["release"],
+    },
     // A purge's confirmation confirms only a purge (omad-launch-week-fixes-bmcx.2).
     Requirement {
         path: "targets rm",
         long: "yes",
         requires: &["purge"],
+    },
+    Requirement {
+        path: "unskip",
+        long: "revision",
+        requires: &["release"],
     },
 ];
 

@@ -16,7 +16,7 @@ expression: "without_length(&s, &c.envelope, \"bash\")"
   "exit_code": 0,
   "ok": true,
   "partial": false,
-  "schema_version": "1.1",
+  "schema_version": "1.2",
   "tool_version": "<version>",
   "warnings": []
 }

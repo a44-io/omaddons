@@ -283,6 +283,63 @@ _arguments "${_arguments_options[@]}" : \
 ':addon -- The installed addon\: its name, or a catalog name or alias:_default' \
 && ret=0
 ;;
+(skip)
+_arguments "${_arguments_options[@]}" : \
+'(--version)--release=[Pass over exactly this release, by its id from outdated or list -v]:RELEASE-ID:_default' \
+'--revision=[With --release\: the release'\''s source revision (WowAce)]:N:_default' \
+'--version=[Pass over every release whose version reads this (a label mark)]:VERSION:_default' \
+'--format=[Output format]:FORMAT:(json human)' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
+'--progress=[Progress events on stderr]:MODE:(json human none)' \
+'--json[One JSON envelope on stdout]' \
+'--robot[The same as --json]' \
+'--dry-run[Show the plan without changing anything]' \
+'--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
+'--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
+'--no-color[No ANSI color]' \
+'--no-progress[No progress output]' \
+'--quiet[Only errors on stderr]' \
+'*-v[More detail (repeatable)]' \
+'*--verbose[More detail (repeatable)]' \
+'-h[Show help]' \
+'--help[Show help]' \
+'*::addons -- The installed addons\: each by its name, or a catalog name or alias:_default' \
+&& ret=0
+;;
+(unskip)
+_arguments "${_arguments_options[@]}" : \
+'(--version --tx)--release=[Offer exactly this release again\: clear the marks that hold it]:RELEASE-ID:_default' \
+'--revision=[With --release\: the release'\''s source revision (WowAce)]:N:_default' \
+'(--tx)--version=[Clear the marks whose version reads this]:VERSION:_default' \
+'--tx=[Clear exactly the marks this transaction made]:TX:_default' \
+'--format=[Output format]:FORMAT:(json human)' \
+'-t+[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--target=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--flavor=[The client to act on\: id, game mode, family, path, or all]:TARGET:_default' \
+'--actor=[Who is acting\: human, agent or widget \[env\: OMADDONS_ACTOR\]]:ACTOR:_default' \
+'--reason=[Why, recorded verbatim in history]:TEXT:_default' \
+'--if-match=[Run only what the preview that returned this token showed]:TOKEN:_default' \
+'--progress=[Progress events on stderr]:MODE:(json human none)' \
+'--json[One JSON envelope on stdout]' \
+'--robot[The same as --json]' \
+'--dry-run[Show the plan without changing anything]' \
+'--offline[Fail any network access \[env\: OMADDONS_OFFLINE=1\]]' \
+'--while-running[Allow folder changes while the client runs (never SavedVariables)]' \
+'--no-color[No ANSI color]' \
+'--no-progress[No progress output]' \
+'--quiet[Only errors on stderr]' \
+'*-v[More detail (repeatable)]' \
+'*--verbose[More detail (repeatable)]' \
+'-h[Show help]' \
+'--help[Show help]' \
+'*::addons -- The installed addons\: each by its name, or a catalog name or alias:_default' \
+&& ret=0
+;;
 (adopt)
 _arguments "${_arguments_options[@]}" : \
 '--ref=[Where the one folder named comes from\: anything install accepts]:REF:_default' \
@@ -2118,6 +2175,8 @@ _omaddons_commands() {
 'upgrade:Update managed addons on every client' \
 'pin:Hold an addon at its release through updates' \
 'unpin:Let a pinned addon update again' \
+'skip:Pass over one release; updates resume at the next' \
+'unskip:Offer a skipped release again' \
 'adopt:Bring addons installed by hand under management' \
 'sync:Make every client match addons.toml' \
 'copy:Install one client'\''s addons on another' \
@@ -2445,6 +2504,11 @@ _omaddons__subcmd__search_commands() {
     local commands; commands=()
     _describe -t commands 'omaddons search commands' commands "$@"
 }
+(( $+functions[_omaddons__subcmd__skip_commands] )) ||
+_omaddons__subcmd__skip_commands() {
+    local commands; commands=()
+    _describe -t commands 'omaddons skip commands' commands "$@"
+}
 (( $+functions[_omaddons__subcmd__status_commands] )) ||
 _omaddons__subcmd__status_commands() {
     local commands; commands=()
@@ -2495,6 +2559,11 @@ _omaddons__subcmd__unpin_commands() {
     local commands; commands=()
     _describe -t commands 'omaddons unpin commands' commands "$@"
 }
+(( $+functions[_omaddons__subcmd__unskip_commands] )) ||
+_omaddons__subcmd__unskip_commands() {
+    local commands; commands=()
+    _describe -t commands 'omaddons unskip commands' commands "$@"
+}
 (( $+functions[_omaddons__subcmd__update_commands] )) ||
 _omaddons__subcmd__update_commands() {
     local commands; commands=()
@@ -2531,7 +2600,7 @@ _omaddons() {
                 -t?*) target=${word#-t}; continue ;;
                 -*)
                     case $word in
-                        --actor|--addon|--before|--budget|--by|--channel|--dir|--file|--flavor|--format|--from|--if-match|--keep|--last-by|--limit|--name|--older-than|--only|--progress|--reason|--ref|--run|--saved-variables|--section|--severity|--since|--skip|--source|--target|--to|--version|-t) value_of=$word ;;
+                        --actor|--addon|--before|--budget|--by|--channel|--dir|--file|--flavor|--format|--from|--if-match|--keep|--last-by|--limit|--name|--older-than|--only|--progress|--reason|--ref|--release|--revision|--run|--saved-variables|--section|--severity|--since|--skip|--source|--target|--to|--tx|--version|-t) value_of=$word ;;
                     esac
                     continue ;;
             esac
@@ -2542,6 +2611,8 @@ _omaddons() {
                 ",update"|",upgrade") cmdpath="update"; n=0; continue ;;
                 ",pin") cmdpath="pin"; n=0; continue ;;
                 ",unpin") cmdpath="unpin"; n=0; continue ;;
+                ",skip") cmdpath="skip"; n=0; continue ;;
+                ",unskip") cmdpath="unskip"; n=0; continue ;;
                 ",adopt") cmdpath="adopt"; n=0; continue ;;
                 ",sync") cmdpath="sync"; n=0; continue ;;
                 ",copy") cmdpath="copy"; n=0; continue ;;
@@ -2611,6 +2682,7 @@ _omaddons() {
         case "$cmdpath $value_of" in
             "copy --from") kind=target ;;
             "copy --to") kind=client ;;
+            "unskip --tx") kind=tx ;;
             "errors --addon") kind=addon ;;
             "backup restore --addon") kind=addon ;;
             "undo --run") kind=run ;;
@@ -2643,11 +2715,13 @@ _omaddons() {
             "pin") if (( n == 0 )); then kind=addon; fi ;;
             "plans show") if (( n == 0 )); then kind=plan; fi ;;
             "remove") if (( n >= 0 )); then kind=addon; fi ;;
+            "skip") if (( n >= 0 )); then kind=addon; fi ;;
             "targets default") if (( n == 0 )); then kind=client; fi ;;
             "targets rename") if (( n == 0 )); then kind=client; fi ;;
             "targets rm") if (( n == 0 )); then kind=target; fi ;;
             "undo") if (( n == 0 )); then kind=tx; fi ;;
             "unpin") if (( n == 0 )); then kind=addon; fi ;;
+            "unskip") if (( n >= 0 )); then kind=addon; fi ;;
             "update") if (( n >= 0 )); then kind=addon; fi ;;
         esac
     fi

@@ -225,6 +225,33 @@ pub(crate) fn home_for(log: &TestLog, path: &str) -> Fixture {
                 strings(&["omaddons", path, "Foo", "-t", "retail"]),
             )
         }
+        // A plain skip marks the release the memo says is waiting: an update checked
+        // once, as `update`'s fixture serves one.
+        "skip" => {
+            install(log, &home, "Foo", YESTERDAY);
+            serve(&home, "Foo", "2");
+            run(
+                log,
+                &home,
+                &strings(&["outdated", "-t", "retail", "--refresh"]),
+            );
+            (
+                strings(&["skip", "Foo", "-t", "retail"]),
+                strings(&["omaddons", "skip", "Foo", "-t", "retail"]),
+            )
+        }
+        "unskip" => {
+            install(log, &home, "Foo", NOW);
+            run(
+                log,
+                &home,
+                &strings(&["skip", "Foo", "--version", "9", "-t", "retail"]),
+            );
+            (
+                strings(&["unskip", "Foo", "-t", "retail"]),
+                strings(&["omaddons", "unskip", "Foo", "-t", "retail"]),
+            )
+        }
         "adopt" => {
             serve(&home, "Bar", "1");
             unmanaged(&home, "Bar");
@@ -372,6 +399,8 @@ fn store_a_no_op_dry_run_writes_no_plan() {
         "update",
         "pin",
         "unpin",
+        "skip",
+        "unskip",
         "adopt",
         "sync",
         "copy",
@@ -611,7 +640,7 @@ fn store_human_output_names_the_plan() {
 #[test]
 fn store_dry_runs_leave_state_untouched_and_take_no_global_lock() {
     let log = crate::common::tlog::tlog!();
-    log.step("prepare the union of all eleven commands' prerequisites");
+    log.step("prepare the union of all thirteen commands' prerequisites");
     let home = Home::new(&["wow", "wow_classic"]);
     log.env(&home);
     serve(&home, "Foo", "1");
@@ -621,6 +650,11 @@ fn store_dry_runs_leave_state_untouched_and_take_no_global_lock() {
     serve(&home, "Bar", "1");
     install(&log, &home, "Bar", NOW);
     run(&log, &home, &strings(&["pin", "Bar", "-t", "retail"]));
+    run(
+        &log,
+        &home,
+        &strings(&["skip", "Bar", "--version", "8", "-t", "retail"]),
+    );
     serve(&home, "Baz", "1");
     unmanaged(&home, "Baz");
     common::wtf::Wtf::at(home.client("_retail_"))
@@ -650,6 +684,11 @@ fn store_dry_runs_leave_state_untouched_and_take_no_global_lock() {
         ("update", strings(&["update", "Foo", "-t", "retail"])),
         ("pin", strings(&["pin", "Foo", "-t", "retail"])),
         ("unpin", strings(&["unpin", "Bar", "-t", "retail"])),
+        (
+            "skip",
+            strings(&["skip", "Foo", "--version", "9", "-t", "retail"]),
+        ),
+        ("unskip", strings(&["unskip", "Bar", "-t", "retail"])),
         ("adopt", strings(&["adopt", "--apply", "-t", "retail"])),
         ("sync", strings(&["sync", &desired, "-t", "retail"])),
         (

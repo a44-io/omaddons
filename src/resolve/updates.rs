@@ -412,6 +412,21 @@ pub fn skip_covers(mark: &SkippedRelease, key: Option<&ReleaseKey>, version: &st
     }
 }
 
+/// Whether `unskip --release` of the release `key`, whose version label is `version`,
+/// clears `mark` (design 7.5.5): every mark that covers that release ([`skip_covers`]:
+/// its exact mark, a mark on its tag made without a revision, a label mark reading its
+/// version), and, when `key` names no revision, an exact mark on any revision of its tag,
+/// since a release id typed without a revision names the tag. A mark about another tag,
+/// or about another revision than a named one, stays.
+pub fn unskip_clears(mark: &SkippedRelease, key: &ReleaseKey, version: &str) -> bool {
+    skip_covers(mark, Some(key), version)
+        || (key.revision.is_none()
+            && mark
+                .release
+                .as_ref()
+                .is_some_and(|m| m.source == key.source && m.tag == key.tag))
+}
+
 /// The mark on `record` that covers the release these name, if any ([`skip_covers`]).
 pub fn skip_covering<'r>(
     record: &'r AddonRecord,

@@ -4,7 +4,7 @@ expression: stable(failure)
 ---
 {
   "ok": false,
-  "schema_version": "1.1",
+  "schema_version": "1.2",
   "tool_version": "<version>",
   "command": "install",
   "exit_code": 3,

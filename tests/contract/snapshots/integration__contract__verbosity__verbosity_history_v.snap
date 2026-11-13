@@ -24,6 +24,8 @@ expression: s.stable(&checked.envelope)
             "change": "installed",
             "folders": 1,
             "from_version": null,
+            "skips_cleared": [],
+            "skips_marked": [],
             "to_version": "v1"
           },
           {
@@ -31,6 +33,8 @@ expression: s.stable(&checked.envelope)
             "change": "installed",
             "folders": 1,
             "from_version": null,
+            "skips_cleared": [],
+            "skips_marked": [],
             "to_version": "v1"
           }
         ],
@@ -74,6 +78,8 @@ expression: s.stable(&checked.envelope)
             "change": "installed",
             "folders": 1,
             "from_version": null,
+            "skips_cleared": [],
+            "skips_marked": [],
             "to_version": "5.19.2"
           }
         ],
@@ -114,6 +120,8 @@ expression: s.stable(&checked.envelope)
             "change": "installed",
             "folders": 1,
             "from_version": null,
+            "skips_cleared": [],
+            "skips_marked": [],
             "to_version": "1"
           }
         ],
@@ -141,7 +149,7 @@ expression: s.stable(&checked.envelope)
   "exit_code": 0,
   "ok": true,
   "partial": false,
-  "schema_version": "1.1",
+  "schema_version": "1.2",
   "tool_version": "<version>",
   "warnings": []
 }

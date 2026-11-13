@@ -164,10 +164,11 @@ pub const KINDS: &[KindRow] = &[
     },
     // A doctor run's `report.json`: the envelope's bytes, written through fsx and not
     // `save`; its version is the envelope's `schema_version`. 1.1: the `info` action in
-    // `commands` (readers refuse only a newer major, `doctor::runs`).
+    // `commands` (readers refuse only a newer major, `doctor::runs`). 1.2: the `unskip`
+    // action, and the transaction kind `skip` in a finding's evidence (RG-33).
     KindRow {
         kind: "doctor_report",
-        current: SchemaVersion::new(1, 1),
+        current: SchemaVersion::new(1, 2),
         #[cfg(feature = "schemas")]
         schema: crate::doctor::report::record_schema,
     },

@@ -460,6 +460,8 @@ var CLI_PATHS = {
   "update":            { "mutates": true,  "destructive": false, "binds": true },
   "pin":               { "mutates": true,  "destructive": false, "binds": true },
   "unpin":             { "mutates": true,  "destructive": false, "binds": true },
+  "skip":              { "mutates": true,  "destructive": false, "binds": true },
+  "unskip":            { "mutates": true,  "destructive": false, "binds": true },
   "adopt":             { "mutates": true,  "destructive": false, "binds": true },
   "sync":              { "mutates": true,  "destructive": false, "binds": true },
   "copy":              { "mutates": true,  "destructive": false, "binds": true },
@@ -6725,7 +6727,7 @@ function toastView(note, result, held, activity, failure) {
 // stores_plan by tests/omarchy_widget.rs. A previewed action on one of them confirms
 // through its plan.
 // BEGIN PLAN_PATHS
-var PLAN_PATHS = ["install", "update", "pin", "unpin", "adopt", "sync", "copy", "remove", "undo", "backup restore", "backup prune"]
+var PLAN_PATHS = ["install", "update", "pin", "unpin", "skip", "unskip", "adopt", "sync", "copy", "remove", "undo", "backup restore", "backup prune"]
 // END PLAN_PATHS
 var PLAN_ID_PATTERN = /^[0-9A-HJKMNP-TV-Z]{26}$/
 // The fields of an approval's selection item, as the widget keeps them.

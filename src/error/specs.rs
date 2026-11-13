@@ -14,7 +14,7 @@ const STRINGS: DetailSpec = DetailSpec::Array(&STR);
 /// A history line's kind (`TxKind`), every value it serializes to.
 const TX_KINDS: DetailSpec = DetailSpec::Enum(&[
     "install", "update", "remove", "undo", "adopt", "sync", "restore", "repair", "backup", "pin",
-    "config", "target", "auth", "export", "dismiss", "widget", "skill",
+    "skip", "config", "target", "auth", "export", "dismiss", "widget", "skill",
 ]);
 const FOLDER_CLASSES: DetailSpec = DetailSpec::Enum(&[
     "protected",

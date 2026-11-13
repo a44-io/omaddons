@@ -385,9 +385,12 @@ impl Outcome for InstallOutcome {
                         item.request
                     )?;
                 }
-                // Install reports adoptions and removals as installs.
+                // Install reports adoptions and removals as installs. It never marks or
+                // clears a skip, but an edit it records is told the same way.
                 ItemStatus::Pinned
                 | ItemStatus::Unpinned
+                | ItemStatus::SkipMarked
+                | ItemStatus::SkipCleared
                 | ItemStatus::Edited
                 | ItemStatus::Removed
                 | ItemStatus::Adopted => {

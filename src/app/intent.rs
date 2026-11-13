@@ -29,6 +29,7 @@ use crate::app::copy::CopyArgs;
 use crate::app::install::InstallArgs;
 use crate::app::pin::{PinArgs, UnpinArgs};
 use crate::app::remove::RemoveArgs;
+use crate::app::skip::{SkipArgs, UnskipArgs};
 use crate::app::sync::SyncArgs;
 use crate::app::undo::UndoArgs;
 use crate::app::update::UpdateArgs;
@@ -598,6 +599,21 @@ pub struct PinIntent {
     pub while_running: bool,
 }
 
+/// `skip`'s and `unskip`'s (only `unskip` takes `tx`). The release a plain `skip` marks
+/// is not here: `apply` asks the release memo again, and the token binds the release the
+/// preview marked (design 7.5.6), so a memo that moved since makes it `plan_stale`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SkipIntent {
+    pub addons: Vec<String>,
+    pub scope: TargetScope,
+    pub release: Option<String>,
+    pub revision: Option<u32>,
+    pub version: Option<String>,
+    pub tx: Option<TxId>,
+    pub while_running: bool,
+}
+
 /// An adopting `adopt`: `--apply`, folder names or `--ref` (the report is not storable).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -693,6 +709,8 @@ pub enum StoredIntent {
     Update(UpdateIntent),
     Pin(PinIntent),
     Unpin(PinIntent),
+    Skip(SkipIntent),
+    Unskip(SkipIntent),
     Adopt(AdoptIntent),
     Sync(SyncIntent),
     Copy(CopyIntent),
@@ -722,6 +740,14 @@ pub enum StorableArgs<'a> {
     },
     Unpin {
         args: &'a UnpinArgs,
+        scope: TargetScope,
+    },
+    Skip {
+        args: &'a SkipArgs,
+        scope: TargetScope,
+    },
+    Unskip {
+        args: &'a UnskipArgs,
         scope: TargetScope,
     },
     Adopt {
@@ -764,12 +790,14 @@ pub enum StorableArgs<'a> {
 }
 
 impl StoredIntent {
-    /// The eleven storable command paths, with the widget's `destructive` flag.
-    pub const PATHS: [(&'static str, bool); 11] = [
+    /// The thirteen storable command paths, with the widget's `destructive` flag.
+    pub const PATHS: [(&'static str, bool); 13] = [
         ("install", false),
         ("update", false),
         ("pin", false),
         ("unpin", false),
+        ("skip", false),
+        ("unskip", false),
         ("adopt", false),
         ("sync", false),
         ("copy", false),
@@ -786,6 +814,8 @@ impl StoredIntent {
             Self::Update(_) => "update",
             Self::Pin(_) => "pin",
             Self::Unpin(_) => "unpin",
+            Self::Skip(_) => "skip",
+            Self::Unskip(_) => "unskip",
             Self::Adopt(_) => "adopt",
             Self::Sync(_) => "sync",
             Self::Copy(_) => "copy",
@@ -814,6 +844,7 @@ impl StoredIntent {
             Self::Install(i) => i.while_running,
             Self::Update(u) => u.while_running,
             Self::Pin(p) | Self::Unpin(p) => p.while_running,
+            Self::Skip(s) | Self::Unskip(s) => s.while_running,
             Self::Adopt(a) => a.while_running,
             Self::Sync(s) => s.while_running,
             Self::Copy(c) => c.while_running,
@@ -845,6 +876,8 @@ impl StoredIntent {
             Self::Update(_)
             | Self::Pin(_)
             | Self::Unpin(_)
+            | Self::Skip(_)
+            | Self::Unskip(_)
             | Self::Adopt(_)
             | Self::Copy(_)
             | Self::Remove(_)
@@ -897,6 +930,31 @@ impl StoredIntent {
                     return Err("unpin takes no version".to_owned());
                 }
                 p.scope.validate()
+            }
+            Self::Skip(s) | Self::Unskip(s) => {
+                let command = self.command_path();
+                names(&format!("{command}'s addons"), &s.addons)?;
+                if matches!(self, Self::Skip(_)) && s.tx.is_some() {
+                    return Err("skip takes no --tx".to_owned());
+                }
+                if s.addons.is_empty() && s.tx.is_none() {
+                    return Err(format!("{command} names at least one addon"));
+                }
+                if s.release.is_some() && s.version.is_some() {
+                    return Err(format!("{command} takes --release or --version, not both"));
+                }
+                if s.tx.is_some() && (s.release.is_some() || s.version.is_some()) {
+                    return Err(
+                        "unskip takes --tx alone, without --release or --version".to_owned()
+                    );
+                }
+                if s.revision.is_some() && s.release.is_none() {
+                    return Err(format!("{command}'s --revision goes with --release"));
+                }
+                if (s.release.is_some() || s.version.is_some()) && s.addons.len() != 1 {
+                    return Err(format!("{command} --release or --version names one addon"));
+                }
+                s.scope.validate()
             }
             Self::Adopt(a) => {
                 if !a.apply && a.folders.is_empty() && a.r#ref.is_none() {
@@ -973,6 +1031,15 @@ impl StoredIntent {
                 f.value("--version", p.version.as_deref());
                 f.switch("--while-running", p.while_running);
                 vec![p.addon.clone()]
+            }
+            Self::Skip(s) | Self::Unskip(s) => {
+                f.value("-t", s.scope.flag());
+                f.value("--release", s.release.as_deref());
+                f.value("--revision", s.revision.map(|r| r.to_string()).as_deref());
+                f.value("--version", s.version.as_deref());
+                f.value("--tx", s.tx.map(|tx| tx.to_string()).as_deref());
+                f.switch("--while-running", s.while_running);
+                s.addons.clone()
             }
             Self::Adopt(a) => {
                 f.switch("--apply", a.apply);
@@ -1102,6 +1169,25 @@ impl StoredIntent {
                 version: None,
                 while_running,
             }),
+            StorableArgs::Skip { args, scope } => Self::Skip(SkipIntent {
+                addons: args.addons.clone(),
+                scope: scope.clone(),
+                release: args.release.clone(),
+                revision: args.revision,
+                version: args.version.clone(),
+                tx: None,
+                while_running,
+            }),
+            StorableArgs::Unskip { args, scope } => Self::Unskip(SkipIntent {
+                addons: args.addons.clone(),
+                scope: scope.clone(),
+                release: args.release.clone(),
+                revision: args.revision,
+                version: args.version.clone(),
+                // The run refused a `--tx` that is not an id before it planned.
+                tx: args.tx.as_deref().and_then(|tx| tx.parse().ok()),
+                while_running,
+            }),
             StorableArgs::Adopt { args, scope, r#ref } => Self::Adopt(AdoptIntent {
                 folders: args.folders.clone(),
                 apply: args.apply,
@@ -1198,6 +1284,7 @@ impl StoredIntent {
             Self::BackupRestore(r) => Some(r.target.to_string()),
             Self::Update(u) => scoped(&u.scope),
             Self::Pin(p) | Self::Unpin(p) => scoped(&p.scope),
+            Self::Skip(s) | Self::Unskip(s) => scoped(&s.scope),
             Self::Adopt(a) => scoped(&a.scope),
             Self::Sync(s) => scoped(&s.scope),
             Self::BackupPrune(p) => scoped(&p.scope),
@@ -1264,6 +1351,31 @@ impl From<&PinIntent> for UnpinArgs {
     fn from(p: &PinIntent) -> Self {
         Self {
             addon: p.addon.clone(),
+        }
+    }
+}
+
+/// `skip`'s arguments for `intent` (whose `tx` is always `None`); nothing is defaulted.
+impl From<&SkipIntent> for SkipArgs {
+    fn from(s: &SkipIntent) -> Self {
+        Self {
+            addons: s.addons.clone(),
+            release: s.release.clone(),
+            revision: s.revision,
+            version: s.version.clone(),
+        }
+    }
+}
+
+/// `unskip`'s arguments for `intent`; nothing is defaulted.
+impl From<&SkipIntent> for UnskipArgs {
+    fn from(s: &SkipIntent) -> Self {
+        Self {
+            addons: s.addons.clone(),
+            release: s.release.clone(),
+            revision: s.revision,
+            version: s.version.clone(),
+            tx: s.tx.map(|tx| tx.to_string()),
         }
     }
 }
@@ -2327,6 +2439,8 @@ mod tests {
         Update(UpdateArgs),
         Pin(PinArgs),
         Unpin(UnpinArgs),
+        Skip(SkipArgs),
+        Unskip(UnskipArgs),
         Adopt(AdoptArgs),
         Sync(SyncArgs),
         Copy(CopyArgs),
@@ -2361,6 +2475,14 @@ mod tests {
             (Args::Unpin(args), StoredIntent::Unpin(p)) => StorableArgs::Unpin {
                 args,
                 scope: p.scope.clone(),
+            },
+            (Args::Skip(args), StoredIntent::Skip(s)) => StorableArgs::Skip {
+                args,
+                scope: s.scope.clone(),
+            },
+            (Args::Unskip(args), StoredIntent::Unskip(s)) => StorableArgs::Unskip {
+                args,
+                scope: s.scope.clone(),
             },
             (Args::Adopt(args), StoredIntent::Adopt(a)) => StorableArgs::Adopt {
                 args,
@@ -2409,6 +2531,8 @@ mod tests {
             Command::Update(a) => Args::Update(a),
             Command::Pin(a) => Args::Pin(a),
             Command::Unpin(a) => Args::Unpin(a),
+            Command::Skip(a) => Args::Skip(a),
+            Command::Unskip(a) => Args::Unskip(a),
             Command::Adopt(a) => Args::Adopt(a),
             Command::Sync(a) => Args::Sync(a),
             Command::Copy(a) => Args::Copy(a),
@@ -2600,6 +2724,91 @@ mod tests {
                     while_running: true,
                 }),
                 display: &["omaddons", "unpin", "Foo", "-t", "era", "--while-running"],
+            },
+            Row {
+                name: "skip the waiting releases of two addons",
+                args: Args::Skip(SkipArgs {
+                    addons: strings(&["Foo", "Bar"]),
+                    ..SkipArgs::default()
+                }),
+                while_running: false,
+                intent: StoredIntent::Skip(SkipIntent {
+                    addons: strings(&["Foo", "Bar"]),
+                    scope: every(),
+                    release: None,
+                    revision: None,
+                    version: None,
+                    tx: None,
+                    while_running: false,
+                }),
+                display: &["omaddons", "skip", "Foo", "Bar"],
+            },
+            Row {
+                name: "skip one release at a revision",
+                args: Args::Skip(SkipArgs {
+                    addons: strings(&["Foo"]),
+                    release: Some("wowace:foo@v2".to_owned()),
+                    revision: Some(1402),
+                    version: None,
+                }),
+                while_running: false,
+                intent: StoredIntent::Skip(SkipIntent {
+                    addons: strings(&["Foo"]),
+                    scope: one("retail", RETAIL),
+                    release: Some("wowace:foo@v2".to_owned()),
+                    revision: Some(1402),
+                    version: None,
+                    tx: None,
+                    while_running: false,
+                }),
+                display: &[
+                    "omaddons",
+                    "skip",
+                    "Foo",
+                    "-t",
+                    "retail",
+                    "--release",
+                    "wowace:foo@v2",
+                    "--revision",
+                    "1402",
+                ],
+            },
+            Row {
+                name: "unskip a label",
+                args: Args::Unskip(UnskipArgs {
+                    addons: strings(&["Foo"]),
+                    version: Some("v2".to_owned()),
+                    ..UnskipArgs::default()
+                }),
+                while_running: false,
+                intent: StoredIntent::Unskip(SkipIntent {
+                    addons: strings(&["Foo"]),
+                    scope: one("era", ERA),
+                    release: None,
+                    revision: None,
+                    version: Some("v2".to_owned()),
+                    tx: None,
+                    while_running: false,
+                }),
+                display: &["omaddons", "unskip", "Foo", "-t", "era", "--version", "v2"],
+            },
+            Row {
+                name: "unskip what one transaction marked",
+                args: Args::Unskip(UnskipArgs {
+                    tx: Some("01JB8Q2VA00000000000000001".to_owned()),
+                    ..UnskipArgs::default()
+                }),
+                while_running: false,
+                intent: StoredIntent::Unskip(SkipIntent {
+                    addons: Vec::new(),
+                    scope: every(),
+                    release: None,
+                    revision: None,
+                    version: None,
+                    tx: Some("01JB8Q2VA00000000000000001".parse().unwrap()),
+                    while_running: false,
+                }),
+                display: &["omaddons", "unskip", "--tx", "01JB8Q2VA00000000000000001"],
             },
             Row {
                 name: "adopt a folder from a ref",
@@ -3247,6 +3456,7 @@ mod tests {
             StoredIntent::Install(i) => &mut i.while_running,
             StoredIntent::Update(u) => &mut u.while_running,
             StoredIntent::Pin(p) | StoredIntent::Unpin(p) => &mut p.while_running,
+            StoredIntent::Skip(s) | StoredIntent::Unskip(s) => &mut s.while_running,
             StoredIntent::Adopt(a) => &mut a.while_running,
             StoredIntent::Sync(s) => &mut s.while_running,
             StoredIntent::Copy(c) => &mut c.while_running,
@@ -3317,7 +3527,7 @@ mod tests {
     }
 
     #[test]
-    fn destructive_flags_and_the_eleven_paths() {
+    fn destructive_flags_and_the_thirteen_paths() {
         let paths: Vec<&str> = StoredIntent::PATHS.iter().map(|(p, _)| *p).collect();
         assert_eq!(
             paths,
@@ -3326,6 +3536,8 @@ mod tests {
                 "update",
                 "pin",
                 "unpin",
+                "skip",
+                "unskip",
                 "adopt",
                 "sync",
                 "copy",

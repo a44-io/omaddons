@@ -113,7 +113,7 @@ fn unreadable_plans_pin_nothing() {
                 match case {
                     "token_edited" => value["precondition"]["token"] = Value::from("pc1:bad"),
                     "display_argv_edited" => value["display_argv"] = json!(["omaddons", "status"]),
-                    "newer_version" => value["schema_version"] = Value::from("1.2"),
+                    "newer_version" => value["schema_version"] = Value::from("1.3"),
                     "id_not_the_file_name" => {
                         value["plan_id"] = Value::from(control.plan_id.to_string())
                     }

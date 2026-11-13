@@ -184,6 +184,18 @@ pub enum Command {
     /// Let a pinned addon update again
     #[command(after_long_help = UNPIN_HELP)]
     Unpin(crate::app::pin::UnpinArgs),
+    /// Pass over one release; updates resume at the next
+    ///
+    /// Marks the release waiting for each addon, from what earlier checks remembered:
+    /// a records-only change that makes no request, undoable.
+    #[command(after_long_help = SKIP_HELP)]
+    Skip(crate::app::skip::SkipArgs),
+    /// Offer a skipped release again
+    ///
+    /// Clears skip marks: every one of the addons, or those of one release, label or
+    /// transaction. A records-only change, undoable.
+    #[command(after_long_help = UNSKIP_HELP)]
+    Unskip(crate::app::skip::UnskipArgs),
     /// Bring addons installed by hand under management
     ///
     /// Folders installed by hand or by another manager are recorded as they are: only
@@ -653,6 +665,25 @@ Examples:
 const UNPIN_HELP: &str = "\
 Examples:
   omaddons unpin WeakAuras          let it update again (nothing is installed now)";
+
+/// `skip`'s long help.
+const SKIP_HELP: &str = "\
+Examples:
+  omaddons skip Plater -t retail                          pass over the release waiting now
+  omaddons skip Plater --release gh:Tercioo/Plater-Nameplates@Plater-v662 -t retail
+                                                          pass over exactly this release
+  omaddons skip DBM --version 12.2.0 -t retail            every release labelled 12.2.0
+
+A mark holds until unskip clears it, an install names that version, or the addon
+moves to another source. update installs the next release as usual.";
+
+/// `unskip`'s long help.
+const UNSKIP_HELP: &str = "\
+Examples:
+  omaddons unskip Plater -t retail                        clear every mark of Plater
+  omaddons unskip Plater --release gh:Tercioo/Plater-Nameplates@Plater-v662 -t retail
+                                                          offer exactly this release again
+  omaddons unskip --tx 01M8Q2VA7K3N5P8R1T4W6X9Y0Z         the marks one transaction made";
 
 /// `adopt`'s long help.
 const ADOPT_HELP: &str = "\

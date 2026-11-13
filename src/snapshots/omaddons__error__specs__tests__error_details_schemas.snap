@@ -4306,6 +4306,7 @@ expression: schemas
                 "repair",
                 "backup",
                 "pin",
+                "skip",
                 "config",
                 "target",
                 "auth",
