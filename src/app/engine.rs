@@ -9,11 +9,12 @@ use crate::cli::Context;
 use crate::engine::indexes::DepIndexes;
 use crate::engine::inspect::ArchiveLimits;
 use crate::engine::plan::DownloadMemo;
+use crate::engine::plan::RequestedChange;
 use crate::engine::retention::RetentionLimits;
 use crate::engine::{Binding, EngineCtx, TxOutcomes, TxRequest, UndoOutcome, UndoRequest};
 use crate::error::{Error, ErrorCode, Result, Suggestion};
 use crate::limits::EffectiveLimits;
-use crate::model::{Actor, Channel, PlanId, Target};
+use crate::model::{Actor, Channel, PlanId, RunId, Target};
 use crate::net::{Http, NetConfig, NetLog, stack};
 use crate::output::ProgressSink;
 use crate::resolve::cache::{Freshness, ReleaseCache};
@@ -206,22 +207,27 @@ impl Engine {
 
     /// Plans and commits `req`, fetching through `cache` (`None`: no memo).
     pub fn run(&self, req: &TxRequest, cache: Option<&ReleaseCache<'_>>) -> Result<TxOutcomes> {
-        crate::engine::run(req, &self.ctx(cache))
+        self.run_bound(req, cache, None)
     }
 
-    /// [`Engine::run`], bound to a preview (`--if-match`) when `binding` is given.
+    /// [`Engine::run`], bound to a preview (`--if-match`) when `binding` is given. The
+    /// clients whose code it may change are read around it (the errors ledger's light
+    /// read, design 7.1.8), outside the commit window.
     pub fn run_bound(
         &self,
         req: &TxRequest,
         cache: Option<&ReleaseCache<'_>>,
         binding: Option<&dyn Binding>,
     ) -> Result<TxOutcomes> {
-        crate::engine::run(req, &self.bound_ctx(cache, binding))
+        let captured = self.light_capture(&read_around(req));
+        let result = crate::engine::run(req, &self.bound_ctx(cache, binding));
+        self.light_commit(captured, req.run);
+        result
     }
 
     /// Reverts the transaction `req` selects.
     pub fn undo(&self, req: &UndoRequest) -> Result<UndoOutcome> {
-        crate::engine::undo(req, &self.ctx(None))
+        self.undo_bound(req, None)
     }
 
     /// The undo of the repair-family line `read.entries[at]`, and the report its run
@@ -235,13 +241,53 @@ impl Engine {
         crate::engine::repair::undo::undo_repair_reported(req, &self.ctx(None), read, at)
     }
 
-    /// [`Engine::undo`], bound to a preview (`--if-match`) when `binding` is given.
+    /// [`Engine::undo`], bound to a preview (`--if-match`) when `binding` is given. Every
+    /// client of the request is read around it (which one the undo acts on is decided
+    /// inside the engine), unless it is a dry run.
     pub fn undo_bound(
         &self,
         req: &UndoRequest,
         binding: Option<&dyn Binding>,
     ) -> Result<UndoOutcome> {
-        crate::engine::undo(req, &self.bound_ctx(None, binding))
+        let targets: Vec<&Target> = if req.dry_run {
+            Vec::new()
+        } else {
+            req.targets.iter().map(|d| &d.target).collect()
+        };
+        let captured = self.light_capture(&targets);
+        let result = crate::engine::undo(req, &self.bound_ctx(None, binding));
+        self.light_commit(captured, req.run);
+        result
+    }
+
+    /// Whether each client of `targets` runs now, by the detection the engine's running
+    /// policy uses, in one scan: `None` for every one when that cannot be told.
+    fn running_clients(&self, targets: &[Target]) -> impl Fn(&Target) -> Option<bool> + use<> {
+        let dirs = crate::engine::tx::running_dirs(&self.ctx(None), targets);
+        move |target: &Target| dirs.as_ref().map(|dirs| dirs.contains(&target.client_dir))
+    }
+
+    /// The errors ledger's light read before a change to `targets` (design 7.1.8): it
+    /// looks at their BugGrabber files and whether they run, takes no lock and never
+    /// fails. Nothing to look at for no target.
+    pub fn light_capture(&self, targets: &[&Target]) -> super::errors_ledger::Captured {
+        if targets.is_empty() {
+            return super::errors_ledger::Captured::default();
+        }
+        let owned: Vec<Target> = targets.iter().map(|t| (*t).clone()).collect();
+        let running = self.running_clients(&owned);
+        super::errors_ledger::capture(&self.paths, targets, &running)
+    }
+
+    /// The light read after the change `run` made, whether it succeeded or not: one
+    /// short session under the evidence lock, never the transaction lock. It never fails.
+    pub fn light_commit(&self, captured: super::errors_ledger::Captured, run: RunId) {
+        let targets = captured.targets();
+        if targets.is_empty() {
+            return;
+        }
+        let running = self.running_clients(&targets);
+        super::errors_ledger::commit(&self.paths, captured, run, &running, self.command);
     }
 
     /// A whole restore's refusals before anything under the client dir is written: a
@@ -281,6 +327,25 @@ impl Engine {
     }
 }
 
+/// The clients a request's light read looks at: each whose requested changes may move
+/// code, that is, any change but a record edit (a plain pin or unpin, an adoption, a
+/// plain skip), whatever the command. None for a dry run, which also serves the
+/// commands' internal probes.
+fn read_around(req: &TxRequest) -> Vec<&Target> {
+    if req.dry_run {
+        return Vec::new();
+    }
+    req.targets
+        .iter()
+        .filter(|t| {
+            t.changes
+                .iter()
+                .any(|change| !matches!(change, RequestedChange::Edit { .. }))
+        })
+        .map(|t| &t.discovered.target)
+        .collect()
+}
+
 /// [`Engine::recover_waiting`] for a command that has built no engine: one is built only
 /// when a journal waits.
 pub fn recover_waiting(ctx: &Context, world: &World, command: &'static str) {
@@ -295,6 +360,81 @@ pub fn recover_waiting(ctx: &Context, world: &World, command: &'static str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_request_is_read_around_unless_a_dry_run_or_made_only_of_record_edits() {
+        use crate::discover::target::DiscoveredTarget;
+        use crate::engine::TxTarget;
+        use crate::engine::edit::RecordEdit;
+        use crate::model::TxKind;
+        let pin = || RequestedChange::Edit {
+            addon: "Foo".into(),
+            edit: RecordEdit::SetPinned(true),
+        };
+        let remove = || RequestedChange::Remove {
+            addon: "Foo".into(),
+        };
+        let client = |id: &str, changes: Vec<RequestedChange>| {
+            let mut target = crate::engine::testing::target(&std::path::Path::new("/c").join(id));
+            target.id = id.into();
+            TxTarget {
+                discovered: DiscoveredTarget {
+                    target,
+                    default_id: id.into(),
+                    qualifier: "battlenet".into(),
+                    source: crate::discover::DiscoverySource::Scan,
+                    not_launched_since: None,
+                },
+                changes,
+                default_kind: TxKind::Install,
+                dependency_locks: std::collections::BTreeMap::new(),
+            }
+        };
+        // (case, dry run, the clients and their changes, the clients read around)
+        let cases: Vec<(&str, bool, Vec<TxTarget>, Vec<&str>)> = vec![
+            ("no client", false, vec![], vec![]),
+            ("a pin alone", false, vec![client("a", vec![pin()])], vec![]),
+            (
+                "a removal",
+                false,
+                vec![client("a", vec![remove()])],
+                vec!["a"],
+            ),
+            (
+                "a removal beside a pin on one client",
+                false,
+                vec![client("a", vec![pin(), remove()])],
+                vec!["a"],
+            ),
+            (
+                "only the client whose code may change",
+                false,
+                vec![client("a", vec![pin()]), client("b", vec![remove()])],
+                vec!["b"],
+            ),
+            (
+                "a dry run, an internal probe's too",
+                true,
+                vec![client("a", vec![remove()])],
+                vec![],
+            ),
+        ];
+        for (case, dry_run, targets, want) in cases {
+            let req = TxRequest {
+                targets,
+                force: false,
+                while_running: false,
+                dry_run,
+                reason: None,
+                kind: None,
+                run: RunId::new(),
+                no_deps: false,
+                witness: None,
+            };
+            let got: Vec<&str> = read_around(&req).iter().map(|t| t.id.as_str()).collect();
+            assert_eq!(got, want, "{case}");
+        }
+    }
 
     #[test]
     fn the_engine_names_apply_while_applying() {

@@ -23,7 +23,7 @@ pub use fence::{Fence, FenceSet, FenceStop, Fenced, FencedOp};
 pub use identity::FileId;
 pub use lock::{
     DirLock, GlobalLock, GlobalLockGuard, HolderInfo, InflightLock, Lease, LeaseError, LeaseGuard,
-    LockState, probe_global,
+    LockState, global_lock_held, probe_global,
 };
 pub(crate) use mutate::count_hashed;
 #[cfg(test)]

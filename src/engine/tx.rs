@@ -623,6 +623,14 @@ impl RunningNow {
     }
 }
 
+/// The client dirs whose game runs now among `targets` and the clients sharing their
+/// AddOns, by the detection the running policy uses: one scan for all of them. `None`
+/// when that cannot be told (the process table could not be read).
+pub fn running_dirs(ctx: &EngineCtx<'_>, targets: &[Target]) -> Option<BTreeSet<PathBuf>> {
+    let now = running_now(ctx, targets);
+    now.unknown.is_none().then_some(now.dirs)
+}
+
 /// The client dirs whose game runs now, or every target's when that cannot be told. A
 /// client sharing a target's AddOns directory sees its folders change too, so it is
 /// looked for as well.

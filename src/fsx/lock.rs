@@ -57,6 +57,25 @@ pub struct GlobalLockGuard {
     acquired_at: Instant,
 }
 
+std::thread_local! {
+    /// The global lock guards this thread holds. A guard is made and dropped on the
+    /// thread that runs the change, so the count is that thread's.
+    static GLOBAL_HELD: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Whether this thread holds the global lock now: for the work that must never run
+/// inside a commit window (the errors ledger's evidence lock), to assert it in debug
+/// builds.
+pub fn global_lock_held() -> bool {
+    GLOBAL_HELD.with(|held| held.get() > 0)
+}
+
+impl Drop for GlobalLockGuard {
+    fn drop(&mut self) {
+        GLOBAL_HELD.with(|held| held.set(held.get().saturating_sub(1)));
+    }
+}
+
 impl GlobalLockGuard {
     /// How long the lock has been held; the engine targets < 50 ms per commit.
     pub fn held_for(&self) -> Duration {
@@ -139,6 +158,7 @@ impl GlobalLock {
         failpoint::hit("fsx.lock.acquired").map_err(|err| io(&err))?;
         write_holder(&mut file, command).map_err(|err| io(&err))?;
         failpoint::hit("fsx.lock.holder_written").map_err(|err| io(&err))?;
+        GLOBAL_HELD.with(|held| held.set(held.get().saturating_add(1)));
         Ok(GlobalLockGuard {
             _file: file,
             acquired_at,

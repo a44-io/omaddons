@@ -84,6 +84,7 @@ mod errors;
 mod errors_decode;
 mod errors_dismiss;
 mod errors_ledger_procs;
+mod errors_light_read;
 mod errors_privacy;
 mod export;
 mod fail_closed;

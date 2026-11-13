@@ -2110,6 +2110,10 @@ pub fn restore_backup(ctx: &Context, args: &BackupRestoreArgs) -> Result<BackupR
     }
     let preview = preview_argv(&ctx.argv);
     check(ctx.if_match.as_deref(), &bound, &preview)?;
+    // The errors ledger's light read: before the reservation's locks, and recorded after
+    // the restore returns, which finds the restore's own history line and ends the
+    // lifetime of the databases it replaced.
+    let captured = engine.light_capture(&[&d.target]);
     let begun = restore::begin(&world.paths, &client, &backup)?;
     let run = RunId::new();
     let kept = match keep_current(ctx, &world, d, &begun.topology) {
@@ -2147,7 +2151,9 @@ pub fn restore_backup(ctx: &Context, args: &BackupRestoreArgs) -> Result<BackupR
         reason: ctx.reason.clone(),
         run,
     };
-    let done = engine.restore(req, binding.as_ref().map(|b| b as &dyn Binding))?;
+    let done = engine.restore(req, binding.as_ref().map(|b| b as &dyn Binding));
+    engine.light_commit(captured, run);
+    let done = done?;
     warnings.extend(done.warnings.iter().cloned());
     warnings.extend(retain_source(ctx, &world, d, done.key, backup.id));
     data.tx = Some(done.tx);

@@ -1865,6 +1865,11 @@ mod tests {
             "the doctor runtime: its own run directory",
         ),
         (
+            "src/app/errors_ledger.rs",
+            1,
+            "derived data: the light read's evidence lease on the errors ledger, after the change",
+        ),
+        (
             "src/backup/inventory.rs",
             1,
             "derived data: the backup inventory projection",

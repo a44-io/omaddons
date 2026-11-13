@@ -157,12 +157,16 @@ pub fn run(ctx: &Context, args: &BackupRestoreArgs) -> Result<BackupRestoreOutco
     }
     let preview = preview_argv(&ctx.argv);
     check(ctx.if_match.as_deref(), &bound, &preview)?;
+    // The errors ledger's light read, as the whole restore makes it: the restore's own
+    // history line ends the lifetime of the databases whose provider it put back.
+    let captured = engine.light_capture(&[&d.target]);
     let restore::Begun {
         tx,
         inflight,
         topology,
     } = restore::begin(&world.paths, &client, &backup)?;
     let binding = ctx.if_match.as_ref().map(|_| RestoreBinding { preview });
+    let run = RunId::new();
     let req = AddonsRequest {
         target: d,
         backup: &backup,
@@ -173,9 +177,11 @@ pub fn run(ctx: &Context, args: &BackupRestoreArgs) -> Result<BackupRestoreOutco
         plan: &plan,
         addons: &sv,
         reason: ctx.reason.clone(),
-        run: RunId::new(),
+        run,
     };
-    let done = engine.restore_addons(req, binding.as_ref().map(|b| b as &dyn Binding))?;
+    let done = engine.restore_addons(req, binding.as_ref().map(|b| b as &dyn Binding));
+    engine.light_commit(captured, run);
+    let done = done?;
     warnings.extend(done.warnings.iter().cloned());
     warnings.extend(retain_source(ctx, &world, d, done.key, backup.id));
     data.tx = Some(done.tx);
