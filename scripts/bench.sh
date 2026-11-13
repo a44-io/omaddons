@@ -125,4 +125,16 @@ echo "net.log lines added by the warm runs: outdated $outdated_new, update --all
 if [ "$outdated_new" -ne 0 ] || [ "$update_new" -ne 0 ]; then
     miss=1
 fi
+
+# The errors ledger's harness (tests/perf.rs, perf::ledger_): its core and store against
+# their budgets, release build, medians of 21; each measurement line starts `ledger`.
+echo
+echo "The errors ledger (release build, medians of 21 runs):"
+ledger_log="$results/ledger.log"
+if ! cargo test --locked --release --test integration perf::ledger_ \
+    -- --ignored --test-threads=1 --nocapture >"$ledger_log" 2>&1; then
+    miss=1
+fi
+grep -oE 'ledger .*' "$ledger_log" | grep -v '^ledger-cap ' || true
+grep -E '^test result' "$ledger_log" || true
 exit "$miss"

@@ -340,6 +340,19 @@ pub fn encode<T: Versioned>(value: &T) -> Result<Vec<u8>> {
     Ok(json)
 }
 
+/// [`encode`] on one line, for a large derived file read and rewritten on hot paths (the
+/// errors ledger): the same document, about half the bytes, read back by the same
+/// [`load`].
+pub fn encode_compact<T: Versioned>(value: &T) -> Result<Vec<u8>> {
+    let mut json = serde_json::to_vec(&Document {
+        schema_version: T::CURRENT,
+        value,
+    })
+    .map_err(|err| Error::internal(format!("serializing {}: {err}", T::KIND)))?;
+    json.push(b'\n');
+    Ok(json)
+}
+
 /// The same document supplies the saved bytes and the published schema.
 #[derive(Serialize, JsonSchema)]
 struct Document<'a, T> {

@@ -1097,7 +1097,7 @@ expression: "(politeness, REGISTRY)"
     {
       "name": "LEDGER_PRECHANGE_MAX_BYTES",
       "value": {
-        "bytes": 16777216
+        "bytes": 6291456
       },
       "unit": "bytes",
       "config_key": null,

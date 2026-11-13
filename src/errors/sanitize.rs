@@ -619,11 +619,35 @@ pub fn fingerprint(normalized_message: &str, location: Option<&str>) -> String {
 /// Errors with one fingerprint always share a family. Raise
 /// [`crate::limits::LEDGER_IDENTITY`] whenever this changes.
 pub fn family_key(message: &str) -> String {
-    let location = strict_message(message).location.map(|l| normalized(&l));
-    let file = location.as_deref().map_or("", without_line);
+    family_of(&normalized(message), identity_location(message).as_deref())
+}
+
+/// An error's fingerprint and family key together, each part computed once: what the
+/// errors ledger gives every entry it reads. The same as [`fingerprint`] over the
+/// normalized message and location, and [`family_key`].
+pub fn identities(message: &str) -> (String, String) {
+    let text = normalized(message);
+    let location = identity_location(message);
+    (
+        fingerprint(&text, location.as_deref()),
+        family_of(&text, location.as_deref()),
+    )
+}
+
+/// The location an error's identity reads: [`strict_message`]'s, normalized, found
+/// without recognizing the message's template.
+fn identity_location(message: &str) -> Option<String> {
+    location(first_line(message))
+        .and_then(|at| strict_location(at, true))
+        .map(|l| normalized(&l))
+}
+
+/// The family key of a normalized message and its normalized location.
+fn family_of(normalized_message: &str, location: Option<&str>) -> String {
+    let file = location.map_or("", without_line);
     format!(
         "a:{}",
-        short_digest(&[&family_text(&normalized(message)), file])
+        short_digest(&[&family_text(normalized_message), file])
     )
 }
 
@@ -1516,6 +1540,12 @@ mod tests {
                 prop_assert!(!locals.chars().any(|c| c.is_control() && c != '\n' && c != '\t'));
             }
             let _ = fingerprint(&normalized(&message), strict.location.as_deref());
+            // The shared computation is the two identities, as `errors` makes them.
+            let location = strict.location.as_deref().map(normalized);
+            prop_assert_eq!(
+                identities(&message),
+                (fingerprint(&normalized(&message), location.as_deref()), family_key(&message))
+            );
         }
     }
 }

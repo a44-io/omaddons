@@ -1761,3 +1761,708 @@ fn a_large_metadata_toc_costs_under_30_ms_and_64_mib() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// The errors ledger (design 7.9): its core and its store, measured before the light read
+// runs around every change. `argc bench` runs these (`perf::ledger_`), and the finished
+// slice is compared with their medians. Each line they print starts with `ledger`.
+
+#[cfg(test)]
+mod ledger_shapes {
+    use std::fs;
+    use std::ops::Range;
+    use std::os::unix::fs::MetadataExt;
+    use std::path::{Path, PathBuf};
+    use std::time::Duration;
+
+    use jiff::Timestamp;
+    use jiff::tz::TimeZone;
+    use omaddons::errors::buggrabber::{TimeEvidence, TimeMeaning, TzEvidence, evidence};
+    use omaddons::errors::ledger::{
+        ClientNow, DbRead, DbSighting, EntrySighting, SightMode, TargetLedger, load, open, sight,
+    };
+    use omaddons::errors::observe::{Coverage, read_stable};
+    use omaddons::errors::sanitize::identities;
+    use omaddons::fsx::{FileStamp, ScopeTable};
+    use omaddons::limits::LEDGER_PRECHANGE_MAX_BYTES;
+    use omaddons::state::paths::Paths;
+
+    use crate::common::buggrabber::{BugDb, BugEntry, NOW, TimeKind, Writer, stack_era_c};
+
+    pub const TARGET: &str = "k";
+
+    pub fn at(seconds: i64) -> Timestamp {
+        Timestamp::from_second(NOW + seconds).unwrap()
+    }
+
+    /// A client: its accounts (one BugGrabber database each), the errors each holds now,
+    /// each its own family, and the families the ledger remembers that no database holds
+    /// any more.
+    #[derive(Debug, Clone, Copy)]
+    pub struct Shape {
+        pub accounts: usize,
+        pub entries: usize,
+        pub absent: usize,
+    }
+
+    impl Shape {
+        /// The families database `db` holds now.
+        pub fn present(&self, db: usize) -> Range<usize> {
+            db * self.entries..(db + 1) * self.entries
+        }
+
+        /// The families gone from every database (database 0 held them once).
+        pub fn gone(&self) -> Range<usize> {
+            let start = self.accounts * self.entries;
+            start..start + self.absent
+        }
+
+        pub fn families(&self) -> usize {
+            self.accounts * self.entries + self.absent
+        }
+    }
+
+    pub fn db_key(db: usize) -> String {
+        format!("d:{db:04}")
+    }
+
+    /// Database `db` in state `stamp`, holding `families`, as a proved read gives them to
+    /// `sight`: keys only, nothing parsed.
+    pub fn sighting(
+        db: usize,
+        stamp: &str,
+        observed: i64,
+        session: u32,
+        families: impl Iterator<Item = usize>,
+    ) -> DbSighting {
+        let entries = families
+            .map(|i| EntrySighting {
+                family: format!("a:{i:016x}"),
+                fingerprint: format!("e:{i:016x}"),
+                session: Some(session),
+                time: TimeEvidence {
+                    at: Some(at(observed - 60)),
+                    meaning: TimeMeaning::Last,
+                    tz: TzEvidence::Explicit,
+                },
+                counter: 1,
+            })
+            .collect();
+        DbSighting {
+            key: db_key(db),
+            provider: "!BugGrabber".to_owned(),
+            stamp: stamp.to_owned(),
+            written_at: Some(at(observed - 1)),
+            observed_at: at(observed),
+            session: Some(session),
+            read: Some(DbRead {
+                coverage: Coverage::Proved,
+                entries,
+            }),
+        }
+    }
+
+    pub fn client(now: Timestamp) -> ClientNow {
+        ClientNow {
+            version: Some("12.1.5.70391".to_owned()),
+            now,
+        }
+    }
+
+    /// A ledger of `shape`, as play builds one: every database read holding its families
+    /// (database 0 also those to be gone), then read again without the gone ones. Each
+    /// database's newest state is `s2:<db>`, looked at at 200.
+    pub fn ledger(shape: &Shape) -> TargetLedger {
+        let mut ledger = TargetLedger::default();
+        let first: Vec<DbSighting> = (0..shape.accounts)
+            .map(|db| {
+                let gone = if db == 0 { shape.gone() } else { 0..0 };
+                sighting(
+                    db,
+                    &format!("s1:{db}"),
+                    100,
+                    1,
+                    shape.present(db).chain(gone),
+                )
+            })
+            .collect();
+        sight(
+            &mut ledger,
+            &first,
+            &[],
+            &client(at(100)),
+            true,
+            SightMode::Full,
+        );
+        let second: Vec<DbSighting> = (0..shape.accounts)
+            .map(|db| sighting(db, &format!("s2:{db}"), 200, 2, shape.present(db)))
+            .collect();
+        sight(
+            &mut ledger,
+            &second,
+            &[],
+            &client(at(200)),
+            true,
+            SightMode::Full,
+        );
+        ledger
+    }
+
+    /// A BugGrabber file holding errors `families`, each in a file of its own (so each is
+    /// its own family), saved in session `session`. Each error carries what a modern
+    /// client writes: a six-frame stack and a few locals.
+    pub fn bugfile(families: impl Iterator<Item = usize>, session: u32) -> Vec<u8> {
+        let mut db = BugDb::new(Writer::Modern, session);
+        for i in families {
+            let line = u32::try_from(i % 997).unwrap() + 1;
+            let frames: Vec<String> = (0..6u32)
+                .map(|f| {
+                    format!(
+                        "{} in function 'Handler{f}'",
+                        stack_era_c("Gen", &format!("f{i}.lua"), line + f)
+                    )
+                })
+                .collect();
+            db.entries.push(
+                BugEntry::new(
+                    &format!(
+                        "Interface/AddOns/Gen/f{i}.lua:{line}: attempt to index a nil value \
+                         (field 'x')"
+                    ),
+                    session,
+                    (TimeKind::Unix, NOW - 60),
+                )
+                .stack(&frames)
+                .locals(
+                    "self = <table> {\n  frame = <table> {}\n  count = 3\n}\nevent = \"UNIT_AURA\"",
+                ),
+            );
+        }
+        db.render()
+    }
+
+    /// What the light read's capture makes of one file the ledger has not seen in this
+    /// state: a stable, bounded read, and each entry's two identities.
+    pub fn capture(key: &str, path: &Path, budget: &mut u64, now: Timestamp) -> DbSighting {
+        let (_, coverage, db, stamp) = read_stable(path, budget, Timestamp::now().as_nanosecond());
+        let entries = db
+            .entries
+            .iter()
+            .map(|e| {
+                let (fingerprint, family) = identities(&e.message);
+                EntrySighting {
+                    family,
+                    fingerprint,
+                    session: e.session,
+                    time: evidence(e.time.as_ref(), &TimeZone::UTC),
+                    counter: e.counter,
+                }
+            })
+            .collect();
+        let written_at = fs::metadata(path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| Timestamp::try_from(t).ok());
+        DbSighting {
+            key: key.to_owned(),
+            provider: "!BugGrabber".to_owned(),
+            stamp: stamp.map_or_else(String::new, |s| s.fingerprint()),
+            written_at,
+            observed_at: now,
+            session: db.session,
+            read: Some(DbRead { coverage, entries }),
+        }
+    }
+
+    /// A client of `shape` on disk: one BugGrabber file per database, and the ledger as
+    /// play left it, every file recorded as it is now.
+    pub struct OnDisk {
+        pub _dir: tempfile::TempDir,
+        pub paths: Paths,
+        pub scopes: ScopeTable,
+        pub files: Vec<(String, PathBuf)>,
+        pub shape: Shape,
+    }
+
+    impl OnDisk {
+        pub fn new(shape: Shape) -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            let paths = Paths::with_roots(
+                root.join("home"),
+                root.join("config"),
+                root.join("state"),
+                root.join("cache"),
+            );
+            let scopes = ScopeTable::new(&paths, &[], None).unwrap();
+            let files = (0..shape.accounts)
+                .map(|db| {
+                    let path = root
+                        .join("wtf")
+                        .join(format!("account{db}"))
+                        .join("!BugGrabber.lua");
+                    fs::create_dir_all(path.parent().unwrap()).unwrap();
+                    (db_key(db), path)
+                })
+                .collect();
+            let disk = Self {
+                _dir: dir,
+                paths,
+                scopes,
+                files,
+                shape,
+            };
+            // First every file with the gone families in database 0's, then without.
+            disk.write(1, true);
+            disk.record_all();
+            disk.write(2, false);
+            disk.record_all();
+            disk
+        }
+
+        /// Every file saved again in session `session` (the game wrote them all).
+        pub fn write(&self, session: u32, with_gone: bool) {
+            for (db, (_, path)) in self.files.iter().enumerate() {
+                let gone = if db == 0 && with_gone {
+                    self.shape.gone()
+                } else {
+                    0..0
+                };
+                fs::write(path, bugfile(self.shape.present(db).chain(gone), session)).unwrap();
+            }
+            // Past the kernel's timestamp slack, so the next read is stable.
+            std::thread::sleep(Duration::from_millis(30));
+        }
+
+        fn record_all(&self) {
+            let now = Timestamp::now();
+            let mut budget = u64::MAX;
+            let dbs: Vec<DbSighting> = self
+                .files
+                .iter()
+                .map(|(key, path)| capture(key, path, &mut budget, now))
+                .collect();
+            let mut session = open(&self.paths, &self.scopes, "seed").unwrap();
+            session.sight(TARGET, &dbs, &[], &client(now), true, SightMode::Full);
+            session.commit().unwrap();
+        }
+
+        pub fn ledger_bytes(&self) -> u64 {
+            fs::metadata(self.paths.errors_ledger()).map_or(0, |m| m.len())
+        }
+
+        /// One half of the light read, in its order (design 7.9): a stamp of each
+        /// database, an unlocked load of the ledger, a bounded parse of each file the
+        /// ledger has not seen in this state, one session that records them, and a
+        /// second stamp of each. Returns the bytes the session wrote.
+        pub fn light_half(&self) -> u64 {
+            let now = Timestamp::now();
+            let stamps: Vec<Option<String>> = self
+                .files
+                .iter()
+                .map(|(_, path)| FileStamp::read(path).unwrap().map(|s| s.fingerprint()))
+                .collect();
+            let known = load(&self.paths).unwrap_or_default();
+            let target = known.targets.get(TARGET);
+            let mut budget = LEDGER_PRECHANGE_MAX_BYTES;
+            let dbs: Vec<DbSighting> = self
+                .files
+                .iter()
+                .zip(&stamps)
+                .map(|((key, path), stamp)| {
+                    let newest = target
+                        .and_then(|t| t.databases.get(key))
+                        .and_then(|db| db.reads.last())
+                        .map(|r| &r.stamp);
+                    match stamp {
+                        Some(stamp) if newest == Some(stamp) => DbSighting {
+                            key: key.clone(),
+                            provider: "!BugGrabber".to_owned(),
+                            stamp: stamp.clone(),
+                            written_at: None,
+                            observed_at: now,
+                            session: None,
+                            read: None,
+                        },
+                        _ => capture(key, path, &mut budget, now),
+                    }
+                })
+                .collect();
+            let before = fs::metadata(self.paths.errors_ledger())
+                .map(|m| m.ino())
+                .ok();
+            let mut session = open(&self.paths, &self.scopes, "light").unwrap();
+            session.sight(TARGET, &dbs, &[], &client(now), true, SightMode::Light);
+            session.commit().unwrap();
+            for (_, path) in &self.files {
+                FileStamp::read(path).unwrap();
+            }
+            let after = fs::metadata(self.paths.errors_ledger()).ok();
+            match after {
+                Some(m) if Some(m.ino()) != before => m.len(),
+                _ => 0,
+            }
+        }
+    }
+}
+
+/// `sight` over one 5,000-entry database at a new state and a 5,000-family ledger: under
+/// 10 ms, median of 21.
+#[test]
+#[ignore = "a release-build budget: cargo test --release --test integration perf:: -- --ignored"]
+fn ledger_sight_over_5000_entries_and_families_under_10_ms() {
+    use ledger_shapes::{Shape, at, client, ledger, sighting};
+    use omaddons::errors::ledger::{SightMode, sight};
+    let shape = Shape {
+        accounts: 1,
+        entries: 5_000,
+        absent: 0,
+    };
+    let base = ledger(&shape);
+    // A new state holding every family, and one new error.
+    let next = [sighting(
+        0,
+        "s3:0",
+        300,
+        3,
+        shape.present(0).chain(5_000..5_001),
+    )];
+    let mut copies: Vec<_> = (0..21).map(|_| base.clone()).collect();
+    let (median, times) = median_of_21(|| {
+        let mut ledger = copies.pop().unwrap();
+        let sighted = sight(
+            &mut ledger,
+            &next,
+            &[],
+            &client(at(300)),
+            true,
+            SightMode::Full,
+        );
+        assert_eq!(sighted.appeared.len(), 1);
+    });
+    measured(format_args!(
+        "ledger sight: 5000 entries, 5000 families: median {median:?}, max {:?}",
+        times[times.len() - 1]
+    ));
+    assert!(
+        median < Duration::from_millis(10),
+        "median {median:?} ({times:?})"
+    );
+}
+
+/// Both halves of the light read over unchanged databases: under 2 ms together with 100
+/// families, under 20 ms with 5,000, median of 21.
+#[test]
+#[ignore = "a release-build budget: cargo test --release --test integration perf:: -- --ignored"]
+fn ledger_light_read_of_unchanged_databases_stays_within_its_budgets() {
+    use ledger_shapes::{OnDisk, Shape};
+    for (families, budget) in [(100, 2), (5_000, 20)] {
+        let disk = OnDisk::new(Shape {
+            accounts: 1,
+            entries: families,
+            absent: 0,
+        });
+        let mut written = 0;
+        let (median, times) = median_of_21(|| written = disk.light_half() + disk.light_half());
+        measured(format_args!(
+            "ledger light read, unchanged, {families} families: median {median:?}, max {:?}, \
+             {written} bytes written, ledger {} bytes",
+            times[times.len() - 1],
+            disk.ledger_bytes()
+        ));
+        assert!(
+            median < Duration::from_millis(budget),
+            "{families} families: median {median:?} ({times:?})"
+        );
+    }
+}
+
+/// A typical multi-account client: 8 databases of 500 errors (BugGrabber's own cap), half
+/// the families gone. Both halves of the light read under 10 ms, unchanged, median of 21;
+/// the ledger under 1 MiB. The half after a play session, when the game wrote every file,
+/// is measured too (each file parsed; bounded by the capture's own case).
+#[test]
+#[ignore = "a release-build budget: cargo test --release --test integration perf:: -- --ignored"]
+fn ledger_light_read_of_a_multi_account_client_stays_within_its_budgets() {
+    use ledger_shapes::{OnDisk, Shape};
+    let disk = OnDisk::new(Shape {
+        accounts: 8,
+        entries: 500,
+        absent: 4_000,
+    });
+    let mut written = 0;
+    let (median, times) = median_of_21(|| written = disk.light_half() + disk.light_half());
+    let ledger = disk.ledger_bytes();
+    measured(format_args!(
+        "ledger light read, 8 accounts of 500, 4000 gone, unchanged: median {median:?}, max \
+         {:?}, {written} bytes written, ledger {ledger} bytes",
+        times[times.len() - 1]
+    ));
+    let mut changed: Vec<Duration> = (0..21u32)
+        .map(|run| {
+            disk.write(3 + run, false);
+            let start = Instant::now();
+            written = disk.light_half();
+            start.elapsed()
+        })
+        .collect();
+    changed.sort();
+    measured(format_args!(
+        "ledger light read, 8 accounts of 500, 4000 gone, every file written since: median \
+         {:?}, max {:?}, {written} bytes written",
+        changed[10], changed[20]
+    ));
+    assert!(
+        median < Duration::from_millis(10),
+        "median {median:?} ({times:?})"
+    );
+    assert!(ledger < 1 << 20, "the ledger is {ledger} bytes");
+}
+
+/// The ledger at `LEDGER_FAMILIES_MAX`, half its families present in 8 databases and half
+/// gone: a session's load, `sight` of every database at a new state, encode and write,
+/// under 100 ms, median of 21, in a child process whose added peak resident memory stays
+/// under 64 MiB. The bytes written are recorded.
+#[test]
+#[ignore = "a release-build budget: cargo test --release --test integration perf:: -- --ignored"]
+fn ledger_at_its_family_cap_stays_within_its_budgets() {
+    use omaddons::limits::LEDGER_FAMILIES_MAX;
+    const MIB: u64 = 1 << 20;
+    let dir = tempfile::tempdir().unwrap();
+    let paths = ledger_cap::paths(dir.path());
+    let shape = ledger_cap::shape();
+    assert_eq!(shape.families(), LEDGER_FAMILIES_MAX);
+    {
+        let scopes = omaddons::fsx::ScopeTable::new(&paths, &[], None).unwrap();
+        let mut session = omaddons::errors::ledger::open(&paths, &scopes, "seed").unwrap();
+        session.ledger.targets.insert(
+            ledger_shapes::TARGET.to_owned(),
+            ledger_shapes::ledger(&shape),
+        );
+        session.commit().unwrap();
+    }
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap()) // ubs:ignore — the test binary itself
+        .args([
+            "perf::ledger_cap_child",
+            "--exact",
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env("OMADDONS_LEDGER_CAP_ROOT", dir.path())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let (_, exit) = sampled_peak_rss(&mut child);
+    let mut stderr = String::new();
+    std::io::Read::read_to_string(&mut child.stderr.take().unwrap(), &mut stderr).unwrap();
+    assert!(exit.success(), "{stderr}");
+    let line = stderr
+        .lines()
+        .find_map(|l| l.split("ledger-cap ").nth(1))
+        .unwrap_or_else(|| unreachable!("no measurement in {stderr}"));
+    let field = |name: &str| -> u64 {
+        line.split(' ')
+            .find_map(|f| f.strip_prefix(&format!("{name}=")))
+            .and_then(|v| v.parse().ok())
+            .unwrap()
+    };
+    let (start, peak, median_us, max_us, bytes) = (
+        field("start"),
+        field("peak"),
+        field("median_us"),
+        field("max_us"),
+        field("bytes"),
+    );
+    let added = peak.saturating_sub(start);
+    measured(format_args!(
+        "ledger at its cap: {} families: load, sight, encode, write: median {:.1} ms, max {:.1} \
+         ms, {bytes} bytes written, peak RSS added {:.1} MiB",
+        shape.families(),
+        median_us as f64 / 1000.0,
+        max_us as f64 / 1000.0,
+        added as f64 / MIB as f64
+    ));
+    assert!(median_us < 100_000, "median {median_us} µs");
+    assert!(
+        added < 64 * MIB,
+        "{added} bytes added (peak {peak}, start {start})"
+    );
+}
+
+#[cfg(test)]
+mod ledger_cap {
+    use std::path::Path;
+
+    use omaddons::state::paths::Paths;
+
+    use super::ledger_shapes::Shape;
+
+    pub fn paths(root: &Path) -> Paths {
+        Paths::with_roots(
+            root.join("home"),
+            root.join("config"),
+            root.join("state"),
+            root.join("cache"),
+        )
+    }
+
+    /// `LEDGER_FAMILIES_MAX` families: 8 databases of 1,024 present, and as many gone.
+    pub fn shape() -> Shape {
+        Shape {
+            accounts: 8,
+            entries: 1_024,
+            absent: 8 * 1_024,
+        }
+    }
+}
+
+/// The workload of the test above, on the ledger it stored; it does nothing when run on
+/// its own.
+#[test]
+#[ignore = "a child of ledger_at_its_family_cap_stays_within_its_budgets"]
+fn ledger_cap_child() {
+    use ledger_shapes::{TARGET, at, client, sighting};
+    use omaddons::errors::ledger::{SightMode, open};
+    let Some(root) = std::env::var_os("OMADDONS_LEDGER_CAP_ROOT") else {
+        return;
+    };
+    let paths = ledger_cap::paths(std::path::Path::new(&root));
+    let scopes = omaddons::fsx::ScopeTable::new(&paths, &[], None).unwrap();
+    let shape = ledger_cap::shape();
+    let start_rss = current_rss();
+    let mut times: Vec<Duration> = Vec::new();
+    let mut bytes = 0;
+    for run in 0..21u32 {
+        let observed = 300 + i64::from(run) * 100;
+        let dbs: Vec<_> = (0..shape.accounts)
+            .map(|db| {
+                sighting(
+                    db,
+                    &format!("s{}:{db}", run + 3),
+                    observed,
+                    run + 3,
+                    shape.present(db),
+                )
+            })
+            .collect();
+        let started = Instant::now();
+        let mut session = open(&paths, &scopes, "cap").unwrap();
+        session.sight(
+            TARGET,
+            &dbs,
+            &[],
+            &client(at(observed)),
+            true,
+            SightMode::Full,
+        );
+        session.commit().unwrap();
+        times.push(started.elapsed());
+        bytes = std::fs::metadata(paths.errors_ledger()).unwrap().len();
+    }
+    times.sort();
+    measured(format_args!(
+        "ledger-cap start={start_rss} peak={} median_us={} max_us={} bytes={bytes}",
+        peak_rss(),
+        times[10].as_micros(),
+        times[20].as_micros()
+    ));
+}
+
+/// The capture's parse of changed files filling `LEDGER_PRECHANGE_MAX_BYTES`: databases
+/// at the decoder's entry cap, and a last one with what room is left, each read whole and
+/// stable, each entry given its two identities, under 100 ms, median of 21.
+#[test]
+#[ignore = "a release-build budget: cargo test --release --test integration perf:: -- --ignored"]
+fn ledger_capture_of_changed_files_up_to_its_cap_under_100_ms() {
+    use ledger_shapes::{bugfile, capture};
+    use omaddons::limits::{BUGGRABBER_MAX_ENTRIES, LEDGER_PRECHANGE_MAX_BYTES};
+    let dir = tempfile::tempdir().unwrap();
+    let full = BUGGRABBER_MAX_ENTRIES;
+    let per_entry = bugfile(0..full, 1).len() as u64 / full as u64;
+    // Full databases while one fits, then one as large as the room left allows.
+    let mut first = 0;
+    let mut used = 0u64;
+    let mut files = Vec::new();
+    loop {
+        let left = LEDGER_PRECHANGE_MAX_BYTES - used;
+        let mut entries = usize::try_from(left / per_entry).unwrap().min(full);
+        let mut bytes = bugfile(first..first + entries, 1);
+        while entries > 0 && bytes.len() as u64 > left {
+            entries -= entries / 100 + 1;
+            bytes = bugfile(first..first + entries, 1);
+        }
+        if entries == 0 {
+            break;
+        }
+        let path = dir.path().join(format!("account{}.lua", files.len()));
+        std::fs::write(&path, &bytes).unwrap();
+        files.push(path);
+        used += bytes.len() as u64;
+        first += entries;
+    }
+    let entries = first;
+    let count = files.len();
+    std::thread::sleep(Duration::from_millis(30));
+    let total: u64 = files
+        .iter()
+        .map(|p| std::fs::metadata(p).unwrap().len())
+        .sum();
+    assert!(total <= LEDGER_PRECHANGE_MAX_BYTES);
+    let mut read = 0;
+    let (median, times) = median_of_21(|| {
+        let mut budget = LEDGER_PRECHANGE_MAX_BYTES;
+        let now = jiff::Timestamp::now();
+        read = files
+            .iter()
+            .map(|p| {
+                capture("d", p, &mut budget, now)
+                    .read
+                    .map_or(0, |r| r.entries.len())
+            })
+            .sum::<usize>();
+    });
+    measured(format_args!(
+        "ledger capture: {count} files, {total} bytes, {read} entries: median {median:?}, max \
+         {:?}",
+        times[times.len() - 1]
+    ));
+    assert_eq!(read, entries, "every entry was read");
+    assert!(
+        median < Duration::from_millis(100),
+        "median {median:?} ({times:?})"
+    );
+}
+
+/// `history::read` of 10,000 lines, the judging path: recorded (an index is filed only
+/// past 150 ms).
+#[test]
+#[ignore = "a release-build budget: cargo test --release --test integration perf:: -- --ignored"]
+fn ledger_history_read_of_10000_lines_is_recorded() {
+    use omaddons::state::history::{self, HistoryFilter};
+    let dir = tempfile::tempdir().unwrap();
+    let paths = ledger_cap::paths(dir.path());
+    let key: omaddons::model::TargetKey = "01M51EX04HHWM46XE9F2B9JXED".parse().unwrap();
+    let mut text = String::new();
+    for _ in 0..10_000 {
+        text.push_str(&serde_json::to_string(&history_line(key, RunId::new())).unwrap());
+        text.push('\n');
+    }
+    std::fs::create_dir_all(paths.history_file().parent().unwrap()).unwrap();
+    std::fs::write(paths.history_file(), &text).unwrap();
+    let filter = HistoryFilter {
+        target: Some(key),
+        ..HistoryFilter::default()
+    };
+    let mut entries = 0;
+    let (median, times) = median_of_21(|| {
+        entries = history::read(&paths, &filter).unwrap().entries.len();
+    });
+    measured(format_args!(
+        "ledger history read: 10000 lines, {} bytes: median {median:?}, max {:?}",
+        text.len(),
+        times[times.len() - 1]
+    ));
+    assert_eq!(entries, 10_000);
+}

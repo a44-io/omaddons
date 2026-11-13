@@ -1254,7 +1254,8 @@ impl LedgerSession {
             });
         }
         ledger.revision = ledger.revision.saturating_add(1);
-        let bytes = store::encode(&ledger).map_err(|e| LedgerUnavailable::Io(e.message.clone()))?;
+        let bytes =
+            store::encode_compact(&ledger).map_err(|e| LedgerUnavailable::Io(e.message.clone()))?;
         let size = bytes.len() as u64;
         if size > LEDGER_MAX_BYTES {
             return Err(LedgerUnavailable::TooLarge { bytes: size });

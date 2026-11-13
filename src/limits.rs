@@ -285,8 +285,10 @@ pub const LEDGER_CLUSTER_FINGERPRINTS_MAX: usize = 16;
 /// run's evidence is lost, and reads as unknown.
 pub const LEDGER_MAX_BYTES: u64 = 16 * MIB;
 /// Bytes of BugGrabber files the light read before a change may read, every database
-/// of the client together.
-pub const LEDGER_PRECHANGE_MAX_BYTES: u64 = 16 * MIB;
+/// of the client together. Measured (`tests/perf.rs`): about 13 ms per MiB of modern
+/// entries read and given their two identities, so 6 MiB holds the 100 ms budget with a
+/// margin; past it, a database is not read and the change's evidence is unknown.
+pub const LEDGER_PRECHANGE_MAX_BYTES: u64 = 6 * MIB;
 /// The longest a command waits for the errors ledger's lock before it gives up
 /// recording that run's evidence. Never the global lock: a change is never delayed past
 /// it, and never fails for it.
