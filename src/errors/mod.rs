@@ -5,10 +5,12 @@ pub mod ack;
 pub mod attribute;
 pub mod buggrabber;
 pub mod frames;
+pub mod ledger;
 pub mod locate;
 pub mod memo;
 pub mod observe;
 pub mod sanitize;
+pub mod suspect;
 
 pub use buggrabber::{BugDb, BugEntry};
 pub use observe::{AddonErrors, ErrorGroup, Observation, read_target};

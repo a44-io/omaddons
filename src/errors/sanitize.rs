@@ -602,17 +602,139 @@ fn version_suffix(bytes: &[u8], i: usize) -> Option<(usize, usize)> {
 /// An error's opaque identity: `e:` and 16 hex digits of the SHA-256 of the normalized
 /// message ([`normalized`]) and the location.
 pub fn fingerprint(normalized_message: &str, location: Option<&str>) -> String {
+    format!(
+        "e:{}",
+        short_digest(&[normalized_message, location.unwrap_or_default()])
+    )
+}
+
+/// An error's identity for "has something of this shape been seen here before" (design
+/// 7.1.2): looser than [`fingerprint`], so the same bug on another line, or with other
+/// numbers or names in its text, is in the same family. `a:` and 16 hex digits of the
+/// SHA-256 of the [`normalized`] message as [`family_text`] reads it, and of its
+/// location (normalized, as an error's identity reads it) without the line.
+///
+/// A family only ever suppresses a regression claim (something of this shape was
+/// already known on the client): nothing may look up a verdict or a remedy by it.
+/// Errors with one fingerprint always share a family. Raise
+/// [`crate::limits::LEDGER_IDENTITY`] whenever this changes.
+pub fn family_key(message: &str) -> String {
+    let location = strict_message(message).location.map(|l| normalized(&l));
+    let file = location.as_deref().map_or("", without_line);
+    format!(
+        "a:{}",
+        short_digest(&[&family_text(&normalized(message)), file])
+    )
+}
+
+/// 16 lowercase hex digits of the SHA-256 of `parts`, a zero byte between each two: the
+/// opaque half of the errors' identities (`e:`, `a:`, and the errors ledger's `c:` and
+/// `g:`). No part holds a zero byte.
+pub(crate) fn short_digest(parts: &[&str]) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(normalized_message.as_bytes());
-    hasher.update([0]);
-    hasher.update(location.unwrap_or_default().as_bytes());
-    let hex: String = hasher
+    for (i, part) in parts.iter().enumerate() {
+        if i > 0 {
+            hasher.update([0]);
+        }
+        hasher.update(part.as_bytes());
+    }
+    hasher
         .finalize()
         .iter()
         .take(8)
         .map(|b| format!("{b:02x}"))
-        .collect();
-    format!("e:{hex}")
+        .collect()
+}
+
+/// The fewest hexadecimal digits in a row that [`family_text`] reads as an address with
+/// no `0x` (the game prints a table as `table: 000001D2C3E4F5A0`). Fewer are a word and
+/// a number: `abc1234` reads `abc#`, `abc12345` reads `#`.
+const ADDRESS_MIN_HEX_DIGITS: usize = 8;
+
+/// A normalized message as a family reads it (design 7.1.2), in this order: every `0x`
+/// address and every run of [`ADDRESS_MIN_HEX_DIGITS`] or more hexadecimal digits
+/// becomes `#`; every remaining run of digits becomes `#`; and the text between a pair
+/// of quotes, single or double, goes, the quotes staying.
+fn family_text(normalized_message: &str) -> String {
+    blank_quoted(&blank_digits(&blank_addresses(normalized_message)))
+}
+
+/// `text` with every `0x` address, and every run of [`ADDRESS_MIN_HEX_DIGITS`] or more
+/// hexadecimal digits, as `#`.
+fn blank_addresses(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let hex_run = |from: usize| {
+        bytes[from..]
+            .iter()
+            .take_while(|b| b.is_ascii_hexdigit())
+            .count()
+    };
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'0' && matches!(bytes.get(i + 1), Some(b'x' | b'X')) {
+            let digits = hex_run(i + 2);
+            if digits > 0 {
+                out.push('#');
+                i += 2 + digits;
+                continue;
+            }
+        }
+        if i == 0 || !bytes[i - 1].is_ascii_hexdigit() {
+            let digits = hex_run(i);
+            if digits >= ADDRESS_MIN_HEX_DIGITS {
+                out.push('#');
+                i += digits;
+                continue;
+            }
+        }
+        let len = text[i..].chars().next().map_or(1, char::len_utf8);
+        out.push_str(&text[i..i + len]);
+        i += len;
+    }
+    out
+}
+
+/// `text` with every run of ASCII digits as `#`.
+fn blank_digits(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_digits = false;
+    for c in text.chars() {
+        if !c.is_ascii_digit() {
+            out.push(c);
+        } else if !in_digits {
+            out.push('#');
+        }
+        in_digits = c.is_ascii_digit();
+    }
+    out
+}
+
+/// `text` without the text between each pair of quotes, single or double; the quotes
+/// stay. A quote with no partner after it stays as it is, and the search goes on after
+/// it.
+fn blank_quoted(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find(['\'', '"']) {
+        let quote = &rest[open..=open];
+        out.push_str(&rest[..=open]);
+        rest = &rest[open + 1..];
+        if let Some(close) = rest.find(quote) {
+            out.push_str(quote);
+            rest = &rest[close + 1..];
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// A location without its trailing `:<line>`: `Foo/x.lua:12` is `Foo/x.lua`.
+fn without_line(location: &str) -> &str {
+    match location.rsplit_once(':') {
+        Some((file, line)) if !line.is_empty() && line.bytes().all(|b| b.is_ascii_digit()) => file,
+        _ => location,
+    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1171,6 +1293,200 @@ mod tests {
             normalized("Lib-3.0-13x and Lib-3.0"),
             "Lib-3.0-13x and Lib-3.0"
         );
+    }
+
+    #[test]
+    fn family_keys_join_what_only_lines_numbers_addresses_or_names_tell_apart() {
+        let at = |file: &str, body: &str| format!("Interface/AddOns/{file}:12: {body}");
+        let guide = "attempt to index local 'guide' (a nil value)";
+        // (case, a, b, one family)
+        for (case, a, b, same) in [
+            (
+                "the motivating message on another line",
+                format!("Interface/AddOns/Guidelime/Guidelime.lua:96: {guide}"),
+                format!("Interface/AddOns/Guidelime/Guidelime.lua:98: {guide}"),
+                true,
+            ),
+            (
+                "two quoted names",
+                at("Foo/Foo.lua", "Unknown unit 'Thrall'"),
+                at("Foo/Foo.lua", "Unknown unit 'Jaina'"),
+                true,
+            ),
+            (
+                "two double-quoted names",
+                at("Foo/Foo.lua", "no frame \"FooFrame1\""),
+                at("Foo/Foo.lua", "no frame \"BarFrame\""),
+                true,
+            ),
+            (
+                "two numbers",
+                at("Foo/Foo.lua", "Unknown spell 12345"),
+                at("Foo/Foo.lua", "Unknown spell 678"),
+                true,
+            ),
+            (
+                "two 0x addresses",
+                at("Foo/Foo.lua", "bad self 0x7f3a2b10"),
+                at("Foo/Foo.lua", "bad self 0xDEAD"),
+                true,
+            ),
+            (
+                "two bare addresses",
+                at("Foo/Foo.lua", "bad argument #1 (table: 000001D2C3E4F5A0)"),
+                at("Foo/Foo.lua", "bad argument #1 (table: 00000002AABBCCDD)"),
+                true,
+            ),
+            (
+                "in two files",
+                at("Foo/Foo.lua", "attempt to call a nil value"),
+                at("Foo/Bar.lua", "attempt to call a nil value"),
+                false,
+            ),
+            (
+                "in two folders that differ only in a digit",
+                at("Foo1/x.lua", "attempt to call a nil value"),
+                at("Foo2/x.lua", "attempt to call a nil value"),
+                false,
+            ),
+            (
+                "two message shapes in one file",
+                at("Foo/Foo.lua", "attempt to call a nil value"),
+                at("Foo/Foo.lua", "attempt to index a nil value"),
+                false,
+            ),
+            (
+                "seven hex digits are a word and a number, eight an address",
+                at("Foo/Foo.lua", "frame abc1234 failed"),
+                at("Foo/Foo.lua", "frame abc12345 failed"),
+                false,
+            ),
+            (
+                "no location, twice",
+                "attempt to call a nil value".to_owned(),
+                "attempt to call a nil value".to_owned(),
+                true,
+            ),
+            (
+                "no location, and a location",
+                "attempt to call a nil value".to_owned(),
+                at("Foo/Foo.lua", "attempt to call a nil value"),
+                false,
+            ),
+        ] {
+            let (ka, kb) = (family_key(&a), family_key(&b));
+            for key in [&ka, &kb] {
+                assert!(key.starts_with("a:") && key.len() == 18, "{case}: {key}");
+            }
+            assert_eq!(ka == kb, same, "{case}: {a:?} is {ka}, {b:?} is {kb}");
+        }
+    }
+
+    #[test]
+    fn a_family_reads_addresses_numbers_and_quoted_names_as_blanks() {
+        for (case, text, expected) in [
+            ("seven hex digits", "abc1234", "abc#"),
+            ("eight hex digits", "abc12345", "#"),
+            ("eight hex digits after a letter", "xabc12345", "x#"),
+            ("0x addresses of any length", "0x1 0xdeadBEEF 0X0", "# # #"),
+            ("0x with no digit", "0x", "#x"),
+            ("a bare address", "table: 000001D2C3E4F5A0", "table: #"),
+            ("numbers", "spell 12345 rank 3", "spell # rank #"),
+            ("a line number", "Foo.lua:96: x", "Foo.lua:#: x"),
+            (
+                "quoted names, the quotes kept",
+                "unit 'Thrall' and \"Jaina\"",
+                "unit '' and \"\"",
+            ),
+            ("digits inside quotes", "'abc1234'", "''"),
+            (
+                "an apostrophe pairs with the next quote",
+                "can't find 'X'",
+                "can''X'",
+            ),
+            ("a quote with no partner", "it's \"x\"", "it's \"\""),
+            (
+                "nothing to blank",
+                "attempt to call a nil value",
+                "attempt to call a nil value",
+            ),
+            ("not ASCII", "héllo 12 ünit 'ß'", "héllo # ünit ''"),
+        ] {
+            assert_eq!(family_text(text), expected, "{case}: {text:?}");
+        }
+    }
+
+    #[test]
+    fn a_location_loses_only_its_line() {
+        for (location, expected) in [
+            ("Foo/x.lua:12", "Foo/x.lua"),
+            ("Foo/x.lua", "Foo/x.lua"),
+            ("[custom code]:4", "[custom code]"),
+            ("[custom code]", "[custom code]"),
+            ("Foo/x.lua:", "Foo/x.lua:"),
+            ("Foo/x.lua:1a", "Foo/x.lua:1a"),
+        ] {
+            assert_eq!(without_line(location), expected, "{location:?}");
+        }
+    }
+
+    /// One slot of a generated message: two values of one kind (a decimal number, a `0x`
+    /// address, a bare address of 8 to 16 hex digits, a quoted name).
+    fn slot() -> impl Strategy<Value = (String, String)> {
+        prop_oneof![
+            ("[0-9]{1,9}", "[0-9]{1,9}"),
+            ("0x[0-9a-fA-F]{1,16}", "0x[0-9a-fA-F]{1,16}"),
+            ("[0-9A-F]{8,16}", "[0-9A-F]{8,16}"),
+            ("'[A-Za-z0-9 _.:-]{0,12}'", "'[A-Za-z0-9 _.:-]{0,12}'"),
+            ("\"[A-Za-z0-9 _.:-]{0,12}\"", "\"[A-Za-z0-9 _.:-]{0,12}\""),
+        ]
+    }
+
+    /// A message of the grammar: an AddOns path and line, then each word followed by its
+    /// slot's first value (its second at `swap`).
+    fn grammar_message(
+        path: &str,
+        line: &str,
+        parts: &[(String, (String, String))],
+        swap: Option<usize>,
+    ) -> String {
+        let mut text = format!("Interface/AddOns/{path}.lua:{line}:");
+        for (i, (word, (first, second))) in parts.iter().enumerate() {
+            text.push(' ');
+            text.push_str(word);
+            text.push(' ');
+            text.push_str(if swap == Some(i) { second } else { first });
+        }
+        text
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        /// Another value in any one slot, or another line, keeps a message's family;
+        /// another file path or another word does not.
+        #[test]
+        fn a_family_holds_through_its_slots_and_breaks_on_its_words(
+            path in "[A-Z][A-Za-z]{1,8}(-[A-Z][a-z]{1,6})?/[A-Z][A-Za-z]{1,8}",
+            other_path in "[A-Z][A-Za-z]{1,8}(-[A-Z][a-z]{1,6})?/[A-Z][A-Za-z]{1,8}",
+            lines in ("[1-9][0-9]{0,4}", "[1-9][0-9]{0,4}"),
+            parts in proptest::collection::vec(("[a-z]{1,7}", slot()), 1..6),
+            at in any::<prop::sample::Index>(),
+            other_word in "[a-z]{1,7}",
+        ) {
+            let i = at.index(parts.len());
+            let key = family_key(&grammar_message(&path, &lines.0, &parts, None));
+            prop_assert_eq!(&key, &family_key(&grammar_message(&path, &lines.0, &parts, Some(i))));
+            prop_assert_eq!(&key, &family_key(&grammar_message(&path, &lines.1, &parts, None)));
+            if other_path != path {
+                prop_assert_ne!(&key, &family_key(&grammar_message(&other_path, &lines.0, &parts, None)));
+            }
+            if other_word != parts[i].0 {
+                let mut changed = parts.clone();
+                changed[i].0 = other_word;
+                prop_assert_ne!(&key, &family_key(&grammar_message(&path, &lines.0, &changed, None)));
+            }
+        }
     }
 
     proptest! {

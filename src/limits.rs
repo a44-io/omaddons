@@ -256,6 +256,48 @@ pub const ERRORS_CHUNK_MAX_CHARS: usize = 40;
 pub const ERRORS_MAX_TOTAL_BYTES: u64 = 256 * MIB;
 /// A BugGrabber file last written longer ago than this has no new errors.
 pub const ERRORS_NEW_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+/// The version of `errors::sanitize::family_key`, recorded in the errors ledger: a
+/// ledger made with another version is discarded, and every error baselines again.
+/// Raised whenever that function changes.
+pub const LEDGER_IDENTITY: u32 = 1;
+/// Proved reads the errors ledger keeps per database, oldest dropped first. They serve
+/// only to find the newest proved read before an appearance; what must outlive them is
+/// copied into appearances and change marks.
+pub const LEDGER_READS_MAX: usize = 32;
+/// Change marks the errors ledger keeps per database, oldest dropped first: a hard cap
+/// far above what `SUSPECT_MAX_AGE` of changes produces.
+pub const LEDGER_MARKS_MAX: usize = 512;
+/// A family of errors gone from every database of its client this long is forgotten.
+/// BugGrabber and BugSack let the player wipe a database, so absence alone must not make
+/// an old error look newly appeared.
+pub const LEDGER_ABSENT_MAX_AGE: Duration = Duration::from_secs(90 * 24 * 60 * 60);
+/// Families the errors ledger remembers per client that are no longer in any database,
+/// the oldest last presence forgotten first.
+pub const LEDGER_ABSENT_MAX: usize = 5_000;
+/// Families the errors ledger holds per client. A client whose families do not fit is
+/// not tracked at all until they do: its errors' first sight reads unknown, never
+/// newly appeared, and no read of it is half recorded.
+pub const LEDGER_FAMILIES_MAX: usize = 16_384;
+/// Exact fingerprints one watched appearance (a cluster) keeps as its members; past it
+/// the cluster is overflowed, and the rest are not members.
+pub const LEDGER_CLUSTER_FINGERPRINTS_MAX: usize = 16;
+/// Bytes of the whole errors ledger. A store that would exceed it is not made: that
+/// run's evidence is lost, and reads as unknown.
+pub const LEDGER_MAX_BYTES: u64 = 16 * MIB;
+/// Bytes of BugGrabber files the light read before a change may read, every database
+/// of the client together.
+pub const LEDGER_PRECHANGE_MAX_BYTES: u64 = 16 * MIB;
+/// How long before a newly appeared error a change may still be named as what preceded
+/// it, and how long the errors ledger keeps change marks: long enough for an error only
+/// a weekly raid triggers to reach last week's update.
+pub const SUSPECT_MAX_AGE: Duration = Duration::from_secs(14 * 24 * 60 * 60);
+/// The version of the rules that judge what preceded a newly appeared error, stored on
+/// every verdict. Raised whenever those rules change.
+pub const SUSPECT_ALGORITHM: u32 = 1;
+/// Verdicts made by an older algorithm than this are discarded when the errors ledger
+/// is loaded, and judged again where they still can be. Raised only when the older
+/// rules were unsound; otherwise old verdicts stay, with their own algorithm number.
+pub const SUSPECT_ALGORITHM_TRUSTED_MIN: u32 = 1;
 /// Bytes read of an installed widget's `manifest.json` or `Build.js` (a few kilobytes
 /// when omaddons wrote them); a larger file is not one it wrote.
 pub const WIDGET_READBACK_MAX_BYTES: u64 = 64 * 1024;
@@ -1007,6 +1049,90 @@ pub const REGISTRY: &[LimitInfo] = &[
         "A BugGrabber file older than this has no new errors",
     ),
     limit(
+        "LEDGER_IDENTITY",
+        LimitValue::Count(LEDGER_IDENTITY as u64),
+        LimitUnit::Count,
+        None,
+        "The version of the errors ledger's family key; a ledger made with another is discarded",
+    ),
+    limit(
+        "LEDGER_READS_MAX",
+        LimitValue::Count(LEDGER_READS_MAX as u64),
+        LimitUnit::Count,
+        None,
+        "Proved reads the errors ledger keeps per database, oldest dropped first",
+    ),
+    limit(
+        "LEDGER_MARKS_MAX",
+        LimitValue::Count(LEDGER_MARKS_MAX as u64),
+        LimitUnit::Count,
+        None,
+        "Change marks the errors ledger keeps per database, oldest dropped first",
+    ),
+    limit(
+        "LEDGER_ABSENT_MAX_AGE",
+        LimitValue::Millis(ms(LEDGER_ABSENT_MAX_AGE)),
+        LimitUnit::Ms,
+        None,
+        "An error family gone from every database of its client this long is forgotten",
+    ),
+    limit(
+        "LEDGER_ABSENT_MAX",
+        LimitValue::Count(LEDGER_ABSENT_MAX as u64),
+        LimitUnit::Count,
+        None,
+        "Absent error families remembered per client, the oldest forgotten first",
+    ),
+    limit(
+        "LEDGER_FAMILIES_MAX",
+        LimitValue::Count(LEDGER_FAMILIES_MAX as u64),
+        LimitUnit::Count,
+        None,
+        "Error families per client; past it the client is not tracked until they fit",
+    ),
+    limit(
+        "LEDGER_CLUSTER_FINGERPRINTS_MAX",
+        LimitValue::Count(LEDGER_CLUSTER_FINGERPRINTS_MAX as u64),
+        LimitUnit::Count,
+        None,
+        "Members of one watched appearance; past it the rest are not members",
+    ),
+    limit(
+        "LEDGER_MAX_BYTES",
+        LimitValue::Bytes(LEDGER_MAX_BYTES),
+        LimitUnit::Bytes,
+        None,
+        "The whole errors ledger; a store that would exceed it is not made",
+    ),
+    limit(
+        "LEDGER_PRECHANGE_MAX_BYTES",
+        LimitValue::Bytes(LEDGER_PRECHANGE_MAX_BYTES),
+        LimitUnit::Bytes,
+        None,
+        "BugGrabber bytes the light read before a change reads, every database of the client",
+    ),
+    limit(
+        "SUSPECT_MAX_AGE",
+        LimitValue::Millis(ms(SUSPECT_MAX_AGE)),
+        LimitUnit::Ms,
+        None,
+        "The oldest change that may be named as preceding a newly appeared error",
+    ),
+    limit(
+        "SUSPECT_ALGORITHM",
+        LimitValue::Count(SUSPECT_ALGORITHM as u64),
+        LimitUnit::Count,
+        None,
+        "The version of the judging rules, stored on every verdict",
+    ),
+    limit(
+        "SUSPECT_ALGORITHM_TRUSTED_MIN",
+        LimitValue::Count(SUSPECT_ALGORITHM_TRUSTED_MIN as u64),
+        LimitUnit::Count,
+        None,
+        "Verdicts of an older algorithm are discarded at load",
+    ),
+    limit(
         "WIDGET_READBACK_MAX_BYTES",
         LimitValue::Bytes(WIDGET_READBACK_MAX_BYTES),
         LimitUnit::Bytes,
@@ -1384,6 +1510,18 @@ mod tests {
         "ERRORS_CHUNK_MAX_CHARS",
         "ERRORS_MAX_TOTAL_BYTES",
         "ERRORS_NEW_MAX_AGE",
+        "LEDGER_IDENTITY",
+        "LEDGER_READS_MAX",
+        "LEDGER_MARKS_MAX",
+        "LEDGER_ABSENT_MAX_AGE",
+        "LEDGER_ABSENT_MAX",
+        "LEDGER_FAMILIES_MAX",
+        "LEDGER_CLUSTER_FINGERPRINTS_MAX",
+        "LEDGER_MAX_BYTES",
+        "LEDGER_PRECHANGE_MAX_BYTES",
+        "SUSPECT_MAX_AGE",
+        "SUSPECT_ALGORITHM",
+        "SUSPECT_ALGORITHM_TRUSTED_MIN",
         "WIDGET_READBACK_MAX_BYTES",
         "OMARCHY_COMMAND_TIMEOUT",
         "OMARCHY_SHELL_JSON_MAX_BYTES",

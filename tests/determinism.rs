@@ -11,8 +11,15 @@ use std::path::Path;
 
 use source_scan::{Literals, matching, production_code, sources};
 
-/// The directories M4-D18 names.
-const SCANNED: &[&str] = &["src/app", "src/output", "src/contract", "src/doctor"];
+/// The directories M4-D18 names, and `src/errors`, whose errors ledger is a persisted file whose bytes decide
+/// whether a store is needed (RG-10a).
+const SCANNED: &[&str] = &[
+    "src/app",
+    "src/output",
+    "src/contract",
+    "src/doctor",
+    "src/errors",
+];
 
 /// One finding: the line (1-based), the item's name and the line's text (as the blanked view shows it).
 #[derive(Debug, PartialEq, Eq)]

@@ -1023,6 +1023,114 @@ expression: "(politeness, REGISTRY)"
       "notes": "A BugGrabber file older than this has no new errors"
     },
     {
+      "name": "LEDGER_IDENTITY",
+      "value": {
+        "count": 1
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "The version of the errors ledger's family key; a ledger made with another is discarded"
+    },
+    {
+      "name": "LEDGER_READS_MAX",
+      "value": {
+        "count": 32
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Proved reads the errors ledger keeps per database, oldest dropped first"
+    },
+    {
+      "name": "LEDGER_MARKS_MAX",
+      "value": {
+        "count": 512
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Change marks the errors ledger keeps per database, oldest dropped first"
+    },
+    {
+      "name": "LEDGER_ABSENT_MAX_AGE",
+      "value": {
+        "millis": 7776000000
+      },
+      "unit": "ms",
+      "config_key": null,
+      "notes": "An error family gone from every database of its client this long is forgotten"
+    },
+    {
+      "name": "LEDGER_ABSENT_MAX",
+      "value": {
+        "count": 5000
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Absent error families remembered per client, the oldest forgotten first"
+    },
+    {
+      "name": "LEDGER_FAMILIES_MAX",
+      "value": {
+        "count": 16384
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Error families per client; past it the client is not tracked until they fit"
+    },
+    {
+      "name": "LEDGER_CLUSTER_FINGERPRINTS_MAX",
+      "value": {
+        "count": 16
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Members of one watched appearance; past it the rest are not members"
+    },
+    {
+      "name": "LEDGER_MAX_BYTES",
+      "value": {
+        "bytes": 16777216
+      },
+      "unit": "bytes",
+      "config_key": null,
+      "notes": "The whole errors ledger; a store that would exceed it is not made"
+    },
+    {
+      "name": "LEDGER_PRECHANGE_MAX_BYTES",
+      "value": {
+        "bytes": 16777216
+      },
+      "unit": "bytes",
+      "config_key": null,
+      "notes": "BugGrabber bytes the light read before a change reads, every database of the client"
+    },
+    {
+      "name": "SUSPECT_MAX_AGE",
+      "value": {
+        "millis": 1209600000
+      },
+      "unit": "ms",
+      "config_key": null,
+      "notes": "The oldest change that may be named as preceding a newly appeared error"
+    },
+    {
+      "name": "SUSPECT_ALGORITHM",
+      "value": {
+        "count": 1
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "The version of the judging rules, stored on every verdict"
+    },
+    {
+      "name": "SUSPECT_ALGORITHM_TRUSTED_MIN",
+      "value": {
+        "count": 1
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Verdicts of an older algorithm are discarded at load"
+    },
+    {
       "name": "WIDGET_READBACK_MAX_BYTES",
       "value": {
         "bytes": 65536

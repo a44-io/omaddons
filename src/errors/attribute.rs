@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::frames::{FrameKind, frames, strip_prefix_ci};
 use super::sanitize::taint_folder;
@@ -40,7 +40,7 @@ pub enum Method {
 }
 
 /// How sure an attribution is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Confidence {
     High,
