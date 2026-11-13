@@ -270,7 +270,8 @@ impl Scene {
     }
 
     /// Every record but the recovery command's (`bar`), without what differs between
-    /// two runs of one transaction (`tx_id`, `installed_at`).
+    /// two runs of one transaction (`tx_id`, `installed_at`, and each skip mark's `at`
+    /// and `tx`, the time and id of the commit that made it).
     pub fn view(&self) -> BTreeMap<String, Value> {
         let Some(file) = self.record_file() else {
             return BTreeMap::new();
@@ -286,6 +287,17 @@ impl Scene {
                 if let Some(map) = record.as_object_mut() {
                     map.remove("tx_id");
                     map.remove("installed_at");
+                    for mark in map
+                        .get_mut("skipped_releases")
+                        .and_then(Value::as_array_mut)
+                        .into_iter()
+                        .flatten()
+                    {
+                        if let Some(mark) = mark.as_object_mut() {
+                            mark.remove("at");
+                            mark.remove("tx");
+                        }
+                    }
                 }
                 (key.clone(), record)
             })
@@ -436,6 +448,18 @@ pub mod shapes {
     pub const SYNC_MIXED: &[&str] = &["Kilo", "Lima", "Mike"];
     pub const HANDOVER: &[&str] = &["Alpha", "Beta", "Shared"];
     pub const ADOPT: &[&str] = &["Echo", "Fox"];
+    pub const UNDO_UPDATE: &[&str] = &["Alpha"];
+
+    /// Alpha installed at v1 and updated to v2 from release fixtures: one `undo` of that
+    /// update, which moves Alpha back and marks v2 skipped (RG-32), its record's version
+    /// and mark committed together.
+    pub fn undo_update(s: &Scene) -> Vec<String> {
+        s.release("alpha", "v1", &[folder("Alpha", &[])]);
+        s.ok(&["install", "gh:o/alpha", "-t", "retail"]);
+        s.release("alpha", "v2", &[folder("Alpha", &[])]);
+        s.ok(&["update", "-t", "retail", "--refresh"]);
+        json_argv(&["undo"])
+    }
 
     /// Alpha, Beta and Gamma installed at v1, with v2 out for each: one `update` of three.
     pub fn update_many(s: &Scene) -> Vec<String> {

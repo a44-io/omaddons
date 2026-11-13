@@ -55,7 +55,8 @@ use crate::fsx::{
     mutate_with, sha256_from_hex,
 };
 use crate::model::{
-    Actor, AddonRecord, FolderName, ReloadRequired, RunId, Target, TargetKey, TxId, TxKind,
+    Actor, AddonRecord, FolderName, ReleaseKey, ReloadRequired, RunId, SkipOrigin, SkippedNote,
+    SkippedRelease, Target, TargetKey, TxId, TxKind,
 };
 use crate::state::files_index::FilesIndex;
 use crate::state::history::{
@@ -135,6 +136,13 @@ pub struct UndoOutcome {
     /// inverses it committed; `None` on every other undo.
     #[serde(skip)]
     pub repair: Option<super::repair::undo::RepairUndone>,
+    /// The skip marks it made (design 7.5.3: the releases it moved back from), sorted;
+    /// `undo`'s data carries them per transaction.
+    #[serde(skip)]
+    pub skips_marked: Vec<SkippedNote>,
+    /// The skip marks the records it put back no longer have (a redo's), sorted.
+    #[serde(skip)]
+    pub skips_cleared: Vec<SkippedNote>,
 }
 
 /// What undoing a whole restore (or the undo of one) reverts with it.
@@ -219,6 +227,8 @@ pub(crate) fn target_of(entry: &HistoryEntry) -> Result<TargetKey> {
 /// Reverts the selected transaction (vision §5.5): plan without the lock, stage the
 /// snapshot's folders, then the commit window under the global lock, planned again.
 pub fn undo(req: &UndoRequest, ctx: &EngineCtx<'_>) -> Result<UndoOutcome> {
+    // One time for the run (common rule 13): both plans build the same marks with it.
+    let marked_at = Timestamp::now();
     let read = history::read(ctx.paths, &HistoryFilter::default())?;
     let entries = &read.entries;
     let at = select(entries, req.selector)?;
@@ -262,7 +272,11 @@ pub fn undo(req: &UndoRequest, ctx: &EngineCtx<'_>) -> Result<UndoOutcome> {
     let target = &discovered.target;
     let running = running_now(ctx, std::slice::from_ref(target));
     let mut hashes = SvHashes::default();
-    let planned = plan(ctx, req, &read, at, target, &running, &mut hashes, None)?;
+    let marking = Marking {
+        at: marked_at,
+        tx: None,
+    };
+    let planned = plan(ctx, req, &read, at, target, &running, &mut hashes, &marking)?;
     if req.dry_run {
         return Ok(planned.outcome(target, None, true, true, Vec::new(), None));
     }
@@ -304,6 +318,7 @@ pub fn undo(req: &UndoRequest, ctx: &EngineCtx<'_>) -> Result<UndoOutcome> {
         discovered,
         &planned,
         &tx,
+        marked_at,
         &staged,
         hashes,
         auto_line.as_ref(),
@@ -393,6 +408,7 @@ fn commit(
     discovered: &DiscoveredTarget,
     before: &Planned,
     tx: &TxId,
+    marked_at: Timestamp,
     staged: &Staged,
     mut hashes: SvHashes,
     auto_line: Option<&HistoryEntry>,
@@ -478,7 +494,10 @@ fn commit(
         target,
         &running,
         &mut hashes,
-        Some(*tx),
+        &Marking {
+            at: marked_at,
+            tx: Some(*tx),
+        },
     )?;
     with_predigests(&mut planned.folders.swap, &client.addons(), &predigests);
     // Planned anew under the lock: still the previewed undo, or nothing (M3-D46).
@@ -668,6 +687,9 @@ struct Planned {
     warnings: Vec<Warning>,
     /// `-v` lines: where the undo's snapshot keeps a folder's only copy.
     notes: Vec<String>,
+    /// The skip marks the undo makes, and those the records it puts back drop.
+    skips_marked: Vec<SkippedNote>,
+    skips_cleared: Vec<SkippedNote>,
 }
 
 impl Planned {
@@ -724,6 +746,8 @@ impl Planned {
             },
             sv: self.sv.counts,
             repair: None,
+            skips_marked: self.skips_marked.clone(),
+            skips_cleared: self.skips_cleared.clone(),
         }
     }
 }
@@ -745,8 +769,9 @@ fn plan(
     target: &Target,
     running_now: &RunningNow,
     hashes: &mut SvHashes,
-    tx: Option<TxId>,
+    marking: &Marking,
 ) -> Result<Planned> {
+    let tx = marking.tx;
     let entries = &history.entries[..];
     let running = running_now.contains(&target.client_dir);
     let reverted = &entries[at];
@@ -809,7 +834,7 @@ fn plan(
         Some(_) => (current.clone(), IndexChanges::default(), Vec::new()),
         None => {
             let (record, index, changes, edit_ops) =
-                restored_state(paths, &current, entries, at, &folders)?;
+                restored_state(paths, &current, entries, at, &folders, marking, &target.id)?;
             folders.history.extend(edit_ops);
             (record, index, changes)
         }
@@ -955,6 +980,7 @@ fn plan(
         }
         None => Vec::new(),
     };
+    let (skips_marked, skips_cleared) = skip_notes(&current, &record);
     Ok(Planned {
         reverts: reverted.tx,
         key,
@@ -969,7 +995,86 @@ fn plan(
         reload_required: judged.reload_required,
         warnings,
         notes,
+        skips_marked,
+        skips_cleared,
     })
+}
+
+/// When an undo marks the releases it moves back from, and which transaction it is: the
+/// one time `undo` took (common rule 13), and its own id, `None` for the plan made before
+/// the id exists (a preview's marks carry the nil id, and never reach a record).
+#[derive(Debug, Clone, Copy)]
+struct Marking {
+    at: Timestamp,
+    tx: Option<TxId>,
+}
+
+/// The skip marks an undo makes and clears, from the record `before` it to the record
+/// `after` it, per addon both hold: the marks only one side selects (a set difference
+/// by [`SkippedRelease::selects`]), each sorted. An addon the undo adds or takes away
+/// makes or clears none.
+fn skip_notes(before: &TargetRecord, after: &TargetRecord) -> (Vec<SkippedNote>, Vec<SkippedNote>) {
+    let (mut marked, mut cleared) = (Vec::new(), Vec::new());
+    for (key, then) in &after.addons {
+        let Some(now) = before.addons.get(key) else {
+            continue;
+        };
+        let delta = PolicyDelta::between(Some(now), Some(then));
+        marked.extend(
+            delta
+                .skips_added
+                .iter()
+                .map(|m| SkippedNote::of(&then.name, m)),
+        );
+        cleared.extend(
+            delta
+                .skips_removed
+                .iter()
+                .map(|m| SkippedNote::of(&then.name, m)),
+        );
+    }
+    marked.sort();
+    cleared.sort();
+    (marked, cleared)
+}
+
+/// The mark an undo leaves for the release it moves away from (design 7.5.3): `now` is
+/// the record the reverted transaction left, `then` the one the undo brings back, and the
+/// undo moves folders for it (condition 1, the caller's, as is condition 3: the reverted
+/// transaction is no undo). `None` when
+/// - the two are one release (condition 2): their [`ReleaseKey`]s are equal (another
+///   revision of a tag is another release), or, where either has no key, so are their
+///   versions and archive hashes;
+/// - the undone change was itself a going-back (condition 4): a mark on `now` covers
+///   `then`'s release, or the dotted versions say `then` is newer (versions that do not
+///   compare mark);
+/// - `update` could not move it at all (condition 5): either record is static.
+fn leaving_mark(
+    now: &AddonRecord,
+    then: &AddonRecord,
+    marking: &Marking,
+) -> Option<SkippedRelease> {
+    use crate::resolve::updates::{compare_versions, is_static, skip_covering};
+    if is_static(now) || is_static(then) {
+        return None;
+    }
+    let (left, back) = (ReleaseKey::of_record(now), ReleaseKey::of_record(then));
+    let differ = match (&left, &back) {
+        (Some(left), Some(back)) => left != back,
+        _ => now.version != then.version || now.blob_sha256 != then.blob_sha256,
+    };
+    if !differ
+        || skip_covering(now, back.as_ref(), &then.version).is_some()
+        || compare_versions(&then.version, &now.version) == Some(std::cmp::Ordering::Greater)
+    {
+        return None;
+    }
+    let mut mark = SkippedRelease::pending(left, now.version.clone(), SkipOrigin::Undo);
+    mark.at = marking.at;
+    if let Some(tx) = marking.tx {
+        mark.tx = tx;
+    }
+    Some(mark)
 }
 
 /// The index of the transaction `selector` names.
@@ -1876,6 +1981,8 @@ fn restored_state(
     entries: &[HistoryEntry],
     at: usize,
     folders: &FolderPlan,
+    marking: &Marking,
+    target: &str,
 ) -> Result<Restored> {
     let reverted = &entries[at];
     let key = target_of(reverted)?;
@@ -1914,6 +2021,9 @@ fn restored_state(
     // gone since (and, for `from_snapshot`, lacks what later transactions edited).
     let mut restored: Vec<String> = Vec::new();
     let mut from_snapshot: Vec<String> = Vec::new();
+    // The addons it moves back from one release to another, with the release each
+    // leaves: what it marks (design 7.5.3).
+    let mut left: Vec<(String, AddonRecord, AddonRecord)> = Vec::new();
     let mut record = current.clone();
     let mut changes = Vec::new();
     for addon_key in &direct {
@@ -1936,6 +2046,9 @@ fn restored_state(
             (None, None) => continue,
         };
         let Some(addon) = then.or(now) else { continue };
+        if let (ChangeKind::Update, Some(now), Some(then)) = (kind, now, then) {
+            left.push((addon_key.clone(), now.clone(), then.clone()));
+        }
         let fields = match kind {
             ChangeKind::Edit => changed_fields(now, then),
             _ => Vec::new(),
@@ -1992,6 +2105,22 @@ fn restored_state(
             addon
                 .required_by
                 .retain(|by| recorded.contains(&TargetRecord::addon_key(by)));
+        }
+    }
+    // Each release it moves back from is skipped, so `update` does not bring it back
+    // (design 7.5.3); never by the undo of an undo, a redo that wants it after all. A
+    // mark that cannot be kept fails the undo before it commits.
+    if reverted.kind != TxKind::Undo {
+        for (addon_key, now, then) in &left {
+            let (Some(mark), Some(addon)) = (
+                leaving_mark(now, then, marking),
+                record.addons.get_mut(addon_key),
+            ) else {
+                continue;
+            };
+            addon
+                .add_skip(mark)
+                .map_err(|full| super::edit::skips_full(&full, target))?;
         }
     }
     let edit_ops = reverse_edits(reverted, &mut record, &mut changes);
@@ -4774,5 +4903,121 @@ mod tests {
             None,
             "a repair before the deferred undo does not"
         );
+    }
+
+    /// RG-32: an addon record of `r` at `version`, from release `tag` at `revision`
+    /// (no tag: no release id).
+    fn at_release(r: &str, tag: Option<&str>, version: &str, revision: Option<u32>) -> AddonRecord {
+        AddonRecord {
+            r#ref: r.parse().unwrap(),
+            name: "Foo".into(),
+            version: version.into(),
+            version_confidence: crate::model::VersionConfidence::Release,
+            release_id: tag.map(|t| format!("{r}@{t}")),
+            channel: crate::model::Channel::Stable,
+            pinned: false,
+            reason: crate::model::AddonReason::Explicit,
+            required_by: Vec::new(),
+            folders: vec![FolderName::new("Foo").unwrap()],
+            state: crate::model::AddonState::Ok,
+            installed_at: "2026-11-01T00:00:00Z".parse().unwrap(),
+            tx_id: TxId::new(),
+            blob_sha256: None,
+            revision,
+            left_out: Vec::new(),
+            any_flavor: false,
+            skipped_releases: Vec::new(),
+        }
+    }
+
+    /// RG-32: the mark an undo leaves for the release it moves back from (design 7.5.3,
+    /// conditions 2, 4 and 5; 1 and 3 are `restored_state`'s, covered end to end).
+    #[test]
+    fn an_undo_marks_the_release_it_leaves_unless_it_goes_forward_or_cannot_update() {
+        let gh = |tag: &str| at_release("gh:o/foo", Some(tag), tag, None);
+        let wowace =
+            |revision: u32| at_release("wowace:foo", Some("v12.1.1"), "v12.1.1", Some(revision));
+        let marked = |mut r: AddonRecord, tag: &str| {
+            r.skipped_releases = vec![SkippedRelease::pending(
+                ReleaseKey::parse(&format!("gh:o/foo@{tag}"), None),
+                tag.into(),
+                SkipOrigin::Rollback,
+            )];
+            r
+        };
+        let file = |version: &str| {
+            let mut r = at_release("file:/home/me/Foo.zip", None, version, None);
+            r.release_id = Some(format!("file:/home/me/Foo.zip@sha256:{version}"));
+            r
+        };
+        let mut adopted = at_release("gh:o/foo", None, "1.0", None);
+        adopted.version_confidence = crate::model::VersionConfidence::Toc;
+        // (case, the record left (now), the record brought back (then), the mark's key
+        // and version, or none)
+        type Case<'a> = (
+            &'a str,
+            AddonRecord,
+            AddonRecord,
+            Option<(Option<&'a str>, &'a str)>,
+        );
+        let cases: Vec<Case<'_>> = vec![
+            (
+                "an update undone marks the newer release",
+                gh("1.1"),
+                gh("1.0"),
+                Some((Some("gh:o/foo@1.1"), "1.1")),
+            ),
+            (
+                "a re-tag undone marks the newer revision",
+                wowace(1402),
+                wowace(1390),
+                Some((Some("wowace:foo@v12.1.1"), "v12.1.1")),
+            ),
+            ("one release is no move", gh("1.1"), gh("1.1"), None),
+            (
+                "an undone going-back, by its mark, marks nothing",
+                marked(gh("1.0"), "1.1"),
+                gh("1.1"),
+                None,
+            ),
+            (
+                "an undone downgrade, by versions, marks nothing",
+                gh("1.0"),
+                gh("1.1"),
+                None,
+            ),
+            (
+                "versions that do not compare mark",
+                gh("r272"),
+                gh("bundle/v12.7.0+v1.0.14"),
+                Some((Some("gh:o/foo@r272"), "r272")),
+            ),
+            ("a local file is static", file("2"), file("1"), None),
+            (
+                "an adopted build updated, then undone, marks the release left",
+                gh("1.1"),
+                adopted.clone(),
+                Some((Some("gh:o/foo@1.1"), "1.1")),
+            ),
+        ];
+        let at: Timestamp = "2026-11-13T00:00:00Z".parse().unwrap();
+        let tx: TxId = "01JB8Q2VA00000000000000009".parse().unwrap();
+        for (case, now, then, expected) in cases {
+            let mark = leaving_mark(&now, &then, &Marking { at, tx: Some(tx) });
+            let got = mark.as_ref().map(|m| {
+                assert_eq!((m.origin, m.at, m.tx), (SkipOrigin::Undo, at, tx), "{case}");
+                (m.release.clone(), m.version.as_str())
+            });
+            let want = expected.map(|(id, version)| {
+                let revision = now.revision;
+                (id.and_then(|id| ReleaseKey::parse(id, revision)), version)
+            });
+            assert_eq!(got, want, "{case}");
+        }
+        // Before the undo's id exists (the first plan, a preview), the mark carries the
+        // nil id, which never reaches a record.
+        let pending = leaving_mark(&gh("1.1"), &gh("1.0"), &Marking { at, tx: None }).unwrap();
+        let nil = SkippedRelease::pending(None, String::new(), SkipOrigin::Undo).tx;
+        assert_eq!(pending.tx, nil);
     }
 }

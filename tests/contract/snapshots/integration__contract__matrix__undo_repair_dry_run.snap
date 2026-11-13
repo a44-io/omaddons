@@ -103,6 +103,8 @@ expression: s.stable(&c.envelope)
       {
         "error": null,
         "reverted": "<ulid>",
+        "skips_cleared": [],
+        "skips_marked": [],
         "status": "undone",
         "target": null,
         "tx": null

@@ -5676,6 +5676,22 @@ output apply data<applied.command=undo>.result.transactions[].error.fix_argv arr
 output apply data<applied.command=undo>.result.transactions[].error.fix_argv[] string
 output apply data<applied.command=undo>.result.transactions[].error.message string!
 output apply data<applied.command=undo>.result.transactions[].reverted string!
+output apply data<applied.command=undo>.result.transactions[].skips_cleared array!
+output apply data<applied.command=undo>.result.transactions[].skips_cleared[] object
+output apply data<applied.command=undo>.result.transactions[].skips_cleared[].addon string!
+output apply data<applied.command=undo>.result.transactions[].skips_cleared[].release object?!
+output apply data<applied.command=undo>.result.transactions[].skips_cleared[].release.revision integer? minimum=0
+output apply data<applied.command=undo>.result.transactions[].skips_cleared[].release.source string!
+output apply data<applied.command=undo>.result.transactions[].skips_cleared[].release.tag string!
+output apply data<applied.command=undo>.result.transactions[].skips_cleared[].version string!
+output apply data<applied.command=undo>.result.transactions[].skips_marked array!
+output apply data<applied.command=undo>.result.transactions[].skips_marked[] object
+output apply data<applied.command=undo>.result.transactions[].skips_marked[].addon string!
+output apply data<applied.command=undo>.result.transactions[].skips_marked[].release object?!
+output apply data<applied.command=undo>.result.transactions[].skips_marked[].release.revision integer? minimum=0
+output apply data<applied.command=undo>.result.transactions[].skips_marked[].release.source string!
+output apply data<applied.command=undo>.result.transactions[].skips_marked[].release.tag string!
+output apply data<applied.command=undo>.result.transactions[].skips_marked[].version string!
 output apply data<applied.command=undo>.result.transactions[].status string!
 output apply data<applied.command=undo>.result.transactions[].target object?!
 output apply data<applied.command=undo>.result.transactions[].target.id string!
@@ -10065,6 +10081,22 @@ output undo data.transactions[].error.fix_argv array?!
 output undo data.transactions[].error.fix_argv[] string
 output undo data.transactions[].error.message string!
 output undo data.transactions[].reverted string!
+output undo data.transactions[].skips_cleared array!
+output undo data.transactions[].skips_cleared[] object
+output undo data.transactions[].skips_cleared[].addon string!
+output undo data.transactions[].skips_cleared[].release object?!
+output undo data.transactions[].skips_cleared[].release.revision integer? minimum=0
+output undo data.transactions[].skips_cleared[].release.source string!
+output undo data.transactions[].skips_cleared[].release.tag string!
+output undo data.transactions[].skips_cleared[].version string!
+output undo data.transactions[].skips_marked array!
+output undo data.transactions[].skips_marked[] object
+output undo data.transactions[].skips_marked[].addon string!
+output undo data.transactions[].skips_marked[].release object?!
+output undo data.transactions[].skips_marked[].release.revision integer? minimum=0
+output undo data.transactions[].skips_marked[].release.source string!
+output undo data.transactions[].skips_marked[].release.tag string!
+output undo data.transactions[].skips_marked[].version string!
 output undo data.transactions[].status string!
 output undo data.transactions[].target object?!
 output undo data.transactions[].target.id string!

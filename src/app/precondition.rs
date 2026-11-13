@@ -3823,6 +3823,8 @@ mod repair_undo_tests {
                 committed: Vec::new(),
                 planned: Vec::new(),
             }),
+            skips_marked: Vec::new(),
+            skips_cleared: Vec::new(),
         }
     }
 

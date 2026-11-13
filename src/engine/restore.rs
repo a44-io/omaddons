@@ -1182,6 +1182,9 @@ pub(super) fn undo_whole(
             },
             wtf: Some(wtf),
             repair: None,
+            // A whole restore moves no addon's release: nothing to mark.
+            skips_marked: Vec::new(),
+            skips_cleared: Vec::new(),
         }
     };
     if req.dry_run {

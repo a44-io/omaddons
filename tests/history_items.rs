@@ -403,9 +403,16 @@ fn every_kind_of_change_and_its_undo_names_the_addon_the_change_and_both_version
             json!([item(foo, "reverted", 1, v2, v2)]),
         ),
         (
+            // The undo of an update marks the release it leaves (RG-32).
             "undo update",
             &undos["update"],
-            json!([item(foo, "reverted", 1, v2, v1)]),
+            {
+                let mut reverted = item(foo, "reverted", 1, v2, v1);
+                reverted["skips_marked"] = json!([
+                    {"addon": "Foo", "version": "v2", "release": {"source": "gh:o/foo", "tag": "v2"}}
+                ]);
+                json!([reverted])
+            },
         ),
         (
             "undo install",

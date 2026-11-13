@@ -1248,6 +1248,8 @@ mod tests {
                     UndoTxStatus::Undone
                 },
                 error: failed.map(item_error),
+                skips_marked: Vec::new(),
+                skips_cleared: Vec::new(),
             })
             .collect();
         UndoData {

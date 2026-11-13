@@ -385,6 +385,18 @@ mod support {
         let now = Foo::of(&s);
         let went_new = now == *new;
         assert!(went_new || now == old, "{}", context("split across sides"));
+        // RG-32: these undos revert an install of a given archive (`--file`), which
+        // `update` never moves, so no crash and no recovery ever leaves a skip mark
+        // (condition 5); `Shape::UndoUpdate` crashes an undo that does mark.
+        if op.kind() == "undo" {
+            let foo = s.view().remove("foo").unwrap_or_default();
+            assert_eq!(
+                foo["skipped_releases"],
+                serde_json::Value::Null,
+                "{}",
+                context("an undo of a given archive marks nothing")
+            );
+        }
         let commits = u64::from(went_new) + 1;
         assert_eq!(
             s.generation(),
@@ -564,6 +576,9 @@ mod support {
         Handover,
         /// `adopt --apply`: records only.
         Adopt,
+        /// `undo` of an update from release fixtures: the folder back, the release it
+        /// leaves marked skipped in the same record (RG-32).
+        UndoUpdate,
     }
 
     impl Shape {
@@ -573,6 +588,7 @@ mod support {
                 Self::InstallWithDep => "install",
                 Self::SyncMixed => "sync",
                 Self::Adopt => "adopt",
+                Self::UndoUpdate => "undo",
             }
         }
 
@@ -583,6 +599,7 @@ mod support {
                 Self::SyncMixed => shapes::SYNC_MIXED,
                 Self::Handover => shapes::HANDOVER,
                 Self::Adopt => shapes::ADOPT,
+                Self::UndoUpdate => shapes::UNDO_UPDATE,
             }
         }
 
@@ -593,6 +610,7 @@ mod support {
                 Self::SyncMixed => shapes::sync_mixed(s),
                 Self::Handover => shapes::handover(s),
                 Self::Adopt => shapes::adopt(s),
+                Self::UndoUpdate => shapes::undo_update(s),
             }
         }
 
@@ -1186,6 +1204,27 @@ fn the_m2_reference_runs_make_the_change_each_shape_names() {
     s.run(&args, "").expect(0);
     assert_eq!(s.view().len(), 2);
     assert_eq!(s.folders_of(shapes::ADOPT), before);
+    // UndoUpdate: Alpha back at v1, with v2 marked skipped by the undo (RG-32). Its
+    // matrix compares whole records, so every crash leaves Alpha at v2 with no mark, or
+    // at v1 with this one.
+    let s = Scene::new();
+    let args = Shape::UndoUpdate.prepare(&s);
+    assert_eq!(
+        s.view()["alpha"]["skipped_releases"],
+        serde_json::Value::Null
+    );
+    s.run(&args, "").expect(0);
+    let alpha = &s.view()["alpha"];
+    assert_eq!(alpha["version"], "v1");
+    assert_eq!(
+        alpha["skipped_releases"],
+        json!([{"release": {"source": "gh:o/alpha", "tag": "v2"}, "version": "v2", "origin": "undo"}])
+    );
+}
+
+#[test]
+fn crash_matrix_undo_of_an_update() {
+    shape_matrix(&tlog!(), Shape::UndoUpdate);
 }
 
 #[test]

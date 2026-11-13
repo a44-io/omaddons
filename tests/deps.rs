@@ -1100,7 +1100,18 @@ fn a_dependency_without_a_compatible_release_during_update_is_a_failed_item() {
         json!(["LittleWigs"])
     );
     assert_eq!(record_of(&home, "LittleWigs").unwrap().version, "v2");
-    home.run(&["undo"]).expect(0);
+    // The undo skips v2 (RG-32): update passes over it, and --strict has nothing to fail.
+    let undone = home.run(&["undo"]).expect(0);
+    let undo_tx = undone["data"]["tx"].as_str().unwrap().to_owned();
+    let again = home.run(&["update", "--refresh", "--strict"]).expect(0);
+    assert_eq!(
+        update_items(&again),
+        [pair("LittleWigs", "skipped")],
+        "{again}"
+    );
+    // Offered again, the same update fails its dependency the same way.
+    home.run(&["unskip", "--tx", &undo_tx, "-t", "retail"])
+        .expect(0);
     home.run(&["update", "--refresh", "--strict"]).expect(6);
 }
 

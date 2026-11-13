@@ -2529,6 +2529,9 @@ fn outcome_of(
             committed,
             planned: Vec::new(),
         }),
+        // A repair moves no addon's release: nothing to mark.
+        skips_marked: Vec::new(),
+        skips_cleared: Vec::new(),
     }
 }
 

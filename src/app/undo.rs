@@ -33,7 +33,9 @@ use crate::doctor::runtime::DoctorRunId;
 use crate::engine::repair::undo::{Dest, is_repair_family};
 use crate::engine::{SvPolicy, UndoOutcome as EngineUndo, UndoRequest, UndoSelector, WtfUndo};
 use crate::error::{CommandHint, Error, ErrorCode, Result, Suggestion, Warning};
-use crate::model::{Actor, FolderName, PlanId, ReloadRequired, RunId, TargetKey, TxId, TxKind};
+use crate::model::{
+    Actor, FolderName, PlanId, ReloadRequired, RunId, SkippedNote, TargetKey, TxId, TxKind,
+};
 use crate::output::{Outcome, Style};
 use crate::state::history::{
     self, HistoryEntry, HistoryFilter, RepairEntry, RepairOp, SettingEntry,
@@ -229,6 +231,13 @@ pub struct UndoTx {
     pub tx: Option<TxId>,
     pub status: UndoTxStatus,
     pub error: Option<ItemError>,
+    /// The skip marks it made (under `--dry-run`, would make): each release it moves an
+    /// addon back from, so `update` passes over it (`{addon, version, release}`,
+    /// sorted); empty when it failed.
+    pub skips_marked: Vec<SkippedNote>,
+    /// The skip marks the records it puts back no longer have, as a redo's (sorted);
+    /// empty when it failed.
+    pub skips_cleared: Vec<SkippedNote>,
 }
 
 /// Whether a transaction was undone.
@@ -252,6 +261,9 @@ struct Undone {
     wtf: Option<WtfUndo>,
     /// The undo of a repair.
     repair: Option<Box<RepairUndo>>,
+    /// The skip marks it made, and those it cleared.
+    skips_marked: Vec<SkippedNote>,
+    skips_cleared: Vec<SkippedNote>,
 }
 
 /// What the undo of a repair did (or would do), for its data and its human output.
@@ -499,7 +511,47 @@ fn render_undone(w: &mut dyn Write, u: &Undone, dry_run: bool, hint: bool) -> st
     }
     parts.push(format!("SavedVariables: {}", counts.join(", ")));
     writeln!(w, "{}", parts.join(" · "))?;
+    render_skips(w, u, dry_run)?;
     render_tail(w, u, hint)
+}
+
+/// What an undo did to skip marks (design 5.3): the releases it skips, and how to offer
+/// them again; the marks a redo cleared.
+fn render_skips(w: &mut dyn Write, u: &Undone, dry_run: bool) -> std::io::Result<()> {
+    let named = |notes: &[SkippedNote]| -> Vec<String> {
+        notes
+            .iter()
+            .map(|n| format!("{} {}", n.addon, n.version))
+            .collect()
+    };
+    let marked = named(&u.skips_marked);
+    if !marked.is_empty() {
+        let (n, is, them, releases) = match marked.len() {
+            1 => ("1 release".to_owned(), "is", "it", "the next release"),
+            n => (format!("{n} releases"), "are", "them", "the next releases"),
+        };
+        let line = if dry_run {
+            format!("{n} would be skipped: update would pass over {them} and resume at {releases}")
+        } else {
+            format!("{n} {is} skipped: update passes over {them} and resumes at {releases}")
+        };
+        writeln!(w, "{line}")?;
+        writeln!(w, "  {}", marked.join(" · "))?;
+        if let (Some(tx), Some(target)) = (u.tx, &u.reverted.target) {
+            writeln!(w, "offer again: omaddons unskip --tx {tx} -t {}", target.id)?;
+        }
+    }
+    let cleared = named(&u.skips_cleared);
+    if !cleared.is_empty() {
+        let marks = crate::output::count(cleared.len(), "skip mark");
+        let verb = if dry_run {
+            "would be cleared"
+        } else {
+            "cleared"
+        };
+        writeln!(w, "{marks} {verb}: {}", cleared.join(", "))?;
+    }
+    Ok(())
 }
 
 /// The middle line of the undo of a whole restore (`kind` `restore`), or of the undo of
@@ -1011,6 +1063,8 @@ fn outcome(
                     tx: undo.outcome.tx,
                     status: UndoTxStatus::Undone,
                     error: None,
+                    skips_marked: undo.skips_marked.clone(),
+                    skips_cleared: undo.skips_cleared.clone(),
                 });
                 attempts.push(Attempt::Undone(Box::new(undone(
                     reverted,
@@ -1034,6 +1088,8 @@ fn outcome(
                     tx: None,
                     status: UndoTxStatus::Failed,
                     error: Some(ItemError::from(&error)),
+                    skips_marked: Vec::new(),
+                    skips_cleared: Vec::new(),
                 });
                 first_error.get_or_insert_with(|| error.clone());
                 attempts.push(Attempt::Failed(Box::new(reverted), error));
@@ -1065,6 +1121,23 @@ fn outcome(
             Action::Undo,
             ["omaddons".to_owned(), "undo".to_owned(), tx.to_string()],
         ));
+    }
+    // What an undo marked, offered again by exactly its transaction (design 7.5.3): never
+    // an older mark on the same addon.
+    for t in &transactions {
+        if let (Some(tx), Some(target), false) = (t.tx, &t.target, t.skips_marked.is_empty()) {
+            commands.push(CommandHint::new(
+                Action::Unskip,
+                [
+                    "omaddons".to_owned(),
+                    "unskip".to_owned(),
+                    "--tx".to_owned(),
+                    tx.to_string(),
+                    "-t".to_owned(),
+                    target.id.clone(),
+                ],
+            ));
+        }
     }
     let client_dir = verbose
         .then(|| {
@@ -1201,6 +1274,8 @@ fn undone(
             .map(|_| done.outcome.atomic_swap),
         wtf: done.wtf,
         repair,
+        skips_marked: done.skips_marked.clone(),
+        skips_cleared: done.skips_cleared.clone(),
     }
 }
 
@@ -1335,6 +1410,8 @@ mod tests {
                 tx: None,
                 status: UndoTxStatus::Undone,
                 error: None,
+                skips_marked: Vec::new(),
+                skips_cleared: Vec::new(),
             }],
             precondition: None,
             plan_id: None,
@@ -1844,6 +1921,8 @@ mod tests {
                 atomic_swap: None,
                 wtf: None,
                 repair: None,
+                skips_marked: Vec::new(),
+                skips_cleared: Vec::new(),
             };
             let mut out = Vec::new();
             render_repair(&mut out, &u, &repair, dry_run, true).unwrap();

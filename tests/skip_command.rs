@@ -847,6 +847,296 @@ fn naming_a_skipped_release_lifts_its_mark_and_the_fix_clears_only_its_own() {
     );
 }
 
+/// The mark of v2 an undo leaves, as `skips_marked` names it.
+fn v2_note() -> Value {
+    json!([{"addon": "Foo", "version": "v2", "release": {"source": "gh:o/foo", "tag": "v2"}}])
+}
+
+/// RG-32: undoing an update marks the release it leaves, so `update` passes over it;
+/// the result offers a scoped `unskip --tx`; a redo lifts the mark and says so.
+#[test]
+fn an_undone_update_is_skipped_and_its_redo_lifts_the_mark() {
+    let log = tlog!();
+    let home = behind(&log);
+    log.step("an older label mark, then the update to v2");
+    json(
+        &log,
+        &home,
+        &["skip", "foo", "--version", "9.9", "-t", "retail"],
+    )
+    .ok();
+    json(&log, &home, &["update", "-t", "retail"]).ok();
+
+    log.step("the undo previews the mark it makes");
+    let preview = json(&log, &home, &["undo", "--dry-run"]);
+    preview.ok();
+    log.assert_eq(
+        "the preview's marks",
+        &preview.data()["transactions"][0]["skips_marked"],
+        &v2_note(),
+    );
+
+    log.step("undo the update");
+    let ran = json(&log, &home, &["undo"]);
+    ran.ok();
+    let undo_tx = ran.data()["tx"].as_str().unwrap().to_owned();
+    log.assert_eq(
+        "skips_marked",
+        &ran.data()["transactions"][0]["skips_marked"],
+        &v2_note(),
+    );
+    let record = common::state::record(&home, "retail");
+    let foo = &record.addons["foo"];
+    log.assert_eq("back at v1", &foo.version, &"v1".to_owned());
+    let made = foo
+        .skipped_releases
+        .iter()
+        .find(|m| m.release.is_some())
+        .cloned();
+    log.assert_eq(
+        "made by this undo",
+        &made.as_ref().map(|m| (m.origin, m.tx.to_string())),
+        &Some((SkipOrigin::Undo, undo_tx.clone())),
+    );
+    let unskip: Vec<Vec<String>> = ran
+        .commands()
+        .into_iter()
+        .filter(|c| c.action == "unskip")
+        .map(|c| c.argv)
+        .collect();
+    log.assert_eq(
+        "offered again by exactly this undo",
+        &unskip,
+        &vec![
+            [
+                "omaddons",
+                "unskip",
+                "--tx",
+                undo_tx.as_str(),
+                "-t",
+                "retail",
+            ]
+            .map(str::to_owned)
+            .to_vec(),
+        ],
+    );
+
+    log.step("update passes over v2");
+    let ran = json(&log, &home, &["update", "--dry-run"]);
+    ran.ok();
+    log.assert_eq(
+        "skipped, not updated",
+        &ran.data()["targets"][0]["items"][0]["skip_reason"],
+        &json!("skipped_release"),
+    );
+
+    log.step("redo: v2 again, its mark gone");
+    let ran = json(&log, &home, &["undo", &undo_tx]);
+    ran.ok();
+    log.assert_eq(
+        "skips_cleared",
+        &ran.data()["transactions"][0]["skips_cleared"],
+        &v2_note(),
+    );
+    log.assert_eq(
+        "the redo marks nothing",
+        &ran.data()["transactions"][0]["skips_marked"],
+        &json!([]),
+    );
+    let record = common::state::record(&home, "retail");
+    log.assert_eq("at v2", &record.addons["foo"].version, &"v2".to_owned());
+    log.assert_eq(
+        "only the label mark",
+        &selected(&marks(&home)),
+        &vec![json!({"label": "9.9"})],
+    );
+}
+
+/// RG-32: the `unskip --tx` an undo offers clears the marks that undo made, and leaves an
+/// older mark on the same addon.
+#[test]
+fn an_undos_unskip_clears_only_its_own_marks() {
+    let log = tlog!();
+    let home = behind(&log);
+    json(
+        &log,
+        &home,
+        &["skip", "foo", "--version", "9.9", "-t", "retail"],
+    )
+    .ok();
+    json(&log, &home, &["update", "-t", "retail"]).ok();
+    let human = log.run(&home, &["undo"]);
+    human.ok();
+    let undo_tx = common::state::history(&home)
+        .last()
+        .map(|e| e.tx.to_string())
+        .unwrap();
+    for says in [
+        "1 release is skipped: update passes over it and resumes at the next release\n  Foo v2\n"
+            .to_owned(),
+        format!("offer again: omaddons unskip --tx {undo_tx} -t retail"),
+    ] {
+        log.assert_eq(
+            &format!("undo says {says:?}"),
+            &human.stdout().contains(&says),
+            &true,
+        );
+    }
+    log.assert_eq("two marks", &marks(&home).len(), &2);
+    log.step("its unskip --tx");
+    json(&log, &home, &["unskip", "--tx", &undo_tx, "-t", "retail"]).ok();
+    log.assert_eq(
+        "the older label mark stays",
+        &selected(&marks(&home)),
+        &vec![json!({"label": "9.9"})],
+    );
+}
+
+/// RG-32: an undo that moves no addon back from one release to another marks nothing:
+/// the undo of an install, of a skip, of a pin.
+#[test]
+fn undos_that_leave_no_release_mark_nothing() {
+    let log = tlog!();
+    let home = behind(&log);
+    for (step, change) in [
+        ("a pin", &["pin", "foo", "-t", "retail"][..]),
+        ("a skip", &["skip", "foo", "-t", "retail"][..]),
+    ] {
+        log.step(&format!("{step}, undone"));
+        json(&log, &home, change).ok();
+        let ran = json(&log, &home, &["undo"]);
+        ran.ok();
+        log.assert_eq(
+            &format!("the undo of {step} marks nothing"),
+            &ran.data()["transactions"][0]["skips_marked"],
+            &json!([]),
+        );
+    }
+    log.step("the install, undone: Foo is gone, with no error");
+    let install = common::state::history(&home)
+        .into_iter()
+        .find(|e| serde_json::to_value(e.kind).unwrap() == "install")
+        .map(|e| e.tx.to_string())
+        .unwrap();
+    let ran = json(&log, &home, &["undo", &install]);
+    ran.ok();
+    log.assert_eq(
+        "no mark",
+        &ran.data()["transactions"][0]["skips_marked"],
+        &json!([]),
+    );
+    log.assert_eq(
+        "Foo is gone",
+        &common::state::record(&home, "retail")
+            .addons
+            .contains_key("foo"),
+        &false,
+    );
+}
+
+/// RG-32: undoing a run that updated two clients marks on each, independently, and an
+/// undo applied from its stored preview marks exactly as an unbound one.
+#[test]
+fn a_whole_run_undo_applied_from_its_preview_marks_each_client() {
+    let log = tlog!();
+    log.step("Foo v1 on retail and the PTR, v2 out, both updated in one run");
+    let mut home = Home::new(&["wow", "wowt"]);
+    log.env(&home);
+    let (v1, v2) = (Rel::new("v1"), Rel::new("v2"));
+    home.installed_behind(
+        FOO,
+        ("v1", &v1.assets()),
+        ("v2", &v2.assets()),
+        &["retail", "ptr"],
+    );
+    json(&log, &home, &["outdated", "-t", "all"]).ok();
+    json(&log, &home, &["update", "-t", "all"]).ok();
+
+    log.step("preview the undo of the run, then apply it");
+    let preview = json(&log, &home, &["undo", "--dry-run"]);
+    preview.ok();
+    let plan = preview.data()["plan_id"].as_str().unwrap().to_owned();
+    let previewed: Vec<Value> = preview.data()["transactions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["skips_marked"].clone())
+        .collect();
+    let ran = json(&log, &home, &["apply", &plan]);
+    ran.ok();
+    let applied: Vec<Value> = ran.data()["result"]["transactions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["skips_marked"].clone())
+        .collect();
+    log.assert_eq(
+        "one mark per client, as previewed",
+        &(&previewed, &applied),
+        &(&vec![v2_note(), v2_note()], &vec![v2_note(), v2_note()]),
+    );
+    for target in ["retail", "ptr"] {
+        let record = common::state::record(&home, target);
+        let foo = &record.addons["foo"];
+        log.assert_eq(
+            &format!("{target}: back at v1, v2 skipped"),
+            &(foo.version.as_str(), selected(&foo.skipped_releases)),
+            &(
+                "v1",
+                vec![json!({"release": {"source": "gh:o/foo", "tag": "v2"}})],
+            ),
+        );
+    }
+}
+
+/// RG-32: a record with 256 marks cannot keep another, so the undo that would add it
+/// fails before it commits, naming the addon and `unskip`.
+#[test]
+fn an_undo_whose_mark_does_not_fit_changes_nothing() {
+    let log = tlog!();
+    let home = behind(&log);
+    log.step("256 label marks on Foo's record, then the update");
+    let key = common::state::key_of(&home, "retail");
+    let path = paths(&home.env).target_record(&key);
+    let mut record: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let full: Vec<SkippedRelease> = (0..256)
+        .map(|n| SkippedRelease {
+            release: None,
+            version: format!("1.{n}"),
+            at: "2026-11-01T00:00:00Z".parse().unwrap(),
+            origin: SkipOrigin::Manual,
+            tx: "01JB8Q2VA00000000000000001".parse().unwrap(),
+        })
+        .collect();
+    record["addons"]["foo"]["skipped_releases"] = serde_json::to_value(&full).unwrap();
+    fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+    json(&log, &home, &["update", "-t", "retail"]).ok();
+
+    log.step("the undo is refused before it commits");
+    let before = (
+        record_bytes(&home),
+        tree_hash(&home.addons("_retail_")),
+        fs::read(home.state().join("history.jsonl")).unwrap(),
+    );
+    let ran = json(&log, &home, &["undo"]);
+    ran.fails(2, "usage");
+    let fix = ran.envelope()["error"]["fix"].as_str().unwrap_or_default();
+    log.assert_eq(
+        "the fix names Foo and unskip",
+        &fix.starts_with("omaddons unskip Foo"),
+        &true,
+    );
+    log.assert_eq(
+        "record, folders and history as they were",
+        &(
+            record_bytes(&home),
+            tree_hash(&home.addons("_retail_")),
+            fs::read(home.state().join("history.jsonl")).unwrap(),
+        ),
+        &before,
+    );
+}
+
 /// What happens between a preview and its `apply`.
 #[derive(Debug, Clone, Copy)]
 enum Between {
