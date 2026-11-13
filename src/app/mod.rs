@@ -19,6 +19,7 @@ pub mod doctor_undo;
 pub mod drift;
 pub mod engine;
 pub mod errors;
+pub mod errors_ledger;
 pub mod errors_status;
 pub mod export;
 pub mod help;

@@ -986,6 +986,21 @@ enum file:doctor_report commands[].action adopt,adopt_folder,adopt_with_ref,appl
 enum file:doctor_report kind diagnose,fix,undo
 enum file:doctor_report warnings[].code addon_pinned,adopt_name_changed,any_flavor,archive_too_large,atomic_swap_unavailable,auth_rejected,auth_required,auto_backup_failed,backup_copied,backup_space_low,backup_unsettled,bad_archive,before_restore_skipped,bridge_dependency,case_collision,catalog_override_invalid,check_failed,client_not_launched_since_patch,config_unknown_key,credential_file_mode,delegated_recovery,desired_state_invalid,desired_unknown_key,desired_unknown_target,discovery_truncated,distribution_disabled,doctor_refused,download_failed,download_unverified,errors_partial,export_local_source,export_missing_target,file_exists,filesystem_unsupported,folder_left_out,game_running,hash_mismatch,history_lines_skipped,history_not_recorded,host_blocked,http_status,internal,io,journal_pending,journal_recovered,local_changes_replaced,locked,missing_dependency,network,no_compatible_release,not_found,not_locked,not_managed,offline,older_release_for_client,omarchy_shell_unreachable,online_required,orphaned_dependency,out_of_date,ownership_conflict,ownership_transferred,plan_not_found,plan_not_stored,plan_stale,protected_folder,rate_limited,ref_ambiguous,ref_invalid,release_skipped,reload_required,restore_rolled_back,retention_failed,running_unknown,saved_variables_deferred,saved_variables_out_of_scope,scope_denied,skip_lifted,snapshot_cap_exceeded,snapshot_only_copy,source_disabled,stale_check,state_corrupt,state_too_new,state_version_newer,state_version_older,still_required,target_addons_shared,target_ambiguous,target_id_reserved,target_key_duplicate,target_not_found,toc_comma_on_legacy,tx_in_progress,undo_conflict,unknown_flavor,unmanaged_folder,unsafe_archive,usage,widget_outdated,wrong_flavor
 enum file:doorbell actor agent,human,widget
+enum file:errors_ledger targets{}.clusters{}.appearance.earliest.time.meaning first_or_last,last,unknown
+enum file:errors_ledger targets{}.clusters{}.appearance.earliest.time.tz explicit,system_assumed
+enum file:errors_ledger targets{}.clusters{}.appearance.time.meaning first_or_last,last,unknown
+enum file:errors_ledger targets{}.clusters{}.appearance.time.tz explicit,system_assumed
+enum file:errors_ledger targets{}.clusters{}.judgment.gap generation_ended,history_unreadable,provider_changed
+enum file:errors_ledger targets{}.clusters{}.judgment.state complete,deferred,unsupported
+enum file:errors_ledger targets{}.clusters{}.judgment.suspect.actor agent,human,widget
+enum file:errors_ledger targets{}.clusters{}.judgment.suspect.changed[].change installed,removed,reverted,updated
+enum file:errors_ledger targets{}.clusters{}.judgment.suspect.confidence high,low,medium
+enum file:errors_ledger targets{}.clusters{}.judgment.suspect.evidence.unknowns[] accounts,client_version,dependencies,mark,running,sessions,time,transition
+enum file:errors_ledger targets{}.clusters{}.judgment.suspect.kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,skip,sync,target,undo,update,widget
+enum file:errors_ledger targets{}.clusters{}.judgment.suspect.relation dependency,in_stack,none,own
+enum file:errors_ledger targets{}.families{}.first<basis=baseline>.reason coverage_incomplete,first_read,new_generation
+enum file:errors_ledger targets{}.families{}.first<basis=pending>.time.meaning first_or_last,last,unknown
+enum file:errors_ledger targets{}.families{}.first<basis=pending>.time.tz explicit,system_assumed
 enum file:errors_memo targets{}.databases[].addons[].kind addon,blizzard,library,unknown
 enum file:errors_memo targets{}.databases[].addons[].sessions{}.newest.meaning first_or_last,last,unknown
 enum file:errors_memo targets{}.databases[].addons[].sessions{}.newest.tz explicit,system_assumed
@@ -2419,6 +2434,143 @@ file errors_ack targets{}.databases object!
 file errors_ack targets{}.databases{} object
 file errors_ack targets{}.databases{}.acked_at string!
 file errors_ack targets{}.databases{}.acked_session integer! minimum=0
+file errors_ledger . object
+file errors_ledger 1.0
+file errors_ledger identity integer! minimum=0
+file errors_ledger revision integer! minimum=0
+file errors_ledger schema_version string!
+file errors_ledger targets object!
+file errors_ledger targets{} object
+file errors_ledger targets{}.clusters object!
+file errors_ledger targets{}.clusters{} object
+file errors_ledger targets{}.clusters{}.addon string?
+file errors_ledger targets{}.clusters{}.appearance object!
+file errors_ledger targets{}.clusters{}.appearance.before object!
+file errors_ledger targets{}.clusters{}.appearance.before.client_version string?!
+file errors_ledger targets{}.clusters{}.appearance.before.observed_at string!
+file errors_ledger targets{}.clusters{}.appearance.before.session integer?! minimum=0
+file errors_ledger targets{}.clusters{}.appearance.before.stamp string!
+file errors_ledger targets{}.clusters{}.appearance.before.written_at string?!
+file errors_ledger targets{}.clusters{}.appearance.counter integer! minimum=0
+file errors_ledger targets{}.clusters{}.appearance.database string!
+file errors_ledger targets{}.clusters{}.appearance.earliest object?
+file errors_ledger targets{}.clusters{}.appearance.earliest.database string!
+file errors_ledger targets{}.clusters{}.appearance.earliest.entry_session integer?! minimum=0
+file errors_ledger targets{}.clusters{}.appearance.earliest.generation string!
+file errors_ledger targets{}.clusters{}.appearance.earliest.observed_at string!
+file errors_ledger targets{}.clusters{}.appearance.earliest.time object!
+file errors_ledger targets{}.clusters{}.appearance.earliest.time.at string?!
+file errors_ledger targets{}.clusters{}.appearance.earliest.time.meaning string!
+file errors_ledger targets{}.clusters{}.appearance.earliest.time.tz string!
+file errors_ledger targets{}.clusters{}.appearance.earliest.written_at string?!
+file errors_ledger targets{}.clusters{}.appearance.entry_session integer?! minimum=0
+file errors_ledger targets{}.clusters{}.appearance.found object!
+file errors_ledger targets{}.clusters{}.appearance.found.client_version string?!
+file errors_ledger targets{}.clusters{}.appearance.found.observed_at string!
+file errors_ledger targets{}.clusters{}.appearance.found.session integer?! minimum=0
+file errors_ledger targets{}.clusters{}.appearance.found.stamp string!
+file errors_ledger targets{}.clusters{}.appearance.found.written_at string?!
+file errors_ledger targets{}.clusters{}.appearance.generation string!
+file errors_ledger targets{}.clusters{}.appearance.provider string!
+file errors_ledger targets{}.clusters{}.appearance.time object!
+file errors_ledger targets{}.clusters{}.appearance.time.at string?!
+file errors_ledger targets{}.clusters{}.appearance.time.meaning string!
+file errors_ledger targets{}.clusters{}.appearance.time.tz string!
+file errors_ledger targets{}.clusters{}.family string!
+file errors_ledger targets{}.clusters{}.fingerprints array!
+file errors_ledger targets{}.clusters{}.fingerprints[] string
+file errors_ledger targets{}.clusters{}.judgment object?
+file errors_ledger targets{}.clusters{}.judgment.algorithm integer! minimum=0
+file errors_ledger targets{}.clusters{}.judgment.gap string?!
+file errors_ledger targets{}.clusters{}.judgment.judged_at string!
+file errors_ledger targets{}.clusters{}.judgment.state string!
+file errors_ledger targets{}.clusters{}.judgment.suspect object?!
+file errors_ledger targets{}.clusters{}.judgment.suspect.actor string!
+file errors_ledger targets{}.clusters{}.judgment.suspect.at string!
+file errors_ledger targets{}.clusters{}.judgment.suspect.changed array!
+file errors_ledger targets{}.clusters{}.judgment.suspect.changed[] object
+file errors_ledger targets{}.clusters{}.judgment.suspect.changed[].addon string!
+file errors_ledger targets{}.clusters{}.judgment.suspect.changed[].change string!
+file errors_ledger targets{}.clusters{}.judgment.suspect.changed[].from object?!
+file errors_ledger targets{}.clusters{}.judgment.suspect.changed[].from.release object?!
+file errors_ledger targets{}.clusters{}.judgment.suspect.changed[].from.release.revision integer? minimum=0
+file errors_ledger targets{}.clusters{}.judgment.suspect.changed[].from.release.source string!
+file errors_ledger targets{}.clusters{}.judgment.suspect.changed[].from.release.tag string!
+file errors_ledger targets{}.clusters{}.judgment.suspect.changed[].from.version string!
+file errors_ledger targets{}.clusters{}.judgment.suspect.changed[].from.witness object!
+file errors_ledger targets{}.clusters{}.judgment.suspect.changed[].from.witness.blob_sha256 string?
+file errors_ledger targets{}.clusters{}.judgment.suspect.changed[].from.witness.commit string?
+file errors_ledger targets{}.clusters{}.judgment.suspect.changed[].to object?!
+file errors_ledger targets{}.clusters{}.judgment.suspect.changed[].to.release object?!
+file errors_ledger targets{}.clusters{}.judgment.suspect.changed[].to.release.revision integer? minimum=0
+file errors_ledger targets{}.clusters{}.judgment.suspect.changed[].to.release.source string!
+file errors_ledger targets{}.clusters{}.judgment.suspect.changed[].to.release.tag string!
+file errors_ledger targets{}.clusters{}.judgment.suspect.changed[].to.version string!
+file errors_ledger targets{}.clusters{}.judgment.suspect.changed[].to.witness object!
+file errors_ledger targets{}.clusters{}.judgment.suspect.changed[].to.witness.blob_sha256 string?
+file errors_ledger targets{}.clusters{}.judgment.suspect.changed[].to.witness.commit string?
+file errors_ledger targets{}.clusters{}.judgment.suspect.confidence string!
+file errors_ledger targets{}.clusters{}.judgment.suspect.evidence object!
+file errors_ledger targets{}.clusters{}.judgment.suspect.evidence.clean_sessions integer?! minimum=0
+file errors_ledger targets{}.clusters{}.judgment.suspect.evidence.client_update object?!
+file errors_ledger targets{}.clusters{}.judgment.suspect.evidence.client_update.from_version string!
+file errors_ledger targets{}.clusters{}.judgment.suspect.evidence.client_update.to_version string!
+file errors_ledger targets{}.clusters{}.judgment.suspect.evidence.exact boolean!
+file errors_ledger targets{}.clusters{}.judgment.suspect.evidence.gap_s integer! minimum=0
+file errors_ledger targets{}.clusters{}.judgment.suspect.evidence.other_changes integer! minimum=0
+file errors_ledger targets{}.clusters{}.judgment.suspect.evidence.same_session boolean?!
+file errors_ledger targets{}.clusters{}.judgment.suspect.evidence.unknowns array!
+file errors_ledger targets{}.clusters{}.judgment.suspect.evidence.unknowns[] string
+file errors_ledger targets{}.clusters{}.judgment.suspect.kind string!
+file errors_ledger targets{}.clusters{}.judgment.suspect.relation string!
+file errors_ledger targets{}.clusters{}.judgment.suspect.run string?!
+file errors_ledger targets{}.clusters{}.judgment.suspect.tx string!
+file errors_ledger targets{}.clusters{}.overflowed boolean!
+file errors_ledger targets{}.databases object!
+file errors_ledger targets{}.databases{} object
+file errors_ledger targets{}.databases{}.generation string!
+file errors_ledger targets{}.databases{}.invalidated_at string?
+file errors_ledger targets{}.databases{}.marks array!
+file errors_ledger targets{}.databases{}.marks[] object
+file errors_ledger targets{}.databases{}.marks[].at string!
+file errors_ledger targets{}.databases{}.marks[].generation string!
+file errors_ledger targets{}.databases{}.marks[].run string!
+file errors_ledger targets{}.databases{}.marks[].running boolean?!
+file errors_ledger targets{}.databases{}.marks[].session integer?! minimum=0
+file errors_ledger targets{}.databases{}.marks[].settled boolean!
+file errors_ledger targets{}.databases{}.marks[].stamp string!
+file errors_ledger targets{}.databases{}.max_session integer?! minimum=0
+file errors_ledger targets{}.databases{}.max_written_at string?!
+file errors_ledger targets{}.databases{}.reads array!
+file errors_ledger targets{}.databases{}.reads[] object
+file errors_ledger targets{}.databases{}.reads[].client_version string?!
+file errors_ledger targets{}.databases{}.reads[].first_observed_at string!
+file errors_ledger targets{}.databases{}.reads[].last_observed_at string!
+file errors_ledger targets{}.databases{}.reads[].session integer?! minimum=0
+file errors_ledger targets{}.databases{}.reads[].stamp string!
+file errors_ledger targets{}.databases{}.reads[].written_at string?!
+file errors_ledger targets{}.databases{}.started_at string!
+file errors_ledger targets{}.databases{}.unproved_stamp string?
+file errors_ledger targets{}.families object!
+file errors_ledger targets{}.families{} object
+file errors_ledger targets{}.families{}.first object! tag=basis
+file errors_ledger targets{}.families{}.first<basis=baseline> variant
+file errors_ledger targets{}.families{}.first<basis=baseline>.at string!
+file errors_ledger targets{}.families{}.first<basis=baseline>.reason string!
+file errors_ledger targets{}.families{}.first<basis=observed> variant
+file errors_ledger targets{}.families{}.first<basis=observed>.cluster string!
+file errors_ledger targets{}.families{}.first<basis=pending> variant
+file errors_ledger targets{}.families{}.first<basis=pending>.database string!
+file errors_ledger targets{}.families{}.first<basis=pending>.entry_session integer?! minimum=0
+file errors_ledger targets{}.families{}.first<basis=pending>.generation string!
+file errors_ledger targets{}.families{}.first<basis=pending>.observed_at string!
+file errors_ledger targets{}.families{}.first<basis=pending>.time object!
+file errors_ledger targets{}.families{}.first<basis=pending>.time.at string?!
+file errors_ledger targets{}.families{}.first<basis=pending>.time.meaning string!
+file errors_ledger targets{}.families{}.first<basis=pending>.time.tz string!
+file errors_ledger targets{}.families{}.first<basis=pending>.written_at string?!
+file errors_ledger targets{}.families{}.last_present_at string!
+file errors_ledger targets{}.untracked boolean
 file errors_memo . object
 file errors_memo 1.0
 file errors_memo schema_version string!

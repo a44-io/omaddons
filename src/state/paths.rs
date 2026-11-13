@@ -545,6 +545,17 @@ impl Paths {
         self.cache.join("errors.json")
     }
 
+    /// The errors ledger: which errors each client's BugGrabber files have held, and
+    /// when each first appeared.
+    pub fn errors_ledger(&self) -> PathBuf {
+        self.cache.join("errors_ledger.json")
+    }
+
+    /// The errors ledger's lock: one writer at a time, never the global lock.
+    pub fn errors_ledger_lock(&self) -> PathBuf {
+        self.cache.join("errors_ledger.lock")
+    }
+
     /// The bar widget's doorbell: rung by every write that can change `status --cached`.
     pub fn doorbell_file(&self) -> PathBuf {
         self.cache.join("doorbell.json")

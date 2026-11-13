@@ -2589,7 +2589,7 @@ Sources:
   wago        off  needs a key (M5)
   wowace      on
 43 error codes · 57 warning codes · 28 actions · 32 failure modes
-  137 limits (0 from config)
+  138 limits (0 from config)
 --json for the full description
 ```
 
@@ -3316,6 +3316,8 @@ A test fails when the binary reads a variable this section does not list.
 | `~/.cache/omaddons/wowi/index.json` | WoWInterface's file list, slim and sanitized (format 1.1), refreshed after its hour | Yes |
 | `~/.cache/omaddons/doorbell.json` | A signal for the bar widget (`{at, command, actor}`), rewritten by every write that can alter what `status --cached` reports, never by `status` | Yes |
 | `~/.cache/omaddons/errors.json` | The errors memo: what `errors` last observed per client and database (stamps, sessions, baselines, counts), so `status` can tell new errors without reading BugGrabber's files. No error text | Yes; but it forgets which older errors were new, except dismissals |
+| `~/.cache/omaddons/errors_ledger.json` | The errors ledger: which errors each client's BugGrabber files have held, when each first appeared, and each file's state at each change. Keys, sessions, stamps and times only; no error text | Yes; but errors present then read as already there, age unknown |
+| `~/.cache/omaddons/errors_ledger.lock` | The ledger's lock: one process records evidence at a time, for milliseconds, and a command that cannot have it within 200 ms records none (never the global lock) | Yes when no command is running |
 | `~/.cache/omaddons/history_tail.json` | The history projection: the end of `history.jsonl` holding its newest 16 undoable runs (at most 1 MiB), for `status --cached`, and `skill_dirs`, the newest 8 folders `robot-docs install-skill` wrote. Believed only while the history matches its recorded length and last line | Yes; `--cached` says `unknown` until the next change |
 | `~/.cache/omaddons/export.json` | The hash of the `addons.toml` `export --write` last wrote | Yes; the next `--write` then needs `--overwrite` |
 | `~/.cache/omaddons/about.json` | The about memo for `info`'s `about`, at most 1,024 projects, believed for a day | Yes |

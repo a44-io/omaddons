@@ -287,6 +287,10 @@ pub const LEDGER_MAX_BYTES: u64 = 16 * MIB;
 /// Bytes of BugGrabber files the light read before a change may read, every database
 /// of the client together.
 pub const LEDGER_PRECHANGE_MAX_BYTES: u64 = 16 * MIB;
+/// The longest a command waits for the errors ledger's lock before it gives up
+/// recording that run's evidence. Never the global lock: a change is never delayed past
+/// it, and never fails for it.
+pub const LEDGER_LOCK_TIMEOUT: Duration = Duration::from_millis(200);
 /// How long before a newly appeared error a change may still be named as what preceded
 /// it, and how long the errors ledger keeps change marks: long enough for an error only
 /// a weekly raid triggers to reach last week's update.
@@ -1112,6 +1116,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         "BugGrabber bytes the light read before a change reads, every database of the client",
     ),
     limit(
+        "LEDGER_LOCK_TIMEOUT",
+        LimitValue::Millis(ms(LEDGER_LOCK_TIMEOUT)),
+        LimitUnit::Ms,
+        None,
+        "Wait for the errors ledger's lock; past it the run records no evidence",
+    ),
+    limit(
         "SUSPECT_MAX_AGE",
         LimitValue::Millis(ms(SUSPECT_MAX_AGE)),
         LimitUnit::Ms,
@@ -1519,6 +1530,7 @@ mod tests {
         "LEDGER_CLUSTER_FINGERPRINTS_MAX",
         "LEDGER_MAX_BYTES",
         "LEDGER_PRECHANGE_MAX_BYTES",
+        "LEDGER_LOCK_TIMEOUT",
         "SUSPECT_MAX_AGE",
         "SUSPECT_ALGORITHM",
         "SUSPECT_ALGORITHM_TRUSTED_MIN",

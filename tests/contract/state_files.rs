@@ -60,6 +60,7 @@ fn kind_of(file: &Path, paths: &Paths, clients: &[ClientPaths]) -> Option<&'stat
         (paths.backup_inventory(), "backup_inventory"),
         (paths.history_tail(), "history_tail"),
         (paths.errors_memo(), "errors_memo"),
+        (paths.errors_ledger(), "errors_ledger"),
         (paths.errors_ack(), "errors_ack"),
         (paths.doorbell_file(), "doorbell"),
     ];

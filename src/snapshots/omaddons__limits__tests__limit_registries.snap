@@ -1104,6 +1104,15 @@ expression: "(politeness, REGISTRY)"
       "notes": "BugGrabber bytes the light read before a change reads, every database of the client"
     },
     {
+      "name": "LEDGER_LOCK_TIMEOUT",
+      "value": {
+        "millis": 200
+      },
+      "unit": "ms",
+      "config_key": null,
+      "notes": "Wait for the errors ledger's lock; past it the run records no evidence"
+    },
+    {
       "name": "SUSPECT_MAX_AGE",
       "value": {
         "millis": 1209600000

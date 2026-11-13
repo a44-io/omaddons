@@ -1909,6 +1909,11 @@ mod tests {
             1,
             "check_releases: cache blobs for a read command",
         ),
+        (
+            "src/errors/ledger.rs",
+            1,
+            "derived data: the errors ledger, under its own evidence lease",
+        ),
         ("src/errors/memo.rs", 1, "derived data: the errors memo"),
         ("src/net/log.rs", 1, "the request log"),
         (

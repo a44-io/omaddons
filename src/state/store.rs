@@ -154,6 +154,7 @@ pub const KINDS: &[KindRow] = &[
     KindRow::of::<crate::backup::inventory::InventoryFile>(),
     KindRow::of::<super::history_tail::HistoryTail>(),
     KindRow::of::<crate::errors::memo::ErrorsMemo>(),
+    KindRow::of::<crate::errors::ledger::ErrorsLedger>(),
     KindRow::of::<crate::errors::ack::ErrorsAck>(),
     KindRow::of::<super::plans::StoredPlan>(),
     KindRow {

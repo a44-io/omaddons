@@ -10,8 +10,11 @@
 //! **cluster** (`c:`, [`cluster_id`]) is one watched appearance: the exact fingerprints
 //! of a family's entries in the read that found it, which alone carry its verdict.
 //!
-//! This module holds the ledger's vocabulary and identities. Nothing here reads or
-//! writes a file.
+//! This module holds the ledger's vocabulary and identities; [`sight`], the one pure
+//! function that updates it; and its store: [`open`] takes the evidence lock and loads,
+//! a [`LedgerSession`] applies what a process saw as input, and [`LedgerSession::commit`]
+//! writes one whole revision. [`load`] is for display. There is no merge: one writer at
+//! a time (design 7.1.6).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
@@ -20,15 +23,23 @@ use jiff::Timestamp;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::error::ErrorCode;
 use crate::errors::buggrabber::{TimeEvidence, TimeMeaning, TzEvidence};
 use crate::errors::observe::Coverage;
 use crate::errors::sanitize::short_digest;
 use crate::errors::suspect::{JudgmentGap, JudgmentState, Verdict};
+use crate::fsx::{
+    Content, Lease, LeaseError, LeaseGuard, Op, ScopeTable, WriteSession, Writer, ensure_dir_all,
+    failpoint, mutate,
+};
 use crate::limits::{
     LEDGER_ABSENT_MAX, LEDGER_ABSENT_MAX_AGE, LEDGER_CLUSTER_FINGERPRINTS_MAX, LEDGER_FAMILIES_MAX,
-    LEDGER_MARKS_MAX, LEDGER_READS_MAX, RACY_SLACK_COARSE_NS, SUSPECT_ALGORITHM, SUSPECT_MAX_AGE,
+    LEDGER_IDENTITY, LEDGER_LOCK_TIMEOUT, LEDGER_MARKS_MAX, LEDGER_MAX_BYTES, LEDGER_READS_MAX,
+    RACY_SLACK_COARSE_NS, SUSPECT_ALGORITHM, SUSPECT_ALGORITHM_TRUSTED_MIN, SUSPECT_MAX_AGE,
 };
 use crate::model::RunId;
+use crate::state::paths::Paths;
+use crate::state::store::{self, SchemaVersion, VersionStatus, Versioned};
 
 /// `<cache>/errors_ledger.json`: which errors each client's BugGrabber databases have
 /// held and when each first appeared, so a newly appeared error can be told from one
@@ -48,6 +59,11 @@ pub struct ErrorsLedger {
     /// while it is unregistered.
     #[serde(default)]
     pub targets: BTreeMap<String, TargetLedger>,
+}
+
+impl Versioned for ErrorsLedger {
+    const KIND: &'static str = "errors_ledger";
+    const CURRENT: SchemaVersion = SchemaVersion::new(1, 0);
 }
 
 /// What the ledger knows of one client.
@@ -1010,6 +1026,259 @@ fn forget_oldest_absent(ledger: &mut TargetLedger, present: &BTreeSet<&str>, cou
     for (_, family) in absent.into_iter().take(count) {
         forget(ledger, &family);
     }
+}
+
+// ---------------------------------------------------------------------------------------
+// Loading and storing (design 7.1.6): one writer at a time, and no merge.
+
+/// Why a session could not be had, or could not store. The run's evidence is lost, and
+/// its caller says so in one `-vv` trace line; it is never a command's failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LedgerUnavailable {
+    /// Another process held the lock past `LEDGER_LOCK_TIMEOUT`.
+    Busy,
+    /// A newer omaddons wrote the file: it is neither believed nor overwritten.
+    Newer,
+    /// The store would pass `LEDGER_MAX_BYTES`.
+    TooLarge { bytes: u64 },
+    /// The lock or the file could not be had.
+    Io(String),
+}
+
+/// The ledger, loaded under the evidence lock (`<cache>/errors_ledger.lock`, an
+/// `fsx::Lease`, never the global lock). What a process learned before it took the lock
+/// goes in only through the three input rules ([`Self::sight`], [`Self::add_mark`],
+/// [`Self::attach`]), as input to the ledger found under it. Dropping the session
+/// without [`Self::commit`] records nothing. Nothing is parsed, fetched or committed
+/// while it is open.
+pub struct LedgerSession {
+    pub ledger: ErrorsLedger,
+    /// As loaded, so an unchanged ledger is not written again.
+    loaded: ErrorsLedger,
+    paths: Paths,
+    lease: LeaseGuard,
+}
+
+/// A stored ledger, with the lock still held until it is dropped, so the caller can
+/// write the memo links that match it.
+pub struct Accepted {
+    pub ledger: ErrorsLedger,
+    _lease: LeaseGuard,
+}
+
+/// Takes the evidence lock, waiting at most `LEDGER_LOCK_TIMEOUT`, then loads the
+/// ledger. A ledger made with another family key, or a file that does not read, loads
+/// as empty and writable; one a newer omaddons wrote is neither believed nor
+/// overwritten.
+pub fn open(
+    paths: &Paths,
+    scopes: &ScopeTable,
+    command: &str,
+) -> std::result::Result<LedgerSession, LedgerUnavailable> {
+    let lease = Lease::acquire(
+        scopes,
+        &paths.errors_ledger_lock(),
+        command,
+        LEDGER_LOCK_TIMEOUT,
+    )
+    .map_err(|err| match err {
+        LeaseError::Busy { .. } => LedgerUnavailable::Busy,
+        other => LedgerUnavailable::Io(other.to_string()),
+    })?;
+    let ledger = match store::load::<ErrorsLedger>(&paths.errors_ledger()) {
+        Ok(Some(loaded)) if loaded.status == VersionStatus::Newer => {
+            return Err(LedgerUnavailable::Newer);
+        }
+        Ok(Some(loaded)) => as_read(loaded.value),
+        Ok(None) => as_read(ErrorsLedger::default()),
+        Err(err) if err.code == ErrorCode::StateTooNew => return Err(LedgerUnavailable::Newer),
+        Err(_) => as_read(ErrorsLedger::default()),
+    };
+    failpoint::hit("errors.ledger.loaded").map_err(|e| LedgerUnavailable::Io(e.to_string()))?;
+    Ok(LedgerSession {
+        loaded: ledger.clone(),
+        ledger,
+        paths: paths.clone(),
+        lease,
+    })
+}
+
+/// The ledger as it is on disk, for display only. It takes no lock: the file is
+/// replaced atomically, so a reader always sees one whole revision. `None` when a newer
+/// omaddons wrote a file this one cannot read; a newer file that reads is believed.
+pub fn load(paths: &Paths) -> Option<ErrorsLedger> {
+    match store::load::<ErrorsLedger>(&paths.errors_ledger()) {
+        Ok(Some(loaded)) => Some(as_read(loaded.value)),
+        Ok(None) => Some(as_read(ErrorsLedger::default())),
+        Err(err) if err.code == ErrorCode::StateTooNew => None,
+        Err(_) => Some(as_read(ErrorsLedger::default())),
+    }
+}
+
+/// A ledger as this build reads it. One made with another family key is discarded
+/// (every error baselines again), keeping its revision so a memo link to the discarded
+/// one never matches. A verdict made by rules older than
+/// `SUSPECT_ALGORITHM_TRUSTED_MIN` is dropped: its cluster is judged again while its
+/// generation is current, and can never be otherwise (design 7.2.6).
+fn as_read(ledger: ErrorsLedger) -> ErrorsLedger {
+    if ledger.identity != LEDGER_IDENTITY {
+        return ErrorsLedger {
+            identity: LEDGER_IDENTITY,
+            revision: ledger.revision,
+            targets: BTreeMap::new(),
+        };
+    }
+    let mut ledger = ledger;
+    for target in ledger.targets.values_mut() {
+        for cluster in target.clusters.values_mut() {
+            let Some(verdict) = &cluster.judgment else {
+                continue;
+            };
+            if verdict.algorithm >= SUSPECT_ALGORITHM_TRUSTED_MIN {
+                continue;
+            }
+            let current = target
+                .databases
+                .get(&cluster.appearance.database)
+                .is_some_and(|db| db.generation == cluster.appearance.generation);
+            cluster.judgment = (!current).then_some(Verdict {
+                algorithm: SUSPECT_ALGORITHM,
+                state: JudgmentState::Unsupported,
+                judged_at: verdict.judged_at,
+                suspect: None,
+                gap: Some(JudgmentGap::GenerationEnded),
+            });
+        }
+    }
+    ledger
+}
+
+impl LedgerSession {
+    /// Records what `dbs` held for `target` (its key, or its id while unregistered), by
+    /// [`sight`] against the ledger found under the lock: a sighting older than what it
+    /// holds is stale and ignored, never retried.
+    pub fn sight(
+        &mut self,
+        target: &str,
+        dbs: &[DbSighting],
+        restores: &[Restored],
+        client: &ClientNow,
+        discovered: bool,
+        mode: SightMode,
+    ) -> Sighted {
+        let ledger = self.ledger.targets.entry(target.to_owned()).or_default();
+        let sighted = sight(ledger, dbs, restores, client, discovered, mode);
+        if *ledger == TargetLedger::default() {
+            self.ledger.targets.remove(target);
+        }
+        sighted
+    }
+
+    /// Adds a change mark (design 7.1.6), only when its generation is the database's
+    /// current one, its stamp is the stamp of that generation's newest proved read (after
+    /// this session's own sightings), the file was not replaced since, and its run has no
+    /// mark yet. Otherwise that change has no mark, and its sessions read as unknown.
+    pub fn add_mark(&mut self, target: &str, database: &str, mark: ChangeMark) -> bool {
+        let Some(db) = self
+            .ledger
+            .targets
+            .get_mut(target)
+            .and_then(|t| t.databases.get_mut(database))
+        else {
+            return false;
+        };
+        let current = db.invalidated_at.is_none()
+            && mark.generation == db.generation
+            && db
+                .reads
+                .last()
+                .is_some_and(|newest| newest.stamp == mark.stamp)
+            && !db.marks.iter().any(|m| m.run == mark.run);
+        if !current {
+            return false;
+        }
+        db.marks.push(mark);
+        db.marks.sort_by_key(|m| m.at);
+        let over = db.marks.len().saturating_sub(LEDGER_MARKS_MAX);
+        db.marks.drain(..over);
+        true
+    }
+
+    /// Attaches a verdict to the cluster it was computed for (design 7.1.6), only while
+    /// that cluster's appearance is in its database's current generation and it has no
+    /// final judgment (`Complete` is kept as made; `Unsupported` is final). A baseline
+    /// has no cluster, so it can never be given one.
+    pub fn attach(
+        &mut self,
+        target: &str,
+        cluster: &str,
+        verdict: Verdict,
+        addon: Option<String>,
+    ) -> bool {
+        let Some(t) = self.ledger.targets.get_mut(target) else {
+            return false;
+        };
+        let Some(c) = t.clusters.get_mut(cluster) else {
+            return false;
+        };
+        let current = t
+            .databases
+            .get(&c.appearance.database)
+            .is_some_and(|db| db.generation == c.appearance.generation);
+        let open = c
+            .judgment
+            .as_ref()
+            .is_none_or(|v| v.state == JudgmentState::Deferred);
+        if !(current && open) {
+            return false;
+        }
+        c.judgment = Some(verdict);
+        c.addon = addon;
+        true
+    }
+
+    /// Stores the ledger, its revision one higher, when it changed and fits
+    /// `LEDGER_MAX_BYTES`, by one atomic replace; an unchanged ledger is not written and
+    /// keeps its revision. The lock stays held until the [`Accepted`] is dropped.
+    pub fn commit(self) -> std::result::Result<Accepted, LedgerUnavailable> {
+        let LedgerSession {
+            mut ledger,
+            loaded,
+            paths,
+            lease,
+        } = self;
+        if ledger == loaded {
+            return Ok(Accepted {
+                ledger,
+                _lease: lease,
+            });
+        }
+        ledger.revision = ledger.revision.saturating_add(1);
+        let bytes = store::encode(&ledger).map_err(|e| LedgerUnavailable::Io(e.message.clone()))?;
+        let size = bytes.len() as u64;
+        if size > LEDGER_MAX_BYTES {
+            return Err(LedgerUnavailable::TooLarge { bytes: size });
+        }
+        failpoint::hit("errors.ledger.store").map_err(|e| LedgerUnavailable::Io(e.to_string()))?;
+        write(&paths, &bytes).map_err(|e| LedgerUnavailable::Io(e.message.clone()))?;
+        Ok(Accepted {
+            ledger,
+            _lease: lease,
+        })
+    }
+}
+
+/// One atomic replace of the ledger file, through the one writer.
+fn write(paths: &Paths, bytes: &[u8]) -> crate::error::Result<()> {
+    let scopes = ScopeTable::new(paths, &[], None)?;
+    let mut s = WriteSession::untracked(Writer::Derived, &scopes, "errors-ledger");
+    ensure_dir_all(&mut s, paths.cache_dir())?;
+    let op = Op::WriteFile {
+        content: Content::Bytes(bytes),
+        mode: Some(0o644),
+    };
+    mutate(&mut s, &paths.errors_ledger(), op)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2638,5 +2907,374 @@ mod tests {
         ] {
             assert!(!json.contains(text), "{text} in {json}");
         }
+    }
+
+    // -----------------------------------------------------------------------------------
+    // The store
+
+    use std::os::unix::fs::MetadataExt;
+
+    use crate::fsx::Lease;
+
+    fn store_home() -> (tempfile::TempDir, Paths, ScopeTable) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let paths = Paths::with_roots(root, root.join("c"), root.join("s"), root.join("k"));
+        let scopes = ScopeTable::new(&paths, &[], None).unwrap();
+        (dir, paths, scopes)
+    }
+
+    fn inode(paths: &Paths) -> Option<u64> {
+        std::fs::metadata(paths.errors_ledger())
+            .ok()
+            .map(|m| m.ino())
+    }
+
+    /// Opens a session, records A's first read on client `k`, and commits.
+    fn first_commit(paths: &Paths, scopes: &ScopeTable) -> ErrorsLedger {
+        let mut session = open(paths, scopes, "test").unwrap();
+        session.sight(
+            "k",
+            &[seen(
+                A,
+                "s1",
+                100,
+                110,
+                Some(3),
+                proved(vec![e("a:1", "e:1")]),
+            )],
+            &[],
+            &client(110),
+            true,
+            SightMode::Full,
+        );
+        session.commit().unwrap().ledger
+    }
+
+    #[test]
+    fn a_commit_round_trips_and_an_unchanged_one_writes_nothing() {
+        let (_dir, paths, scopes) = store_home();
+        // Nothing recorded on a missing file writes nothing.
+        open(&paths, &scopes, "test").unwrap().commit().unwrap();
+        assert_eq!(inode(&paths), None);
+        let stored = first_commit(&paths, &scopes);
+        assert_eq!(stored.revision, 1);
+        assert_eq!(stored.identity, LEDGER_IDENTITY);
+        assert_eq!(load(&paths), Some(stored.clone()));
+        let before = inode(&paths);
+        let again = open(&paths, &scopes, "test").unwrap().commit().unwrap();
+        assert_eq!(again.ledger, stored);
+        drop(again);
+        assert_eq!(inode(&paths), before, "an unchanged ledger is not written");
+        // A change raises the revision by one.
+        let mut session = open(&paths, &scopes, "test").unwrap();
+        session.sight(
+            "k",
+            &[seen(
+                A,
+                "s2",
+                200,
+                210,
+                Some(4),
+                proved(vec![e("a:1", "e:1")]),
+            )],
+            &[],
+            &client(210),
+            true,
+            SightMode::Full,
+        );
+        assert_eq!(session.commit().unwrap().ledger.revision, 2);
+    }
+
+    #[test]
+    fn a_newer_file_is_neither_believed_nor_overwritten() {
+        let (_dir, paths, scopes) = store_home();
+        std::fs::create_dir_all(paths.cache_dir()).unwrap();
+        // (case, bytes, what load believes)
+        for (case, bytes, believed) in [
+            (
+                "newer",
+                r#"{"schema_version":"9.0","identity":1,"revision":4,"targets":{}}"#,
+                true,
+            ),
+            (
+                "newer, reshaped",
+                r#"{"schema_version":"9.0","targets":"a shape this build cannot decode"}"#,
+                false,
+            ),
+        ] {
+            std::fs::write(paths.errors_ledger(), bytes).unwrap();
+            assert_eq!(
+                open(&paths, &scopes, "test").err(),
+                Some(LedgerUnavailable::Newer),
+                "{case}"
+            );
+            assert_eq!(load(&paths).is_some(), believed, "{case}");
+            assert_eq!(
+                std::fs::read_to_string(paths.errors_ledger()).unwrap(),
+                bytes,
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn another_identity_or_a_corrupt_file_loads_empty_and_writable() {
+        let (_dir, paths, scopes) = store_home();
+        let mut other = first_commit(&paths, &scopes);
+        other.identity = LEDGER_IDENTITY + 1;
+        other.revision = 7;
+        std::fs::write(paths.errors_ledger(), store::encode(&other).unwrap()).unwrap();
+        let session = open(&paths, &scopes, "test").unwrap();
+        assert!(session.ledger.targets.is_empty());
+        assert_eq!(
+            session.ledger.revision, 7,
+            "a discarded ledger keeps its revision"
+        );
+        drop(session);
+        assert_eq!(first_commit(&paths, &scopes).revision, 8);
+        std::fs::write(paths.errors_ledger(), "{ not json").unwrap();
+        assert!(
+            open(&paths, &scopes, "test")
+                .unwrap()
+                .ledger
+                .targets
+                .is_empty()
+        );
+        assert_eq!(first_commit(&paths, &scopes).revision, 1);
+    }
+
+    #[test]
+    fn a_busy_lock_is_given_up_after_its_timeout() {
+        let (_dir, paths, scopes) = store_home();
+        let held = Lease::acquire(
+            &scopes,
+            &paths.errors_ledger_lock(),
+            "holder",
+            LEDGER_LOCK_TIMEOUT,
+        )
+        .unwrap();
+        let started = std::time::Instant::now();
+        assert_eq!(
+            open(&paths, &scopes, "test").err(),
+            Some(LedgerUnavailable::Busy)
+        );
+        let waited = started.elapsed();
+        assert!(waited >= LEDGER_LOCK_TIMEOUT, "{waited:?}");
+        assert!(waited < LEDGER_LOCK_TIMEOUT * 5, "{waited:?}");
+        drop(held);
+        assert!(open(&paths, &scopes, "test").is_ok());
+    }
+
+    #[test]
+    fn a_ledger_past_its_bound_is_not_stored() {
+        let (_dir, paths, scopes) = store_home();
+        let mut session = open(&paths, &scopes, "test").unwrap();
+        let family = Family {
+            first: FamilyFirst::Baseline {
+                at: at(0),
+                reason: BaselineReason::FirstRead,
+            },
+            last_present_at: at(0),
+        };
+        let filler = "x".repeat(1_000);
+        let target = session.ledger.targets.entry("k".to_owned()).or_default();
+        for i in 0..20_000 {
+            target
+                .families
+                .insert(format!("a:{i:05}{filler}"), family.clone());
+        }
+        assert!(matches!(
+            session.commit().err(),
+            Some(LedgerUnavailable::TooLarge { bytes }) if bytes > LEDGER_MAX_BYTES
+        ));
+        assert_eq!(inode(&paths), None);
+    }
+
+    /// A session over client `k` holding A at state `s2` (generation `g`), with `a:2`
+    /// watched to appear there.
+    fn session_with_cluster(paths: &Paths, scopes: &ScopeTable) -> (LedgerSession, String) {
+        first_commit(paths, scopes);
+        let mut session = open(paths, scopes, "test").unwrap();
+        let sighted = session.sight(
+            "k",
+            &[seen(
+                A,
+                "s2",
+                200,
+                210,
+                Some(4),
+                proved(vec![e("a:2", "e:2")]),
+            )],
+            &[],
+            &client(210),
+            true,
+            SightMode::Full,
+        );
+        let id = sighted.appeared[0].clone();
+        (session, id)
+    }
+
+    fn mark(generation: &DbGeneration, stamp: &str, run: &str) -> ChangeMark {
+        ChangeMark {
+            run: run.parse().unwrap(),
+            at: at(205),
+            generation: generation.clone(),
+            stamp: stamp.to_owned(),
+            session: Some(4),
+            running: Some(false),
+            settled: true,
+        }
+    }
+
+    #[test]
+    fn a_mark_is_added_only_for_the_current_generations_newest_state() {
+        let (_dir, paths, scopes) = store_home();
+        let (mut session, _) = session_with_cluster(&paths, &scopes);
+        let g = session.ledger.targets["k"].databases[A].generation.clone();
+        let run = "01M51EX04HHWM46XE9F2B9JXED";
+        let other_run = "01M51EX645RCVFN6Z4ZV5GRWVS";
+        // (case, mark, database, added)
+        for (case, m, db, added) in [
+            ("an older state", mark(&g, "s1", run), A, false),
+            (
+                "another generation",
+                mark(&generation(9), "s2", run),
+                A,
+                false,
+            ),
+            ("an unknown database", mark(&g, "s2", run), B, false),
+            ("the newest state", mark(&g, "s2", run), A, true),
+            ("a second mark of one run", mark(&g, "s2", run), A, false),
+            ("another run", mark(&g, "s2", other_run), A, true),
+        ] {
+            assert_eq!(session.add_mark("k", db, m), added, "{case}");
+        }
+        assert_eq!(session.ledger.targets["k"].databases[A].marks.len(), 2);
+        // Not while the file was replaced and no proved read has followed.
+        session.sight(
+            "k",
+            &[],
+            &[Restored {
+                at: at(300),
+                whole: true,
+                providers: vec![],
+            }],
+            &client(300),
+            true,
+            SightMode::Light,
+        );
+        let third = "01M51EXA0000000000000000AA";
+        assert!(!session.add_mark("k", A, mark(&g, "s2", third)));
+    }
+
+    #[test]
+    fn a_verdict_attaches_only_to_its_open_cluster_in_the_current_generation() {
+        let verdict = |state| Verdict {
+            algorithm: SUSPECT_ALGORITHM,
+            state,
+            judged_at: at(220),
+            suspect: None,
+            gap: None,
+        };
+        let (_dir, paths, scopes) = store_home();
+        let (mut session, id) = session_with_cluster(&paths, &scopes);
+        assert!(!session.attach("k", "c:nothing", verdict(JudgmentState::Complete), None));
+        assert!(!session.attach("other", &id, verdict(JudgmentState::Complete), None));
+        assert!(
+            session.attach("k", &id, verdict(JudgmentState::Deferred), None),
+            "an open cluster"
+        );
+        assert!(
+            session.attach(
+                "k",
+                &id,
+                verdict(JudgmentState::Complete),
+                Some("Foo".to_owned())
+            ),
+            "a deferred one"
+        );
+        assert!(
+            !session.attach("k", &id, verdict(JudgmentState::Complete), None),
+            "a complete one is kept"
+        );
+        assert_eq!(
+            session.ledger.targets["k"].clusters[&id].addon.as_deref(),
+            Some("Foo")
+        );
+        // A cluster of an ended generation takes no verdict.
+        let (_dir, paths, scopes) = store_home();
+        let (mut session, id) = session_with_cluster(&paths, &scopes);
+        session.sight(
+            "k",
+            &[seen(
+                A,
+                "s3",
+                300,
+                310,
+                Some(1),
+                proved(vec![e("a:2", "e:2")]),
+            )],
+            &[],
+            &client(310),
+            true,
+            SightMode::Full,
+        );
+        assert!(!session.attach("k", &id, verdict(JudgmentState::Complete), None));
+        assert_eq!(
+            session.ledger.targets["k"].clusters[&id]
+                .judgment
+                .as_ref()
+                .map(|v| v.state),
+            Some(JudgmentState::Unsupported)
+        );
+    }
+
+    #[test]
+    fn a_verdict_of_untrusted_rules_is_dropped_when_read() {
+        let (_dir, paths, scopes) = store_home();
+        let (mut session, id) = session_with_cluster(&paths, &scopes);
+        let old = Verdict {
+            algorithm: SUSPECT_ALGORITHM_TRUSTED_MIN - 1,
+            state: JudgmentState::Complete,
+            judged_at: at(220),
+            suspect: None,
+            gap: None,
+        };
+        session
+            .ledger
+            .targets
+            .get_mut("k")
+            .unwrap()
+            .clusters
+            .get_mut(&id)
+            .unwrap()
+            .judgment = Some(old.clone());
+        let current = as_read(session.ledger.clone());
+        assert_eq!(
+            current.targets["k"].clusters[&id].judgment, None,
+            "judged again"
+        );
+        let mut ended = session.ledger.clone();
+        ended
+            .targets
+            .get_mut("k")
+            .unwrap()
+            .databases
+            .get_mut(A)
+            .unwrap()
+            .generation = generation(9);
+        let ended = as_read(ended);
+        assert_eq!(
+            ended.targets["k"].clusters[&id].judgment,
+            Some(Verdict {
+                algorithm: SUSPECT_ALGORITHM,
+                state: JudgmentState::Unsupported,
+                judged_at: at(220),
+                suspect: None,
+                gap: Some(JudgmentGap::GenerationEnded),
+            }),
+            "never judged again"
+        );
     }
 }
