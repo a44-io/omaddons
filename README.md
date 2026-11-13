@@ -2786,7 +2786,7 @@ Every error code has its doctor exit, from its general exit: 2 → 64, 3 → 66,
 | `catalog_override_invalid` | a `catalog.d` file was skipped |
 | `ownership_transferred` | `--force` moved a folder from one addon to another |
 | `credential_file_mode` | a credential file (config.toml's `{ file = … }` credential, or the token `auth github set` stores) is readable by other users; the fix is `chmod 600 <file>` |
-| `addon_pinned` | a pinned addon was left at its release; the fix shows it with `info`, and `--version` moves it |
+| `addon_pinned` | a pinned addon was left at its release; the fix unpins it there (`omaddons unpin <addon> -t <id>`), and the message adds that `--version` moves the pin |
 | `release_skipped` | a release [skipped](#skip-addon-and-unskip-addon) on its client was passed over (`update` of a named addon, `install` without `--version`); the fix, `omaddons unskip <addon> --release <id> -t <id>` (with `--revision` where the release has one), offers that one release again and clears no other mark |
 | `skip_lifted` | a skipped release was installed because a request named its version (`install --version`, `pin --version`, `sync`), so the mark that covered it is gone; one per mark. The fix is `omaddons undo <tx>`, which puts the release before and its mark back |
 | `stale_check` | an answer came from stored data, not from the source now: offline from the release memo, or from the stored WoWInterface index (offline, or after a failed refresh); it names how old. When `--offline` alone made the run offline, its `fix_argv` reruns the command online |
