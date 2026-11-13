@@ -768,6 +768,174 @@ impl AddonRecord {
 }
 
 // ---------------------------------------------------------------------------------------
+// Release identity (regression guard, design 7.5.1, RG-D24).
+//
+// Skips, first sight, undo's "did it move", "still installed" and the rollback all ask
+// whether two releases are the same one, and they must all compare the same thing: a
+// [`ReleaseKey`]. What proves the bytes is an [`ArtifactWitness`], kept apart from the
+// key, so a tag republished with other bytes is still the same release (a skip holds)
+// while the witness says the content changed.
+
+/// Which release, exactly.
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
+pub struct ReleaseKey {
+    /// The source, in its one canonical spelling (`Ref::identity()`): a GitHub owner
+    /// and repo in one case, and so on.
+    pub source: String,
+    /// The part of the release id after its last `@`, exactly as the source spells it:
+    /// a tag, or the source's own release number.
+    pub tag: String,
+    /// The source's revision of that tag, when it numbers them (WowAce: the tag's
+    /// last-changed revision, which a re-tag moves). Omitted otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u32>,
+}
+
+impl ReleaseKey {
+    /// From a release id (`<ref>@<tag>`) and a revision. The ref is split off at the
+    /// last `@` and canonicalized here, once, with the identity
+    /// `resolve::updates::same_release` compares, so two ids that `same_release` calls
+    /// one release give equal keys at one revision. `None` for an id with no `@`, an
+    /// empty tag, or a ref that does not parse.
+    pub fn parse(release_id: &str, revision: Option<u32>) -> Option<Self> {
+        let (r, tag) = release_id.rsplit_once('@')?;
+        if tag.is_empty() {
+            return None;
+        }
+        let r: Ref = r.parse().ok()?;
+        Some(Self {
+            source: r.identity(),
+            tag: tag.to_owned(),
+            revision,
+        })
+    }
+
+    /// The installed release's key. `None` for a record whose release id names no
+    /// source release: none at all (an addon adopted at its TOC's version), a local
+    /// file or folder (`file:`, whose id is a hash of its content), or a URL (`url:`,
+    /// whose id is the URL itself).
+    pub fn of_record(record: &AddonRecord) -> Option<Self> {
+        if matches!(record.r#ref, Ref::File { .. } | Ref::Url { .. }) {
+            return None;
+        }
+        Self::parse(record.release_id.as_deref()?, record.revision)
+    }
+
+    /// A fetched release's key, for the resolver's side.
+    pub fn of_release(release: &Release) -> Option<Self> {
+        Self::parse(&release.release_id, release.revision)
+    }
+
+    /// A candidate's key: the key of the release it is an asset of.
+    pub fn of_candidate(candidate: &Candidate) -> Option<Self> {
+        Self::parse(&candidate.release_id, candidate.revision)
+    }
+}
+
+/// What can show that an archive is the one that was installed. Separate from the
+/// [`ReleaseKey`]: a tag alone never proves the bytes.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ArtifactWitness {
+    /// The SHA-256 of the archive it was installed from (`AddonRecord::blob_sha256`).
+    /// Omitted when unknown, as for a local archive or folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob_sha256: Option<String>,
+    /// An immutable source commit, in lowercase hex, for a `git:` record whose release
+    /// names a full commit id (40 hex digits). Omitted otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+}
+
+impl ArtifactWitness {
+    /// Whether the two can be the same bytes: every proof both sides hold agrees. A
+    /// proof only one side holds decides nothing.
+    fn agrees(&self, other: &Self) -> bool {
+        fn agree(a: Option<&str>, b: Option<&str>) -> bool {
+            a.zip(b).is_none_or(|(a, b)| a == b)
+        }
+        agree(self.blob_sha256.as_deref(), other.blob_sha256.as_deref())
+            && agree(self.commit.as_deref(), other.commit.as_deref())
+    }
+}
+
+/// One installed release as a fact: what people call it, which release it is, and what
+/// proves its bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct InstalledRelease {
+    /// The version label, as the record shows it: presentation, never the identity.
+    pub version: String,
+    /// Which release it is; `null` for a record whose release id names no source release
+    /// (see [`ReleaseKey::of_record`]).
+    pub release: Option<ReleaseKey>,
+    pub witness: ArtifactWitness,
+}
+
+impl InstalledRelease {
+    /// The release `record` holds: its version, its key and its witness.
+    pub fn of(record: &AddonRecord) -> Self {
+        let release = ReleaseKey::of_record(record);
+        let commit = match (&record.r#ref, &release) {
+            (Ref::Git { .. }, Some(key))
+                if key.tag.len() == 40 && key.tag.bytes().all(|b| b.is_ascii_hexdigit()) =>
+            {
+                Some(key.tag.to_ascii_lowercase())
+            }
+            _ => None,
+        };
+        Self {
+            version: record.version.clone(),
+            release,
+            witness: ArtifactWitness {
+                blob_sha256: record.blob_sha256.clone(),
+                commit,
+            },
+        }
+    }
+
+    /// The same release and, as far as both sides can show, the same bytes: equal keys
+    /// (for two releases without a key, equal versions; a key never equals no key), and
+    /// equal archive hashes and commits where both have one. A known revision never
+    /// equals an unknown one.
+    pub fn same_artifact(&self, other: &InstalledRelease) -> bool {
+        let same_release = match (&self.release, &other.release) {
+            (None, None) => self.version == other.version,
+            (a, b) => a == b,
+        };
+        same_release && self.witness.agrees(&other.witness)
+    }
+}
+
+/// What one transaction did to one addon's installed release (design 7.2.1). Types only
+/// for now: history lines record them (RG-02), and the regression guard's verdicts
+/// hold them (RG-10).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ReleaseTransition {
+    /// The addon's name, as its record names it.
+    pub addon: String,
+    pub change: TransitionChange,
+    /// What was installed before; `null` when the addon was not.
+    pub from: Option<InstalledRelease>,
+    /// What is installed after; `null` when the addon is not.
+    pub to: Option<InstalledRelease>,
+}
+
+/// How a transaction moved one addon's installed release.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TransitionChange {
+    /// The addon was not installed before.
+    Installed,
+    /// Another release, or the same release with other bytes, replaced the installed one.
+    Updated,
+    /// The addon is not installed after.
+    Removed,
+    /// An undo put back what was installed before the transaction it reverts.
+    Reverted,
+}
+
+// ---------------------------------------------------------------------------------------
 // Refs.
 
 /// The kind of a [`Ref`], named by its canonical prefix.
@@ -2143,5 +2311,431 @@ mod tests {
         );
         assert_eq!(target["$defs"]["ClientVersion"]["type"], "string");
         assert_eq!(target["$defs"]["TargetKey"]["type"], "string");
+    }
+
+    // ---- Release identity ------------------------------------------------------------
+
+    const SHA_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const SHA_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const COMMIT: &str = "0123456789ABCDEF0123456789abcdef01234567";
+
+    fn key(release_id: &str, revision: Option<u32>) -> ReleaseKey {
+        ReleaseKey::parse(release_id, revision)
+            .unwrap_or_else(|| panic!("{release_id} should parse"))
+    }
+
+    /// A record of `ref_` at `release_id`, with an archive hash and a revision.
+    fn record_at(
+        ref_: &str,
+        release_id: Option<&str>,
+        blob: Option<&str>,
+        revision: Option<u32>,
+    ) -> AddonRecord {
+        AddonRecord {
+            r#ref: r(ref_),
+            release_id: release_id.map(str::to_owned),
+            blob_sha256: blob.map(str::to_owned),
+            revision,
+            ..sample_record()
+        }
+    }
+
+    #[test]
+    fn release_key_parse_compares_one_release() {
+        // (case, a, a's revision, b, b's revision, whether the keys are equal)
+        let cases = [
+            (
+                "a GitHub id in two spellings of owner and repo",
+                "gh:WeakAuras/WeakAuras2@5.19.2",
+                None,
+                "gh:weakauras/WEAKAURAS2@5.19.2",
+                None,
+                true,
+            ),
+            (
+                "a Tukui slug in two cases",
+                "tukui:ElvUI@13.92",
+                None,
+                "tukui:elvui@13.92",
+                None,
+                true,
+            ),
+            (
+                "a local path with and without a `.` component",
+                "file:/x/./Bar.zip@sha256:1",
+                None,
+                "file:/x/Bar.zip@sha256:1",
+                None,
+                true,
+            ),
+            ("two tags", "gh:o/foo@v1", None, "gh:o/foo@v2", None, false),
+            (
+                "a tag keeps its spelling",
+                "gh:o/foo@V1",
+                None,
+                "gh:o/foo@v1",
+                None,
+                false,
+            ),
+            (
+                "one tag at two revisions (a WowAce re-tag)",
+                "wowace:bug-grabber@v12.1.1",
+                Some(400),
+                "wowace:bug-grabber@v12.1.1",
+                Some(403),
+                false,
+            ),
+            (
+                "a known revision is not an unknown one",
+                "wowace:bug-grabber@v12.1.1",
+                Some(400),
+                "wowace:bug-grabber@v12.1.1",
+                None,
+                false,
+            ),
+            (
+                "one tag at one revision",
+                "wowace:bug-grabber@v12.1.1",
+                Some(400),
+                "wowace:bug-grabber@v12.1.1",
+                Some(400),
+                true,
+            ),
+            (
+                "two sources with one tag",
+                "gh:o/foo@v1",
+                None,
+                "gh:o/bar@v1",
+                None,
+                false,
+            ),
+        ];
+        for (case, a, a_rev, b, b_rev, equal) in cases {
+            let (x, y) = (key(a, a_rev), key(b, b_rev));
+            assert_eq!(x == y, equal, "{case}: {x:?} vs {y:?}");
+        }
+    }
+
+    #[test]
+    fn release_key_parse_refuses_what_names_no_release() {
+        let cases = [
+            ("an id without `@`", "5.19.10"),
+            (
+                "a URL release id, which is the URL",
+                "url:https://github.com/o/r/a.zip",
+            ),
+            ("an empty tag", "gh:o/foo@"),
+            ("a ref that does not parse", "gh:o@v1"),
+            ("no ref at all", "@v1"),
+            ("nothing", ""),
+        ];
+        for (case, id) in cases {
+            assert_eq!(ReleaseKey::parse(id, None), None, "{case}: {id}");
+        }
+    }
+
+    #[test]
+    fn release_key_parse_canonicalizes_the_source_and_splits_at_the_last_at() {
+        let gh = key("gh:WeakAuras/WeakAuras2@5.19.2", Some(7));
+        assert_eq!(gh.source, "gh:weakauras/weakauras2");
+        assert_eq!(gh.tag, "5.19.2");
+        assert_eq!(gh.revision, Some(7));
+        let wowace = key("wowace:bug-grabber@r43:tmp/trunk/!BugGrabber", Some(43));
+        assert_eq!(wowace.source, "wowace:bug-grabber");
+        assert_eq!(wowace.tag, "r43:tmp/trunk/!BugGrabber");
+    }
+
+    #[test]
+    fn release_key_of_release_and_candidate_carry_the_revision() {
+        let release = Release {
+            release_id: "wowace:bug-grabber@v12.1.1".into(),
+            version: "v12.1.1".into(),
+            channel: Channel::Stable,
+            published_at: None,
+            assets: Vec::new(),
+            changelog_url: None,
+            notes: None,
+            name_hint: None,
+            revision: Some(403),
+        };
+        let expected = key("wowace:bug-grabber@v12.1.1", Some(403));
+        assert_eq!(ReleaseKey::of_release(&release), Some(expected.clone()));
+        let candidate = Candidate {
+            release_id: release.release_id.clone(),
+            version: release.version.clone(),
+            channel: Channel::Stable,
+            asset: Asset {
+                filename: "bug-grabber.zip".into(),
+                location: AssetLocation::Url("https://repos.wowace.com/x".into()),
+                size: None,
+                expected_hash: None,
+                flavors: Vec::new(),
+                name_flavors: Vec::new(),
+                nolib: false,
+            },
+            rank: RankReason::Unannotated,
+            revision: Some(403),
+        };
+        assert_eq!(ReleaseKey::of_candidate(&candidate), Some(expected));
+    }
+
+    /// A release id from a small pool, so that pairs often name one release in two
+    /// spellings, and sometimes do not parse at all.
+    fn release_id() -> impl Strategy<Value = String> {
+        let source = prop_oneof![
+            ("[aA][bB]?", "[cC][dD]?").prop_map(|(o, r)| format!("gh:{o}/{r}")),
+            "[eE][lL]?".prop_map(|s| format!("tukui:{s}")),
+            (1u64..3).prop_map(|id| format!("wowi:{id}")),
+            "[ab]{1,2}".prop_map(|s| format!("wowace:{s}")),
+            Just("git:https://github.com/o/r#main".to_owned()),
+            Just("file:/x/./a.zip".to_owned()),
+            Just("file:/x/a.zip".to_owned()),
+            Just("url:https://github.com/o/r/a.zip".to_owned()),
+            Just("gh:o".to_owned()),
+            "\\PC{0,8}",
+        ];
+        let tag = prop_oneof![
+            Just("v1".to_owned()),
+            Just("V1".to_owned()),
+            Just("v2".to_owned()),
+            Just("r43:tmp/trunk/!BugGrabber".to_owned()),
+            Just(String::new()),
+            "\\PC{0,4}",
+        ];
+        (source, proptest::option::of(tag)).prop_map(|(source, tag)| match tag {
+            Some(tag) => format!("{source}@{tag}"),
+            None => source,
+        })
+    }
+
+    proptest! {
+        /// `same_release` and the key agree on every pair of ids that both parse, so
+        /// the key and the resolver's comparison cannot disagree.
+        #[test]
+        fn release_key_agrees_with_same_release(a in release_id(), b in release_id()) {
+            if let (Some(x), Some(y)) = (ReleaseKey::parse(&a, None), ReleaseKey::parse(&b, None)) {
+                prop_assert_eq!(
+                    crate::resolve::updates::same_release(&a, &b),
+                    x == y,
+                    "{:?} vs {:?}",
+                    a,
+                    b
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn installed_release_of_reads_the_record() {
+        let gh = InstalledRelease::of(&record_at(
+            "gh:WeakAuras/WeakAuras2",
+            Some("gh:WeakAuras/WeakAuras2@5.19.10"),
+            Some(SHA_A),
+            None,
+        ));
+        assert_eq!(gh.version, "5.19.10");
+        assert_eq!(
+            gh.release,
+            Some(key("gh:weakauras/weakauras2@5.19.10", None))
+        );
+        assert_eq!(gh.witness.blob_sha256.as_deref(), Some(SHA_A));
+        assert_eq!(gh.witness.commit, None);
+
+        // (case, ref, release id): records whose release names no source release.
+        let keyless = [
+            (
+                "a local file",
+                "file:/x/Bar.zip",
+                Some(format!("file:/x/Bar.zip@sha256:{SHA_A}")),
+            ),
+            (
+                "a local folder",
+                "file:/x/Bar",
+                Some("file:/x/Bar@listing:1234".to_owned()),
+            ),
+            (
+                "a URL with an @ in its path",
+                "url:https://github.com/o/r/a@b/c.zip",
+                Some("url:https://github.com/o/r/a@b/c.zip".to_owned()),
+            ),
+            ("an adoption at its TOC's version", "gh:o/foo", None),
+        ];
+        for (case, ref_, release_id) in keyless {
+            let installed =
+                InstalledRelease::of(&record_at(ref_, release_id.as_deref(), None, None));
+            assert_eq!(installed.release, None, "{case}");
+            assert_eq!(installed.version, "5.19.10", "{case}");
+        }
+
+        let wowace = InstalledRelease::of(&record_at(
+            "wowace:bug-grabber",
+            Some("wowace:bug-grabber@v12.1.1"),
+            Some(SHA_B),
+            Some(403),
+        ));
+        assert_eq!(
+            wowace.release,
+            Some(key("wowace:bug-grabber@v12.1.1", Some(403)))
+        );
+        assert_eq!(wowace.witness.commit, None);
+    }
+
+    #[test]
+    fn installed_release_of_a_git_record_witnesses_a_full_commit() {
+        // (case, release id, the commit witnessed)
+        let cases = [
+            (
+                "a full commit id, lowercased",
+                format!("git:https://github.com/o/r#main@{COMMIT}"),
+                Some(COMMIT.to_ascii_lowercase()),
+            ),
+            (
+                "a tag",
+                "git:https://codeberg.org/o/r#v1@v1".to_owned(),
+                None,
+            ),
+            (
+                "a short commit id",
+                "git:https://github.com/o/r#main@0123456".to_owned(),
+                None,
+            ),
+        ];
+        for (case, release_id, commit) in cases {
+            let installed = InstalledRelease::of(&record_at(
+                "git:https://github.com/o/r#main",
+                Some(&release_id),
+                None,
+                None,
+            ));
+            assert!(installed.release.is_some(), "{case}");
+            assert_eq!(installed.witness.commit, commit, "{case}");
+        }
+        // A 40-hex tag of another source is no commit.
+        let gh = InstalledRelease::of(&record_at(
+            "gh:o/foo",
+            Some(&format!("gh:o/foo@{COMMIT}")),
+            None,
+            None,
+        ));
+        assert_eq!(gh.witness.commit, None);
+    }
+
+    #[test]
+    fn installed_release_same_artifact() {
+        let at = |release_id: Option<&str>, blob: Option<&str>, revision: Option<u32>| {
+            let ref_ = release_id.map_or("file:/x/Foo.zip", |id| {
+                id.rsplit_once('@').map_or(id, |(r, _)| r)
+            });
+            InstalledRelease::of(&record_at(ref_, release_id, blob, revision))
+        };
+        let with_version = |version: &str| InstalledRelease {
+            version: version.to_owned(),
+            ..at(None, None, None)
+        };
+        let v1 = Some("wowace:foo@v1");
+        // (case, a, b, the same artifact)
+        let cases = [
+            (
+                "equal keys and equal hashes",
+                at(v1, Some(SHA_A), Some(5)),
+                at(v1, Some(SHA_A), Some(5)),
+                true,
+            ),
+            (
+                "equal keys and one hash unknown",
+                at(v1, Some(SHA_A), Some(5)),
+                at(v1, None, Some(5)),
+                true,
+            ),
+            (
+                "equal keys and different hashes",
+                at(v1, Some(SHA_A), Some(5)),
+                at(v1, Some(SHA_B), Some(5)),
+                false,
+            ),
+            (
+                "different revisions of one tag",
+                at(v1, Some(SHA_A), Some(5)),
+                at(v1, Some(SHA_A), Some(6)),
+                false,
+            ),
+            (
+                "a known revision and an unknown one",
+                at(v1, None, Some(5)),
+                at(v1, None, None),
+                false,
+            ),
+            (
+                "a key and no key",
+                at(v1, None, None),
+                InstalledRelease {
+                    version: "v1".into(),
+                    ..at(None, None, None)
+                },
+                false,
+            ),
+            (
+                "two releases without a key and equal versions",
+                with_version("1.0"),
+                with_version("1.0"),
+                true,
+            ),
+            (
+                "two releases without a key and other versions",
+                with_version("1.0"),
+                with_version("1.1"),
+                false,
+            ),
+        ];
+        for (case, a, b, same) in cases {
+            assert_eq!(a.same_artifact(&b), same, "{case}: {a:?} vs {b:?}");
+            assert_eq!(b.same_artifact(&a), same, "{case}, reversed");
+        }
+    }
+
+    #[test]
+    fn release_identity_serializes_without_what_is_unknown() {
+        let bare = key("gh:o/foo@v1", None);
+        let json = serde_json::to_value(&bare).unwrap();
+        assert_eq!(json, serde_json::json!({"source": "gh:o/foo", "tag": "v1"}));
+        let revised = key("wowace:foo@v1", Some(9));
+        assert_eq!(serde_json::to_value(&revised).unwrap()["revision"], 9);
+        assert_eq!(
+            serde_json::to_value(ArtifactWitness::default()).unwrap(),
+            serde_json::json!({})
+        );
+
+        let transition = ReleaseTransition {
+            addon: "Foo".into(),
+            change: TransitionChange::Reverted,
+            from: Some(InstalledRelease {
+                version: "v1".into(),
+                release: Some(revised),
+                witness: ArtifactWitness {
+                    blob_sha256: Some(SHA_A.into()),
+                    commit: None,
+                },
+            }),
+            to: None,
+        };
+        let json = serde_json::to_value(&transition).unwrap();
+        assert_eq!(json["change"], "reverted");
+        assert_eq!(json["to"], serde_json::Value::Null);
+        assert_eq!(
+            json["from"]["witness"],
+            serde_json::json!({"blob_sha256": SHA_A})
+        );
+        let back: ReleaseTransition = serde_json::from_value(json).unwrap();
+        assert_eq!(back, transition);
+        for (change, wire) in [
+            (TransitionChange::Installed, "installed"),
+            (TransitionChange::Updated, "updated"),
+            (TransitionChange::Removed, "removed"),
+            (TransitionChange::Reverted, "reverted"),
+        ] {
+            assert_eq!(serde_json::to_value(change).unwrap(), wire);
+        }
+        let schema = serde_json::to_value(schemars::schema_for!(ReleaseTransition)).unwrap();
+        assert!(schema.get("type").is_some(), "{schema}");
     }
 }
