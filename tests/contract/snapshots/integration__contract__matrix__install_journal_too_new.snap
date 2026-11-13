@@ -22,7 +22,7 @@ expression: s.stable(&c.envelope)
               "-t",
               "retail"
             ],
-            "message": "transaction <ulid> on target <ulid> was started by a newer omaddons (journal version 9.0; this one reads 1.1), so it is left as it is"
+            "message": "transaction <ulid> on target <ulid> was started by a newer omaddons (journal version 9.0; this one reads 1.2), so it is left as it is"
           },
           "request": "gh:o/foo",
           "target": "retail"
@@ -41,7 +41,7 @@ expression: s.stable(&c.envelope)
       "-t",
       "retail"
     ],
-    "message": "transaction <ulid> on target <ulid> was started by a newer omaddons (journal version 9.0; this one reads 1.1), so it is left as it is",
+    "message": "transaction <ulid> on target <ulid> was started by a newer omaddons (journal version 9.0; this one reads 1.2), so it is left as it is",
     "retryable": false
   },
   "exit_code": 4,

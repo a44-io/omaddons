@@ -25,7 +25,7 @@ use common::home::Home;
 use common::tlog::{TestLog, tlog};
 use common::trees::tree_hash;
 use serde_json::{Value, json};
-use support::{INSTALL, INSTALL_AGED, Scene, assert_rows, local, run_probe};
+use support::{INSTALL, INSTALL_AGED, PROBES, Scene, assert_rows, local, run_probe};
 
 // The probes and helpers every family's scenes share (5.9.2 to 5.9.4 append theirs).
 #[cfg(test)]
@@ -596,4 +596,73 @@ fn the_m3_build_recovers_an_interrupted_m4_folder_transaction() {
         }
     }
     assert_rows(&log, "The M3 build after an interrupted M4 install", &rows);
+}
+
+/// The record row's scene: a client whose record a newer build wrote as 1.1 (RG-30).
+#[cfg(test)]
+mod record {
+    use super::*;
+    use common::compat::{mark_skips, skip_marks, target_record};
+
+    /// Retail with `Foo` installed by this build and two skip marks on it: the record
+    /// is 1.1, the record's subject protected byte for byte.
+    pub fn marked(log: &TestLog) -> Scene {
+        log.step("build");
+        let home = Home::new(&["wow", "wow_classic_era"]);
+        log.env(&home);
+        let foo = local(&home, "Foo");
+        log.run(&home, &["install", &foo, "-t", "retail", "--json"])
+            .ok();
+        mark_skips(&home, "Foo");
+        let record = target_record(&home);
+        Scene {
+            home,
+            family: "record",
+            name: "a 1.1 record with skip marks".to_owned(),
+            position: "committed".to_owned(),
+            expect_m3_recovery: None,
+            addons_after_m3_recovery: None,
+            subjects: vec![record],
+            next: Some(kept),
+        }
+    }
+
+    /// After the M3 command, this build still reads both marks.
+    fn kept(_log: &TestLog, s: &Scene) -> Result<String, String> {
+        match skip_marks(&s.home, "Foo") {
+            2 => Ok("Foo's 2 skip marks kept".to_owned()),
+            n => Err(format!("Foo has {n} skip marks, not 2")),
+        }
+    }
+}
+
+/// RG-30: on a client whose record this build wrote as 1.1, with skip marks, the M3 build
+/// reads, refuses every change with `state_too_new` and leaves the record byte for byte,
+/// at once and two hours on. `config set`, which changes no client, goes through.
+#[test]
+#[ignore = "builds the M3 commit: cargo test --test integration compat_m3:: -- --ignored --nocapture"]
+fn the_m3_build_refuses_to_change_a_client_whose_record_is_1_1() {
+    let log = tlog!();
+    let build = m3();
+    log.note(format!(
+        "binary: {M3_SHORT}, {}, sha256 {}, reused {}",
+        build.provenance.toolchain, build.provenance.binary_sha256, build.reused
+    ));
+    let mut rows = Vec::new();
+    for probe in PROBES {
+        let age = if probe.aged { "2 h" } else { "at once" };
+        let case = log.case(&format!("{} {age}", probe.name));
+        let probed = run_probe(&case, &record::marked, probe);
+        let row = &probed.row;
+        case.assert_eq("class", &row.class, &"untouched");
+        let (exit, code) = if probe.name == "config set" {
+            (0, "ok")
+        } else {
+            (4, "state_too_new")
+        };
+        case.assert_eq("exit", &row.exit, &exit);
+        case.assert_eq("code", &row.code.as_str(), &code);
+        rows.push(probed.row);
+    }
+    assert_rows(&log, "The M3 build on a client whose record is 1.1", &rows);
 }

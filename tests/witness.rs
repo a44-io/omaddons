@@ -174,6 +174,7 @@ fn adoption(case: &Case, folder: &str) -> RequestedChange {
         revision: None,
         left_out: Vec::new(),
         any_flavor: false,
+        skipped_releases: Vec::new(),
     };
     RequestedChange::Edit {
         addon: folder.into(),

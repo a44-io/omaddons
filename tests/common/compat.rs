@@ -30,6 +30,10 @@ use super::trees::tree_hash;
 /// The last M3 commit.
 pub const M3_COMMIT: &str = "c0ab5e904db26e95cade7fe1ef5129c27bb16ead";
 pub const M3_SHORT: &str = "c0ab5e9";
+/// The commit tag `v0.2.1` points at (the annotated tag object itself is `90f2453`): the
+/// previous release, the build a user who downgrades meets (RG-D30).
+pub const V0_2_1_COMMIT: &str = "8727df8dc168ff211676569be2d20c019b6e73af";
+pub const V0_2_1_SHORT: &str = "8727df8";
 /// Past either build's `ORPHAN_MIN_AGE` (one hour).
 pub const AGE: Duration = Duration::from_secs(2 * 3600);
 /// The build log's lines quoted when no binary can be had.
@@ -261,7 +265,7 @@ pub fn old_build(short: &str, full: &str) -> Result<OldBuild, String> {
         format!(
             "{short} could not be built with its recorded toolchain ({channel}) and no \
              provenance-verified binary of it exists ({why}). This is a failure, never a SKIP; \
-             file a bug against the M3 compatibility characterization. Last lines of \
+             file a bug against the compatibility checkpoint that needs it. Last lines of \
              target/compat/{short}-build.log:\n{}",
             tail(&log, BUILD_LOG_TAIL)
         )
@@ -320,6 +324,71 @@ pub fn m3() -> &'static OldBuild {
     match BUILD.get_or_init(|| old_build(M3_SHORT, M3_COMMIT)) {
         Ok(build) => build,
         Err(why) => panic!("criterion 16 is unmet: {why}"), // ubs:ignore — fails the test
+    }
+}
+
+/// The home's one target record, `<state>/targets/<key>.json`.
+pub fn target_record(home: &Home) -> PathBuf {
+    let records: Vec<PathBuf> = fs::read_dir(home.state().join("targets"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| {
+            let name = p.file_name().unwrap().to_string_lossy().into_owned();
+            name.ends_with(".json") && !name.ends_with(".files.json")
+        })
+        .collect();
+    assert_eq!(records.len(), 1, "one target record: {records:?}");
+    records[0].clone()
+}
+
+/// Two skip marks on `addon` in the home's record, as this build writes them (RG-30):
+/// one exact, at a WowAce-style revision, one by label. The record must already be 1.1,
+/// written by this build.
+pub fn mark_skips(home: &Home, addon: &str) {
+    use omaddons::model::{ReleaseKey, SkipOrigin, SkippedRelease};
+    let path = target_record(home);
+    let mut record: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(
+        record["schema_version"], "1.1",
+        "the record this build wrote is 1.1"
+    );
+    let marks = [
+        SkippedRelease {
+            release: ReleaseKey::parse("gh:o/foo@v2", Some(1390)),
+            version: "v2".into(),
+            at: "2026-11-01T00:00:00Z".parse().unwrap(),
+            origin: SkipOrigin::Undo,
+            tx: "01JB8Q2VA00000000000000001".parse().unwrap(),
+        },
+        SkippedRelease {
+            release: None,
+            version: "3.0".into(),
+            at: "2026-11-02T00:00:00Z".parse().unwrap(),
+            origin: SkipOrigin::Manual,
+            tx: "01JB8Q2VA00000000000000002".parse().unwrap(),
+        },
+    ];
+    record["addons"][addon.to_ascii_lowercase()]["skipped_releases"] =
+        serde_json::to_value(marks).unwrap();
+    fs::write(&path, serde_json::to_string_pretty(&record).unwrap() + "\n").unwrap();
+}
+
+/// How many skip marks `addon` carries in the home's record now.
+pub fn skip_marks(home: &Home, addon: &str) -> usize {
+    let record: Value = serde_json::from_slice(&fs::read(target_record(home)).unwrap()).unwrap();
+    record["addons"][addon.to_ascii_lowercase()]["skipped_releases"]
+        .as_array()
+        .map_or(0, Vec::len)
+}
+
+/// The previous release, `v0.2.1`, built once per test process (and once at a time
+/// across them), as [`m3`] is.
+pub fn v0_2_1() -> &'static OldBuild {
+    static BUILD: OnceLock<Result<OldBuild, String>> = OnceLock::new();
+    match BUILD.get_or_init(|| old_build(V0_2_1_SHORT, V0_2_1_COMMIT)) {
+        Ok(build) => build,
+        // ubs:ignore — fails the test
+        Err(why) => panic!("the 0.2.1 checkpoint cannot run: {why}"),
     }
 }
 
@@ -825,8 +894,8 @@ pub fn history_prefix_kept(before: &[u8], after: &[u8]) -> bool {
 /// One replica's record, as README's table quotes it.
 #[derive(Debug, Clone, Serialize)]
 pub struct Row {
-    /// `committed`, `interrupted`, `undo`, `apply`, `set-aside`, `reactivation` or
-    /// `control`.
+    /// `committed`, `interrupted`, `undo`, `apply`, `set-aside`, `reactivation`,
+    /// `control` or `record` (a client whose record a newer build wrote, RG-30).
     pub family: &'static str,
     pub scene: String,
     /// `at rest`, `prepared`, `before 2`, `after 2`, `done`, `history` or `committed`.

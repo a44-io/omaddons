@@ -695,6 +695,7 @@ mod tests {
                     revision: None,
                     left_out: Vec::new(),
                     any_flavor: false,
+                    skipped_releases: Vec::new(),
                     installed_at: "2026-10-14T00:00:00Z".parse().unwrap(),
                     tx_id: TxId::new(),
                 },

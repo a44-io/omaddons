@@ -738,7 +738,10 @@ fn write_fuzz_seeds() {
         partial.as_bytes(),
     );
     let newer = update.replacen(
-        "\"schema_version\":\"1.1\"",
+        &format!(
+            "\"schema_version\":\"{}\"",
+            omaddons::engine::journal::CURRENT
+        ),
         "\"schema_version\":\"9.0\"",
         1,
     );

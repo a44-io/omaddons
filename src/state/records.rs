@@ -23,7 +23,11 @@ pub struct TargetRecord {
 
 impl Versioned for TargetRecord {
     const KIND: &'static str = "target_record";
-    const CURRENT: SchemaVersion = SchemaVersion::new(1, 0);
+    /// 1.1: each addon's `skipped_releases`, the releases `update` passes over (the
+    /// regression guard, RG-30). A 1.0 record reads as having none. A build that knows
+    /// only 1.0 reads a 1.1 record and refuses to change it (`state_too_new`), so it can
+    /// never drop the marks by rewriting it.
+    const CURRENT: SchemaVersion = SchemaVersion::new(1, 1);
 }
 
 impl TargetRecord {
@@ -96,6 +100,7 @@ mod tests {
             revision: None,
             left_out: Vec::new(),
             any_flavor: false,
+            skipped_releases: Vec::new(),
         }
     }
 
@@ -134,10 +139,113 @@ mod tests {
         .unwrap();
         let text = std::fs::read_to_string(paths.target_record(&key)).unwrap();
         assert!(
-            text.starts_with("{\n  \"schema_version\": \"1.0\",\n  \"key\""),
+            text.starts_with("{\n  \"schema_version\": \"1.1\",\n  \"key\""),
             "{text}"
         );
         assert_eq!(load_record(&paths, &key).unwrap().value, record);
+    }
+
+    /// A record as 1.0 wrote it: the same keys, no `skipped_releases`.
+    fn record_1_0(version: &str) -> String {
+        format!(
+            r#"{{
+  "schema_version": "{version}",
+  "key": "{KEY}",
+  "generation": 3,
+  "addons": {{
+    "weakauras": {{
+      "ref": "gh:WeakAuras/WeakAuras2",
+      "name": "WeakAuras",
+      "version": "5.19.10",
+      "version_confidence": "release",
+      "release_id": null,
+      "channel": "stable",
+      "pinned": false,
+      "reason": "explicit",
+      "required_by": [],
+      "folders": ["WeakAuras"],
+      "state": "ok",
+      "installed_at": "2026-10-14T21:00:00Z",
+      "tx_id": "01JB8Q2VA00000000000000000"
+    }}
+  }}
+}}
+"#
+        )
+    }
+
+    fn paths_in(root: &std::path::Path) -> Paths {
+        Paths::with_roots(
+            root,
+            root.join(".config"),
+            root.join(".local/state"),
+            root.join(".cache"),
+        )
+    }
+
+    #[test]
+    fn a_1_0_record_loads_with_no_marks_and_saves_as_1_1() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let paths = paths_in(&root);
+        let key: TargetKey = KEY.parse().unwrap();
+        std::fs::create_dir_all(paths.targets_dir()).unwrap();
+        std::fs::write(paths.target_record(&key), record_1_0("1.0")).unwrap();
+
+        let loaded = load_record(&paths, &key).unwrap();
+        assert_eq!(loaded.status, VersionStatus::Older);
+        assert_eq!(loaded.version, SchemaVersion::new(1, 0));
+        let addon = &loaded.value.addons["weakauras"];
+        assert!(addon.skipped_releases.is_empty());
+
+        let scopes = ScopeTable::new(&paths, &[], None).unwrap();
+        let mut s = WriteSession::untracked(Writer::Mutating, &scopes, "test");
+        store::save(
+            &mut s,
+            &paths.target_record(&key),
+            &loaded.value,
+            Some(&loaded.status),
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(paths.target_record(&key)).unwrap();
+        assert!(text.contains("\"schema_version\": \"1.1\""), "{text}");
+        assert!(
+            !text.contains("skipped_releases"),
+            "a record without marks writes as before: {text}"
+        );
+        assert_eq!(load_record(&paths, &key).unwrap().value, loaded.value);
+    }
+
+    #[test]
+    fn a_1_2_record_is_read_and_refused_for_a_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let paths = paths_in(&root);
+        let key: TargetKey = KEY.parse().unwrap();
+        std::fs::create_dir_all(paths.targets_dir()).unwrap();
+        let newer = record_1_0("1.2");
+        std::fs::write(paths.target_record(&key), &newer).unwrap();
+
+        let loaded = load_record(&paths, &key).unwrap();
+        assert_eq!(loaded.status, VersionStatus::Newer);
+        let refused = store::refuse_newer::<TargetRecord>(&paths.target_record(&key)).unwrap_err();
+        assert_eq!(refused.code, crate::error::ErrorCode::StateTooNew);
+        let scopes = ScopeTable::new(&paths, &[], None).unwrap();
+        let mut s = WriteSession::untracked(Writer::Mutating, &scopes, "test");
+        assert!(
+            store::save(
+                &mut s,
+                &paths.target_record(&key),
+                &loaded.value,
+                Some(&loaded.status)
+            )
+            .is_err()
+        );
+        assert_eq!(
+            std::fs::read_to_string(paths.target_record(&key)).unwrap(),
+            newer,
+            "a newer record is never rewritten"
+        );
     }
 
     #[test]

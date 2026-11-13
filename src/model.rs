@@ -704,6 +704,12 @@ pub struct AddonRecord {
     /// like the channel; never by a dependency of it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub any_flavor: bool,
+    /// Releases `update` passes over (design 7.5.1). Decisions: kept until one is
+    /// cleared by name, by a repoint, or by installing that release on purpose, and
+    /// never dropped to make room ([`AddonRecord::add_skip`]). Omitted when there are
+    /// none, so a record without marks writes exactly as before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skipped_releases: Vec<SkippedRelease>,
 }
 
 /// A folder of an addon's release that an install left out, as `folders.skipped`
@@ -764,6 +770,107 @@ impl AddonRecord {
     /// installed addon is never an orphan.
     pub fn is_orphan(&self) -> bool {
         self.reason == AddonReason::Dependency && self.required_by.is_empty()
+    }
+
+    /// Adds a skip mark: the one way every writer of marks (`skip`, an undo, a
+    /// rollback) adds one. A mark that selects what a mark already there selects
+    /// ([`SkippedRelease::selects`]) changes nothing, and the older mark stays. Returns
+    /// whether the list changed. A mark past [`crate::limits::SKIPS_PER_ADDON_MAX`] is
+    /// refused with the list unchanged: no mark is ever removed to make room, so the
+    /// change that would add it must fail before it commits.
+    pub fn add_skip(&mut self, mark: SkippedRelease) -> Result<bool, SkipsFull> {
+        let selects = mark.selects();
+        if self.skipped_releases.iter().any(|m| m.selects() == selects) {
+            return Ok(false);
+        }
+        if self.skipped_releases.len() >= crate::limits::SKIPS_PER_ADDON_MAX {
+            return Err(SkipsFull {
+                addon: self.name.clone(),
+                limit: crate::limits::SKIPS_PER_ADDON_MAX,
+            });
+        }
+        self.skipped_releases.push(mark);
+        Ok(true)
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// Skip marks (regression guard, design 7.5.1, RG-D15).
+
+/// One release `update` passes over on one client, and where the decision came from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SkippedRelease {
+    /// The exact release; `null` for a mark made by version label only, which covers
+    /// every release with that label.
+    pub release: Option<ReleaseKey>,
+    /// The version label, for display, and the selector when `release` is `null`.
+    pub version: String,
+    /// When the mark was made.
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
+    pub at: Timestamp,
+    pub origin: SkipOrigin,
+    /// The transaction that made the mark.
+    pub tx: TxId,
+}
+
+impl SkippedRelease {
+    /// What the mark selects: its exact release, else its label. Two marks that select
+    /// the same are one.
+    pub fn selects(&self) -> SkipIdentity {
+        match &self.release {
+            Some(key) => SkipIdentity::Release(key.clone()),
+            None => SkipIdentity::Label(skip_label(&self.version).to_owned()),
+        }
+    }
+}
+
+/// Where a skip mark came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SkipOrigin {
+    /// An undo moved the addon back from it.
+    Undo,
+    /// `skip --back` moved the addon back from it.
+    Rollback,
+    /// `skip` passed over it before it was installed.
+    Manual,
+}
+
+/// What a skip mark selects: the identity a record's marks are de-duplicated by, and a
+/// preview binds (design 7.5.6).
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum SkipIdentity {
+    /// One exact release, its revision included.
+    Release(ReleaseKey),
+    /// Every release with this version label, written without one leading `v`.
+    Label(String),
+}
+
+/// A version label as label marks compare it: without one leading `v` or `V`, as
+/// `resolve::updates::dotted` reads versions.
+pub fn skip_label(version: &str) -> &str {
+    version.strip_prefix(['v', 'V']).unwrap_or(version)
+}
+
+/// A skip mark past [`crate::limits::SKIPS_PER_ADDON_MAX`] on one addon. The caller
+/// fails the change before it commits, naming the addon and how to clear marks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkipsFull {
+    /// The addon, by its record's name.
+    pub addon: String,
+    pub limit: usize,
+}
+
+impl fmt::Display for SkipsFull {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} already has {} skipped releases, the most one addon keeps",
+            self.addon, self.limit
+        )
     }
 }
 
@@ -2123,6 +2230,7 @@ mod tests {
             revision: None,
             left_out: Vec::new(),
             any_flavor: false,
+            skipped_releases: Vec::new(),
         }
     }
 
@@ -2737,5 +2845,155 @@ mod tests {
         }
         let schema = serde_json::to_value(schemars::schema_for!(ReleaseTransition)).unwrap();
         assert!(schema.get("type").is_some(), "{schema}");
+    }
+
+    // ---- Skip marks --------------------------------------------------------------------
+
+    /// A mark made by `tx`: exact on `release_id` when given, else by its label.
+    fn skip(release_id: Option<&str>, version: &str, tx: &str) -> SkippedRelease {
+        SkippedRelease {
+            release: release_id.map(|id| key(id, None)),
+            version: version.into(),
+            at: "2026-11-01T00:00:00Z".parse().unwrap(),
+            origin: SkipOrigin::Undo,
+            tx: tx.parse().unwrap(),
+        }
+    }
+
+    const TX_1: &str = "01JB8Q2VA00000000000000001";
+    const TX_2: &str = "01JB8Q2VA00000000000000002";
+
+    #[test]
+    fn add_skip_deduplicates_by_what_a_mark_selects() {
+        // (case, the marks added in order, how many stay, the transactions of those that
+        // stay, in order)
+        let cases = [
+            (
+                "the same exact release twice: one mark, the older",
+                vec![
+                    skip(Some("gh:o/foo@v2"), "v2", TX_1),
+                    skip(Some("gh:O/Foo@v2"), "v2", TX_2),
+                ],
+                vec![TX_1],
+            ),
+            (
+                "the same label twice, with and without a leading v: one mark, the older",
+                vec![skip(None, "v2", TX_1), skip(None, "2", TX_2)],
+                vec![TX_1],
+            ),
+            (
+                "an exact mark and a label mark for one version are two marks",
+                vec![
+                    skip(Some("gh:o/foo@v2"), "v2", TX_1),
+                    skip(None, "v2", TX_2),
+                ],
+                vec![TX_1, TX_2],
+            ),
+            (
+                "two tags are two marks",
+                vec![
+                    skip(Some("gh:o/foo@v2"), "v2", TX_1),
+                    skip(Some("gh:o/foo@v3"), "v3", TX_2),
+                ],
+                vec![TX_1, TX_2],
+            ),
+        ];
+        for (case, marks, kept) in cases {
+            let mut record = sample_record();
+            let added: Vec<bool> = marks
+                .into_iter()
+                .map(|m| record.add_skip(m).unwrap())
+                .collect();
+            let txs: Vec<String> = record
+                .skipped_releases
+                .iter()
+                .map(|m| m.tx.to_string())
+                .collect();
+            assert_eq!(txs, kept, "{case}");
+            assert_eq!(
+                added.iter().filter(|a| **a).count(),
+                kept.len(),
+                "{case}: add_skip says whether the list changed"
+            );
+        }
+    }
+
+    #[test]
+    fn add_skip_refuses_the_mark_past_the_limit_and_keeps_every_other() {
+        let mut record = sample_record();
+        for n in 0..crate::limits::SKIPS_PER_ADDON_MAX {
+            assert_eq!(
+                record.add_skip(skip(None, &format!("1.{n}"), TX_1)),
+                Ok(true)
+            );
+        }
+        let full = record.skipped_releases.clone();
+        assert_eq!(full.len(), 256);
+        let refused = record.add_skip(skip(Some("gh:o/foo@v9"), "v9", TX_2));
+        assert_eq!(
+            refused,
+            Err(SkipsFull {
+                addon: "WeakAuras".into(),
+                limit: 256
+            })
+        );
+        assert_eq!(record.skipped_releases, full, "the list is unchanged");
+        assert_eq!(
+            record.add_skip(skip(None, "1.0", TX_2)),
+            Ok(false),
+            "a mark already there is no 257th"
+        );
+        assert_eq!(
+            refused.unwrap_err().to_string(),
+            "WeakAuras already has 256 skipped releases, the most one addon keeps"
+        );
+    }
+
+    #[test]
+    fn skipped_releases_round_trip_and_are_left_out_when_empty() {
+        let plain = sample_record();
+        let json = serde_json::to_value(&plain).unwrap();
+        assert!(json.get("skipped_releases").is_none(), "{json}");
+        let read: AddonRecord = serde_json::from_value(json).unwrap();
+        assert_eq!(read, plain, "a record without marks reads as having none");
+
+        let mut marked = sample_record();
+        marked.skipped_releases = vec![
+            SkippedRelease {
+                origin: SkipOrigin::Rollback,
+                ..skip(Some("wowace:foo@v1"), "v1", TX_1)
+            },
+            SkippedRelease {
+                origin: SkipOrigin::Manual,
+                ..skip(None, "v2", TX_2)
+            },
+        ];
+        marked.skipped_releases[0].release = Some(key("wowace:foo@v1", Some(1390)));
+        let json = serde_json::to_value(&marked).unwrap();
+        assert_eq!(
+            json["skipped_releases"],
+            serde_json::json!([
+                {
+                    "release": {"source": "wowace:foo", "tag": "v1", "revision": 1390},
+                    "version": "v1",
+                    "at": "2026-11-01T00:00:00Z",
+                    "origin": "rollback",
+                    "tx": TX_1,
+                },
+                {
+                    "release": null,
+                    "version": "v2",
+                    "at": "2026-11-01T00:00:00Z",
+                    "origin": "manual",
+                    "tx": TX_2,
+                },
+            ])
+        );
+        let read: AddonRecord = serde_json::from_value(json).unwrap();
+        assert_eq!(read, marked);
+        assert_eq!(
+            serde_json::to_value(SkipOrigin::Undo).unwrap(),
+            serde_json::json!("undo")
+        );
     }
 }

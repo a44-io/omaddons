@@ -21,7 +21,8 @@ use serde::Serialize;
 
 use crate::error::{Error, ErrorBody, Suggestion};
 use crate::model::{
-    AddonRecord, Candidate, Channel, RankReason, Ref, Release, Target, VersionConfidence,
+    AddonRecord, Candidate, Channel, RankReason, Ref, Release, ReleaseKey, SkippedRelease, Target,
+    VersionConfidence, skip_label,
 };
 use crate::resolve::select::select;
 use crate::rules::{Family, RulesTable};
@@ -388,6 +389,41 @@ pub fn same_release(a: &str, b: &str) -> bool {
     }
 }
 
+/// Whether `mark` covers the release that `key` and `version` name (design 7.5.1).
+///
+/// - An exact mark (`release` present) covers an equal key: the same source in any
+///   spelling, the same tag, the same revision. Made without a revision, it holds every
+///   revision of its tag, the cautious direction for a hold; with one, it never covers
+///   another revision or an unknown one, so a WowAce re-tag is a new release.
+/// - A label mark (`release` absent) covers every release whose version is its label,
+///   ignoring one leading `v`, whatever its key.
+///
+/// An exact mark never looks at the version, so an equal label on another tag is not
+/// covered.
+pub fn skip_covers(mark: &SkippedRelease, key: Option<&ReleaseKey>, version: &str) -> bool {
+    match &mark.release {
+        Some(marked) => key.is_some_and(|key| {
+            marked == key
+                || (marked.revision.is_none()
+                    && marked.source == key.source
+                    && marked.tag == key.tag)
+        }),
+        None => skip_label(&mark.version) == skip_label(version),
+    }
+}
+
+/// The mark on `record` that covers the release these name, if any ([`skip_covers`]).
+pub fn skip_covering<'r>(
+    record: &'r AddonRecord,
+    key: Option<&ReleaseKey>,
+    version: &str,
+) -> Option<&'r SkippedRelease> {
+    record
+        .skipped_releases
+        .iter()
+        .find(|mark| skip_covers(mark, key, version))
+}
+
 /// Whether the installed release is newer than the newest one: by publication dates
 /// when both are known (the installed one from the entry's releases), else by dotted
 /// version numbers when both parse. Unknown either way: not newer.
@@ -595,6 +631,7 @@ mod tests {
             revision: None,
             left_out: Vec::new(),
             any_flavor: false,
+            skipped_releases: Vec::new(),
         }
     }
 
@@ -1333,5 +1370,133 @@ mod tests {
             ("static", UpdateStatus::Static),
         ]);
         insta::assert_json_snapshot!("update_statuses", variants);
+    }
+
+    // ---- Skip marks ------------------------------------------------------------------
+
+    /// An exact mark on `release_id` at `revision`, or a label mark when `release_id` is
+    /// `None`, labeled `version`.
+    fn mark(release_id: Option<&str>, revision: Option<u32>, version: &str) -> SkippedRelease {
+        SkippedRelease {
+            release: release_id.map(|id| ReleaseKey::parse(id, revision).unwrap()),
+            version: version.into(),
+            at: at("2026-11-01T00:00:00Z"),
+            origin: crate::model::SkipOrigin::Undo,
+            tx: TxId::new(),
+        }
+    }
+
+    #[test]
+    fn skip_covering_matches_exact_and_label_marks() {
+        // (case, the mark, the release's id and revision (no id: a keyless release), its
+        // version, whether the mark covers it)
+        let cases = [
+            (
+                "an exact mark covers an equal key in another spelling of the ref",
+                mark(Some("gh:WeakAuras/WeakAuras2@5.19.2"), None, "5.19.2"),
+                Some(("gh:weakauras/WEAKAURAS2@5.19.2", None)),
+                "5.19.2",
+                true,
+            ),
+            (
+                "an exact mark does not cover another tag",
+                mark(Some("gh:o/foo@v2"), None, "v2"),
+                Some(("gh:o/foo@v3", None)),
+                "v3",
+                false,
+            ),
+            (
+                "a WowAce mark at revision 1390 does not cover revision 1402 of its tag",
+                mark(Some("wowace:bug-grabber@v12.1.1"), Some(1390), "v12.1.1"),
+                Some(("wowace:bug-grabber@v12.1.1", Some(1402))),
+                "v12.1.1",
+                false,
+            ),
+            (
+                "a WowAce mark at revision 1390 covers revision 1390",
+                mark(Some("wowace:bug-grabber@v12.1.1"), Some(1390), "v12.1.1"),
+                Some(("wowace:bug-grabber@v12.1.1", Some(1390))),
+                "v12.1.1",
+                true,
+            ),
+            (
+                "a mark with a revision does not cover the tag at an unknown one",
+                mark(Some("wowace:bug-grabber@v12.1.1"), Some(1390), "v12.1.1"),
+                Some(("wowace:bug-grabber@v12.1.1", None)),
+                "v12.1.1",
+                false,
+            ),
+            (
+                "a mark without a revision covers every revision of its tag",
+                mark(Some("wowace:bug-grabber@v12.1.1"), None, "v12.1.1"),
+                Some(("wowace:bug-grabber@v12.1.1", Some(1402))),
+                "v12.1.1",
+                true,
+            ),
+            (
+                "a mark without a revision covers its tag without one",
+                mark(Some("wowace:bug-grabber@v12.1.1"), None, "v12.1.1"),
+                Some(("wowace:bug-grabber@v12.1.1", None)),
+                "v12.1.1",
+                true,
+            ),
+            (
+                "a label mark covers its version with a leading v",
+                mark(None, None, "2.0"),
+                Some(("gh:o/foo@v2.0", None)),
+                "v2.0",
+                true,
+            ),
+            (
+                "a label mark with a leading v covers its version without one",
+                mark(None, None, "v2.0"),
+                Some(("gh:o/bar@2.0", None)),
+                "2.0",
+                true,
+            ),
+            (
+                "a label mark covers a keyless release by version",
+                mark(None, None, "2.0"),
+                None,
+                "2.0",
+                true,
+            ),
+            (
+                "a label mark does not cover another version",
+                mark(None, None, "2.0"),
+                Some(("gh:o/foo@2.1", None)),
+                "2.1",
+                false,
+            ),
+            (
+                "an exact mark is not widened by an equal label on another tag",
+                mark(Some("gh:o/foo@v2"), None, "2.0"),
+                Some(("gh:o/foo@release-2", None)),
+                "2.0",
+                false,
+            ),
+            (
+                "an exact mark covers no keyless release",
+                mark(Some("gh:o/foo@v2"), None, "v2"),
+                None,
+                "v2",
+                false,
+            ),
+        ];
+        for (case, marked, release, version, covers) in cases {
+            let key = release.map(|(id, revision)| ReleaseKey::parse(id, revision).unwrap());
+            assert_eq!(
+                skip_covers(&marked, key.as_ref(), version),
+                covers,
+                "{case}: {marked:?} against {key:?} {version}"
+            );
+            let mut on = record(Some("v1"), "v1");
+            on.skipped_releases = vec![mark(None, None, "never"), marked.clone()];
+            assert_eq!(
+                skip_covering(&on, key.as_ref(), version),
+                covers.then_some(&marked),
+                "{case}: skip_covering finds the covering mark"
+            );
+        }
     }
 }

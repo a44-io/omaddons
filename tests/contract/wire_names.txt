@@ -982,6 +982,7 @@ enum file:journal <type=prepared>.commit.history.result committed
 enum file:journal <type=prepared>.commit.record.addons{}.channel alpha,beta,stable
 enum file:journal <type=prepared>.commit.record.addons{}.left_out[].reason below_client_floor,dependency_skipped,game_type_excluded,interface_not_in_family,no_interface,no_loadable_toc,target_interface_unknown
 enum file:journal <type=prepared>.commit.record.addons{}.reason dependency,explicit
+enum file:journal <type=prepared>.commit.record.addons{}.skipped_releases[].origin manual,rollback,undo
 enum file:journal <type=prepared>.commit.record.addons{}.state degraded,ok
 enum file:journal <type=prepared>.commit.record.addons{}.version_confidence release,toc
 enum file:journal <type=prepared>.kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,sync,target,undo,update,widget
@@ -1021,6 +1022,7 @@ enum file:repair_journal <type=prepared>.primitives[].pre<untagged=kind|identity
 enum file:target_record addons{}.channel alpha,beta,stable
 enum file:target_record addons{}.left_out[].reason below_client_floor,dependency_skipped,game_type_excluded,interface_not_in_family,no_interface,no_loadable_toc,target_interface_unknown
 enum file:target_record addons{}.reason dependency,explicit
+enum file:target_record addons{}.skipped_releases[].origin manual,rollback,undo
 enum file:target_record addons{}.state degraded,ok
 enum file:target_record addons{}.version_confidence release,toc
 enum help data<untagged=commands,discovery,exit_codes,global_flags,name,usage,version>.commands[].group change,look,setup
@@ -2591,7 +2593,7 @@ file http_validators status integer! minimum=0 maximum=65535
 file http_validators stored_at string!
 file http_validators url string!
 file journal . object tag=type
-file journal 1.1
+file journal 1.2
 file journal <type=committed> variant
 file journal <type=prepared> variant
 file journal <type=prepared>.client object?
@@ -2758,6 +2760,16 @@ file journal <type=prepared>.commit.record.addons{}.release_id string?!
 file journal <type=prepared>.commit.record.addons{}.required_by array!
 file journal <type=prepared>.commit.record.addons{}.required_by[] string
 file journal <type=prepared>.commit.record.addons{}.revision integer? minimum=0
+file journal <type=prepared>.commit.record.addons{}.skipped_releases array
+file journal <type=prepared>.commit.record.addons{}.skipped_releases[] object
+file journal <type=prepared>.commit.record.addons{}.skipped_releases[].at string!
+file journal <type=prepared>.commit.record.addons{}.skipped_releases[].origin string!
+file journal <type=prepared>.commit.record.addons{}.skipped_releases[].release object?!
+file journal <type=prepared>.commit.record.addons{}.skipped_releases[].release.revision integer? minimum=0
+file journal <type=prepared>.commit.record.addons{}.skipped_releases[].release.source string!
+file journal <type=prepared>.commit.record.addons{}.skipped_releases[].release.tag string!
+file journal <type=prepared>.commit.record.addons{}.skipped_releases[].tx string!
+file journal <type=prepared>.commit.record.addons{}.skipped_releases[].version string!
 file journal <type=prepared>.commit.record.addons{}.state string!
 file journal <type=prepared>.commit.record.addons{}.tx_id string!
 file journal <type=prepared>.commit.record.addons{}.version string!
@@ -3388,7 +3400,7 @@ file target_marker 1.0
 file target_marker key string!
 file target_marker schema_version string!
 file target_record . object
-file target_record 1.0
+file target_record 1.1
 file target_record addons object!
 file target_record addons{} object
 file target_record addons{}.any_flavor boolean
@@ -3409,6 +3421,16 @@ file target_record addons{}.release_id string?!
 file target_record addons{}.required_by array!
 file target_record addons{}.required_by[] string
 file target_record addons{}.revision integer? minimum=0
+file target_record addons{}.skipped_releases array
+file target_record addons{}.skipped_releases[] object
+file target_record addons{}.skipped_releases[].at string!
+file target_record addons{}.skipped_releases[].origin string!
+file target_record addons{}.skipped_releases[].release object?!
+file target_record addons{}.skipped_releases[].release.revision integer? minimum=0
+file target_record addons{}.skipped_releases[].release.source string!
+file target_record addons{}.skipped_releases[].release.tag string!
+file target_record addons{}.skipped_releases[].tx string!
+file target_record addons{}.skipped_releases[].version string!
 file target_record addons{}.state string!
 file target_record addons{}.tx_id string!
 file target_record addons{}.version string!

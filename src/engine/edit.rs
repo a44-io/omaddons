@@ -184,6 +184,9 @@ pub fn apply_edit(
             record.r#ref = r.clone();
             record.release_id = None;
             record.version_confidence = VersionConfidence::Toc;
+            // Marks name releases of the old source; the undo of the repoint puts the
+            // record, marks included, back from its snapshot.
+            record.skipped_releases.clear();
         }
         RecordEdit::Forget | RecordEdit::Adopt(_) => {}
     }
@@ -463,6 +466,7 @@ mod tests {
             revision: None,
             left_out: Vec::new(),
             any_flavor: false,
+            skipped_releases: Vec::new(),
         }
     }
 
@@ -547,6 +551,24 @@ mod tests {
                 "1.0"
             ),
             "the next update installs from the new ref"
+        );
+        let mut marked = record("Foo", &["Foo"]);
+        marked.skipped_releases = vec![crate::model::SkippedRelease {
+            release: crate::model::ReleaseKey::parse("gh:o/r@v2", None),
+            version: "v2".into(),
+            at: "2026-11-01T00:00:00Z".parse().unwrap(),
+            origin: crate::model::SkipOrigin::Undo,
+            tx: crate::model::TxId::new(),
+        }];
+        let repointed = apply(
+            Some(marked),
+            RecordEdit::Repoint("gh:o/elsewhere".parse().unwrap()),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            repointed.skipped_releases.is_empty(),
+            "marks name the old source's releases: a repoint clears them"
         );
         assert_eq!(apply(foo(), RecordEdit::Forget).unwrap(), None);
     }

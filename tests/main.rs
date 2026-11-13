@@ -40,6 +40,7 @@ mod cli_skeleton;
 mod common_selftest;
 mod compat_m2;
 mod compat_m3;
+mod compat_v021;
 mod completions;
 #[path = "contract/main.rs"]
 mod contract;

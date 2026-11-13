@@ -649,6 +649,7 @@ mod tests {
             revision: None,
             left_out: Vec::new(),
             any_flavor,
+            skipped_releases: Vec::new(),
         }
     }
 

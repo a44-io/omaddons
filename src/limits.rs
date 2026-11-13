@@ -120,6 +120,10 @@ pub const RELEASE_MEMO_MAX_ENTRIES: usize = 4_096;
 /// Most other releases a memo entry remembers beside the newest, for telling an
 /// installed release that is ahead of the source's newest.
 pub const MEMO_KNOWN_RELEASES: usize = 10;
+/// Most skip marks one addon's record keeps. A guard on the record's size, not a working
+/// limit: a change that would add one more fails before it commits, and no mark is
+/// ever dropped to make room (marks are decisions).
+pub const SKIPS_PER_ADDON_MAX: usize = 256;
 /// A WoWInterface project unchanged for longer is never chosen on its own to satisfy a
 /// dependency (`wowi_abandoned`); `search` calls it abandoned.
 pub const DEPENDENCY_SOURCE_MAX_AGE: Duration = Duration::from_secs(730 * 24 * 60 * 60);
@@ -627,6 +631,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         LimitUnit::Count,
         None,
         "Other releases a memo entry remembers beside the newest",
+    ),
+    limit(
+        "SKIPS_PER_ADDON_MAX",
+        LimitValue::Count(SKIPS_PER_ADDON_MAX as u64),
+        LimitUnit::Count,
+        None,
+        "Skip marks one addon keeps; one more fails the change, never evicting a mark",
     ),
     limit(
         "DEPENDENCY_SOURCE_MAX_AGE",
@@ -1323,7 +1334,7 @@ mod tests {
         "DOCTOR_DETECTOR_DEADLINE", "RUN_ID_RETRY",
         "DISCOVERY_FILE_MAX_BYTES", "CREDENTIAL_COMMAND_TIMEOUT", "CREDENTIAL_OUTPUT_MAX_BYTES",
         "CREDENTIAL_KILL_GRACE", "RELEASE_MEMO_MAX_ENTRIES",
-        "MEMO_KNOWN_RELEASES", "DEPENDENCY_SOURCE_MAX_AGE", "CHANGELOG_MAX_CHARS",
+        "MEMO_KNOWN_RELEASES", "SKIPS_PER_ADDON_MAX", "DEPENDENCY_SOURCE_MAX_AGE", "CHANGELOG_MAX_CHARS",
         "CHANGELOG_MAX_ENTRIES", "API_RESPONSE_MAX_BYTES",
         "WOWACE_TREE_MAX_FILES",
         "WOWACE_TREE_MAX_DIRS",

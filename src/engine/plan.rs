@@ -45,8 +45,8 @@ use crate::inventory::{Depth, FolderClass, Inventory, inventory_shared, sibling_
 use crate::limits::{DEPENDENCY_MAX_ADDONS, DEPENDENCY_MAX_DEPTH};
 use crate::model::{
     Actor, AddonReason, AddonRecord, AddonState, AssetLocation, Candidate, Channel, ExpectedHash,
-    FlavorHint, FolderName, MutableFolderName, RankReason, Ref, ReleaseSet, ReloadRequired, Target,
-    TargetKey, TxId, TxKind, VersionConfidence,
+    FlavorHint, FolderName, MutableFolderName, RankReason, Ref, ReleaseKey, ReleaseSet,
+    ReloadRequired, SkippedRelease, Target, TargetKey, TxId, TxKind, VersionConfidence,
 };
 use crate::net::Http;
 use crate::output::{Phase, ProgressSink, Subject};
@@ -313,6 +313,7 @@ impl InstallIntent {
 /// | `reason` | as passed | as passed | as recorded |
 /// | `required_by` | additions | recorded ∪ additions − removals | recorded ∪ additions − removals |
 /// | `name` | `chosen`'s | as recorded | as recorded |
+/// | `skipped_releases` | none | as recorded, less [`skips_lifted`] | as recorded |
 ///
 /// `required_by` comes out sorted and de-duplicated, and `state` is `ok`.
 pub fn carry_over(
@@ -357,7 +358,46 @@ pub fn carry_over(
             }
         }
     }
+    // Skip marks are decisions about this addon on this client: every install keeps
+    // them from the record (never from `chosen`), except the ones a named version lifts.
+    let lifted = skips_lifted(existing, intent, &record);
+    record.skipped_releases = existing
+        .map(|e| {
+            e.skipped_releases
+                .iter()
+                .filter(|mark| !lifted.contains(mark))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
     record
+}
+
+/// The skip marks of `existing` that an install lifts: those covering the release it
+/// lands on (`installed`, the record [`carry_over`] builds), when the request named a
+/// version (`install --version`, `pin --version`, a version an `addons.toml` entry
+/// names). That release was asked for, so it is not skipped; each one is reported as
+/// `skip_lifted`. An install without a version never lands on a covered release, so it
+/// lifts none, and neither does the resolver's install of a dependency, which keeps the
+/// record's other decisions too.
+pub fn skips_lifted(
+    existing: Option<&AddonRecord>,
+    intent: &InstallIntent,
+    installed: &AddonRecord,
+) -> Vec<SkippedRelease> {
+    let Some(existing) = existing else {
+        return Vec::new();
+    };
+    if intent.version.is_none() || intent.from_resolver() {
+        return Vec::new();
+    }
+    let key = ReleaseKey::of_record(installed);
+    existing
+        .skipped_releases
+        .iter()
+        .filter(|mark| crate::resolve::updates::skip_covers(mark, key.as_ref(), &installed.version))
+        .cloned()
+        .collect()
 }
 
 /// The fields among `pinned`, `channel` and `reason` that `carried` changes in
@@ -4272,6 +4312,8 @@ impl TargetPlanner<'_> {
                 .map(SkippedFolder::left_out)
                 .collect(),
             any_flavor: false,
+            // `carry_over` keeps the installed record's marks.
+            skipped_releases: Vec::new(),
         };
         // A deferred asset's token URL is never stored: the plan shows its canonical URL.
         let (url, expected_hash) = match &winner.candidate.asset.location {
@@ -6299,6 +6341,7 @@ mod tests {
             revision: None,
             left_out: Vec::new(),
             any_flavor: false,
+            skipped_releases: Vec::new(),
         }
     }
 
@@ -6866,6 +6909,134 @@ mod tests {
             ["Bar", "Mid"],
             "existing ∪ additions − removals"
         );
+    }
+
+    /// A skip mark: exact on `gh:o/foo@<tag>`, or a label mark when `tag` is `None`.
+    fn skip(tag: Option<&str>, version: &str) -> SkippedRelease {
+        SkippedRelease {
+            release: tag.map(|t| ReleaseKey::parse(&format!("gh:o/foo@{t}"), None).unwrap()),
+            version: version.into(),
+            at: "2026-11-01T00:00:00Z".parse().unwrap(),
+            origin: crate::model::SkipOrigin::Undo,
+            tx: TxId::new(),
+        }
+    }
+
+    #[test]
+    fn carry_over_keeps_skip_marks_and_a_named_version_lifts_its_own() {
+        let marks = vec![
+            skip(Some("2.0"), "2.0"),
+            skip(None, "3.0"),
+            skip(Some("4.0"), "4.0"),
+        ];
+        let with_marks = || {
+            let mut e = installed("1.0", false, Channel::Stable, AddonReason::Explicit);
+            e.skipped_releases.clone_from(&marks);
+            e
+        };
+        let keep = user(PinIntent::Keep, Channel::Stable, AddonReason::Explicit);
+        let named = |version: &str| InstallIntent {
+            version: Some(version.into()),
+            ..keep.clone()
+        };
+        let at = |version: &str| {
+            let mut chosen = chosen();
+            chosen.version = version.into();
+            chosen.release_id = Some(format!("gh:o/foo@{version}"));
+            chosen.skipped_releases = vec![skip(None, "from the template")];
+            chosen
+        };
+        // (case, existing, intent, the release installed, the marks kept, the marks lifted)
+        let cases = [
+            (
+                "an update to another release keeps every mark",
+                Some(with_marks()),
+                keep.clone(),
+                at("5.0"),
+                marks.clone(),
+                vec![],
+            ),
+            (
+                "a named version lifts the exact mark covering it, and keeps the others",
+                Some(with_marks()),
+                named("2.0"),
+                at("2.0"),
+                vec![marks[1].clone(), marks[2].clone()],
+                vec![marks[0].clone()],
+            ),
+            (
+                "a named version lifts the label mark covering it",
+                Some(with_marks()),
+                named("v3.0"),
+                at("v3.0"),
+                vec![marks[0].clone(), marks[2].clone()],
+                vec![marks[1].clone()],
+            ),
+            (
+                "a named version that no mark covers lifts none",
+                Some(with_marks()),
+                named("5.0"),
+                at("5.0"),
+                marks.clone(),
+                vec![],
+            ),
+            (
+                "without a version, none is dropped, even at a covered release",
+                Some(with_marks()),
+                keep.clone(),
+                at("2.0"),
+                marks.clone(),
+                vec![],
+            ),
+            (
+                "the resolver's install of a dependency lifts none",
+                Some(with_marks()),
+                InstallIntent {
+                    version: Some("2.0".into()),
+                    ..resolver("Bar")
+                },
+                at("2.0"),
+                marks.clone(),
+                vec![],
+            ),
+            (
+                "a first install has none, whatever the template holds",
+                None,
+                named("2.0"),
+                at("2.0"),
+                vec![],
+                vec![],
+            ),
+        ];
+        for (case, existing, intent, chosen, kept, lifted) in cases {
+            let carried = carry_over(existing.as_ref(), &intent, &chosen);
+            assert_eq!(carried.skipped_releases, kept, "{case}");
+            assert_eq!(
+                skips_lifted(existing.as_ref(), &intent, &carried),
+                lifted,
+                "{case}: skips_lifted reports what was dropped"
+            );
+        }
+    }
+
+    #[test]
+    fn twenty_marks_survive_twenty_updates() {
+        let mut record = installed("1.0", false, Channel::Stable, AddonReason::Explicit);
+        for n in 0..20 {
+            record
+                .add_skip(skip(Some(&format!("0.{n}")), &format!("0.{n}")))
+                .unwrap();
+        }
+        let marks = record.skipped_releases.clone();
+        let update = user(PinIntent::Keep, Channel::Stable, AddonReason::Explicit);
+        for n in 1..=20 {
+            let mut next = chosen();
+            next.version = format!("{n}.0");
+            next.release_id = Some(format!("gh:o/foo@{n}.0"));
+            record = carry_over(Some(&record), &update, &next);
+            assert_eq!(record.skipped_releases, marks, "after update {n}");
+        }
+        assert_eq!(record.version, "20.0");
     }
 
     #[test]

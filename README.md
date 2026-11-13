@@ -2537,7 +2537,7 @@ Sources:
   wago        off  needs a key (M5)
   wowace      on
 43 error codes · 55 warning codes · 27 actions · 32 failure modes
-  124 limits (0 from config)
+  125 limits (0 from config)
 --json for the full description
 ```
 
@@ -3278,6 +3278,8 @@ A test fails when the binary reads a variable this section does not list.
 
 The state directory honors `XDG_STATE_HOME`, the cache `XDG_CACHE_HOME`, and the config `XDG_CONFIG_HOME`. State files carry a `schema_version`. A file written by a newer omaddons is read, never overwritten (`state_too_new`).
 
+A client's record (`targets/<key>.json`) is format 1.1 from the first change this build makes to that client: each addon may carry `skipped_releases`, releases `update` is to pass over, which are decisions and never dropped to make room (at most 256 per addon, `SKIPS_PER_ADDON_MAX`). omaddons 0.2.1 and older still read such a client, but refuse every change to it with `state_too_new`, so going back to an older build leaves that client read-only until you upgrade again.
+
 ---
 
 ## Architecture
@@ -3666,7 +3668,7 @@ Generating schemas needs schemars, built only by the package's `schemas` feature
 
 ### Tests
 
-The gate runs about 4,500 Rust tests, unit tests in `src/` and integration tests in about 130 suites under `tests/`. Every suite is a module of one test binary, `integration` (`tests/main.rs`), with tests named `<suite>::…`, so `cargo test --test integration restore::` runs one suite (one binary links the library once). Debug and test builds carry line tables only, and dependencies no debuginfo (`CARGO_PROFILE_DEV_DEBUG=true` for a debugger). About 98 more are `#[ignore]`d and run only at checkpoints or by hand: live probes, real-machine checks, time budgets and bench homes (`tests/perf.rs`), the compatibility suites (`tests/compat_m2.rs`, `tests/compat_m3.rs`), fixture recorders, the fuzz-seed writer and child-process helpers. The widget adds 191 `bun` tests and 204 QML test functions in `omarchy/tests/qml/`. `cargo test -- --list` counts today's.
+The gate runs about 4,500 Rust tests, unit tests in `src/` and integration tests in about 130 suites under `tests/`. Every suite is a module of one test binary, `integration` (`tests/main.rs`), with tests named `<suite>::…`, so `cargo test --test integration restore::` runs one suite (one binary links the library once). Debug and test builds carry line tables only, and dependencies no debuginfo (`CARGO_PROFILE_DEV_DEBUG=true` for a debugger). About 98 more are `#[ignore]`d and run only at checkpoints or by hand: live probes, real-machine checks, time budgets and bench homes (`tests/perf.rs`), the compatibility suites (`tests/compat_m2.rs`, `tests/compat_m3.rs`, `tests/compat_v021.rs`), fixture recorders, the fuzz-seed writer and child-process helpers. The widget adds 191 `bun` tests and 204 QML test functions in `omarchy/tests/qml/`. `cargo test -- --list` counts today's.
 
 | Suite | What it covers |
 |---|---|
@@ -3677,6 +3679,7 @@ The gate runs about 4,500 Rust tests, unit tests in `src/` and integration tests
 | `tests/engine_witness.rs`, `tests/preconditions.rs`, `tests/preconditions_matrix.rs`, `tests/fail_closed.rs` | `--if-match` and the approval under the commit lock: every change between preview and run refused, guarded renames, crashes and I/O errors at every step, two runs holding one token; state a build cannot read refused, never acted on |
 | `tests/engine_concurrency.rs` | Parallel runs, plan/commit races at named steps, no lock while planning and staging, measured lock holds, captures, prunes and verifies racing |
 | `tests/compat_m2.rs` | The last M2 build (`af10e34`) against state M3 wrote; checkpoint only |
+| `tests/compat_v021.rs` | The previous release, 0.2.1 (`8727df8`), on a client this build changed: it reads, refuses every change (`state_too_new`) and leaves an interrupted change of this build byte for byte; checkpoint only |
 | `tests/perf.rs` | Time budgets (release build, checkpoint only), the request-economy checks (in the gate), the under-lock check's cost, and the `capabilities` budget (under 20 ms) |
 | `tests/apply.rs`, `tests/apply_crash.rs` | Stored previews and `apply` end to end for every storable command: hand edits, release landings, the plan lifecycle, two appliers and the lease, and crashes that leave a plan applied exactly once or not at all |
 | `tests/discover_*.rs`, `tests/catalog.rs`, `tests/sources_*.rs` | Discovery (launchers, scanning, custom clients, the cache); every catalog entry replayed offline from recorded fixtures with no REST calls; each source, WowAce over a recording of the live server |
@@ -3732,6 +3735,7 @@ argc widget-bench --real                                   # the bar widget's co
 cargo test --release --test integration perf:: -- --ignored --skip bench_home --skip live_home --test-threads=1   # the time budgets
 cargo test --test integration compat_m2:: -- --ignored --nocapture   # the M2 build against M3 state (prints its table)
 cargo test --test integration compat_m3:: -- --ignored --nocapture   # the M3 build (c0ab5e9) against M4 state (prints its table)
+cargo test --test integration compat_v021:: -- --ignored --nocapture   # the 0.2.1 release (8727df8) on a client this build changed
 OMADDONS_LIVE=1 cargo test --test integration live_probes:: -- --ignored   # the real endpoints
 OMADDONS_REAL_MACHINE=1 OMADDONS_LIVE=1 OMADDONS_ALLOW_SKIP=keyless_installs_forever \
   cargo test --test integration real_machine:: -- --ignored --test-threads=1   # this machine's clients; every addon change is undone

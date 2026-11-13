@@ -3216,7 +3216,7 @@ mod tests {
         let mut restore = Restore::new(true);
         restore.world.base.markers.clear();
         let newer = text(&restore.prepared, &restore.steps, &[]).replacen(
-            "\"schema_version\":\"1.1\"",
+            &format!("\"schema_version\":\"{}\"", crate::engine::journal::CURRENT),
             "\"schema_version\":\"9.0\"",
             1,
         );
@@ -3254,7 +3254,7 @@ mod tests {
         let folder = Folder::new(2, false);
         let plain = text(&folder.prepared, &folder.steps, &[]);
         let newer = without_target(&plain.replacen(
-            "\"schema_version\":\"1.1\"",
+            &format!("\"schema_version\":\"{}\"", crate::engine::journal::CURRENT),
             "\"schema_version\":\"9.0\"",
             1,
         ));

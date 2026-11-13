@@ -546,6 +546,15 @@ expression: "(politeness, REGISTRY)"
       "notes": "Other releases a memo entry remembers beside the newest"
     },
     {
+      "name": "SKIPS_PER_ADDON_MAX",
+      "value": {
+        "count": 256
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Skip marks one addon keeps; one more fails the change, never evicting a mark"
+    },
+    {
       "name": "DEPENDENCY_SOURCE_MAX_AGE",
       "value": {
         "millis": 63072000000

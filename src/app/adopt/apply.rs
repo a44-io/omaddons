@@ -1017,6 +1017,7 @@ fn adopted_record(
         revision: None,
         left_out: Vec::new(),
         any_flavor: false,
+        skipped_releases: Vec::new(),
     }
 }
 

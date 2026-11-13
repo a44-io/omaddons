@@ -55,8 +55,11 @@ pub use super::simulate::{
 };
 
 /// The version of the line format. A newer minor adds only optional fields and lines an
-/// older build may ignore; a newer major is never recovered by this one.
-pub const CURRENT: SchemaVersion = SchemaVersion::new(1, 1);
+/// older build may ignore; a newer major is never recovered by this one. 1.2: the commit
+/// payload's record may hold `skipped_releases` (target record 1.1, RG-30); a 1.1 reader
+/// ignores them, and its roll-forward then cannot save over the 1.1 record on disk
+/// (`state_too_new`).
+pub const CURRENT: SchemaVersion = SchemaVersion::new(1, 2);
 
 /// One journal line.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -2681,6 +2684,12 @@ fn undo(s: &mut WriteSession<'_>, step: &StepRecord) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// How this build writes its journal version in a line: what the tests that plant
+    /// another version replace.
+    pub(crate) fn current_version() -> String {
+        format!("\"schema_version\":\"{CURRENT}\"")
+    }
+
     #[test]
     fn a_prepared_line_with_a_files_index_round_trips() {
         use crate::model::{Actor, FolderName};
@@ -3870,13 +3879,7 @@ mod tests {
         let rows: [(&str, Edit, Unrecoverable); 5] = [
             (
                 "a newer major version",
-                Box::new(|t| {
-                    t.replacen(
-                        "\"schema_version\":\"1.1\"",
-                        "\"schema_version\":\"2.0\"",
-                        1,
-                    )
-                }),
+                Box::new(|t| t.replacen(&current_version(), "\"schema_version\":\"2.0\"", 1)),
                 Unrecoverable::TooNew,
             ),
             (
@@ -4321,11 +4324,7 @@ mod tests {
             (
                 "newer_major_without_target",
                 |t| {
-                    without_target(&t.replacen(
-                        "\"schema_version\":\"1.1\"",
-                        "\"schema_version\":\"9.0\"",
-                        1,
-                    ))
+                    without_target(&t.replacen(&current_version(), "\"schema_version\":\"9.0\"", 1))
                 },
                 ErrorCode::StateTooNew,
                 false,
@@ -4380,13 +4379,7 @@ mod tests {
 
     #[test]
     fn an_own_targets_stop_keeps_its_reason() {
-        let scene = planted(|t| {
-            t.replacen(
-                "\"schema_version\":\"1.1\"",
-                "\"schema_version\":\"9.0\"",
-                1,
-            )
-        });
+        let scene = planted(|t| t.replacen(&current_version(), "\"schema_version\":\"9.0\"", 1));
         let err = recover_planted(&scene, true).unwrap_err();
         assert_eq!(err.code, ErrorCode::StateTooNew, "{err:?}");
         assert_eq!(err.details["reason"], "journal_too_new", "{err:?}");
@@ -4469,13 +4462,7 @@ mod tests {
             ),
             (
                 "a newer minor version",
-                Box::new(|t| {
-                    t.replacen(
-                        "\"schema_version\":\"1.1\"",
-                        "\"schema_version\":\"1.9\"",
-                        1,
-                    )
-                }),
+                Box::new(|t| t.replacen(&current_version(), "\"schema_version\":\"1.9\"", 1)),
             ),
             (
                 "a torn final step line",
@@ -4483,13 +4470,7 @@ mod tests {
             ),
             (
                 "an older version",
-                Box::new(|t| {
-                    t.replacen(
-                        "\"schema_version\":\"1.1\"",
-                        "\"schema_version\":\"1.0\"",
-                        1,
-                    )
-                }),
+                Box::new(|t| t.replacen(&current_version(), "\"schema_version\":\"1.0\"", 1)),
             ),
         ];
         for (name, edit) in rows {
@@ -5204,11 +5185,7 @@ mod tests {
             prepared.writes_wtf = writes_wtf;
             let line = serde_json::to_string(&JournalLine::Prepared(Box::new(prepared))).unwrap();
             let line = if newer {
-                line.replacen(
-                    "\"schema_version\":\"1.1\"",
-                    "\"schema_version\":\"9.0\"",
-                    1,
-                )
+                line.replacen(&current_version(), "\"schema_version\":\"9.0\"", 1)
             } else {
                 line
             };

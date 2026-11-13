@@ -160,6 +160,7 @@ impl PlanningHome {
                 revision: None,
                 left_out: Vec::new(),
                 any_flavor: false,
+                skipped_releases: Vec::new(),
             };
             record
                 .addons

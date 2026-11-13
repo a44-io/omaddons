@@ -195,6 +195,7 @@ mod support {
                     revision: None,
                     left_out: Vec::new(),
                     any_flavor: false,
+                    skipped_releases: Vec::new(),
                 };
                 edit(&mut addon);
                 record.addons.insert(TargetRecord::addon_key(name), addon);
