@@ -803,6 +803,7 @@ pub(super) fn commit(
                         folders: None,
                         required_by: None,
                         deps: ItemDeps::default(),
+                        auto: crate::app::outcome::ItemAuto::default(),
                         error: None,
                     },
                 )),
@@ -1041,6 +1042,7 @@ fn failed_item(request: String, error: &Error) -> ItemResult {
         folders: None,
         required_by: None,
         deps: ItemDeps::default(),
+        auto: crate::app::outcome::ItemAuto::default(),
         error: Some(item_error),
     }
 }

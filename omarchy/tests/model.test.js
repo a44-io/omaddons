@@ -643,6 +643,8 @@ const CLASSIFIER_TABLE = [
   [["omaddons", "install", "Baz", "-t", "retail", "--reinstall"], "", false],
   [["omaddons", "undo", "--run", "01M5JHFF8X0FXBT1K068DQKCHG"], "", true],
   [["omaddons", "help", "update"], "", false],
+  // RG-52d: the automatic update's argv (RG-63 runs it as a preview, then its apply).
+  [["omaddons", "update", "--auto", "-t", "retail"], "", false],
   [["omaddons", "targets", "rm", "retail"], "", true],
   [["omaddons", "remove", "-t", "retail", "--", "Foo"], "", true],
   [["omaddons", "remove", "--", "--json"], "", true],
@@ -726,6 +728,7 @@ describe("classifyCliArgv", () => {
       ["backup_restore", ["omaddons", "backup", "restore", "01M6Q2VA", "-t", "retail"], "runs_through_apply"],
       ["backup_prune", ["omaddons", "backup", "prune", "-t", "retail", "--", "01M6Q2VA"], "runs_through_apply"],
       ["update", ["omaddons", "update", "-t", "retail"], "runs_through_apply"],
+      ["update_auto", ["omaddons", "update", "--auto", "-t", "retail"], "runs_through_apply"],
       ["errors_dismiss_builds", ["omaddons", "errors", "dismiss", "-t", "retail"], null],
     ], (argv) => reasonOf(() => M.cliArgv(argv, opts({ token: TOKEN }))))
   })

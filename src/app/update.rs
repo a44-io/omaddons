@@ -13,20 +13,23 @@
 
 use std::collections::BTreeMap;
 
+use jiff::Timestamp;
+
 use super::adopt::hints::{adopt_fixes, adopting};
 use super::approval::{Approval, ApprovalFlags};
 use super::engine::{Engine, recover_waiting};
 use super::intent::{self, Preview, Storable, StorableArgs, TargetScope};
 use super::outcome::{
-    ItemDeps, ItemError, ItemRequest, ItemResult, ItemStatus, SkipReason, TargetRef, TargetResult,
-    TargetsData, TargetsOutcome, sort_keeping_dependencies,
+    ItemAuto, ItemDeps, ItemError, ItemRequest, ItemResult, ItemStatus, SkipReason, TargetRef,
+    TargetResult, TargetsData, TargetsOutcome, sort_keeping_dependencies,
 };
 use super::precondition::{self, Idle, PlanBinding, PlanExtras, Precondition};
 use super::world::{World, names_addon};
 use crate::cli::Context;
 use crate::discover::DiscoveredTarget;
 use crate::engine::plan::{
-    AnyFlavorIntent, PinIntent, RequestedChange, addon_pinned, release_skipped,
+    AnyFlavorIntent, HeldReason, PinIntent, RequestedChange, TargetPlan, UpdatePolicy,
+    addon_pinned, release_skipped,
 };
 use crate::engine::{Binding, TxOutcomes, TxRequest, TxTarget};
 use crate::error::{CommandHint, Error, ErrorBody, ErrorCode, Result, Suggestion, Warning};
@@ -36,7 +39,8 @@ use crate::politeness::SOURCE_RECHECK_MIN_INTERVAL;
 use crate::resolve::cache::Freshness;
 use crate::resolve::catalog::Catalog;
 use crate::resolve::updates::{
-    UncheckedReason, UpdateStatus, installed_primary_interface, is_static, statuses, update_floor,
+    AutoGate, UncheckedReason, UpdateStatus, auto_gate, installed_primary_interface, is_static,
+    statuses, update_floor,
 };
 use crate::rules::TargetKind;
 use crate::sources::{SourceId, Wanted};
@@ -67,6 +71,15 @@ pub struct UpdateArgs {
     /// Update only the named addons, not the ones their TOCs require
     #[arg(long)]
     pub no_deps: bool,
+    /// Take only releases first seen at least `update_min_age_hours` ago
+    ///
+    /// An unattended update. Every release it would take (the newest, a release looked
+    /// back to, a new dependency) must have been first seen by this machine at least the
+    /// configured wait ago; one that has not is left for a later run, and so is every
+    /// addon that needs it. Bytes replaced under a release's tag count from when they were
+    /// seen.
+    #[arg(long)]
+    pub auto: bool,
 }
 
 /// `update`'s outcome: the shared multi-target outcome, with `--strict`.
@@ -178,8 +191,16 @@ struct InScope<'w> {
 
 /// Runs `update`.
 pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
+    // One instant for the whole run: the prediction and the planner judge age by it.
+    let now = Timestamp::now();
     let channel = check_args(ctx, args)?;
     let world = World::load(ctx)?;
+    let min_age = world.config.update_min_age();
+    let policy = if args.auto {
+        UpdatePolicy::Unattended { min_age, now }
+    } else {
+        UpdatePolicy::Attended
+    };
     let verbose = ctx.output.style.detail();
     let mut warnings = world.warnings.clone();
     let mut notes = Vec::new();
@@ -323,7 +344,32 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
                 .iter()
                 .find(|r| r.target == *id && r.addon.eq_ignore_ascii_case(&a.name))
                 .map(|r| r.status.clone());
+            // `--auto`: the offered release too new by what the memo knows is left
+            // before planning, as `status` would report it; the planner judges every
+            // release it settles on, this one included (design 7.6).
+            let too_new = match (&status, policy) {
+                (
+                    Some(UpdateStatus::UpdateAvailable { latest, .. }),
+                    UpdatePolicy::Unattended { min_age, now },
+                ) => match auto_gate(now, min_age, latest.first_seen_at) {
+                    AutoGate::TooNew { eligible_at } => Some((latest.version.clone(), eligible_at)),
+                    AutoGate::Take => None,
+                },
+                _ => None,
+            };
             match status {
+                Some(UpdateStatus::UpdateAvailable { .. }) if let Some((to, at)) = too_new => {
+                    let item = ItemResult {
+                        to_version: Some(to),
+                        auto: ItemAuto {
+                            auto_eligible_at: Some(at),
+                            held_by: None,
+                        },
+                        ..skipped(s, SkipReason::TooNew)
+                    };
+                    pushed.push((target_ref, item));
+                    None
+                }
                 Some(UpdateStatus::UpdateAvailable { .. }) => Some(RequestedChange::Update {
                     addon: a.name.clone(),
                     installed_primary_interface: update_floor(&s.target.target, a, &world.table),
@@ -399,6 +445,7 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
     let skips = update_skips(&pushed);
     let extras = PlanExtras {
         update_skips: &skips,
+        auto_min_age_hours: args.auto.then_some(min_age.as_secs() / 3600),
         ..PlanExtras::default()
     };
     let run = RunId::new();
@@ -449,8 +496,7 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
             no_deps: args.no_deps,
             // The run the token describes: a dry run's, or a bound run's to compare.
             witness: precondition::witnessing(ctx),
-            // RG-52d passes `Unattended` for `update --auto`.
-            policy: crate::engine::plan::UpdatePolicy::Attended,
+            policy,
         };
         let binding = PlanBinding::of_run(ctx, "update", extras.clone());
         match engine.run_bound(
@@ -480,6 +526,7 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
         Some(done) => {
             let mut data = TargetsData::build(done, run, &requested);
             settle_failures(&mut data, done);
+            settle_holds(&mut data, &done.plan.targets);
             for o in &done.outcomes {
                 warnings.extend(o.warnings.iter().cloned());
                 notes.extend(o.notes.iter().cloned());
@@ -526,6 +573,7 @@ pub fn run(ctx: &Context, args: &UpdateArgs) -> Result<UpdateOutcome> {
                     folders: None,
                     required_by: None,
                     deps: ItemDeps::default(),
+                    auto: ItemAuto::default(),
                     error: Some(ItemError::from(&error)),
                 },
             );
@@ -724,6 +772,7 @@ fn item(s: &InScope<'_>, status: ItemStatus) -> ItemResult {
         folders: None,
         required_by: None,
         deps: ItemDeps::default(),
+        auto: ItemAuto::default(),
         error: None,
     }
 }
@@ -767,6 +816,44 @@ fn update_skips(
             ))
         })
         .collect()
+}
+
+/// What the planner held under `--auto` (design 7.6). Each held addon's item, which the
+/// engine's outcome lists as `unchanged`, becomes `skipped`: `too_new` with when its
+/// release may be taken, or `dependency_held` with the too-new release it needs. A held
+/// new dependency was never installed and is no item; its requesters name it.
+fn settle_holds(data: &mut TargetsData, plans: &[TargetPlan]) {
+    for tp in plans {
+        let Some(t) = data.targets.iter_mut().find(|t| t.target.id == tp.target) else {
+            continue;
+        };
+        for h in &tp.held {
+            let Some(item) = t.items.iter_mut().find(|i| {
+                i.status == ItemStatus::Unchanged
+                    && i.name
+                        .as_deref()
+                        .is_some_and(|n| n.eq_ignore_ascii_case(&h.addon))
+            }) else {
+                continue;
+            };
+            let held_by = match &h.reason {
+                HeldReason::DependencyHeld { dependency } => tp
+                    .held
+                    .iter()
+                    .find(|c| c.addon.eq_ignore_ascii_case(dependency))
+                    .map(|c| (c.addon.clone(), c.version.clone())),
+                HeldReason::TooNew | HeldReason::ClientHeld => None,
+            };
+            item.status = ItemStatus::Skipped;
+            item.skip_reason = Some(SkipReason::of_hold(&h.reason));
+            item.to_version = Some(h.version.clone());
+            item.auto = ItemAuto {
+                auto_eligible_at: h.eligible_at.filter(|_| h.reason == HeldReason::TooNew),
+                held_by,
+            };
+        }
+    }
+    data.recount();
 }
 
 /// What the engine's failures mean for `update`: a release of an addon it was asked
@@ -859,6 +946,7 @@ mod tests {
             folders: None,
             required_by: None,
             deps: ItemDeps::default(),
+            auto: ItemAuto::default(),
             error: None,
         };
         let key = TargetKey::new();

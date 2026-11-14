@@ -64,7 +64,8 @@ impl Versioned for StoredPlan {
     /// 1.1: a `sync` intent may hold `stdin`, the text `sync -` read, which its `apply`
     /// syncs instead of reading standard input (1n2p.8). A 1.0 plan holds none: the
     /// default migration reads it as is. 1.2: the `skip` and `unskip` intents (RG-33),
-    /// which an older plan never holds.
+    /// which an older plan never holds, and the `update` intent's `auto` (RG-52d), which
+    /// an older plan reads as `false`.
     const CURRENT: SchemaVersion = SchemaVersion::new(1, 2);
 }
 

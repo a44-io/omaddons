@@ -586,6 +586,10 @@ pub struct UpdateIntent {
     pub refresh: bool,
     pub strict: bool,
     pub no_deps: bool,
+    /// `--auto`: the unattended policy, which `apply` runs under too (RG-52d). An
+    /// intent stored before the flag holds none: an attended update.
+    #[serde(default)]
+    pub auto: bool,
     pub while_running: bool,
 }
 
@@ -1056,6 +1060,7 @@ impl StoredIntent {
                 f.switch("--refresh", u.refresh);
                 f.switch("--strict", u.strict);
                 f.switch("--no-deps", u.no_deps);
+                f.switch("--auto", u.auto);
                 f.switch("--while-running", u.while_running);
                 u.addons.clone()
             }
@@ -1190,6 +1195,7 @@ impl StoredIntent {
                 refresh: args.refresh,
                 strict: args.strict,
                 no_deps: args.no_deps,
+                auto: args.auto,
                 while_running,
             }),
             StorableArgs::Pin { args, scope } => Self::Pin(PinIntent {
@@ -1372,6 +1378,7 @@ impl From<&UpdateIntent> for UpdateArgs {
             refresh: false,
             strict: false,
             no_deps: u.no_deps,
+            auto: u.auto,
         }
     }
 }
@@ -1862,6 +1869,7 @@ mod tests {
             refresh: true,
             strict: true,
             no_deps: true,
+            auto: true,
             while_running: true,
         };
         let UpdateArgs {
@@ -1871,10 +1879,11 @@ mod tests {
             refresh,
             strict,
             no_deps,
+            auto,
         } = UpdateArgs::from(&intent);
         assert_eq!(addons, ["DBM", "Plater"]);
         assert_eq!(channel.as_deref(), Some("alpha"));
-        assert!(no_deps, "copied");
+        assert!(no_deps && auto, "copied");
         assert_eq!((all, refresh, strict), (false, false, false), "defaulted");
     }
 
@@ -2169,6 +2178,7 @@ mod tests {
                     refresh: false,
                     strict: false,
                     no_deps: false,
+                    auto: false,
                     while_running: false,
                 }),
                 "update",
@@ -2695,6 +2705,7 @@ mod tests {
                     refresh: true,
                     strict: true,
                     no_deps: true,
+                    auto: true,
                     all: false,
                 }),
                 while_running: false,
@@ -2705,6 +2716,7 @@ mod tests {
                     refresh: true,
                     strict: true,
                     no_deps: true,
+                    auto: true,
                     while_running: false,
                 }),
                 display: &[
@@ -2718,6 +2730,7 @@ mod tests {
                     "--refresh",
                     "--strict",
                     "--no-deps",
+                    "--auto",
                 ],
             },
             Row {
@@ -2735,6 +2748,7 @@ mod tests {
                     refresh: false,
                     strict: false,
                     no_deps: false,
+                    auto: false,
                     while_running: true,
                 }),
                 display: &["omaddons", "update", "-t", "mainline", "--while-running"],

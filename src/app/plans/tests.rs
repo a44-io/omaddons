@@ -282,6 +282,7 @@ fn records_history_is_false_only_for_backup_prune() {
             refresh: false,
             strict: false,
             no_deps: false,
+            auto: false,
             while_running: false,
         }),
         StoredIntent::Pin(PinIntent {

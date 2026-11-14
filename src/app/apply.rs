@@ -1115,6 +1115,7 @@ mod tests {
             folders: None,
             required_by: None,
             deps: crate::app::outcome::ItemDeps::default(),
+            auto: crate::app::outcome::ItemAuto::default(),
             error: code.map(item_error),
         }
     }

@@ -646,6 +646,7 @@ fn bare(request: &str, status: ItemStatus) -> ItemResult {
         folders: None,
         required_by: None,
         deps: ItemDeps::default(),
+        auto: crate::app::outcome::ItemAuto::default(),
         error: None,
     }
 }

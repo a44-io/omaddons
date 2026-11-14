@@ -561,6 +561,7 @@ fn run(ctx: &Context, mode: Mode<'_>) -> Result<SkipOutcome> {
                         folders: None,
                         required_by: None,
                         deps: ItemDeps::default(),
+                        auto: crate::app::outcome::ItemAuto::default(),
                         error: None,
                     },
                 ));
@@ -713,6 +714,7 @@ fn run(ctx: &Context, mode: Mode<'_>) -> Result<SkipOutcome> {
                     folders: None,
                     required_by: None,
                     deps: ItemDeps::default(),
+                    auto: crate::app::outcome::ItemAuto::default(),
                     error: Some(ItemError::from(&error)),
                 },
             );

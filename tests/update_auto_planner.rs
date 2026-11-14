@@ -413,3 +413,139 @@ fn a_look_back_choice_first_seen_recently_is_held() {
     assert!(held(&plan).is_empty(), "{:?}", held(&plan));
     assert_eq!(changed(&plan), ["VuhDo"]);
 }
+
+/// One generated history of the release memo's sightings of `gh:o/foo` (RG-52d's
+/// property): `ages[i]` is how long before the plan release `v{i + 2}` was first seen
+/// (`None`: never), the newest being the one offered; `close` packs every sighting into
+/// a few seconds, as eight re-tags in a row would; `replaced` rebuilds the newest's
+/// archive after its sighting, so the plan downloads other bytes.
+#[derive(Debug, Clone)]
+struct History {
+    ages: Vec<Option<i64>>,
+    close: bool,
+    replaced: bool,
+    wait_hours: i64,
+}
+
+fn arb_history() -> impl proptest::strategy::Strategy<Value = History> {
+    use proptest::prelude::*;
+    // Ages around the wait matter most: up to two days, in seconds.
+    let age = prop::option::weighted(0.85, 0i64..=2 * 86_400);
+    (
+        prop::collection::vec(age, 1..=8),
+        any::<bool>(),
+        prop::bool::weighted(0.25),
+        1i64..=48,
+    )
+        .prop_map(|(ages, close, replaced, wait_hours)| History {
+            ages,
+            close,
+            replaced,
+            wait_hours,
+        })
+}
+
+/// The property's one case: plans `update Foo` under the generated history and checks
+/// that a release planned has stood the wait since its first sight, with the bytes it
+/// was seen with, and that one which has stood it (by more than a second) is planned.
+fn no_bypass(h: &History) -> Result<(), proptest::test_runner::TestCaseError> {
+    use proptest::prop_assert;
+    let s = Scene::new(&[("Foo", "foo")], &[]);
+    let tags: Vec<String> = (0..h.ages.len()).map(|i| format!("v{}", i + 2)).collect();
+    for tag in &tags {
+        s.release("Foo", "foo", tag, &[], &format!("-- {tag}"));
+    }
+    let newest = tags.last().unwrap();
+    // As a check would: the memo learns the newest release and its archive's bytes.
+    s.plan(vec![update("Foo")], UpdatePolicy::Attended);
+    let now = Timestamp::now();
+    let path = s.home.paths.release_memo();
+    let mut memo: ReleaseMemo = store::load::<ReleaseMemo>(&path).unwrap().unwrap().value;
+    for entry in memo.entries.values_mut() {
+        if entry.wanted.r#ref.to_string() != "gh:o/foo" {
+            continue;
+        }
+        let learned = entry.seen_releases.clone();
+        entry.seen_releases.clear();
+        for (i, (tag, age)) in tags.iter().zip(&h.ages).enumerate() {
+            let Some(age) = age else { continue };
+            // Packed: one age for all, a second apart.
+            let age = if h.close {
+                h.ages.iter().flatten().max().unwrap() - i as i64
+            } else {
+                *age
+            };
+            let release =
+                omaddons::model::ReleaseKey::parse(&format!("gh:o/foo@{tag}"), None).unwrap();
+            let hash = learned
+                .iter()
+                .find(|s| s.release == release)
+                .and_then(|s| s.blob_sha256.clone());
+            entry.seen_releases.push(memo::SeenRelease {
+                release,
+                first_seen_at: now - SignedDuration::from_secs(age.max(0)),
+                blob_sha256: hash,
+            });
+        }
+        entry.seen_releases.sort_by_key(|s| s.first_seen_at);
+    }
+    fs::write(&path, store::encode(&memo).unwrap()).unwrap();
+    if h.replaced {
+        s.release("Foo", "foo", newest, &[], &format!("-- {newest}, rebuilt"));
+        let blobs = s.home.paths.blobs_dir();
+        if blobs.exists() {
+            fs::remove_dir_all(&blobs).unwrap();
+        }
+    }
+    let wait = SignedDuration::from_hours(h.wait_hours);
+    let at = Timestamp::now();
+    let policy = UpdatePolicy::Unattended {
+        min_age: wait.try_into().unwrap(),
+        now: at,
+    };
+    let plan = s.plan(vec![update("Foo")], policy);
+    let planned = changed(&plan) == ["Foo"];
+    let (memo, _) = memo::load(&s.home.paths);
+    let sight = memo
+        .entries
+        .values()
+        .filter(|e| e.wanted.r#ref.to_string() == "gh:o/foo")
+        .flat_map(|e| &e.seen_releases)
+        .filter(|s| &s.release.tag == newest)
+        .map(|s| s.first_seen_at)
+        .min();
+    let stood = |margin: i64| {
+        sight
+            .is_some_and(|seen| at.duration_since(seen) >= wait + SignedDuration::from_secs(margin))
+    };
+    if planned {
+        prop_assert!(!h.replaced, "replaced bytes were planned: {h:?}");
+        prop_assert!(
+            stood(0),
+            "planned before its wait: {h:?}, first seen {sight:?}, now {at}"
+        );
+    } else {
+        prop_assert!(
+            h.replaced || !stood(1),
+            "held though it stood the wait: {h:?}, first seen {sight:?}, held {:?}",
+            held(&plan)
+        );
+    }
+    Ok(())
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig {
+        cases: 48,
+        rng_seed: proptest::test_runner::RngSeed::Fixed(0x52d),
+        ..proptest::prelude::ProptestConfig::default()
+    })]
+
+    /// RG-52d's acceptance: for any history of sightings (any number of releases, any
+    /// spacing, eight re-tags within seconds, replaced bytes), a release first seen less
+    /// than a non-zero wait before now is never planned under the unattended policy.
+    #[test]
+    fn no_history_of_sightings_plans_a_release_younger_than_the_wait(h in arb_history()) {
+        no_bypass(&h)?;
+    }
+}

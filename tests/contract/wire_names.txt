@@ -331,7 +331,7 @@ enum adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,r
 enum adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].error.code archive_too_large,auth_rejected,auth_required,bad_archive,case_collision,check_failed,desired_state_invalid,distribution_disabled,doctor_refused,download_failed,file_exists,filesystem_unsupported,game_running,hash_mismatch,host_blocked,http_status,internal,io,locked,network,no_compatible_release,not_found,not_managed,offline,online_required,ownership_conflict,plan_not_found,plan_stale,protected_folder,rate_limited,ref_ambiguous,ref_invalid,scope_denied,source_disabled,state_corrupt,state_too_new,target_ambiguous,target_not_found,undo_conflict,unmanaged_folder,unsafe_archive,usage,wrong_flavor
 enum adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].folders.skipped[]<reason=interface_not_in_family>.family cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].reason dependency,explicit
-enum adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].skip_reason ahead,already_installed,blocked,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,unchecked
+enum adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].skip_reason ahead,already_installed,blocked,dependency_held,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,too_new,unchecked
 enum adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].status adopted,edited,failed,installed,pinned,removed,skip_cleared,skip_marked,skipped,unchanged,unpinned,updated
 enum adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].unresolved[].reason limit_reached,managed_folder_missing,no_source,not_requested,not_shipped,out_of_date,several_catalog_entries,unknown_condition,wowi_abandoned,wowi_ambiguous
 enum adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,skip,sync,target,undo,update,widget
@@ -389,7 +389,7 @@ enum apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_exp
 enum apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].error.code archive_too_large,auth_rejected,auth_required,bad_archive,case_collision,check_failed,desired_state_invalid,distribution_disabled,doctor_refused,download_failed,file_exists,filesystem_unsupported,game_running,hash_mismatch,host_blocked,http_status,internal,io,locked,network,no_compatible_release,not_found,not_managed,offline,online_required,ownership_conflict,plan_not_found,plan_stale,protected_folder,rate_limited,ref_ambiguous,ref_invalid,scope_denied,source_disabled,state_corrupt,state_too_new,target_ambiguous,target_not_found,undo_conflict,unmanaged_folder,unsafe_archive,usage,wrong_flavor
 enum apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].folders.skipped[]<reason=interface_not_in_family>.family cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].reason dependency,explicit
-enum apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].skip_reason ahead,already_installed,blocked,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,unchecked
+enum apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].skip_reason ahead,already_installed,blocked,dependency_held,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,too_new,unchecked
 enum apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].status adopted,edited,failed,installed,pinned,removed,skip_cleared,skip_marked,skipped,unchanged,unpinned,updated
 enum apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].unresolved[].reason limit_reached,managed_folder_missing,no_source,not_requested,not_shipped,out_of_date,several_catalog_entries,unknown_condition,wowi_abandoned,wowi_ambiguous
 enum apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,skip,sync,target,undo,update,widget
@@ -418,7 +418,7 @@ enum apply data<applied.command=copy>.result.targets[].identifications[].tier cf
 enum apply data<applied.command=copy>.result.targets[].items[].error.code archive_too_large,auth_rejected,auth_required,bad_archive,case_collision,check_failed,desired_state_invalid,distribution_disabled,doctor_refused,download_failed,file_exists,filesystem_unsupported,game_running,hash_mismatch,host_blocked,http_status,internal,io,locked,network,no_compatible_release,not_found,not_managed,offline,online_required,ownership_conflict,plan_not_found,plan_stale,protected_folder,rate_limited,ref_ambiguous,ref_invalid,scope_denied,source_disabled,state_corrupt,state_too_new,target_ambiguous,target_not_found,undo_conflict,unmanaged_folder,unsafe_archive,usage,wrong_flavor
 enum apply data<applied.command=copy>.result.targets[].items[].folders.skipped[]<reason=interface_not_in_family>.family cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum apply data<applied.command=copy>.result.targets[].items[].reason dependency,explicit
-enum apply data<applied.command=copy>.result.targets[].items[].skip_reason ahead,already_installed,blocked,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,unchecked
+enum apply data<applied.command=copy>.result.targets[].items[].skip_reason ahead,already_installed,blocked,dependency_held,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,too_new,unchecked
 enum apply data<applied.command=copy>.result.targets[].items[].status adopted,edited,failed,installed,pinned,removed,skip_cleared,skip_marked,skipped,unchanged,unpinned,updated
 enum apply data<applied.command=copy>.result.targets[].items[].unresolved[].reason limit_reached,managed_folder_missing,no_source,not_requested,not_shipped,out_of_date,several_catalog_entries,unknown_condition,wowi_abandoned,wowi_ambiguous
 enum apply data<applied.command=copy>.result.targets[].kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,skip,sync,target,undo,update,widget
@@ -439,7 +439,7 @@ enum apply data<applied.command=install>.result.items[].error.code archive_too_l
 enum apply data<applied.command=install>.result.items[].fields[] any_flavor,channel,pinned,reason,ref,required_by,skipped_releases
 enum apply data<applied.command=install>.result.items[].folders.skipped[]<reason=interface_not_in_family>.family cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum apply data<applied.command=install>.result.items[].reason dependency,explicit
-enum apply data<applied.command=install>.result.items[].skip_reason ahead,already_installed,blocked,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,unchecked
+enum apply data<applied.command=install>.result.items[].skip_reason ahead,already_installed,blocked,dependency_held,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,too_new,unchecked
 enum apply data<applied.command=install>.result.items[].status adopted,edited,failed,installed,pinned,removed,skip_cleared,skip_marked,skipped,unchanged,unpinned,updated
 enum apply data<applied.command=install>.result.items[].unresolved[].reason limit_reached,managed_folder_missing,no_source,not_requested,not_shipped,out_of_date,several_catalog_entries,unknown_condition,wowi_abandoned,wowi_ambiguous
 enum apply data<applied.command=install>.result.items[].version_confidence release,toc
@@ -460,7 +460,7 @@ enum apply data<applied.command=pin>.result.targets[].identifications[].tier cf_
 enum apply data<applied.command=pin>.result.targets[].items[].error.code archive_too_large,auth_rejected,auth_required,bad_archive,case_collision,check_failed,desired_state_invalid,distribution_disabled,doctor_refused,download_failed,file_exists,filesystem_unsupported,game_running,hash_mismatch,host_blocked,http_status,internal,io,locked,network,no_compatible_release,not_found,not_managed,offline,online_required,ownership_conflict,plan_not_found,plan_stale,protected_folder,rate_limited,ref_ambiguous,ref_invalid,scope_denied,source_disabled,state_corrupt,state_too_new,target_ambiguous,target_not_found,undo_conflict,unmanaged_folder,unsafe_archive,usage,wrong_flavor
 enum apply data<applied.command=pin>.result.targets[].items[].folders.skipped[]<reason=interface_not_in_family>.family cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum apply data<applied.command=pin>.result.targets[].items[].reason dependency,explicit
-enum apply data<applied.command=pin>.result.targets[].items[].skip_reason ahead,already_installed,blocked,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,unchecked
+enum apply data<applied.command=pin>.result.targets[].items[].skip_reason ahead,already_installed,blocked,dependency_held,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,too_new,unchecked
 enum apply data<applied.command=pin>.result.targets[].items[].status adopted,edited,failed,installed,pinned,removed,skip_cleared,skip_marked,skipped,unchanged,unpinned,updated
 enum apply data<applied.command=pin>.result.targets[].items[].unresolved[].reason limit_reached,managed_folder_missing,no_source,not_requested,not_shipped,out_of_date,several_catalog_entries,unknown_condition,wowi_abandoned,wowi_ambiguous
 enum apply data<applied.command=pin>.result.targets[].kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,skip,sync,target,undo,update,widget
@@ -494,7 +494,7 @@ enum apply data<applied.command=skip>.result.targets[].identifications[].tier cf
 enum apply data<applied.command=skip>.result.targets[].items[].error.code archive_too_large,auth_rejected,auth_required,bad_archive,case_collision,check_failed,desired_state_invalid,distribution_disabled,doctor_refused,download_failed,file_exists,filesystem_unsupported,game_running,hash_mismatch,host_blocked,http_status,internal,io,locked,network,no_compatible_release,not_found,not_managed,offline,online_required,ownership_conflict,plan_not_found,plan_stale,protected_folder,rate_limited,ref_ambiguous,ref_invalid,scope_denied,source_disabled,state_corrupt,state_too_new,target_ambiguous,target_not_found,undo_conflict,unmanaged_folder,unsafe_archive,usage,wrong_flavor
 enum apply data<applied.command=skip>.result.targets[].items[].folders.skipped[]<reason=interface_not_in_family>.family cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum apply data<applied.command=skip>.result.targets[].items[].reason dependency,explicit
-enum apply data<applied.command=skip>.result.targets[].items[].skip_reason ahead,already_installed,blocked,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,unchecked
+enum apply data<applied.command=skip>.result.targets[].items[].skip_reason ahead,already_installed,blocked,dependency_held,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,too_new,unchecked
 enum apply data<applied.command=skip>.result.targets[].items[].status adopted,edited,failed,installed,pinned,removed,skip_cleared,skip_marked,skipped,unchanged,unpinned,updated
 enum apply data<applied.command=skip>.result.targets[].items[].unresolved[].reason limit_reached,managed_folder_missing,no_source,not_requested,not_shipped,out_of_date,several_catalog_entries,unknown_condition,wowi_abandoned,wowi_ambiguous
 enum apply data<applied.command=skip>.result.targets[].kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,skip,sync,target,undo,update,widget
@@ -515,7 +515,7 @@ enum apply data<applied.command=sync>.result.targets[].identifications[].tier cf
 enum apply data<applied.command=sync>.result.targets[].items[].error.code archive_too_large,auth_rejected,auth_required,bad_archive,case_collision,check_failed,desired_state_invalid,distribution_disabled,doctor_refused,download_failed,file_exists,filesystem_unsupported,game_running,hash_mismatch,host_blocked,http_status,internal,io,locked,network,no_compatible_release,not_found,not_managed,offline,online_required,ownership_conflict,plan_not_found,plan_stale,protected_folder,rate_limited,ref_ambiguous,ref_invalid,scope_denied,source_disabled,state_corrupt,state_too_new,target_ambiguous,target_not_found,undo_conflict,unmanaged_folder,unsafe_archive,usage,wrong_flavor
 enum apply data<applied.command=sync>.result.targets[].items[].folders.skipped[]<reason=interface_not_in_family>.family cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum apply data<applied.command=sync>.result.targets[].items[].reason dependency,explicit
-enum apply data<applied.command=sync>.result.targets[].items[].skip_reason ahead,already_installed,blocked,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,unchecked
+enum apply data<applied.command=sync>.result.targets[].items[].skip_reason ahead,already_installed,blocked,dependency_held,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,too_new,unchecked
 enum apply data<applied.command=sync>.result.targets[].items[].status adopted,edited,failed,installed,pinned,removed,skip_cleared,skip_marked,skipped,unchanged,unpinned,updated
 enum apply data<applied.command=sync>.result.targets[].items[].unresolved[].reason limit_reached,managed_folder_missing,no_source,not_requested,not_shipped,out_of_date,several_catalog_entries,unknown_condition,wowi_abandoned,wowi_ambiguous
 enum apply data<applied.command=sync>.result.targets[].kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,skip,sync,target,undo,update,widget
@@ -554,7 +554,7 @@ enum apply data<applied.command=unpin>.result.targets[].identifications[].tier c
 enum apply data<applied.command=unpin>.result.targets[].items[].error.code archive_too_large,auth_rejected,auth_required,bad_archive,case_collision,check_failed,desired_state_invalid,distribution_disabled,doctor_refused,download_failed,file_exists,filesystem_unsupported,game_running,hash_mismatch,host_blocked,http_status,internal,io,locked,network,no_compatible_release,not_found,not_managed,offline,online_required,ownership_conflict,plan_not_found,plan_stale,protected_folder,rate_limited,ref_ambiguous,ref_invalid,scope_denied,source_disabled,state_corrupt,state_too_new,target_ambiguous,target_not_found,undo_conflict,unmanaged_folder,unsafe_archive,usage,wrong_flavor
 enum apply data<applied.command=unpin>.result.targets[].items[].folders.skipped[]<reason=interface_not_in_family>.family cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum apply data<applied.command=unpin>.result.targets[].items[].reason dependency,explicit
-enum apply data<applied.command=unpin>.result.targets[].items[].skip_reason ahead,already_installed,blocked,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,unchecked
+enum apply data<applied.command=unpin>.result.targets[].items[].skip_reason ahead,already_installed,blocked,dependency_held,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,too_new,unchecked
 enum apply data<applied.command=unpin>.result.targets[].items[].status adopted,edited,failed,installed,pinned,removed,skip_cleared,skip_marked,skipped,unchanged,unpinned,updated
 enum apply data<applied.command=unpin>.result.targets[].items[].unresolved[].reason limit_reached,managed_folder_missing,no_source,not_requested,not_shipped,out_of_date,several_catalog_entries,unknown_condition,wowi_abandoned,wowi_ambiguous
 enum apply data<applied.command=unpin>.result.targets[].kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,skip,sync,target,undo,update,widget
@@ -575,7 +575,7 @@ enum apply data<applied.command=unskip>.result.targets[].identifications[].tier 
 enum apply data<applied.command=unskip>.result.targets[].items[].error.code archive_too_large,auth_rejected,auth_required,bad_archive,case_collision,check_failed,desired_state_invalid,distribution_disabled,doctor_refused,download_failed,file_exists,filesystem_unsupported,game_running,hash_mismatch,host_blocked,http_status,internal,io,locked,network,no_compatible_release,not_found,not_managed,offline,online_required,ownership_conflict,plan_not_found,plan_stale,protected_folder,rate_limited,ref_ambiguous,ref_invalid,scope_denied,source_disabled,state_corrupt,state_too_new,target_ambiguous,target_not_found,undo_conflict,unmanaged_folder,unsafe_archive,usage,wrong_flavor
 enum apply data<applied.command=unskip>.result.targets[].items[].folders.skipped[]<reason=interface_not_in_family>.family cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum apply data<applied.command=unskip>.result.targets[].items[].reason dependency,explicit
-enum apply data<applied.command=unskip>.result.targets[].items[].skip_reason ahead,already_installed,blocked,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,unchecked
+enum apply data<applied.command=unskip>.result.targets[].items[].skip_reason ahead,already_installed,blocked,dependency_held,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,too_new,unchecked
 enum apply data<applied.command=unskip>.result.targets[].items[].status adopted,edited,failed,installed,pinned,removed,skip_cleared,skip_marked,skipped,unchanged,unpinned,updated
 enum apply data<applied.command=unskip>.result.targets[].items[].unresolved[].reason limit_reached,managed_folder_missing,no_source,not_requested,not_shipped,out_of_date,several_catalog_entries,unknown_condition,wowi_abandoned,wowi_ambiguous
 enum apply data<applied.command=unskip>.result.targets[].kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,skip,sync,target,undo,update,widget
@@ -596,7 +596,7 @@ enum apply data<applied.command=update>.result.targets[].identifications[].tier 
 enum apply data<applied.command=update>.result.targets[].items[].error.code archive_too_large,auth_rejected,auth_required,bad_archive,case_collision,check_failed,desired_state_invalid,distribution_disabled,doctor_refused,download_failed,file_exists,filesystem_unsupported,game_running,hash_mismatch,host_blocked,http_status,internal,io,locked,network,no_compatible_release,not_found,not_managed,offline,online_required,ownership_conflict,plan_not_found,plan_stale,protected_folder,rate_limited,ref_ambiguous,ref_invalid,scope_denied,source_disabled,state_corrupt,state_too_new,target_ambiguous,target_not_found,undo_conflict,unmanaged_folder,unsafe_archive,usage,wrong_flavor
 enum apply data<applied.command=update>.result.targets[].items[].folders.skipped[]<reason=interface_not_in_family>.family cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum apply data<applied.command=update>.result.targets[].items[].reason dependency,explicit
-enum apply data<applied.command=update>.result.targets[].items[].skip_reason ahead,already_installed,blocked,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,unchecked
+enum apply data<applied.command=update>.result.targets[].items[].skip_reason ahead,already_installed,blocked,dependency_held,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,too_new,unchecked
 enum apply data<applied.command=update>.result.targets[].items[].status adopted,edited,failed,installed,pinned,removed,skip_cleared,skip_marked,skipped,unchanged,unpinned,updated
 enum apply data<applied.command=update>.result.targets[].items[].unresolved[].reason limit_reached,managed_folder_missing,no_source,not_requested,not_shipped,out_of_date,several_catalog_entries,unknown_condition,wowi_abandoned,wowi_ambiguous
 enum apply data<applied.command=update>.result.targets[].kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,skip,sync,target,undo,update,widget
@@ -696,7 +696,7 @@ enum copy data.targets[].identifications[].tier cf_only,exact,guess,identified,u
 enum copy data.targets[].items[].error.code archive_too_large,auth_rejected,auth_required,bad_archive,case_collision,check_failed,desired_state_invalid,distribution_disabled,doctor_refused,download_failed,file_exists,filesystem_unsupported,game_running,hash_mismatch,host_blocked,http_status,internal,io,locked,network,no_compatible_release,not_found,not_managed,offline,online_required,ownership_conflict,plan_not_found,plan_stale,protected_folder,rate_limited,ref_ambiguous,ref_invalid,scope_denied,source_disabled,state_corrupt,state_too_new,target_ambiguous,target_not_found,undo_conflict,unmanaged_folder,unsafe_archive,usage,wrong_flavor
 enum copy data.targets[].items[].folders.skipped[]<reason=interface_not_in_family>.family cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum copy data.targets[].items[].reason dependency,explicit
-enum copy data.targets[].items[].skip_reason ahead,already_installed,blocked,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,unchecked
+enum copy data.targets[].items[].skip_reason ahead,already_installed,blocked,dependency_held,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,too_new,unchecked
 enum copy data.targets[].items[].status adopted,edited,failed,installed,pinned,removed,skip_cleared,skip_marked,skipped,unchanged,unpinned,updated
 enum copy data.targets[].items[].unresolved[].reason limit_reached,managed_folder_missing,no_source,not_requested,not_shipped,out_of_date,several_catalog_entries,unknown_condition,wowi_abandoned,wowi_ambiguous
 enum copy data.targets[].kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,skip,sync,target,undo,update,widget
@@ -1148,7 +1148,7 @@ enum install data.items[].error.code archive_too_large,auth_rejected,auth_requir
 enum install data.items[].fields[] any_flavor,channel,pinned,reason,ref,required_by,skipped_releases
 enum install data.items[].folders.skipped[]<reason=interface_not_in_family>.family cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum install data.items[].reason dependency,explicit
-enum install data.items[].skip_reason ahead,already_installed,blocked,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,unchecked
+enum install data.items[].skip_reason ahead,already_installed,blocked,dependency_held,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,too_new,unchecked
 enum install data.items[].status adopted,edited,failed,installed,pinned,removed,skip_cleared,skip_marked,skipped,unchanged,unpinned,updated
 enum install data.items[].unresolved[].reason limit_reached,managed_folder_missing,no_source,not_requested,not_shipped,out_of_date,several_catalog_entries,unknown_condition,wowi_abandoned,wowi_ambiguous
 enum install data.items[].version_confidence release,toc
@@ -1199,7 +1199,7 @@ enum pin data.targets[].identifications[].tier cf_only,exact,guess,identified,un
 enum pin data.targets[].items[].error.code archive_too_large,auth_rejected,auth_required,bad_archive,case_collision,check_failed,desired_state_invalid,distribution_disabled,doctor_refused,download_failed,file_exists,filesystem_unsupported,game_running,hash_mismatch,host_blocked,http_status,internal,io,locked,network,no_compatible_release,not_found,not_managed,offline,online_required,ownership_conflict,plan_not_found,plan_stale,protected_folder,rate_limited,ref_ambiguous,ref_invalid,scope_denied,source_disabled,state_corrupt,state_too_new,target_ambiguous,target_not_found,undo_conflict,unmanaged_folder,unsafe_archive,usage,wrong_flavor
 enum pin data.targets[].items[].folders.skipped[]<reason=interface_not_in_family>.family cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum pin data.targets[].items[].reason dependency,explicit
-enum pin data.targets[].items[].skip_reason ahead,already_installed,blocked,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,unchecked
+enum pin data.targets[].items[].skip_reason ahead,already_installed,blocked,dependency_held,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,too_new,unchecked
 enum pin data.targets[].items[].status adopted,edited,failed,installed,pinned,removed,skip_cleared,skip_marked,skipped,unchanged,unpinned,updated
 enum pin data.targets[].items[].unresolved[].reason limit_reached,managed_folder_missing,no_source,not_requested,not_shipped,out_of_date,several_catalog_entries,unknown_condition,wowi_abandoned,wowi_ambiguous
 enum pin data.targets[].kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,skip,sync,target,undo,update,widget
@@ -1236,7 +1236,7 @@ enum skip data.targets[].identifications[].tier cf_only,exact,guess,identified,u
 enum skip data.targets[].items[].error.code archive_too_large,auth_rejected,auth_required,bad_archive,case_collision,check_failed,desired_state_invalid,distribution_disabled,doctor_refused,download_failed,file_exists,filesystem_unsupported,game_running,hash_mismatch,host_blocked,http_status,internal,io,locked,network,no_compatible_release,not_found,not_managed,offline,online_required,ownership_conflict,plan_not_found,plan_stale,protected_folder,rate_limited,ref_ambiguous,ref_invalid,scope_denied,source_disabled,state_corrupt,state_too_new,target_ambiguous,target_not_found,undo_conflict,unmanaged_folder,unsafe_archive,usage,wrong_flavor
 enum skip data.targets[].items[].folders.skipped[]<reason=interface_not_in_family>.family cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum skip data.targets[].items[].reason dependency,explicit
-enum skip data.targets[].items[].skip_reason ahead,already_installed,blocked,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,unchecked
+enum skip data.targets[].items[].skip_reason ahead,already_installed,blocked,dependency_held,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,too_new,unchecked
 enum skip data.targets[].items[].status adopted,edited,failed,installed,pinned,removed,skip_cleared,skip_marked,skipped,unchanged,unpinned,updated
 enum skip data.targets[].items[].unresolved[].reason limit_reached,managed_folder_missing,no_source,not_requested,not_shipped,out_of_date,several_catalog_entries,unknown_condition,wowi_abandoned,wowi_ambiguous
 enum skip data.targets[].kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,skip,sync,target,undo,update,widget
@@ -1274,7 +1274,7 @@ enum sync data.targets[].identifications[].tier cf_only,exact,guess,identified,u
 enum sync data.targets[].items[].error.code archive_too_large,auth_rejected,auth_required,bad_archive,case_collision,check_failed,desired_state_invalid,distribution_disabled,doctor_refused,download_failed,file_exists,filesystem_unsupported,game_running,hash_mismatch,host_blocked,http_status,internal,io,locked,network,no_compatible_release,not_found,not_managed,offline,online_required,ownership_conflict,plan_not_found,plan_stale,protected_folder,rate_limited,ref_ambiguous,ref_invalid,scope_denied,source_disabled,state_corrupt,state_too_new,target_ambiguous,target_not_found,undo_conflict,unmanaged_folder,unsafe_archive,usage,wrong_flavor
 enum sync data.targets[].items[].folders.skipped[]<reason=interface_not_in_family>.family cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum sync data.targets[].items[].reason dependency,explicit
-enum sync data.targets[].items[].skip_reason ahead,already_installed,blocked,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,unchecked
+enum sync data.targets[].items[].skip_reason ahead,already_installed,blocked,dependency_held,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,too_new,unchecked
 enum sync data.targets[].items[].status adopted,edited,failed,installed,pinned,removed,skip_cleared,skip_marked,skipped,unchanged,unpinned,updated
 enum sync data.targets[].items[].unresolved[].reason limit_reached,managed_folder_missing,no_source,not_requested,not_shipped,out_of_date,several_catalog_entries,unknown_condition,wowi_abandoned,wowi_ambiguous
 enum sync data.targets[].kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,skip,sync,target,undo,update,widget
@@ -1309,7 +1309,7 @@ enum unpin data.targets[].identifications[].tier cf_only,exact,guess,identified,
 enum unpin data.targets[].items[].error.code archive_too_large,auth_rejected,auth_required,bad_archive,case_collision,check_failed,desired_state_invalid,distribution_disabled,doctor_refused,download_failed,file_exists,filesystem_unsupported,game_running,hash_mismatch,host_blocked,http_status,internal,io,locked,network,no_compatible_release,not_found,not_managed,offline,online_required,ownership_conflict,plan_not_found,plan_stale,protected_folder,rate_limited,ref_ambiguous,ref_invalid,scope_denied,source_disabled,state_corrupt,state_too_new,target_ambiguous,target_not_found,undo_conflict,unmanaged_folder,unsafe_archive,usage,wrong_flavor
 enum unpin data.targets[].items[].folders.skipped[]<reason=interface_not_in_family>.family cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum unpin data.targets[].items[].reason dependency,explicit
-enum unpin data.targets[].items[].skip_reason ahead,already_installed,blocked,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,unchecked
+enum unpin data.targets[].items[].skip_reason ahead,already_installed,blocked,dependency_held,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,too_new,unchecked
 enum unpin data.targets[].items[].status adopted,edited,failed,installed,pinned,removed,skip_cleared,skip_marked,skipped,unchanged,unpinned,updated
 enum unpin data.targets[].items[].unresolved[].reason limit_reached,managed_folder_missing,no_source,not_requested,not_shipped,out_of_date,several_catalog_entries,unknown_condition,wowi_abandoned,wowi_ambiguous
 enum unpin data.targets[].kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,skip,sync,target,undo,update,widget
@@ -1324,7 +1324,7 @@ enum unskip data.targets[].identifications[].tier cf_only,exact,guess,identified
 enum unskip data.targets[].items[].error.code archive_too_large,auth_rejected,auth_required,bad_archive,case_collision,check_failed,desired_state_invalid,distribution_disabled,doctor_refused,download_failed,file_exists,filesystem_unsupported,game_running,hash_mismatch,host_blocked,http_status,internal,io,locked,network,no_compatible_release,not_found,not_managed,offline,online_required,ownership_conflict,plan_not_found,plan_stale,protected_folder,rate_limited,ref_ambiguous,ref_invalid,scope_denied,source_disabled,state_corrupt,state_too_new,target_ambiguous,target_not_found,undo_conflict,unmanaged_folder,unsafe_archive,usage,wrong_flavor
 enum unskip data.targets[].items[].folders.skipped[]<reason=interface_not_in_family>.family cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum unskip data.targets[].items[].reason dependency,explicit
-enum unskip data.targets[].items[].skip_reason ahead,already_installed,blocked,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,unchecked
+enum unskip data.targets[].items[].skip_reason ahead,already_installed,blocked,dependency_held,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,too_new,unchecked
 enum unskip data.targets[].items[].status adopted,edited,failed,installed,pinned,removed,skip_cleared,skip_marked,skipped,unchanged,unpinned,updated
 enum unskip data.targets[].items[].unresolved[].reason limit_reached,managed_folder_missing,no_source,not_requested,not_shipped,out_of_date,several_catalog_entries,unknown_condition,wowi_abandoned,wowi_ambiguous
 enum unskip data.targets[].kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,skip,sync,target,undo,update,widget
@@ -1339,7 +1339,7 @@ enum update data.targets[].identifications[].tier cf_only,exact,guess,identified
 enum update data.targets[].items[].error.code archive_too_large,auth_rejected,auth_required,bad_archive,case_collision,check_failed,desired_state_invalid,distribution_disabled,doctor_refused,download_failed,file_exists,filesystem_unsupported,game_running,hash_mismatch,host_blocked,http_status,internal,io,locked,network,no_compatible_release,not_found,not_managed,offline,online_required,ownership_conflict,plan_not_found,plan_stale,protected_folder,rate_limited,ref_ambiguous,ref_invalid,scope_denied,source_disabled,state_corrupt,state_too_new,target_ambiguous,target_not_found,undo_conflict,unmanaged_folder,unsafe_archive,usage,wrong_flavor
 enum update data.targets[].items[].folders.skipped[]<reason=interface_not_in_family>.family cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum update data.targets[].items[].reason dependency,explicit
-enum update data.targets[].items[].skip_reason ahead,already_installed,blocked,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,unchecked
+enum update data.targets[].items[].skip_reason ahead,already_installed,blocked,dependency_held,duplicate,local_source,no_build_for_target,pinned,skipped_release,static,too_new,unchecked
 enum update data.targets[].items[].status adopted,edited,failed,installed,pinned,removed,skip_cleared,skip_marked,skipped,unchanged,unpinned,updated
 enum update data.targets[].items[].unresolved[].reason limit_reached,managed_folder_missing,no_source,not_requested,not_shipped,out_of_date,several_catalog_entries,unknown_condition,wowi_abandoned,wowi_ambiguous
 enum update data.targets[].kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,skip,sync,target,undo,update,widget
@@ -3342,6 +3342,7 @@ file plan intent<command=unskip>.while_running boolean!
 file plan intent<command=update> variant
 file plan intent<command=update>.addons array!
 file plan intent<command=update>.addons[] string
+file plan intent<command=update>.auto boolean!
 file plan intent<command=update>.channel string?!
 file plan intent<command=update>.no_deps boolean!
 file plan intent<command=update>.refresh boolean!
@@ -4023,6 +4024,7 @@ input unskip --tx string default= arity=1..1 conflicts=--release,--version
 input unskip --version string default= arity=1..1 conflicts=--release,--tx
 input unskip @1 <ADDON> string default= arity=0.. repeat
 input update --all flag default=false arity=0..0
+input update --auto flag default=false arity=0..0
 input update --channel enum(alpha|beta|stable) default= arity=1..1
 input update --no-deps flag default=false arity=0..0
 input update --refresh flag default=false arity=0..0
@@ -4177,6 +4179,7 @@ output adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition
 output adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].identifications[].tier string!
 output adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items array!
 output adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[] object
+output adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].auto_eligible_at string?
 output adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].bridge_dependencies array?
 output adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].bridge_dependencies[] object
 output adopt data<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].bridge_dependencies[].folder string!
@@ -4642,6 +4645,7 @@ output apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_e
 output apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].identifications[].tier string!
 output apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items array!
 output apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[] object
+output apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].auto_eligible_at string?
 output apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].bridge_dependencies array?
 output apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].bridge_dependencies[] object
 output apply data<applied.command=adopt>.result<untagged=approval,dry_run,plan_expires_at,plan_id,precondition,run,summary,targets>.targets[].items[].bridge_dependencies[].folder string!
@@ -4877,6 +4881,7 @@ output apply data<applied.command=copy>.result.targets[].identifications[].reaso
 output apply data<applied.command=copy>.result.targets[].identifications[].tier string!
 output apply data<applied.command=copy>.result.targets[].items array!
 output apply data<applied.command=copy>.result.targets[].items[] object
+output apply data<applied.command=copy>.result.targets[].items[].auto_eligible_at string?
 output apply data<applied.command=copy>.result.targets[].items[].bridge_dependencies array?
 output apply data<applied.command=copy>.result.targets[].items[].bridge_dependencies[] object
 output apply data<applied.command=copy>.result.targets[].items[].bridge_dependencies[].folder string!
@@ -5226,6 +5231,7 @@ output apply data<applied.command=pin>.result.targets[].identifications[].reason
 output apply data<applied.command=pin>.result.targets[].identifications[].tier string!
 output apply data<applied.command=pin>.result.targets[].items array!
 output apply data<applied.command=pin>.result.targets[].items[] object
+output apply data<applied.command=pin>.result.targets[].items[].auto_eligible_at string?
 output apply data<applied.command=pin>.result.targets[].items[].bridge_dependencies array?
 output apply data<applied.command=pin>.result.targets[].items[].bridge_dependencies[] object
 output apply data<applied.command=pin>.result.targets[].items[].bridge_dependencies[].folder string!
@@ -5520,6 +5526,7 @@ output apply data<applied.command=skip>.result.targets[].identifications[].reaso
 output apply data<applied.command=skip>.result.targets[].identifications[].tier string!
 output apply data<applied.command=skip>.result.targets[].items array!
 output apply data<applied.command=skip>.result.targets[].items[] object
+output apply data<applied.command=skip>.result.targets[].items[].auto_eligible_at string?
 output apply data<applied.command=skip>.result.targets[].items[].bridge_dependencies array?
 output apply data<applied.command=skip>.result.targets[].items[].bridge_dependencies[] object
 output apply data<applied.command=skip>.result.targets[].items[].bridge_dependencies[].folder string!
@@ -5711,6 +5718,7 @@ output apply data<applied.command=sync>.result.targets[].identifications[].reaso
 output apply data<applied.command=sync>.result.targets[].identifications[].tier string!
 output apply data<applied.command=sync>.result.targets[].items array!
 output apply data<applied.command=sync>.result.targets[].items[] object
+output apply data<applied.command=sync>.result.targets[].items[].auto_eligible_at string?
 output apply data<applied.command=sync>.result.targets[].items[].bridge_dependencies array?
 output apply data<applied.command=sync>.result.targets[].items[].bridge_dependencies[] object
 output apply data<applied.command=sync>.result.targets[].items[].bridge_dependencies[].folder string!
@@ -6059,6 +6067,7 @@ output apply data<applied.command=unpin>.result.targets[].identifications[].reas
 output apply data<applied.command=unpin>.result.targets[].identifications[].tier string!
 output apply data<applied.command=unpin>.result.targets[].items array!
 output apply data<applied.command=unpin>.result.targets[].items[] object
+output apply data<applied.command=unpin>.result.targets[].items[].auto_eligible_at string?
 output apply data<applied.command=unpin>.result.targets[].items[].bridge_dependencies array?
 output apply data<applied.command=unpin>.result.targets[].items[].bridge_dependencies[] object
 output apply data<applied.command=unpin>.result.targets[].items[].bridge_dependencies[].folder string!
@@ -6250,6 +6259,7 @@ output apply data<applied.command=unskip>.result.targets[].identifications[].rea
 output apply data<applied.command=unskip>.result.targets[].identifications[].tier string!
 output apply data<applied.command=unskip>.result.targets[].items array!
 output apply data<applied.command=unskip>.result.targets[].items[] object
+output apply data<applied.command=unskip>.result.targets[].items[].auto_eligible_at string?
 output apply data<applied.command=unskip>.result.targets[].items[].bridge_dependencies array?
 output apply data<applied.command=unskip>.result.targets[].items[].bridge_dependencies[] object
 output apply data<applied.command=unskip>.result.targets[].items[].bridge_dependencies[].folder string!
@@ -6441,6 +6451,7 @@ output apply data<applied.command=update>.result.targets[].identifications[].rea
 output apply data<applied.command=update>.result.targets[].identifications[].tier string!
 output apply data<applied.command=update>.result.targets[].items array!
 output apply data<applied.command=update>.result.targets[].items[] object
+output apply data<applied.command=update>.result.targets[].items[].auto_eligible_at string?
 output apply data<applied.command=update>.result.targets[].items[].bridge_dependencies array?
 output apply data<applied.command=update>.result.targets[].items[].bridge_dependencies[] object
 output apply data<applied.command=update>.result.targets[].items[].bridge_dependencies[].folder string!
@@ -7169,6 +7180,7 @@ output copy data.targets[].identifications[].reason string?!
 output copy data.targets[].identifications[].tier string!
 output copy data.targets[].items array!
 output copy data.targets[].items[] object
+output copy data.targets[].items[].auto_eligible_at string?
 output copy data.targets[].items[].bridge_dependencies array?
 output copy data.targets[].items[].bridge_dependencies[] object
 output copy data.targets[].items[].bridge_dependencies[].folder string!
@@ -9467,6 +9479,7 @@ output pin data.targets[].identifications[].reason string?!
 output pin data.targets[].identifications[].tier string!
 output pin data.targets[].items array!
 output pin data.targets[].items[] object
+output pin data.targets[].items[].auto_eligible_at string?
 output pin data.targets[].items[].bridge_dependencies array?
 output pin data.targets[].items[].bridge_dependencies[] object
 output pin data.targets[].items[].bridge_dependencies[].folder string!
@@ -9789,6 +9802,7 @@ output skip data.targets[].identifications[].reason string?!
 output skip data.targets[].identifications[].tier string!
 output skip data.targets[].items array!
 output skip data.targets[].items[] object
+output skip data.targets[].items[].auto_eligible_at string?
 output skip data.targets[].items[].bridge_dependencies array?
 output skip data.targets[].items[].bridge_dependencies[] object
 output skip data.targets[].items[].bridge_dependencies[].folder string!
@@ -10138,6 +10152,7 @@ output sync data.targets[].identifications[].reason string?!
 output sync data.targets[].identifications[].tier string!
 output sync data.targets[].items array!
 output sync data.targets[].items[] object
+output sync data.targets[].items[].auto_eligible_at string?
 output sync data.targets[].items[].bridge_dependencies array?
 output sync data.targets[].items[].bridge_dependencies[] object
 output sync data.targets[].items[].bridge_dependencies[].folder string!
@@ -10494,6 +10509,7 @@ output unpin data.targets[].identifications[].reason string?!
 output unpin data.targets[].identifications[].tier string!
 output unpin data.targets[].items array!
 output unpin data.targets[].items[] object
+output unpin data.targets[].items[].auto_eligible_at string?
 output unpin data.targets[].items[].bridge_dependencies array?
 output unpin data.targets[].items[].bridge_dependencies[] object
 output unpin data.targets[].items[].bridge_dependencies[].folder string!
@@ -10641,6 +10657,7 @@ output unskip data.targets[].identifications[].reason string?!
 output unskip data.targets[].identifications[].tier string!
 output unskip data.targets[].items array!
 output unskip data.targets[].items[] object
+output unskip data.targets[].items[].auto_eligible_at string?
 output unskip data.targets[].items[].bridge_dependencies array?
 output unskip data.targets[].items[].bridge_dependencies[] object
 output unskip data.targets[].items[].bridge_dependencies[].folder string!
@@ -10788,6 +10805,7 @@ output update data.targets[].identifications[].reason string?!
 output update data.targets[].identifications[].tier string!
 output update data.targets[].items array!
 output update data.targets[].items[] object
+output update data.targets[].items[].auto_eligible_at string?
 output update data.targets[].items[].bridge_dependencies array?
 output update data.targets[].items[].bridge_dependencies[] object
 output update data.targets[].items[].bridge_dependencies[].folder string!

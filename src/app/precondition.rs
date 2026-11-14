@@ -382,8 +382,12 @@ pub struct PlanExtras<'a> {
     pub copy_source: Option<(TargetKey, u64)>,
     /// `sync`: the lowercase hex SHA-256 of the desired-state file's bytes.
     pub desired_sha256: Option<String>,
-    /// `update`: what it chose not to touch, as (target, addon name, why).
+    /// `update`: what it chose not to touch, as (target, addon name, why). What the
+    /// planner held under `--auto` joins it from the plan itself.
     pub update_skips: &'a [(TargetRef, String, SkipReason)],
+    /// `update --auto`: the wait it ran with, in hours; `None` for an attended update.
+    /// A plan previewed with one wait is stale when applied under another.
+    pub auto_min_age_hours: Option<u64>,
 }
 
 /// An engine command's precondition (M4-D19, M4-D60), from the plan it will execute:
@@ -434,6 +438,15 @@ fn of_plan_at(
         .iter()
         .map(|(target, addon, reason)| (target.to_string(), addon.as_str(), json!(reason)))
         .collect();
+    // What the planner held (`update --auto`): a release whose time comes between the
+    // preview and `apply` is planned then, so the plan is stale.
+    for tp in &plan.targets {
+        let target = TargetRef::of(tp.key, &tp.target).to_string();
+        for h in &tp.held {
+            let reason = json!(SkipReason::of_hold(&h.reason));
+            skips.push((target.clone(), h.addon.as_str(), reason));
+        }
+    }
     skips.sort_by(|a, b| (&a.0, a.1, a.2.to_string()).cmp(&(&b.0, b.1, b.2.to_string())));
     let skips: Vec<Value> = skips
         .into_iter()
@@ -446,6 +459,7 @@ fn of_plan_at(
             .map(|(key, generation)| json!({"key": key.to_string(), "generation": generation})),
         "desired_sha256": extras.desired_sha256,
         "update_skips": skips,
+        "auto_min_age_hours": extras.auto_min_age_hours,
         "witnesses": witnessed,
     });
     Precondition::new(command, targets, json!(selection), observed)
@@ -1753,6 +1767,7 @@ mod tests {
         copy_source: Option<(TargetKey, u64)>,
         desired: Option<String>,
         skips: Vec<(TargetRef, String, SkipReason)>,
+        auto: Option<u64>,
         build_id: String,
     }
 
@@ -1762,6 +1777,7 @@ mod tests {
                 copy_source: self.copy_source,
                 desired_sha256: self.desired.clone(),
                 update_skips: &self.skips,
+                auto_min_age_hours: self.auto,
             };
             of_plan_at(
                 &self.build_id,
@@ -1890,6 +1906,7 @@ mod tests {
                 (by_key(KEY), "DBM-Core".into(), SkipReason::Pinned),
                 (by_key(KEY), "Plater".into(), SkipReason::Ahead),
             ],
+            auto: Some(6),
             build_id: BUILD.into(),
         }
     }
@@ -1911,7 +1928,7 @@ mod tests {
         let p = inputs().precondition();
         assert_eq!(
             p.token(),
-            "pc1:39975c7e71548c5101f290ceb610e821935a76b37d3a58dce2ee9968a74a44df",
+            "pc1:39975c7e71548c5101f290ceb610e821935a76b37d3a58dc6d31b84b3c74511d",
             "{:#?}",
             p.parts()
         );
@@ -2072,6 +2089,13 @@ mod tests {
                 },
                 OBSERVED,
             ),
+            (
+                "update --auto's skip reason",
+                |i| i.skips[0].2 = SkipReason::TooNew,
+                OBSERVED,
+            ),
+            ("update --auto's wait", |i| i.auto = Some(12), OBSERVED),
+            ("update without --auto", |i| i.auto = None, OBSERVED),
             ("the command", |i| i.command = "update", &[Part::Command]),
             (
                 "a target registering",
@@ -2206,7 +2230,7 @@ mod tests {
         assert_eq!(
             observed,
             format!(
-                r#"{{"build_id":"{BUILD}","copy_source":null,"desired_sha256":null,"update_skips":[],"witnesses":{{"{KEY}":null}}}}"#
+                r#"{{"auto_min_age_hours":null,"build_id":"{BUILD}","copy_source":null,"desired_sha256":null,"update_skips":[],"witnesses":{{"{KEY}":null}}}}"#
             )
         );
     }
@@ -2953,6 +2977,7 @@ mod tests {
             copy_source: i.copy_source,
             desired_sha256: i.desired.clone(),
             update_skips: &i.skips,
+            auto_min_age_hours: i.auto,
         }
     }
 
@@ -2982,7 +3007,7 @@ mod tests {
     #[test]
     fn a_plan_binding_names_each_moved_part() {
         type Edit = fn(&mut Inputs);
-        let rows: [(&str, Edit, &str, &str); 8] = [
+        let rows: [(&str, Edit, &str, &str); 9] = [
             (
                 "generation_moved",
                 |i| i.plan.targets[0].generation = 8,
@@ -3025,6 +3050,12 @@ mod tests {
                     i.skips
                         .push((by_key(KEY), "WeakAuras".into(), SkipReason::Pinned));
                 },
+                "install",
+                "observed",
+            ),
+            (
+                "auto_min_age_changed",
+                |i| i.auto = Some(1),
                 "install",
                 "observed",
             ),

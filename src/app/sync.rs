@@ -430,6 +430,7 @@ fn failed_item(request: String, r: Option<Ref>, error: &Error) -> ItemResult {
         folders: None,
         required_by: None,
         deps: ItemDeps::default(),
+        auto: crate::app::outcome::ItemAuto::default(),
         error: Some(ItemError::from(error)),
     }
 }
@@ -713,6 +714,7 @@ fn target_work(
                     folders: None,
                     required_by: None,
                     deps: ItemDeps::default(),
+                    auto: crate::app::outcome::ItemAuto::default(),
                     error: None,
                 });
             }

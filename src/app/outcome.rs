@@ -23,7 +23,8 @@ use crate::engine::TxOutcome;
 use crate::engine::TxOutcomes;
 use crate::engine::edit::EditField;
 use crate::engine::plan::{
-    Change, ChangeKind, DepReport, FolderSummary, PlanFailure, TargetPlan, Unresolved, WorkMode,
+    Change, ChangeKind, DepReport, FolderSummary, HeldReason, PlanFailure, TargetPlan, Unresolved,
+    WorkMode,
 };
 use crate::error::{CommandHint, Error, ErrorBody, ErrorCode, Suggestion, Warning};
 use crate::model::{
@@ -163,6 +164,14 @@ pub enum SkipReason {
     LocalSource,
     /// Another request named the same addon.
     Duplicate,
+    /// `update --auto`: the release it would move to was first seen by this machine
+    /// less than `update_min_age_hours` ago; the item's `auto_eligible_at` says when it
+    /// may be taken (design 7.6).
+    TooNew,
+    /// `update --auto`: its new release requires, directly or through other new
+    /// dependencies, a release that is too new for an automatic update (or, rarely, its
+    /// client's whole update waits for one).
+    DependencyHeld,
 }
 
 impl SkipReason {
@@ -179,6 +188,18 @@ impl SkipReason {
             Self::NoBuildForTarget => "has no build for this client",
             Self::LocalSource => "comes from a local source",
             Self::Duplicate => "was requested twice",
+            Self::TooNew => "has a release too new for an automatic update",
+            Self::DependencyHeld => "needs a release too new for an automatic update",
+        }
+    }
+
+    /// The reason a hold of the planner's is given on the wire. A client held whole
+    /// (its second plan still held a release) is `dependency_held`: like a dependent,
+    /// it waits on another release's age, not its own.
+    pub const fn of_hold(reason: &HeldReason) -> Self {
+        match reason {
+            HeldReason::TooNew => Self::TooNew,
+            HeldReason::DependencyHeld { .. } | HeldReason::ClientHeld => Self::DependencyHeld,
         }
     }
 }
@@ -423,7 +444,22 @@ pub struct ItemResult {
     pub required_by: Option<Vec<String>>,
     #[serde(flatten)]
     pub deps: ItemDeps,
+    #[serde(flatten)]
+    pub auto: ItemAuto,
     pub error: Option<ItemError>,
+}
+
+/// What `update --auto` says of an item it held (design 7.6); empty on every other item.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct ItemAuto {
+    /// `too_new`: when the release will have stood `update_min_age_hours` since this
+    /// machine first saw it. Omitted on every other item.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
+    pub auto_eligible_at: Option<jiff::Timestamp>,
+    /// `dependency_held`: the too-new dependency's name and version, for the human line.
+    #[serde(skip)]
+    pub held_by: Option<(String, String)>,
 }
 
 /// What an item says about its dependencies beyond `reason` and `required_by` (C5),
@@ -969,6 +1005,7 @@ fn target_result(
                 folders: None,
                 required_by: None,
                 deps: ItemDeps::default(),
+                auto: ItemAuto::default(),
                 error: None,
             });
             continue;
@@ -1021,6 +1058,7 @@ fn target_result(
                 folders: None,
                 required_by: None,
                 deps: ItemDeps::default(),
+                auto: ItemAuto::default(),
                 error: None,
             }),
         }
@@ -1085,6 +1123,7 @@ fn failed_item(
         folders: None,
         required_by: None,
         deps: ItemDeps::default(),
+        auto: ItemAuto::default(),
         error: Some(ItemError::from(error)),
     }
 }
@@ -1111,6 +1150,7 @@ fn dependency_failed(folder: &FolderName, f: &PlanFailure) -> ItemResult {
         folders: None,
         required_by: Some(required_by),
         deps: ItemDeps::default(),
+        auto: ItemAuto::default(),
         error: Some(ItemError::from(&f.error)),
     }
 }
@@ -1162,6 +1202,7 @@ fn change_item(request: String, change: &Change, p: &Planned<'_>) -> ItemResult 
         folders: Some(sorted(&change.folders)),
         required_by: Some(record.map(|r| r.required_by.clone()).unwrap_or_default()),
         deps,
+        auto: ItemAuto::default(),
         error: None,
     }
 }
@@ -1312,6 +1353,9 @@ pub(crate) fn header(command: &str, dry_run: bool, t: &TargetResult) -> String {
                     item_name(i),
                     i.from_version.as_deref().unwrap_or("?")
                 )),
+                (Some(SkipReason::TooNew | SkipReason::DependencyHeld), _) => {
+                    Some(format!("{} {}", item_name(i), held_words(i)))
+                }
                 (r, _) => r.map(|r| format!("{} {}", item_name(i), r.phrase())),
             })
             .collect();
@@ -1398,6 +1442,42 @@ pub fn dependency_suffix(reason: Option<AddonReason>, required_by: &[String]) ->
     format!(" (dependency of {names})")
 }
 
+/// An `update --auto` hold's words after the addon's name:
+/// `left at v412 · v413 is too new for an automatic update (after 00:52)`, and for a
+/// dependent `left at v412 · it needs LibFoo 2.1, which is too new for an automatic
+/// update`.
+fn held_words(i: &ItemResult) -> String {
+    let from = i.from_version.as_deref().unwrap_or("?");
+    let why = match (i.skip_reason, &i.auto.held_by) {
+        (Some(SkipReason::DependencyHeld), Some((name, version))) => {
+            format!("it needs {name} {version}, which is too new for an automatic update")
+        }
+        (Some(SkipReason::DependencyHeld), None) => {
+            "its client waits on a release too new for an automatic update".to_owned()
+        }
+        _ => {
+            let to = i.to_version.as_deref().unwrap_or("its newest release");
+            let after = i.auto.auto_eligible_at.map_or_else(String::new, |at| {
+                let tz = jiff::tz::TimeZone::system();
+                format!(" (after {})", time_of_day(at, Timestamp::now(), &tz))
+            });
+            format!("{to} is too new for an automatic update{after}")
+        }
+    };
+    format!("left at {from} · {why}")
+}
+
+/// `00:52` when `at` falls on `now`'s day in `tz`, else `2026-11-15 00:52`.
+fn time_of_day(at: Timestamp, now: Timestamp, tz: &jiff::tz::TimeZone) -> String {
+    let (local, today) = (at.to_zoned(tz.clone()), now.to_zoned(tz.clone()));
+    let format = if local.date() == today.date() {
+        "%H:%M"
+    } else {
+        "%Y-%m-%d %H:%M"
+    };
+    local.strftime(format).to_string()
+}
+
 pub(crate) fn item_detail(i: &ItemResult, dry_run: bool) -> String {
     let suffix = dependency_suffix(i.reason, i.required_by.as_deref().unwrap_or_default());
     format!("{}{suffix}", status_detail(i, dry_run))
@@ -1425,6 +1505,7 @@ fn status_detail(i: &ItemResult, dry_run: bool) -> String {
             (Some(SkipReason::SkippedRelease), Some(to)) => {
                 format!("left at {from} · {to} is skipped")
             }
+            (Some(SkipReason::TooNew | SkipReason::DependencyHeld), _) => held_words(i),
             (Some(reason), _) => format!("skipped: {}", reason.phrase()),
             (None, _) => "skipped".to_owned(),
         },
@@ -1700,6 +1781,7 @@ mod tests {
                 folders: None,
                 required_by: None,
                 deps: ItemDeps::default(),
+                auto: ItemAuto::default(),
                 error: None,
             },
         );
@@ -2340,6 +2422,7 @@ mod tests {
             folders: None,
             required_by: None,
             deps: ItemDeps::default(),
+            auto: ItemAuto::default(),
             error: None,
         }
     }

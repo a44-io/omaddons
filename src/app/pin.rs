@@ -256,6 +256,7 @@ fn run(ctx: &Context, addon: &str, mode: Mode<'_>) -> Result<PinOutcome> {
                     folders: None,
                     required_by: None,
                     deps: ItemDeps::default(),
+                    auto: crate::app::outcome::ItemAuto::default(),
                     error: None,
                 },
             )),

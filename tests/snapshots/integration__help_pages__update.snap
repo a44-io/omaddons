@@ -18,6 +18,7 @@ Options:
       --refresh            Ask every source now, even when it was checked in the last 15 minutes
       --strict             Exit 6 when only some of the addons update
       --no-deps            Update only the named addons, not the ones their TOCs require
+      --auto               Take only releases first seen at least `update_min_age_hours` ago
 
 Examples:
   omaddons update                every addon on every client
@@ -59,6 +60,14 @@ Options:
 
       --no-deps
           Update only the named addons, not the ones their TOCs require
+
+      --auto
+          Take only releases first seen at least `update_min_age_hours` ago
+          
+          An unattended update. Every release it would take (the newest, a release looked back to, a
+          new dependency) must have been first seen by this machine at least the configured wait
+          ago; one that has not is left for a later run, and so is every addon that needs it. Bytes
+          replaced under a release's tag count from when they were seen.
 
 Examples:
   omaddons update                   every addon on every client; one undo reverts it all

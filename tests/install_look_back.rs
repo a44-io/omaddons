@@ -15,7 +15,7 @@ use serde_json::Value;
 use support::{BCC, MISTS, REF, Rel, TITAN, alpha_series, codes, listed, listing, serve};
 
 #[cfg(test)]
-mod support {
+pub(crate) mod support {
     use std::path::Path;
 
     use common::addons::toc;
