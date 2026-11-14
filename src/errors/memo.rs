@@ -11,12 +11,15 @@ use jiff::Timestamp;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::attribute::Confidence;
 use super::buggrabber::{Origin, TimeEvidence};
+use super::ledger::DbGeneration;
 use super::locate::{Capture, Coverage};
 use super::observe::{Observation, ReadState, SourceKind};
+use super::suspect::Relation;
 use crate::error::Result;
 use crate::fsx::{Content, Op, ScopeTable, WriteSession, Writer, ensure_dir_all, mutate};
-use crate::model::Actor;
+use crate::model::{Actor, ReleaseKey, TxId, TxKind};
 use crate::state::paths::Paths;
 use crate::state::store::{self, SchemaVersion, VersionStatus, Versioned};
 
@@ -30,7 +33,9 @@ pub struct ErrorsMemo {
 
 impl Versioned for ErrorsMemo {
     const KIND: &'static str = "errors_memo";
-    const CURRENT: SchemaVersion = SchemaVersion::new(1, 0);
+    /// 1.1: each addon's `links`, each database's `generation`, each client's
+    /// `ledger_revision` and `projected_at` (regression guard, RG-17).
+    const CURRENT: SchemaVersion = SchemaVersion::new(1, 1);
 }
 
 /// What the last `errors` run observed on one client.
@@ -46,6 +51,16 @@ pub struct TargetMemo {
     /// Received reports: a count only.
     pub received: u64,
     pub databases: Vec<DbMemo>,
+    /// The errors ledger's revision the links were projected from; omitted when none
+    /// were. A projection from a lower revision than the memo already carries is never
+    /// written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ledger_revision: Option<u64>,
+    /// When the links were projected; omitted when none were. A restore committed
+    /// later ends them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "crate::contract::schema::timestamp_opt")]
+    pub projected_at: Option<Timestamp>,
 }
 
 /// How much of the client the walk saw.
@@ -84,6 +99,10 @@ pub struct DbMemo {
     pub occurrences: u64,
     /// Local entries per attributed addon, per session.
     pub addons: Vec<AddonMemo>,
+    /// The ledger's generation of this database when its links were projected; omitted
+    /// when unknown. A link of another generation is never shown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<DbGeneration>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -103,26 +122,95 @@ pub struct AddonMemo {
     /// Absent from a memo written before it, which reads as none.
     #[serde(default)]
     pub folders: Vec<String>,
+    /// The changes before this addon's new errors in this database, best first, at most
+    /// `MEMO_LINKS_PER_ADDON`: only `current` `high` and `medium` links. Omitted when
+    /// none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<MemoLink>,
+}
+
+/// A link from a cluster of new errors to the change before it, with what it is about,
+/// so `status` can check it still holds before showing it (design 7.3.2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoLink {
+    /// The cluster and its member fingerprints (at most 16).
+    pub cluster: String,
+    pub fingerprints: Vec<String>,
+    /// The database generation the cluster appeared in.
+    pub generation: DbGeneration,
+    /// The newest session a member occurred in at this read, in the memo's convention
+    /// (0: the entries carry no session).
+    pub session: u32,
+    pub tx: TxId,
+    pub kind: TxKind,
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
+    pub at: Timestamp,
+    /// The first addon the change moved (else the one the error is filed under), and
+    /// the release that change installed for it.
+    pub addon: String,
+    pub release: Option<ReleaseKey>,
+    pub relation: Relation,
+    pub confidence: Confidence,
+    pub algorithm: u32,
+    /// `onset.by + SUSPECT_FRESH_MAX_AGE`: past it the link is no longer shown.
+    #[schemars(schema_with = "crate::contract::schema::timestamp")]
+    pub fresh_until_at: Timestamp,
+}
+
+/// What the errors ledger says of one client's databases, by their index in the
+/// observation: each one's generation, and the links of each addon, by its name
+/// (lowercased) and kind, the two things an [`AddonMemo`] is told apart by.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Projection {
+    pub databases: Vec<DbProjection>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DbProjection {
+    pub generation: Option<DbGeneration>,
+    pub links: BTreeMap<(String, SourceKind), Vec<MemoLink>>,
+}
+
+/// The links `previous` held for `db`'s addons, kept only when the file is unchanged
+/// (the same stamp): what was said about it still holds. Otherwise none.
+fn carried(previous: Option<&DbMemo>, stamp: &str) -> (Option<DbGeneration>, Vec<AddonMemo>) {
+    match previous.filter(|p| p.stamp == stamp) {
+        Some(p) => (p.generation.clone(), p.addons.clone()),
+        None => (None, Vec::new()),
+    }
 }
 
 /// The memo of `observation`. A database this run could not read keeps what `previous`
-/// last counted, never zero errors.
-pub fn target_memo(observation: &Observation, previous: Option<&TargetMemo>) -> TargetMemo {
+/// last counted, never zero errors. `links` is what the ledger projected (design
+/// 7.3.2); without it (a dismissal, or a run that could not have the ledger), a
+/// database keeps its previous links only while its file is unchanged.
+pub fn target_memo(
+    observation: &Observation,
+    previous: Option<&TargetMemo>,
+    links: Option<&Projection>,
+) -> TargetMemo {
     let databases = observation
         .databases
         .iter()
         .enumerate()
         .map(|(at, db)| {
+            let before = previous.and_then(|p| p.databases.iter().find(|d| d.path == db.path));
+            let stamp = db.stamp.fingerprint();
             let unread = matches!(db.state, ReadState::OverBudget | ReadState::Unreadable);
-            if unread
-                && let Some(before) =
-                    previous.and_then(|p| p.databases.iter().find(|d| d.path == db.path))
-            {
+            if unread && let Some(before) = before {
+                // What it last counted, with its links only while the file is unchanged.
+                let (generation, kept) = carried(Some(before), &stamp);
+                let mut addons = before.addons.clone();
+                for addon in &mut addons {
+                    addon.links = links_of(&kept, addon);
+                }
                 return DbMemo {
-                    stamp: db.stamp.fingerprint(),
+                    stamp,
                     written_at: db.written_at,
                     state: db.state,
                     baseline: db.baseline,
+                    addons,
+                    generation,
                     ..before.clone()
                 };
             }
@@ -130,7 +218,7 @@ pub fn target_memo(observation: &Observation, previous: Option<&TargetMemo>) -> 
                 path: db.path.clone(),
                 account: db.account,
                 provider: db.provider.clone(),
-                stamp: db.stamp.fingerprint(),
+                stamp: stamp.clone(),
                 written_at: db.written_at,
                 state: db.state,
                 session: db.session,
@@ -139,6 +227,7 @@ pub fn target_memo(observation: &Observation, previous: Option<&TargetMemo>) -> 
                 entries: 0,
                 occurrences: 0,
                 addons: Vec::new(),
+                generation: None,
             };
             for e in observation.local().filter(|e| e.database == at) {
                 let session = e.entry.session.unwrap_or(0);
@@ -159,6 +248,7 @@ pub fn target_memo(observation: &Observation, previous: Option<&TargetMemo>) -> 
                             kind: e.kind,
                             sessions: BTreeMap::new(),
                             folders: Vec::new(),
+                            links: Vec::new(),
                         });
                         let last = memo.addons.len() - 1;
                         &mut memo.addons[last]
@@ -177,6 +267,26 @@ pub fn target_memo(observation: &Observation, previous: Option<&TargetMemo>) -> 
             memo.addons.sort_by(|a, b| {
                 (a.addon.to_ascii_lowercase(), a.kind).cmp(&(b.addon.to_ascii_lowercase(), b.kind))
             });
+            match links {
+                Some(projection) => {
+                    let projected = projection.databases.get(at);
+                    memo.generation = projected.and_then(|p| p.generation.clone());
+                    for addon in &mut memo.addons {
+                        let key = (addon.addon.to_ascii_lowercase(), addon.kind);
+                        addon.links = projected
+                            .and_then(|p| p.links.get(&key))
+                            .cloned()
+                            .unwrap_or_default();
+                    }
+                }
+                None => {
+                    let (generation, kept) = carried(before, &stamp);
+                    memo.generation = generation;
+                    for addon in &mut memo.addons {
+                        addon.links = links_of(&kept, addon);
+                    }
+                }
+            }
             memo
         })
         .collect();
@@ -213,7 +323,19 @@ pub fn target_memo(observation: &Observation, previous: Option<&TargetMemo>) -> 
             .filter(|e| e.entry.origin == Origin::Received)
             .count() as u64,
         databases,
+        // Set by the caller that projected the links, under the evidence lock; carried
+        // over with the links it keeps otherwise.
+        ledger_revision: previous.and_then(|p| p.ledger_revision),
+        projected_at: previous.and_then(|p| p.projected_at),
     }
+}
+
+/// The links an earlier memo held for `addon` (by name ignoring case, and kind).
+fn links_of(kept: &[AddonMemo], addon: &AddonMemo) -> Vec<MemoLink> {
+    kept.iter()
+        .find(|k| k.addon.eq_ignore_ascii_case(&addon.addon) && k.kind == addon.kind)
+        .map(|k| k.links.clone())
+        .unwrap_or_default()
 }
 
 fn add(

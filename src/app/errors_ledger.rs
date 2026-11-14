@@ -39,26 +39,30 @@ use crate::errors::attribute::{self, FolderSet};
 use crate::errors::buggrabber::{BugEntry, DbShape, Origin, evidence};
 use crate::errors::frames;
 use crate::errors::ledger::{
-    self, BaselineReason, ChangeMark, ClientNow, Cluster, DbLedger, DbRead, DbSighting,
-    EntrySighting, ErrorsLedger, FamilyFirst, LedgerUnavailable, Restored, SightMode, TargetLedger,
+    self, BaselineReason, ChangeMark, ClientNow, Cluster, DbGeneration, DbLedger, DbRead,
+    DbSighting, EntrySighting, ErrorsLedger, FamilyFirst, LedgerUnavailable, Restored, SightMode,
+    TargetLedger,
 };
 use crate::errors::locate::{self, Coverage as WalkCoverage};
-use crate::errors::memo::{self, TargetMemo};
-use crate::errors::observe::{Coverage, Observation, Observed, read_stable};
+use crate::errors::memo::{self, DbProjection, MemoLink, Projection, TargetMemo};
+use crate::errors::observe::{Coverage, Observation, Observed, SourceKind, read_stable};
 use crate::errors::sanitize::{family_key, identities};
 use crate::errors::suspect::{
     Appeared, ChangeFact, ChangeOp, JudgeContext, JudgmentGap, JudgmentState, Suspect, Verdict,
-    judge, onset,
+    grade, judge, onset,
 };
 use crate::fsx::{FileStamp, ScopeTable};
 use crate::inventory::Inventory;
 use crate::limits::{
-    LEDGER_PRECHANGE_MAX_BYTES, SUSPECT_ALGORITHM, SUSPECT_FRESH_MAX_AGE, SUSPECT_MAX_AGE,
+    LEDGER_PRECHANGE_MAX_BYTES, MEMO_LINKS_PER_ADDON, SUSPECT_ALGORITHM, SUSPECT_FRESH_MAX_AGE,
+    SUSPECT_MAX_AGE,
 };
-use crate::model::{InstalledRelease, ReleaseTransition, RunId, Target, TargetKey, TxId, TxKind};
+use crate::model::{
+    Actor, InstalledRelease, ReleaseTransition, RunId, Target, TargetKey, TxId, TxKind,
+};
 use crate::output::trace;
 use crate::state::history::{self, FolderOp, HistoryEntry, HistoryFilter, HistoryRead, TxResult};
-use crate::state::history_tail;
+use crate::state::history_tail::{self, HistoryTail};
 use crate::state::paths::{ClientPaths, Paths};
 use crate::state::records::TargetRecord;
 
@@ -97,7 +101,31 @@ fn restores_on(paths: &Paths, key: Option<TargetKey>, since: Timestamp) -> Optio
 /// every line from `since` on: it starts at the history's first byte, or its oldest
 /// line that reads is not later than `since`.
 fn from_projection(paths: &Paths, since: Timestamp, filter: &HistoryFilter) -> Option<HistoryRead> {
-    let tail = history_tail::fresh(paths)?;
+    projected(&history_tail::fresh(paths)?, since, filter)
+}
+
+/// The restores committed on `target` at or after `since`, from the history projection
+/// alone, as `status --cached` reads it (it opens nothing else): `None` when there is no
+/// fresh projection, it does not reach back to `since`, or a line that may concern the
+/// client does not read.
+pub fn restores_in_projection(
+    tail: Option<&HistoryTail>,
+    target: &Target,
+    since: Timestamp,
+) -> Option<Vec<Restored>> {
+    let Some(key) = target.key else {
+        return Some(Vec::new());
+    };
+    let filter = HistoryFilter {
+        target: Some(key),
+        since: Some(since),
+        ..HistoryFilter::default()
+    };
+    restores_of(&projected(tail?, since, &filter)?, key, since)
+}
+
+/// The history projection read with `filter`, when it reaches back to `since`.
+fn projected(tail: &HistoryTail, since: Timestamp, filter: &HistoryFilter) -> Option<HistoryRead> {
     let mut text = tail.lines.join("\n");
     text.push('\n');
     let reaches = tail.covers.from == 0
@@ -433,6 +461,7 @@ pub fn commit(
     run: RunId,
     running: &dyn Fn(&Target) -> Option<bool>,
     command: &str,
+    actor: Actor,
 ) {
     if captured.clients.iter().all(CapturedClient::idle) {
         return;
@@ -482,6 +511,7 @@ pub fn commit(
             return;
         }
     };
+    let mut regenerated: Vec<(String, Vec<String>)> = Vec::new();
     for Looked {
         client,
         settled,
@@ -507,7 +537,7 @@ pub fn commit(
             version: Some(client.target.version.to_string()),
             now: client.looked_at,
         };
-        session.sight(
+        let sighted = session.sight(
             &client.filed_as,
             &dbs,
             restores,
@@ -515,6 +545,9 @@ pub fn commit(
             discovered,
             SightMode::Light,
         );
+        if !sighted.regenerated.is_empty() {
+            regenerated.push((client.filed_as.clone(), sighted.regenerated));
+        }
         let mut marked = 0;
         for (db, settled) in client.dbs.iter().zip(settled) {
             let Some(mark) = mark_of(&session.ledger, client, db, run, *ran, *settled) else {
@@ -534,8 +567,46 @@ pub fn commit(
             });
         }
     }
-    if let Err(why) = session.commit() {
-        trace::emit(|| format!("errors ledger: the light read was not stored: {why:?}"));
+    match session.commit() {
+        // Still under the evidence lock: a database whose lifetime this read started or
+        // ended loses its links in the memo (design 7.3.2). It adds none: it has no
+        // attribution.
+        Ok(_accepted) => drop_links(paths, &regenerated, actor),
+        Err(why) => {
+            trace::emit(|| format!("errors ledger: the light read was not stored: {why:?}"));
+        }
+    }
+}
+
+/// Removes from the errors memo the links of each database a light read started or ended
+/// a lifetime of (`(filed_as, database keys)`), and rings the doorbell when that changed
+/// it. Best effort, as every memo write is.
+fn drop_links(paths: &Paths, regenerated: &[(String, Vec<String>)], actor: Actor) {
+    if regenerated.is_empty() {
+        return;
+    }
+    let (mut memo, writable) = memo::load(paths);
+    if !writable {
+        return;
+    }
+    let mut changed = false;
+    for (filed_as, keys) in regenerated {
+        let Some(target) = memo.targets.get_mut(filed_as) else {
+            continue;
+        };
+        for db in &mut target.databases {
+            if !keys.contains(&db_key(&db.path)) {
+                continue;
+            }
+            for addon in &mut db.addons {
+                changed |= !addon.links.is_empty();
+                addon.links.clear();
+            }
+            changed |= db.generation.take().is_some();
+        }
+    }
+    if changed {
+        memo::store(paths, &memo, actor);
     }
 }
 
@@ -952,15 +1023,18 @@ type Prepared<'c, 'a> = (&'c FullClient<'a>, Vec<DbSighting>, Option<Vec<Restore
 /// may have met, read before the lock; one session under the evidence lock that sights
 /// every database each read whole (`SightMode::Full`) and stores the ledger; then the
 /// judgments that ledger owes, made outside any lock ([`judge_owed`]) and attached in a
-/// second session ([`publish`]). Returns the ledger the view reads. What cannot be had is
-/// one `-vv` line, never an error: the view then reads the ledger as it is on disk (or as
-/// the first session stored it, the judgments waiting for the next run), and says why an
-/// error it does not know cannot be placed.
+/// second session ([`publish`]). `on_stored` runs with the last ledger stored while its
+/// evidence lock is still held (the memo's links are written there, design 7.3.2); not
+/// at all when no session stored one. Returns the ledger the view reads. What cannot be
+/// had is one `-vv` line, never an error: the view then reads the ledger as it is on
+/// disk (or as the first session stored it, the judgments waiting for the next run), and
+/// says why an error it does not know cannot be placed.
 pub fn full_read(
     paths: &Paths,
     clients: &[FullClient<'_>],
     now: Timestamp,
     command: &str,
+    on_stored: &mut dyn FnMut(&ErrorsLedger),
 ) -> LedgerView {
     let loaded = ledger::load(paths);
     let unstored = |why: &LedgerUnavailable, loaded: Option<ErrorsLedger>| {
@@ -1037,21 +1111,153 @@ pub fn full_read(
             });
         }
     }
-    // The lock is let go here: judging happens outside any lock (phase 3).
-    let stored = match session.commit() {
-        Ok(accepted) => accepted.ledger.clone(),
+    let accepted = match session.commit() {
+        Ok(accepted) => accepted,
         Err(why) => return unstored(&why, loaded),
     };
+    let owes_any = clients.iter().any(|client| {
+        accepted
+            .ledger
+            .targets
+            .get(client.filed_as)
+            .is_some_and(|ledger| !owed(ledger, client.observation).is_empty())
+    });
+    if !owes_any {
+        trace::emit(|| "errors ledger: judged 0".to_owned());
+        on_stored(&accepted.ledger);
+        return LedgerView {
+            ledger: Some(accepted.ledger.clone()),
+            missing: None,
+        };
+    }
+    // The lock is let go here: judging happens outside any lock (phase 3).
+    let stored = accepted.ledger.clone();
+    drop(accepted);
     let judged = judge_owed(paths, clients, &stored, now);
-    let ledger = if judged.is_empty() {
-        stored
-    } else {
-        publish(paths, &scopes, command, judged).unwrap_or(stored)
+    let ledger = match publish(paths, &scopes, command, judged) {
+        Some(accepted) => {
+            on_stored(&accepted.ledger);
+            accepted.ledger.clone()
+        }
+        None => stored,
     };
     LedgerView {
         ledger: Some(ledger),
         missing: None,
     }
+}
+
+/// What `errors` projects into the memo from `ledger` for one client (design 7.3.2), by
+/// database of `observation`: each database's generation, and for each cluster that
+/// appeared in it, was judged `complete` with a `high` or `medium` change, is still
+/// `current` at `now`, and has a member this read holds there, a link on the addon that
+/// member is filed under in that database. Nothing is keyed by addon name across
+/// databases; a `low` link is never projected.
+pub fn project(
+    ledger: Option<&TargetLedger>,
+    observation: &Observation,
+    now: Timestamp,
+) -> Projection {
+    let Some(ledger) = ledger else {
+        return Projection {
+            databases: vec![DbProjection::default(); observation.databases.len()],
+        };
+    };
+    let databases = observation
+        .databases
+        .iter()
+        .enumerate()
+        .map(|(at, db)| {
+            let key = db_key(&db.path);
+            let generation = ledger.databases.get(&key).map(|d| d.generation.clone());
+            let mut links: BTreeMap<(String, SourceKind), Vec<MemoLink>> = BTreeMap::new();
+            for (id, cluster) in &ledger.clusters {
+                let Some(link) = link_of(id, cluster, generation.as_ref(), &key, now) else {
+                    continue;
+                };
+                let members: Vec<&Observed> = observation
+                    .local()
+                    .filter(|o| o.database == at && cluster.fingerprints.contains(&o.fingerprint))
+                    .collect();
+                let Some(first) = members.first() else {
+                    continue;
+                };
+                let session = members.iter().filter_map(|o| o.entry.session).max();
+                let link = MemoLink {
+                    session: session.unwrap_or(0),
+                    addon: if link.addon.is_empty() {
+                        first.name.clone()
+                    } else {
+                        link.addon
+                    },
+                    ..link
+                };
+                links
+                    .entry((first.name.to_ascii_lowercase(), first.kind))
+                    .or_default()
+                    .push(link);
+            }
+            for best in links.values_mut() {
+                best.sort_by(|a, b| {
+                    grade(b.confidence)
+                        .cmp(&grade(a.confidence))
+                        .then(b.at.cmp(&a.at))
+                        .then(a.cluster.cmp(&b.cluster))
+                });
+                best.truncate(MEMO_LINKS_PER_ADDON);
+            }
+            DbProjection { generation, links }
+        })
+        .collect();
+    Projection { databases }
+}
+
+/// A cluster's link as the memo keeps it, when it qualifies: it appeared in the database
+/// keyed `key`, in its `generation` (current), was judged `complete` with a `high` or
+/// `medium` change, and is fresh at `now`. `session` and an unnamed `addon` are the
+/// caller's to fill from the read.
+fn link_of(
+    id: &str,
+    cluster: &Cluster,
+    generation: Option<&DbGeneration>,
+    key: &str,
+    now: Timestamp,
+) -> Option<MemoLink> {
+    if cluster.appearance.database != key || generation != Some(&cluster.appearance.generation) {
+        return None;
+    }
+    let verdict = cluster.judgment.as_ref()?;
+    let suspect = verdict.suspect.as_ref()?;
+    let strong = matches!(
+        suspect.confidence,
+        crate::errors::attribute::Confidence::High | crate::errors::attribute::Confidence::Medium
+    );
+    if verdict.state != JudgmentState::Complete || !strong {
+        return None;
+    }
+    let (bounds, _) = onset(&cluster.appearance);
+    let fresh_until_at = bounds.by.checked_add(SUSPECT_FRESH_MAX_AGE).ok()?;
+    if now >= fresh_until_at {
+        return None;
+    }
+    let first = suspect.changed.first();
+    Some(MemoLink {
+        cluster: id.to_owned(),
+        fingerprints: cluster.fingerprints.clone(),
+        generation: cluster.appearance.generation.clone(),
+        session: 0,
+        tx: suspect.tx,
+        kind: suspect.kind,
+        at: suspect.at,
+        addon: first.map(|t| t.addon.clone()).unwrap_or_default(),
+        release: first
+            .and_then(|t| t.to.as_ref())
+            .and_then(|r| r.release.clone()),
+        relation: suspect.relation,
+        confidence: suspect.confidence,
+        algorithm: verdict.algorithm,
+        fresh_until_at,
+    })
 }
 
 /// One judgment a full read made, for its second session to attach.
@@ -1326,7 +1532,7 @@ fn publish(
     scopes: &ScopeTable,
     command: &str,
     judged: Vec<Judged>,
-) -> Option<ErrorsLedger> {
+) -> Option<ledger::Accepted> {
     let mut session = match ledger::open(paths, scopes, command) {
         Ok(session) => session,
         Err(why) => {
@@ -1338,7 +1544,7 @@ fn publish(
         session.attach(&j.filed_as, &j.cluster, j.verdict, Some(j.addon));
     }
     match session.commit() {
-        Ok(accepted) => Some(accepted.ledger.clone()),
+        Ok(accepted) => Some(accepted),
         Err(why) => {
             trace::emit(|| format!("errors ledger: judgments not stored: {why:?}"));
             None
@@ -1716,7 +1922,7 @@ mod tests {
 
         fn light_read_with(&self, run: RunId, before: Option<bool>, after: Option<bool>) {
             let captured = capture(&self.paths, &[&self.target], &|_| before);
-            commit(&self.paths, captured, run, &|_| after, "test");
+            commit(&self.paths, captured, run, &|_| after, "test", Actor::Human);
         }
 
         fn ledger(&self) -> TargetLedger {
@@ -1812,7 +2018,14 @@ mod tests {
         let sighting = &captured.clients[0].dbs[0].sighting;
         assert!(sighting.read.is_none(), "{sighting:?}");
         let second = RunId::new();
-        commit(&client.paths, captured, second, &|_| Some(false), "test");
+        commit(
+            &client.paths,
+            captured,
+            second,
+            &|_| Some(false),
+            "test",
+            Actor::Human,
+        );
         let db = client.db();
         assert_eq!(db.reads.len(), 1, "one state, seen twice");
         assert_eq!(
@@ -1847,7 +2060,14 @@ mod tests {
         let captured = capture(&client.paths, &[&client.target], &|_| Some(false));
         client.save(6, &[OLD]);
         let run = RunId::new();
-        commit(&client.paths, captured, run, &|_| Some(false), "test");
+        commit(
+            &client.paths,
+            captured,
+            run,
+            &|_| Some(false),
+            "test",
+            Actor::Human,
+        );
         let db = client.db();
         let mark = db.marks.iter().find(|m| m.run == run).unwrap();
         assert!(!mark.settled, "{mark:?}");
@@ -1974,6 +2194,7 @@ mod tests {
             RunId::new(),
             &|_| Some(false),
             "test",
+            Actor::Human,
         );
         drop(held);
         assert_eq!(client.db().generation, before, "nothing recorded yet");
@@ -1993,7 +2214,14 @@ mod tests {
         let captured = capture(&client.paths, &[&client.target], &|_| Some(false));
         client.restore_whole(5, &[OLD, NEW]);
         let run = RunId::new();
-        commit(&client.paths, captured, run, &|_| Some(false), "test");
+        commit(
+            &client.paths,
+            captured,
+            run,
+            &|_| Some(false),
+            "test",
+            Actor::Human,
+        );
         let db = client.db();
         assert!(db.invalidated_at.is_some(), "{db:?}");
         assert!(!db.marks.iter().any(|m| m.run == run), "{db:?}");
@@ -2038,7 +2266,10 @@ mod tests {
                         entries: 1,
                         occurrences: 1,
                         addons: Vec::new(),
+                        generation: None,
                     }],
+                    ledger_revision: None,
+                    projected_at: None,
                 },
             )]),
         };
@@ -2091,6 +2322,7 @@ mod tests {
             RunId::new(),
             &|_| Some(false),
             "test",
+            Actor::Human,
         );
     }
 

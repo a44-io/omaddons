@@ -442,7 +442,15 @@ impl Outcome for StatusOutcome {
             }
             return Ok(());
         }
-        writeln!(w, "{}", summary_line(&self.data.summary))?;
+        // "first seen after an update" only when a `high` link counts (design 7.3.2).
+        let after_update = self.data.targets.iter().any(|t| {
+            t.errors.top_addons.iter().any(|a| {
+                a.after_change
+                    .as_ref()
+                    .is_some_and(|b| b.confidence == crate::errors::attribute::Confidence::High)
+            })
+        });
+        writeln!(w, "{}", summary_line(&self.data.summary, after_update))?;
         let rows: Vec<Vec<String>> = self
             .data
             .targets
@@ -500,7 +508,7 @@ impl Outcome for StatusOutcome {
             for issue in &t.issues {
                 writeln!(w, "{}", issue_line(issue))?;
             }
-            if let Some(line) = errors_status::human_line(&t.id, &t.errors) {
+            if let Some(line) = errors_status::human_line(&t.id, &t.errors, now) {
                 writeln!(w, "{line}")?;
             }
             if let Some(backups) = &t.backups {
@@ -561,8 +569,9 @@ impl Outcome for StatusOutcome {
 }
 
 /// The first line: `3 updates on 2 clients · 1 issue (P2) · 4 new Lua errors on 1 client
-/// · retail running`.
-fn summary_line(s: &Summary) -> String {
+/// · retail running`. `after_update` adds `first seen after an update` to the errors,
+/// when a `high` link counts (design 7.3.2).
+fn summary_line(s: &Summary, after_update: bool) -> String {
     let plural = |n: usize, one: &str, many: &str| {
         if n == 1 {
             format!("1 {one}")
@@ -602,6 +611,9 @@ fn summary_line(s: &Summary) -> String {
             plural(s.errors.new, "new Lua error", "new Lua errors"),
             plural(s.errors.targets.len(), "client", "clients")
         ));
+        if after_update {
+            parts.push("first seen after an update".to_owned());
+        }
     }
     if !s.running.is_empty() {
         parts.push(format!("{} running", s.running.join(", ")));
@@ -773,6 +785,10 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
     let (errors_memo, _) = memo::load(&world.paths);
     let (acks, ack_note) = ack::read(&world.paths);
     notes.extend(ack_note);
+    // `--cached` reads the history projection once: for the restores a memo link must
+    // not have met, its last change, and the Skill layer (the folders it lists). Plain
+    // `status` reads the whole history instead.
+    let tail = args.cached.then(|| history_tail::fresh(&world.paths));
     // Read once too, never rebuilt here: what the backups add up to, per client.
     let backup_inventory = inventory::load_file(&world.paths);
     let auto_mode = world.config.auto_backup.unwrap_or_default();
@@ -919,6 +935,19 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
             .unwrap_or_default();
         let filed_as = t.key.map_or_else(|| t.id.clone(), |k| k.to_string());
         let client = ClientPaths::new(&t.client_dir);
+        // The restores a memo link must not have met: those since its projection.
+        let target_memo = errors_memo.targets.get(&filed_as);
+        let restores = target_memo
+            .and_then(|m| m.projected_at)
+            .and_then(|since| match &tail {
+                Some(tail) => super::errors_ledger::restores_in_projection(tail.as_ref(), t, since),
+                None => super::errors_ledger::restores_since(&world.paths, t, since),
+            });
+        let check = errors_status::LinkCheck {
+            restores: restores.as_deref(),
+            ack: acks.targets.get(&filed_as),
+            now: errors_now,
+        };
         let errors = match &live_errors {
             Some(tz) => {
                 let owner = |folder: &str| {
@@ -937,7 +966,7 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
                     },
                     &mut errors_budget,
                 );
-                errors_status::live(&observation)
+                errors_status::live(&observation, target_memo, &check)
             }
             None => {
                 let installed = |folder: &str| {
@@ -948,9 +977,10 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
                 errors_status::cached(
                     &client,
                     &installed,
-                    errors_memo.targets.get(&filed_as),
+                    target_memo,
                     acks.targets.get(&filed_as),
                     errors_now,
+                    restores.as_deref(),
                 )
             }
         };
@@ -1126,9 +1156,6 @@ pub fn run(ctx: &Context, args: StatusArgs) -> Result<StatusOutcome> {
     // twice. `-t` narrows the per-client rows as `doctor -t` does; `-t all` lists every
     // client, a vanished one too, as no `-t` does.
     let in_progress = matches!(lock, LockState::Held { .. });
-    // `--cached` reads the history projection once: for its last change, and for the
-    // Skill layer (the folders it lists). Plain `status` reads the whole history instead.
-    let tail = args.cached.then(|| history_tail::fresh(&world.paths));
     let view = DoctorView::seeded(
         ViewOptions {
             discovery: if args.cached {
@@ -1960,11 +1987,14 @@ mod tests {
         assert!(s.check_due);
         assert_eq!(s.state, SummaryState::Updates);
         assert_eq!(
-            summary_line(&s),
+            summary_line(&s, false),
             "3 updates on 2 clients · 1 issue (P2) · retail running"
         );
         assert_eq!(
-            summary_line(&summary(&[target("retail", 0, &[], 0)], &[], &[], false)),
+            summary_line(
+                &summary(&[target("retail", 0, &[], 0)], &[], &[], false),
+                false
+            ),
             "Nothing needs doing"
         );
     }
@@ -1995,12 +2025,12 @@ mod tests {
         );
         assert_eq!(s.state, SummaryState::Errors, "errors outrank updates");
         assert_eq!(
-            summary_line(&s),
+            summary_line(&s, false),
             "2 updates on 1 client · 4 new Lua errors on 1 client"
         );
         let s = summary(&[classic], &[], &[], false);
         assert_eq!((s.errors.new, s.state), (0, SummaryState::Idle));
-        assert_eq!(summary_line(&s), "Nothing needs doing");
+        assert_eq!(summary_line(&s, false), "Nothing needs doing");
     }
 
     #[test]

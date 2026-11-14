@@ -12,13 +12,16 @@ use jiff::Timestamp;
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use super::errors::{CaptureState, CoverageState};
+use super::errors::{AfterChangeBrief, CaptureState, CoverageState};
 use crate::errors::ack::{TargetAck, db_key};
+use crate::errors::attribute::Confidence;
+use crate::errors::ledger::Restored;
 use crate::errors::locate::{self, Capture, Coverage, DbFile, Declared};
-use crate::errors::memo::{SessionMemo, TargetMemo};
+use crate::errors::memo::{AddonMemo, DbMemo, MemoLink, SessionMemo, TargetMemo};
 use crate::errors::observe::{
     DbState, Observation, Observed, ReadState, SourceKind, group, session_is_new,
 };
+use crate::errors::suspect::Relation;
 use crate::state::paths::ClientPaths;
 
 /// The addons `top` lists at most: enough for a notification to name them. A display
@@ -85,6 +88,139 @@ pub struct TopAddon {
     pub new: usize,
     /// Occurrences.
     pub count: u64,
+    /// The change its new errors first appeared after, from the errors memo: the first
+    /// of its links that still holds (the same database lifetime, no restore since, the
+    /// linked error there and new, fresh); only `current` `high` and `medium` links are
+    /// kept. `null` when none holds.
+    pub after_change: Option<AfterChangeBrief>,
+}
+
+/// What a link of the memo is checked against, besides the memo itself (design 7.3.2):
+/// the restores committed on the client since the memo's links were projected (`None`:
+/// the history cannot say, and no link counts), the dismissals, and the call's time.
+#[derive(Debug, Clone, Copy)]
+pub struct LinkCheck<'a> {
+    pub restores: Option<&'a [Restored]>,
+    pub ack: Option<&'a TargetAck>,
+    pub now: Timestamp,
+}
+
+impl LinkCheck<'_> {
+    /// No restore of the client's `WTF/`, or of this database's provider's
+    /// SavedVariables, was committed after the memo's links were projected.
+    fn unrestored(&self, memo: &TargetMemo, db: &DbMemo) -> bool {
+        let (Some(restores), Some(projected)) = (self.restores, memo.projected_at) else {
+            return false;
+        };
+        !restores.iter().any(|r| {
+            r.at > projected
+                && (r.whole
+                    || r.providers
+                        .iter()
+                        .any(|p| p.eq_ignore_ascii_case(&db.provider)))
+        })
+    }
+}
+
+/// A link as `status` shows it.
+fn brief(link: &MemoLink) -> AfterChangeBrief {
+    AfterChangeBrief {
+        tx: link.tx,
+        kind: link.kind,
+        at: link.at,
+        addon: link.addon.clone(),
+        relation: link.relation,
+        confidence: link.confidence,
+    }
+}
+
+/// The links the memo holds for an addon (by name ignoring case, and kind), with their
+/// database, in database order, each database's best first.
+fn links_for<'m>(
+    memo: &'m TargetMemo,
+    addon: &str,
+    kind: SourceKind,
+) -> impl Iterator<Item = (&'m DbMemo, &'m AddonMemo, &'m MemoLink)> {
+    let addon = addon.to_owned();
+    memo.databases.iter().flat_map(move |db| {
+        let addon = addon.clone();
+        db.addons
+            .iter()
+            .filter(move |a| a.addon.eq_ignore_ascii_case(&addon) && a.kind == kind)
+            .flat_map(move |a| a.links.iter().map(move |l| (db, a, l)))
+    })
+}
+
+/// `status --cached`'s link for an addon: the first that passes every test of design
+/// 7.3.2 over the memo and the dismissals alone. `unchanged` says whether a database's
+/// file is as the memo recorded it: `--cached` cannot tell a reset from play without
+/// reading the file, so a link shows only while its file is the one judged.
+fn cached_link(
+    memo: &TargetMemo,
+    addon: &str,
+    kind: SourceKind,
+    check: &LinkCheck<'_>,
+    unchanged: &dyn Fn(&DbMemo) -> bool,
+) -> Option<AfterChangeBrief> {
+    links_for(memo, addon, kind)
+        .find(|(db, a, link)| {
+            let ack = check
+                .ack
+                .and_then(|ack| ack.databases.get(&db_key(&db.path)));
+            let state = DbState {
+                session: db.session,
+                baseline: db.baseline,
+                written_at: db.written_at,
+            };
+            let new = a.sessions.contains_key(&link.session)
+                && link.session != 0
+                && session_is_new(
+                    &state,
+                    link.session,
+                    db.sessions.get(&link.session).map(|s| &s.newest),
+                    ack,
+                    check.now,
+                );
+            db.generation.as_ref() == Some(&link.generation)
+                && unchanged(db)
+                && check.unrestored(memo, db)
+                && new
+                && check.now < link.fresh_until_at
+        })
+        .map(|(_, _, link)| brief(link))
+}
+
+/// Plain `status`' link for an addon: the first that passes every test of design 7.3.2
+/// over the memo and the live read, which it never writes.
+fn live_link(
+    observation: &Observation,
+    memo: &TargetMemo,
+    addon: &str,
+    kind: SourceKind,
+    check: &LinkCheck<'_>,
+) -> Option<AfterChangeBrief> {
+    links_for(memo, addon, kind)
+        .find(|(db, _, link)| {
+            let Some((at, live)) = observation
+                .databases
+                .iter()
+                .enumerate()
+                .find(|(_, d)| d.path == db.path)
+            else {
+                return false;
+            };
+            // The same lifetime: the file as recorded, or one that continues it.
+            let continues = live.stamp.fingerprint() == db.stamp
+                || matches!(
+                    (live.session, db.session, live.written_at, db.written_at),
+                    (Some(s), Some(was), Some(w), Some(written)) if s >= was && w >= written
+                );
+            let there = observation
+                .local()
+                .any(|e| e.database == at && e.new && link.fingerprints.contains(&e.fingerprint));
+            continues && check.unrestored(memo, db) && there && check.now < link.fresh_until_at
+        })
+        .map(|(_, _, link)| brief(link))
 }
 
 impl TargetErrors {
@@ -112,8 +248,13 @@ impl TargetErrors {
     }
 }
 
-/// The block of a whole observation (plain `status`): `errors`' own counts.
-pub fn live(observation: &Observation) -> TargetErrors {
+/// The block of a whole observation (plain `status`): `errors`' own counts, and each
+/// addon's link from `memo` checked against the live read.
+pub fn live(
+    observation: &Observation,
+    memo: Option<&TargetMemo>,
+    check: &LinkCheck<'_>,
+) -> TargetErrors {
     let coverage = coverage_state(observation.coverage);
     if observation.capture == Capture::None {
         return TargetErrors::uncaptured(coverage);
@@ -122,6 +263,7 @@ pub fn live(observation: &Observation) -> TargetErrors {
     let tallies: Vec<Tally> = group(&local)
         .into_iter()
         .map(|g| Tally {
+            after_change: memo.and_then(|m| live_link(observation, m, &g.name, g.kind, check)),
             addon: g.name,
             kind: g.kind,
             folders: g.folders,
@@ -167,6 +309,7 @@ pub fn cached(
     memo: Option<&TargetMemo>,
     ack: Option<&TargetAck>,
     now: Timestamp,
+    restores: Option<&[Restored]>,
 ) -> TargetErrors {
     let embedding: Vec<&str> = memo
         .into_iter()
@@ -236,7 +379,15 @@ pub fn cached(
         || seen != recorded
         || !listed.eq(remembered)
         || embedding.iter().any(|p| !installed(p));
-    let counts = recount(memo, ack, now);
+    let mut counts = recount(memo, ack, now);
+    let check = LinkCheck { restores, ack, now };
+    let unchanged = |db: &DbMemo| {
+        seen.iter()
+            .any(|(path, stamp)| *path == db.path && *stamp == db.stamp)
+    };
+    for t in &mut counts.tallies {
+        t.after_change = cached_link(memo, &t.addon, t.kind, &check, &unchanged);
+    }
     let (state, incomplete) = if changed {
         (ErrorsState::Stale, None)
     } else {
@@ -266,6 +417,7 @@ struct Tally {
     folders: Vec<String>,
     new: usize,
     count: u64,
+    after_change: Option<AfterChangeBrief>,
 }
 
 /// What the memo counts, `new` decided now.
@@ -324,6 +476,7 @@ fn recount(memo: &TargetMemo, ack: Option<&TargetAck>, now: Timestamp) -> Recoun
                         folders: Vec::new(),
                         new: 0,
                         count: 0,
+                        after_change: None,
                     });
                     out.tallies.len() - 1
                 }
@@ -374,6 +527,7 @@ fn top(mut tallies: Vec<Tally>) -> Vec<TopAddon> {
             addon: t.addon,
             new: t.new,
             count: t.count,
+            after_change: t.after_change,
         })
         .collect()
 }
@@ -406,8 +560,9 @@ fn coverage_state(coverage: Coverage) -> CoverageState {
 
 /// The human line under client `id`'s row, when its errors say anything: new errors, a
 /// read that is stale, unchecked, incomplete or unreadable, or a walk a bound cut. Names
-/// and counts only, never an error's text (M3-D21).
-pub fn human_line(id: &str, e: &TargetErrors) -> Option<String> {
+/// and counts only, never an error's text (M3-D21). The first addon whose link counts
+/// says after which change (`DBM 1, likely since its update today 16:02`).
+pub fn human_line(id: &str, e: &TargetErrors, now: Timestamp) -> Option<String> {
     if matches!(e.capture, CaptureState::None) {
         return None;
     }
@@ -431,11 +586,18 @@ pub fn human_line(id: &str, e: &TargetErrors) -> Option<String> {
             ]
         }
         ErrorsState::Ok if e.new > 0 => {
+            let mut linked = false;
             let named: Vec<String> = e
                 .top_addons
                 .iter()
                 .filter(|a| a.new > 0)
-                .map(|a| format!("{} {}", a.addon, a.new))
+                .map(|a| match &a.after_change {
+                    Some(link) if !linked => {
+                        linked = true;
+                        format!("{} {}, {}", a.addon, a.new, link_phrase(link, now))
+                    }
+                    _ => format!("{} {}", a.addon, a.new),
+                })
                 .collect();
             // New errors of addons `top_addons` leaves out.
             let shown: usize = e.top_addons.iter().map(|a| a.new).sum();
@@ -451,6 +613,25 @@ pub fn human_line(id: &str, e: &TargetErrors) -> Option<String> {
         parts.push("read in part (too many accounts or files)".to_owned());
     }
     (!parts.is_empty()).then(|| format!("  errors: {}", parts.join(" · ")))
+}
+
+/// `likely since its update today 16:02` for the addon's own change, `possible after
+/// update today 16:02` for any other (design 7.3.2): evidence of order, never of cause.
+fn link_phrase(link: &AfterChangeBrief, now: Timestamp) -> String {
+    let word = match link.confidence {
+        Confidence::High => "likely",
+        Confidence::Medium => "possible",
+        Confidence::Low => "weak",
+    };
+    let when = super::backup::when(link.at, now);
+    if link.relation == Relation::Own {
+        format!("{word} since its update {when}")
+    } else {
+        format!(
+            "{word} after {} {when}",
+            super::history::kind_name(link.kind)
+        )
+    }
 }
 
 #[cfg(test)]
@@ -666,8 +847,8 @@ mod tests {
         #[test]
         fn the_memo_recounts_what_errors_counts(dbs in prop::collection::vec(gen_db(), 1..4)) {
             let (obs, acks) = observation(&dbs);
-            let live = live(&obs);
-            let memo = target_memo(&obs, None);
+            let live = live(&obs, None, &no_links());
+            let memo = target_memo(&obs, None, None);
             let again = recount(&memo, Some(&acks), now());
             prop_assert_eq!(live.new, again.new);
             prop_assert_eq!(live.total, again.total);
@@ -752,7 +933,9 @@ mod tests {
                     kind: SourceKind::Addon,
                     sessions: BTreeMap::from([(4, session(2, at)), (5, session(3, at))]),
                     folders: vec!["Foo".to_owned()],
+                    links: Vec::new(),
                 }],
+                generation: None,
             })
             .collect();
         TargetMemo {
@@ -772,6 +955,17 @@ mod tests {
                 .collect(),
             received: 1,
             databases,
+            ledger_revision: None,
+            projected_at: None,
+        }
+    }
+
+    /// No link can count: no restores known (as without a projection).
+    fn no_links() -> LinkCheck<'static> {
+        LinkCheck {
+            restores: None,
+            ack: None,
+            now: now(),
         }
     }
 
@@ -783,7 +977,7 @@ mod tests {
     fn an_unchanged_client_keeps_the_memo_and_new_is_decided_now() {
         let (_dir, c) = client(1);
         let memo = memo_of(&c);
-        let e = cached(&c, &bug_grabber, Some(&memo), None, now());
+        let e = cached(&c, &bug_grabber, Some(&memo), None, now(), None);
         assert_eq!(
             (e.capture, e.state, e.coverage),
             (
@@ -799,13 +993,21 @@ mod tests {
                 addon: "Foo".to_owned(),
                 folder: Some("Foo".to_owned()),
                 new: 3,
-                count: 10
+                count: 10,
+                after_change: None,
             }]
         );
         assert!(e.last_session_at.is_some());
         assert!(!e.worth_checking());
         // A week later, with no file changed, nothing is new any more.
-        let later = cached(&c, &bug_grabber, Some(&memo), None, now() + hours(7 * 24));
+        let later = cached(
+            &c,
+            &bug_grabber,
+            Some(&memo),
+            None,
+            now() + hours(7 * 24),
+            None,
+        );
         assert_eq!(
             (later.state, later.new, later.total),
             (ErrorsState::Ok, 0, 5)
@@ -826,13 +1028,13 @@ mod tests {
                 },
             )]),
         };
-        let e = cached(&c, &bug_grabber, Some(&memo), Some(&ack), now());
+        let e = cached(&c, &bug_grabber, Some(&memo), Some(&ack), now(), None);
         assert_eq!((e.state, e.new, e.total), (ErrorsState::Ok, 0, 5));
         assert_eq!(e.top_addons[0].new, 0);
         assert_eq!(e.dismissed_at, Some(dismissed));
         // Without a memo (the cache emptied), it is unchecked, never new, and the
         // dismissal is still known.
-        let unread = cached(&c, &bug_grabber, None, Some(&ack), now());
+        let unread = cached(&c, &bug_grabber, None, Some(&ack), now(), None);
         assert_eq!(
             (unread.state, unread.new, unread.total, unread.dismissed_at),
             (ErrorsState::Unchecked, 0, 0, Some(dismissed))
@@ -850,20 +1052,20 @@ mod tests {
             b"BugGrabberDB = { session = 6 }\n",
         )
         .unwrap();
-        let e = cached(&c, &bug_grabber, Some(&memo), None, now());
+        let e = cached(&c, &bug_grabber, Some(&memo), None, now(), None);
         assert_eq!((e.state, e.new, e.total), (ErrorsState::Stale, 3, 5));
         assert!(e.worth_checking());
 
         let (dir, c) = client(1);
         let memo = memo_of(&c);
         fs::write(dir.path().join(SV).join("Details.lua"), b"x").unwrap();
-        let e = cached(&c, &bug_grabber, Some(&memo), None, now());
+        let e = cached(&c, &bug_grabber, Some(&memo), None, now(), None);
         assert_eq!(e.state, ErrorsState::Stale, "a new file name in the folder");
 
         let (dir, c) = client(1);
         let memo = memo_of(&c);
         fs::remove_file(dir.path().join(SV).join("!BugGrabber.lua")).unwrap();
-        let e = cached(&c, &bug_grabber, Some(&memo), None, now());
+        let e = cached(&c, &bug_grabber, Some(&memo), None, now(), None);
         assert_eq!(
             e.state,
             ErrorsState::Stale,
@@ -890,9 +1092,9 @@ mod tests {
         db.stamp = embedded.stamp.fingerprint();
         memo.databases.push(db);
         let both = |f: &str| bug_grabber(f) || f.eq_ignore_ascii_case("bdui");
-        let e = cached(&c, &both, Some(&memo), None, now());
+        let e = cached(&c, &both, Some(&memo), None, now(), None);
         assert_eq!((e.state, e.total, e.new), (ErrorsState::Ok, 10, 6));
-        let e = cached(&c, &bug_grabber, Some(&memo), None, now());
+        let e = cached(&c, &bug_grabber, Some(&memo), None, now(), None);
         assert_eq!(e.state, ErrorsState::Stale, "bdUI was removed");
     }
 
@@ -901,7 +1103,7 @@ mod tests {
         let (_dir, c) = client(2);
         let mut memo = memo_of(&c);
         memo.databases[1].state = ReadState::OverBudget;
-        let e = cached(&c, &bug_grabber, Some(&memo), None, now());
+        let e = cached(&c, &bug_grabber, Some(&memo), None, now(), None);
         assert_eq!(
             (e.state, e.incomplete, e.new, e.total),
             (ErrorsState::Partial, Some(ReadState::OverBudget), 6, 10)
@@ -910,7 +1112,7 @@ mod tests {
         for db in &mut memo.databases {
             db.state = ReadState::Unreadable;
         }
-        let e = cached(&c, &bug_grabber, Some(&memo), None, now());
+        let e = cached(&c, &bug_grabber, Some(&memo), None, now(), None);
         assert_eq!(e.state, ErrorsState::Unreadable);
         assert!(!e.worth_checking());
     }
@@ -919,10 +1121,10 @@ mod tests {
     fn without_bug_grabber_nothing_is_captured() {
         let (_dir, c) = client(0);
         let none = |_: &str| false;
-        let e = cached(&c, &none, None, None, now());
+        let e = cached(&c, &none, None, None, now(), None);
         assert_eq!(e, TargetErrors::uncaptured(CoverageState::Complete));
         // Installed but never run: nothing read yet.
-        let e = cached(&c, &bug_grabber, None, None, now());
+        let e = cached(&c, &bug_grabber, None, None, now(), None);
         assert_eq!(
             (e.capture, e.state),
             (CaptureState::Buggrabber, ErrorsState::Unchecked)
@@ -933,7 +1135,7 @@ mod tests {
     fn more_accounts_than_the_bound_is_truncated() {
         let (_dir, c) = client(crate::limits::ERRORS_MAX_ACCOUNTS + 1);
         let memo = memo_of(&c);
-        let e = cached(&c, &bug_grabber, Some(&memo), None, now());
+        let e = cached(&c, &bug_grabber, Some(&memo), None, now(), None);
         assert_eq!(
             (e.coverage, e.state),
             (CoverageState::Truncated, ErrorsState::Ok)
@@ -957,6 +1159,7 @@ mod tests {
                     folder: Some((*addon).to_owned()),
                     new: *new,
                     count: 9,
+                    after_change: None,
                 })
                 .collect(),
             incomplete: matches!(state, ErrorsState::Partial).then_some(ReadState::Partial),
@@ -966,7 +1169,7 @@ mod tests {
 
     #[test]
     fn the_human_line_names_addons_and_counts_only() {
-        let line = |e: &TargetErrors| human_line("retail", e);
+        let line = |e: &TargetErrors| human_line("retail", e, now());
         assert_eq!(
             line(&errors(
                 ErrorsState::Ok,
@@ -1003,6 +1206,308 @@ mod tests {
         assert_eq!(
             line(&TargetErrors::uncaptured(CoverageState::Complete)),
             None
+        );
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Links (RG-17, design 7.3.2).
+
+    use crate::errors::ledger::DbGeneration;
+    use crate::errors::memo::MemoLink;
+    use crate::errors::suspect::Relation;
+    use crate::model::{ReleaseKey, TxKind};
+
+    /// A link of Foo's cluster in session `session`, of generation `g:1`, graded
+    /// `confidence`, fresh for a day.
+    fn link(session: u32, confidence: Confidence, tx: &str) -> MemoLink {
+        MemoLink {
+            cluster: format!("c:{session}"),
+            fingerprints: vec![format!("e:{session}")],
+            generation: DbGeneration("g:1".to_owned()),
+            session,
+            tx: tx.parse().unwrap(),
+            kind: TxKind::Update,
+            at: now() - hours(3),
+            addon: "Foo".to_owned(),
+            release: ReleaseKey::parse("gh:o/foo@v2", None),
+            relation: Relation::Own,
+            confidence,
+            algorithm: 1,
+            fresh_until_at: now() + hours(24),
+        }
+    }
+
+    const TX1: &str = "01M9Q00000000000000000000A";
+    const TX2: &str = "01M9Q00000000000000000000B";
+
+    /// The memo of FAKEACCT's file, projected an hour ago in generation `g:1`, with
+    /// Foo's `links` (sessions 4 and 5; 5 is new, baseline 3).
+    fn linked(c: &ClientPaths, links: Vec<MemoLink>) -> TargetMemo {
+        let mut memo = memo_of(c);
+        memo.projected_at = Some(now() - hours(1));
+        memo.ledger_revision = Some(7);
+        let db = &mut memo.databases[0];
+        db.baseline = 3;
+        db.generation = Some(DbGeneration("g:1".to_owned()));
+        db.addons[0].links = links;
+        memo
+    }
+
+    fn restore(hours_ago: i64, whole: bool, providers: &[&str]) -> Restored {
+        Restored {
+            at: now() - hours(hours_ago),
+            whole,
+            providers: providers.iter().map(|p| (*p).to_owned()).collect(),
+        }
+    }
+
+    #[test]
+    fn a_cached_link_shows_only_while_every_test_holds() {
+        let (_dir, c) = client(1);
+        let none: &[Restored] = &[];
+        let earlier = [restore(2, true, &[])];
+        let later = [restore(0, true, &[])];
+        let elsewhere = [restore(0, false, &["bdUI"])];
+        let provider = [restore(0, false, &["!bugGrabber"])];
+        let dismissed = |memo: &TargetMemo, session| TargetAck {
+            databases: BTreeMap::from([(
+                db_key(&memo.databases[0].path),
+                Ack {
+                    acked_session: session,
+                    acked_at: now() - hours(1) + SignedDuration::from_mins(5),
+                },
+            )]),
+        };
+        let shown = |memo: &TargetMemo,
+                     restores: Option<&[Restored]>,
+                     ack: Option<&TargetAck>,
+                     at,
+                     unchanged: bool| {
+            let check = LinkCheck {
+                restores,
+                ack,
+                now: at,
+            };
+            cached_link(memo, "foo", SourceKind::Addon, &check, &|_| unchanged)
+                .map(|b| b.tx.to_string())
+        };
+        let one = linked(&c, vec![link(5, Confidence::High, TX1)]);
+        let mut other_generation = one.clone();
+        other_generation.databases[0].generation = Some(DbGeneration("g:2".to_owned()));
+        let mut not_in_addon = one.clone();
+        not_in_addon.databases[0].addons[0].links = vec![link(6, Confidence::High, TX1)];
+        let ack5 = dismissed(&one, 5);
+        // (case, memo, restores, dismissal, now, file unchanged, shown)
+        type Case<'a> = (
+            &'a str,
+            &'a TargetMemo,
+            Option<&'a [Restored]>,
+            Option<&'a TargetAck>,
+            Timestamp,
+            bool,
+            bool,
+        );
+        let cases: Vec<Case<'_>> = vec![
+            (
+                "every test holds",
+                &one,
+                Some(none),
+                None,
+                now(),
+                true,
+                true,
+            ),
+            (
+                "another generation",
+                &other_generation,
+                Some(none),
+                None,
+                now(),
+                true,
+                false,
+            ),
+            (
+                "the file changed since",
+                &one,
+                Some(none),
+                None,
+                now(),
+                false,
+                false,
+            ),
+            (
+                "the history cannot say",
+                &one,
+                None,
+                None,
+                now(),
+                true,
+                false,
+            ),
+            (
+                "a restore before the projection",
+                &one,
+                Some(&earlier),
+                None,
+                now(),
+                true,
+                true,
+            ),
+            (
+                "a whole restore since",
+                &one,
+                Some(&later),
+                None,
+                now(),
+                true,
+                false,
+            ),
+            (
+                "its provider's settings restored since",
+                &one,
+                Some(&provider),
+                None,
+                now(),
+                true,
+                false,
+            ),
+            (
+                "another provider's settings restored",
+                &one,
+                Some(&elsewhere),
+                None,
+                now(),
+                true,
+                true,
+            ),
+            (
+                "its session dismissed",
+                &one,
+                Some(none),
+                Some(&ack5),
+                now(),
+                true,
+                false,
+            ),
+            (
+                "a session the addon does not hold",
+                &not_in_addon,
+                Some(none),
+                None,
+                now(),
+                true,
+                false,
+            ),
+            (
+                "past fresh_until_at",
+                &one,
+                Some(none),
+                None,
+                now() + hours(25),
+                true,
+                false,
+            ),
+        ];
+        for (case, memo, restores, ack, at, unchanged, want) in cases {
+            assert_eq!(
+                shown(memo, restores, ack, at, unchanged).is_some(),
+                want,
+                "{case}"
+            );
+        }
+        // Dismissing the strongest falls back to the next that holds.
+        let mut two = linked(
+            &c,
+            vec![
+                link(4, Confidence::High, TX1),
+                link(5, Confidence::Medium, TX2),
+            ],
+        );
+        two.databases[0].baseline = 3;
+        let ack4 = dismissed(&two, 4);
+        assert_eq!(
+            shown(&two, Some(none), None, now(), true).as_deref(),
+            Some(TX1),
+            "the strongest first"
+        );
+        assert_eq!(
+            shown(&two, Some(none), Some(&ack4), now(), true).as_deref(),
+            Some(TX2),
+            "its session dismissed, the next that holds"
+        );
+        assert_eq!(
+            shown(&two, Some(none), Some(&ack5), now(), true),
+            None,
+            "both dismissed: none"
+        );
+    }
+
+    /// Without the ledger's projection (a dismissal, a run without the evidence lock), a
+    /// database keeps its links only while its file is unchanged, read or unread; a
+    /// projection replaces them.
+    #[test]
+    fn the_memo_keeps_a_database_s_links_only_while_its_file_is_unchanged() {
+        let foo = GenEntry {
+            session: Some(5),
+            received: false,
+            who: 0,
+            counter: 1,
+            ago: Some(30),
+            meaning: TimeMeaning::Last,
+        };
+        let db = GenDb {
+            session: Some(5),
+            baseline: 3,
+            written_ago: 1,
+            ack: None,
+            entries: vec![foo],
+        };
+        let (obs, _) = observation(&[db]);
+        let g1 = Some(DbGeneration("g:1".to_owned()));
+        let mut previous = target_memo(&obs, None, None);
+        previous.databases[0].generation = g1.clone();
+        previous.databases[0].addons[0].links = vec![link(5, Confidence::High, TX1)];
+        let links = |memo: &TargetMemo| memo.databases[0].addons[0].links.len();
+
+        let kept = target_memo(&obs, Some(&previous), None);
+        assert_eq!(
+            (kept.databases[0].generation.clone(), links(&kept)),
+            (g1.clone(), 1)
+        );
+
+        let mut unread = obs.clone();
+        unread.databases[0].state = ReadState::Unreadable;
+        let kept_unread = target_memo(&unread, Some(&previous), None);
+        assert_eq!(
+            links(&kept_unread),
+            1,
+            "an unreadable file with the same stamp"
+        );
+
+        let mut changed = previous.clone();
+        changed.databases[0].stamp = "another".to_owned();
+        let dropped = target_memo(&obs, Some(&changed), None);
+        assert_eq!(
+            (dropped.databases[0].generation.clone(), links(&dropped)),
+            (None, 0)
+        );
+        let dropped_unread = target_memo(&unread, Some(&changed), None);
+        assert_eq!(
+            links(&dropped_unread),
+            0,
+            "an unreadable file with another stamp"
+        );
+
+        let projection = crate::errors::memo::Projection {
+            databases: vec![crate::errors::memo::DbProjection {
+                generation: Some(DbGeneration("g:9".to_owned())),
+                links: BTreeMap::new(),
+            }],
+        };
+        let projected = target_memo(&obs, Some(&previous), Some(&projection));
+        assert_eq!(
+            (projected.databases[0].generation.clone(), links(&projected)),
+            (Some(DbGeneration("g:9".to_owned())), 0)
         );
     }
 }

@@ -287,7 +287,14 @@ impl Engine {
             return;
         }
         let running = self.running_clients(&targets);
-        super::errors_ledger::commit(&self.paths, captured, run, &running, self.command);
+        super::errors_ledger::commit(
+            &self.paths,
+            captured,
+            run,
+            &running,
+            self.command,
+            self.actor,
+        );
     }
 
     /// A whole restore's refusals before anything under the client dir is written: a

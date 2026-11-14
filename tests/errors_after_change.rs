@@ -554,3 +554,345 @@ fn a_weak_link_stays_off_the_addon_s_row() {
         "{text}"
     );
 }
+
+// ---------------------------------------------------------------------------------------
+// `status` shows a link from the errors memo, checked before it shows (RG-17, design
+// 7.3.2). Here rather than in `tests/status_errors.rs`, whose frozen clock cannot run a
+// change before an error the ledger judges.
+
+/// `omaddons status <extra> --json`, valid against its schemas.
+fn status(s: &Scene, extra: &[&str]) -> Value {
+    let mut argv = vec!["status"];
+    argv.extend_from_slice(extra);
+    let run = s.home.run(&argv);
+    let envelope = run.expect(0);
+    if let Err(failures) = validate::validate_envelope(&envelope, &run.stderr) {
+        panic!("status's envelope does not validate:\n{failures}"); // ubs:ignore — the test's own failure
+    }
+    envelope
+}
+
+/// The link `status` shows for `name` on the first client, `Null` for none.
+fn shown(envelope: &Value, name: &str) -> Value {
+    envelope["data"]["targets"][0]["errors"]["top_addons"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["addon"] == name)
+        .map_or(Value::Null, |a| a["after_change"].clone())
+}
+
+/// What both forms of `status` show for `name`: `(cached, plain)`.
+fn both(s: &Scene, name: &str) -> (Value, Value) {
+    (
+        shown(&status(s, &["--cached"]), name),
+        shown(&status(s, &[]), name),
+    )
+}
+
+fn status_human(s: &Scene, extra: &[&str]) -> String {
+    let mut argv: Vec<String> = vec!["status".to_owned()];
+    argv.extend(extra.iter().map(|a| (*a).to_owned()));
+    let run = s.home.exec(&argv);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    run.stdout
+}
+
+fn memo(s: &Scene) -> Value {
+    serde_json::from_slice(&fs::read(paths(s).errors_memo()).unwrap()).unwrap()
+}
+
+/// Every link the memo holds, per database (in its order), for `addon`.
+fn memo_links(s: &Scene, addon: &str) -> Vec<usize> {
+    let memo = memo(s);
+    let target = memo["targets"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap()
+        .clone();
+    target["databases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|db| {
+            db["addons"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|a| a["addon"] == addon)
+                .map(|a| a["links"].as_array().map_or(0, Vec::len))
+                .sum()
+        })
+        .collect()
+}
+
+#[test]
+fn status_shows_a_strong_link_in_both_forms_and_says_so_in_words() {
+    let log = common::tlog::tlog!();
+    let s = foo_installed();
+    log.env(&s);
+    regression(&s);
+    let update = last_tx(&s, "update");
+    errors(&s, &[]);
+    log.step("both forms of status show the update, the cached one from the memo alone");
+    let (cached, plain) = both(&s, "Foo");
+    log.json("cached", &cached);
+    assert_eq!(cached, plain);
+    assert_eq!(
+        (
+            &cached["tx"],
+            &cached["kind"],
+            &cached["relation"],
+            &cached["confidence"],
+            &cached["addon"]
+        ),
+        (
+            &json!(update),
+            &json!("update"),
+            &json!("own"),
+            &json!("high"),
+            &json!("Foo")
+        )
+    );
+    let text = status_human(&s, &["--cached"]);
+    log.json("human", &text);
+    assert!(text.contains("first seen after an update"), "{text}");
+    assert!(
+        text.contains("Foo 1, likely since its update today"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_medium_link_shows_without_the_headline_and_a_low_one_never_shows() {
+    let log = common::tlog::tlog!();
+    let s = foo_installed();
+    log.env(&s);
+    log.step("Foo's error once in its second session after the update: medium");
+    update_foo(&s, "v2");
+    let when = a_second_later();
+    save(
+        &s,
+        &BugDb::new(Writer::Modern, 7).entry(error("Foo", 12, 7, when, 1)),
+    );
+    errors(&s, &[]);
+    let (cached, plain) = both(&s, "Foo");
+    assert_eq!(
+        (&cached["confidence"], &plain["confidence"]),
+        (&json!("medium"), &json!("medium"))
+    );
+    let text = status_human(&s, &[]);
+    assert!(!text.contains("first seen after an update"), "{text}");
+    assert!(text.contains("possible since its update"), "{text}");
+
+    log.step("an error in Bar, which nothing touched: a low link, kept out of status");
+    let s = foo_installed();
+    addon_folder(&s.addons(), "Bar", &[("Bar.toc", &toc("120105", &[]))], &[]);
+    errors(&s, &[]);
+    update_foo(&s, "v2");
+    let when = a_second_later();
+    save(
+        &s,
+        &BugDb::new(Writer::Modern, 6).entry(error("Bar", 3, 6, when, 1)),
+    );
+    let (v, _) = errors(&s, &[]);
+    assert_eq!(at_line(&v, "Bar", 3)["after_change"]["confidence"], "low");
+    assert_eq!(both(&s, "Bar"), (Value::Null, Value::Null));
+    assert_eq!(
+        memo_links(&s, "Bar"),
+        vec![0],
+        "a low link is never projected"
+    );
+}
+
+#[test]
+fn a_dismissal_hides_the_link_at_once_and_keeps_it_in_the_memo() {
+    let log = common::tlog::tlog!();
+    let s = foo_installed();
+    log.env(&s);
+    regression(&s);
+    errors(&s, &[]);
+    log.step("errors dismiss: no errors run after it");
+    s.ok(&["errors", "dismiss", "-t", "retail"]);
+    assert_eq!(
+        memo_links(&s, "Foo"),
+        vec![1],
+        "the dismissal kept the unchanged file's link"
+    );
+    assert_eq!(shown(&status(&s, &["--cached"]), "Foo"), Value::Null);
+    log.step("a later errors run does not bring it back while the error is not new");
+    errors(&s, &[]);
+    assert_eq!(both(&s, "Foo"), (Value::Null, Value::Null));
+}
+
+#[test]
+fn a_reset_file_shows_no_link_in_either_form_before_any_errors_run() {
+    let log = common::tlog::tlog!();
+    let s = foo_installed();
+    log.env(&s);
+    regression(&s);
+    errors(&s, &[]);
+    assert!(shown(&status(&s, &["--cached"]), "Foo").is_object());
+    log.step("BugGrabber's file reset: session 1, the error again");
+    save(
+        &s,
+        &BugDb::new(Writer::Modern, 1).entry(error("Foo", 12, 1, a_second_later(), 1)),
+    );
+    assert_eq!(both(&s, "Foo"), (Value::Null, Value::Null));
+}
+
+#[test]
+fn a_restore_whose_light_read_never_committed_still_hides_the_link() {
+    let log = common::tlog::tlog!();
+    let s = foo_installed();
+    log.env(&s);
+    regression(&s);
+    errors(&s, &[]);
+    log.step("a backup holding the error in a later session");
+    save(
+        &s,
+        &BugDb::new(Writer::Modern, 9).entry(error("Foo", 12, 9, a_second_later(), 2)),
+    );
+    let created = s.ok(&["backup", "create", "-t", "retail"]);
+    let id = created["data"]["targets"][0]["backup"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    log.step("restored while another process holds the evidence lock");
+    let scopes = omaddons::fsx::ScopeTable::new(&paths(&s), &[], None).unwrap();
+    let held = omaddons::errors::ledger::open(&paths(&s), &scopes, "test").unwrap();
+    s.ok(&["backup", "restore", &id, "-t", "retail"]);
+    drop(held);
+    assert_eq!(
+        memo_links(&s, "Foo"),
+        vec![1],
+        "the light read never committed"
+    );
+    assert_eq!(both(&s, "Foo"), (Value::Null, Value::Null));
+}
+
+#[test]
+fn two_accounts_at_one_session_show_the_link_once_from_its_own_database() {
+    let log = common::tlog::tlog!();
+    let s = Scene::new();
+    log.env(&s);
+    s.release("foo", "v1", &[folder("Foo", &[])]);
+    s.ok(&["install", "gh:o/foo", "-t", "retail"]);
+    age_history(&s, SignedDuration::from_hours(21 * 24));
+    // Foo's known error: another file and text, so another family than the new one.
+    let known = |session: u32, when: i64| {
+        let message = format!(
+            "{} attempt to call a nil value",
+            stack_era_c("Foo", "util.lua", 40)
+        );
+        BugEntry::new(&message, session, (TimeKind::Unix, when))
+    };
+    let old = known(5, a_second_later());
+    let second = |db: &BugDb| {
+        write_files(
+            &s.home.client("_retail_").join("WTF"),
+            &[db.file_of("SECONDACCT")],
+        );
+        std::thread::sleep(Duration::from_millis(60));
+    };
+    save(&s, &BugDb::new(Writer::Modern, 5).entry(old.clone()));
+    second(&BugDb::new(Writer::Modern, 5));
+    errors(&s, &[]);
+    update_foo(&s, "v2");
+    log.step("account 1: a new error; account 2, also at session 6: Foo's known one");
+    let when = a_second_later();
+    save(
+        &s,
+        &BugDb::new(Writer::Modern, 6)
+            .entry(old.clone())
+            .entry(error("Foo", 12, 6, when, 1)),
+    );
+    second(&BugDb::new(Writer::Modern, 6).entry(known(6, when)));
+    errors(&s, &[]);
+    let links = memo_links(&s, "Foo");
+    log.json("links per database", &links);
+    assert_eq!(
+        links.iter().sum::<usize>(),
+        1,
+        "one link, in one database: {links:?}"
+    );
+    let (cached, plain) = both(&s, "Foo");
+    assert_eq!(
+        (&cached["confidence"], &plain["confidence"]),
+        (&json!("high"), &json!("high"))
+    );
+}
+
+#[test]
+fn a_memo_projected_from_a_newer_ledger_is_never_overwritten() {
+    let log = common::tlog::tlog!();
+    let s = foo_installed();
+    log.env(&s);
+    regression(&s);
+    errors(&s, &[]);
+    log.step("the memo on disk says it was projected from a far newer revision");
+    let mut newer = memo(&s);
+    for target in newer["targets"].as_object_mut().unwrap().values_mut() {
+        target["ledger_revision"] = json!(1_000_000);
+    }
+    let bytes = serde_json::to_vec_pretty(&newer).unwrap();
+    fs::write(paths(&s).errors_memo(), &bytes).unwrap();
+    errors(&s, &[]);
+    assert_eq!(fs::read(paths(&s).errors_memo()).unwrap(), bytes);
+}
+
+#[test]
+fn a_link_whose_error_is_gone_is_not_lent_to_another_new_error() {
+    let log = common::tlog::tlog!();
+    let s = foo_installed();
+    log.env(&s);
+    regression(&s);
+    errors(&s, &[]);
+    log.step("the linked error is gone; Foo has another new error in the next session");
+    let message = format!(
+        "{} attempt to call a nil value",
+        stack_era_c("Foo", "util.lua", 40)
+    );
+    let other = BugEntry::new(&message, 7, (TimeKind::Unix, a_second_later()));
+    save(&s, &BugDb::new(Writer::Modern, 7).entry(other));
+    let plain = status(&s, &[]);
+    let foo = plain["data"]["targets"][0]["errors"]["top_addons"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["addon"] == "Foo")
+        .unwrap()
+        .clone();
+    log.json("Foo in plain status", &foo);
+    assert_eq!(
+        (&foo["new"], &foo["after_change"]),
+        (&json!(1), &Value::Null)
+    );
+}
+
+#[test]
+fn a_restore_s_light_read_removes_the_links_of_the_file_it_replaced() {
+    let log = common::tlog::tlog!();
+    let s = foo_installed();
+    log.env(&s);
+    regression(&s);
+    errors(&s, &[]);
+    assert_eq!(memo_links(&s, "Foo"), vec![1]);
+    let created = s.ok(&["backup", "create", "-t", "retail"]);
+    let id = created["data"]["targets"][0]["backup"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    log.step("restored: its light read ends the file's lifetime and drops its links");
+    s.ok(&["backup", "restore", &id, "-t", "retail"]);
+    assert_eq!(memo_links(&s, "Foo"), vec![0]);
+    let bell: Value = serde_json::from_slice(
+        &fs::read(s.home.env.cache().join("omaddons/doorbell.json")).unwrap(),
+    )
+    .unwrap();
+    log.json("the doorbell", &bell);
+    assert!(bell["at"].is_string(), "the memo write rang it");
+    assert_eq!(both(&s, "Foo"), (Value::Null, Value::Null));
+}

@@ -572,6 +572,13 @@ fn record(
 ) -> Batch {
     let now = client.now;
     let dbs = distinct(dbs);
+    // The databases already ended before this batch: the rest that end here are reported.
+    let ended_before: BTreeSet<String> = ledger
+        .databases
+        .iter()
+        .filter(|(_, db)| db.invalidated_at.is_some())
+        .map(|(key, _)| key.clone())
+        .collect();
     invalidate(ledger, &dbs, restores);
     let classes: Vec<Class> = dbs
         .iter()
@@ -872,8 +879,18 @@ fn record(
         });
     }
 
+    // A generation this batch ended (a restore, or a degraded read's lower counter) is
+    // reported as one it started is: the memo drops that database's links.
+    sighted.regenerated.extend(
+        ledger
+            .databases
+            .iter()
+            .filter(|(key, db)| db.invalidated_at.is_some() && !ended_before.contains(*key))
+            .map(|(key, _)| key.clone()),
+    );
     sighted.appeared.sort();
     sighted.regenerated.sort();
+    sighted.regenerated.dedup();
     Batch {
         sighted,
         covered,

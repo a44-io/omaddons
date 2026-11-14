@@ -216,6 +216,7 @@ expression: s.stable(&checked.envelope)
           "top_addons": [
             {
               "addon": "Foo",
+              "after_change": null,
               "count": 4,
               "folder": "Foo",
               "new": 1

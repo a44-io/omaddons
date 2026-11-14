@@ -246,6 +246,10 @@ pub const ERRORS_STACK_LINES: usize = 6;
 /// Errors one addon lists in `errors`' output: its new ones first, then the most
 /// frequent. Its `entries` counts every one.
 pub const ERRORS_SHOWN_PER_ADDON: usize = 10;
+/// Links to the change before a new error the errors memo keeps per addon and database,
+/// best first: `status` shows the first that still holds, so dismissing the strongest
+/// can fall back to the next (design 7.3.2).
+pub const MEMO_LINKS_PER_ADDON: usize = 4;
 /// Stack frames shown with `-v` or `--raw-details`.
 pub const ERRORS_STACK_LINES_VERBOSE: usize = 40;
 /// Characters of an error's locals shown with `--raw-details`.
@@ -1031,6 +1035,13 @@ pub const REGISTRY: &[LimitInfo] = &[
         "Errors one addon lists in errors' output, new first, then the most frequent; entries counts them all",
     ),
     limit(
+        "MEMO_LINKS_PER_ADDON",
+        LimitValue::Count(MEMO_LINKS_PER_ADDON as u64),
+        LimitUnit::Count,
+        None,
+        "Links to the change before a new error the errors memo keeps per addon and database",
+    ),
+    limit(
         "ERRORS_STACK_LINES_VERBOSE",
         LimitValue::Count(ERRORS_STACK_LINES_VERBOSE as u64),
         LimitUnit::Count,
@@ -1550,6 +1561,7 @@ mod tests {
         "ERRORS_MESSAGE_MAX_CHARS",
         "ERRORS_STACK_LINES",
         "ERRORS_SHOWN_PER_ADDON",
+        "MEMO_LINKS_PER_ADDON",
         "ERRORS_STACK_LINES_VERBOSE",
         "ERRORS_LOCALS_MAX_CHARS",
         "ERRORS_CHUNK_MAX_CHARS",

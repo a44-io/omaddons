@@ -978,6 +978,15 @@ expression: "(politeness, REGISTRY)"
       "notes": "Errors one addon lists in errors' output, new first, then the most frequent; entries counts them all"
     },
     {
+      "name": "MEMO_LINKS_PER_ADDON",
+      "value": {
+        "count": 4
+      },
+      "unit": "count",
+      "config_key": null,
+      "notes": "Links to the change before a new error the errors memo keeps per addon and database"
+    },
+    {
       "name": "ERRORS_STACK_LINES_VERBOSE",
       "value": {
         "count": 40

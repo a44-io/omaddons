@@ -1017,6 +1017,9 @@ enum file:errors_ledger targets{}.families[].first<basis=baseline>.reason covera
 enum file:errors_ledger targets{}.families[].first<basis=pending>.time.meaning first_or_last,last,unknown
 enum file:errors_ledger targets{}.families[].first<basis=pending>.time.tz explicit,system_assumed
 enum file:errors_memo targets{}.databases[].addons[].kind addon,blizzard,library,unknown
+enum file:errors_memo targets{}.databases[].addons[].links[].confidence high,low,medium
+enum file:errors_memo targets{}.databases[].addons[].links[].kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,skip,sync,target,undo,update,widget
+enum file:errors_memo targets{}.databases[].addons[].links[].relation dependency,in_stack,none,own
 enum file:errors_memo targets{}.databases[].addons[].sessions{}.newest.meaning first_or_last,last,unknown
 enum file:errors_memo targets{}.databases[].addons[].sessions{}.newest.tz explicit,system_assumed
 enum file:errors_memo targets{}.databases[].sessions{}.newest.meaning first_or_last,last,unknown
@@ -1253,6 +1256,9 @@ enum status data.targets[].drift[].state clean,missing,modified,unindexed
 enum status data.targets[].errors.capture buggrabber,none
 enum status data.targets[].errors.coverage complete,truncated
 enum status data.targets[].errors.state ok,partial,stale,unchecked,unreadable
+enum status data.targets[].errors.top_addons[].after_change.confidence high,low,medium
+enum status data.targets[].errors.top_addons[].after_change.kind adopt,auth,backup,config,dismiss,export,install,pin,remove,repair,restore,skill,skip,sync,target,undo,update,widget
+enum status data.targets[].errors.top_addons[].after_change.relation dependency,in_stack,none,own
 enum status data.targets[].family cata,cata-legacy,forever,mainline,mists,mists-legacy,tbc,tbc-legacy,titan,unknown,vanilla,vanilla-legacy,wrath,wrath-legacy
 enum status data.targets[].install_kind battlenet,custom
 enum status data.targets[].issues[].severity P0,P1,P2,P3
@@ -2591,7 +2597,7 @@ file errors_ledger targets{}.families[].members array!
 file errors_ledger targets{}.families[].members[] string
 file errors_ledger targets{}.untracked boolean
 file errors_memo . object
-file errors_memo 1.0
+file errors_memo 1.1
 file errors_memo schema_version string!
 file errors_memo targets object!
 file errors_memo targets{} object
@@ -2609,6 +2615,25 @@ file errors_memo targets{}.databases[].addons[].addon string!
 file errors_memo targets{}.databases[].addons[].folders array!
 file errors_memo targets{}.databases[].addons[].folders[] string
 file errors_memo targets{}.databases[].addons[].kind string!
+file errors_memo targets{}.databases[].addons[].links array
+file errors_memo targets{}.databases[].addons[].links[] object
+file errors_memo targets{}.databases[].addons[].links[].addon string!
+file errors_memo targets{}.databases[].addons[].links[].algorithm integer! minimum=0
+file errors_memo targets{}.databases[].addons[].links[].at string!
+file errors_memo targets{}.databases[].addons[].links[].cluster string!
+file errors_memo targets{}.databases[].addons[].links[].confidence string!
+file errors_memo targets{}.databases[].addons[].links[].fingerprints array!
+file errors_memo targets{}.databases[].addons[].links[].fingerprints[] string
+file errors_memo targets{}.databases[].addons[].links[].fresh_until_at string!
+file errors_memo targets{}.databases[].addons[].links[].generation string!
+file errors_memo targets{}.databases[].addons[].links[].kind string!
+file errors_memo targets{}.databases[].addons[].links[].relation string!
+file errors_memo targets{}.databases[].addons[].links[].release object?!
+file errors_memo targets{}.databases[].addons[].links[].release.revision integer? minimum=0
+file errors_memo targets{}.databases[].addons[].links[].release.source string!
+file errors_memo targets{}.databases[].addons[].links[].release.tag string!
+file errors_memo targets{}.databases[].addons[].links[].session integer! minimum=0
+file errors_memo targets{}.databases[].addons[].links[].tx string!
 file errors_memo targets{}.databases[].addons[].managed boolean!
 file errors_memo targets{}.databases[].addons[].sessions object!
 file errors_memo targets{}.databases[].addons[].sessions{} object
@@ -2620,6 +2645,7 @@ file errors_memo targets{}.databases[].addons[].sessions{}.newest.tz string!
 file errors_memo targets{}.databases[].addons[].sessions{}.occurrences integer! minimum=0
 file errors_memo targets{}.databases[].baseline integer! minimum=0
 file errors_memo targets{}.databases[].entries integer! minimum=0
+file errors_memo targets{}.databases[].generation string?
 file errors_memo targets{}.databases[].occurrences integer! minimum=0
 file errors_memo targets{}.databases[].path string!
 file errors_memo targets{}.databases[].provider string!
@@ -2635,10 +2661,12 @@ file errors_memo targets{}.databases[].sessions{}.occurrences integer! minimum=0
 file errors_memo targets{}.databases[].stamp string!
 file errors_memo targets{}.databases[].state string!
 file errors_memo targets{}.databases[].written_at string?!
+file errors_memo targets{}.ledger_revision integer? minimum=0
 file errors_memo targets{}.listings array!
 file errors_memo targets{}.listings[] object
 file errors_memo targets{}.listings[].account integer! minimum=0
 file errors_memo targets{}.listings[].fingerprint string!
+file errors_memo targets{}.projected_at string?
 file errors_memo targets{}.received integer! minimum=0
 file export_memo . object
 file export_memo 1.0
@@ -9958,6 +9986,13 @@ output status data.targets[].errors.state string!
 output status data.targets[].errors.top_addons array!
 output status data.targets[].errors.top_addons[] object
 output status data.targets[].errors.top_addons[].addon string!
+output status data.targets[].errors.top_addons[].after_change object?!
+output status data.targets[].errors.top_addons[].after_change.addon string!
+output status data.targets[].errors.top_addons[].after_change.at string!
+output status data.targets[].errors.top_addons[].after_change.confidence string!
+output status data.targets[].errors.top_addons[].after_change.kind string!
+output status data.targets[].errors.top_addons[].after_change.relation string!
+output status data.targets[].errors.top_addons[].after_change.tx string!
 output status data.targets[].errors.top_addons[].count integer! minimum=0
 output status data.targets[].errors.top_addons[].folder string?!
 output status data.targets[].errors.top_addons[].new integer! minimum=0

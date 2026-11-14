@@ -46,7 +46,7 @@ use crate::fsx::{FileStamp, GlobalLock, WriteSession, Writer, ensure_dir_all};
 use crate::inventory::{Depth, inventory_shared};
 use crate::limits::{ERRORS_MAX_TOTAL_BYTES, ERRORS_SHOWN_PER_ADDON};
 use crate::model::{Actor, ReleaseKey, RunId, Target, TargetKey, TransitionChange, TxId, TxKind};
-use crate::output::{Outcome, Style};
+use crate::output::{Outcome, Style, trace};
 use crate::privacy::WtfPathRedactor;
 use crate::resolve::catalog::Catalog;
 use crate::resolve::updates::StatusKind;
@@ -1266,6 +1266,8 @@ pub fn run(ctx: &Context, args: &ErrorsArgs) -> Result<ErrorsOutcome> {
     let mut warnings = world.warnings.clone();
     let remembered = Remembered::load(&world);
     let (mut memo, writable) = memo::load(&world.paths);
+    // As loaded: what each client's projected memo entry carries over from.
+    let previous = memo.clone();
     let (acks, ack_note) = ack::read(&world.paths);
     let seen = observe(ctx, &world, &mut memo, &acks, now, &mut warnings)?;
     // The ledger learns from the whole observation, never the filtered view (7.1.7).
@@ -1278,7 +1280,42 @@ pub fn run(ctx: &Context, args: &ErrorsArgs) -> Result<ErrorsOutcome> {
             installed: &s.installed,
         })
         .collect();
-    let ledger = errors_ledger::full_read(&world.paths, &clients, now, "errors");
+    // The memo's links are projected from the ledger the full read stored, and written
+    // while its evidence lock is still held, unless the memo on disk was projected from a
+    // newer revision (design 7.3.2). Without that ledger, the memo is written below with
+    // the links of unchanged files carried over.
+    let mut projected = false;
+    let ledger = errors_ledger::full_read(&world.paths, &clients, now, "errors", &mut |stored| {
+        projected = true;
+        if !writable {
+            return;
+        }
+        let mut next = memo.clone();
+        for s in &seen {
+            let projection =
+                errors_ledger::project(stored.targets.get(&s.filed_as), &s.observation, now);
+            let mut entry = target_memo(
+                &s.observation,
+                previous.targets.get(&s.filed_as),
+                Some(&projection),
+            );
+            entry.ledger_revision = Some(stored.revision);
+            entry.projected_at = Some(now);
+            next.targets.insert(s.filed_as.clone(), entry);
+        }
+        let (on_disk, _) = memo::load(&world.paths);
+        let newer = on_disk
+            .targets
+            .values()
+            .any(|t| t.ledger_revision.is_some_and(|r| r > stored.revision));
+        if newer {
+            trace::emit(|| {
+                "errors memo: not written: one projected from a newer ledger is on disk".to_owned()
+            });
+        } else {
+            memo::store(&world.paths, &next, ctx.actor);
+        }
+    });
     let found: Vec<Target> = seen.iter().map(|s| s.target.clone()).collect();
     let running_scan = detect_running(&found);
     let (catalog, catalog_warnings) = world.catalog(ctx);
@@ -1314,7 +1351,7 @@ pub fn run(ctx: &Context, args: &ErrorsArgs) -> Result<ErrorsOutcome> {
             running.push(t.id.clone());
         }
     }
-    if writable {
+    if writable && !projected {
         memo::store(&world.paths, &memo, ctx.actor);
     }
     if let Some(addon) = &args.addon
@@ -1406,7 +1443,9 @@ fn observe<'w>(
             },
             &mut budget,
         );
-        let fresh = target_memo(&observation, memo.targets.get(&filed_as));
+        // Without the ledger's projection: links carried over where a file is unchanged.
+        // `run` projects them under the evidence lock when it has the ledger.
+        let fresh = target_memo(&observation, memo.targets.get(&filed_as), None);
         memo.targets.insert(filed_as.clone(), fresh);
         ctx.notes.warn_all(&observation.warnings);
         warnings.extend(observation.warnings.iter().cloned());
