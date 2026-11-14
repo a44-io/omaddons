@@ -10,6 +10,13 @@
 //! update replaced by a later one before the error began is no candidate. The second
 //! half itself is `tests/errors_ledger_model.rs`'s judge pass.
 //!
+//! RG-41's scenarios (`r1` to `r6`) run the loop a player goes through: the error, the
+//! way back `errors` offers, its preview and apply, the release left skipped, and the
+//! next one taken; offline from the cache; through `undo` for a two-addon update whose
+//! scoped `unskip` offers the innocent addon again; as an agent; a stale rollback
+//! refused at its preview; and every offered command parsed, each rollback and unskip
+//! run. Every step's envelope is validated against the published schemas.
+//!
 //! Changes run here and now, so the game's writes come after them and each error's own
 //! unix time is a whole second after the change (`a_second_later`). No scenario sets
 //! `OMADDONS_NOW`: the spans (14 days, 24 hours, 30 days) are RG-14's and RG-15's tables.
@@ -24,6 +31,7 @@ use crate::validate;
 use std::fs;
 use std::time::Duration;
 
+use clap::Parser as _;
 use common::buggrabber::{BugDb, BugEntry, TimeKind, Writer, stack_era_c, write_files};
 use common::engine::{Scene, folder};
 use common::home::Run;
@@ -665,4 +673,338 @@ fn s18_an_update_replaced_before_the_error_is_no_candidate() {
         &errors_text(&s),
         "that update replaced Foo v2 → v3 · likely",
     );
+}
+
+// ---------------------------------------------------------------------------------------
+// RG-41: from the error to the way back to the next release, through the real binary.
+
+/// `omaddons <argv> --json` (`argv` without `omaddons`): its exit code and its envelope,
+/// validated against the published schemas whatever the exit.
+fn run_json(s: &Scene, argv: &[&str]) -> (i32, Value) {
+    let run = s.home.run(argv);
+    let envelope: Value = serde_json::from_str(&run.stdout)
+        .unwrap_or_else(|e| panic!("{argv:?}: no envelope ({e}): {}", run.stderr)); // ubs:ignore — the test's own failure
+    if let Err(failures) = validate::validate_envelope(&envelope, &run.stderr) {
+        panic!("{argv:?}'s envelope does not validate:\n{failures}"); // ubs:ignore — the test's own failure
+    }
+    (run.code, envelope)
+}
+
+/// [`run_json`] of an argv an envelope offered (it starts with `omaddons`), with `extra`.
+fn run_offered(s: &Scene, argv: &[String], extra: &[&str]) -> (i32, Value) {
+    let mut words: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
+    words.extend_from_slice(extra);
+    run_json(s, &words)
+}
+
+/// Every argv an envelope offers: its `commands`, and each error's own
+/// `after_change.commands`.
+fn offered(v: &Value) -> Vec<(String, Vec<String>)> {
+    let argv = |c: &Value| -> (String, Vec<String>) {
+        let words = c["argv"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w.as_str().unwrap().to_owned())
+            .collect();
+        (c["action"].as_str().unwrap().to_owned(), words)
+    };
+    let mut all: Vec<(String, Vec<String>)> = v["commands"]
+        .as_array()
+        .map(|cs| cs.iter().map(argv).collect())
+        .unwrap_or_default();
+    for t in v["data"]["targets"].as_array().into_iter().flatten() {
+        for a in t["addons"].as_array().into_iter().flatten() {
+            for e in a["errors"].as_array().into_iter().flatten() {
+                for c in e["after_change"]["commands"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                {
+                    all.push(argv(c));
+                }
+            }
+        }
+    }
+    all
+}
+
+/// The first offered argv of `action`.
+fn first_of(v: &Value, action: &str) -> Vec<String> {
+    offered(v)
+        .into_iter()
+        .find(|(a, _)| a == action)
+        .unwrap_or_else(|| panic!("no {action} offered: {v}")) // ubs:ignore — the test's own failure
+        .1
+}
+
+/// Foo at v2 by an update from v1, and a new error in its first session: design 5.1.
+/// The scene and the update's transaction.
+fn after_regression() -> (Scene, String) {
+    let s = foo_installed(&[]);
+    let tx = update(&s, "foo", "Foo", &[]);
+    session(&s, 6, &[foo_error(12, 6, a_second_later(), 7)]);
+    (s, tx)
+}
+
+fn foo_version(s: &Scene) -> String {
+    s.record("foo")["version"].as_str().unwrap().to_owned()
+}
+
+fn foo_marks(s: &Scene) -> Vec<Value> {
+    s.record("foo")["skipped_releases"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+}
+
+#[test]
+fn r1_the_full_loop_from_the_error_to_the_next_release() {
+    let log = common::tlog::tlog!();
+    let (s, tx) = after_regression();
+    log.env(&s);
+    log.step("errors offers the rollback, first");
+    let v = errors(&s);
+    let rollback = first_of(&v, "rollback");
+    assert_eq!(v["commands"][0]["action"], "rollback");
+    assert_eq!(
+        rollback,
+        [
+            "omaddons", "skip", "Foo", "--back", "--tx", &tx, "-t", "retail"
+        ]
+        .map(str::to_owned)
+    );
+    log.step("the offered argv previewed, then its plan applied");
+    let (code, preview) = run_offered(&s, &rollback, &["--dry-run"]);
+    assert_eq!(code, 0, "{preview}");
+    let plan = preview["data"]["plan_id"].as_str().unwrap().to_owned();
+    let (code, applied) = run_json(&s, &["apply", &plan]);
+    assert_eq!(code, 0, "{applied}");
+    assert_eq!(foo_version(&s), "v1");
+    log.step("outdated reads skipped_release");
+    let (code, out) = run_json(&s, &["outdated", "-t", "retail"]);
+    assert_eq!(code, 0);
+    assert_eq!(
+        out["data"]["targets"][0]["items"][0]["status"],
+        "skipped_release"
+    );
+    log.step("v3 out: update installs it, and the mark on v2 stays");
+    s.release("foo", "v3", &[folder("Foo", &[])]);
+    let (code, _) = run_json(&s, &["update", "-t", "retail", "--refresh"]);
+    assert_eq!(code, 0);
+    assert_eq!(foo_version(&s), "v3");
+    assert_eq!(foo_marks(&s)[0]["release"]["tag"], "v2");
+}
+
+#[test]
+fn r2_the_loop_offline_goes_back_from_the_cache() {
+    let log = common::tlog::tlog!();
+    let (mut s, _) = after_regression();
+    log.env(&s);
+    log.step("the fixtures answer nothing from here on");
+    s.home.scenario("silent");
+    let asked = common::netlog::net_log(&s.home).len();
+    let v = errors(&s);
+    let rollback = first_of(&v, "rollback");
+    let (code, preview) = run_offered(&s, &rollback, &["--dry-run"]);
+    assert_eq!(code, 0, "{preview}");
+    let plan = preview["data"]["plan_id"].as_str().unwrap().to_owned();
+    let (code, applied) = run_json(&s, &["apply", &plan]);
+    assert_eq!(code, 0, "{applied}");
+    assert_eq!(foo_version(&s), "v1");
+    assert_eq!(
+        common::netlog::net_log(&s.home).len(),
+        asked,
+        "no request once the fixtures went quiet"
+    );
+}
+
+#[test]
+fn r3_through_undo_both_are_marked_and_the_innocent_one_is_offered_again() {
+    use common::wowi::{details, wowi_details, wowi_file};
+    let log = common::tlog::tlog!();
+    let mut s = Scene::new();
+    log.env(&s);
+    let bugsack = |scenario: &std::path::Path, version: &str| {
+        let toc = common::addons::toc(
+            "120105",
+            &["## Title: BugSack", &format!("## Version: {version}")],
+        );
+        let core = format!("-- BugSack {version}");
+        let zip = common::archives::zip_text(&[
+            ("BugSack/BugSack.toc", &toc),
+            ("BugSack/core.lua", &core),
+        ]);
+        let md5 = wowi_file(scenario, 5995, &zip);
+        wowi_details(
+            scenario,
+            &[5995],
+            &[details(5995, "BugSack", version, &md5)],
+        );
+    };
+    log.step("Foo (GitHub) and BugSack (WoWInterface) installed three weeks ago, then read");
+    s.release("foo", "v1", &[folder("Foo", &[])]);
+    bugsack(&s.home.http, "1.0");
+    s.ok(&["install", "gh:o/foo", "wowi:5995", "-t", "retail"]);
+    let earlier = s.record("bugsack")["blob_sha256"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    age_history(&s, SignedDuration::from_hours(21 * 24));
+    session(&s, 5, &[]);
+    errors(&s);
+    log.step("one update takes both; BugSack throws; its 1.0 archive left the cache");
+    let newer = s.home.scenario("newer");
+    s.release("foo", "v1", &[folder("Foo", &[])]);
+    s.release("foo", "v2", &[folder("Foo", &[])]);
+    bugsack(&newer, "1.1");
+    common::binding::age_release_memo(&s.home, SignedDuration::from_hours(24));
+    let (code, _) = run_json(&s, &["update", "-t", "retail", "--refresh"]);
+    assert_eq!(code, 0);
+    let tx = last_tx(&s, "update");
+    let message = format!(
+        "{} attempt to index a nil value",
+        stack_era_c("BugSack", "core.lua", 12)
+    );
+    session(
+        &s,
+        6,
+        &[BugEntry::new(
+            &message,
+            6,
+            (TimeKind::Unix, a_second_later()),
+        )],
+    );
+    fs::remove_file(s.home.env.cache().join("omaddons/blobs").join(&earlier)).unwrap();
+    log.step("errors offers the update's undo, which also moves Foo back");
+    let v = errors(&s);
+    let undo = first_of(&v, "undo");
+    assert_eq!(undo, ["omaddons", "undo", tx.as_str()].map(str::to_owned));
+    assert!(
+        errors_text(&s).contains("undoing that update also moves back Foo"),
+        "{}",
+        errors_text(&s)
+    );
+    let (code, undone) = run_offered(&s, &undo, &[]);
+    assert_eq!(code, 0, "{undone}");
+    assert_eq!(foo_version(&s), "v1");
+    assert_eq!(s.record("bugsack")["version"], "1.0");
+    log.step("both marked, and the result offers unskip --tx");
+    let marked = |addon: &str| {
+        s.record(addon)["skipped_releases"]
+            .as_array()
+            .map_or(0, Vec::len)
+    };
+    assert_eq!((marked("foo"), marked("bugsack")), (1, 1));
+    let unskip = first_of(&undone, "unskip");
+    let undo_tx = unskip[unskip.iter().position(|w| w == "--tx").unwrap() + 1].clone();
+    log.step("unskip Foo --tx: update takes Foo, BugSack stays skipped");
+    let (code, _) = run_json(&s, &["unskip", "Foo", "--tx", &undo_tx, "-t", "retail"]);
+    assert_eq!(code, 0);
+    let (code, _) = run_json(&s, &["update", "-t", "retail"]);
+    assert_eq!(code, 0);
+    assert_eq!(foo_version(&s), "v2");
+    assert_eq!(s.record("bugsack")["version"], "1.0");
+    assert_eq!(marked("bugsack"), 1);
+}
+
+#[test]
+fn r4_an_agents_path_is_recorded_and_undone_by_its_actor() {
+    let log = common::tlog::tlog!();
+    let (s, _) = after_regression();
+    log.env(&s);
+    let (code, v) = run_json(&s, &["errors", "-t", "retail", "--actor", "agent"]);
+    assert_eq!(code, 0);
+    let rollback = first_of(&v, "rollback");
+    let (code, done) = run_offered(
+        &s,
+        &rollback,
+        &["--actor", "agent", "--reason", "the error after the update"],
+    );
+    assert_eq!(code, 0, "{done}");
+    let rolled = done["data"]["targets"][0]["tx"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    log.step("history records the agent on the rollback");
+    let (_, history) = run_json(&s, &["history", "-t", "retail", "--actor", "agent"]);
+    let entry = history["data"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["tx"] == rolled.as_str())
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (&entry["actor"], &entry["kind"]),
+        (&json!("agent"), &json!("update"))
+    );
+    log.step("undo --last-by agent reverts it and takes the mark away");
+    let (code, _) = run_json(&s, &["undo", "--last-by", "agent", "--actor", "agent"]);
+    assert_eq!(code, 0);
+    assert_eq!(foo_version(&s), "v2");
+    assert!(foo_marks(&s).is_empty());
+}
+
+#[test]
+fn r5_a_stale_rollback_is_refused_at_its_preview() {
+    let log = common::tlog::tlog!();
+    let (s, _) = after_regression();
+    log.env(&s);
+    let rollback = first_of(&errors(&s), "rollback");
+    log.step("v3 installed by hand, then the old argv previewed, as the widget would");
+    s.release("foo", "v3", &[folder("Foo", &[])]);
+    let (code, _) = run_json(&s, &["update", "-t", "retail", "--refresh"]);
+    assert_eq!(code, 0);
+    let before = (s.record("foo"), s.folders_of(&["Foo"]));
+    let (code, stale) = run_offered(&s, &rollback, &["--dry-run"]);
+    assert_eq!((code, &stale["error"]["code"]), (1, &json!("plan_stale")));
+    assert_eq!(
+        (s.record("foo"), s.folders_of(&["Foo"])),
+        before,
+        "nothing changed"
+    );
+}
+
+#[test]
+fn r6_every_offered_command_parses_and_each_rollback_and_unskip_does_what_it_says() {
+    let log = common::tlog::tlog!();
+    let (s, tx) = after_regression();
+    log.env(&s);
+    let mut seen: Vec<(String, Vec<String>)> = Vec::new();
+    let v = errors(&s);
+    seen.extend(offered(&v));
+    log.step("the rollback, run as offered: Foo back at v1, v2 marked by it");
+    let rollback = first_of(&v, "rollback");
+    assert!(rollback.windows(2).any(|w| w == ["--tx", tx.as_str()]));
+    let (code, done) = run_offered(&s, &rollback, &[]);
+    assert_eq!(code, 0, "{done}");
+    seen.extend(offered(&done));
+    let rolled = done["data"]["targets"][0]["tx"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(foo_version(&s), "v1");
+    let marks = foo_marks(&s);
+    assert_eq!(
+        (&marks[0]["release"]["tag"], &marks[0]["tx"]),
+        (&json!("v2"), &json!(rolled))
+    );
+    log.step("its unskip --tx, run as offered: exactly that mark is gone");
+    let unskip = first_of(&done, "unskip");
+    assert!(unskip.windows(2).any(|w| w == ["--tx", rolled.as_str()]));
+    let (code, cleared) = run_offered(&s, &unskip, &[]);
+    assert_eq!(code, 0, "{cleared}");
+    seen.extend(offered(&cleared));
+    assert!(foo_marks(&s).is_empty());
+    assert_eq!(foo_version(&s), "v1", "an unskip moves no folder");
+    seen.extend(offered(&errors(&s)));
+    log.step("every command seen parses with the binary's own parser");
+    log.json("seen", &seen);
+    assert!(seen.iter().any(|(a, _)| a == "rollback") && seen.iter().any(|(a, _)| a == "unskip"));
+    for (action, argv) in &seen {
+        if let Err(e) = omaddons::cli::Cli::try_parse_from(argv) {
+            panic!("{action}: {argv:?} does not parse: {e}"); // ubs:ignore — the test's own failure
+        }
+    }
 }
